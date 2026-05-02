@@ -11,6 +11,8 @@ import android.util.Log
 import android.view.KeyEvent as AndroidKeyEvent
 import android.view.MotionEvent
 import java.util.LinkedHashMap
+import java.net.HttpURLConnection
+import java.util.concurrent.atomic.AtomicReference
 import androidx.annotation.DrawableRes
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.activity.ComponentActivity
@@ -817,6 +819,18 @@ private data class OfflinePackagesControllerUiStateWire(
     val syncInFlight: Boolean = false,
     @SerialName("sync_message")
     val syncMessage: String? = null,
+    @SerialName("package_source_editable")
+    val packageSourceEditable: Boolean = true,
+    @SerialName("refresh_enabled")
+    val refreshEnabled: Boolean = false,
+    @SerialName("refresh_cancel_enabled")
+    val refreshCancelEnabled: Boolean = false,
+    @SerialName("sync_enabled")
+    val syncEnabled: Boolean = false,
+    @SerialName("sync_cancel_enabled")
+    val syncCancelEnabled: Boolean = false,
+    @SerialName("planner_interactions_enabled")
+    val plannerInteractionsEnabled: Boolean = true,
 )
 
 @Serializable
@@ -2257,8 +2271,8 @@ private fun HomePage(
     val productIds = remember { OfflineProductOptions.map { it.id } }
     var offlinePackagesControllerResult by remember { mutableStateOf<OfflinePackagesControllerResultWire?>(null) }
     var offlinePackageOperationJob by remember { mutableStateOf<Job?>(null) }
-    var offlinePackageOperationMessage by remember { mutableStateOf<String?>(null) }
     var offlinePackageCancelRequested by remember { mutableStateOf(false) }
+    val activePackageConnection = remember { AtomicReference<HttpURLConnection?>(null) }
     fun launchOfflinePackageOperation(block: suspend () -> Unit) {
         if (offlinePackageOperationJob?.isActive == true) {
             return
@@ -2268,6 +2282,7 @@ private fun HomePage(
             try {
                 block()
             } finally {
+                activePackageConnection.getAndSet(null)?.disconnect()
                 offlinePackageOperationJob = null
                 offlinePackageCancelRequested = false
             }
@@ -2300,38 +2315,35 @@ private fun HomePage(
         offlinePackagesControllerResult = result
         when (val command = result.command) {
             is OfflinePackagesControllerCommandWire.RefreshLibrary -> {
-                offlinePackageOperationMessage = "Refreshing package library..."
                 val refreshResult: Result<OfflinePackagesControllerEventWire.LibraryRefreshSucceeded> = runCatching {
                     withContext(Dispatchers.IO) {
                         refreshOfflinePackageLibrary(
                             packageSourceBaseUrl = command.packageSourceBaseUrl,
                             discoveryFilenames = command.discoveryFilenames,
+                            activeConnectionRef = activePackageConnection,
                         )
                     }
                 }
                 val nextEvent = refreshResult.getOrNull()?.let<OfflinePackagesControllerEventWire.LibraryRefreshSucceeded, OfflinePackagesControllerEventWire> { refreshed ->
                     refreshed
                 } ?: refreshResult.exceptionOrNull()?.let { error ->
-                    if (error is CancellationException) {
-                        offlinePackageOperationMessage = "Package library refresh canceled."
-                    }
+                    val canceled = error is CancellationException || offlinePackageCancelRequested
                     Log.e("OfflinePackages", "library refresh failed", error)
                     OfflinePackagesControllerEventWire.LibraryRefreshFailed(
-                        if (error is CancellationException) {
+                        if (canceled) {
                             "package library refresh canceled"
                         } else {
                             error.message ?: error::class.simpleName ?: "offline packages library refresh failed"
                         },
                     )
                 } ?: error("offline packages library refresh produced no result")
-                withContext(if (refreshResult.exceptionOrNull() is CancellationException) NonCancellable else currentCoroutineContext()) {
+                withContext(NonCancellable) {
                     dispatchOfflinePackagesController(
                         nextEvent,
                     )
                 }
             }
             is OfflinePackagesControllerCommandWire.Sync -> {
-                offlinePackageOperationMessage = "Preparing sync..."
                 val summary = try {
                     withContext(Dispatchers.IO) {
                         syncOfflinePackages(
@@ -2339,9 +2351,9 @@ private fun HomePage(
                             plan = command.plan,
                             bundle = command.bundle,
                             packageSourceBaseUrl = command.packageSourceBaseUrl,
+                            activeConnectionRef = activePackageConnection,
                             onProgress = { message, progress ->
                                 withContext(Dispatchers.Main) {
-                                    offlinePackageOperationMessage = message
                                     if (progress != null) {
                                         dispatchOfflinePackagesController(
                                             OfflinePackagesControllerEventWire.SyncProgressObserved(progress),
@@ -2352,7 +2364,6 @@ private fun HomePage(
                         )
                     }
                 } catch (error: CancellationException) {
-                    offlinePackageOperationMessage = "Sync canceled."
                     OfflinePackagesSyncSummary(
                         fetchedCount = 0,
                         gcCount = 0,
@@ -2383,7 +2394,9 @@ private fun HomePage(
     }
     LaunchedEffect(forceOfflinePackagesOpen, offlinePackagesOpen) {
         if (forceOfflinePackagesOpen || offlinePackagesOpen) {
-            dispatchOfflinePackagesController(OfflinePackagesControllerEventWire.EnsureLibrary)
+            launchOfflinePackageOperation {
+                dispatchOfflinePackagesController(OfflinePackagesControllerEventWire.EnsureLibrary)
+            }
         }
     }
 
@@ -2475,12 +2488,11 @@ private fun HomePage(
                     ),
                 )
             }
-            if (controllerUiState == null || controllerUiState.libraryLoading || !controllerUiState.libraryLoaded) {
+            if (controllerUiState == null || (controllerUiState.plannerUiState == null && !controllerUiState.libraryLoaded)) {
                 OfflinePackagesLibraryPanel(
                     message = listOfNotNull(
                         bootstrapMessage,
                         controllerUiState?.libraryErrorMessage,
-                        offlinePackageOperationMessage,
                         if (controllerUiState?.libraryLoading == true) {
                             "Refreshing package library..."
                         } else {
@@ -2489,7 +2501,7 @@ private fun HomePage(
                     ).joinToString("\n\n"),
                     packageSourceBaseUrl = packageSourceBaseUrl,
                     onPackageSourceBaseUrlChange = { nextBaseUrl ->
-                        if (controllerUiState?.syncInFlight == true || controllerUiState?.libraryLoading == true) {
+                        if (controllerUiState?.packageSourceEditable != true) {
                             return@OfflinePackagesLibraryPanel
                         }
                         packageSourceBaseUrl = nextBaseUrl
@@ -2497,9 +2509,12 @@ private fun HomePage(
                         offlinePackagesControllerResult = null
                     },
                     refreshInFlight = controllerUiState?.libraryLoading == true,
+                    sourceEditable = controllerUiState?.packageSourceEditable == true,
+                    refreshEnabled = controllerUiState?.refreshEnabled == true,
+                    refreshCancelEnabled = controllerUiState?.refreshCancelEnabled == true,
                     cancelRequested = offlinePackageCancelRequested,
                     onRefresh = {
-                        if (controllerUiState?.syncInFlight == true || controllerUiState?.libraryLoading == true) {
+                        if (controllerUiState?.refreshEnabled != true) {
                             return@OfflinePackagesLibraryPanel
                         }
                         launchOfflinePackageOperation {
@@ -2507,8 +2522,9 @@ private fun HomePage(
                         }
                     },
                     onCancelRefresh = {
+                        Log.i("OfflinePackages", "refresh cancel requested")
                         offlinePackageCancelRequested = true
-                        offlinePackageOperationMessage = "Canceling..."
+                        activePackageConnection.getAndSet(null)?.disconnect()
                         offlinePackageOperationJob?.cancel(CancellationException("offline package refresh canceled"))
                     },
                     closeEnabled = !forceOfflinePackagesOpen,
@@ -2548,11 +2564,10 @@ private fun HomePage(
                     uiState = controllerUiState.plannerUiState,
                     navDbStatusText = navDbStatus?.let(::formatNavDbStatusLine),
                     syncMessage = controllerUiState.syncMessage,
-                    operationMessage = offlinePackageOperationMessage,
                     cancelRequested = offlinePackageCancelRequested,
                     packageSourceBaseUrl = packageSourceBaseUrl,
                     onPackageSourceBaseUrlChange = { nextBaseUrl ->
-                        if (controllerUiState.syncInFlight || controllerUiState.libraryLoading) {
+                        if (!controllerUiState.packageSourceEditable) {
                             return@OfflinePackagesPanel
                         }
                         packageSourceBaseUrl = nextBaseUrl
@@ -2560,7 +2575,7 @@ private fun HomePage(
                         offlinePackagesControllerResult = null
                     },
                     onRefreshLibrary = {
-                        if (controllerUiState.syncInFlight || controllerUiState.libraryLoading) {
+                        if (!controllerUiState.refreshEnabled) {
                             return@OfflinePackagesPanel
                         }
                         launchOfflinePackageOperation {
@@ -2568,8 +2583,20 @@ private fun HomePage(
                         }
                     },
                     libraryRefreshInFlight = controllerUiState.libraryLoading,
+                    packageSourceEditable = controllerUiState.packageSourceEditable,
+                    refreshEnabled = controllerUiState.refreshEnabled,
+                    refreshCancelEnabled = controllerUiState.refreshCancelEnabled,
+                    syncEnabled = controllerUiState.syncEnabled,
+                    syncCancelEnabled = controllerUiState.syncCancelEnabled,
+                    plannerInteractionsEnabled = controllerUiState.plannerInteractionsEnabled,
+                    onCancelRefresh = {
+                        Log.i("OfflinePackages", "refresh cancel requested")
+                        offlinePackageCancelRequested = true
+                        activePackageConnection.getAndSet(null)?.disconnect()
+                        offlinePackageOperationJob?.cancel(CancellationException("offline package refresh canceled"))
+                    },
                     onRowClick = { event ->
-                        if (controllerUiState.syncInFlight) {
+                        if (!controllerUiState.plannerInteractionsEnabled) {
                             return@OfflinePackagesPanel
                         }
                         coroutineScope.launch {
@@ -2579,7 +2606,7 @@ private fun HomePage(
                         }
                     },
                     onClockClick = { clockId ->
-                        if (controllerUiState.syncInFlight) {
+                        if (!controllerUiState.plannerInteractionsEnabled) {
                             return@OfflinePackagesPanel
                         }
                         coroutineScope.launch {
@@ -2602,7 +2629,7 @@ private fun HomePage(
                             "OfflinePackages",
                             "sync button clicked syncInFlight=${controllerUiState.syncInFlight} libraryLoading=${controllerUiState.libraryLoading}",
                         )
-                        if (controllerUiState.syncInFlight || offlinePackageOperationJob?.isActive == true) {
+                        if (!controllerUiState.syncEnabled || offlinePackageOperationJob?.isActive == true) {
                             return@OfflinePackagesPanel
                         }
                         launchOfflinePackageOperation {
@@ -2611,8 +2638,9 @@ private fun HomePage(
                         }
                     },
                     onCancelOperation = {
+                        Log.i("OfflinePackages", "sync cancel requested")
                         offlinePackageCancelRequested = true
-                        offlinePackageOperationMessage = "Canceling..."
+                        activePackageConnection.getAndSet(null)?.disconnect()
                         offlinePackageOperationJob?.cancel(CancellationException("offline package operation canceled"))
                     },
                     syncInFlight = controllerUiState.syncInFlight,
@@ -2688,6 +2716,9 @@ private fun OfflinePackagesLibraryPanel(
     packageSourceBaseUrl: String,
     onPackageSourceBaseUrlChange: (String) -> Unit,
     refreshInFlight: Boolean,
+    sourceEditable: Boolean,
+    refreshEnabled: Boolean,
+    refreshCancelEnabled: Boolean,
     cancelRequested: Boolean,
     onRefresh: () -> Unit,
     onCancelRefresh: () -> Unit,
@@ -2731,7 +2762,7 @@ private fun OfflinePackagesLibraryPanel(
                         .width(if (refreshInFlight) ThumbSize * 2.24f else ThumbSize * 1.8f)
                         .height(ThumbSize * 0.72f),
                     maxLines = if (refreshInFlight) 2 else 1,
-                    enabled = !cancelRequested,
+                    enabled = !cancelRequested && if (refreshInFlight) refreshCancelEnabled else refreshEnabled,
                     onClick = if (refreshInFlight) onCancelRefresh else onRefresh,
                 )
                 CompactSquareButton(
@@ -2760,7 +2791,7 @@ private fun OfflinePackagesLibraryPanel(
                 BasicTextField(
                     value = packageSourceBaseUrl,
                     onValueChange = onPackageSourceBaseUrlChange,
-                    enabled = !refreshInFlight,
+                    enabled = sourceEditable,
                     singleLine = true,
                     textStyle = MaterialTheme.typography.labelSmall.copy(
                         color = uiTheme.controls.panelFg,
@@ -2786,12 +2817,18 @@ private fun OfflinePackagesPanel(
     uiState: OfflinePackagesUiStateWire,
     navDbStatusText: String?,
     syncMessage: String?,
-    operationMessage: String?,
     cancelRequested: Boolean,
     packageSourceBaseUrl: String,
     onPackageSourceBaseUrlChange: (String) -> Unit,
     onRefreshLibrary: () -> Unit,
     libraryRefreshInFlight: Boolean,
+    packageSourceEditable: Boolean,
+    refreshEnabled: Boolean,
+    refreshCancelEnabled: Boolean,
+    syncEnabled: Boolean,
+    syncCancelEnabled: Boolean,
+    plannerInteractionsEnabled: Boolean,
+    onCancelRefresh: () -> Unit,
     onRowClick: (OfflinePackagesEventWire) -> Unit,
     onClockClick: (String) -> Unit,
     onSync: () -> Unit,
@@ -2835,13 +2872,17 @@ private fun OfflinePackagesPanel(
                     )
                 }
                 CompactSquareButton(
-                    label = if (libraryRefreshInFlight) "REFRESH..." else "REFRESH",
+                    label = if (libraryRefreshInFlight) {
+                        if (cancelRequested) "CANCELING..." else "REFRESHING\n(cancel)"
+                    } else {
+                        "REFRESH"
+                    },
                     modifier = Modifier
-                        .width(ThumbSize * 1.8f)
+                        .width(if (libraryRefreshInFlight) ThumbSize * 2.24f else ThumbSize * 1.8f)
                         .height(ThumbSize * 0.72f),
-                    maxLines = 1,
-                    enabled = !libraryRefreshInFlight && !syncInFlight,
-                    onClick = onRefreshLibrary,
+                    maxLines = if (libraryRefreshInFlight) 2 else 1,
+                    enabled = !cancelRequested && if (libraryRefreshInFlight) refreshCancelEnabled else refreshEnabled,
+                    onClick = if (libraryRefreshInFlight) onCancelRefresh else onRefreshLibrary,
                 )
                 CompactSquareButton(
                     label = if (syncInFlight) {
@@ -2853,7 +2894,7 @@ private fun OfflinePackagesPanel(
                         .width(if (syncInFlight) ThumbSize * 2.05f else ThumbSize * 1.4f)
                         .height(ThumbSize * 0.72f),
                     maxLines = if (syncInFlight) 2 else 1,
-                    enabled = !cancelRequested,
+                    enabled = !cancelRequested && if (syncInFlight) syncCancelEnabled else syncEnabled,
                     onClick = if (syncInFlight) onCancelOperation else onSync,
                 )
                 CompactSquareButton(
@@ -2878,16 +2919,6 @@ private fun OfflinePackagesPanel(
                     color = Color(0xFFD98B38),
                 )
             }
-            operationMessage?.let { message ->
-                Text(
-                    text = message,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = OfflinePackageMagenta,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
             Text(
                 text = navDbStatusText ?: "NAVDB unknown",
                 style = MaterialTheme.typography.labelMedium,
@@ -2908,7 +2939,7 @@ private fun OfflinePackagesPanel(
                 BasicTextField(
                     value = packageSourceBaseUrl,
                     onValueChange = onPackageSourceBaseUrlChange,
-                    enabled = !syncInFlight,
+                    enabled = packageSourceEditable,
                     singleLine = true,
                     textStyle = MaterialTheme.typography.labelSmall.copy(
                         color = uiTheme.controls.panelFg,
@@ -2935,7 +2966,7 @@ private fun OfflinePackagesPanel(
                                 .weight(1f)
                                 .height(ThumbSize * 0.72f),
                             maxLines = 1,
-                            enabled = !syncInFlight,
+                            enabled = plannerInteractionsEnabled,
                             selected = option.active,
                             onClick = { onClockClick(option.id) },
                         )
@@ -2959,7 +2990,7 @@ private fun OfflinePackagesPanel(
                         title = "REGIONS",
                         options = regionOptions,
                         rows = uiState.regions,
-                        enabled = !syncInFlight,
+                        enabled = plannerInteractionsEnabled,
                         onRowClick = { id ->
                             onRowClick(OfflinePackagesEventWire(kind = "cycle_region", id = id))
                         },
@@ -2970,7 +3001,7 @@ private fun OfflinePackagesPanel(
                         title = "PRODUCTS",
                         options = productOptions,
                         rows = uiState.products,
-                        enabled = !syncInFlight,
+                        enabled = plannerInteractionsEnabled,
                         onRowClick = { id ->
                             onRowClick(OfflinePackagesEventWire(kind = "cycle_product", id = id))
                         },
@@ -3359,6 +3390,7 @@ private suspend fun syncOfflinePackages(
     plan: PackageManagementPlanWire,
     bundle: BundleManifestWire,
     packageSourceBaseUrl: String,
+    activeConnectionRef: AtomicReference<HttpURLConnection?>,
     onProgress: suspend (String, OfflinePackagesSyncProgressWire?) -> Unit = { _, _ -> },
 ): OfflinePackagesSyncSummary {
     val syncStartMs = SystemClock.elapsedRealtime()
@@ -3401,6 +3433,7 @@ private suspend fun syncOfflinePackages(
                 sourceUrl = sourceUrl,
                 expectedSizeBytes = pkg.sizeBytes,
                 expectedSha256 = pkg.checksumSha256,
+                activeConnectionRef = activeConnectionRef,
                 onBytesRead = { bytesRead ->
                     packageDownloadedBytes += bytesRead
                     if (
@@ -3518,9 +3551,13 @@ private fun syncProgressText(
 
 private fun formatProgressMegabytes(bytes: Long): String = "${bytes / 1_000_000L}MB"
 
+private const val PackageHttpConnectTimeoutMs = 5_000
+private const val PackageHttpReadTimeoutMs = 5_000
+
 private suspend fun refreshOfflinePackageLibrary(
     packageSourceBaseUrl: String,
     discoveryFilenames: List<String>,
+    activeConnectionRef: AtomicReference<HttpURLConnection?>,
 ): OfflinePackagesControllerEventWire.LibraryRefreshSucceeded {
     check(packageSourceBaseUrl.isNotBlank()) { "package source URL is blank" }
     val discoveryNames = buildList {
@@ -3529,9 +3566,10 @@ private suspend fun refreshOfflinePackageLibrary(
     }.distinct()
     val discoveryJsons = discoveryNames.map { filename ->
         currentCoroutineContext().ensureActive()
-        URL(resolvePackageSourceUrl(filename, packageSourceBaseUrl)).openStream().buffered().use {
-            it.readBytes().decodeToString()
-        }
+        readPackageSourceText(
+            resolvePackageSourceUrl(filename, packageSourceBaseUrl),
+            activeConnectionRef,
+        )
     }
     val bundleNames = discoveryJsons
         .map { PackageManagementJson.decodeFromString<CurrentArtifactsManifestWire>(it) }
@@ -3544,9 +3582,10 @@ private suspend fun refreshOfflinePackageLibrary(
         .sorted()
     val bundleJsonsByFilename = bundleNames.associateWith { filename ->
         currentCoroutineContext().ensureActive()
-        URL(resolvePackageSourceUrl(filename, packageSourceBaseUrl)).openStream().buffered().use {
-            it.readBytes().decodeToString()
-        }
+        readPackageSourceText(
+            resolvePackageSourceUrl(filename, packageSourceBaseUrl),
+            activeConnectionRef,
+        )
     }
     return OfflinePackagesControllerEventWire.LibraryRefreshSucceeded(
         fetchedAtEpochMs = System.currentTimeMillis(),
@@ -3555,6 +3594,68 @@ private suspend fun refreshOfflinePackageLibrary(
     )
 }
 
+private suspend fun readPackageSourceText(
+    sourceUrl: String,
+    activeConnectionRef: AtomicReference<HttpURLConnection?>,
+): String =
+    readPackageSourceBytes(
+        sourceUrl = sourceUrl,
+        expectedSizeBytes = null,
+        activeConnectionRef = activeConnectionRef,
+        onBytesRead = {},
+    ).decodeToString()
+
+private suspend fun readPackageSourceBytes(
+    sourceUrl: String,
+    expectedSizeBytes: Long?,
+    activeConnectionRef: AtomicReference<HttpURLConnection?>,
+    onBytesRead: suspend (Long) -> Unit,
+): ByteArray {
+    val connection = openCancellablePackageConnection(sourceUrl)
+    activeConnectionRef.set(connection)
+    val completionHandle = currentCoroutineContext()[Job]?.invokeOnCompletion { error ->
+        if (error is CancellationException) {
+            Log.i("OfflinePackages", "cancel disconnect $sourceUrl")
+            connection.disconnect()
+        }
+    }
+    return try {
+        Log.i("OfflinePackages", "http read start $sourceUrl")
+        connection.inputStream.buffered().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            val output = expectedSizeBytes
+                ?.takeIf { it in 0..Int.MAX_VALUE.toLong() }
+                ?.let { java.io.ByteArrayOutputStream(it.toInt()) }
+                ?: java.io.ByteArrayOutputStream()
+            output.use { bytes ->
+                while (true) {
+                    currentCoroutineContext().ensureActive()
+                    val read = input.read(buffer)
+                    currentCoroutineContext().ensureActive()
+                    if (read < 0) {
+                        break
+                    }
+                    bytes.write(buffer, 0, read)
+                    onBytesRead(read.toLong())
+                }
+                bytes.toByteArray()
+            }
+        }
+    } finally {
+        completionHandle?.dispose()
+        activeConnectionRef.compareAndSet(connection, null)
+        connection.disconnect()
+        Log.i("OfflinePackages", "http read end $sourceUrl")
+    }
+}
+
+private fun openCancellablePackageConnection(sourceUrl: String): HttpURLConnection =
+    (URL(sourceUrl).openConnection() as HttpURLConnection).apply {
+        connectTimeout = PackageHttpConnectTimeoutMs
+        readTimeout = PackageHttpReadTimeoutMs
+        instanceFollowRedirects = true
+    }
+
 private suspend fun downloadPackageToTempFile(
     context: Context,
     kind: InstalledPackageKind,
@@ -3562,6 +3663,7 @@ private suspend fun downloadPackageToTempFile(
     sourceUrl: String,
     expectedSizeBytes: Long?,
     expectedSha256: String?,
+    activeConnectionRef: AtomicReference<HttpURLConnection?>,
     onBytesRead: suspend (Long) -> Unit = {},
 ): File {
     val target = File(File(context.filesDir, kind.directoryName), filename)
@@ -3572,20 +3674,42 @@ private suspend fun downloadPackageToTempFile(
     }
     val digest = MessageDigest.getInstance("SHA-256")
     var sizeBytes = 0L
-    URL(sourceUrl).openStream().buffered().use { input ->
-        BufferedOutputStream(temp.outputStream()).use { output ->
-            val buffer = ByteArray(64 * 1024)
-            while (true) {
-                currentCoroutineContext().ensureActive()
-                val read = input.read(buffer)
-                if (read < 0) {
-                    break
+    var complete = false
+    val connection = openCancellablePackageConnection(sourceUrl)
+    activeConnectionRef.set(connection)
+    val completionHandle = currentCoroutineContext()[Job]?.invokeOnCompletion { error ->
+        if (error is CancellationException) {
+            Log.i("OfflinePackages", "cancel disconnect $sourceUrl")
+            connection.disconnect()
+        }
+    }
+    try {
+        Log.i("OfflinePackages", "http download start $sourceUrl")
+        connection.inputStream.buffered().use { input ->
+            BufferedOutputStream(temp.outputStream()).use { output ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    currentCoroutineContext().ensureActive()
+                    val read = input.read(buffer)
+                    currentCoroutineContext().ensureActive()
+                    if (read < 0) {
+                        break
+                    }
+                    output.write(buffer, 0, read)
+                    digest.update(buffer, 0, read)
+                    sizeBytes += read.toLong()
+                    onBytesRead(read.toLong())
                 }
-                output.write(buffer, 0, read)
-                digest.update(buffer, 0, read)
-                sizeBytes += read.toLong()
-                onBytesRead(read.toLong())
             }
+        }
+        complete = true
+    } finally {
+        completionHandle?.dispose()
+        activeConnectionRef.compareAndSet(connection, null)
+        connection.disconnect()
+        Log.i("OfflinePackages", "http download end $sourceUrl complete=$complete")
+        if (!complete) {
+            temp.delete()
         }
     }
     expectedSizeBytes?.let { expected ->

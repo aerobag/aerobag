@@ -308,6 +308,12 @@ pub struct OfflinePackagesControllerUiState {
     pub library_error_message: Option<String>,
     pub sync_in_flight: bool,
     pub sync_message: Option<String>,
+    pub package_source_editable: bool,
+    pub refresh_enabled: bool,
+    pub refresh_cancel_enabled: bool,
+    pub sync_enabled: bool,
+    pub sync_cancel_enabled: bool,
+    pub planner_interactions_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -766,16 +772,24 @@ fn project_offline_packages_controller_ui_state(
     package_source_base_url: &str,
     planner_ui_state: Option<OfflinePackagesUiState>,
 ) -> OfflinePackagesControllerUiState {
+    let library_loaded = state.library_cache.as_ref().is_some_and(|cache| {
+        cache.package_source_base_url == package_source_base_url
+            && !cache.discovery_manifests.is_empty()
+    });
+    let operation_in_flight = state.library_loading || state.sync_in_flight;
     OfflinePackagesControllerUiState {
         planner_ui_state,
-        library_loaded: state.library_cache.as_ref().is_some_and(|cache| {
-            cache.package_source_base_url == package_source_base_url
-                && !cache.discovery_manifests.is_empty()
-        }),
+        library_loaded,
         library_loading: state.library_loading,
         library_error_message: state.library_error_message.clone(),
         sync_in_flight: state.sync_in_flight,
         sync_message: state.sync_message.clone(),
+        package_source_editable: !operation_in_flight,
+        refresh_enabled: !operation_in_flight,
+        refresh_cancel_enabled: state.library_loading,
+        sync_enabled: library_loaded && !operation_in_flight,
+        sync_cancel_enabled: state.sync_in_flight,
+        planner_interactions_enabled: !state.sync_in_flight,
     }
 }
 
@@ -2113,7 +2127,9 @@ mod tests {
         assert_eq!(all.sync_progress_per_mille, Some(500));
 
         let mut replanned_input = input.clone();
-        replanned_input.installed.push(installed_with_size("NW_SEC_2605", 2_000));
+        replanned_input
+            .installed
+            .push(installed_with_size("NW_SEC_2605", 2_000));
         let replanned = plan_offline_packages(&replanned_input);
         let replanned_rows = plan_rows_by_dimension(
             &replanned_input,

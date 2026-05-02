@@ -579,6 +579,7 @@ const vorOuterHexPoints = [
   { x: -4, y: 7 },
 ] as const;
 const vorEdgeInsetDistances = [3.8, 1.9, 3.8, 1.9, 3.8, 1.9] as const;
+const mapSelectionSpotPegPath = "M 0 0 C -9 -9 -12 -16 -12 -23 A 12 12 0 1 1 12 -23 C 12 -16 9 -9 0 0 Z";
 
 type PersistedWebUiState = {
   page?: AppPage;
@@ -3516,8 +3517,8 @@ function MapPage(props: {
               </g>
             ) : (
               <g transform={`translate(${selectedMapHighlight.point.x} ${selectedMapHighlight.point.y})`}>
-                <path className="mapSelectionSpotPegUnder" d="M 0 0 C -9 -9 -12 -16 -12 -23 A 12 12 0 1 1 12 -23 C 12 -16 9 -9 0 0 Z" />
-                <path className="mapSelectionSpotPeg" d="M 0 0 C -9 -9 -12 -16 -12 -23 A 12 12 0 1 1 12 -23 C 12 -16 9 -9 0 0 Z" />
+                <path className="mapSelectionSpotPegUnder" d={mapSelectionSpotPegPath} />
+                <path className="mapSelectionSpotPeg" d={mapSelectionSpotPegPath} />
                 <circle className="mapSelectionSpotPegDot" cx="0" cy="-23" r="4" />
               </g>
             )}
@@ -5869,8 +5870,8 @@ function MapSelectionTray(props: {
                 onClick={() => onSelectItem(item)}
                 title={item.sublabel}
               >
+                <MapSelectionItemIcon item={item} />
                 <span className="mapSelectionItemLabel">{item.label}</span>
-                <span className="mapSelectionItemSubLabel">{item.sublabel}</span>
               </button>
             ))}
           </div>
@@ -5898,6 +5899,27 @@ function MapSelectionTray(props: {
       </div>
     </section>
   );
+}
+
+function MapSelectionItemIcon(props: { item: MapSelectionItem }) {
+  const { item } = props;
+  if (item.symbol_feature) {
+    return (
+      <span className="mapSelectionItemIcon" aria-hidden="true">
+        <PlanWaypointSymbol feature={item.symbol_feature} />
+      </span>
+    );
+  }
+  if (item.highlight.kind === "spot") {
+    return (
+      <svg className="mapSelectionItemIcon mapSelectionSpotIcon" viewBox="-20 -40 40 46" aria-hidden="true">
+        <path className="mapSelectionSpotPegUnder" d={mapSelectionSpotPegPath} />
+        <path className="mapSelectionSpotPeg" d={mapSelectionSpotPegPath} />
+        <circle className="mapSelectionSpotPegDot" cx="0" cy="-23" r="4" />
+      </svg>
+    );
+  }
+  return <span className="mapSelectionItemTextIcon">{item.sublabel || item.label}</span>;
 }
 
 function ChartsPage(props: {

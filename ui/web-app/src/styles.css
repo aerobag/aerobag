@@ -675,6 +675,7 @@ button {
 }
 
 .mapSelectionItem {
+  position: relative;
   flex: 0 0 var(--thumb);
   width: var(--thumb);
   height: var(--thumb);
@@ -685,9 +686,8 @@ button {
   color: var(--theme-button-fg);
   box-shadow: var(--shadow);
   display: flex;
-  flex-direction: column;
+  align-items: center;
   justify-content: center;
-  gap: calc(var(--thumb) * 0.04);
   overflow: hidden;
 }
 
@@ -696,22 +696,54 @@ button {
 }
 
 .mapSelectionItemLabel {
+  position: absolute;
+  z-index: 2;
+  left: calc(var(--thumb) * 0.05);
+  right: calc(var(--thumb) * 0.05);
+  bottom: calc(var(--thumb) * 0.06);
   overflow: hidden;
-  font-size: calc(var(--thumb) * 0.18);
+  font-size: calc(var(--thumb) * 0.16);
   font-weight: 800;
   line-height: 1.05;
   text-overflow: clip;
   white-space: nowrap;
+  text-align: center;
+  paint-order: stroke;
+  -webkit-text-stroke: 2px rgba(5, 12, 16, 0.78);
 }
 
-.mapSelectionItemSubLabel {
-  overflow: hidden;
-  font-size: calc(var(--thumb) * 0.11);
-  font-weight: 700;
-  line-height: 1.05;
-  opacity: 0.82;
-  text-overflow: clip;
-  white-space: nowrap;
+.mapSelectionItemIcon {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(var(--thumb) * 0.82);
+  height: calc(var(--thumb) * 0.72);
+  margin-bottom: calc(var(--thumb) * 0.12);
+  overflow: visible;
+}
+
+.mapSelectionItemIcon .planWaypointSymbol {
+  position: static;
+  width: calc(var(--thumb) * 0.78);
+  height: calc(var(--thumb) * 0.78);
+  transform: none;
+  margin: 0;
+}
+
+.mapSelectionSpotIcon {
+  width: calc(var(--thumb) * 0.76);
+  height: calc(var(--thumb) * 0.76);
+}
+
+.mapSelectionItemTextIcon {
+  color: rgba(255, 255, 255, 0.9);
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 800;
+  text-align: center;
+  paint-order: stroke;
+  -webkit-text-stroke: 2px rgba(5, 12, 16, 0.78);
 }
 
 .mapSelectionActions {

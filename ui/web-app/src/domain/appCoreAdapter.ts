@@ -24,6 +24,7 @@ import type {
   MapViewOptionJson,
   MaterializedProcedure,
   NavRef,
+  NavSymbolFeature,
   OwnshipSelectionCommand,
   OwnshipSourceRegistration,
   OwnshipSourceStatusUpdate,
@@ -311,6 +312,7 @@ export type MapSelectionItem = {
   label: string;
   sublabel: string;
   highlight: MapSelectionHighlight;
+  symbol_feature?: NavSymbolFeature | null;
   actions: MapSelectionAction[];
 };
 

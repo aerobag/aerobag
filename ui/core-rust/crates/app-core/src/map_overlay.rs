@@ -340,6 +340,8 @@ pub struct MapSelectionItem {
     pub label: String,
     pub sublabel: String,
     pub highlight: MapSelectionHighlight,
+    #[serde(default)]
+    pub symbol_feature: Option<NavSymbolFeature>,
     pub actions: Vec<MapSelectionAction>,
 }
 
@@ -933,6 +935,7 @@ pub fn query_map_selection(
                         lat: click.lat,
                         lon: click.lon,
                     },
+                    symbol_feature: None,
                     actions: vec![
                         display_action("terrain", "Terrain --"),
                         disabled_action("direct_to", "Direct-to"),
@@ -989,6 +992,7 @@ fn selection_item_for_point(
         highlight: MapSelectionHighlight::FeatureRef {
             id: record.id.clone(),
         },
+        symbol_feature: Some(symbol.clone()),
         actions: {
             actions.shrink_to_fit();
             actions
@@ -1004,6 +1008,7 @@ fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelection
         highlight: MapSelectionHighlight::FeatureRef {
             id: feature.id.clone(),
         },
+        symbol_feature: None,
         actions: vec![display_action(
             "limits",
             &format!(
@@ -1042,6 +1047,7 @@ fn selection_item_for_tfr(area: &TfrAreaPayload) -> MapSelectionItem {
         highlight: MapSelectionHighlight::FeatureRef {
             id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
         },
+        symbol_feature: None,
         actions: vec![display_action(
             "limits",
             &format!(

@@ -692,8 +692,6 @@ private data class OfflinePackagesClockOptionWire(
 
 @Serializable
 private data class OfflinePackagesUiStateWire(
-    @SerialName("summary_text")
-    val summaryText: String = "",
     @SerialName("clock_label")
     val clockLabel: String = "",
     @SerialName("clock_options")
@@ -2266,6 +2264,7 @@ private fun HomePage(
     }
     var offlinePackagesOpen by remember { mutableStateOf(forceOfflinePackagesOpen || initialOfflinePackagesOpen) }
     var debugPanelOpen by remember { mutableStateOf(false) }
+    var debugOfflineSimulatedClockButtons by remember { mutableStateOf(false) }
     val regionOptions = remember { offlineRegionOptions() }
     val regionIds = remember(regionOptions) { regionOptions.map { it.id } }
     val productIds = remember { OfflineProductOptions.map { it.id } }
@@ -2462,6 +2461,21 @@ private fun HomePage(
                 style = MaterialTheme.typography.labelSmall,
                 color = Color(0xFF52656D),
             )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Checkbox(
+                    checked = debugOfflineSimulatedClockButtons,
+                    onCheckedChange = { debugOfflineSimulatedClockButtons = it },
+                    modifier = Modifier.size(ThumbSize * 0.36f),
+                )
+                Text(
+                    "offline simulated clock buttons",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF52656D),
+                )
+            }
         }
 
         if (offlinePackagesOpen || forceOfflinePackagesOpen) {
@@ -2565,6 +2579,7 @@ private fun HomePage(
                     navDbStatusText = navDbStatus?.let(::formatNavDbStatusLine),
                     syncMessage = controllerUiState.syncMessage,
                     cancelRequested = offlinePackageCancelRequested,
+                    showSimulatedClockButtons = debugOfflineSimulatedClockButtons,
                     packageSourceBaseUrl = packageSourceBaseUrl,
                     onPackageSourceBaseUrlChange = { nextBaseUrl ->
                         if (!controllerUiState.packageSourceEditable) {
@@ -2818,6 +2833,7 @@ private fun OfflinePackagesPanel(
     navDbStatusText: String?,
     syncMessage: String?,
     cancelRequested: Boolean,
+    showSimulatedClockButtons: Boolean,
     packageSourceBaseUrl: String,
     onPackageSourceBaseUrlChange: (String) -> Unit,
     onRefreshLibrary: () -> Unit,
@@ -2865,11 +2881,6 @@ private fun OfflinePackagesPanel(
                         fontWeight = FontWeight.ExtraBold,
                         color = uiTheme.controls.panelFg,
                     )
-                    Text(
-                        text = "Download set: selected regions x selected products",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = uiTheme.controls.panelMuted,
-                    )
                 }
                 CompactSquareButton(
                     label = if (libraryRefreshInFlight) {
@@ -2905,12 +2916,6 @@ private fun OfflinePackagesPanel(
                 )
             }
 
-            Text(
-                text = uiState.summaryText,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
-                color = uiTheme.controls.panelFg,
-            )
             syncMessage?.let { message ->
                 Text(
                     text = message,
@@ -2954,7 +2959,7 @@ private fun OfflinePackagesPanel(
                         .padding(horizontal = ThumbGap * 0.7f, vertical = ThumbGap * 0.55f),
                 )
             }
-            if (uiState.clockOptions.isNotEmpty()) {
+            if (showSimulatedClockButtons && uiState.clockOptions.isNotEmpty()) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.5f),

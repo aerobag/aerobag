@@ -159,7 +159,6 @@ pub struct OfflinePackagesClockOption {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct OfflinePackagesUiState {
-    pub summary_text: String,
     pub clock_label: String,
     pub clock_options: Vec<OfflinePackagesClockOption>,
     pub all_packages: OfflinePackagesUiRow,
@@ -656,7 +655,7 @@ pub fn reduce_offline_packages_controller(
         OfflinePackagesControllerEvent::SyncFinished { summary } => {
             state.sync_in_flight = false;
             state.sync_progress = None;
-            state.sync_message = Some(format_offline_packages_sync_summary(summary));
+            state.sync_message = format_offline_packages_sync_summary(summary);
             state
                 .suppressed_fetch_filename_messages
                 .extend(summary.remote_poisoned_filename_messages.clone());
@@ -793,13 +792,9 @@ fn project_offline_packages_controller_ui_state(
     }
 }
 
-fn format_offline_packages_sync_summary(summary: &OfflinePackagesSyncSummary) -> String {
-    let base = format!(
-        "SYNC fetched {}, GC {}",
-        summary.fetched_count, summary.gc_count
-    );
+fn format_offline_packages_sync_summary(summary: &OfflinePackagesSyncSummary) -> Option<String> {
     if summary.warnings.is_empty() {
-        return base;
+        return None;
     }
     let core_warnings: Vec<_> = summary
         .warnings
@@ -844,11 +839,11 @@ fn format_offline_packages_sync_summary(summary: &OfflinePackagesSyncSummary) ->
             .unwrap_or_default();
         parts.push(format!("core packages: {core_ids}{more}"));
     }
-    format!(
-        "{base}. WARN {}: {}",
+    Some(format!(
+        "WARN {}: {}",
         summary.warnings.len(),
         parts.join(" | ")
-    )
+    ))
 }
 
 pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagementPlan {
@@ -997,21 +992,6 @@ fn project_offline_packages_ui_state(
     );
 
     OfflinePackagesUiState {
-        summary_text: format!(
-            "{} regions playing, {} products playing",
-            state
-                .preferences
-                .regions
-                .values()
-                .filter(|&&s| s == OfflinePackageSelection::Play)
-                .count(),
-            state
-                .preferences
-                .products
-                .values()
-                .filter(|&&s| s == OfflinePackageSelection::Play)
-                .count(),
-        ),
         clock_label: clock_label(now_epoch_ms, state.now_override_epoch_ms),
         clock_options: clock_options(discovery_manifests, state.now_override_epoch_ms),
         all_packages: offline_packages_ui_row(
@@ -2444,11 +2424,6 @@ mod tests {
             init.ui_state.regions[0].selection,
             OfflinePackageSelection::Play
         );
-        assert_eq!(
-            init.ui_state.summary_text,
-            "1 regions playing, 1 products playing"
-        );
-
         let paused = reduce_offline_packages(&OfflinePackagesReduceInput {
             state: init.state,
             event: OfflinePackagesEvent::CycleRegion {
@@ -2467,10 +2442,6 @@ mod tests {
         assert_eq!(
             paused.ui_state.regions[0].selection,
             OfflinePackageSelection::Pause
-        );
-        assert_eq!(
-            paused.ui_state.summary_text,
-            "0 regions playing, 1 products playing"
         );
     }
 

@@ -2466,8 +2466,9 @@ mod tests {
         .expect("suggest waypoint identifiers near view center");
         match outcome {
             HadOperationOutcome::Complete { result } => {
-                let suggestions = serde_json::from_value::<Vec<WaypointIdentifierSuggestion>>(result)
-                    .expect("decode waypoint suggestions");
+                let suggestions =
+                    serde_json::from_value::<Vec<WaypointIdentifierSuggestion>>(result)
+                        .expect("decode waypoint suggestions");
                 assert!(!suggestions.is_empty());
                 assert!(suggestions.len() <= 5);
                 assert!(suggestions

@@ -128,6 +128,8 @@ pub struct OfflinePackagesUiRow {
     pub planned_delta_label: String,
     #[serde(default)]
     pub planned_total_size_label: String,
+    #[serde(default)]
+    pub planned_size_change_visible: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Ord, PartialOrd)]
@@ -1117,6 +1119,7 @@ fn offline_packages_ui_row(
         installed_size_label: format_package_size_label(installed_size_bytes),
         planned_delta_label: format_signed_package_size_label(planned_delta_bytes),
         planned_total_size_label: format_package_size_label(planned_total_size_bytes),
+        planned_size_change_visible: planned_delta_bytes != 0,
     }
 }
 
@@ -1955,6 +1958,7 @@ mod tests {
         assert_eq!(nw.installed_size_label, "0.00M");
         assert_eq!(nw.planned_delta_label, "-0.00M");
         assert_eq!(nw.planned_total_size_label, "0.00M");
+        assert!(nw.planned_size_change_visible);
         assert_eq!(
             nw.plan_entries,
             vec![
@@ -1990,6 +1994,10 @@ mod tests {
         assert_eq!(format_package_size_label(4_240_000), "4.2M");
         assert_eq!(format_package_size_label(424_000), "0.42M");
         assert_eq!(format_signed_package_size_label(-458_000_000), "-460M");
+        assert!(
+            !offline_packages_ui_row("nw".to_string(), OfflinePackageSelection::Play, None,)
+                .planned_size_change_visible
+        );
     }
 
     #[test]

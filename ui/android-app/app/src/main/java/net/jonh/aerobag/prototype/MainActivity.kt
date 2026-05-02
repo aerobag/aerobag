@@ -3616,6 +3616,8 @@ private suspend fun readPackageSourceBytes(
     activeConnectionRef: AtomicReference<HttpURLConnection?>,
     onBytesRead: suspend (Long) -> Unit,
 ): ByteArray {
+    val startMs = SystemClock.elapsedRealtime()
+    var totalBytesRead = 0L
     val connection = openCancellablePackageConnection(sourceUrl)
     activeConnectionRef.set(connection)
     val completionHandle = currentCoroutineContext()[Job]?.invokeOnCompletion { error ->
@@ -3641,6 +3643,7 @@ private suspend fun readPackageSourceBytes(
                         break
                     }
                     bytes.write(buffer, 0, read)
+                    totalBytesRead += read.toLong()
                     onBytesRead(read.toLong())
                 }
                 bytes.toByteArray()
@@ -3650,7 +3653,10 @@ private suspend fun readPackageSourceBytes(
         completionHandle?.dispose()
         activeConnectionRef.compareAndSet(connection, null)
         connection.disconnect()
-        Log.i("OfflinePackages", "http read end $sourceUrl")
+        Log.i(
+            "OfflinePackages",
+            "http read end bytes=$totalBytesRead elapsedMs=${SystemClock.elapsedRealtime() - startMs} url=$sourceUrl",
+        )
     }
 }
 
@@ -3659,6 +3665,7 @@ private fun openCancellablePackageConnection(sourceUrl: String): HttpURLConnecti
         connectTimeout = PackageHttpConnectTimeoutMs
         readTimeout = PackageHttpReadTimeoutMs
         instanceFollowRedirects = true
+        useCaches = false
     }
 
 private suspend fun downloadPackageToTempFile(

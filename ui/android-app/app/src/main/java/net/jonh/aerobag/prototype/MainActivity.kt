@@ -2943,13 +2943,12 @@ private fun OfflinePackagesPanel(
                 }
             }
 
+            OfflinePackageAllSection(row = uiState.allPackages)
+
             LazyColumn(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(ThumbGap),
             ) {
-                item("all-packages") {
-                    OfflinePackageAllSection(row = uiState.allPackages)
-                }
                 if (uiState.coreProducts.isNotEmpty()) {
                     item("core-products") {
                         OfflinePackageCoreSection(rows = uiState.coreProducts)

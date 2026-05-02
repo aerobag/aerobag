@@ -631,7 +631,7 @@ button {
 .mapSelectionTray {
   position: fixed;
   z-index: 9;
-  width: calc(var(--thumb) * 3.5);
+  width: calc(var(--thumb) * 3.8);
   max-height: calc(var(--app-height) - var(--safe-top) - var(--safe-bottom) - (var(--thumb-gap) * 2));
   display: flex;
   flex-direction: column;
@@ -753,6 +753,11 @@ button {
 .mapSelectionAction.isDisplayOnly {
   background: rgba(255, 255, 255, 0.78);
   color: #24333a;
+}
+
+.mapSelectionAction.isPlaceholder {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .chartButton {

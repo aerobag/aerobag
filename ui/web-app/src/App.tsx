@@ -5819,13 +5819,34 @@ function MapSelectionTray(props: {
   onSelectItem: (item: MapSelectionItem) => void;
 }) {
   const { point, result, selectedItem, onSelectItem } = props;
-  const left = Math.min(Math.max(thumbPixels(0.1), point.x + thumbPixels(0.18)), window.innerWidth - thumbPixels(3.7));
-  const top = Math.min(Math.max(thumbPixels(0.1), point.y + thumbPixels(0.18)), window.innerHeight - thumbPixels(4.0));
+  const edgePad = thumbPixels(0.1);
+  type MapSelectionActionSlot = MapSelectionItem["actions"][number] & { placeholder?: boolean };
+  const actionSlots: MapSelectionActionSlot[] = selectedItem
+    ? [...selectedItem.actions, ...Array.from({ length: Math.max(0, 6 - selectedItem.actions.length) }, (_, index) => ({
+      id: `placeholder-${index}`,
+      label: "",
+      enabled: false,
+      display_only: true,
+      placeholder: true,
+    }))]
+    : Array.from({ length: 6 }, (_, index) => ({
+      id: `placeholder-${index}`,
+      label: "",
+      enabled: false,
+      display_only: true,
+      placeholder: true,
+    }));
+  const horizontalStyle = point.x < window.innerWidth / 2
+    ? { right: `${edgePad}px` }
+    : { left: `${edgePad}px` };
+  const verticalStyle = point.y < window.innerHeight / 2
+    ? { bottom: `${edgePad}px` }
+    : { top: `${edgePad}px` };
 
   return (
     <section
       className="mapSelectionTray"
-      style={{ left: `${left}px`, top: `${top}px` }}
+      style={{ ...horizontalStyle, ...verticalStyle }}
       aria-label="Map selection"
       onPointerDown={stopPointer}
       onPointerUp={stopPointer}
@@ -5855,26 +5876,26 @@ function MapSelectionTray(props: {
           </div>
         </div>
       ))}
-      {selectedItem ? (
-        <div className="mapSelectionActions">
-          <div className="mapSelectionActionTitle">{selectedItem.label}</div>
-          <div className="mapSelectionActionGrid">
-            {selectedItem.actions.map((action) => (
-              <button
-                key={action.id}
-                type="button"
-                className={`mapSelectionAction${action.display_only ? " isDisplayOnly" : ""}`}
-                disabled={!action.enabled}
-                onPointerDown={stopPointer}
-                onPointerUp={stopPointer}
-                onDoubleClick={stopDoubleClick}
-              >
-                {action.label}
-              </button>
-            ))}
-          </div>
+      <div className="mapSelectionActions">
+        <div className="mapSelectionActionTitle">{selectedItem?.label ?? "\u00a0"}</div>
+        <div className="mapSelectionActionGrid">
+          {actionSlots.slice(0, 6).map((action) => (
+            <button
+              key={action.id}
+              type="button"
+              className={`mapSelectionAction${action.display_only ? " isDisplayOnly" : ""}${action.placeholder ? " isPlaceholder" : ""}`}
+              disabled={!action.enabled}
+              onPointerDown={stopPointer}
+              onPointerUp={stopPointer}
+              onDoubleClick={stopDoubleClick}
+              aria-hidden={action.placeholder ? "true" : undefined}
+              tabIndex={action.placeholder ? -1 : undefined}
+            >
+              {action.label}
+            </button>
+          ))}
         </div>
-      ) : null}
+      </div>
     </section>
   );
 }

@@ -7247,15 +7247,29 @@ function stopDoubleClick(event: React.MouseEvent<HTMLElement>) {
 }
 
 function TrayScrim(props: { ariaLabel: string; onClose: () => void }) {
+  function handlePointerDown(event: React.PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    props.onClose();
+  }
+
+  function handleClick(event: React.MouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.detail === 0) {
+      props.onClose();
+    }
+  }
+
   return (
     <button
       type="button"
       className="trayScrim"
       aria-label={props.ariaLabel}
-      onPointerDown={stopPointer}
+      onPointerDown={handlePointerDown}
       onPointerUp={stopPointer}
       onDoubleClick={stopDoubleClick}
-      onClick={props.onClose}
+      onClick={handleClick}
     />
   );
 }

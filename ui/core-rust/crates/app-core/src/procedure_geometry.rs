@@ -1,8 +1,8 @@
 use crate::planning::LegDisplayPathStyle;
 use crate::{
     basic_terminal_state, direct_to_fix_with_course_continuation_requirement,
-    heading_signature_for_element, reconcile_handoff, HandoffDecision, LatLon, LegDisplayElement,
-    LegDisplayPath, ProcedureLegMaterializationRecord,
+    reconcile_handoff, HandoffDecision, LatLon, LegDisplayElement, LegDisplayPath,
+    ProcedureLegMaterializationRecord,
 };
 
 macro_rules! debug_source {
@@ -100,6 +100,7 @@ const NEAR_INTERCEPT_SNAP_DISTANCE_NM: f64 = 0.1;
 const TO_FIX_TERMINATION_SNAP_DISTANCE_NM: f64 = 0.1;
 const MIN_ARC_SWEEP_DEG: f64 = 0.5;
 const POSITION_EPSILON_DEG: f64 = 0.0005;
+const EXPLICIT_MISSED_TURN_SOURCE_PREFIX: &str = "explicit_missed_turn@";
 
 pub fn display_path_for_procedure_leg(
     segment_records: &[ProcedureLegMaterializationRecord],
@@ -237,6 +238,16 @@ fn following_common_course_from_segment_start(
         .skip(1)
         .find(|record| record.path_termination.trim() == "CF")?;
     Some(following_cf.magnetic_course_deg? + course_reference_variation_deg(following_cf))
+}
+
+fn next_fix_record_in_segment<'a>(
+    records: &'a [ProcedureLegMaterializationRecord],
+    step: &ProcedureLegMaterializationRecord,
+) -> Option<&'a ProcedureLegMaterializationRecord> {
+    records
+        .iter()
+        .filter(|record| record.sequence > step.sequence && record.nav_ref.is_some())
+        .min_by_key(|record| record.sequence)
 }
 
 fn append_arrival_turn_to_fix_course(
@@ -687,43 +698,9 @@ fn build_procedure_leg_display_path(
                         }
                         current_course_deg = Some(direct_course_deg);
                     } else {
-                        if let (Some(current_heading_deg), Some(next_step)) =
-                            (current_course_deg, steps.get(index + 1).copied())
-                        {
-                            if next_step.path_termination.trim() == "CF" {
-                                if let Some(next_fix) = next_step.nav_position {
-                                    let direct_course_deg = bearing_from(fix, next_fix);
-                                    if angular_difference_degrees(
-                                        current_heading_deg,
-                                        direct_course_deg,
-                                    ) > 5.0
-                                    {
-                                        let prior_len = elements.len();
-                                        let turn_end = append_heading_change(
-                                            &mut elements,
-                                            current_position,
-                                            current_heading_deg,
-                                            direct_course_deg,
-                                            shortest_turn_clockwise(
-                                                current_heading_deg,
-                                                direct_course_deg,
-                                            ),
-                                            0.0,
-                                            missed_approach_turn_radius_nm(),
-                                        );
-                                        extend_sources_for_new_elements(
-                                            &mut debug_sources,
-                                            prior_len,
-                                            &elements,
-                                            debug_source!(),
-                                        );
-                                        current_position = turn_end;
-                                        current_course_deg = Some(direct_course_deg);
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
+                        // When an IF sits at the handoff fix, keep the published corner exact.
+                        // KICT I01R/JAMEY at NAZMU needs later turn anticipation/filleting,
+                        // not an eager fly-over arc that moves the next CF off its tangent.
                         current_course_deg = step
                             .magnetic_course_deg
                             .map(|course| course + course_reference_variation_deg(step))
@@ -738,6 +715,16 @@ fn build_procedure_leg_display_path(
                     continue;
                 }
                 let course_deg = current_or_step_course_deg(step, current_course_deg)?;
+                let climb_limit = steps
+                    .get(index + 1)
+                    .and_then(|next_step| {
+                        next_step.nav_position.filter(|fix| {
+                            angular_difference_degrees(
+                                bearing_from(current_position, *fix),
+                                course_deg,
+                            ) <= 30.0
+                        })
+                    });
                 let prior_len = elements.len();
                 current_position = extend_climb_segment(
                     &mut elements,
@@ -745,6 +732,7 @@ fn build_procedure_leg_display_path(
                     course_deg,
                     &mut current_altitude_ft,
                     step.altitude_1_ft,
+                    climb_limit,
                 );
                 extend_sources_for_new_elements(
                     &mut debug_sources,
@@ -915,7 +903,7 @@ fn build_procedure_leg_display_path(
             }
             "PI" => {
                 let fix = step.nav_position?;
-                let mut path = procedure_turn_display_path(step)?;
+                let path = procedure_turn_display_path(step)?;
                 let next_cf_course_deg = steps
                     .iter()
                     .skip(index + 1)
@@ -930,37 +918,9 @@ fn build_procedure_leg_display_path(
                     push_segment!(elements, debug_sources, current_position, fix);
                 }
                 current_position = fix;
-                if let (Some(current_heading_deg), Some(first_element)) =
-                    (current_course_deg, path.elements.first_mut())
-                {
-                    if let Some((_, outbound_course_deg, _, _)) =
-                        heading_signature_for_element(first_element)
-                    {
-                        if angular_difference_degrees(current_heading_deg, outbound_course_deg)
-                            > 5.0
-                        {
-                            let prior_len = elements.len();
-                            let turn_clockwise =
-                                shortest_turn_clockwise(current_heading_deg, outbound_course_deg);
-                            let turn_end = append_heading_change(
-                                &mut elements,
-                                current_position,
-                                current_heading_deg,
-                                outbound_course_deg,
-                                turn_clockwise,
-                                0.0,
-                                missed_approach_turn_radius_nm(),
-                            );
-                            extend_sources_for_new_elements(
-                                &mut debug_sources,
-                                prior_len,
-                                &elements,
-                                debug_source!(),
-                            );
-                            set_display_element_start_position(first_element, turn_end);
-                        }
-                    }
-                }
+                // Keep the handoff into the procedure turn exact. The arrival-to-PI corner
+                // at fixes such as KPWA VOR-A/IRW MUTTS should be filleted later, not hidden
+                // by an eager fly-over arc that moves the published PI outbound leg.
                 current_course_deg = next_cf_course_deg.or_else(|| {
                     path.elements
                         .last()
@@ -993,43 +953,77 @@ fn build_procedure_leg_display_path(
                     current_position = fix;
                     continue;
                 }
-                let direct_course_deg = bearing_from(current_position, fix);
-                let turn_clockwise = match step.turn_direction.as_deref().unwrap_or("").trim() {
-                    "L" => false,
-                    "R" => true,
-                    _ => shortest_turn_clockwise(current_course_deg?, direct_course_deg),
-                };
-                let initial_course_deg = current_course_deg?;
-                if angular_difference_degrees(initial_course_deg, direct_course_deg) > 1.0 {
-                    let turn_radius_nm = missed_approach_turn_radius_nm();
-                    let turn_center = turn_center_for_heading_change(
-                        current_position,
-                        initial_course_deg,
-                        turn_clockwise,
-                        turn_radius_nm,
-                    );
-                    let turn_end = point_on_turn_center(
-                        turn_center,
-                        direct_course_deg,
-                        turn_clockwise,
-                        turn_radius_nm,
-                    );
-                    push_arc!(
-                        elements,
-                        debug_sources,
-                        turn_center,
-                        turn_radius_nm,
-                        current_position,
-                        turn_end,
-                        turn_clockwise,
-                        heading_sweep_degrees(
+                let raw_turn_direction = step.turn_direction.as_deref().unwrap_or("").trim();
+                if matches!(raw_turn_direction, "L" | "R") {
+                    if let Some(initial_course_deg) = current_course_deg {
+                        let turn_clockwise = raw_turn_direction == "R";
+                        let turn_radius_nm = missed_approach_turn_radius_nm();
+                        let turn_center = turn_center_for_heading_change(
+                            current_position,
                             initial_course_deg,
-                            direct_course_deg,
                             turn_clockwise,
-                        )
-                    );
-                    current_position = turn_end;
+                            turn_radius_nm,
+                        );
+                        if let Some((turn_end, rejoin_course_deg)) =
+                            tangent_rejoin_from_turn_with_min_sweep(
+                                turn_center,
+                                turn_radius_nm,
+                                initial_course_deg,
+                                turn_clockwise,
+                                fix,
+                                0.0,
+                            )
+                            .or_else(|| {
+                                let direct_course_deg = bearing_from(current_position, fix);
+                                let turn_end = point_on_turn_center(
+                                    turn_center,
+                                    direct_course_deg,
+                                    turn_clockwise,
+                                    turn_radius_nm,
+                                );
+                                Some((turn_end, direct_course_deg))
+                            })
+                        {
+                            let sweep_degrees = heading_sweep_degrees(
+                                initial_course_deg,
+                                rejoin_course_deg,
+                                turn_clockwise,
+                            );
+                            // An explicit missed-approach DF turn is procedure content, not
+                            // smoothing. Preserve it even when the visual arc is tiny; KDHN
+                            // R14/MUNEE only needs a very shallow left turn before the fix.
+                            elements.push(LegDisplayElement::Arc {
+                                center: turn_center,
+                                radius_nm: turn_radius_nm,
+                                start: current_position,
+                                end: turn_end,
+                                clockwise: turn_clockwise,
+                                sweep_degrees,
+                            });
+                            debug_sources.push(format!(
+                                "{}{}",
+                                EXPLICIT_MISSED_TURN_SOURCE_PREFIX,
+                                debug_source!()
+                            ));
+                            if distance_between_points_nm(turn_end, fix) > MIN_GEOMETRY_DISTANCE_NM
+                            {
+                                elements.push(LegDisplayElement::Segment {
+                                    start: turn_end,
+                                    end: fix,
+                                });
+                                debug_sources.push(debug_source!());
+                            }
+                            debug_assert_eq!(debug_sources.len(), elements.len());
+                            current_position = fix;
+                            current_course_deg = Some(rejoin_course_deg);
+                            continue;
+                        }
+                    }
                 }
+                let direct_course_deg = bearing_from(current_position, fix);
+                // Direct-to-fix legs terminate at a real waypoint. Do not add a post-fix
+                // fly-over arc; later filleting can smooth corners such as KPWA VOR-A/IRW
+                // at MUTTS after the adjacent published legs are known.
                 push_segment!(elements, debug_sources, current_position, fix);
                 current_position = fix;
                 current_course_deg = Some(direct_course_deg);
@@ -1137,6 +1131,17 @@ fn build_procedure_leg_display_path(
                     > MIN_GEOMETRY_DISTANCE_NM
                 {
                     if let Some(current_heading_deg) = current_course_deg {
+                        if steps
+                            .get(index + 1)
+                            .is_some_and(|next| next.path_termination.trim() == "CF")
+                            || next_fix_record_in_segment(segment_records, step)
+                                .is_some_and(|next| next.path_termination.trim() == "CF")
+                        {
+                            push_segment!(elements, debug_sources, current_position, effective_fix);
+                            current_course_deg = Some(outbound_course_deg);
+                            current_position = effective_fix;
+                            continue;
+                        }
                         if let Some(target_course_deg) =
                             following_common_course_for_terminal_tf_to_if(step, &steps, index)
                                 .or_else(|| {
@@ -1163,36 +1168,9 @@ fn build_procedure_leg_display_path(
                                 continue;
                             }
                         }
-                        if angular_difference_degrees(current_heading_deg, outbound_course_deg)
-                            > 5.0
-                        {
-                            let prior_len = elements.len();
-                            let turn_clockwise =
-                                shortest_turn_clockwise(current_heading_deg, outbound_course_deg);
-                            let turn_end = append_heading_change(
-                                &mut elements,
-                                current_position,
-                                current_heading_deg,
-                                outbound_course_deg,
-                                turn_clockwise,
-                                0.0,
-                                missed_approach_turn_radius_nm(),
-                            );
-                            extend_sources_for_new_elements(
-                                &mut debug_sources,
-                                prior_len,
-                                &elements,
-                                debug_source!(),
-                            );
-                            if distance_between_points_nm(turn_end, effective_fix)
-                                > MIN_GEOMETRY_DISTANCE_NM
-                            {
-                                push_segment!(elements, debug_sources, turn_end, effective_fix);
-                            }
-                            current_course_deg = Some(outbound_course_deg);
-                            current_position = effective_fix;
-                            continue;
-                        }
+                        // Ordinary TF corners are fly-by candidates. Preserve the published
+                        // waypoint legs exactly; later turn-anticipation/filleting can smooth
+                        // cases like KLGA I04/GGREG without inventing post-waypoint arcs.
                     }
                 }
                 if distance_between_points_nm(current_position, effective_fix)
@@ -1368,7 +1346,44 @@ fn append_course_track_path(
     let track_start = if distance_between_points_nm(current_position, course_anchor)
         <= MIN_GEOMETRY_DISTANCE_NM
     {
-        if matches!(termination, TrackTermination::ToAltitude(_)) {
+        if let (TrackTermination::ToFix(_), Some(current_heading_deg), Some(turn_clockwise)) =
+            (termination, current_course_deg, cf_turn_direction(step))
+        {
+            if angular_difference_degrees(current_heading_deg, course_deg) > 5.0 {
+                // Explicit-turn CF legs that start at the course anchor encode turn-to-intercept
+                // instructions, e.g. KPWA VOR-A missed approach: turn left to intercept PWA R-220.
+                let (join_elements, intercept) = directed_track_join_elements(
+                    current_position,
+                    current_heading_deg,
+                    turn_clockwise,
+                    course_anchor,
+                    course_deg,
+                    track_limit,
+                    missed_approach_turn_radius_nm(),
+                )
+                .or_else(|| {
+                    best_nominal_intercept_track_join(
+                        current_position,
+                        current_heading_deg,
+                        Some(turn_clockwise),
+                        course_anchor,
+                        course_deg,
+                        track_limit,
+                        missed_approach_turn_radius_nm(),
+                    )
+                })?;
+                extend_elements_with_sources(
+                    elements,
+                    debug_sources,
+                    join_elements,
+                    Vec::new(),
+                    debug_source!(),
+                );
+                intercept
+            } else {
+                current_position
+            }
+        } else if matches!(termination, TrackTermination::ToAltitude(_)) {
             if let Some(current_heading_deg) = current_course_deg {
                 let heading_delta_deg = angular_difference_degrees(current_heading_deg, course_deg);
                 if heading_delta_deg > 1.0 {
@@ -1493,44 +1508,17 @@ fn append_course_track_path(
                     track_limit,
                 )
             });
-            let intercept = if let Some(intercept) = direct_intercept {
-                let intercept_distance_nm = distance_between_points_nm(current_position, intercept);
-                if intercept_distance_nm <= NEAR_INTERCEPT_SNAP_DISTANCE_NM {
-                    if let TrackTermination::ToFix(fix) = termination {
-                        let direct_to_fix_course_deg = bearing_from(current_position, fix);
-                        if angular_difference_degrees(current_heading_deg, direct_to_fix_course_deg)
-                            > 5.0
-                        {
-                            let turn_prior_len = elements.len();
-                            let turn_end = append_heading_change(
-                                elements,
-                                current_position,
-                                current_heading_deg,
-                                direct_to_fix_course_deg,
-                                shortest_turn_clockwise(
-                                    current_heading_deg,
-                                    direct_to_fix_course_deg,
-                                ),
-                                0.0,
-                                missed_approach_turn_radius_nm(),
-                            );
-                            extend_sources_for_new_elements(
-                                debug_sources,
-                                turn_prior_len,
-                                elements,
-                                debug_source!(),
-                            );
-                            turn_end
-                        } else {
-                            current_position
-                        }
-                    } else {
+                let intercept = if let Some(intercept) = direct_intercept {
+                    let intercept_distance_nm = distance_between_points_nm(current_position, intercept);
+                    if intercept_distance_nm <= NEAR_INTERCEPT_SNAP_DISTANCE_NM {
+                        // A near-at-fix course change, such as KICT I01R/JAMEY at NAZMU,
+                        // is a fly-by corner. Keep the published legs exact here; a later
+                        // fillet/turn-anticipation pass can smooth it using both tangents.
                         current_position
-                    }
-                } else if intercept_distance_nm > MIN_GEOMETRY_DISTANCE_NM {
-                    push_segment!(elements, debug_sources, current_position, intercept);
-                    intercept
-                } else {
+                    } else if intercept_distance_nm > MIN_GEOMETRY_DISTANCE_NM {
+                        push_segment!(elements, debug_sources, current_position, intercept);
+                        intercept
+                    } else {
                     current_position
                 }
             } else {
@@ -1596,6 +1584,7 @@ fn append_course_track_path(
             course_deg,
             current_altitude_ft,
             target_altitude_ft,
+            None,
         ),
         TrackTermination::ToDme { center, radius_nm } => {
             let end =
@@ -1727,6 +1716,7 @@ fn extend_climb_segment(
     course_deg: f64,
     current_altitude_ft: &mut Option<f64>,
     target_altitude_ft: Option<f64>,
+    limit_position: Option<LatLon>,
 ) -> LatLon {
     let (Some(start_alt_ft), Some(target_alt_ft)) = (*current_altitude_ft, target_altitude_ft)
     else {
@@ -1740,7 +1730,15 @@ fn extend_climb_segment(
         *current_altitude_ft = Some(target_alt_ft);
         return current_position;
     }
-    let climb_end = destination_point(current_position, course_deg, climb_distance_nm);
+    let climb_end = if let Some(limit) = limit_position {
+        if distance_between_points_nm(current_position, limit) <= climb_distance_nm {
+            limit
+        } else {
+            destination_point(current_position, course_deg, climb_distance_nm)
+        }
+    } else {
+        destination_point(current_position, course_deg, climb_distance_nm)
+    };
     elements.push(LegDisplayElement::Segment {
         start: current_position,
         end: climb_end,
@@ -1845,6 +1843,7 @@ fn append_heading_leg_path(
             target_heading_deg,
             current_altitude_ft,
             step.altitude_1_ft,
+            None,
         );
     }
 
@@ -2187,6 +2186,24 @@ fn tangent_rejoin_from_turn(
     clockwise: bool,
     fix: LatLon,
 ) -> Option<(LatLon, f64)> {
+    tangent_rejoin_from_turn_with_min_sweep(
+        turn_center,
+        radius_nm,
+        initial_course_deg,
+        clockwise,
+        fix,
+        1.0,
+    )
+}
+
+fn tangent_rejoin_from_turn_with_min_sweep(
+    turn_center: LatLon,
+    radius_nm: f64,
+    initial_course_deg: f64,
+    clockwise: bool,
+    fix: LatLon,
+    min_sweep_degrees: f64,
+) -> Option<(LatLon, f64)> {
     let fix_en = to_local_en(turn_center, fix);
     let distance_sq = fix_en.0 * fix_en.0 + fix_en.1 * fix_en.1;
     if distance_sq <= radius_nm * radius_nm {
@@ -2211,7 +2228,7 @@ fn tangent_rejoin_from_turn(
             let rejoin_course_deg = bearing_from(turn_end, fix);
             let sweep_degrees =
                 heading_sweep_degrees(initial_course_deg, rejoin_course_deg, clockwise);
-            if sweep_degrees < 1.0 {
+            if sweep_degrees < min_sweep_degrees {
                 return None;
             }
             Some((turn_end, rejoin_course_deg, sweep_degrees))
@@ -3201,9 +3218,13 @@ fn prune_degenerate_display_elements_with_sources_and_roles(
                 sweep_degrees,
                 ..
             } => {
-                !positions_nearly_equal_for_geometry(*start, *end)
-                    && *radius_nm > MIN_GEOMETRY_DISTANCE_NM
-                    && sweep_degrees.abs() > MIN_ARC_SWEEP_DEG
+                let is_explicit_missed_turn = original_sources
+                    .get(index)
+                    .is_some_and(|source| source.starts_with(EXPLICIT_MISSED_TURN_SOURCE_PREFIX));
+                is_explicit_missed_turn
+                    || (!positions_nearly_equal_for_geometry(*start, *end)
+                        && *radius_nm > MIN_GEOMETRY_DISTANCE_NM
+                        && sweep_degrees.abs() > MIN_ARC_SWEEP_DEG)
             }
         };
         if keep {

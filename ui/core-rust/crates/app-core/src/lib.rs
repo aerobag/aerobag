@@ -170,6 +170,7 @@ const MIN_GEOMETRY_DISTANCE_NM: f64 = 0.05;
 const MIN_ARC_SWEEP_DEG: f64 = 0.5;
 const MAX_APPROACH_DISPLAY_ELEMENT_DISTANCE_NM: f64 = 40.0;
 const POSITION_EPSILON_DEG: f64 = 0.0005;
+const EXPLICIT_MISSED_TURN_SOURCE_PREFIX: &str = "explicit_missed_turn@";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AirwayPlanMutation {
@@ -1667,6 +1668,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
             &resolved,
             procedure_id,
         )?;
+        validate_explicit_missed_direct_turns_materialized(segments, &resolved, procedure_id)?;
     }
     validate_heading_continuity_checks(&heading_checks, validate_heading_continuity, procedure_id)?;
 
@@ -1787,6 +1789,10 @@ fn validate_no_zero_length_legs(resolved: &[ResolvedLeg], procedure_id: &str) {
 
         let mut has_nonzero_geometry = false;
         for (index, element) in path.elements.iter().enumerate() {
+            let is_explicit_missed_turn = path
+                .debug_element_sources
+                .get(index)
+                .is_some_and(|source| source.starts_with(EXPLICIT_MISSED_TURN_SOURCE_PREFIX));
             match element {
                 LegDisplayElement::Segment { start, end } => {
                     if positions_nearly_equal(*start, *end) {
@@ -1809,8 +1815,9 @@ fn validate_no_zero_length_legs(resolved: &[ResolvedLeg], procedure_id: &str) {
                     sweep_degrees,
                     ..
                 } => {
-                    if *radius_nm <= MIN_GEOMETRY_DISTANCE_NM
-                        || sweep_degrees.abs() <= MIN_ARC_SWEEP_DEG
+                    if !is_explicit_missed_turn
+                        && (*radius_nm <= MIN_GEOMETRY_DISTANCE_NM
+                            || sweep_degrees.abs() <= MIN_ARC_SWEEP_DEG)
                     {
                         panic!(
                             "procedure degenerate arc for {} leg={} element#{} center=({:.6},{:.6}) radius_nm={:.2} sweep_deg={:.2}",
@@ -1823,7 +1830,7 @@ fn validate_no_zero_length_legs(resolved: &[ResolvedLeg], procedure_id: &str) {
                             sweep_degrees,
                         );
                     }
-                    if positions_nearly_equal(*start, *end) {
+                    if !is_explicit_missed_turn && positions_nearly_equal(*start, *end) {
                         panic!(
                             "procedure zero-length arc endpoints for {} leg={} element#{} at ({:.6},{:.6})",
                             procedure_id.trim(),
@@ -1987,6 +1994,86 @@ fn validate_required_procedure_turns_materialized(
     })
 }
 
+fn validate_explicit_missed_direct_turns_materialized(
+    segments: &[(
+        MaterializedSegmentRole,
+        Vec<ProcedureLegMaterializationRecord>,
+        Vec<ConcretizedNavItem>,
+        bool,
+    )],
+    resolved: &[ResolvedLeg],
+    procedure_id: &str,
+) -> AppResult<()> {
+    for (role, records, _, _) in segments {
+        if matches!(role, MaterializedSegmentRole::EnrouteTransition) {
+            continue;
+        }
+        for record in records.iter().filter(|record| {
+            record.path_termination.trim() == "DF"
+                && matches!(record.turn_direction.as_deref().map(str::trim), Some("L" | "R"))
+                && record.nav_position.is_some()
+        }) {
+            let turn_clockwise = record.turn_direction.as_deref().map(str::trim) == Some("R");
+            let fix = record.nav_position.expect("checked above");
+            let route_prefix = format!(
+                "procedure-{}-{}-",
+                procedure_id.trim(),
+                record.key.route_type.trim()
+            );
+            let Some(path) = resolved
+                .iter()
+                .filter(|leg| leg.id.starts_with(&route_prefix))
+                .filter_map(|leg| {
+                    leg.procedure_provenance
+                        .as_ref()
+                        .filter(|provenance| provenance.leg_sequence >= record.sequence)
+                        .and_then(|provenance| provenance.display_path.as_ref())
+                })
+                .next()
+            else {
+                continue;
+            };
+            if explicit_turn_path_has_arc_before_fix(path, fix, turn_clockwise) {
+                continue;
+            }
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: format!(
+                    "explicit missed direct-to turn not materialized for {} route {} seq {} turn {}",
+                    procedure_id.trim(),
+                    record.key.route_type.trim(),
+                    record.sequence,
+                    record.turn_direction.as_deref().unwrap_or("").trim(),
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn explicit_turn_path_has_arc_before_fix(
+    path: &LegDisplayPath,
+    fix: LatLon,
+    turn_clockwise: bool,
+) -> bool {
+    let mut saw_directed_arc = false;
+    for element in &path.elements {
+        match element {
+            LegDisplayElement::Arc { clockwise, .. } => {
+                if *clockwise == turn_clockwise {
+                    saw_directed_arc = true;
+                }
+            }
+            LegDisplayElement::Segment { end, .. } => {
+                if positions_nearly_equal(*end, fix) {
+                    return saw_directed_arc;
+                }
+            }
+        }
+    }
+    false
+}
+
 #[derive(Clone)]
 struct DisplayElementHeadingSignature {
     step_index: usize,
@@ -2023,6 +2110,8 @@ enum HeadingContinuityAllowance {
     GeneratedPathExitToPublishedCourse,
     PublishedWaypointTurnWithRoom,
     DeferredFlyByTfTurn,
+    PublishedCourseIntercept,
+    PublishedMissedRouteTurnWithRoom,
 }
 
 impl HeadingContinuityAllowance {
@@ -2038,11 +2127,13 @@ impl HeadingContinuityAllowance {
             Self::GeneratedPathExitToPublishedCourse => "generated_path_exit_to_published_course",
             Self::PublishedWaypointTurnWithRoom => "published_waypoint_turn_with_room",
             Self::DeferredFlyByTfTurn => "deferred_fly_by_tf_turn",
+            Self::PublishedCourseIntercept => "published_course_intercept",
+            Self::PublishedMissedRouteTurnWithRoom => "published_missed_route_turn_with_room",
         }
     }
 
     #[cfg(test)]
-    fn all() -> [Self; 9] {
+    fn all() -> [Self; 11] {
         [
             Self::PublishedAcuteTurn,
             Self::InternalGeneratedDisplayPathTurn,
@@ -2053,6 +2144,8 @@ impl HeadingContinuityAllowance {
             Self::GeneratedPathExitToPublishedCourse,
             Self::PublishedWaypointTurnWithRoom,
             Self::DeferredFlyByTfTurn,
+            Self::PublishedCourseIntercept,
+            Self::PublishedMissedRouteTurnWithRoom,
         ]
     }
 }
@@ -2319,7 +2412,11 @@ fn named_heading_continuity_allowance(
     if leaves_hold_entry_to_published_course(previous, current) {
         return Some((
             HeadingContinuityAllowance::HoldEntryExitToPublishedCourse,
-            20.0,
+            if matches!(previous.element_role.as_deref(), Some("hold_entry")) {
+                45.0
+            } else {
+                20.0
+            },
         ));
     }
     if is_charted_arc_handoff(previous, current) {
@@ -2331,16 +2428,25 @@ fn named_heading_continuity_allowance(
     if is_deferred_fly_by_tf_turn(previous, current) {
         return Some((HeadingContinuityAllowance::DeferredFlyByTfTurn, 75.0));
     }
-    if leaves_generated_path_to_published_course(previous, current) {
+    if is_published_course_intercept(previous, current) {
+        return Some((HeadingContinuityAllowance::PublishedCourseIntercept, 120.0));
+    }
+    if is_published_missed_route_turn_with_room(previous, current) {
         return Some((
-            HeadingContinuityAllowance::GeneratedPathExitToPublishedCourse,
-            20.0,
+            HeadingContinuityAllowance::PublishedMissedRouteTurnWithRoom,
+            120.0,
         ));
     }
     if is_published_waypoint_turn_with_room(previous, current) {
         return Some((
             HeadingContinuityAllowance::PublishedWaypointTurnWithRoom,
             120.0,
+        ));
+    }
+    if leaves_generated_path_to_published_course(previous, current) {
+        return Some((
+            HeadingContinuityAllowance::GeneratedPathExitToPublishedCourse,
+            20.0,
         ));
     }
     None
@@ -2428,7 +2534,7 @@ fn is_published_waypoint_turn_with_room(
     if previous.end_label == "synthesized-path" || current.start_label == "synthesized-path" {
         return false;
     }
-    if previous.start_label == "synthesized-path" || current.end_label == "synthesized-path" {
+    if previous.end_label != current.start_label {
         return false;
     }
     if previous.element_kind != DisplayElementKind::Segment
@@ -2438,7 +2544,7 @@ fn is_published_waypoint_turn_with_room(
     }
     let previous_len_nm = great_circle_distance_nm(previous.start_position, previous.end_position);
     let current_len_nm = great_circle_distance_nm(current.start_position, current.end_position);
-    previous_len_nm >= 3.0 && current_len_nm >= 3.0
+    previous_len_nm >= 1.5 && current_len_nm >= 1.5
 }
 
 fn is_deferred_fly_by_tf_turn(
@@ -2462,6 +2568,52 @@ fn is_deferred_fly_by_tf_turn(
     // These are real TF fly-by corners that need turn anticipation/filleting.
     // Keep them named instead of blessing them as generic sharp turns.
     previous.start_label == "synthesized-path" || current.end_label == "synthesized-path"
+}
+
+fn is_published_course_intercept(
+    previous: &DisplayElementHeadingSignature,
+    current: &DisplayElementHeadingSignature,
+) -> bool {
+    if current.path_termination != "CF" {
+        return false;
+    }
+    if previous.end_label == "synthesized-path" || current.start_label == "synthesized-path" {
+        return false;
+    }
+    if previous.end_label != current.start_label {
+        return false;
+    }
+    if previous.element_kind != DisplayElementKind::Segment
+        || current.element_kind != DisplayElementKind::Segment
+    {
+        return false;
+    }
+    let previous_len_nm = great_circle_distance_nm(previous.start_position, previous.end_position);
+    let current_len_nm = great_circle_distance_nm(current.start_position, current.end_position);
+    previous_len_nm >= 1.5 && current_len_nm >= 1.5
+}
+
+fn is_published_missed_route_turn_with_room(
+    previous: &DisplayElementHeadingSignature,
+    current: &DisplayElementHeadingSignature,
+) -> bool {
+    if !matches!(current.path_termination.as_str(), "HF" | "HM") {
+        return false;
+    }
+    if previous.end_label == "synthesized-path" || current.start_label == "synthesized-path" {
+        return false;
+    }
+    if previous.end_label != current.start_label {
+        return false;
+    }
+    if previous.element_kind != DisplayElementKind::Segment
+        || current.element_kind != DisplayElementKind::Segment
+    {
+        return false;
+    }
+    let previous_len_nm = great_circle_distance_nm(previous.start_position, previous.end_position);
+    let current_len_nm = great_circle_distance_nm(current.start_position, current.end_position);
+    previous_len_nm >= 2.0 && current_len_nm >= 2.0
 }
 
 fn published_acute_turn_heading_tolerance_deg(
@@ -6907,13 +7059,232 @@ mod tests {
     #[test]
     #[ignore = "manual visual inspection overlay for KCRQ I24"]
     fn writes_kcrq_i24_ocn_overlay_png() {
-        render_procedure_overlay_to_paths("KCRQ", "I24", "OCN", "KCRQ_I24_OCN", false);
+        render_procedure_overlay_to_paths("KCRQ", "I24", "OCN", "KCRQ_I24_OCN", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KPHX I07R ALLIS"]
+    fn writes_kphx_i07r_allis_overlay_png() {
+        render_procedure_overlay_to_paths("KPHX", "I07R", "ALLIS", "KPHX_I07R_ALLIS", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KICT I01R JAMEY"]
+    fn writes_kict_i01r_jamey_overlay_png() {
+        render_procedure_overlay_to_paths("KICT", "I01R", "JAMEY", "KICT_I01R_JAMEY", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KEWR I22L PATRN"]
+    fn writes_kewr_i22l_patrn_overlay_png() {
+        render_procedure_overlay_to_paths("KEWR", "I22L", "PATRN", "KEWR_I22L_PATRN", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KLGA I04 GGREG"]
+    fn writes_klga_i04_ggreg_overlay_png() {
+        render_procedure_overlay_to_paths("KLGA", "I04", "GGREG", "KLGA_I04_GGREG", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KAXX R17 FENON"]
+    fn writes_kaxx_r17_fenon_overlay_png() {
+        render_procedure_overlay_to_paths("KAXX", "R17", "FENON", "KAXX_R17_FENON", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KGVQ R28 GEE"]
+    fn writes_kgvq_r28_gee_overlay_png() {
+        render_procedure_overlay_to_paths("KGVQ", "R28", "GEE", "KGVQ_R28_GEE", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for 4B6 R20 TIMDE"]
+    fn writes_4b6_r20_timde_overlay_png() {
+        render_procedure_overlay_to_paths("4B6", "R20", "TIMDE", "4B6_R20_TIMDE", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KPWA VOR-A IRW"]
+    fn writes_kpwa_vora_irw_overlay_png() {
+        render_procedure_overlay_to_paths("KPWA", "VOR-A", "IRW", "KPWA_VOR-A_IRW", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for 05C R08 BOONE"]
+    fn writes_05c_r08_boone_overlay_png() {
+        render_procedure_overlay_to_paths("05C", "R08", "BOONE", "05C_R08_BOONE", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for 6G5 R27 AVACA"]
+    fn writes_6g5_r27_avaca_overlay_png() {
+        render_procedure_overlay_to_paths("6G5", "R27", "AVACA", "6G5_R27_AVACA", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KDHN R14 MUNEE"]
+    fn writes_kdhn_r14_munee_overlay_png() {
+        render_procedure_overlay_to_paths("KDHN", "R14", "MUNEE", "KDHN_R14_MUNEE", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for 09J VOR-A SSI"]
+    fn writes_09j_vora_ssi_overlay_png() {
+        render_procedure_overlay_to_paths("09J", "VOR-A", "SSI", "09J_VOR-A_SSI", true);
+    }
+
+    #[test]
+    #[ignore = "manual probe for 09J VOR-A SSI materialization rows"]
+    fn audit_09j_vora_ssi_materialization_rows() {
+        let store = load_snapshot_nav_kv_store();
+        let rows = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "09J".to_string(),
+                procedure_id: "VOR-A".to_string(),
+            },
+            "09J VOR-A materialization rows",
+        );
+        for row in rows.iter().filter(|row| {
+            row.key.transition_id.trim() == "SSI" || row.key.route_type.trim() == "S"
+        }) {
+            eprintln!("{row:#?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "manual probe for 05C R08 BOONE materialization rows"]
+    fn audit_05c_r08_boone_materialization_rows() {
+        let store = load_snapshot_nav_kv_store();
+        let rows = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "05C".to_string(),
+                procedure_id: "R08".to_string(),
+            },
+            "05C R08 materialization rows",
+        );
+        for row in rows.iter().filter(|row| {
+            row.key.transition_id.trim() == "BOONE" || row.key.route_type.trim() == "R"
+        }) {
+            eprintln!("{row:#?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "manual probe for KDHN R14 MUNEE materialization rows"]
+    fn audit_kdhn_r14_munee_materialization_rows() {
+        let store = load_snapshot_nav_kv_store();
+        let rows = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "KDHN".to_string(),
+                procedure_id: "R14".to_string(),
+            },
+            "KDHN R14 materialization rows",
+        );
+        for row in rows.iter().filter(|row| {
+            row.key.transition_id.trim() == "MUNEE" || row.key.route_type.trim() == "R"
+        }) {
+            eprintln!("{row:#?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "manual probe for KPWA VOR-A IRW materialization rows"]
+    fn audit_kpwa_vora_irw_materialization_rows() {
+        let store = load_snapshot_nav_kv_store();
+        let rows = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "KPWA".to_string(),
+                procedure_id: "VOR-A".to_string(),
+            },
+            "KPWA VOR-A materialization rows",
+        );
+        for row in rows.iter().filter(|row| {
+            row.key.transition_id.trim() == "IRW" || row.key.route_type.trim() == "S"
+        }) {
+            eprintln!("{row:#?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "manual probe for KAXX R17 FENON materialization rows"]
+    fn audit_kaxx_r17_fenon_materialization_rows() {
+        let store = load_snapshot_nav_kv_store();
+        let rows = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "KAXX".to_string(),
+                procedure_id: "R17".to_string(),
+            },
+            "KAXX R17 materialization rows",
+        );
+        for row in rows.iter().filter(|row| {
+            row.key.transition_id.trim() == "FENON" || row.key.route_type.trim() == "R"
+        }) {
+            eprintln!("{row:#?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "manual probe for KICT I01R JAMEY materialization rows"]
+    fn audit_kict_i01r_jamey_materialization_rows() {
+        let store = load_snapshot_nav_kv_store();
+        let rows = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "KICT".to_string(),
+                procedure_id: "I01R".to_string(),
+            },
+            "KICT I01R materialization rows",
+        );
+        for row in rows
+            .iter()
+            .filter(|row| row.key.transition_id.trim() == "JAMEY" || row.key.route_type.trim() == "I")
+        {
+            eprintln!("{row:#?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "manual probe for KCRQ I24 OCN materialization rows"]
+    fn audit_kcrq_i24_ocn_materialization_rows() {
+        let store = load_snapshot_nav_kv_store();
+        let rows = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "KCRQ".to_string(),
+                procedure_id: "I24".to_string(),
+            },
+            "KCRQ I24 materialization rows",
+        );
+        for row in rows
+            .iter()
+            .filter(|row| row.key.transition_id.trim() == "OCN")
+        {
+            eprintln!("{row:#?}");
+        }
     }
 
     #[test]
     #[ignore = "manual visual inspection overlay for KDEN I16L"]
     fn writes_kden_i16l_jeepr_overlay_png() {
         render_procedure_overlay_to_paths("KDEN", "I16L", "KAILE", "KDEN_I16L_KAILE", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KDEN I17R HISSY"]
+    fn writes_kden_i17r_hissy_overlay_png() {
+        render_procedure_overlay_to_paths("KDEN", "I17R", "HISSY", "KDEN_I17R_HISSY", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KIAH I08L GUSHR"]
+    fn writes_kiah_i08l_gushr_overlay_png() {
+        render_procedure_overlay_to_paths("KIAH", "I08L", "GUSHR", "KIAH_I08L_GUSHR", true);
     }
 
     #[test]
@@ -8717,6 +9088,98 @@ mod tests {
         assert!(
             matches!(path.elements.first(), Some(LegDisplayElement::Arc { clockwise: false, .. })),
             "missed approach starts with climbing left turn, not straight-ahead CA: {:?}",
+            path.elements
+        );
+    }
+
+    #[test]
+    fn materializes_05c_r08_boone_missed_direct_fix_as_climbing_turn() {
+        let store = load_snapshot_nav_kv_store();
+        let materialized =
+            materialize_snapshot_procedure(&store, "05C", "R08", Some("BOONE".to_string()))
+                .unwrap_or_else(|error| panic!("materialize 05C R08 BOONE: {error}"));
+        let path = materialized
+            .resolved_legs
+            .iter()
+            .find(|leg| leg.id == "procedure-R08-R-60")
+            .and_then(|leg| leg.procedure_provenance.as_ref())
+            .and_then(|provenance| provenance.display_path.as_ref())
+            .expect("display path for 05C R08 missed approach");
+
+        assert!(
+            path.elements
+                .iter()
+                .any(|element| matches!(element, LegDisplayElement::Arc { clockwise: true, .. })),
+            "missed approach says climbing right turn direct FIPEX; rendered path must include a right-turn arc before FIPEX: {:?}",
+            path.elements
+        );
+    }
+
+    #[test]
+    fn materializes_6g5_r27_avaca_shallow_missed_direct_fix_as_climbing_turn() {
+        let store = load_snapshot_nav_kv_store();
+        let materialized =
+            materialize_snapshot_procedure(&store, "6G5", "R27", Some("AVACA".to_string()))
+                .unwrap_or_else(|error| panic!("materialize 6G5 R27 AVACA: {error}"));
+        let path = materialized
+            .resolved_legs
+            .iter()
+            .find(|leg| leg.id == "procedure-R27-R-60")
+            .and_then(|leg| leg.procedure_provenance.as_ref())
+            .and_then(|provenance| provenance.display_path.as_ref())
+            .expect("display path for 6G5 R27 missed approach");
+
+        assert!(
+            path.elements.iter().any(|element| {
+                matches!(element, LegDisplayElement::Arc { clockwise: false, sweep_degrees, .. } if *sweep_degrees > 1.0)
+            }),
+            "missed approach says climbing left turn direct hold fix; shallow explicit turn arc must not be suppressed: {:?}",
+            path.elements
+        );
+    }
+
+    #[test]
+    fn materializes_kdhn_r14_munee_tiny_missed_direct_fix_as_climbing_turn() {
+        let store = load_snapshot_nav_kv_store();
+        let materialized =
+            materialize_snapshot_procedure(&store, "KDHN", "R14", Some("MUNEE".to_string()))
+                .unwrap_or_else(|error| panic!("materialize KDHN R14 MUNEE: {error}"));
+        let path = materialized
+            .resolved_legs
+            .iter()
+            .find(|leg| leg.id == "procedure-R14-R-60")
+            .and_then(|leg| leg.procedure_provenance.as_ref())
+            .and_then(|provenance| provenance.display_path.as_ref())
+            .expect("display path for KDHN R14 missed approach");
+
+        assert!(
+            path.elements
+                .iter()
+                .any(|element| matches!(element, LegDisplayElement::Arc { clockwise: false, .. })),
+            "missed approach says climbing left turn direct hold fix; explicit turn arc must be preserved even when visually tiny: {:?}",
+            path.elements
+        );
+    }
+
+    #[test]
+    fn materializes_09j_vora_ssi_missed_direct_fix_turn_on_s_route() {
+        let store = load_snapshot_nav_kv_store();
+        let materialized =
+            materialize_snapshot_procedure(&store, "09J", "VOR-A", Some("SSI".to_string()))
+                .unwrap_or_else(|error| panic!("materialize 09J VOR-A SSI: {error}"));
+        let path = materialized
+            .resolved_legs
+            .iter()
+            .find(|leg| leg.id == "procedure-VOR-A-S-60")
+            .and_then(|leg| leg.procedure_provenance.as_ref())
+            .and_then(|provenance| provenance.display_path.as_ref())
+            .expect("display path for 09J VOR-A missed approach");
+
+        assert!(
+            path.elements
+                .iter()
+                .any(|element| matches!(element, LegDisplayElement::Arc { clockwise: true, .. })),
+            "S-route missed approach encodes DF SSI turn R; rendered path must include right-turn arc before SSI: {:?}",
             path.elements
         );
     }

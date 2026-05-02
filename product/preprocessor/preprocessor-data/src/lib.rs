@@ -15,8 +15,8 @@ pub use tpp_cifp_matching::{
     audit_tpp_cifp_matching, build_data_package_with_tpp_matches,
     choose_bundle as choose_matching_bundle, load_bundle as load_matching_bundle,
     publish_tpp_cifp_matches, resolve_db_path as resolve_matching_db_path,
-    tpp_zip_paths_from_bundle, DataTppMatchRequest, DataTppMatchResult,
-    PublishedMatchSummary, TppCifpAuditReport,
+    tpp_zip_paths_from_bundle, DataTppMatchRequest, DataTppMatchResult, PublishedMatchSummary,
+    TppCifpAuditReport,
 };
 
 pub const INTERMEDIATE_SQLITE_BASENAME: &str = "intermediate-sqlite.db";
@@ -282,7 +282,7 @@ CREATE TABLE airways(name Text, sequence Text, Latitude float, Longitude float);
         }
     };
     conn.execute_batch(&format!("{base}\n{airway_schema}\n"))
-    .context("failed to create data schema")?;
+        .context("failed to create data schema")?;
     Ok(())
 }
 
@@ -697,9 +697,8 @@ fn insert_awos_with_ids(
 fn insert_airways(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
     let path = input_dir.join("AWY.txt");
     let text = read_text_lossy(&path)?;
-    let mut branch_stmt = conn.prepare(
-        "INSERT INTO airways_branch VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-    )?;
+    let mut branch_stmt =
+        conn.prepare("INSERT INTO airways_branch VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")?;
     let mut count = 0;
     for raw in text.lines() {
         if !raw.starts_with("AWY2") {
@@ -1244,20 +1243,20 @@ fn parse_cifp_arinc_navaid(line: &str) -> Option<CifpArincNavaid> {
         return None;
     }
     let section = field(line, 4, 1);
-    if section != "D" {
+    let subsection = field(line, 5, 1);
+    if !(section == "D" || (section == "P" && subsection == "N")) {
         return None;
     }
-    let subsection = field(line, 5, 1);
     let id = trim(field(line, 13, 6)).to_ascii_uppercase();
     let icao_code = trim(field(line, 19, 2)).to_ascii_uppercase();
     if id.is_empty() || icao_code.is_empty() {
         return None;
     }
 
-    // FAA public CIFP is ARINC 424-format data. Section D records carry their
+    // FAA public CIFP is ARINC 424-format data. Navaid-like records carry their
     // own ICAO/section/subsection identity; procedure rows refer back to that
-    // tuple, so keep it instead of collapsing duplicate navaid identifiers
-    // like JN/K5 and JN/K7 into a single LocationID.
+    // tuple, so keep it instead of collapsing duplicate navaid identifiers like
+    // JN/K5 and JN/K7 or AB/D/B and AB/P/N into a single LocationID.
     let (lat, lon) = cifp_compact_coord_lat(field(line, 32, 9))
         .zip(cifp_compact_coord_lon(field(line, 41, 10)))
         .or_else(|| {
@@ -1274,7 +1273,7 @@ fn parse_cifp_arinc_navaid(line: &str) -> Option<CifpArincNavaid> {
         lat,
         lon,
         kind: match subsection {
-            "B" => "NDB".to_string(),
+            "B" | "N" => "NDB".to_string(),
             _ => "NAVAID".to_string(),
         },
         name,
@@ -1501,14 +1500,14 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
     );
     tx.commit()?;
 
-    let artifact_stem = request
-        .artifact_stem
-        .as_deref()
-        .unwrap_or("databases");
+    let artifact_stem = request.artifact_stem.as_deref().unwrap_or("databases");
     let manifest_path = request.output_dir.join(format!("{artifact_stem}.manifest"));
     fs::write(
         &manifest_path,
-        format!("{}\n{}\n", request.manifest_version, INTERMEDIATE_SQLITE_BASENAME),
+        format!(
+            "{}\n{}\n",
+            request.manifest_version, INTERMEDIATE_SQLITE_BASENAME
+        ),
     )
     .with_context(|| format!("failed to write {}", manifest_path.display()))?;
     let zip_path = request.output_dir.join(format!("{artifact_stem}.zip"));
@@ -1736,6 +1735,23 @@ mod tests {
         String::from_utf8(line).unwrap()
     }
 
+    fn build_cifp_procedure_ndb_record(id: &str, icao_code: &str, name: &str) -> String {
+        let mut line = vec![b' '; 132];
+        put_field(&mut line, 0, 4, "SUSA");
+        put_field(&mut line, 4, 1, "P");
+        put_field(&mut line, 5, 1, "N");
+        put_field(&mut line, 6, 4, "KABI");
+        put_field(&mut line, 10, 2, icao_code);
+        put_field(&mut line, 13, 6, id);
+        put_field(&mut line, 19, 2, icao_code);
+        put_field(&mut line, 32, 9, "N32175591");
+        put_field(&mut line, 41, 10, "W099402722");
+        put_field(&mut line, 74, 5, "E0050");
+        put_field(&mut line, 93, 30, name);
+        put_field(&mut line, 123, 9, "585081911");
+        String::from_utf8(line).unwrap()
+    }
+
     fn write_empty(path: &Path) {
         fs::write(path, "").unwrap();
     }
@@ -1809,7 +1825,9 @@ mod tests {
         let alias_pairs = conn
             .prepare("SELECT alias_id, airport_id FROM airport_aliases ORDER BY alias_id")
             .unwrap()
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
@@ -1991,7 +2009,11 @@ mod tests {
         write_empty(&input_dir.join("AWOS.txt"));
         fs::write(
             input_dir.join("FAACIFP18"),
-            format!("{}\n", build_cifp_arinc_ndb_record("JN", "K7", "JURLY")),
+            format!(
+                "{}\n{}\n",
+                build_cifp_arinc_ndb_record("JN", "K7", "JURLY"),
+                build_cifp_procedure_ndb_record("AB", "K4", "TOMHI"),
+            ),
         )
         .unwrap();
         for name in ["NAV.txt", "FIX.txt", "DOF.DAT", "AWY.txt"] {
@@ -2039,6 +2061,40 @@ mod tests {
         assert_eq!(scoped.6, "NDB");
         assert_eq!(scoped.7, "JURLY");
         assert!((scoped.8 - -9.0).abs() < 1e-6);
+
+        let procedure_scoped = conn
+            .query_row(
+                "SELECT trim(identifier), trim(icao_code), trim(section_code), trim(subsection_code),
+                        CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL), trim(Type), trim(FacilityName),
+                        CAST(Variation AS REAL)
+                 FROM arinc_navaids
+                 WHERE trim(identifier)='AB' AND trim(icao_code)='K4'
+                   AND trim(section_code)='P' AND trim(subsection_code)='N'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, f64>(4)?,
+                        row.get::<_, f64>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, f64>(8)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(procedure_scoped.0, "AB");
+        assert_eq!(procedure_scoped.1, "K4");
+        assert_eq!(procedure_scoped.2, "P");
+        assert_eq!(procedure_scoped.3, "N");
+        assert!((procedure_scoped.4 - 32.2988638889).abs() < 1e-6);
+        assert!((procedure_scoped.5 - -99.6742277778).abs() < 1e-6);
+        assert_eq!(procedure_scoped.6, "NDB");
+        assert_eq!(procedure_scoped.7, "TOMHI");
+        assert!((procedure_scoped.8 - 5.0).abs() < 1e-6);
     }
 
     #[test]

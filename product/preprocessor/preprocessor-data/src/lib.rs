@@ -258,7 +258,7 @@ CREATE TABLE airport_aliases(alias_id Text, airport_id Text, UNIQUE(alias_id));
 CREATE TABLE airportfreq(LocationID Text,Type Text, Freq Text);
 CREATE TABLE airportrunways(LocationID Text,Length Text,Width Text,Surface Text,LEIdent Text,HEIdent Text,LELatitude Text,HELatitude Text,LELongitude Text,HELongitude Text,LEElevation Text,HEElevation Text,LEHeadingT Text,HEHeading Text,LEDT Text,HEDT Text,LELights Text,HELights Text,LEILS Text,HEILS Text,LEVGSI Text,HEVGSI Text,LEPattern Text, HEPattern Text);
 CREATE TABLE nav(LocationID Text,ARPLatitude float,ARPLongitude float,Type Text,FacilityName Text,Variation TinyInt,Class Text,Hiwas Text,Elevation Text);
-CREATE TABLE arinc_navaids(identifier Text,icao_code Text,section_code Text,subsection_code Text,ARPLatitude float,ARPLongitude float,Type Text,FacilityName Text,Variation float,Elevation Text,UNIQUE(identifier,icao_code,section_code,subsection_code));
+CREATE TABLE arinc_navaids(identifier Text,icao_code Text,section_code Text,subsection_code Text,airport_id Text,ARPLatitude float,ARPLongitude float,Type Text,FacilityName Text,Variation float,Elevation Text,UNIQUE(identifier,icao_code,section_code,subsection_code,airport_id));
 CREATE TABLE fix(LocationID Text,ARPLatitude float,ARPLongitude float,Type Text,FacilityName Text);
 CREATE TABLE fix_usage(LocationID Text,Usage Text);
 CREATE TABLE awos(LocationID Text, Type Text, Status Text, Latitude float,Longitude float, Elevation Text, Frequency1 Text, Frequency2 Text, Telephone1 Text, Telephone2 Text, Remark Text);
@@ -1230,6 +1230,7 @@ struct CifpArincNavaid {
     icao_code: String,
     section_code: String,
     subsection_code: String,
+    airport_id: String,
     lat: f64,
     lon: f64,
     kind: String,
@@ -1270,6 +1271,11 @@ fn parse_cifp_arinc_navaid(line: &str) -> Option<CifpArincNavaid> {
         icao_code,
         section_code: section.to_string(),
         subsection_code: subsection.to_string(),
+        airport_id: if section == "P" {
+            trim(field(line, 6, 4)).to_ascii_uppercase()
+        } else {
+            String::new()
+        },
         lat,
         lon,
         kind: match subsection {
@@ -1333,18 +1339,38 @@ fn insert_cifp_arinc_navaids(conn: &Connection, input_dir: &Path) -> anyhow::Res
     let path = input_dir.join("FAACIFP18");
     let text = read_text_lossy(&path)?;
     let mut stmt = conn.prepare(
-        "INSERT OR IGNORE INTO arinc_navaids VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT OR IGNORE INTO arinc_navaids VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )?;
     let mut count = 0;
+    let mut seen = BTreeMap::<(String, String, String, String, String), (f64, f64)>::new();
     for line in text.lines() {
         let Some(record) = parse_cifp_arinc_navaid(line) else {
             continue;
         };
+        let key = (
+            record.id.clone(),
+            record.icao_code.clone(),
+            record.section_code.clone(),
+            record.subsection_code.clone(),
+            record.airport_id.clone(),
+        );
+        if let Some((lat, lon)) = seen.get(&key) {
+            anyhow::ensure!(
+                (lat - record.lat).abs() < 1e-7 && (lon - record.lon).abs() < 1e-7,
+                "conflicting CIFP navaid records for scoped key {:?}: ({lat},{lon}) vs ({},{})",
+                key,
+                record.lat,
+                record.lon
+            );
+        } else {
+            seen.insert(key, (record.lat, record.lon));
+        }
         count += stmt.execute(params![
             record.id,
             record.icao_code,
             record.section_code,
             record.subsection_code,
+            record.airport_id,
             record.lat,
             record.lon,
             record.kind,
@@ -1735,17 +1761,24 @@ mod tests {
         String::from_utf8(line).unwrap()
     }
 
-    fn build_cifp_procedure_ndb_record(id: &str, icao_code: &str, name: &str) -> String {
+    fn build_cifp_procedure_ndb_record(
+        airport_id: &str,
+        id: &str,
+        icao_code: &str,
+        lat: &str,
+        lon: &str,
+        name: &str,
+    ) -> String {
         let mut line = vec![b' '; 132];
         put_field(&mut line, 0, 4, "SUSA");
         put_field(&mut line, 4, 1, "P");
         put_field(&mut line, 5, 1, "N");
-        put_field(&mut line, 6, 4, "KABI");
+        put_field(&mut line, 6, 4, airport_id);
         put_field(&mut line, 10, 2, icao_code);
         put_field(&mut line, 13, 6, id);
         put_field(&mut line, 19, 2, icao_code);
-        put_field(&mut line, 32, 9, "N32175591");
-        put_field(&mut line, 41, 10, "W099402722");
+        put_field(&mut line, 32, 9, lat);
+        put_field(&mut line, 41, 10, lon);
         put_field(&mut line, 74, 5, "E0050");
         put_field(&mut line, 93, 30, name);
         put_field(&mut line, 123, 9, "585081911");
@@ -2012,7 +2045,14 @@ mod tests {
             format!(
                 "{}\n{}\n",
                 build_cifp_arinc_ndb_record("JN", "K7", "JURLY"),
-                build_cifp_procedure_ndb_record("AB", "K4", "TOMHI"),
+                build_cifp_procedure_ndb_record(
+                    "KABI",
+                    "AB",
+                    "K4",
+                    "N32175591",
+                    "W099402722",
+                    "TOMHI",
+                ),
             ),
         )
         .unwrap();
@@ -2095,6 +2135,67 @@ mod tests {
         assert_eq!(procedure_scoped.6, "NDB");
         assert_eq!(procedure_scoped.7, "TOMHI");
         assert!((procedure_scoped.8 - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn build_data_package_keeps_terminal_navaid_airport_scope() {
+        let dir = tempdir().unwrap();
+        let input_dir = dir.path().join("input");
+        let output_dir = dir.path().join("output");
+        fs::create_dir_all(&input_dir).unwrap();
+
+        for name in [
+            "APT.txt", "TWR.txt", "AWOS.txt", "NAV.txt", "FIX.txt", "DOF.DAT", "AWY.txt",
+        ] {
+            write_empty(&input_dir.join(name));
+        }
+        fs::write(
+            input_dir.join("FAACIFP18"),
+            format!(
+                "{}\n{}\n",
+                build_cifp_procedure_ndb_record(
+                    "KILM",
+                    "GM",
+                    "K7",
+                    "N34201427",
+                    "W077484262",
+                    "WILZE",
+                ),
+                build_cifp_procedure_ndb_record(
+                    "KGSP",
+                    "GM",
+                    "K7",
+                    "N34464860",
+                    "W082205916",
+                    "JUDKY",
+                ),
+            ),
+        )
+        .unwrap();
+
+        let request = DataBuildRequest {
+            input_dir,
+            output_dir,
+            manifest_version: "2604".to_string(),
+            mode: DataBuildMode::Production,
+            artifact_stem: None,
+        };
+        let result = build_data_package(&request).unwrap();
+        let conn = Connection::open(result.main_db).unwrap();
+
+        let count: usize = conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM arinc_navaids
+                 WHERE trim(identifier)='GM'
+                   AND trim(icao_code)='K7'
+                   AND trim(section_code)='P'
+                   AND trim(subsection_code)='N'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
     }
 
     #[test]

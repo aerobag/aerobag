@@ -88,6 +88,7 @@ import type {
   TerrainOverlayQueryResult,
   TerrainOverlayTileRequest,
   TfrProductPayload,
+  VisibleMapFeature,
 } from "./domain/appCoreAdapter";
 import { airwayEntryCandidateFromPresentation, airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
 import { debugLog, debugTiming, installGlobalErrorLogging } from "./domain/debugLog";
@@ -156,6 +157,48 @@ function colorWithOpacity(color: string, opacity: number): string {
 
 function aviationThemeColor(colorKey: string): string {
   return loadedUiTheme.aviation[colorKey as AviationThemeColorKey] ?? loadedUiTheme.aviation.dark_gray;
+}
+
+function AirspaceDisplayPathGroup(props: { feature: AirspaceDisplayPath }) {
+  const { feature } = props;
+  return (
+    <g>
+      {feature.paths.map((path, index) => (
+        <Fragment key={`${feature.id}:${index}`}>
+          <path
+            d={airspaceSvgPathD(path)}
+            fill={path.closed ? colorWithOpacity(aviationThemeColor(feature.style.fill_color_key), feature.style.fill_opacity) : "none"}
+            stroke="none"
+          />
+          {feature.style.strokes.map((stroke, strokeIndex) => (
+            <path
+              key={strokeIndex}
+              d={airspaceSvgPathD(path)}
+              fill="none"
+              stroke={aviationThemeColor(stroke.color_key)}
+              strokeWidth={stroke.width_px}
+              strokeDasharray={airspaceDashArray(stroke.dash_px)}
+              strokeLinecap={svgStrokeLinecap(stroke.line_cap)}
+              strokeLinejoin="round"
+              vectorEffect="non-scaling-stroke"
+            />
+          ))}
+        </Fragment>
+      ))}
+      {feature.decorations.map((decoration, index) => (
+        <path
+          key={`${feature.id}:decoration:${index}`}
+          d={airspaceSvgPathListD(decoration.paths)}
+          fill="none"
+          stroke={aviationThemeColor(decoration.color_key)}
+          strokeWidth={decoration.width_px}
+          strokeLinecap={svgStrokeLinecap(decoration.line_cap)}
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+    </g>
+  );
 }
 
 type AppPage = "map" | "plan" | "charts" | "home";
@@ -524,6 +567,7 @@ const loadedUiTheme = uiTheme as UiThemeJson;
 const controlTheme = loadedUiTheme.controls;
 const plateFolderTheme = loadedUiTheme.plate_folder;
 const VAMPS_POSITION = { lat: 47.3648944444444, lon: -121.980275 };
+const NRVNA_POSITION = { lat: 47.37208888888889, lon: -122.16950277777778 };
 const defaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json";
 const startupHighLatencyWarningGraceMs = 10_000;
 const vorOuterHexPoints = [
@@ -1149,7 +1193,11 @@ export default function App() {
         initialPlan.selectedAirportId ?? initialChartPageState.selected_airport_id,
         initialPlan.selectedChartId ?? initialChartPageState.selected_chart_id,
       ));
-      const createdSnapshot = await debugTiming("startup.session.snapshot", () => created.snapshot());
+      const createdSnapshot = await debugTiming("startup.session.ownship_start", () => created.setSituation({
+        position: { kind: "lat_lon", lat: NRVNA_POSITION.lat, lon: NRVNA_POSITION.lon },
+        orientation_deg: 342,
+        speed_kt: 0,
+      }));
       debugLog("session.create.snapshot", {
         app_state_active_plan: createdSnapshot.app_state.active_plan?.id ?? null,
         app_ui_state_nav_element: createdSnapshot.app_ui_state.active_plan?.guidance?.nav_element ?? null,
@@ -2842,6 +2890,32 @@ function MapPage(props: {
     const dy = (mapOverlayViewport.centerWorldY - viewport.centerWorldY) * currentScale;
     return `translate(${dx}px, ${dy}px) scale(${scaleRatio})`;
   }, [mapOverlayViewport, viewport]);
+  const selectedMapHighlight = useMemo(() => {
+    const highlight = mapSelection?.selectedItem?.highlight;
+    if (!highlight || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+      return null;
+    }
+    if (highlight.kind === "spot") {
+      const world = latLonToWorld(highlight.lat, highlight.lon);
+      return {
+        kind: "spot" as const,
+        point: worldToScreen(viewport, world, surfaceSize.width, surfaceSize.height),
+      };
+    }
+    const pointFeature = mapOverlay.visible_features.find((feature) => feature.id === highlight.id);
+    if (pointFeature) {
+      return { kind: "point" as const, feature: pointFeature };
+    }
+    const airspacePath = mapOverlay.airspace_paths.find((feature) => feature.id === highlight.id);
+    if (airspacePath) {
+      return { kind: "path" as const, feature: airspacePath };
+    }
+    const tfrPath = mapOverlay.tfr_paths.find((feature) => feature.id === highlight.id);
+    if (tfrPath) {
+      return { kind: "path" as const, feature: tfrPath };
+    }
+    return null;
+  }, [mapOverlay.airspace_paths, mapOverlay.tfr_paths, mapOverlay.visible_features, mapSelection?.selectedItem?.highlight, surfaceSize.height, surfaceSize.width, viewport]);
   const rasterTileTransform = useMemo(() => {
     if (!rasterTileViewport) {
       return undefined;
@@ -3318,68 +3392,10 @@ function MapPage(props: {
             style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
           >
             {mapOverlay.airspace_paths.map((feature) => (
-              <g key={feature.id}>
-                {feature.paths.map((path, index) => (
-                  <Fragment key={`${feature.id}:${index}`}>
-                    <path
-                      d={airspaceSvgPathD(path)}
-                      fill={path.closed ? colorWithOpacity(aviationThemeColor(feature.style.fill_color_key), feature.style.fill_opacity) : "none"}
-                      stroke="none"
-                    />
-                    {feature.style.strokes.map((stroke, strokeIndex) => (
-                      <path
-                        key={strokeIndex}
-                        d={airspaceSvgPathD(path)}
-                        fill="none"
-                        stroke={aviationThemeColor(stroke.color_key)}
-                        strokeWidth={stroke.width_px}
-                        strokeDasharray={airspaceDashArray(stroke.dash_px)}
-                        strokeLinecap={svgStrokeLinecap(stroke.line_cap)}
-                        strokeLinejoin="round"
-                        vectorEffect="non-scaling-stroke"
-                      />
-                    ))}
-                  </Fragment>
-                ))}
-                {feature.decorations.map((decoration, index) => (
-                  <path
-                    key={`${feature.id}:decoration:${index}`}
-                    d={airspaceSvgPathListD(decoration.paths)}
-                    fill="none"
-                    stroke={aviationThemeColor(decoration.color_key)}
-                    strokeWidth={decoration.width_px}
-                    strokeLinecap={svgStrokeLinecap(decoration.line_cap)}
-                    strokeLinejoin="round"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                ))}
-              </g>
+              <AirspaceDisplayPathGroup key={feature.id} feature={feature} />
             ))}
             {mapOverlay.tfr_paths.map((feature) => (
-              <g key={feature.id}>
-                {feature.paths.map((path, index) => (
-                  <Fragment key={`${feature.id}:${index}`}>
-                    <path
-                      d={airspaceSvgPathD(path)}
-                      fill={path.closed ? colorWithOpacity(aviationThemeColor(feature.style.fill_color_key), feature.style.fill_opacity) : "none"}
-                      stroke="none"
-                    />
-                    {feature.style.strokes.map((stroke, strokeIndex) => (
-                      <path
-                        key={strokeIndex}
-                        d={airspaceSvgPathD(path)}
-                        fill="none"
-                        stroke={aviationThemeColor(stroke.color_key)}
-                        strokeWidth={stroke.width_px}
-                        strokeDasharray={airspaceDashArray(stroke.dash_px)}
-                        strokeLinecap={svgStrokeLinecap(stroke.line_cap)}
-                        strokeLinejoin="round"
-                        vectorEffect="non-scaling-stroke"
-                      />
-                    ))}
-                  </Fragment>
-                ))}
-              </g>
+              <AirspaceDisplayPathGroup key={feature.id} feature={feature} />
             ))}
             {mapOverlay.airspace_labels.map((label) => {
               const parts = airspaceLabelParts(label.text);
@@ -3466,6 +3482,45 @@ function MapPage(props: {
                 </g>
               );
             })}
+          </svg>
+        ) : null}
+        {mapIsVisible && selectedMapHighlight ? (
+          <svg
+            className="mapSelectionHighlightOverlay"
+            viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
+            preserveAspectRatio="none"
+            style={selectedMapHighlight.kind === "spot" ? undefined : overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+          >
+            {selectedMapHighlight.kind === "point" ? (
+              <g transform={`translate(${selectedMapHighlight.feature.screen_x} ${selectedMapHighlight.feature.screen_y})`}>
+                <g className="mapSelectionFeatureContrast">
+                  <VectorPointSymbol feature={selectedMapHighlight.feature} />
+                </g>
+                <VectorPointSymbol feature={selectedMapHighlight.feature} />
+              </g>
+            ) : selectedMapHighlight.kind === "path" ? (
+              <g>
+                {selectedMapHighlight.feature.paths.map((path, index) => (
+                  <path
+                    key={`${selectedMapHighlight.feature.id}:highlight:${index}`}
+                    d={airspaceSvgPathD(path)}
+                    fill="none"
+                    stroke="white"
+                    strokeWidth="9"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ))}
+                <AirspaceDisplayPathGroup feature={selectedMapHighlight.feature} />
+              </g>
+            ) : (
+              <g transform={`translate(${selectedMapHighlight.point.x} ${selectedMapHighlight.point.y})`}>
+                <path className="mapSelectionSpotPegUnder" d="M 0 0 C -9 -9 -12 -16 -12 -23 A 12 12 0 1 1 12 -23 C 12 -16 9 -9 0 0 Z" />
+                <path className="mapSelectionSpotPeg" d="M 0 0 C -9 -9 -12 -16 -12 -23 A 12 12 0 1 1 12 -23 C 12 -16 9 -9 0 0 Z" />
+                <circle className="mapSelectionSpotPegDot" cx="0" cy="-23" r="4" />
+              </g>
+            )}
           </svg>
         ) : null}
         <SituationStatusBadge ownship={ownship} />
@@ -7034,10 +7089,9 @@ async function buildSeededDevPlan(): Promise<{
   recentAirportIds?: string[];
 }> {
   const waypoints: Array<{ Airport: string } | { Navaid: string } | { Fix: string }> = [
-    { Airport: "KPAO" },
-    { Fix: "VPDUB" },
-    { Airport: "KVCB" },
-    { Airport: "KWLW" },
+    { Airport: "KRNT" },
+    { Navaid: "SEA" },
+    { Airport: "KPAE" },
   ];
   const routeComponents = waypoints.map((waypoint) => ({ kind: "waypoint" as const, waypoint }));
   const resolvedLegs = waypoints.slice(0, -1).map((from, index) => ({
@@ -7048,21 +7102,21 @@ async function buildSeededDevPlan(): Promise<{
   }));
   const plan = {
     ...samplePlan,
-    id: "dev-kpao-vpdub-kvcb-kwlw",
-    name: "KPAO VPDUB KVCB KWLW",
+    id: "dev-krnt-sea-kpae",
+    name: "KRNT SEA KPAE",
     legs: resolvedLegs.map((leg) => ({ from: leg.from, to: leg.to, airway: null })),
     route_components: routeComponents,
     resolved_legs: resolvedLegs,
     guidance: { active_leg_index: 0, active_detail_index: 0, sequencing_mode: "follow_plan" as const, direct_to: null },
-    departure: "KPAO",
-    destination: "KWLW",
+    departure: "KRNT",
+    destination: "KPAE",
     updated_at_epoch_ms: Date.now(),
     version: samplePlan.version + 1,
   };
   return {
     plan,
-    selectedAirportId: "KWLW",
-    recentAirportIds: ["KWLW", "KVCB", "KPAO"],
+    selectedAirportId: "KPAE",
+    recentAirportIds: ["KPAE", "KRNT"],
   };
 }
 

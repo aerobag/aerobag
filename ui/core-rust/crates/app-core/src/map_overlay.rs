@@ -339,7 +339,15 @@ pub struct MapSelectionItem {
     pub id: String,
     pub label: String,
     pub sublabel: String,
+    pub highlight: MapSelectionHighlight,
     pub actions: Vec<MapSelectionAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MapSelectionHighlight {
+    FeatureRef { id: String },
+    Spot { lat: f64, lon: f64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -921,6 +929,10 @@ pub fn query_map_selection(
                     id: format!("spot:{:.6}:{:.6}", click.lat, click.lon),
                     label: "SPOT".to_string(),
                     sublabel: format!("{:.4}, {:.4}", click.lat, click.lon),
+                    highlight: MapSelectionHighlight::Spot {
+                        lat: click.lat,
+                        lon: click.lon,
+                    },
                     actions: vec![
                         display_action("terrain", "Terrain --"),
                         disabled_action("direct_to", "Direct-to"),
@@ -974,6 +986,9 @@ fn selection_item_for_point(
         id: record.id.clone(),
         label,
         sublabel: record.kind.trim().to_ascii_uppercase(),
+        highlight: MapSelectionHighlight::FeatureRef {
+            id: record.id.clone(),
+        },
         actions: {
             actions.shrink_to_fit();
             actions
@@ -986,6 +1001,9 @@ fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelection
         id: feature.id.clone(),
         label: feature.ident.trim().to_string(),
         sublabel: feature.name.trim().to_string(),
+        highlight: MapSelectionHighlight::FeatureRef {
+            id: feature.id.clone(),
+        },
         actions: vec![display_action(
             "limits",
             &format!(
@@ -1021,6 +1039,9 @@ fn selection_item_for_tfr(area: &TfrAreaPayload) -> MapSelectionItem {
         id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
         label: "TFR".to_string(),
         sublabel: area.notam_id.trim().to_string(),
+        highlight: MapSelectionHighlight::FeatureRef {
+            id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
+        },
         actions: vec![display_action(
             "limits",
             &format!(

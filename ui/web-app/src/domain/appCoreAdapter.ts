@@ -310,8 +310,13 @@ export type MapSelectionItem = {
   id: string;
   label: string;
   sublabel: string;
+  highlight: MapSelectionHighlight;
   actions: MapSelectionAction[];
 };
+
+export type MapSelectionHighlight =
+  | { kind: "feature_ref"; id: string }
+  | { kind: "spot"; lat: number; lon: number };
 
 export type MapSelectionAction = {
   id: string;

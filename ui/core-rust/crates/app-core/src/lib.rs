@@ -47,10 +47,10 @@ pub use map_overlay::{
     AirspaceDisplaySubpath, AirspaceFeaturePath, AirspaceFeaturePayload, AirspaceFeatureRequest,
     AirspaceLabelRecord, AirspaceLabelTilePayload, AirspaceReferenceTilePayload,
     AirspaceScreenPoint, MapOverlayConfig, MapOverlayQueryResult, MapOverlayWarning,
-    MapSelectionAction, MapSelectionCategory, MapSelectionItem, MapSelectionQueryResult,
-    NavSymbolFeature, ObstacleOverlayContext, PointTilePayload, PointVectorRecord,
-    TfrAltitudeLimit, TfrAreaPayload, TfrLatLonPoint, TfrProductPayload, TfrScheduleFragment,
-    VectorTileRequest, VisibleMapFeature, AIRSPACE_DISPLAY_FEATURE_LIMIT,
+    MapSelectionAction, MapSelectionCategory, MapSelectionHighlight, MapSelectionItem,
+    MapSelectionQueryResult, NavSymbolFeature, ObstacleOverlayContext, PointTilePayload,
+    PointVectorRecord, TfrAltitudeLimit, TfrAreaPayload, TfrLatLonPoint, TfrProductPayload,
+    TfrScheduleFragment, VectorTileRequest, VisibleMapFeature, AIRSPACE_DISPLAY_FEATURE_LIMIT,
     VECTOR_DISPLAY_FEATURE_LIMIT,
 };
 pub use navdb_types::{

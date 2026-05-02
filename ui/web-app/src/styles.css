@@ -130,6 +130,51 @@ button {
   overflow: visible;
 }
 
+.mapSelectionHighlightOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.mapSelectionFeatureContrast path,
+.mapSelectionFeatureContrast line,
+.mapSelectionFeatureContrast circle {
+  fill: none;
+  stroke: white;
+  stroke-width: 8px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.mapSelectionFeatureContrast text {
+  fill: none;
+  stroke: white;
+  stroke-width: 8px;
+  stroke-linejoin: round;
+}
+
+.mapSelectionSpotPegUnder {
+  fill: none;
+  stroke: white;
+  stroke-width: 8px;
+  stroke-linejoin: round;
+}
+
+.mapSelectionSpotPeg {
+  fill: var(--theme-button-bg);
+  stroke: rgba(8, 18, 24, 0.75);
+  stroke-width: 2px;
+  stroke-linejoin: round;
+}
+
+.mapSelectionSpotPegDot {
+  fill: white;
+  stroke: rgba(8, 18, 24, 0.75);
+  stroke-width: 1.5px;
+}
+
 .airspaceLabel {
   paint-order: stroke;
   stroke: rgba(255, 255, 255, 0.92);

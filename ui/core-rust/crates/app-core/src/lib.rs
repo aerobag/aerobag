@@ -77,8 +77,9 @@ pub use package_management::{
     OfflinePackagesControllerResult, OfflinePackagesControllerState,
     OfflinePackagesControllerUiState, OfflinePackagesEvent, OfflinePackagesInitInput,
     OfflinePackagesLibraryCache, OfflinePackagesReduceInput, OfflinePackagesReduceResult,
-    OfflinePackagesState, OfflinePackagesSyncSummary, OfflinePackagesUiRow, OfflinePackagesUiState,
-    OfflinePackagesWarning, PackageManagementInput, PackageManagementPlan,
+    OfflinePackagesState, OfflinePackagesSyncProgress, OfflinePackagesSyncSummary,
+    OfflinePackagesUiRow, OfflinePackagesUiState, OfflinePackagesWarning, PackageManagementInput,
+    PackageManagementPlan,
 };
 pub use planning::{
     activate_direct_to, activate_direct_to_leg, activate_leg, activate_next_leg,

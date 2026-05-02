@@ -658,6 +658,8 @@ private data class OfflinePackagesUiRowWire(
     val plannedTotalSizeLabel: String = "0M",
     @SerialName("planned_size_change_visible")
     val plannedSizeChangeVisible: Boolean = false,
+    @SerialName("sync_progress_per_mille")
+    val syncProgressPerMille: Int? = null,
 )
 
 @Serializable
@@ -694,6 +696,11 @@ private data class OfflinePackagesUiStateWire(
     val clockLabel: String = "",
     @SerialName("clock_options")
     val clockOptions: List<OfflinePackagesClockOptionWire> = emptyList(),
+    @SerialName("all_packages")
+    val allPackages: OfflinePackagesUiRowWire = OfflinePackagesUiRowWire(
+        id = "all-packages",
+        selection = OfflinePackageSelection.Play,
+    ),
     @SerialName("core_products")
     val coreProducts: List<OfflinePackagesUiRowWire> = emptyList(),
     val regions: List<OfflinePackagesUiRowWire> = emptyList(),
@@ -748,6 +755,16 @@ private data class OfflinePackagesSyncSummary(
     val warnings: List<OfflinePackagesWarning>,
     @SerialName("remote_poisoned_filename_messages")
     val remotePoisonedFilenameMessages: Map<String, String> = emptyMap(),
+)
+
+@Serializable
+private data class OfflinePackagesSyncProgressWire(
+    @SerialName("completed_fetch_artifact_ids")
+    val completedFetchArtifactIds: Set<String> = emptySet(),
+    @SerialName("current_fetch_artifact_id")
+    val currentFetchArtifactId: String? = null,
+    @SerialName("current_fetch_bytes")
+    val currentFetchBytes: Long = 0,
 )
 
 @Serializable
@@ -916,6 +933,12 @@ private sealed interface OfflinePackagesControllerEventWire {
     @Serializable
     @SerialName("sync_requested")
     data object SyncRequested : OfflinePackagesControllerEventWire
+
+    @Serializable
+    @SerialName("sync_progress_observed")
+    data class SyncProgressObserved(
+        val progress: OfflinePackagesSyncProgressWire,
+    ) : OfflinePackagesControllerEventWire
 
     @Serializable
     @SerialName("sync_finished")
@@ -2316,9 +2339,14 @@ private fun HomePage(
                             plan = command.plan,
                             bundle = command.bundle,
                             packageSourceBaseUrl = command.packageSourceBaseUrl,
-                            onProgress = { message ->
+                            onProgress = { message, progress ->
                                 withContext(Dispatchers.Main) {
                                     offlinePackageOperationMessage = message
+                                    if (progress != null) {
+                                        dispatchOfflinePackagesController(
+                                            OfflinePackagesControllerEventWire.SyncProgressObserved(progress),
+                                        )
+                                    }
                                 }
                             },
                         )
@@ -2919,6 +2947,9 @@ private fun OfflinePackagesPanel(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(ThumbGap),
             ) {
+                item("all-packages") {
+                    OfflinePackageAllSection(row = uiState.allPackages)
+                }
                 if (uiState.coreProducts.isNotEmpty()) {
                     item("core-products") {
                         OfflinePackageCoreSection(rows = uiState.coreProducts)
@@ -2948,6 +2979,23 @@ private fun OfflinePackagesPanel(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun OfflinePackageAllSection(
+    row: OfflinePackagesUiRowWire,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    MenuPanel(modifier = Modifier.fillMaxWidth()) {
+        OfflinePackagePlanRow(
+            label = "All packages",
+            row = row,
+            enabled = false,
+            onCycleClick = null,
+            showSelectionIcon = false,
+            backgroundOverride = lerp(uiTheme.controls.buttonBg, Color.Gray, 0.34f),
+        )
     }
 }
 
@@ -3035,40 +3083,53 @@ private fun OfflinePackagePlanRow(
     row: OfflinePackagesUiRowWire,
     enabled: Boolean,
     onCycleClick: (() -> Unit)?,
+    showSelectionIcon: Boolean = true,
+    backgroundOverride: Color? = null,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
-    val background = when (row.selection) {
-        OfflinePackageSelection.Play -> lerp(uiTheme.controls.buttonBg, Color.White, 0.14f)
-        OfflinePackageSelection.Pause -> lerp(uiTheme.controls.buttonBg, Color(0xFFFFC166), 0.18f)
-        OfflinePackageSelection.Unselected -> uiTheme.controls.buttonBg
-    }
+    val background = backgroundOverride ?: when (row.selection) {
+            OfflinePackageSelection.Play -> lerp(uiTheme.controls.buttonBg, Color.White, 0.14f)
+            OfflinePackageSelection.Pause -> lerp(uiTheme.controls.buttonBg, Color(0xFFFFC166), 0.18f)
+            OfflinePackageSelection.Unselected -> uiTheme.controls.buttonBg
+        }
+    val progressFraction = row.syncProgressPerMille?.coerceIn(0, 1000)?.toFloat()?.div(1000f)
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(ThumbSize)
             .clip(RoundedCornerShape(ThumbRadius))
             .background(background)
+            .drawBehind {
+                if (progressFraction != null) {
+                    drawRect(
+                        color = OfflinePackageMagenta.copy(alpha = 0.22f),
+                        size = Size(size.width * progressFraction, size.height),
+                    )
+                }
+            }
             .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Box(
-            modifier = Modifier
-                .size(ThumbSize * 0.46f)
-                .clip(CircleShape)
-                .then(
-                    if (enabled && onCycleClick != null) {
-                        Modifier.clickable(
-                            indication = null,
-                            interactionSource = remember { MutableInteractionSource() },
-                        ) { onCycleClick() }
-                    } else {
-                        Modifier.alpha(0.58f)
-                    },
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            OfflinePackageSelectionIcon(selection = row.selection, modifier = Modifier.fillMaxSize())
+        if (showSelectionIcon) {
+            Box(
+                modifier = Modifier
+                    .size(ThumbSize * 0.46f)
+                    .clip(CircleShape)
+                    .then(
+                        if (enabled && onCycleClick != null) {
+                            Modifier.clickable(
+                                indication = null,
+                                interactionSource = remember { MutableInteractionSource() },
+                            ) { onCycleClick() }
+                        } else {
+                            Modifier.alpha(0.58f)
+                        },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                OfflinePackageSelectionIcon(selection = row.selection, modifier = Modifier.fillMaxSize())
+            }
         }
         Text(
             text = label,
@@ -3299,7 +3360,7 @@ private suspend fun syncOfflinePackages(
     plan: PackageManagementPlanWire,
     bundle: BundleManifestWire,
     packageSourceBaseUrl: String,
-    onProgress: suspend (String) -> Unit = {},
+    onProgress: suspend (String, OfflinePackagesSyncProgressWire?) -> Unit = { _, _ -> },
 ): OfflinePackagesSyncSummary {
     val syncStartMs = SystemClock.elapsedRealtime()
     val packagesById = bundle.packages.associateBy { it.id }
@@ -3307,21 +3368,33 @@ private suspend fun syncOfflinePackages(
     val warnings = mutableListOf<OfflinePackagesWarning>()
     val remotePoisonedFilenameMessages = linkedMapOf<String, String>()
     val totalFetchBytes = plan.fetch.sumOf { artifactId -> packagesById[artifactId]?.sizeBytes ?: 0L }
+    val completedFetchArtifactIds = linkedSetOf<String>()
     var completedFetchBytes = 0L
     var fetchedCount = 0
     var gcCount = 0
-    onProgress(syncProgressText(fetchedCount, plan.fetch.size, completedFetchBytes, totalFetchBytes))
+    suspend fun reportProgress(message: String, currentArtifactId: String? = null, currentBytes: Long = 0L) {
+        onProgress(
+            message,
+            OfflinePackagesSyncProgressWire(
+                completedFetchArtifactIds = completedFetchArtifactIds,
+                currentFetchArtifactId = currentArtifactId,
+                currentFetchBytes = currentBytes,
+            ),
+        )
+    }
+    reportProgress(syncProgressText(fetchedCount, plan.fetch.size, completedFetchBytes, totalFetchBytes))
     plan.fetch.forEachIndexed { index, artifactId ->
         currentCoroutineContext().ensureActive()
         runCatching {
             val fetchStartMs = SystemClock.elapsedRealtime()
             val pkg = packagesById[artifactId]
                 ?: error("missing bundle metadata for fetch artifact $artifactId")
-            onProgress("Fetching package ${index + 1}/${plan.fetch.size}: ${pkg.filename}")
+            reportProgress("Fetching package ${index + 1}/${plan.fetch.size}: ${pkg.filename}", artifactId)
             check(packageSourceBaseUrl.isNotBlank()) { "package source URL is blank" }
             val sourceUrl = resolvePackageSourceUrl(pkg.relativePath, packageSourceBaseUrl)
             val kind = installedPackageKindForFamilyId(pkg.familyId)
             var packageDownloadedBytes = 0L
+            var lastReportedPackageBytes = 0L
             val tempFile = downloadPackageToTempFile(
                 context = context,
                 kind = kind,
@@ -3331,17 +3404,26 @@ private suspend fun syncOfflinePackages(
                 expectedSha256 = pkg.checksumSha256,
                 onBytesRead = { bytesRead ->
                     packageDownloadedBytes += bytesRead
-                    onProgress(
-                        syncProgressText(
-                            fetchedCount,
-                            plan.fetch.size,
-                            completedFetchBytes + packageDownloadedBytes,
-                            totalFetchBytes,
-                        ),
-                    )
+                    if (
+                        packageDownloadedBytes - lastReportedPackageBytes >= 10_000_000L ||
+                        packageDownloadedBytes == pkg.sizeBytes
+                    ) {
+                        lastReportedPackageBytes = packageDownloadedBytes
+                        reportProgress(
+                            syncProgressText(
+                                fetchedCount,
+                                plan.fetch.size,
+                                completedFetchBytes + packageDownloadedBytes,
+                                totalFetchBytes,
+                            ),
+                            artifactId,
+                            packageDownloadedBytes,
+                        )
+                    }
                 },
             )
             completedFetchBytes += packageDownloadedBytes
+            completedFetchArtifactIds += artifactId
             installDownloadedPackage(
                 context = context,
                 kind = kind,
@@ -3366,7 +3448,7 @@ private suspend fun syncOfflinePackages(
                 )
             }
             fetchedCount += 1
-            onProgress(syncProgressText(fetchedCount, plan.fetch.size, completedFetchBytes, totalFetchBytes))
+            reportProgress(syncProgressText(fetchedCount, plan.fetch.size, completedFetchBytes, totalFetchBytes))
             Log.i(
                 "OfflinePackages",
                 "fetch installed $artifactId in ${SystemClock.elapsedRealtime() - fetchStartMs}ms from $sourceUrl" +
@@ -3386,7 +3468,7 @@ private suspend fun syncOfflinePackages(
         currentCoroutineContext().ensureActive()
         runCatching {
             val gcStartMs = SystemClock.elapsedRealtime()
-            onProgress("Removing package ${index + 1}/${plan.gc.size}: $filename")
+            reportProgress("Removing package ${index + 1}/${plan.gc.size}: $filename")
             val installedArtifact = installedByFilename[filename]
                 ?: error("missing installed metadata for gc filename $filename")
             val keepFilename = packagesById[installedArtifact.artifactId]?.filename
@@ -3408,7 +3490,7 @@ private suspend fun syncOfflinePackages(
             )
         }
     }
-    onProgress("Sync complete: fetched $fetchedCount, GC $gcCount")
+    reportProgress("Sync complete: fetched $fetchedCount, GC $gcCount")
     return OfflinePackagesSyncSummary(
         fetchedCount = fetchedCount,
         gcCount = gcCount,

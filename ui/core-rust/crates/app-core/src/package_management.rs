@@ -113,7 +113,7 @@ pub enum OfflinePackagesEvent {
     SetClockOverride { epoch_ms: i64 },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct OfflinePackagesUiRow {
     pub id: String,
     pub selection: OfflinePackageSelection,
@@ -130,6 +130,8 @@ pub struct OfflinePackagesUiRow {
     pub planned_total_size_label: String,
     #[serde(default)]
     pub planned_size_change_visible: bool,
+    #[serde(default)]
+    pub sync_progress_per_mille: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Ord, PartialOrd)]
@@ -160,6 +162,7 @@ pub struct OfflinePackagesUiState {
     pub summary_text: String,
     pub clock_label: String,
     pub clock_options: Vec<OfflinePackagesClockOption>,
+    pub all_packages: OfflinePackagesUiRow,
     pub core_products: Vec<OfflinePackagesUiRow>,
     pub regions: Vec<OfflinePackagesUiRow>,
     pub products: Vec<OfflinePackagesUiRow>,
@@ -236,10 +239,23 @@ pub struct OfflinePackagesControllerState {
     pub library_cache: Option<OfflinePackagesLibraryCache>,
     pub tombstoned_installed_filename_messages: BTreeMap<String, String>,
     pub suppressed_fetch_filename_messages: BTreeMap<String, String>,
+    #[serde(default)]
+    pub sync_progress: Option<OfflinePackagesSyncProgress>,
     pub library_loading: bool,
     pub library_error_message: Option<String>,
     pub sync_in_flight: bool,
     pub sync_message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct OfflinePackagesSyncProgress {
+    #[serde(default)]
+    pub planned_fetch_artifact_ids: BTreeSet<String>,
+    #[serde(default)]
+    pub completed_fetch_artifact_ids: BTreeSet<String>,
+    pub current_fetch_artifact_id: Option<String>,
+    #[serde(default)]
+    pub current_fetch_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,6 +278,9 @@ pub enum OfflinePackagesControllerEvent {
         event: OfflinePackagesEvent,
     },
     SyncRequested,
+    SyncProgressObserved {
+        progress: OfflinePackagesSyncProgress,
+    },
     SyncFinished {
         summary: OfflinePackagesSyncSummary,
     },
@@ -381,6 +400,7 @@ pub fn initialize_offline_packages(
             &input.installed,
             &input.forced_gc_installed_filenames,
             &input.suppressed_fetch_filenames,
+            None,
         ),
         effective_now_epoch_ms,
         plan,
@@ -445,6 +465,7 @@ pub fn reduce_offline_packages(input: &OfflinePackagesReduceInput) -> OfflinePac
             &input.installed,
             &input.forced_gc_installed_filenames,
             &input.suppressed_fetch_filenames,
+            None,
         ),
         effective_now_epoch_ms,
         plan,
@@ -589,6 +610,10 @@ pub fn reduce_offline_packages_controller(
             });
             state.packages_state = Some(current.state.clone());
             state.sync_in_flight = true;
+            state.sync_progress = Some(OfflinePackagesSyncProgress {
+                planned_fetch_artifact_ids: current.plan.fetch.iter().cloned().collect(),
+                ..OfflinePackagesSyncProgress::default()
+            });
             command = Some(OfflinePackagesControllerCommand::Sync {
                 package_source_base_url: package_source_base_url.clone(),
                 plan: current.plan,
@@ -604,8 +629,27 @@ pub fn reduce_offline_packages_controller(
                 command,
             };
         }
+        OfflinePackagesControllerEvent::SyncProgressObserved { progress } => {
+            let planned_fetch_artifact_ids = progress
+                .planned_fetch_artifact_ids
+                .is_empty()
+                .then(|| {
+                    state
+                        .sync_progress
+                        .as_ref()
+                        .map(|progress| progress.planned_fetch_artifact_ids.clone())
+                        .unwrap_or_default()
+                })
+                .filter(|planned| !planned.is_empty())
+                .unwrap_or_else(|| progress.planned_fetch_artifact_ids.clone());
+            state.sync_progress = Some(OfflinePackagesSyncProgress {
+                planned_fetch_artifact_ids,
+                ..progress.clone()
+            });
+        }
         OfflinePackagesControllerEvent::SyncFinished { summary } => {
             state.sync_in_flight = false;
+            state.sync_progress = None;
             state.sync_message = Some(format_offline_packages_sync_summary(summary));
             state
                 .suppressed_fetch_filename_messages
@@ -697,8 +741,24 @@ fn replan_controller_ui_state(
             .cloned()
             .collect(),
     });
+    let ui_state = project_offline_packages_ui_state(
+        &reduced.state,
+        region_ids,
+        product_ids,
+        reduced.effective_now_epoch_ms,
+        &library_cache.discovery_manifests,
+        &library_cache.bundle_manifests_by_filename,
+        installed,
+        forced_gc_installed_filenames,
+        &state
+            .suppressed_fetch_filename_messages
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        state.sync_progress.as_ref(),
+    );
     state.packages_state = Some(reduced.state);
-    Some(reduced.ui_state)
+    Some(ui_state)
 }
 
 fn project_offline_packages_controller_ui_state(
@@ -889,6 +949,7 @@ fn project_offline_packages_ui_state(
     installed: &[InstalledArtifact],
     forced_gc_installed_filenames: &[String],
     suppressed_fetch_filenames: &[String],
+    sync_progress: Option<&OfflinePackagesSyncProgress>,
 ) -> OfflinePackagesUiState {
     let bundle = resolve_cycle_bundle_manifest(
         discovery_manifests,
@@ -918,6 +979,7 @@ fn project_offline_packages_ui_state(
         },
         &plan,
         bundle_manifests_by_filename,
+        sync_progress,
     );
 
     OfflinePackagesUiState {
@@ -938,6 +1000,11 @@ fn project_offline_packages_ui_state(
         ),
         clock_label: clock_label(now_epoch_ms, state.now_override_epoch_ms),
         clock_options: clock_options(discovery_manifests, state.now_override_epoch_ms),
+        all_packages: offline_packages_ui_row(
+            "all-packages".to_string(),
+            OfflinePackageSelection::Play,
+            Some(&rows.all_packages),
+        ),
         core_products: {
             let active_bundle = resolve_cycle_bundle_manifest(
                 discovery_manifests,
@@ -1060,6 +1127,8 @@ struct DimensionPlanDetails {
     installed_size_bytes: u64,
     planned_download_bytes: u64,
     planned_gc_bytes: u64,
+    sync_loaded_bytes: u64,
+    sync_total_bytes: u64,
     plan_groups: BTreeMap<OfflinePackagesUiPlanAction, PlanEntryAccumulator>,
 }
 
@@ -1071,6 +1140,7 @@ struct PlanEntryAccumulator {
 
 #[derive(Default)]
 struct PlanRowsByDimension {
+    all_packages: DimensionPlanDetails,
     core_products: BTreeMap<String, DimensionPlanDetails>,
     regions: BTreeMap<String, DimensionPlanDetails>,
     products: BTreeMap<String, DimensionPlanDetails>,
@@ -1109,6 +1179,16 @@ fn offline_packages_ui_row(
     let planned_total_size_bytes = installed_size_bytes
         .saturating_add(planned_download_bytes)
         .saturating_sub(planned_gc_bytes);
+    let sync_progress_per_mille = details.and_then(|details| {
+        if details.sync_total_bytes == 0 {
+            None
+        } else {
+            Some(
+                ((details.sync_loaded_bytes.min(details.sync_total_bytes) * 1000)
+                    / details.sync_total_bytes) as u16,
+            )
+        }
+    });
     OfflinePackagesUiRow {
         id,
         selection,
@@ -1120,6 +1200,7 @@ fn offline_packages_ui_row(
         planned_delta_label: format_signed_package_size_label(planned_delta_bytes),
         planned_total_size_label: format_package_size_label(planned_total_size_bytes),
         planned_size_change_visible: planned_delta_bytes != 0,
+        sync_progress_per_mille,
     }
 }
 
@@ -1127,6 +1208,7 @@ fn plan_rows_by_dimension(
     input: &PackageManagementInput,
     plan: &PackageManagementPlan,
     bundle_manifests_by_filename: &BTreeMap<String, BundleManifest>,
+    sync_progress: Option<&OfflinePackagesSyncProgress>,
 ) -> PlanRowsByDimension {
     let mut rows = PlanRowsByDimension::default();
     let packages_by_id: BTreeMap<&str, &BundlePackageArtifact> = bundle_manifests_by_filename
@@ -1167,6 +1249,8 @@ fn plan_rows_by_dimension(
             details.planned_download_bytes = details.planned_download_bytes.saturating_add(size);
         });
     }
+
+    apply_sync_progress(&mut rows, &packages_by_id, plan, sync_progress);
 
     for filename in &plan.gc {
         let Some(installed) = installed_by_filename.get(filename.as_str()).copied() else {
@@ -1235,6 +1319,37 @@ fn plan_rows_by_dimension(
     }
 
     rows
+}
+
+fn apply_sync_progress(
+    rows: &mut PlanRowsByDimension,
+    packages_by_id: &BTreeMap<&str, &BundlePackageArtifact>,
+    plan: &PackageManagementPlan,
+    sync_progress: Option<&OfflinePackagesSyncProgress>,
+) {
+    let Some(progress) = sync_progress else {
+        return;
+    };
+    let planned_fetch_artifact_ids: Vec<&str> = if progress.planned_fetch_artifact_ids.is_empty() {
+        plan.fetch.iter().map(String::as_str).collect()
+    } else {
+        progress
+            .planned_fetch_artifact_ids
+            .iter()
+            .map(String::as_str)
+            .collect()
+    };
+    for artifact_id in planned_fetch_artifact_ids {
+        let Some(pkg) = packages_by_id.get(artifact_id).copied() else {
+            continue;
+        };
+        let size = package_size_bytes(pkg, None);
+        let loaded = sync_progress_loaded_bytes(Some(progress), artifact_id, size);
+        apply_size(rows, pkg, |details| {
+            details.sync_total_bytes = details.sync_total_bytes.saturating_add(size);
+            details.sync_loaded_bytes = details.sync_loaded_bytes.saturating_add(loaded);
+        });
+    }
 }
 
 fn apply_installed_size(
@@ -1308,6 +1423,7 @@ fn apply_to_package_dimensions(
     pkg: &BundlePackageArtifact,
     mutate: impl Fn(&mut DimensionPlanDetails),
 ) {
+    mutate(&mut rows.all_packages);
     if let Some(region_id) = &pkg.region_id {
         mutate(rows.regions.entry(region_id.clone()).or_default());
     } else {
@@ -1326,11 +1442,29 @@ fn apply_to_package_dimensions_opt(
         apply_to_package_dimensions(rows, pkg, mutate);
         return;
     }
+    mutate(&mut rows.all_packages);
     mutate(
         rows.products
             .entry(installed.artifact_id.clone())
             .or_default(),
     );
+}
+
+fn sync_progress_loaded_bytes(
+    progress: Option<&OfflinePackagesSyncProgress>,
+    artifact_id: &str,
+    size: u64,
+) -> u64 {
+    let Some(progress) = progress else {
+        return 0;
+    };
+    if progress.completed_fetch_artifact_ids.contains(artifact_id) {
+        return size;
+    }
+    if progress.current_fetch_artifact_id.as_deref() == Some(artifact_id) {
+        return progress.current_fetch_bytes.min(size);
+    }
+    0
 }
 
 fn package_size_bytes(pkg: &BundlePackageArtifact, installed: Option<&InstalledArtifact>) -> u64 {
@@ -1945,20 +2079,62 @@ mod tests {
             &BTreeMap::from([(
                 "bundle_cycle_2603.json".to_string(),
                 BundleManifest {
-                    packages: vec![old_sec, current_sec, next_sec, paused_tac],
+                    packages: vec![
+                        old_sec,
+                        current_sec.clone(),
+                        next_sec.clone(),
+                        paused_tac.clone(),
+                    ],
                 },
             )]),
+            Some(&OfflinePackagesSyncProgress {
+                planned_fetch_artifact_ids: BTreeSet::from(["NW_SEC_2605".to_string()]),
+                completed_fetch_artifact_ids: BTreeSet::new(),
+                current_fetch_artifact_id: Some("NW_SEC_2605".to_string()),
+                current_fetch_bytes: 1_000,
+            }),
         );
         let nw = offline_packages_ui_row(
             "nw".to_string(),
             OfflinePackageSelection::Play,
             rows.regions.get("nw"),
         );
+        let all = offline_packages_ui_row(
+            "all-packages".to_string(),
+            OfflinePackageSelection::Play,
+            Some(&rows.all_packages),
+        );
 
         assert_eq!(nw.installed_size_label, "0.00M");
         assert_eq!(nw.planned_delta_label, "-0.00M");
         assert_eq!(nw.planned_total_size_label, "0.00M");
         assert!(nw.planned_size_change_visible);
+        assert_eq!(nw.sync_progress_per_mille, Some(500));
+        assert_eq!(all.sync_progress_per_mille, Some(500));
+
+        let mut replanned_input = input.clone();
+        replanned_input.installed.push(installed_with_size("NW_SEC_2605", 2_000));
+        let replanned = plan_offline_packages(&replanned_input);
+        let replanned_rows = plan_rows_by_dimension(
+            &replanned_input,
+            &replanned,
+            &BTreeMap::new(),
+            Some(&OfflinePackagesSyncProgress {
+                planned_fetch_artifact_ids: BTreeSet::from(["NW_SEC_2605".to_string()]),
+                completed_fetch_artifact_ids: BTreeSet::new(),
+                current_fetch_artifact_id: Some("NW_SEC_2605".to_string()),
+                current_fetch_bytes: 1_000,
+            }),
+        );
+        assert_eq!(
+            offline_packages_ui_row(
+                "all-packages".to_string(),
+                OfflinePackageSelection::Play,
+                Some(&replanned_rows.all_packages),
+            )
+            .sync_progress_per_mille,
+            Some(500)
+        );
         assert_eq!(
             nw.plan_entries,
             vec![
@@ -2072,6 +2248,7 @@ mod tests {
                 }),
                 tombstoned_installed_filename_messages: BTreeMap::new(),
                 suppressed_fetch_filename_messages: BTreeMap::new(),
+                sync_progress: None,
                 library_loading: false,
                 library_error_message: None,
                 sync_in_flight: false,
@@ -2158,6 +2335,7 @@ mod tests {
                 }),
                 tombstoned_installed_filename_messages: BTreeMap::new(),
                 suppressed_fetch_filename_messages: BTreeMap::new(),
+                sync_progress: None,
                 library_loading: false,
                 library_error_message: None,
                 sync_in_flight: true,

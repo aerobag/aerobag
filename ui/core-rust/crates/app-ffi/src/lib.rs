@@ -974,6 +974,9 @@ enum OfflinePackagesControllerEventWire {
         event: app_core::OfflinePackagesEvent,
     },
     SyncRequested,
+    SyncProgressObserved {
+        progress: app_core::OfflinePackagesSyncProgress,
+    },
     SyncFinished {
         summary: app_core::OfflinePackagesSyncSummary,
     },
@@ -1134,6 +1137,9 @@ pub fn dispatch_offline_packages_controller_json(
         }
         OfflinePackagesControllerEventWire::SyncRequested => {
             app_core::OfflinePackagesControllerEvent::SyncRequested
+        }
+        OfflinePackagesControllerEventWire::SyncProgressObserved { progress } => {
+            app_core::OfflinePackagesControllerEvent::SyncProgressObserved { progress }
         }
         OfflinePackagesControllerEventWire::SyncFinished { summary } => {
             app_core::OfflinePackagesControllerEvent::SyncFinished { summary }

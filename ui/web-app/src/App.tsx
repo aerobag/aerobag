@@ -5919,6 +5919,13 @@ function MapSelectionItemIcon(props: { item: MapSelectionItem }) {
       </svg>
     );
   }
+  if (item.airspace_icon) {
+    return (
+      <svg className="mapSelectionItemIcon mapSelectionAirspaceIcon" viewBox="0 0 64 64" aria-hidden="true">
+        <AirspaceDisplayPathGroup feature={item.airspace_icon} />
+      </svg>
+    );
+  }
   return <span className="mapSelectionItemTextIcon">{item.sublabel || item.label}</span>;
 }
 

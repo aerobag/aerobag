@@ -737,6 +737,11 @@ button {
   height: calc(var(--thumb) * 0.76);
 }
 
+.mapSelectionAirspaceIcon {
+  width: calc(var(--thumb) * 0.82);
+  height: calc(var(--thumb) * 0.82);
+}
+
 .mapSelectionItemTextIcon {
   color: rgba(255, 255, 255, 0.9);
   font-size: calc(var(--thumb) * 0.18);

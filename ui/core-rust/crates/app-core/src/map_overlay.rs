@@ -342,6 +342,8 @@ pub struct MapSelectionItem {
     pub highlight: MapSelectionHighlight,
     #[serde(default)]
     pub symbol_feature: Option<NavSymbolFeature>,
+    #[serde(default)]
+    pub airspace_icon: Option<AirspaceDisplayPath>,
     pub actions: Vec<MapSelectionAction>,
 }
 
@@ -936,6 +938,7 @@ pub fn query_map_selection(
                         lon: click.lon,
                     },
                     symbol_feature: None,
+                    airspace_icon: None,
                     actions: vec![
                         display_action("terrain", "Terrain --"),
                         disabled_action("direct_to", "Direct-to"),
@@ -993,6 +996,7 @@ fn selection_item_for_point(
             id: record.id.clone(),
         },
         symbol_feature: Some(symbol.clone()),
+        airspace_icon: None,
         actions: {
             actions.shrink_to_fit();
             actions
@@ -1009,6 +1013,7 @@ fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelection
             id: feature.id.clone(),
         },
         symbol_feature: None,
+        airspace_icon: airspace_selection_icon(feature),
         actions: vec![display_action(
             "limits",
             &format!(
@@ -1039,6 +1044,140 @@ fn selectable_airspace_feature(feature: &AirspaceFeaturePayload) -> bool {
     !feature.id.contains(":outline:")
 }
 
+fn airspace_selection_icon(feature: &AirspaceFeaturePayload) -> Option<AirspaceDisplayPath> {
+    airspace_icon_paths_from_lon_lat_paths(
+        feature.paths.iter().map(|path| AirspaceIconSourcePath {
+            closed: path.closed,
+            interior_side: path.interior_side.clone(),
+            points: path.points.clone(),
+        }),
+        &feature.id,
+        &feature.name,
+        &feature.vertical_label,
+        &airspace_style_key(&feature.style_hint),
+        None,
+    )
+}
+
+fn tfr_selection_icon(area: &TfrAreaPayload) -> Option<AirspaceDisplayPath> {
+    airspace_icon_paths_from_lon_lat_paths(
+        std::iter::once(AirspaceIconSourcePath {
+            closed: true,
+            interior_side: None,
+            points: area
+                .polygon
+                .iter()
+                .map(|point| [point.lon, point.lat])
+                .collect(),
+        }),
+        &format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
+        area.notam_id.trim(),
+        area.notam_id.trim(),
+        "tfr",
+        Some(tfr_display_style()),
+    )
+}
+
+struct AirspaceIconSourcePath {
+    closed: bool,
+    interior_side: Option<String>,
+    points: Vec<[f64; 2]>,
+}
+
+fn airspace_icon_paths_from_lon_lat_paths(
+    source_paths: impl IntoIterator<Item = AirspaceIconSourcePath>,
+    id: &str,
+    name: &str,
+    label: &str,
+    style_key: &str,
+    style_override: Option<AirspaceDisplayStyle>,
+) -> Option<AirspaceDisplayPath> {
+    const ICON_SIZE_PX: f64 = 64.0;
+    const ICON_PAD_PX: f64 = 8.0;
+    let source_paths = source_paths
+        .into_iter()
+        .filter(|path| path.points.len() >= 2)
+        .collect::<Vec<_>>();
+    if source_paths.is_empty() {
+        return None;
+    }
+
+    let mut min_lon = f64::INFINITY;
+    let mut max_lon = f64::NEG_INFINITY;
+    let mut min_lat = f64::INFINITY;
+    let mut max_lat = f64::NEG_INFINITY;
+    for path in &source_paths {
+        for point in &path.points {
+            let lon = point[0];
+            let lat = point[1];
+            if !lon.is_finite() || !lat.is_finite() {
+                continue;
+            }
+            min_lon = min_lon.min(lon);
+            max_lon = max_lon.max(lon);
+            min_lat = min_lat.min(lat);
+            max_lat = max_lat.max(lat);
+        }
+    }
+    if !min_lon.is_finite() || !max_lon.is_finite() || !min_lat.is_finite() || !max_lat.is_finite()
+    {
+        return None;
+    }
+    let center_lon = (min_lon + max_lon) / 2.0;
+    let center_lat = (min_lat + max_lat) / 2.0;
+    let lon_scale = center_lat.to_radians().cos().abs().max(0.01);
+    let lon_span = (max_lon - min_lon).abs() * lon_scale;
+    let lat_span = (max_lat - min_lat).abs();
+    let max_span = lon_span.max(lat_span);
+    if max_span <= f64::EPSILON {
+        return None;
+    }
+    let scale = (ICON_SIZE_PX - ICON_PAD_PX * 2.0) / max_span;
+    let icon_center = ICON_SIZE_PX / 2.0;
+    let paths = source_paths
+        .iter()
+        .filter_map(|path| {
+            let points = path
+                .points
+                .iter()
+                .filter_map(|point| {
+                    let lon = point[0];
+                    let lat = point[1];
+                    if !lon.is_finite() || !lat.is_finite() {
+                        return None;
+                    }
+                    Some(AirspaceScreenPoint {
+                        x: round_screen_coordinate(
+                            icon_center + (lon - center_lon) * lon_scale * scale,
+                        ),
+                        y: round_screen_coordinate(icon_center - (lat - center_lat) * scale),
+                    })
+                })
+                .collect::<Vec<_>>();
+            let points = simplify_projected_points(points);
+            (points.len() >= 2).then_some(AirspaceDisplaySubpath {
+                closed: path.closed,
+                interior_side: path.interior_side.clone(),
+                points,
+            })
+        })
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        return None;
+    }
+    let mut decoration_budget = AirspaceDecorationBudget::default();
+    let style = style_override.unwrap_or_else(|| airspace_display_style(style_key));
+    Some(AirspaceDisplayPath {
+        id: id.to_string(),
+        name: name.to_string(),
+        label: label.to_string(),
+        style_key: style_key.to_string(),
+        style,
+        decorations: airspace_decorations(style_key, &paths, &mut decoration_budget),
+        paths,
+    })
+}
+
 fn selection_item_for_tfr(area: &TfrAreaPayload) -> MapSelectionItem {
     MapSelectionItem {
         id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
@@ -1048,6 +1187,7 @@ fn selection_item_for_tfr(area: &TfrAreaPayload) -> MapSelectionItem {
             id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
         },
         symbol_feature: None,
+        airspace_icon: tfr_selection_icon(area),
         actions: vec![display_action(
             "limits",
             &format!(
@@ -1354,16 +1494,7 @@ fn query_tfr_overlay(
             name: area.notam_id.trim().to_string(),
             label: area.notam_id.trim().to_string(),
             style_key: "tfr".to_string(),
-            style: AirspaceDisplayStyle {
-                fill_color_key: "tfr_red".to_string(),
-                fill_opacity: 0.08,
-                strokes: vec![AirspaceDisplayStroke {
-                    color_key: "tfr_red".to_string(),
-                    width_px: 2.0,
-                    dash_px: Vec::new(),
-                    line_cap: "round".to_string(),
-                }],
-            },
+            style: tfr_display_style(),
             paths: vec![AirspaceDisplaySubpath {
                 closed: true,
                 interior_side: None,
@@ -1702,6 +1833,19 @@ fn query_airspace_overlay(
         paths,
         labels,
         warnings,
+    }
+}
+
+fn tfr_display_style() -> AirspaceDisplayStyle {
+    AirspaceDisplayStyle {
+        fill_color_key: "tfr_red".to_string(),
+        fill_opacity: 0.08,
+        strokes: vec![AirspaceDisplayStroke {
+            color_key: "tfr_red".to_string(),
+            width_px: 2.0,
+            dash_px: Vec::new(),
+            line_cap: "round".to_string(),
+        }],
     }
 }
 

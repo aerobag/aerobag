@@ -313,6 +313,7 @@ export type MapSelectionItem = {
   sublabel: string;
   highlight: MapSelectionHighlight;
   symbol_feature?: NavSymbolFeature | null;
+  airspace_icon?: AirspaceDisplayPath | null;
   actions: MapSelectionAction[];
 };
 

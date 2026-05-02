@@ -86,6 +86,7 @@ describe("loadBestAvailableAdapter", () => {
       ingest_airspace_label_tiles_in_session: async () => {},
       ingest_tfrs_in_session: async () => {},
       get_map_overlay_in_session: async () => "{\"visible_features\":[],\"needed_point_tiles\":[],\"needed_airspace_ref_tiles\":[],\"needed_airspace_features\":[],\"needed_airspace_label_tiles\":[],\"needed_tfrs\":false,\"airspace_paths\":[],\"tfr_paths\":[],\"airspace_labels\":[],\"warnings\":[]}",
+      get_map_selection_in_session: async () => "{\"click_lat\":0,\"click_lon\":0,\"categories\":[]}",
       get_terrain_overlay_in_session: async () => "{\"needed_terrain_tiles\":[],\"status\":\"hidden\"}",
       render_terrain_overlay_tile_in_session: async () => new Uint8Array(),
       render_terrain_overlay_tiles_in_session: async () => new Uint8Array(),

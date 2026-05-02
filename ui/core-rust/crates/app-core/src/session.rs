@@ -15,11 +15,11 @@ use crate::{
     map_overlay_config_from_vector_manifest_json, move_flight_plan_waypoint,
     planning::NavElementUiView,
     playback::PlaybackSessionState,
-    query_map_overlay, remove_flight_plan_leg, state, AirspaceFeaturePayload,
+    query_map_overlay, query_map_selection, remove_flight_plan_leg, state, AirspaceFeaturePayload,
     AirspaceLabelTilePayload, AirspaceReferenceTilePayload, AppError, AppErrorKind, AppEvent,
     AppResult, AppState, AppUiState, FlightPlan, LatLon, MapOverlayConfig, MapOverlayQueryResult,
-    MapViewport, NavRef, PlanLeg, PlaybackUiState, PointTilePayload, RasterMapCatalog,
-    RasterTilePlan, SequencingMode, TerrainOverlayQueryResult, TfrProductPayload,
+    MapSelectionQueryResult, MapViewport, NavRef, PlanLeg, PlaybackUiState, PointTilePayload,
+    RasterMapCatalog, RasterTilePlan, SequencingMode, TerrainOverlayQueryResult, TfrProductPayload,
     UiSnapshotAppState,
 };
 
@@ -779,6 +779,29 @@ pub fn get_map_overlay_in_session(
         .iter()
         .any(|warning| warning.code == "vector_display_feature_limit");
     Ok(overlay)
+}
+
+pub fn get_map_selection_in_session(
+    handle: u32,
+    viewport: MapViewport,
+    width_px: f64,
+    height_px: f64,
+    click: LatLon,
+    hit_radius_px: f64,
+) -> AppResult<MapSelectionQueryResult> {
+    let sessions = sessions().lock().expect("session store poisoned");
+    let session = session_ref(&sessions, handle)?;
+    Ok(query_map_selection(
+        &viewport,
+        width_px,
+        height_px,
+        &session.map_overlay_config,
+        click,
+        hit_radius_px,
+        &session.point_tile_cache,
+        &session.airspace_feature_cache,
+        session.tfr_payload.as_ref(),
+    ))
 }
 
 pub fn get_terrain_overlay_in_session(

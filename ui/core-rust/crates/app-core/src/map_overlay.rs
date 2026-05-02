@@ -320,6 +320,36 @@ pub struct MapOverlayQueryResult {
     pub warnings: Vec<MapOverlayWarning>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MapSelectionQueryResult {
+    pub click_lat: f64,
+    pub click_lon: f64,
+    pub categories: Vec<MapSelectionCategory>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MapSelectionCategory {
+    pub id: String,
+    pub label: String,
+    pub items: Vec<MapSelectionItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MapSelectionItem {
+    pub id: String,
+    pub label: String,
+    pub sublabel: String,
+    pub actions: Vec<MapSelectionAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MapSelectionAction {
+    pub id: String,
+    pub label: String,
+    pub enabled: bool,
+    pub display_only: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapOverlayConfig {
     pub airspace_reference_tile_min_zoom: u32,
@@ -787,6 +817,290 @@ pub fn query_map_overlay(
     }
 }
 
+pub fn query_map_selection(
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    config: &MapOverlayConfig,
+    click: LatLon,
+    hit_radius_px: f64,
+    point_tile_cache: &HashMap<String, PointTilePayload>,
+    airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
+    tfr_payload: Option<&TfrProductPayload>,
+) -> MapSelectionQueryResult {
+    let center_world = lat_lon_to_world(viewport.center);
+    let scale = 2.0_f64.powf(viewport.zoom);
+    let click_screen = world_to_screen(center_world, scale, width_px, height_px, click);
+    let mut airports = Vec::new();
+    let mut navaids = Vec::new();
+    let mut airspaces = Vec::new();
+
+    for tile in visible_point_tile_window(config, viewport, width_px, height_px, None) {
+        let Some(payload) = point_tile_cache.get(&tile_key(&tile.layer, tile.z, tile.x, tile.y))
+        else {
+            continue;
+        };
+        for record in &payload.records {
+            if !should_display_record(record) {
+                continue;
+            }
+            let point = world_to_screen(
+                center_world,
+                scale,
+                width_px,
+                height_px,
+                LatLon {
+                    lat: record.lat,
+                    lon: record.lon,
+                },
+            );
+            let distance_px =
+                ((point.x - click_screen.x).powi(2) + (point.y - click_screen.y).powi(2)).sqrt();
+            if distance_px > hit_radius_px {
+                continue;
+            }
+            let Some(symbol) = point_vector_record_to_symbol_feature(record, None) else {
+                continue;
+            };
+            let item = selection_item_for_point(record, &symbol);
+            if record.style_class == "airport"
+                || record.kind.eq_ignore_ascii_case("airport")
+                || record.id.starts_with("airports:")
+            {
+                airports.push(MapSelectionPointMatch { item, distance_px });
+            } else if record.style_class == "fix" || record.style_class == "nav" {
+                navaids.push(MapSelectionPointMatch { item, distance_px });
+            }
+        }
+    }
+
+    for feature in airspace_feature_cache.values() {
+        if selectable_airspace_feature(feature) && airspace_feature_contains(feature, click) {
+            airspaces.push(selection_item_for_airspace(feature));
+        }
+    }
+    if let Some(tfr_payload) = tfr_payload {
+        for area in &tfr_payload.areas {
+            if tfr_area_contains(area, click) {
+                airspaces.push(selection_item_for_tfr(area));
+            }
+        }
+    }
+
+    airports.sort_by(compare_map_selection_point_matches);
+    navaids.sort_by(compare_map_selection_point_matches);
+    airspaces.sort_by(|left, right| {
+        left.label
+            .cmp(&right.label)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    MapSelectionQueryResult {
+        click_lat: click.lat,
+        click_lon: click.lon,
+        categories: vec![
+            MapSelectionCategory {
+                id: "airport".to_string(),
+                label: "Airport".to_string(),
+                items: airports.into_iter().map(|matched| matched.item).collect(),
+            },
+            MapSelectionCategory {
+                id: "navaid".to_string(),
+                label: "Navaid".to_string(),
+                items: navaids.into_iter().map(|matched| matched.item).collect(),
+            },
+            MapSelectionCategory {
+                id: "airspace".to_string(),
+                label: "Airspace".to_string(),
+                items: airspaces,
+            },
+            MapSelectionCategory {
+                id: "spot".to_string(),
+                label: "Spot".to_string(),
+                items: vec![MapSelectionItem {
+                    id: format!("spot:{:.6}:{:.6}", click.lat, click.lon),
+                    label: "SPOT".to_string(),
+                    sublabel: format!("{:.4}, {:.4}", click.lat, click.lon),
+                    actions: vec![
+                        display_action("terrain", "Terrain --"),
+                        disabled_action("direct_to", "Direct-to"),
+                        disabled_action("insert", "Insert in flight plan"),
+                    ],
+                }],
+            },
+        ],
+    }
+}
+
+fn selection_item_for_point(
+    record: &PointVectorRecord,
+    symbol: &NavSymbolFeature,
+) -> MapSelectionItem {
+    let label = if symbol.label.trim().is_empty() {
+        display_label(record)
+    } else {
+        symbol.label.clone()
+    };
+    let is_airport = record.style_class == "airport"
+        || record.kind.eq_ignore_ascii_case("airport")
+        || record.id.starts_with("airports:");
+    let mut actions = if is_airport {
+        vec![
+            display_action("elevation", "Elev --"),
+            disabled_action("direct_to", "Direct-to"),
+            disabled_action("insert", "Insert in flight plan"),
+            disabled_action("plates", "Plates"),
+            disabled_action("csup", "Chart Supp"),
+            disabled_action("runways", "Runways"),
+        ]
+    } else {
+        let freq = if is_vor_family_kind(&record.kind) {
+            record
+                .label
+                .split_whitespace()
+                .find(|part| part.chars().any(|ch| ch == '.'))
+                .unwrap_or("--")
+                .to_string()
+        } else {
+            "--".to_string()
+        };
+        vec![
+            display_action("frequency", &format!("Freq {freq}")),
+            disabled_action("direct_to", "Direct-to"),
+            disabled_action("insert", "Insert in flight plan"),
+        ]
+    };
+    MapSelectionItem {
+        id: record.id.clone(),
+        label,
+        sublabel: record.kind.trim().to_ascii_uppercase(),
+        actions: {
+            actions.shrink_to_fit();
+            actions
+        },
+    }
+}
+
+fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelectionItem {
+    MapSelectionItem {
+        id: feature.id.clone(),
+        label: feature.ident.trim().to_string(),
+        sublabel: feature.name.trim().to_string(),
+        actions: vec![display_action(
+            "limits",
+            &format!(
+                "{} {}",
+                feature.style_hint.trim(),
+                feature.vertical_label.trim()
+            ),
+        )],
+    }
+}
+
+struct MapSelectionPointMatch {
+    item: MapSelectionItem,
+    distance_px: f64,
+}
+
+fn compare_map_selection_point_matches(
+    left: &MapSelectionPointMatch,
+    right: &MapSelectionPointMatch,
+) -> std::cmp::Ordering {
+    left.distance_px
+        .total_cmp(&right.distance_px)
+        .then_with(|| left.item.label.cmp(&right.item.label))
+        .then_with(|| left.item.id.cmp(&right.item.id))
+}
+
+fn selectable_airspace_feature(feature: &AirspaceFeaturePayload) -> bool {
+    !feature.id.contains(":outline:")
+}
+
+fn selection_item_for_tfr(area: &TfrAreaPayload) -> MapSelectionItem {
+    MapSelectionItem {
+        id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
+        label: "TFR".to_string(),
+        sublabel: area.notam_id.trim().to_string(),
+        actions: vec![display_action(
+            "limits",
+            &format!(
+                "{}/{}",
+                tfr_limit_label(&area.upper_limit),
+                tfr_limit_label(&area.lower_limit)
+            ),
+        )],
+    }
+}
+
+fn display_action(id: &str, label: &str) -> MapSelectionAction {
+    MapSelectionAction {
+        id: id.to_string(),
+        label: label.to_string(),
+        enabled: false,
+        display_only: true,
+    }
+}
+
+fn disabled_action(id: &str, label: &str) -> MapSelectionAction {
+    MapSelectionAction {
+        id: id.to_string(),
+        label: label.to_string(),
+        enabled: false,
+        display_only: false,
+    }
+}
+
+fn airspace_feature_contains(feature: &AirspaceFeaturePayload, point: LatLon) -> bool {
+    if point.lon < feature.bbox[0]
+        || point.lat < feature.bbox[1]
+        || point.lon > feature.bbox[2]
+        || point.lat > feature.bbox[3]
+    {
+        return false;
+    }
+    feature.paths.iter().any(|path| {
+        path.closed
+            && path.points.len() >= 3
+            && lon_lat_polygon_contains(&path.points, point.lon, point.lat)
+    })
+}
+
+fn tfr_area_contains(area: &TfrAreaPayload, point: LatLon) -> bool {
+    if area.polygon.len() < 3 {
+        return false;
+    }
+    let polygon = area
+        .polygon
+        .iter()
+        .map(|point| [point.lon, point.lat])
+        .collect::<Vec<_>>();
+    lon_lat_polygon_contains(&polygon, point.lon, point.lat)
+}
+
+fn lon_lat_polygon_contains(points: &[[f64; 2]], lon: f64, lat: f64) -> bool {
+    let mut inside = false;
+    let mut previous = points.len() - 1;
+    for current in 0..points.len() {
+        let current_lon = points[current][0];
+        let current_lat = points[current][1];
+        let previous_lon = points[previous][0];
+        let previous_lat = points[previous][1];
+        let denom = previous_lat - current_lat;
+        let denom = if denom.abs() < f64::EPSILON {
+            f64::EPSILON.copysign(denom)
+        } else {
+            denom
+        };
+        if ((current_lat > lat) != (previous_lat > lat))
+            && (lon < (previous_lon - current_lon) * (lat - current_lat) / denom + current_lon)
+        {
+            inside = !inside;
+        }
+        previous = current;
+    }
+    inside
+}
+
 #[derive(Debug, Clone, Copy)]
 struct LabelRect {
     left: f64,
@@ -826,12 +1140,18 @@ fn suppress_overlapping_vector_labels(
     let mut candidates = Vec::<(LabelRef, LabelRect)>::new();
     for (index, label) in airspace_labels.iter().enumerate() {
         if let Some(rect) = airspace_label_rect(label) {
-            candidates.push((LabelRef::Airspace(index), rect.padded(LABEL_COLLISION_PADDING_PX)));
+            candidates.push((
+                LabelRef::Airspace(index),
+                rect.padded(LABEL_COLLISION_PADDING_PX),
+            ));
         }
     }
     for (index, feature) in visible_features.iter().enumerate() {
         if let Some(rect) = point_feature_label_rect(feature) {
-            candidates.push((LabelRef::Point(index), rect.padded(LABEL_COLLISION_PADDING_PX)));
+            candidates.push((
+                LabelRef::Point(index),
+                rect.padded(LABEL_COLLISION_PADDING_PX),
+            ));
         }
     }
 
@@ -869,7 +1189,13 @@ fn airspace_label_rect(label: &AirspaceDisplayLabel) -> Option<LabelRect> {
         return None;
     }
     let (width, height) = if let Some((upper, lower)) = text.split_once('/') {
-        let width = upper.trim().chars().count().max(lower.trim().chars().count()) as f64 * 8.2 + 10.0;
+        let width = upper
+            .trim()
+            .chars()
+            .count()
+            .max(lower.trim().chars().count()) as f64
+            * 8.2
+            + 10.0;
         (width, 30.0)
     } else {
         (text.chars().count() as f64 * 8.2 + 8.0, 18.0)
@@ -893,9 +1219,18 @@ fn point_feature_label_rect(feature: &VisibleMapFeature) -> Option<LabelRect> {
     } else {
         -15.0
     };
-    let font_px = if style.starts_with("obstacle") { 12.0 } else { 14.0 };
+    let font_px = if style.starts_with("obstacle") {
+        12.0
+    } else {
+        14.0
+    };
     let width = text.chars().count() as f64 * font_px * 0.64 + 8.0;
-    Some(centered_rect(feature.screen_x, feature.screen_y + label_y, width, font_px + 6.0))
+    Some(centered_rect(
+        feature.screen_x,
+        feature.screen_y + label_y,
+        width,
+        font_px + 6.0,
+    ))
 }
 
 fn centered_rect(center_x: f64, center_y: f64, width: f64, height: f64) -> LabelRect {
@@ -2581,6 +2916,75 @@ mod tests {
 
         assert!(airspace_labels.is_empty());
         assert_eq!(features[0].label, "ABC");
+    }
+
+    #[test]
+    fn map_selection_returns_point_and_spot_categories() {
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.36,
+                lon: -121.98,
+            },
+            zoom: 10.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let airport_tile =
+            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0, None)
+                .into_iter()
+                .find(|tile| tile.layer == "airport")
+                .expect("expected airport tile");
+        let mut cache = HashMap::new();
+        cache.insert(
+            tile_key(
+                &airport_tile.layer,
+                airport_tile.z,
+                airport_tile.x,
+                airport_tile.y,
+            ),
+            PointTilePayload {
+                schema_version: 1,
+                layer: airport_tile.layer.clone(),
+                z: airport_tile.z,
+                x: airport_tile.x,
+                y: airport_tile.y,
+                records: vec![PointVectorRecord {
+                    id: "airports:KSEA".to_string(),
+                    kind: "airport".to_string(),
+                    lat: 47.36,
+                    lon: -121.98,
+                    label: "SEATTLE".to_string(),
+                    style_class: "airport".to_string(),
+                    towered: Some(true),
+                    fuel_available: Some(true),
+                    public_use: Some(true),
+                    private_use: Some(false),
+                    has_paved_runway: Some(true),
+                    heliport: Some(false),
+                    has_water_runway: Some(false),
+                    longest_runway_length_ft: Some(10000.0),
+                    longest_runway_heading_true_deg: Some(160.0),
+                    obstacle: None,
+                }],
+            },
+        );
+
+        let result = query_map_selection(
+            &viewport,
+            1200.0,
+            900.0,
+            &test_map_overlay_config(),
+            viewport.center,
+            32.0,
+            &cache,
+            &HashMap::new(),
+            None,
+        );
+
+        assert_eq!(result.categories[0].id, "airport");
+        assert_eq!(result.categories[0].items[0].label, "SEA");
+        assert_eq!(result.categories[3].id, "spot");
+        assert_eq!(result.categories[3].items.len(), 1);
     }
 
     #[test]

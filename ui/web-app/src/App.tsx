@@ -39,6 +39,8 @@ import {
   type DerivedChartPageState,
   type DerivedMapSelectorState,
   type MapLayerId,
+  type MapSelectionItem,
+  type MapSelectionQueryResult,
   type RasterTileDraw,
   type UiMapLayerState,
   type UiMapLayerToggleState,
@@ -53,7 +55,9 @@ import {
   latLonToWorld,
   preserveViewportForMap,
   scaleForZoom,
+  screenToWorld,
   viewportCenterLatLon,
+  worldToLatLon,
   worldToScreen,
   zoomAroundPoint,
   type MapViewportState,
@@ -1873,8 +1877,14 @@ function MapPage(props: {
   const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
   const pinchRef = useRef<ReturnType<typeof createPinchSnapshot> | null>(null);
+  const clickCandidateRef = useRef<{ pointerId: number; start: ScreenPoint; latest: ScreenPoint } | null>(null);
   const gestureActiveRef = useRef(false);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
+  const [mapSelection, setMapSelection] = useState<{
+    point: ScreenPoint;
+    result: MapSelectionQueryResult;
+    selectedItem: MapSelectionItem | null;
+  } | null>(null);
   const firstVisualReadyRef = useRef(false);
   const lastOverlayWarningKeyRef = useRef("");
 
@@ -2904,7 +2914,7 @@ function MapPage(props: {
   }, [mapFollowTargetViewport, mapFollowUiState.following, viewport]);
 
   function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
-    if (trayGroup.scrimOpen) {
+    if (trayGroup.scrimOpen || mapSelection) {
       return;
     }
     if (event.pointerType === "mouse") {
@@ -2918,8 +2928,10 @@ function MapPage(props: {
     event.currentTarget.setPointerCapture(event.pointerId);
     if (activePointersRef.current.size === 1) {
       dragRef.current = { id: event.pointerId, last: point };
+      clickCandidateRef.current = { pointerId: event.pointerId, start: point, latest: point };
       pinchRef.current = null;
     } else if (activePointersRef.current.size >= 2 && surfaceSize.width > 0 && surfaceSize.height > 0) {
+      clickCandidateRef.current = null;
       const [first, second] = Array.from(activePointersRef.current.values());
       pinchRef.current = createPinchSnapshot(
         viewportRef.current,
@@ -2933,7 +2945,7 @@ function MapPage(props: {
   }
 
   function handlePointerMove(event: React.PointerEvent<HTMLDivElement>) {
-    if (trayGroup.scrimOpen || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+    if (trayGroup.scrimOpen || mapSelection || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return;
     }
     const point = { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY };
@@ -2941,6 +2953,9 @@ function MapPage(props: {
       return;
     }
     activePointersRef.current.set(event.pointerId, point);
+    if (clickCandidateRef.current?.pointerId === event.pointerId) {
+      clickCandidateRef.current = { ...clickCandidateRef.current, latest: point };
+    }
     const pointers = Array.from(activePointersRef.current.entries());
     if (pointers.length === 1 && dragRef.current?.id === event.pointerId) {
       const dx = point.x - dragRef.current.last.x;
@@ -2957,6 +2972,9 @@ function MapPage(props: {
       updateViewport(nextViewport);
       syncFollowStateForViewport(nextViewport);
       dragRef.current = { id: event.pointerId, last: point };
+      if (clickCandidateRef.current && distanceBetween(clickCandidateRef.current.start, point) > 8) {
+        clickCandidateRef.current = null;
+      }
       return;
     }
     if (pointers.length >= 2) {
@@ -2990,6 +3008,7 @@ function MapPage(props: {
   }
 
   function handlePointerRelease(event: React.PointerEvent<HTMLDivElement>) {
+    const clickCandidate = clickCandidateRef.current;
     activePointersRef.current.delete(event.pointerId);
     gestureActiveRef.current = activePointersRef.current.size > 0;
     pinchRef.current = null;
@@ -2999,10 +3018,39 @@ function MapPage(props: {
     } else {
       dragRef.current = null;
     }
+    if (
+      clickCandidate &&
+      clickCandidate.pointerId === event.pointerId &&
+      activePointersRef.current.size === 0 &&
+      surfaceSize.width > 0 &&
+      surfaceSize.height > 0 &&
+      uiSession
+    ) {
+      clickCandidateRef.current = null;
+      const world = screenToWorld(viewportRef.current, clickCandidate.latest, surfaceSize.width, surfaceSize.height);
+      const click = worldToLatLon(world.x, world.y);
+      void uiSession
+        .queryMapSelection(viewportRef.current, surfaceSize.width, surfaceSize.height, click, thumbPixels(0.5))
+        .then((result) => {
+          setMapSelection({
+            point: clickCandidate.latest,
+            result,
+            selectedItem: null,
+          });
+        })
+        .catch((error) => {
+          debugLog("map.selection.failed", { error: errorMessage(error) });
+        });
+    } else if (activePointersRef.current.size === 0) {
+      clickCandidateRef.current = null;
+    }
   }
 
   function handleLostPointerCapture(event: React.PointerEvent<HTMLDivElement>) {
     activePointersRef.current.delete(event.pointerId);
+    if (clickCandidateRef.current?.pointerId === event.pointerId) {
+      clickCandidateRef.current = null;
+    }
     gestureActiveRef.current = activePointersRef.current.size > 0;
     pinchRef.current = null;
     const remaining = Array.from(activePointersRef.current.entries());
@@ -3193,6 +3241,17 @@ function MapPage(props: {
       >
         <div className="mapBackdrop" />
         {trayGroup.scrimOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
+        {mapSelection ? (
+          <>
+            <TrayScrim ariaLabel="Close map selection" onClose={() => setMapSelection(null)} />
+            <MapSelectionTray
+              point={mapSelection.point}
+              result={mapSelection.result}
+              selectedItem={mapSelection.selectedItem}
+              onSelectItem={(item) => setMapSelection((current) => current ? { ...current, selectedItem: item } : current)}
+            />
+          </>
+        ) : null}
         <div
           className="rasterTileLayer"
           aria-hidden="true"
@@ -5695,6 +5754,73 @@ function ChartSearchBox(props: {
         </section>
       ) : null}
     </div>
+  );
+}
+
+function MapSelectionTray(props: {
+  point: ScreenPoint;
+  result: MapSelectionQueryResult;
+  selectedItem: MapSelectionItem | null;
+  onSelectItem: (item: MapSelectionItem) => void;
+}) {
+  const { point, result, selectedItem, onSelectItem } = props;
+  const left = Math.min(Math.max(thumbPixels(0.1), point.x + thumbPixels(0.18)), window.innerWidth - thumbPixels(3.7));
+  const top = Math.min(Math.max(thumbPixels(0.1), point.y + thumbPixels(0.18)), window.innerHeight - thumbPixels(4.0));
+
+  return (
+    <section
+      className="mapSelectionTray"
+      style={{ left: `${left}px`, top: `${top}px` }}
+      aria-label="Map selection"
+      onPointerDown={stopPointer}
+      onPointerUp={stopPointer}
+    >
+      {result.categories.map((category) => (
+        <div key={category.id} className="mapSelectionCategory">
+          <div className="mapSelectionRow">
+            {category.items.length === 0 ? (
+              <div className="mapSelectionEmpty" aria-hidden="true">
+                no {category.label.toLowerCase()}s
+              </div>
+            ) : category.items.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`mapSelectionItem${selectedItem?.id === item.id ? " isSelected" : ""}`}
+                onPointerDown={stopPointer}
+                onPointerUp={stopPointer}
+                onDoubleClick={stopDoubleClick}
+                onClick={() => onSelectItem(item)}
+                title={item.sublabel}
+              >
+                <span className="mapSelectionItemLabel">{item.label}</span>
+                <span className="mapSelectionItemSubLabel">{item.sublabel}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+      {selectedItem ? (
+        <div className="mapSelectionActions">
+          <div className="mapSelectionActionTitle">{selectedItem.label}</div>
+          <div className="mapSelectionActionGrid">
+            {selectedItem.actions.map((action) => (
+              <button
+                key={action.id}
+                type="button"
+                className={`mapSelectionAction${action.display_only ? " isDisplayOnly" : ""}`}
+                disabled={!action.enabled}
+                onPointerDown={stopPointer}
+                onPointerUp={stopPointer}
+                onDoubleClick={stopDoubleClick}
+              >
+                {action.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </section>
   );
 }
 

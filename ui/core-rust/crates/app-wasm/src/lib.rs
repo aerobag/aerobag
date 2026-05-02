@@ -557,6 +557,26 @@ pub fn get_map_overlay_in_session(
 }
 
 #[wasm_bindgen]
+pub fn get_map_selection_in_session(
+    handle: u32,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+    click_json: &str,
+    hit_radius_px: f64,
+) -> Result<String, JsValue> {
+    get_map_selection_in_session_json(
+        handle,
+        viewport_json,
+        width_px,
+        height_px,
+        click_json,
+        hit_radius_px,
+    )
+    .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn get_terrain_overlay_in_session(
     handle: u32,
     viewport_json: &str,
@@ -1236,6 +1256,30 @@ fn get_map_overlay_in_session_json(
     let overlay = app_core::get_map_overlay_in_session(handle, viewport, width_px, height_px)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&overlay).map_err(|err| err.to_string())
+}
+
+fn get_map_selection_in_session_json(
+    handle: u32,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+    click_json: &str,
+    hit_radius_px: f64,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let click: app_core::LatLon =
+        serde_json::from_str(click_json).map_err(|err| err.to_string())?;
+    let selection = app_core::get_map_selection_in_session(
+        handle,
+        viewport,
+        width_px,
+        height_px,
+        click,
+        hit_radius_px,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&selection).map_err(|err| err.to_string())
 }
 
 fn get_terrain_overlay_in_session_json(

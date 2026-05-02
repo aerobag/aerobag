@@ -583,6 +583,133 @@ button {
   color: #9a2d00;
 }
 
+.mapSelectionTray {
+  position: fixed;
+  z-index: 9;
+  width: calc(var(--thumb) * 3.5);
+  max-height: calc(var(--app-height) - var(--safe-top) - var(--safe-bottom) - (var(--thumb-gap) * 2));
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--thumb-gap) * 1.2);
+  overflow-y: auto;
+  padding: var(--thumb-gap);
+  border: 1px solid rgba(19, 33, 41, 0.14);
+  border-radius: calc(var(--thumb-radius) + 2px);
+  background: rgba(252, 248, 241, 0.96);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
+  pointer-events: auto;
+}
+
+.mapSelectionCategory {
+  min-width: 0;
+}
+
+.mapSelectionRow {
+  display: flex;
+  gap: calc(var(--thumb-gap) * 0.8);
+  min-height: var(--thumb);
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding-bottom: 2px;
+}
+
+.mapSelectionEmpty {
+  flex: 0 0 calc(var(--thumb) * 2);
+  width: calc(var(--thumb) * 2);
+  height: var(--thumb);
+  color: rgba(82, 101, 109, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: calc(var(--thumb) * 0.16);
+  font-weight: 800;
+  text-transform: lowercase;
+  pointer-events: none;
+}
+
+.mapSelectionItem {
+  flex: 0 0 var(--thumb);
+  width: var(--thumb);
+  height: var(--thumb);
+  padding: calc(var(--thumb) * 0.08);
+  border: 1px solid color-mix(in srgb, var(--theme-button-bg) 78%, black);
+  border-radius: var(--thumb-radius);
+  background: var(--theme-button-bg);
+  color: var(--theme-button-fg);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: calc(var(--thumb) * 0.04);
+  overflow: hidden;
+}
+
+.mapSelectionItem.isSelected {
+  background: color-mix(in srgb, var(--theme-button-bg) 72%, white);
+}
+
+.mapSelectionItemLabel {
+  overflow: hidden;
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 800;
+  line-height: 1.05;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.mapSelectionItemSubLabel {
+  overflow: hidden;
+  font-size: calc(var(--thumb) * 0.11);
+  font-weight: 700;
+  line-height: 1.05;
+  opacity: 0.82;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.mapSelectionActions {
+  border-top: 1px solid rgba(19, 33, 41, 0.14);
+  padding-top: var(--thumb-gap);
+}
+
+.mapSelectionActionTitle {
+  margin-bottom: var(--thumb-gap);
+  color: #24333a;
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 800;
+}
+
+.mapSelectionActionGrid {
+  display: grid;
+  grid-template-columns: repeat(3, var(--thumb));
+  gap: calc(var(--thumb-gap) * 0.8);
+}
+
+.mapSelectionAction {
+  width: var(--thumb);
+  height: var(--thumb);
+  padding: calc(var(--thumb) * 0.08);
+  border: 1px solid color-mix(in srgb, var(--theme-button-bg) 78%, black);
+  border-radius: var(--thumb-radius);
+  background: var(--theme-button-bg);
+  color: var(--theme-button-fg);
+  font-size: calc(var(--thumb) * 0.14);
+  font-weight: 800;
+  line-height: 1.05;
+}
+
+.mapSelectionAction:disabled {
+  background: var(--theme-disabled-button);
+  border-color: color-mix(in srgb, var(--theme-disabled-button) 78%, black);
+}
+
+.mapSelectionAction.isDisplayOnly {
+  background: rgba(255, 255, 255, 0.78);
+  color: #24333a;
+}
+
 .chartButton {
   width: var(--thumb);
   height: var(--thumb);

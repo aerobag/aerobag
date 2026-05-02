@@ -709,6 +709,24 @@ button {
   max-width: calc(var(--thumb) * 1.6);
 }
 
+@media (max-width: 720px) and (orientation: portrait) {
+  .plateDock {
+    gap: calc(var(--thumb-gap) * 0.55);
+    max-width: calc(100vw - (var(--thumb-gap) * 2));
+  }
+
+  .plateDock .plateChartSelector.chartButtonWide {
+    width: var(--thumb);
+    padding-inline: 0;
+  }
+
+  .plateDock .plateChartSelector .chartButtonLabelWide {
+    max-width: calc(var(--thumb) * 0.72);
+    overflow: hidden;
+    text-overflow: clip;
+  }
+}
+
 .pageToggleTrack {
   position: absolute;
   top: 4px;

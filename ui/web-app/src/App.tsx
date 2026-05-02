@@ -5496,10 +5496,11 @@ function TrayDock(props: {
   ariaLabel: string;
   disabled?: boolean;
   style?: TrayDockStyle;
+  launcherClassName?: string;
   launcherAccentColor?: string;
   options: TrayOption[];
 }) {
-  const { launcherLabel, launcherImageSrc, launcherStyle, open, onToggle, ariaLabel, disabled = false, style = "compact", launcherAccentColor, options } = props;
+  const { launcherLabel, launcherImageSrc, launcherStyle, open, onToggle, ariaLabel, disabled = false, style = "compact", launcherClassName, launcherAccentColor, options } = props;
   const launcherRef = useRef<HTMLButtonElement | null>(null);
   const trayRef = useRef<HTMLElement | null>(null);
   const [trayPosition, setTrayPosition] = useState<{ left: number; top: number } | null>(null);
@@ -5551,7 +5552,7 @@ function TrayDock(props: {
       <button
         ref={launcherRef}
         type="button"
-        className={`chartButton${launcherWide ? " chartButtonWide" : ""}${open ? " isOpen" : ""}${launcherDisabled ? " isDisabled" : ""}`}
+        className={`chartButton${launcherWide ? " chartButtonWide" : ""}${launcherClassName ? ` ${launcherClassName}` : ""}${open ? " isOpen" : ""}${launcherDisabled ? " isDisabled" : ""}`}
         aria-disabled={launcherDisabled}
         style={{
           ...launcherStyle,
@@ -6170,7 +6171,7 @@ function ChartsPage(props: {
           </>
         ) : null}
 
-        <div className="chartDock chartDockDouble">
+        <div className="chartDock chartDockDouble plateDock">
           <HomeNavButton active={page === "home"} onClick={() => onSelectPage("home")} />
           <ChartPlateToggleButton page={page} onSelectPage={onSelectPage} />
           <TrayDock
@@ -6192,6 +6193,7 @@ function ChartsPage(props: {
           <TrayDock
             launcherLabel={selectedChart?.label ?? "---"}
             open={trayGroup.isOpen("chart")}
+            launcherClassName="plateChartSelector"
             launcherAccentColor={selectedChart ? plateFolderColor(selectedChart.folder_category) : undefined}
             onToggle={() => trayGroup.toggle("chart")}
             ariaLabel="Chart"

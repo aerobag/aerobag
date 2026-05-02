@@ -5737,7 +5737,7 @@ function ChartsPage(props: {
   const wheelGestureUntilRef = useRef(0);
   const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
-  const pinchRef = useRef<{ zoom: number; distance: number; midpoint: ScreenPoint } | null>(null);
+  const pinchRef = useRef<{ viewport: ImageViewportState; distance: number; midpoint: ScreenPoint } | null>(null);
   const lastChartLayoutKeyRef = useRef("");
   const firstVisualReadyRef = useRef(false);
   const trayGroup = useModalTrayGroup(["airport", "chart", "load"] as const);
@@ -5963,7 +5963,7 @@ function ChartsPage(props: {
     } else if (activePointersRef.current.size >= 2) {
       const [first, second] = Array.from(activePointersRef.current.values());
       pinchRef.current = {
-        zoom: viewportRef.current.zoom,
+        viewport: viewportRef.current,
         distance: distanceBetween(first, second),
         midpoint: midpoint(first, second),
       };
@@ -6004,10 +6004,10 @@ function ChartsPage(props: {
       const nextMidpoint = midpoint(first, second);
       const zoomDelta = pinchRef.current.distance > 0 ? Math.log2(nextDistance / pinchRef.current.distance) : 0;
       let next = zoomImageAroundPoint(
-        viewportRef.current,
+        pinchRef.current.viewport,
         pinchRef.current.midpoint.x,
         pinchRef.current.midpoint.y,
-        clampImageZoom(pinchRef.current.zoom + zoomDelta),
+        clampImageZoom(pinchRef.current.viewport.zoom + zoomDelta),
         selectedImageSize.width,
         selectedImageSize.height,
         surfaceSize.width,

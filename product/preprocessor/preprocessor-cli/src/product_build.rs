@@ -3,7 +3,7 @@ use std::{
     env, fs,
     fs::{File, OpenOptions},
     io::Write,
-    os::unix::fs::PermissionsExt,
+    os::unix::{ffi::OsStrExt, fs::PermissionsExt},
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
     process::Command,
@@ -351,6 +351,45 @@ struct BundlePackageArtifact {
     expiration_date: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     metadata: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BuildStatusDocument {
+    schema_version: u32,
+    generated_at_utc: String,
+    build_root: String,
+    current_artifacts: String,
+    disk: BuildStatusDisk,
+    products: Vec<BuildStatusProduct>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BuildStatusDisk {
+    path: String,
+    total_bytes: u64,
+    used_bytes: u64,
+    free_bytes: u64,
+    available_bytes: u64,
+    percent_free: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BuildStatusProduct {
+    bundle_type: String,
+    bundle_id: String,
+    cycle: Option<String>,
+    id: String,
+    family_id: String,
+    region_id: Option<String>,
+    filename: String,
+    size_bytes: u64,
+    declared_time: Option<String>,
+    fetch_time: Option<String>,
+    effective_date: Option<String>,
+    expiration_date: Option<String>,
+    source_generated_at_utc: Option<String>,
+    source_fetched_at_utc: Option<String>,
+    published_at_utc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2555,6 +2594,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
 
     match result {
         Ok(result) => {
+            write_build_status_html(config, &result.current_artifacts_path)?;
             master_log.log(format!(
                 "complete PASS current_artifacts={}",
                 result.current_artifacts_path.display()
@@ -2651,6 +2691,7 @@ pub fn build_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<FastSubs
     validate_packaged_contract(&config.build_root, &output_path)?;
     let unpacked_root = published_unpacked_root(config)?;
     validate_unpacked_contract(&config.build_root, &unpacked_root, &output_path)?;
+    write_build_status_html(config, &output_path)?;
     record_gc_roots(config, "fast", &gc_records)?;
 
     Ok(FastSubsetBuildResult {
@@ -10768,6 +10809,245 @@ fn write_current_artifacts_manifest(
     Ok(latest_alias_path)
 }
 
+fn write_build_status_html(
+    config: &ProductBuildConfig,
+    current_artifacts_path: &Path,
+) -> anyhow::Result<()> {
+    let status = build_status_document(&config.build_root, current_artifacts_path)?;
+    let html = render_build_status_html(&status)?;
+    let packaged_path = config.build_root.join("build-status.html");
+    fs::write(&packaged_path, &html)
+        .with_context(|| format!("failed to write {}", packaged_path.display()))?;
+    let unpacked_root = published_unpacked_root(config)?;
+    if unpacked_root.is_dir() {
+        let unpacked_path = unpacked_root.join("build-status.html");
+        fs::write(&unpacked_path, html)
+            .with_context(|| format!("failed to write {}", unpacked_path.display()))?;
+    }
+    Ok(())
+}
+
+fn build_status_document(
+    build_root: &Path,
+    current_artifacts_path: &Path,
+) -> anyhow::Result<BuildStatusDocument> {
+    let current = load_current_artifacts_manifest(current_artifacts_path)?;
+    let mut products = Vec::new();
+    for bundle_ref in &current.bundles {
+        let bundle_path = build_root.join(&bundle_ref.filename);
+        match load_bundle_manifest_like(&bundle_path)? {
+            BundleManifestLike::Cycle(bundle) => {
+                let bundle_id = if bundle.bundle_id.is_empty() {
+                    bundle_ref.id.clone()
+                } else {
+                    bundle.bundle_id.clone()
+                };
+                for package in bundle.packages {
+                    products.push(build_status_product(
+                        "cycle",
+                        &bundle_id,
+                        Some(bundle.cycle.as_str()),
+                        package,
+                    ));
+                }
+            }
+            BundleManifestLike::Fast(bundle) => {
+                let bundle_id = if bundle.bundle_id.is_empty() {
+                    bundle_ref.id.clone()
+                } else {
+                    bundle.bundle_id.clone()
+                };
+                for package in bundle.packages {
+                    products.push(build_status_product("fast", &bundle_id, None, package));
+                }
+            }
+        }
+    }
+    products.sort_by(|left, right| {
+        (
+            left.bundle_type.as_str(),
+            left.cycle.as_deref().unwrap_or(""),
+            left.family_id.as_str(),
+            left.region_id.as_deref().unwrap_or(""),
+            left.id.as_str(),
+        )
+            .cmp(&(
+                right.bundle_type.as_str(),
+                right.cycle.as_deref().unwrap_or(""),
+                right.family_id.as_str(),
+                right.region_id.as_deref().unwrap_or(""),
+                right.id.as_str(),
+            ))
+    });
+    Ok(BuildStatusDocument {
+        schema_version: 1,
+        generated_at_utc: utc_now_string(),
+        build_root: build_root.display().to_string(),
+        current_artifacts: filename_string(current_artifacts_path)?,
+        disk: build_status_disk(build_root)?,
+        products,
+    })
+}
+
+fn build_status_product(
+    bundle_type: &str,
+    bundle_id: &str,
+    bundle_cycle: Option<&str>,
+    package: BundlePackageArtifact,
+) -> BuildStatusProduct {
+    let declared_time = package
+        .source_generated_at_utc
+        .clone()
+        .or_else(|| package.effective_date.clone());
+    let fetch_time = package
+        .source_fetched_at_utc
+        .clone()
+        .or_else(|| package.published_at_utc.clone());
+    BuildStatusProduct {
+        bundle_type: bundle_type.to_string(),
+        bundle_id: bundle_id.to_string(),
+        cycle: package
+            .cycle
+            .clone()
+            .or_else(|| bundle_cycle.map(str::to_string)),
+        id: package.id,
+        family_id: package.family_id,
+        region_id: package.region_id,
+        filename: package.filename,
+        size_bytes: package.size_bytes,
+        declared_time,
+        fetch_time,
+        effective_date: package.effective_date,
+        expiration_date: package.expiration_date,
+        source_generated_at_utc: package.source_generated_at_utc,
+        source_fetched_at_utc: package.source_fetched_at_utc,
+        published_at_utc: package.published_at_utc,
+    }
+}
+
+fn build_status_disk(path: &Path) -> anyhow::Result<BuildStatusDisk> {
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .with_context(|| format!("failed to encode path {}", path.display()))?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    let result = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("failed to stat filesystem {}", path.display()));
+    }
+    let stat = unsafe { stat.assume_init() };
+    let block_size = stat.f_frsize as u128;
+    let total_bytes = block_size.saturating_mul(stat.f_blocks as u128);
+    let free_bytes = block_size.saturating_mul(stat.f_bfree as u128);
+    let available_bytes = block_size.saturating_mul(stat.f_bavail as u128);
+    let used_bytes = total_bytes.saturating_sub(free_bytes);
+    let percent_free = if total_bytes == 0 {
+        0.0
+    } else {
+        (available_bytes as f64 / total_bytes as f64) * 100.0
+    };
+    Ok(BuildStatusDisk {
+        path: path.display().to_string(),
+        total_bytes: u64::try_from(total_bytes).unwrap_or(u64::MAX),
+        used_bytes: u64::try_from(used_bytes).unwrap_or(u64::MAX),
+        free_bytes: u64::try_from(free_bytes).unwrap_or(u64::MAX),
+        available_bytes: u64::try_from(available_bytes).unwrap_or(u64::MAX),
+        percent_free,
+    })
+}
+
+fn render_build_status_html(status: &BuildStatusDocument) -> anyhow::Result<String> {
+    let json = serde_json::to_string(status).context("failed to encode build status JSON")?;
+    Ok(format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aerobag Build Status</title>
+<style>
+:root {{ color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }}
+body {{ margin: 2rem; line-height: 1.35; }}
+table {{ border-collapse: collapse; width: 100%; font-size: 0.9rem; }}
+th, td {{ border-bottom: 1px solid #9996; padding: 0.35rem 0.5rem; text-align: left; vertical-align: top; }}
+th {{ position: sticky; top: 0; background: Canvas; }}
+.summary {{ display: flex; flex-wrap: wrap; gap: 1rem; margin: 1rem 0 1.5rem; }}
+.card {{ border: 1px solid #9996; border-radius: 0.5rem; padding: 0.75rem 1rem; }}
+.muted {{ color: #777; }}
+.warn {{ color: #9a6700; font-weight: 700; }}
+</style>
+</head>
+<body>
+<h1>Aerobag Build Status</h1>
+<div id="app"></div>
+<script id="status-data" type="application/json">{json}</script>
+<script>
+const status = JSON.parse(document.getElementById('status-data').textContent);
+const app = document.getElementById('app');
+const fmtBytes = (value) => {{
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let n = Number(value || 0);
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) {{ n /= 1024; i++; }}
+  return `${{n.toFixed(i === 0 ? 0 : 1)}} ${{units[i]}}`;
+}};
+const parseTime = (value) => {{
+  if (!value) return null;
+  if (/^\d{{4}}-\d{{2}}-\d{{2}}$/.test(value)) return new Date(`${{value}}T00:00:00Z`);
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}};
+const fmtAge = (value) => {{
+  const date = parseTime(value);
+  if (!date) return '';
+  const seconds = Math.max(0, (Date.now() - date.getTime()) / 1000);
+  const units = [['d', 86400], ['h', 3600], ['m', 60]];
+  for (const [label, size] of units) {{
+    if (seconds >= size) return `${{Math.floor(seconds / size)}}${{label}} ago`;
+  }}
+  return `${{Math.floor(seconds)}}s ago`;
+}};
+const text = (value) => value == null || value === '' ? '' : String(value);
+const esc = (value) => text(value).replace(/[&<>"']/g, (ch) => ({{'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}})[ch]);
+const timeCell = (value) => value ? `${{esc(value)}} <span class="muted">(${{fmtAge(value)}})</span>` : '<span class="muted">n/a</span>';
+const diskClass = status.disk.percent_free < 10 ? 'warn' : '';
+app.innerHTML = `
+  <div class="summary">
+    <div class="card"><b>Generated</b><br>${{esc(status.generated_at_utc)}} <span class="muted">(${{fmtAge(status.generated_at_utc)}})</span></div>
+    <div class="card"><b>Current Artifacts</b><br>${{esc(status.current_artifacts)}}</div>
+    <div class="card"><b>Build Root</b><br>${{esc(status.build_root)}}</div>
+    <div class="card"><b>Disk</b><br>
+      used ${{fmtBytes(status.disk.used_bytes)}} / total ${{fmtBytes(status.disk.total_bytes)}}<br>
+      free ${{fmtBytes(status.disk.available_bytes)}} <span class="${{diskClass}}">(${{status.disk.percent_free.toFixed(1)}}% free)</span>
+    </div>
+  </div>
+  <h2>Products</h2>
+  <table>
+    <thead><tr>
+      <th>Build</th><th>Product</th><th>Region</th><th>Cycle</th><th>Declared Time</th><th>Fetch Time</th><th>Size</th><th>File</th>
+    </tr></thead>
+    <tbody>
+      ${{status.products.map((p) => `
+        <tr>
+          <td>${{esc(p.bundle_type)}}</td>
+          <td>${{esc(p.id || p.family_id)}}</td>
+          <td>${{esc(p.region_id)}}</td>
+          <td>${{esc(p.cycle)}}</td>
+          <td>${{timeCell(p.declared_time)}}</td>
+          <td>${{timeCell(p.fetch_time)}}</td>
+          <td>${{fmtBytes(p.size_bytes)}}</td>
+          <td><code>${{esc(p.filename)}}</code></td>
+        </tr>
+      `).join('')}}
+    </tbody>
+  </table>
+`;
+</script>
+</body>
+</html>
+"#
+    ))
+}
+
 fn write_product_build_diagnostics(
     build_root: &Path,
     as_of_date: NaiveDate,
@@ -15109,6 +15389,130 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn build_status_html_includes_cycle_and_fast_products() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        let cycle_bundle = BundleManifest {
+            schema_version: 1,
+            bundle_id: "cycle_2604_01".to_string(),
+            bundle_type: "cycle".to_string(),
+            cycle: "2604".to_string(),
+            cycle_version: "01".to_string(),
+            generated_at_utc: "2026-04-16T00:00:00Z".to_string(),
+            effective_date: "2026-04-16".to_string(),
+            expiration_date: "2026-05-14".to_string(),
+            start_valid: "2026-04-16".to_string(),
+            end_valid: "2026-05-14".to_string(),
+            packages: vec![BundlePackageArtifact {
+                id: "vectors_data_2604_01".to_string(),
+                family_id: "vectors".to_string(),
+                region_id: None,
+                filename: "vectors_data_2604_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip".to_string(),
+                relative_path: "vectors_data_2604_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip".to_string(),
+                cycle: Some("2604".to_string()),
+                cycle_version: Some("01".to_string()),
+                checksum_sha256: "a".repeat(64),
+                size_bytes: 1234,
+                published_at_utc: None,
+                source_generated_at_utc: None,
+                source_version: None,
+                source_fetched_at_utc: Some("2026-04-15T23:00:00Z".to_string()),
+                effective_date: Some("2026-04-16".to_string()),
+                expiration_date: Some("2026-05-14".to_string()),
+                metadata: BTreeMap::new(),
+            }],
+            ancillary: vec![],
+        };
+        let fast_bundle = FastBundleManifest {
+            schema_version: 1,
+            bundle_id: "fast_current".to_string(),
+            bundle_type: "fast".to_string(),
+            published_at_utc: "2026-05-03T18:00:00Z".to_string(),
+            packages: vec![BundlePackageArtifact {
+                id: "metars".to_string(),
+                family_id: "metars".to_string(),
+                region_id: None,
+                filename:
+                    "metars_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.zip"
+                        .to_string(),
+                relative_path:
+                    "metars_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.zip"
+                        .to_string(),
+                cycle: None,
+                cycle_version: None,
+                checksum_sha256: "b".repeat(64),
+                size_bytes: 5678,
+                published_at_utc: Some("2026-05-03T18:00:00Z".to_string()),
+                source_generated_at_utc: Some("2026-05-03T17:55:00Z".to_string()),
+                source_version: None,
+                source_fetched_at_utc: Some("2026-05-03T17:56:00Z".to_string()),
+                effective_date: Some("2026-05-03T17:55:00Z".to_string()),
+                expiration_date: None,
+                metadata: BTreeMap::new(),
+            }],
+        };
+        fs::write(
+            root.join("bundle_cycle_2604_01_test.json"),
+            serde_json::to_vec_pretty(&cycle_bundle).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("bundle_fast_test.json"),
+            serde_json::to_vec_pretty(&fast_bundle).unwrap(),
+        )
+        .unwrap();
+        let current = CurrentArtifactsManifest {
+            schema_version: 1,
+            as_of_date: "2026-05-03".to_string(),
+            as_of_utc: "2026-05-03T18:01:00Z".to_string(),
+            bundles: vec![
+                CurrentBundleEntry {
+                    filename: "bundle_cycle_2604_01_test.json".to_string(),
+                    relative_path: "bundle_cycle_2604_01_test.json".to_string(),
+                    id: "cycle_2604_01".to_string(),
+                    bundle_type: "cycle".to_string(),
+                    cycle: "2604".to_string(),
+                    cycle_version: "01".to_string(),
+                    start_valid: "2026-04-16".to_string(),
+                    end_valid: "2026-05-14".to_string(),
+                    checksum_sha256: "c".repeat(64),
+                    size_bytes: 1,
+                },
+                CurrentBundleEntry {
+                    filename: "bundle_fast_test.json".to_string(),
+                    relative_path: "bundle_fast_test.json".to_string(),
+                    id: "fast_current".to_string(),
+                    bundle_type: "fast".to_string(),
+                    cycle: String::new(),
+                    cycle_version: String::new(),
+                    start_valid: String::new(),
+                    end_valid: String::new(),
+                    checksum_sha256: "d".repeat(64),
+                    size_bytes: 1,
+                },
+            ],
+            diagnostics: None,
+        };
+        let current_path = root.join("current_artifacts.json");
+        fs::write(&current_path, serde_json::to_vec_pretty(&current).unwrap()).unwrap();
+
+        let status = build_status_document(root, &current_path).unwrap();
+        assert_eq!(status.products.len(), 2);
+        assert!(status
+            .products
+            .iter()
+            .any(|product| product.bundle_type == "cycle" && product.family_id == "vectors"));
+        assert!(status
+            .products
+            .iter()
+            .any(|product| product.bundle_type == "fast" && product.family_id == "metars"));
+        let html = render_build_status_html(&status).unwrap();
+        assert!(html.contains("Aerobag Build Status"));
+        assert!(html.contains("metars_"));
+        assert!(html.contains("vectors_data_"));
     }
 
     #[test]

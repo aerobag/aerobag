@@ -1102,11 +1102,18 @@ fn structured_metar_records(input_xml_path: &Path) -> anyhow::Result<Vec<Structu
 
 fn structured_metar_clouds(raw_text: &str) -> StructuredMetarClouds {
     StructuredMetarClouds {
-        symbol: Metar::parse(raw_text)
+        symbol: Metar::parse(normalized_metar_parse_text(raw_text))
             .ok()
             .as_ref()
             .and_then(metar_cloud_symbol),
     }
+}
+
+fn normalized_metar_parse_text(raw_text: &str) -> &str {
+    raw_text
+        .trim()
+        .strip_prefix("SPECI ")
+        .unwrap_or_else(|| raw_text.trim())
 }
 
 fn metar_cloud_symbol(metar: &Metar) -> Option<String> {
@@ -2973,6 +2980,14 @@ mod tests {
         let zip_listing = String::from_utf8(zip_listing.stdout)?;
         assert!(zip_listing.lines().any(|line| line == "manifest.json"));
         Ok(())
+    }
+
+    #[test]
+    fn metar_cloud_symbol_handles_speci_prefix() {
+        let clouds = structured_metar_clouds(
+            "SPECI KBOK 031917Z AUTO 19004KT 3/4SM BR OVC002 11/11 A2990 RMK AO2 RAE1857",
+        );
+        assert_eq!(clouds.symbol, Some("OVC".to_string()));
     }
 
     #[test]

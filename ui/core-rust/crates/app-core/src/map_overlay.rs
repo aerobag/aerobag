@@ -23,6 +23,8 @@ const OBSTACLE_LOOKAHEAD_CENTER_OFFSET_DIAMETER_RATIO: f64 = 0.3;
 const OBSTACLE_BELOW_OWNERSHIP_HIDE_FT: f64 = 1000.0;
 const OBSTACLE_CAUTION_LOWER_FT: f64 = 800.0;
 const OBSTACLE_DANGER_LOWER_FT: f64 = 200.0;
+const METAR_TILE_ZOOM: u32 = 7;
+const METAR_DISPLAY_FEATURE_LIMIT: usize = 1_000;
 const WORLD_SIZE: f64 = 256.0;
 const MAX_LATITUDE: f64 = 85.051_128_78;
 
@@ -104,6 +106,49 @@ pub struct PointTilePayload {
     pub x: u32,
     pub y: u32,
     pub records: Vec<PointVectorRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MetarTileRecord {
+    pub station_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MetarTilePayload {
+    pub schema_version: u32,
+    pub layer: String,
+    pub z: u32,
+    pub x: u32,
+    pub y: u32,
+    pub records: Vec<MetarTileRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MetarClouds {
+    pub symbol: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MetarRecord {
+    pub raw_text: String,
+    #[serde(default, alias = "observed_at_utc", alias = "observation_time_utc")]
+    pub observed_at_utc: Option<String>,
+    pub station_id: String,
+    #[serde(default)]
+    pub flight_category: Option<String>,
+    #[serde(default)]
+    pub clouds: Option<MetarClouds>,
+    pub longitude: f64,
+    pub latitude: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MetarProductPayload {
+    pub schema_version: u32,
+    pub version_label: String,
+    #[serde(default)]
+    pub metar_count: Option<u32>,
+    pub metars_by_station: HashMap<String, MetarRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -226,6 +271,15 @@ pub struct VisibleMapFeature {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VisibleMetarFeature {
+    pub station_id: String,
+    pub screen_x: f64,
+    pub screen_y: f64,
+    pub flight_category: String,
+    pub ceiling_amount: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AirspaceDisplayStyle {
     pub fill_color_key: String,
     pub fill_opacity: f64,
@@ -310,11 +364,14 @@ pub struct MapOverlayWarning {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MapOverlayQueryResult {
     pub needed_point_tiles: Vec<VectorTileRequest>,
+    pub needed_metar_tiles: Vec<VectorTileRequest>,
     pub needed_airspace_ref_tiles: Vec<VectorTileRequest>,
     pub needed_airspace_features: Vec<AirspaceFeatureRequest>,
     pub needed_airspace_label_tiles: Vec<VectorTileRequest>,
+    pub needed_metars: bool,
     pub needed_tfrs: bool,
     pub visible_features: Vec<VisibleMapFeature>,
+    pub visible_metars: Vec<VisibleMetarFeature>,
     pub airspace_paths: Vec<AirspaceDisplayPath>,
     pub tfr_paths: Vec<AirspaceDisplayPath>,
     pub airspace_labels: Vec<AirspaceDisplayLabel>,
@@ -710,70 +767,76 @@ pub fn query_map_overlay(
     width_px: f64,
     height_px: f64,
     config: &MapOverlayConfig,
+    display_vectors: bool,
+    display_metars: bool,
     obstacle_context: Option<&ObstacleOverlayContext>,
     point_tile_cache: &HashMap<String, PointTilePayload>,
+    metar_tile_cache: &HashMap<String, MetarTilePayload>,
+    metar_payload: Option<&MetarProductPayload>,
     airspace_ref_tile_cache: &HashMap<String, AirspaceReferenceTilePayload>,
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     airspace_label_tile_cache: &HashMap<String, AirspaceLabelTilePayload>,
     tfr_payload: Option<&TfrProductPayload>,
 ) -> MapOverlayQueryResult {
-    let tile_window =
-        visible_point_tile_window(config, viewport, width_px, height_px, obstacle_context);
     let mut needed_point_tiles = Vec::new();
     let mut visible_features = Vec::new();
     let mut limit_hit = false;
     let center_world = lat_lon_to_world(viewport.center);
     let scale = 2.0_f64.powf(viewport.zoom);
 
-    for tile in tile_window {
-        let key = tile_key(&tile.layer, tile.z, tile.x, tile.y);
-        let Some(payload) = point_tile_cache.get(&key) else {
-            needed_point_tiles.push(tile);
-            continue;
-        };
-        for record in &payload.records {
-            if visible_features.len() >= VECTOR_DISPLAY_FEATURE_LIMIT {
-                limit_hit = true;
-                break;
-            }
-            if !should_display_record(record) {
-                continue;
-            }
-            let point = world_to_screen(
-                center_world,
-                scale,
-                width_px,
-                height_px,
-                LatLon {
-                    lat: record.lat,
-                    lon: record.lon,
-                },
-            );
-            let Some(symbol) = point_vector_record_to_symbol_feature(
-                record,
-                obstacle_context.and_then(|context| context.altitude_ft),
-            ) else {
+    if display_vectors {
+        let tile_window =
+            visible_point_tile_window(config, viewport, width_px, height_px, obstacle_context);
+        for tile in tile_window {
+            let key = tile_key(&tile.layer, tile.z, tile.x, tile.y);
+            let Some(payload) = point_tile_cache.get(&key) else {
+                needed_point_tiles.push(tile);
                 continue;
             };
-            visible_features.push(VisibleMapFeature {
-                id: record.id.clone(),
-                kind: symbol.kind,
-                label: symbol.label,
-                style_class: symbol.style_class,
-                obstacle_variant: symbol.obstacle_variant,
-                screen_x: point.x,
-                screen_y: point.y,
-                towered: symbol.towered,
-                fuel_available: symbol.fuel_available,
-                has_paved_runway: symbol.has_paved_runway,
-                heliport: symbol.heliport,
-                has_water_runway: symbol.has_water_runway,
-                runway_length_ratio: symbol.runway_length_ratio,
-                longest_runway_heading_true_deg: symbol.longest_runway_heading_true_deg,
-            });
-        }
-        if limit_hit {
-            break;
+            for record in &payload.records {
+                if visible_features.len() >= VECTOR_DISPLAY_FEATURE_LIMIT {
+                    limit_hit = true;
+                    break;
+                }
+                if !should_display_record(record) {
+                    continue;
+                }
+                let point = world_to_screen(
+                    center_world,
+                    scale,
+                    width_px,
+                    height_px,
+                    LatLon {
+                        lat: record.lat,
+                        lon: record.lon,
+                    },
+                );
+                let Some(symbol) = point_vector_record_to_symbol_feature(
+                    record,
+                    obstacle_context.and_then(|context| context.altitude_ft),
+                ) else {
+                    continue;
+                };
+                visible_features.push(VisibleMapFeature {
+                    id: record.id.clone(),
+                    kind: symbol.kind,
+                    label: symbol.label,
+                    style_class: symbol.style_class,
+                    obstacle_variant: symbol.obstacle_variant,
+                    screen_x: point.x,
+                    screen_y: point.y,
+                    towered: symbol.towered,
+                    fuel_available: symbol.fuel_available,
+                    has_paved_runway: symbol.has_paved_runway,
+                    heliport: symbol.heliport,
+                    has_water_runway: symbol.has_water_runway,
+                    runway_length_ratio: symbol.runway_length_ratio,
+                    longest_runway_heading_true_deg: symbol.longest_runway_heading_true_deg,
+                });
+            }
+            if limit_hit {
+                break;
+            }
         }
     }
 
@@ -789,27 +852,65 @@ pub fn query_map_overlay(
         Vec::new()
     };
 
-    let airspace = query_airspace_overlay(
-        viewport,
-        width_px,
-        height_px,
-        config,
-        center_world,
-        scale,
-        airspace_ref_tile_cache,
-        airspace_feature_cache,
-        airspace_label_tile_cache,
-    );
+    let airspace = if display_vectors {
+        query_airspace_overlay(
+            viewport,
+            width_px,
+            height_px,
+            config,
+            center_world,
+            scale,
+            airspace_ref_tile_cache,
+            airspace_feature_cache,
+            airspace_label_tile_cache,
+        )
+    } else {
+        AirspaceOverlayProjection {
+            needed_ref_tiles: Vec::new(),
+            needed_features: Vec::new(),
+            needed_label_tiles: Vec::new(),
+            paths: Vec::new(),
+            labels: Vec::new(),
+            warnings: Vec::new(),
+        }
+    };
     let mut warnings = warnings;
     warnings.extend(airspace.warnings);
-    let tfrs = query_tfr_overlay(
-        viewport,
-        width_px,
-        height_px,
-        center_world,
-        scale,
-        tfr_payload,
-    );
+    let tfrs = if display_vectors {
+        query_tfr_overlay(
+            viewport,
+            width_px,
+            height_px,
+            center_world,
+            scale,
+            tfr_payload,
+        )
+    } else {
+        TfrOverlayProjection {
+            needed_tfrs: false,
+            paths: Vec::new(),
+            labels: Vec::new(),
+        }
+    };
+    let metars = if display_metars {
+        query_metar_overlay(
+            viewport,
+            width_px,
+            height_px,
+            center_world,
+            scale,
+            metar_tile_cache,
+            metar_payload,
+        )
+    } else {
+        MetarOverlayProjection {
+            needed_tiles: Vec::new(),
+            needed_metars: false,
+            visible_metars: Vec::new(),
+            warnings: Vec::new(),
+        }
+    };
+    warnings.extend(metars.warnings);
 
     let mut airspace_labels = {
         let mut labels = airspace.labels;
@@ -820,15 +921,134 @@ pub fn query_map_overlay(
 
     MapOverlayQueryResult {
         needed_point_tiles,
+        needed_metar_tiles: metars.needed_tiles,
         needed_airspace_ref_tiles: airspace.needed_ref_tiles,
         needed_airspace_features: airspace.needed_features,
         needed_airspace_label_tiles: airspace.needed_label_tiles,
+        needed_metars: metars.needed_metars,
         needed_tfrs: tfrs.needed_tfrs,
         visible_features,
+        visible_metars: metars.visible_metars,
         airspace_paths: airspace.paths,
         tfr_paths: tfrs.paths,
         airspace_labels,
         warnings,
+    }
+}
+
+struct MetarOverlayProjection {
+    needed_tiles: Vec<VectorTileRequest>,
+    needed_metars: bool,
+    visible_metars: Vec<VisibleMetarFeature>,
+    warnings: Vec<MapOverlayWarning>,
+}
+
+fn query_metar_overlay(
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    center_world: WorldPoint,
+    scale: f64,
+    metar_tile_cache: &HashMap<String, MetarTilePayload>,
+    metar_payload: Option<&MetarProductPayload>,
+) -> MetarOverlayProjection {
+    let needed_metars = metar_payload.is_none();
+    let mut needed_tiles = Vec::new();
+    let mut visible_metars = Vec::new();
+    let mut limit_hit = false;
+    for tile in visible_layer_tile_window("metars", METAR_TILE_ZOOM, viewport, width_px, height_px)
+    {
+        let key = tile_key(&tile.layer, tile.z, tile.x, tile.y);
+        let Some(tile_payload) = metar_tile_cache.get(&key) else {
+            needed_tiles.push(tile);
+            continue;
+        };
+        let Some(metars) = metar_payload else {
+            continue;
+        };
+        for record_ref in &tile_payload.records {
+            if visible_metars.len() >= METAR_DISPLAY_FEATURE_LIMIT {
+                limit_hit = true;
+                break;
+            }
+            let Some(record) = metars.metars_by_station.get(&record_ref.station_id) else {
+                continue;
+            };
+            let point = world_to_screen(
+                center_world,
+                scale,
+                width_px,
+                height_px,
+                LatLon {
+                    lat: record.latitude,
+                    lon: record.longitude,
+                },
+            );
+            if point.x < -32.0
+                || point.x > width_px + 32.0
+                || point.y < -32.0
+                || point.y > height_px + 32.0
+            {
+                continue;
+            }
+            visible_metars.push(VisibleMetarFeature {
+                station_id: record.station_id.clone(),
+                screen_x: point.x,
+                screen_y: point.y,
+                flight_category: normalized_metar_flight_category(record),
+                ceiling_amount: normalized_metar_ceiling_amount(record),
+            });
+        }
+        if limit_hit {
+            break;
+        }
+    }
+    let warnings = if limit_hit {
+        vec![MapOverlayWarning {
+            code: "metar_display_feature_limit".to_string(),
+            message: format!(
+                "display capped at {} visible METAR features",
+                METAR_DISPLAY_FEATURE_LIMIT
+            ),
+        }]
+    } else {
+        Vec::new()
+    };
+    MetarOverlayProjection {
+        needed_tiles,
+        needed_metars,
+        visible_metars,
+        warnings,
+    }
+}
+
+fn normalized_metar_flight_category(record: &MetarRecord) -> String {
+    match record.flight_category.as_deref().map(str::trim) {
+        Some(value) if value.eq_ignore_ascii_case("VFR") => "vfr".to_string(),
+        Some(value) if value.eq_ignore_ascii_case("MVFR") => "mvfr".to_string(),
+        Some(value) if value.eq_ignore_ascii_case("IFR") => "ifr".to_string(),
+        Some(value) if value.eq_ignore_ascii_case("LIFR") => "lifr".to_string(),
+        _ => "missing".to_string(),
+    }
+}
+
+fn normalized_metar_ceiling_amount(record: &MetarRecord) -> String {
+    let amount = record
+        .clouds
+        .as_ref()
+        .map(|clouds| clouds.symbol.as_str())
+        .map(str::trim);
+    match amount {
+        Some(value) if value.eq_ignore_ascii_case("SKC") || value.eq_ignore_ascii_case("CLR") => {
+            "skc".to_string()
+        }
+        Some(value) if value.eq_ignore_ascii_case("FEW") => "few".to_string(),
+        Some(value) if value.eq_ignore_ascii_case("SCT") => "sct".to_string(),
+        Some(value) if value.eq_ignore_ascii_case("BKN") => "bkn".to_string(),
+        Some(value) if value.eq_ignore_ascii_case("OVC") || value.eq_ignore_ascii_case("VV") => {
+            "ovc".to_string()
+        }
+        _ => "missing".to_string(),
     }
 }
 
@@ -2505,8 +2725,12 @@ mod tests {
             width_px,
             height_px,
             &test_map_overlay_config(),
+            true,
+            false,
             None,
             point_tile_cache,
+            &HashMap::new(),
+            None,
             airspace_ref_tile_cache,
             airspace_feature_cache,
             airspace_label_tile_cache,
@@ -2659,8 +2883,8 @@ mod tests {
                     },
                     AirspaceLabelRecord {
                         feature_id: "feature-a".to_string(),
-                        text: "A-RANK-2".to_string(),
-                        lon: 0.0,
+                        text: "A2".to_string(),
+                        lon: -1.5,
                         lat: 0.0,
                         rank: 2,
                         score: Some(0.2),
@@ -2668,8 +2892,8 @@ mod tests {
                     },
                     AirspaceLabelRecord {
                         feature_id: "feature-a".to_string(),
-                        text: "A-RANK-1".to_string(),
-                        lon: 0.1,
+                        text: "A1".to_string(),
+                        lon: -1.5,
                         lat: 0.0,
                         rank: 1,
                         score: Some(0.1),
@@ -2677,18 +2901,18 @@ mod tests {
                     },
                     AirspaceLabelRecord {
                         feature_id: "feature-b".to_string(),
-                        text: "B-RANK-1".to_string(),
-                        lon: 0.0,
-                        lat: 0.1,
+                        text: "B1".to_string(),
+                        lon: 1.5,
+                        lat: 0.0,
                         rank: 1,
                         score: Some(0.9),
                         style_hint: "class_c".to_string(),
                     },
                     AirspaceLabelRecord {
                         feature_id: "feature-b".to_string(),
-                        text: "B-RANK-0".to_string(),
-                        lon: 0.1,
-                        lat: 0.1,
+                        text: "B0".to_string(),
+                        lon: 1.5,
+                        lat: 0.0,
                         rank: 0,
                         score: Some(0.1),
                         style_hint: "class_c".to_string(),
@@ -2699,8 +2923,8 @@ mod tests {
 
         let result = query_map_overlay(
             &viewport,
-            100.0,
-            100.0,
+            240.0,
+            240.0,
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -2710,8 +2934,96 @@ mod tests {
         assert_eq!(result.airspace_labels.len(), 2);
         assert_eq!(result.airspace_labels[0].feature_id, "feature-a");
         assert_eq!(result.airspace_labels[1].feature_id, "feature-b");
-        assert_eq!(result.airspace_labels[0].text, "A-RANK-1");
-        assert_eq!(result.airspace_labels[1].text, "B-RANK-0");
+        assert_eq!(result.airspace_labels[0].text, "A1");
+        assert_eq!(result.airspace_labels[1].text, "B0");
+    }
+
+    #[test]
+    fn metar_overlay_joins_tile_station_ids_to_product_records() {
+        let viewport = MapViewport {
+            center: LatLon { lat: 0.0, lon: 0.0 },
+            zoom: 8.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let tiles = visible_layer_tile_window("metars", METAR_TILE_ZOOM, &viewport, 240.0, 240.0);
+        let tile = tiles.first().expect("expected visible metar tile").clone();
+        let mut metar_tile_cache = HashMap::new();
+        for requested_tile in &tiles {
+            metar_tile_cache.insert(
+                tile_key(
+                    &requested_tile.layer,
+                    requested_tile.z,
+                    requested_tile.x,
+                    requested_tile.y,
+                ),
+                MetarTilePayload {
+                    schema_version: 1,
+                    layer: "metars".to_string(),
+                    z: requested_tile.z,
+                    x: requested_tile.x,
+                    y: requested_tile.y,
+                    records: Vec::new(),
+                },
+            );
+        }
+        metar_tile_cache.insert(
+            tile_key(&tile.layer, tile.z, tile.x, tile.y),
+            MetarTilePayload {
+                schema_version: 1,
+                layer: "metars".to_string(),
+                z: tile.z,
+                x: tile.x,
+                y: tile.y,
+                records: vec![MetarTileRecord {
+                    station_id: "KAAA".to_string(),
+                }],
+            },
+        );
+        let mut metars_by_station = HashMap::new();
+        metars_by_station.insert(
+            "KAAA".to_string(),
+            MetarRecord {
+                raw_text: "METAR KAAA 010000Z 00000KT 10SM SCT020 10/08 A3000".to_string(),
+                observed_at_utc: Some("2026-05-03T00:00:00.000Z".to_string()),
+                station_id: "KAAA".to_string(),
+                flight_category: Some("MVFR".to_string()),
+                clouds: Some(MetarClouds {
+                    symbol: "SCT".to_string(),
+                }),
+                longitude: viewport.center.lon,
+                latitude: viewport.center.lat,
+            },
+        );
+        let metars = MetarProductPayload {
+            schema_version: 2,
+            version_label: "test".to_string(),
+            metar_count: Some(1),
+            metars_by_station,
+        };
+        let result = super::query_map_overlay(
+            &viewport,
+            240.0,
+            240.0,
+            &test_map_overlay_config(),
+            false,
+            true,
+            None,
+            &HashMap::new(),
+            &metar_tile_cache,
+            Some(&metars),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+        );
+
+        assert!(result.needed_metar_tiles.is_empty());
+        assert!(!result.needed_metars);
+        assert_eq!(result.visible_metars.len(), 1);
+        assert_eq!(result.visible_metars[0].station_id, "KAAA");
+        assert_eq!(result.visible_metars[0].flight_category, "mvfr");
+        assert_eq!(result.visible_metars[0].ceiling_amount, "sct");
     }
 
     #[test]

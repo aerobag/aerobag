@@ -122,6 +122,14 @@ button {
   overflow: visible;
 }
 
+.metarOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  overflow: visible;
+}
+
 .airspaceOverlay {
   position: absolute;
   inset: 0;
@@ -133,7 +141,7 @@ button {
 .mapSelectionHighlightOverlay {
   position: absolute;
   inset: 0;
-  z-index: 5;
+  z-index: 6;
   pointer-events: none;
   overflow: visible;
 }
@@ -417,6 +425,61 @@ button {
 
 .obstacleMuted {
   stroke: rgba(255, 211, 77, 0.72);
+}
+
+.metarSymbol {
+  --metar-color: rgba(110, 126, 132, 0.95);
+}
+
+.metarVfr {
+  --metar-color: #00a651;
+}
+
+.metarMvfr {
+  --metar-color: #0072ce;
+}
+
+.metarIfr {
+  --metar-color: #d71920;
+}
+
+.metarLifr {
+  --metar-color: #c000ff;
+}
+
+.metarCircleUnder,
+.metarBarUnder {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.9);
+  stroke-width: 5px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.metarCircle {
+  fill: rgba(255, 255, 255, 0.68);
+  stroke: var(--metar-color);
+  stroke-width: 2.5px;
+}
+
+.metarFill {
+  fill: var(--metar-color);
+  stroke: none;
+}
+
+.metarBar {
+  stroke: var(--metar-color);
+  stroke-width: 2.5px;
+  stroke-linecap: round;
+}
+
+.metarMissingGlyph {
+  fill: var(--metar-color);
+  stroke: rgba(255, 255, 255, 0.9);
+  stroke-width: 2.5px;
+  paint-order: stroke;
+  font-size: 11px;
+  font-weight: 900;
 }
 
 .obstacleDangerFill {

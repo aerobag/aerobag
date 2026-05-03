@@ -544,6 +544,11 @@ pub fn ingest_point_tiles_in_session(handle: u32, tiles_json: &str) -> Result<()
 }
 
 #[wasm_bindgen]
+pub fn ingest_metar_tiles_in_session(handle: u32, tiles_json: &str) -> Result<(), JsValue> {
+    ingest_metar_tiles_in_session_json(handle, tiles_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn ingest_airspace_ref_tiles_in_session(handle: u32, tiles_json: &str) -> Result<(), JsValue> {
     ingest_airspace_ref_tiles_in_session_json(handle, tiles_json)
         .map_err(|err| JsValue::from_str(&err))
@@ -570,6 +575,11 @@ pub fn ingest_airspace_label_tiles_in_session(
 #[wasm_bindgen]
 pub fn ingest_tfrs_in_session(handle: u32, payload_json: &str) -> Result<(), JsValue> {
     ingest_tfrs_in_session_json(handle, payload_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn ingest_metars_in_session(handle: u32, payload_json: &str) -> Result<(), JsValue> {
+    ingest_metars_in_session_json(handle, payload_json).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -1253,6 +1263,12 @@ fn ingest_point_tiles_in_session_json(handle: u32, tiles_json: &str) -> Result<(
     app_core::ingest_point_tiles_in_session(handle, &tiles).map_err(|err| err.to_string())
 }
 
+fn ingest_metar_tiles_in_session_json(handle: u32, tiles_json: &str) -> Result<(), String> {
+    let tiles: Vec<app_core::MetarTilePayload> =
+        serde_json::from_str(tiles_json).map_err(|err| err.to_string())?;
+    app_core::ingest_metar_tiles_in_session(handle, &tiles).map_err(|err| err.to_string())
+}
+
 fn ingest_airspace_ref_tiles_in_session_json(handle: u32, tiles_json: &str) -> Result<(), String> {
     let tiles: Vec<app_core::AirspaceReferenceTilePayload> =
         serde_json::from_str(tiles_json).map_err(|err| err.to_string())?;
@@ -1281,6 +1297,12 @@ fn ingest_tfrs_in_session_json(handle: u32, payload_json: &str) -> Result<(), St
     let payload: app_core::TfrProductPayload =
         serde_json::from_str(payload_json).map_err(|err| err.to_string())?;
     app_core::ingest_tfrs_in_session(handle, &payload).map_err(|err| err.to_string())
+}
+
+fn ingest_metars_in_session_json(handle: u32, payload_json: &str) -> Result<(), String> {
+    let payload: app_core::MetarProductPayload =
+        serde_json::from_str(payload_json).map_err(|err| err.to_string())?;
+    app_core::ingest_metars_in_session(handle, &payload).map_err(|err| err.to_string())
 }
 
 fn get_map_overlay_in_session_json(

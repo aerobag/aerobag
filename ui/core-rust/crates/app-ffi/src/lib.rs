@@ -682,6 +682,14 @@ pub fn ingest_point_tiles_in_session_json(handle: u64, tiles_json: &str) -> Resu
     Ok("null".to_string())
 }
 
+pub fn ingest_metar_tiles_in_session_json(handle: u64, tiles_json: &str) -> Result<String, String> {
+    let tiles: Vec<app_core::MetarTilePayload> =
+        serde_json::from_str(tiles_json).map_err(|err| err.to_string())?;
+    app_core::ingest_metar_tiles_in_session(handle as u32, &tiles)
+        .map_err(|err| err.to_string())?;
+    Ok("null".to_string())
+}
+
 pub fn ingest_airspace_ref_tiles_in_session_json(
     handle: u64,
     tiles_json: &str,
@@ -712,6 +720,13 @@ pub fn ingest_airspace_label_tiles_in_session_json(
         serde_json::from_str(tiles_json).map_err(|err| err.to_string())?;
     app_core::ingest_airspace_label_tiles_in_session(handle as u32, &tiles)
         .map_err(|err| err.to_string())?;
+    Ok("null".to_string())
+}
+
+pub fn ingest_metars_in_session_json(handle: u64, payload_json: &str) -> Result<String, String> {
+    let payload: app_core::MetarProductPayload =
+        serde_json::from_str(payload_json).map_err(|err| err.to_string())?;
+    app_core::ingest_metars_in_session(handle as u32, &payload).map_err(|err| err.to_string())?;
     Ok("null".to_string())
 }
 

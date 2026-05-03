@@ -19,9 +19,9 @@ use crate::{
     query_map_overlay, query_map_selection, remove_flight_plan_leg, state, AirspaceFeaturePayload,
     AirspaceLabelTilePayload, AirspaceReferenceTilePayload, AppError, AppErrorKind, AppEvent,
     AppResult, AppState, AppUiState, FlightPlan, LatLon, MapOverlayConfig, MapOverlayQueryResult,
-    MapSelectionQueryResult, MapViewport, NavKvStore, NavRef, PlanLeg, PlaybackUiState,
-    PointTilePayload, RasterMapCatalog, RasterTilePlan, SequencingMode, TerrainOverlayQueryResult,
-    TfrProductPayload, UiSnapshotAppState,
+    MapSelectionQueryResult, MapViewport, MetarProductPayload, MetarTilePayload, NavKvStore,
+    NavRef, PlanLeg, PlaybackUiState, PointTilePayload, RasterMapCatalog, RasterTilePlan,
+    SequencingMode, TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -41,6 +41,7 @@ pub struct UiMapLayerToggleState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiMapLayerState {
     pub vectors: UiMapLayerToggleState,
+    pub metars: UiMapLayerToggleState,
     pub nexrad: UiMapLayerToggleState,
     pub terrain_warning: UiMapLayerToggleState,
 }
@@ -85,6 +86,8 @@ struct UiSession {
     caution_state: UiCautionState,
     raster_map_catalog: Option<RasterMapCatalog>,
     point_tile_cache: HashMap<String, PointTilePayload>,
+    metar_tile_cache: HashMap<String, MetarTilePayload>,
+    metar_payload: Option<MetarProductPayload>,
     airspace_ref_tile_cache: HashMap<String, AirspaceReferenceTilePayload>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
     airspace_label_tile_cache: HashMap<String, AirspaceLabelTilePayload>,
@@ -99,6 +102,7 @@ const CDI_OFFSCALE_DOTS: f64 = 2.1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MapLayerId {
     Vectors,
+    Metars,
     Nexrad,
     TerrainWarning,
 }
@@ -226,6 +230,8 @@ fn create_ui_session_inner(
             caution_state: default_caution_state(),
             raster_map_catalog: None,
             point_tile_cache: HashMap::new(),
+            metar_tile_cache: HashMap::new(),
+            metar_payload: None,
             airspace_ref_tile_cache: HashMap::new(),
             airspace_feature_cache: HashMap::new(),
             airspace_label_tile_cache: HashMap::new(),
@@ -730,6 +736,18 @@ pub fn ingest_point_tiles_in_session(handle: u32, tiles: &[PointTilePayload]) ->
     Ok(())
 }
 
+pub fn ingest_metar_tiles_in_session(handle: u32, tiles: &[MetarTilePayload]) -> AppResult<()> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    for tile in tiles {
+        session.metar_tile_cache.insert(
+            crate::tile_key(&tile.layer, tile.z, tile.x, tile.y),
+            tile.clone(),
+        );
+    }
+    Ok(())
+}
+
 pub fn ingest_airspace_ref_tiles_in_session(
     handle: u32,
     tiles: &[AirspaceReferenceTilePayload],
@@ -781,6 +799,13 @@ pub fn ingest_tfrs_in_session(handle: u32, payload: &TfrProductPayload) -> AppRe
     Ok(())
 }
 
+pub fn ingest_metars_in_session(handle: u32, payload: &MetarProductPayload) -> AppResult<()> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session.metar_payload = Some(payload.clone());
+    Ok(())
+}
+
 pub fn get_map_overlay_in_session(
     handle: u32,
     viewport: MapViewport,
@@ -789,7 +814,7 @@ pub fn get_map_overlay_in_session(
 ) -> AppResult<MapOverlayQueryResult> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
-    if !session.map_layer_state.vectors.visible {
+    if !session.map_layer_state.vectors.visible && !session.map_layer_state.metars.visible {
         session.caution_state.obstacle_display_limited = false;
         return Ok(empty_map_overlay_query());
     }
@@ -798,8 +823,12 @@ pub fn get_map_overlay_in_session(
         width_px,
         height_px,
         &session.map_overlay_config,
+        session.map_layer_state.vectors.visible,
+        session.map_layer_state.metars.visible,
         ownship_overlay_context(session).as_ref(),
         &session.point_tile_cache,
+        &session.metar_tile_cache,
+        session.metar_payload.as_ref(),
         &session.airspace_ref_tile_cache,
         &session.airspace_feature_cache,
         &session.airspace_label_tile_cache,
@@ -1040,6 +1069,10 @@ fn default_map_layer_state() -> UiMapLayerState {
             visible: true,
             enabled: true,
         },
+        metars: UiMapLayerToggleState {
+            visible: true,
+            enabled: true,
+        },
         nexrad: UiMapLayerToggleState {
             visible: false,
             enabled: true,
@@ -1060,6 +1093,7 @@ fn default_caution_state() -> UiCautionState {
 fn parse_map_layer_id(layer_id: &str) -> AppResult<MapLayerId> {
     match layer_id {
         "vectors" => Ok(MapLayerId::Vectors),
+        "metars" => Ok(MapLayerId::Metars),
         "nexrad" => Ok(MapLayerId::Nexrad),
         "terrain_warning" => Ok(MapLayerId::TerrainWarning),
         _ => Err(AppError {
@@ -1075,6 +1109,7 @@ fn map_layer_toggle_mut(
 ) -> &mut UiMapLayerToggleState {
     match layer_id {
         MapLayerId::Vectors => &mut map_layer_state.vectors,
+        MapLayerId::Metars => &mut map_layer_state.metars,
         MapLayerId::Nexrad => &mut map_layer_state.nexrad,
         MapLayerId::TerrainWarning => &mut map_layer_state.terrain_warning,
     }
@@ -1083,11 +1118,14 @@ fn map_layer_toggle_mut(
 fn empty_map_overlay_query() -> MapOverlayQueryResult {
     MapOverlayQueryResult {
         needed_point_tiles: Vec::new(),
+        needed_metar_tiles: Vec::new(),
         needed_airspace_ref_tiles: Vec::new(),
         needed_airspace_features: Vec::new(),
         needed_airspace_label_tiles: Vec::new(),
+        needed_metars: false,
         needed_tfrs: false,
         visible_features: Vec::new(),
+        visible_metars: Vec::new(),
         airspace_paths: Vec::new(),
         tfr_paths: Vec::new(),
         airspace_labels: Vec::new(),

@@ -76,6 +76,7 @@ import {
   airspaceFeatureUrl,
   airspaceLabelTileUrl,
   airspaceReferenceTileUrl,
+  metarTileUrl,
   pointTileUrl,
   type PointTilePayload,
 } from "./domain/vectorTiles";
@@ -85,10 +86,13 @@ import type {
   AirspaceLabelTilePayload,
   AirspaceReferenceTilePayload,
   MapOverlayQueryResult,
+  MetarTilePayload,
+  MetarProductPayload,
   TerrainOverlayQueryResult,
   TerrainOverlayTileRequest,
   TfrProductPayload,
   VisibleMapFeature,
+  VisibleMetarFeature,
 } from "./domain/appCoreAdapter";
 import { airwayEntryCandidateFromPresentation, airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
 import { debugLog, debugTiming, installGlobalErrorLogging } from "./domain/debugLog";
@@ -304,6 +308,8 @@ function chartFamilyIconSrc(familyId: ChartFamilyId | null | undefined): string 
 function layerIconSrc(layerId: MapLayerId): string {
   switch (layerId) {
     case "vectors":
+      return LAYER_VECTORS_ICON_SRC;
+    case "metars":
       return LAYER_VECTORS_ICON_SRC;
     case "nexrad":
       return LAYER_NEXRAD_ICON_SRC;
@@ -874,6 +880,51 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
   );
 }
 
+function metarCategoryClass(category: string): string {
+  switch (category) {
+    case "vfr":
+      return "metarVfr";
+    case "mvfr":
+      return "metarMvfr";
+    case "ifr":
+      return "metarIfr";
+    case "lifr":
+      return "metarLifr";
+    default:
+      return "metarMissing";
+  }
+}
+
+function MetarSymbol(props: { feature: VisibleMetarFeature }) {
+  const { feature } = props;
+  const categoryClass = metarCategoryClass(feature.flight_category);
+  const radius = 8;
+  const quadrantPath = feature.ceiling_amount === "sct"
+    ? `M 0 0 L 0 ${-radius} A ${radius} ${radius} 0 0 1 ${radius} 0 Z`
+    : feature.ceiling_amount === "bkn"
+      ? `M 0 0 L 0 ${-radius} A ${radius} ${radius} 0 1 1 ${-radius} 0 Z`
+      : null;
+  return (
+    <g className={`metarSymbol ${categoryClass}`} aria-hidden="true">
+      {feature.ceiling_amount === "ovc" ? <circle r={radius} className="metarFill" /> : null}
+      {quadrantPath ? <path d={quadrantPath} className="metarFill" /> : null}
+      <circle r={radius} className="metarCircleUnder" />
+      <circle r={radius} className="metarCircle" />
+      {feature.ceiling_amount === "few" ? (
+        <>
+          <line x1="0" y1={-radius + 1.5} x2="0" y2={radius - 1.5} className="metarBarUnder" />
+          <line x1="0" y1={-radius + 1.5} x2="0" y2={radius - 1.5} className="metarBar" />
+        </>
+      ) : null}
+      {feature.ceiling_amount === "missing" ? (
+        <text x="0" y="4" textAnchor="middle" className="metarMissingGlyph">
+          M
+        </text>
+      ) : null}
+    </g>
+  );
+}
+
 function PlanWaypointSymbol(props: { feature: NavSymbolFeature | null }) {
   const { feature } = props;
   if (!feature) {
@@ -916,6 +967,7 @@ function emptyMapFollowUiState(): MapFollowUiState {
 function defaultUiMapLayerState(): UiMapLayerState {
   return {
     vectors: { visible: true, enabled: true },
+    metars: { visible: true, enabled: true },
     nexrad: { visible: false, enabled: true },
     terrain_warning: { visible: true, enabled: true },
   };
@@ -1907,11 +1959,14 @@ function MapPage(props: {
   });
   const [mapOverlay, setMapOverlay] = useState<MapOverlayQueryResult>({
     needed_point_tiles: [],
+    needed_metar_tiles: [],
     needed_airspace_ref_tiles: [],
     needed_airspace_features: [],
     needed_airspace_label_tiles: [],
+    needed_metars: false,
     needed_tfrs: false,
     visible_features: [],
+    visible_metars: [],
     airspace_paths: [],
     tfr_paths: [],
     airspace_labels: [],
@@ -2547,14 +2602,17 @@ function MapPage(props: {
     if (!mapIsVisible) {
       return;
     }
-    if (!mapLayerState.vectors.visible) {
+    if (!mapLayerState.vectors.visible && !mapLayerState.metars.visible) {
       setMapOverlay({
         needed_point_tiles: [],
+        needed_metar_tiles: [],
         needed_airspace_ref_tiles: [],
         needed_airspace_features: [],
         needed_airspace_label_tiles: [],
+        needed_metars: false,
         needed_tfrs: false,
         visible_features: [],
+        visible_metars: [],
         airspace_paths: [],
         tfr_paths: [],
         airspace_labels: [],
@@ -2566,11 +2624,14 @@ function MapPage(props: {
     if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       setMapOverlay({
         needed_point_tiles: [],
+        needed_metar_tiles: [],
         needed_airspace_ref_tiles: [],
         needed_airspace_features: [],
         needed_airspace_label_tiles: [],
+        needed_metars: false,
         needed_tfrs: false,
         visible_features: [],
+        visible_metars: [],
         airspace_paths: [],
         tfr_paths: [],
         airspace_labels: [],
@@ -2602,9 +2663,11 @@ function MapPage(props: {
     function overlayNeedsInputs(overlay: MapOverlayQueryResult): boolean {
       return (
         overlay.needed_point_tiles.length > 0 ||
+        overlay.needed_metar_tiles.length > 0 ||
         overlay.needed_airspace_ref_tiles.length > 0 ||
         overlay.needed_airspace_features.length > 0 ||
         overlay.needed_airspace_label_tiles.length > 0 ||
+        overlay.needed_metars ||
         overlay.needed_tfrs
       );
     }
@@ -2669,6 +2732,37 @@ function MapPage(props: {
           zoom: viewport.zoom,
           count: tiles.length,
           elapsed_ms: Math.round(performance.now() - ingestStartedAt),
+        });
+        ingested = true;
+      }
+      if (overlay.needed_metar_tiles.length > 0) {
+        const startedAt = performance.now();
+        const tiles = await Promise.all(
+          overlay.needed_metar_tiles.map(async (tile) => {
+            const response = await fetch(metarTileUrl(tile.z, tile.x, tile.y), {
+              signal: controller.signal,
+            });
+            if (response.status === 404) {
+              return {
+                schema_version: 1,
+                layer: "metars",
+                z: tile.z,
+                x: tile.x,
+                y: tile.y,
+                records: [],
+              } satisfies MetarTilePayload;
+            }
+            if (!response.ok) {
+              throw new Error(`failed to load METAR tile ${tile.z}/${tile.x}/${tile.y}: ${response.status}`);
+            }
+            return (await response.json()) as MetarTilePayload;
+          }),
+        );
+        await session.ingestMetarTiles(tiles);
+        debugLog("map.overlay.metar_tiles.done", {
+          zoom: viewport.zoom,
+          count: tiles.length,
+          elapsed_ms: Math.round(performance.now() - startedAt),
         });
         ingested = true;
       }
@@ -2784,6 +2878,23 @@ function MapPage(props: {
         });
         ingested = true;
       }
+      if (overlay.needed_metars) {
+        const startedAt = performance.now();
+        const response = await fetch("/fast-products/metars/metars.json", {
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`failed to load METAR product: ${response.status}`);
+        }
+        const payload = (await response.json()) as MetarProductPayload;
+        await session.ingestMetars(payload);
+        debugLog("map.overlay.metars.ingest.done", {
+          zoom: viewport.zoom,
+          records: payload.metar_count ?? Object.keys(payload.metars_by_station).length,
+          elapsed_ms: Math.round(performance.now() - startedAt),
+        });
+        ingested = true;
+      }
       return ingested;
     }
 
@@ -2808,10 +2919,12 @@ function MapPage(props: {
           zoom: viewport.zoom,
           elapsed_ms: Math.round(performance.now() - startedAt),
           needed_point_tiles: overlay.needed_point_tiles.length,
+          needed_metar_tiles: overlay.needed_metar_tiles.length,
           needed_airspace_ref_tiles: overlay.needed_airspace_ref_tiles.length,
           needed_airspace_features: overlay.needed_airspace_features.length,
           needed_airspace_label_tiles: overlay.needed_airspace_label_tiles.length,
           visible_features: overlay.visible_features.length,
+          visible_metars: overlay.visible_metars.length,
           airspace_paths: overlay.airspace_paths.length,
           airspace_labels: overlay.airspace_labels.length,
           warnings: overlay.warnings.map((warning) => warning.code),
@@ -2857,10 +2970,12 @@ function MapPage(props: {
           zoom: viewport.zoom,
           elapsed_ms: Math.round(performance.now() - refreshStartedAt),
           needed_point_tiles: overlay.needed_point_tiles.length,
+          needed_metar_tiles: overlay.needed_metar_tiles.length,
           needed_airspace_ref_tiles: overlay.needed_airspace_ref_tiles.length,
           needed_airspace_features: overlay.needed_airspace_features.length,
           needed_airspace_label_tiles: overlay.needed_airspace_label_tiles.length,
           visible_features: overlay.visible_features.length,
+          visible_metars: overlay.visible_metars.length,
           airspace_paths: overlay.airspace_paths.length,
           airspace_labels: overlay.airspace_labels.length,
           warnings: overlay.warnings.map((warning) => warning.code),
@@ -2882,6 +2997,7 @@ function MapPage(props: {
       controller.abort();
     };
   }, [
+    mapLayerState.metars.visible,
     mapLayerState.vectors.visible,
     mapIsVisible,
     mapOverlayOwnshipKey,
@@ -3295,6 +3411,14 @@ function MapPage(props: {
       onSelect: () => void setMapLayerVisible("vectors", !mapLayerState.vectors.visible),
     },
     {
+      id: "metars",
+      label: "METARs",
+      iconSrc: layerIconSrc("metars"),
+      toggleState: mapLayerState.metars,
+      disabled: !mapLayerState.metars.enabled,
+      onSelect: () => void setMapLayerVisible("metars", !mapLayerState.metars.visible),
+    },
+    {
       id: "nexrad",
       label: "NEXRAD",
       iconSrc: layerIconSrc("nexrad"),
@@ -3521,6 +3645,20 @@ function MapPage(props: {
                 </g>
               );
             })}
+          </svg>
+        ) : null}
+        {mapIsVisible && mapOverlay.visible_metars.length > 0 ? (
+          <svg
+            className="metarOverlay"
+            viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
+            preserveAspectRatio="none"
+            style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+          >
+            {mapOverlay.visible_metars.map((feature) => (
+              <g key={feature.station_id} transform={`translate(${feature.screen_x} ${feature.screen_y})`}>
+                <MetarSymbol feature={feature} />
+              </g>
+            ))}
           </svg>
         ) : null}
         {mapIsVisible && selectedMapHighlight ? (

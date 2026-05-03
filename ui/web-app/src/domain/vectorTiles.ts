@@ -104,6 +104,10 @@ export function pointTileUrl(layer: string, zoom: number, x: number, y: number) 
   return `/vectors/points/${layer}/${zoom}/${x}/${y}.json`;
 }
 
+export function metarTileUrl(zoom: number, x: number, y: number) {
+  return `/fast-products/metars/points/metars/${zoom}/${x}/${y}.json`;
+}
+
 export function airspaceReferenceTileUrl(zoom: number, x: number, y: number) {
   return `/vectors/airspace/refs/${zoom}/${x}/${y}.json`;
 }

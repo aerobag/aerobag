@@ -94,7 +94,7 @@ export type UiCautionState = {
   obstacle_display_limited: boolean;
 };
 
-export type MapLayerId = "vectors" | "nexrad" | "terrain_warning";
+export type MapLayerId = "vectors" | "metars" | "nexrad" | "terrain_warning";
 
 export type UiMapLayerToggleState = {
   visible: boolean;
@@ -103,6 +103,7 @@ export type UiMapLayerToggleState = {
 
 export type UiMapLayerState = {
   vectors: UiMapLayerToggleState;
+  metars: UiMapLayerToggleState;
   nexrad: UiMapLayerToggleState;
   terrain_warning: UiMapLayerToggleState;
 };
@@ -140,6 +141,17 @@ export type PointTilePayload = {
       top_msl_ft: number;
       is_tall: boolean;
     } | null;
+  }>;
+};
+
+export type MetarTilePayload = {
+  schema_version: number;
+  layer: string;
+  z: number;
+  x: number;
+  y: number;
+  records: Array<{
+    station_id: string;
   }>;
 };
 
@@ -206,6 +218,14 @@ export type VisibleMapFeature = {
   has_water_runway?: boolean | null;
   runway_length_ratio: number;
   longest_runway_heading_true_deg: number | null;
+};
+
+export type VisibleMetarFeature = {
+  station_id: string;
+  screen_x: number;
+  screen_y: number;
+  flight_category: "vfr" | "mvfr" | "ifr" | "lifr" | "missing" | string;
+  ceiling_amount: "skc" | "few" | "sct" | "bkn" | "ovc" | "missing" | string;
 };
 
 export type AirspaceFeatureRequest = {
@@ -279,13 +299,23 @@ export type TfrProductPayload = {
   }>;
 };
 
+export type MetarProductPayload = {
+  schema_version: number;
+  version_label: string;
+  metar_count?: number | null;
+  metars_by_station: Record<string, unknown>;
+};
+
 export type MapOverlayQueryResult = {
   needed_point_tiles: VectorTileRequest[];
+  needed_metar_tiles: VectorTileRequest[];
   needed_airspace_ref_tiles: VectorTileRequest[];
   needed_airspace_features: AirspaceFeatureRequest[];
   needed_airspace_label_tiles: VectorTileRequest[];
+  needed_metars: boolean;
   needed_tfrs: boolean;
   visible_features: VisibleMapFeature[];
+  visible_metars: VisibleMetarFeature[];
   airspace_paths: AirspaceDisplayPath[];
   tfr_paths: AirspaceDisplayPath[];
   airspace_labels: AirspaceDisplayLabel[];
@@ -413,10 +443,12 @@ export interface UiSession {
   selectAirport(airportId: string): Promise<UiSessionSnapshot>;
   selectChart(chartId: string): Promise<UiSessionSnapshot>;
   ingestPointTiles(tiles: PointTilePayload[]): Promise<void>;
+  ingestMetarTiles(tiles: MetarTilePayload[]): Promise<void>;
   ingestAirspaceRefTiles(tiles: AirspaceReferenceTilePayload[]): Promise<void>;
   ingestAirspaceFeatures(features: AirspaceFeaturePayload[]): Promise<void>;
   ingestAirspaceLabelTiles(tiles: AirspaceLabelTilePayload[]): Promise<void>;
   ingestTfrs(payload: TfrProductPayload): Promise<void>;
+  ingestMetars(payload: MetarProductPayload): Promise<void>;
   queryMapOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<MapOverlayQueryResult>;
   queryMapSelection(viewport: MapViewportState, widthPx: number, heightPx: number, click: LatLon, hitRadiusPx: number): Promise<MapSelectionQueryResult>;
   queryTerrainOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<TerrainOverlayQueryResult>;
@@ -593,10 +625,12 @@ type WasmModule = {
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
   ingest_point_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
+  ingest_metar_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   ingest_airspace_ref_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   ingest_airspace_features_in_session(handle: number, featuresJson: string): Promise<void> | void;
   ingest_airspace_label_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   ingest_tfrs_in_session(handle: number, payloadJson: string): Promise<void> | void;
+  ingest_metars_in_session(handle: number, payloadJson: string): Promise<void> | void;
   get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
   get_map_selection_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, clickJson: string, hitRadiusPx: number): Promise<string> | string;
   get_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
@@ -992,6 +1026,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           await this.module.ingest_point_tiles_in_session(handle, JSON.stringify(tiles));
         });
       },
+      ingestMetarTiles: async (tiles) => {
+        await withSessionRetry(async () => {
+          await this.module.ingest_metar_tiles_in_session(handle, JSON.stringify(tiles));
+        });
+      },
       ingestAirspaceRefTiles: async (tiles) => {
         await withSessionRetry(async () => {
           await this.module.ingest_airspace_ref_tiles_in_session(handle, JSON.stringify(tiles));
@@ -1010,6 +1049,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       ingestTfrs: async (payload) => {
         await withSessionRetry(async () => {
           await this.module.ingest_tfrs_in_session(handle, JSON.stringify(payload));
+        });
+      },
+      ingestMetars: async (payload) => {
+        await withSessionRetry(async () => {
+          await this.module.ingest_metars_in_session(handle, JSON.stringify(payload));
         });
       },
       queryMapOverlay: async (viewport, widthPx, heightPx) =>
@@ -1444,10 +1488,12 @@ export async function loadBestAvailableAdapter(
     typeof mod.select_airport_in_session !== "function" ||
     typeof mod.select_chart_in_session !== "function" ||
     typeof mod.ingest_point_tiles_in_session !== "function" ||
+    typeof mod.ingest_metar_tiles_in_session !== "function" ||
     typeof mod.ingest_airspace_ref_tiles_in_session !== "function" ||
     typeof mod.ingest_airspace_features_in_session !== "function" ||
     typeof mod.ingest_airspace_label_tiles_in_session !== "function" ||
     typeof mod.ingest_tfrs_in_session !== "function" ||
+    typeof mod.ingest_metars_in_session !== "function" ||
     typeof mod.get_map_overlay_in_session !== "function" ||
     typeof mod.get_map_selection_in_session !== "function" ||
     typeof mod.get_terrain_overlay_in_session !== "function" ||

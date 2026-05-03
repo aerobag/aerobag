@@ -852,6 +852,7 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
         .unwrap_or(0);
 
     let structured_json_path = request.output_dir.join("metars.json");
+    let canonical_manifest_path = request.output_dir.join("manifest.json");
     let manifest_path = request
         .output_dir
         .join(format!("metars_{}.manifest.json", request.version_label));
@@ -889,39 +890,38 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
         )?;
         zip_members.push((relative_path, tile_path));
     }
-    write_json_pretty(
-        &manifest_path,
-        &MetarManifest {
-            schema_version: METAR_PRODUCT_CONTRACT_VERSION,
-            version_label: request.version_label.clone(),
-            generated_at_utc: request.generated_at_utc.to_rfc3339(),
-            files: MetarManifestFiles {
-                manifest: "manifest.json".to_string(),
-                structured_json: "metars.json".to_string(),
-                zip: zip_path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or_default()
-                    .to_string(),
-            },
-            map_view: MetarManifestMapView {
-                layer: "metars".to_string(),
-                storage_kind: "fast_product".to_string(),
-                tile_path_template: METAR_TILE_PATH_TEMPLATE.to_string(),
-                tile_size: METAR_TILE_SIZE,
-                min_zoom: METAR_TILE_MIN_ZOOM,
-                max_zoom: METAR_TILE_MAX_ZOOM,
-                levels: metar_manifest_tile_levels(&model.tiles),
-            },
-            counts: MetarManifestCounts {
-                metars: metar_count,
-                important_metars: important_metar_count,
-                tile_count,
-                max_metars_per_tile,
-            },
+    let manifest = MetarManifest {
+        schema_version: METAR_PRODUCT_CONTRACT_VERSION,
+        version_label: request.version_label.clone(),
+        generated_at_utc: request.generated_at_utc.to_rfc3339(),
+        files: MetarManifestFiles {
+            manifest: "manifest.json".to_string(),
+            structured_json: "metars.json".to_string(),
+            zip: zip_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string(),
         },
-    )?;
-    zip_members.push(("manifest.json".to_string(), manifest_path.clone()));
+        map_view: MetarManifestMapView {
+            layer: "metars".to_string(),
+            storage_kind: "fast_product".to_string(),
+            tile_path_template: METAR_TILE_PATH_TEMPLATE.to_string(),
+            tile_size: METAR_TILE_SIZE,
+            min_zoom: METAR_TILE_MIN_ZOOM,
+            max_zoom: METAR_TILE_MAX_ZOOM,
+            levels: metar_manifest_tile_levels(&model.tiles),
+        },
+        counts: MetarManifestCounts {
+            metars: metar_count,
+            important_metars: important_metar_count,
+            tile_count,
+            max_metars_per_tile,
+        },
+    };
+    write_json_pretty(&canonical_manifest_path, &manifest)?;
+    write_json_pretty(&manifest_path, &manifest)?;
+    zip_members.push(("manifest.json".to_string(), canonical_manifest_path));
     let zip_member_refs = zip_members
         .iter()
         .map(|(relative_path, path)| (relative_path.as_str(), path.as_path()))
@@ -2870,6 +2870,12 @@ mod tests {
             .is_none());
 
         let manifest: Value = serde_json::from_slice(&fs::read(&first_result.manifest_path)?)?;
+        assert!(first_result
+            .zip_path
+            .parent()
+            .unwrap()
+            .join("manifest.json")
+            .is_file());
         assert_eq!(
             manifest
                 .pointer("/files/manifest")

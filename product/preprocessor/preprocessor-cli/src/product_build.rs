@@ -3000,6 +3000,7 @@ fn sync_referenced_fast_bundle_unpacked_zips(
                 let unpack_dir = unpacked_target_dir(unpacked_root, &package.filename)?;
                 let marker_path = unpacked_marker_path(unpacked_root, &package.filename)?;
                 if unpack_dir.is_dir()
+                    && unpacked_dir_has_files(&unpack_dir)?
                     && fs::read_to_string(&marker_path)
                         .ok()
                         .as_deref()
@@ -7268,6 +7269,7 @@ fn sync_unpacked_zip_from_source(
         None => hash_file(zip_path)?,
     };
     if unpack_dir.is_dir()
+        && unpacked_dir_has_files(&unpack_dir)?
         && fs::read_to_string(&marker_path)
             .ok()
             .as_deref()
@@ -7297,6 +7299,7 @@ fn sync_unpacked_dir_from_existing(
     let unpack_dir = unpacked_target_dir(unpacked_root, published_filename)?;
     let marker_path = unpacked_marker_path(unpacked_root, published_filename)?;
     if unpack_dir.is_dir()
+        && unpacked_dir_has_files(&unpack_dir)?
         && fs::read_to_string(&marker_path)
             .ok()
             .as_deref()
@@ -7328,6 +7331,7 @@ fn sync_unpacked_zip_by_extract(
         None => hash_file(zip_path)?,
     };
     if unpack_dir.is_dir()
+        && unpacked_dir_has_files(&unpack_dir)?
         && fs::read_to_string(&marker_path)
             .ok()
             .as_deref()
@@ -7401,6 +7405,22 @@ fn hardlink_dir_recursive(source_dir: &Path, output_dir: &Path) -> anyhow::Resul
         }
     }
     Ok(())
+}
+
+fn unpacked_dir_has_files(path: &Path) -> anyhow::Result<bool> {
+    for entry in fs::read_dir(path).with_context(|| format!("failed to read {}", path.display()))? {
+        let entry = entry?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to stat {}", entry.path().display()))?;
+        if file_type.is_file() {
+            return Ok(true);
+        }
+        if file_type.is_dir() && unpacked_dir_has_files(&entry.path())? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn hardlink_zip_members_from_source_root(

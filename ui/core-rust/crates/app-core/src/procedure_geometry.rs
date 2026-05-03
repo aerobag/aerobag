@@ -1,3 +1,4 @@
+use crate::arinc_ambiguity_resolutions;
 use crate::planning::LegDisplayPathStyle;
 use crate::{
     basic_terminal_state, direct_to_fix_with_course_continuation_requirement, reconcile_handoff,
@@ -100,6 +101,8 @@ const TO_FIX_TERMINATION_SNAP_DISTANCE_NM: f64 = 0.1;
 const MIN_ARC_SWEEP_DEG: f64 = 0.5;
 const POSITION_EPSILON_DEG: f64 = 0.0005;
 const EXPLICIT_MISSED_TURN_SOURCE_PREFIX: &str = "explicit_missed_turn@";
+const INFERRED_MISSED_TURN_SOURCE_PREFIX: &str = "inferred_missed_turn@";
+const PLATE_EXCEPTION_MISSED_TURN_SOURCE_PREFIX: &str = "plate_exception_missed_turn@";
 
 pub fn display_path_for_procedure_leg(
     segment_records: &[ProcedureLegMaterializationRecord],
@@ -974,10 +977,68 @@ fn build_procedure_leg_display_path(
                     current_position = fix;
                     continue;
                 }
+                let direct_course_deg = bearing_from(current_position, fix);
                 let raw_turn_direction = step.turn_direction.as_deref().unwrap_or("").trim();
-                if matches!(raw_turn_direction, "L" | "R") {
+                let inferred_turn_clockwise = if raw_turn_direction.is_empty() {
+                    current_course_deg.and_then(|current_heading_deg| {
+                        if !ambiguous_missed_direct_to_same_fix_hold_after_climb(
+                            step,
+                            index
+                                .checked_sub(1)
+                                .and_then(|previous_index| steps.get(previous_index).copied()),
+                            steps.get(index + 1).copied(),
+                        ) {
+                            return None;
+                        }
+                        let heading_delta_deg =
+                            angular_difference_degrees(current_heading_deg, direct_course_deg);
+                        if heading_delta_deg < 120.0 {
+                            return None;
+                        }
+                        if heading_delta_deg < 170.0 {
+                            return Some(shortest_turn_clockwise(
+                                current_heading_deg,
+                                direct_course_deg,
+                            ));
+                        }
+                        if let Some(resolution) =
+                            arinc_ambiguity_resolutions::handle_unspecified_missed_turn_to_same_fix_hold(
+                                step.key.airport_id.trim(),
+                                step.key.procedure_id.trim(),
+                                step.key.route_type.trim(),
+                                step.sequence,
+                            )
+                        {
+                            return Some(resolution.clockwise());
+                        }
+                        if !debug_allows_ambiguous_missed_turn_rendering() {
+                            panic!(
+                                "ambiguous missed approach turn direction before same-fix hold: {} {} route={} seq={} fix={} inbound_mh={:.1} direct_mh={:.1} delta={:.1}",
+                                step.key.airport_id.trim(),
+                                step.key.procedure_id.trim(),
+                                step.key.route_type.trim(),
+                                step.sequence,
+                                step.nav_ref
+                                    .as_ref()
+                                    .map(|nav_ref| format!("{nav_ref:?}"))
+                                    .unwrap_or_else(|| "-".to_string()),
+                                normalize_bearing_degrees(current_heading_deg),
+                                normalize_bearing_degrees(direct_course_deg),
+                                heading_delta_deg,
+                            );
+                        }
+                        None
+                    })
+                } else {
+                    None
+                };
+                let missed_turn_clockwise = match raw_turn_direction {
+                    "L" => Some(false),
+                    "R" => Some(true),
+                    _ => inferred_turn_clockwise,
+                };
+                if let Some(turn_clockwise) = missed_turn_clockwise {
                     if let Some(initial_course_deg) = current_course_deg {
-                        let turn_clockwise = raw_turn_direction == "R";
                         let turn_radius_nm = missed_approach_turn_radius_nm();
                         let turn_center = turn_center_for_heading_change(
                             current_position,
@@ -1010,7 +1071,6 @@ fn build_procedure_leg_display_path(
                                 rejoin_course_deg,
                                 turn_clockwise,
                             );
-                            let direct_course_deg = bearing_from(current_position, fix);
                             if sweep_degrees > 270.0
                                 && angular_difference_degrees(initial_course_deg, direct_course_deg)
                                     <= 30.0
@@ -1048,9 +1108,25 @@ fn build_procedure_leg_display_path(
                                 clockwise: turn_clockwise,
                                 sweep_degrees,
                             });
+                            let turn_source_prefix = if inferred_turn_clockwise.is_some() {
+                                if arinc_ambiguity_resolutions::handle_unspecified_missed_turn_to_same_fix_hold(
+                                    step.key.airport_id.trim(),
+                                    step.key.procedure_id.trim(),
+                                    step.key.route_type.trim(),
+                                    step.sequence,
+                                )
+                                .is_some()
+                                {
+                                    PLATE_EXCEPTION_MISSED_TURN_SOURCE_PREFIX
+                                } else {
+                                    INFERRED_MISSED_TURN_SOURCE_PREFIX
+                                }
+                            } else {
+                                EXPLICIT_MISSED_TURN_SOURCE_PREFIX
+                            };
                             debug_sources.push(format!(
                                 "{}{}",
-                                EXPLICIT_MISSED_TURN_SOURCE_PREFIX,
+                                turn_source_prefix,
                                 debug_source!()
                             ));
                             if distance_between_points_nm(turn_end, fix) > MIN_GEOMETRY_DISTANCE_NM
@@ -1069,7 +1145,6 @@ fn build_procedure_leg_display_path(
                         }
                     }
                 }
-                let direct_course_deg = bearing_from(current_position, fix);
                 // Direct-to-fix legs terminate at a real waypoint. Do not add a post-fix
                 // fly-over arc; later filleting can smooth corners such as KPWA VOR-A/IRW
                 // at MUTTS after the adjacent published legs are known.
@@ -1784,6 +1859,36 @@ fn ca_is_altitude_note_before_climbing_turn(
         (Some(ca_altitude_ft), Some(next_altitude_ft)) => next_altitude_ft > ca_altitude_ft,
         _ => false,
     }
+}
+
+fn ambiguous_missed_direct_to_same_fix_hold_after_climb(
+    step: &ProcedureLegMaterializationRecord,
+    previous_step: Option<&ProcedureLegMaterializationRecord>,
+    next_step: Option<&ProcedureLegMaterializationRecord>,
+) -> bool {
+    if step.path_termination.trim() != "DF" {
+        return false;
+    }
+    if matches!(
+        step.turn_direction.as_deref().map(str::trim),
+        Some("L" | "R")
+    ) {
+        return false;
+    }
+    if previous_step.map(|record| record.path_termination.trim()) != Some("CA") {
+        return false;
+    }
+    let Some(next_step) = next_step else {
+        return false;
+    };
+    if !matches!(next_step.path_termination.trim(), "HF" | "HM") {
+        return false;
+    }
+    step.nav_ref.is_some() && step.nav_ref == next_step.nav_ref
+}
+
+fn debug_allows_ambiguous_missed_turn_rendering() -> bool {
+    cfg!(test) && std::env::var_os("AEROBAG_DEBUG_RENDER_AMBIGUOUS_MISSED_TURN").is_some()
 }
 
 fn best_nominal_intercept_track_join(
@@ -3434,13 +3539,14 @@ fn prune_degenerate_display_elements_with_sources_and_roles(
                 sweep_degrees,
                 ..
             } => {
-                let is_explicit_missed_turn = original_sources
-                    .get(index)
-                    .is_some_and(|source| source.starts_with(EXPLICIT_MISSED_TURN_SOURCE_PREFIX));
-                let has_arc_geometry =
-                    !positions_nearly_equal_for_geometry(*start, *end)
-                        && *radius_nm > MIN_GEOMETRY_DISTANCE_NM;
-                (is_explicit_missed_turn
+                let is_missed_turn = original_sources.get(index).is_some_and(|source| {
+                    source.starts_with(EXPLICIT_MISSED_TURN_SOURCE_PREFIX)
+                        || source.starts_with(INFERRED_MISSED_TURN_SOURCE_PREFIX)
+                        || source.starts_with(PLATE_EXCEPTION_MISSED_TURN_SOURCE_PREFIX)
+                });
+                let has_arc_geometry = !positions_nearly_equal_for_geometry(*start, *end)
+                    && *radius_nm > MIN_GEOMETRY_DISTANCE_NM;
+                (is_missed_turn
                     && *radius_nm > MIN_GEOMETRY_DISTANCE_NM
                     && sweep_degrees.abs() > 0.0)
                     || (has_arc_geometry && sweep_degrees.abs() > MIN_ARC_SWEEP_DEG)

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+pub mod arinc_ambiguity_resolutions;
 pub mod chart_page;
 pub mod content;
 pub mod errors;
@@ -174,6 +175,8 @@ const MAX_ENROUTE_TRANSITION_DISPLAY_ELEMENT_DISTANCE_NM: f64 = 200.0;
 const MAX_PUBLISHED_HOLD_OR_MISSED_SEGMENT_DISTANCE_NM: f64 = 60.0;
 const POSITION_EPSILON_DEG: f64 = 0.0005;
 const EXPLICIT_MISSED_TURN_SOURCE_PREFIX: &str = "explicit_missed_turn@";
+const INFERRED_MISSED_TURN_SOURCE_PREFIX: &str = "inferred_missed_turn@";
+const PLATE_EXCEPTION_MISSED_TURN_SOURCE_PREFIX: &str = "plate_exception_missed_turn@";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AirwayPlanMutation {
@@ -1798,10 +1801,11 @@ fn validate_no_zero_length_legs(resolved: &[ResolvedLeg], procedure_id: &str) {
 
         let mut has_nonzero_geometry = false;
         for (index, element) in path.elements.iter().enumerate() {
-            let is_explicit_missed_turn = path
-                .debug_element_sources
-                .get(index)
-                .is_some_and(|source| source.starts_with(EXPLICIT_MISSED_TURN_SOURCE_PREFIX));
+            let is_missed_turn = path.debug_element_sources.get(index).is_some_and(|source| {
+                source.starts_with(EXPLICIT_MISSED_TURN_SOURCE_PREFIX)
+                    || source.starts_with(INFERRED_MISSED_TURN_SOURCE_PREFIX)
+                    || source.starts_with(PLATE_EXCEPTION_MISSED_TURN_SOURCE_PREFIX)
+            });
             match element {
                 LegDisplayElement::Segment { start, end } => {
                     if positions_nearly_equal(*start, *end) {
@@ -1835,7 +1839,7 @@ fn validate_no_zero_length_legs(resolved: &[ResolvedLeg], procedure_id: &str) {
                             sweep_degrees,
                         );
                     }
-                    if !is_explicit_missed_turn
+                    if !is_missed_turn
                         && (*radius_nm <= MIN_GEOMETRY_DISTANCE_NM
                             || sweep_degrees.abs() <= MIN_ARC_SWEEP_DEG)
                     {
@@ -1850,7 +1854,7 @@ fn validate_no_zero_length_legs(resolved: &[ResolvedLeg], procedure_id: &str) {
                             sweep_degrees,
                         );
                     }
-                    if !is_explicit_missed_turn && positions_nearly_equal(*start, *end) {
+                    if !is_missed_turn && positions_nearly_equal(*start, *end) {
                         panic!(
                             "procedure zero-length arc endpoints for {} leg={} element#{} at ({:.6},{:.6})",
                             procedure_id.trim(),
@@ -2768,31 +2772,20 @@ fn allow_acute_turn_ksan_09_family_at_pgy(
     previous: &DisplayElementHeadingSignature,
     current: &DisplayElementHeadingSignature,
 ) -> bool {
-    if previous.airport_id != "KSAN" || current.airport_id != "KSAN" {
-        return false;
-    }
-    if previous.end_label != "PGY" || current.start_label != "PGY" {
-        return false;
-    }
-    matches!(
-        previous.procedure_id.as_str(),
-        "I09-Y" | "I09-Z" | "L09-Y" | "L09-Z"
-    ) && previous.procedure_id == current.procedure_id
+    arinc_ambiguity_resolutions::acute_turn_ksan_09_family_at_pgy(
+        &previous.airport_id,
+        &current.airport_id,
+        &previous.procedure_id,
+        &current.procedure_id,
+        &previous.end_label,
+        &current.start_label,
+    )
 }
 
 fn allow_acute_turn_kykm_vora_missed_at_ykm(
     previous: &DisplayElementHeadingSignature,
     current: &DisplayElementHeadingSignature,
 ) -> bool {
-    if previous.airport_id != "KYKM" || current.airport_id != "KYKM" {
-        return false;
-    }
-    if previous.procedure_id != "VOR-A" || current.procedure_id != "VOR-A" {
-        return false;
-    }
-    if previous.end_label != "YKM" || current.start_label != "YKM" {
-        return false;
-    }
     let inbound_magnetic_heading = magnetic_heading_degrees(
         previous.end_course_deg,
         previous
@@ -2805,8 +2798,16 @@ fn allow_acute_turn_kykm_vora_missed_at_ykm(
             .start_magnetic_variation_deg
             .or(previous.end_magnetic_variation_deg),
     );
-    angular_difference_degrees(inbound_magnetic_heading, 274.0) <= 10.0
-        && angular_difference_degrees(outbound_magnetic_heading, 94.0) <= 10.0
+    arinc_ambiguity_resolutions::acute_turn_kykm_vora_missed_at_ykm(
+        &previous.airport_id,
+        &current.airport_id,
+        &previous.procedure_id,
+        &current.procedure_id,
+        &previous.end_label,
+        &current.start_label,
+        inbound_magnetic_heading,
+        outbound_magnetic_heading,
+    )
 }
 
 fn continuity_path_boundary_tolerance_deg(
@@ -7377,6 +7378,71 @@ mod tests {
             "logical_heading_KGDB_R33_MOLOW",
             true,
         );
+    }
+
+    #[test]
+    #[ignore = "manual static overlays for remaining ambiguous missed turn direction bucket"]
+    fn writes_ambiguous_missed_turn_direction_bucket_overlays() {
+        clean_procedure_plot_output_dir();
+        let previous_debug_render = std::env::var_os("AEROBAG_DEBUG_RENDER_AMBIGUOUS_MISSED_TURN");
+        std::env::set_var("AEROBAG_DEBUG_RENDER_AMBIGUOUS_MISSED_TURN", "1");
+        render_procedure_overlay_to_paths(
+            "KGDB",
+            "R33",
+            "RISLE",
+            "ambiguous_missed_turn_KGDB_R33_RISLE",
+            false,
+        );
+        render_procedure_overlay_to_paths(
+            "KGDB",
+            "R33",
+            "MOLOW",
+            "ambiguous_missed_turn_KGDB_R33_MOLOW",
+            false,
+        );
+        render_procedure_overlay_to_paths(
+            "KHOU",
+            "I31L",
+            "",
+            "ambiguous_missed_turn_KHOU_I31L",
+            false,
+        );
+        render_procedure_overlay_to_paths(
+            "KHOU",
+            "L31L",
+            "",
+            "ambiguous_missed_turn_KHOU_L31L",
+            false,
+        );
+        render_procedure_overlay_to_paths(
+            "KIEN",
+            "R30",
+            "IROVE",
+            "ambiguous_missed_turn_KIEN_R30_IROVE",
+            false,
+        );
+        render_procedure_overlay_to_paths(
+            "KIEN",
+            "R30",
+            "JITOG",
+            "ambiguous_missed_turn_KIEN_R30_JITOG",
+            false,
+        );
+        render_procedure_overlay_to_paths(
+            "KIEN",
+            "R30",
+            "WAXER",
+            "ambiguous_missed_turn_KIEN_R30_WAXER",
+            false,
+        );
+        if let Some(previous_debug_render) = previous_debug_render {
+            std::env::set_var(
+                "AEROBAG_DEBUG_RENDER_AMBIGUOUS_MISSED_TURN",
+                previous_debug_render,
+            );
+        } else {
+            std::env::remove_var("AEROBAG_DEBUG_RENDER_AMBIGUOUS_MISSED_TURN");
+        }
     }
 
     #[test]

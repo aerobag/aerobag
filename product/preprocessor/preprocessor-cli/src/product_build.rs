@@ -10261,12 +10261,12 @@ fn fast_product_source_generated_at(
                 .into_iter()
                 .filter_map(|record| {
                     record
-                        .get("observation_time_utc")
+                        .get("observed_at_utc")
                         .and_then(|value| value.as_str())
                 })
                 .max()
                 .map(ToOwned::to_owned)
-                .context("METAR product had no observation_time_utc values")
+                .context("METAR product had no observed_at_utc values")
         }
         "nexrad" => value
             .get("frames")

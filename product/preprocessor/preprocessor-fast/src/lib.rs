@@ -7,6 +7,7 @@ use std::process::Command;
 use anyhow::{bail, Context};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use image::ImageReader;
+use metar::{CloudDensity, Data, Metar, VerticalVisibility};
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -15,7 +16,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 const METAR_TILE_ZOOM: u8 = 7;
-const METAR_TILE_PATH_TEMPLATE: &str = "points/metars/7/{x}/{y}.json";
+const METAR_TILE_PATH_TEMPLATE: &str = "points/metars/{z}/{x}/{y}.json";
+const METAR_TILE_SIZE: u16 = 256;
 
 #[derive(Debug, Clone)]
 pub struct BuildTfrRequest {
@@ -158,14 +160,32 @@ struct MetarManifest {
     version_label: String,
     generated_at_utc: String,
     files: MetarManifestFiles,
+    map_view: MetarManifestMapView,
     counts: MetarManifestCounts,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct MetarManifestFiles {
     structured_json: String,
-    tile_path_template: String,
     zip: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MetarManifestMapView {
+    layer: String,
+    storage_kind: String,
+    tile_path_template: String,
+    tile_size: u16,
+    min_zoom: u8,
+    max_zoom: u8,
+    levels: Vec<MetarManifestTileLevel>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MetarManifestTileLevel {
+    zoom: u8,
+    tile_count: usize,
+    max_records_per_tile: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -354,11 +374,23 @@ pub struct StructuredMetarDataset {
 #[derive(Debug, Clone, Serialize)]
 pub struct StructuredMetarRecord {
     raw_text: String,
-    observation_time_utc: String,
+    observed_at_utc: String,
     station_id: String,
     flight_category: Option<String>,
+    clouds: StructuredMetarClouds,
     longitude: Option<f64>,
     latitude: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StructuredMetarClouds {
+    ceiling: Option<StructuredMetarCeiling>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StructuredMetarCeiling {
+    amount: String,
+    height_ft_agl: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -862,12 +894,24 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
             generated_at_utc: request.generated_at_utc.to_rfc3339(),
             files: MetarManifestFiles {
                 structured_json: "metars.json".to_string(),
-                tile_path_template: METAR_TILE_PATH_TEMPLATE.to_string(),
                 zip: zip_path
                     .file_name()
                     .and_then(|name| name.to_str())
                     .unwrap_or_default()
                     .to_string(),
+            },
+            map_view: MetarManifestMapView {
+                layer: "metars".to_string(),
+                storage_kind: "fast_product".to_string(),
+                tile_path_template: METAR_TILE_PATH_TEMPLATE.to_string(),
+                tile_size: METAR_TILE_SIZE,
+                min_zoom: METAR_TILE_ZOOM,
+                max_zoom: METAR_TILE_ZOOM,
+                levels: vec![MetarManifestTileLevel {
+                    zoom: METAR_TILE_ZOOM,
+                    tile_count,
+                    max_records_per_tile: max_metars_per_tile,
+                }],
             },
             counts: MetarManifestCounts {
                 metars: metar_count,
@@ -907,13 +951,11 @@ fn metar_product_model(input_xml_path: &Path) -> anyhow::Result<MetarProductMode
         let replace_existing = metars_by_station
             .get(&station_id)
             .map(|existing: &StructuredMetarRecord| {
-                (
-                    record.observation_time_utc.as_str(),
-                    record.raw_text.as_str(),
-                ) >= (
-                    existing.observation_time_utc.as_str(),
-                    existing.raw_text.as_str(),
-                )
+                (record.observed_at_utc.as_str(), record.raw_text.as_str())
+                    >= (
+                        existing.observed_at_utc.as_str(),
+                        existing.raw_text.as_str(),
+                    )
             })
             .unwrap_or(true);
         if replace_existing {
@@ -1000,8 +1042,9 @@ fn structured_metar_records(input_xml_path: &Path) -> anyhow::Result<Vec<Structu
         .into_iter()
         .map(|record| -> anyhow::Result<StructuredMetarRecord> {
             Ok(StructuredMetarRecord {
+                clouds: structured_metar_clouds(&record.raw_text),
                 raw_text: record.raw_text,
-                observation_time_utc: record.observation_time,
+                observed_at_utc: record.observation_time,
                 station_id: record.station_id,
                 flight_category: empty_to_none(record.flight_category),
                 longitude: parse_optional_f64(&record.longitude)?,
@@ -1009,6 +1052,43 @@ fn structured_metar_records(input_xml_path: &Path) -> anyhow::Result<Vec<Structu
             })
         })
         .collect()
+}
+
+fn structured_metar_clouds(raw_text: &str) -> StructuredMetarClouds {
+    let ceiling = Metar::parse(raw_text)
+        .ok()
+        .and_then(|metar| metar_ceiling(&metar));
+    StructuredMetarClouds { ceiling }
+}
+
+fn metar_ceiling(metar: &Metar) -> Option<StructuredMetarCeiling> {
+    if let Some(vertical_visibility) = metar.vert_visibility {
+        return Some(match vertical_visibility {
+            VerticalVisibility::Distance(height) => StructuredMetarCeiling {
+                amount: "VV".to_string(),
+                height_ft_agl: Some(height * 100),
+            },
+            VerticalVisibility::ReducedByUnknownAmount => StructuredMetarCeiling {
+                amount: "VV".to_string(),
+                height_ft_agl: None,
+            },
+        });
+    }
+
+    metar.cloud_layers.iter().find_map(|layer| {
+        let amount = match layer.density {
+            Data::Known(CloudDensity::Broken) => "BKN",
+            Data::Known(CloudDensity::Overcast) => "OVC",
+            _ => return None,
+        };
+        Some(StructuredMetarCeiling {
+            amount: amount.to_string(),
+            height_ft_agl: match layer.height {
+                Data::Known(height) => Some(height * 100),
+                Data::Unknown => None,
+            },
+        })
+    })
 }
 
 pub fn build_nexrad_avare_parity_artifacts(
@@ -2657,7 +2737,7 @@ mod tests {
         let first = temp.path().join("first.xml");
         let second = temp.path().join("second.xml");
         let record_a = r#"<METAR><raw_text>METAR KAAA 160400Z 00000KT 10SM CLR 10/08 A3000</raw_text><station_id>KAAA</station_id><observation_time>2026-04-16T04:00:00.000Z</observation_time><latitude>1.0</latitude><longitude>2.0</longitude><flight_category>VFR</flight_category></METAR>"#;
-        let record_b = r#"<METAR><raw_text>METAR KBBB 160355Z 18005KT 10SM SCT020 12/09 A3001</raw_text><station_id>KBBB</station_id><observation_time>2026-04-16T03:55:00.000Z</observation_time><latitude>3.0</latitude><longitude>4.0</longitude><flight_category>VFR</flight_category></METAR>"#;
+        let record_b = r#"<METAR><raw_text>METAR KBBB 160355Z 18005KT 10SM SCT020 BKN025 12/09 A3001</raw_text><station_id>KBBB</station_id><observation_time>2026-04-16T03:55:00.000Z</observation_time><latitude>3.0</latitude><longitude>4.0</longitude><flight_category>MVFR</flight_category></METAR>"#;
         fs::write(
             &first,
             format!(
@@ -2708,13 +2788,63 @@ mod tests {
         assert!(metars_by_station.contains_key("KAAA"));
         assert!(metars_by_station.contains_key("KBBB"));
         assert!(dataset.get("metars").is_none());
+        assert_eq!(
+            dataset.pointer("/metars_by_station/KAAA/observed_at_utc"),
+            Some(&Value::String("2026-04-16T04:00:00.000Z".to_string())),
+        );
+        assert_eq!(
+            dataset.pointer("/metars_by_station/KBBB/flight_category"),
+            Some(&Value::String("MVFR".to_string())),
+        );
+        assert_eq!(
+            dataset.pointer("/metars_by_station/KBBB/clouds/ceiling/amount"),
+            Some(&Value::String("BKN".to_string())),
+        );
+        assert_eq!(
+            dataset
+                .pointer("/metars_by_station/KBBB/clouds/ceiling/height_ft_agl")
+                .and_then(|value| value.as_u64()),
+            Some(2500),
+        );
 
         let manifest: Value = serde_json::from_slice(&fs::read(&first_result.manifest_path)?)?;
         assert_eq!(
             manifest
-                .pointer("/files/tile_path_template")
+                .pointer("/map_view/tile_path_template")
                 .and_then(|value| value.as_str()),
             Some(METAR_TILE_PATH_TEMPLATE),
+        );
+        assert_eq!(
+            manifest
+                .pointer("/map_view/storage_kind")
+                .and_then(|value| value.as_str()),
+            Some("fast_product"),
+        );
+        assert_eq!(
+            manifest
+                .pointer("/map_view/min_zoom")
+                .and_then(|value| value.as_u64()),
+            Some(u64::from(METAR_TILE_ZOOM)),
+        );
+        assert_eq!(
+            manifest
+                .pointer("/map_view/max_zoom")
+                .and_then(|value| value.as_u64()),
+            Some(u64::from(METAR_TILE_ZOOM)),
+        );
+        assert_eq!(
+            manifest
+                .pointer("/map_view/levels/0/zoom")
+                .and_then(|value| value.as_u64()),
+            Some(u64::from(METAR_TILE_ZOOM)),
+        );
+        assert_eq!(
+            manifest
+                .pointer("/map_view/levels/0/max_records_per_tile")
+                .and_then(|value| value.as_u64()),
+            manifest
+                .pointer("/counts/max_metars_per_tile")
+                .and_then(|value| value.as_u64()),
         );
         assert!(
             manifest

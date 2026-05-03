@@ -8,6 +8,7 @@ license.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 image.workspace = true
+metar.workspace = true
 preprocessor-zip = { path = "../preprocessor-zip" }
 quick-xml.workspace = true
 roxmltree.workspace = true

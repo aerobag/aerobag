@@ -1824,6 +1824,17 @@ fn validate_no_zero_length_legs(resolved: &[ResolvedLeg], procedure_id: &str) {
                     sweep_degrees,
                     ..
                 } => {
+                    if sweep_degrees.abs() > 270.0 {
+                        panic!(
+                            "procedure excessive arc sweep for {} leg={} element#{} center=({:.6},{:.6}) sweep_deg={:.1}",
+                            procedure_id.trim(),
+                            leg.id,
+                            index,
+                            center.lat,
+                            center.lon,
+                            sweep_degrees,
+                        );
+                    }
                     if !is_explicit_missed_turn
                         && (*radius_nm <= MIN_GEOMETRY_DISTANCE_NM
                             || sweep_degrees.abs() <= MIN_ARC_SWEEP_DEG)
@@ -7242,6 +7253,18 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual visual inspection overlay for 20N R15 ILGEZ"]
+    fn writes_20n_r15_ilgez_overlay_png() {
+        render_procedure_overlay_to_paths("20N", "R15", "ILGEZ", "20N_R15_ILGEZ", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KBKL R24R SOOTO"]
+    fn writes_kbkl_r24r_sooto_overlay_png() {
+        render_procedure_overlay_to_paths("KBKL", "R24R", "SOOTO", "KBKL_R24R_SOOTO", true);
+    }
+
+    #[test]
     #[ignore = "manual visual inspection overlay for KABI I35R ABI"]
     fn writes_kabi_i35r_abi_overlay_png() {
         render_procedure_overlay_to_paths("KABI", "I35R", "ABI", "KABI_I35R_ABI", true);
@@ -9879,7 +9902,7 @@ mod tests {
     #[test]
     #[ignore = "manual visual inspection overlay for 05U R18 JEBEG"]
     fn writes_05u_r18_jebeg_overlay_png() {
-        render_procedure_overlay_to_paths("05U", "R18", "JEBEG", "05U_R18_JEBEG", false);
+        render_procedure_overlay_to_paths("05U", "R18", "JEBEG", "05U_R18_JEBEG", true);
     }
 
     #[test]

@@ -285,6 +285,9 @@ fn append_arrival_turn_to_fix_course(
     if angular_difference_degrees(rejoin_course_deg, target_course_deg) > 10.0 {
         return None;
     }
+    if heading_sweep_degrees(current_heading_deg, rejoin_course_deg, turn_clockwise) > 270.0 {
+        return None;
+    }
     let prior_len = elements.len();
     let turn_end = append_heading_change(
         elements,
@@ -948,12 +951,26 @@ fn build_procedure_leg_display_path(
                     continue;
                 }
                 if distance_between_points_nm(current_position, fix) <= MIN_GEOMETRY_DISTANCE_NM {
-                    pending_direct_turn_clockwise =
-                        match step.turn_direction.as_deref().map(str::trim) {
-                            Some("L") => Some(false),
-                            Some("R") => Some(true),
-                            _ => None,
-                        };
+                    pending_direct_turn_clockwise = None;
+                    if let Some(current_heading_deg) = current_course_deg {
+                        let next_fix = steps
+                            .iter()
+                            .skip(index + 1)
+                            .find_map(|next_step| next_step.nav_position);
+                        if let Some(next_fix) = next_fix {
+                            let next_course_deg = bearing_from(current_position, next_fix);
+                            if angular_difference_degrees(current_heading_deg, next_course_deg)
+                                >= 120.0
+                            {
+                                pending_direct_turn_clockwise =
+                                    match step.turn_direction.as_deref().map(str::trim) {
+                                        Some("L") => Some(false),
+                                        Some("R") => Some(true),
+                                        _ => None,
+                                    };
+                            }
+                        }
+                    }
                     current_position = fix;
                     continue;
                 }
@@ -969,7 +986,7 @@ fn build_procedure_leg_display_path(
                             turn_radius_nm,
                         );
                         if let Some((mut turn_end, mut rejoin_course_deg)) =
-                            tangent_rejoin_from_turn_with_min_sweep(
+                            tangent_rejoin_from_turn_with_min_sweep_prefer_shortest(
                                 turn_center,
                                 turn_radius_nm,
                                 initial_course_deg,
@@ -1047,6 +1064,7 @@ fn build_procedure_leg_display_path(
                             debug_assert_eq!(debug_sources.len(), elements.len());
                             current_position = fix;
                             current_course_deg = Some(rejoin_course_deg);
+                            pending_direct_turn_clockwise = None;
                             continue;
                         }
                     }
@@ -1058,6 +1076,7 @@ fn build_procedure_leg_display_path(
                 push_segment!(elements, debug_sources, current_position, fix);
                 current_position = fix;
                 current_course_deg = Some(direct_course_deg);
+                pending_direct_turn_clockwise = None;
             }
             "CF" => {
                 let fix = step.nav_position?;
@@ -1171,7 +1190,7 @@ fn build_procedure_leg_display_path(
                                 turn_radius_nm,
                             );
                             if let Some((turn_end, rejoin_course_deg)) =
-                                tangent_rejoin_from_turn_with_min_sweep(
+                                tangent_rejoin_from_turn_with_min_sweep_prefer_shortest(
                                     turn_center,
                                     turn_radius_nm,
                                     current_heading_deg,
@@ -2315,6 +2334,13 @@ fn tangent_rejoin_from_turn_with_min_sweep(
         .filter_map(|candidate| {
             let turn_end = offset_latlon(turn_center, candidate.0, candidate.1);
             let rejoin_course_deg = bearing_from(turn_end, fix);
+            if angular_difference_degrees(
+                arc_course_at_point(turn_center, turn_end, clockwise),
+                rejoin_course_deg,
+            ) > 5.0
+            {
+                return None;
+            }
             let sweep_degrees =
                 heading_sweep_degrees(initial_course_deg, rejoin_course_deg, clockwise);
             if sweep_degrees < min_sweep_degrees {
@@ -2328,6 +2354,15 @@ fn tangent_rejoin_from_turn_with_min_sweep(
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
         .map(|(turn_end, rejoin_course_deg, _)| (turn_end, rejoin_course_deg))
+}
+
+fn arc_course_at_point(center: LatLon, point: LatLon, clockwise: bool) -> f64 {
+    let radial_deg = bearing_from(center, point);
+    if clockwise {
+        normalize_bearing_degrees(radial_deg + 90.0)
+    } else {
+        normalize_bearing_degrees(radial_deg - 90.0)
+    }
 }
 
 fn tangent_rejoin_from_turn_with_min_sweep_prefer_shortest(
@@ -2360,6 +2395,13 @@ fn tangent_rejoin_from_turn_with_min_sweep_prefer_shortest(
         .filter_map(|candidate| {
             let turn_end = offset_latlon(turn_center, candidate.0, candidate.1);
             let rejoin_course_deg = bearing_from(turn_end, fix);
+            if angular_difference_degrees(
+                arc_course_at_point(turn_center, turn_end, clockwise),
+                rejoin_course_deg,
+            ) > 5.0
+            {
+                return None;
+            }
             let sweep_degrees =
                 heading_sweep_degrees(initial_course_deg, rejoin_course_deg, clockwise);
             if sweep_degrees < min_sweep_degrees {

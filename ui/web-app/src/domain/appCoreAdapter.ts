@@ -390,6 +390,7 @@ export interface UiSession {
   removeLeg(index: number): Promise<UiSessionSnapshot>;
   moveWaypoint(index: number, delta: number): Promise<UiSessionSnapshot>;
   insertWaypointBestPosition(waypoint: NavRef): Promise<UiSessionSnapshot>;
+  removeTopLevelWaypointByNavRef(navRef: NavRef): Promise<UiSessionSnapshot>;
   setSituation(situation: Situation): Promise<UiSessionSnapshot>;
   loadPlaybackTrace(sourcePath: string, traceJson: string): Promise<UiSessionSnapshot>;
   playPlayback(nowEpochMs: number): Promise<UiSessionSnapshot>;
@@ -566,6 +567,7 @@ type WasmModule = {
   create_ui_session_profiled?: (vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
   remove_leg_in_session(handle: number, index: number): Promise<string> | string;
   move_waypoint_in_session(handle: number, waypointIndex: number, delta: number): Promise<string> | string;
+  remove_top_level_waypoint_by_nav_ref_in_session(handle: number, navRefJson: string): Promise<string> | string;
   set_situation_in_session(handle: number, situationJson: string): Promise<string> | string;
   engage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
   disengage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
@@ -818,6 +820,13 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           runCoreHadSessionOperation<UiSessionSnapshot>((navKvHandle) =>
             this.module.insert_waypoint_best_position_in_session(navKvHandle, handle, JSON.stringify(waypoint)),
           ),
+        );
+        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        return snapshot;
+      },
+      removeTopLevelWaypointByNavRef: async (navRef) => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(this.module.remove_top_level_waypoint_by_nav_ref_in_session(handle, JSON.stringify(navRef))),
         );
         await syncGuidanceGeometry(snapshot.app_state.active_plan);
         return snapshot;
@@ -1410,6 +1419,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.create_ui_session !== "function" ||
     typeof mod.remove_leg_in_session !== "function" ||
     typeof mod.move_waypoint_in_session !== "function" ||
+    typeof mod.remove_top_level_waypoint_by_nav_ref_in_session !== "function" ||
     typeof mod.set_situation_in_session !== "function" ||
     typeof mod.engage_map_follow_in_session !== "function" ||
     typeof mod.disengage_map_follow_in_session !== "function" ||

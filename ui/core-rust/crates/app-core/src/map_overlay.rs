@@ -970,10 +970,13 @@ fn selection_item_for_point(
         || record.id.starts_with("airports:");
     let nav_ref = selection_nav_ref(record, is_airport);
     let insert_action = match &nav_ref {
+        Some(nav_ref) if selection_plan_has_top_level_waypoint(plan, nav_ref) => {
+            enabled_action("remove_from_flight_plan", "Remove from flight plan")
+        }
         Some(nav_ref) if !selection_plan_contains_nav_ref(plan, nav_ref) => {
             enabled_action("insert", "Insert in flight plan")
         }
-        Some(_) => disabled_action("insert", "Already in flight plan"),
+        Some(_) => disabled_action("insert", "In grouped route"),
         None => disabled_action("insert", "Insert unavailable"),
     };
     let mut actions = if is_airport {
@@ -1266,6 +1269,11 @@ fn selection_nav_ref(record: &PointVectorRecord, is_airport: bool) -> Option<Nav
 fn selection_plan_contains_nav_ref(plan: Option<&FlightPlan>, nav_ref: &NavRef) -> bool {
     plan.map(|plan| crate::flight_plan_contains_nav_ref(plan, nav_ref))
         .unwrap_or(false)
+}
+
+fn selection_plan_has_top_level_waypoint(plan: Option<&FlightPlan>, nav_ref: &NavRef) -> bool {
+    plan.and_then(|plan| crate::top_level_waypoint_component_index(plan, nav_ref))
+        .is_some()
 }
 
 fn airspace_feature_contains(feature: &AirspaceFeaturePayload, point: LatLon) -> bool {
@@ -3212,7 +3220,7 @@ mod tests {
     }
 
     #[test]
-    fn map_selection_disables_insert_for_waypoint_already_in_plan() {
+    fn map_selection_offers_remove_for_top_level_waypoint_already_in_plan() {
         let record = PointVectorRecord {
             id: "airports:KSEA".to_string(),
             kind: "airport".to_string(),
@@ -3251,15 +3259,16 @@ mod tests {
         };
 
         let item = selection_item_for_point(&record, &symbol, Some(&plan));
-        let insert = item
+        let remove = item
             .actions
             .iter()
-            .find(|action| action.id == "insert")
-            .expect("insert action");
+            .find(|action| action.id == "remove_from_flight_plan")
+            .expect("remove action");
 
         assert_eq!(item.nav_ref, Some(NavRef::Airport("KSEA".to_string())));
-        assert!(!insert.enabled);
-        assert!(!insert.display_only);
+        assert_eq!(remove.label, "Remove from flight plan");
+        assert!(remove.enabled);
+        assert!(!remove.display_only);
     }
 
     #[test]

@@ -3337,18 +3337,26 @@ function MapPage(props: {
               selectedItem={mapSelection.selectedItem}
               onSelectItem={(item) => setMapSelection((current) => current ? { ...current, selectedItem: item } : current)}
               onSelectAction={async (item, action) => {
-                if (!appCoreAdapter || action.id !== "insert" || !item.nav_ref) {
+                if (!appCoreAdapter || !item.nav_ref) {
                   return;
                 }
                 try {
                   if (!uiSession) {
-                    throw new Error("map selection insert requires live core session");
+                    throw new Error("map selection flight-plan action requires live core session");
                   }
-                  const nextSnapshot = await uiSession.insertWaypointBestPosition(item.nav_ref);
+                  const nextSnapshot = action.id === "remove_from_flight_plan"
+                    ? await uiSession.removeTopLevelWaypointByNavRef(item.nav_ref)
+                    : action.id === "insert"
+                      ? await uiSession.insertWaypointBestPosition(item.nav_ref)
+                      : null;
+                  if (!nextSnapshot) {
+                    return;
+                  }
                   onPlaybackSnapshotChange(nextSnapshot);
                   setMapSelection(null);
                 } catch (error) {
-                  debugLog("map.selection.insert.failed", {
+                  debugLog("map.selection.flight_plan_action.failed", {
+                    action_id: action.id,
                     nav_ref: item.nav_ref,
                     error: errorMessage(error),
                   });

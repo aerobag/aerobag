@@ -631,6 +631,18 @@ pub fn insert_waypoint_best_position_in_session(
     })
 }
 
+pub fn remove_top_level_waypoint_by_nav_ref_in_session(
+    handle: u32,
+    nav_ref: NavRef,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let plan = session_plan(session)?;
+    let next_plan = crate::remove_top_level_waypoint_by_nav_ref(&plan, &nav_ref)?;
+    replace_session_flight_plan(session, next_plan)?;
+    Ok(snapshot_for_session(session))
+}
+
 pub fn engage_map_follow_in_session(
     handle: u32,
     viewport: MapViewport,
@@ -1567,6 +1579,35 @@ mod tests {
             .and_then(|plan| plan.guidance.as_ref())
             .and_then(|guidance| guidance.nav_element.cdi_indicator_dots);
         assert!(dots.is_some(), "expected CDI dots after ownship update");
+    }
+
+    #[test]
+    fn remove_top_level_waypoint_by_nav_ref_in_session_updates_plan() {
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            sample_guided_plan(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+
+        let after_remove = remove_top_level_waypoint_by_nav_ref_in_session(
+            init.handle,
+            NavRef::Fix("VPDUB".to_string()),
+        )
+        .expect("remove waypoint");
+        let active_plan = after_remove
+            .app_state
+            .active_plan
+            .as_ref()
+            .expect("active plan");
+
+        assert_eq!(active_plan.route_components.len(), 2);
+        assert!(!crate::flight_plan_contains_nav_ref(
+            active_plan,
+            &NavRef::Fix("VPDUB".to_string())
+        ));
     }
 
     #[test]

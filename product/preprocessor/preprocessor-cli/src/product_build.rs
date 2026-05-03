@@ -602,12 +602,19 @@ fn load_fast_bundle_products(
             .with_context(|| format!("failed to read {}", bundle_path.display()))?,
     )
     .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
+    fast_bundle_products_from_manifest(bundle_path, &bundle)
+}
+
+fn fast_bundle_products_from_manifest(
+    bundle_path: &Path,
+    bundle: &FastBundleManifest,
+) -> anyhow::Result<Vec<PublishedFastProductResult>> {
     bundle
         .packages
-        .into_iter()
+        .iter()
         .map(|package| {
             Ok(PublishedFastProductResult {
-                id: package.id,
+                id: package.id.clone(),
                 source_zip_path: bundle_path
                     .parent()
                     .context("fast bundle path missing parent")?
@@ -616,11 +623,12 @@ fn load_fast_bundle_products(
                     .parent()
                     .context("fast bundle path missing parent")?
                     .join(&package.filename),
-                checksum_sha256: package.checksum_sha256,
+                checksum_sha256: package.checksum_sha256.clone(),
                 size_bytes: package.size_bytes,
                 source_generated_at_utc: package
                     .source_generated_at_utc
-                    .or(package.effective_date)
+                    .clone()
+                    .or_else(|| package.effective_date.clone())
                     .unwrap_or_default(),
             })
         })
@@ -2998,28 +3006,6 @@ fn sync_referenced_fast_bundle_unpacked_zips(
         };
         products_by_filename.insert(filename, product.clone());
     }
-    for entry in fs::read_dir(build_root)
-        .with_context(|| format!("failed to read {}", build_root.display()))?
-    {
-        let path = entry?.path();
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if !(name.starts_with("bundle_fast_") && name.ends_with(".json")) {
-            continue;
-        }
-        for product in load_fast_bundle_products(&path)? {
-            let Some(filename) = product
-                .published_zip
-                .file_name()
-                .and_then(|value| value.to_str())
-                .map(str::to_string)
-            else {
-                bail!("failed to determine published fast filename");
-            };
-            products_by_filename.entry(filename).or_insert(product);
-        }
-    }
     for discovery_path in discovery_manifest_paths(build_root, current_artifacts_path)? {
         let current: CurrentArtifactsManifest = serde_json::from_slice(
             &fs::read(&discovery_path)
@@ -3037,6 +3023,17 @@ fn sync_referenced_fast_bundle_unpacked_zips(
                     .with_context(|| format!("failed to read {}", bundle_path.display()))?,
             )
             .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
+            for product in fast_bundle_products_from_manifest(&bundle_path, &fast_bundle)? {
+                let Some(filename) = product
+                    .published_zip
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .map(str::to_string)
+                else {
+                    bail!("failed to determine published fast filename");
+                };
+                products_by_filename.entry(filename).or_insert(product);
+            }
             for package in &fast_bundle.packages {
                 let unpack_dir = unpacked_target_dir(unpacked_root, &package.filename)?;
                 let marker_path = unpacked_marker_path(unpacked_root, &package.filename)?;
@@ -15513,6 +15510,86 @@ mod tests {
         assert!(html.contains("Aerobag Build Status"));
         assert!(html.contains("metars_"));
         assert!(html.contains("vectors_data_"));
+    }
+
+    #[test]
+    fn fast_unpacked_sync_ignores_unreferenced_stale_bundle_files() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        let unpacked_root = root.with_file_name(format!(
+            "{}-unpacked",
+            root.file_name().unwrap().to_string_lossy()
+        ));
+        let package_root = temp.path().join("package-source");
+        fs::create_dir_all(&package_root).unwrap();
+        fs::write(package_root.join("manifest.json"), "{}\n").unwrap();
+        let package_filename =
+            "metars_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.zip";
+        let package_path = root.join(package_filename);
+        zip_directory_deterministic(&package_path, &package_root, &["manifest.json"]).unwrap();
+        let checksum_sha256 = hash_file(&package_path).unwrap();
+        let size_bytes = fs::metadata(&package_path).unwrap().len();
+        let fast_bundle = FastBundleManifest {
+            schema_version: 1,
+            bundle_id: "fast_current".to_string(),
+            bundle_type: "fast".to_string(),
+            published_at_utc: "2026-05-03T18:00:00Z".to_string(),
+            packages: vec![BundlePackageArtifact {
+                id: "metars".to_string(),
+                family_id: "metars".to_string(),
+                region_id: None,
+                filename: package_filename.to_string(),
+                relative_path: package_filename.to_string(),
+                cycle: None,
+                cycle_version: None,
+                checksum_sha256: checksum_sha256.clone(),
+                size_bytes,
+                published_at_utc: Some("2026-05-03T18:00:00Z".to_string()),
+                source_generated_at_utc: Some("2026-05-03T17:55:00Z".to_string()),
+                source_version: None,
+                source_fetched_at_utc: Some("2026-05-03T17:56:00Z".to_string()),
+                effective_date: Some("2026-05-03T17:55:00Z".to_string()),
+                expiration_date: None,
+                metadata: BTreeMap::new(),
+            }],
+        };
+        fs::write(
+            root.join("bundle_fast_good.json"),
+            serde_json::to_vec_pretty(&fast_bundle).unwrap(),
+        )
+        .unwrap();
+        fs::write(root.join("bundle_fast_stale_empty.json"), []).unwrap();
+        let current = CurrentArtifactsManifest {
+            schema_version: 1,
+            as_of_date: "2026-05-03".to_string(),
+            as_of_utc: "2026-05-03T18:01:00Z".to_string(),
+            bundles: vec![CurrentBundleEntry {
+                filename: "bundle_fast_good.json".to_string(),
+                relative_path: "bundle_fast_good.json".to_string(),
+                id: "fast_current".to_string(),
+                bundle_type: "fast".to_string(),
+                cycle: String::new(),
+                cycle_version: String::new(),
+                start_valid: String::new(),
+                end_valid: String::new(),
+                checksum_sha256: "d".repeat(64),
+                size_bytes: 1,
+            }],
+            diagnostics: None,
+        };
+        let current_path = root.join("current_artifacts.json");
+        fs::write(&current_path, serde_json::to_vec_pretty(&current).unwrap()).unwrap();
+
+        sync_referenced_fast_bundle_unpacked_zips(root, &unpacked_root, &current_path, &[], &[])
+            .unwrap();
+
+        let unpack_dir = unpacked_target_dir(&unpacked_root, package_filename).unwrap();
+        let marker_path = unpacked_marker_path(&unpacked_root, package_filename).unwrap();
+        assert!(unpack_dir.join("manifest.json").is_file());
+        assert_eq!(
+            fs::read_to_string(marker_path).unwrap().trim(),
+            checksum_sha256.as_str()
+        );
     }
 
     #[test]

@@ -58,8 +58,16 @@ export class NavKvStore {
   }
 
   async runCoreOperation<T>(operation: unknown): Promise<T> {
+    return this.runPagedOperation<T>(() => this.wasm.core_had_operation(this.handle, JSON.stringify(operation)));
+  }
+
+  async runCoreSessionOperation<T>(operation: (navKvHandle: number) => Promise<string> | string): Promise<T> {
+    return this.runPagedOperation<T>(() => operation(this.handle));
+  }
+
+  private async runPagedOperation<T>(operation: () => Promise<string> | string): Promise<T> {
     for (;;) {
-      const response = JSON.parse(this.wasm.core_had_operation(this.handle, JSON.stringify(operation))) as
+      const response = JSON.parse(await operation()) as
         | { state: "complete"; result: T }
         | { state: "need_pages"; pages: number[] };
       if (response.state === "complete") {
@@ -101,4 +109,12 @@ export async function runCoreHadOperation<T>(operation: unknown): Promise<T> {
     throw new Error("nav_kv root is unavailable");
   }
   return store.runCoreOperation<T>(operation);
+}
+
+export async function runCoreHadSessionOperation<T>(operation: (navKvHandle: number) => Promise<string> | string): Promise<T> {
+  const store = await getNavKvStore();
+  if (!store) {
+    throw new Error("nav_kv root is unavailable");
+  }
+  return store.runCoreSessionOperation<T>(operation);
 }

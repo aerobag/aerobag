@@ -3336,6 +3336,24 @@ function MapPage(props: {
               result={mapSelection.result}
               selectedItem={mapSelection.selectedItem}
               onSelectItem={(item) => setMapSelection((current) => current ? { ...current, selectedItem: item } : current)}
+              onSelectAction={async (item, action) => {
+                if (!appCoreAdapter || action.id !== "insert" || !item.nav_ref) {
+                  return;
+                }
+                try {
+                  if (!uiSession) {
+                    throw new Error("map selection insert requires live core session");
+                  }
+                  const nextSnapshot = await uiSession.insertWaypointBestPosition(item.nav_ref);
+                  onPlaybackSnapshotChange(nextSnapshot);
+                  setMapSelection(null);
+                } catch (error) {
+                  debugLog("map.selection.insert.failed", {
+                    nav_ref: item.nav_ref,
+                    error: errorMessage(error),
+                  });
+                }
+              }}
             />
           </>
         ) : null}
@@ -5830,8 +5848,9 @@ function MapSelectionTray(props: {
   result: MapSelectionQueryResult;
   selectedItem: MapSelectionItem | null;
   onSelectItem: (item: MapSelectionItem) => void;
+  onSelectAction: (item: MapSelectionItem, action: MapSelectionItem["actions"][number]) => void | Promise<void>;
 }) {
-  const { point, result, selectedItem, onSelectItem } = props;
+  const { point, result, selectedItem, onSelectItem, onSelectAction } = props;
   const edgePad = thumbPixels(0.1);
   type MapSelectionActionSlot = MapSelectionItem["actions"][number] & { placeholder?: boolean };
   const actionSlots: MapSelectionActionSlot[] = selectedItem
@@ -5901,6 +5920,11 @@ function MapSelectionTray(props: {
               onPointerDown={stopPointer}
               onPointerUp={stopPointer}
               onDoubleClick={stopDoubleClick}
+              onClick={() => {
+                if (selectedItem && action.enabled && !action.display_only) {
+                  void onSelectAction(selectedItem, action);
+                }
+              }}
               aria-hidden={action.placeholder ? "true" : undefined}
               tabIndex={action.placeholder ? -1 : undefined}
             >

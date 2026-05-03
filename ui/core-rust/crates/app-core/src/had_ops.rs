@@ -8,8 +8,8 @@ use crate::{
     chart_page::{airport_ids_from_plan, derive_chart_page_state_from_airports},
     describe_plate_procedure_load_options, describe_procedure_options_from_rows,
     describe_show_plate_for_procedure, enrich_procedure_materialization_records_from_store,
-    flight_leg_distance_nm, insert_airway_after_waypoint, insert_waypoint,
-    materialize_procedure_from_records, prepare_airway_presentation,
+    flight_leg_distance_nm, flight_plan_contains_nav_ref, insert_airway_after_waypoint,
+    insert_waypoint, materialize_procedure_from_records, prepare_airway_presentation,
     project_flight_plan_route_with_resolver, AirwayAutoSelection, AirwayBranch,
     AirwayEntryCandidate, AirwayExitCandidate, AirwayPresentationPlan, AirwaySegment,
     AirwaySpatialPoint, AirwaySuggestion, AppError, AppErrorKind, AppResult, CifpTppMatchRow,
@@ -141,7 +141,7 @@ pub enum HadOperation {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum HadReadError {
+pub(crate) enum HadReadError {
     NeedPages(Vec<u32>),
     Fatal(String),
 }
@@ -1394,6 +1394,127 @@ fn append_flight_plan_entry(
         )?,
         plan: appended,
     })
+}
+
+pub(crate) fn insert_waypoint_best_position(
+    store: &NavKvStore,
+    plan: &FlightPlan,
+    waypoint: NavRef,
+) -> Result<FlightPlanUiMutation, HadReadError> {
+    if !matches!(waypoint, NavRef::Airport(_) | NavRef::Navaid(_)) {
+        return Err(HadReadError::Fatal(
+            "only airports and navaids can be inserted from map selection".to_string(),
+        ));
+    }
+    if flight_plan_contains_nav_ref(plan, &waypoint) {
+        return Err(HadReadError::Fatal(format!(
+            "{} is already in the flight plan",
+            nav_ref_display_label(&waypoint)
+        )));
+    }
+
+    let insertion_index = best_top_level_insertion_index(store, plan, &waypoint)?;
+    let inserted = insert_waypoint_at_top_level(plan, insertion_index, waypoint)?;
+    Ok(FlightPlanUiMutation {
+        ui_state: flight_plan_ui_state(
+            store,
+            inserted.clone(),
+            crate::project_ui_state(&inserted),
+        )?,
+        plan: inserted,
+    })
+}
+
+fn best_top_level_insertion_index(
+    store: &NavKvStore,
+    plan: &FlightPlan,
+    waypoint: &NavRef,
+) -> Result<usize, HadReadError> {
+    let plan = plan.clone().normalized();
+    if plan.route_components.len() <= 1 {
+        return Ok(plan.route_components.len());
+    }
+    let waypoint_position = nav_ref_position(store, waypoint, None)?;
+    let mut best: Option<(usize, f64)> = None;
+    for insertion_index in 0..=plan.route_components.len() {
+        let prev = plan.route_components[..insertion_index]
+            .iter()
+            .rev()
+            .find_map(route_component_last_nav_ref);
+        let next = plan.route_components[insertion_index..]
+            .iter()
+            .find_map(route_component_first_nav_ref);
+        let cost = insertion_added_length_nm(store, prev, next, waypoint_position)?;
+        match best {
+            Some((_, best_cost)) if cost >= best_cost => {}
+            _ => best = Some((insertion_index, cost)),
+        }
+    }
+    best.map(|(index, _)| index)
+        .ok_or_else(|| HadReadError::Fatal("could not place waypoint in flight plan".to_string()))
+}
+
+fn insertion_added_length_nm(
+    store: &NavKvStore,
+    prev: Option<&NavRef>,
+    next: Option<&NavRef>,
+    waypoint_position: LatLon,
+) -> Result<f64, HadReadError> {
+    let prev_position = match prev {
+        Some(nav_ref) => Some(nav_ref_position(store, nav_ref, None)?),
+        None => None,
+    };
+    let next_position = match next {
+        Some(nav_ref) => Some(nav_ref_position(store, nav_ref, None)?),
+        None => None,
+    };
+    Ok(match (prev_position, next_position) {
+        (Some(prev), Some(next)) => {
+            flight_leg_distance_nm(prev, waypoint_position)
+                + flight_leg_distance_nm(waypoint_position, next)
+                - flight_leg_distance_nm(prev, next)
+        }
+        (Some(prev), None) => flight_leg_distance_nm(prev, waypoint_position),
+        (None, Some(next)) => flight_leg_distance_nm(waypoint_position, next),
+        (None, None) => 0.0,
+    })
+}
+
+fn insert_waypoint_at_top_level(
+    plan: &FlightPlan,
+    insertion_index: usize,
+    waypoint: NavRef,
+) -> Result<FlightPlan, HadReadError> {
+    let plan = plan.clone().normalized();
+    if plan.route_components.is_empty() {
+        let mut next_plan = plan;
+        next_plan
+            .route_components
+            .push(RouteComponent::Waypoint { waypoint });
+        next_plan.resolved_legs.clear();
+        return Ok(next_plan.normalized());
+    }
+    if insertion_index >= plan.route_components.len() {
+        insert_waypoint(&plan, plan.route_components.len() - 1, false, waypoint).map_err(Into::into)
+    } else {
+        insert_waypoint(&plan, insertion_index, true, waypoint).map_err(Into::into)
+    }
+}
+
+fn route_component_first_nav_ref(component: &RouteComponent) -> Option<&NavRef> {
+    match component {
+        RouteComponent::Waypoint { waypoint } => Some(waypoint),
+        RouteComponent::Airway { airway } => Some(&airway.entry),
+        RouteComponent::Procedure { .. } => None,
+    }
+}
+
+fn route_component_last_nav_ref(component: &RouteComponent) -> Option<&NavRef> {
+    match component {
+        RouteComponent::Waypoint { waypoint } => Some(waypoint),
+        RouteComponent::Airway { airway } => Some(&airway.exit),
+        RouteComponent::Procedure { .. } => None,
+    }
 }
 
 fn tokenize_flight_plan_entry(input: &str) -> Vec<ParsedInputToken> {
@@ -2756,5 +2877,71 @@ mod tests {
             mutation.plan.route_components[0],
             RouteComponent::Waypoint { waypoint: NavRef::Airport(ref id) } if id == "KPAE"
         ));
+    }
+
+    #[test]
+    fn insert_waypoint_best_position_uses_minimum_added_route_length() {
+        let store = load_fixture_nav_kv_store();
+        let plan = FlightPlan {
+            id: "west-coast".to_string(),
+            name: "West Coast".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KUAO".to_string()),
+                },
+            ],
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: Some(AirportId("KPAE".to_string())),
+            destination: Some(AirportId("KUAO".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+
+        let mutation =
+            insert_waypoint_best_position(&store, &plan, NavRef::Navaid("SEA".to_string()))
+                .expect("insert waypoint");
+
+        assert_eq!(mutation.plan.route_components.len(), 3);
+        assert!(matches!(
+            mutation.plan.route_components[1],
+            RouteComponent::Waypoint { waypoint: NavRef::Navaid(ref id) } if id == "SEA"
+        ));
+    }
+
+    #[test]
+    fn insert_waypoint_best_position_rejects_existing_waypoint() {
+        let store = load_fixture_nav_kv_store();
+        let plan = FlightPlan {
+            id: "duplicate".to_string(),
+            name: "Duplicate".to_string(),
+            legs: Vec::new(),
+            route_components: vec![RouteComponent::Waypoint {
+                waypoint: NavRef::Navaid("SEA".to_string()),
+            }],
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+
+        let err = insert_waypoint_best_position(&store, &plan, NavRef::Navaid("SEA".to_string()))
+            .expect_err("duplicate insert should fail");
+
+        assert!(
+            matches!(err, HadReadError::Fatal(message) if message.contains("already in the flight plan"))
+        );
     }
 }

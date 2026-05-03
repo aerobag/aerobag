@@ -43,7 +43,7 @@ import type {
   WaypointIdentifierSuggestion,
 } from "./types";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
-import { runCoreHadOperation } from "./navKv";
+import { runCoreHadOperation, runCoreHadSessionOperation } from "./navKv";
 import { debugLog, debugTiming } from "./debugLog";
 
 export type DerivedChartPageState = {
@@ -312,6 +312,7 @@ export type MapSelectionItem = {
   label: string;
   sublabel: string;
   highlight: MapSelectionHighlight;
+  nav_ref?: NavRef | null;
   symbol_feature?: NavSymbolFeature | null;
   airspace_icon?: AirspaceDisplayPath | null;
   actions: MapSelectionAction[];
@@ -388,6 +389,7 @@ export interface UiSession {
   replaceFlightPlan(plan: FlightPlan): Promise<UiSessionSnapshot>;
   removeLeg(index: number): Promise<UiSessionSnapshot>;
   moveWaypoint(index: number, delta: number): Promise<UiSessionSnapshot>;
+  insertWaypointBestPosition(waypoint: NavRef): Promise<UiSessionSnapshot>;
   setSituation(situation: Situation): Promise<UiSessionSnapshot>;
   loadPlaybackTrace(sourcePath: string, traceJson: string): Promise<UiSessionSnapshot>;
   playPlayback(nowEpochMs: number): Promise<UiSessionSnapshot>;
@@ -584,6 +586,7 @@ type WasmModule = {
   set_raster_map_catalog_in_session(handle: number, catalogJson: string): Promise<string> | string;
   select_map_in_session(handle: number, selectedMapIdJson: string): Promise<string> | string;
   replace_flight_plan_in_session(handle: number, planJson: string): Promise<string> | string;
+  insert_waypoint_best_position_in_session(navKvHandle: number, sessionHandle: number, waypointJson: string): Promise<string> | string;
   set_guidance_leg_geometry_in_session(handle: number, geometriesJson: string): Promise<string> | string;
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
@@ -806,6 +809,15 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       moveWaypoint: async (index, delta) => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.move_waypoint_in_session(handle, index, delta)),
+        );
+        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        return snapshot;
+      },
+      insertWaypointBestPosition: async (waypoint) => {
+        snapshot = await withSessionRetry(async () =>
+          runCoreHadSessionOperation<UiSessionSnapshot>((navKvHandle) =>
+            this.module.insert_waypoint_best_position_in_session(navKvHandle, handle, JSON.stringify(waypoint)),
+          ),
         );
         await syncGuidanceGeometry(snapshot.app_state.active_plan);
         return snapshot;

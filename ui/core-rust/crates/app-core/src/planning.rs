@@ -2161,6 +2161,20 @@ pub fn insert_airport_waypoint(
     insert_waypoint(plan, component_index, before, NavRef::Airport(airport_id))
 }
 
+pub fn flight_plan_contains_nav_ref(plan: &FlightPlan, nav_ref: &NavRef) -> bool {
+    plan.route_components
+        .iter()
+        .any(|component| match component {
+            RouteComponent::Waypoint { waypoint } => waypoint == nav_ref,
+            RouteComponent::Airway { airway } => {
+                airway.entry == *nav_ref || airway.exit == *nav_ref
+            }
+            RouteComponent::Procedure { procedure } => {
+                matches!(nav_ref, NavRef::Airport(id) if id == &procedure.airport_id.0)
+            }
+        })
+}
+
 pub fn insert_waypoint(
     plan: &FlightPlan,
     component_index: usize,

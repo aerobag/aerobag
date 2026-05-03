@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     chart_page::airport_ids_from_plan,
     guidance_detail_id_for_index,
+    had_ops::{insert_waypoint_best_position, HadOperationOutcome, HadReadError},
     map_follow::{MapFollowSessionState, MapFollowUiState},
     map_overlay_config_from_vector_manifest_json, move_flight_plan_waypoint,
     planning::NavElementUiView,
@@ -18,9 +19,9 @@ use crate::{
     query_map_overlay, query_map_selection, remove_flight_plan_leg, state, AirspaceFeaturePayload,
     AirspaceLabelTilePayload, AirspaceReferenceTilePayload, AppError, AppErrorKind, AppEvent,
     AppResult, AppState, AppUiState, FlightPlan, LatLon, MapOverlayConfig, MapOverlayQueryResult,
-    MapSelectionQueryResult, MapViewport, NavRef, PlanLeg, PlaybackUiState, PointTilePayload,
-    RasterMapCatalog, RasterTilePlan, SequencingMode, TerrainOverlayQueryResult, TfrProductPayload,
-    UiSnapshotAppState,
+    MapSelectionQueryResult, MapViewport, NavKvStore, NavRef, PlanLeg, PlaybackUiState,
+    PointTilePayload, RasterMapCatalog, RasterTilePlan, SequencingMode, TerrainOverlayQueryResult,
+    TfrProductPayload, UiSnapshotAppState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -598,18 +599,36 @@ pub fn replace_flight_plan_in_session(
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::ReplaceFlightPlan(plan.clone()),
-    )?;
-    session.guidance_leg_geometry.clear();
-    session.chart_page_state = derive_compact_chart_page_state(
-        &plan,
-        &session.chart_page_state.recent_airport_ids,
-        Some(&session.chart_page_state.selected_airport_id),
-        Some(&session.chart_page_state.selected_chart_id),
-    );
+    replace_session_flight_plan(session, plan)?;
     Ok(snapshot_for_session(session))
+}
+
+pub fn insert_waypoint_best_position_in_session(
+    handle: u32,
+    store: &NavKvStore,
+    waypoint: NavRef,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let plan = session_plan(session)?;
+    let mutation = match insert_waypoint_best_position(store, &plan, waypoint) {
+        Ok(mutation) => mutation,
+        Err(HadReadError::NeedPages(pages)) => return Ok(HadOperationOutcome::NeedPages { pages }),
+        Err(HadReadError::Fatal(message)) => {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message,
+            });
+        }
+    };
+    replace_session_flight_plan(session, mutation.plan)?;
+    let snapshot = snapshot_for_session(session);
+    Ok(HadOperationOutcome::Complete {
+        result: serde_json::to_value(snapshot).map_err(|err| AppError {
+            kind: AppErrorKind::Internal,
+            message: err.to_string(),
+        })?,
+    })
 }
 
 pub fn engage_map_follow_in_session(
@@ -791,11 +810,13 @@ pub fn get_map_selection_in_session(
 ) -> AppResult<MapSelectionQueryResult> {
     let sessions = sessions().lock().expect("session store poisoned");
     let session = session_ref(&sessions, handle)?;
+    let plan = session.app_state.active_plan.as_ref();
     Ok(query_map_selection(
         &viewport,
         width_px,
         height_px,
         &session.map_overlay_config,
+        plan,
         click,
         hit_radius_px,
         &session.point_tile_cache,
@@ -966,6 +987,21 @@ fn session_plan(session: &UiSession) -> AppResult<FlightPlan> {
             kind: AppErrorKind::Internal,
             message: "session missing active plan".to_string(),
         })
+}
+
+fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> AppResult<()> {
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::ReplaceFlightPlan(plan.clone()),
+    )?;
+    session.guidance_leg_geometry.clear();
+    session.chart_page_state = derive_compact_chart_page_state(
+        &plan,
+        &session.chart_page_state.recent_airport_ids,
+        Some(&session.chart_page_state.selected_airport_id),
+        Some(&session.chart_page_state.selected_chart_id),
+    );
+    Ok(())
 }
 
 fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {

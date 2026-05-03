@@ -122,6 +122,24 @@ pub fn core_had_operation(nav_kv_handle: u32, operation_json: &str) -> Result<St
 }
 
 #[wasm_bindgen]
+pub fn insert_waypoint_best_position_in_session(
+    nav_kv_handle: u32,
+    session_handle: u32,
+    waypoint_json: &str,
+) -> Result<String, JsValue> {
+    let waypoint: app_core::NavRef =
+        serde_json::from_str(waypoint_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let stores = nav_kv_stores().lock().expect("nav kv store poisoned");
+    let store = stores
+        .get(&nav_kv_handle)
+        .ok_or_else(|| JsValue::from_str(&format!("invalid nav kv handle: {nav_kv_handle}")))?;
+    let outcome =
+        app_core::insert_waypoint_best_position_in_session(session_handle, store, waypoint)
+            .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn situation_ring_candidates_json() -> Result<String, JsValue> {
     serde_json::to_string(&app_core::situation_ring_candidates())
         .map_err(|err| JsValue::from_str(&err.to_string()))

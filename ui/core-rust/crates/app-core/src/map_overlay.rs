@@ -3,7 +3,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    geometry::LatLon, great_circle_distance_nm, AppError, AppErrorKind, AppResult, MapViewport,
+    geometry::LatLon, great_circle_distance_nm, AppError, AppErrorKind, AppResult, FlightPlan,
+    MapViewport, NavRef,
 };
 
 pub const VECTOR_DISPLAY_FEATURE_LIMIT: usize = 500;
@@ -340,6 +341,8 @@ pub struct MapSelectionItem {
     pub label: String,
     pub sublabel: String,
     pub highlight: MapSelectionHighlight,
+    #[serde(default)]
+    pub nav_ref: Option<NavRef>,
     #[serde(default)]
     pub symbol_feature: Option<NavSymbolFeature>,
     #[serde(default)]
@@ -834,6 +837,7 @@ pub fn query_map_selection(
     width_px: f64,
     height_px: f64,
     config: &MapOverlayConfig,
+    plan: Option<&FlightPlan>,
     click: LatLon,
     hit_radius_px: f64,
     point_tile_cache: &HashMap<String, PointTilePayload>,
@@ -874,7 +878,7 @@ pub fn query_map_selection(
             let Some(symbol) = point_vector_record_to_symbol_feature(record, None) else {
                 continue;
             };
-            let item = selection_item_for_point(record, &symbol);
+            let item = selection_item_for_point(record, &symbol, plan);
             if record.style_class == "airport"
                 || record.kind.eq_ignore_ascii_case("airport")
                 || record.id.starts_with("airports:")
@@ -937,6 +941,7 @@ pub fn query_map_selection(
                         lat: click.lat,
                         lon: click.lon,
                     },
+                    nav_ref: None,
                     symbol_feature: None,
                     airspace_icon: None,
                     actions: vec![
@@ -953,6 +958,7 @@ pub fn query_map_selection(
 fn selection_item_for_point(
     record: &PointVectorRecord,
     symbol: &NavSymbolFeature,
+    plan: Option<&FlightPlan>,
 ) -> MapSelectionItem {
     let label = if symbol.label.trim().is_empty() {
         display_label(record)
@@ -962,11 +968,19 @@ fn selection_item_for_point(
     let is_airport = record.style_class == "airport"
         || record.kind.eq_ignore_ascii_case("airport")
         || record.id.starts_with("airports:");
+    let nav_ref = selection_nav_ref(record, is_airport);
+    let insert_action = match &nav_ref {
+        Some(nav_ref) if !selection_plan_contains_nav_ref(plan, nav_ref) => {
+            enabled_action("insert", "Insert in flight plan")
+        }
+        Some(_) => disabled_action("insert", "Already in flight plan"),
+        None => disabled_action("insert", "Insert unavailable"),
+    };
     let mut actions = if is_airport {
         vec![
             display_action("elevation", "Elev --"),
             disabled_action("direct_to", "Direct-to"),
-            disabled_action("insert", "Insert in flight plan"),
+            insert_action,
             disabled_action("plates", "Plates"),
             disabled_action("csup", "Chart Supp"),
             disabled_action("runways", "Runways"),
@@ -985,7 +999,7 @@ fn selection_item_for_point(
         vec![
             display_action("frequency", &format!("Freq {freq}")),
             disabled_action("direct_to", "Direct-to"),
-            disabled_action("insert", "Insert in flight plan"),
+            insert_action,
         ]
     };
     MapSelectionItem {
@@ -995,6 +1009,7 @@ fn selection_item_for_point(
         highlight: MapSelectionHighlight::FeatureRef {
             id: record.id.clone(),
         },
+        nav_ref,
         symbol_feature: Some(symbol.clone()),
         airspace_icon: None,
         actions: {
@@ -1012,6 +1027,7 @@ fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelection
         highlight: MapSelectionHighlight::FeatureRef {
             id: feature.id.clone(),
         },
+        nav_ref: None,
         symbol_feature: None,
         airspace_icon: airspace_selection_icon(feature),
         actions: vec![display_action(
@@ -1186,6 +1202,7 @@ fn selection_item_for_tfr(area: &TfrAreaPayload) -> MapSelectionItem {
         highlight: MapSelectionHighlight::FeatureRef {
             id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
         },
+        nav_ref: None,
         symbol_feature: None,
         airspace_icon: tfr_selection_icon(area),
         actions: vec![display_action(
@@ -1208,6 +1225,15 @@ fn display_action(id: &str, label: &str) -> MapSelectionAction {
     }
 }
 
+fn enabled_action(id: &str, label: &str) -> MapSelectionAction {
+    MapSelectionAction {
+        id: id.to_string(),
+        label: label.to_string(),
+        enabled: true,
+        display_only: false,
+    }
+}
+
 fn disabled_action(id: &str, label: &str) -> MapSelectionAction {
     MapSelectionAction {
         id: id.to_string(),
@@ -1215,6 +1241,31 @@ fn disabled_action(id: &str, label: &str) -> MapSelectionAction {
         enabled: false,
         display_only: false,
     }
+}
+
+fn selection_nav_ref(record: &PointVectorRecord, is_airport: bool) -> Option<NavRef> {
+    if is_airport {
+        return record
+            .id
+            .strip_prefix("airports:")
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(|id| NavRef::Airport(id.to_ascii_uppercase()));
+    }
+    if record.style_class == "nav" {
+        return record
+            .id
+            .strip_prefix("nav:")
+            .map(|tail| tail.split(':').next().unwrap_or(tail).trim())
+            .filter(|id| !id.is_empty())
+            .map(|id| NavRef::Navaid(id.to_ascii_uppercase()));
+    }
+    None
+}
+
+fn selection_plan_contains_nav_ref(plan: Option<&FlightPlan>, nav_ref: &NavRef) -> bool {
+    plan.map(|plan| crate::flight_plan_contains_nav_ref(plan, nav_ref))
+        .unwrap_or(false)
 }
 
 fn airspace_feature_contains(feature: &AirspaceFeaturePayload, point: LatLon) -> bool {
@@ -2402,6 +2453,7 @@ fn destination_point(origin: LatLon, bearing_deg: f64, distance_nm: f64) -> LatL
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RouteComponent;
     use app_fixtures::fixture_vector_tile_root as app_fixture_vector_tile_root;
     use std::fs;
     use std::sync::OnceLock;
@@ -3145,6 +3197,7 @@ mod tests {
             1200.0,
             900.0,
             &test_map_overlay_config(),
+            None,
             viewport.center,
             32.0,
             &cache,
@@ -3156,6 +3209,57 @@ mod tests {
         assert_eq!(result.categories[0].items[0].label, "SEA");
         assert_eq!(result.categories[3].id, "spot");
         assert_eq!(result.categories[3].items.len(), 1);
+    }
+
+    #[test]
+    fn map_selection_disables_insert_for_waypoint_already_in_plan() {
+        let record = PointVectorRecord {
+            id: "airports:KSEA".to_string(),
+            kind: "airport".to_string(),
+            lat: 47.36,
+            lon: -121.98,
+            label: "SEATTLE".to_string(),
+            style_class: "airport".to_string(),
+            towered: Some(true),
+            fuel_available: Some(true),
+            public_use: Some(true),
+            private_use: Some(false),
+            has_paved_runway: Some(true),
+            heliport: Some(false),
+            has_water_runway: Some(false),
+            longest_runway_length_ft: Some(10000.0),
+            longest_runway_heading_true_deg: Some(160.0),
+            obstacle: None,
+        };
+        let symbol = point_vector_record_to_symbol_feature(&record, None).unwrap();
+        let plan = FlightPlan {
+            id: "plan".to_string(),
+            name: "Plan".to_string(),
+            legs: Vec::new(),
+            route_components: vec![RouteComponent::Waypoint {
+                waypoint: NavRef::Airport("KSEA".to_string()),
+            }],
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+
+        let item = selection_item_for_point(&record, &symbol, Some(&plan));
+        let insert = item
+            .actions
+            .iter()
+            .find(|action| action.id == "insert")
+            .expect("insert action");
+
+        assert_eq!(item.nav_ref, Some(NavRef::Airport("KSEA".to_string())));
+        assert!(!insert.enabled);
+        assert!(!insert.display_only);
     }
 
     #[test]

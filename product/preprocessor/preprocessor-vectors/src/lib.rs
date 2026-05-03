@@ -1366,7 +1366,12 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
              OR trim(LocationID) IN (
                  SELECT DISTINCT trim(LocationID)
                  FROM fix_usage
-                 WHERE Usage IN ('ENROUTE HIGH', 'ENROUTE LOW')
+                 WHERE Usage IN (
+                     'ENROUTE HIGH',
+                     'ENROUTE LOW',
+                     'VFR FLYWAY PLANNING',
+                     'VFR TERMINAL AREA'
+                 )
              )",
             "fix",
         ),

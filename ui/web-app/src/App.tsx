@@ -2007,6 +2007,7 @@ function MapPage(props: {
     airspace_labels: [],
     warnings: [],
   });
+  const [mapOverlayInputGeneration, setMapOverlayInputGeneration] = useState(0);
   const [nexradFrames, setNexradFrames] = useState<NexradOverlayFrame[]>([]);
   const [nexradFrameIndex, setNexradFrameIndex] = useState(0);
   const [nexradStatus, setNexradStatus] = useState<NexradLayerStatus>({ state: "loading" });
@@ -2707,8 +2708,45 @@ function MapPage(props: {
       );
     }
 
+    function markOverlayInputIngested() {
+      setMapOverlayInputGeneration((generation) => generation + 1);
+    }
+
+    function isAbortError(error: unknown) {
+      return (error as { name?: string } | null)?.name === "AbortError";
+    }
+
     async function fetchMissingOverlayInputs(overlay: MapOverlayQueryResult): Promise<boolean> {
       let ingested = false;
+      if (overlay.needed_metars) {
+        const startedAt = performance.now();
+        try {
+          const response = await fetch("/fast-products/metars/metars.json", {
+            signal: controller.signal,
+          });
+          if (!response.ok) {
+            throw new Error(`failed to load METAR product: ${response.status}`);
+          }
+          const payload = (await response.json()) as MetarProductPayload;
+          await session.ingestMetars(payload);
+          debugLog("map.overlay.metars.ingest.done", {
+            zoom: viewport.zoom,
+            records: payload.metar_count ?? Object.keys(payload.metars_by_station).length,
+            elapsed_ms: Math.round(performance.now() - startedAt),
+          });
+          ingested = true;
+          markOverlayInputIngested();
+        } catch (error) {
+          if (isAbortError(error)) {
+            throw error;
+          }
+          debugLog("map.overlay.metars.ingest.error", {
+            zoom: viewport.zoom,
+            elapsed_ms: Math.round(performance.now() - startedAt),
+            error: errorMessage(error),
+          });
+        }
+      }
       if (overlay.needed_point_tiles.length > 0) {
         const tileFetchStartedAt = performance.now();
         debugLog("map.overlay.tiles.fetch.start", {
@@ -2768,38 +2806,52 @@ function MapPage(props: {
           count: tiles.length,
           elapsed_ms: Math.round(performance.now() - ingestStartedAt),
         });
-        return true;
+        ingested = true;
+        markOverlayInputIngested();
       }
       if (overlay.needed_metar_tiles.length > 0) {
         const startedAt = performance.now();
-        const tiles = await Promise.all(
-          overlay.needed_metar_tiles.map(async (tile) => {
-            const response = await fetch(metarTileUrl(tile.z, tile.x, tile.y), {
-              signal: controller.signal,
-            });
-            if (response.status === 404) {
-              return {
-                schema_version: 1,
-                layer: "metars",
-                z: tile.z,
-                x: tile.x,
-                y: tile.y,
-                records: [],
-              } satisfies MetarTilePayload;
-            }
-            if (!response.ok) {
-              throw new Error(`failed to load METAR tile ${tile.z}/${tile.x}/${tile.y}: ${response.status}`);
-            }
-            return (await response.json()) as MetarTilePayload;
-          }),
-        );
-        await session.ingestMetarTiles(tiles);
-        debugLog("map.overlay.metar_tiles.done", {
-          zoom: viewport.zoom,
-          count: tiles.length,
-          elapsed_ms: Math.round(performance.now() - startedAt),
-        });
-        return true;
+        try {
+          const tiles = await Promise.all(
+            overlay.needed_metar_tiles.map(async (tile) => {
+              const response = await fetch(metarTileUrl(tile.z, tile.x, tile.y), {
+                signal: controller.signal,
+              });
+              if (response.status === 404) {
+                return {
+                  schema_version: 1,
+                  layer: "metars",
+                  z: tile.z,
+                  x: tile.x,
+                  y: tile.y,
+                  records: [],
+                } satisfies MetarTilePayload;
+              }
+              if (!response.ok) {
+                throw new Error(`failed to load METAR tile ${tile.z}/${tile.x}/${tile.y}: ${response.status}`);
+              }
+              return (await response.json()) as MetarTilePayload;
+            }),
+          );
+          await session.ingestMetarTiles(tiles);
+          debugLog("map.overlay.metar_tiles.done", {
+            zoom: viewport.zoom,
+            count: tiles.length,
+            elapsed_ms: Math.round(performance.now() - startedAt),
+          });
+          ingested = true;
+          markOverlayInputIngested();
+        } catch (error) {
+          if (isAbortError(error)) {
+            throw error;
+          }
+          debugLog("map.overlay.metar_tiles.error", {
+            zoom: viewport.zoom,
+            count: overlay.needed_metar_tiles.length,
+            elapsed_ms: Math.round(performance.now() - startedAt),
+            error: errorMessage(error),
+          });
+        }
       }
       if (overlay.needed_airspace_ref_tiles.length > 0) {
         const startedAt = performance.now();
@@ -2830,7 +2882,8 @@ function MapPage(props: {
           count: tiles.length,
           elapsed_ms: Math.round(performance.now() - startedAt),
         });
-        return true;
+        ingested = true;
+        markOverlayInputIngested();
       }
       if (overlay.needed_airspace_features.length > 0) {
         const startedAt = performance.now();
@@ -2856,6 +2909,8 @@ function MapPage(props: {
         ).filter((feature): feature is AirspaceFeaturePayload => feature !== null);
         if (features.length > 0) {
           await session.ingestAirspaceFeatures(features);
+          ingested = true;
+          markOverlayInputIngested();
         }
         debugLog("map.overlay.airspace_features.done", {
           zoom: viewport.zoom,
@@ -2896,7 +2951,8 @@ function MapPage(props: {
           count: tiles.length,
           elapsed_ms: Math.round(performance.now() - startedAt),
         });
-        return true;
+        ingested = true;
+        markOverlayInputIngested();
       }
       if (overlay.needed_tfrs) {
         const startedAt = performance.now();
@@ -2913,24 +2969,8 @@ function MapPage(props: {
           areas: payload.areas.length,
           elapsed_ms: Math.round(performance.now() - startedAt),
         });
-        return true;
-      }
-      if (overlay.needed_metars) {
-        const startedAt = performance.now();
-        const response = await fetch("/fast-products/metars/metars.json", {
-          signal: controller.signal,
-        });
-        if (!response.ok) {
-          throw new Error(`failed to load METAR product: ${response.status}`);
-        }
-        const payload = (await response.json()) as MetarProductPayload;
-        await session.ingestMetars(payload);
-        debugLog("map.overlay.metars.ingest.done", {
-          zoom: viewport.zoom,
-          records: payload.metar_count ?? Object.keys(payload.metars_by_station).length,
-          elapsed_ms: Math.round(performance.now() - startedAt),
-        });
-        return true;
+        ingested = true;
+        markOverlayInputIngested();
       }
       return ingested;
     }
@@ -2957,9 +2997,11 @@ function MapPage(props: {
           elapsed_ms: Math.round(performance.now() - startedAt),
           needed_point_tiles: overlay.needed_point_tiles.length,
           needed_metar_tiles: overlay.needed_metar_tiles.length,
+          needed_metars: overlay.needed_metars,
           needed_airspace_ref_tiles: overlay.needed_airspace_ref_tiles.length,
           needed_airspace_features: overlay.needed_airspace_features.length,
           needed_airspace_label_tiles: overlay.needed_airspace_label_tiles.length,
+          needed_tfrs: overlay.needed_tfrs,
           visible_features: overlay.visible_features.length,
           visible_metars: overlay.visible_metars.length,
           airspace_paths: overlay.airspace_paths.length,
@@ -3008,9 +3050,11 @@ function MapPage(props: {
           elapsed_ms: Math.round(performance.now() - refreshStartedAt),
           needed_point_tiles: overlay.needed_point_tiles.length,
           needed_metar_tiles: overlay.needed_metar_tiles.length,
+          needed_metars: overlay.needed_metars,
           needed_airspace_ref_tiles: overlay.needed_airspace_ref_tiles.length,
           needed_airspace_features: overlay.needed_airspace_features.length,
           needed_airspace_label_tiles: overlay.needed_airspace_label_tiles.length,
+          needed_tfrs: overlay.needed_tfrs,
           visible_features: overlay.visible_features.length,
           visible_metars: overlay.visible_metars.length,
           airspace_paths: overlay.airspace_paths.length,
@@ -3026,6 +3070,10 @@ function MapPage(props: {
       if ((error as { name?: string } | null)?.name === "AbortError") {
         return;
       }
+      debugLog("map.overlay.sync.error", {
+        zoom: viewport.zoom,
+        error: errorMessage(error),
+      });
       console.error(error);
     });
 
@@ -3037,6 +3085,7 @@ function MapPage(props: {
     mapLayerState.metars.visible,
     mapLayerState.vectors.visible,
     mapIsVisible,
+    mapOverlayInputGeneration,
     mapOverlayOwnshipKey,
     onDebugWarning,
     surfaceSize.height,

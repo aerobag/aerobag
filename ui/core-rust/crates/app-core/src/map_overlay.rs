@@ -23,7 +23,6 @@ const OBSTACLE_LOOKAHEAD_CENTER_OFFSET_DIAMETER_RATIO: f64 = 0.3;
 const OBSTACLE_BELOW_OWNERSHIP_HIDE_FT: f64 = 1000.0;
 const OBSTACLE_CAUTION_LOWER_FT: f64 = 800.0;
 const OBSTACLE_DANGER_LOWER_FT: f64 = 200.0;
-const METAR_TILE_ZOOM: u32 = 7;
 const METAR_DISPLAY_FEATURE_LIMIT: usize = 1_000;
 const WORLD_SIZE: f64 = 256.0;
 const MAX_LATITUDE: f64 = 85.051_128_78;
@@ -127,7 +126,8 @@ pub struct MetarTilePayload {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetarClouds {
-    pub symbol: String,
+    #[serde(default)]
+    pub symbol: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -439,6 +439,14 @@ pub struct MapOverlayConfig {
     pub airspace_label_tile_min_zoom: u32,
     pub airspace_label_tile_max_zoom: u32,
     pub obstacle_layer: Option<ObstacleLayerConfig>,
+    pub metar_layer: Option<PointTileLayerConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PointTileLayerConfig {
+    min_zoom: u32,
+    max_zoom: u32,
+    available_zooms: Vec<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -495,18 +503,25 @@ pub fn map_overlay_config_from_vector_manifest_json(
         .get("obstacle")
         .map(obstacle_layer_config_from_manifest)
         .transpose()?;
+    let metar_layer = manifest
+        .point_layers
+        .get("metars")
+        .map(|layer| point_tile_layer_config_from_manifest("metars", layer))
+        .transpose()?;
     Ok(MapOverlayConfig {
         airspace_reference_tile_min_zoom: manifest.airspace.reference_tile_min_zoom,
         airspace_reference_tile_max_zoom: manifest.airspace.reference_tile_max_zoom,
         airspace_label_tile_min_zoom: manifest.airspace.label_tile_min_zoom,
         airspace_label_tile_max_zoom: manifest.airspace.label_tile_max_zoom,
         obstacle_layer,
+        metar_layer,
     })
 }
 
-fn obstacle_layer_config_from_manifest(
+fn point_tile_layer_config_from_manifest(
+    layer_name: &str,
     manifest: &VectorPointLayerManifest,
-) -> AppResult<ObstacleLayerConfig> {
+) -> AppResult<PointTileLayerConfig> {
     let available_zooms = if manifest.available_zooms.is_empty() {
         match (manifest.min_zoom, manifest.max_zoom) {
             (Some(min_zoom), Some(max_zoom)) if min_zoom <= max_zoom => {
@@ -523,8 +538,9 @@ fn obstacle_layer_config_from_manifest(
     if available_zooms.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidManifest,
-            message: "vector overlay manifest obstacle layer is missing available zooms"
-                .to_string(),
+            message: format!(
+                "vector overlay manifest {layer_name} layer is missing available zooms"
+            ),
         });
     }
     let min_zoom = manifest
@@ -536,11 +552,22 @@ fn obstacle_layer_config_from_manifest(
     if min_zoom > max_zoom {
         return Err(AppError {
             kind: AppErrorKind::InvalidManifest,
-            message: "vector overlay manifest has inverted obstacle zoom range".to_string(),
+            message: format!("vector overlay manifest has inverted {layer_name} zoom range"),
         });
     }
+    Ok(PointTileLayerConfig {
+        min_zoom,
+        max_zoom,
+        available_zooms,
+    })
+}
+
+fn obstacle_layer_config_from_manifest(
+    manifest: &VectorPointLayerManifest,
+) -> AppResult<ObstacleLayerConfig> {
+    let point_config = point_tile_layer_config_from_manifest("obstacle", manifest)?;
     let mut zoom_levels = HashMap::new();
-    let mut high_detail_zoom = *available_zooms.last().unwrap();
+    let mut high_detail_zoom = *point_config.available_zooms.last().unwrap();
     for level in &manifest.zoom_levels {
         zoom_levels.insert(level.zoom, level.clone());
         if !level.filtered {
@@ -548,9 +575,9 @@ fn obstacle_layer_config_from_manifest(
         }
     }
     Ok(ObstacleLayerConfig {
-        min_zoom,
-        max_zoom,
-        available_zooms,
+        min_zoom: point_config.min_zoom,
+        max_zoom: point_config.max_zoom,
+        available_zooms: point_config.available_zooms,
         high_detail_zoom,
         zoom_levels,
     })
@@ -655,14 +682,36 @@ fn visible_obstacle_tile_window(
 }
 
 fn nearest_available_zoom(config: &ObstacleLayerConfig, desired_zoom: u32) -> u32 {
-    let clamped = desired_zoom.clamp(config.min_zoom, config.max_zoom);
-    config
-        .available_zooms
+    nearest_available_zoom_in(
+        config.min_zoom,
+        config.max_zoom,
+        &config.available_zooms,
+        desired_zoom,
+    )
+}
+
+fn nearest_available_layer_zoom(config: &PointTileLayerConfig, desired_zoom: u32) -> u32 {
+    nearest_available_zoom_in(
+        config.min_zoom,
+        config.max_zoom,
+        &config.available_zooms,
+        desired_zoom,
+    )
+}
+
+fn nearest_available_zoom_in(
+    min_zoom: u32,
+    max_zoom: u32,
+    available_zooms: &[u32],
+    desired_zoom: u32,
+) -> u32 {
+    let clamped = desired_zoom.clamp(min_zoom, max_zoom);
+    available_zooms
         .iter()
         .copied()
         .filter(|zoom| *zoom <= clamped)
         .max()
-        .unwrap_or_else(|| *config.available_zooms.first().unwrap())
+        .unwrap_or_else(|| *available_zooms.first().unwrap())
 }
 
 fn visible_layer_tile_window(
@@ -907,6 +956,7 @@ pub fn query_map_overlay(
             viewport,
             width_px,
             height_px,
+            config,
             center_world,
             scale,
             metar_tile_cache,
@@ -957,17 +1007,26 @@ fn query_metar_overlay(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
+    config: &MapOverlayConfig,
     center_world: WorldPoint,
     scale: f64,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
 ) -> MetarOverlayProjection {
+    let Some(metar_layer) = config.metar_layer.as_ref() else {
+        return MetarOverlayProjection {
+            needed_tiles: Vec::new(),
+            needed_metars: false,
+            visible_metars: Vec::new(),
+            warnings: Vec::new(),
+        };
+    };
     let needed_metars = metar_payload.is_none();
     let mut needed_tiles = Vec::new();
     let mut visible_metars = Vec::new();
     let mut limit_hit = false;
-    for tile in visible_layer_tile_window("metars", METAR_TILE_ZOOM, viewport, width_px, height_px)
-    {
+    let metar_zoom = nearest_available_layer_zoom(metar_layer, viewport.zoom.floor() as u32);
+    for tile in visible_layer_tile_window("metars", metar_zoom, viewport, width_px, height_px) {
         let key = tile_key(&tile.layer, tile.z, tile.x, tile.y);
         let Some(tile_payload) = metar_tile_cache.get(&key) else {
             needed_tiles.push(tile);
@@ -1046,7 +1105,7 @@ fn normalized_metar_ceiling_amount(record: &MetarRecord) -> String {
     let amount = record
         .clouds
         .as_ref()
-        .map(|clouds| clouds.symbol.as_str())
+        .and_then(|clouds| clouds.symbol.as_deref())
         .map(str::trim);
     match amount {
         Some(value) if value.eq_ignore_ascii_case("SKC") || value.eq_ignore_ascii_case("CLR") => {
@@ -2773,6 +2832,11 @@ mod tests {
             airspace_label_tile_min_zoom: 0,
             airspace_label_tile_max_zoom: 12,
             obstacle_layer: None,
+            metar_layer: Some(PointTileLayerConfig {
+                min_zoom: 5,
+                max_zoom: 7,
+                available_zooms: vec![5, 6, 7],
+            }),
         }
     }
 
@@ -2906,6 +2970,73 @@ mod tests {
     }
 
     #[test]
+    fn vector_manifest_config_controls_metar_tile_zoom_levels() {
+        let config = map_overlay_config_from_vector_manifest_json(
+            r#"{
+                "point_layers": {
+                    "metars": {
+                        "min_zoom": 5,
+                        "max_zoom": 7,
+                        "available_zooms": [5, 6, 7],
+                        "tile_path_template": "points/metars/{z}/{x}/{y}.json"
+                    }
+                },
+                "airspace": {
+                    "reference_tile_min_zoom": 0,
+                    "reference_tile_max_zoom": 12,
+                    "label_tile_min_zoom": 0,
+                    "label_tile_max_zoom": 12
+                }
+            }"#,
+        )
+        .expect("manifest should parse");
+        let viewport = MapViewport {
+            center: LatLon { lat: 0.0, lon: 0.0 },
+            zoom: 4.2,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let low_zoom = super::query_map_overlay(
+            &viewport,
+            240.0,
+            240.0,
+            &config,
+            false,
+            true,
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+        );
+        assert!(low_zoom.needed_metar_tiles.iter().all(|tile| tile.z == 5));
+
+        let high_zoom = super::query_map_overlay(
+            &MapViewport {
+                zoom: 9.0,
+                ..viewport
+            },
+            240.0,
+            240.0,
+            &config,
+            false,
+            true,
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+        );
+        assert!(high_zoom.needed_metar_tiles.iter().all(|tile| tile.z == 7));
+    }
+
+    #[test]
     fn airspace_label_candidates_are_filtered_and_deduped_by_rank() {
         let viewport = MapViewport {
             center: LatLon { lat: 0.0, lon: 0.0 },
@@ -3011,7 +3142,7 @@ mod tests {
             rotation_deg: 0.0,
             pitch_deg: 0.0,
         };
-        let tiles = visible_layer_tile_window("metars", METAR_TILE_ZOOM, &viewport, 240.0, 240.0);
+        let tiles = visible_layer_tile_window("metars", 7, &viewport, 240.0, 240.0);
         let tile = tiles.first().expect("expected visible metar tile").clone();
         let mut metar_tile_cache = HashMap::new();
         for requested_tile in &tiles {
@@ -3054,7 +3185,7 @@ mod tests {
                 station_id: "KAAA".to_string(),
                 flight_category: Some("MVFR".to_string()),
                 clouds: Some(MetarClouds {
-                    symbol: "SCT".to_string(),
+                    symbol: Some("SCT".to_string()),
                 }),
                 longitude: viewport.center.lon,
                 latitude: viewport.center.lat,

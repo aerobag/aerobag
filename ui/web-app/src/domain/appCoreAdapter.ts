@@ -591,6 +591,50 @@ async function fetchVectorManifestJson(): Promise<string> {
   } catch {
     // Obstacle overlay is optional; keep the base vector manifest usable if the fast product is absent.
   }
+  try {
+    const metarResponse = await fetch("/fast-products/metars/manifest.json", { cache: "no-cache" });
+    if (metarResponse.ok) {
+      const metarManifest = JSON.parse(await metarResponse.text()) as {
+        map_view?: {
+          min_zoom?: number;
+          max_zoom?: number;
+          levels?: Array<{ zoom?: number }>;
+          tile_path_template?: string;
+        };
+      };
+      const mapView = metarManifest.map_view;
+      const availableZooms = Array.from(new Set(
+        mapView?.levels
+          ?.map((level) => level.zoom)
+          .filter((zoom): zoom is number => typeof zoom === "number" && Number.isInteger(zoom))
+          ?? [],
+      )).sort((a, b) => a - b);
+      if (mapView && availableZooms && availableZooms.length > 0) {
+        baseManifest.point_layers = {
+          ...(typeof baseManifest.point_layers === "object" && baseManifest.point_layers !== null
+            ? baseManifest.point_layers as Record<string, unknown>
+            : {}),
+          metars: {
+            min_zoom: typeof mapView.min_zoom === "number" ? mapView.min_zoom : availableZooms[0],
+            max_zoom: typeof mapView.max_zoom === "number" ? mapView.max_zoom : availableZooms[availableZooms.length - 1],
+            available_zooms: availableZooms,
+            tile_path_template: mapView.tile_path_template ?? "points/metars/{z}/{x}/{y}.json",
+          },
+        };
+      }
+      if (mapView?.tile_path_template) {
+        baseManifest.files = {
+          ...(typeof baseManifest.files === "object" && baseManifest.files !== null
+            ? baseManifest.files as Record<string, unknown>
+            : {}),
+          point_tiles_metars: mapView.tile_path_template,
+          metars: "metars.json",
+        };
+      }
+    }
+  } catch {
+    // METAR overlay is optional; keep the base vector manifest usable if the fast product is absent.
+  }
   return JSON.stringify(baseManifest);
 }
 

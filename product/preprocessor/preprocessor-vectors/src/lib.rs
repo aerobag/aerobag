@@ -1320,7 +1320,11 @@ pub fn analyze_obstacle_thresholds(
                 break;
             }
         }
-        rows.push(selected.or(fallback).expect("threshold list should not be empty"));
+        rows.push(
+            selected
+                .or(fallback)
+                .expect("threshold list should not be empty"),
+        );
     }
     Ok(rows)
 }
@@ -1338,14 +1342,14 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
         ),
         (
             "nav",
-            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type
+            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type, NULL, NULL, NULL, NULL
              FROM nav
              WHERE UPPER(TRIM(Type)) IN ('VOR', 'VOR/DME', 'VORTAC')",
             "nav",
         ),
         (
             "fix",
-            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type
+            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type, NULL, NULL, NULL, NULL
              FROM fix
              WHERE printf('%.6f,%.6f', ARPLatitude, ARPLongitude) IN (
                  SELECT DISTINCT printf('%.6f,%.6f', Latitude, Longitude)
@@ -1379,7 +1383,7 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
         ),
         (
             "awos",
-            "SELECT LocationID, Latitude, Longitude, Type, Type FROM awos WHERE Latitude != '' AND Longitude != ''",
+            "SELECT LocationID, Latitude, Longitude, Type, Type, NULL, NULL, NULL, NULL FROM awos WHERE Latitude != '' AND Longitude != ''",
             "awos",
         ),
     ];
@@ -1402,7 +1406,6 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                     let atct: String = row.get::<_, String>(5)?;
                     let fuel_types: String = row.get::<_, String>(6)?;
                     let use_code: String = row.get::<_, String>(7)?;
-                    let elevation: String = row.get::<_, String>(8)?;
                     let type_upper = kind.trim().to_ascii_uppercase();
                     (
                         Some(atct.trim().eq_ignore_ascii_case("Y")),
@@ -1410,7 +1413,7 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                         Some(use_code.trim().eq_ignore_ascii_case("PU")),
                         Some(use_code.trim().eq_ignore_ascii_case("PR")),
                         Some(type_upper.contains("HELIPORT")),
-                        parse_optional_float(&elevation),
+                        parse_optional_f64_cell(row, 8)?,
                     )
                 } else {
                     (None, None, None, None, None, None)
@@ -3380,6 +3383,19 @@ fn parse_f64_cell(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<f64
     }
 }
 
+fn parse_optional_f64_cell(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Option<f64>> {
+    use rusqlite::types::ValueRef;
+    match row.get_ref(index)? {
+        ValueRef::Real(value) => Ok(Some(value)),
+        ValueRef::Integer(value) => Ok(Some(value as f64)),
+        ValueRef::Text(bytes) => {
+            let text = String::from_utf8_lossy(bytes);
+            Ok(text.trim().parse::<f64>().ok())
+        }
+        ValueRef::Null | ValueRef::Blob(_) => Ok(None),
+    }
+}
+
 fn read_i32_be(bytes: &[u8], offset: usize) -> anyhow::Result<i32> {
     Ok(i32::from_be_bytes(read_array(bytes, offset)?))
 }
@@ -3457,6 +3473,84 @@ fn write_zip(path: &Path, members: &[(String, PathBuf)]) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn airport_points_include_arp_elevation() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE airports (
+                LocationID TEXT,
+                ARPLatitude REAL,
+                ARPLongitude REAL,
+                FacilityName TEXT,
+                Type TEXT,
+                ATCT TEXT,
+                FuelTypes TEXT,
+                Use TEXT,
+                ARPElevation TEXT
+            );
+            CREATE TABLE nav (
+                LocationID TEXT,
+                ARPLatitude REAL,
+                ARPLongitude REAL,
+                FacilityName TEXT,
+                Type TEXT
+            );
+            CREATE TABLE fix (
+                LocationID TEXT,
+                ARPLatitude REAL,
+                ARPLongitude REAL,
+                FacilityName TEXT,
+                Type TEXT
+            );
+            CREATE TABLE fix_usage (
+                LocationID TEXT,
+                Usage TEXT
+            );
+            CREATE TABLE cifp_sid_star_app (
+                fix_identifier TEXT,
+                section_code TEXT,
+                subsection_code TEXT,
+                route_type TEXT,
+                transition_identifier TEXT
+            );
+            CREATE TABLE awos (
+                LocationID TEXT,
+                Latitude REAL,
+                Longitude REAL,
+                Type TEXT
+            );
+            CREATE TABLE airways_branch (
+                Latitude REAL,
+                Longitude REAL
+            );
+            CREATE TABLE airportrunways (
+                LocationID TEXT,
+                Length TEXT,
+                Surface TEXT,
+                LEIdent TEXT,
+                HEIdent TEXT,
+                LELatitude TEXT,
+                LELongitude TEXT,
+                HELatitude TEXT,
+                HELongitude TEXT,
+                LEHeadingT TEXT
+            );
+            INSERT INTO airports VALUES ('KRNT', 47.4931388888889, -122.21575, 'RENTON MUNI', 'AIRPORT', 'Y', '100LL', 'PU', '32.0');
+            ",
+        )
+        .unwrap();
+
+        let points = load_points(&conn).unwrap();
+        let krnt = points
+            .iter()
+            .find(|point| point.id == "airports:KRNT")
+            .expect("KRNT airport point");
+        assert_eq!(krnt.elevation_msl_ft, Some(32.0));
+        let value = serde_json::to_value(krnt).unwrap();
+        assert_eq!(value["elevation_msl_ft"], serde_json::json!(32.0));
+    }
 
     #[test]
     fn saa_aixm_parser_does_not_turn_arc_centers_into_boundary_vertices() {

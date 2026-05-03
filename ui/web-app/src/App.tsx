@@ -6104,7 +6104,16 @@ function MapSelectionTray(props: {
         </div>
       ))}
       <div className="mapSelectionActions">
-        <div className="mapSelectionActionTitle">{selectedItem?.label ?? "\u00a0"}</div>
+        <div className="mapSelectionActionTitle">
+          {selectedItem ? (
+            <>
+              <strong>{selectedItem.label}</strong>
+              {selectedItem.description ? (
+                <span className="mapSelectionActionDescription"> · {selectedItem.description}</span>
+              ) : null}
+            </>
+          ) : "\u00a0"}
+        </div>
         <div className="mapSelectionActionGrid">
           {actionSlots.slice(0, 6).map((action) => (
             <button

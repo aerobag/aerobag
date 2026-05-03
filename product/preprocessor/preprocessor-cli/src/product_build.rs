@@ -5227,7 +5227,7 @@ fn build_nav_kv_airport_navref_pairs(
     let mut stmt = connection.prepare(
         "
         SELECT trim(LocationID), CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL),
-               trim(FacilityName), trim(Type), trim(ATCT), trim(FuelTypes)
+               trim(FacilityName), trim(Type), trim(ATCT), trim(FuelTypes), trim(ARPElevation)
         FROM airports
         WHERE trim(LocationID) <> ''
         ",
@@ -5241,12 +5241,13 @@ fn build_nav_kv_airport_navref_pairs(
             row.get::<_, String>(4)?,
             row.get::<_, String>(5)?,
             row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
         ))
     })?;
     let runway_info = airport_runway_symbol_info_by_airport(connection)?;
     let mut pairs = Vec::new();
     for row in rows {
-        let (id, lat, lon, facility_name, kind, atct, fuel_types) = row?;
+        let (id, lat, lon, facility_name, kind, atct, fuel_types, elevation) = row?;
         let key_id = had_upper_key_component(&id);
         pairs.push(json_pair(
             format!("navref/position/airport/{key_id}"),
@@ -5269,6 +5270,7 @@ fn build_nav_kv_airport_navref_pairs(
                 "has_water_runway": has_water_runway,
                 "runway_length_ratio": runway_length_ratio(info.map(|info| info.length_ft)),
                 "longest_runway_heading_true_deg": info.map(|info| info.heading_true_deg),
+                "elevation_msl_ft": parse_optional_float(&elevation),
             }),
             "navref airport symbol",
         )?);
@@ -7072,6 +7074,17 @@ fn surface_is_paved(surface: &str) -> bool {
 
 fn parse_float(value: &str) -> f64 {
     value.trim().parse::<f64>().unwrap_or(0.0)
+}
+
+fn parse_optional_float(value: &str) -> Option<f64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
 }
 
 fn valid_lat_lon(lat: f64, lon: f64) -> bool {

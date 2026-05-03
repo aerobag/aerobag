@@ -95,6 +95,8 @@ pub struct PointVectorRecord {
     #[serde(default)]
     pub longest_runway_heading_true_deg: Option<f64>,
     #[serde(default)]
+    pub elevation_msl_ft: Option<f64>,
+    #[serde(default)]
     pub obstacle: Option<ObstaclePointSemantics>,
 }
 
@@ -397,6 +399,8 @@ pub struct MapSelectionItem {
     pub id: String,
     pub label: String,
     pub sublabel: String,
+    #[serde(default)]
+    pub description: Option<String>,
     pub highlight: MapSelectionHighlight,
     #[serde(default)]
     pub nav_ref: Option<NavRef>,
@@ -1181,6 +1185,7 @@ pub fn query_map_selection(
                         lon: click.lon,
                     },
                     nav_ref: None,
+                    description: None,
                     symbol_feature: None,
                     airspace_icon: None,
                     actions: vec![
@@ -1200,14 +1205,20 @@ fn selection_item_for_point(
     plan: Option<&FlightPlan>,
     airport_plate_availability: AirportPlateAvailability,
 ) -> MapSelectionItem {
-    let label = if symbol.label.trim().is_empty() {
+    let is_airport = record.style_class == "airport"
+        || record.kind.eq_ignore_ascii_case("airport")
+        || record.id.starts_with("airports:");
+    let label = if is_airport {
+        airport_icao_label(record).unwrap_or_else(|| display_label(record))
+    } else if symbol.label.trim().is_empty() {
         display_label(record)
     } else {
         symbol.label.clone()
     };
-    let is_airport = record.style_class == "airport"
-        || record.kind.eq_ignore_ascii_case("airport")
-        || record.id.starts_with("airports:");
+    let mut symbol_feature = symbol.clone();
+    if is_airport {
+        symbol_feature.label = label.clone();
+    }
     let nav_ref = selection_nav_ref(record, is_airport);
     let insert_action = match &nav_ref {
         Some(nav_ref) if selection_plan_has_top_level_waypoint(plan, nav_ref) => {
@@ -1221,7 +1232,6 @@ fn selection_item_for_point(
     };
     let mut actions = if is_airport {
         vec![
-            display_action("elevation", "Elev --"),
             disabled_action("direct_to", "Direct-to"),
             insert_action,
             action_for_availability("plates", "Plates", airport_plate_availability.plates),
@@ -1229,31 +1239,18 @@ fn selection_item_for_point(
             disabled_action("runways", "Runways"),
         ]
     } else {
-        let freq = if is_vor_family_kind(&record.kind) {
-            record
-                .label
-                .split_whitespace()
-                .find(|part| part.chars().any(|ch| ch == '.'))
-                .unwrap_or("--")
-                .to_string()
-        } else {
-            "--".to_string()
-        };
-        vec![
-            display_action("frequency", &format!("Freq {freq}")),
-            disabled_action("direct_to", "Direct-to"),
-            insert_action,
-        ]
+        vec![disabled_action("direct_to", "Direct-to"), insert_action]
     };
     MapSelectionItem {
         id: record.id.clone(),
         label,
         sublabel: record.kind.trim().to_ascii_uppercase(),
+        description: selection_item_description(record, is_airport),
         highlight: MapSelectionHighlight::FeatureRef {
             id: record.id.clone(),
         },
         nav_ref,
-        symbol_feature: Some(symbol.clone()),
+        symbol_feature: Some(symbol_feature),
         airspace_icon: None,
         actions: {
             actions.shrink_to_fit();
@@ -1275,6 +1272,7 @@ fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelection
         id: feature.id.clone(),
         label: feature.ident.trim().to_string(),
         sublabel: feature.name.trim().to_string(),
+        description: None,
         highlight: MapSelectionHighlight::FeatureRef {
             id: feature.id.clone(),
         },
@@ -1450,6 +1448,7 @@ fn selection_item_for_tfr(area: &TfrAreaPayload) -> MapSelectionItem {
         id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
         label: "TFR".to_string(),
         sublabel: area.notam_id.trim().to_string(),
+        description: None,
         highlight: MapSelectionHighlight::FeatureRef {
             id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
         },
@@ -1498,6 +1497,42 @@ fn selection_record_is_airport(record: &PointVectorRecord) -> bool {
     record.style_class == "airport"
         || record.kind.eq_ignore_ascii_case("airport")
         || record.id.starts_with("airports:")
+}
+
+fn airport_icao_label(record: &PointVectorRecord) -> Option<String> {
+    record
+        .id
+        .strip_prefix("airports:")
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(|id| id.to_ascii_uppercase())
+}
+
+fn airport_selection_description(elevation_msl_ft: Option<f64>) -> Option<String> {
+    elevation_msl_ft
+        .filter(|value| value.is_finite())
+        .map(|value| format!("Elev {}", value.round() as i64))
+}
+
+fn selection_item_description(record: &PointVectorRecord, is_airport: bool) -> Option<String> {
+    if is_airport {
+        return airport_selection_description(record.elevation_msl_ft);
+    }
+    if is_vor_family_kind(&record.kind) {
+        return vor_frequency_description(&record.label);
+    }
+    None
+}
+
+fn vor_frequency_description(label: &str) -> Option<String> {
+    label
+        .split_whitespace()
+        .find(|part| part.chars().any(|ch| ch == '.'))
+        .map(|part| {
+            part.trim_matches(|ch: char| ch == ',' || ch == ';')
+                .to_string()
+        })
+        .filter(|part| !part.is_empty())
 }
 
 fn selection_symbol_for_point(
@@ -3449,6 +3484,7 @@ mod tests {
                         has_water_runway: None,
                         longest_runway_length_ft: None,
                         longest_runway_heading_true_deg: None,
+                        elevation_msl_ft: None,
                         obstacle: None,
                     })
                     .collect(),
@@ -3552,6 +3588,7 @@ mod tests {
                     has_water_runway: Some(false),
                     longest_runway_length_ft: Some(10000.0),
                     longest_runway_heading_true_deg: Some(160.0),
+                    elevation_msl_ft: Some(433.0),
                     obstacle: None,
                 }],
             },
@@ -3575,7 +3612,15 @@ mod tests {
         );
 
         assert_eq!(result.categories[0].id, "airport");
-        assert_eq!(result.categories[0].items[0].label, "SEA");
+        assert_eq!(result.categories[0].items[0].label, "KSEA");
+        assert_eq!(
+            result.categories[0].items[0].description.as_deref(),
+            Some("Elev 433")
+        );
+        assert!(!result.categories[0].items[0]
+            .actions
+            .iter()
+            .any(|action| action.id == "elevation"));
         assert_eq!(result.categories[3].id, "spot");
         assert_eq!(result.categories[3].items.len(), 1);
     }
@@ -3598,6 +3643,7 @@ mod tests {
             has_water_runway: Some(false),
             longest_runway_length_ft: Some(10000.0),
             longest_runway_heading_true_deg: Some(160.0),
+            elevation_msl_ft: Some(433.0),
             obstacle: None,
         };
         let symbol = point_vector_record_to_symbol_feature(&record, None).unwrap();
@@ -3650,30 +3696,66 @@ mod tests {
 
     #[test]
     fn vor_symbol_labels_omit_frequency() {
-        let feature = point_vector_record_to_symbol_feature(
-            &PointVectorRecord {
-                id: "nav:ELN:VOR".to_string(),
-                kind: "VORTAC".to_string(),
-                lat: 47.024,
-                lon: -120.459,
-                label: "ELLENSBURG 117.9".to_string(),
-                style_class: "nav".to_string(),
-                towered: None,
-                fuel_available: None,
-                public_use: None,
-                private_use: None,
-                has_paved_runway: None,
-                heliport: None,
-                has_water_runway: None,
-                longest_runway_length_ft: None,
-                longest_runway_heading_true_deg: None,
-                obstacle: None,
-            },
-            None,
-        )
-        .expect("VORTAC should be displayed");
+        let record = PointVectorRecord {
+            id: "nav:ELN:VOR".to_string(),
+            kind: "VORTAC".to_string(),
+            lat: 47.024,
+            lon: -120.459,
+            label: "ELLENSBURG 117.9".to_string(),
+            style_class: "nav".to_string(),
+            towered: None,
+            fuel_available: None,
+            public_use: None,
+            private_use: None,
+            has_paved_runway: None,
+            heliport: None,
+            has_water_runway: None,
+            longest_runway_length_ft: None,
+            longest_runway_heading_true_deg: None,
+            elevation_msl_ft: None,
+            obstacle: None,
+        };
+        let feature = point_vector_record_to_symbol_feature(&record, None)
+            .expect("VORTAC should be displayed");
 
         assert_eq!(feature.label, "ELN");
+    }
+
+    #[test]
+    fn vor_selection_uses_frequency_as_description() {
+        let record = PointVectorRecord {
+            id: "nav:SEA:VOR".to_string(),
+            kind: "VOR/DME".to_string(),
+            lat: 47.435,
+            lon: -122.309,
+            label: "SEATTLE 118.8".to_string(),
+            style_class: "nav".to_string(),
+            towered: None,
+            fuel_available: None,
+            public_use: None,
+            private_use: None,
+            has_paved_runway: None,
+            heliport: None,
+            has_water_runway: None,
+            longest_runway_length_ft: None,
+            longest_runway_heading_true_deg: None,
+            elevation_msl_ft: None,
+            obstacle: None,
+        };
+        let symbol = point_vector_record_to_symbol_feature(&record, None).unwrap();
+        let item = selection_item_for_point(
+            &record,
+            &symbol,
+            None,
+            AirportPlateAvailability {
+                plates: false,
+                csup: false,
+            },
+        );
+
+        assert_eq!(item.label, "SEA");
+        assert_eq!(item.description.as_deref(), Some("118.8"));
+        assert!(!item.actions.iter().any(|action| action.id == "frequency"));
     }
 
     #[test]
@@ -3694,6 +3776,7 @@ mod tests {
             has_water_runway: Some(false),
             longest_runway_length_ft: Some(1_900.0),
             longest_runway_heading_true_deg: Some(120.0),
+            elevation_msl_ft: Some(82.0),
             obstacle: None,
         };
 
@@ -3727,6 +3810,7 @@ mod tests {
                 has_water_runway: None,
                 longest_runway_length_ft: None,
                 longest_runway_heading_true_deg: None,
+                elevation_msl_ft: None,
                 obstacle: Some(ObstaclePointSemantics {
                     height_agl_ft: 1_076.0,
                     elevation_msl_ft: 2_375.0,
@@ -3837,6 +3921,7 @@ mod tests {
                         has_water_runway: Some(false),
                         longest_runway_length_ft: Some(10000.0),
                         longest_runway_heading_true_deg: Some(160.0),
+                        elevation_msl_ft: Some(433.0),
                         obstacle: None,
                     },
                     PointVectorRecord {
@@ -3855,6 +3940,7 @@ mod tests {
                         has_water_runway: Some(false),
                         longest_runway_length_ft: Some(2500.0),
                         longest_runway_heading_true_deg: Some(90.0),
+                        elevation_msl_ft: Some(120.0),
                         obstacle: None,
                     },
                     PointVectorRecord {
@@ -3873,6 +3959,7 @@ mod tests {
                         has_water_runway: Some(true),
                         longest_runway_length_ft: Some(3000.0),
                         longest_runway_heading_true_deg: Some(45.0),
+                        elevation_msl_ft: Some(10.0),
                         obstacle: None,
                     },
                     PointVectorRecord {
@@ -3891,6 +3978,7 @@ mod tests {
                         has_water_runway: Some(false),
                         longest_runway_length_ft: Some(80.0),
                         longest_runway_heading_true_deg: Some(0.0),
+                        elevation_msl_ft: Some(200.0),
                         obstacle: None,
                     },
                 ],

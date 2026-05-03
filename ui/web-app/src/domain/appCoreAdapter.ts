@@ -135,6 +135,7 @@ export type PointTilePayload = {
     has_water_runway?: boolean | null;
     longest_runway_length_ft?: number | null;
     longest_runway_heading_true_deg?: number | null;
+    elevation_msl_ft?: number | null;
     obstacle?: {
       height_agl_ft: number;
       elevation_msl_ft: number;
@@ -341,6 +342,7 @@ export type MapSelectionItem = {
   id: string;
   label: string;
   sublabel: string;
+  description?: string | null;
   highlight: MapSelectionHighlight;
   nav_ref?: NavRef | null;
   symbol_feature?: NavSymbolFeature | null;

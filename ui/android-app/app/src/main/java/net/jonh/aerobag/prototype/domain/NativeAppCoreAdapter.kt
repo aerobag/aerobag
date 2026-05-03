@@ -39,6 +39,8 @@ data class PointVectorRecord(
     val longestRunwayLengthFt: Double? = null,
     @kotlinx.serialization.SerialName("longest_runway_heading_true_deg")
     val longestRunwayHeadingTrueDeg: Double? = null,
+    @kotlinx.serialization.SerialName("elevation_msl_ft")
+    val elevationMslFt: Double? = null,
 )
 
 @kotlinx.serialization.Serializable

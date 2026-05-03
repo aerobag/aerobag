@@ -482,6 +482,7 @@ data class WirePointVectorRecord(
     val has_water_runway: Boolean? = null,
     val longest_runway_length_ft: Double? = null,
     val longest_runway_heading_true_deg: Double? = null,
+    val elevation_msl_ft: Double? = null,
 )
 
 @Serializable

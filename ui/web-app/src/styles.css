@@ -823,7 +823,15 @@ button {
   margin-bottom: var(--thumb-gap);
   color: #24333a;
   font-size: calc(var(--thumb) * 0.18);
+  font-weight: 400;
+}
+
+.mapSelectionActionTitle strong {
   font-weight: 800;
+}
+
+.mapSelectionActionDescription {
+  font-weight: 400;
 }
 
 .mapSelectionActionGrid {

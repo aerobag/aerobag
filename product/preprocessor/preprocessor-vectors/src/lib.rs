@@ -290,6 +290,8 @@ struct PointRecord {
     longest_runway_length_ft: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     longest_runway_heading_true_deg: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    elevation_msl_ft: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1331,7 +1333,7 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
     let point_sources = [
         (
             "airports",
-            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type, ATCT, FuelTypes, Use FROM airports WHERE ARPLatitude != '' AND ARPLongitude != ''",
+            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type, ATCT, FuelTypes, Use, ARPElevation FROM airports WHERE ARPLatitude != '' AND ARPLongitude != ''",
             "airport",
         ),
         (
@@ -1395,11 +1397,12 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                 source_label
             };
             let kind: String = row.get::<_, String>(4)?;
-            let (towered, fuel_available, public_use, private_use, heliport) =
+            let (towered, fuel_available, public_use, private_use, heliport, elevation_msl_ft) =
                 if table_name == "airports" {
                     let atct: String = row.get::<_, String>(5)?;
                     let fuel_types: String = row.get::<_, String>(6)?;
                     let use_code: String = row.get::<_, String>(7)?;
+                    let elevation: String = row.get::<_, String>(8)?;
                     let type_upper = kind.trim().to_ascii_uppercase();
                     (
                         Some(atct.trim().eq_ignore_ascii_case("Y")),
@@ -1407,9 +1410,10 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                         Some(use_code.trim().eq_ignore_ascii_case("PU")),
                         Some(use_code.trim().eq_ignore_ascii_case("PR")),
                         Some(type_upper.contains("HELIPORT")),
+                        parse_optional_float(&elevation),
                     )
                 } else {
-                    (None, None, None, None, None)
+                    (None, None, None, None, None, None)
                 };
             Ok((
                 id,
@@ -1422,6 +1426,7 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                 public_use,
                 private_use,
                 heliport,
+                elevation_msl_ft,
             ))
         })?;
         for row in rows {
@@ -1436,6 +1441,7 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                 public_use,
                 private_use,
                 heliport,
+                elevation_msl_ft,
             ) = row?;
             if !valid_lat_lon(lat, lon) {
                 continue;
@@ -1470,6 +1476,7 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                 longest_runway_heading_true_deg: (table_name == "airports")
                     .then(|| airport_runway_info.map(|runway| runway.heading_true_deg))
                     .flatten(),
+                elevation_msl_ft,
             });
         }
     }
@@ -1545,6 +1552,7 @@ fn load_obstacle_points(input_dir: &Path) -> anyhow::Result<Vec<ObstaclePointRec
                 has_water_runway: None,
                 longest_runway_length_ft: None,
                 longest_runway_heading_true_deg: None,
+                elevation_msl_ft: None,
             },
             agl_ft: height_agl.round() as i32,
         });
@@ -2419,6 +2427,17 @@ fn field(line: &str, start: usize, len: usize) -> &str {
 
 fn parse_float(value: &str) -> f64 {
     value.trim().parse::<f64>().unwrap_or(0.0)
+}
+
+fn parse_optional_float(value: &str) -> Option<f64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
 }
 
 fn round_coord(value: f64) -> f64 {

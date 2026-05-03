@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -7,7 +7,7 @@ use std::process::Command;
 use anyhow::{bail, Context};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use image::ImageReader;
-use metar::{CloudDensity, Data, Metar, VerticalVisibility};
+use metar::{CloudDensity, Clouds, Data, Metar};
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-const METAR_TILE_ZOOM: u8 = 7;
+const METAR_TILE_MIN_ZOOM: u8 = 5;
+const METAR_TILE_MAX_ZOOM: u8 = 7;
 const METAR_TILE_PATH_TEMPLATE: &str = "points/metars/{z}/{x}/{y}.json";
 const METAR_TILE_SIZE: u16 = 256;
 
@@ -75,6 +76,7 @@ pub struct BuildMetarRequest {
     pub output_dir: PathBuf,
     pub version_label: String,
     pub generated_at_utc: DateTime<Utc>,
+    pub important_station_ids: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -186,11 +188,14 @@ struct MetarManifestTileLevel {
     zoom: u8,
     tile_count: usize,
     max_records_per_tile: usize,
+    station_count: usize,
+    important_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct MetarManifestCounts {
     metars: usize,
+    important_metars: usize,
     tile_count: usize,
     max_metars_per_tile: usize,
 }
@@ -384,13 +389,7 @@ pub struct StructuredMetarRecord {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StructuredMetarClouds {
-    ceiling: Option<StructuredMetarCeiling>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct StructuredMetarCeiling {
-    amount: String,
-    height_ft_agl: Option<u32>,
+    symbol: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -419,6 +418,7 @@ struct MetarTileRecord {
 #[derive(Debug, Clone, Serialize)]
 struct MetarProductModel {
     metars_by_station: BTreeMap<String, StructuredMetarRecord>,
+    important_station_ids: BTreeSet<String>,
     tiles: Vec<MetarTileRecord>,
 }
 
@@ -838,8 +838,9 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
     fs::create_dir_all(&request.output_dir)
         .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
 
-    let model = metar_product_model(&request.input_xml_path)?;
+    let model = metar_product_model(&request.input_xml_path, &request.important_station_ids)?;
     let metar_count = model.metars_by_station.len();
+    let important_metar_count = model.important_station_ids.len();
     let tile_count = model.tiles.len();
     let max_metars_per_tile = model
         .tiles
@@ -905,16 +906,13 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
                 storage_kind: "fast_product".to_string(),
                 tile_path_template: METAR_TILE_PATH_TEMPLATE.to_string(),
                 tile_size: METAR_TILE_SIZE,
-                min_zoom: METAR_TILE_ZOOM,
-                max_zoom: METAR_TILE_ZOOM,
-                levels: vec![MetarManifestTileLevel {
-                    zoom: METAR_TILE_ZOOM,
-                    tile_count,
-                    max_records_per_tile: max_metars_per_tile,
-                }],
+                min_zoom: METAR_TILE_MIN_ZOOM,
+                max_zoom: METAR_TILE_MAX_ZOOM,
+                levels: metar_manifest_tile_levels(&model.tiles),
             },
             counts: MetarManifestCounts {
                 metars: metar_count,
+                important_metars: important_metar_count,
                 tile_count,
                 max_metars_per_tile,
             },
@@ -934,13 +932,19 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
     })
 }
 
-pub fn metar_content_fingerprint(input_xml_path: &Path) -> anyhow::Result<String> {
-    let model = metar_product_model(input_xml_path)?;
+pub fn metar_content_fingerprint(
+    input_xml_path: &Path,
+    important_station_ids: &BTreeSet<String>,
+) -> anyhow::Result<String> {
+    let model = metar_product_model(input_xml_path, important_station_ids)?;
     let bytes = serde_json::to_vec(&model).context("failed to encode canonical METAR model")?;
     Ok(format!("{:x}", Sha256::digest(&bytes)))
 }
 
-fn metar_product_model(input_xml_path: &Path) -> anyhow::Result<MetarProductModel> {
+fn metar_product_model(
+    input_xml_path: &Path,
+    important_station_ids: &BTreeSet<String>,
+) -> anyhow::Result<MetarProductModel> {
     let mut metars_by_station = BTreeMap::new();
     for mut record in structured_metar_records(input_xml_path)? {
         let station_id = record.station_id.trim().to_ascii_uppercase();
@@ -962,35 +966,72 @@ fn metar_product_model(input_xml_path: &Path) -> anyhow::Result<MetarProductMode
             metars_by_station.insert(station_id, record);
         }
     }
-    let tiles = build_metar_tiles(&metars_by_station);
+    let important_station_ids = important_station_ids
+        .iter()
+        .filter(|station_id| metars_by_station.contains_key(*station_id))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let tiles = build_metar_tiles(&metars_by_station, &important_station_ids);
     Ok(MetarProductModel {
         metars_by_station,
+        important_station_ids,
         tiles,
     })
 }
 
 fn build_metar_tiles(
     metars_by_station: &BTreeMap<String, StructuredMetarRecord>,
+    important_station_ids: &BTreeSet<String>,
 ) -> Vec<MetarTileRecord> {
     let mut tiles: BTreeMap<(u8, u32, u32), Vec<MetarTileReference>> = BTreeMap::new();
-    for (station_id, record) in metars_by_station {
-        let (Some(latitude), Some(longitude)) = (record.latitude, record.longitude) else {
-            continue;
-        };
-        if !metar_has_valid_position(latitude, longitude) {
-            continue;
+    for zoom in METAR_TILE_MIN_ZOOM..=METAR_TILE_MAX_ZOOM {
+        let important_only = zoom == METAR_TILE_MIN_ZOOM;
+        for (station_id, record) in metars_by_station {
+            if important_only && !important_station_ids.contains(station_id) {
+                continue;
+            }
+            let (Some(latitude), Some(longitude)) = (record.latitude, record.longitude) else {
+                continue;
+            };
+            if !metar_has_valid_position(latitude, longitude) {
+                continue;
+            }
+            let (x, y) = metar_slippy_tile(latitude, longitude, zoom);
+            tiles
+                .entry((zoom, x, y))
+                .or_default()
+                .push(MetarTileReference {
+                    station_id: station_id.clone(),
+                });
         }
-        let (x, y) = metar_slippy_tile(latitude, longitude, METAR_TILE_ZOOM);
-        tiles
-            .entry((METAR_TILE_ZOOM, x, y))
-            .or_default()
-            .push(MetarTileReference {
-                station_id: station_id.clone(),
-            });
     }
     tiles
         .into_iter()
         .map(|((z, x, y), records)| MetarTileRecord { z, x, y, records })
+        .collect()
+}
+
+fn metar_manifest_tile_levels(tiles: &[MetarTileRecord]) -> Vec<MetarManifestTileLevel> {
+    (METAR_TILE_MIN_ZOOM..=METAR_TILE_MAX_ZOOM)
+        .map(|zoom| {
+            let mut station_ids = BTreeSet::new();
+            let mut tile_count = 0;
+            let mut max_records_per_tile = 0;
+            for tile in tiles.iter().filter(|tile| tile.z == zoom) {
+                tile_count += 1;
+                max_records_per_tile = max_records_per_tile.max(tile.records.len());
+                for record in &tile.records {
+                    station_ids.insert(record.station_id.clone());
+                }
+            }
+            MetarManifestTileLevel {
+                zoom,
+                tile_count,
+                max_records_per_tile,
+                station_count: station_ids.len(),
+                important_only: zoom == METAR_TILE_MIN_ZOOM,
+            }
+        })
         .collect()
 }
 
@@ -1055,40 +1096,52 @@ fn structured_metar_records(input_xml_path: &Path) -> anyhow::Result<Vec<Structu
 }
 
 fn structured_metar_clouds(raw_text: &str) -> StructuredMetarClouds {
-    let ceiling = Metar::parse(raw_text)
-        .ok()
-        .and_then(|metar| metar_ceiling(&metar));
-    StructuredMetarClouds { ceiling }
+    StructuredMetarClouds {
+        symbol: Metar::parse(raw_text)
+            .ok()
+            .as_ref()
+            .and_then(metar_cloud_symbol),
+    }
 }
 
-fn metar_ceiling(metar: &Metar) -> Option<StructuredMetarCeiling> {
-    if let Some(vertical_visibility) = metar.vert_visibility {
-        return Some(match vertical_visibility {
-            VerticalVisibility::Distance(height) => StructuredMetarCeiling {
-                amount: "VV".to_string(),
-                height_ft_agl: Some(height * 100),
-            },
-            VerticalVisibility::ReducedByUnknownAmount => StructuredMetarCeiling {
-                amount: "VV".to_string(),
-                height_ft_agl: None,
-            },
-        });
+fn metar_cloud_symbol(metar: &Metar) -> Option<String> {
+    if metar.vert_visibility.is_some() {
+        return Some("VV".to_string());
     }
-
-    metar.cloud_layers.iter().find_map(|layer| {
-        let amount = match layer.density {
-            Data::Known(CloudDensity::Broken) => "BKN",
-            Data::Known(CloudDensity::Overcast) => "OVC",
-            _ => return None,
-        };
-        Some(StructuredMetarCeiling {
-            amount: amount.to_string(),
-            height_ft_agl: match layer.height {
-                Data::Known(height) => Some(height * 100),
+    let layers = metar
+        .cloud_layers
+        .iter()
+        .filter_map(|layer| {
+            let amount = match layer.density {
+                Data::Known(CloudDensity::Few) => "FEW",
+                Data::Known(CloudDensity::Scattered) => "SCT",
+                Data::Known(CloudDensity::Broken) => "BKN",
+                Data::Known(CloudDensity::Overcast) => "OVC",
+                Data::Unknown => return None,
+            };
+            let height = match layer.height {
+                Data::Known(height) => Some(height),
                 Data::Unknown => None,
-            },
+            };
+            Some((amount, height))
         })
-    })
+        .collect::<Vec<_>>();
+    if let Some((amount, _)) = layers
+        .iter()
+        .filter(|(amount, _)| *amount == "BKN" || *amount == "OVC")
+        .min_by_key(|(_, height)| height.unwrap_or(u32::MAX))
+    {
+        return Some((*amount).to_string());
+    }
+    layers
+        .iter()
+        .min_by_key(|(_, height)| height.unwrap_or(u32::MAX))
+        .map(|(amount, _)| amount.to_string())
+        .or(match metar.clouds {
+            Clouds::NoCloudDetected => Some("SKC".to_string()),
+            Clouds::NoSignificantCloud => Some("NSC".to_string()),
+            Clouds::CloudLayers => None,
+        })
 }
 
 pub fn build_nexrad_avare_parity_artifacts(
@@ -2751,8 +2804,9 @@ mod tests {
             ),
         )?;
 
-        let first_fingerprint = metar_content_fingerprint(&first)?;
-        let second_fingerprint = metar_content_fingerprint(&second)?;
+        let important_station_ids = BTreeSet::from(["KAAA".to_string()]);
+        let first_fingerprint = metar_content_fingerprint(&first, &important_station_ids)?;
+        let second_fingerprint = metar_content_fingerprint(&second, &important_station_ids)?;
         assert_eq!(first_fingerprint, second_fingerprint);
         let version_label = first_fingerprint.chars().take(16).collect::<String>();
         let generated_at_utc = DateTime::parse_from_rfc3339("2026-04-16T04:00:00Z")
@@ -2763,12 +2817,14 @@ mod tests {
             output_dir: temp.path().join("first-out"),
             version_label: version_label.clone(),
             generated_at_utc,
+            important_station_ids: important_station_ids.clone(),
         })?;
         let second_result = build_metar_dataset(&BuildMetarRequest {
             input_xml_path: second,
             output_dir: temp.path().join("second-out"),
             version_label,
             generated_at_utc,
+            important_station_ids,
         })?;
 
         assert_eq!(
@@ -2797,15 +2853,16 @@ mod tests {
             Some(&Value::String("MVFR".to_string())),
         );
         assert_eq!(
-            dataset.pointer("/metars_by_station/KBBB/clouds/ceiling/amount"),
-            Some(&Value::String("BKN".to_string())),
+            dataset.pointer("/metars_by_station/KAAA/clouds/symbol"),
+            Some(&Value::String("SKC".to_string())),
         );
         assert_eq!(
-            dataset
-                .pointer("/metars_by_station/KBBB/clouds/ceiling/height_ft_agl")
-                .and_then(|value| value.as_u64()),
-            Some(2500),
+            dataset.pointer("/metars_by_station/KBBB/clouds/symbol"),
+            Some(&Value::String("BKN".to_string())),
         );
+        assert!(dataset
+            .pointer("/metars_by_station/KBBB/clouds/ceiling")
+            .is_none());
 
         let manifest: Value = serde_json::from_slice(&fs::read(&first_result.manifest_path)?)?;
         assert_eq!(
@@ -2824,27 +2881,44 @@ mod tests {
             manifest
                 .pointer("/map_view/min_zoom")
                 .and_then(|value| value.as_u64()),
-            Some(u64::from(METAR_TILE_ZOOM)),
+            Some(u64::from(METAR_TILE_MIN_ZOOM)),
         );
         assert_eq!(
             manifest
                 .pointer("/map_view/max_zoom")
                 .and_then(|value| value.as_u64()),
-            Some(u64::from(METAR_TILE_ZOOM)),
+            Some(u64::from(METAR_TILE_MAX_ZOOM)),
         );
         assert_eq!(
             manifest
                 .pointer("/map_view/levels/0/zoom")
                 .and_then(|value| value.as_u64()),
-            Some(u64::from(METAR_TILE_ZOOM)),
+            Some(u64::from(METAR_TILE_MIN_ZOOM)),
         );
         assert_eq!(
             manifest
-                .pointer("/map_view/levels/0/max_records_per_tile")
-                .and_then(|value| value.as_u64()),
+                .pointer("/map_view/levels/0/important_only")
+                .and_then(|value| value.as_bool()),
+            Some(true),
+        );
+        assert_eq!(
             manifest
-                .pointer("/counts/max_metars_per_tile")
+                .pointer("/map_view/levels/0/station_count")
                 .and_then(|value| value.as_u64()),
+            Some(1),
+        );
+        assert_eq!(
+            manifest
+                .pointer("/map_view/levels/2/zoom")
+                .and_then(|value| value.as_u64()),
+            Some(u64::from(METAR_TILE_MAX_ZOOM)),
+        );
+        assert!(
+            manifest
+                .pointer("/map_view/levels/2/max_records_per_tile")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0)
+                > 0
         );
         assert!(
             manifest
@@ -2861,12 +2935,12 @@ mod tests {
                 > 0
         );
 
-        let (x, y) = metar_slippy_tile(1.0, 2.0, METAR_TILE_ZOOM);
+        let (x, y) = metar_slippy_tile(1.0, 2.0, METAR_TILE_MAX_ZOOM);
         let tile_path = first_result
             .zip_path
             .parent()
             .unwrap()
-            .join(metar_tile_relative_path(METAR_TILE_ZOOM, x, y));
+            .join(metar_tile_relative_path(METAR_TILE_MAX_ZOOM, x, y));
         let tile: Value = serde_json::from_slice(&fs::read(tile_path)?)?;
         assert_eq!(
             tile.pointer("/records/0/station_id")

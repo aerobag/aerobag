@@ -7954,7 +7954,8 @@ fn build_metars_product(
     run_status_command("gzip", &["-d", gz_path.to_str().unwrap()])?;
     let input_xml_path = input_dir.join("metars.cache.xml");
     let source_fingerprint = hash_tree(&input_dir)?;
-    let content_fingerprint = metar_content_fingerprint(&input_xml_path)?;
+    let important_station_ids = load_towered_metar_station_ids_from_current_vectors(config)?;
+    let content_fingerprint = metar_content_fingerprint(&input_xml_path, &important_station_ids)?;
     let version_label = fast_product_version_label(&content_fingerprint);
     let inputs = fast_product_node_inputs("metars", &source_fingerprint)?;
     let build_version_label = version_label.clone();
@@ -7970,6 +7971,7 @@ fn build_metars_product(
                 output_dir,
                 version_label: build_version_label,
                 generated_at_utc,
+                important_station_ids,
             })?;
             Ok(FastStructuredProductOutputs {
                 manifest_path: result.manifest_path,
@@ -7978,6 +7980,73 @@ fn build_metars_product(
             })
         },
     )
+}
+
+fn load_towered_metar_station_ids_from_current_vectors(
+    config: &ProductBuildConfig,
+) -> anyhow::Result<BTreeSet<String>> {
+    let current_artifacts_path = current_artifacts_path_for_fast_subset(config)?;
+    let current = load_current_artifacts_manifest(&current_artifacts_path)?;
+    let cycle_bundle_path = current_bundle_path(&current, &config.build_root, "cycle")
+        .context("current artifacts had no cycle bundle for METAR station importance")?;
+    let cycle_bundle = match load_bundle_manifest_like(&cycle_bundle_path)? {
+        BundleManifestLike::Cycle(bundle) => bundle,
+        BundleManifestLike::Fast(_) => bail!(
+            "expected cycle bundle for METAR station importance, got {}",
+            cycle_bundle_path.display()
+        ),
+    };
+    let vectors_package = cycle_bundle
+        .packages
+        .iter()
+        .find(|package| package.family_id == "vectors")
+        .context("cycle bundle had no vectors package for METAR station importance")?;
+    let vectors_zip_path = config.build_root.join(&vectors_package.relative_path);
+    let file = File::open(&vectors_zip_path)
+        .with_context(|| format!("failed to open {}", vectors_zip_path.display()))?;
+    let mut archive = ZipArchive::new(file)
+        .with_context(|| format!("failed to read {}", vectors_zip_path.display()))?;
+    let mut station_ids = BTreeSet::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).with_context(|| {
+            format!(
+                "failed to read entry {index} in {}",
+                vectors_zip_path.display()
+            )
+        })?;
+        let name = entry.name().to_string();
+        if !name.starts_with("points/airport/") || !name.ends_with(".json") {
+            continue;
+        }
+        let tile: serde_json::Value = serde_json::from_reader(&mut entry)
+            .with_context(|| format!("failed to parse {name} in {}", vectors_zip_path.display()))?;
+        let Some(records) = tile.get("records").and_then(|value| value.as_array()) else {
+            continue;
+        };
+        for record in records {
+            if record.get("towered").and_then(|value| value.as_bool()) != Some(true) {
+                continue;
+            }
+            let Some(id) = record.get("id").and_then(|value| value.as_str()) else {
+                continue;
+            };
+            let station_id = id
+                .strip_prefix("airports:")
+                .unwrap_or(id)
+                .trim()
+                .to_ascii_uppercase();
+            if !station_id.is_empty() {
+                station_ids.insert(station_id);
+            }
+        }
+    }
+    if station_ids.is_empty() {
+        bail!(
+            "vectors package {} yielded no towered airport station ids for METAR importance",
+            vectors_zip_path.display()
+        );
+    }
+    Ok(station_ids)
 }
 
 fn build_nexrad_product(

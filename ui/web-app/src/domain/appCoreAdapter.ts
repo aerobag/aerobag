@@ -343,15 +343,18 @@ export type MapSelectionItem = {
   label: string;
   sublabel: string;
   description?: string | null;
+  detail_text?: string | null;
   highlight: MapSelectionHighlight;
   nav_ref?: NavRef | null;
   symbol_feature?: NavSymbolFeature | null;
+  metar_feature?: VisibleMetarFeature | null;
   airspace_icon?: AirspaceDisplayPath | null;
   actions: MapSelectionAction[];
 };
 
 export type MapSelectionHighlight =
   | { kind: "feature_ref"; id: string }
+  | { kind: "metar"; station_id: string }
   | { kind: "spot"; lat: number; lon: number };
 
 export type MapSelectionAction = {

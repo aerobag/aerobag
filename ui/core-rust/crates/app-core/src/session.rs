@@ -899,6 +899,8 @@ pub fn get_map_selection_in_session(
         click,
         hit_radius_px,
         &session.point_tile_cache,
+        &session.metar_tile_cache,
+        session.metar_payload.as_ref(),
         &session.airspace_feature_cache,
         session.tfr_payload.as_ref(),
         &mut availability,

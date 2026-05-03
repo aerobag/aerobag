@@ -805,6 +805,11 @@ button {
   height: calc(var(--thumb) * 0.82);
 }
 
+.mapSelectionMetarIcon {
+  width: calc(var(--thumb) * 0.76);
+  height: calc(var(--thumb) * 0.76);
+}
+
 .mapSelectionItemTextIcon {
   color: rgba(255, 255, 255, 0.9);
   font-size: calc(var(--thumb) * 0.18);
@@ -851,6 +856,19 @@ button {
   font-size: calc(var(--thumb) * 0.14);
   font-weight: 800;
   line-height: 1.05;
+}
+
+.mapSelectionDetailText {
+  grid-column: 1 / -1;
+  height: var(--thumb);
+  padding: calc(var(--thumb) * 0.07) calc(var(--thumb) * 0.08);
+  border-radius: var(--thumb-radius);
+  background: rgba(255, 255, 255, 0.82);
+  color: #24333a;
+  font-size: calc(var(--thumb) * 0.17);
+  font-weight: 700;
+  line-height: 1.08;
+  overflow: hidden;
 }
 
 .mapSelectionAction:disabled {

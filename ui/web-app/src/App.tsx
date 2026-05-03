@@ -3117,6 +3117,17 @@ function MapPage(props: {
         point: worldToScreen(viewport, world, surfaceSize.width, surfaceSize.height),
       };
     }
+    if (highlight.kind === "metar") {
+      const metarFeature = mapOverlay.visible_metars.find((feature) => feature.station_id === highlight.station_id);
+      if (metarFeature) {
+        return { kind: "metar" as const, feature: metarFeature };
+      }
+      const selectedMetarFeature = mapSelection?.selectedItem?.metar_feature;
+      if (selectedMetarFeature?.station_id === highlight.station_id) {
+        return { kind: "metar" as const, feature: selectedMetarFeature };
+      }
+      return null;
+    }
     const pointFeature = mapOverlay.visible_features.find((feature) => feature.id === highlight.id);
     if (pointFeature) {
       return { kind: "point" as const, feature: pointFeature };
@@ -3130,7 +3141,7 @@ function MapPage(props: {
       return { kind: "path" as const, feature: tfrPath };
     }
     return null;
-  }, [mapOverlay.airspace_paths, mapOverlay.tfr_paths, mapOverlay.visible_features, mapSelection?.selectedItem?.highlight, surfaceSize.height, surfaceSize.width, viewport]);
+  }, [mapOverlay.airspace_paths, mapOverlay.tfr_paths, mapOverlay.visible_features, mapOverlay.visible_metars, mapSelection?.selectedItem, surfaceSize.height, surfaceSize.width, viewport]);
   const rasterTileTransform = useMemo(() => {
     if (!rasterTileViewport) {
       return undefined;
@@ -3772,6 +3783,13 @@ function MapPage(props: {
                   <VectorPointSymbol feature={selectedMapHighlight.feature} />
                 </g>
                 <VectorPointSymbol feature={selectedMapHighlight.feature} />
+              </g>
+            ) : selectedMapHighlight.kind === "metar" ? (
+              <g transform={`translate(${selectedMapHighlight.feature.screen_x} ${selectedMapHighlight.feature.screen_y})`}>
+                <g className="mapSelectionFeatureContrast">
+                  <MetarSymbol feature={selectedMapHighlight.feature} />
+                </g>
+                <MetarSymbol feature={selectedMapHighlight.feature} />
               </g>
             ) : selectedMapHighlight.kind === "path" ? (
               <g>
@@ -6111,7 +6129,10 @@ function MapSelectionTray(props: {
       enabled: false,
       display_only: true,
       placeholder: true,
-    }));
+	    }));
+  const visibleActionSlots = selectedItem?.detail_text
+    ? actionSlots.slice(0, 3)
+    : actionSlots.slice(0, 6);
   const horizontalStyle = point.x < window.innerWidth / 2
     ? { right: `${edgePad}px` }
     : { left: `${edgePad}px` };
@@ -6164,7 +6185,7 @@ function MapSelectionTray(props: {
           ) : "\u00a0"}
         </div>
         <div className="mapSelectionActionGrid">
-          {actionSlots.slice(0, 6).map((action) => (
+          {visibleActionSlots.map((action) => (
             <button
               key={action.id}
               type="button"
@@ -6184,6 +6205,9 @@ function MapSelectionTray(props: {
               {action.label}
             </button>
           ))}
+          {selectedItem?.detail_text ? (
+            <div className="mapSelectionDetailText">{selectedItem.detail_text}</div>
+          ) : null}
         </div>
       </div>
     </section>
@@ -6197,6 +6221,13 @@ function MapSelectionItemIcon(props: { item: MapSelectionItem }) {
       <span className="mapSelectionItemIcon" aria-hidden="true">
         <PlanWaypointSymbol feature={item.symbol_feature} />
       </span>
+    );
+  }
+  if (item.metar_feature) {
+    return (
+      <svg className="mapSelectionItemIcon mapSelectionMetarIcon" viewBox="-20 -20 40 40" aria-hidden="true">
+        <MetarSymbol feature={item.metar_feature} />
+      </svg>
     );
   }
   if (item.highlight.kind === "spot") {

@@ -401,11 +401,15 @@ pub struct MapSelectionItem {
     pub sublabel: String,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub detail_text: Option<String>,
     pub highlight: MapSelectionHighlight,
     #[serde(default)]
     pub nav_ref: Option<NavRef>,
     #[serde(default)]
     pub symbol_feature: Option<NavSymbolFeature>,
+    #[serde(default)]
+    pub metar_feature: Option<VisibleMetarFeature>,
     #[serde(default)]
     pub airspace_icon: Option<AirspaceDisplayPath>,
     pub actions: Vec<MapSelectionAction>,
@@ -415,6 +419,7 @@ pub struct MapSelectionItem {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MapSelectionHighlight {
     FeatureRef { id: String },
+    Metar { station_id: String },
     Spot { lat: f64, lon: f64 },
 }
 
@@ -1043,30 +1048,15 @@ fn query_metar_overlay(
             let Some(record) = metars.metars_by_station.get(&record_ref.station_id) else {
                 continue;
             };
-            let point = world_to_screen(
-                center_world,
-                scale,
-                width_px,
-                height_px,
-                LatLon {
-                    lat: record.latitude,
-                    lon: record.longitude,
-                },
-            );
-            if point.x < -32.0
-                || point.x > width_px + 32.0
-                || point.y < -32.0
-                || point.y > height_px + 32.0
+            let feature = visible_metar_feature(record, center_world, scale, width_px, height_px);
+            if feature.screen_x < -32.0
+                || feature.screen_x > width_px + 32.0
+                || feature.screen_y < -32.0
+                || feature.screen_y > height_px + 32.0
             {
                 continue;
             }
-            visible_metars.push(VisibleMetarFeature {
-                station_id: record.station_id.clone(),
-                screen_x: point.x,
-                screen_y: point.y,
-                flight_category: normalized_metar_flight_category(record),
-                ceiling_amount: normalized_metar_ceiling_amount(record),
-            });
+            visible_metars.push(feature);
         }
         if limit_hit {
             break;
@@ -1121,6 +1111,32 @@ fn normalized_metar_ceiling_amount(record: &MetarRecord) -> String {
     }
 }
 
+fn visible_metar_feature(
+    record: &MetarRecord,
+    center_world: WorldPoint,
+    scale: f64,
+    width_px: f64,
+    height_px: f64,
+) -> VisibleMetarFeature {
+    let point = world_to_screen(
+        center_world,
+        scale,
+        width_px,
+        height_px,
+        LatLon {
+            lat: record.latitude,
+            lon: record.longitude,
+        },
+    );
+    VisibleMetarFeature {
+        station_id: record.station_id.clone(),
+        screen_x: point.x,
+        screen_y: point.y,
+        flight_category: normalized_metar_flight_category(record),
+        ceiling_amount: normalized_metar_ceiling_amount(record),
+    }
+}
+
 pub fn query_map_selection(
     viewport: &MapViewport,
     width_px: f64,
@@ -1130,6 +1146,8 @@ pub fn query_map_selection(
     click: LatLon,
     hit_radius_px: f64,
     point_tile_cache: &HashMap<String, PointTilePayload>,
+    metar_tile_cache: &HashMap<String, MetarTilePayload>,
+    metar_payload: Option<&MetarProductPayload>,
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
@@ -1139,6 +1157,7 @@ pub fn query_map_selection(
     let click_screen = world_to_screen(center_world, scale, width_px, height_px, click);
     let mut airports = Vec::new();
     let mut navaids = Vec::new();
+    let mut weather = Vec::new();
     let mut airspaces = Vec::new();
 
     for tile in visible_point_tile_window(config, viewport, width_px, height_px, None) {
@@ -1205,12 +1224,32 @@ pub fn query_map_selection(
         }
     }
 
+    if let Some(metar_payload) = metar_payload {
+        weather.extend(query_metar_selection_matches(
+            viewport,
+            width_px,
+            height_px,
+            config,
+            center_world,
+            scale,
+            click_screen,
+            hit_radius_px,
+            metar_tile_cache,
+            metar_payload,
+        ));
+    }
+
     airports.sort_by(compare_map_selection_point_matches);
     navaids.sort_by(compare_map_selection_point_matches);
+    weather.sort_by(compare_map_selection_point_matches);
     airspaces.sort_by(|left, right| {
         left.label
             .cmp(&right.label)
             .then_with(|| left.id.cmp(&right.id))
+    });
+    navaids.push(MapSelectionPointMatch {
+        item: spot_selection_item(click),
+        distance_px: f64::INFINITY,
     });
 
     MapSelectionQueryResult {
@@ -1233,29 +1272,54 @@ pub fn query_map_selection(
                 items: airspaces,
             },
             MapSelectionCategory {
-                id: "spot".to_string(),
-                label: "Spot".to_string(),
-                items: vec![MapSelectionItem {
-                    id: format!("spot:{:.6}:{:.6}", click.lat, click.lon),
-                    label: "SPOT".to_string(),
-                    sublabel: format!("{:.4}, {:.4}", click.lat, click.lon),
-                    highlight: MapSelectionHighlight::Spot {
-                        lat: click.lat,
-                        lon: click.lon,
-                    },
-                    nav_ref: None,
-                    description: None,
-                    symbol_feature: None,
-                    airspace_icon: None,
-                    actions: vec![
-                        display_action("terrain", "Terrain --"),
-                        disabled_action("direct_to", "Direct-to"),
-                        disabled_action("insert", "Insert in flight plan"),
-                    ],
-                }],
+                id: "weather".to_string(),
+                label: "Weather".to_string(),
+                items: weather.into_iter().map(|matched| matched.item).collect(),
             },
         ],
     }
+}
+
+fn query_metar_selection_matches(
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    config: &MapOverlayConfig,
+    center_world: WorldPoint,
+    scale: f64,
+    click_screen: WorldPoint,
+    hit_radius_px: f64,
+    metar_tile_cache: &HashMap<String, MetarTilePayload>,
+    metar_payload: &MetarProductPayload,
+) -> Vec<MapSelectionPointMatch> {
+    let Some(metar_layer) = config.metar_layer.as_ref() else {
+        return Vec::new();
+    };
+    let mut matches = Vec::new();
+    let metar_zoom = nearest_available_layer_zoom(metar_layer, viewport.zoom.floor() as u32);
+    for tile in visible_layer_tile_window("metars", metar_zoom, viewport, width_px, height_px) {
+        let Some(tile_payload) =
+            metar_tile_cache.get(&tile_key(&tile.layer, tile.z, tile.x, tile.y))
+        else {
+            continue;
+        };
+        for record_ref in &tile_payload.records {
+            let Some(record) = metar_payload.metars_by_station.get(&record_ref.station_id) else {
+                continue;
+            };
+            let feature = visible_metar_feature(record, center_world, scale, width_px, height_px);
+            let distance_px = ((feature.screen_x - click_screen.x).powi(2)
+                + (feature.screen_y - click_screen.y).powi(2))
+            .sqrt();
+            if distance_px <= hit_radius_px {
+                matches.push(MapSelectionPointMatch {
+                    item: selection_item_for_metar(record, feature),
+                    distance_px,
+                });
+            }
+        }
+    }
+    matches
 }
 
 fn selection_item_for_point(
@@ -1305,11 +1369,13 @@ fn selection_item_for_point(
         label,
         sublabel: record.kind.trim().to_ascii_uppercase(),
         description: selection_item_description(record, is_airport),
+        detail_text: None,
         highlight: MapSelectionHighlight::FeatureRef {
             id: record.id.clone(),
         },
         nav_ref,
         symbol_feature: Some(symbol_feature),
+        metar_feature: None,
         airspace_icon: None,
         actions: {
             actions.shrink_to_fit();
@@ -1326,17 +1392,66 @@ fn action_for_availability(id: &str, label: &str, available: bool) -> MapSelecti
     }
 }
 
+fn spot_selection_item(click: LatLon) -> MapSelectionItem {
+    MapSelectionItem {
+        id: format!("spot:{:.6}:{:.6}", click.lat, click.lon),
+        label: "SPOT".to_string(),
+        sublabel: format!("{:.4}, {:.4}", click.lat, click.lon),
+        description: None,
+        detail_text: None,
+        highlight: MapSelectionHighlight::Spot {
+            lat: click.lat,
+            lon: click.lon,
+        },
+        nav_ref: None,
+        symbol_feature: None,
+        metar_feature: None,
+        airspace_icon: None,
+        actions: vec![
+            display_action("terrain", "Terrain --"),
+            disabled_action("direct_to", "Direct-to"),
+            disabled_action("insert", "Insert in flight plan"),
+        ],
+    }
+}
+
+fn selection_item_for_metar(
+    record: &MetarRecord,
+    feature: VisibleMetarFeature,
+) -> MapSelectionItem {
+    MapSelectionItem {
+        id: format!("metar:{}", record.station_id.trim()),
+        label: record.station_id.trim().to_ascii_uppercase(),
+        sublabel: normalized_metar_flight_category(record).to_ascii_uppercase(),
+        description: record.observed_at_utc.clone(),
+        detail_text: Some(record.raw_text.clone()),
+        highlight: MapSelectionHighlight::Metar {
+            station_id: record.station_id.clone(),
+        },
+        nav_ref: None,
+        symbol_feature: None,
+        metar_feature: Some(feature),
+        airspace_icon: None,
+        actions: vec![
+            display_action("metar", "METAR"),
+            disabled_action("taf", "TAF"),
+        ],
+    }
+}
+
 fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelectionItem {
     MapSelectionItem {
         id: feature.id.clone(),
         label: feature.ident.trim().to_string(),
         sublabel: feature.name.trim().to_string(),
         description: None,
+        detail_text: None,
         highlight: MapSelectionHighlight::FeatureRef {
             id: feature.id.clone(),
         },
         nav_ref: None,
         symbol_feature: None,
+        metar_feature: None,
         airspace_icon: airspace_selection_icon(feature),
         actions: vec![display_action(
             "limits",
@@ -1508,11 +1623,13 @@ fn selection_item_for_tfr(area: &TfrAreaPayload) -> MapSelectionItem {
         label: "TFR".to_string(),
         sublabel: area.notam_id.trim().to_string(),
         description: None,
+        detail_text: None,
         highlight: MapSelectionHighlight::FeatureRef {
             id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
         },
         nav_ref: None,
         symbol_feature: None,
+        metar_feature: None,
         airspace_icon: tfr_selection_icon(area),
         actions: vec![display_action(
             "limits",
@@ -3223,6 +3340,94 @@ mod tests {
     }
 
     #[test]
+    fn map_selection_returns_metars_in_weather_category() {
+        let viewport = MapViewport {
+            center: LatLon { lat: 0.0, lon: 0.0 },
+            zoom: 8.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let tiles = visible_layer_tile_window("metars", 7, &viewport, 240.0, 240.0);
+        let tile = tiles.first().expect("expected visible metar tile").clone();
+        let mut metar_tile_cache = HashMap::new();
+        metar_tile_cache.insert(
+            tile_key(&tile.layer, tile.z, tile.x, tile.y),
+            MetarTilePayload {
+                schema_version: 1,
+                layer: "metars".to_string(),
+                z: tile.z,
+                x: tile.x,
+                y: tile.y,
+                records: vec![MetarTileRecord {
+                    station_id: "KAAA".to_string(),
+                }],
+            },
+        );
+        let raw_text = "METAR KAAA 010000Z 00000KT 10SM SCT020 10/08 A3000";
+        let mut metars_by_station = HashMap::new();
+        metars_by_station.insert(
+            "KAAA".to_string(),
+            MetarRecord {
+                raw_text: raw_text.to_string(),
+                observed_at_utc: Some("2026-05-03T00:00:00.000Z".to_string()),
+                station_id: "KAAA".to_string(),
+                flight_category: Some("MVFR".to_string()),
+                clouds: Some(MetarClouds {
+                    symbol: Some("SCT".to_string()),
+                }),
+                longitude: viewport.center.lon,
+                latitude: viewport.center.lat,
+            },
+        );
+        let metars = MetarProductPayload {
+            schema_version: 2,
+            version_label: "test".to_string(),
+            metar_count: Some(1),
+            metars_by_station,
+        };
+
+        let result = query_map_selection(
+            &viewport,
+            240.0,
+            240.0,
+            &test_map_overlay_config(),
+            None,
+            viewport.center,
+            32.0,
+            &HashMap::new(),
+            &metar_tile_cache,
+            Some(&metars),
+            &HashMap::new(),
+            None,
+            &mut |_| AirportPlateAvailability::default(),
+        );
+        let weather = result
+            .categories
+            .iter()
+            .find(|category| category.id == "weather")
+            .expect("weather category");
+        let item = weather.items.first().expect("METAR selection item");
+
+        assert_eq!(item.label, "KAAA");
+        assert_eq!(item.detail_text.as_deref(), Some(raw_text));
+        assert!(matches!(
+            item.highlight,
+            MapSelectionHighlight::Metar { ref station_id } if station_id == "KAAA"
+        ));
+        assert_eq!(
+            item.metar_feature
+                .as_ref()
+                .map(|feature| feature.ceiling_amount.as_str()),
+            Some("sct")
+        );
+        assert!(item.actions.iter().any(|action| action.id == "metar"));
+        assert!(item
+            .actions
+            .iter()
+            .any(|action| action.id == "taf" && !action.enabled));
+    }
+
+    #[test]
     fn moa_paths_generate_feather_decorations_and_cap_warning() {
         let viewport = MapViewport {
             center: LatLon { lat: 0.0, lon: 0.0 },
@@ -3736,6 +3941,8 @@ mod tests {
             &cache,
             &HashMap::new(),
             None,
+            &HashMap::new(),
+            None,
             &mut |_| AirportPlateAvailability {
                 plates: true,
                 csup: true,
@@ -3752,8 +3959,12 @@ mod tests {
             .actions
             .iter()
             .any(|action| action.id == "elevation"));
-        assert_eq!(result.categories[3].id, "spot");
-        assert_eq!(result.categories[3].items.len(), 1);
+        assert_eq!(result.categories[1].id, "navaid");
+        assert!(result.categories[1]
+            .items
+            .iter()
+            .any(|item| item.id.starts_with("spot:")));
+        assert_eq!(result.categories[3].id, "weather");
     }
 
     #[test]
@@ -4137,6 +4348,8 @@ mod tests {
             viewport.center,
             32.0,
             &cache,
+            &HashMap::new(),
+            None,
             &HashMap::new(),
             None,
             &mut |_| AirportPlateAvailability::default(),

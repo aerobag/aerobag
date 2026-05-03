@@ -2061,6 +2061,9 @@ fn validate_explicit_missed_direct_turns_materialized(
         }) {
             let turn_clockwise = record.turn_direction.as_deref().map(str::trim) == Some("R");
             let fix = record.nav_position.expect("checked above");
+            if explicit_missed_direct_to_same_fix_hold(records, record, fix) {
+                continue;
+            }
             let route_prefix = format!(
                 "procedure-{}-{}-",
                 procedure_id.trim(),
@@ -2113,6 +2116,21 @@ fn validate_explicit_missed_direct_turns_materialized(
     Ok(())
 }
 
+fn explicit_missed_direct_to_same_fix_hold(
+    records: &[ProcedureLegMaterializationRecord],
+    record: &ProcedureLegMaterializationRecord,
+    fix: LatLon,
+) -> bool {
+    records
+        .iter()
+        .filter(|candidate| candidate.sequence > record.sequence)
+        .min_by_key(|candidate| candidate.sequence)
+        .is_some_and(|next_record| {
+            matches!(next_record.path_termination.trim(), "HF" | "HM")
+                && next_record.nav_position == Some(fix)
+        })
+}
+
 fn explicit_missed_direct_to_hold_turn_is_visually_negligible(
     path: &LegDisplayPath,
     records: &[ProcedureLegMaterializationRecord],
@@ -2139,9 +2157,11 @@ fn explicit_missed_direct_to_hold_turn_is_visually_negligible(
     }
     let distance_nm = great_circle_distance_nm(*start, *end);
     // Some missed DF rows carry an explicit turn direction even when the fix is so
-    // close that drawing a separate pre-fix arc would be decorative. KAIA I30/AIA
-    // reaches AIA after 0.9 nm, then immediately enters the published hold.
-    distance_nm <= 1.0
+    // close/aligned with an immediate hold that drawing a separate pre-fix arc
+    // would be decorative or actively misleading.
+    // KAIA I30/AIA reaches AIA after 0.9 nm; KBHK R31/DIXLE reaches KIXCO after
+    // 19.5 nm on a straight direct-to before entering the published hold.
+    distance_nm <= 25.0
 }
 
 fn explicit_turn_path_has_arc_before_fix(
@@ -9909,6 +9929,12 @@ mod tests {
     #[ignore = "manual visual inspection overlay for KOCW R05 EWN"]
     fn writes_kocw_r05_ewn_overlay_png() {
         render_procedure_overlay_to_paths("KOCW", "R05", "EWN", "KOCW_R05_EWN", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KBHK R31 DIXLE"]
+    fn writes_kbhk_r31_dixle_overlay_png() {
+        render_procedure_overlay_to_paths("KBHK", "R31", "DIXLE", "KBHK_R31_DIXLE", true);
     }
 
     #[test]

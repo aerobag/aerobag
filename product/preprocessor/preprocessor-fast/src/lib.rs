@@ -19,6 +19,7 @@ const METAR_TILE_MIN_ZOOM: u8 = 5;
 const METAR_TILE_MAX_ZOOM: u8 = 7;
 const METAR_TILE_PATH_TEMPLATE: &str = "points/metars/{z}/{x}/{y}.json";
 const METAR_TILE_SIZE: u16 = 256;
+const METAR_PRODUCT_CONTRACT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub struct BuildTfrRequest {
@@ -168,6 +169,7 @@ struct MetarManifest {
 
 #[derive(Debug, Clone, Serialize)]
 struct MetarManifestFiles {
+    manifest: String,
     structured_json: String,
     zip: String,
 }
@@ -890,10 +892,11 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
     write_json_pretty(
         &manifest_path,
         &MetarManifest {
-            schema_version: 2,
+            schema_version: METAR_PRODUCT_CONTRACT_VERSION,
             version_label: request.version_label.clone(),
             generated_at_utc: request.generated_at_utc.to_rfc3339(),
             files: MetarManifestFiles {
+                manifest: "manifest.json".to_string(),
                 structured_json: "metars.json".to_string(),
                 zip: zip_path
                     .file_name()
@@ -918,6 +921,7 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
             },
         },
     )?;
+    zip_members.push(("manifest.json".to_string(), manifest_path.clone()));
     let zip_member_refs = zip_members
         .iter()
         .map(|(relative_path, path)| (relative_path.as_str(), path.as_path()))
@@ -937,7 +941,8 @@ pub fn metar_content_fingerprint(
     important_station_ids: &BTreeSet<String>,
 ) -> anyhow::Result<String> {
     let model = metar_product_model(input_xml_path, important_station_ids)?;
-    let bytes = serde_json::to_vec(&model).context("failed to encode canonical METAR model")?;
+    let bytes = serde_json::to_vec(&(METAR_PRODUCT_CONTRACT_VERSION, model))
+        .context("failed to encode canonical METAR model")?;
     Ok(format!("{:x}", Sha256::digest(&bytes)))
 }
 
@@ -2867,6 +2872,12 @@ mod tests {
         let manifest: Value = serde_json::from_slice(&fs::read(&first_result.manifest_path)?)?;
         assert_eq!(
             manifest
+                .pointer("/files/manifest")
+                .and_then(|value| value.as_str()),
+            Some("manifest.json"),
+        );
+        assert_eq!(
+            manifest
                 .pointer("/map_view/tile_path_template")
                 .and_then(|value| value.as_str()),
             Some(METAR_TILE_PATH_TEMPLATE),
@@ -2947,6 +2958,14 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("KAAA")
         );
+        let zip_listing = Command::new("unzip")
+            .arg("-Z1")
+            .arg(&first_result.zip_path)
+            .output()
+            .context("failed to list METAR package zip")?;
+        assert!(zip_listing.status.success());
+        let zip_listing = String::from_utf8(zip_listing.stdout)?;
+        assert!(zip_listing.lines().any(|line| line == "manifest.json"));
         Ok(())
     }
 

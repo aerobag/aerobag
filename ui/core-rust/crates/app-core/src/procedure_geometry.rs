@@ -2798,6 +2798,9 @@ fn projection_along_course_nm(origin: LatLon, point: LatLon, course_unit: (f64, 
 }
 
 fn heading_sweep_degrees(from_deg: f64, to_deg: f64, clockwise: bool) -> f64 {
+    if angular_difference_degrees(from_deg, to_deg) <= MIN_ARC_SWEEP_DEG {
+        return 0.0;
+    }
     let mut delta = normalize_bearing_degrees(to_deg) - normalize_bearing_degrees(from_deg);
     if clockwise {
         while delta < 0.0 {
@@ -3101,10 +3104,12 @@ fn hold_entry_elements(
     };
     let elements = match classify_hold_entry(arrival_course_deg, inbound_course_deg, clockwise) {
         HoldEntryKind::Direct => {
-            if angular_difference_degrees(arrival_course_deg, inbound_course_deg) <= 5.0 {
+            let outbound_course_deg = normalize_bearing_degrees(inbound_course_deg + 180.0);
+            if angular_difference_degrees(arrival_course_deg, inbound_course_deg) <= 5.0
+                || angular_difference_degrees(arrival_course_deg, outbound_course_deg) <= 5.0
+            {
                 return (Vec::new(), Vec::new());
             }
-            let outbound_course_deg = normalize_bearing_degrees(inbound_course_deg + 180.0);
             let turn_center =
                 turn_center_for_heading_change(fix, arrival_course_deg, clockwise, turn_radius_nm);
             let turn_end =
@@ -3397,10 +3402,13 @@ fn prune_degenerate_display_elements_with_sources_and_roles(
                 let is_explicit_missed_turn = original_sources
                     .get(index)
                     .is_some_and(|source| source.starts_with(EXPLICIT_MISSED_TURN_SOURCE_PREFIX));
-                is_explicit_missed_turn
-                    || (!positions_nearly_equal_for_geometry(*start, *end)
-                        && *radius_nm > MIN_GEOMETRY_DISTANCE_NM
-                        && sweep_degrees.abs() > MIN_ARC_SWEEP_DEG)
+                let has_arc_geometry =
+                    !positions_nearly_equal_for_geometry(*start, *end)
+                        && *radius_nm > MIN_GEOMETRY_DISTANCE_NM;
+                (is_explicit_missed_turn
+                    && *radius_nm > MIN_GEOMETRY_DISTANCE_NM
+                    && sweep_degrees.abs() > 0.0)
+                    || (has_arc_geometry && sweep_degrees.abs() > MIN_ARC_SWEEP_DEG)
             }
         };
         if keep {

@@ -9906,6 +9906,12 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual visual inspection overlay for KOCW R05 EWN"]
+    fn writes_kocw_r05_ewn_overlay_png() {
+        render_procedure_overlay_to_paths("KOCW", "R05", "EWN", "KOCW_R05_EWN", true);
+    }
+
+    #[test]
     #[ignore = "manual visual inspection overlay for 12D R08 INKER"]
     fn writes_12d_r08_inker_overlay_png() {
         render_procedure_overlay_to_paths("12D", "R08", "INKER", "12D_R08_INKER", false);

@@ -7,7 +7,6 @@ use std::process::Command;
 use anyhow::{bail, Context};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use image::ImageReader;
-use metar::{CloudDensity, Clouds, Data, Metar};
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -19,7 +18,8 @@ const METAR_TILE_MIN_ZOOM: u8 = 5;
 const METAR_TILE_MAX_ZOOM: u8 = 7;
 const METAR_TILE_PATH_TEMPLATE: &str = "points/metars/{z}/{x}/{y}.json";
 const METAR_TILE_SIZE: u16 = 256;
-const METAR_PRODUCT_CONTRACT_VERSION: u32 = 3;
+const METAR_PRODUCT_CONTRACT_VERSION: u32 = 4;
+const METAR_TREND_TOKENS: &[&str] = &["BECMG", "TEMPO", "INTER", "NOSIG", "PROB30", "PROB40"];
 
 #[derive(Debug, Clone)]
 pub struct BuildTfrRequest {
@@ -1102,58 +1102,95 @@ fn structured_metar_records(input_xml_path: &Path) -> anyhow::Result<Vec<Structu
 
 fn structured_metar_clouds(raw_text: &str) -> StructuredMetarClouds {
     StructuredMetarClouds {
-        symbol: Metar::parse(normalized_metar_parse_text(raw_text))
-            .ok()
-            .as_ref()
-            .and_then(metar_cloud_symbol),
+        symbol: metar_cloud_symbol(raw_text).map(str::to_string),
     }
 }
 
-fn normalized_metar_parse_text(raw_text: &str) -> &str {
-    raw_text
-        .trim()
-        .strip_prefix("SPECI ")
-        .unwrap_or_else(|| raw_text.trim())
+fn metar_cloud_symbol(raw_text: &str) -> Option<&'static str> {
+    let observation = raw_text
+        .split_once(" RMK ")
+        .map(|(observation, _)| observation)
+        .unwrap_or(raw_text);
+    let mut layers = Vec::new();
+    for token in observation.split_whitespace() {
+        if METAR_TREND_TOKENS.contains(&token) {
+            break;
+        }
+        match parse_metar_cloud_token(token) {
+            MetarCloudToken::None => {}
+            MetarCloudToken::Immediate(symbol) => return Some(symbol),
+            MetarCloudToken::Layer { amount, height_ft } => {
+                layers.push((amount, height_ft));
+            }
+        }
+    }
+    choose_metar_cloud_symbol(&layers)
 }
 
-fn metar_cloud_symbol(metar: &Metar) -> Option<String> {
-    if metar.vert_visibility.is_some() {
-        return Some("VV".to_string());
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetarCloudToken {
+    None,
+    Immediate(&'static str),
+    Layer {
+        amount: &'static str,
+        height_ft: Option<u32>,
+    },
+}
+
+fn parse_metar_cloud_token(token: &str) -> MetarCloudToken {
+    match token {
+        "CAVOK" | "SKC" | "CLR" | "NCD" => return MetarCloudToken::Immediate("SKC"),
+        "NSC" => return MetarCloudToken::Immediate("NSC"),
+        _ => {}
     }
-    let layers = metar
-        .cloud_layers
-        .iter()
-        .filter_map(|layer| {
-            let amount = match layer.density {
-                Data::Known(CloudDensity::Few) => "FEW",
-                Data::Known(CloudDensity::Scattered) => "SCT",
-                Data::Known(CloudDensity::Broken) => "BKN",
-                Data::Known(CloudDensity::Overcast) => "OVC",
-                Data::Unknown => return None,
-            };
-            let height = match layer.height {
-                Data::Known(height) => Some(height),
-                Data::Unknown => None,
-            };
-            Some((amount, height))
-        })
-        .collect::<Vec<_>>();
-    if let Some((amount, _)) = layers
-        .iter()
-        .filter(|(amount, _)| *amount == "BKN" || *amount == "OVC")
-        .min_by_key(|(_, height)| height.unwrap_or(u32::MAX))
-    {
-        return Some((*amount).to_string());
+    if token.starts_with("VV") && parse_metar_cloud_height(&token[2..]).is_some() {
+        return MetarCloudToken::Immediate("VV");
     }
+    for amount in ["FEW", "SCT", "BKN", "OVC"] {
+        if let Some(rest) = token.strip_prefix(amount) {
+            return match parse_metar_cloud_height(rest) {
+                Some(height_ft) => MetarCloudToken::Layer { amount, height_ft },
+                None => MetarCloudToken::None,
+            };
+        }
+    }
+    MetarCloudToken::None
+}
+
+fn parse_metar_cloud_height(rest: &str) -> Option<Option<u32>> {
+    if rest.starts_with("///") {
+        return Some(None);
+    }
+    let digit_len = rest
+        .as_bytes()
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .take(4)
+        .count();
+    if digit_len < 3 {
+        return None;
+    }
+    let suffix = &rest[digit_len..];
+    if !(suffix.is_empty() || suffix == "CB" || suffix == "TCU" || suffix == "///") {
+        return None;
+    }
+    rest[..digit_len]
+        .parse::<u32>()
+        .ok()
+        .map(|hundreds_ft| Some(hundreds_ft * 100))
+}
+
+fn choose_metar_cloud_symbol(layers: &[(&'static str, Option<u32>)]) -> Option<&'static str> {
     layers
         .iter()
-        .min_by_key(|(_, height)| height.unwrap_or(u32::MAX))
-        .map(|(amount, _)| amount.to_string())
-        .or(match metar.clouds {
-            Clouds::NoCloudDetected => Some("SKC".to_string()),
-            Clouds::NoSignificantCloud => Some("NSC".to_string()),
-            Clouds::CloudLayers => None,
+        .filter(|(amount, _)| *amount == "BKN" || *amount == "OVC")
+        .min_by_key(|(_, height_ft)| height_ft.unwrap_or(u32::MAX))
+        .or_else(|| {
+            layers
+                .iter()
+                .min_by_key(|(_, height_ft)| height_ft.unwrap_or(u32::MAX))
         })
+        .map(|(amount, _)| *amount)
 }
 
 pub fn build_nexrad_avare_parity_artifacts(
@@ -2988,6 +3025,53 @@ mod tests {
             "SPECI KBOK 031917Z AUTO 19004KT 3/4SM BR OVC002 11/11 A2990 RMK AO2 RAE1857",
         );
         assert_eq!(clouds.symbol, Some("OVC".to_string()));
+    }
+
+    #[test]
+    fn metar_cloud_symbol_uses_source_clear_sky_tokens() {
+        for (raw_text, expected) in [
+            ("METAR KAAA 160400Z 00000KT 10SM CLR 10/08 A3000", "SKC"),
+            ("METAR KBBB 160400Z 00000KT 10SM SKC 10/08 A3000", "SKC"),
+            ("METAR BIKF 032000Z 34012KT CAVOK 06/M03 Q1012", "SKC"),
+            ("METAR KCCC 160400Z 00000KT 10SM NSC 10/08 A3000", "NSC"),
+        ] {
+            assert_eq!(
+                structured_metar_clouds(raw_text).symbol,
+                Some(expected.to_string()),
+                "{raw_text}",
+            );
+        }
+    }
+
+    #[test]
+    fn metar_cloud_symbol_selects_current_observation_ceiling() {
+        let clouds = structured_metar_clouds(
+            "METAR KBBB 160355Z 18005KT 10SM FEW008 SCT020 BKN025 OVC040 12/09 A3001",
+        );
+        assert_eq!(clouds.symbol, Some("BKN".to_string()));
+    }
+
+    #[test]
+    fn metar_cloud_symbol_selects_lowest_layer_without_ceiling() {
+        let clouds = structured_metar_clouds(
+            "METAR AGGH 032000Z 00000KT 9999 FEW0016 SCT100 24/24 Q1008 NOSIG",
+        );
+        assert_eq!(clouds.symbol, Some("FEW".to_string()));
+    }
+
+    #[test]
+    fn metar_cloud_symbol_ignores_trend_groups() {
+        let clouds = structured_metar_clouds(
+            "METAR EHAM 031955Z 21005KT 9999 FEW013 SCT017 15/13 Q1010 TEMPO BKN014",
+        );
+        assert_eq!(clouds.symbol, Some("FEW".to_string()));
+    }
+
+    #[test]
+    fn metar_cloud_symbol_handles_vertical_visibility() {
+        let clouds =
+            structured_metar_clouds("METAR KAAA 160400Z 00000KT 1/4SM FG VV002 10/08 A3000");
+        assert_eq!(clouds.symbol, Some("VV".to_string()));
     }
 
     #[test]

@@ -151,8 +151,8 @@ function mountStaticTree(sourceRoot: string, options: { missingStatus?: number }
             ? "application/vnd.sqlite3"
           : extension === ".json"
             ? "application/json"
-          : extension === ".terrain"
-            ? "application/vnd.aerobag.terrain"
+          : extension === ".html"
+            ? "text/html; charset=utf-8"
             : "application/octet-stream";
     const acceptEncoding = req.headers?.["accept-encoding"] ?? "";
     const shouldCompress = extension === ".db" || extension === ".json" || sourceRoot === navKvRoot;
@@ -380,6 +380,7 @@ function aerobagStaticPlugin(): Plugin {
     server.middlewares.use("/shaded-relief-products", mountShadedReliefProducts());
     server.middlewares.use("/icons", mountStaticTree(iconsRoot));
     server.middlewares.use("/adsb-traces", mountStaticTree(adsbTraceRoot));
+    server.middlewares.use("/files", mountStaticTree(artifactReadRoot, { missingStatus: 404 }));
   }
 
   return {

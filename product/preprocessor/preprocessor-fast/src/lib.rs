@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::f64::consts::PI;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -11,6 +13,9 @@ use quick_xml::Reader;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+
+const METAR_TILE_ZOOM: u8 = 7;
+const METAR_TILE_PATH_TEMPLATE: &str = "points/metars/7/{x}/{y}.json";
 
 #[derive(Debug, Clone)]
 pub struct BuildTfrRequest {
@@ -159,12 +164,15 @@ struct MetarManifest {
 #[derive(Debug, Clone, Serialize)]
 struct MetarManifestFiles {
     structured_json: String,
+    tile_path_template: String,
     zip: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct MetarManifestCounts {
     metars: usize,
+    tile_count: usize,
+    max_metars_per_tile: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -340,7 +348,7 @@ pub struct StructuredMetarDataset {
     schema_version: u32,
     version_label: String,
     metar_count: usize,
-    metars: Vec<StructuredMetarRecord>,
+    metars_by_station: BTreeMap<String, StructuredMetarRecord>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -351,6 +359,35 @@ pub struct StructuredMetarRecord {
     flight_category: Option<String>,
     longitude: Option<f64>,
     latitude: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MetarTileFile {
+    schema_version: u32,
+    layer: String,
+    z: u8,
+    x: u32,
+    y: u32,
+    records: Vec<MetarTileReference>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MetarTileReference {
+    station_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MetarTileRecord {
+    z: u8,
+    x: u32,
+    y: u32,
+    records: Vec<MetarTileReference>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MetarProductModel {
+    metars_by_station: BTreeMap<String, StructuredMetarRecord>,
+    tiles: Vec<MetarTileRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -769,8 +806,15 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
     fs::create_dir_all(&request.output_dir)
         .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
 
-    let metars = structured_metar_records(&request.input_xml_path)?;
-    let metar_count = metars.len();
+    let model = metar_product_model(&request.input_xml_path)?;
+    let metar_count = model.metars_by_station.len();
+    let tile_count = model.tiles.len();
+    let max_metars_per_tile = model
+        .tiles
+        .iter()
+        .map(|tile| tile.records.len())
+        .max()
+        .unwrap_or(0);
 
     let structured_json_path = request.output_dir.join("metars.json");
     let manifest_path = request
@@ -783,20 +827,42 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
     write_json_pretty(
         &structured_json_path,
         &StructuredMetarDataset {
-            schema_version: 1,
+            schema_version: 2,
             version_label: request.version_label.clone(),
-            metar_count: metars.len(),
-            metars,
+            metar_count,
+            metars_by_station: model.metars_by_station.clone(),
         },
     )?;
+    let mut zip_members = vec![("metars.json".to_string(), structured_json_path.clone())];
+    for tile in &model.tiles {
+        let relative_path = metar_tile_relative_path(tile.z, tile.x, tile.y);
+        let tile_path = request.output_dir.join(&relative_path);
+        if let Some(parent) = tile_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        write_json_pretty(
+            &tile_path,
+            &MetarTileFile {
+                schema_version: 1,
+                layer: "metars".to_string(),
+                z: tile.z,
+                x: tile.x,
+                y: tile.y,
+                records: tile.records.clone(),
+            },
+        )?;
+        zip_members.push((relative_path, tile_path));
+    }
     write_json_pretty(
         &manifest_path,
         &MetarManifest {
-            schema_version: 1,
+            schema_version: 2,
             version_label: request.version_label.clone(),
             generated_at_utc: request.generated_at_utc.to_rfc3339(),
             files: MetarManifestFiles {
                 structured_json: "metars.json".to_string(),
+                tile_path_template: METAR_TILE_PATH_TEMPLATE.to_string(),
                 zip: zip_path
                     .file_name()
                     .and_then(|name| name.to_str())
@@ -805,10 +871,16 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
             },
             counts: MetarManifestCounts {
                 metars: metar_count,
+                tile_count,
+                max_metars_per_tile,
             },
         },
     )?;
-    write_zip(&zip_path, &[("metars.json", &structured_json_path)])?;
+    let zip_member_refs = zip_members
+        .iter()
+        .map(|(relative_path, path)| (relative_path.as_str(), path.as_path()))
+        .collect::<Vec<_>>();
+    write_zip(&zip_path, &zip_member_refs)?;
 
     Ok(BuildMetarResult {
         manifest_path,
@@ -819,9 +891,89 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
 }
 
 pub fn metar_content_fingerprint(input_xml_path: &Path) -> anyhow::Result<String> {
-    let records = structured_metar_records(input_xml_path)?;
-    let bytes = serde_json::to_vec(&records).context("failed to encode canonical METAR records")?;
+    let model = metar_product_model(input_xml_path)?;
+    let bytes = serde_json::to_vec(&model).context("failed to encode canonical METAR model")?;
     Ok(format!("{:x}", Sha256::digest(&bytes)))
+}
+
+fn metar_product_model(input_xml_path: &Path) -> anyhow::Result<MetarProductModel> {
+    let mut metars_by_station = BTreeMap::new();
+    for mut record in structured_metar_records(input_xml_path)? {
+        let station_id = record.station_id.trim().to_ascii_uppercase();
+        if station_id.is_empty() {
+            continue;
+        }
+        record.station_id = station_id.clone();
+        let replace_existing = metars_by_station
+            .get(&station_id)
+            .map(|existing: &StructuredMetarRecord| {
+                (
+                    record.observation_time_utc.as_str(),
+                    record.raw_text.as_str(),
+                ) >= (
+                    existing.observation_time_utc.as_str(),
+                    existing.raw_text.as_str(),
+                )
+            })
+            .unwrap_or(true);
+        if replace_existing {
+            metars_by_station.insert(station_id, record);
+        }
+    }
+    let tiles = build_metar_tiles(&metars_by_station);
+    Ok(MetarProductModel {
+        metars_by_station,
+        tiles,
+    })
+}
+
+fn build_metar_tiles(
+    metars_by_station: &BTreeMap<String, StructuredMetarRecord>,
+) -> Vec<MetarTileRecord> {
+    let mut tiles: BTreeMap<(u8, u32, u32), Vec<MetarTileReference>> = BTreeMap::new();
+    for (station_id, record) in metars_by_station {
+        let (Some(latitude), Some(longitude)) = (record.latitude, record.longitude) else {
+            continue;
+        };
+        if !metar_has_valid_position(latitude, longitude) {
+            continue;
+        }
+        let (x, y) = metar_slippy_tile(latitude, longitude, METAR_TILE_ZOOM);
+        tiles
+            .entry((METAR_TILE_ZOOM, x, y))
+            .or_default()
+            .push(MetarTileReference {
+                station_id: station_id.clone(),
+            });
+    }
+    tiles
+        .into_iter()
+        .map(|((z, x, y), records)| MetarTileRecord { z, x, y, records })
+        .collect()
+}
+
+fn metar_tile_relative_path(z: u8, x: u32, y: u32) -> String {
+    format!("points/metars/{z}/{x}/{y}.json")
+}
+
+fn metar_has_valid_position(latitude: f64, longitude: f64) -> bool {
+    latitude.is_finite()
+        && longitude.is_finite()
+        && (-85.051_128_78..=85.051_128_78).contains(&latitude)
+        && (-180.0..=180.0).contains(&longitude)
+}
+
+fn metar_slippy_tile(latitude: f64, longitude: f64, zoom: u8) -> (u32, u32) {
+    let lat_rad = latitude.to_radians();
+    let tile_count = 2_f64.powi(i32::from(zoom));
+    let x = ((longitude + 180.0) / 360.0) * tile_count;
+    let y = (1.0 - ((lat_rad.tan() + (1.0 / lat_rad.cos())).ln() / PI)) / 2.0 * tile_count;
+    (metar_clamp_tile(x, zoom), metar_clamp_tile(y, zoom))
+}
+
+fn metar_clamp_tile(value: f64, zoom: u8) -> u32 {
+    let max_tile = (1_u32 << zoom) - 1;
+    value.floor().clamp(0.0, f64::from(max_tile)) as u32
 }
 
 fn structured_metar_records(input_xml_path: &Path) -> anyhow::Result<Vec<StructuredMetarRecord>> {
@@ -2546,6 +2698,50 @@ mod tests {
         assert_eq!(
             fs::read(&first_result.zip_path)?,
             fs::read(&second_result.zip_path)?,
+        );
+        let dataset: Value =
+            serde_json::from_slice(&fs::read(&first_result.structured_json_path)?)?;
+        let metars_by_station = dataset
+            .get("metars_by_station")
+            .and_then(|value| value.as_object())
+            .context("METAR dataset should be keyed by station")?;
+        assert!(metars_by_station.contains_key("KAAA"));
+        assert!(metars_by_station.contains_key("KBBB"));
+        assert!(dataset.get("metars").is_none());
+
+        let manifest: Value = serde_json::from_slice(&fs::read(&first_result.manifest_path)?)?;
+        assert_eq!(
+            manifest
+                .pointer("/files/tile_path_template")
+                .and_then(|value| value.as_str()),
+            Some(METAR_TILE_PATH_TEMPLATE),
+        );
+        assert!(
+            manifest
+                .pointer("/counts/tile_count")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0)
+                > 0
+        );
+        assert!(
+            manifest
+                .pointer("/counts/max_metars_per_tile")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0)
+                > 0
+        );
+
+        let (x, y) = metar_slippy_tile(1.0, 2.0, METAR_TILE_ZOOM);
+        let tile_path = first_result
+            .zip_path
+            .parent()
+            .unwrap()
+            .join(metar_tile_relative_path(METAR_TILE_ZOOM, x, y));
+        let tile: Value = serde_json::from_slice(&fs::read(tile_path)?)?;
+        assert_eq!(
+            tile.pointer("/records/0/station_id")
+                .and_then(|value| value.as_str()),
+            Some("KAAA")
         );
         Ok(())
     }

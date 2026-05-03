@@ -10245,21 +10245,29 @@ fn fast_product_source_generated_at(
     )
     .with_context(|| format!("failed to parse {}", structured_json_path.display()))?;
     match product_id {
-        "metars" => value
-            .get("metars")
-            .and_then(|value| value.as_array())
-            .and_then(|records| {
-                records
-                    .iter()
-                    .filter_map(|record| {
-                        record
-                            .get("observation_time_utc")
-                            .and_then(|value| value.as_str())
-                    })
-                    .max()
-            })
-            .map(ToOwned::to_owned)
-            .context("METAR product had no observation_time_utc values"),
+        "metars" => {
+            let records = value
+                .get("metars_by_station")
+                .and_then(|value| value.as_object())
+                .map(|records| records.values().collect::<Vec<_>>())
+                .or_else(|| {
+                    value
+                        .get("metars")
+                        .and_then(|value| value.as_array())
+                        .map(|records| records.iter().collect::<Vec<_>>())
+                })
+                .context("METAR product had no records")?;
+            records
+                .into_iter()
+                .filter_map(|record| {
+                    record
+                        .get("observation_time_utc")
+                        .and_then(|value| value.as_str())
+                })
+                .max()
+                .map(ToOwned::to_owned)
+                .context("METAR product had no observation_time_utc values")
+        }
         "nexrad" => value
             .get("frames")
             .and_then(|value| value.as_array())

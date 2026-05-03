@@ -2317,7 +2317,9 @@ fn bearing_degrees(from: LatLon, to: LatLon) -> f64 {
 fn nav_ref_label(nav_ref: &NavRef) -> String {
     match nav_ref {
         NavRef::Airport(code) | NavRef::Navaid(code) | NavRef::Fix(code) => code.clone(),
-        NavRef::ArincNavaid { identifier, .. } => identifier.clone(),
+        NavRef::ArincNavaid { identifier, .. } | NavRef::TerminalNavaid { identifier, .. } => {
+            identifier.clone()
+        }
         NavRef::LatLon(position) => format!("{:.4},{:.4}", position.lat, position.lon),
     }
 }

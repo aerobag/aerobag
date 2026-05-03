@@ -1,8 +1,7 @@
 use crate::planning::LegDisplayPathStyle;
 use crate::{
-    basic_terminal_state, direct_to_fix_with_course_continuation_requirement,
-    reconcile_handoff, HandoffDecision, LatLon, LegDisplayElement, LegDisplayPath,
-    ProcedureLegMaterializationRecord,
+    basic_terminal_state, direct_to_fix_with_course_continuation_requirement, reconcile_handoff,
+    HandoffDecision, LatLon, LegDisplayElement, LegDisplayPath, ProcedureLegMaterializationRecord,
 };
 
 macro_rules! debug_source {
@@ -641,6 +640,7 @@ fn build_procedure_leg_display_path(
         .or(leg_start.altitude_1_ft);
     let mut elements = Vec::new();
     let mut debug_sources = Vec::new();
+    let mut pending_direct_turn_clockwise: Option<bool> = None;
 
     let mut steps = segment_records
         .iter()
@@ -651,6 +651,7 @@ fn build_procedure_leg_display_path(
     steps.sort_by_key(|record| record.sequence);
 
     for (index, step) in steps.iter().enumerate() {
+        let pending_direct_turn_for_step = pending_direct_turn_clockwise.take();
         match step.path_termination.trim() {
             "FM" | "HA" => {
                 panic!(
@@ -711,20 +712,17 @@ fn build_procedure_leg_display_path(
             }
             "CA" => {
                 if ca_is_altitude_note_before_climbing_turn(step, steps.get(index + 1).copied()) {
-                    current_course_deg = Some(current_or_step_course_deg(step, current_course_deg)?);
+                    current_course_deg =
+                        Some(current_or_step_course_deg(step, current_course_deg)?);
                     continue;
                 }
                 let course_deg = current_or_step_course_deg(step, current_course_deg)?;
-                let climb_limit = steps
-                    .get(index + 1)
-                    .and_then(|next_step| {
-                        next_step.nav_position.filter(|fix| {
-                            angular_difference_degrees(
-                                bearing_from(current_position, *fix),
-                                course_deg,
-                            ) <= 30.0
-                        })
-                    });
+                let climb_limit = steps.get(index + 1).and_then(|next_step| {
+                    next_step.nav_position.filter(|fix| {
+                        angular_difference_degrees(bearing_from(current_position, *fix), course_deg)
+                            <= 30.0
+                    })
+                });
                 let prior_len = elements.len();
                 current_position = extend_climb_segment(
                     &mut elements,
@@ -950,6 +948,12 @@ fn build_procedure_leg_display_path(
                     continue;
                 }
                 if distance_between_points_nm(current_position, fix) <= MIN_GEOMETRY_DISTANCE_NM {
+                    pending_direct_turn_clockwise =
+                        match step.turn_direction.as_deref().map(str::trim) {
+                            Some("L") => Some(false),
+                            Some("R") => Some(true),
+                            _ => None,
+                        };
                     current_position = fix;
                     continue;
                 }
@@ -964,7 +968,7 @@ fn build_procedure_leg_display_path(
                             turn_clockwise,
                             turn_radius_nm,
                         );
-                        if let Some((turn_end, rejoin_course_deg)) =
+                        if let Some((mut turn_end, mut rejoin_course_deg)) =
                             tangent_rejoin_from_turn_with_min_sweep(
                                 turn_center,
                                 turn_radius_nm,
@@ -984,11 +988,38 @@ fn build_procedure_leg_display_path(
                                 Some((turn_end, direct_course_deg))
                             })
                         {
-                            let sweep_degrees = heading_sweep_degrees(
+                            let mut sweep_degrees = heading_sweep_degrees(
                                 initial_course_deg,
                                 rejoin_course_deg,
                                 turn_clockwise,
                             );
+                            let direct_course_deg = bearing_from(current_position, fix);
+                            if sweep_degrees > 270.0
+                                && angular_difference_degrees(initial_course_deg, direct_course_deg)
+                                    <= 30.0
+                            {
+                                if let Some((short_turn_end, short_rejoin_course_deg)) =
+                                    tangent_rejoin_from_turn_with_min_sweep_prefer_shortest(
+                                        turn_center,
+                                        turn_radius_nm,
+                                        initial_course_deg,
+                                        turn_clockwise,
+                                        fix,
+                                        0.0,
+                                    )
+                                {
+                                    let short_sweep_degrees = heading_sweep_degrees(
+                                        initial_course_deg,
+                                        short_rejoin_course_deg,
+                                        turn_clockwise,
+                                    );
+                                    if short_sweep_degrees <= 30.0 {
+                                        turn_end = short_turn_end;
+                                        rejoin_course_deg = short_rejoin_course_deg;
+                                        sweep_degrees = short_sweep_degrees;
+                                    }
+                                }
+                            }
                             // An explicit missed-approach DF turn is procedure content, not
                             // smoothing. Preserve it even when the visual arc is tiny; KDHN
                             // R14/MUNEE only needs a very shallow left turn before the fix.
@@ -1131,6 +1162,51 @@ fn build_procedure_leg_display_path(
                     > MIN_GEOMETRY_DISTANCE_NM
                 {
                     if let Some(current_heading_deg) = current_course_deg {
+                        if let Some(turn_clockwise) = pending_direct_turn_for_step {
+                            let turn_radius_nm = missed_approach_turn_radius_nm();
+                            let turn_center = turn_center_for_heading_change(
+                                current_position,
+                                current_heading_deg,
+                                turn_clockwise,
+                                turn_radius_nm,
+                            );
+                            if let Some((turn_end, rejoin_course_deg)) =
+                                tangent_rejoin_from_turn_with_min_sweep(
+                                    turn_center,
+                                    turn_radius_nm,
+                                    current_heading_deg,
+                                    turn_clockwise,
+                                    effective_fix,
+                                    0.0,
+                                )
+                            {
+                                elements.push(LegDisplayElement::Arc {
+                                    center: turn_center,
+                                    radius_nm: turn_radius_nm,
+                                    start: current_position,
+                                    end: turn_end,
+                                    clockwise: turn_clockwise,
+                                    sweep_degrees: heading_sweep_degrees(
+                                        current_heading_deg,
+                                        rejoin_course_deg,
+                                        turn_clockwise,
+                                    ),
+                                });
+                                debug_sources.push(format!(
+                                    "{}{}",
+                                    EXPLICIT_MISSED_TURN_SOURCE_PREFIX,
+                                    debug_source!()
+                                ));
+                                if distance_between_points_nm(turn_end, effective_fix)
+                                    > MIN_GEOMETRY_DISTANCE_NM
+                                {
+                                    push_segment!(elements, debug_sources, turn_end, effective_fix);
+                                }
+                                current_course_deg = Some(rejoin_course_deg);
+                                current_position = effective_fix;
+                                continue;
+                            }
+                        }
                         if steps
                             .get(index + 1)
                             .is_some_and(|next| next.path_termination.trim() == "CF")
@@ -1508,17 +1584,17 @@ fn append_course_track_path(
                     track_limit,
                 )
             });
-                let intercept = if let Some(intercept) = direct_intercept {
-                    let intercept_distance_nm = distance_between_points_nm(current_position, intercept);
-                    if intercept_distance_nm <= NEAR_INTERCEPT_SNAP_DISTANCE_NM {
-                        // A near-at-fix course change, such as KICT I01R/JAMEY at NAZMU,
-                        // is a fly-by corner. Keep the published legs exact here; a later
-                        // fillet/turn-anticipation pass can smooth it using both tangents.
-                        current_position
-                    } else if intercept_distance_nm > MIN_GEOMETRY_DISTANCE_NM {
-                        push_segment!(elements, debug_sources, current_position, intercept);
-                        intercept
-                    } else {
+            let intercept = if let Some(intercept) = direct_intercept {
+                let intercept_distance_nm = distance_between_points_nm(current_position, intercept);
+                if intercept_distance_nm <= NEAR_INTERCEPT_SNAP_DISTANCE_NM {
+                    // A near-at-fix course change, such as KICT I01R/JAMEY at NAZMU,
+                    // is a fly-by corner. Keep the published legs exact here; a later
+                    // fillet/turn-anticipation pass can smooth it using both tangents.
+                    current_position
+                } else if intercept_distance_nm > MIN_GEOMETRY_DISTANCE_NM {
+                    push_segment!(elements, debug_sources, current_position, intercept);
+                    intercept
+                } else {
                     current_position
                 }
             } else {
@@ -1622,8 +1698,13 @@ fn course_to_fix_start_decision(
     {
         return CourseToFixStartDecision::JoinPublishedCourse;
     }
-    if !track_intercept_is_reasonable(current_position, fix, course_anchor, course_deg, track_limit)
-    {
+    if !track_intercept_is_reasonable(
+        current_position,
+        fix,
+        course_anchor,
+        course_deg,
+        track_limit,
+    ) {
         return CourseToFixStartDecision::JoinPublishedCourse;
     }
     CourseToFixStartDecision::DirectToFixAlreadySatisfiesCourse
@@ -2039,7 +2120,11 @@ fn delayed_turn_start_for_track_capture(
 fn course_reference_variation_deg(leg: &ProcedureLegMaterializationRecord) -> f64 {
     if matches!(
         leg.defining_nav_ref,
-        Some(crate::NavRef::Navaid(_) | crate::NavRef::ArincNavaid { .. })
+        Some(
+            crate::NavRef::Navaid(_)
+                | crate::NavRef::ArincNavaid { .. }
+                | crate::NavRef::TerminalNavaid { .. }
+        )
     ) {
         return leg
             .defining_nav_magnetic_variation_deg
@@ -2049,7 +2134,11 @@ fn course_reference_variation_deg(leg: &ProcedureLegMaterializationRecord) -> f6
     }
     if matches!(
         leg.nav_ref,
-        Some(crate::NavRef::Navaid(_) | crate::NavRef::ArincNavaid { .. })
+        Some(
+            crate::NavRef::Navaid(_)
+                | crate::NavRef::ArincNavaid { .. }
+                | crate::NavRef::TerminalNavaid { .. }
+        )
     ) {
         return leg
             .nav_magnetic_variation_deg
@@ -2234,6 +2323,51 @@ fn tangent_rejoin_from_turn_with_min_sweep(
             Some((turn_end, rejoin_course_deg, sweep_degrees))
         })
         .max_by(|left, right| {
+            left.2
+                .partial_cmp(&right.2)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(turn_end, rejoin_course_deg, _)| (turn_end, rejoin_course_deg))
+}
+
+fn tangent_rejoin_from_turn_with_min_sweep_prefer_shortest(
+    turn_center: LatLon,
+    radius_nm: f64,
+    initial_course_deg: f64,
+    clockwise: bool,
+    fix: LatLon,
+    min_sweep_degrees: f64,
+) -> Option<(LatLon, f64)> {
+    let fix_en = to_local_en(turn_center, fix);
+    let distance_sq = fix_en.0 * fix_en.0 + fix_en.1 * fix_en.1;
+    if distance_sq <= radius_nm * radius_nm {
+        return None;
+    }
+    let scale = (radius_nm * radius_nm) / distance_sq;
+    let offset_scale = radius_nm * (distance_sq - radius_nm * radius_nm).sqrt() / distance_sq;
+    let candidates = [
+        (
+            scale * fix_en.0 - offset_scale * fix_en.1,
+            scale * fix_en.1 + offset_scale * fix_en.0,
+        ),
+        (
+            scale * fix_en.0 + offset_scale * fix_en.1,
+            scale * fix_en.1 - offset_scale * fix_en.0,
+        ),
+    ];
+    candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            let turn_end = offset_latlon(turn_center, candidate.0, candidate.1);
+            let rejoin_course_deg = bearing_from(turn_end, fix);
+            let sweep_degrees =
+                heading_sweep_degrees(initial_course_deg, rejoin_course_deg, clockwise);
+            if sweep_degrees < min_sweep_degrees {
+                return None;
+            }
+            Some((turn_end, rejoin_course_deg, sweep_degrees))
+        })
+        .min_by(|left, right| {
             left.2
                 .partial_cmp(&right.2)
                 .unwrap_or(std::cmp::Ordering::Equal)

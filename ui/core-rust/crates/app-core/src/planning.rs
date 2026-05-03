@@ -1074,6 +1074,13 @@ pub enum NavRef {
         section_code: String,
         subsection_code: String,
     },
+    TerminalNavaid {
+        airport_id: String,
+        identifier: String,
+        icao_code: String,
+        section_code: String,
+        subsection_code: String,
+    },
     Fix(String),
     LatLon(LatLon),
 }
@@ -3700,7 +3707,9 @@ fn active_component_index_for_guidance(
 fn nav_ref_label(nav_ref: &NavRef) -> String {
     match nav_ref {
         NavRef::Airport(code) | NavRef::Navaid(code) | NavRef::Fix(code) => code.clone(),
-        NavRef::ArincNavaid { identifier, .. } => identifier.clone(),
+        NavRef::ArincNavaid { identifier, .. } | NavRef::TerminalNavaid { identifier, .. } => {
+            identifier.clone()
+        }
         NavRef::LatLon(position) => format!("{:.4},{:.4}", position.lat, position.lon),
     }
 }

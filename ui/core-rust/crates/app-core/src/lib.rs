@@ -114,7 +114,8 @@ pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use procedure_geometry::{
     build_trailing_course_to_intercept_display_path, display_path_for_procedure_leg,
     display_path_for_procedure_leg_before_following_segment, display_path_for_resumed_common_cf,
-    display_path_for_single_procedure_step, display_path_for_terminal_tf_to_following_common_course,
+    display_path_for_single_procedure_step,
+    display_path_for_terminal_tf_to_following_common_course,
 };
 pub use procedure_legs::{
     interpret_path_termination, leading_procedure_discontinuity, parse_airport_magnetic_variation,
@@ -169,6 +170,8 @@ pub use terrain::{
 const MIN_GEOMETRY_DISTANCE_NM: f64 = 0.05;
 const MIN_ARC_SWEEP_DEG: f64 = 0.5;
 const MAX_APPROACH_DISPLAY_ELEMENT_DISTANCE_NM: f64 = 40.0;
+const MAX_ENROUTE_TRANSITION_DISPLAY_ELEMENT_DISTANCE_NM: f64 = 200.0;
+const MAX_PUBLISHED_HOLD_OR_MISSED_SEGMENT_DISTANCE_NM: f64 = 60.0;
 const POSITION_EPSILON_DEG: f64 = 0.0005;
 const EXPLICIT_MISSED_TURN_SOURCE_PREFIX: &str = "explicit_missed_turn@";
 
@@ -1055,6 +1058,7 @@ fn nav_ref_identifier(nav_ref: &NavRef) -> Option<&str> {
     match nav_ref {
         NavRef::Airport(code) | NavRef::Navaid(code) | NavRef::Fix(code) => Some(code.as_str()),
         NavRef::ArincNavaid { identifier, .. } => Some(identifier.as_str()),
+        NavRef::TerminalNavaid { identifier, .. } => Some(identifier.as_str()),
         NavRef::LatLon(_) => None,
     }
 }
@@ -1151,6 +1155,7 @@ pub fn materialize_procedure_from_records(
             kind.clone(),
             component_index,
             true,
+            true,
             &segments,
         )?;
 
@@ -1238,6 +1243,7 @@ pub fn materialize_procedure_from_records(
         procedure_id,
         kind.clone(),
         component_index,
+        true,
         true,
         &segments,
     )?;
@@ -1460,6 +1466,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
     kind: ProcedureKind,
     component_index: usize,
     validate_heading_continuity: bool,
+    validate_display_geometry: bool,
     segments: &[(
         MaterializedSegmentRole,
         Vec<ProcedureLegMaterializationRecord>,
@@ -1659,9 +1666,11 @@ fn resolve_procedure_materialization_legs_with_provenance(
         }
     }
 
-    validate_no_zero_length_legs(&resolved, procedure_id);
-    validate_no_absurdly_long_display_elements(&resolved, procedure_id)?;
-    validate_display_path_geometry_stitches(&resolved, procedure_id);
+    if validate_display_geometry {
+        validate_no_zero_length_legs(&resolved, procedure_id);
+        validate_no_absurdly_long_display_elements(&resolved, procedure_id)?;
+        validate_display_path_geometry_stitches(&resolved, procedure_id);
+    }
     if validate_heading_continuity {
         validate_required_procedure_turns_materialized(
             &required_procedure_turn_sequences,
@@ -1876,12 +1885,13 @@ fn validate_no_absurdly_long_display_elements(
                     ..
                 } => radius_nm * sweep_degrees.abs().to_radians(),
             };
-            if distance_nm > MAX_APPROACH_DISPLAY_ELEMENT_DISTANCE_NM {
+            let allowed_distance_nm = allowed_approach_display_element_distance_nm(leg, element);
+            if distance_nm > allowed_distance_nm {
                 return Err(AppError {
                     kind: AppErrorKind::InvalidFlightPlan,
                     message: format!(
                         "procedure display path element exceeds {:.0} NM for {} leg={} element#{} distance_nm={:.1} pt={:?}",
-                        MAX_APPROACH_DISPLAY_ELEMENT_DISTANCE_NM,
+                        allowed_distance_nm,
                         procedure_id.trim(),
                         leg.id,
                         index,
@@ -1893,6 +1903,28 @@ fn validate_no_absurdly_long_display_elements(
         }
     }
     Ok(())
+}
+
+fn allowed_approach_display_element_distance_nm(
+    leg: &ResolvedLeg,
+    element: &LegDisplayElement,
+) -> f64 {
+    let Some(provenance) = leg.procedure_provenance.as_ref() else {
+        return MAX_APPROACH_DISPLAY_ELEMENT_DISTANCE_NM;
+    };
+    let is_charted_feeder_transition = provenance.role == ProcedureSegmentRole::EnrouteTransition;
+    if is_charted_feeder_transition {
+        return MAX_ENROUTE_TRANSITION_DISPLAY_ELEMENT_DISTANCE_NM;
+    }
+    let is_published_hold_or_missed_segment =
+        matches!(
+            provenance.path_termination,
+            PathTermination::HeadingToManual
+        ) && matches!(element, LegDisplayElement::Segment { .. });
+    if is_published_hold_or_missed_segment {
+        return MAX_PUBLISHED_HOLD_OR_MISSED_SEGMENT_DISTANCE_NM;
+    }
+    MAX_APPROACH_DISPLAY_ELEMENT_DISTANCE_NM
 }
 
 fn validate_display_path_geometry_stitches(resolved: &[ResolvedLeg], procedure_id: &str) {
@@ -2010,7 +2042,10 @@ fn validate_explicit_missed_direct_turns_materialized(
         }
         for record in records.iter().filter(|record| {
             record.path_termination.trim() == "DF"
-                && matches!(record.turn_direction.as_deref().map(str::trim), Some("L" | "R"))
+                && matches!(
+                    record.turn_direction.as_deref().map(str::trim),
+                    Some("L" | "R")
+                )
                 && record.nav_position.is_some()
         }) {
             let turn_clockwise = record.turn_direction.as_deref().map(str::trim) == Some("R");
@@ -2020,7 +2055,7 @@ fn validate_explicit_missed_direct_turns_materialized(
                 procedure_id.trim(),
                 record.key.route_type.trim()
             );
-            let Some(path) = resolved
+            let paths = resolved
                 .iter()
                 .filter(|leg| leg.id.starts_with(&route_prefix))
                 .filter_map(|leg| {
@@ -2029,11 +2064,27 @@ fn validate_explicit_missed_direct_turns_materialized(
                         .filter(|provenance| provenance.leg_sequence >= record.sequence)
                         .and_then(|provenance| provenance.display_path.as_ref())
                 })
-                .next()
-            else {
+                .collect::<Vec<_>>();
+            if paths.is_empty() {
                 continue;
-            };
-            if explicit_turn_path_has_arc_before_fix(path, fix, turn_clockwise) {
+            }
+            if paths
+                .iter()
+                .any(|path| explicit_turn_path_has_arc_before_fix(path, fix, turn_clockwise))
+            {
+                continue;
+            }
+            if paths
+                .iter()
+                .any(|path| explicit_turn_path_has_arc_from_fix(path, fix, turn_clockwise))
+            {
+                continue;
+            }
+            if paths.iter().any(|path| {
+                explicit_missed_direct_to_hold_turn_is_visually_negligible(
+                    path, records, record, fix,
+                )
+            }) {
                 continue;
             }
             return Err(AppError {
@@ -2049,6 +2100,37 @@ fn validate_explicit_missed_direct_turns_materialized(
         }
     }
     Ok(())
+}
+
+fn explicit_missed_direct_to_hold_turn_is_visually_negligible(
+    path: &LegDisplayPath,
+    records: &[ProcedureLegMaterializationRecord],
+    record: &ProcedureLegMaterializationRecord,
+    fix: LatLon,
+) -> bool {
+    let Some(next_record) = records
+        .iter()
+        .filter(|candidate| candidate.sequence > record.sequence)
+        .min_by_key(|candidate| candidate.sequence)
+    else {
+        return false;
+    };
+    if !matches!(next_record.path_termination.trim(), "HF" | "HM")
+        || next_record.nav_position != Some(fix)
+    {
+        return false;
+    }
+    let Some(LegDisplayElement::Segment { start, end }) = path.elements.first() else {
+        return false;
+    };
+    if !positions_nearly_equal(*end, fix) {
+        return false;
+    }
+    let distance_nm = great_circle_distance_nm(*start, *end);
+    // Some missed DF rows carry an explicit turn direction even when the fix is so
+    // close that drawing a separate pre-fix arc would be decorative. KAIA I30/AIA
+    // reaches AIA after 0.9 nm, then immediately enters the published hold.
+    distance_nm <= 1.0
 }
 
 fn explicit_turn_path_has_arc_before_fix(
@@ -2072,6 +2154,21 @@ fn explicit_turn_path_has_arc_before_fix(
         }
     }
     false
+}
+
+fn explicit_turn_path_has_arc_from_fix(
+    path: &LegDisplayPath,
+    fix: LatLon,
+    turn_clockwise: bool,
+) -> bool {
+    matches!(
+        path.elements.first(),
+        Some(LegDisplayElement::Arc {
+            start,
+            clockwise,
+            ..
+        }) if *clockwise == turn_clockwise && positions_nearly_equal(*start, fix)
+    )
 }
 
 #[derive(Clone)]
@@ -2481,10 +2578,14 @@ fn enters_published_hold(
     previous: &DisplayElementHeadingSignature,
     current: &DisplayElementHeadingSignature,
 ) -> bool {
-    let current_is_hold_geometry =
-        matches!(current.element_role.as_deref(), Some("hold_entry" | "hold_racetrack"));
-    let previous_is_hold_geometry =
-        matches!(previous.element_role.as_deref(), Some("hold_entry" | "hold_racetrack"));
+    let current_is_hold_geometry = matches!(
+        current.element_role.as_deref(),
+        Some("hold_entry" | "hold_racetrack")
+    );
+    let previous_is_hold_geometry = matches!(
+        previous.element_role.as_deref(),
+        Some("hold_entry" | "hold_racetrack")
+    );
     current_is_hold_geometry
         && !previous_is_hold_geometry
         && positions_nearly_equal(previous.end_position, current.start_position)
@@ -2613,7 +2714,10 @@ fn is_published_missed_route_turn_with_room(
     }
     let previous_len_nm = great_circle_distance_nm(previous.start_position, previous.end_position);
     let current_len_nm = great_circle_distance_nm(current.start_position, current.end_position);
-    previous_len_nm >= 2.0 && current_len_nm >= 2.0
+    // Missed-approach hold fixes are often deliberately close to the runway.
+    // KORF R32/SUNNS turns at CERIN after a rounded 1.0 nm, and KHSP R25/AHLER and
+    // KCEK R35/BIE show the same charted close-in fix-to-hold pattern.
+    previous_len_nm >= 0.9 && current_len_nm >= 2.0
 }
 
 fn published_acute_turn_heading_tolerance_deg(
@@ -2737,6 +2841,7 @@ fn describe_nav_ref(nav_ref: &NavRef) -> String {
         NavRef::Airport(code) => code.clone(),
         NavRef::Navaid(code) => code.clone(),
         NavRef::ArincNavaid { identifier, .. } => identifier.clone(),
+        NavRef::TerminalNavaid { identifier, .. } => identifier.clone(),
         NavRef::Fix(code) => code.clone(),
         NavRef::LatLon(position) => format!("latlon:{:.4},{:.4}", position.lat, position.lon),
     }
@@ -5135,6 +5240,7 @@ mod tests {
                 ProcedureKind::Approach,
                 0,
                 false,
+                false,
                 &segments,
             )
             .map_err(|err| err.to_string())?;
@@ -5571,6 +5677,7 @@ mod tests {
             ProcedureKind::Approach,
             0,
             false,
+            true,
             &segments,
         )?;
         Ok(MaterializedProcedure {
@@ -7135,6 +7242,272 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual visual inspection overlay for KABI I35R ABI"]
+    fn writes_kabi_i35r_abi_overlay_png() {
+        render_procedure_overlay_to_paths("KABI", "I35R", "ABI", "KABI_I35R_ABI", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KILM I24-Y GM"]
+    fn writes_kilm_i24y_gm_overlay_png() {
+        render_procedure_overlay_to_paths("KILM", "I24-Y", "GM", "KILM_I24-Y_GM", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for PMDY R24 IDOCA"]
+    fn writes_pmdy_r24_idoca_overlay_png() {
+        render_procedure_overlay_to_paths("PMDY", "R24", "IDOCA", "PMDY_R24_IDOCA", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlays for long feeder transition exemplars"]
+    fn writes_long_feeder_transition_exemplar_overlays() {
+        clean_procedure_plot_output_dir();
+        for (airport_id, procedure_id, transition_id, output_stem) in [
+            ("PMDY", "R24", "IDOCA", "long_feeder_PMDY_R24_IDOCA"),
+            ("97M", "R13", "DIK", "long_feeder_97M_R13_DIK"),
+            ("KDRT", "R13", "CSI", "long_feeder_KDRT_R13_CSI"),
+            ("PARC", "R20", "OMEDE", "long_feeder_PARC_R20_OMEDE"),
+            ("KRKD", "R31", "ENE", "long_feeder_KRKD_R31_ENE"),
+        ] {
+            render_procedure_overlay_to_paths(
+                airport_id,
+                procedure_id,
+                transition_id,
+                output_stem,
+                false,
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlays for remaining long-element failures"]
+    fn writes_remaining_long_element_failure_overlays() {
+        clean_procedure_plot_output_dir();
+        for (airport_id, procedure_id, transition_id, output_stem) in [
+            ("05U", "R18", "JEBEG", "remaining_long_05U_R18_JEBEG"),
+            ("KPDT", "I26", "LACIB", "remaining_long_KPDT_I26_LACIB"),
+            ("06D", "R32", "DVL", "remaining_long_06D_R32_DVL"),
+            ("KMKC", "I19", "ANX", "remaining_long_KMKC_I19_ANX"),
+        ] {
+            render_procedure_overlay_to_paths(
+                airport_id,
+                procedure_id,
+                transition_id,
+                output_stem,
+                false,
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for logical-heading exemplar KLNK I36-Y LNK"]
+    fn writes_klnk_i36y_lnk_logical_heading_exemplar_overlay() {
+        clean_procedure_plot_output_dir();
+        render_procedure_overlay_to_paths(
+            "KLNK",
+            "I36-Y",
+            "LNK",
+            "logical_heading_KLNK_I36-Y_LNK",
+            true,
+        );
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for logical-heading exemplar KGDB R33 MOLOW"]
+    fn writes_kgdb_r33_molow_logical_heading_exemplar_overlay() {
+        clean_procedure_plot_output_dir();
+        render_procedure_overlay_to_paths(
+            "KGDB",
+            "R33",
+            "MOLOW",
+            "logical_heading_KGDB_R33_MOLOW",
+            true,
+        );
+    }
+
+    #[test]
+    #[ignore = "manual probe for KGDB R33 MOLOW materialization rows"]
+    fn audit_kgdb_r33_molow_materialization_rows() {
+        let store = load_snapshot_nav_kv_store();
+        let rows = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "KGDB".to_string(),
+                procedure_id: "R33".to_string(),
+            },
+            "KGDB R33 materialization rows",
+        );
+        for row in rows.iter().filter(|row| {
+            row.key.transition_id.trim() == "MOLOW" || row.key.route_type.trim() == "R"
+        }) {
+            eprintln!("{row:#?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for DF-to-HM logical-heading exemplar KORF R32 SUNNS"]
+    fn writes_korf_r32_sunns_logical_heading_exemplar_overlay() {
+        clean_procedure_plot_output_dir();
+        render_procedure_overlay_to_paths(
+            "KORF",
+            "R32",
+            "SUNNS",
+            "logical_heading_KORF_R32_SUNNS",
+            true,
+        );
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for DF-to-HM logical-heading exemplar KHSP R25 AHLER"]
+    fn writes_khsp_r25_ahler_logical_heading_exemplar_overlay() {
+        clean_procedure_plot_output_dir();
+        render_procedure_overlay_to_paths(
+            "KHSP",
+            "R25",
+            "AHLER",
+            "logical_heading_KHSP_R25_AHLER",
+            true,
+        );
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for DF-to-HM logical-heading exemplar KCEK R35 BIE"]
+    fn writes_kcek_r35_bie_logical_heading_exemplar_overlay() {
+        clean_procedure_plot_output_dir();
+        render_procedure_overlay_to_paths(
+            "KCEK",
+            "R35",
+            "BIE",
+            "logical_heading_KCEK_R35_BIE",
+            true,
+        );
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for explicit missed direct-to exemplar KAIA I30 AIA"]
+    fn writes_kaia_i30_aia_explicit_missed_direct_to_exemplar_overlay() {
+        clean_procedure_plot_output_dir();
+        render_procedure_overlay_to_paths(
+            "KAIA",
+            "I30",
+            "AIA",
+            "explicit_missed_direct_KAIA_I30_AIA",
+            true,
+        );
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for explicit missed direct-to exemplar KBLV I32L ENL"]
+    fn writes_kblv_i32l_enl_explicit_missed_direct_to_exemplar_overlay() {
+        clean_procedure_plot_output_dir();
+        render_procedure_overlay_to_paths(
+            "KBLV",
+            "I32L",
+            "ENL",
+            "explicit_missed_direct_KBLV_I32L_ENL",
+            true,
+        );
+    }
+
+    #[test]
+    #[ignore = "manual probe for KBLV I32L ENL materialization rows"]
+    fn audit_kblv_i32l_enl_materialization_rows() {
+        let store = load_snapshot_nav_kv_store();
+        let rows = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "KBLV".to_string(),
+                procedure_id: "I32L".to_string(),
+            },
+            "KBLV I32L materialization rows",
+        );
+        for row in rows
+            .iter()
+            .filter(|row| row.key.transition_id.trim() == "ENL" || row.key.route_type.trim() == "I")
+        {
+            eprintln!("{row:#?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "manual probe for KLNK I36-Y LNK materialization rows"]
+    fn audit_klnk_i36y_lnk_materialization_rows() {
+        let store = load_snapshot_nav_kv_store();
+        let rows = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "KLNK".to_string(),
+                procedure_id: "I36-Y".to_string(),
+            },
+            "KLNK I36-Y materialization rows",
+        );
+        for row in rows
+            .iter()
+            .filter(|row| row.key.transition_id.trim() == "LNK" || row.key.route_type.trim() == "I")
+        {
+            eprintln!("{row:#?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "manual probe for PMDY R24 IDOCA materialization rows"]
+    fn audit_pmdy_r24_idoca_materialization_rows() {
+        let store = load_snapshot_nav_kv_store();
+        let rows = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "PMDY".to_string(),
+                procedure_id: "R24".to_string(),
+            },
+            "PMDY R24 materialization rows",
+        );
+        for row in rows.iter().filter(|row| {
+            row.key.transition_id.trim() == "IDOCA" || row.key.route_type.trim() == "R"
+        }) {
+            eprintln!("{row:#?}");
+        }
+        let Ok(materialized) =
+            materialize_snapshot_procedure(&store, "PMDY", "R24", Some("IDOCA".to_string()))
+        else {
+            eprintln!(
+                "PMDY R24 IDOCA fails strict materialization; rows above are the probe payload"
+            );
+            return;
+        };
+        for leg in &materialized.resolved_legs {
+            eprintln!(
+                "leg id={} from={} to={} seq={:?} pt={:?}",
+                leg.id,
+                describe_nav_ref(&leg.from),
+                describe_nav_ref(&leg.to),
+                leg.procedure_provenance.as_ref().map(|p| p.leg_sequence),
+                leg.procedure_provenance
+                    .as_ref()
+                    .map(|p| &p.path_termination),
+            );
+            if let Some(path) = leg
+                .procedure_provenance
+                .as_ref()
+                .and_then(|provenance| provenance.display_path.as_ref())
+            {
+                for (index, element) in path.elements.iter().enumerate() {
+                    if let LegDisplayElement::Segment { start, end } = element {
+                        eprintln!(
+                            "  element#{index} segment {:.6},{:.6} -> {:.6},{:.6} distance_nm={:.2}",
+                            start.lat,
+                            start.lon,
+                            end.lat,
+                            end.lon,
+                            great_circle_distance_nm(*start, *end),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "manual probe for 09J VOR-A SSI materialization rows"]
     fn audit_09j_vora_ssi_materialization_rows() {
         let store = load_snapshot_nav_kv_store();
@@ -7146,9 +7519,50 @@ mod tests {
             },
             "09J VOR-A materialization rows",
         );
-        for row in rows.iter().filter(|row| {
-            row.key.transition_id.trim() == "SSI" || row.key.route_type.trim() == "S"
-        }) {
+        for row in rows
+            .iter()
+            .filter(|row| row.key.transition_id.trim() == "SSI" || row.key.route_type.trim() == "S")
+        {
+            eprintln!("{row:#?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "manual probe for KABI I35R ABI materialization rows"]
+    fn audit_kabi_i35r_abi_materialization_rows() {
+        let store = load_snapshot_nav_kv_store();
+        let rows = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "KABI".to_string(),
+                procedure_id: "I35R".to_string(),
+            },
+            "KABI I35R materialization rows",
+        );
+        for row in rows
+            .iter()
+            .filter(|row| row.key.transition_id.trim() == "ABI" || row.key.route_type.trim() == "I")
+        {
+            eprintln!("{row:#?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "manual probe for KILM I24-Y GM materialization rows"]
+    fn audit_kilm_i24y_gm_materialization_rows() {
+        let store = load_snapshot_nav_kv_store();
+        let rows = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "KILM".to_string(),
+                procedure_id: "I24-Y".to_string(),
+            },
+            "KILM I24-Y materialization rows",
+        );
+        for row in rows
+            .iter()
+            .filter(|row| row.key.transition_id.trim() == "GM" || row.key.route_type.trim() == "I")
+        {
             eprintln!("{row:#?}");
         }
     }
@@ -7203,9 +7617,10 @@ mod tests {
             },
             "KPWA VOR-A materialization rows",
         );
-        for row in rows.iter().filter(|row| {
-            row.key.transition_id.trim() == "IRW" || row.key.route_type.trim() == "S"
-        }) {
+        for row in rows
+            .iter()
+            .filter(|row| row.key.transition_id.trim() == "IRW" || row.key.route_type.trim() == "S")
+        {
             eprintln!("{row:#?}");
         }
     }
@@ -7241,10 +7656,9 @@ mod tests {
             },
             "KICT I01R materialization rows",
         );
-        for row in rows
-            .iter()
-            .filter(|row| row.key.transition_id.trim() == "JAMEY" || row.key.route_type.trim() == "I")
-        {
+        for row in rows.iter().filter(|row| {
+            row.key.transition_id.trim() == "JAMEY" || row.key.route_type.trim() == "I"
+        }) {
             eprintln!("{row:#?}");
         }
     }
@@ -8382,6 +8796,7 @@ mod tests {
             ProcedureKind::Approach,
             0,
             false,
+            true,
             &segments,
         )
         .unwrap();
@@ -9086,7 +9501,13 @@ mod tests {
             .expect("display path for KSFZ VOR-A missed approach");
 
         assert!(
-            matches!(path.elements.first(), Some(LegDisplayElement::Arc { clockwise: false, .. })),
+            matches!(
+                path.elements.first(),
+                Some(LegDisplayElement::Arc {
+                    clockwise: false,
+                    ..
+                })
+            ),
             "missed approach starts with climbing left turn, not straight-ahead CA: {:?}",
             path.elements
         );
@@ -9218,10 +9639,13 @@ mod tests {
         assert!(
             wendi_jn
                 .nav_position
-                .is_some_and(|position| great_circle_distance_nm(position, LatLon {
-                    lat: 35.475,
-                    lon: -78.42528611111112,
-                }) < 0.1),
+                .is_some_and(|position| great_circle_distance_nm(
+                    position,
+                    LatLon {
+                        lat: 35.475,
+                        lon: -78.42528611111112,
+                    }
+                ) < 0.1),
             "expected scoped JN near JURLY, got {:?}",
             wendi_jn.nav_position
         );
@@ -9320,12 +9744,11 @@ mod tests {
         row: &ProcedureLegMaterializationRecord,
         field: &str,
         nav_ref: &NavRef,
-        row_position: Option<LatLon>,
+        _row_position: Option<LatLon>,
     ) {
         match nav_ref {
             NavRef::Navaid(identifier) => {
-                let candidate_count =
-                    navaid_identifier_candidate_count(store, cache, identifier);
+                let candidate_count = navaid_identifier_candidate_count(store, cache, identifier);
                 if candidate_count == 1 {
                     if crate::nav_ref_position_from_store(store, &row.key.airport_id, nav_ref)
                         .is_none()
@@ -9339,20 +9762,9 @@ mod tests {
                             row.sequence,
                         ));
                     }
-                } else if row_position.is_none() {
+                } else {
                     failures.push(format!(
-                        "{} {} {} {} seq={} {field}=Navaid({identifier}) has {candidate_count} navaid candidates and no row position",
-                        row.key.airport_id.trim(),
-                        row.key.procedure_id.trim(),
-                        row.key.route_type.trim(),
-                        row.key.transition_id.trim(),
-                        row.sequence,
-                    ));
-                } else if crate::nav_ref_position_from_store(store, &row.key.airport_id, nav_ref)
-                    .is_some()
-                {
-                    failures.push(format!(
-                        "{} {} {} {} seq={} {field}=Navaid({identifier}) has {candidate_count} navaid candidates but ordinary fallback still resolved",
+                        "{} {} {} {} seq={} {field}=Navaid({identifier}) has {candidate_count} navaid candidates; CIFP materialization must publish a scoped ArincNavaid instead of falling back to a bare navaid",
                         row.key.airport_id.trim(),
                         row.key.procedure_id.trim(),
                         row.key.route_type.trim(),
@@ -9361,12 +9773,11 @@ mod tests {
                     ));
                 }
             }
-            NavRef::ArincNavaid { .. } => {
-                if crate::nav_ref_position_from_store(store, &row.key.airport_id, nav_ref)
-                    .is_none()
+            NavRef::ArincNavaid { .. } | NavRef::TerminalNavaid { .. } => {
+                if crate::nav_ref_position_from_store(store, &row.key.airport_id, nav_ref).is_none()
                 {
                     failures.push(format!(
-                        "{} {} {} {} seq={} {field}={nav_ref:?} did not resolve through scoped ARINC navaid index",
+                        "{} {} {} {} seq={} {field}={nav_ref:?} did not resolve through scoped navaid index",
                         row.key.airport_id.trim(),
                         row.key.procedure_id.trim(),
                         row.key.route_type.trim(),
@@ -9386,7 +9797,10 @@ mod tests {
         let mut failures = Vec::<String>::new();
         let mut checked_rows = 0usize;
         for key in store.keys_with_prefix("procedure/materialization-rows/") {
-            let bytes = match store.get_bytes(&key).expect("read materialization row value") {
+            let bytes = match store
+                .get_bytes(&key)
+                .expect("read materialization row value")
+            {
                 crate::NavKvLookup::Hit(bytes) => bytes,
                 other => panic!("expected hit for {key}, got {other:?}"),
             };
@@ -9605,6 +10019,7 @@ mod tests {
             ProcedureKind::Approach,
             0,
             false,
+            true,
             &segments,
         )
         .expect("resolve KHLN I27-Y FALDE");

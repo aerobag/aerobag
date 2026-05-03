@@ -5340,7 +5340,6 @@ fn build_nav_kv_arinc_navaid_navref_pairs(
         WHERE trim(identifier) <> ''
           AND trim(icao_code) <> ''
           AND trim(section_code) <> ''
-          AND trim(subsection_code) <> ''
         ",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -6065,10 +6064,9 @@ impl ArincNavaidKey {
     }
 
     fn is_complete(&self) -> bool {
-        !self.identifier.is_empty()
-            && !self.icao_code.is_empty()
-            && !self.section_code.is_empty()
-            && !self.subsection_code.is_empty()
+        // CIFP section D navaids can carry a blank subsection. Procedure rows
+        // still refer to the full ARINC tuple, e.g. JVL/K5/D/<blank>.
+        !self.identifier.is_empty() && !self.icao_code.is_empty() && !self.section_code.is_empty()
     }
 }
 
@@ -6478,7 +6476,6 @@ fn load_arinc_navaid_position_map(
         WHERE trim(identifier) <> ''
           AND trim(icao_code) <> ''
           AND trim(section_code) <> ''
-          AND trim(subsection_code) <> ''
           AND NOT (upper(trim(section_code)) = 'P' AND upper(trim(subsection_code)) = 'N')
         ",
     )?;
@@ -6551,7 +6548,6 @@ fn load_arinc_navaid_variation_map(
         WHERE trim(identifier) <> ''
           AND trim(icao_code) <> ''
           AND trim(section_code) <> ''
-          AND trim(subsection_code) <> ''
           AND NOT (upper(trim(section_code)) = 'P' AND upper(trim(subsection_code)) = 'N')
         ",
     )?;
@@ -14981,6 +14977,125 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({ "lat": 39.0, "lon": -122.0 })).unwrap(),
         );
         validate_airway_navrefs_resolve(&pairs).unwrap();
+    }
+
+    #[test]
+    fn nav_kv_procedure_rows_resolve_arinc_navaids_with_blank_subsection() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE airports (
+                    LocationID TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL,
+                    MagneticVariation TEXT
+                );
+                CREATE TABLE nav (
+                    LocationID TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL,
+                    Variation TEXT
+                );
+                CREATE TABLE arinc_navaids (
+                    identifier TEXT,
+                    icao_code TEXT,
+                    section_code TEXT,
+                    subsection_code TEXT,
+                    airport_id TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL,
+                    Variation TEXT
+                );
+                CREATE TABLE fix (
+                    LocationID TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL
+                );
+                CREATE TABLE airportrunways (
+                    LocationID TEXT,
+                    LEIdent TEXT,
+                    LELatitude REAL,
+                    LELongitude REAL,
+                    HEIdent TEXT,
+                    HELatitude REAL,
+                    HELongitude REAL
+                );
+                CREATE TABLE cifp_sid_star_app (
+                    airport_identifier TEXT,
+                    sid_star_approach_identifier TEXT,
+                    route_type TEXT,
+                    transition_identifier TEXT,
+                    sequence_number TEXT,
+                    fix_identifier TEXT,
+                    icao_code_2 TEXT,
+                    section_code_2 TEXT,
+                    subsection_code_2 TEXT,
+                    recommended_navaid TEXT,
+                    icao_code_3 TEXT,
+                    recd_nav_section TEXT,
+                    recd_nav_subsection TEXT,
+                    altitude_1 TEXT,
+                    altitude_2 TEXT,
+                    path_and_termination TEXT,
+                    turn_direction TEXT,
+                    theta TEXT,
+                    magnetic_course TEXT,
+                    route_distance_holding_distance_or_time TEXT
+                );
+                INSERT INTO airports VALUES ('44C', 42.4978, -88.9676, 'W0030');
+                INSERT INTO nav VALUES ('JVL', 42.6151230555556, -89.0412775, '3.0');
+                INSERT INTO nav VALUES ('JVL', 42.5580080555556, -89.1052575, '3.0');
+                INSERT INTO arinc_navaids VALUES ('JVL', 'K5', 'D', '', '', 42.5580083333333, -89.1052583333333, '3.0');
+                INSERT INTO fix VALUES ('MADMY', 42.5000, -89.0000);
+                INSERT INTO cifp_sid_star_app VALUES ('44C', 'VOR-A', 'A', 'JVL', '010', 'JVL', 'K5', 'D', '', '', '', '', '', '', '', 'IF', '', '', '', '');
+                INSERT INTO cifp_sid_star_app VALUES ('44C', 'VOR-A', 'A', 'JVL', '020', 'JVL', 'K5', 'D', '', 'JVL', 'K5', 'D', '', '', '', 'PI', '', '', '', '');
+                ",
+            )
+            .unwrap();
+
+        let mut sid_lists = BTreeMap::new();
+        let mut star_lists = BTreeMap::new();
+        let mut distinct_by_procedure = BTreeMap::new();
+        let mut materialization_by_procedure = BTreeMap::new();
+        load_nav_kv_procedure_rows(
+            &connection,
+            &mut sid_lists,
+            &mut star_lists,
+            &mut distinct_by_procedure,
+            &mut materialization_by_procedure,
+        )
+        .unwrap();
+
+        let rows = materialization_by_procedure
+            .get(&("44C".to_string(), "VOR-A".to_string()))
+            .expect("44C VOR-A materialization rows");
+        assert_eq!(
+            rows[0]["nav_ref"],
+            serde_json::json!({
+                "ArincNavaid": {
+                    "identifier": "JVL",
+                    "icao_code": "K5",
+                    "section_code": "D",
+                    "subsection_code": ""
+                }
+            })
+        );
+        assert_eq!(
+            rows[0]["nav_position"],
+            serde_json::json!({ "lat": 42.5580083333333, "lon": -89.1052583333333 })
+        );
+        assert_eq!(
+            rows[1]["defining_nav_ref"],
+            serde_json::json!({
+                "ArincNavaid": {
+                    "identifier": "JVL",
+                    "icao_code": "K5",
+                    "section_code": "D",
+                    "subsection_code": ""
+                }
+            })
+        );
     }
 
     #[test]

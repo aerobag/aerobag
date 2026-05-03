@@ -5741,6 +5741,16 @@ mod tests {
         message: String,
     }
 
+    fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+        if let Some(text) = payload.downcast_ref::<&str>() {
+            (*text).to_string()
+        } else if let Some(text) = payload.downcast_ref::<String>() {
+            text.clone()
+        } else {
+            "panic without string payload".to_string()
+        }
+    }
+
     #[derive(Serialize, Deserialize)]
     #[serde(tag = "kind", rename_all = "snake_case")]
     enum ApproachCaptureResult {
@@ -8953,6 +8963,8 @@ mod tests {
         let queue = Arc::new(Mutex::new(VecDeque::from(cases)));
         let completed = Arc::new(AtomicUsize::new(0));
         let failure_count = Arc::new(AtomicUsize::new(0));
+        let app_error_count = Arc::new(AtomicUsize::new(0));
+        let panic_count = Arc::new(AtomicUsize::new(0));
         let known_broken_count = Arc::new(AtomicUsize::new(0));
         let start = Instant::now();
         let worker_count = std::thread::available_parallelism()
@@ -8966,6 +8978,8 @@ mod tests {
                 let store = Arc::clone(&store);
                 let completed = Arc::clone(&completed);
                 let failure_count = Arc::clone(&failure_count);
+                let app_error_count = Arc::clone(&app_error_count);
+                let panic_count = Arc::clone(&panic_count);
                 let known_broken_count = Arc::clone(&known_broken_count);
                 let progress_log = &progress_log;
                 let failures_log = &failures_log;
@@ -8991,27 +9005,25 @@ mod tests {
 
                     let maybe_failure = match result {
                         Ok(Ok(_)) => None,
-                        Ok(Err(err)) => Some(ApproachAuditFailure {
-                            airport_id: case.airport_id.clone(),
-                            procedure_id: case.procedure_id.clone(),
-                            enroute_transition: case.enroute_transition.clone(),
-                            failure_kind: "app_error".to_string(),
-                            message: err.message,
-                        }),
+                        Ok(Err(err)) => {
+                            app_error_count.fetch_add(1, Ordering::SeqCst);
+                            Some(ApproachAuditFailure {
+                                airport_id: case.airport_id.clone(),
+                                procedure_id: case.procedure_id.clone(),
+                                enroute_transition: case.enroute_transition.clone(),
+                                failure_kind: "app_error".to_string(),
+                                message: err.message,
+                            })
+                        }
                         Err(payload) => {
-                            let message = if let Some(text) = payload.downcast_ref::<&str>() {
-                                (*text).to_string()
-                            } else if let Some(text) = payload.downcast_ref::<String>() {
-                                text.clone()
-                            } else {
-                                "panic without string payload".to_string()
-                            };
+                            panic_count.fetch_add(1, Ordering::SeqCst);
+                            let message = panic_payload_message(payload.as_ref());
                             Some(ApproachAuditFailure {
                                 airport_id: case.airport_id.clone(),
                                 procedure_id: case.procedure_id.clone(),
                                 enroute_transition: case.enroute_transition.clone(),
                                 failure_kind: "panic".to_string(),
-                                message,
+                                message: format!("internal materialization panic: {message}"),
                             })
                         }
                     };
@@ -9104,6 +9116,8 @@ mod tests {
         });
 
         let failures_total = failure_count.load(Ordering::SeqCst);
+        let app_errors_total = app_error_count.load(Ordering::SeqCst);
+        let panics_total = panic_count.load(Ordering::SeqCst);
         let known_broken_total = known_broken_count.load(Ordering::SeqCst);
         let elapsed_secs = start.elapsed().as_secs_f64();
         fs::write(
@@ -9111,6 +9125,8 @@ mod tests {
             serde_json::to_vec_pretty(&serde_json::json!({
                 "total_cases": total,
                 "failures": failures_total,
+                "app_errors": app_errors_total,
+                "panics": panics_total,
                 "known_broken": known_broken_total,
                 "elapsed_secs": elapsed_secs,
                 "progress_log_path": progress_log_path,
@@ -9221,18 +9237,14 @@ mod tests {
                             },
                         },
                         Err(payload) => {
-                            let message = if let Some(text) = payload.downcast_ref::<&str>() {
-                                (*text).to_string()
-                            } else if let Some(text) = payload.downcast_ref::<String>() {
-                                text.clone()
-                            } else {
-                                "panic without string payload".to_string()
-                            };
+                            let message = panic_payload_message(payload.as_ref());
                             ApproachCaptureRecord {
                                 airport_id: case.airport_id.clone(),
                                 procedure_id: case.procedure_id.clone(),
                                 enroute_transition: case.enroute_transition.clone(),
-                                result: ApproachCaptureResult::Panic { message },
+                                result: ApproachCaptureResult::Panic {
+                                    message: format!("internal materialization panic: {message}"),
+                                },
                             }
                         }
                     };
@@ -9941,6 +9953,12 @@ mod tests {
     #[ignore = "manual visual inspection overlay for KSPW I12 DOSN1"]
     fn writes_kspw_i12_dosn1_overlay_png() {
         render_procedure_overlay_to_paths("KSPW", "I12", "DOSN1", "KSPW_I12_DOSN1", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for 44C VOR-A JVL"]
+    fn writes_44c_vora_jvl_overlay_png() {
+        render_procedure_overlay_to_paths("44C", "VOR-A", "JVL", "44C_VOR-A_JVL", true);
     }
 
     #[test]

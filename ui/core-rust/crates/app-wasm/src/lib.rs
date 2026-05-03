@@ -97,6 +97,7 @@ pub fn nav_kv_insert_page(handle: u32, page_index: u32, page_bytes: &[u8]) -> Re
         .get_mut(&handle)
         .ok_or_else(|| JsValue::from_str(&format!("invalid nav kv handle: {handle}")))?;
     store.insert_page(page_index, page_bytes.to_vec());
+    app_core::insert_nav_kv_page_for_attached_sessions(handle, page_index, page_bytes);
     Ok(())
 }
 
@@ -123,20 +124,27 @@ pub fn core_had_operation(nav_kv_handle: u32, operation_json: &str) -> Result<St
 
 #[wasm_bindgen]
 pub fn insert_waypoint_best_position_in_session(
-    nav_kv_handle: u32,
     session_handle: u32,
     waypoint_json: &str,
 ) -> Result<String, JsValue> {
     let waypoint: app_core::NavRef =
         serde_json::from_str(waypoint_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome = app_core::insert_waypoint_best_position_in_session(session_handle, waypoint)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn attach_nav_kv_store_to_session(
+    nav_kv_handle: u32,
+    session_handle: u32,
+) -> Result<(), JsValue> {
     let stores = nav_kv_stores().lock().expect("nav kv store poisoned");
     let store = stores
         .get(&nav_kv_handle)
         .ok_or_else(|| JsValue::from_str(&format!("invalid nav kv handle: {nav_kv_handle}")))?;
-    let outcome =
-        app_core::insert_waypoint_best_position_in_session(session_handle, store, waypoint)
-            .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+    app_core::attach_nav_kv_store_to_session(session_handle, nav_kv_handle, store)
+        .map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[wasm_bindgen]

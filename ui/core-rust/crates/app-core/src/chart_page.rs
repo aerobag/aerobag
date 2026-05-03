@@ -161,6 +161,22 @@ fn resolve_chart_id(
 ) -> String {
     let airport = airports.iter().find(|airport| airport.id == airport_id);
     if let Some(candidate_chart_id) = candidate_chart_id {
+        if plate_target_kind(candidate_chart_id, airport_id) == Some("csup") {
+            return airport
+                .and_then(|airport| {
+                    airport
+                        .charts
+                        .iter()
+                        .find(|chart| chart.kind == "csup" || chart.folder_category == "csup")
+                        .map(|chart| chart.id.clone())
+                })
+                .unwrap_or_default();
+        }
+        if plate_target_kind(candidate_chart_id, airport_id) == Some("folder") {
+            return airport
+                .and_then(|airport| airport.charts.first().map(|chart| chart.id.clone()))
+                .unwrap_or_default();
+        }
         if airport
             .map(|airport| {
                 airport
@@ -176,4 +192,84 @@ fn resolve_chart_id(
     airport
         .and_then(|airport| airport.charts.first().map(|chart| chart.id.clone()))
         .unwrap_or_default()
+}
+
+fn plate_target_kind(candidate_chart_id: &str, airport_id: &str) -> Option<&'static str> {
+    let mut parts = candidate_chart_id.split(':');
+    let page = parts.next()?;
+    let candidate_airport_id = parts.next()?;
+    let target = parts.next()?;
+    if parts.next().is_some()
+        || page != "Plate"
+        || !candidate_airport_id.eq_ignore_ascii_case(airport_id)
+    {
+        return None;
+    }
+    if target.eq_ignore_ascii_case("CSup") {
+        Some("csup")
+    } else if target.eq_ignore_ascii_case("Folder") {
+        Some("folder")
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chart(id: &str, kind: &str, folder_category: &str) -> DerivedChartAsset {
+        DerivedChartAsset {
+            id: id.to_string(),
+            airport_id: "KXYZ".to_string(),
+            package_id: "pkg".to_string(),
+            label: id.to_string(),
+            kind: kind.to_string(),
+            folder_category: folder_category.to_string(),
+            source_asset_path: String::new(),
+            asset_path: String::new(),
+            asset_url: String::new(),
+            thumbnail_source_path: None,
+            thumbnail_path: None,
+            thumbnail_url: None,
+            georef: None,
+        }
+    }
+
+    fn airport() -> DerivedChartAirport {
+        DerivedChartAirport {
+            id: "KXYZ".to_string(),
+            label: "KXYZ".to_string(),
+            charts: vec![
+                chart("plate:KXYZ:diagram.png", "plate", "airport"),
+                chart("csup:KXYZ:csup.pdf", "csup", "csup"),
+            ],
+        }
+    }
+
+    #[test]
+    fn plate_folder_target_selects_first_chart() {
+        let state = derive_chart_page_state_from_airports(
+            vec![airport()],
+            &[],
+            Some("KXYZ"),
+            Some("Plate:KXYZ:Folder"),
+        );
+
+        assert_eq!(state.selected_airport_id, "KXYZ");
+        assert_eq!(state.selected_chart_id, "plate:KXYZ:diagram.png");
+    }
+
+    #[test]
+    fn plate_csup_target_selects_chart_supplement() {
+        let state = derive_chart_page_state_from_airports(
+            vec![airport()],
+            &[],
+            Some("KXYZ"),
+            Some("Plate:KXYZ:CSup"),
+        );
+
+        assert_eq!(state.selected_airport_id, "KXYZ");
+        assert_eq!(state.selected_chart_id, "csup:KXYZ:csup.pdf");
+    }
 }

@@ -72,6 +72,7 @@ declare module "@generated/app_wasm.js" {
   export const nav_kv_open: (...args: unknown[]) => number;
   export const nav_kv_insert_page: (...args: unknown[]) => void;
   export const nav_kv_destroy: (...args: unknown[]) => void;
+  export const attach_nav_kv_store_to_session: (...args: unknown[]) => void;
   export const core_had_operation: (...args: unknown[]) => string;
 }
 

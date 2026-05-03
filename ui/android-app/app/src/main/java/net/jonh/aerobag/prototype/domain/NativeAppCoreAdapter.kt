@@ -174,6 +174,7 @@ class NativeAppCoreAdapter(
             navKvStore = navKvStore,
             initialSnapshot = enrichUiSessionSnapshot(result.snapshot.toUi()),
         )
+        navKvStore?.attachToSession(result.handle)
         runCatching {
             val catalog = runHadOperationElement(
                 buildJsonObject {

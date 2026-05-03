@@ -43,7 +43,7 @@ import type {
   WaypointIdentifierSuggestion,
 } from "./types";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
-import { runCoreHadOperation, runCoreHadSessionOperation } from "./navKv";
+import { attachNavKvStoreToSession, runCoreHadOperation, runCoreHadSessionOperation } from "./navKv";
 import { debugLog, debugTiming } from "./debugLog";
 
 export type DerivedChartPageState = {
@@ -620,7 +620,7 @@ type WasmModule = {
   set_raster_map_catalog_in_session(handle: number, catalogJson: string): Promise<string> | string;
   select_map_in_session(handle: number, selectedMapIdJson: string): Promise<string> | string;
   replace_flight_plan_in_session(handle: number, planJson: string): Promise<string> | string;
-  insert_waypoint_best_position_in_session(navKvHandle: number, sessionHandle: number, waypointJson: string): Promise<string> | string;
+  insert_waypoint_best_position_in_session(sessionHandle: number, waypointJson: string): Promise<string> | string;
   set_guidance_leg_geometry_in_session(handle: number, geometriesJson: string): Promise<string> | string;
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
@@ -643,6 +643,7 @@ type WasmModule = {
   nav_kv_open(rootBytes: Uint8Array): Promise<number> | number;
   nav_kv_insert_page(handle: number, pageIndex: number, pageBytes: Uint8Array): Promise<void> | void;
   nav_kv_destroy(handle: number): Promise<void> | void;
+  attach_nav_kv_store_to_session(navKvHandle: number, sessionHandle: number): Promise<void> | void;
   core_had_operation(handle: number, operationJson: string): Promise<string> | string;
   activate_leg_ui(planJson: string, legIndex: number): Promise<string> | string;
   activate_next_leg_ui(planJson: string): Promise<string> | string;
@@ -757,6 +758,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         debugLog("startup.session.core_profile", { timings: createdEnvelope.timings });
       }
       const created = createdEnvelope.result ?? createdEnvelope;
+      await attachNavKvStoreToSession(created.handle);
       const rasterMapCatalog = await debugTiming("startup.session.raster_catalog", () =>
         this.deriveMapSelectorState(undefined),
       );
@@ -851,8 +853,8 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       insertWaypointBestPosition: async (waypoint) => {
         snapshot = await withSessionRetry(async () =>
-          runCoreHadSessionOperation<UiSessionSnapshot>((navKvHandle) =>
-            this.module.insert_waypoint_best_position_in_session(navKvHandle, handle, JSON.stringify(waypoint)),
+          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+            this.module.insert_waypoint_best_position_in_session(handle, JSON.stringify(waypoint)),
           ),
         );
         await syncGuidanceGeometry(snapshot.app_state.active_plan);
@@ -1069,8 +1071,8 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         ),
       queryMapSelection: async (viewport, widthPx, heightPx, click, hitRadiusPx) =>
         withSessionRetry(async () =>
-          JSON.parse(
-            await this.module.get_map_selection_in_session(
+          runCoreHadSessionOperation<MapSelectionQueryResult>(() =>
+            this.module.get_map_selection_in_session(
               handle,
               JSON.stringify(coreViewportForMap(viewport)),
               widthPx,
@@ -1078,7 +1080,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
               JSON.stringify(click),
               hitRadiusPx,
             ),
-          ) as MapSelectionQueryResult,
+          ),
         ),
       queryTerrainOverlay: async (viewport, widthPx, heightPx) =>
         withSessionRetry(async () =>
@@ -1518,6 +1520,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.nav_kv_open !== "function" ||
     typeof mod.nav_kv_insert_page !== "function" ||
     typeof mod.nav_kv_destroy !== "function" ||
+    typeof mod.attach_nav_kv_store_to_session !== "function" ||
     typeof mod.core_had_operation !== "function"
   ) {
     throw new Error("generated wasm module is missing required exports");

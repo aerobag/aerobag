@@ -74,6 +74,10 @@ class NavKvStore private constructor(
     fun <T> runCoreOperation(operation: JsonObject, serializer: KSerializer<T>): T =
         json.decodeFromJsonElement(serializer, runCoreOperationElement(operation))
 
+    fun attachToSession(sessionHandle: Long) {
+        bridge.attachNavKvStoreToSession(handle, sessionHandle)
+    }
+
     @Synchronized
     private fun ensurePage(pageIndex: Int) {
         if (!loadedPages.add(pageIndex)) {

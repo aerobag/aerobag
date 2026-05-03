@@ -933,7 +933,22 @@ pub fn nav_kv_insert_page_bytes(
         .get_mut(&(handle as u32))
         .ok_or_else(|| format!("invalid nav kv handle: {handle}"))?;
     store.insert_page(page_index, page_bytes.to_vec());
+    app_core::insert_nav_kv_page_for_attached_sessions(handle as u32, page_index, page_bytes);
     Ok(())
+}
+
+pub fn attach_nav_kv_store_to_session_json(
+    nav_kv_handle: u64,
+    session_handle: u64,
+) -> Result<(), String> {
+    let stores = nav_kv_stores()
+        .lock()
+        .map_err(|_| "nav kv store poisoned".to_string())?;
+    let store = stores
+        .get(&(nav_kv_handle as u32))
+        .ok_or_else(|| format!("invalid nav kv handle: {nav_kv_handle}"))?;
+    app_core::attach_nav_kv_store_to_session(session_handle as u32, nav_kv_handle as u32, store)
+        .map_err(|err| err.to_string())
 }
 
 pub fn nav_kv_destroy_handle(handle: u64) {
@@ -2341,6 +2356,20 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_nav
     handle: i64,
 ) {
     nav_kv_destroy_handle(handle as u64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_attachNavKvStoreToSession(
+    mut env: JNIEnv,
+    _class: JClass,
+    nav_kv_handle: i64,
+    session_handle: i64,
+) {
+    if let Err(message) =
+        attach_nav_kv_store_to_session_json(nav_kv_handle as u64, session_handle as u64)
+    {
+        let _ = env.throw_new("java/lang/RuntimeException", message);
+    }
 }
 
 #[unsafe(no_mangle)]

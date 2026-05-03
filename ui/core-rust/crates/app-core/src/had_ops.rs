@@ -571,7 +571,9 @@ fn chart_page_state(
     candidate_chart_id: Option<&str>,
 ) -> Result<crate::DerivedChartPageState, HadReadError> {
     let mut airports = Vec::new();
-    for airport_id in airport_ids_from_plan(plan) {
+    for airport_id in
+        chart_page_airport_candidates(plan, stored_recent_airport_ids, candidate_airport_id)
+    {
         if airports
             .iter()
             .any(|airport: &crate::DerivedChartAirport| airport.id == airport_id)
@@ -593,6 +595,38 @@ fn chart_page_state(
         candidate_airport_id,
         candidate_chart_id,
     ))
+}
+
+fn chart_page_airport_candidates(
+    plan: &FlightPlan,
+    stored_recent_airport_ids: &[String],
+    candidate_airport_id: Option<&str>,
+) -> Vec<String> {
+    let mut airport_ids = Vec::new();
+    if let Some(candidate_airport_id) = candidate_airport_id
+        .map(str::trim)
+        .filter(|airport_id| !airport_id.is_empty())
+    {
+        airport_ids.push(candidate_airport_id.to_ascii_uppercase());
+    }
+    for airport_id in stored_recent_airport_ids {
+        let airport_id = airport_id.trim();
+        if !airport_id.is_empty() {
+            airport_ids.push(airport_id.to_ascii_uppercase());
+        }
+    }
+    airport_ids.extend(airport_ids_from_plan(plan));
+
+    let mut unique_airport_ids = Vec::new();
+    for airport_id in airport_ids {
+        if !unique_airport_ids
+            .iter()
+            .any(|existing| existing == &airport_id)
+        {
+            unique_airport_ids.push(airport_id);
+        }
+    }
+    unique_airport_ids
 }
 
 fn map_selector_state(

@@ -19,6 +19,8 @@ interface NativeBridge {
 
     fun navKvDestroy(handle: Long)
 
+    fun attachNavKvStoreToSession(navKvHandle: Long, sessionHandle: Long)
+
     fun coreHadOperation(handle: Long, operationJson: String): String
 
     fun situationRingCandidatesJson(): String
@@ -337,6 +339,8 @@ object NativeBindings : NativeBridge {
     external override fun navKvInsertPage(handle: Long, pageIndex: Int, pageBytes: ByteArray)
 
     external override fun navKvDestroy(handle: Long)
+
+    external override fun attachNavKvStoreToSession(navKvHandle: Long, sessionHandle: Long)
 
     external override fun coreHadOperation(handle: Long, operationJson: String): String
 

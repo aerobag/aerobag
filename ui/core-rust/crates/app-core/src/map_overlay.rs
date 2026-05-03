@@ -422,6 +422,12 @@ pub struct MapSelectionAction {
     pub display_only: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AirportPlateAvailability {
+    pub plates: bool,
+    pub csup: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapOverlayConfig {
     pub airspace_reference_tile_min_zoom: u32,
@@ -1063,6 +1069,7 @@ pub fn query_map_selection(
     point_tile_cache: &HashMap<String, PointTilePayload>,
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
+    airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
 ) -> MapSelectionQueryResult {
     let center_world = lat_lon_to_world(viewport.center);
     let scale = 2.0_f64.powf(viewport.zoom);
@@ -1099,10 +1106,24 @@ pub fn query_map_selection(
             let Some(symbol) = selection_symbol_for_point(record, is_airport) else {
                 continue;
             };
-            let item = selection_item_for_point(record, &symbol, plan);
             if is_airport {
+                let availability = selection_nav_ref(record, true)
+                    .and_then(|nav_ref| match nav_ref {
+                        NavRef::Airport(airport_id) => {
+                            Some(airport_plate_availability(&airport_id))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                let item = selection_item_for_point(record, &symbol, plan, availability);
                 airports.push(MapSelectionPointMatch { item, distance_px });
             } else if record.style_class == "fix" || record.style_class == "nav" {
+                let item = selection_item_for_point(
+                    record,
+                    &symbol,
+                    plan,
+                    AirportPlateAvailability::default(),
+                );
                 navaids.push(MapSelectionPointMatch { item, distance_px });
             }
         }
@@ -1177,6 +1198,7 @@ fn selection_item_for_point(
     record: &PointVectorRecord,
     symbol: &NavSymbolFeature,
     plan: Option<&FlightPlan>,
+    airport_plate_availability: AirportPlateAvailability,
 ) -> MapSelectionItem {
     let label = if symbol.label.trim().is_empty() {
         display_label(record)
@@ -1202,8 +1224,8 @@ fn selection_item_for_point(
             display_action("elevation", "Elev --"),
             disabled_action("direct_to", "Direct-to"),
             insert_action,
-            disabled_action("plates", "Plates"),
-            disabled_action("csup", "Chart Supp"),
+            action_for_availability("plates", "Plates", airport_plate_availability.plates),
+            action_for_availability("csup", "Chart Supp", airport_plate_availability.csup),
             disabled_action("runways", "Runways"),
         ]
     } else {
@@ -1237,6 +1259,14 @@ fn selection_item_for_point(
             actions.shrink_to_fit();
             actions
         },
+    }
+}
+
+fn action_for_availability(id: &str, label: &str, available: bool) -> MapSelectionAction {
+    if available {
+        enabled_action(id, label)
+    } else {
+        disabled_action(id, label)
     }
 }
 
@@ -3538,6 +3568,10 @@ mod tests {
             &cache,
             &HashMap::new(),
             None,
+            &mut |_| AirportPlateAvailability {
+                plates: true,
+                csup: true,
+            },
         );
 
         assert_eq!(result.categories[0].id, "airport");
@@ -3585,7 +3619,15 @@ mod tests {
             version: 1,
         };
 
-        let item = selection_item_for_point(&record, &symbol, Some(&plan));
+        let item = selection_item_for_point(
+            &record,
+            &symbol,
+            Some(&plan),
+            AirportPlateAvailability {
+                plates: true,
+                csup: true,
+            },
+        );
         let remove = item
             .actions
             .iter()
@@ -3596,6 +3638,14 @@ mod tests {
         assert_eq!(remove.label, "Remove from flight plan");
         assert!(remove.enabled);
         assert!(!remove.display_only);
+        assert!(item
+            .actions
+            .iter()
+            .any(|action| action.id == "plates" && action.enabled));
+        assert!(item
+            .actions
+            .iter()
+            .any(|action| action.id == "csup" && action.enabled));
     }
 
     #[test]
@@ -3870,6 +3920,7 @@ mod tests {
             &cache,
             &HashMap::new(),
             None,
+            &mut |_| AirportPlateAvailability::default(),
         );
         let airport_ids = selection.categories[0]
             .items
@@ -3885,6 +3936,19 @@ mod tests {
                 "airports:H1"
             ]
         );
+        let private_airport = selection.categories[0]
+            .items
+            .iter()
+            .find(|item| item.id == "airports:WN50")
+            .expect("private airport selection");
+        assert!(private_airport
+            .actions
+            .iter()
+            .any(|action| action.id == "plates" && !action.enabled));
+        assert!(private_airport
+            .actions
+            .iter()
+            .any(|action| action.id == "csup" && !action.enabled));
     }
 
     fn fixture_vector_tile_root() -> &'static std::path::Path {

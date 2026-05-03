@@ -8,6 +8,7 @@ const latestBundle = currentArtifacts.bundles?.[currentArtifacts.bundles.length 
 const navKvCacheKey = encodeURIComponent(latestBundle?.checksum_sha256 ?? latestBundle?.filename ?? "unknown");
 
 type NavKvWasmModule = {
+  attach_nav_kv_store_to_session(handle: number, sessionHandle: number): void;
   core_had_operation(handle: number, operationJson: string): string;
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
   nav_kv_destroy(handle: number): void;
@@ -65,6 +66,10 @@ export class NavKvStore {
     return this.runPagedOperation<T>(() => operation(this.handle));
   }
 
+  attachToSession(sessionHandle: number): void {
+    this.wasm.attach_nav_kv_store_to_session(this.handle, sessionHandle);
+  }
+
   private async runPagedOperation<T>(operation: () => Promise<string> | string): Promise<T> {
     for (;;) {
       const response = JSON.parse(await operation()) as
@@ -117,4 +122,12 @@ export async function runCoreHadSessionOperation<T>(operation: (navKvHandle: num
     throw new Error("nav_kv root is unavailable");
   }
   return store.runCoreSessionOperation<T>(operation);
+}
+
+export async function attachNavKvStoreToSession(sessionHandle: number): Promise<void> {
+  const store = await getNavKvStore();
+  if (!store) {
+    throw new Error("nav_kv root is unavailable");
+  }
+  store.attachToSession(sessionHandle);
 }

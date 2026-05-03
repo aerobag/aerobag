@@ -1490,6 +1490,38 @@ export default function App() {
     navigateToPage("map");
   }
 
+  function openPlateTarget(airportId: string, target: "Folder" | "CSup") {
+    const targetChartId = `Plate:${airportId}:${target}`;
+    const nextRecentAirportIds = moveAirportToFront(recentAirportIds, airportId, chartPageData.airports);
+    const localChartId = resolveChartId(chartPageData.airports, airportId, targetChartId);
+    const localAirport = chartPageData.airports.find((entry) => entry.id === airportId);
+    const localChart = localAirport?.charts.find((chart) => chart.id === localChartId);
+    if (uiSession) {
+      void uiSession.restoreChartPageState(
+        nextRecentAirportIds,
+        airportId,
+        targetChartId,
+      ).then((nextSnapshot) => {
+        setSessionSnapshot(nextSnapshot);
+      }).catch((error) => {
+        debugLog("plates.open.target.failed", {
+          airport_id: airportId,
+          target,
+          error: errorMessage(error),
+        });
+      });
+    }
+    pushViewSnapshot({
+      page: "charts",
+      selectedAirportId: airportId,
+      selectedChartId: localChartId || targetChartId,
+      selectedChartLabel: localChart?.label ?? "",
+      recentAirportIds: nextRecentAirportIds,
+      chartViewport: null,
+      chartFolderOpen: target === "Folder",
+    });
+  }
+
   const themeVars = useMemo(
     () =>
       ({
@@ -1577,6 +1609,7 @@ export default function App() {
           }}
           onSelectPage={navigateToPage}
           onOpenPlan={() => navigateToPage("plan")}
+          onOpenPlateTarget={openPlateTarget}
           legSummary={legSummary}
           ownship={appUiState.ownship.render}
           plan={currentPlan}
@@ -1889,6 +1922,7 @@ function MapPage(props: {
   onSelectMapId: (mapId: string) => void;
   onSelectPage: (page: AppPage) => void;
   onOpenPlan: () => void;
+  onOpenPlateTarget: (airportId: string, target: "Folder" | "CSup") => void;
   legSummary: string;
   ownship: OwnshipRenderState;
   plan: FlightPlan;
@@ -1927,6 +1961,7 @@ function MapPage(props: {
     onSelectMapId,
     onSelectPage,
     onOpenPlan,
+    onOpenPlateTarget,
     legSummary,
     ownship,
     plan,
@@ -3461,7 +3496,19 @@ function MapPage(props: {
               selectedItem={mapSelection.selectedItem}
               onSelectItem={(item) => setMapSelection((current) => current ? { ...current, selectedItem: item } : current)}
               onSelectAction={async (item, action) => {
-                if (!appCoreAdapter || !item.nav_ref) {
+                if (!appCoreAdapter) {
+                  return;
+                }
+                if (action.id === "plates" || action.id === "csup") {
+                  const airportId = airportIdFromNavRef(item.nav_ref);
+                  if (!airportId) {
+                    return;
+                  }
+                  onOpenPlateTarget(airportId, action.id === "csup" ? "CSup" : "Folder");
+                  setMapSelection(null);
+                  return;
+                }
+                if (!item.nav_ref) {
                   return;
                 }
                 try {
@@ -6883,7 +6930,8 @@ function moveAirportToFront(
   airportId: string,
   airports: ChartPageData["airports"],
 ) {
-  return mergeRecentAirportIds(airports, [airportId, ...currentIds.filter((id) => id !== airportId)]);
+  const mergedIds = mergeRecentAirportIds(airports, [airportId, ...currentIds.filter((id) => id !== airportId)]);
+  return mergedIds.includes(airportId) ? mergedIds : [airportId, ...mergedIds];
 }
 
 function resolveAirportId(
@@ -6907,10 +6955,20 @@ function resolveChartId(
   candidateChartId: string | undefined,
 ) {
   const airport = airports.find((entry) => entry.id === airportId);
+  if (candidateChartId === `Plate:${airportId}:CSup`) {
+    return airport?.charts.find((chart) => chart.kind === "csup" || chart.folder_category === "csup")?.id ?? "";
+  }
+  if (candidateChartId === `Plate:${airportId}:Folder`) {
+    return airport?.charts[0]?.id ?? "";
+  }
   if (candidateChartId && airport?.charts.some((chart) => chart.id === candidateChartId)) {
     return candidateChartId;
   }
   return airport?.charts[0]?.id ?? "";
+}
+
+function airportIdFromNavRef(navRef: NavRef | null | undefined): string | null {
+  return navRef && "Airport" in navRef ? navRef.Airport : null;
 }
 
 

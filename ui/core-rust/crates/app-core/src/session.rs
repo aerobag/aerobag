@@ -13,15 +13,16 @@ use crate::{
     guidance_detail_id_for_index,
     had_ops::{insert_waypoint_best_position, HadOperationOutcome, HadReadError},
     map_follow::{MapFollowSessionState, MapFollowUiState},
-    map_overlay_config_from_vector_manifest_json, move_flight_plan_waypoint,
+    map_overlay_config_from_vector_manifest_json, move_flight_plan_waypoint, nav_kv_key_for_query,
     planning::NavElementUiView,
     playback::PlaybackSessionState,
-    query_map_overlay, query_map_selection, remove_flight_plan_leg, state, AirspaceFeaturePayload,
-    AirspaceLabelTilePayload, AirspaceReferenceTilePayload, AppError, AppErrorKind, AppEvent,
-    AppResult, AppState, AppUiState, FlightPlan, LatLon, MapOverlayConfig, MapOverlayQueryResult,
-    MapSelectionQueryResult, MapViewport, MetarProductPayload, MetarTilePayload, NavKvStore,
-    NavRef, PlanLeg, PlaybackUiState, PointTilePayload, RasterMapCatalog, RasterTilePlan,
-    SequencingMode, TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
+    query_map_overlay, query_map_selection, remove_flight_plan_leg, state,
+    AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
+    AirspaceReferenceTilePayload, AppError, AppErrorKind, AppEvent, AppResult, AppState,
+    AppUiState, FlightPlan, LatLon, MapOverlayConfig, MapOverlayQueryResult, MapViewport,
+    MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore, NavRef, PlanLeg,
+    PlaybackUiState, PointTilePayload, RasterMapCatalog, RasterTilePlan, SequencingMode,
+    TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -82,6 +83,8 @@ struct UiSession {
     guidance_leg_geometry: HashMap<String, GuidanceLegGeometry>,
     map_overlay_config: MapOverlayConfig,
     chart_page_state: UiChartPageState,
+    nav_kv_store_id: Option<u32>,
+    nav_kv_store: Option<NavKvStore>,
     map_layer_state: UiMapLayerState,
     caution_state: UiCautionState,
     raster_map_catalog: Option<RasterMapCatalog>,
@@ -226,6 +229,8 @@ fn create_ui_session_inner(
             guidance_leg_geometry: HashMap::new(),
             map_overlay_config,
             chart_page_state,
+            nav_kv_store_id: None,
+            nav_kv_store: None,
             map_layer_state,
             caution_state: default_caution_state(),
             raster_map_catalog: None,
@@ -611,12 +616,12 @@ pub fn replace_flight_plan_in_session(
 
 pub fn insert_waypoint_best_position_in_session(
     handle: u32,
-    store: &NavKvStore,
     waypoint: NavRef,
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
+    let store = session_nav_kv_store(session)?;
     let mutation = match insert_waypoint_best_position(store, &plan, waypoint) {
         Ok(mutation) => mutation,
         Err(HadReadError::NeedPages(pages)) => return Ok(HadOperationOutcome::NeedPages { pages }),
@@ -635,6 +640,29 @@ pub fn insert_waypoint_best_position_in_session(
             message: err.to_string(),
         })?,
     })
+}
+
+pub fn attach_nav_kv_store_to_session(
+    handle: u32,
+    store_id: u32,
+    store: &NavKvStore,
+) -> AppResult<()> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session.nav_kv_store_id = Some(store_id);
+    session.nav_kv_store = Some(store.clone());
+    Ok(())
+}
+
+pub fn insert_nav_kv_page_for_attached_sessions(store_id: u32, page_index: u32, page_bytes: &[u8]) {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    for session in sessions.values_mut() {
+        if session.nav_kv_store_id == Some(store_id) {
+            if let Some(store) = session.nav_kv_store.as_mut() {
+                store.insert_page(page_index, page_bytes.to_vec());
+            }
+        }
+    }
 }
 
 pub fn remove_top_level_waypoint_by_nav_ref_in_session(
@@ -848,11 +876,21 @@ pub fn get_map_selection_in_session(
     height_px: f64,
     click: LatLon,
     hit_radius_px: f64,
-) -> AppResult<MapSelectionQueryResult> {
+) -> AppResult<HadOperationOutcome> {
     let sessions = sessions().lock().expect("session store poisoned");
     let session = session_ref(&sessions, handle)?;
     let plan = session.app_state.active_plan.as_ref();
-    Ok(query_map_selection(
+    let store = session_nav_kv_store(session)?;
+    let mut missing_pages = Vec::new();
+    let mut availability = |airport_id: &str| match airport_plate_availability(store, airport_id) {
+        Ok(availability) => availability,
+        Err(HadReadError::NeedPages(pages)) => {
+            missing_pages.extend(pages);
+            AirportPlateAvailability::default()
+        }
+        Err(HadReadError::Fatal(_)) => AirportPlateAvailability::default(),
+    };
+    let selection = query_map_selection(
         &viewport,
         width_px,
         height_px,
@@ -863,7 +901,21 @@ pub fn get_map_selection_in_session(
         &session.point_tile_cache,
         &session.airspace_feature_cache,
         session.tfr_payload.as_ref(),
-    ))
+        &mut availability,
+    );
+    if !missing_pages.is_empty() {
+        missing_pages.sort_unstable();
+        missing_pages.dedup();
+        return Ok(HadOperationOutcome::NeedPages {
+            pages: missing_pages,
+        });
+    }
+    Ok(HadOperationOutcome::Complete {
+        result: serde_json::to_value(selection).map_err(|err| AppError {
+            kind: AppErrorKind::Internal,
+            message: err.to_string(),
+        })?,
+    })
 }
 
 pub fn get_terrain_overlay_in_session(
@@ -1028,6 +1080,40 @@ fn session_plan(session: &UiSession) -> AppResult<FlightPlan> {
             kind: AppErrorKind::Internal,
             message: "session missing active plan".to_string(),
         })
+}
+
+fn session_nav_kv_store(session: &UiSession) -> AppResult<&NavKvStore> {
+    session.nav_kv_store.as_ref().ok_or_else(|| AppError {
+        kind: AppErrorKind::Internal,
+        message: "session missing nav kv store".to_string(),
+    })
+}
+
+fn airport_plate_availability(
+    store: &NavKvStore,
+    airport_id: &str,
+) -> Result<AirportPlateAvailability, HadReadError> {
+    let key = nav_kv_key_for_query(&NavKvQuery::PlateAirport {
+        airport_id: airport_id.to_ascii_uppercase(),
+    })
+    .ok_or_else(|| HadReadError::Fatal("invalid plate airport query".to_string()))?;
+    match store.get_bytes(&key).map_err(HadReadError::Fatal)? {
+        NavKvLookup::Hit(bytes) => {
+            let airport: crate::DerivedChartAirport =
+                serde_json::from_slice(&bytes).map_err(|err| {
+                    HadReadError::Fatal(format!("HAD JSON decode failed for {key}: {err}"))
+                })?;
+            Ok(AirportPlateAvailability {
+                plates: !airport.charts.is_empty(),
+                csup: airport
+                    .charts
+                    .iter()
+                    .any(|chart| chart.kind == "csup" || chart.folder_category == "csup"),
+            })
+        }
+        NavKvLookup::MissingKey => Ok(AirportPlateAvailability::default()),
+        NavKvLookup::MissingPages(pages) => Err(HadReadError::NeedPages(pages)),
+    }
 }
 
 fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> AppResult<()> {
@@ -1389,7 +1475,9 @@ fn derive_compact_chart_page_state(
     candidate_chart_id: Option<&str>,
 ) -> UiChartPageState {
     let mut ordered_airport_ids = Vec::new();
-    for airport_id in airport_ids_from_plan(plan) {
+    for airport_id in
+        compact_chart_page_airport_candidates(plan, stored_recent_airport_ids, candidate_airport_id)
+    {
         if !ordered_airport_ids
             .iter()
             .any(|existing| existing == &airport_id)
@@ -1433,6 +1521,38 @@ fn derive_compact_chart_page_state(
         selected_airport_id,
         selected_chart_id: candidate_chart_id.unwrap_or_default().to_string(),
     }
+}
+
+fn compact_chart_page_airport_candidates(
+    plan: &FlightPlan,
+    stored_recent_airport_ids: &[String],
+    candidate_airport_id: Option<&str>,
+) -> Vec<String> {
+    let mut airport_ids = Vec::new();
+    if let Some(candidate_airport_id) = candidate_airport_id
+        .map(str::trim)
+        .filter(|airport_id| !airport_id.is_empty())
+    {
+        airport_ids.push(candidate_airport_id.to_ascii_uppercase());
+    }
+    for airport_id in stored_recent_airport_ids {
+        let airport_id = airport_id.trim();
+        if !airport_id.is_empty() {
+            airport_ids.push(airport_id.to_ascii_uppercase());
+        }
+    }
+    airport_ids.extend(airport_ids_from_plan(plan));
+
+    let mut unique_airport_ids = Vec::new();
+    for airport_id in airport_ids {
+        if !unique_airport_ids
+            .iter()
+            .any(|existing| existing == &airport_id)
+        {
+            unique_airport_ids.push(airport_id);
+        }
+    }
+    unique_airport_ids
 }
 
 #[cfg(test)]

@@ -2432,17 +2432,6 @@ fn parse_float(value: &str) -> f64 {
     value.trim().parse::<f64>().unwrap_or(0.0)
 }
 
-fn parse_optional_float(value: &str) -> Option<f64> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    trimmed
-        .parse::<f64>()
-        .ok()
-        .filter(|value| value.is_finite())
-}
-
 fn round_coord(value: f64) -> f64 {
     (value * 10_000_000.0).round() / 10_000_000.0
 }

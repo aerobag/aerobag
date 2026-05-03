@@ -1426,6 +1426,18 @@ export default function App() {
     }
   }
 
+  function navigateToMostRecentChartOrPlate() {
+    const target = pageHistory
+      .slice()
+      .reverse()
+      .find((snapshot) => snapshot.page === "map" || snapshot.page === "charts");
+    if (target) {
+      pushViewSnapshot(target);
+      return;
+    }
+    navigateToPage("map");
+  }
+
   const themeVars = useMemo(
     () =>
       ({
@@ -1540,7 +1552,7 @@ export default function App() {
           legSummary={legSummary}
           plan={currentPlan}
           planUiState={planUiState}
-          onOpenPlan={() => navigateToPage("plan")}
+          onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
           onSelectPage={navigateToPage}
           onOpenCharts={(airportId, chartId) => {
             if (!airportId) {
@@ -4259,7 +4271,7 @@ function FlightPlanPage(props: {
   legSummary: string;
   plan: FlightPlan;
   planUiState: FlightPlanUiState | null;
-  onOpenPlan: () => void;
+  onOpenRecentChartOrPlate: () => void;
   onSelectPage: (page: AppPage) => void;
   onOpenCharts: (airportId: string | null, chartId?: string | null) => void;
   onMoveComponent: (componentIndex: number, delta: number) => void | Promise<void>;
@@ -5098,7 +5110,7 @@ function FlightPlanPage(props: {
         <NavElementButton
           navElement={planUiState.guidance?.nav_element}
           className="navElement navElementStatic"
-          onClick={props.onOpenPlan}
+          onClick={props.onOpenRecentChartOrPlate}
         />
       </div>
 

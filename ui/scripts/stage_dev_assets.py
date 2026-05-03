@@ -378,7 +378,20 @@ def stage_is_current() -> bool:
         existing = json.loads(STAGE_STAMP_PATH.read_text())
     except Exception:
         return False
-    return existing == current_stage_stamp()
+    return existing == current_stage_stamp() and staged_outputs_exist()
+
+
+def staged_outputs_exist() -> bool:
+    required_paths = [
+        WEB_STATIC_ROOT / "current-artifacts.json",
+        WEB_STATIC_ROOT / "cycle-bundle.json",
+        WEB_STATIC_ROOT / "vectors" / "vectors",
+        WEB_STATIC_ROOT / "vectors" / "points",
+        WEB_STATIC_ROOT / "vectors" / "airspace",
+        WEB_STATIC_ROOT / "vectors" / "had",
+        WEB_STATIC_ROOT / "nav-kv" / "root",
+    ]
+    return all(path.exists() for path in required_paths)
 
 
 def write_stage_stamp() -> None:

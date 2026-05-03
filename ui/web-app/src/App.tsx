@@ -2768,7 +2768,7 @@ function MapPage(props: {
           count: tiles.length,
           elapsed_ms: Math.round(performance.now() - ingestStartedAt),
         });
-        ingested = true;
+        return true;
       }
       if (overlay.needed_metar_tiles.length > 0) {
         const startedAt = performance.now();
@@ -2799,7 +2799,7 @@ function MapPage(props: {
           count: tiles.length,
           elapsed_ms: Math.round(performance.now() - startedAt),
         });
-        ingested = true;
+        return true;
       }
       if (overlay.needed_airspace_ref_tiles.length > 0) {
         const startedAt = performance.now();
@@ -2830,7 +2830,7 @@ function MapPage(props: {
           count: tiles.length,
           elapsed_ms: Math.round(performance.now() - startedAt),
         });
-        ingested = true;
+        return true;
       }
       if (overlay.needed_airspace_features.length > 0) {
         const startedAt = performance.now();
@@ -2856,7 +2856,6 @@ function MapPage(props: {
         ).filter((feature): feature is AirspaceFeaturePayload => feature !== null);
         if (features.length > 0) {
           await session.ingestAirspaceFeatures(features);
-          ingested = true;
         }
         debugLog("map.overlay.airspace_features.done", {
           zoom: viewport.zoom,
@@ -2864,6 +2863,9 @@ function MapPage(props: {
           missing: overlay.needed_airspace_features.length - features.length,
           elapsed_ms: Math.round(performance.now() - startedAt),
         });
+        if (features.length > 0) {
+          return true;
+        }
       }
       if (overlay.needed_airspace_label_tiles.length > 0) {
         const startedAt = performance.now();
@@ -2894,7 +2896,7 @@ function MapPage(props: {
           count: tiles.length,
           elapsed_ms: Math.round(performance.now() - startedAt),
         });
-        ingested = true;
+        return true;
       }
       if (overlay.needed_tfrs) {
         const startedAt = performance.now();
@@ -2911,7 +2913,7 @@ function MapPage(props: {
           areas: payload.areas.length,
           elapsed_ms: Math.round(performance.now() - startedAt),
         });
-        ingested = true;
+        return true;
       }
       if (overlay.needed_metars) {
         const startedAt = performance.now();
@@ -2928,7 +2930,7 @@ function MapPage(props: {
           records: payload.metar_count ?? Object.keys(payload.metars_by_station).length,
           elapsed_ms: Math.round(performance.now() - startedAt),
         });
-        ingested = true;
+        return true;
       }
       return ingested;
     }
@@ -2982,7 +2984,7 @@ function MapPage(props: {
         });
         throw error;
       }
-      for (let pass = 0; pass < 4 && overlayNeedsInputs(overlay); pass += 1) {
+      for (let pass = 0; pass < 8 && overlayNeedsInputs(overlay); pass += 1) {
         const ingested = await fetchMissingOverlayInputs(overlay);
         if (!ingested) {
           break;

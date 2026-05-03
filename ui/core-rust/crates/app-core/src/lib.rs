@@ -9938,6 +9938,12 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual visual inspection overlay for KSPW I12 DOSN1"]
+    fn writes_kspw_i12_dosn1_overlay_png() {
+        render_procedure_overlay_to_paths("KSPW", "I12", "DOSN1", "KSPW_I12_DOSN1", true);
+    }
+
+    #[test]
     #[ignore = "manual visual inspection overlay for 12D R08 INKER"]
     fn writes_12d_r08_inker_overlay_png() {
         render_procedure_overlay_to_paths("12D", "R08", "INKER", "12D_R08_INKER", false);

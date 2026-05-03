@@ -1081,6 +1081,24 @@ fn build_procedure_leg_display_path(
             "CF" => {
                 let fix = step.nav_position?;
                 let course_deg = step.magnetic_course_deg? + course_reference_variation_deg(step);
+                if let (Some(turn_clockwise), Some(current_heading_deg)) =
+                    (pending_direct_turn_for_step, current_course_deg)
+                {
+                    if append_pending_direct_turn_to_fix(
+                        &mut elements,
+                        &mut debug_sources,
+                        current_position,
+                        current_heading_deg,
+                        turn_clockwise,
+                        fix,
+                    )
+                    .is_some()
+                    {
+                        current_position = fix;
+                        current_course_deg = Some(course_deg);
+                        continue;
+                    }
+                }
                 if step
                     .turn_direction
                     .as_deref()
@@ -1182,47 +1200,18 @@ fn build_procedure_leg_display_path(
                 {
                     if let Some(current_heading_deg) = current_course_deg {
                         if let Some(turn_clockwise) = pending_direct_turn_for_step {
-                            let turn_radius_nm = missed_approach_turn_radius_nm();
-                            let turn_center = turn_center_for_heading_change(
+                            if append_pending_direct_turn_to_fix(
+                                &mut elements,
+                                &mut debug_sources,
                                 current_position,
                                 current_heading_deg,
                                 turn_clockwise,
-                                turn_radius_nm,
-                            );
-                            if let Some((turn_end, rejoin_course_deg)) =
-                                tangent_rejoin_from_turn_with_min_sweep_prefer_shortest(
-                                    turn_center,
-                                    turn_radius_nm,
-                                    current_heading_deg,
-                                    turn_clockwise,
-                                    effective_fix,
-                                    0.0,
-                                )
+                                effective_fix,
+                            )
+                            .is_some()
                             {
-                                elements.push(LegDisplayElement::Arc {
-                                    center: turn_center,
-                                    radius_nm: turn_radius_nm,
-                                    start: current_position,
-                                    end: turn_end,
-                                    clockwise: turn_clockwise,
-                                    sweep_degrees: heading_sweep_degrees(
-                                        current_heading_deg,
-                                        rejoin_course_deg,
-                                        turn_clockwise,
-                                    ),
-                                });
-                                debug_sources.push(format!(
-                                    "{}{}",
-                                    EXPLICIT_MISSED_TURN_SOURCE_PREFIX,
-                                    debug_source!()
-                                ));
-                                if distance_between_points_nm(turn_end, effective_fix)
-                                    > MIN_GEOMETRY_DISTANCE_NM
-                                {
-                                    push_segment!(elements, debug_sources, turn_end, effective_fix);
-                                }
-                                current_course_deg = Some(rejoin_course_deg);
                                 current_position = effective_fix;
+                                current_course_deg = Some(outbound_course_deg);
                                 continue;
                             }
                         }
@@ -1346,6 +1335,52 @@ fn should_skip_direct_to_fix_for_following_course(
         reconcile_handoff(&terminal_state, &start_requirement),
         HandoffDecision::SkipStaleFix
     )
+}
+
+fn append_pending_direct_turn_to_fix(
+    elements: &mut Vec<LegDisplayElement>,
+    debug_sources: &mut Vec<String>,
+    current_position: LatLon,
+    current_heading_deg: f64,
+    turn_clockwise: bool,
+    fix: LatLon,
+) -> Option<()> {
+    let turn_radius_nm = missed_approach_turn_radius_nm();
+    let turn_center = turn_center_for_heading_change(
+        current_position,
+        current_heading_deg,
+        turn_clockwise,
+        turn_radius_nm,
+    );
+    let (turn_end, rejoin_course_deg) = tangent_rejoin_from_turn_with_min_sweep_prefer_shortest(
+        turn_center,
+        turn_radius_nm,
+        current_heading_deg,
+        turn_clockwise,
+        fix,
+        0.0,
+    )?;
+    elements.push(LegDisplayElement::Arc {
+        center: turn_center,
+        radius_nm: turn_radius_nm,
+        start: current_position,
+        end: turn_end,
+        clockwise: turn_clockwise,
+        sweep_degrees: heading_sweep_degrees(
+            current_heading_deg,
+            rejoin_course_deg,
+            turn_clockwise,
+        ),
+    });
+    debug_sources.push(format!(
+        "{}{}",
+        EXPLICIT_MISSED_TURN_SOURCE_PREFIX,
+        debug_source!()
+    ));
+    if distance_between_points_nm(turn_end, fix) > MIN_GEOMETRY_DISTANCE_NM {
+        push_segment!(elements, debug_sources, turn_end, fix);
+    }
+    Some(())
 }
 
 fn display_element_end_position(element: &LegDisplayElement) -> Option<LatLon> {

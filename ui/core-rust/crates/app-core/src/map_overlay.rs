@@ -857,7 +857,8 @@ pub fn query_map_selection(
             continue;
         };
         for record in &payload.records {
-            if !should_display_record(record) {
+            let is_airport = selection_record_is_airport(record);
+            if !is_airport && !should_display_record(record) {
                 continue;
             }
             let point = world_to_screen(
@@ -875,14 +876,11 @@ pub fn query_map_selection(
             if distance_px > hit_radius_px {
                 continue;
             }
-            let Some(symbol) = point_vector_record_to_symbol_feature(record, None) else {
+            let Some(symbol) = selection_symbol_for_point(record, is_airport) else {
                 continue;
             };
             let item = selection_item_for_point(record, &symbol, plan);
-            if record.style_class == "airport"
-                || record.kind.eq_ignore_ascii_case("airport")
-                || record.id.starts_with("airports:")
-            {
+            if is_airport {
                 airports.push(MapSelectionPointMatch { item, distance_px });
             } else if record.style_class == "fix" || record.style_class == "nav" {
                 navaids.push(MapSelectionPointMatch { item, distance_px });
@@ -1243,6 +1241,23 @@ fn disabled_action(id: &str, label: &str) -> MapSelectionAction {
         label: label.to_string(),
         enabled: false,
         display_only: false,
+    }
+}
+
+fn selection_record_is_airport(record: &PointVectorRecord) -> bool {
+    record.style_class == "airport"
+        || record.kind.eq_ignore_ascii_case("airport")
+        || record.id.starts_with("airports:")
+}
+
+fn selection_symbol_for_point(
+    record: &PointVectorRecord,
+    is_airport: bool,
+) -> Option<NavSymbolFeature> {
+    if is_airport {
+        point_vector_record_to_symbol_feature_unfiltered(record, None)
+    } else {
+        point_vector_record_to_symbol_feature(record, None)
     }
 }
 
@@ -3531,6 +3546,33 @@ mod tests {
         );
         assert_eq!(result.visible_features.len(), 1);
         assert_eq!(result.visible_features[0].id, "airports:KSEA");
+
+        let selection = query_map_selection(
+            &viewport,
+            1200.0,
+            900.0,
+            &test_map_overlay_config(),
+            None,
+            viewport.center,
+            32.0,
+            &cache,
+            &HashMap::new(),
+            None,
+        );
+        let airport_ids = selection.categories[0]
+            .items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            airport_ids,
+            vec![
+                "airports:KSEA",
+                "airports:WN50",
+                "airports:W57",
+                "airports:H1"
+            ]
+        );
     }
 
     fn fixture_vector_tile_root() -> &'static std::path::Path {

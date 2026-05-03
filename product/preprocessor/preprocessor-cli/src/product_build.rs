@@ -10777,12 +10777,9 @@ fn write_current_artifacts_json(
     path: &Path,
     manifest: &CurrentArtifactsManifest,
 ) -> anyhow::Result<()> {
-    fs::write(
-        path,
-        serde_json::to_vec_pretty(manifest)
-            .context("failed to encode current artifacts manifest")?,
-    )
-    .with_context(|| format!("failed to write {}", path.display()))
+    let bytes = serde_json::to_vec_pretty(manifest)
+        .context("failed to encode current artifacts manifest")?;
+    write_public_json_atomic(path, &bytes)
 }
 
 fn write_current_artifacts_manifest(
@@ -12194,8 +12191,7 @@ fn write_hashed_bundle_manifest(
         "bundle_cycle_{}_{}_{sha256}.json",
         bundle_manifest.cycle, bundle_manifest.cycle_version
     ));
-    fs::write(&bundle_manifest_path, bytes)
-        .with_context(|| format!("failed to write {}", bundle_manifest_path.display()))?;
+    write_public_json_atomic(&bundle_manifest_path, &bytes)?;
     Ok(bundle_manifest_path)
 }
 
@@ -12210,9 +12206,21 @@ fn write_hashed_fast_bundle_manifest(
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     let bundle_manifest_path = build_root.join(format!("bundle_fast_{sha256}.json"));
-    fs::write(&bundle_manifest_path, bytes)
-        .with_context(|| format!("failed to write {}", bundle_manifest_path.display()))?;
+    write_public_json_atomic(&bundle_manifest_path, &bytes)?;
     Ok(bundle_manifest_path)
+}
+
+fn write_public_json_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let temp_path = path.with_extension("json.tmp");
+    fs::write(&temp_path, bytes)
+        .with_context(|| format!("failed to write {}", temp_path.display()))?;
+    fs::rename(&temp_path, path).with_context(|| {
+        format!(
+            "failed to rename {} to {}",
+            temp_path.display(),
+            path.display()
+        )
+    })
 }
 
 fn publish_bundle_artifact(

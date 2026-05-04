@@ -11255,7 +11255,7 @@ fn cleanup_published_unpacked_root(
     unpacked_root: &Path,
     current_artifacts_path: &Path,
 ) -> anyhow::Result<()> {
-    let keep = collect_reachable_unpacked_entries(current_artifacts_path)?;
+    let keep = collect_reachable_unpacked_entries(unpacked_root, current_artifacts_path)?;
     prune_root_to_keep_set(unpacked_root, &keep)
 }
 
@@ -11309,12 +11309,10 @@ fn collect_reachable_packaged_entries_for_discovery(
 }
 
 fn collect_reachable_unpacked_entries(
+    unpacked_root: &Path,
     current_artifacts_path: &Path,
 ) -> anyhow::Result<BTreeSet<String>> {
     let mut keep = BTreeSet::new();
-    let unpacked_root = current_artifacts_path
-        .parent()
-        .context("current artifacts path missing parent")?;
     for discovery_path in discovery_manifest_paths(unpacked_root, current_artifacts_path)? {
         let is_current_discovery = same_path(&discovery_path, current_artifacts_path);
         match collect_reachable_unpacked_entries_for_discovery(unpacked_root, &discovery_path) {
@@ -11620,35 +11618,53 @@ fn validate_unpacked_contract(
 ) -> anyhow::Result<()> {
     validate_packaged_contract(packaged_root, current_artifacts_path)?;
     for discovery_path in discovery_manifest_paths(packaged_root, current_artifacts_path)? {
-        let current_filename = discovery_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .context("current artifacts path has no filename")?;
-        let unpacked_current_path = unpacked_root.join(current_filename);
-        ensure_public_file_exists(&unpacked_current_path)?;
-        validate_no_internal_paths_in_json(&unpacked_current_path)?;
-
-        let current = load_current_artifacts_manifest(&discovery_path)?;
-
-        for bundle in &current.bundles {
-            let unpacked_bundle_path = unpacked_root.join(&bundle.filename);
-            ensure_public_file_exists(&unpacked_bundle_path)?;
-            validate_no_internal_paths_in_json(&unpacked_bundle_path)?;
-            let bundle = load_bundle_manifest_like(&unpacked_bundle_path)?;
-            let bundle_refs = bundle.bundle_refs();
-            for artifact in bundle_refs.ancillary {
-                if artifact.filename.ends_with(".zip") {
-                    ensure_public_dir_exists(&unpacked_root.join(zip_stem(&artifact.filename)?))?;
-                } else {
-                    ensure_public_file_exists(&unpacked_root.join(&artifact.filename))?;
-                }
+        let is_current_discovery = same_path(&discovery_path, current_artifacts_path);
+        match validate_unpacked_contract_for_discovery(unpacked_root, &discovery_path) {
+            Ok(()) => {}
+            Err(error) if !is_current_discovery => {
+                eprintln!(
+                    "WARNING skipping stale historical unpacked discovery {} during validation: {error:#}",
+                    discovery_path.display()
+                );
             }
-            for package in bundle_refs.packages {
-                ensure_public_dir_exists(&unpacked_root.join(zip_stem(&package.filename)?))?;
-            }
+            Err(error) => return Err(error),
         }
     }
 
+    Ok(())
+}
+
+fn validate_unpacked_contract_for_discovery(
+    unpacked_root: &Path,
+    discovery_path: &Path,
+) -> anyhow::Result<()> {
+    let current_filename = discovery_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("current artifacts path has no filename")?;
+    let unpacked_current_path = unpacked_root.join(current_filename);
+    ensure_public_file_exists(&unpacked_current_path)?;
+    validate_no_internal_paths_in_json(&unpacked_current_path)?;
+
+    let current = load_current_artifacts_manifest(discovery_path)?;
+
+    for bundle in &current.bundles {
+        let unpacked_bundle_path = unpacked_root.join(&bundle.filename);
+        ensure_public_file_exists(&unpacked_bundle_path)?;
+        validate_no_internal_paths_in_json(&unpacked_bundle_path)?;
+        let bundle = load_bundle_manifest_like(&unpacked_bundle_path)?;
+        let bundle_refs = bundle.bundle_refs();
+        for artifact in bundle_refs.ancillary {
+            if artifact.filename.ends_with(".zip") {
+                ensure_public_dir_exists(&unpacked_root.join(zip_stem(&artifact.filename)?))?;
+            } else {
+                ensure_public_file_exists(&unpacked_root.join(&artifact.filename))?;
+            }
+        }
+        for package in bundle_refs.packages {
+            ensure_public_dir_exists(&unpacked_root.join(zip_stem(&package.filename)?))?;
+        }
+    }
     Ok(())
 }
 
@@ -15874,6 +15890,69 @@ mod tests {
         assert!(current_fast_bundle_path.is_file());
         assert!(!stale_path.exists());
         assert!(!stale_cycle_bundle_path.exists());
+    }
+
+    #[test]
+    fn unpacked_cleanup_uses_unpacked_root_for_package_dirs() {
+        let temp = tempdir().unwrap();
+        let packaged_root = temp.path().join("published-packaged");
+        let unpacked_root = temp.path().join("published-unpacked");
+        fs::create_dir_all(&packaged_root).unwrap();
+        fs::create_dir_all(&unpacked_root).unwrap();
+        let package_filename =
+            "csup_ak_2604_01_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.zip";
+        let package_stem = zip_stem(package_filename).unwrap();
+        let package_dir = unpacked_root.join(&package_stem);
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(package_dir.join("manifest.json"), "{}\n").unwrap();
+        let bundle = BundleManifest {
+            schema_version: 1,
+            bundle_id: "cycle_2604_01".to_string(),
+            bundle_type: "cycle".to_string(),
+            cycle: "2604".to_string(),
+            cycle_version: "01".to_string(),
+            generated_at_utc: "2026-05-04T00:00:00Z".to_string(),
+            effective_date: "2026-04-16".to_string(),
+            expiration_date: "2026-05-14".to_string(),
+            start_valid: "2026-04-16".to_string(),
+            end_valid: "2026-05-14".to_string(),
+            packages: vec![BundlePackageArtifact {
+                id: "csup_ak_2604_01".to_string(),
+                family_id: "csup".to_string(),
+                region_id: Some("ak".to_string()),
+                filename: package_filename.to_string(),
+                relative_path: package_filename.to_string(),
+                cycle: Some("2604".to_string()),
+                cycle_version: Some("01".to_string()),
+                checksum_sha256: "b".repeat(64),
+                size_bytes: 123,
+                published_at_utc: None,
+                source_generated_at_utc: None,
+                source_version: None,
+                source_fetched_at_utc: None,
+                effective_date: Some("2026-04-16".to_string()),
+                expiration_date: Some("2026-05-14".to_string()),
+                metadata: BTreeMap::new(),
+            }],
+            ancillary: vec![],
+        };
+        let bundle_path = write_hashed_bundle_manifest(&packaged_root, &bundle).unwrap();
+        sync_unpacked_file(&bundle_path, &unpacked_root).unwrap();
+        let current = CurrentArtifactsManifest {
+            schema_version: 1,
+            as_of_date: "2026-05-04".to_string(),
+            as_of_utc: "2026-05-04T00:00:00Z".to_string(),
+            bundles: vec![current_bundle_entry_from_path(&bundle_path).unwrap()],
+            diagnostics: None,
+        };
+        let current_path = packaged_root.join("current_artifacts.json");
+        fs::write(&current_path, serde_json::to_vec_pretty(&current).unwrap()).unwrap();
+        sync_unpacked_file(&current_path, &unpacked_root).unwrap();
+
+        cleanup_published_unpacked_root(&unpacked_root, &current_path).unwrap();
+
+        assert!(unpacked_root.join(&package_stem).is_dir());
+        assert!(!packaged_root.join(&package_stem).exists());
     }
 
     #[test]

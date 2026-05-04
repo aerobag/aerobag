@@ -18,6 +18,8 @@ data class ControlsTheme(
     val panelBorder: Color,
     val panelFg: Color,
     val panelMuted: Color,
+    val mapSelectionDisplayBg: Color,
+    val mapSelectionDisplayFg: Color,
     val chartSurfaceBg: Color,
     val cdiPointer: Color,
 )
@@ -42,6 +44,8 @@ private data class WireControlsTheme(
     val panel_border: String,
     val panel_fg: String,
     val panel_muted: String,
+    val map_selection_display_bg: String,
+    val map_selection_display_fg: String,
     val chart_surface_bg: String,
     val cdi_pointer: String,
 )
@@ -71,6 +75,8 @@ object UiThemeLoader {
                 panelBorder = wire.controls.panel_border.toColor(),
                 panelFg = wire.controls.panel_fg.toColor(),
                 panelMuted = wire.controls.panel_muted.toColor(),
+                mapSelectionDisplayBg = wire.controls.map_selection_display_bg.toColor(),
+                mapSelectionDisplayFg = wire.controls.map_selection_display_fg.toColor(),
                 chartSurfaceBg = wire.controls.chart_surface_bg.toColor(),
                 cdiPointer = wire.controls.cdi_pointer.toColor(),
             ),

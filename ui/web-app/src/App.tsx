@@ -214,6 +214,8 @@ type UiThemeJson = {
     panel_border: string;
     panel_fg: string;
     panel_muted: string;
+    map_selection_display_bg: string;
+    map_selection_display_fg: string;
     chart_surface_bg: string;
     cdi_pointer: string;
   };
@@ -1512,6 +1514,8 @@ export default function App() {
         "--theme-panel-border": controlTheme.panel_border,
         "--theme-panel-fg": controlTheme.panel_fg,
         "--theme-panel-muted": controlTheme.panel_muted,
+        "--theme-map-selection-display-bg": controlTheme.map_selection_display_bg,
+        "--theme-map-selection-display-fg": controlTheme.map_selection_display_fg,
         "--theme-chart-surface-bg": controlTheme.chart_surface_bg,
         "--theme-cdi-pointer": controlTheme.cdi_pointer,
         "--theme-class-b-d-blue": loadedUiTheme.aviation.class_b_d_blue,

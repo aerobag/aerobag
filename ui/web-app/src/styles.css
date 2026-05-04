@@ -895,8 +895,8 @@ button {
 }
 
 .mapSelectionAction.isDisplayOnly {
-  background: rgba(255, 255, 255, 0.78);
-  color: #24333a;
+  background: var(--theme-map-selection-display-bg);
+  color: var(--theme-map-selection-display-fg);
 }
 
 .mapSelectionAction.isPlaceholder {

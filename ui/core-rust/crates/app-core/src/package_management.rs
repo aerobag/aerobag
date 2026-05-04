@@ -987,9 +987,8 @@ fn fetch_sort_key_for_id(artifact_id: &str) -> (u8, &str) {
 fn fetch_product_priority(product_id: &str) -> u8 {
     match product_id {
         "nav-db" => 0,
-        "vectors" => 1,
-        "geo" => 2,
-        _ => 3,
+        "geo" => 1,
+        _ => 2,
     }
 }
 
@@ -997,12 +996,10 @@ fn fetch_product_priority_from_artifact_id(artifact_id: &str) -> u8 {
     let normalized = artifact_id.to_ascii_lowercase().replace('_', "-");
     if normalized.starts_with("nav-db-") {
         0
-    } else if normalized.starts_with("vectors-") || normalized.starts_with("vectors-data-") {
-        1
     } else if normalized.starts_with("geo-") {
-        2
+        1
     } else {
-        3
+        2
     }
 }
 
@@ -1693,7 +1690,7 @@ fn cycle_selection(selections: &mut BTreeMap<String, OfflinePackageSelection>, i
 fn bundle_package_to_artifact(pkg: &BundlePackageArtifact) -> Option<AvailablePackageArtifact> {
     match pkg.family_id.as_str() {
         "sec" | "tac" | "shaded-relief" | "enr-l" | "enr-h" | "tpp" | "csup" | "nav-db"
-        | "vectors" | "geo" | "terrain" => Some(AvailablePackageArtifact {
+        | "geo" | "terrain" => Some(AvailablePackageArtifact {
             artifact_id: pkg.id.clone(),
             filename: pkg.filename.clone(),
             product_id: pkg.family_id.clone(),
@@ -2006,13 +2003,6 @@ mod tests {
             bundle: BundleManifest {
                 packages: vec![
                     pkg("NW_SEC_2603", "sec", Some("nw"), None, Some("2099-01-01")),
-                    pkg(
-                        "VECTORS_DATA_2604",
-                        "vectors",
-                        None,
-                        None,
-                        Some("2099-01-01"),
-                    ),
                     pkg("NW_TAC_2603", "tac", Some("nw"), None, Some("2099-01-01")),
                     pkg("GEO_STATIC", "geo", None, None, Some("2099-01-01")),
                     pkg("NAV_DB_2604", "nav-db", None, None, Some("2099-01-01")),
@@ -2029,12 +2019,38 @@ mod tests {
             plan.fetch,
             vec![
                 "NAV_DB_2604",
-                "VECTORS_DATA_2604",
                 "GEO_STATIC",
                 "NW_SEC_2603",
                 "NW_TAC_2603",
             ]
         );
+    }
+
+    #[test]
+    fn obsolete_standalone_vectors_package_is_ignored_by_sync_plan() {
+        let input = PackageManagementInput {
+            now_epoch_ms: 200,
+            preferences: default_offline_package_preferences(Vec::<String>::new(), Vec::<String>::new()),
+            bundle: BundleManifest {
+                packages: vec![
+                    pkg(
+                        "VECTORS_DATA_2604",
+                        "vectors",
+                        None,
+                        None,
+                        Some("2099-01-01"),
+                    ),
+                    pkg("NAV_DB_2604", "nav-db", None, None, Some("2099-01-01")),
+                ],
+            },
+            installed: vec![],
+            forced_gc_installed_filenames: vec![],
+            suppressed_fetch_filenames: vec![],
+        };
+
+        let plan = plan_offline_packages(&input);
+
+        assert_eq!(plan.fetch, vec!["NAV_DB_2604"]);
     }
 
     #[test]

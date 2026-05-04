@@ -207,7 +207,6 @@ import net.jonh.aerobag.prototype.domain.NavElementUiView
 import net.jonh.aerobag.prototype.domain.OwnshipMode
 import net.jonh.aerobag.prototype.domain.OwnshipRenderState
 import net.jonh.aerobag.prototype.domain.PackageZipStore
-import net.jonh.aerobag.prototype.domain.PointTilePayload
 import net.jonh.aerobag.prototype.domain.PlaybackStatus
 import net.jonh.aerobag.prototype.domain.PlaybackUiState
 import net.jonh.aerobag.prototype.domain.ProcedureKind
@@ -413,68 +412,6 @@ private data class SituationCardinalLabel(
     val pointUnits: Offset,
     val rotationDeg: Float,
 )
-
-private object VectorTileAssets {
-    private val json = Json {
-        ignoreUnknownKeys = true
-    }
-    private val cache = mutableMapOf<String, PointTilePayload?>()
-
-    suspend fun loadPointTiles(
-        context: Context,
-        vectorPackageId: String,
-        requests: List<net.jonh.aerobag.prototype.domain.VectorTileRequest>,
-    ): List<PointTilePayload> =
-        withContext(Dispatchers.IO) {
-            if (requests.isEmpty()) {
-                return@withContext emptyList()
-            }
-            val entryNames = requests.map { request ->
-                "points/${request.layer}/${request.z}/${request.x}/${request.y}.json"
-            }
-            val missing = synchronized(cache) { entryNames.filter { !cache.containsKey(it) }.toSet() }
-            if (missing.isNotEmpty()) {
-                val vectorZip = InstalledPackages.existingInstalledFile(context, InstalledPackageKind.Data, vectorPackageId)
-                    ?: error("missing installed data package $vectorPackageId")
-                missing.forEach { entryName ->
-                    currentCoroutineContext().ensureActive()
-                    val payload = try {
-                        PackageZipStore.readEntryBytes(vectorZip, entryName)?.decodeToString()?.let {
-                            json.decodeFromString<PointTilePayload>(it)
-                        }
-                    } catch (error: CancellationException) {
-                        throw error
-                    } catch (_: Throwable) {
-                        null
-                    }
-                    currentCoroutineContext().ensureActive()
-                    synchronized(cache) {
-                        cache[entryName] = payload
-                    }
-                }
-                synchronized(cache) {
-                    missing.filter { cache[it] == null }.forEach { entryName ->
-                        val parts = entryName.removePrefix("points/").removeSuffix(".json").split("/")
-                        synchronized(cache) {
-                            if (parts.size == 4) {
-                                cache[entryName] = PointTilePayload(
-                                    schemaVersion = 1,
-                                    layer = parts[0],
-                                    z = parts[1].toIntOrNull() ?: 0,
-                                    x = parts[2].toIntOrNull() ?: 0,
-                                    y = parts[3].toIntOrNull() ?: 0,
-                                    records = emptyList(),
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-            synchronized(cache) {
-                entryNames.mapNotNull { cache[it] }
-            }
-        }
-}
 
 private val ThumbRadius = 10.dp
 private val FolderThumbGutter = ThumbSize * 0.3f
@@ -4688,20 +4625,6 @@ private fun MapExplorerPage(
             var overlay = uiSession.queryMapOverlay(viewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble())
             repeat(8) {
                 var ingested = false
-                if (overlay.neededPointTiles.isNotEmpty()) {
-                    val payloads = fixture.vectorPackageId?.let { vectorPackageId ->
-                        VectorTileAssets.loadPointTiles(
-                            context.applicationContext,
-                            vectorPackageId,
-                            overlay.neededPointTiles,
-                        )
-                    } ?: emptyList()
-                    currentCoroutineContext().ensureActive()
-                    if (payloads.isNotEmpty()) {
-                        uiSession.ingestPointTiles(payloads)
-                        ingested = true
-                    }
-                }
                 if (overlay.neededMetars) {
                     val payloadJson = withContext(Dispatchers.IO) {
                         URL(resolvePlaybackTraceUrl("/fast-products/metars/metars.json", devServerBaseUrl)).readText()

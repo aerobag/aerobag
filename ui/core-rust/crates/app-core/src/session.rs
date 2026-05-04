@@ -13,7 +13,7 @@ use crate::{
     guidance_detail_id_for_index,
     had_ops::{
         insert_waypoint_best_position, materialize_airway_presentation_selection,
-        HadOperationOutcome, HadReadError,
+        materialize_procedure, HadOperationOutcome, HadReadError,
     },
     map_follow::{MapFollowSessionState, MapFollowUiState},
     map_overlay_config_from_vector_manifest_json, move_flight_plan_waypoint, nav_kv_key_for_query,
@@ -25,7 +25,7 @@ use crate::{
     AirwayPresentationPlan, AppUiState, FlightPlan, FlightPlanRowActionExecution,
     FlightPlanRowActionId, LatLon, MapOverlayConfig, MapOverlayQueryResult, MapViewport,
     MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore, NavRef, PlanLeg,
-    PlaybackUiState, PointTilePayload,
+    PlaybackUiState, PointTilePayload, ProcedureKind,
     RasterMapCatalog, RasterTilePlan, SequencingMode, TerrainOverlayQueryResult, TfrProductPayload,
     UiSnapshotAppState,
 };
@@ -776,6 +776,103 @@ pub fn insert_airway_at_flight_plan_row_in_session(
         materialized.airway,
         materialized.resolved_legs,
     )?;
+    replace_session_flight_plan(session, mutation.mutation.plan)?;
+    let snapshot = snapshot_for_session(session);
+    Ok(HadOperationOutcome::Complete {
+        result: serde_json::to_value(snapshot).map_err(|err| AppError {
+            kind: AppErrorKind::Internal,
+            message: err.to_string(),
+        })?,
+    })
+}
+
+pub fn select_procedure_at_flight_plan_row_in_session(
+    handle: u32,
+    row_uid: String,
+    airport_id: String,
+    procedure_id: String,
+    kind: ProcedureKind,
+    runway_transition: Option<String>,
+    enroute_transition: Option<String>,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let plan = session_plan(session)?;
+    let ui = crate::project_ui_state(&plan);
+    let row = ui
+        .display_rows
+        .iter()
+        .find(|row| row.uid == row_uid)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("flight-plan procedure target is stale: {row_uid}"),
+        })?;
+    let row_airport_id = row.chart_airport_id.as_deref().ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: "procedure target row has no airport".to_string(),
+    })?;
+    if row_airport_id != airport_id {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("procedure airport mismatch: row has {row_airport_id}, requested {airport_id}"),
+        });
+    }
+    let component_uid = row.component_uid.as_deref().ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: "procedure target row has no route component uid".to_string(),
+    })?;
+    let airport_component_index = plan
+        .route_component_uids
+        .iter()
+        .position(|uid| uid == component_uid)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("procedure target component is stale: {component_uid}"),
+        })?;
+    let replace_component_index =
+        airport_component_index
+            .checked_sub(1)
+            .and_then(|index| match plan.route_components.get(index) {
+                Some(crate::RouteComponent::Procedure { procedure })
+                    if procedure.kind == kind && procedure.airport_id.0 == airport_id =>
+                {
+                    Some(index)
+                }
+                _ => None,
+            });
+    let start_component_index = airport_component_index.checked_sub(1).ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: "procedure insert target has no preceding component".to_string(),
+    })?;
+    let store = session_nav_kv_store(session)?;
+    let built = match materialize_procedure(
+        store,
+        &airport_id,
+        &procedure_id,
+        kind,
+        runway_transition.as_deref(),
+        enroute_transition.as_deref(),
+        airport_component_index,
+    ) {
+        Ok(built) => built,
+        Err(HadReadError::NeedPages(pages)) => return Ok(HadOperationOutcome::NeedPages { pages }),
+        Err(HadReadError::Fatal(message)) => {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message,
+            });
+        }
+    };
+    let mutation = if let Some(replace_component_index) = replace_component_index {
+        crate::replace_procedure_materialized_ui(&plan, replace_component_index, built)?
+    } else {
+        crate::insert_procedure_materialized_ui(
+            &plan,
+            start_component_index,
+            airport_component_index,
+            built,
+        )?
+    };
     replace_session_flight_plan(session, mutation.mutation.plan)?;
     let snapshot = snapshot_for_session(session);
     Ok(HadOperationOutcome::Complete {

@@ -15,7 +15,6 @@ import type {
   GeometryJson,
   LatLon,
   MapViewOptionJson,
-  MaterializedProcedure,
   NavSymbolFeature,
   NavElementUiView,
   NavRef,
@@ -1740,24 +1739,17 @@ export default function App() {
             const nextSnapshot = await uiSession.insertAirwayAtFlightPlanRow(rowUid, presentation, entryIndex, exitIndex);
             setSessionSnapshot(nextSnapshot);
           }}
-          onInsertProcedure={async (startComponentIndex, endComponentIndex, built) => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.insertProcedureMaterializedUi(
-              currentPlan,
-              startComponentIndex,
-              endComponentIndex,
-              built,
+          onSelectProcedureAtRow={async (rowUid, airportId, procedureId, enrouteTransition) => {
+            if (!uiSession) return;
+            const nextSnapshot = await uiSession.selectProcedureAtFlightPlanRow(
+              rowUid,
+              airportId,
+              procedureId,
+              "approach",
+              null,
+              enrouteTransition,
             );
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
-          }}
-          onReplaceProcedure={async (componentIndex, built) => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.replaceProcedureMaterializedUi(
-              currentPlan,
-              componentIndex,
-              built,
-            );
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
+            setSessionSnapshot(nextSnapshot);
           }}
           debugWarningActive={debugWarningActive}
         />
@@ -4304,12 +4296,7 @@ function FlightPlanPage(props: {
     exitIndex: number,
     presentation: AirwayPresentationPlan,
   ) => void | Promise<void>;
-  onInsertProcedure: (
-    startComponentIndex: number,
-    endComponentIndex: number,
-    built: MaterializedProcedure,
-  ) => void | Promise<void>;
-  onReplaceProcedure: (componentIndex: number, built: MaterializedProcedure) => void | Promise<void>;
+  onSelectProcedureAtRow: (rowUid: string, airportId: string, procedureId: string, enrouteTransition: string | null) => void | Promise<void>;
   debugWarningActive: boolean;
 }) {
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
@@ -4329,10 +4316,8 @@ function FlightPlanPage(props: {
   const [procedurePicker, setProcedurePicker] = useState<{
     loading: boolean;
     error: string | null;
+    rowUid: string;
     airportId: string;
-    replaceComponentIndex: number | null;
-    startComponentIndex: number;
-    endComponentIndex: number;
     procedures: ProcedureSummary[];
     selectedProcedureId: string | null;
     options: ProcedureOptions | null;
@@ -4579,18 +4564,14 @@ function FlightPlanPage(props: {
             return;
           }
           if (action.id === "select_procedure") {
-            if (selectedRow.componentIndex === null || !selectedRow.chartAirportId) {
+            if (!selectedRow.chartAirportId) {
               return;
             }
-            const startComponentIndex = selectedRow.componentIndex - 1;
-            const endComponentIndex = selectedRow.componentIndex;
             setProcedurePicker({
               loading: true,
               error: null,
+              rowUid: selectedRow.rowUid,
               airportId: selectedRow.chartAirportId,
-              replaceComponentIndex: selectedRow.replaceProcedureComponentIndex ?? null,
-              startComponentIndex,
-              endComponentIndex,
               procedures: [],
               selectedProcedureId: null,
               options: null,
@@ -5241,23 +5222,12 @@ function FlightPlanPage(props: {
                             error: null,
                           } : current);
                           try {
-                            const built = await props.appCoreAdapter!.materializeProcedure(
+                            await props.onSelectProcedureAtRow(
+                              procedurePicker.rowUid,
                               procedurePicker.airportId,
                               procedurePicker.selectedProcedureId!,
-                              "approach",
-                              null,
                               choice.enroute_transition,
-                              procedurePicker.startComponentIndex + 1,
                             );
-                            if (procedurePicker.replaceComponentIndex !== null) {
-                              await props.onReplaceProcedure(procedurePicker.replaceComponentIndex, built);
-                            } else {
-                              await props.onInsertProcedure(
-                                procedurePicker.startComponentIndex,
-                                procedurePicker.endComponentIndex,
-                                built,
-                              );
-                            }
                             setProcedurePicker(null);
                             setSelectedWaypointIndex(null);
                           } catch (error) {

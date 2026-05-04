@@ -47,6 +47,7 @@ declare module "@generated/app_wasm.js" {
   export const replace_flight_plan_in_session: (...args: unknown[]) => string;
   export const insert_waypoint_at_flight_plan_row_in_session: (...args: unknown[]) => string;
   export const insert_airway_at_flight_plan_row_in_session: (...args: unknown[]) => string;
+  export const select_procedure_at_flight_plan_row_in_session: (...args: unknown[]) => string;
   export const activate_direct_to_nav_ref_in_session: (...args: unknown[]) => string;
   export const restore_direct_to_in_session: (...args: unknown[]) => string;
   export const select_airport_in_session: (...args: unknown[]) => string;

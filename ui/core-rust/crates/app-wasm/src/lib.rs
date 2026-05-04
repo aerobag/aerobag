@@ -175,6 +175,35 @@ pub fn insert_airway_at_flight_plan_row_in_session(
 }
 
 #[wasm_bindgen]
+pub fn select_procedure_at_flight_plan_row_in_session(
+    session_handle: u32,
+    row_uid: &str,
+    airport_id: &str,
+    procedure_id: &str,
+    procedure_kind_json: &str,
+    runway_transition_json: &str,
+    enroute_transition_json: &str,
+) -> Result<String, JsValue> {
+    let procedure_kind: app_core::ProcedureKind =
+        serde_json::from_str(procedure_kind_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let runway_transition: Option<String> =
+        serde_json::from_str(runway_transition_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let enroute_transition: Option<String> =
+        serde_json::from_str(enroute_transition_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome = app_core::select_procedure_at_flight_plan_row_in_session(
+        session_handle,
+        row_uid.to_string(),
+        airport_id.to_string(),
+        procedure_id.to_string(),
+        procedure_kind,
+        runway_transition,
+        enroute_transition,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn activate_direct_to_nav_ref_in_session(
     session_handle: u32,
     target_json: &str,

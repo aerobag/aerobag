@@ -28,6 +28,7 @@ import type {
   PlanLeg,
   PlaybackUiState,
   ProcedureLoadOption,
+  ProcedureKind,
   ProcedureOptions,
   ProcedureSummary,
   ResolvedLegUiView,
@@ -442,6 +443,7 @@ export interface UiSession {
   insertWaypointBestPosition(waypoint: NavRef): Promise<UiSessionSnapshot>;
   insertWaypointAtFlightPlanRow(rowUid: string, before: boolean, waypoint: NavRef): Promise<UiSessionSnapshot>;
   insertAirwayAtFlightPlanRow(rowUid: string, presentation: AirwayPresentationPlan, entryIndex: number, exitIndex: number): Promise<UiSessionSnapshot>;
+  selectProcedureAtFlightPlanRow(rowUid: string, airportId: string, procedureId: string, kind: ProcedureKind, runwayTransition: string | null, enrouteTransition: string | null): Promise<UiSessionSnapshot>;
   removeTopLevelWaypointByNavRef(navRef: NavRef): Promise<UiSessionSnapshot>;
   activateDirectTo(navRef: NavRef): Promise<UiSessionSnapshot>;
   restoreDirectTo(): Promise<UiSessionSnapshot>;
@@ -667,6 +669,15 @@ type WasmModule = {
   insert_waypoint_best_position_in_session(sessionHandle: number, waypointJson: string): Promise<string> | string;
   insert_waypoint_at_flight_plan_row_in_session(sessionHandle: number, rowUid: string, before: boolean, waypointJson: string): Promise<string> | string;
   insert_airway_at_flight_plan_row_in_session(sessionHandle: number, rowUid: string, presentationJson: string, entryIndex: number, exitIndex: number): Promise<string> | string;
+  select_procedure_at_flight_plan_row_in_session(
+    sessionHandle: number,
+    rowUid: string,
+    airportId: string,
+    procedureId: string,
+    procedureKindJson: string,
+    runwayTransitionJson: string,
+    enrouteTransitionJson: string,
+  ): Promise<string> | string;
   activate_direct_to_nav_ref_in_session(sessionHandle: number, targetJson: string): Promise<string> | string;
   restore_direct_to_in_session(sessionHandle: number): Promise<string> | string;
   perform_flight_plan_row_action_in_session(sessionHandle: number, rowUid: string, actionUid: string): Promise<string> | string;
@@ -910,6 +921,23 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
               JSON.stringify(presentation),
               entryIndex,
               exitIndex,
+            ),
+          ),
+        );
+        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        return snapshot;
+      },
+      selectProcedureAtFlightPlanRow: async (rowUid, airportId, procedureId, kind, runwayTransition, enrouteTransition) => {
+        snapshot = await withSessionRetry(async () =>
+          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+            this.module.select_procedure_at_flight_plan_row_in_session(
+              handle,
+              rowUid,
+              airportId,
+              procedureId,
+              JSON.stringify(kind),
+              JSON.stringify(runwayTransition),
+              JSON.stringify(enrouteTransition),
             ),
           ),
         );
@@ -1493,6 +1521,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.destroy_session !== "function" ||
     typeof mod.insert_waypoint_at_flight_plan_row_in_session !== "function" ||
     typeof mod.insert_airway_at_flight_plan_row_in_session !== "function" ||
+    typeof mod.select_procedure_at_flight_plan_row_in_session !== "function" ||
     typeof mod.activate_next_leg_ui !== "function" ||
     typeof mod.suspend_sequencing_ui !== "function" ||
     typeof mod.unsuspend_sequencing_ui !== "function" ||

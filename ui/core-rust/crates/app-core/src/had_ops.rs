@@ -1341,7 +1341,7 @@ fn describe_procedure_options(
     describe_procedure_options_from_rows(airport_id, procedure_id, kind, rows).map_err(Into::into)
 }
 
-fn materialize_procedure(
+pub(crate) fn materialize_procedure(
     store: &NavKvStore,
     airport_id: &str,
     procedure_id: &str,

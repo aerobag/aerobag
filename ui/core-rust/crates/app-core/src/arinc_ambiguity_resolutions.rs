@@ -16,7 +16,7 @@ pub struct InventedPiEntryCourseReversal {
     pub outbound_intercept_angle_deg: f64,
 }
 
-pub const SIMPLE_PI_ENTRY_MAX_TURN_DEG: f64 = 75.0;
+pub const SIMPLE_PI_ENTRY_MAX_TURN_DEG: f64 = 120.0;
 
 pub fn invent_pi_entry_course_reversal_when_no_hold_is_available(
     airport_id: &str,
@@ -48,7 +48,7 @@ pub fn invent_pi_entry_course_reversal_when_no_hold_is_available(
         transition_id,
         sequence,
     );
-    if turn_to_pi_outbound_deg <= 120.0 {
+    if turn_to_pi_outbound_deg <= SIMPLE_PI_ENTRY_MAX_TURN_DEG {
         return None;
     }
     Some(InventedPiEntryCourseReversal {

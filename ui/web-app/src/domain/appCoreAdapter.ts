@@ -445,6 +445,7 @@ export interface UiSession {
   moveWaypoint(index: number, delta: number): Promise<UiSessionSnapshot>;
   insertWaypointBestPosition(waypoint: NavRef): Promise<UiSessionSnapshot>;
   insertWaypointAtFlightPlanRow(rowUid: string, before: boolean, waypoint: NavRef): Promise<UiSessionSnapshot>;
+  insertAirwayAtFlightPlanRow(rowUid: string, presentation: AirwayPresentationPlan, entryIndex: number, exitIndex: number): Promise<UiSessionSnapshot>;
   removeTopLevelWaypointByNavRef(navRef: NavRef): Promise<UiSessionSnapshot>;
   activateDirectTo(navRef: NavRef): Promise<UiSessionSnapshot>;
   restoreDirectTo(): Promise<UiSessionSnapshot>;
@@ -532,14 +533,6 @@ export interface AppCoreAdapter {
     airway: AirwaySegment;
     resolvedLegs: ResolvedLeg[];
   }>;
-  insertAirwayMaterializedUi(
-    plan: FlightPlan,
-    startComponentIndex: number,
-    endComponentIndex: number | null,
-    selection: AirwayAutoSelection,
-    airway: AirwaySegment,
-    resolvedLegs: ResolvedLeg[],
-  ): Promise<FlightPlanUiMutation>;
   replaceAirwayMaterializedUi(
     plan: FlightPlan,
     componentIndex: number,
@@ -695,6 +688,7 @@ type WasmModule = {
   replace_flight_plan_in_session(handle: number, planJson: string): Promise<string> | string;
   insert_waypoint_best_position_in_session(sessionHandle: number, waypointJson: string): Promise<string> | string;
   insert_waypoint_at_flight_plan_row_in_session(sessionHandle: number, rowUid: string, before: boolean, waypointJson: string): Promise<string> | string;
+  insert_airway_at_flight_plan_row_in_session(sessionHandle: number, rowUid: string, presentationJson: string, entryIndex: number, exitIndex: number): Promise<string> | string;
   activate_direct_to_nav_ref_in_session(sessionHandle: number, targetJson: string): Promise<string> | string;
   restore_direct_to_in_session(sessionHandle: number): Promise<string> | string;
   perform_flight_plan_row_action_in_session(sessionHandle: number, rowUid: string, actionUid: string): Promise<string> | string;
@@ -726,14 +720,6 @@ type WasmModule = {
   suspend_sequencing_ui(planJson: string): Promise<string> | string;
   unsuspend_sequencing_ui(planJson: string): Promise<string> | string;
   sequence_active_leg_ui(planJson: string): Promise<string> | string;
-  insert_airway_materialized_ui(
-    planJson: string,
-    startComponentIndex: number,
-    endComponentIndexJson: string,
-    selectionJson: string,
-    airwayJson: string,
-    resolvedLegsJson: string,
-  ): Promise<string> | string;
   replace_airway_materialized_ui(
     planJson: string,
     componentIndex: number,
@@ -940,6 +926,21 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             before,
             JSON.stringify(waypoint),
           )),
+        );
+        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        return snapshot;
+      },
+      insertAirwayAtFlightPlanRow: async (rowUid, presentation, entryIndex, exitIndex) => {
+        snapshot = await withSessionRetry(async () =>
+          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+            this.module.insert_airway_at_flight_plan_row_in_session(
+              handle,
+              rowUid,
+              JSON.stringify(presentation),
+              entryIndex,
+              exitIndex,
+            ),
+          ),
         );
         await syncGuidanceGeometry(snapshot.app_state.active_plan);
         return snapshot;
@@ -1398,30 +1399,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     });
   }
 
-  async insertAirwayMaterializedUi(
-    plan: FlightPlan,
-    startComponentIndex: number,
-    endComponentIndex: number | null,
-    selection: AirwayAutoSelection,
-    airway: AirwaySegment,
-    resolvedLegs: ResolvedLeg[],
-  ): Promise<FlightPlanUiMutation> {
-    const result = JSON.parse(
-      await this.module.insert_airway_materialized_ui(
-        JSON.stringify(plan),
-        startComponentIndex,
-        JSON.stringify(endComponentIndex),
-        JSON.stringify(selection),
-        JSON.stringify(airway),
-        JSON.stringify(resolvedLegs),
-      ),
-    ) as { mutation: { plan: FlightPlan }; ui_state: FlightPlanUiState };
-    return {
-      plan: result.mutation.plan,
-      ui_state: await this.enrichFlightPlanUiState(result.mutation.plan, result.ui_state),
-    };
-  }
-
   async replaceAirwayMaterializedUi(
     plan: FlightPlan,
     componentIndex: number,
@@ -1591,11 +1568,11 @@ export async function loadBestAvailableAdapter(
     typeof mod.restore_chart_page_state_in_session !== "function" ||
     typeof mod.destroy_session !== "function" ||
     typeof mod.insert_waypoint_at_flight_plan_row_in_session !== "function" ||
+    typeof mod.insert_airway_at_flight_plan_row_in_session !== "function" ||
     typeof mod.activate_next_leg_ui !== "function" ||
     typeof mod.suspend_sequencing_ui !== "function" ||
     typeof mod.unsuspend_sequencing_ui !== "function" ||
     typeof mod.sequence_active_leg_ui !== "function" ||
-    typeof mod.insert_airway_materialized_ui !== "function" ||
     typeof mod.replace_airway_materialized_ui !== "function" ||
     typeof mod.insert_procedure_materialized_ui !== "function" ||
     typeof mod.replace_procedure_materialized_ui !== "function" ||

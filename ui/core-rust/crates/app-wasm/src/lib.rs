@@ -154,6 +154,27 @@ pub fn insert_waypoint_at_flight_plan_row_in_session(
 }
 
 #[wasm_bindgen]
+pub fn insert_airway_at_flight_plan_row_in_session(
+    session_handle: u32,
+    row_uid: &str,
+    presentation_json: &str,
+    entry_index: usize,
+    exit_index: usize,
+) -> Result<String, JsValue> {
+    let presentation: app_core::AirwayPresentationPlan =
+        serde_json::from_str(presentation_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome = app_core::insert_airway_at_flight_plan_row_in_session(
+        session_handle,
+        row_uid.to_string(),
+        presentation,
+        entry_index,
+        exit_index,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn activate_direct_to_nav_ref_in_session(
     session_handle: u32,
     target_json: &str,
@@ -256,26 +277,6 @@ pub fn activate_direct_to_leg_ui(
 ) -> Result<String, JsValue> {
     activate_direct_to_leg_ui_json(plan_json, lat, lon, target_leg_id)
         .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn insert_airway_materialized_ui(
-    plan_json: &str,
-    start_component_index: usize,
-    end_component_index_json: &str,
-    selection_json: &str,
-    airway_json: &str,
-    resolved_legs_json: &str,
-) -> Result<String, JsValue> {
-    insert_airway_materialized_ui_json(
-        plan_json,
-        start_component_index,
-        end_component_index_json,
-        selection_json,
-        airway_json,
-        resolved_legs_json,
-    )
-    .map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -822,36 +823,6 @@ fn activate_direct_to_leg_ui_json(
     let mutation =
         app_core::activate_direct_to_leg_ui(&plan, app_core::LatLon { lat, lon }, target_leg_id)
             .map_err(|err| err.to_string())?;
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
-fn insert_airway_materialized_ui_json(
-    plan_json: &str,
-    start_component_index: usize,
-    end_component_index_json: &str,
-    selection_json: &str,
-    airway_json: &str,
-    resolved_legs_json: &str,
-) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let selection: app_core::AirwayAutoSelection =
-        serde_json::from_str(selection_json).map_err(|err| err.to_string())?;
-    let airway: app_core::AirwaySegment =
-        serde_json::from_str(airway_json).map_err(|err| err.to_string())?;
-    let resolved_legs: Vec<app_core::ResolvedLeg> =
-        serde_json::from_str(resolved_legs_json).map_err(|err| err.to_string())?;
-    let end_component_index: Option<usize> =
-        serde_json::from_str(end_component_index_json).map_err(|err| err.to_string())?;
-    let mutation = app_core::insert_airway_materialized_ui(
-        &plan,
-        start_component_index,
-        end_component_index,
-        selection,
-        airway,
-        resolved_legs,
-    )
-    .map_err(|err| err.to_string())?;
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 

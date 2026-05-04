@@ -11,7 +11,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
     chart_page::airport_ids_from_plan,
     guidance_detail_id_for_index,
-    had_ops::{insert_waypoint_best_position, HadOperationOutcome, HadReadError},
+    had_ops::{
+        insert_waypoint_best_position, materialize_airway_presentation_selection,
+        HadOperationOutcome, HadReadError,
+    },
     map_follow::{MapFollowSessionState, MapFollowUiState},
     map_overlay_config_from_vector_manifest_json, move_flight_plan_waypoint, nav_kv_key_for_query,
     planning::NavElementUiView,
@@ -19,9 +22,10 @@ use crate::{
     query_map_overlay, query_map_selection, remove_flight_plan_leg, state,
     AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
     AirspaceReferenceTilePayload, AppError, AppErrorKind, AppEvent, AppResult, AppState,
-    AppUiState, FlightPlan, FlightPlanRowActionExecution, FlightPlanRowActionId, LatLon,
-    MapOverlayConfig, MapOverlayQueryResult, MapViewport, MetarProductPayload, MetarTilePayload,
-    NavKvLookup, NavKvQuery, NavKvStore, NavRef, PlanLeg, PlaybackUiState, PointTilePayload,
+    AirwayPresentationPlan, AppUiState, FlightPlan, FlightPlanRowActionExecution,
+    FlightPlanRowActionId, LatLon, MapOverlayConfig, MapOverlayQueryResult, MapViewport,
+    MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore, NavRef, PlanLeg,
+    PlaybackUiState, PointTilePayload,
     RasterMapCatalog, RasterTilePlan, SequencingMode, TerrainOverlayQueryResult, TfrProductPayload,
     UiSnapshotAppState,
 };
@@ -703,6 +707,83 @@ pub fn insert_waypoint_at_flight_plan_row_in_session(
     let next_plan = crate::insert_waypoint(&plan, component_index, before, waypoint)?;
     replace_session_flight_plan(session, next_plan)?;
     Ok(snapshot_for_session(session))
+}
+
+pub fn insert_airway_at_flight_plan_row_in_session(
+    handle: u32,
+    row_uid: String,
+    presentation: AirwayPresentationPlan,
+    entry_index: usize,
+    exit_index: usize,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let plan = session_plan(session)?;
+    let ui = crate::project_ui_state(&plan);
+    let row = ui
+        .display_rows
+        .iter()
+        .find(|row| row.uid == row_uid)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("flight-plan airway insert target is stale: {row_uid}"),
+        })?;
+    let origin_anchor = row.origin_anchor.clone().ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: "airway insert row has no origin anchor".to_string(),
+    })?;
+    let component_uid = row.component_uid.as_deref().ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: "airway insert row has no route component uid".to_string(),
+    })?;
+    let start_component_index = plan
+        .route_component_uids
+        .iter()
+        .position(|uid| uid == component_uid)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("airway insert target component is stale: {component_uid}"),
+        })?;
+    let end_component_index = if row.destination_anchor.is_some() {
+        Some(start_component_index + 1)
+    } else {
+        None
+    };
+    let store = session_nav_kv_store(session)?;
+    let materialized = match materialize_airway_presentation_selection(
+        store,
+        start_component_index,
+        presentation,
+        entry_index,
+        exit_index,
+        &origin_anchor,
+        row.destination_anchor.as_ref(),
+    ) {
+        Ok(materialized) => materialized,
+        Err(HadReadError::NeedPages(pages)) => return Ok(HadOperationOutcome::NeedPages { pages }),
+        Err(HadReadError::Fatal(message)) => {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message,
+            });
+        }
+    };
+    let mutation = crate::insert_airway_materialized_ui(
+        &plan,
+        start_component_index,
+        end_component_index,
+        materialized.selection,
+        materialized.airway,
+        materialized.resolved_legs,
+    )?;
+    replace_session_flight_plan(session, mutation.mutation.plan)?;
+    let snapshot = snapshot_for_session(session);
+    Ok(HadOperationOutcome::Complete {
+        result: serde_json::to_value(snapshot).map_err(|err| AppError {
+            kind: AppErrorKind::Internal,
+            message: err.to_string(),
+        })?,
+    })
 }
 
 pub fn activate_direct_to_nav_ref_in_session(

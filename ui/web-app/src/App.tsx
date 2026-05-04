@@ -1735,26 +1735,10 @@ export default function App() {
             const nextSnapshot = await uiSession.performFlightPlanRowAction(rowUid, actionUid);
             setSessionSnapshot(nextSnapshot);
           }}
-          onInsertAirway={async (startComponentIndex, endComponentIndex, entryIndex, exitIndex, presentation, originAnchor, destinationAnchor) => {
-            if (!appCoreAdapter) return;
-            const entry = airwayEntryCandidateFromPresentation(presentation, entryIndex);
-            const exit = airwayExitCandidatesFromPresentation(presentation, entryIndex)[exitIndex];
-            const materialized = await appCoreAdapter.materializeAirwaySelection(
-              startComponentIndex,
-              entry,
-              exit,
-              originAnchor,
-              destinationAnchor,
-            );
-            const mutation = await appCoreAdapter.insertAirwayMaterializedUi(
-              currentPlan,
-              startComponentIndex,
-              endComponentIndex,
-              materialized.selection,
-              materialized.airway,
-              materialized.resolvedLegs,
-            );
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
+          onInsertAirwayAtRow={async (rowUid, entryIndex, exitIndex, presentation) => {
+            if (!uiSession) return;
+            const nextSnapshot = await uiSession.insertAirwayAtFlightPlanRow(rowUid, presentation, entryIndex, exitIndex);
+            setSessionSnapshot(nextSnapshot);
           }}
           onReplaceAirway={async (componentIndex, entryIndex, exitIndex, presentation, originAnchor, destinationAnchor) => {
             if (!appCoreAdapter) return;
@@ -4334,14 +4318,11 @@ function FlightPlanPage(props: {
   onSequenceActiveLeg: () => void | Promise<void>;
   onRestoreDirectTo: () => void | Promise<void>;
   onPerformFlightPlanRowAction: (rowUid: string, actionUid: string) => void | Promise<void>;
-  onInsertAirway: (
-    startComponentIndex: number,
-    endComponentIndex: number | null,
+  onInsertAirwayAtRow: (
+    rowUid: string,
     entryIndex: number,
     exitIndex: number,
     presentation: AirwayPresentationPlan,
-    originAnchor: NavRef,
-    destinationAnchor: NavRef | null,
   ) => void | Promise<void>;
   onReplaceAirway: (
     componentIndex: number,
@@ -4366,8 +4347,7 @@ function FlightPlanPage(props: {
     error: string | null;
     mode: "insert" | "replace";
     componentIndex: number | null;
-    startComponentIndex: number | null;
-    endComponentIndex: number | null;
+    rowUid: string | null;
     originAnchor: NavRef;
     destinationAnchor: NavRef | null;
     suggestions: AirwaySuggestion[];
@@ -4603,8 +4583,7 @@ function FlightPlanPage(props: {
               error: null,
               mode: "insert",
               componentIndex: null,
-              startComponentIndex: selectedRow.startComponentIndex!,
-              endComponentIndex: selectedRow.endComponentIndex!,
+              rowUid: selectedRow.rowUid,
               originAnchor: selectedRow.originAnchor!,
               destinationAnchor: selectedRow.destinationAnchor!,
               suggestions: [],
@@ -5447,10 +5426,6 @@ function FlightPlanPage(props: {
                           if (!presentation || selectedEntryIndex === null) {
                             return;
                           }
-                          const selectedEntry = airwayEntryCandidateFromPresentation(
-                            presentation,
-                            selectedEntryIndex,
-                          );
                           setAirwayPicker((current) => current ? { ...current, loading: true, error: null } : current);
                           try {
                             if (airwayPicker.mode === "replace" && airwayPicker.componentIndex !== null) {
@@ -5462,18 +5437,15 @@ function FlightPlanPage(props: {
                                 airwayPicker.originAnchor,
                                 airwayPicker.destinationAnchor,
                               );
-                            } else if (airwayPicker.startComponentIndex !== null) {
-                              await props.onInsertAirway(
-                                airwayPicker.startComponentIndex,
-                                airwayPicker.endComponentIndex,
+                            } else if (airwayPicker.rowUid !== null) {
+                              await props.onInsertAirwayAtRow(
+                                airwayPicker.rowUid,
                                 selectedEntryIndex,
                                 index,
                                 presentation,
-                                airwayPicker.originAnchor,
-                                airwayPicker.destinationAnchor,
                               );
                             } else {
-                              throw new Error("airway picker missing insertion span");
+                              throw new Error("airway picker missing insertion row");
                             }
                             setAirwayPicker(null);
                             setSelectedWaypointIndex(null);

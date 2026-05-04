@@ -1055,11 +1055,11 @@ fn prepare_airway_presentation_for_anchors(
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct MaterializedAirwayResponse {
-    selection: AirwayAutoSelection,
-    airway: AirwaySegment,
+pub(crate) struct MaterializedAirwayResponse {
+    pub(crate) selection: AirwayAutoSelection,
+    pub(crate) airway: AirwaySegment,
     #[serde(rename = "resolvedLegs")]
-    resolved_legs: Vec<ResolvedLeg>,
+    pub(crate) resolved_legs: Vec<ResolvedLeg>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1177,7 +1177,7 @@ fn materialize_airway_selection(
     })
 }
 
-fn materialize_airway_presentation_selection(
+pub(crate) fn materialize_airway_presentation_selection(
     store: &NavKvStore,
     start_component_index: usize,
     presentation: AirwayPresentationPlan,

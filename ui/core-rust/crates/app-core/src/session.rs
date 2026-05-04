@@ -26,8 +26,8 @@ use crate::{
     FlightPlanRowActionId, LatLon, MapOverlayConfig, MapOverlayQueryResult, MapViewport,
     MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore, NavRef, PlanLeg,
     PlaybackUiState, PointTilePayload, ProcedureKind, ProcedureLoadCommand,
-    RasterMapCatalog, RasterTilePlan, SequencingMode, TerrainOverlayQueryResult, TfrProductPayload,
-    UiSnapshotAppState,
+    RasterMapCatalog, RasterTilePlan, RouteComponentViewKind, SequencingMode,
+    TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1129,16 +1129,21 @@ pub fn perform_flight_plan_row_action_in_session(
             crate::activate_leg(&plan, leg_index)?
         }
         FlightPlanRowActionId::DirectTo => {
-            let from_position = session
-                .app_state
-                .ownship
-                .render
-                .position
-                .ok_or_else(|| AppError {
-                    kind: AppErrorKind::UnsupportedOperation,
-                    message: "cannot activate direct-to without ownship position".to_string(),
-                })?;
-            if let Some(target_leg_index) = row.leg_index {
+            let from_position =
+                session
+                    .app_state
+                    .ownship
+                    .render
+                    .position
+                    .ok_or_else(|| AppError {
+                        kind: AppErrorKind::UnsupportedOperation,
+                        message: "cannot activate direct-to without ownship position".to_string(),
+                    })?;
+            if row.component_kind == Some(RouteComponentViewKind::Waypoint)
+                && row.component_uid.is_some()
+            {
+                crate::activate_direct_to_component(&plan, from_position, row_component_index()?)?
+            } else if let Some(target_leg_index) = row.leg_index {
                 let target_leg_id = plan
                     .resolved_legs
                     .get(target_leg_index)
@@ -1149,15 +1154,11 @@ pub fn perform_flight_plan_row_action_in_session(
                     })?;
                 crate::activate_direct_to_leg(&plan, from_position, &target_leg_id)?
             } else {
-                if row.component_uid.is_some() {
-                    crate::activate_direct_to_component(&plan, from_position, row_component_index()?)?
-                } else {
-                    let target = row.nav_ref.clone().ok_or_else(|| AppError {
-                        kind: AppErrorKind::InvalidFlightPlan,
-                        message: "direct-to row has no nav reference".to_string(),
-                    })?;
-                    crate::activate_direct_to(&plan, from_position, target)?
-                }
+                let target = row.nav_ref.clone().ok_or_else(|| AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message: "direct-to row has no nav reference".to_string(),
+                })?;
+                crate::activate_direct_to(&plan, from_position, target)?
             }
         }
         FlightPlanRowActionId::Remove
@@ -2498,6 +2499,68 @@ mod tests {
         }
     }
 
+    fn sample_duplicate_waypoint_plan() -> FlightPlan {
+        FlightPlan {
+            id: "plan-dup".to_string(),
+            name: "KRNT SEA KPAE KRNT".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRNT".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Navaid("SEA".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRNT".to_string()),
+                },
+            ],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: vec![
+                ResolvedLeg {
+                    id: "component-0-1".to_string(),
+                    from: NavRef::Airport("KRNT".to_string()),
+                    to: NavRef::Navaid("SEA".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "component-1-2".to_string(),
+                    from: NavRef::Navaid("SEA".to_string()),
+                    to: NavRef::Airport("KPAE".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "component-2-3".to_string(),
+                    from: NavRef::Airport("KPAE".to_string()),
+                    to: NavRef::Airport("KRNT".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 2 },
+                    procedure_provenance: None,
+                },
+            ],
+            guidance: Some(GuidanceState {
+                active_leg_index: 0,
+                active_detail_index: Some(0),
+                display_split_leg_id: None,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            departure: Some(AirportId("KRNT".to_string())),
+            destination: Some(AirportId("KRNT".to_string())),
+            alternate: None,
+            cruise_altitude_ft: Some(3000),
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        }
+    }
+
     #[test]
     fn straight_leg_cdi_is_signed_against_course_direction() {
         let from = LatLon {
@@ -2639,6 +2702,75 @@ mod tests {
             active_plan,
             &NavRef::Fix("VPDUB".to_string())
         ));
+    }
+
+    #[test]
+    fn row_action_direct_to_targets_clicked_duplicate_row_uid() {
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            sample_duplicate_waypoint_plan(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+        let positioned = push_situation_sample_in_session(
+            init.handle,
+            SituationSample {
+                source_id: OwnshipSourceId("test-gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 1_000,
+                received_time_epoch_ms: 1_000,
+                position: Some(LatLon {
+                    lat: 47.5,
+                    lon: -122.0,
+                }),
+                track_deg_true: Some(45.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: Some(3000.0),
+                pressure_altitude_ft: None,
+            },
+        )
+        .expect("push sample");
+        let ui = positioned
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .expect("plan ui");
+        let clicked_row = ui
+            .display_rows
+            .iter()
+            .find(|row| row.component_index == Some(3))
+            .expect("second KRNT row");
+        let direct_to_action = clicked_row
+            .actions
+            .iter()
+            .find(|action| action.id == FlightPlanRowActionId::DirectTo)
+            .expect("direct-to action");
+
+        let after_direct_to = perform_flight_plan_row_action_in_session(
+            init.handle,
+            clicked_row.uid.clone(),
+            direct_to_action.uid.clone(),
+        )
+        .expect("direct-to row action");
+        let guidance = after_direct_to
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .expect("guidance");
+
+        assert_eq!(guidance.active_to_row_uid.as_ref(), Some(&clicked_row.uid));
+        assert_eq!(guidance.active_from_row_uid, None);
+        assert_eq!(
+            guidance
+                .direct_to
+                .as_ref()
+                .and_then(|direct_to| direct_to.target_component_uid.as_ref()),
+            clicked_row.component_uid.as_ref()
+        );
     }
 
     #[test]

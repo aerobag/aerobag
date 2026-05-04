@@ -269,6 +269,7 @@ export type SequencingMode = "follow_plan" | "suspended" | "direct_to";
 export type DirectToState = {
   start: NavRef;
   target: NavRef;
+  target_component_uid: string | null;
   target_leg_id: string | null;
   resume_leg_id: string | null;
 };
@@ -320,6 +321,7 @@ export type ResolvedLegUiView = {
 export type DirectToUiView = {
   start: NavRef;
   target: NavRef;
+  target_component_uid: string | null;
   target_leg_id: string | null;
   resume_leg_id: string | null;
   on_plan_target: boolean;
@@ -329,6 +331,8 @@ export type GuidanceUiView = {
   sequencing_mode: SequencingMode;
   active_leg_index: number | null;
   display_split_leg_index: number | null;
+  active_from_row_uid: string | null;
+  active_to_row_uid: string | null;
   active_component_index: number | null;
   active_leg: PlanLeg | null;
   nav_element: NavElementUiView;

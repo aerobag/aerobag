@@ -864,6 +864,7 @@ pub enum SuspendReason {
 pub struct DirectToState {
     pub start: NavRef,
     pub target: NavRef,
+    pub target_component_uid: Option<String>,
     pub target_leg_id: Option<String>,
     pub resume_leg_id: Option<String>,
 }
@@ -1023,6 +1024,8 @@ pub struct GuidanceUiView {
     pub sequencing_mode: SequencingMode,
     pub active_leg_index: Option<usize>,
     pub display_split_leg_index: Option<usize>,
+    pub active_from_row_uid: Option<String>,
+    pub active_to_row_uid: Option<String>,
     pub active_component_index: Option<usize>,
     pub active_leg: Option<PlanLeg>,
     #[serde(default)]
@@ -1047,6 +1050,7 @@ pub struct NavElementUiView {
 pub struct DirectToUiView {
     pub start: NavRef,
     pub target: NavRef,
+    pub target_component_uid: Option<String>,
     pub target_leg_id: Option<String>,
     pub resume_leg_id: Option<String>,
     pub on_plan_target: bool,
@@ -1157,6 +1161,7 @@ pub fn activate_direct_to(
             direct_to: Some(DirectToState {
                 start: NavRef::LatLon(from_position),
                 target,
+                target_component_uid: None,
                 target_leg_id,
                 resume_leg_id,
             }),
@@ -1209,6 +1214,7 @@ pub fn activate_direct_to_component(
             direct_to: Some(DirectToState {
                 start: NavRef::LatLon(from_position),
                 target,
+                target_component_uid: Some(component_uid(&plan, target_component_index)),
                 target_leg_id: target_leg_index.map(|index| plan.resolved_legs[index].id.clone()),
                 resume_leg_id: resume_leg_index.map(|index| plan.resolved_legs[index].id.clone()),
             }),
@@ -1285,6 +1291,7 @@ pub fn activate_direct_to_leg(
             direct_to: Some(DirectToState {
                 start: NavRef::LatLon(from_position),
                 target: target_leg.to.clone(),
+                target_component_uid: None,
                 target_leg_id: Some(target_leg.id.clone()),
                 resume_leg_id,
             }),
@@ -1674,6 +1681,9 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
         })
         .collect();
 
+    let display_rows = project_display_rows(&plan, &components, &resolved_legs);
+    let (active_from_row_uid, active_to_row_uid) = active_guidance_row_uids(&plan, &display_rows);
+
     let guidance = plan.guidance.as_ref().map(|guidance| GuidanceUiView {
         sequencing_mode: guidance.sequencing_mode.clone(),
         active_leg_index: if plan.resolved_legs.is_empty() {
@@ -1692,12 +1702,15 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
                 .and_then(|leg_id| leg_index_by_id(&plan.resolved_legs, leg_id))
                 .or(Some(0))
         },
+        active_from_row_uid,
+        active_to_row_uid,
         active_component_index,
         active_leg: active_guidance_leg(&plan),
         nav_element: project_nav_element_ui(&plan),
         direct_to: guidance.direct_to.as_ref().map(|direct_to| DirectToUiView {
             start: direct_to.start.clone(),
             target: direct_to.target.clone(),
+            target_component_uid: direct_to.target_component_uid.clone(),
             target_leg_id: direct_to.target_leg_id.clone(),
             resume_leg_id: direct_to.resume_leg_id.clone(),
             on_plan_target: direct_to_on_plan(&plan, direct_to),
@@ -1717,7 +1730,7 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
     });
 
     FlightPlanUiState {
-        display_rows: project_display_rows(&plan, &components, &resolved_legs),
+        display_rows,
         components,
         resolved_legs,
         guidance,
@@ -2116,6 +2129,81 @@ fn project_display_rows(
     }
 
     rows
+}
+
+fn active_guidance_row_uids(
+    plan: &FlightPlan,
+    rows: &[FlightPlanDisplayRowUiView],
+) -> (Option<String>, Option<String>) {
+    let Some(guidance) = plan.guidance.as_ref() else {
+        return (None, None);
+    };
+    let Some(active_leg) = active_guidance_leg(plan) else {
+        return (None, None);
+    };
+
+    let to_index = match guidance.sequencing_mode {
+        SequencingMode::DirectTo => {
+            let direct_to = guidance.direct_to.as_ref();
+            direct_to
+                .and_then(|state| state.target_component_uid.as_deref())
+                .and_then(|component_uid| {
+                    rows.iter().position(|row| {
+                        row.row_kind == FlightPlanDisplayRowKind::Waypoint
+                            && row.component_uid.as_deref() == Some(component_uid)
+                            && row.nav_ref.as_ref() == Some(&active_leg.to)
+                    })
+                })
+                .or_else(|| {
+                    direct_to
+                        .and_then(|state| state.target_leg_id.as_deref())
+                        .and_then(|target_leg_id| {
+                            leg_index_by_id(&plan.resolved_legs, target_leg_id)
+                        })
+                        .and_then(|leg_index| {
+                            rows.iter().position(|row| {
+                                row.row_kind == FlightPlanDisplayRowKind::Waypoint
+                                    && row.leg_index == Some(leg_index)
+                                    && row.nav_ref.as_ref() == Some(&active_leg.to)
+                            })
+                        })
+                })
+                .or_else(|| waypoint_row_index_by_nav_ref(rows, &active_leg.to))
+        }
+        SequencingMode::FollowPlan | SequencingMode::Suspended => rows.iter().position(|row| {
+            row.row_kind == FlightPlanDisplayRowKind::Waypoint
+                && row.leg_index == Some(guidance.active_leg_index)
+                && row.nav_ref.as_ref() == Some(&active_leg.to)
+        }),
+    };
+
+    let Some(to_index) = to_index else {
+        return (None, None);
+    };
+    let from_index = if guidance.sequencing_mode == SequencingMode::DirectTo
+        && matches!(active_leg.from, NavRef::LatLon(_))
+    {
+        None
+    } else {
+        rows[..to_index].iter().rposition(|row| {
+            row.row_kind == FlightPlanDisplayRowKind::Waypoint
+                && row.nav_ref.as_ref() == Some(&active_leg.from)
+        })
+    };
+
+    (
+        from_index.map(|index| rows[index].uid.clone()),
+        Some(rows[to_index].uid.clone()),
+    )
+}
+
+fn waypoint_row_index_by_nav_ref(
+    rows: &[FlightPlanDisplayRowUiView],
+    nav_ref: &NavRef,
+) -> Option<usize> {
+    rows.iter().position(|row| {
+        row.row_kind == FlightPlanDisplayRowKind::Waypoint && row.nav_ref.as_ref() == Some(nav_ref)
+    })
 }
 
 fn replaceable_procedure_component_before(
@@ -2558,7 +2646,20 @@ pub fn flight_plan_contains_nav_ref(plan: &FlightPlan, nav_ref: &NavRef) -> bool
 }
 
 fn direct_to_on_plan(plan: &FlightPlan, direct_to: &DirectToState) -> bool {
-    direct_to.target_leg_id.is_some() || flight_plan_contains_nav_ref(plan, &direct_to.target)
+    direct_to
+        .target_component_uid
+        .as_ref()
+        .is_some_and(|target_uid| {
+            plan.route_component_uids
+                .iter()
+                .zip(&plan.route_components)
+                .any(|(uid, component)| {
+                    uid == target_uid
+                        && matches!(component, RouteComponent::Waypoint { waypoint } if waypoint == &direct_to.target)
+                })
+        })
+        || direct_to.target_leg_id.is_some()
+        || flight_plan_contains_nav_ref(plan, &direct_to.target)
 }
 
 pub fn top_level_waypoint_component_index(plan: &FlightPlan, nav_ref: &NavRef) -> Option<usize> {
@@ -6243,6 +6344,57 @@ mod tests {
         assert_eq!(direct_to.target, NavRef::Fix("IAF".to_string()));
         assert_eq!(direct_to.target_leg_id.as_deref(), Some("component-2-3"));
         assert_eq!(direct_to.resume_leg_id.as_deref(), Some("component-3-4"));
+    }
+
+    #[test]
+    fn direct_to_duplicate_component_projects_clicked_row_uid() {
+        let activated = activate_direct_to_component(
+            &sample_duplicate_waypoint_plan(),
+            LatLon {
+                lat: 47.5,
+                lon: -122.0,
+            },
+            3,
+        )
+        .unwrap();
+        let ui = project_ui_state(&activated);
+        let rows = ui
+            .display_rows
+            .iter()
+            .filter(|row| row.row_kind == FlightPlanDisplayRowKind::Waypoint && row.depth == 0)
+            .collect::<Vec<_>>();
+        let first_duplicate_uid = rows
+            .iter()
+            .find(|row| {
+                row.nav_ref == Some(NavRef::Fix("IAF".to_string()))
+                    && row.component_index == Some(1)
+            })
+            .expect("first IAF row")
+            .uid
+            .clone();
+        let clicked_duplicate_uid = rows
+            .iter()
+            .find(|row| {
+                row.nav_ref == Some(NavRef::Fix("IAF".to_string()))
+                    && row.component_index == Some(3)
+            })
+            .expect("clicked IAF row")
+            .uid
+            .clone();
+
+        assert_ne!(first_duplicate_uid, clicked_duplicate_uid);
+        assert_eq!(
+            ui.guidance
+                .as_ref()
+                .and_then(|guidance| guidance.active_from_row_uid.as_ref()),
+            None
+        );
+        assert_eq!(
+            ui.guidance
+                .as_ref()
+                .and_then(|guidance| guidance.active_to_row_uid.as_ref()),
+            Some(&clicked_duplicate_uid)
+        );
     }
 
     #[test]

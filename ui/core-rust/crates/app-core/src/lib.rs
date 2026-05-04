@@ -4102,6 +4102,7 @@ mod tests {
                         lon: -122.0,
                     }),
                     target: NavRef::Airport("KPSC".to_string()),
+                    target_component_uid: None,
                     target_leg_id: None,
                     resume_leg_id: None,
                 }),

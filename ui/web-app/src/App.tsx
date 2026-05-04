@@ -4690,7 +4690,6 @@ function FlightPlanPage(props: {
       setStructuredArrow(null);
       return;
     }
-    const activeLeg = guidance.active_leg;
     const scrollPane = planScrollSurfaceRef.current;
     const content = planScrollContentRef.current;
     if (!scrollPane || !content) {
@@ -4698,18 +4697,12 @@ function FlightPlanPage(props: {
       return;
     }
 
-    const fromIndex = displayRows.findIndex((row) => row.rowKind === "waypoint" && navRefsEqual(row.navRef, activeLeg.from));
-    let toIndex = -1;
-    for (let index = Math.max(0, fromIndex + 1); index < displayRows.length; index += 1) {
-      const row = displayRows[index];
-      if (row.rowKind === "waypoint" && navRefsEqual(row.navRef, activeLeg.to)) {
-        toIndex = index;
-        break;
-      }
-    }
-    if (toIndex < 0) {
-      toIndex = displayRows.findIndex((row) => row.rowKind === "waypoint" && navRefsEqual(row.navRef, activeLeg.to));
-    }
+    const fromIndex = guidance.active_from_row_uid
+      ? displayRows.findIndex((row) => row.rowUid === guidance.active_from_row_uid)
+      : -1;
+    const toIndex = guidance.active_to_row_uid
+      ? displayRows.findIndex((row) => row.rowUid === guidance.active_to_row_uid)
+      : -1;
     if (toIndex < 0) {
       setStructuredArrow(null);
       return;

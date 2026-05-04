@@ -1750,9 +1750,9 @@ export default function App() {
             const nextSnapshot = await uiSession.restoreDirectTo();
             setSessionSnapshot(nextSnapshot);
           }}
-          onPerformFlightPlanRowAction={async (rowIndex, actionId) => {
+          onPerformFlightPlanRowAction={async (rowUid, actionUid) => {
             if (!uiSession) return;
-            const nextSnapshot = await uiSession.performFlightPlanRowAction(rowIndex, actionId);
+            const nextSnapshot = await uiSession.performFlightPlanRowAction(rowUid, actionUid);
             setSessionSnapshot(nextSnapshot);
           }}
           onInsertAirway={async (startComponentIndex, endComponentIndex, entryIndex, exitIndex, presentation, originAnchor, destinationAnchor) => {
@@ -4357,7 +4357,7 @@ function FlightPlanPage(props: {
   onUnsuspendSequencing: () => void | Promise<void>;
   onSequenceActiveLeg: () => void | Promise<void>;
   onRestoreDirectTo: () => void | Promise<void>;
-  onPerformFlightPlanRowAction: (rowIndex: number, actionId: string) => void | Promise<void>;
+  onPerformFlightPlanRowAction: (rowUid: string, actionUid: string) => void | Promise<void>;
   onInsertAirway: (
     startComponentIndex: number,
     endComponentIndex: number | null,
@@ -4533,7 +4533,7 @@ function FlightPlanPage(props: {
               : row.depth === 0
                 ? `component:${row.component_index ?? index}`
                 : `item:${row.component_index ?? "x"}:${row.label}:${index}`,
-        rowIndex: index,
+        rowUid: row.uid,
         label: row.label,
         distance: row.row_kind === "group" ? "" : formatPlanDistance(row.distance_nm),
         eta: row.eta_text,
@@ -4601,7 +4601,7 @@ function FlightPlanPage(props: {
 
   const rowActions = useMemo(() => {
     if (!selectedRow) {
-      return [] as Array<{ id: string; label: string; enabled: boolean; execution?: string; onSelect: () => void }>;
+      return [] as Array<{ id: string; uid: string; label: string; enabled: boolean; execution?: string; onSelect: () => void }>;
     }
 
     const closeTray = () => {
@@ -4612,9 +4612,10 @@ function FlightPlanPage(props: {
       setAirportInsert(null);
     };
 
-    return (selectedRow.actions as Array<{ id: string; label: string; enabled: boolean; execution?: string }>).map((action) => {
+    return (selectedRow.actions as Array<{ id: string; uid: string; label: string; enabled: boolean; execution?: string }>).map((action) => {
       return {
         id: action.id,
+        uid: action.uid,
         label: action.label,
         enabled: action.enabled,
         execution: action.execution,
@@ -4623,7 +4624,7 @@ function FlightPlanPage(props: {
             return;
           }
           if (action.execution === "core_session") {
-            void props.onPerformFlightPlanRowAction(selectedRow.rowIndex, action.id);
+            void props.onPerformFlightPlanRowAction(selectedRow.rowUid, action.uid);
             closeTray();
             return;
           }

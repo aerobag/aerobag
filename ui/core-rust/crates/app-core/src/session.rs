@@ -722,35 +722,39 @@ pub fn activate_direct_to_leg_in_session(
 
 pub fn perform_flight_plan_row_action_in_session(
     handle: u32,
-    row_index: usize,
-    action_id: FlightPlanRowActionId,
+    row_uid: String,
+    action_uid: String,
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
-    let row = ui.display_rows.get(row_index).ok_or_else(|| AppError {
-        kind: AppErrorKind::InvalidFlightPlan,
-        message: format!("invalid flight-plan row index: {row_index}"),
-    })?;
+    let row = ui
+        .display_rows
+        .iter()
+        .find(|row| row.uid == row_uid)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("flight-plan row action target is stale: {row_uid}"),
+        })?;
     let action = row
         .actions
         .iter()
-        .find(|action| action.id == action_id)
+        .find(|action| action.uid == action_uid)
         .ok_or_else(|| AppError {
             kind: AppErrorKind::UnsupportedOperation,
-            message: format!("flight-plan row action is unavailable: {action_id:?}"),
+            message: format!("flight-plan row action is unavailable: {action_uid}"),
         })?;
     if !action.enabled {
         return Err(AppError {
             kind: AppErrorKind::UnsupportedOperation,
-            message: format!("flight-plan row action is disabled: {action_id:?}"),
+            message: format!("flight-plan row action is disabled: {action_uid}"),
         });
     }
     if action.execution != FlightPlanRowActionExecution::CoreSession {
         return Err(AppError {
             kind: AppErrorKind::UnsupportedOperation,
-            message: format!("flight-plan row action is UI-controller owned: {action_id:?}"),
+            message: format!("flight-plan row action is UI-controller owned: {action_uid}"),
         });
     }
 
@@ -763,7 +767,7 @@ pub fn perform_flight_plan_row_action_in_session(
             kind: AppErrorKind::UnsupportedOperation,
             message: "cannot activate direct-to without ownship position".to_string(),
         })?;
-    let next_plan = match action_id {
+    let next_plan = match &action.id {
         FlightPlanRowActionId::DirectTo => {
             if let Some(target_leg_index) = row.leg_index {
                 let target_leg_id = plan
@@ -786,7 +790,7 @@ pub fn perform_flight_plan_row_action_in_session(
         _ => {
             return Err(AppError {
                 kind: AppErrorKind::UnsupportedOperation,
-                message: format!("unsupported core flight-plan row action: {action_id:?}"),
+                message: format!("unsupported core flight-plan row action: {action_uid}"),
             });
         }
     };

@@ -916,6 +916,8 @@ fn default_row_action_execution() -> FlightPlanRowActionExecution {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlightPlanRowActionUiView {
     pub id: FlightPlanRowActionId,
+    #[serde(default)]
+    pub uid: String,
     pub label: String,
     pub enabled: bool,
     #[serde(default = "default_row_action_execution")]
@@ -924,6 +926,8 @@ pub struct FlightPlanRowActionUiView {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlightPlanDisplayRowUiView {
+    #[serde(default)]
+    pub uid: String,
     pub label: String,
     pub row_kind: FlightPlanDisplayRowKind,
     pub component_kind: Option<RouteComponentViewKind>,
@@ -1723,6 +1727,7 @@ fn project_display_rows(
                 None
             };
             rows.push(FlightPlanDisplayRowUiView {
+                uid: String::new(),
                 label: nav_ref
                     .as_ref()
                     .map(nav_ref_label)
@@ -1766,6 +1771,7 @@ fn project_display_rows(
             let origin_anchor = component.preceding_waypoint.clone();
             let destination_anchor = component.following_waypoint.clone();
             rows.push(FlightPlanDisplayRowUiView {
+                uid: String::new(),
                 label: structured_component_label(component),
                 row_kind: FlightPlanDisplayRowKind::Group,
                 component_kind: Some(component.kind.clone()),
@@ -1806,6 +1812,7 @@ fn project_display_rows(
                 match item {
                     ConcretizedNavItem::Waypoint { nav_ref } => {
                         rows.push(FlightPlanDisplayRowUiView {
+                            uid: String::new(),
                             label: nav_ref_label(nav_ref),
                             row_kind: FlightPlanDisplayRowKind::Waypoint,
                             component_kind: Some(component.kind.clone()),
@@ -1845,6 +1852,7 @@ fn project_display_rows(
                     }
                     ConcretizedNavItem::Discontinuity { label, .. } => {
                         rows.push(FlightPlanDisplayRowUiView {
+                            uid: String::new(),
                             label: label.clone(),
                             row_kind: FlightPlanDisplayRowKind::Discontinuity,
                             component_kind: Some(component.kind.clone()),
@@ -1890,6 +1898,7 @@ fn project_display_rows(
     if let Some(direct_to) = direct_to.filter(|_| !direct_to_target_on_plan) {
         let chart_airport_id = airport_id_from_nav_ref(&direct_to.target);
         rows.push(FlightPlanDisplayRowUiView {
+            uid: String::new(),
             label: nav_ref_label(&direct_to.target),
             row_kind: FlightPlanDisplayRowKind::Waypoint,
             component_kind: Some(RouteComponentViewKind::Waypoint),
@@ -1935,6 +1944,9 @@ fn project_display_rows(
                 for leg in &resolved_legs[next_leg_cursor..] {
                     if leg.to == nav_ref {
                         rows[index].leg_index = Some(leg.leg_index);
+                        if let Some(resolved_leg) = plan.resolved_legs.get(leg.leg_index) {
+                            rows[index].uid = format!("leg:{}", resolved_leg.id);
+                        }
                         next_leg_cursor = leg.leg_index + 1;
                         break;
                     }
@@ -1960,9 +1972,13 @@ fn project_display_rows(
     }
 
     for index in 0..rows.len() {
+        if rows[index].uid.is_empty() {
+            rows[index].uid = flight_plan_row_uid(&rows[index], index);
+        }
         if rows[index].actions.is_empty() {
             rows[index].actions = waypoint_or_discontinuity_actions(&rows, index);
         }
+        assign_row_action_uids(&mut rows[index]);
     }
 
     if direct_to_overlay {
@@ -2085,6 +2101,7 @@ fn waypoint_or_discontinuity_actions(
 fn action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView {
     FlightPlanRowActionUiView {
         label: action_label(&id).to_string(),
+        uid: String::new(),
         id,
         enabled,
         execution: FlightPlanRowActionExecution::UiController,
@@ -2094,9 +2111,48 @@ fn action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView
 fn core_session_action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView {
     FlightPlanRowActionUiView {
         label: action_label(&id).to_string(),
+        uid: String::new(),
         id,
         enabled,
         execution: FlightPlanRowActionExecution::CoreSession,
+    }
+}
+
+fn assign_row_action_uids(row: &mut FlightPlanDisplayRowUiView) {
+    for action in &mut row.actions {
+        if action.uid.is_empty() {
+            action.uid = format!("{}:action:{:?}", row.uid, action.id);
+        }
+    }
+}
+
+fn flight_plan_row_uid(row: &FlightPlanDisplayRowUiView, index: usize) -> String {
+    if let Some(component_index) = row.component_index {
+        let kind = row
+            .component_kind
+            .as_ref()
+            .map(|kind| format!("{kind:?}"))
+            .unwrap_or_else(|| "unknown".to_string());
+        if let Some(nav_ref) = row.nav_ref.as_ref() {
+            return format!(
+                "component:{component_index}:{kind}:{}",
+                nav_ref_key(nav_ref)
+            );
+        }
+        return format!("component:{component_index}:{kind}:{}", row.label);
+    }
+    if let Some(nav_ref) = row.nav_ref.as_ref() {
+        return format!("nav:{}:{index}", nav_ref_key(nav_ref));
+    }
+    format!("row:{}:{index}", row.label)
+}
+
+fn nav_ref_key(nav_ref: &NavRef) -> String {
+    match nav_ref {
+        NavRef::Airport(id) => format!("airport:{id}"),
+        NavRef::Navaid(id) => format!("navaid:{id}"),
+        NavRef::Fix(id) => format!("fix:{id}"),
+        NavRef::LatLon(position) => format!("latlon:{:.7}:{:.7}", position.lat, position.lon),
     }
 }
 
@@ -5856,6 +5912,8 @@ mod tests {
             .find(|action| action.id == FlightPlanRowActionId::DirectTo)
             .expect("direct-to action");
 
+        assert!(!child_row.uid.is_empty());
+        assert!(!direct_to.uid.is_empty());
         assert!(direct_to.enabled);
         assert_eq!(
             direct_to.execution,

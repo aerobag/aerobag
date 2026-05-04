@@ -156,14 +156,15 @@ pub fn restore_direct_to_in_session(session_handle: u32) -> Result<String, JsVal
 #[wasm_bindgen]
 pub fn perform_flight_plan_row_action_in_session(
     session_handle: u32,
-    row_index: usize,
-    action_id_json: &str,
+    row_uid: &str,
+    action_uid: &str,
 ) -> Result<String, JsValue> {
-    let action_id: app_core::FlightPlanRowActionId =
-        serde_json::from_str(action_id_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let snapshot =
-        app_core::perform_flight_plan_row_action_in_session(session_handle, row_index, action_id)
-            .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let snapshot = app_core::perform_flight_plan_row_action_in_session(
+        session_handle,
+        row_uid.to_string(),
+        action_uid.to_string(),
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 

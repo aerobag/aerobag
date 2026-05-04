@@ -356,12 +356,14 @@ export type FlightPlanDisplayRowKind = "waypoint" | "group" | "discontinuity";
 
 export type FlightPlanRowActionUiView = {
   id: string;
+  uid: string;
   label: string;
   enabled: boolean;
   execution?: "ui_controller" | "core_session";
 };
 
 export type FlightPlanDisplayRowUiView = {
+  uid: string;
   label: string;
   row_kind: FlightPlanDisplayRowKind;
   component_kind: RouteComponentViewKind | null;

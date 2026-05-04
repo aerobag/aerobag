@@ -128,6 +128,7 @@ pub fn display_path_for_procedure_leg(
         initial_position_override,
         initial_course_override,
         None,
+        false,
     )
 }
 
@@ -139,6 +140,7 @@ pub fn display_path_for_procedure_leg_before_following_segment(
     initial_position_override: Option<LatLon>,
     initial_course_override: Option<f64>,
     following_segment_records: &[ProcedureLegMaterializationRecord],
+    allow_hold_exit_to_following_course: bool,
 ) -> Option<LegDisplayPath> {
     let terminal_record = if leg_start.sequence == leg_end.sequence {
         segment_records
@@ -156,6 +158,7 @@ pub fn display_path_for_procedure_leg_before_following_segment(
         initial_position_override,
         initial_course_override,
         Some(following_segment_records),
+        allow_hold_exit_to_following_course,
     )
 }
 
@@ -235,11 +238,19 @@ fn following_common_course_from_segment_start(
     if first.path_termination.trim() != "IF" {
         return None;
     }
-    let following_cf = records
+    let following_fix = records
         .iter()
         .skip(1)
-        .find(|record| record.path_termination.trim() == "CF")?;
-    Some(following_cf.magnetic_course_deg? + course_reference_variation_deg(following_cf))
+        .find(|record| matches!(record.path_termination.trim(), "CF" | "TF"))?;
+    following_fix
+        .magnetic_course_deg
+        .map(|course| course + course_reference_variation_deg(following_fix))
+        .or_else(|| {
+            Some(bearing_from(
+                first.nav_position?,
+                following_fix.nav_position?,
+            ))
+        })
 }
 
 fn next_fix_record_in_segment<'a>(
@@ -355,6 +366,7 @@ pub fn display_path_for_single_procedure_step(
         initial_position_override,
         initial_course_override,
         None,
+        false,
     )
 }
 
@@ -394,6 +406,7 @@ pub fn build_trailing_course_to_intercept_display_path(
 fn hold_display_path(
     leg: &ProcedureLegMaterializationRecord,
     arrival_course_deg: Option<f64>,
+    following_course_deg: Option<f64>,
 ) -> Option<LegDisplayPath> {
     let hold_kind = leg.path_termination.trim();
     if !matches!(hold_kind, "HF" | "HM") {
@@ -417,6 +430,7 @@ fn hold_display_path(
         turn_radius_nm,
         arrival_course_deg,
         hold_kind == "HF",
+        following_course_deg,
     ))
 }
 
@@ -635,6 +649,7 @@ fn build_procedure_leg_display_path(
     initial_position_override: Option<LatLon>,
     initial_course_override: Option<f64>,
     following_segment_records: Option<&[ProcedureLegMaterializationRecord]>,
+    allow_hold_exit_to_following_course: bool,
 ) -> Option<LegDisplayPath> {
     let mut current_position = initial_position_override.or(leg_start.nav_position)?;
     let mut current_course_deg = initial_course_override.or_else(|| {
@@ -1402,7 +1417,14 @@ fn build_procedure_leg_display_path(
                 current_position = effective_fix;
             }
             "HF" | "HM" => {
-                if let Some(hold_path) = hold_display_path(step, current_course_deg) {
+                let following_course_deg = if allow_hold_exit_to_following_course {
+                    following_segment_records.and_then(following_common_course_from_segment_start)
+                } else {
+                    None
+                };
+                if let Some(hold_path) =
+                    hold_display_path(step, current_course_deg, following_course_deg)
+                {
                     current_position = hold_path
                         .elements
                         .last()
@@ -2037,10 +2059,26 @@ fn borrowed_protected_side_turn_to_pi_outbound(
         return None;
     }
     let pi_outbound_course_deg = procedure_turn_initial_outbound_course_deg(pi_step)?;
+    protected_side_turn_to_course_intercept(
+        fix,
+        arrival_course_deg,
+        pi_outbound_course_deg,
+        clockwise,
+        turn_radius_nm,
+    )
+}
+
+fn protected_side_turn_to_course_intercept(
+    fix: LatLon,
+    arrival_course_deg: f64,
+    target_course_deg: f64,
+    clockwise: bool,
+    turn_radius_nm: f64,
+) -> Option<Vec<LegDisplayElement>> {
     let intercept_heading_deg = if clockwise {
-        normalize_bearing_degrees(pi_outbound_course_deg + NOMINAL_COURSE_INTERCEPT_ANGLE_DEG)
+        normalize_bearing_degrees(target_course_deg + NOMINAL_COURSE_INTERCEPT_ANGLE_DEG)
     } else {
-        normalize_bearing_degrees(pi_outbound_course_deg - NOMINAL_COURSE_INTERCEPT_ANGLE_DEG)
+        normalize_bearing_degrees(target_course_deg - NOMINAL_COURSE_INTERCEPT_ANGLE_DEG)
     };
     let turn_center =
         turn_center_for_heading_change(fix, arrival_course_deg, clockwise, turn_radius_nm);
@@ -2054,9 +2092,13 @@ fn borrowed_protected_side_turn_to_pi_outbound(
         turn_end,
         intercept_heading_deg,
         fix,
-        pi_outbound_course_deg,
+        target_course_deg,
         fix,
     )?;
+    let target_course_unit = bearing_unit_vector(target_course_deg);
+    if projection_along_course_nm(fix, intercept, target_course_unit) <= MIN_GEOMETRY_DISTANCE_NM {
+        return None;
+    }
     let mut elements = vec![LegDisplayElement::Arc {
         center: turn_center,
         radius_nm: turn_radius_nm,
@@ -3355,6 +3397,7 @@ fn build_hold_display_path(
     turn_radius_nm: f64,
     arrival_course_deg: Option<f64>,
     stop_when_established_inbound: bool,
+    following_course_deg: Option<f64>,
 ) -> LegDisplayPath {
     let inbound = bearing_unit_vector(inbound_course_deg);
     let outbound = (-inbound.0, -inbound.1);
@@ -3414,6 +3457,26 @@ fn build_hold_display_path(
     );
     if stop_when_established_inbound {
         if !matches!(entry_kind, Some(HoldEntryKind::Direct) | None) {
+            let mut terminal_course_deg = inbound_course_deg;
+            let requested_exit_course_deg = following_course_deg
+                .filter(|course| angular_difference_degrees(inbound_course_deg, *course) > 45.0);
+            if let Some(exit_course_deg) = requested_exit_course_deg {
+                if let Some(mut exit_elements) = protected_side_turn_to_course_intercept(
+                    fix,
+                    inbound_course_deg,
+                    exit_course_deg,
+                    clockwise,
+                    turn_radius_nm,
+                ) {
+                    debug_sources.extend(vec![debug_source!(); exit_elements.len()]);
+                    element_roles.extend(vec![
+                        HOLD_ENTRY_ELEMENT_ROLE.to_string();
+                        exit_elements.len()
+                    ]);
+                    elements.append(&mut exit_elements);
+                    terminal_course_deg = exit_course_deg;
+                }
+            }
             prune_degenerate_display_elements_with_sources_and_roles(
                 &mut elements,
                 &mut debug_sources,
@@ -3422,7 +3485,7 @@ fn build_hold_display_path(
             tag_hold_debug_sources(&mut debug_sources, &element_roles);
             let mut path = solid_path(elements, debug_sources);
             path.debug_element_roles = element_roles;
-            path.effective_terminal_course_deg = Some(inbound_course_deg);
+            path.effective_terminal_course_deg = Some(terminal_course_deg);
             return path;
         }
     }

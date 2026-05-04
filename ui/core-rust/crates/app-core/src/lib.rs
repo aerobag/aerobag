@@ -1518,7 +1518,6 @@ fn borrow_sibling_transition_hold_for_common_if_course_reversal(
     ) {
         return;
     }
-
     let Some(mut borrowed_hold) = all_legs
         .iter()
         .find(|candidate| {
@@ -1546,7 +1545,6 @@ fn borrow_sibling_transition_hold_for_common_if_course_reversal(
     else {
         return;
     };
-
     borrowed_hold.key.transition_id = last_transition_leg.key.transition_id.clone();
     borrowed_hold.sequence = last_transition_leg.sequence + 1;
     transition_legs.push(borrowed_hold);
@@ -1651,10 +1649,11 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 )
             } else if window_link.display_leg_start.sequence
                 == window_link.effective_leg_end.sequence
-                && matches!(
+                && (matches!(
                     window_link.display_leg_start.path_termination.trim(),
                     "PI" | "RF"
-                )
+                ) || (window_link.render_inherited_single_tf_step
+                    && window_link.display_leg_start.path_termination.trim() == "TF"))
             {
                 display_path_for_single_procedure_step(
                     leg_records,
@@ -1673,6 +1672,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                             initial_position_override,
                             initial_course_override,
                             records,
+                            false,
                         )
                     })
                     .or_else(|| {
@@ -3569,6 +3569,7 @@ struct PreviousWindowContext {
     terminal_position: Option<LatLon>,
     terminal_course: Option<f64>,
     previous_was_course_to_intercept: bool,
+    previous_ended_with_hold_entry_geometry: bool,
     previous_leg_consumed_same_pi: bool,
 }
 
@@ -3603,6 +3604,13 @@ fn previous_window_context(
                         PathTermination::Other(label) if label.trim() == "CI"
                     )
                 })
+        }),
+        // Raw HF/HM provenance is collapsed to HeadingToManual in resolved legs, so use the
+        // tagged display provenance to recognize a borrowed hold-entry exit like 4B8 R20/HFD.
+        previous_ended_with_hold_entry_geometry: previous_display_path.is_some_and(|path| {
+            path.debug_element_sources
+                .last()
+                .is_some_and(|source| source.starts_with("hold_entry@"))
         }),
         previous_leg_consumed_same_pi: resolved_last.is_some_and(|previous| {
             previous
@@ -3693,6 +3701,7 @@ struct ProcedureWindowLink<'a> {
     display_leg_start: &'a ProcedureLegMaterializationRecord,
     render_as_empty_join: bool,
     render_as_resumed_common_cf: bool,
+    render_inherited_single_tf_step: bool,
 }
 
 #[derive(Clone)]
@@ -3887,6 +3896,7 @@ struct ProcedureWindowContinuationPolicy {
     continuing_same_anchor_window: bool,
     continuing_from_fa_window: bool,
     continuing_from_previous_anchor: bool,
+    continuing_from_previous_course: bool,
     resume_common_cf_from_previous_path: bool,
 }
 
@@ -3932,6 +3942,9 @@ impl ProcedureWindowContinuationPolicy {
             .is_some_and(|(previous_end, anchor_position)| {
                 great_circle_distance_nm(previous_end, anchor_position) <= 0.05
             });
+        let continuing_from_previous_course = previous.previous_ended_with_hold_entry_geometry
+            && role == ProcedureSegmentRole::Common
+            && previous_terminal_lies_on_window_course(previous, pair);
         let resume_common_cf_from_previous_path = role == ProcedureSegmentRole::Common
             && traversal_policy.resumes_common_on_window(current_window_index);
         Self {
@@ -3939,6 +3952,7 @@ impl ProcedureWindowContinuationPolicy {
             continuing_same_anchor_window,
             continuing_from_fa_window,
             continuing_from_previous_anchor,
+            continuing_from_previous_course,
             resume_common_cf_from_previous_path,
         }
     }
@@ -3949,8 +3963,34 @@ impl ProcedureWindowContinuationPolicy {
             || self.continuing_same_anchor_window
             || self.continuing_from_fa_window
             || self.continuing_from_previous_anchor
+            || self.continuing_from_previous_course
             || self.resume_common_cf_from_previous_path
     }
+}
+
+fn previous_terminal_lies_on_window_course(
+    previous: PreviousWindowContext,
+    pair: [&ProcedureLegMaterializationRecord; 2],
+) -> bool {
+    let (Some(previous_position), Some(previous_course), Some(start), Some(end)) = (
+        previous.terminal_position,
+        previous.terminal_course,
+        pair[0].nav_position,
+        pair[1].nav_position,
+    ) else {
+        return false;
+    };
+    let course = initial_course_deg(start, end);
+    if angular_difference_degrees(previous_course, course) > 35.0 {
+        return false;
+    }
+    if cross_track_left_nm(start, end, previous_position).abs() > 0.2 {
+        return false;
+    }
+    let start_to_end = great_circle_distance_nm(start, end);
+    let via_previous = great_circle_distance_nm(start, previous_position)
+        + great_circle_distance_nm(previous_position, end);
+    via_previous <= start_to_end + 0.2
 }
 
 struct ProcedureWindowLinkBehavior<'a> {
@@ -3958,6 +3998,7 @@ struct ProcedureWindowLinkBehavior<'a> {
     inherit_previous_state: bool,
     render_as_empty_join: bool,
     render_as_resumed_common_cf: bool,
+    render_inherited_single_tf_step: bool,
 }
 
 fn determine_procedure_window_link<'a>(
@@ -3991,6 +4032,8 @@ fn determine_procedure_window_link<'a>(
         pair[1]
     } else if policy.resume_common_cf_from_previous_path {
         pair[1]
+    } else if policy.continuing_from_previous_course {
+        pair[1]
     } else {
         pair[0]
     };
@@ -4004,6 +4047,7 @@ fn determine_procedure_window_link<'a>(
         inherit_previous_state: policy.inherits_previous_state(from, to),
         render_as_empty_join,
         render_as_resumed_common_cf: policy.resume_common_cf_from_previous_path,
+        render_inherited_single_tf_step: policy.continuing_from_previous_course,
     }
 }
 
@@ -4112,6 +4156,7 @@ fn plan_procedure_window<'a>(
         display_leg_start: behavior.display_leg_start,
         render_as_empty_join: behavior.render_as_empty_join,
         render_as_resumed_common_cf: behavior.render_as_resumed_common_cf,
+        render_inherited_single_tf_step: behavior.render_inherited_single_tf_step,
     }))
 }
 
@@ -4152,6 +4197,21 @@ fn plan_trailing_procedure_window<'a>(
             initial_position_override,
             initial_course_override,
         )
+    } else if matches!(trailing_record.path_termination.trim(), "HF" | "HM") {
+        planning
+            .next_segment_records
+            .and_then(|next_segment_records| {
+                display_path_for_procedure_leg_before_following_segment(
+                    planning.leg_records,
+                    last_fix,
+                    last_fix,
+                    None,
+                    initial_position_override,
+                    initial_course_override,
+                    next_segment_records,
+                    true,
+                )
+            })
     } else if let Some(next_segment_records) = planning.next_segment_records {
         display_path_for_terminal_tf_to_following_common_course(
             last_fix,
@@ -4219,6 +4279,7 @@ fn plan_standalone_pi_window<'a>(
                 previous_path_state.terminal_position,
                 previous_path_state.terminal_course,
                 next_segment_records,
+                false,
             )
         })
         .or_else(|| {
@@ -7825,13 +7886,7 @@ mod tests {
     #[ignore = "manual buexre render for current worst audit failure"]
     fn writes_current_buexre_overlay() {
         clean_procedure_plot_output_dir();
-        render_procedure_overlay_to_paths(
-            "KSJN",
-            "VOR-A",
-            "PERRL",
-            "logical_heading_KSJN_VOR-A_PERRL",
-            true,
-        );
+        render_procedure_overlay_to_paths("4B8", "R20", "HFD", "drawn_heading_4B8_R20_HFD", true);
     }
 
     #[test]

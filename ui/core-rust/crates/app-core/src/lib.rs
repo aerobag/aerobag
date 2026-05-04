@@ -1623,6 +1623,10 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 window_link.hold_record,
                 window_link.provenance_record,
             );
+            if window_link.render_as_empty_join {
+                previous_leg_to = Some(window_link.to);
+                continue;
+            }
             let initial_position_override = if window_link.inherit_previous_state {
                 previous_path_state.terminal_position
             } else {
@@ -2999,12 +3003,21 @@ fn is_charted_arc_handoff(
     previous: &DisplayElementHeadingSignature,
     current: &DisplayElementHeadingSignature,
 ) -> bool {
+    let previous_len_nm = great_circle_distance_nm(previous.start_position, previous.end_position);
+    let current_len_nm = great_circle_distance_nm(current.start_position, current.end_position);
     matches!(previous.path_termination.as_str(), "AF" | "RF")
         || matches!(current.path_termination.as_str(), "AF" | "RF")
         || (previous.element_kind == DisplayElementKind::Arc
             && previous.end_label != "synthesized-path")
         || (current.element_kind == DisplayElementKind::Arc
             && current.end_label != "synthesized-path")
+        || (previous.element_kind == DisplayElementKind::Segment
+            && current.element_kind == DisplayElementKind::Arc
+            && previous.end_label != "synthesized-path"
+            && previous.end_label == current.start_label
+            && current.end_label == "synthesized-path"
+            && previous_len_nm >= 1.5
+            && current_len_nm >= 3.0)
 }
 
 fn enters_generated_turn_arc(
@@ -7089,6 +7102,12 @@ mod tests {
             .unwrap_or(0)
     }
 
+    fn plate_pixel_area_sort_key(path: &Path) -> u64 {
+        image::image_dimensions(path)
+            .map(|(width, height)| u64::from(width) * u64::from(height))
+            .unwrap_or(0)
+    }
+
     fn find_matching_plate_path(
         plate_index: &HashMap<String, Vec<PathBuf>>,
         airport_id: &str,
@@ -7118,6 +7137,9 @@ mod tests {
             .max_by(|left, right| {
                 plate_cycle_sort_key(left)
                     .cmp(&plate_cycle_sort_key(right))
+                    .then_with(|| {
+                        plate_pixel_area_sort_key(left).cmp(&plate_pixel_area_sort_key(right))
+                    })
                     .then_with(|| right.cmp(left))
             })
             .cloned()
@@ -7942,7 +7964,13 @@ mod tests {
     #[ignore = "manual buexre render for current worst audit failure"]
     fn writes_current_buexre_overlay() {
         clean_procedure_plot_output_dir();
-        render_procedure_overlay_to_paths("4B8", "R20", "HFD", "drawn_heading_4B8_R20_HFD", true);
+        render_procedure_overlay_to_paths(
+            "KSEA",
+            "I16C",
+            "ERYKA",
+            "drawn_heading_KSEA_I16C_ERYKA",
+            true,
+        );
     }
 
     #[test]

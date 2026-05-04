@@ -98,6 +98,7 @@ const NOMINAL_MANUAL_TERMINATION_DISTANCE_NM: f64 = 4.0;
 const MIN_GEOMETRY_DISTANCE_NM: f64 = 0.05;
 const NEAR_INTERCEPT_SNAP_DISTANCE_NM: f64 = 0.1;
 const TO_FIX_TERMINATION_SNAP_DISTANCE_NM: f64 = 0.1;
+const LATE_TO_FIX_CORRECTION_SNAP_DISTANCE_NM: f64 = 0.3;
 const MIN_ARC_SWEEP_DEG: f64 = 0.5;
 const POSITION_EPSILON_DEG: f64 = 0.0005;
 const EXPLICIT_MISSED_TURN_SOURCE_PREFIX: &str = "explicit_missed_turn@";
@@ -1795,6 +1796,22 @@ fn append_course_track_path(
                     // is a fly-by corner. Keep the published legs exact here; a later
                     // fillet/turn-anticipation pass can smooth it using both tangents.
                     current_position
+                } else if matches!(termination, TrackTermination::ToFix(fix) if distance_between_points_nm(intercept, fix) <= MIN_GEOMETRY_DISTANCE_NM)
+                    && intercept_distance_nm <= LATE_TO_FIX_CORRECTION_SNAP_DISTANCE_NM
+                    && elements
+                        .last()
+                        .and_then(display_element_start_position)
+                        .is_some_and(|start| {
+                            distance_between_points_nm(start, intercept) > MIN_GEOMETRY_DISTANCE_NM
+                        })
+                {
+                    // KSEA I16C/ERYKA reaches TEBNE by following missed guidance, then used to
+                    // draw a 0.22 nm sideways correction. Fold tiny late fix corrections into the
+                    // preceding course leg instead of manufacturing a validator hairpin at the fix.
+                    if let Some(last_element) = elements.last_mut() {
+                        set_display_element_end_position(last_element, intercept);
+                    }
+                    intercept
                 } else if intercept_distance_nm > MIN_GEOMETRY_DISTANCE_NM {
                     push_segment!(elements, debug_sources, current_position, intercept);
                     intercept
@@ -1849,7 +1866,25 @@ fn append_course_track_path(
     let final_position = match termination {
         TrackTermination::ToFix(fix) => {
             let distance_to_fix_nm = distance_between_points_nm(track_start, fix);
-            if distance_to_fix_nm <= TO_FIX_TERMINATION_SNAP_DISTANCE_NM {
+            if distance_to_fix_nm <= TO_FIX_TERMINATION_SNAP_DISTANCE_NM
+                && elements
+                    .last()
+                    .and_then(display_element_start_position)
+                    .is_some_and(|start| {
+                        distance_between_points_nm(start, fix) > MIN_GEOMETRY_DISTANCE_NM
+                    })
+            {
+                if let Some(last_element) = elements.last_mut() {
+                    set_display_element_end_position(last_element, fix);
+                }
+            } else if distance_to_fix_nm <= LATE_TO_FIX_CORRECTION_SNAP_DISTANCE_NM
+                && elements
+                    .last()
+                    .and_then(display_element_start_position)
+                    .is_some_and(|start| {
+                        distance_between_points_nm(start, fix) > MIN_GEOMETRY_DISTANCE_NM
+                    })
+            {
                 if let Some(last_element) = elements.last_mut() {
                     set_display_element_end_position(last_element, fix);
                 }

@@ -38,12 +38,14 @@ import {
   type AppCoreAdapter,
   type DerivedChartPageState,
   type DerivedMapSelectorState,
+  type DebugFlagId,
   type MapLayerId,
   type MapSelectionItem,
   type MapSelectionQueryResult,
   type RasterTileDraw,
   type UiMapLayerState,
   type UiMapLayerToggleState,
+  type UiDebugState,
   type UiSession,
   type UiSessionSnapshot,
 } from "./domain/appCoreAdapter";
@@ -954,13 +956,20 @@ function defaultUiMapLayerState(): UiMapLayerState {
   };
 }
 
+function defaultUiDebugState(): UiDebugState {
+  const debugTiles = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debugTiles");
+  return {
+    tile_labels: debugTiles,
+    playback_visible: false,
+    fast_tiles: false,
+    offline_simulated_clock_buttons: false,
+  };
+}
+
 export default function App() {
   const [sessionStartMs] = useState(() => Date.now());
   const uptimeLabel = useSessionUptimeLabel(sessionStartMs);
-  const [debugTileLabels, setDebugTileLabels] = useState(
-    () => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debugTiles"),
-  );
-  const [debugPlaybackVisible, setDebugPlaybackVisible] = useState(false);
+  const initialDebugState = useMemo(defaultUiDebugState, []);
   const persistedUiState = useMemo(readPersistedWebUiState, []);
   const [page, setPage] = useState<AppPage>(persistedUiState.page ?? "map");
   const [pageHistory, setPageHistory] = useState<AppViewSnapshot[]>([]);
@@ -971,6 +980,7 @@ export default function App() {
   const startupVisualReadyRef = useRef(false);
   const pageTilePaintTimingRef = useRef<WebPageTilePaintTiming | null>(null);
   const nextPageTilePaintTimingIdRef = useRef(1);
+  const [debugOpen, setDebugOpen] = useState(false);
   const highLatencyWarningsSuppressedRef = useRef(true);
   const highLatencyWarningTimerRef = useRef<number | null>(null);
   const [mapSelectorState, setMapSelectorState] = useState<DerivedMapSelectorState>({
@@ -1044,6 +1054,7 @@ export default function App() {
     caution_state: {
       obstacle_display_limited: false,
     },
+    debug_state: initialDebugState,
   });
   const [playbackSourcePath, setPlaybackSourcePath] = useState(defaultPlaybackTracePath);
   const [debugWarningActive, setDebugWarningActive] = useState(false);
@@ -1061,6 +1072,16 @@ export default function App() {
     }
     logDebugWarning(tag, data);
   }, [logDebugWarning]);
+  const setDebugFlag = useCallback(async (flagId: DebugFlagId, enabled: boolean) => {
+    if (uiSession === null) {
+      setSessionSnapshot((snapshot) => ({
+        ...snapshot,
+        debug_state: { ...snapshot.debug_state, [flagId]: enabled },
+      }));
+      return;
+    }
+    setSessionSnapshot(await uiSession.setDebugFlag(flagId, enabled));
+  }, [uiSession]);
   const reportStartupVisualReady = useCallback(() => {
     if (startupVisualReadyRef.current) {
       return;
@@ -1227,11 +1248,16 @@ export default function App() {
         initialPlan.selectedAirportId ?? initialChartPageState.selected_airport_id,
         initialPlan.selectedChartId ?? initialChartPageState.selected_chart_id,
       ));
-      const createdSnapshot = await debugTiming("startup.session.ownship_start", () => created.setSituation({
+      let createdSnapshot = await debugTiming("startup.session.ownship_start", () => created.setSituation({
         position: { kind: "lat_lon", lat: NRVNA_POSITION.lat, lon: NRVNA_POSITION.lon },
         orientation_deg: 342,
         speed_kt: 0,
       }));
+      for (const flagId of Object.keys(initialDebugState) as DebugFlagId[]) {
+        if (initialDebugState[flagId]) {
+          createdSnapshot = await created.setDebugFlag(flagId, true);
+        }
+      }
       debugLog("session.create.snapshot", {
         app_state_active_plan: createdSnapshot.app_state.active_plan?.id ?? null,
         app_ui_state_nav_element: createdSnapshot.app_ui_state.active_plan?.guidance?.nav_element ?? null,
@@ -1248,7 +1274,7 @@ export default function App() {
       cancelled = true;
       void nextSession?.destroy();
     };
-  }, [adapterBackend, appCoreAdapter, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, initialRecentAirportIds]);
+  }, [adapterBackend, appCoreAdapter, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, initialDebugState, initialRecentAirportIds]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1565,10 +1591,7 @@ export default function App() {
           page={page}
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
-          debugTileLabels={debugTileLabels}
-          onDebugTileLabelsChange={setDebugTileLabels}
-          debugPlaybackVisible={debugPlaybackVisible}
-          onDebugPlaybackVisibleChange={setDebugPlaybackVisible}
+          debugState={sessionSnapshot.debug_state}
           mapLayerState={sessionSnapshot.map_layer_state}
           selectedMapId={selectedMapId}
           selectedMap={selectedMap}
@@ -1859,8 +1882,7 @@ export default function App() {
           playbackSourcePath={playbackSourcePath}
           onPlaybackSourcePathChange={setPlaybackSourcePath}
           onPlaybackSnapshotChange={setSessionSnapshot}
-          debugPlaybackVisible={debugPlaybackVisible}
-          onDebugPlaybackVisibleChange={setDebugPlaybackVisible}
+          debugState={sessionSnapshot.debug_state}
           uiSession={uiSession}
           debugWarningActive={debugWarningActive}
           onFirstVisualReady={reportStartupVisualReady}
@@ -1878,6 +1900,15 @@ export default function App() {
           debugWarningActive={debugWarningActive}
         />
       </div>
+      <div className="debugDock">
+        <DebugDock open={debugOpen} warn={debugWarningActive} onToggle={() => setDebugOpen((open) => !open)}>
+          <CommonDebugPanel
+            uptimeLabel={uptimeLabel}
+            debugState={sessionSnapshot.debug_state}
+            onDebugFlagChange={(flagId, enabled) => void setDebugFlag(flagId, enabled)}
+          />
+        </DebugDock>
+      </div>
     </main>
   );
 }
@@ -1887,10 +1918,7 @@ function MapPage(props: {
   page: AppPage;
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
-  debugTileLabels: boolean;
-  onDebugTileLabelsChange: (enabled: boolean) => void;
-  debugPlaybackVisible: boolean;
-  onDebugPlaybackVisibleChange: (enabled: boolean) => void;
+  debugState: UiDebugState;
   mapLayerState: UiMapLayerState;
   selectedMapId: string;
   selectedMap: MapViewOptionJson;
@@ -1924,10 +1952,7 @@ function MapPage(props: {
 }) {
   const {
     appCoreAdapter,
-    debugTileLabels,
-    onDebugTileLabelsChange,
-    debugPlaybackVisible,
-    onDebugPlaybackVisibleChange,
+    debugState,
     mapLayerState,
     page,
     pageHistory,
@@ -1960,7 +1985,6 @@ function MapPage(props: {
   } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const trayGroup = useModalTrayGroup(["family", "layers"] as const);
-  const [debugOpen, setDebugOpen] = useState(false);
   const [layerToggleBusyId, setLayerToggleBusyId] = useState<MapLayerId | null>(null);
   const [chartSearch, setChartSearch] = useState<{
     query: string;
@@ -3440,7 +3464,7 @@ function MapPage(props: {
                 onLoad={() => reportRasterTileLoaded(tile)}
                 onError={() => reportRasterTileError(tile)}
               />
-              {debugTileLabels ? (
+              {debugState.tile_labels ? (
                 <div className="tileLabel">
                   z{tile.zoom} x{tile.x} y{tile.yTms}
                 </div>
@@ -3820,7 +3844,7 @@ function MapPage(props: {
           onClick={onOpenPlan}
         />
 
-        {debugPlaybackVisible ? (
+        {debugState.playback_visible ? (
           <PlaybackWidget
             uiSession={uiSession}
             playbackUiState={props.playbackUiState}
@@ -3855,33 +3879,6 @@ function MapPage(props: {
         >
           CTR
         </button>
-
-        <div className="debugDock isRightAligned" style={{ left: "auto", right: "calc(var(--thumb) + (var(--thumb-gap) * 2))" }}>
-          <DebugDock
-            open={debugOpen}
-            warn={debugWarningActive || mapOverlay.warnings.length > 0}
-            onToggle={() => setDebugOpen((open) => !open)}
-          >
-            <div className="debugLine">up: {uptimeLabel}</div>
-            <div className="debugLine">{center.lat.toFixed(3)}/{center.lon.toFixed(3)} z{viewport.zoom.toFixed(2)}</div>
-            <label className="debugToggle">
-              <input
-                type="checkbox"
-                checked={debugTileLabels}
-                onChange={(event) => onDebugTileLabelsChange(event.currentTarget.checked)}
-              />
-              tile labels
-            </label>
-            <label className="debugToggle">
-              <input
-                type="checkbox"
-                checked={debugPlaybackVisible}
-                onChange={(event) => onDebugPlaybackVisibleChange(event.currentTarget.checked)}
-              />
-              playback
-            </label>
-          </DebugDock>
-        </div>
       </div>
     </section>
   );
@@ -4418,7 +4415,6 @@ function FlightPlanPage(props: {
   const [routeEntryLoading, setRouteEntryLoading] = useState(false);
   const [routeEntryError, setRouteEntryError] = useState<string | null>(null);
   const [routeEntrySubmitting, setRouteEntrySubmitting] = useState(false);
-  const [debugOpen, setDebugOpen] = useState(false);
   const pageRef = useRef<HTMLElement | null>(null);
   const planScrollSurfaceRef = useRef<HTMLDivElement | null>(null);
   const waypointModalRef = useRef<HTMLElement | null>(null);
@@ -5174,12 +5170,6 @@ function FlightPlanPage(props: {
           className="navElement navElementStatic"
           onClick={props.onOpenRecentChartOrPlate}
         />
-      </div>
-
-      <div className="debugDock">
-        <DebugDock open={debugOpen} warn={props.debugWarningActive} onToggle={() => setDebugOpen((open) => !open)}>
-          <div className="debugLine">up: {props.uptimeLabel}</div>
-        </DebugDock>
       </div>
 
       {selectedWaypointIndex !== null ? (
@@ -6090,8 +6080,7 @@ function ChartsPage(props: {
   playbackSourcePath: string;
   onPlaybackSourcePathChange: Dispatch<SetStateAction<string>>;
   onPlaybackSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
-  debugPlaybackVisible: boolean;
-  onDebugPlaybackVisibleChange: (enabled: boolean) => void;
+  debugState: UiDebugState;
   uiSession: UiSession | null;
   ownship: OwnshipRenderState;
   debugWarningActive: boolean;
@@ -6111,7 +6100,6 @@ function ChartsPage(props: {
   const lastChartLayoutKeyRef = useRef("");
   const firstVisualReadyRef = useRef(false);
   const trayGroup = useModalTrayGroup(["airport", "chart", "load"] as const);
-  const [debugOpen, setDebugOpen] = useState(false);
   const [plateProcedureLoads, setPlateProcedureLoads] = useState<ProcedureLoadOption[]>([]);
   const trayOpen = trayGroup.scrimOpen;
   const sortedCharts = selectedAirport?.charts ?? [];
@@ -6610,7 +6598,7 @@ function ChartsPage(props: {
           onClick={onOpenPlan}
         />
 
-        {props.debugPlaybackVisible ? (
+        {props.debugState.playback_visible ? (
           <PlaybackWidget
             uiSession={props.uiSession}
             playbackUiState={props.playbackUiState}
@@ -6621,22 +6609,6 @@ function ChartsPage(props: {
             dock="left"
           />
         ) : null}
-
-        <div className="debugDock">
-          <DebugDock open={debugOpen} warn={props.debugWarningActive} onToggle={() => setDebugOpen((open) => !open)}>
-            <div className="debugLine">up: {uptimeLabel}</div>
-            <div className="debugLine">{viewport ? `z${viewport.zoom.toFixed(2)}` : "viewport (none)"}</div>
-            <label className="debugToggle">
-              <input
-                type="checkbox"
-                checked={props.debugPlaybackVisible}
-                onChange={(event) => props.onDebugPlaybackVisibleChange(event.currentTarget.checked)}
-              />
-              playback
-            </label>
-          </DebugDock>
-        </div>
-
       </div>
     </section>
   );
@@ -6651,8 +6623,7 @@ function HomePage(props: {
   onOpenPlan: () => void;
   debugWarningActive: boolean;
 }) {
-  const { page, pageHistory, uptimeLabel, planUiState, onSelectPage, onOpenPlan, debugWarningActive } = props;
-  const [debugOpen, setDebugOpen] = useState(false);
+  const { page, pageHistory, planUiState, onSelectPage, onOpenPlan } = props;
   const homeButtons: Array<{ id: string; label: string; page: AppPage; iconSrc?: string }> = [
     { id: "chart", label: "CHART", page: "map", iconSrc: PAGE_CHART_ICON_SRC },
     { id: "plate", label: "PLATE", page: "charts", iconSrc: PAGE_PLATE_ICON_SRC },
@@ -6691,13 +6662,36 @@ function HomePage(props: {
         onDoubleClick={stopDoubleClick}
         onClick={onOpenPlan}
       />
-
-      <div className="debugDock">
-        <DebugDock open={debugOpen} warn={debugWarningActive} onToggle={() => setDebugOpen((open) => !open)}>
-          <div className="debugLine">up: {uptimeLabel}</div>
-        </DebugDock>
-      </div>
     </section>
+  );
+}
+
+function CommonDebugPanel(props: {
+  uptimeLabel: string;
+  debugState: UiDebugState;
+  onDebugFlagChange: (flagId: DebugFlagId, enabled: boolean) => void;
+}) {
+  const flags: Array<{ id: DebugFlagId; label: string }> = [
+    { id: "tile_labels", label: "tile labels" },
+    { id: "playback_visible", label: "playback" },
+    { id: "fast_tiles", label: "fast tiles" },
+    { id: "offline_simulated_clock_buttons", label: "offline simulated clock buttons" },
+  ];
+
+  return (
+    <>
+      <div className="debugLine">up: {props.uptimeLabel}</div>
+      {flags.map((flag) => (
+        <label key={flag.id} className="debugToggle">
+          <input
+            type="checkbox"
+            checked={props.debugState[flag.id]}
+            onChange={(event) => props.onDebugFlagChange(flag.id, event.currentTarget.checked)}
+          />
+          {flag.label}
+        </label>
+      ))}
+    </>
   );
 }
 

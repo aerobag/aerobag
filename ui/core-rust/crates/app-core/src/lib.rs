@@ -139,11 +139,12 @@ pub use session::{
     render_terrain_overlay_tiles_in_session, replace_flight_plan_in_session,
     restore_chart_page_state_in_session, seek_playback_in_session, select_airport_in_session,
     select_chart_in_session, select_map_in_session, select_ownship_source_in_session,
-    set_guidance_leg_geometry_in_session, set_map_follow_offset_in_session,
-    set_map_layer_enabled_in_session, set_map_layer_visibility_in_session,
-    set_playback_rate_in_session, set_raster_map_catalog_in_session, set_situation_in_session,
-    sync_map_follow_in_session, tick_playback_in_session, update_ownship_source_status_in_session,
-    GuidanceLegGeometry, UiCautionState, UiChartPageState, UiMapLayerState, UiMapLayerToggleState,
+    set_debug_flag_in_session, set_guidance_leg_geometry_in_session,
+    set_map_follow_offset_in_session, set_map_layer_enabled_in_session,
+    set_map_layer_visibility_in_session, set_playback_rate_in_session,
+    set_raster_map_catalog_in_session, set_situation_in_session, sync_map_follow_in_session,
+    tick_playback_in_session, update_ownship_source_status_in_session, GuidanceLegGeometry,
+    UiCautionState, UiChartPageState, UiDebugState, UiMapLayerState, UiMapLayerToggleState,
     UiSessionInitResult, UiSessionSnapshot,
 };
 pub use situation::{Situation, SituationPosition};

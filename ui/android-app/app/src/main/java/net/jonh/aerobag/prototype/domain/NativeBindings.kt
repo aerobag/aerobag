@@ -221,6 +221,12 @@ interface NativeBridge {
         enabled: Boolean,
     ): String
 
+    fun setDebugFlagInSessionJson(
+        handle: Long,
+        flagIdJson: String,
+        enabled: Boolean,
+    ): String
+
     fun setRasterMapCatalogInSessionJson(
         handle: Long,
         catalogJson: String,
@@ -313,14 +319,6 @@ interface NativeBridge {
         viewportJson: String,
         widthPx: Double,
         heightPx: Double,
-    ): String
-
-    fun getRasterTilePlanInSessionWithOptionsJson(
-        handle: Long,
-        viewportJson: String,
-        widthPx: Double,
-        heightPx: Double,
-        maxTileDisplayMultiplier: Double,
     ): String
 
     fun renderTerrainOverlayTileInSession(
@@ -591,6 +589,12 @@ object NativeBindings : NativeBridge {
         enabled: Boolean,
     ): String
 
+    external override fun setDebugFlagInSessionJson(
+        handle: Long,
+        flagIdJson: String,
+        enabled: Boolean,
+    ): String
+
     external override fun setRasterMapCatalogInSessionJson(
         handle: Long,
         catalogJson: String,
@@ -683,14 +687,6 @@ object NativeBindings : NativeBridge {
         viewportJson: String,
         widthPx: Double,
         heightPx: Double,
-    ): String
-
-    external override fun getRasterTilePlanInSessionWithOptionsJson(
-        handle: Long,
-        viewportJson: String,
-        widthPx: Double,
-        heightPx: Double,
-        maxTileDisplayMultiplier: Double,
     ): String
 
     external override fun renderTerrainOverlayTileInSession(

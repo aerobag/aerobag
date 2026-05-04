@@ -467,8 +467,9 @@ pub fn remove_top_level_waypoint_by_nav_ref_in_session_json(
 ) -> Result<String, String> {
     let nav_ref: app_core::NavRef =
         serde_json::from_str(nav_ref_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::remove_top_level_waypoint_by_nav_ref_in_session(handle as u32, nav_ref)
-        .map_err(|err| err.to_string())?;
+    let snapshot =
+        app_core::remove_top_level_waypoint_by_nav_ref_in_session(handle as u32, nav_ref)
+            .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -643,6 +644,17 @@ pub fn set_map_layer_enabled_in_session_json(
 ) -> Result<String, String> {
     let layer_id: String = serde_json::from_str(layer_id_json).map_err(|err| err.to_string())?;
     let snapshot = app_core::set_map_layer_enabled_in_session(handle as u32, &layer_id, enabled)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn set_debug_flag_in_session_json(
+    handle: u64,
+    flag_id_json: &str,
+    enabled: bool,
+) -> Result<String, String> {
+    let flag_id: String = serde_json::from_str(flag_id_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::set_debug_flag_in_session(handle as u32, &flag_id, enabled)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
@@ -2156,6 +2168,21 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_set
     let result = (|| {
         let layer_id = get_java_string(&mut env, layer_id_json)?;
         set_map_layer_enabled_in_session_json(handle as u64, &layer_id, enabled)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setDebugFlagInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    flag_id_json: JString,
+    enabled: bool,
+) -> jstring {
+    let result = (|| {
+        let flag_id = get_java_string(&mut env, flag_id_json)?;
+        set_debug_flag_in_session_json(handle as u64, &flag_id, enabled)
     })();
     return_string(&mut env, result)
 }

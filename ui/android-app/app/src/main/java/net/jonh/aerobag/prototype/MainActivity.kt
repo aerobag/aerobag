@@ -233,6 +233,7 @@ import net.jonh.aerobag.prototype.domain.SampleData
 import net.jonh.aerobag.prototype.domain.SequencingMode
 import net.jonh.aerobag.prototype.domain.SituationRingCandidate
 import net.jonh.aerobag.prototype.domain.TileStorageKind
+import net.jonh.aerobag.prototype.domain.UiDebugState
 import net.jonh.aerobag.prototype.domain.UiMapLayerToggleState
 import net.jonh.aerobag.prototype.domain.UiTheme
 import net.jonh.aerobag.prototype.domain.UiThemeLoader
@@ -268,6 +269,7 @@ import java.nio.ByteBuffer
 import java.net.URL
 import java.security.MessageDigest
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
@@ -444,6 +446,12 @@ private const val MapViewportLogTag = "MapViewport"
 private const val MaxViewHistoryDepth = 64
 private const val OverlayPlaneModalScrim = 80f
 private const val OverlayPlaneModal = 90f
+private fun defaultUiDebugState() = UiDebugState(
+    tileLabels = false,
+    playbackVisible = false,
+    fastTiles = false,
+    offlineSimulatedClockButtons = false,
+)
 private val PackageManagementJson = Json {
     encodeDefaults = true
     ignoreUnknownKeys = true
@@ -1436,6 +1444,7 @@ private class RasterTileBitmapLoader(
         }
     }.asCoroutineDispatcher()
     private val workerScope = CoroutineScope(SupervisorJob(scope.coroutineContext[Job]) + workerDispatcher)
+    private val closed = AtomicBoolean(false)
     private val latestGenerationId = AtomicLong()
     private val queueSignal = Channel<Unit>(capacity = Channel.UNLIMITED)
     private val queueMutex = Mutex()
@@ -1447,7 +1456,9 @@ private class RasterTileBitmapLoader(
                 Log.i(TileBudgetLogTag, "worker-start worker=$workerIndex")
                 try {
                     while (true) {
-                        queueSignal.receive()
+                        if (queueSignal.receiveCatching().isClosed) {
+                            break
+                        }
                         while (true) {
                             val work = queueMutex.withLock {
                                 while (pendingWork.isNotEmpty() && pendingWork.first().generationId != latestGenerationId.get()) {
@@ -1492,6 +1503,9 @@ private class RasterTileBitmapLoader(
     }
 
     fun close() {
+        if (!closed.compareAndSet(false, true)) {
+            return
+        }
         queueSignal.close()
         workerScope.coroutineContext[Job]?.cancel()
         workerDispatcher.close()
@@ -1504,6 +1518,9 @@ private class RasterTileBitmapLoader(
         onTileLoaded: suspend (LoadedRenderTileBitmap) -> Unit = {},
     ): List<LoadedRenderTileBitmap> {
         if (missingTiles.isEmpty()) {
+            return emptyList()
+        }
+        if (closed.get()) {
             return emptyList()
         }
         latestGenerationId.set(generationId)
@@ -1530,7 +1547,9 @@ private class RasterTileBitmapLoader(
                 dropped
             }
             repeat(MapTileLoadWorkerCount) {
-                queueSignal.send(Unit)
+                if (queueSignal.trySend(Unit).isFailure) {
+                    return emptyList()
+                }
             }
             Log.i(
                 TileBudgetLogTag,
@@ -2250,6 +2269,7 @@ private fun AerobagApp() {
                 pageHistory = emptyList(),
                 uptimeLabel = rememberUptimeLabel(SystemClock.elapsedRealtime()),
                 bootstrap = bootstrap,
+                debugState = defaultUiDebugState(),
                 navElement = null,
                 onSelectPage = {},
                 onOpenPlan = {},
@@ -2275,6 +2295,7 @@ private fun AerobagApp() {
                 pageHistory = emptyList(),
                 uptimeLabel = rememberUptimeLabel(SystemClock.elapsedRealtime()),
                 bootstrap = bootstrap,
+                debugState = defaultUiDebugState(),
                 navElement = null,
                 onSelectPage = {},
                 onOpenPlan = {},
@@ -2348,7 +2369,7 @@ private fun AerobagApp() {
     var chartFolderOpen by remember { mutableStateOf(false) }
     var pageTilePaintTiming by remember { mutableStateOf<PageTilePaintTiming?>(null) }
     var nextPageTilePaintTimingId by remember { mutableStateOf(1L) }
-    var debugFastTiles by remember { mutableStateOf(false) }
+    var debugPanelOpen by remember { mutableStateOf(false) }
     val decodedTileBitmapCache = remember(fixture.navKvStore) { DecodedTileBitmapCache(DecodedTileCacheMaxBytes) }
     var playbackSourcePath by remember { mutableStateOf(DefaultPlaybackTracePath) }
     val planListState = rememberLazyListState()
@@ -2449,7 +2470,9 @@ private fun AerobagApp() {
     }
 
     fun navigateToPage(nextPage: AppPage) {
+        Log.i("AerobagNavigation", "navigate request from=$page to=$nextPage history=${pageHistory.size}")
         if (nextPage == page) {
+            Log.i("AerobagNavigation", "navigate ignored same-page page=$page")
             return
         }
         if (nextPage == AppPage.Map) {
@@ -2462,6 +2485,11 @@ private fun AerobagApp() {
         }
         pageHistory = boundedHistory(pageHistory + currentSnapshot())
         page = nextPage
+        Log.i("AerobagNavigation", "navigate committed page=$page history=${pageHistory.size}")
+    }
+
+    fun setDebugFlag(flagId: String, enabled: Boolean) {
+        sessionSnapshot = uiSession.setDebugFlag(flagId, enabled)
     }
 
     fun openChartsForAirport(airportId: String) {
@@ -2489,148 +2517,163 @@ private fun AerobagApp() {
     CompositionLocalProvider(LocalAerobagUiTheme provides uiTheme) {
         Box(modifier = Modifier.fillMaxSize()) {
             when (page) {
-            AppPage.Map -> {
-                MapExplorerPage(
-                    appCore = appCore,
-                    page = page,
-                    pageHistory = pageHistory,
-                    uptimeLabel = uptimeLabel,
-                    fixture = fixture,
-                    uiSession = uiSession,
-                    sessionSnapshot = sessionSnapshot,
-                    uiTheme = uiTheme,
-                    ownship = appUiState.ownship.render,
-                    playbackUiState = sessionSnapshot.playbackUiState,
-                    playbackSourcePath = playbackSourcePath,
-                    mapFollowUiState = sessionSnapshot.mapFollowUiState,
-                    mapFollowTargetViewport = sessionSnapshot.mapFollowTargetViewport,
-                    situationRingCandidates = situationRingCandidates,
-                    selectedMapId = selectedMapId,
-                    viewport = mapViewport,
-                    decodedTileBitmapCache = decodedTileBitmapCache,
-                    debugFastTiles = debugFastTiles,
-                    onDebugFastTilesChange = { debugFastTiles = it },
-                    pageTilePaintTiming = pageTilePaintTiming,
-                    onPageTilePaintTimingComplete = { completedId ->
-                        if (pageTilePaintTiming?.id == completedId) {
-                            pageTilePaintTiming = null
-                        }
-                    },
-                    onViewportChange = { mapViewport = it },
-                    onSessionSnapshotChange = { sessionSnapshot = it },
-                    onPlaybackSourcePathChange = { playbackSourcePath = it },
-                    onSelectMapId = {
-                        restoreSnapshot(
-                            currentSnapshot().copy(
-                                page = AppPage.Map,
-                                selectedMapId = it,
-                            ),
-                            boundedHistory(pageHistory + currentSnapshot()),
-                        )
-                    },
-                    onSelectPage = ::navigateToPage,
-                    onOpenPlan = { navigateToPage(AppPage.Plan) },
-                    navElement = navElement,
-                    plan = currentPlan,
-                    planUiState = sessionPlanUiState,
-                )
-            }
-            AppPage.Plan -> {
-                FlightPlanPage(
-                    appCore = appCore,
-                    page = page,
-                    pageHistory = pageHistory,
-                    uptimeLabel = uptimeLabel,
-                    navElement = navElement,
-                    samplePlan = currentPlan,
-                    planUiState = sessionPlanUiState,
-                    planListState = planListState,
-                    uiTheme = uiTheme,
-                    onSelectPage = ::navigateToPage,
-                    onOpenPlan = { navigateToPage(AppPage.Plan) },
-                    onOpenCharts = { airportId -> if (airportId != null) openChartsForAirport(airportId) },
-                    onApplyMutation = { mutation ->
-                        sessionSnapshot = uiSession.replaceFlightPlan(mutation.plan)
-                    },
-                )
-            }
-            AppPage.Charts -> {
-                ChartsPage(
-                    page = page,
-                    pageHistory = pageHistory,
-                    uptimeLabel = uptimeLabel,
-                    airports = orderedChartAirports,
-                    selectedAirport = selectedAirport,
-                    selectedChart = selectedChart,
-                    uiTheme = uiTheme,
-                    ownship = appUiState.ownship.render,
-                    navElement = navElement,
-                    folderOpen = chartFolderOpen,
-                    viewport = chartViewport,
-                    onViewportChange = { chartViewport = it },
-                    onFolderOpenChange = {
-                        restoreSnapshot(
-                            currentSnapshot().copy(
+                AppPage.Map -> {
+                    MapExplorerPage(
+                        appCore = appCore,
+                        page = page,
+                        pageHistory = pageHistory,
+                        uptimeLabel = uptimeLabel,
+                        fixture = fixture,
+                        uiSession = uiSession,
+                        sessionSnapshot = sessionSnapshot,
+                        uiTheme = uiTheme,
+                        ownship = appUiState.ownship.render,
+                        playbackUiState = sessionSnapshot.playbackUiState,
+                        playbackSourcePath = playbackSourcePath,
+                        mapFollowUiState = sessionSnapshot.mapFollowUiState,
+                        mapFollowTargetViewport = sessionSnapshot.mapFollowTargetViewport,
+                        situationRingCandidates = situationRingCandidates,
+                        selectedMapId = selectedMapId,
+                        viewport = mapViewport,
+                        decodedTileBitmapCache = decodedTileBitmapCache,
+                        debugState = sessionSnapshot.debugState,
+                        pageTilePaintTiming = pageTilePaintTiming,
+                        onPageTilePaintTimingComplete = { completedId ->
+                            if (pageTilePaintTiming?.id == completedId) {
+                                pageTilePaintTiming = null
+                            }
+                        },
+                        onViewportChange = { mapViewport = it },
+                        onSessionSnapshotChange = { sessionSnapshot = it },
+                        onPlaybackSourcePathChange = { playbackSourcePath = it },
+                        onSelectMapId = {
+                            restoreSnapshot(
+                                currentSnapshot().copy(
+                                    page = AppPage.Map,
+                                    selectedMapId = it,
+                                ),
+                                boundedHistory(pageHistory + currentSnapshot()),
+                            )
+                        },
+                        onSelectPage = ::navigateToPage,
+                        onOpenPlan = { navigateToPage(AppPage.Plan) },
+                        navElement = navElement,
+                        plan = currentPlan,
+                        planUiState = sessionPlanUiState,
+                    )
+                }
+                AppPage.Plan -> {
+                    FlightPlanPage(
+                        appCore = appCore,
+                        page = page,
+                        pageHistory = pageHistory,
+                        uptimeLabel = uptimeLabel,
+                        navElement = navElement,
+                        samplePlan = currentPlan,
+                        planUiState = sessionPlanUiState,
+                        planListState = planListState,
+                        uiTheme = uiTheme,
+                        onSelectPage = ::navigateToPage,
+                        onOpenPlan = { navigateToPage(AppPage.Plan) },
+                        onOpenCharts = { airportId -> if (airportId != null) openChartsForAirport(airportId) },
+                        onApplyMutation = { mutation ->
+                            sessionSnapshot = uiSession.replaceFlightPlan(mutation.plan)
+                        },
+                    )
+                }
+                AppPage.Charts -> {
+                    ChartsPage(
+                        page = page,
+                        pageHistory = pageHistory,
+                        uptimeLabel = uptimeLabel,
+                        airports = orderedChartAirports,
+                        selectedAirport = selectedAirport,
+                        selectedChart = selectedChart,
+                        uiTheme = uiTheme,
+                        ownship = appUiState.ownship.render,
+                        navElement = navElement,
+                        folderOpen = chartFolderOpen,
+                        viewport = chartViewport,
+                        onViewportChange = { chartViewport = it },
+                        onFolderOpenChange = {
+                            restoreSnapshot(
+                                currentSnapshot().copy(
                                     page = AppPage.Charts,
                                     chartFolderOpen = it,
-                            ),
-                            boundedHistory(pageHistory + currentSnapshot()),
-                        )
-                    },
-                    onSelectPage = ::navigateToPage,
-                    onOpenPlan = { navigateToPage(AppPage.Plan) },
-                    onSelectAirport = { airportId ->
-                        sessionSnapshot = uiSession.selectAirport(airportId)
-                        val airport = chartAirportById[airportId]
-                        restoreSnapshot(
-                            currentSnapshot().copy(
-                                page = AppPage.Charts,
-                                selectedAirportId = airportId,
-                                selectedChartId = airport?.charts?.firstOrNull()?.id.orEmpty(),
-                                selectedChartLabel = airport?.charts?.firstOrNull()?.label.orEmpty(),
-                                recentAirportIds = sessionSnapshot.chartPageState.recentAirportIds,
-                                chartViewport = null,
-                                chartFolderOpen = false,
-                            ),
-                            boundedHistory(pageHistory + currentSnapshot()),
-                        )
-                    },
-                    onSelectChart = {
-                        sessionSnapshot = uiSession.selectChart(it)
-                        restoreSnapshot(
-                            currentSnapshot().copy(
-                                page = AppPage.Charts,
-                                selectedChartId = it,
-                                selectedChartLabel = chartAirportById[sessionSnapshot.chartPageState.selectedAirportId]
-                                    ?.charts
-                                    ?.firstOrNull { chart -> chart.id == it }
-                                    ?.label
-                                    .orEmpty(),
-                                chartViewport = null,
-                                chartFolderOpen = false,
-                            ),
-                            boundedHistory(pageHistory + currentSnapshot()),
-                        )
-                    },
-                )
+                                ),
+                                boundedHistory(pageHistory + currentSnapshot()),
+                            )
+                        },
+                        onSelectPage = ::navigateToPage,
+                        onOpenPlan = { navigateToPage(AppPage.Plan) },
+                        onSelectAirport = { airportId ->
+                            sessionSnapshot = uiSession.selectAirport(airportId)
+                            val airport = chartAirportById[airportId]
+                            restoreSnapshot(
+                                currentSnapshot().copy(
+                                    page = AppPage.Charts,
+                                    selectedAirportId = airportId,
+                                    selectedChartId = airport?.charts?.firstOrNull()?.id.orEmpty(),
+                                    selectedChartLabel = airport?.charts?.firstOrNull()?.label.orEmpty(),
+                                    recentAirportIds = sessionSnapshot.chartPageState.recentAirportIds,
+                                    chartViewport = null,
+                                    chartFolderOpen = false,
+                                ),
+                                boundedHistory(pageHistory + currentSnapshot()),
+                            )
+                        },
+                        onSelectChart = {
+                            sessionSnapshot = uiSession.selectChart(it)
+                            restoreSnapshot(
+                                currentSnapshot().copy(
+                                    page = AppPage.Charts,
+                                    selectedChartId = it,
+                                    selectedChartLabel = chartAirportById[sessionSnapshot.chartPageState.selectedAirportId]
+                                        ?.charts
+                                        ?.firstOrNull { chart -> chart.id == it }
+                                        ?.label
+                                        .orEmpty(),
+                                    chartViewport = null,
+                                    chartFolderOpen = false,
+                                ),
+                                boundedHistory(pageHistory + currentSnapshot()),
+                            )
+                        },
+                    )
+                }
+                AppPage.Home -> {
+                    Log.i("AerobagNavigation", "render home history=${pageHistory.size}")
+                    HomePage(
+                        page = page,
+                        pageHistory = pageHistory,
+                        uptimeLabel = uptimeLabel,
+                        bootstrap = bootstrap,
+                        debugState = sessionSnapshot.debugState,
+                        navElement = navElement,
+                        onSelectPage = ::navigateToPage,
+                        onOpenPlan = { navigateToPage(AppPage.Plan) },
+                        initialOfflinePackagesOpen = keepOfflinePackagesVisible,
+                        offlinePackagesControllerHandle = offlinePackagesControllerHandle,
+                        onOfflinePackagesClosed = { keepOfflinePackagesVisible = false },
+                        onRuntimeMaybeAvailable = { runtimeReloadToken += 1 },
+                    )
+                }
             }
-            AppPage.Home -> {
-                HomePage(
-                    page = page,
-                    pageHistory = pageHistory,
+            DebugDock(
+                open = debugPanelOpen,
+                onToggle = { debugPanelOpen = !debugPanelOpen },
+                expandAbove = true,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = ThumbSize + (ThumbGap * 2f)),
+            ) {
+                CommonDebugPanel(
                     uptimeLabel = uptimeLabel,
-                    bootstrap = bootstrap,
-                    navElement = navElement,
-                    onSelectPage = ::navigateToPage,
-                    onOpenPlan = { navigateToPage(AppPage.Plan) },
-                    initialOfflinePackagesOpen = keepOfflinePackagesVisible,
-                    offlinePackagesControllerHandle = offlinePackagesControllerHandle,
-                    onOfflinePackagesClosed = { keepOfflinePackagesVisible = false },
-                    onRuntimeMaybeAvailable = { runtimeReloadToken += 1 },
+                    debugState = sessionSnapshot.debugState,
+                    onDebugFlagChange = ::setDebugFlag,
                 )
             }
         }
-    }
     }
 }
 
@@ -2640,6 +2683,7 @@ private fun HomePage(
     pageHistory: List<AppViewSnapshot>,
     uptimeLabel: String,
     bootstrap: net.jonh.aerobag.prototype.domain.BootstrapFixture,
+    debugState: UiDebugState,
     navElement: NavElementUiView?,
     onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
@@ -2658,8 +2702,6 @@ private fun HomePage(
         mutableStateOf(readPackageSourceBaseUrl(context.applicationContext, prefs))
     }
     var offlinePackagesOpen by remember { mutableStateOf(forceOfflinePackagesOpen || initialOfflinePackagesOpen) }
-    var debugPanelOpen by remember { mutableStateOf(false) }
-    var debugOfflineSimulatedClockButtons by remember { mutableStateOf(false) }
     val regionOptions = remember { offlineRegionOptions() }
     val regionIds = remember(regionOptions) { regionOptions.map { it.id } }
     val productIds = remember { OfflineProductOptions.map { it.id } }
@@ -2830,9 +2872,11 @@ private fun HomePage(
                     iconResId = button.iconResId,
                     wide = true,
                     onClick = {
+                        Log.i("AerobagNavigation", "home button key=${button.key} target=${button.targetPage}")
                         if (button.targetPage != null) {
                             onSelectPage(button.targetPage)
                         } else if (button.key == "offline-packages") {
+                            Log.i("AerobagNavigation", "offline packages open requested")
                             offlinePackagesOpen = true
                         }
                     },
@@ -2847,38 +2891,6 @@ private fun HomePage(
                 .align(Alignment.BottomCenter)
                 .padding(bottom = ThumbGap),
         )
-
-        DebugDock(
-            open = debugPanelOpen,
-            onToggle = { debugPanelOpen = !debugPanelOpen },
-            expandAbove = true,
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = ThumbGap, bottom = ThumbGap),
-        ) {
-            Text("page ${pageLabel(page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text(
-                "stack ${formatPageStack(pageHistory, page)}",
-                style = MaterialTheme.typography.labelSmall,
-                color = Color(0xFF52656D),
-            )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Checkbox(
-                    checked = debugOfflineSimulatedClockButtons,
-                    onCheckedChange = { debugOfflineSimulatedClockButtons = it },
-                    modifier = Modifier.size(ThumbSize * 0.36f),
-                )
-                Text(
-                    "offline simulated clock buttons",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFF52656D),
-                )
-            }
-        }
 
         if (offlinePackagesOpen || forceOfflinePackagesOpen) {
             if (!forceOfflinePackagesOpen) {
@@ -2987,7 +2999,7 @@ private fun HomePage(
                     navDbStatusText = navDbStatus?.let(::formatNavDbStatusLine),
                     syncMessage = controllerUiState.syncMessage,
                     cancelRequested = offlinePackageCancelRequested,
-                    showSimulatedClockButtons = debugOfflineSimulatedClockButtons,
+                    showSimulatedClockButtons = debugState.offlineSimulatedClockButtons,
                     packageSourceBaseUrl = packageSourceBaseUrl,
                     onPackageSourceBaseUrlChange = { nextBaseUrl ->
                         if (!controllerUiState.packageSourceEditable) {
@@ -4365,8 +4377,7 @@ private fun MapExplorerPage(
     selectedMapId: String,
     viewport: MapViewportState,
     decodedTileBitmapCache: DecodedTileBitmapCache,
-    debugFastTiles: Boolean,
-    onDebugFastTilesChange: (Boolean) -> Unit,
+    debugState: UiDebugState,
     pageTilePaintTiming: PageTilePaintTiming?,
     onPageTilePaintTimingComplete: (Long) -> Unit,
     onViewportChange: (MapViewportState) -> Unit,
@@ -4390,8 +4401,6 @@ private fun MapExplorerPage(
     var chartTrayOpen by remember { mutableStateOf(false) }
     var layerTrayOpen by remember { mutableStateOf(false) }
     var mapSelection by remember { mutableStateOf<MapSelectionUiState?>(null) }
-    var debugPanelOpen by remember { mutableStateOf(false) }
-    var debugTileLabels by remember { mutableStateOf(false) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
     var committedMapOverlay by remember(uiSession) {
         mutableStateOf(
@@ -4459,13 +4468,11 @@ private fun MapExplorerPage(
         }
     }
     val currentViewport = viewportState.value
-    val center = remember(currentViewport) { viewportCenterLatLon(currentViewport) }
     val surfaceWidthPx = surfaceSize.width.toFloat()
     val surfaceHeightPx = surfaceSize.height.toFloat()
     val surfaceWidthDp = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
     val surfaceHeightDp = remember(surfaceSize, density) { with(density) { surfaceSize.height.toDp().value } }
-    val tileDisplayMultiplier = if (debugFastTiles) 2.0 else 1.0
-    val tiles = remember(selectedMap.id, currentViewport, surfaceSize, fixture.mapViews, uiSession, tileDisplayMultiplier) {
+    val tiles = remember(selectedMap.id, currentViewport, surfaceSize, fixture.mapViews, uiSession, debugState.fastTiles) {
         if (surfaceSize.width == 0 || surfaceSize.height == 0) {
             emptyList()
         } else {
@@ -4476,14 +4483,13 @@ private fun MapExplorerPage(
                     currentViewport,
                     surfaceWidthPx.toDouble(),
                     surfaceHeightPx.toDouble(),
-                    tileDisplayMultiplier,
                 ),
             )
             val planMs = SystemClock.elapsedRealtime() - planStartMs
             pageTilePaintTiming?.let { timing ->
                 Log.i(
                     TileBudgetLogTag,
-                    "page-to-map-plan id=${timing.id} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} planMs=$planMs tiles=${plan.tiles.size} fastTiles=$debugFastTiles",
+                    "page-to-map-plan id=${timing.id} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} planMs=$planMs tiles=${plan.tiles.size} fastTiles=${debugState.fastTiles}",
                 )
             }
             plan.tiles.mapNotNull { tile ->
@@ -4726,7 +4732,7 @@ private fun MapExplorerPage(
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
         }
     }
-    val tileBitmapCache = remember(selectedMap.id, installRevision, tileDisplayMultiplier) {
+    val tileBitmapCache = remember(selectedMap.id, installRevision, debugState.fastTiles) {
         mutableStateMapOf<net.jonh.aerobag.prototype.domain.RenderTileKey, androidx.compose.ui.graphics.ImageBitmap?>()
     }
     val rasterTileBitmapLoaderScope = rememberCoroutineScope()
@@ -4738,7 +4744,7 @@ private fun MapExplorerPage(
             rasterTileBitmapLoader.close()
         }
     }
-    LaunchedEffect(tiles, selectedMap.id, installRevision, tileDisplayMultiplier) {
+    LaunchedEffect(tiles, selectedMap.id, installRevision, debugState.fastTiles) {
         var decodedCacheHits = 0
         tiles.forEach { tile ->
             val renderKey = renderTileKey(tile)
@@ -4754,7 +4760,7 @@ private fun MapExplorerPage(
         val decodedCacheStats = decodedTileBitmapCache.stats()
         Log.i(
             TileBudgetLogTag,
-            "visible map=${selectedMap.id} total=${tiles.size} missing=${missingTiles.size} localCache=${tileBitmapCache.size} decodedLru=${decodedCacheStats.entries}/${decodedCacheStats.bytes}B lruHits=$decodedCacheHits fastTiles=$debugFastTiles groups=[${formatTileBudgetSummary(tiles)}]",
+            "visible map=${selectedMap.id} total=${tiles.size} missing=${missingTiles.size} localCache=${tileBitmapCache.size} decodedLru=${decodedCacheStats.entries}/${decodedCacheStats.bytes}B lruHits=$decodedCacheHits fastTiles=${debugState.fastTiles} groups=[${formatTileBudgetSummary(tiles)}]",
         )
         if (missingTiles.isEmpty()) {
             pageTilePaintTiming?.takeIf { tiles.isNotEmpty() }?.let { timing ->
@@ -5512,7 +5518,7 @@ private fun MapExplorerPage(
                         }
                     }
                 }
-                if (debugTileLabels) {
+                if (debugState.tileLabels) {
                     val label = "z${tile.zoom} x${tile.x} y${tile.yTms}"
                     val rectLeft = tileRect.leftPx + 6f
                     val rectTop = tileRect.topPx + 6f
@@ -5822,16 +5828,18 @@ private fun MapExplorerPage(
             } else {
                 ThumbGap
             }
-        PlaybackWidget(
-            uiSession = uiSession,
-            playbackUiState = playbackUiState,
-            sourcePath = playbackSourcePath,
-            onSourcePathChange = onPlaybackSourcePathChange,
-            onSnapshotChange = onSessionSnapshotChange,
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(start = ThumbGap, bottom = playbackBottomPadding),
-        )
+        if (debugState.playbackVisible) {
+            PlaybackWidget(
+                uiSession = uiSession,
+                playbackUiState = playbackUiState,
+                sourcePath = playbackSourcePath,
+                onSourcePathChange = onPlaybackSourcePathChange,
+                onSnapshotChange = onSessionSnapshotChange,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = ThumbGap, bottom = playbackBottomPadding),
+            )
+        }
 
         CompactSquareButton(
             label = "CTR",
@@ -5915,40 +5923,6 @@ private fun MapExplorerPage(
                 .padding(bottom = ThumbGap),
         )
 
-        DebugDock(
-            open = debugPanelOpen,
-            onToggle = { debugPanelOpen = !debugPanelOpen },
-            highlight = committedMapOverlay.warnings.isNotEmpty() || mapOverlayError != null,
-            expandAbove = true,
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = ThumbSize + (ThumbGap * 2f)),
-        ) {
-            Text("up: $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text("${String.format("%.3f", center.first)}/${String.format("%.3f", center.second)} z${String.format("%.2f", viewport.zoom)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Checkbox(
-                    checked = debugTileLabels,
-                    onCheckedChange = { debugTileLabels = it },
-                    modifier = Modifier.size(ThumbSize * 0.36f),
-                )
-                Text("tile labels", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Checkbox(
-                    checked = debugFastTiles,
-                    onCheckedChange = onDebugFastTilesChange,
-                    modifier = Modifier.size(ThumbSize * 0.36f),
-                )
-                Text("fast tiles", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            }
-        }
     }
 }
 
@@ -6268,7 +6242,6 @@ private fun FlightPlanPage(
     var selectedWaypointTrayAnchor by remember { mutableStateOf<Dp?>(null) }
     var pendingSelectedRowKey by remember { mutableStateOf<String?>(null) }
     var reorderOpen by remember { mutableStateOf(false) }
-    var debugPanelOpen by remember { mutableStateOf(false) }
     var airwayPicker by remember { mutableStateOf<AndroidAirwayPickerState?>(null) }
     var procedurePicker by remember { mutableStateOf<AndroidProcedurePickerState?>(null) }
     var airportInsert by remember { mutableStateOf<AndroidAirportInsertState?>(null) }
@@ -6732,14 +6705,6 @@ private fun FlightPlanPage(
                 onClick = onOpenPlan,
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
-        }
-
-        DebugDock(
-            open = debugPanelOpen,
-            onToggle = { debugPanelOpen = !debugPanelOpen },
-            modifier = Modifier.align(Alignment.BottomStart),
-        ) {
-            Text("up: $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
         }
 
         if (selectedWaypointIndex != null && selectedRow != null) {
@@ -7237,7 +7202,6 @@ private fun ChartsPage(
     }
     var airportTrayOpen by remember { mutableStateOf(false) }
     var chartTrayOpen by remember { mutableStateOf(false) }
-    var debugPanelOpen by remember { mutableStateOf(false) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
     val sortedCharts = selectedAirport?.charts ?: emptyList()
     val overscrollPx = with(density) { ThumbSize.toPx() }
@@ -7521,15 +7485,6 @@ private fun ChartsPage(
                 .align(Alignment.BottomCenter)
                 .padding(bottom = ThumbGap),
         )
-
-        DebugDock(
-            open = debugPanelOpen,
-            onToggle = { debugPanelOpen = !debugPanelOpen },
-            modifier = Modifier.align(Alignment.BottomStart),
-        ) {
-            Text("up: $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text(viewport?.let { "z${String.format("%.2f", it.zoom)}" } ?: "viewport (none)", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-        }
 
     }
 }
@@ -9175,6 +9130,40 @@ private fun PlanCell(value: String, modifier: Modifier, isHeader: Boolean = fals
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+    }
+}
+
+@Composable
+private fun CommonDebugPanel(
+    uptimeLabel: String,
+    debugState: UiDebugState,
+    onDebugFlagChange: (String, Boolean) -> Unit,
+) {
+    Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+    DebugCheckbox("tile labels", debugState.tileLabels) { onDebugFlagChange("tile_labels", it) }
+    DebugCheckbox("playback", debugState.playbackVisible) { onDebugFlagChange("playback_visible", it) }
+    DebugCheckbox("fast tiles", debugState.fastTiles) { onDebugFlagChange("fast_tiles", it) }
+    DebugCheckbox("offline simulated clock buttons", debugState.offlineSimulatedClockButtons) {
+        onDebugFlagChange("offline_simulated_clock_buttons", it)
+    }
+}
+
+@Composable
+private fun DebugCheckbox(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Checkbox(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            modifier = Modifier.size(ThumbSize * 0.36f),
+        )
+        Text(label, style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
     }
 }
 

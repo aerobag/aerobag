@@ -53,6 +53,14 @@ pub struct UiCautionState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiDebugState {
+    pub tile_labels: bool,
+    pub playback_visible: bool,
+    pub fast_tiles: bool,
+    pub offline_simulated_clock_buttons: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiSessionSnapshot {
     pub app_state: UiSnapshotAppState,
     pub app_ui_state: AppUiState,
@@ -62,6 +70,7 @@ pub struct UiSessionSnapshot {
     pub chart_page_state: UiChartPageState,
     pub map_layer_state: UiMapLayerState,
     pub caution_state: UiCautionState,
+    pub debug_state: UiDebugState,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -88,6 +97,7 @@ struct UiSession {
     nav_kv_store: Option<NavKvStore>,
     map_layer_state: UiMapLayerState,
     caution_state: UiCautionState,
+    debug_state: UiDebugState,
     raster_map_catalog: Option<RasterMapCatalog>,
     point_tile_cache: HashMap<String, PointTilePayload>,
     metar_tile_cache: HashMap<String, MetarTilePayload>,
@@ -210,6 +220,8 @@ fn create_ui_session_inner(
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_project_other_ui_state");
     }
+    let caution_state = default_caution_state();
+    let debug_state = default_debug_state();
     let snapshot = UiSessionSnapshot {
         app_state: snapshot_app_state,
         app_ui_state,
@@ -218,7 +230,8 @@ fn create_ui_session_inner(
         map_follow_target_viewport,
         chart_page_state: chart_page_state.clone(),
         map_layer_state: map_layer_state.clone(),
-        caution_state: default_caution_state(),
+        caution_state: caution_state.clone(),
+        debug_state: debug_state.clone(),
     };
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
     sessions().lock().expect("session store poisoned").insert(
@@ -234,7 +247,8 @@ fn create_ui_session_inner(
             nav_kv_store_id: None,
             nav_kv_store: None,
             map_layer_state,
-            caution_state: default_caution_state(),
+            caution_state,
+            debug_state,
             raster_map_catalog: None,
             point_tile_cache: HashMap::new(),
             metar_tile_cache: HashMap::new(),
@@ -311,13 +325,24 @@ pub fn get_raster_tile_plan_in_session(
     width_px: f64,
     height_px: f64,
 ) -> AppResult<RasterTilePlan> {
-    get_raster_tile_plan_in_session_with_options(
-        handle,
-        viewport,
-        width_px,
-        height_px,
-        crate::RasterTilePlanOptions::default(),
-    )
+    let sessions = sessions().lock().expect("session store poisoned");
+    let session = session_ref(&sessions, handle)?;
+    let Some(catalog) = session.raster_map_catalog.as_ref() else {
+        return Err(AppError {
+            kind: AppErrorKind::Internal,
+            message: "session missing raster map catalog".to_string(),
+        });
+    };
+    let options = crate::RasterTilePlanOptions {
+        max_tile_display_multiplier: if session.debug_state.fast_tiles {
+            2.0
+        } else {
+            1.0
+        },
+    };
+    Ok(crate::raster_tile_plan_with_options(
+        catalog, &viewport, width_px, height_px, options,
+    ))
 }
 
 pub fn get_raster_tile_plan_in_session_with_options(
@@ -748,6 +773,30 @@ pub fn restore_chart_page_state_in_session(
     Ok(snapshot_for_session(session))
 }
 
+pub fn set_debug_flag_in_session(
+    handle: u32,
+    flag_id: &str,
+    enabled: bool,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    match flag_id {
+        "tile_labels" => session.debug_state.tile_labels = enabled,
+        "playback_visible" => session.debug_state.playback_visible = enabled,
+        "fast_tiles" => session.debug_state.fast_tiles = enabled,
+        "offline_simulated_clock_buttons" => {
+            session.debug_state.offline_simulated_clock_buttons = enabled
+        }
+        _ => {
+            return Err(AppError {
+                kind: AppErrorKind::Internal,
+                message: format!("unknown debug flag id: {flag_id}"),
+            });
+        }
+    }
+    Ok(snapshot_for_session(session))
+}
+
 pub fn get_session_snapshot(handle: u32) -> AppResult<UiSessionSnapshot> {
     let sessions = sessions().lock().expect("session store poisoned");
     let session = session_ref(&sessions, handle)?;
@@ -843,9 +892,7 @@ fn internal_json_error(err: serde_json::Error) -> AppError {
     }
 }
 
-fn had_read_error_to_overlay_outcome(
-    err: HadReadError,
-) -> AppResult<HadOperationOutcome> {
+fn had_read_error_to_overlay_outcome(err: HadReadError) -> AppResult<HadOperationOutcome> {
     match err {
         HadReadError::NeedPages(mut pages) => {
             pages.sort_unstable();
@@ -1030,17 +1077,15 @@ fn ensure_vector_inputs_loaded(
         }
 
         for tile in point_tiles {
-            session.point_tile_cache.insert(
-                crate::tile_key(&tile.layer, tile.z, tile.x, tile.y),
-                tile,
-            );
+            session
+                .point_tile_cache
+                .insert(crate::tile_key(&tile.layer, tile.z, tile.x, tile.y), tile);
             loaded_any = true;
         }
         for tile in ref_tiles {
-            session.airspace_ref_tile_cache.insert(
-                crate::airspace_ref_tile_key(tile.z, tile.x, tile.y),
-                tile,
-            );
+            session
+                .airspace_ref_tile_cache
+                .insert(crate::airspace_ref_tile_key(tile.z, tile.x, tile.y), tile);
             loaded_any = true;
         }
         for feature in features {
@@ -1050,10 +1095,9 @@ fn ensure_vector_inputs_loaded(
             loaded_any = true;
         }
         for tile in label_tiles {
-            session.airspace_label_tile_cache.insert(
-                crate::airspace_label_tile_key(tile.z, tile.x, tile.y),
-                tile,
-            );
+            session
+                .airspace_label_tile_cache
+                .insert(crate::airspace_label_tile_key(tile.z, tile.x, tile.y), tile);
             loaded_any = true;
         }
         if !loaded_any {
@@ -1084,18 +1128,28 @@ fn vector_input_keys(overlay: &MapOverlayQueryResult) -> Vec<String> {
                 y: tile.y,
             })
         }))
-        .chain(overlay.needed_airspace_features.iter().filter_map(|feature| {
-            nav_kv_key_for_query(&NavKvQuery::VectorAirspaceFeature {
-                id: feature.id.clone(),
-            })
-        }))
-        .chain(overlay.needed_airspace_label_tiles.iter().filter_map(|tile| {
-            nav_kv_key_for_query(&NavKvQuery::VectorAirspaceLabelTile {
-                z: tile.z,
-                x: tile.x,
-                y: tile.y,
-            })
-        }))
+        .chain(
+            overlay
+                .needed_airspace_features
+                .iter()
+                .filter_map(|feature| {
+                    nav_kv_key_for_query(&NavKvQuery::VectorAirspaceFeature {
+                        id: feature.id.clone(),
+                    })
+                }),
+        )
+        .chain(
+            overlay
+                .needed_airspace_label_tiles
+                .iter()
+                .filter_map(|tile| {
+                    nav_kv_key_for_query(&NavKvQuery::VectorAirspaceLabelTile {
+                        z: tile.z,
+                        x: tile.x,
+                        y: tile.y,
+                    })
+                }),
+        )
         .collect()
 }
 
@@ -1425,6 +1479,7 @@ fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
         chart_page_state: session.chart_page_state.clone(),
         map_layer_state: session.map_layer_state.clone(),
         caution_state: session.caution_state.clone(),
+        debug_state: session.debug_state.clone(),
     }
 }
 
@@ -1452,6 +1507,15 @@ fn default_map_layer_state() -> UiMapLayerState {
 fn default_caution_state() -> UiCautionState {
     UiCautionState {
         obstacle_display_limited: false,
+    }
+}
+
+fn default_debug_state() -> UiDebugState {
+    UiDebugState {
+        tile_labels: false,
+        playback_visible: false,
+        fast_tiles: false,
+        offline_simulated_clock_buttons: false,
     }
 }
 

@@ -881,6 +881,11 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
+    fun setDebugFlag(flagId: String, enabled: Boolean): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.setDebugFlagInSessionJson(handle, json.encodeToString(flagId), enabled))
+        return snapshot
+    }
+
     fun installRasterMapCatalogJson(catalogJson: String): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.setRasterMapCatalogInSessionJson(handle, catalogJson))
         return snapshot
@@ -1005,20 +1010,9 @@ class NativeUiSession internal constructor(
         viewport: MapViewportState,
         widthPx: Double,
         heightPx: Double,
-        maxTileDisplayMultiplier: Double = 1.0,
     ): String {
         val viewportJson = json.encodeToString(viewport.toWire())
-        return if (maxTileDisplayMultiplier == 1.0) {
-            bridge.getRasterTilePlanInSessionJson(handle, viewportJson, widthPx, heightPx)
-        } else {
-            bridge.getRasterTilePlanInSessionWithOptionsJson(
-                handle,
-                viewportJson,
-                widthPx,
-                heightPx,
-                maxTileDisplayMultiplier,
-            )
-        }
+        return bridge.getRasterTilePlanInSessionJson(handle, viewportJson, widthPx, heightPx)
     }
 
     fun renderTerrainOverlayTile(tileBytes: ByteArray, aircraftAltitudeFt: Double): ByteArray =
@@ -1488,6 +1482,14 @@ private data class WireUiMapLayerState(
 )
 
 @kotlinx.serialization.Serializable
+private data class WireUiDebugState(
+    val tile_labels: Boolean = false,
+    val playback_visible: Boolean = false,
+    val fast_tiles: Boolean = false,
+    val offline_simulated_clock_buttons: Boolean = false,
+)
+
+@kotlinx.serialization.Serializable
 private data class WireUiSessionSnapshot(
     val app_state: WireUiSnapshotAppState,
     val app_ui_state: WireAppUiState = WireAppUiState(),
@@ -1496,6 +1498,7 @@ private data class WireUiSessionSnapshot(
     val map_follow_target_viewport: WireMapViewport? = null,
     val chart_page_state: WireUiChartPageState,
     val map_layer_state: WireUiMapLayerState = WireUiMapLayerState(),
+    val debug_state: WireUiDebugState = WireUiDebugState(),
 )
 
 @kotlinx.serialization.Serializable
@@ -1546,6 +1549,14 @@ data class UiSessionSnapshot(
     val mapFollowTargetViewport: CoreMapViewport?,
     val chartPageState: UiChartPageState,
     val mapLayerState: UiMapLayerState,
+    val debugState: UiDebugState,
+)
+
+data class UiDebugState(
+    val tileLabels: Boolean,
+    val playbackVisible: Boolean,
+    val fastTiles: Boolean,
+    val offlineSimulatedClockButtons: Boolean,
 )
 
 data class UiChartPageState(
@@ -1581,6 +1592,13 @@ private fun WireUiMapLayerState.toUi() = UiMapLayerState(
     terrainWarning = terrain_warning.toUi(),
 )
 
+private fun WireUiDebugState.toUi() = UiDebugState(
+    tileLabels = tile_labels,
+    playbackVisible = playback_visible,
+    fastTiles = fast_tiles,
+    offlineSimulatedClockButtons = offline_simulated_clock_buttons,
+)
+
 private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     appState = app_state.toUi(),
     appUiState = app_ui_state.toUi(),
@@ -1589,6 +1607,7 @@ private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     mapFollowTargetViewport = map_follow_target_viewport?.toUi(),
     chartPageState = chart_page_state.toUi(),
     mapLayerState = map_layer_state.toUi(),
+    debugState = debug_state.toUi(),
 )
 
 internal fun WireDerivedChartAirport.toUi() = ChartAirport(

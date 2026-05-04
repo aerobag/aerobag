@@ -88,6 +88,16 @@ export type UiSessionSnapshot = {
   chart_page_state: UiChartPageState;
   map_layer_state: UiMapLayerState;
   caution_state: UiCautionState;
+  debug_state: UiDebugState;
+};
+
+export type DebugFlagId = "tile_labels" | "playback_visible" | "fast_tiles" | "offline_simulated_clock_buttons";
+
+export type UiDebugState = {
+  tile_labels: boolean;
+  playback_visible: boolean;
+  fast_tiles: boolean;
+  offline_simulated_clock_buttons: boolean;
 };
 
 export type UiCautionState = {
@@ -452,6 +462,7 @@ export interface UiSession {
   selectOwnshipSource(selection: OwnshipSelectionCommand): Promise<UiSessionSnapshot>;
   setMapLayerVisibility(layerId: MapLayerId, visible: boolean): Promise<UiSessionSnapshot>;
   setMapLayerEnabled(layerId: MapLayerId, enabled: boolean): Promise<UiSessionSnapshot>;
+  setDebugFlag(flagId: DebugFlagId, enabled: boolean): Promise<UiSessionSnapshot>;
   installRasterMapCatalog(catalog: DerivedMapSelectorState): Promise<UiSessionSnapshot>;
   selectMap(mapId: string): Promise<UiSessionSnapshot>;
   selectAirport(airportId: string): Promise<UiSessionSnapshot>;
@@ -679,6 +690,7 @@ type WasmModule = {
   select_ownship_source_in_session(handle: number, selectionJson: string): Promise<string> | string;
   set_map_layer_visibility_in_session(handle: number, layerIdJson: string, visible: boolean): Promise<string> | string;
   set_map_layer_enabled_in_session(handle: number, layerIdJson: string, enabled: boolean): Promise<string> | string;
+  set_debug_flag_in_session(handle: number, flagIdJson: string, enabled: boolean): Promise<string> | string;
   set_raster_map_catalog_in_session(handle: number, catalogJson: string): Promise<string> | string;
   select_map_in_session(handle: number, selectedMapIdJson: string): Promise<string> | string;
   replace_flight_plan_in_session(handle: number, planJson: string): Promise<string> | string;
@@ -971,6 +983,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(
             this.module.set_map_layer_enabled_in_session(handle, JSON.stringify(layerId), enabled),
+          ),
+        );
+        return snapshot;
+      },
+      setDebugFlag: async (flagId, enabled) => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(
+            this.module.set_debug_flag_in_session(handle, JSON.stringify(flagId), enabled),
           ),
         );
         return snapshot;
@@ -1545,6 +1565,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.select_ownship_source_in_session !== "function" ||
     typeof mod.set_map_layer_visibility_in_session !== "function" ||
     typeof mod.set_map_layer_enabled_in_session !== "function" ||
+    typeof mod.set_debug_flag_in_session !== "function" ||
     typeof mod.set_raster_map_catalog_in_session !== "function" ||
     typeof mod.select_map_in_session !== "function" ||
     typeof mod.replace_flight_plan_in_session !== "function" ||

@@ -268,8 +268,15 @@ export type AirspaceDisplayLabel = {
   feature_id: string;
   text: string;
   style_key: string;
+  color_key: string;
   screen_x: number;
   screen_y: number;
+};
+
+export type AirspaceLimitGlyph = {
+  text: string;
+  style_key: string;
+  color_key: string;
 };
 
 export type TfrProductPayload = {
@@ -362,6 +369,7 @@ export type MapSelectionAction = {
   label: string;
   enabled: boolean;
   display_only: boolean;
+  airspace_limit?: AirspaceLimitGlyph | null;
 };
 
 export type TerrainOverlayStatus =

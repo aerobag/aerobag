@@ -187,7 +187,7 @@ button {
   paint-order: stroke;
   stroke: rgba(255, 255, 255, 0.92);
   stroke-width: 2px;
-  fill: var(--theme-class-b-d-blue);
+  fill: var(--airspace-label-color, var(--theme-class-b-d-blue));
   font: 700 14px/1 "Avenir Next Condensed", "Arial Narrow", sans-serif;
   letter-spacing: 0.04em;
   text-anchor: middle;
@@ -195,7 +195,7 @@ button {
 }
 
 .airspaceLabelDivider {
-  stroke: var(--theme-class-b-d-blue);
+  stroke: var(--airspace-label-color, var(--theme-class-b-d-blue));
   stroke-width: 1.6px;
   stroke-linecap: square;
 }
@@ -207,27 +207,39 @@ button {
 }
 
 .airspaceLabel-class_c .airspaceLabel {
-  fill: var(--theme-class-c-magenta);
+  --airspace-label-color: var(--theme-class-c-magenta);
 }
 
 .airspaceLabel-class_c .airspaceLabelDivider {
-  stroke: var(--theme-class-c-magenta);
+  --airspace-label-color: var(--theme-class-c-magenta);
 }
 
 .airspaceLabel-class_d .airspaceLabel {
-  fill: var(--theme-class-b-d-blue);
+  --airspace-label-color: var(--theme-class-b-d-blue);
 }
 
 .airspaceLabel-class_d .airspaceLabelDivider {
-  stroke: var(--theme-class-b-d-blue);
+  --airspace-label-color: var(--theme-class-b-d-blue);
+}
+
+.airspaceLabel-moa,
+.airspaceLabel-alert,
+.airspaceLabel-national_security {
+  --airspace-label-color: var(--theme-class-c-magenta);
+}
+
+.airspaceLabel-restricted,
+.airspaceLabel-prohibited,
+.airspaceLabel-warning {
+  --airspace-label-color: var(--theme-class-b-d-blue);
 }
 
 .airspaceLabel-tfr .airspaceLabel {
-  fill: var(--theme-tfr-red);
+  --airspace-label-color: var(--theme-tfr-red);
 }
 
 .airspaceLabel-tfr .airspaceLabelDivider {
-  stroke: var(--theme-tfr-red);
+  --airspace-label-color: var(--theme-tfr-red);
 }
 
 .nexradOverlay {
@@ -856,6 +868,12 @@ button {
   font-size: calc(var(--thumb) * 0.14);
   font-weight: 800;
   line-height: 1.05;
+}
+
+.mapSelectionAirspaceLimitGlyph {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
 }
 
 .mapSelectionDetailText {

@@ -3670,47 +3670,13 @@ function MapPage(props: {
               <AirspaceDisplayPathGroup key={feature.id} feature={feature} />
             ))}
             {mapOverlay.airspace_labels.map((label) => {
-              const parts = airspaceLabelParts(label.text);
-              if (!parts) {
-                return (
-                  <g
-                    key={`${label.feature_id}:${label.text}:${label.screen_x}:${label.screen_y}`}
-                    className={`airspaceLabel airspaceLabel-${label.style_key}`}
-                    transform={`translate(${label.screen_x} ${label.screen_y})`}
-                  >
-                    <text className="airspaceLabel" x="0" y="0">
-                      {label.text}
-                    </text>
-                  </g>
-                );
-              }
-              const dividerWidth = airspaceLabelDividerWidth(parts);
               return (
                 <g
                   key={`${label.feature_id}:${label.text}:${label.screen_x}:${label.screen_y}`}
                   className={`airspaceFractionLabel airspaceLabel-${label.style_key}`}
                   transform={`translate(${label.screen_x} ${label.screen_y})`}
                 >
-                  <text className="airspaceLabel" x="0" y="-7">
-                    {parts.upper}
-                  </text>
-                  <line
-                    className="airspaceLabelDividerContrast"
-                    x1={-dividerWidth / 2}
-                    y1="0"
-                    x2={dividerWidth / 2}
-                    y2="0"
-                  />
-                  <line
-                    className="airspaceLabelDivider"
-                    x1={-dividerWidth / 2}
-                    y1="0"
-                    x2={dividerWidth / 2}
-                    y2="0"
-                  />
-                  <text className="airspaceLabel" x="0" y="9">
-                    {parts.lower}
-                  </text>
+                  <AirspaceLimitGlyph glyph={{ text: label.text, style_key: label.style_key, color_key: label.color_key }} />
                 </g>
               );
             })}
@@ -6202,7 +6168,11 @@ function MapSelectionTray(props: {
               aria-hidden={action.placeholder ? "true" : undefined}
               tabIndex={action.placeholder ? -1 : undefined}
             >
-              {action.label}
+              {action.airspace_limit ? (
+                <svg className="mapSelectionAirspaceLimitGlyph" viewBox="-32 -32 64 64" aria-hidden="true">
+                  <AirspaceLimitGlyph glyph={action.airspace_limit} scale={1.45} />
+                </svg>
+              ) : action.label}
             </button>
           ))}
           {selectedItem?.detail_text ? (
@@ -6211,6 +6181,47 @@ function MapSelectionTray(props: {
         </div>
       </div>
     </section>
+  );
+}
+
+function AirspaceLimitGlyph(props: { glyph: { text: string; style_key: string; color_key: string }; scale?: number }) {
+  const { glyph, scale = 1 } = props;
+  const parts = airspaceLabelParts(glyph.text);
+  const color = aviationThemeColor(glyph.color_key);
+  const labelStyle = { fill: color, fontSize: `${14 * scale}px` };
+  if (!parts) {
+    return (
+      <g className={`airspaceLabel-${glyph.style_key}`} style={{ "--airspace-label-color": color } as React.CSSProperties}>
+        <text className="airspaceLabel" style={labelStyle} x="0" y="0">
+          {glyph.text}
+        </text>
+      </g>
+    );
+  }
+  const dividerWidth = airspaceLabelDividerWidth(parts) * scale;
+  return (
+    <g className={`airspaceLabel-${glyph.style_key}`} style={{ "--airspace-label-color": color } as React.CSSProperties}>
+      <text className="airspaceLabel" style={labelStyle} x="0" y={-7 * scale}>
+        {parts.upper}
+      </text>
+      <line
+        className="airspaceLabelDividerContrast"
+        x1={-dividerWidth / 2}
+        y1="0"
+        x2={dividerWidth / 2}
+        y2="0"
+      />
+      <line
+        className="airspaceLabelDivider"
+        x1={-dividerWidth / 2}
+        y1="0"
+        x2={dividerWidth / 2}
+        y2="0"
+      />
+      <text className="airspaceLabel" style={labelStyle} x="0" y={9 * scale}>
+        {parts.lower}
+      </text>
+    </g>
   );
 }
 

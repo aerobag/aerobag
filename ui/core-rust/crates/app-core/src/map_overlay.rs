@@ -334,8 +334,16 @@ pub struct AirspaceDisplayLabel {
     pub feature_id: String,
     pub text: String,
     pub style_key: String,
+    pub color_key: String,
     pub screen_x: f64,
     pub screen_y: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirspaceLimitGlyph {
+    pub text: String,
+    pub style_key: String,
+    pub color_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -429,6 +437,8 @@ pub struct MapSelectionAction {
     pub label: String,
     pub enabled: bool,
     pub display_only: bool,
+    #[serde(default)]
+    pub airspace_limit: Option<AirspaceLimitGlyph>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1442,8 +1452,8 @@ fn selection_item_for_metar(
 fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelectionItem {
     MapSelectionItem {
         id: feature.id.clone(),
-        label: feature.ident.trim().to_string(),
-        sublabel: feature.name.trim().to_string(),
+        label: airspace_selection_label(feature),
+        sublabel: feature.ident.trim().to_string(),
         description: None,
         detail_text: None,
         highlight: MapSelectionHighlight::FeatureRef {
@@ -1453,14 +1463,20 @@ fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelection
         symbol_feature: None,
         metar_feature: None,
         airspace_icon: airspace_selection_icon(feature),
-        actions: vec![display_action(
+        actions: vec![airspace_limit_action(
             "limits",
-            &format!(
-                "{} {}",
-                feature.style_hint.trim(),
-                feature.vertical_label.trim()
-            ),
+            feature.vertical_label.trim(),
+            &airspace_style_key(&feature.style_hint),
         )],
+    }
+}
+
+fn airspace_selection_label(feature: &AirspaceFeaturePayload) -> String {
+    let name = feature.name.trim();
+    if !name.is_empty() {
+        name.to_string()
+    } else {
+        feature.ident.trim().to_string()
     }
 }
 
@@ -1648,6 +1664,7 @@ fn display_action(id: &str, label: &str) -> MapSelectionAction {
         label: label.to_string(),
         enabled: false,
         display_only: true,
+        airspace_limit: None,
     }
 }
 
@@ -1657,6 +1674,7 @@ fn enabled_action(id: &str, label: &str) -> MapSelectionAction {
         label: label.to_string(),
         enabled: true,
         display_only: false,
+        airspace_limit: None,
     }
 }
 
@@ -1666,6 +1684,21 @@ fn disabled_action(id: &str, label: &str) -> MapSelectionAction {
         label: label.to_string(),
         enabled: false,
         display_only: false,
+        airspace_limit: None,
+    }
+}
+
+fn airspace_limit_action(id: &str, label: &str, style_key: &str) -> MapSelectionAction {
+    MapSelectionAction {
+        id: id.to_string(),
+        label: label.to_string(),
+        enabled: false,
+        display_only: true,
+        airspace_limit: Some(AirspaceLimitGlyph {
+            text: label.to_string(),
+            style_key: style_key.to_string(),
+            color_key: airspace_label_color_key(style_key).to_string(),
+        }),
     }
 }
 
@@ -2020,6 +2053,7 @@ fn query_tfr_overlay(
                     tfr_limit_label(&area.lower_limit)
                 ),
                 style_key: "tfr".to_string(),
+                color_key: airspace_label_color_key("tfr").to_string(),
                 screen_x: label_point.x,
                 screen_y: label_point.y,
             });
@@ -2306,12 +2340,16 @@ fn query_airspace_overlay(
             }
             let candidate = AirspaceLabelCandidate {
                 rank: label.rank,
-                label: AirspaceDisplayLabel {
-                    feature_id: label.feature_id.clone(),
-                    text: label.text.trim().to_string(),
-                    style_key: airspace_style_key(&label.style_hint),
-                    screen_x: point.x,
-                    screen_y: point.y,
+                label: {
+                    let style_key = airspace_style_key(&label.style_hint);
+                    AirspaceDisplayLabel {
+                        feature_id: label.feature_id.clone(),
+                        text: label.text.trim().to_string(),
+                        color_key: airspace_label_color_key(&style_key).to_string(),
+                        style_key,
+                        screen_x: point.x,
+                        screen_y: point.y,
+                    }
                 },
             };
             let entry = label_by_feature
@@ -2520,6 +2558,14 @@ fn airspace_feather_style(style_key: &str) -> Option<(String, f64)> {
         "moa" | "alert" => Some(("class_c_magenta".to_string(), 1.4)),
         "restricted" | "prohibited" | "warning" => Some(("class_b_d_blue".to_string(), 1.4)),
         _ => None,
+    }
+}
+
+fn airspace_label_color_key(style_key: &str) -> &'static str {
+    match style_key {
+        "class_c" | "moa" | "alert" | "national_security" => "class_c_magenta",
+        "tfr" => "tfr_red",
+        _ => "class_b_d_blue",
     }
 }
 
@@ -3428,6 +3474,43 @@ mod tests {
     }
 
     #[test]
+    fn airspace_selection_uses_descriptive_name_as_label() {
+        let feature = AirspaceFeaturePayload {
+            schema_version: 1,
+            id: "airspace:sua:nhanford".to_string(),
+            kind: "airspace".to_string(),
+            name: "HANFORD NSA, WA".to_string(),
+            ident: "NHANFORD".to_string(),
+            airspace_class: "NSA".to_string(),
+            style_hint: "national_security".to_string(),
+            vertical_label: "UNL/SFC".to_string(),
+            bbox: [-120.0, 46.0, -119.0, 47.0],
+            paths: vec![AirspaceFeaturePath {
+                role: "boundary".to_string(),
+                closed: true,
+                interior_side: None,
+                points: vec![[-120.0, 46.0], [-119.0, 46.0], [-119.0, 47.0]],
+            }],
+        };
+
+        let item = selection_item_for_airspace(&feature);
+
+        assert_eq!(item.label, "HANFORD NSA, WA");
+        assert_eq!(item.sublabel, "NHANFORD");
+        assert_eq!(
+            item.actions
+                .iter()
+                .find(|action| action.id == "limits")
+                .and_then(|action| action.airspace_limit.as_ref()),
+            Some(&AirspaceLimitGlyph {
+                text: "UNL/SFC".to_string(),
+                style_key: "national_security".to_string(),
+                color_key: "class_c_magenta".to_string(),
+            })
+        );
+    }
+
+    #[test]
     fn moa_paths_generate_feather_decorations_and_cap_warning() {
         let viewport = MapViewport {
             center: LatLon { lat: 0.0, lon: 0.0 },
@@ -3868,6 +3951,7 @@ mod tests {
             feature_id: "airspace:a".to_string(),
             text: "100/50".to_string(),
             style_key: "class_b".to_string(),
+            color_key: "class_b_d_blue".to_string(),
             screen_x: 100.0,
             screen_y: 100.0,
         }];

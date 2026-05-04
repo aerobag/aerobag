@@ -6394,13 +6394,27 @@ mod tests {
         procedure_id: &str,
         enroute_transition: Option<&str>,
     ) -> bool {
+        let key = (
+            airport_id.trim(),
+            procedure_id.trim(),
+            enroute_transition.map(str::trim),
+        );
+        // KMSN I36/JVL contains a source-data/course mismatch that makes the
+        // generated turn-arc entry unsuitable until the FC/CF interpretation is
+        // repaired.
+        if key == ("KMSN", "I36", Some("JVL")) {
+            return true;
+        }
+        // KCBF I36/L36 OVR and KROC I28/L28 LORTH both chart very short feeders
+        // into large course changes. Keep them failing instead of weakening the
+        // validator around turns no pilot could physically make in the encoded
+        // distance.
         matches!(
-            (
-                airport_id.trim(),
-                procedure_id.trim(),
-                enroute_transition.map(str::trim)
-            ),
-            ("KMSN", "I36", Some("JVL"))
+            key,
+            ("KCBF", "I36", Some("OVR"))
+                | ("KCBF", "L36", Some("OVR"))
+                | ("KROC", "I28", Some("LORTH"))
+                | ("KROC", "L28", Some("LORTH"))
         )
     }
 

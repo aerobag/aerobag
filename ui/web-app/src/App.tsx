@@ -7100,6 +7100,8 @@ async function buildSeededDevPlan(): Promise<{
     name: "KRNT SEA KPAE",
     legs: resolvedLegs.map((leg) => ({ from: leg.from, to: leg.to, airway: null })),
     route_components: routeComponents,
+    route_component_uids: routeComponents.map((_, index) => `fpc:${index.toString(16).padStart(16, "0")}`),
+    route_component_uid_counter: routeComponents.length,
     resolved_legs: resolvedLegs,
     guidance: { active_leg_index: 0, active_detail_index: 0, sequencing_mode: "follow_plan" as const, direct_to: null },
     departure: "KRNT",

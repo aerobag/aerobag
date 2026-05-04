@@ -2853,7 +2853,7 @@ fn main() -> anyhow::Result<()> {
             println!("manifest {}", result.manifest_path.display());
             println!("stats {}", result.stats_path.display());
             println!("errors {}", result.errors_path.display());
-            println!("zip {}", result.zip_path.display());
+            println!("had_pairs {}", result.had_pairs_path.display());
         }
         Some("audit-bravo-unions") => {
             let mut class_airspace_shp = None;

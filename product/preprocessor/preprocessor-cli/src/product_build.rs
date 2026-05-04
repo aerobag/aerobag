@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
     fs::{File, OpenOptions},
-    io::Write,
+    io::{BufRead, Read, Write},
     os::unix::{ffi::OsStrExt, fs::PermissionsExt},
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
@@ -18,7 +18,7 @@ use preprocessor_charts::{
     build_family_tiles, build_family_vrts, package_family_region_versioned, stage_work_dir,
     FULL_COVERAGE_ZOOM,
 };
-use preprocessor_core::nav_kv::{build_nav_kv_sorted, NavKvPair};
+use preprocessor_core::nav_kv::{build_nav_kv_sorted, NavKvPair, NavKvRoot};
 use preprocessor_core::{ChartFamily, Region};
 use preprocessor_csup::{
     package_csup_region_versioned, prepare_csup_inputs, render_csup_region,
@@ -407,6 +407,12 @@ struct BuiltNavDbArtifacts {
     package: BundlePackageArtifact,
 }
 
+#[derive(Debug, Deserialize)]
+struct VectorHadPairLine {
+    key: String,
+    value_json: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct ChartCoveragePolygonRecord {
     id: String,
@@ -723,7 +729,6 @@ enum ScheduledTaskKind {
     CsupUnpack { region: Region },
     TppUnpack { region: Region },
     DataUnpack,
-    VectorsUnpack,
 }
 
 #[derive(Debug, Clone)]
@@ -748,9 +753,6 @@ enum TaskValue {
         source_input_dir: PathBuf,
         zip: PathBuf,
         fingerprint: String,
-    },
-    FingerprintedZip {
-        zip: PathBuf,
     },
     FingerprintedTppSource {
         source: AssetSource,
@@ -781,9 +783,9 @@ enum ProductTaskValue {
         zip: PathBuf,
         fingerprint: String,
     },
-    FingerprintedZip {
-        zip: PathBuf,
-        errors: Option<PathBuf>,
+    VectorHad {
+        pairs: PathBuf,
+        errors: PathBuf,
     },
     FingerprintedTppSource {
         source: AssetSource,
@@ -1823,14 +1825,11 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             cycle_config.target_cycle = Some(cycle);
                             let record = build_vectors_node(&cycle_config, &data, &source_input_dir, &data_fingerprint, &data_version)?;
                             let cache_hit = record.cache_hit;
-                            let zip = resolve_artifact_path(&cycle_config, output_path(&record, "zip")?);
-                            let errors = Some(resolve_artifact_path(&cycle_config, output_path(&record, "errors")?));
+                            let pairs = resolve_artifact_path(&cycle_config, output_path(&record, "had_pairs")?);
+                            let errors = resolve_artifact_path(&cycle_config, output_path(&record, "errors")?);
                             Ok(ProductTaskCompletion {
                                 node_records: vec![normalize_node_record_paths(record, &cycle_config.build_root)],
-                                value: ProductTaskValue::FingerprintedZip {
-                                    zip,
-                                    errors,
-                                },
+                                value: ProductTaskValue::VectorHad { pairs, errors },
                                 completion_detail: format!("cache_hit={}", cache_hit),
                             })
                         }
@@ -1937,78 +1936,17 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     ),
                                 })
                                 .collect::<anyhow::Result<Vec<_>>>()?;
-                            let vectors_record = task_node_records_snapshot
-                                .get(&cycle_task_id(&cycle, "vectors"))
-                                .and_then(|records| records.iter().find(|record| record.name == "vectors"))
-                                .cloned()
-                                .context("missing vectors node record")?;
-                            let vectors_zip_path =
-                                resolve_artifact_path(&cycle_config, output_path(&vectors_record, "zip")?);
-                            let vectors_sha256 =
-                                output_sha_or_hash(&vectors_record, "zip", &vectors_zip_path)?;
-                            let vectors_filename = format!(
-                                "vectors_data_{cycle}_{PACKAGE_CYCLE_VERSION}_{vectors_sha256}.zip"
-                            );
-                            publish_flat_artifact(
-                                &vectors_zip_path,
-                                &cycle_config.build_root.join(&vectors_filename),
-                            )?;
-                            let resource_index: ResourceIndex = serde_json::from_slice(
-                                &fs::read(&resource_index_path).with_context(|| {
-                                    format!("failed to read {}", resource_index_path.display())
-                                })?,
-                            )
-                            .with_context(|| {
-                                format!("failed to parse {}", resource_index_path.display())
-                            })?;
-                            let start_valid = resource_index
-                                .temporal_summary
-                                .uniform_good_beyond_date
-                                .clone()
-                                .or_else(|| {
-                                    resource_index.temporal_summary.uniform_effective_date.clone()
-                                })
-                                .context("resource-index missing start-valid date")?;
-                            let end_valid = resource_index
-                                .temporal_summary
-                                .uniform_expiration_date
-                                .clone()
-                                .or_else(|| {
-                                    resource_index
-                                        .temporal_summary
-                                        .expiration_dates
-                                        .first()
-                                        .cloned()
-                                })
-                                .context("resource-index missing end-valid date")?;
-                            let vectors_package = BundlePackageArtifact {
-                                id: format!("VECTORS_DATA_{cycle}_{PACKAGE_CYCLE_VERSION}"),
-                                family_id: "vectors".to_string(),
-                                region_id: None,
-                                filename: vectors_filename.clone(),
-                                relative_path: vectors_filename,
-                                cycle: Some(cycle.clone()),
-                                cycle_version: Some(PACKAGE_CYCLE_VERSION.to_string()),
-                                checksum_sha256: vectors_sha256,
-                                size_bytes: fs::metadata(&vectors_zip_path)
-                                    .with_context(|| {
-                                        format!("failed to stat {}", vectors_zip_path.display())
-                                    })?
-                                    .len(),
-                                published_at_utc: None,
-                                source_generated_at_utc: None,
-                                source_version: None,
-                                source_fetched_at_utc: None,
-                                effective_date: Some(start_valid),
-                                expiration_date: Some(end_valid),
-                                metadata: BTreeMap::new(),
-                            };
+                            let vector_had_pairs_path =
+                                match task_values_snapshot.get(&cycle_task_id(&cycle, "vectors")) {
+                                    Some(ProductTaskValue::VectorHad { pairs, .. }) => pairs.clone(),
+                                    _ => bail!("missing vectors HAD output for cycle {cycle}"),
+                                };
                             let built = build_nav_kv_artifact(
                                 &cycle_config,
                                 &resource_index_path,
                                 &intermediate_sqlite_db,
                                 &cycle,
-                                &vectors_package,
+                                &vector_had_pairs_path,
                                 &stable_packages,
                                 &shaded_relief_tile_levels,
                             )?;
@@ -3332,12 +3270,6 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             weight: 1,
             kind: ScheduledTaskKind::DataUnpack,
         });
-        pending_tasks.push(ScheduledTask {
-            id: "vectors-unpack".to_string(),
-            deps: vec!["vectors".to_string()],
-            weight: 1,
-            kind: ScheduledTaskKind::VectorsUnpack,
-        });
         let mut resource_index_deps = chart_families
             .iter()
             .map(|family| format!("charts-{}-package", family_slug(*family)))
@@ -3664,10 +3596,9 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 &data_version,
                             )?;
                             let cache_hit = record.cache_hit;
-                            let zip = resolve_artifact_path(&config, output_path(&record, "zip")?);
                             Ok(TaskCompletion {
                                 node_records: vec![record],
-                                value: TaskValue::FingerprintedZip { zip },
+                                value: TaskValue::None,
                                 completion_detail: format!("cache_hit={}", cache_hit),
                             })
                         }
@@ -3838,29 +3769,6 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 zip.parent().unwrap_or_else(|| Path::new("/")),
                                 &unpacked_root,
                                 &format!("data_{bundle_cycle}.zip"),
-                                None,
-                            )?;
-                            Ok(TaskCompletion {
-                                node_records: vec![],
-                                value: TaskValue::None,
-                                completion_detail: format!(
-                                    "cache_hit={} unpack_dir={}",
-                                    cache_hit,
-                                    unpack_dir.display()
-                                ),
-                            })
-                        }
-                        ScheduledTaskKind::VectorsUnpack => {
-                            let zip = match task_values_snapshot.get("vectors") {
-                                Some(TaskValue::FingerprintedZip { zip, .. }) => zip.clone(),
-                                _ => bail!("missing vectors zip"),
-                            };
-                            let unpacked_root = published_unpacked_root(&config)?;
-                            let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
-                                &zip,
-                                zip.parent().unwrap_or_else(|| Path::new("/")),
-                                &unpacked_root,
-                                &format!("vectors_data_{bundle_cycle}.zip"),
                                 None,
                             )?;
                             Ok(TaskCompletion {
@@ -4077,68 +3985,14 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         );
         let intermediate_sqlite_db =
             resolve_artifact_path(config, sqlite_output_path(data_record)?);
-        let vectors_zip_path = resolve_artifact_path(config, output_path(vectors_record, "zip")?);
-        let vectors_sha256 = output_sha_or_hash(vectors_record, "zip", &vectors_zip_path)?;
-        let vectors_filename =
-            format!("vectors_data_{bundle_cycle}_{PACKAGE_CYCLE_VERSION}_{vectors_sha256}.zip");
-        publish_flat_artifact(
-            &vectors_zip_path,
-            &config.build_root.join(&vectors_filename),
-        )?;
-        let resource_index: ResourceIndex = serde_json::from_slice(
-            &fs::read(&resource_index_path)
-                .with_context(|| format!("failed to read {}", resource_index_path.display()))?,
-        )
-        .with_context(|| format!("failed to parse {}", resource_index_path.display()))?;
-        let start_valid = resource_index
-            .temporal_summary
-            .uniform_good_beyond_date
-            .clone()
-            .or_else(|| {
-                resource_index
-                    .temporal_summary
-                    .uniform_effective_date
-                    .clone()
-            })
-            .context("resource-index missing start-valid date")?;
-        let end_valid = resource_index
-            .temporal_summary
-            .uniform_expiration_date
-            .clone()
-            .or_else(|| {
-                resource_index
-                    .temporal_summary
-                    .expiration_dates
-                    .first()
-                    .cloned()
-            })
-            .context("resource-index missing end-valid date")?;
-        let vectors_package = BundlePackageArtifact {
-            id: format!("VECTORS_DATA_{bundle_cycle}_{PACKAGE_CYCLE_VERSION}"),
-            family_id: "vectors".to_string(),
-            region_id: None,
-            filename: vectors_filename.clone(),
-            relative_path: vectors_filename,
-            cycle: Some(bundle_cycle.clone()),
-            cycle_version: Some(PACKAGE_CYCLE_VERSION.to_string()),
-            checksum_sha256: vectors_sha256,
-            size_bytes: fs::metadata(&vectors_zip_path)
-                .with_context(|| format!("failed to stat {}", vectors_zip_path.display()))?
-                .len(),
-            published_at_utc: None,
-            source_generated_at_utc: None,
-            source_version: None,
-            source_fetched_at_utc: None,
-            effective_date: Some(start_valid),
-            expiration_date: Some(end_valid),
-            metadata: BTreeMap::new(),
-        };
+        let vector_had_pairs_path =
+            resolve_artifact_path(config, output_path(vectors_record, "had_pairs")?);
         let nav_db = build_nav_kv_artifact(
             config,
             &resource_index_path,
             &intermediate_sqlite_db,
             &bundle_cycle,
-            &vectors_package,
+            &vector_had_pairs_path,
             &[],
             &[],
         )?;
@@ -4203,17 +4057,10 @@ fn build_bundle_manifest(
         .iter()
         .find(|node| node.name == "resource-index")
         .context("build manifest missing resource-index node")?;
-    let vectors_record = build_manifest
-        .nodes
-        .iter()
-        .find(|node| node.name == "vectors")
-        .context("build manifest missing vectors node")?;
-
     let resource_index_path = resolve_artifact_path(
         config,
         output_path(resource_index_record, "resource_index")?,
     );
-    let vectors_zip_path = resolve_artifact_path(config, output_path(vectors_record, "zip")?);
     let index: ResourceIndex = serde_json::from_slice(
         &fs::read(&resource_index_path)
             .with_context(|| format!("failed to read {}", resource_index_path.display()))?,
@@ -4232,13 +4079,6 @@ fn build_bundle_manifest(
         .or_else(|| index.temporal_summary.expiration_dates.first().cloned())
         .context("resource-index missing end-valid date")?;
     let cycle = build_manifest.cycle.clone();
-    let vectors_sha256 = output_sha_or_hash(vectors_record, "zip", &vectors_zip_path)?;
-    let vectors_filename =
-        format!("vectors_data_{cycle}_{PACKAGE_CYCLE_VERSION}_{vectors_sha256}.zip");
-    publish_flat_artifact(
-        &vectors_zip_path,
-        &config.build_root.join(&vectors_filename),
-    )?;
 
     let mut package_artifacts = index
         .packages
@@ -4284,26 +4124,6 @@ fn build_bundle_manifest(
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    package_artifacts.push(BundlePackageArtifact {
-        id: format!("VECTORS_DATA_{cycle}_{PACKAGE_CYCLE_VERSION}"),
-        family_id: "vectors".to_string(),
-        region_id: None,
-        filename: vectors_filename.clone(),
-        relative_path: vectors_filename.clone(),
-        cycle: Some(cycle.clone()),
-        cycle_version: Some(PACKAGE_CYCLE_VERSION.to_string()),
-        checksum_sha256: vectors_sha256.clone(),
-        size_bytes: fs::metadata(&vectors_zip_path)
-            .with_context(|| format!("failed to stat {}", vectors_zip_path.display()))?
-            .len(),
-        published_at_utc: None,
-        source_generated_at_utc: None,
-        source_version: None,
-        source_fetched_at_utc: None,
-        effective_date: Some(start_valid.clone()),
-        expiration_date: Some(end_valid.clone()),
-        metadata: BTreeMap::new(),
-    });
     package_artifacts.extend(stable_packages.iter().cloned());
     package_artifacts.push(nav_db_package.clone());
 
@@ -4330,7 +4150,7 @@ fn build_nav_kv_artifact(
     resource_index_path: &Path,
     intermediate_sqlite_db_path: &Path,
     cycle: &str,
-    vectors_package: &BundlePackageArtifact,
+    vector_had_pairs_path: &Path,
     stable_packages: &[BundlePackageArtifact],
     shaded_relief_tile_levels: &[(Region, Vec<TileLevelRecord>)],
 ) -> anyhow::Result<BuiltNavDbArtifacts> {
@@ -4340,7 +4160,6 @@ fn build_nav_kv_artifact(
     )
     .with_context(|| format!("failed to parse {}", resource_index_path.display()))?;
     let mut package_artifacts = bundle_package_artifacts_from_resource_index(&resource_index)?;
-    package_artifacts.push(vectors_package.clone());
     package_artifacts.extend(stable_packages.iter().cloned());
     let package_index_json = serde_json::to_string(&package_artifacts)
         .context("failed to encode nav-db package inputs")?;
@@ -4363,6 +4182,10 @@ fn build_nav_kv_artifact(
         (
             "intermediate_sqlite_db".to_string(),
             hash_file(intermediate_sqlite_db_path)?,
+        ),
+        (
+            "vector_had_pairs".to_string(),
+            hash_file(vector_had_pairs_path)?,
         ),
         ("cycle".to_string(), cycle.to_string()),
         (
@@ -4416,6 +4239,7 @@ fn build_nav_kv_artifact(
                 pairs.extend(build_nav_kv_plate_pairs(&resource_index)?);
                 pairs.extend(build_nav_kv_package_pairs(&package_artifacts)?);
                 pairs.extend(build_nav_kv_navref_pairs(intermediate_sqlite_db_path)?);
+                pairs.extend(build_nav_kv_vector_pairs(vector_had_pairs_path)?);
                 let built = build_nav_kv_sorted(pairs, 64 * 1024)
                     .map_err(|err| anyhow::anyhow!("failed to build nav_kv: {err}"))?;
                 let root_source_path = source_dir.join(root_filename);
@@ -5080,6 +4904,39 @@ fn build_nav_kv_package_pairs(
         &serde_json::Value::Array(package_index),
         "package/index",
     )?);
+    Ok(pairs)
+}
+
+fn build_nav_kv_vector_pairs(path: &Path) -> anyhow::Result<Vec<NavKvPair>> {
+    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mut pairs = Vec::new();
+    for (line_index, line) in std::io::BufReader::new(file).lines().enumerate() {
+        let line = line.with_context(|| format!("failed to read {}", path.display()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let pair: VectorHadPairLine = serde_json::from_str(&line).with_context(|| {
+            format!(
+                "failed to parse vector HAD pair line {} in {}",
+                line_index + 1,
+                path.display()
+            )
+        })?;
+        if pair.key.is_empty() {
+            bail!(
+                "vector HAD pair line {} in {} had empty key",
+                line_index + 1,
+                path.display()
+            );
+        }
+        pairs.push(NavKvPair {
+            key: pair.key,
+            value: pair.value_json.into_bytes(),
+        });
+    }
+    if pairs.is_empty() {
+        bail!("vector HAD pair file {} had no records", path.display());
+    }
     Ok(pairs)
 }
 
@@ -7628,22 +7485,11 @@ fn sync_cycle_bundle_unpacked_zips(
                 .cycle
                 .as_deref()
                 .context("nav-db package missing cycle")?;
-            let source_dir = task_values
-                .and_then(|values| values.get(&format!("{cycle}:nav-db")))
-                .and_then(|value| match value {
-                    ProductTaskValue::FingerprintedZip { zip, .. } => {
-                        Some(zip.parent().map(|parent| parent.join("nav_db")))
-                    }
-                    _ => None,
-                })
-                .flatten()
-                .unwrap_or_else(|| {
-                    artifact_root_from_build_root(&config.build_root)
-                        .join("private-work")
-                        .join("nav-kv")
-                        .join(config.profile.as_str())
-                        .join(cycle)
-                });
+            let source_dir = artifact_root_from_build_root(&config.build_root)
+                .join("private-work")
+                .join("nav-kv")
+                .join(config.profile.as_str())
+                .join(cycle);
             sync_unpacked_zip_from_source(
                 &config.build_root.join(&package.filename),
                 &source_dir,
@@ -7801,9 +7647,6 @@ fn resolve_cycle_bundle_package_root(
         Some(ProductTaskValue::CsupSource(source)) => source.package_root.clone(),
         Some(ProductTaskValue::FingerprintedTppSource { source, .. }) => {
             source.package_root.clone()
-        }
-        Some(ProductTaskValue::FingerprintedZip { zip, .. }) => {
-            zip.parent().unwrap_or_else(|| Path::new("/")).to_path_buf()
         }
         _ => return Ok(None),
     };
@@ -8137,30 +7980,40 @@ fn load_towered_metar_station_ids_from_current_vectors(
             cycle_bundle_path.display()
         ),
     };
-    let vectors_package = cycle_bundle
+    let nav_db_package = cycle_bundle
         .packages
         .iter()
-        .find(|package| package.family_id == "vectors")
-        .context("cycle bundle had no vectors package for METAR station importance")?;
-    let vectors_zip_path = config.build_root.join(&vectors_package.relative_path);
-    let file = File::open(&vectors_zip_path)
-        .with_context(|| format!("failed to open {}", vectors_zip_path.display()))?;
+        .find(|package| package.family_id == "nav-db")
+        .context("cycle bundle had no nav_db package for METAR station importance")?;
+    let nav_db_zip_path = config.build_root.join(&nav_db_package.relative_path);
+    let file = File::open(&nav_db_zip_path)
+        .with_context(|| format!("failed to open {}", nav_db_zip_path.display()))?;
     let mut archive = ZipArchive::new(file)
-        .with_context(|| format!("failed to read {}", vectors_zip_path.display()))?;
+        .with_context(|| format!("failed to read {}", nav_db_zip_path.display()))?;
+    let mut root_bytes = Vec::new();
+    archive
+        .by_name("root")
+        .with_context(|| format!("failed to read root in {}", nav_db_zip_path.display()))?
+        .read_to_end(&mut root_bytes)
+        .with_context(|| format!("failed to read root in {}", nav_db_zip_path.display()))?;
+    let root = NavKvRoot::parse(&root_bytes)
+        .map_err(|error| anyhow::anyhow!("failed to parse nav_db root: {error}"))?;
     let mut station_ids = BTreeSet::new();
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).with_context(|| {
-            format!(
-                "failed to read entry {index} in {}",
-                vectors_zip_path.display()
-            )
-        })?;
-        let name = entry.name().to_string();
-        if !name.starts_with("points/airport/") || !name.ends_with(".json") {
-            continue;
-        }
-        let tile: serde_json::Value = serde_json::from_reader(&mut entry)
-            .with_context(|| format!("failed to parse {name} in {}", vectors_zip_path.display()))?;
+    for key in root.prefix_keys("vector/point-tile/airport/") {
+        let value = root
+            .extract_value(&key, |page_index| {
+                let page_name = format!("values_{page_index:04}");
+                let mut page = Vec::new();
+                archive
+                    .by_name(&page_name)
+                    .ok()?
+                    .read_to_end(&mut page)
+                    .ok()?;
+                Some(page)
+            })
+            .with_context(|| format!("missing nav_db value for {key}"))?;
+        let tile: serde_json::Value = serde_json::from_slice(&value)
+            .with_context(|| format!("failed to parse {key} in {}", nav_db_zip_path.display()))?;
         let Some(records) = tile.get("records").and_then(|value| value.as_array()) else {
             continue;
         };
@@ -8183,8 +8036,8 @@ fn load_towered_metar_station_ids_from_current_vectors(
     }
     if station_ids.is_empty() {
         bail!(
-            "vectors package {} yielded no towered airport station ids for METAR importance",
-            vectors_zip_path.display()
+            "nav_db package {} yielded no towered airport station ids for METAR importance",
+            nav_db_zip_path.display()
         );
     }
     Ok(station_ids)
@@ -11248,8 +11101,8 @@ fn write_product_build_diagnostics(
             continue;
         }
         let cycle = task_id.trim_end_matches(":vectors").to_string();
-        let ProductTaskValue::FingerprintedZip {
-            errors: Some(errors_path),
+        let ProductTaskValue::VectorHad {
+            errors: errors_path,
             ..
         } = task_value
         else {
@@ -11560,7 +11413,7 @@ fn validate_packaged_contract(
             let bundle_path = packaged_root.join(&bundle.filename);
             ensure_public_file_exists(&bundle_path)?;
             validate_embedded_sha256_filename(&bundle.filename, &bundle.checksum_sha256)?;
-            validate_bundle_manifest(packaged_root, &bundle_path)?;
+            validate_bundle_manifest_compat(packaged_root, &bundle_path)?;
         }
         if let Some(diagnostics) = &current.diagnostics {
             validate_public_filename(
@@ -11577,6 +11430,18 @@ fn validate_packaged_contract(
 }
 
 fn validate_bundle_manifest(packaged_root: &Path, bundle_path: &Path) -> anyhow::Result<()> {
+    validate_bundle_manifest_inner(packaged_root, bundle_path, true)
+}
+
+fn validate_bundle_manifest_compat(packaged_root: &Path, bundle_path: &Path) -> anyhow::Result<()> {
+    validate_bundle_manifest_inner(packaged_root, bundle_path, false)
+}
+
+fn validate_bundle_manifest_inner(
+    packaged_root: &Path,
+    bundle_path: &Path,
+    enforce_current_contract: bool,
+) -> anyhow::Result<()> {
     let filename = filename_string(bundle_path)?;
     if filename.starts_with("bundle_fast_") {
         return validate_fast_bundle_manifest(packaged_root, bundle_path);
@@ -11643,7 +11508,9 @@ fn validate_bundle_manifest(packaged_root: &Path, bundle_path: &Path) -> anyhow:
     for artifact in &bundle.ancillary {
         validate_bundle_artifact_ref(packaged_root, artifact)?;
     }
-    validate_bundle_contract_split(&bundle, bundle_path)?;
+    if enforce_current_contract {
+        validate_bundle_contract_split(&bundle, bundle_path)?;
+    }
     Ok(())
 }
 
@@ -11769,16 +11636,6 @@ fn validate_bundle_contract_split(
     bundle: &BundleManifest,
     bundle_path: &Path,
 ) -> anyhow::Result<()> {
-    let has_vectors_package = bundle
-        .packages
-        .iter()
-        .any(|package| package.family_id == "vectors" && package.region_id.is_none());
-    if !has_vectors_package {
-        bail!(
-            "bundle {} missing vectors package row in packages[]",
-            bundle_path.display()
-        );
-    }
     let has_nav_db_package = bundle
         .packages
         .iter()
@@ -11803,7 +11660,7 @@ fn validate_bundle_contract_split(
             );
         }
     }
-    for forbidden in ["resource_index_", "catalog_", "data_"] {
+    for forbidden in ["resource_index_", "catalog_", "data_", "vectors_data_"] {
         if bundle
             .packages
             .iter()
@@ -13792,12 +13649,16 @@ fn build_vectors_node(
         version_label: version_label.to_string(),
         include_class_e_airspace: false,
     };
-    let zip_path = output_dir.join(format!("vectors_{version_label}.zip"));
+    let had_pairs_path = output_dir.join(format!("vectors_{version_label}.had-pairs.jsonl"));
     let stats_path = output_dir.join("stats.json");
     let errors_path = output_dir.join("errors.json");
     let _build_lock = match claim_or_wait_for_node(
         &prepared,
-        &[zip_path.clone(), stats_path.clone(), errors_path.clone()],
+        &[
+            had_pairs_path.clone(),
+            stats_path.clone(),
+            errors_path.clone(),
+        ],
     )? {
         NodeCacheState::CacheHit(record) => return Ok(record),
         NodeCacheState::Build(lock) => lock,
@@ -13819,8 +13680,8 @@ fn build_vectors_node(
             relative_artifact_path(&result.errors_path, &config.build_root),
         ),
         (
-            "zip".to_string(),
-            relative_artifact_path(&result.zip_path, &config.build_root),
+            "had_pairs".to_string(),
+            relative_artifact_path(&result.had_pairs_path, &config.build_root),
         ),
     ]);
     write_node_record(
@@ -15290,11 +15151,11 @@ mod tests {
                 )]),
             },
             BundlePackageArtifact {
-                id: "VECTORS_DATA_2604_01".to_string(),
-                family_id: "vectors".to_string(),
+                id: "NAV_DB_2604_01".to_string(),
+                family_id: "nav-db".to_string(),
                 region_id: None,
-                filename: "vectors_data_2604_01_cafebabe.zip".to_string(),
-                relative_path: "vectors_data_2604_01_cafebabe.zip".to_string(),
+                filename: "nav_db_2604_01_cafebabe.zip".to_string(),
+                relative_path: "nav_db_2604_01_cafebabe.zip".to_string(),
                 cycle: Some("2604".to_string()),
                 cycle_version: Some("01".to_string()),
                 checksum_sha256: "cafebabe".to_string(),
@@ -15322,24 +15183,39 @@ mod tests {
         assert_eq!(index.as_array().unwrap().len(), 2);
         assert_eq!(index[0]["id"], "NW_SEC_2604_01");
         assert_eq!(index[0]["metadata"]["full_coverage_zoom"], 7);
-        assert_eq!(index[1]["id"], "VECTORS_DATA_2604_01");
+        assert_eq!(index[1]["id"], "NAV_DB_2604_01");
 
         let sectional = pair_value("package/by-id/NW_SEC_2604_01");
         assert_eq!(sectional["metadata"]["full_coverage_zoom"], 7);
 
-        let vectors = pair_value("package/by-id/VECTORS_DATA_2604_01");
-        assert_eq!(vectors["family_id"], "vectors");
-        assert_eq!(vectors["region_id"], serde_json::Value::Null);
-        assert_eq!(
-            vectors["relative_path"],
-            "vectors_data_2604_01_cafebabe.zip"
-        );
-        assert_eq!(vectors["size_bytes"], 456);
-        assert_eq!(vectors["checksum_sha256"], "cafebabe");
-        assert_eq!(vectors["cycle"], "2604");
-        assert_eq!(vectors["cycle_version"], "01");
+        let nav_db = pair_value("package/by-id/NAV_DB_2604_01");
+        assert_eq!(nav_db["family_id"], "nav-db");
+        assert_eq!(nav_db["region_id"], serde_json::Value::Null);
+        assert_eq!(nav_db["relative_path"], "nav_db_2604_01_cafebabe.zip");
+        assert_eq!(nav_db["size_bytes"], 456);
+        assert_eq!(nav_db["checksum_sha256"], "cafebabe");
+        assert_eq!(nav_db["cycle"], "2604");
+        assert_eq!(nav_db["cycle_version"], "01");
         let sec = pair_value("package/by-id/NW_SEC_2604_01");
         assert_eq!(sec["metadata"]["full_coverage_zoom"], 7);
+    }
+
+    #[test]
+    fn nav_kv_vector_pairs_load_jsonl_into_vector_keyspace() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("vectors.had-pairs.jsonl");
+        fs::write(
+            &path,
+            r#"{"key":"vector/manifest","value_json":"{\"schema_version\":1}"}"#,
+        )
+        .unwrap();
+        let pairs = build_nav_kv_vector_pairs(&path).unwrap();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].key, "vector/manifest");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&pairs[0].value).unwrap()["schema_version"],
+            1
+        );
     }
 
     #[test]
@@ -15678,11 +15554,11 @@ mod tests {
             start_valid: "2026-04-16".to_string(),
             end_valid: "2026-05-14".to_string(),
             packages: vec![BundlePackageArtifact {
-                id: "vectors_data_2604_01".to_string(),
-                family_id: "vectors".to_string(),
+                id: "NAV_DB_2604_01".to_string(),
+                family_id: "nav-db".to_string(),
                 region_id: None,
-                filename: "vectors_data_2604_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip".to_string(),
-                relative_path: "vectors_data_2604_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip".to_string(),
+                filename: "nav_db_2604_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip".to_string(),
+                relative_path: "nav_db_2604_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip".to_string(),
                 cycle: Some("2604".to_string()),
                 cycle_version: Some("01".to_string()),
                 checksum_sha256: "a".repeat(64),
@@ -15778,7 +15654,7 @@ mod tests {
         assert!(status
             .products
             .iter()
-            .any(|product| product.bundle_type == "cycle" && product.family_id == "vectors"));
+            .any(|product| product.bundle_type == "cycle" && product.family_id == "nav-db"));
         assert!(status
             .products
             .iter()
@@ -15787,7 +15663,7 @@ mod tests {
         assert!(html.contains("Aerobag Build Status"));
         assert!(html.contains("bundle_fast_stale_empty.json"));
         assert!(html.contains("metars_"));
-        assert!(html.contains("vectors_data_"));
+        assert!(html.contains("nav_db_"));
     }
 
     #[test]

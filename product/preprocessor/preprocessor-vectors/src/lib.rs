@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -72,7 +72,7 @@ pub struct BuildVectorsResult {
     pub manifest_path: PathBuf,
     pub stats_path: PathBuf,
     pub errors_path: PathBuf,
-    pub zip_path: PathBuf,
+    pub had_pairs_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +130,40 @@ struct VectorManifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     airspace: Option<AirspaceManifest>,
     files: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VectorHadManifest {
+    schema_version: u32,
+    version_label: String,
+    point_layers: BTreeMap<String, VectorHadPointLayerManifest>,
+    airspace: Option<VectorHadAirspaceManifest>,
+    stats: VectorHadStatsSummary,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VectorHadPointLayerManifest {
+    available_zooms: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VectorHadAirspaceManifest {
+    reference_tile_min_zoom: u8,
+    reference_tile_max_zoom: u8,
+    label_tile_min_zoom: u8,
+    label_tile_max_zoom: u8,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VectorHadStatsSummary {
+    total_points: usize,
+    airspace_feature_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VectorHadPairLine {
+    key: String,
+    value_json: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -837,27 +871,27 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
     let manifest_path = request
         .output_dir
         .join(format!("vectors_{}.manifest", request.version_label));
-    let zip_path = request
+    let had_pairs_path = request
         .output_dir
-        .join(format!("vectors_{}.zip", request.version_label));
+        .join(format!("vectors_{}.had-pairs.jsonl", request.version_label));
 
     let mut files = BTreeMap::new();
     let mut point_layers = BTreeMap::new();
+    let mut had_point_layers = BTreeMap::new();
     let mut layer_stats = BTreeMap::new();
-    let mut zip_members = vec![
-        ("vectors".to_string(), manifest_path.clone()),
-        ("stats.json".to_string(), stats_path.clone()),
-    ];
+    let mut had_pairs = Vec::<VectorHadPairLine>::new();
 
     for (layer_name, layer_points) in points_by_layer(&points) {
         let zoom = layer_tile_zoom(&layer_name);
         let point_tiles = build_point_tiles(&layer_points, zoom);
         let tile_path_template = format!("points/{layer_name}/{zoom}/{{x}}/{{y}}.json");
         for tile in &point_tiles {
-            let relative_path = point_tile_relative_path(&layer_name, tile.z, tile.x, tile.y);
-            let points_path = request.output_dir.join(&relative_path);
-            write_json_pretty(
-                &points_path,
+            push_vector_had_json(
+                &mut had_pairs,
+                format!(
+                    "vector/point-tile/{layer_name}/{}/{}/{}",
+                    tile.z, tile.x, tile.y
+                ),
                 &PointTileFile {
                     schema_version: 1,
                     layer: layer_name.clone(),
@@ -867,7 +901,6 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
                     records: tile.records.clone(),
                 },
             )?;
-            zip_members.push((relative_path, points_path));
         }
         files.insert(
             format!("point_tiles_{layer_name}"),
@@ -882,6 +915,12 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
                 available_zooms: vec![zoom],
                 tile_path_template,
                 zoom_levels: None,
+            },
+        );
+        had_point_layers.insert(
+            layer_name.clone(),
+            VectorHadPointLayerManifest {
+                available_zooms: vec![zoom],
             },
         );
         layer_stats.insert(
@@ -915,7 +954,11 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
             *class_counts
                 .entry(feature.airspace_class.clone())
                 .or_insert(0) += 1;
-            write_airspace_feature(&request.output_dir, feature, &mut zip_members)?;
+            push_vector_had_json(
+                &mut had_pairs,
+                format!("vector/airspace/feature/{}", had_key_component(&feature.id)),
+                feature,
+            )?;
 
             for zoom in AIRSPACE_REF_MIN_ZOOM..=AIRSPACE_REF_MAX_ZOOM {
                 if controlled_airspace_uses_outline_at_zoom(feature, zoom) {
@@ -968,7 +1011,11 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
         }
 
         for feature in &controlled_outline_features {
-            write_airspace_feature(&request.output_dir, feature, &mut zip_members)?;
+            push_vector_had_json(
+                &mut had_pairs,
+                format!("vector/airspace/feature/{}", had_key_component(&feature.id)),
+                feature,
+            )?;
 
             for zoom in AIRSPACE_REF_MIN_ZOOM..=CONTROLLED_AIRSPACE_OUTLINE_MAX_ZOOM {
                 if !bbox_is_visible_at_zoom(feature.bbox, zoom, AIRSPACE_REF_MIN_PIXEL_SPAN) {
@@ -987,10 +1034,9 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
             refs.sort();
             refs.dedup();
             max_refs_in_tile = max_refs_in_tile.max(refs.len());
-            let relative_path = airspace_ref_tile_relative_path(z, x, y);
-            let path = request.output_dir.join(&relative_path);
-            write_json_compact(
-                &path,
+            push_vector_had_json(
+                &mut had_pairs,
+                format!("vector/airspace/ref-tile/{z}/{x}/{y}"),
                 &AirspaceReferenceTileFile {
                     schema_version: 1,
                     layer: "airspace".to_string(),
@@ -1000,17 +1046,15 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
                     refs,
                 },
             )?;
-            zip_members.push((relative_path, path));
         }
 
         let mut max_labels_in_tile = 0usize;
         let label_tile_count = label_tiles.len();
         for ((z, x, y), labels) in label_tiles {
             max_labels_in_tile = max_labels_in_tile.max(labels.len());
-            let relative_path = airspace_label_tile_relative_path(z, x, y);
-            let path = request.output_dir.join(&relative_path);
-            write_json_compact(
-                &path,
+            push_vector_had_json(
+                &mut had_pairs,
+                format!("vector/airspace/label-tile/{z}/{x}/{y}"),
                 &AirspaceLabelTileFile {
                     schema_version: 1,
                     layer: "airspace-labels".to_string(),
@@ -1020,7 +1064,6 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
                     labels,
                 },
             )?;
-            zip_members.push((relative_path, path));
         }
 
         files.insert(
@@ -1057,15 +1100,10 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
             class_counts,
             saa_source_xml_count,
             saa_emitted_feature_count,
-            reference_tile_count: files
-                .get("airspace_reference_tiles")
-                .map(|_| {
-                    zip_members
-                        .iter()
-                        .filter(|(name, _)| name.starts_with("airspace/refs/"))
-                        .count()
-                })
-                .unwrap_or(0),
+            reference_tile_count: had_pairs
+                .iter()
+                .filter(|pair| pair.key.starts_with("vector/airspace/ref-tile/"))
+                .count(),
             label_tile_count,
             max_refs_in_tile,
             max_labels_in_tile,
@@ -1109,18 +1147,44 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
             schema_version: 1,
             version_label: request.version_label.clone(),
             point_layers,
-            airspace: airspace_manifest,
+            airspace: airspace_manifest.clone(),
             files,
         },
     )?;
 
-    write_zip(&zip_path, &zip_members)?;
+    let airspace_feature_count = had_pairs
+        .iter()
+        .filter(|pair| pair.key.starts_with("vector/airspace/feature/"))
+        .count();
+    push_vector_had_json(&mut had_pairs, "vector/stats".to_string(), &stats)?;
+    push_vector_had_json(
+        &mut had_pairs,
+        "vector/manifest".to_string(),
+        &VectorHadManifest {
+            schema_version: 1,
+            version_label: request.version_label.clone(),
+            point_layers: had_point_layers,
+            airspace: airspace_manifest
+                .as_ref()
+                .map(|_| VectorHadAirspaceManifest {
+                    reference_tile_min_zoom: AIRSPACE_REF_MIN_ZOOM,
+                    reference_tile_max_zoom: AIRSPACE_REF_MAX_ZOOM,
+                    label_tile_min_zoom: AIRSPACE_LABEL_MIN_ZOOM,
+                    label_tile_max_zoom: AIRSPACE_LABEL_MAX_ZOOM,
+                }),
+            stats: VectorHadStatsSummary {
+                total_points: points.len(),
+                airspace_feature_count,
+            },
+        },
+    )?;
+    write_vector_had_pairs(&had_pairs_path, &had_pairs)?;
 
     Ok(BuildVectorsResult {
         manifest_path,
         stats_path,
         errors_path,
-        zip_path,
+        had_pairs_path,
     })
 }
 
@@ -2478,18 +2542,6 @@ fn point_layer_counts(points: &[PointRecord]) -> BTreeMap<String, usize> {
     counts
 }
 
-fn airspace_feature_relative_path(id: &str) -> String {
-    format!("had/{}.json", id.replace(':', "/"))
-}
-
-fn airspace_ref_tile_relative_path(z: u8, x: u32, y: u32) -> String {
-    format!("airspace/refs/{z}/{x}/{y}.json")
-}
-
-fn airspace_label_tile_relative_path(z: u8, x: u32, y: u32) -> String {
-    format!("airspace/labels/{z}/{x}/{y}.json")
-}
-
 fn insert_airspace_tile_label(labels: &mut Vec<AirspaceTileLabel>, candidate: AirspaceTileLabel) {
     if let Some(existing) = labels
         .iter_mut()
@@ -3427,28 +3479,49 @@ fn write_json_pretty<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()>
     .with_context(|| format!("failed to write {}", path.display()))
 }
 
-fn write_json_compact<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
+fn push_vector_had_json<T: Serialize>(
+    pairs: &mut Vec<VectorHadPairLine>,
+    key: String,
+    value: &T,
+) -> anyhow::Result<()> {
+    let value_json = String::from_utf8(
+        serde_json::to_vec(value)
+            .with_context(|| format!("failed to encode vector HAD value {key}"))?,
+    )
+    .with_context(|| format!("vector HAD value {key} was not UTF-8 JSON"))?;
+    pairs.push(VectorHadPairLine { key, value_json });
+    Ok(())
+}
+
+fn write_vector_had_pairs(path: &Path, pairs: &[VectorHadPairLine]) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    fs::write(
-        path,
-        serde_json::to_vec(value).context("failed to encode json")?,
-    )
-    .with_context(|| format!("failed to write {}", path.display()))
+    let mut file =
+        fs::File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
+    for pair in pairs {
+        serde_json::to_writer(&mut file, pair)
+            .with_context(|| format!("failed to encode vector HAD pair {}", pair.key))?;
+        file.write_all(b"\n")
+            .with_context(|| format!("failed to write {}", path.display()))?;
+    }
+    Ok(())
 }
 
-fn write_airspace_feature(
-    output_dir: &Path,
-    feature: &AirspaceFeature,
-    zip_members: &mut Vec<(String, PathBuf)>,
-) -> anyhow::Result<()> {
-    let relative_path = airspace_feature_relative_path(&feature.id);
-    let feature_path = output_dir.join(&relative_path);
-    write_json_compact(&feature_path, feature)?;
-    zip_members.push((relative_path, feature_path));
-    Ok(())
+fn had_key_component(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.trim().as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char);
+            }
+            _ => {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+    out
 }
 
 fn write_zip(path: &Path, members: &[(String, PathBuf)]) -> anyhow::Result<()> {
@@ -3462,6 +3535,29 @@ fn write_zip(path: &Path, members: &[(String, PathBuf)]) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vector_had_pairs_encode_logical_keys_and_json_values() {
+        let mut pairs = Vec::new();
+        push_vector_had_json(
+            &mut pairs,
+            format!(
+                "vector/airspace/feature/{}",
+                had_key_component("airspace:data_2604:saa:aa:a381")
+            ),
+            &serde_json::json!({"id": "airspace:data_2604:saa:aa:a381"}),
+        )
+        .unwrap();
+
+        assert_eq!(
+            pairs[0].key,
+            "vector/airspace/feature/airspace%3Adata_2604%3Asaa%3Aaa%3Aa381"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&pairs[0].value_json).unwrap()["id"],
+            "airspace:data_2604:saa:aa:a381"
+        );
+    }
 
     #[test]
     fn airport_points_include_arp_elevation() {

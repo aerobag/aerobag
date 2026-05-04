@@ -2072,6 +2072,77 @@ private fun transformScreenPoint(
     )
 }
 
+private fun transformAirspaceScreenPoint(
+    point: AirspaceScreenPoint,
+    fromViewport: MapViewportState,
+    fromSurface: OverlaySurfaceUnits,
+    toViewport: MapViewportState,
+    toSurface: OverlaySurfaceUnits,
+): AirspaceScreenPoint {
+    val world =
+        screenToWorld(
+            viewport = fromViewport,
+            point = ScreenPoint(point.x.toFloat(), point.y.toFloat()),
+            widthPx = fromSurface.width,
+            heightPx = fromSurface.height,
+        )
+    val nextScale = scaleForZoom(toViewport.zoom)
+    return point.copy(
+        x = (world.x - toViewport.centerWorldX) * nextScale + toSurface.width / 2.0,
+        y = (world.y - toViewport.centerWorldY) * nextScale + toSurface.height / 2.0,
+    )
+}
+
+private fun transformAirspaceSubpath(
+    subpath: AirspaceDisplaySubpath,
+    fromViewport: MapViewportState,
+    fromSurface: OverlaySurfaceUnits,
+    toViewport: MapViewportState,
+    toSurface: OverlaySurfaceUnits,
+): AirspaceDisplaySubpath =
+    subpath.copy(
+        points = subpath.points.map { point ->
+            transformAirspaceScreenPoint(point, fromViewport, fromSurface, toViewport, toSurface)
+        },
+    )
+
+private fun transformAirspaceDisplayPath(
+    path: AirspaceDisplayPath,
+    fromViewport: MapViewportState,
+    fromSurface: OverlaySurfaceUnits,
+    toViewport: MapViewportState,
+    toSurface: OverlaySurfaceUnits,
+): AirspaceDisplayPath =
+    path.copy(
+        paths = path.paths.map { subpath ->
+            transformAirspaceSubpath(subpath, fromViewport, fromSurface, toViewport, toSurface)
+        },
+        decorations = path.decorations.map { decoration ->
+            decoration.copy(
+                paths = decoration.paths.map { subpath ->
+                    transformAirspaceSubpath(subpath, fromViewport, fromSurface, toViewport, toSurface)
+                },
+            )
+        },
+    )
+
+private fun transformAirspaceDisplayLabel(
+    label: AirspaceDisplayLabel,
+    fromViewport: MapViewportState,
+    fromSurface: OverlaySurfaceUnits,
+    toViewport: MapViewportState,
+    toSurface: OverlaySurfaceUnits,
+): AirspaceDisplayLabel {
+    val point = transformAirspaceScreenPoint(
+        AirspaceScreenPoint(label.screenX, label.screenY),
+        fromViewport,
+        fromSurface,
+        toViewport,
+        toSurface,
+    )
+    return label.copy(screenX = point.x, screenY = point.y)
+}
+
 private fun formatPlanDistance(distanceNm: Double?): String =
     when {
         distanceNm == null -> "—"
@@ -8856,7 +8927,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceDisplay
 }
 
 private fun airspaceLabelParts(text: String): Pair<String, String>? {
-    val parts = text.split("/")
+    val parts = text.trim().split(Regex("""[/\r\n]+"""))
     if (parts.size != 2) return null
     val upper = parts[0].trim()
     val lower = parts[1].trim()

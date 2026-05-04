@@ -16,7 +16,6 @@ import android.view.KeyEvent as AndroidKeyEvent
 import android.view.MotionEvent
 import java.util.LinkedHashMap
 import java.net.HttpURLConnection
-import java.util.concurrent.atomic.AtomicReference
 import androidx.annotation.DrawableRes
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.activity.result.contract.ActivityResultContracts
@@ -163,6 +162,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import net.jonh.aerobag.prototype.domain.ChartAirport
 import net.jonh.aerobag.prototype.domain.ChartAsset
@@ -880,6 +881,8 @@ private sealed interface OfflinePackagesControllerCommandWire {
         val packageSourceBaseUrl: String,
         val plan: PackageManagementPlanWire,
         val bundle: BundleManifestWire,
+        @SerialName("max_parallel_fetches")
+        val maxParallelFetches: Int = 4,
     ) : OfflinePackagesControllerCommandWire
 }
 
@@ -2384,7 +2387,7 @@ private fun HomePage(
     var offlinePackagesControllerResult by remember { mutableStateOf<OfflinePackagesControllerResultWire?>(null) }
     var offlinePackageOperationJob by remember { mutableStateOf<Job?>(null) }
     var offlinePackageCancelRequested by remember { mutableStateOf(false) }
-    val activePackageConnection = remember { AtomicReference<HttpURLConnection?>(null) }
+    val activePackageConnections = remember { ActivePackageConnections() }
     fun launchOfflinePackageOperation(block: suspend () -> Unit) {
         if (offlinePackageOperationJob?.isActive == true) {
             return
@@ -2394,7 +2397,7 @@ private fun HomePage(
             try {
                 block()
             } finally {
-                activePackageConnection.getAndSet(null)?.disconnect()
+                activePackageConnections.disconnectAll()
                 offlinePackageOperationJob = null
                 offlinePackageCancelRequested = false
             }
@@ -2438,7 +2441,7 @@ private fun HomePage(
                         refreshOfflinePackageLibrary(
                             packageSourceBaseUrl = command.packageSourceBaseUrl,
                             discoveryFilenames = command.discoveryFilenames,
-                            activeConnectionRef = activePackageConnection,
+                            activeConnections = activePackageConnections,
                         )
                     }
                 }
@@ -2469,7 +2472,8 @@ private fun HomePage(
                             plan = command.plan,
                             bundle = command.bundle,
                             packageSourceBaseUrl = command.packageSourceBaseUrl,
-                            activeConnectionRef = activePackageConnection,
+                            maxParallelFetches = command.maxParallelFetches,
+                            activeConnections = activePackageConnections,
                             onProgress = { message, progress ->
                                 withContext(Dispatchers.Main) {
                                     if (progress != null) {
@@ -2663,7 +2667,7 @@ private fun HomePage(
                     onCancelRefresh = {
                         Log.i("OfflinePackages", "refresh cancel requested")
                         offlinePackageCancelRequested = true
-                        activePackageConnection.getAndSet(null)?.disconnect()
+                        activePackageConnections.disconnectAll()
                         offlinePackageOperationJob?.cancel(CancellationException("offline package refresh canceled"))
                     },
                     closeEnabled = !forceOfflinePackagesOpen,
@@ -2732,7 +2736,7 @@ private fun HomePage(
                     onCancelRefresh = {
                         Log.i("OfflinePackages", "refresh cancel requested")
                         offlinePackageCancelRequested = true
-                        activePackageConnection.getAndSet(null)?.disconnect()
+                        activePackageConnections.disconnectAll()
                         offlinePackageOperationJob?.cancel(CancellationException("offline package refresh canceled"))
                     },
                     onRowClick = { event ->
@@ -2780,7 +2784,7 @@ private fun HomePage(
                     onCancelOperation = {
                         Log.i("OfflinePackages", "sync cancel requested")
                         offlinePackageCancelRequested = true
-                        activePackageConnection.getAndSet(null)?.disconnect()
+                        activePackageConnections.disconnectAll()
                         offlinePackageOperationJob?.cancel(CancellationException("offline package operation canceled"))
                     },
                     syncInFlight = controllerUiState.syncInFlight,
@@ -3520,7 +3524,8 @@ private suspend fun syncOfflinePackages(
     plan: PackageManagementPlanWire,
     bundle: BundleManifestWire,
     packageSourceBaseUrl: String,
-    activeConnectionRef: AtomicReference<HttpURLConnection?>,
+    maxParallelFetches: Int,
+    activeConnections: ActivePackageConnections,
     onProgress: suspend (String, OfflinePackagesSyncProgressWire?) -> Unit = { _, _ -> },
 ): OfflinePackagesSyncSummary {
     val syncStartMs = SystemClock.elapsedRealtime()
@@ -3530,101 +3535,173 @@ private suspend fun syncOfflinePackages(
     val remotePoisonedFilenameMessages = linkedMapOf<String, String>()
     val totalFetchBytes = plan.fetch.sumOf { artifactId -> packagesById[artifactId]?.sizeBytes ?: 0L }
     val completedFetchArtifactIds = linkedSetOf<String>()
+    val activeFetchBytesByArtifactId = linkedMapOf<String, Long>()
+    val progressMutex = Mutex()
     var completedFetchBytes = 0L
     var fetchedCount = 0
     var gcCount = 0
-    suspend fun reportProgress(message: String, currentArtifactId: String? = null, currentBytes: Long = 0L) {
-        onProgress(
-            message,
-            OfflinePackagesSyncProgressWire(
-                completedFetchArtifactIds = completedFetchArtifactIds,
-                currentFetchArtifactId = currentArtifactId,
-                currentFetchBytes = currentBytes,
-            ),
-        )
-    }
-    reportProgress(syncProgressText(fetchedCount, plan.fetch.size, completedFetchBytes, totalFetchBytes))
-    plan.fetch.forEachIndexed { index, artifactId ->
-        currentCoroutineContext().ensureActive()
-        runCatching {
-            val fetchStartMs = SystemClock.elapsedRealtime()
-            val pkg = packagesById[artifactId]
-                ?: error("missing bundle metadata for fetch artifact $artifactId")
-            reportProgress("Fetching package ${index + 1}/${plan.fetch.size}: ${pkg.filename}", artifactId)
-            check(packageSourceBaseUrl.isNotBlank()) { "package source URL is blank" }
-            val sourceUrl = resolvePackageSourceUrl(pkg.relativePath, packageSourceBaseUrl)
-            val kind = installedPackageKindForFamilyId(pkg.familyId)
-            var packageDownloadedBytes = 0L
-            var lastReportedPackageBytes = 0L
-            val tempFile = downloadPackageToTempFile(
-                context = context,
-                kind = kind,
-                filename = pkg.filename,
-                sourceUrl = sourceUrl,
-                expectedSizeBytes = pkg.sizeBytes,
-                expectedSha256 = pkg.checksumSha256,
-                activeConnectionRef = activeConnectionRef,
-                onBytesRead = { bytesRead ->
-                    packageDownloadedBytes += bytesRead
-                    if (
-                        packageDownloadedBytes - lastReportedPackageBytes >= 10_000_000L ||
-                        packageDownloadedBytes == pkg.sizeBytes
-                    ) {
-                        lastReportedPackageBytes = packageDownloadedBytes
-                        reportProgress(
-                            syncProgressText(
-                                fetchedCount,
-                                plan.fetch.size,
-                                completedFetchBytes + packageDownloadedBytes,
-                                totalFetchBytes,
-                            ),
-                            artifactId,
-                            packageDownloadedBytes,
-                        )
-                    }
-                },
-            )
-            completedFetchBytes += packageDownloadedBytes
-            completedFetchArtifactIds += artifactId
-            installDownloadedPackage(
-                context = context,
-                kind = kind,
-                artifactId = pkg.id,
-                filename = pkg.filename,
-                tempFile = tempFile,
-                sizeBytes = pkg.sizeBytes,
-                checksumSha256 = pkg.checksumSha256,
-            )
-            val validationError = validateInstalledPackageOrNull(
-                context = context,
-                kind = kind,
-                pkg = pkg,
-            )
-            if (validationError != null) {
-                remotePoisonedFilenameMessages[pkg.filename] = validationError
-                warnings += OfflinePackagesWarning(
-                    artifactId = artifactId,
-                    familyId = pkg.familyId,
-                    regionId = pkg.regionId,
-                    message = validationError,
-                )
-            }
-            fetchedCount += 1
-            reportProgress(syncProgressText(fetchedCount, plan.fetch.size, completedFetchBytes, totalFetchBytes))
-            Log.i(
-                "OfflinePackages",
-                "fetch installed $artifactId in ${SystemClock.elapsedRealtime() - fetchStartMs}ms from $sourceUrl" +
-                    if (validationError != null) " poison=${pkg.filename}" else "",
-            )
-        }.onFailure {
-            Log.e("OfflinePackages", "fetch failed for $artifactId", it)
-            warnings += OfflinePackagesWarning(
-                artifactId = artifactId,
-                familyId = packagesById[artifactId]?.familyId,
-                regionId = packagesById[artifactId]?.regionId,
-                message = it.message ?: it::class.simpleName ?: "fetch failed",
+    fun activeFetchBytes(): Long = activeFetchBytesByArtifactId.values.sum()
+    suspend fun reportProgress(
+        message: String,
+        currentArtifactId: String? = null,
+        currentBytes: Long? = null,
+    ) {
+        progressMutex.withLock {
+            onProgress(
+                message,
+                OfflinePackagesSyncProgressWire(
+                    completedFetchArtifactIds = completedFetchArtifactIds.toSet(),
+                    currentFetchArtifactId = currentArtifactId,
+                    currentFetchBytes = currentBytes ?: currentArtifactId?.let { activeFetchBytesByArtifactId[it] } ?: 0L,
+                ),
             )
         }
+    }
+    reportProgress(syncProgressText(fetchedCount, plan.fetch.size, completedFetchBytes, totalFetchBytes))
+    if (plan.fetch.isNotEmpty()) {
+        val fetchWorkerCount = maxParallelFetches.coerceIn(1, 8).coerceAtMost(plan.fetch.size)
+        val fetchQueue = Channel<IndexedValue<String>>(Channel.UNLIMITED)
+        coroutineScope {
+            launch {
+                plan.fetch.withIndex().forEach { work ->
+                    fetchQueue.send(work)
+                }
+                fetchQueue.close()
+            }
+            repeat(fetchWorkerCount) { workerIndex ->
+                launch {
+                    for ((index, artifactId) in fetchQueue) {
+                        currentCoroutineContext().ensureActive()
+                        val pkg = packagesById[artifactId]
+                        if (pkg == null) {
+                            progressMutex.withLock {
+                                warnings += OfflinePackagesWarning(
+                                    artifactId = artifactId,
+                                    familyId = null,
+                                    regionId = null,
+                                    message = "missing bundle metadata for fetch artifact $artifactId",
+                                )
+                            }
+                            continue
+                        }
+                        runCatching {
+                            val fetchStartMs = SystemClock.elapsedRealtime()
+                            reportProgress("Fetching package ${index + 1}/${plan.fetch.size}: ${pkg.filename}", artifactId)
+                            check(packageSourceBaseUrl.isNotBlank()) { "package source URL is blank" }
+                            val sourceUrl = resolvePackageSourceUrl(pkg.relativePath, packageSourceBaseUrl)
+                            val kind = installedPackageKindForFamilyId(pkg.familyId)
+                            var packageDownloadedBytes = 0L
+                            var lastReportedPackageBytes = 0L
+                            progressMutex.withLock {
+                                activeFetchBytesByArtifactId[artifactId] = 0L
+                            }
+                            val tempFile = downloadPackageToTempFile(
+                                context = context,
+                                kind = kind,
+                                filename = pkg.filename,
+                                sourceUrl = sourceUrl,
+                                expectedSizeBytes = pkg.sizeBytes,
+                                expectedSha256 = pkg.checksumSha256,
+                                activeConnections = activeConnections,
+                                onBytesRead = { bytesRead ->
+                                    packageDownloadedBytes += bytesRead
+                                    var shouldReport = false
+                                    progressMutex.withLock {
+                                        activeFetchBytesByArtifactId[artifactId] = packageDownloadedBytes
+                                        shouldReport = packageDownloadedBytes - lastReportedPackageBytes >= 10_000_000L ||
+                                            packageDownloadedBytes == pkg.sizeBytes
+                                    }
+                                    if (shouldReport) {
+                                        lastReportedPackageBytes = packageDownloadedBytes
+                                        val aggregateFetchBytes = progressMutex.withLock {
+                                            completedFetchBytes + activeFetchBytes()
+                                        }
+                                        reportProgress(
+                                            syncProgressText(
+                                                fetchedCount,
+                                                plan.fetch.size,
+                                                aggregateFetchBytes,
+                                                totalFetchBytes,
+                                            ),
+                                            artifactId,
+                                            packageDownloadedBytes,
+                                        )
+                                    }
+                                },
+                            )
+                            installDownloadedPackage(
+                                context = context,
+                                kind = kind,
+                                artifactId = pkg.id,
+                                filename = pkg.filename,
+                                tempFile = tempFile,
+                                sizeBytes = pkg.sizeBytes,
+                                checksumSha256 = pkg.checksumSha256,
+                            )
+                            val validationError = validateInstalledPackageOrNull(
+                                context = context,
+                                kind = kind,
+                                pkg = pkg,
+                            )
+                            progressMutex.withLock {
+                                activeFetchBytesByArtifactId.remove(artifactId)
+                                completedFetchBytes += packageDownloadedBytes
+                                completedFetchArtifactIds += artifactId
+                                if (validationError != null) {
+                                    remotePoisonedFilenameMessages[pkg.filename] = validationError
+                                    warnings += OfflinePackagesWarning(
+                                        artifactId = artifactId,
+                                        familyId = pkg.familyId,
+                                        regionId = pkg.regionId,
+                                        message = validationError,
+                                    )
+                                }
+                                fetchedCount += 1
+                            }
+                            val aggregateFetchBytes = progressMutex.withLock {
+                                completedFetchBytes + activeFetchBytes()
+                            }
+                            reportProgress(syncProgressText(fetchedCount, plan.fetch.size, aggregateFetchBytes, totalFetchBytes))
+                            Log.i(
+                                "OfflinePackages",
+                                "fetch installed $artifactId worker=$workerIndex in ${SystemClock.elapsedRealtime() - fetchStartMs}ms from $sourceUrl" +
+                                    if (validationError != null) " poison=${pkg.filename}" else "",
+                            )
+                        }.onFailure {
+                            progressMutex.withLock {
+                                activeFetchBytesByArtifactId.remove(artifactId)
+                                warnings += OfflinePackagesWarning(
+                                    artifactId = artifactId,
+                                    familyId = pkg.familyId,
+                                    regionId = pkg.regionId,
+                                    message = it.message ?: it::class.simpleName ?: "fetch failed",
+                                )
+                            }
+                            Log.e("OfflinePackages", "fetch failed for $artifactId", it)
+                            val aggregateFetchBytes = progressMutex.withLock {
+                                completedFetchBytes + activeFetchBytes()
+                            }
+                            reportProgress(
+                                syncProgressText(
+                                    fetchedCount,
+                                    plan.fetch.size,
+                                    aggregateFetchBytes,
+                                    totalFetchBytes,
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        reportProgress(
+            syncProgressText(
+                fetchedCount,
+                plan.fetch.size,
+                completedFetchBytes,
+                totalFetchBytes,
+            ),
+        )
     }
     plan.gc.forEachIndexed { index, filename ->
         currentCoroutineContext().ensureActive()
@@ -3684,10 +3761,33 @@ private fun formatProgressMegabytes(bytes: Long): String = "${bytes / 1_000_000L
 private const val PackageHttpConnectTimeoutMs = 5_000
 private const val PackageHttpReadTimeoutMs = 5_000
 
+private class ActivePackageConnections {
+    private val connections = linkedSetOf<HttpURLConnection>()
+
+    @Synchronized
+    fun add(connection: HttpURLConnection) {
+        connections += connection
+    }
+
+    @Synchronized
+    fun remove(connection: HttpURLConnection) {
+        connections -= connection
+    }
+
+    @Synchronized
+    fun disconnectAll() {
+        val snapshot = connections.toList()
+        connections.clear()
+        snapshot.forEach { connection ->
+            runCatching { connection.disconnect() }
+        }
+    }
+}
+
 private suspend fun refreshOfflinePackageLibrary(
     packageSourceBaseUrl: String,
     discoveryFilenames: List<String>,
-    activeConnectionRef: AtomicReference<HttpURLConnection?>,
+    activeConnections: ActivePackageConnections,
 ): OfflinePackagesControllerEventWire.LibraryRefreshSucceeded {
     check(packageSourceBaseUrl.isNotBlank()) { "package source URL is blank" }
     val discoveryNames = buildList {
@@ -3698,7 +3798,7 @@ private suspend fun refreshOfflinePackageLibrary(
         currentCoroutineContext().ensureActive()
         readPackageSourceText(
             resolvePackageSourceUrl(filename, packageSourceBaseUrl),
-            activeConnectionRef,
+            activeConnections,
         )
     }
     val bundleNames = discoveryJsons
@@ -3714,7 +3814,7 @@ private suspend fun refreshOfflinePackageLibrary(
         currentCoroutineContext().ensureActive()
         readPackageSourceText(
             resolvePackageSourceUrl(filename, packageSourceBaseUrl),
-            activeConnectionRef,
+            activeConnections,
         )
     }
     return OfflinePackagesControllerEventWire.LibraryRefreshSucceeded(
@@ -3726,25 +3826,25 @@ private suspend fun refreshOfflinePackageLibrary(
 
 private suspend fun readPackageSourceText(
     sourceUrl: String,
-    activeConnectionRef: AtomicReference<HttpURLConnection?>,
+    activeConnections: ActivePackageConnections,
 ): String =
     readPackageSourceBytes(
         sourceUrl = sourceUrl,
         expectedSizeBytes = null,
-        activeConnectionRef = activeConnectionRef,
+        activeConnections = activeConnections,
         onBytesRead = {},
     ).decodeToString()
 
 private suspend fun readPackageSourceBytes(
     sourceUrl: String,
     expectedSizeBytes: Long?,
-    activeConnectionRef: AtomicReference<HttpURLConnection?>,
+    activeConnections: ActivePackageConnections,
     onBytesRead: suspend (Long) -> Unit,
 ): ByteArray {
     val startMs = SystemClock.elapsedRealtime()
     var totalBytesRead = 0L
     val connection = openCancellablePackageConnection(sourceUrl)
-    activeConnectionRef.set(connection)
+    activeConnections.add(connection)
     val completionHandle = currentCoroutineContext()[Job]?.invokeOnCompletion { error ->
         if (error is CancellationException) {
             Log.i("OfflinePackages", "cancel disconnect $sourceUrl")
@@ -3776,7 +3876,7 @@ private suspend fun readPackageSourceBytes(
         }
     } finally {
         completionHandle?.dispose()
-        activeConnectionRef.compareAndSet(connection, null)
+        activeConnections.remove(connection)
         connection.disconnect()
         Log.i(
             "OfflinePackages",
@@ -3800,7 +3900,7 @@ private suspend fun downloadPackageToTempFile(
     sourceUrl: String,
     expectedSizeBytes: Long?,
     expectedSha256: String?,
-    activeConnectionRef: AtomicReference<HttpURLConnection?>,
+    activeConnections: ActivePackageConnections,
     onBytesRead: suspend (Long) -> Unit = {},
 ): File {
     val target = File(File(context.filesDir, kind.directoryName), filename)
@@ -3813,7 +3913,7 @@ private suspend fun downloadPackageToTempFile(
     var sizeBytes = 0L
     var complete = false
     val connection = openCancellablePackageConnection(sourceUrl)
-    activeConnectionRef.set(connection)
+    activeConnections.add(connection)
     val completionHandle = currentCoroutineContext()[Job]?.invokeOnCompletion { error ->
         if (error is CancellationException) {
             Log.i("OfflinePackages", "cancel disconnect $sourceUrl")
@@ -3842,7 +3942,7 @@ private suspend fun downloadPackageToTempFile(
         complete = true
     } finally {
         completionHandle?.dispose()
-        activeConnectionRef.compareAndSet(connection, null)
+        activeConnections.remove(connection)
         connection.disconnect()
         Log.i("OfflinePackages", "http download end $sourceUrl complete=$complete")
         if (!complete) {

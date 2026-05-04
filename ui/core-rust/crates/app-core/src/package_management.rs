@@ -296,8 +296,11 @@ pub enum OfflinePackagesControllerCommand {
         package_source_base_url: String,
         plan: PackageManagementPlan,
         bundle: BundleManifest,
+        max_parallel_fetches: usize,
     },
 }
+
+pub const OFFLINE_PACKAGES_MAX_PARALLEL_FETCHES: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct OfflinePackagesControllerUiState {
@@ -623,6 +626,7 @@ pub fn reduce_offline_packages_controller(
                 package_source_base_url: package_source_base_url.clone(),
                 plan: current.plan,
                 bundle: current.bundle,
+                max_parallel_fetches: OFFLINE_PACKAGES_MAX_PARALLEL_FETCHES,
             });
             return OfflinePackagesControllerResult {
                 ui_state: project_offline_packages_controller_ui_state(
@@ -879,7 +883,8 @@ pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagemen
             .map(|installed| installed.filename.clone())
             .collect()
     };
-    let mut fetch = BTreeSet::new();
+    let mut fetch = Vec::new();
+    let mut fetch_set = BTreeSet::new();
     let mut retain_installed = BTreeSet::new();
     let mut protected_by_pause = BTreeSet::new();
     let mut slots_with_current_installed = BTreeSet::new();
@@ -899,7 +904,7 @@ pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagemen
                 } else if suppressed_fetch_filenames.contains(&artifact.filename) {
                     // Known-bad immutable remote artifact for this app run; do not requeue fetch.
                 } else {
-                    fetch.insert(artifact.artifact_id.clone());
+                    push_fetch_artifact(&mut fetch, &mut fetch_set, artifact);
                     retain_installed.extend(matching_installed_filenames);
                 }
             }
@@ -933,7 +938,8 @@ pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagemen
     let mut gc = BTreeSet::new();
     for (filename, installed) in &installed_by_filename {
         if retain_installed.contains(filename)
-            || (fetch.contains(&installed.artifact_id) && !forced_gc_filenames.contains(filename))
+            || (fetch_set.contains(&installed.artifact_id)
+                && !forced_gc_filenames.contains(filename))
         {
             continue;
         }
@@ -942,10 +948,61 @@ pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagemen
     gc.extend(forced_gc_filenames);
 
     PackageManagementPlan {
-        fetch: fetch.into_iter().collect(),
+        fetch,
         retain_installed: retain_installed.into_iter().collect(),
         gc: gc.into_iter().collect(),
         protected_by_pause: protected_by_pause.into_iter().collect(),
+    }
+}
+
+fn push_fetch_artifact(
+    fetch: &mut Vec<String>,
+    fetch_set: &mut BTreeSet<String>,
+    artifact: &AvailablePackageArtifact,
+) {
+    if !fetch_set.insert(artifact.artifact_id.clone()) {
+        return;
+    }
+    let key = fetch_sort_key(artifact);
+    let insert_at = fetch
+        .binary_search_by(|existing_id| fetch_sort_key_for_id(existing_id).cmp(&key))
+        .unwrap_or_else(|index| index);
+    fetch.insert(insert_at, artifact.artifact_id.clone());
+}
+
+fn fetch_sort_key(artifact: &AvailablePackageArtifact) -> (u8, &str) {
+    (
+        fetch_product_priority(&artifact.product_id),
+        artifact.artifact_id.as_str(),
+    )
+}
+
+fn fetch_sort_key_for_id(artifact_id: &str) -> (u8, &str) {
+    (
+        fetch_product_priority_from_artifact_id(artifact_id),
+        artifact_id,
+    )
+}
+
+fn fetch_product_priority(product_id: &str) -> u8 {
+    match product_id {
+        "nav-db" => 0,
+        "vectors" => 1,
+        "geo" => 2,
+        _ => 3,
+    }
+}
+
+fn fetch_product_priority_from_artifact_id(artifact_id: &str) -> u8 {
+    let normalized = artifact_id.to_ascii_lowercase().replace('_', "-");
+    if normalized.starts_with("nav-db-") {
+        0
+    } else if normalized.starts_with("vectors-") || normalized.starts_with("vectors-data-") {
+        1
+    } else if normalized.starts_with("geo-") {
+        2
+    } else {
+        3
     }
 }
 
@@ -1939,6 +1996,45 @@ mod tests {
             ]
         );
         assert!(!plan.retain_installed.contains(&current_filename));
+    }
+
+    #[test]
+    fn sync_fetch_plan_prioritizes_core_artifacts() {
+        let input = PackageManagementInput {
+            now_epoch_ms: 200,
+            preferences: default_offline_package_preferences(["nw"], ["sec", "tac"]),
+            bundle: BundleManifest {
+                packages: vec![
+                    pkg("NW_SEC_2603", "sec", Some("nw"), None, Some("2099-01-01")),
+                    pkg(
+                        "VECTORS_DATA_2604",
+                        "vectors",
+                        None,
+                        None,
+                        Some("2099-01-01"),
+                    ),
+                    pkg("NW_TAC_2603", "tac", Some("nw"), None, Some("2099-01-01")),
+                    pkg("GEO_STATIC", "geo", None, None, Some("2099-01-01")),
+                    pkg("NAV_DB_2604", "nav-db", None, None, Some("2099-01-01")),
+                ],
+            },
+            installed: vec![],
+            forced_gc_installed_filenames: vec![],
+            suppressed_fetch_filenames: vec![],
+        };
+
+        let plan = plan_offline_packages(&input);
+
+        assert_eq!(
+            plan.fetch,
+            vec![
+                "NAV_DB_2604",
+                "VECTORS_DATA_2604",
+                "GEO_STATIC",
+                "NW_SEC_2603",
+                "NW_TAC_2603",
+            ]
+        );
     }
 
     #[test]

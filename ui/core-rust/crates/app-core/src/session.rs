@@ -82,6 +82,7 @@ struct UiSession {
     map_follow: MapFollowSessionState,
     guidance_leg_geometry: HashMap<String, GuidanceLegGeometry>,
     map_overlay_config: MapOverlayConfig,
+    vector_manifest_loaded: bool,
     chart_page_state: UiChartPageState,
     nav_kv_store_id: Option<u32>,
     nav_kv_store: Option<NavKvStore>,
@@ -228,6 +229,7 @@ fn create_ui_session_inner(
             map_follow,
             guidance_leg_geometry: HashMap::new(),
             map_overlay_config,
+            vector_manifest_loaded: false,
             chart_page_state,
             nav_kv_store_id: None,
             nav_kv_store: None,
@@ -834,17 +836,287 @@ pub fn ingest_metars_in_session(handle: u32, payload: &MetarProductPayload) -> A
     Ok(())
 }
 
+fn internal_json_error(err: serde_json::Error) -> AppError {
+    AppError {
+        kind: AppErrorKind::Internal,
+        message: err.to_string(),
+    }
+}
+
+fn had_read_error_to_overlay_outcome(
+    err: HadReadError,
+) -> AppResult<HadOperationOutcome> {
+    match err {
+        HadReadError::NeedPages(mut pages) => {
+            pages.sort_unstable();
+            pages.dedup();
+            Ok(HadOperationOutcome::NeedPages { pages })
+        }
+        HadReadError::Fatal(message) => Err(AppError {
+            kind: AppErrorKind::Internal,
+            message,
+        }),
+    }
+}
+
+fn read_attached_json_optional<T: for<'de> Deserialize<'de>>(
+    store: &NavKvStore,
+    query: NavKvQuery,
+) -> Result<Option<T>, HadReadError> {
+    let Some(key) = nav_kv_key_for_query(&query) else {
+        return Ok(None);
+    };
+    match store.get_bytes(&key).map_err(HadReadError::Fatal)? {
+        NavKvLookup::Hit(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|err| HadReadError::Fatal(format!("HAD JSON decode failed for {key}: {err}"))),
+        NavKvLookup::MissingKey => Ok(None),
+        NavKvLookup::MissingPages(pages) => Err(HadReadError::NeedPages(pages)),
+    }
+}
+
+fn read_attached_json_required<T: for<'de> Deserialize<'de>>(
+    store: &NavKvStore,
+    query: NavKvQuery,
+    family: &str,
+) -> Result<T, HadReadError> {
+    read_attached_json_optional(store, query.clone())?.ok_or_else(|| {
+        let key = nav_kv_key_for_query(&query).unwrap_or_else(|| "<no-key>".to_string());
+        HadReadError::Fatal(format!("HAD missing required {family} key: {key}"))
+    })
+}
+
+fn ensure_vector_manifest_loaded(session: &mut UiSession) -> Result<(), HadReadError> {
+    if session.vector_manifest_loaded {
+        return Ok(());
+    }
+    let manifest_json = {
+        let store = session.nav_kv_store.as_ref().ok_or_else(|| {
+            HadReadError::Fatal("session missing nav kv store for vector overlay".to_string())
+        })?;
+        read_attached_json_required::<serde_json::Value>(
+            store,
+            NavKvQuery::VectorManifest,
+            "vector manifest",
+        )?
+    };
+    let manifest_json = serde_json::to_string(&manifest_json)
+        .map_err(|err| HadReadError::Fatal(err.to_string()))?;
+    let previous_config = session.map_overlay_config.clone();
+    let mut next_config = map_overlay_config_from_vector_manifest_json(&manifest_json)
+        .map_err(|err| HadReadError::Fatal(err.to_string()))?;
+    next_config.metar_layer = previous_config.metar_layer;
+    next_config.obstacle_layer = previous_config.obstacle_layer;
+    session.map_overlay_config = next_config;
+    session.vector_manifest_loaded = true;
+    Ok(())
+}
+
+fn ensure_vector_inputs_loaded(
+    session: &mut UiSession,
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+) -> Result<(), HadReadError> {
+    ensure_vector_manifest_loaded(session)?;
+    for _ in 0..8 {
+        let overlay = query_map_overlay(
+            viewport,
+            width_px,
+            height_px,
+            &session.map_overlay_config,
+            true,
+            false,
+            ownship_overlay_context(session).as_ref(),
+            &session.point_tile_cache,
+            &session.metar_tile_cache,
+            session.metar_payload.as_ref(),
+            &session.airspace_ref_tile_cache,
+            &session.airspace_feature_cache,
+            &session.airspace_label_tile_cache,
+            session.tfr_payload.as_ref(),
+        );
+        let needed_vector_inputs = overlay.needed_point_tiles.len()
+            + overlay.needed_airspace_ref_tiles.len()
+            + overlay.needed_airspace_features.len()
+            + overlay.needed_airspace_label_tiles.len();
+        if needed_vector_inputs == 0 {
+            return Ok(());
+        }
+
+        let mut loaded_any = false;
+        let store = session.nav_kv_store.as_ref().ok_or_else(|| {
+            HadReadError::Fatal("session missing nav kv store for vector overlay".to_string())
+        })?;
+        let needed_pages = store
+            .missing_pages_for_keys(&vector_input_keys(&overlay))
+            .map_err(HadReadError::Fatal)?;
+        if !needed_pages.is_empty() {
+            return Err(HadReadError::NeedPages(needed_pages));
+        }
+
+        let mut point_tiles = Vec::new();
+        for tile in overlay.needed_point_tiles {
+            let payload = read_attached_json_optional::<PointTilePayload>(
+                store,
+                NavKvQuery::VectorPointTile {
+                    layer: tile.layer.clone(),
+                    z: tile.z,
+                    x: tile.x,
+                    y: tile.y,
+                },
+            )?
+            .unwrap_or(PointTilePayload {
+                schema_version: 1,
+                layer: tile.layer,
+                z: tile.z,
+                x: tile.x,
+                y: tile.y,
+                records: Vec::new(),
+            });
+            point_tiles.push(payload);
+        }
+
+        let mut ref_tiles = Vec::new();
+        for tile in overlay.needed_airspace_ref_tiles {
+            let payload = read_attached_json_optional::<AirspaceReferenceTilePayload>(
+                store,
+                NavKvQuery::VectorAirspaceRefTile {
+                    z: tile.z,
+                    x: tile.x,
+                    y: tile.y,
+                },
+            )?
+            .unwrap_or(AirspaceReferenceTilePayload {
+                schema_version: 1,
+                layer: "airspace".to_string(),
+                z: tile.z,
+                x: tile.x,
+                y: tile.y,
+                refs: Vec::new(),
+            });
+            ref_tiles.push(payload);
+        }
+
+        let mut features = Vec::new();
+        for feature in overlay.needed_airspace_features {
+            let payload = read_attached_json_required::<AirspaceFeaturePayload>(
+                store,
+                NavKvQuery::VectorAirspaceFeature { id: feature.id },
+                "vector airspace feature",
+            )?;
+            features.push(payload);
+        }
+
+        let mut label_tiles = Vec::new();
+        for tile in overlay.needed_airspace_label_tiles {
+            let payload = read_attached_json_optional::<AirspaceLabelTilePayload>(
+                store,
+                NavKvQuery::VectorAirspaceLabelTile {
+                    z: tile.z,
+                    x: tile.x,
+                    y: tile.y,
+                },
+            )?
+            .unwrap_or(AirspaceLabelTilePayload {
+                schema_version: 1,
+                layer: "airspace-labels".to_string(),
+                z: tile.z,
+                x: tile.x,
+                y: tile.y,
+                labels: Vec::new(),
+            });
+            label_tiles.push(payload);
+        }
+
+        for tile in point_tiles {
+            session.point_tile_cache.insert(
+                crate::tile_key(&tile.layer, tile.z, tile.x, tile.y),
+                tile,
+            );
+            loaded_any = true;
+        }
+        for tile in ref_tiles {
+            session.airspace_ref_tile_cache.insert(
+                crate::airspace_ref_tile_key(tile.z, tile.x, tile.y),
+                tile,
+            );
+            loaded_any = true;
+        }
+        for feature in features {
+            session
+                .airspace_feature_cache
+                .insert(feature.id.clone(), feature);
+            loaded_any = true;
+        }
+        for tile in label_tiles {
+            session.airspace_label_tile_cache.insert(
+                crate::airspace_label_tile_key(tile.z, tile.x, tile.y),
+                tile,
+            );
+            loaded_any = true;
+        }
+        if !loaded_any {
+            return Ok(());
+        }
+    }
+    Err(HadReadError::Fatal(
+        "vector overlay did not converge after loading HAD inputs".to_string(),
+    ))
+}
+
+fn vector_input_keys(overlay: &MapOverlayQueryResult) -> Vec<String> {
+    overlay
+        .needed_point_tiles
+        .iter()
+        .filter_map(|tile| {
+            nav_kv_key_for_query(&NavKvQuery::VectorPointTile {
+                layer: tile.layer.clone(),
+                z: tile.z,
+                x: tile.x,
+                y: tile.y,
+            })
+        })
+        .chain(overlay.needed_airspace_ref_tiles.iter().filter_map(|tile| {
+            nav_kv_key_for_query(&NavKvQuery::VectorAirspaceRefTile {
+                z: tile.z,
+                x: tile.x,
+                y: tile.y,
+            })
+        }))
+        .chain(overlay.needed_airspace_features.iter().filter_map(|feature| {
+            nav_kv_key_for_query(&NavKvQuery::VectorAirspaceFeature {
+                id: feature.id.clone(),
+            })
+        }))
+        .chain(overlay.needed_airspace_label_tiles.iter().filter_map(|tile| {
+            nav_kv_key_for_query(&NavKvQuery::VectorAirspaceLabelTile {
+                z: tile.z,
+                x: tile.x,
+                y: tile.y,
+            })
+        }))
+        .collect()
+}
+
 pub fn get_map_overlay_in_session(
     handle: u32,
     viewport: MapViewport,
     width_px: f64,
     height_px: f64,
-) -> AppResult<MapOverlayQueryResult> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     if !session.map_layer_state.vectors.visible && !session.map_layer_state.metars.visible {
         session.caution_state.obstacle_display_limited = false;
-        return Ok(empty_map_overlay_query());
+        return Ok(HadOperationOutcome::Complete {
+            result: serde_json::to_value(empty_map_overlay_query()).map_err(internal_json_error)?,
+        });
+    }
+    if session.map_layer_state.vectors.visible {
+        if let Err(err) = ensure_vector_inputs_loaded(session, &viewport, width_px, height_px) {
+            return had_read_error_to_overlay_outcome(err);
+        }
     }
     let overlay = query_map_overlay(
         &viewport,
@@ -866,7 +1138,9 @@ pub fn get_map_overlay_in_session(
         .warnings
         .iter()
         .any(|warning| warning.code == "vector_display_feature_limit");
-    Ok(overlay)
+    Ok(HadOperationOutcome::Complete {
+        result: serde_json::to_value(overlay).map_err(internal_json_error)?,
+    })
 }
 
 pub fn get_map_selection_in_session(
@@ -877,8 +1151,11 @@ pub fn get_map_selection_in_session(
     click: LatLon,
     hit_radius_px: f64,
 ) -> AppResult<HadOperationOutcome> {
-    let sessions = sessions().lock().expect("session store poisoned");
-    let session = session_ref(&sessions, handle)?;
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    if let Err(err) = ensure_vector_inputs_loaded(session, &viewport, width_px, height_px) {
+        return had_read_error_to_overlay_outcome(err);
+    }
     let plan = session.app_state.active_plan.as_ref();
     let store = session_nav_kv_store(session)?;
     let mut missing_pages = Vec::new();

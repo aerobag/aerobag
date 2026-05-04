@@ -97,6 +97,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
@@ -129,6 +130,9 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -172,11 +176,17 @@ import net.jonh.aerobag.prototype.domain.FlightPlanUiState
 import net.jonh.aerobag.prototype.domain.GuidanceState
 import net.jonh.aerobag.prototype.domain.InstalledPackageKind
 import net.jonh.aerobag.prototype.domain.InstalledPackages
+import net.jonh.aerobag.prototype.domain.AirspaceDisplayPath
+import net.jonh.aerobag.prototype.domain.AirspaceLimitGlyph
 import net.jonh.aerobag.prototype.domain.LatLonPoint
 import net.jonh.aerobag.prototype.domain.MapChartFamily
 import net.jonh.aerobag.prototype.domain.MapLayerId
 import net.jonh.aerobag.prototype.domain.MapFollowUiState
 import net.jonh.aerobag.prototype.domain.MapOverlayQueryResult
+import net.jonh.aerobag.prototype.domain.MapSelectionAction
+import net.jonh.aerobag.prototype.domain.MapSelectionHighlight
+import net.jonh.aerobag.prototype.domain.MapSelectionItem
+import net.jonh.aerobag.prototype.domain.MapSelectionQueryResult
 import net.jonh.aerobag.prototype.domain.MapView
 import net.jonh.aerobag.prototype.domain.MapViewOption
 import net.jonh.aerobag.prototype.domain.MapViewportState
@@ -194,7 +204,6 @@ import net.jonh.aerobag.prototype.domain.OwnshipSourceStatusUpdate
 import net.jonh.aerobag.prototype.domain.PackageZipStore
 import net.jonh.aerobag.prototype.domain.PlaybackStatus
 import net.jonh.aerobag.prototype.domain.PlaybackUiState
-import net.jonh.aerobag.prototype.domain.PointTilePayload
 import net.jonh.aerobag.prototype.domain.ProcedureKind
 import net.jonh.aerobag.prototype.domain.ProcedureOptions
 import net.jonh.aerobag.prototype.domain.ProcedureSummary
@@ -217,6 +226,8 @@ import net.jonh.aerobag.prototype.domain.UiMapLayerToggleState
 import net.jonh.aerobag.prototype.domain.UiTheme
 import net.jonh.aerobag.prototype.domain.UiThemeLoader
 import net.jonh.aerobag.prototype.domain.UiSessionSnapshot
+import net.jonh.aerobag.prototype.domain.VisibleMapFeature
+import net.jonh.aerobag.prototype.domain.VisibleMetarFeature
 import net.jonh.aerobag.prototype.domain.applyPinchGesture
 import net.jonh.aerobag.prototype.domain.clampZoom
 import net.jonh.aerobag.prototype.domain.createInitialImageViewport
@@ -232,6 +243,7 @@ import net.jonh.aerobag.prototype.domain.scaleForZoom
 import net.jonh.aerobag.prototype.domain.screenToWorld
 import net.jonh.aerobag.prototype.domain.tileRelativePath
 import net.jonh.aerobag.prototype.domain.viewportCenterLatLon
+import net.jonh.aerobag.prototype.domain.worldToLatLon
 import net.jonh.aerobag.prototype.domain.zoomAroundPoint
 import net.jonh.aerobag.prototype.domain.zoomImageAroundPoint
 import kotlinx.serialization.json.Json
@@ -249,6 +261,7 @@ import kotlin.math.roundToInt
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.sin
 
@@ -395,61 +408,6 @@ private data class SituationCardinalLabel(
     val rotationDeg: Float,
 )
 
-private object VectorTileAssets {
-    private val json = Json {
-        ignoreUnknownKeys = true
-    }
-    private val cache = mutableMapOf<String, PointTilePayload?>()
-
-    suspend fun loadPointTiles(
-        context: Context,
-        vectorPackageId: String,
-        requests: List<net.jonh.aerobag.prototype.domain.VectorTileRequest>,
-    ): List<PointTilePayload> =
-        withContext(Dispatchers.IO) {
-            if (requests.isEmpty()) {
-                return@withContext emptyList()
-            }
-            val entryNames = requests.map { request ->
-                "points/${request.layer}/${request.z}/${request.x}/${request.y}.json"
-            }
-            val missing = synchronized(cache) { entryNames.filter { !cache.containsKey(it) }.toSet() }
-            if (missing.isNotEmpty()) {
-                val vectorZip = InstalledPackages.existingInstalledFile(context, InstalledPackageKind.Data, vectorPackageId)
-                    ?: error("missing installed data package $vectorPackageId")
-                missing.forEach { entryName ->
-                    val payload = runCatching {
-                        PackageZipStore.readEntryBytes(vectorZip, entryName)?.decodeToString()?.let {
-                            json.decodeFromString<PointTilePayload>(it)
-                        }
-                    }.getOrNull()
-                    synchronized(cache) {
-                        cache[entryName] = payload
-                    }
-                }
-                synchronized(cache) {
-                    missing.filter { cache[it] == null }.forEach { entryName ->
-                        val parts = entryName.removePrefix("points/").removeSuffix(".json").split("/")
-                        synchronized(cache) {
-                            if (parts.size == 4) {
-                                cache[entryName] = PointTilePayload(
-                                    schemaVersion = 1,
-                                    layer = parts[0],
-                                    z = parts[1].toIntOrNull() ?: 0,
-                                    x = parts[2].toIntOrNull() ?: 0,
-                                    y = parts[3].toIntOrNull() ?: 0,
-                                    records = emptyList(),
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-            synchronized(cache) {
-                entryNames.mapNotNull { cache[it] }
-            }
-        }
-}
 private val ThumbRadius = 10.dp
 private val FolderThumbGutter = ThumbSize * 0.3f
 private val PlateFolderTileWidth = ThumbSize * 2f
@@ -489,6 +447,12 @@ private data class AppViewSnapshot(
     val recentAirportIds: List<String>,
     val chartViewport: net.jonh.aerobag.prototype.domain.ImageViewportState?,
     val chartFolderOpen: Boolean,
+)
+
+private data class MapSelectionUiState(
+    val point: Offset,
+    val result: MapSelectionQueryResult,
+    val selectedItem: MapSelectionItem?,
 )
 
 private data class FlightPlanDisplayRow(
@@ -1171,6 +1135,7 @@ private fun chartFamilyIconResId(chartFamily: MapChartFamily): Int = when (chart
 @DrawableRes
 private fun mapLayerIconResId(layerId: MapLayerId): Int = when (layerId) {
     MapLayerId.Vectors -> R.drawable.layer_vectors_icon
+    MapLayerId.Metars -> R.drawable.layer_nexrad_icon
     MapLayerId.Nexrad -> R.drawable.layer_nexrad_icon
     MapLayerId.TerrainWarning -> R.drawable.layer_terrain_warning_icon
 }
@@ -3885,6 +3850,7 @@ private fun MapExplorerPage(
     val focusRequester = remember { FocusRequester() }
     var chartTrayOpen by remember { mutableStateOf(false) }
     var layerTrayOpen by remember { mutableStateOf(false) }
+    var mapSelection by remember { mutableStateOf<MapSelectionUiState?>(null) }
     var debugPanelOpen by remember { mutableStateOf(false) }
     var debugTileLabels by remember { mutableStateOf(false) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
@@ -3892,7 +3858,17 @@ private fun MapExplorerPage(
         mutableStateOf(
             MapOverlayQueryResult(
                 neededPointTiles = emptyList(),
+                neededMetarTiles = emptyList(),
+                neededAirspaceRefTiles = emptyList(),
+                neededAirspaceFeatures = emptyList(),
+                neededAirspaceLabelTiles = emptyList(),
+                neededMetars = false,
+                neededTfrs = false,
                 visibleFeatures = emptyList(),
+                visibleMetars = emptyList(),
+                airspacePaths = emptyList(),
+                tfrPaths = emptyList(),
+                airspaceLabels = emptyList(),
                 warnings = emptyList(),
             ),
         )
@@ -4039,6 +4015,19 @@ private fun MapExplorerPage(
                 val startMs = SystemClock.elapsedRealtime()
                 val snapshot = uiSession.setMapLayerVisibility(MapLayerId.Vectors, visible)
                 Log.i(MapLayerLogTag, "toggle layer=vectors visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                onSessionSnapshotChange(snapshot)
+            },
+            MenuDockOption(
+                key = "metars",
+                label = "METARs",
+                enabled = mapLayerState.metars.enabled,
+                toggleState = mapLayerState.metars,
+                iconResId = mapLayerIconResId(MapLayerId.Metars),
+            ) {
+                val visible = !mapLayerState.metars.visible
+                val startMs = SystemClock.elapsedRealtime()
+                val snapshot = uiSession.setMapLayerVisibility(MapLayerId.Metars, visible)
+                Log.i(MapLayerLogTag, "toggle layer=metars visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
                 onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(
@@ -4391,6 +4380,7 @@ private fun MapExplorerPage(
     LaunchedEffect(selectedMap.id) {
         chartTrayOpen = false
         layerTrayOpen = false
+        mapSelection = null
     }
     LaunchedEffect(appCore, uiSession, plan.id, plan.version, plan.guidance, plan.resolvedLegs) {
         if (plan.resolvedLegs.isEmpty()) {
@@ -4430,15 +4420,25 @@ private fun MapExplorerPage(
             onViewportChange(nextViewport)
         }
     }
-    LaunchedEffect(uiSession, viewport, surfaceSize, mapLayerState.vectors.visible) {
+    LaunchedEffect(uiSession, viewport, surfaceSize, mapLayerState.vectors.visible, mapLayerState.metars.visible, devServerBaseUrl) {
         if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
             mapOverlayError = null
             return@LaunchedEffect
         }
-        if (!mapLayerState.vectors.visible) {
+        if (!mapLayerState.vectors.visible && !mapLayerState.metars.visible) {
             committedMapOverlay = MapOverlayQueryResult(
                 neededPointTiles = emptyList(),
+                neededMetarTiles = emptyList(),
+                neededAirspaceRefTiles = emptyList(),
+                neededAirspaceFeatures = emptyList(),
+                neededAirspaceLabelTiles = emptyList(),
+                neededMetars = false,
+                neededTfrs = false,
                 visibleFeatures = emptyList(),
+                visibleMetars = emptyList(),
+                airspacePaths = emptyList(),
+                tfrPaths = emptyList(),
+                airspaceLabels = emptyList(),
                 warnings = emptyList(),
             )
             committedOverlayViewport = viewport
@@ -4447,24 +4447,41 @@ private fun MapExplorerPage(
             return@LaunchedEffect
         }
         runCatching {
-            val firstPass = uiSession.queryMapOverlay(viewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble())
-            val payloads = if (firstPass.neededPointTiles.isNotEmpty()) {
-                fixture.vectorPackageId?.let { vectorPackageId ->
-                    VectorTileAssets.loadPointTiles(
-                        context.applicationContext,
-                        vectorPackageId,
-                        firstPass.neededPointTiles,
-                    )
-                } ?: emptyList()
-            } else {
-                emptyList()
+            var overlay = uiSession.queryMapOverlay(viewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble())
+            repeat(8) {
+                var ingested = false
+                if (overlay.neededMetars) {
+                    val payloadJson = withContext(Dispatchers.IO) {
+                        URL(resolvePlaybackTraceUrl("/fast-products/metars/metars.json", devServerBaseUrl)).readText()
+                    }
+                    uiSession.ingestMetarsJson(payloadJson)
+                    ingested = true
+                }
+                if (overlay.neededMetarTiles.isNotEmpty()) {
+                    val tilesJson = withContext(Dispatchers.IO) {
+                        overlay.neededMetarTiles.map { tile ->
+                            fetchJsonOrEmpty(
+                                resolvePlaybackTraceUrl("/fast-products/metars/points/metars/${tile.z}/${tile.x}/${tile.y}.json", devServerBaseUrl),
+                                """{"schema_version":1,"layer":"metars","z":${tile.z},"x":${tile.x},"y":${tile.y},"records":[]}""",
+                            )
+                        }.joinToString(prefix = "[", postfix = "]")
+                    }
+                    uiSession.ingestMetarTilesJson(tilesJson)
+                    ingested = true
+                }
+                if (overlay.neededTfrs) {
+                    val payloadJson = withContext(Dispatchers.IO) {
+                        URL(resolvePlaybackTraceUrl("/fast-products/tfrs/tfrs.json", devServerBaseUrl)).readText()
+                    }
+                    uiSession.ingestTfrsJson(payloadJson)
+                    ingested = true
+                }
+                if (!ingested) {
+                    return@repeat
+                }
+                overlay = uiSession.queryMapOverlay(viewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble())
             }
-            if (payloads.isNotEmpty()) {
-                uiSession.ingestPointTiles(payloads)
-                uiSession.queryMapOverlay(viewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble())
-            } else {
-                firstPass
-            }
+            overlay
         }.onSuccess { overlay ->
             committedMapOverlay = overlay
             committedOverlayViewport = viewport
@@ -4833,6 +4850,31 @@ private fun MapExplorerPage(
                     } finally {
                         if (movedViewportDuringGesture) {
                             syncFollowStateForViewport(viewportState.value)
+                        } else if (loggedGestureSeed && dragLastPosition != null) {
+                            val point = dragLastPosition
+                            val world = screenToWorld(
+                                viewportState.value,
+                                ScreenPoint(point.x, point.y),
+                                surfaceWidthPx,
+                                surfaceHeightPx,
+                            )
+                            val (lat, lon) = worldToLatLon(world.x, world.y)
+                            runCatching {
+                                uiSession.queryMapSelection(
+                                    viewportState.value,
+                                    surfaceWidthPx.toDouble(),
+                                    surfaceHeightPx.toDouble(),
+                                    LatLonPoint(lat = lat, lon = lon),
+                                    with(density) { (ThumbSize * 0.5f).toPx().toDouble() },
+                                )
+                            }.onSuccess { result ->
+                                val firstItem = result.categories.firstNotNullOfOrNull { category -> category.items.firstOrNull() }
+                                mapSelection = MapSelectionUiState(point = point, result = result, selectedItem = firstItem)
+                                chartTrayOpen = false
+                                layerTrayOpen = false
+                            }.onFailure { error ->
+                                Log.w("AerobagSelection", "map selection failed", error)
+                            }
                         }
                         mapGestureActive = false
                     }
@@ -4946,6 +4988,20 @@ private fun MapExplorerPage(
                 }
             }
         }
+        if (committedMapOverlay.airspacePaths.isNotEmpty() || committedMapOverlay.tfrPaths.isNotEmpty() || committedMapOverlay.airspaceLabels.isNotEmpty()) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                (committedMapOverlay.airspacePaths + committedMapOverlay.tfrPaths).forEach { feature ->
+                    drawAirspaceDisplayPath(feature)
+                }
+                committedMapOverlay.airspaceLabels.forEach { label ->
+                    drawAirspaceLimitGlyph(
+                        glyph = AirspaceLimitGlyph(label.text, label.styleKey, label.colorKey),
+                        center = Offset(label.screenX.toFloat(), label.screenY.toFloat()),
+                        scale = 1f,
+                    )
+                }
+            }
+        }
         if (displayedOverlayFeatures.isNotEmpty()) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val densityScale = density.density
@@ -5020,6 +5076,40 @@ private fun MapExplorerPage(
                             drawText(feature.label, center.x, textY, fixLabelStrokePaint)
                             drawText(feature.label, center.x, textY, fixLabelFillPaint)
                         }
+                    }
+                }
+            }
+        }
+        if (committedMapOverlay.visibleMetars.isNotEmpty()) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                committedMapOverlay.visibleMetars.forEach { feature ->
+                    drawMetarSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), density.density)
+                }
+            }
+        }
+        mapSelection?.selectedItem?.let { item ->
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                when (val highlight = item.highlight) {
+                    is MapSelectionHighlight.FeatureRef -> {
+                        val feature = displayedOverlayFeatures.firstOrNull { it.id == highlight.id }
+                        if (feature != null) {
+                            drawCircle(Color.White, radius = 20f * density.density, center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), style = Stroke(width = 4f * density.density))
+                        }
+                        (committedMapOverlay.airspacePaths + committedMapOverlay.tfrPaths).firstOrNull { it.id == highlight.id }?.let { path ->
+                            drawAirspaceDisplayPath(path)
+                        }
+                    }
+                    is MapSelectionHighlight.Metar -> {
+                        val feature = committedMapOverlay.visibleMetars.firstOrNull { it.stationId == highlight.stationId } ?: item.metarFeature
+                        if (feature != null) {
+                            drawCircle(Color.White, radius = 16f * density.density, center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), style = Stroke(width = 4f * density.density))
+                            drawMetarSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), density.density)
+                        }
+                    }
+                    is MapSelectionHighlight.Spot -> {
+                        val point = latLonToScreen(highlight.lat, highlight.lon, currentViewport, surfaceWidthPx, surfaceHeightPx)
+                        drawLine(Color(0xE6FFFFFF), point, Offset(point.x, point.y + 32f * density.density), strokeWidth = 6f * density.density, cap = StrokeCap.Round)
+                        drawCircle(Color(0xFFFF4FD8), radius = 7f * density.density, center = point)
                     }
                 }
             }
@@ -5166,6 +5256,58 @@ private fun MapExplorerPage(
             }
         }
 
+        mapSelection?.let { selection ->
+            Scrim { mapSelection = null }
+            MapSelectionTray(
+                state = selection,
+                modifier = Modifier
+                    .align(
+                        when {
+                            selection.point.x < surfaceWidthPx / 2f && selection.point.y < surfaceHeightPx / 2f -> Alignment.BottomEnd
+                            selection.point.x < surfaceWidthPx / 2f -> Alignment.TopEnd
+                            selection.point.y < surfaceHeightPx / 2f -> Alignment.BottomStart
+                            else -> Alignment.TopStart
+                        },
+                    )
+                    .padding(ThumbGap),
+                onSelectItem = { item ->
+                    mapSelection = selection.copy(selectedItem = item)
+                },
+                onSelectAction = { item, action ->
+                    when (action.id) {
+                        "plates", "csup" -> {
+                            val airportId = (item.navRef as? NavRef.Airport)?.code
+                            if (airportId != null) {
+                                val target = if (action.id == "csup") "CSup" else "Folder"
+                                val snapshot = uiSession.selectAirport(airportId)
+                                onSessionSnapshotChange(snapshot)
+                                runCatching { uiSession.selectChart("Plate:$airportId:$target") }
+                                    .onSuccess(onSessionSnapshotChange)
+                                onSelectPage(AppPage.Charts)
+                                mapSelection = null
+                            }
+                        }
+                        "insert" -> {
+                            item.navRef?.let { navRef ->
+                                runCatching { uiSession.insertWaypointBestPosition(navRef) }
+                                    .onSuccess(onSessionSnapshotChange)
+                                    .onFailure { Log.w("AerobagSelection", "insert waypoint failed", it) }
+                                mapSelection = null
+                            }
+                        }
+                        "remove_from_flight_plan" -> {
+                            item.navRef?.let { navRef ->
+                                runCatching { uiSession.removeTopLevelWaypointByNavRef(navRef) }
+                                    .onSuccess(onSessionSnapshotChange)
+                                    .onFailure { Log.w("AerobagSelection", "remove waypoint failed", it) }
+                                mapSelection = null
+                            }
+                        }
+                    }
+                },
+            )
+        }
+
         NavElementDock(
             navElement = navElement,
             onClick = onOpenPlan,
@@ -5206,6 +5348,181 @@ private fun MapExplorerPage(
                     modifier = Modifier.size(ThumbSize * 0.36f),
                 )
                 Text("fast tiles", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            }
+        }
+    }
+}
+
+@Composable
+private fun MapSelectionTray(
+    state: MapSelectionUiState,
+    modifier: Modifier,
+    onSelectItem: (MapSelectionItem) -> Unit,
+    onSelectAction: (MapSelectionItem, MapSelectionAction) -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    val selectedItem = state.selectedItem
+    val actionSlots = selectedItem?.actions.orEmpty()
+    val visibleActions = if (selectedItem?.detailText != null) actionSlots.take(3) else actionSlots.take(6)
+    Surface(
+        modifier = modifier.width(ThumbSize * 4.4f),
+        shape = RoundedCornerShape(ThumbRadius),
+        color = Color(0xF3FCF8F1),
+        contentColor = Color(0xFF132129),
+        shadowElevation = 8.dp,
+        border = BorderStroke(1.dp, Color(0x3D132129)),
+    ) {
+        Column(modifier = Modifier.padding(ThumbGap * 0.7f), verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.55f)) {
+            state.result.categories.forEach { category ->
+                Row(horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f)) {
+                    if (category.items.isEmpty()) {
+                        Text(
+                            text = "no ${category.label.lowercase()}s",
+                            modifier = Modifier.height(ThumbSize).width(ThumbSize * 1.28f).wrapContentSize(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFF697780),
+                            textAlign = TextAlign.Center,
+                        )
+                    } else {
+                        category.items.take(3).forEach { item ->
+                            MapSelectionItemButton(
+                                item = item,
+                                selected = item.id == selectedItem?.id,
+                                onClick = { onSelectItem(item) },
+                            )
+                        }
+                    }
+                }
+            }
+            Surface(
+                shape = RoundedCornerShape(ThumbRadius),
+                color = Color(0xD9081218),
+            ) {
+                Column(modifier = Modifier.padding(ThumbGap * 0.6f), verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f)) {
+                    Text(
+                        text = buildAnnotatedString {
+                            if (selectedItem != null) {
+                                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(selectedItem.label) }
+                                selectedItem.description?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
+                            } else {
+                                append(" ")
+                            }
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = uiTheme.controls.buttonFg,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f)) {
+                        visibleActions.forEach { action ->
+                            MapSelectionActionButton(
+                                action = action,
+                                enabled = action.enabled && !action.displayOnly,
+                                onClick = {
+                                    if (selectedItem != null) onSelectAction(selectedItem, action)
+                                },
+                            )
+                        }
+                    }
+                    selectedItem?.detailText?.let { detail ->
+                        Text(
+                            text = detail,
+                            style = MaterialTheme.typography.labelMedium.copy(fontSize = 14.sp),
+                            color = uiTheme.controls.buttonFg,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MapSelectionItemButton(
+    item: MapSelectionItem,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .size(ThumbSize)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(ThumbRadius),
+        color = if (selected) Color(0xFF214B64) else Color(0xE6081218),
+        contentColor = Color.White,
+        border = BorderStroke(if (selected) 2.dp else 1.dp, if (selected) Color.White else Color(0x4DFFFFFF)),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(3.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            MapSelectionItemIcon(item, Modifier.weight(1f).fillMaxWidth())
+            Text(
+                text = item.label,
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MapSelectionItemIcon(item: MapSelectionItem, modifier: Modifier) {
+    when {
+        item.symbolFeature != null -> PlanWaypointSymbol(item.symbolFeature, modifier)
+        item.metarFeature != null -> Canvas(modifier = modifier) {
+            drawMetarSymbol(item.metarFeature, Offset(size.width / 2f, size.height / 2f), density)
+        }
+        item.highlight is MapSelectionHighlight.Spot -> Canvas(modifier = modifier) {
+            val center = Offset(size.width / 2f, size.height * 0.45f)
+            drawLine(Color(0xD0081218), center, Offset(center.x, size.height * 0.9f), strokeWidth = 5f, cap = StrokeCap.Round)
+            drawLine(Color(0xFFFF4FD8), center, Offset(center.x, size.height * 0.9f), strokeWidth = 2.4f, cap = StrokeCap.Round)
+            drawCircle(Color(0xFFFF4FD8), radius = 5f, center = center)
+        }
+        item.airspaceIcon != null -> Canvas(modifier = modifier) {
+            drawAirspaceDisplayPath(item.airspaceIcon)
+        }
+        else -> Box(modifier = modifier, contentAlignment = Alignment.Center) {
+            Text(item.sublabel.ifBlank { item.label }, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
+        }
+    }
+}
+
+@Composable
+private fun MapSelectionActionButton(
+    action: MapSelectionAction,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .width(ThumbSize * 1.2f)
+            .height(ThumbSize)
+            .alpha(if (action.label.isBlank()) 0f else 1f)
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
+        shape = RoundedCornerShape(ThumbRadius),
+        color = if (action.displayOnly) Color(0xFF15252E) else if (enabled) Color(0xFF214B64) else Color(0xFF52656D),
+        contentColor = Color.White,
+        border = BorderStroke(1.dp, Color(0x33FFFFFF)),
+    ) {
+        Box(modifier = Modifier.fillMaxSize().padding(4.dp), contentAlignment = Alignment.Center) {
+            if (action.airspaceLimit != null) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    drawAirspaceLimitGlyph(action.airspaceLimit, Offset(size.width / 2f, size.height / 2f), 1.45f)
+                }
+            } else {
+                Text(
+                    text = action.label,
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                    textAlign = TextAlign.Center,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }
@@ -7708,6 +8025,17 @@ private fun resolvePlaybackTraceUrl(sourcePath: String, devServerBaseUrl: String
         else -> "$devServerBaseUrl/$sourcePath"
     }
 
+private fun fetchJsonOrNull(url: String): String? =
+    runCatching {
+        val connection = URL(url).openConnection() as HttpURLConnection
+        connection.connectTimeout = 1500
+        connection.readTimeout = 2500
+        connection.inputStream.bufferedReader().use { it.readText() }
+    }.getOrNull()
+
+private fun fetchJsonOrEmpty(url: String, emptyJson: String): String =
+    fetchJsonOrNull(url) ?: emptyJson
+
 @Composable
 private fun PlanHeaderRow() {
     Row(horizontalArrangement = Arrangement.spacedBy(PlanGridGap)) {
@@ -7870,6 +8198,135 @@ private fun airportFuelMarkerPath(center: Offset, scale: Float): Path {
         arcTo(circleBounds, 199.4712f, 51.0576f, false)
         close()
     }
+}
+
+private fun aviationColor(colorKey: String): Color = when (colorKey) {
+    "class_c_magenta", "magenta" -> Color(0xFFFF4FD8)
+    "class_b_d_blue", "blue" -> Color(0xFF2D8CFF)
+    "tfr_red", "red" -> Color(0xFFE03131)
+    "dark_gray" -> Color(0xFF26333A)
+    else -> Color(0xFF2D8CFF)
+}
+
+private fun airspacePath(subpath: net.jonh.aerobag.prototype.domain.AirspaceDisplaySubpath): Path =
+    Path().apply {
+        val first = subpath.points.firstOrNull() ?: return@apply
+        moveTo(first.x.toFloat(), first.y.toFloat())
+        subpath.points.drop(1).forEach { point -> lineTo(point.x.toFloat(), point.y.toFloat()) }
+        if (subpath.closed) {
+            close()
+        }
+    }
+
+private fun strokeCapFor(lineCap: String): StrokeCap = when (lineCap) {
+    "butt" -> StrokeCap.Butt
+    "square" -> StrokeCap.Square
+    else -> StrokeCap.Round
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceDisplayPath(feature: AirspaceDisplayPath) {
+    feature.paths.forEach { subpath ->
+        val path = airspacePath(subpath)
+        if (subpath.closed && feature.style.fillOpacity > 0.0) {
+            drawPath(
+                path = path,
+                color = aviationColor(feature.style.fillColorKey).copy(alpha = feature.style.fillOpacity.toFloat()),
+            )
+        }
+        feature.style.strokes.forEach { stroke ->
+            drawPath(
+                path = path,
+                color = aviationColor(stroke.colorKey),
+                style = Stroke(
+                    width = stroke.widthPx.toFloat(),
+                    cap = strokeCapFor(stroke.lineCap),
+                    pathEffect = stroke.dashPx.takeIf { it.isNotEmpty() }?.let { dash ->
+                        PathEffect.dashPathEffect(dash.map { it.toFloat() }.toFloatArray())
+                    },
+                ),
+            )
+        }
+    }
+    feature.decorations.forEach { decoration ->
+        decoration.paths.forEach { subpath ->
+            drawPath(
+                path = airspacePath(subpath),
+                color = aviationColor(decoration.colorKey),
+                style = Stroke(width = decoration.widthPx.toFloat(), cap = strokeCapFor(decoration.lineCap)),
+            )
+        }
+    }
+}
+
+private fun airspaceLabelParts(text: String): Pair<String, String>? {
+    val parts = text.split("/")
+    if (parts.size != 2) return null
+    val upper = parts[0].trim()
+    val lower = parts[1].trim()
+    return if (upper.isNotEmpty() && lower.isNotEmpty()) upper to lower else null
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceLimitGlyph(
+    glyph: AirspaceLimitGlyph,
+    center: Offset,
+    scale: Float,
+) {
+    val color = aviationColor(glyph.colorKey)
+    val parts = airspaceLabelParts(glyph.text)
+    val paint = Paint().apply {
+        isAntiAlias = true
+        style = Paint.Style.FILL
+        this.color = color.toArgb()
+        textAlign = Paint.Align.CENTER
+        textSize = 14f * scale * density
+        typeface = Typeface.create(Typeface.DEFAULT_BOLD, Typeface.BOLD)
+    }
+    val strokePaint = Paint(paint).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 3.5f * scale * density
+        this.color = android.graphics.Color.argb(190, 252, 248, 241)
+    }
+    drawContext.canvas.nativeCanvas.apply {
+        if (parts == null) {
+            drawText(glyph.text, center.x, center.y, strokePaint)
+            drawText(glyph.text, center.x, center.y, paint)
+        } else {
+            val upperY = center.y - 7f * scale * density
+            val lowerY = center.y + 9f * scale * density
+            val dividerWidth = (max(parts.first.length, parts.second.length).coerceAtLeast(2) * 7.2f + 6f) * scale * density
+            drawText(parts.first, center.x, upperY, strokePaint)
+            drawText(parts.first, center.x, upperY, paint)
+            drawLine(center.x - dividerWidth / 2f, center.y, center.x + dividerWidth / 2f, center.y, strokePaint)
+            drawLine(center.x - dividerWidth / 2f, center.y, center.x + dividerWidth / 2f, center.y, paint)
+            drawText(parts.second, center.x, lowerY, strokePaint)
+            drawText(parts.second, center.x, lowerY, paint)
+        }
+    }
+}
+
+private fun metarColor(category: String): Color = when (category.lowercase()) {
+    "vfr" -> Color(0xFF26C85A)
+    "mvfr" -> Color(0xFF2D8CFF)
+    "ifr" -> Color(0xFFE03131)
+    "lifr" -> Color(0xFFFF4FD8)
+    else -> Color(0xFF9AA6AE)
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMetarSymbol(
+    feature: VisibleMetarFeature,
+    center: Offset,
+    densityScale: Float,
+) {
+    val radius = 8f * densityScale
+    val fillColor = metarColor(feature.flightCategory)
+    when (feature.ceilingAmount.lowercase()) {
+        "ovc" -> drawCircle(fillColor, radius = radius, center = center)
+        "few" -> drawLine(fillColor, Offset(center.x, center.y - radius), Offset(center.x, center.y + radius), strokeWidth = 3f * densityScale)
+        "sct" -> drawArc(fillColor, -90f, 90f, useCenter = true, topLeft = Offset(center.x - radius, center.y - radius), size = Size(radius * 2f, radius * 2f))
+        "bkn" -> drawArc(fillColor, -90f, 270f, useCenter = true, topLeft = Offset(center.x - radius, center.y - radius), size = Size(radius * 2f, radius * 2f))
+    }
+    drawCircle(Color(0xE6081218), radius = radius + 2f * densityScale, center = center, style = Stroke(width = 3f * densityScale))
+    drawCircle(fillColor, radius = radius, center = center, style = Stroke(width = 2.2f * densityScale))
 }
 
 @Composable

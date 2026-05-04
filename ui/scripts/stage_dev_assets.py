@@ -240,34 +240,6 @@ def stage_chart_assets() -> None:
                     ensure_hard_link(source, WEB_STATIC_ROOT / source.relative_to(package_dir))
 
 
-def stage_vectors() -> None:
-    target = WEB_STATIC_ROOT / "vectors"
-    reset_dir(target)
-    vectors_package = next(
-        (
-            package
-            for package in PRODUCT_BUILD.get("packages", [])
-            if isinstance(package, dict) and package.get("family_id") == "vectors"
-        ),
-        None,
-    )
-    if not isinstance(vectors_package, dict):
-        raise RuntimeError("cycle bundle missing vectors package")
-    vectors_filename = vectors_package.get("filename")
-    if not isinstance(vectors_filename, str) or not vectors_filename:
-        raise RuntimeError("vectors package missing filename")
-    vectors_root = unpacked_dir_from_relative_zip(vectors_filename)
-    for relative_root in ("points", "airspace", "had"):
-        source = vectors_root / relative_root
-        if not source.is_dir():
-            raise RuntimeError(f"missing published vector dir {source}")
-        ensure_symlink(source, target / relative_root)
-    manifest = vectors_root / "vectors"
-    if not manifest.is_file():
-        raise RuntimeError(f"missing published vector manifest {manifest}")
-    ensure_hard_link(manifest, target / "vectors")
-
-
 def stage_fast_products() -> None:
     target = WEB_STATIC_ROOT / "fast-products"
     reset_dir(target)
@@ -411,7 +383,6 @@ def main() -> None:
     stage_bundle_manifests()
     stage_sectional_packages()
     stage_chart_assets()
-    stage_vectors()
     stage_fast_products()
     stage_nav_kv()
     write_stage_stamp()

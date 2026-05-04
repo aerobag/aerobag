@@ -97,27 +97,8 @@ export function visiblePointRecords(
   return visible;
 }
 
-export function pointTileUrl(layer: string, zoom: number, x: number, y: number) {
-  if (layer === "obstacle") {
-    return `/fast-products/obstacles/points/obstacle/${zoom}/${x}/${y}.json`;
-  }
-  return `/vectors/points/${layer}/${zoom}/${x}/${y}.json`;
-}
-
 export function metarTileUrl(zoom: number, x: number, y: number) {
   return `/fast-products/metars/points/metars/${zoom}/${x}/${y}.json`;
-}
-
-export function airspaceReferenceTileUrl(zoom: number, x: number, y: number) {
-  return `/vectors/airspace/refs/${zoom}/${x}/${y}.json`;
-}
-
-export function airspaceLabelTileUrl(zoom: number, x: number, y: number) {
-  return `/vectors/airspace/labels/${zoom}/${x}/${y}.json`;
-}
-
-export function airspaceFeatureUrl(path: string) {
-  return `/vectors/${path}`;
 }
 
 export function tileKey(z: number, x: number, y: number) {

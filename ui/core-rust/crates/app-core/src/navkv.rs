@@ -92,6 +92,26 @@ pub enum NavKvQuery {
     WaypointPrefix {
         prefix: String,
     },
+    VectorManifest,
+    VectorPointTile {
+        layer: String,
+        z: u32,
+        x: u32,
+        y: u32,
+    },
+    VectorAirspaceRefTile {
+        z: u32,
+        x: u32,
+        y: u32,
+    },
+    VectorAirspaceLabelTile {
+        z: u32,
+        x: u32,
+        y: u32,
+    },
+    VectorAirspaceFeature {
+        id: String,
+    },
 }
 
 impl NavKvRoot {
@@ -337,6 +357,20 @@ pub fn nav_kv_key_for_query(query: &NavKvQuery) -> Option<String> {
                 normalized.chars().take(2).collect()
             };
             Some(format!("waypoint/prefix/{}", component(&shard)))
+        }
+        NavKvQuery::VectorManifest => Some("vector/manifest".to_string()),
+        NavKvQuery::VectorPointTile { layer, z, x, y } => Some(format!(
+            "vector/point-tile/{}/{z}/{x}/{y}",
+            component(layer)
+        )),
+        NavKvQuery::VectorAirspaceRefTile { z, x, y } => {
+            Some(format!("vector/airspace/ref-tile/{z}/{x}/{y}"))
+        }
+        NavKvQuery::VectorAirspaceLabelTile { z, x, y } => {
+            Some(format!("vector/airspace/label-tile/{z}/{x}/{y}"))
+        }
+        NavKvQuery::VectorAirspaceFeature { id } => {
+            Some(format!("vector/airspace/feature/{}", component(id)))
         }
     }
 }

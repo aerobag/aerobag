@@ -71,11 +71,31 @@ class NavKvStore private constructor(
         }
     }
 
+    fun runPagedSessionOperationElement(operation: () -> String): JsonElement {
+        while (true) {
+            val outcome = json.parseToJsonElement(operation()).jsonObject
+            return when (val state = outcome.getValue("state").jsonPrimitive.content) {
+                "complete" -> outcome["result"] ?: JsonNull
+                "need_pages" -> {
+                    for (page in outcome.getValue("pages").jsonArray) {
+                        ensurePage(page.jsonPrimitive.content.toInt())
+                    }
+                    continue
+                }
+                else -> error("unknown HAD session operation state: $state")
+            }
+        }
+    }
+
     fun <T> runCoreOperation(operation: JsonObject, serializer: KSerializer<T>): T =
         json.decodeFromJsonElement(serializer, runCoreOperationElement(operation))
 
     fun attachToSession(sessionHandle: Long) {
         bridge.attachNavKvStoreToSession(handle, sessionHandle)
+    }
+
+    fun ensurePages(pageIndexes: Iterable<Int>) {
+        pageIndexes.forEach { ensurePage(it) }
     }
 
     @Synchronized

@@ -450,6 +450,28 @@ pub fn move_waypoint_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn insert_waypoint_best_position_in_session_json(
+    handle: u64,
+    waypoint_json: &str,
+) -> Result<String, String> {
+    let waypoint: app_core::NavRef =
+        serde_json::from_str(waypoint_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::insert_waypoint_best_position_in_session(handle as u32, waypoint)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
+pub fn remove_top_level_waypoint_by_nav_ref_in_session_json(
+    handle: u64,
+    nav_ref_json: &str,
+) -> Result<String, String> {
+    let nav_ref: app_core::NavRef =
+        serde_json::from_str(nav_ref_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::remove_top_level_waypoint_by_nav_ref_in_session(handle as u32, nav_ref)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn select_airport_in_session_json(
     handle: u64,
     airport_id_json: &str,
@@ -727,6 +749,13 @@ pub fn ingest_metars_in_session_json(handle: u64, payload_json: &str) -> Result<
     let payload: app_core::MetarProductPayload =
         serde_json::from_str(payload_json).map_err(|err| err.to_string())?;
     app_core::ingest_metars_in_session(handle as u32, &payload).map_err(|err| err.to_string())?;
+    Ok("null".to_string())
+}
+
+pub fn ingest_tfrs_in_session_json(handle: u64, payload_json: &str) -> Result<String, String> {
+    let payload: app_core::TfrProductPayload =
+        serde_json::from_str(payload_json).map_err(|err| err.to_string())?;
+    app_core::ingest_tfrs_in_session(handle as u32, &payload).map_err(|err| err.to_string())?;
     Ok("null".to_string())
 }
 
@@ -1858,6 +1887,34 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_mov
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_insertWaypointBestPositionInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    waypoint_json: JString,
+) -> jstring {
+    let result = (|| {
+        let waypoint = get_java_string(&mut env, waypoint_json)?;
+        insert_waypoint_best_position_in_session_json(handle as u64, &waypoint)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_removeTopLevelWaypointByNavRefInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    nav_ref_json: JString,
+) -> jstring {
+    let result = (|| {
+        let nav_ref = get_java_string(&mut env, nav_ref_json)?;
+        remove_top_level_waypoint_by_nav_ref_in_session_json(handle as u64, &nav_ref)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_selectAirportInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -2178,6 +2235,90 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ing
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ingestMetarTilesInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    tiles_json: JString,
+) -> jstring {
+    let result = (|| {
+        let tiles = get_java_string(&mut env, tiles_json)?;
+        ingest_metar_tiles_in_session_json(handle as u64, &tiles)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ingestAirspaceRefTilesInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    tiles_json: JString,
+) -> jstring {
+    let result = (|| {
+        let tiles = get_java_string(&mut env, tiles_json)?;
+        ingest_airspace_ref_tiles_in_session_json(handle as u64, &tiles)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ingestAirspaceFeaturesInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    features_json: JString,
+) -> jstring {
+    let result = (|| {
+        let features = get_java_string(&mut env, features_json)?;
+        ingest_airspace_features_in_session_json(handle as u64, &features)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ingestAirspaceLabelTilesInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    tiles_json: JString,
+) -> jstring {
+    let result = (|| {
+        let tiles = get_java_string(&mut env, tiles_json)?;
+        ingest_airspace_label_tiles_in_session_json(handle as u64, &tiles)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ingestTfrsInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    payload_json: JString,
+) -> jstring {
+    let result = (|| {
+        let payload = get_java_string(&mut env, payload_json)?;
+        ingest_tfrs_in_session_json(handle as u64, &payload)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ingestMetarsInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    payload_json: JString,
+) -> jstring {
+    let result = (|| {
+        let payload = get_java_string(&mut env, payload_json)?;
+        ingest_metars_in_session_json(handle as u64, &payload)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getMapOverlayInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -2189,6 +2330,32 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
     let result = (|| {
         let viewport = get_java_string(&mut env, viewport_json)?;
         get_map_overlay_in_session_json(handle as u64, &viewport, width_px, height_px)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getMapSelectionInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    viewport_json: JString,
+    width_px: f64,
+    height_px: f64,
+    click_json: JString,
+    hit_radius_px: f64,
+) -> jstring {
+    let result = (|| {
+        let viewport = get_java_string(&mut env, viewport_json)?;
+        let click = get_java_string(&mut env, click_json)?;
+        get_map_selection_in_session_json(
+            handle as u64,
+            &viewport,
+            width_px,
+            height_px,
+            &click,
+            hit_radius_px,
+        )
     })();
     return_string(&mut env, result)
 }

@@ -9,13 +9,21 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 data class VectorTileRequest(
     val layer: String,
     val z: Int,
     val x: Int,
     val y: Int,
+)
+
+data class AirspaceFeatureRequest(
+    val id: String,
+    val path: String,
 )
 
 @kotlinx.serialization.Serializable
@@ -70,6 +78,69 @@ data class VisibleMapFeature(
     val longestRunwayHeadingTrueDeg: Double?,
 )
 
+data class VisibleMetarFeature(
+    val stationId: String,
+    val screenX: Double,
+    val screenY: Double,
+    val flightCategory: String,
+    val ceilingAmount: String,
+)
+
+data class AirspaceDisplayStroke(
+    val colorKey: String,
+    val widthPx: Double,
+    val dashPx: List<Double>,
+    val lineCap: String,
+)
+
+data class AirspaceDisplayStyle(
+    val fillColorKey: String,
+    val fillOpacity: Double,
+    val strokes: List<AirspaceDisplayStroke>,
+)
+
+data class AirspaceScreenPoint(
+    val x: Double,
+    val y: Double,
+)
+
+data class AirspaceDisplaySubpath(
+    val closed: Boolean,
+    val points: List<AirspaceScreenPoint>,
+)
+
+data class AirspaceDisplayDecoration(
+    val colorKey: String,
+    val widthPx: Double,
+    val lineCap: String,
+    val paths: List<AirspaceDisplaySubpath>,
+)
+
+data class AirspaceDisplayPath(
+    val id: String,
+    val name: String,
+    val label: String,
+    val styleKey: String,
+    val style: AirspaceDisplayStyle,
+    val paths: List<AirspaceDisplaySubpath>,
+    val decorations: List<AirspaceDisplayDecoration>,
+)
+
+data class AirspaceDisplayLabel(
+    val featureId: String,
+    val text: String,
+    val styleKey: String,
+    val colorKey: String,
+    val screenX: Double,
+    val screenY: Double,
+)
+
+data class AirspaceLimitGlyph(
+    val text: String,
+    val styleKey: String,
+    val colorKey: String,
+)
+
 data class NavSymbolFeature(
     val kind: String,
     val label: String,
@@ -90,6 +161,7 @@ data class MapOverlayWarning(
 
 enum class MapLayerId {
     Vectors,
+    Metars,
     Nexrad,
     TerrainWarning,
 }
@@ -101,14 +173,65 @@ data class UiMapLayerToggleState(
 
 data class UiMapLayerState(
     val vectors: UiMapLayerToggleState,
+    val metars: UiMapLayerToggleState,
     val nexrad: UiMapLayerToggleState,
     val terrainWarning: UiMapLayerToggleState,
 )
 
 data class MapOverlayQueryResult(
     val neededPointTiles: List<VectorTileRequest>,
+    val neededMetarTiles: List<VectorTileRequest>,
+    val neededAirspaceRefTiles: List<VectorTileRequest>,
+    val neededAirspaceFeatures: List<AirspaceFeatureRequest>,
+    val neededAirspaceLabelTiles: List<VectorTileRequest>,
+    val neededMetars: Boolean,
+    val neededTfrs: Boolean,
     val visibleFeatures: List<VisibleMapFeature>,
+    val visibleMetars: List<VisibleMetarFeature>,
+    val airspacePaths: List<AirspaceDisplayPath>,
+    val tfrPaths: List<AirspaceDisplayPath>,
+    val airspaceLabels: List<AirspaceDisplayLabel>,
     val warnings: List<MapOverlayWarning>,
+)
+
+data class MapSelectionQueryResult(
+    val clickLat: Double,
+    val clickLon: Double,
+    val categories: List<MapSelectionCategory>,
+)
+
+data class MapSelectionCategory(
+    val id: String,
+    val label: String,
+    val items: List<MapSelectionItem>,
+)
+
+data class MapSelectionItem(
+    val id: String,
+    val label: String,
+    val sublabel: String,
+    val description: String?,
+    val detailText: String?,
+    val highlight: MapSelectionHighlight,
+    val navRef: NavRef?,
+    val symbolFeature: NavSymbolFeature?,
+    val metarFeature: VisibleMetarFeature?,
+    val airspaceIcon: AirspaceDisplayPath?,
+    val actions: List<MapSelectionAction>,
+)
+
+sealed interface MapSelectionHighlight {
+    data class FeatureRef(val id: String) : MapSelectionHighlight
+    data class Metar(val stationId: String) : MapSelectionHighlight
+    data class Spot(val lat: Double, val lon: Double) : MapSelectionHighlight
+}
+
+data class MapSelectionAction(
+    val id: String,
+    val label: String,
+    val enabled: Boolean,
+    val displayOnly: Boolean,
+    val airspaceLimit: AirspaceLimitGlyph?,
 )
 
 data class TerrainOverlaySourceTile(
@@ -635,6 +758,31 @@ class NativeUiSession internal constructor(
         return syncGuidanceGeometryFromPlan()
     }
 
+    fun insertWaypointBestPosition(waypoint: NavRef): UiSessionSnapshot {
+        val store = navKvStore ?: error("nav_kv store is required to insert waypoint")
+        while (true) {
+            val outcome = json.parseToJsonElement(
+                bridge.insertWaypointBestPositionInSessionJson(handle, json.encodeToString(waypoint.toWire())),
+            ).jsonObject
+            when (outcome.getValue("state").jsonPrimitive.content) {
+                "complete" -> {
+                    val result = outcome["result"] ?: error("insert waypoint missing result: $outcome")
+                    snapshot = enrichSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi())
+                    return syncGuidanceGeometryFromPlan()
+                }
+                "need_pages" -> {
+                    store.ensurePages(outcome.getValue("pages").jsonArray.map { it.jsonPrimitive.content.toInt() })
+                }
+                else -> error("unknown insert waypoint outcome: $outcome")
+            }
+        }
+    }
+
+    fun removeTopLevelWaypointByNavRef(navRef: NavRef): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.removeTopLevelWaypointByNavRefInSessionJson(handle, json.encodeToString(navRef.toWire())))
+        return syncGuidanceGeometryFromPlan()
+    }
+
     fun registerOwnshipSource(registration: OwnshipSourceRegistration): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.registerOwnshipSourceInSessionJson(handle, registration.toCoreJson(json)))
         return snapshot
@@ -798,10 +946,55 @@ class NativeUiSession internal constructor(
         bridge.ingestPointTilesInSessionJson(handle, json.encodeToString(tiles.map { it.toWire() }))
     }
 
+    fun ingestMetarsJson(payloadJson: String) {
+        bridge.ingestMetarsInSessionJson(handle, payloadJson)
+    }
+
+    fun ingestMetarTilesJson(tilesJson: String) {
+        bridge.ingestMetarTilesInSessionJson(handle, tilesJson)
+    }
+
+    fun ingestAirspaceRefTilesJson(tilesJson: String) {
+        bridge.ingestAirspaceRefTilesInSessionJson(handle, tilesJson)
+    }
+
+    fun ingestAirspaceFeaturesJson(featuresJson: String) {
+        bridge.ingestAirspaceFeaturesInSessionJson(handle, featuresJson)
+    }
+
+    fun ingestAirspaceLabelTilesJson(tilesJson: String) {
+        bridge.ingestAirspaceLabelTilesInSessionJson(handle, tilesJson)
+    }
+
+    fun ingestTfrsJson(payloadJson: String) {
+        bridge.ingestTfrsInSessionJson(handle, payloadJson)
+    }
+
     fun queryMapOverlay(viewport: MapViewportState, widthPx: Double, heightPx: Double): MapOverlayQueryResult {
         val viewportJson = json.encodeToString(viewport.toWire())
-        val resultJson = bridge.getMapOverlayInSessionJson(handle, viewportJson, widthPx, heightPx)
-        return json.decodeFromString<WireMapOverlayQueryResult>(resultJson).toUi()
+        val store = navKvStore ?: error("session missing nav_db for map overlay")
+        return json.decodeFromJsonElement<WireMapOverlayQueryResult>(
+            store.runPagedSessionOperationElement {
+                bridge.getMapOverlayInSessionJson(handle, viewportJson, widthPx, heightPx)
+            },
+        ).toUi()
+    }
+
+    fun queryMapSelection(
+        viewport: MapViewportState,
+        widthPx: Double,
+        heightPx: Double,
+        click: LatLonPoint,
+        hitRadiusPx: Double,
+    ): MapSelectionQueryResult {
+        val viewportJson = json.encodeToString(viewport.toWire())
+        val clickJson = json.encodeToString(click.toWire())
+        val store = navKvStore ?: error("session missing nav_db for map selection")
+        return json.decodeFromJsonElement<WireMapSelectionQueryResult>(
+            store.runPagedSessionOperationElement {
+                bridge.getMapSelectionInSessionJson(handle, viewportJson, widthPx, heightPx, clickJson, hitRadiusPx)
+            },
+        ).toUi()
     }
 
     fun queryTerrainOverlay(viewport: MapViewportState, widthPx: Double, heightPx: Double): TerrainOverlayQueryResult {
@@ -1291,6 +1484,7 @@ private data class WireUiMapLayerToggleState(
 @kotlinx.serialization.Serializable
 private data class WireUiMapLayerState(
     val vectors: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
+    val metars: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
     val nexrad: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
     val terrain_warning: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
 )
@@ -1384,6 +1578,7 @@ private fun WireUiMapLayerToggleState.toUi() = UiMapLayerToggleState(
 
 private fun WireUiMapLayerState.toUi() = UiMapLayerState(
     vectors = vectors.toUi(),
+    metars = metars.toUi(),
     nexrad = nexrad.toUi(),
     terrainWarning = terrain_warning.toUi(),
 )
@@ -1474,8 +1669,23 @@ private fun PointVectorRecord.toWire() = WirePointVectorRecord(
 
 private fun WireMapOverlayQueryResult.toUi() = MapOverlayQueryResult(
     neededPointTiles = needed_point_tiles.map { it.toUi() },
+    neededMetarTiles = needed_metar_tiles.map { it.toUi() },
+    neededAirspaceRefTiles = needed_airspace_ref_tiles.map { it.toUi() },
+    neededAirspaceFeatures = needed_airspace_features.map { it.toUi() },
+    neededAirspaceLabelTiles = needed_airspace_label_tiles.map { it.toUi() },
+    neededMetars = needed_metars,
+    neededTfrs = needed_tfrs,
     visibleFeatures = visible_features.map { it.toUi() },
+    visibleMetars = visible_metars.map { it.toUi() },
+    airspacePaths = airspace_paths.map { it.toUi() },
+    tfrPaths = tfr_paths.map { it.toUi() },
+    airspaceLabels = airspace_labels.map { it.toUi() },
     warnings = warnings.map { it.toUi() },
+)
+
+private fun WireAirspaceFeatureRequest.toUi() = AirspaceFeatureRequest(
+    id = id,
+    path = path,
 )
 
 private fun WireTerrainOverlayQueryResult.toUi() = TerrainOverlayQueryResult(
@@ -1530,6 +1740,112 @@ private fun WireVisibleMapFeature.toUi() = VisibleMapFeature(
     hasWaterRunway = has_water_runway,
     runwayLengthRatio = runway_length_ratio,
     longestRunwayHeadingTrueDeg = longest_runway_heading_true_deg,
+)
+
+private fun WireVisibleMetarFeature.toUi() = VisibleMetarFeature(
+    stationId = station_id,
+    screenX = screen_x,
+    screenY = screen_y,
+    flightCategory = flight_category,
+    ceilingAmount = ceiling_amount,
+)
+
+private fun WireAirspaceDisplayStroke.toUi() = AirspaceDisplayStroke(
+    colorKey = color_key,
+    widthPx = width_px,
+    dashPx = dash_px,
+    lineCap = line_cap,
+)
+
+private fun WireAirspaceDisplayStyle.toUi() = AirspaceDisplayStyle(
+    fillColorKey = fill_color_key,
+    fillOpacity = fill_opacity,
+    strokes = strokes.map { it.toUi() },
+)
+
+private fun WireAirspaceScreenPoint.toUi() = AirspaceScreenPoint(
+    x = x,
+    y = y,
+)
+
+private fun WireAirspaceDisplaySubpath.toUi() = AirspaceDisplaySubpath(
+    closed = closed,
+    points = points.map { it.toUi() },
+)
+
+private fun WireAirspaceDisplayDecoration.toUi() = AirspaceDisplayDecoration(
+    colorKey = color_key,
+    widthPx = width_px,
+    lineCap = line_cap,
+    paths = paths.map { it.toUi() },
+)
+
+private fun WireAirspaceDisplayPath.toUi() = AirspaceDisplayPath(
+    id = id,
+    name = name,
+    label = label,
+    styleKey = style_key,
+    style = style.toUi(),
+    paths = paths.map { it.toUi() },
+    decorations = decorations.map { it.toUi() },
+)
+
+private fun WireAirspaceDisplayLabel.toUi() = AirspaceDisplayLabel(
+    featureId = feature_id,
+    text = text,
+    styleKey = style_key,
+    colorKey = color_key,
+    screenX = screen_x,
+    screenY = screen_y,
+)
+
+private fun WireAirspaceLimitGlyph.toUi() = AirspaceLimitGlyph(
+    text = text,
+    styleKey = style_key,
+    colorKey = color_key,
+)
+
+private fun WireMapSelectionQueryResult.toUi() = MapSelectionQueryResult(
+    clickLat = click_lat,
+    clickLon = click_lon,
+    categories = categories.map { it.toUi() },
+)
+
+private fun WireMapSelectionCategory.toUi() = MapSelectionCategory(
+    id = id,
+    label = label,
+    items = items.map { it.toUi() },
+)
+
+private fun WireMapSelectionItem.toUi() = MapSelectionItem(
+    id = id,
+    label = label,
+    sublabel = sublabel,
+    description = description,
+    detailText = detail_text,
+    highlight = highlight.toUi(),
+    navRef = nav_ref?.toUi(),
+    symbolFeature = symbol_feature?.toUi(),
+    metarFeature = metar_feature?.toUi(),
+    airspaceIcon = airspace_icon?.toUi(),
+    actions = actions.map { it.toUi() },
+)
+
+private fun WireMapSelectionHighlight.toUi(): MapSelectionHighlight = when (this) {
+    is WireMapSelectionHighlightFeatureRef -> MapSelectionHighlight.FeatureRef(id)
+    is WireMapSelectionHighlightMetar -> MapSelectionHighlight.Metar(station_id)
+    is WireMapSelectionHighlightSpot -> MapSelectionHighlight.Spot(lat, lon)
+    is WireMapSelectionHighlight.FeatureRef -> MapSelectionHighlight.FeatureRef(id)
+    is WireMapSelectionHighlight.Metar -> MapSelectionHighlight.Metar(station_id)
+    is WireMapSelectionHighlight.Spot -> MapSelectionHighlight.Spot(lat, lon)
+}
+
+private fun WireMapSelectionAction.toUi() = MapSelectionAction(
+    id = id,
+    label = label,
+    enabled = enabled,
+    displayOnly = display_only,
+    airspaceLimit = airspace_limit?.toUi(),
 )
 
 private fun WireNavSymbolFeature.toUi() = NavSymbolFeature(
@@ -2067,6 +2383,7 @@ private fun SuspendReason.toWire() = when (this) {
 
 private fun MapLayerId.toWire() = when (this) {
     MapLayerId.Vectors -> "vectors"
+    MapLayerId.Metars -> "metars"
     MapLayerId.Nexrad -> "nexrad"
     MapLayerId.TerrainWarning -> "terrain_warning"
 }

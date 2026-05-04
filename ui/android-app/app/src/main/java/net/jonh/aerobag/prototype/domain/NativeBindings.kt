@@ -119,6 +119,16 @@ interface NativeBridge {
         delta: Int,
     ): String
 
+    fun insertWaypointBestPositionInSessionJson(
+        handle: Long,
+        waypointJson: String,
+    ): String
+
+    fun removeTopLevelWaypointByNavRefInSessionJson(
+        handle: Long,
+        navRefJson: String,
+    ): String
+
     fun registerOwnshipSourceInSessionJson(
         handle: Long,
         registrationJson: String,
@@ -245,11 +255,50 @@ interface NativeBridge {
         tilesJson: String,
     ): String
 
+    fun ingestMetarTilesInSessionJson(
+        handle: Long,
+        tilesJson: String,
+    ): String
+
+    fun ingestAirspaceRefTilesInSessionJson(
+        handle: Long,
+        tilesJson: String,
+    ): String
+
+    fun ingestAirspaceFeaturesInSessionJson(
+        handle: Long,
+        featuresJson: String,
+    ): String
+
+    fun ingestAirspaceLabelTilesInSessionJson(
+        handle: Long,
+        tilesJson: String,
+    ): String
+
+    fun ingestTfrsInSessionJson(
+        handle: Long,
+        payloadJson: String,
+    ): String
+
+    fun ingestMetarsInSessionJson(
+        handle: Long,
+        payloadJson: String,
+    ): String
+
     fun getMapOverlayInSessionJson(
         handle: Long,
         viewportJson: String,
         widthPx: Double,
         heightPx: Double,
+    ): String
+
+    fun getMapSelectionInSessionJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+        clickJson: String,
+        hitRadiusPx: Double,
     ): String
 
     fun getTerrainOverlayInSessionJson(
@@ -440,6 +489,16 @@ object NativeBindings : NativeBridge {
         delta: Int,
     ): String
 
+    external override fun insertWaypointBestPositionInSessionJson(
+        handle: Long,
+        waypointJson: String,
+    ): String
+
+    external override fun removeTopLevelWaypointByNavRefInSessionJson(
+        handle: Long,
+        navRefJson: String,
+    ): String
+
     external override fun registerOwnshipSourceInSessionJson(
         handle: Long,
         registrationJson: String,
@@ -566,11 +625,50 @@ object NativeBindings : NativeBridge {
         tilesJson: String,
     ): String
 
+    external override fun ingestMetarTilesInSessionJson(
+        handle: Long,
+        tilesJson: String,
+    ): String
+
+    external override fun ingestAirspaceRefTilesInSessionJson(
+        handle: Long,
+        tilesJson: String,
+    ): String
+
+    external override fun ingestAirspaceFeaturesInSessionJson(
+        handle: Long,
+        featuresJson: String,
+    ): String
+
+    external override fun ingestAirspaceLabelTilesInSessionJson(
+        handle: Long,
+        tilesJson: String,
+    ): String
+
+    external override fun ingestTfrsInSessionJson(
+        handle: Long,
+        payloadJson: String,
+    ): String
+
+    external override fun ingestMetarsInSessionJson(
+        handle: Long,
+        payloadJson: String,
+    ): String
+
     external override fun getMapOverlayInSessionJson(
         handle: Long,
         viewportJson: String,
         widthPx: Double,
         heightPx: Double,
+    ): String
+
+    external override fun getMapSelectionInSessionJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+        clickJson: String,
+        hitRadiusPx: Double,
     ): String
 
     external override fun getTerrainOverlayInSessionJson(

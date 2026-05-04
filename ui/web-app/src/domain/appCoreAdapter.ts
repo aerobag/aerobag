@@ -570,11 +570,15 @@ export type LoadedAdapter = {
 };
 
 async function fetchVectorManifestJson(): Promise<string> {
-  const response = await fetch("/vectors/vectors", { cache: "no-cache" });
-  if (!response.ok) {
-    throw new Error(`failed to load vector manifest: ${response.status}`);
-  }
-  const baseManifest = JSON.parse(await response.text()) as Record<string, unknown>;
+  const baseManifest: Record<string, unknown> = {
+    airspace: {
+      reference_tile_min_zoom: 0,
+      reference_tile_max_zoom: 12,
+      label_tile_min_zoom: 0,
+      label_tile_max_zoom: 12,
+    },
+    point_layers: {},
+  };
   try {
     const obstacleResponse = await fetch("/fast-products/obstacles/obstacles", { cache: "no-cache" });
     if (obstacleResponse.ok) {
@@ -1117,14 +1121,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       queryMapOverlay: async (viewport, widthPx, heightPx) =>
         withSessionRetry(async () =>
-          JSON.parse(
-            await this.module.get_map_overlay_in_session(
+          runCoreHadSessionOperation<MapOverlayQueryResult>(() =>
+            this.module.get_map_overlay_in_session(
               handle,
               JSON.stringify(coreViewportForMap(viewport)),
               widthPx,
               heightPx,
             ),
-          ) as MapOverlayQueryResult,
+          ),
         ),
       queryMapSelection: async (viewport, widthPx, heightPx, click, hitRadiusPx) =>
         withSessionRetry(async () =>

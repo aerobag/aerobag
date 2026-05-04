@@ -73,18 +73,10 @@ import {
   type ImageViewportState,
 } from "./domain/imageViewport";
 import {
-  airspaceFeatureUrl,
-  airspaceLabelTileUrl,
-  airspaceReferenceTileUrl,
   metarTileUrl,
-  pointTileUrl,
-  type PointTilePayload,
 } from "./domain/vectorTiles";
 import type {
   AirspaceDisplayPath,
-  AirspaceFeaturePayload,
-  AirspaceLabelTilePayload,
-  AirspaceReferenceTilePayload,
   MapOverlayQueryResult,
   MetarTilePayload,
   MetarProductPayload,
@@ -2698,11 +2690,7 @@ function MapPage(props: {
 
     function overlayNeedsInputs(overlay: MapOverlayQueryResult): boolean {
       return (
-        overlay.needed_point_tiles.length > 0 ||
         overlay.needed_metar_tiles.length > 0 ||
-        overlay.needed_airspace_ref_tiles.length > 0 ||
-        overlay.needed_airspace_features.length > 0 ||
-        overlay.needed_airspace_label_tiles.length > 0 ||
         overlay.needed_metars ||
         overlay.needed_tfrs
       );
@@ -2747,68 +2735,6 @@ function MapPage(props: {
           });
         }
       }
-      if (overlay.needed_point_tiles.length > 0) {
-        const tileFetchStartedAt = performance.now();
-        debugLog("map.overlay.tiles.fetch.start", {
-          zoom: viewport.zoom,
-          count: overlay.needed_point_tiles.length,
-        });
-        const tiles = await Promise.all(
-          overlay.needed_point_tiles.map(async (tile) => {
-            const response = await fetch(pointTileUrl(tile.layer, tile.z, tile.x, tile.y), {
-              signal: controller.signal,
-            });
-            if (response.status === 404) {
-              return {
-                schema_version: 1,
-                layer: tile.layer,
-                z: tile.z,
-                x: tile.x,
-                y: tile.y,
-                records: [],
-              } satisfies PointTilePayload;
-            }
-            if (!response.ok) {
-              throw new Error(`failed to load vector tile ${tile.z}/${tile.x}/${tile.y}: ${response.status}`);
-            }
-            try {
-              return (await response.json()) as PointTilePayload;
-            } catch (error) {
-              if (tile.layer === "obstacle") {
-                debugLog("map.overlay.obstacle_tile.parse_fallback", {
-                  z: tile.z,
-                  x: tile.x,
-                  y: tile.y,
-                  error: errorMessage(error),
-                });
-                return {
-                  schema_version: 1,
-                  layer: tile.layer,
-                  z: tile.z,
-                  x: tile.x,
-                  y: tile.y,
-                  records: [],
-                } satisfies PointTilePayload;
-              }
-              throw error;
-            }
-          }),
-        );
-        debugLog("map.overlay.tiles.fetch.done", {
-          zoom: viewport.zoom,
-          count: tiles.length,
-          elapsed_ms: Math.round(performance.now() - tileFetchStartedAt),
-        });
-        const ingestStartedAt = performance.now();
-        await session.ingestPointTiles(tiles);
-        debugLog("map.overlay.tiles.ingest.done", {
-          zoom: viewport.zoom,
-          count: tiles.length,
-          elapsed_ms: Math.round(performance.now() - ingestStartedAt),
-        });
-        ingested = true;
-        markOverlayInputIngested();
-      }
       if (overlay.needed_metar_tiles.length > 0) {
         const startedAt = performance.now();
         try {
@@ -2852,107 +2778,6 @@ function MapPage(props: {
             error: errorMessage(error),
           });
         }
-      }
-      if (overlay.needed_airspace_ref_tiles.length > 0) {
-        const startedAt = performance.now();
-        const tiles = await Promise.all(
-          overlay.needed_airspace_ref_tiles.map(async (tile) => {
-            const response = await fetch(airspaceReferenceTileUrl(tile.z, tile.x, tile.y), {
-              signal: controller.signal,
-            });
-            if (response.status === 404) {
-              return {
-                schema_version: 1,
-                layer: "airspace",
-                z: tile.z,
-                x: tile.x,
-                y: tile.y,
-                refs: [],
-              } satisfies AirspaceReferenceTilePayload;
-            }
-            if (!response.ok) {
-              throw new Error(`failed to load airspace ref tile ${tile.z}/${tile.x}/${tile.y}: ${response.status}`);
-            }
-            return (await response.json()) as AirspaceReferenceTilePayload;
-          }),
-        );
-        await session.ingestAirspaceRefTiles(tiles);
-        debugLog("map.overlay.airspace_refs.done", {
-          zoom: viewport.zoom,
-          count: tiles.length,
-          elapsed_ms: Math.round(performance.now() - startedAt),
-        });
-        ingested = true;
-        markOverlayInputIngested();
-      }
-      if (overlay.needed_airspace_features.length > 0) {
-        const startedAt = performance.now();
-        const features = (
-          await Promise.all(
-            overlay.needed_airspace_features.map(async (feature) => {
-              const response = await fetch(airspaceFeatureUrl(feature.path), {
-                signal: controller.signal,
-              });
-              if (response.status === 404) {
-                debugLog("map.overlay.airspace_feature.missing", {
-                  id: feature.id,
-                  path: feature.path,
-                });
-                return null;
-              }
-              if (!response.ok) {
-                throw new Error(`failed to load airspace feature ${feature.path}: ${response.status}`);
-              }
-              return (await response.json()) as AirspaceFeaturePayload;
-            }),
-          )
-        ).filter((feature): feature is AirspaceFeaturePayload => feature !== null);
-        if (features.length > 0) {
-          await session.ingestAirspaceFeatures(features);
-          ingested = true;
-          markOverlayInputIngested();
-        }
-        debugLog("map.overlay.airspace_features.done", {
-          zoom: viewport.zoom,
-          count: features.length,
-          missing: overlay.needed_airspace_features.length - features.length,
-          elapsed_ms: Math.round(performance.now() - startedAt),
-        });
-        if (features.length > 0) {
-          return true;
-        }
-      }
-      if (overlay.needed_airspace_label_tiles.length > 0) {
-        const startedAt = performance.now();
-        const tiles = await Promise.all(
-          overlay.needed_airspace_label_tiles.map(async (tile) => {
-            const response = await fetch(airspaceLabelTileUrl(tile.z, tile.x, tile.y), {
-              signal: controller.signal,
-            });
-            if (response.status === 404) {
-              return {
-                schema_version: 1,
-                layer: "airspace-labels",
-                z: tile.z,
-                x: tile.x,
-                y: tile.y,
-                labels: [],
-              } satisfies AirspaceLabelTilePayload;
-            }
-            if (!response.ok) {
-              throw new Error(`failed to load airspace label tile ${tile.z}/${tile.x}/${tile.y}: ${response.status}`);
-            }
-            return (await response.json()) as AirspaceLabelTilePayload;
-          }),
-        );
-        await session.ingestAirspaceLabelTiles(tiles);
-        debugLog("map.overlay.airspace_labels.done", {
-          zoom: viewport.zoom,
-          count: tiles.length,
-          elapsed_ms: Math.round(performance.now() - startedAt),
-        });
-        ingested = true;
-        markOverlayInputIngested();
       }
       if (overlay.needed_tfrs) {
         const startedAt = performance.now();

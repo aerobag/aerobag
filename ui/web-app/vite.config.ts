@@ -22,7 +22,6 @@ const plateRoot = path.join(staticRoot, "plates");
 const csupRoot = path.join(staticRoot, "afd");
 const thumbnailRoot = path.join(staticRoot, "thumbnails");
 const navDbRoot = path.join(staticRoot, "nav-db");
-const vectorRoot = path.join(staticRoot, "vectors");
 const fastProductRoot = path.join(staticRoot, "fast-products");
 const navKvRoot = path.join(staticRoot, "nav-kv");
 const iconsRoot = path.join(staticRoot, "icons");
@@ -119,19 +118,13 @@ function mountStaticTree(sourceRoot: string, options: { missingStatus?: number }
     const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
     const relativePath = requestPath.replace(/^\/+/, "");
     const filePath = path.resolve(sourceRoot, relativePath);
-    if (sourceRoot === vectorRoot) {
-      fs.appendFileSync(
-        requestLogPath,
-        `${JSON.stringify({ ts: Date.now(), kind: "vector_request", requestPath, filePath, exists: fs.existsSync(filePath) })}\n`,
-      );
-    }
     if (!filePath.startsWith(sourceRoot)) {
       res.statusCode = 403;
       res.end("forbidden");
       return;
     }
     if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
-      if (sourceRoot === vectorRoot || options.missingStatus) {
+      if (options.missingStatus) {
         res.statusCode = options.missingStatus ?? 404;
         res.end("not found");
         return;
@@ -374,7 +367,6 @@ function aerobagStaticPlugin(): Plugin {
     server.middlewares.use("/thumbnails", mountStaticTree(thumbnailRoot));
     server.middlewares.use("/nav-db", mountStaticTree(navDbRoot));
     server.middlewares.use("/nav-kv", mountStaticTree(navKvRoot, { missingStatus: 404 }));
-    server.middlewares.use("/vectors", mountStaticTree(vectorRoot));
     server.middlewares.use("/fast-products", mountFastProducts());
     server.middlewares.use("/terrain-products", mountTerrainProducts());
     server.middlewares.use("/shaded-relief-products", mountShadedReliefProducts());
@@ -403,7 +395,6 @@ function aerobagStaticPlugin(): Plugin {
         [thumbnailRoot, "thumbnails"],
         [navDbRoot, "nav-db"],
         [navKvRoot, "nav-kv"],
-        [vectorRoot, "vectors"],
         [fastProductRoot, "fast-products"],
         [iconsRoot, "icons"],
         [adsbTraceRoot, "adsb-traces"],

@@ -96,16 +96,8 @@ object SampleData {
         navKvOpenMs: Long,
     ): ContentFixture {
         val startMs = SystemClock.elapsedRealtime()
-        val vectorsPackageId = latestInstalledDataPackageIdOrNull(context, "VECTORS_DATA_")
         val vectorManifestStartMs = SystemClock.elapsedRealtime()
-        val vectorManifestJson = vectorsPackageId?.let {
-            InstalledPackages.readZipEntryText(
-                context,
-                InstalledPackageKind.Data,
-                it,
-                "vectors",
-            )
-        } ?: FALLBACK_VECTOR_MANIFEST_JSON
+        val vectorManifestJson = FALLBACK_VECTOR_MANIFEST_JSON
         val vectorManifestMs = SystemClock.elapsedRealtime() - vectorManifestStartMs
         val chartCatalogStartMs = SystemClock.elapsedRealtime()
         val mapViews =
@@ -143,7 +135,7 @@ object SampleData {
         return ContentFixture(
             bootstrap = bootstrapFixture,
             vectorManifestJson = vectorManifestJson,
-            vectorPackageId = vectorsPackageId,
+            vectorPackageId = null,
             mapView = mapView,
             mapViews = mapViews,
             chartPage = chartPage,

@@ -2,7 +2,7 @@ use app_core::{GeometryBundle, PolygonRecord};
 use serde::Serialize;
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub fn sample_geometry() -> GeometryBundle {
     GeometryBundle {
@@ -16,13 +16,6 @@ pub fn sample_geometry() -> GeometryBundle {
 
 pub fn sample_geometry_json() -> String {
     serde_json::to_string(&sample_geometry()).expect("sample geometry should serialize")
-}
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../..")
-        .canonicalize()
-        .expect("resolve repository root")
 }
 
 pub fn fixture_snapshot_root() -> PathBuf {
@@ -142,42 +135,6 @@ pub fn load_fixture_nav_kv_pages() -> (Vec<u8>, Vec<Vec<u8>>) {
         pages.push(page_bytes);
     }
     (root_bytes, pages)
-}
-
-pub fn generated_static_vectors_root() -> PathBuf {
-    let ui_dir = repo_root().join("ui");
-    let target_root_raw =
-        fs::read_to_string(ui_dir.join("target-root.txt")).expect("read ui/target-root.txt");
-    let target_root = repo_root()
-        .join(target_root_raw.trim())
-        .canonicalize()
-        .expect("resolve ui target root");
-    let path = target_root.join("web/generated-static/vectors");
-    assert!(
-        path.is_dir(),
-        "generated vector fixture root missing: {}",
-        path.display()
-    );
-    path
-}
-
-pub fn fixture_vector_tile_root(layer: &str, z: u8) -> PathBuf {
-    if let Some(value) = std::env::var_os("AEROBAG_FIXTURE_VECTOR_ROOT") {
-        let path = PathBuf::from(value);
-        assert!(
-            path.is_dir(),
-            "AEROBAG_FIXTURE_VECTOR_ROOT does not name a directory: {}",
-            path.display()
-        );
-        return path;
-    }
-    let path = generated_static_vectors_root().join(format!("points/{layer}/{z}"));
-    assert!(
-        path.is_dir(),
-        "generated vector tile fixture root missing: {}",
-        path.display()
-    );
-    path
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

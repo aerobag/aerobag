@@ -468,6 +468,12 @@ data class WireVectorTileRequest(
 )
 
 @Serializable
+data class WireAirspaceFeatureRequest(
+    val id: String,
+    val path: String,
+)
+
+@Serializable
 data class WirePointVectorRecord(
     val id: String,
     val kind: String,
@@ -535,8 +541,168 @@ data class WireMapOverlayWarning(
 @Serializable
 data class WireMapOverlayQueryResult(
     val needed_point_tiles: List<WireVectorTileRequest>,
+    val needed_metar_tiles: List<WireVectorTileRequest> = emptyList(),
+    val needed_airspace_ref_tiles: List<WireVectorTileRequest> = emptyList(),
+    val needed_airspace_features: List<WireAirspaceFeatureRequest> = emptyList(),
+    val needed_airspace_label_tiles: List<WireVectorTileRequest> = emptyList(),
+    val needed_metars: Boolean = false,
+    val needed_tfrs: Boolean = false,
     val visible_features: List<WireVisibleMapFeature>,
+    val visible_metars: List<WireVisibleMetarFeature> = emptyList(),
+    val airspace_paths: List<WireAirspaceDisplayPath> = emptyList(),
+    val tfr_paths: List<WireAirspaceDisplayPath> = emptyList(),
+    val airspace_labels: List<WireAirspaceDisplayLabel> = emptyList(),
     val warnings: List<WireMapOverlayWarning>,
+)
+
+@Serializable
+data class WireVisibleMetarFeature(
+    val station_id: String,
+    val screen_x: Double,
+    val screen_y: Double,
+    val flight_category: String,
+    val ceiling_amount: String,
+)
+
+@Serializable
+data class WireAirspaceDisplayStroke(
+    val color_key: String,
+    val width_px: Double,
+    val dash_px: List<Double> = emptyList(),
+    val line_cap: String = "round",
+)
+
+@Serializable
+data class WireAirspaceDisplayStyle(
+    val fill_color_key: String,
+    val fill_opacity: Double,
+    val strokes: List<WireAirspaceDisplayStroke> = emptyList(),
+)
+
+@Serializable
+data class WireAirspaceScreenPoint(
+    val x: Double,
+    val y: Double,
+)
+
+@Serializable
+data class WireAirspaceDisplaySubpath(
+    val closed: Boolean,
+    val points: List<WireAirspaceScreenPoint> = emptyList(),
+)
+
+@Serializable
+data class WireAirspaceDisplayDecoration(
+    val color_key: String,
+    val width_px: Double,
+    val line_cap: String = "round",
+    val paths: List<WireAirspaceDisplaySubpath> = emptyList(),
+)
+
+@Serializable
+data class WireAirspaceDisplayPath(
+    val id: String,
+    val name: String,
+    val label: String,
+    val style_key: String,
+    val style: WireAirspaceDisplayStyle,
+    val paths: List<WireAirspaceDisplaySubpath> = emptyList(),
+    val decorations: List<WireAirspaceDisplayDecoration> = emptyList(),
+)
+
+@Serializable
+data class WireAirspaceDisplayLabel(
+    val feature_id: String,
+    val text: String,
+    val style_key: String,
+    val color_key: String,
+    val screen_x: Double,
+    val screen_y: Double,
+)
+
+@Serializable
+data class WireAirspaceLimitGlyph(
+    val text: String,
+    val style_key: String,
+    val color_key: String,
+)
+
+@Serializable
+data class WireMapSelectionQueryResult(
+    val click_lat: Double,
+    val click_lon: Double,
+    val categories: List<WireMapSelectionCategory> = emptyList(),
+)
+
+@Serializable
+data class WireMapSelectionCategory(
+    val id: String,
+    val label: String,
+    val items: List<WireMapSelectionItem> = emptyList(),
+)
+
+@Serializable
+data class WireMapSelectionItem(
+    val id: String,
+    val label: String,
+    val sublabel: String,
+    val description: String? = null,
+    val detail_text: String? = null,
+    val highlight: @Serializable(with = WireMapSelectionHighlightSerializer::class) WireMapSelectionHighlight,
+    val nav_ref: WireNavRef? = null,
+    val symbol_feature: WireNavSymbolFeature? = null,
+    val metar_feature: WireVisibleMetarFeature? = null,
+    val airspace_icon: WireAirspaceDisplayPath? = null,
+    val actions: List<WireMapSelectionAction> = emptyList(),
+)
+
+@Serializable(with = WireMapSelectionHighlightSerializer::class)
+sealed interface WireMapSelectionHighlight {
+    data class FeatureRef(val id: String) : WireMapSelectionHighlight
+    data class Metar(val station_id: String) : WireMapSelectionHighlight
+    data class Spot(val lat: Double, val lon: Double) : WireMapSelectionHighlight
+}
+
+object WireMapSelectionHighlightSerializer : JsonContentPolymorphicSerializer<WireMapSelectionHighlight>(WireMapSelectionHighlight::class) {
+    override fun selectDeserializer(element: kotlinx.serialization.json.JsonElement): kotlinx.serialization.DeserializationStrategy<out WireMapSelectionHighlight> {
+        return when (element.jsonObject["kind"]?.jsonPrimitive?.content) {
+            "feature_ref" -> WireMapSelectionHighlightFeatureRef.serializer()
+            "metar" -> WireMapSelectionHighlightMetar.serializer()
+            "spot" -> WireMapSelectionHighlightSpot.serializer()
+            else -> WireMapSelectionHighlightSpot.serializer()
+        }
+    }
+}
+
+@Serializable
+@SerialName("feature_ref")
+data class WireMapSelectionHighlightFeatureRef(
+    val kind: String = "feature_ref",
+    val id: String,
+) : WireMapSelectionHighlight
+
+@Serializable
+@SerialName("metar")
+data class WireMapSelectionHighlightMetar(
+    val kind: String = "metar",
+    val station_id: String,
+) : WireMapSelectionHighlight
+
+@Serializable
+@SerialName("spot")
+data class WireMapSelectionHighlightSpot(
+    val kind: String = "spot",
+    val lat: Double,
+    val lon: Double,
+) : WireMapSelectionHighlight
+
+@Serializable
+data class WireMapSelectionAction(
+    val id: String,
+    val label: String,
+    val enabled: Boolean,
+    val display_only: Boolean,
+    val airspace_limit: WireAirspaceLimitGlyph? = null,
 )
 
 @Serializable

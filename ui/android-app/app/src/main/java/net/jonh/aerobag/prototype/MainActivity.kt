@@ -5911,6 +5911,13 @@ private fun MapExplorerPage(
                     mapSelection = selection.copy(selectedItem = item)
                 },
                 onSelectAction = { item, action ->
+                    action.flightPlanRowAction?.let { rowAction ->
+                        runCatching { uiSession.performFlightPlanRowAction(rowAction.rowUid, rowAction.actionUid) }
+                            .onSuccess(onSessionSnapshotChange)
+                            .onFailure { Log.w("AerobagSelection", "flight-plan row action failed", it) }
+                        mapSelection = null
+                        return@MapSelectionTray
+                    }
                     when (action.id) {
                         "plates", "csup" -> {
                             val airportId = (item.navRef as? NavRef.Airport)?.code
@@ -5929,14 +5936,6 @@ private fun MapExplorerPage(
                                 runCatching { uiSession.insertWaypointBestPosition(navRef) }
                                     .onSuccess(onSessionSnapshotChange)
                                     .onFailure { Log.w("AerobagSelection", "insert waypoint failed", it) }
-                                mapSelection = null
-                            }
-                        }
-                        "remove_from_flight_plan" -> {
-                            item.navRef?.let { navRef ->
-                                runCatching { uiSession.removeTopLevelWaypointByNavRef(navRef) }
-                                    .onSuccess(onSessionSnapshotChange)
-                                    .onFailure { Log.w("AerobagSelection", "remove waypoint failed", it) }
                                 mapSelection = null
                             }
                         }

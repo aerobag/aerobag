@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     geometry::LatLon, great_circle_distance_nm, AppError, AppErrorKind, AppResult, FlightPlan,
-    MapViewport, NavRef,
+    FlightPlanRowActionId, MapViewport, NavRef, RouteComponentViewKind,
 };
 
 pub const VECTOR_DISPLAY_FEATURE_LIMIT: usize = 500;
@@ -470,6 +470,14 @@ pub struct MapSelectionAction {
     pub detail_text: Option<String>,
     #[serde(default)]
     pub airspace_limit: Option<AirspaceLimitGlyph>,
+    #[serde(default)]
+    pub flight_plan_row_action: Option<MapSelectionFlightPlanRowAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MapSelectionFlightPlanRowAction {
+    pub row_uid: String,
+    pub action_uid: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1409,9 +1417,20 @@ fn selection_item_for_point(
         symbol_feature.label = label.clone();
     }
     let nav_ref = selection_nav_ref(record, is_airport);
+    let remove_row_action = nav_ref.as_ref().and_then(|nav_ref| {
+        selection_flight_plan_row_action(plan, nav_ref, FlightPlanRowActionId::Remove)
+    });
+    let direct_to_row_action = nav_ref.as_ref().and_then(|nav_ref| {
+        selection_flight_plan_row_action(plan, nav_ref, FlightPlanRowActionId::DirectTo)
+    });
     let insert_action = match &nav_ref {
-        Some(nav_ref) if selection_plan_has_top_level_waypoint(plan, nav_ref) => {
-            enabled_action("remove_from_flight_plan", "Remove from flight plan")
+        Some(nav_ref) if remove_row_action.is_some() => row_action(
+            "remove_from_flight_plan",
+            "Remove from flight plan",
+            remove_row_action,
+        ),
+        Some(nav_ref) if selection_plan_top_level_waypoint_count(plan, nav_ref) > 1 => {
+            disabled_action("remove_from_flight_plan", "Remove ambiguous")
         }
         Some(nav_ref) if !selection_plan_contains_nav_ref(plan, nav_ref) => {
             enabled_action("insert", "Insert in flight plan")
@@ -1421,7 +1440,7 @@ fn selection_item_for_point(
     };
     let mut actions = if is_airport {
         vec![
-            action_for_availability("direct_to", "Direct-to", nav_ref.is_some()),
+            direct_to_action(plan, nav_ref.as_ref(), direct_to_row_action),
             insert_action,
             action_for_availability("plates", "Plates", airport_plate_availability.plates),
             action_for_availability("csup", "Chart Supp", airport_plate_availability.csup),
@@ -1431,7 +1450,7 @@ fn selection_item_for_point(
         ]
     } else {
         vec![
-            action_for_availability("direct_to", "Direct-to", nav_ref.is_some()),
+            direct_to_action(plan, nav_ref.as_ref(), direct_to_row_action),
             insert_action,
         ]
     };
@@ -1743,6 +1762,7 @@ fn display_action(id: &str, label: &str) -> MapSelectionAction {
         display_only: true,
         detail_text: None,
         airspace_limit: None,
+        flight_plan_row_action: None,
     }
 }
 
@@ -1754,6 +1774,7 @@ fn detail_action(id: &str, label: &str, detail_text: String) -> MapSelectionActi
         display_only: false,
         detail_text: Some(detail_text),
         airspace_limit: None,
+        flight_plan_row_action: None,
     }
 }
 
@@ -1765,6 +1786,7 @@ fn enabled_action(id: &str, label: &str) -> MapSelectionAction {
         display_only: false,
         detail_text: None,
         airspace_limit: None,
+        flight_plan_row_action: None,
     }
 }
 
@@ -1776,6 +1798,40 @@ fn disabled_action(id: &str, label: &str) -> MapSelectionAction {
         display_only: false,
         detail_text: None,
         airspace_limit: None,
+        flight_plan_row_action: None,
+    }
+}
+
+fn row_action(
+    id: &str,
+    label: &str,
+    flight_plan_row_action: Option<MapSelectionFlightPlanRowAction>,
+) -> MapSelectionAction {
+    MapSelectionAction {
+        id: id.to_string(),
+        label: label.to_string(),
+        enabled: flight_plan_row_action.is_some(),
+        display_only: false,
+        detail_text: None,
+        airspace_limit: None,
+        flight_plan_row_action,
+    }
+}
+
+fn direct_to_action(
+    plan: Option<&FlightPlan>,
+    nav_ref: Option<&NavRef>,
+    flight_plan_row_action: Option<MapSelectionFlightPlanRowAction>,
+) -> MapSelectionAction {
+    if let Some(flight_plan_row_action) = flight_plan_row_action {
+        return row_action("direct_to", "Direct-to", Some(flight_plan_row_action));
+    }
+    match nav_ref {
+        Some(nav_ref) if selection_plan_contains_nav_ref(plan, nav_ref) => {
+            disabled_action("direct_to", "Direct-to ambiguous")
+        }
+        Some(_) => enabled_action("direct_to", "Direct-to"),
+        None => disabled_action("direct_to", "Direct-to"),
     }
 }
 
@@ -1797,6 +1853,7 @@ fn airspace_limit_action_from_parts(
             style_key: style_key.to_string(),
             color_key: airspace_label_color_key(style_key).to_string(),
         }),
+        flight_plan_row_action: None,
     }
 }
 
@@ -1908,9 +1965,34 @@ fn selection_plan_contains_nav_ref(plan: Option<&FlightPlan>, nav_ref: &NavRef) 
         .unwrap_or(false)
 }
 
-fn selection_plan_has_top_level_waypoint(plan: Option<&FlightPlan>, nav_ref: &NavRef) -> bool {
-    plan.and_then(|plan| crate::top_level_waypoint_component_index(plan, nav_ref))
-        .is_some()
+fn selection_plan_top_level_waypoint_count(plan: Option<&FlightPlan>, nav_ref: &NavRef) -> usize {
+    plan.map(|plan| crate::top_level_waypoint_component_count(plan, nav_ref))
+        .unwrap_or(0)
+}
+
+fn selection_flight_plan_row_action(
+    plan: Option<&FlightPlan>,
+    nav_ref: &NavRef,
+    action_id: FlightPlanRowActionId,
+) -> Option<MapSelectionFlightPlanRowAction> {
+    let plan = plan?;
+    if crate::top_level_waypoint_component_count(plan, nav_ref) != 1 {
+        return None;
+    }
+    let ui = crate::project_ui_state(plan);
+    let row = ui.display_rows.iter().find(|row| {
+        row.component_kind == Some(RouteComponentViewKind::Waypoint)
+            && row.nav_ref.as_ref() == Some(nav_ref)
+            && row.component_uid.is_some()
+    })?;
+    let action = row
+        .actions
+        .iter()
+        .find(|action| action.id == action_id && action.enabled)?;
+    Some(MapSelectionFlightPlanRowAction {
+        row_uid: row.uid.clone(),
+        action_uid: action.uid.clone(),
+    })
 }
 
 fn airspace_feature_contains(feature: &AirspaceFeaturePayload, point: LatLon) -> bool {
@@ -4283,6 +4365,14 @@ mod tests {
         assert_eq!(remove.label, "Remove from flight plan");
         assert!(remove.enabled);
         assert!(!remove.display_only);
+        assert!(remove.flight_plan_row_action.is_some());
+        let direct_to = item
+            .actions
+            .iter()
+            .find(|action| action.id == "direct_to")
+            .expect("direct-to action");
+        assert!(direct_to.enabled);
+        assert!(direct_to.flight_plan_row_action.is_some());
         assert!(item
             .actions
             .iter()
@@ -4301,6 +4391,41 @@ mod tests {
             taf.detail_text.as_deref(),
             Some("TAF KSEA 010000Z 0100/0124 00000KT P6SM SCT020\nBECMG 0102/0104 BKN030\nFM010600 22008KT P6SM SCT050")
         );
+
+        let duplicate_plan = FlightPlan {
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KSEA".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KSEA".to_string()),
+                },
+            ],
+            ..plan
+        };
+        let duplicate_item = selection_item_for_point(
+            &record,
+            &symbol,
+            Some(&duplicate_plan),
+            AirportPlateAvailability::default(),
+            None,
+        );
+        let duplicate_remove = duplicate_item
+            .actions
+            .iter()
+            .find(|action| action.id == "remove_from_flight_plan")
+            .expect("remove action");
+        assert!(!duplicate_remove.enabled);
+        assert_eq!(duplicate_remove.label, "Remove ambiguous");
+        assert!(duplicate_remove.flight_plan_row_action.is_none());
+        let duplicate_direct_to = duplicate_item
+            .actions
+            .iter()
+            .find(|action| action.id == "direct_to")
+            .expect("direct-to action");
+        assert!(!duplicate_direct_to.enabled);
+        assert_eq!(duplicate_direct_to.label, "Direct-to ambiguous");
+        assert!(duplicate_direct_to.flight_plan_row_action.is_none());
     }
 
     #[test]

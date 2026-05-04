@@ -2678,18 +2678,11 @@ pub fn top_level_waypoint_component_index(plan: &FlightPlan, nav_ref: &NavRef) -
         .position(|component| matches!(component, RouteComponent::Waypoint { waypoint } if waypoint == nav_ref))
 }
 
-pub fn remove_top_level_waypoint_by_nav_ref(
-    plan: &FlightPlan,
-    nav_ref: &NavRef,
-) -> AppResult<FlightPlan> {
-    let component_index =
-        top_level_waypoint_component_index(plan, nav_ref).ok_or_else(|| AppError {
-            kind: AppErrorKind::UnsupportedOperation,
-            message:
-                "cannot remove a waypoint that is only present inside a grouped route component"
-                    .to_string(),
-        })?;
-    delete_waypoint_component(plan, component_index)
+pub fn top_level_waypoint_component_count(plan: &FlightPlan, nav_ref: &NavRef) -> usize {
+    plan.route_components
+        .iter()
+        .filter(|component| matches!(component, RouteComponent::Waypoint { waypoint } if waypoint == nav_ref))
+        .count()
 }
 
 pub fn insert_waypoint(

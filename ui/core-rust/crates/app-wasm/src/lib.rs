@@ -390,15 +390,6 @@ pub fn move_waypoint_in_session(
 }
 
 #[wasm_bindgen]
-pub fn remove_top_level_waypoint_by_nav_ref_in_session(
-    handle: u32,
-    nav_ref_json: &str,
-) -> Result<String, JsValue> {
-    remove_top_level_waypoint_by_nav_ref_in_session_json(handle, nav_ref_json)
-        .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
 pub fn select_airport_in_session(handle: u32, airport_id_json: &str) -> Result<String, JsValue> {
     select_airport_in_session_json(handle, airport_id_json).map_err(|err| JsValue::from_str(&err))
 }
@@ -934,17 +925,6 @@ fn move_waypoint_in_session_json(
     delta: isize,
 ) -> Result<String, String> {
     let snapshot = app_core::move_waypoint_in_session(handle, waypoint_index, delta)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
-}
-
-fn remove_top_level_waypoint_by_nav_ref_in_session_json(
-    handle: u32,
-    nav_ref_json: &str,
-) -> Result<String, String> {
-    let nav_ref: app_core::NavRef =
-        serde_json::from_str(nav_ref_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::remove_top_level_waypoint_by_nav_ref_in_session(handle, nav_ref)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }

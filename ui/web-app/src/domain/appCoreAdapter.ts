@@ -385,6 +385,10 @@ export type MapSelectionAction = {
   display_only: boolean;
   detail_text?: string | null;
   airspace_limit?: AirspaceLimitGlyph | null;
+  flight_plan_row_action?: {
+    row_uid: string;
+    action_uid: string;
+  } | null;
 };
 
 export type TerrainOverlayStatus =
@@ -453,7 +457,6 @@ export interface UiSession {
   insertAirwayAtFlightPlanRow(rowUid: string, presentation: AirwayPresentationPlan, entryIndex: number, exitIndex: number): Promise<UiSessionSnapshot>;
   selectProcedureAtFlightPlanRow(rowUid: string, airportId: string, procedureId: string, kind: ProcedureKind, runwayTransition: string | null, enrouteTransition: string | null): Promise<UiSessionSnapshot>;
   loadPlateProcedure(loadId: string): Promise<UiSessionSnapshot>;
-  removeTopLevelWaypointByNavRef(navRef: NavRef): Promise<UiSessionSnapshot>;
   activateDirectTo(navRef: NavRef): Promise<UiSessionSnapshot>;
   restoreDirectTo(): Promise<UiSessionSnapshot>;
   performFlightPlanRowAction(rowUid: string, actionUid: string): Promise<UiSessionSnapshot>;
@@ -634,7 +637,6 @@ type WasmModule = {
   create_ui_session_profiled?: (vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
   remove_leg_in_session(handle: number, index: number): Promise<string> | string;
   move_waypoint_in_session(handle: number, waypointIndex: number, delta: number): Promise<string> | string;
-  remove_top_level_waypoint_by_nav_ref_in_session(handle: number, navRefJson: string): Promise<string> | string;
   set_situation_in_session(handle: number, situationJson: string): Promise<string> | string;
   engage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
   disengage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
@@ -965,13 +967,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       performFlightPlanRowAction: async (rowUid, actionUid) => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.perform_flight_plan_row_action_in_session(handle, rowUid, actionUid)),
-        );
-        await syncGuidanceGeometry(snapshot.app_state.active_plan);
-        return snapshot;
-      },
-      removeTopLevelWaypointByNavRef: async (navRef) => {
-        snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.remove_top_level_waypoint_by_nav_ref_in_session(handle, JSON.stringify(navRef))),
         );
         await syncGuidanceGeometry(snapshot.app_state.active_plan);
         return snapshot;
@@ -1412,7 +1407,6 @@ export async function loadBestAvailableAdapter(
     typeof mod.create_ui_session !== "function" ||
     typeof mod.remove_leg_in_session !== "function" ||
     typeof mod.move_waypoint_in_session !== "function" ||
-    typeof mod.remove_top_level_waypoint_by_nav_ref_in_session !== "function" ||
     typeof mod.perform_flight_plan_row_action_in_session !== "function" ||
     typeof mod.set_situation_in_session !== "function" ||
     typeof mod.engage_map_follow_in_session !== "function" ||

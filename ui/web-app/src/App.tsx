@@ -3384,6 +3384,26 @@ function MapPage(props: {
                     setMapSelection(null);
                     return;
                   }
+                  if (action.flight_plan_row_action) {
+                    try {
+                      if (!uiSession) {
+                        throw new Error("map selection row action requires live core session");
+                      }
+                      const nextSnapshot = await uiSession.performFlightPlanRowAction(
+                        action.flight_plan_row_action.row_uid,
+                        action.flight_plan_row_action.action_uid,
+                      );
+                      onPlaybackSnapshotChange(nextSnapshot);
+                      setMapSelection(null);
+                    } catch (error) {
+                      debugLog("map.selection.row_action.failed", {
+                        action_id: action.id,
+                        row_action: action.flight_plan_row_action,
+                        error: errorMessage(error),
+                      });
+                    }
+                    return;
+                  }
                   if (!item.nav_ref) {
                     return;
                   }
@@ -3391,9 +3411,7 @@ function MapPage(props: {
                     if (!uiSession) {
                       throw new Error("map selection flight-plan action requires live core session");
                     }
-                    const nextSnapshot = action.id === "remove_from_flight_plan"
-                      ? await uiSession.removeTopLevelWaypointByNavRef(item.nav_ref)
-                      : action.id === "direct_to"
+                    const nextSnapshot = action.id === "direct_to"
                         ? await uiSession.activateDirectTo(item.nav_ref)
                       : action.id === "insert"
                         ? await uiSession.insertWaypointBestPosition(item.nav_ref)

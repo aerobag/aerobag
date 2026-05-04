@@ -124,11 +124,6 @@ interface NativeBridge {
         waypointJson: String,
     ): String
 
-    fun removeTopLevelWaypointByNavRefInSessionJson(
-        handle: Long,
-        navRefJson: String,
-    ): String
-
     fun registerOwnshipSourceInSessionJson(
         handle: Long,
         registrationJson: String,
@@ -496,11 +491,6 @@ object NativeBindings : NativeBridge {
     external override fun insertWaypointBestPositionInSessionJson(
         handle: Long,
         waypointJson: String,
-    ): String
-
-    external override fun removeTopLevelWaypointByNavRefInSessionJson(
-        handle: Long,
-        navRefJson: String,
     ): String
 
     external override fun registerOwnshipSourceInSessionJson(

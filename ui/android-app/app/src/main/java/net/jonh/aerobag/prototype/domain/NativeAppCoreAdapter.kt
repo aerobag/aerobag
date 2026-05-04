@@ -230,6 +230,12 @@ data class MapSelectionAction(
     val enabled: Boolean,
     val displayOnly: Boolean,
     val airspaceLimit: AirspaceLimitGlyph?,
+    val flightPlanRowAction: MapSelectionFlightPlanRowAction?,
+)
+
+data class MapSelectionFlightPlanRowAction(
+    val rowUid: String,
+    val actionUid: String,
 )
 
 data class TerrainOverlaySourceTile(
@@ -774,11 +780,6 @@ class NativeUiSession internal constructor(
                 else -> error("unknown insert waypoint outcome: $outcome")
             }
         }
-    }
-
-    fun removeTopLevelWaypointByNavRef(navRef: NavRef): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.removeTopLevelWaypointByNavRefInSessionJson(handle, json.encodeToString(navRef.toWire())))
-        return syncGuidanceGeometryFromPlan()
     }
 
     fun registerOwnshipSource(registration: OwnshipSourceRegistration): UiSessionSnapshot {
@@ -1870,6 +1871,12 @@ private fun WireMapSelectionAction.toUi() = MapSelectionAction(
     enabled = enabled,
     displayOnly = display_only,
     airspaceLimit = airspace_limit?.toUi(),
+    flightPlanRowAction = flight_plan_row_action?.toUi(),
+)
+
+private fun WireMapSelectionFlightPlanRowAction.toUi() = MapSelectionFlightPlanRowAction(
+    rowUid = row_uid,
+    actionUid = action_uid,
 )
 
 private fun WireNavSymbolFeature.toUi() = NavSymbolFeature(

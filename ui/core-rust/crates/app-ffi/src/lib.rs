@@ -487,18 +487,6 @@ pub fn insert_waypoint_best_position_in_session_json(
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
-pub fn remove_top_level_waypoint_by_nav_ref_in_session_json(
-    handle: u64,
-    nav_ref_json: &str,
-) -> Result<String, String> {
-    let nav_ref: app_core::NavRef =
-        serde_json::from_str(nav_ref_json).map_err(|err| err.to_string())?;
-    let snapshot =
-        app_core::remove_top_level_waypoint_by_nav_ref_in_session(handle as u32, nav_ref)
-            .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
-}
-
 pub fn select_airport_in_session_json(
     handle: u64,
     airport_id_json: &str,
@@ -1950,20 +1938,6 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ins
     let result = (|| {
         let waypoint = get_java_string(&mut env, waypoint_json)?;
         insert_waypoint_best_position_in_session_json(handle as u64, &waypoint)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_removeTopLevelWaypointByNavRefInSessionJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: i64,
-    nav_ref_json: JString,
-) -> jstring {
-    let result = (|| {
-        let nav_ref = get_java_string(&mut env, nav_ref_json)?;
-        remove_top_level_waypoint_by_nav_ref_in_session_json(handle as u64, &nav_ref)
     })();
     return_string(&mut env, result)
 }

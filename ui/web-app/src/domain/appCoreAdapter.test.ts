@@ -59,7 +59,6 @@ describe("loadBestAvailableAdapter", () => {
       create_ui_session: async () => JSON.stringify({ handle: 1, snapshot: JSON.parse(snapshotJson) }),
       remove_leg_in_session: async () => snapshotJson,
       move_waypoint_in_session: async () => snapshotJson,
-      remove_top_level_waypoint_by_nav_ref_in_session: async () => snapshotJson,
       insert_waypoint_best_position_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       set_situation_in_session: async () => snapshotJson,
       engage_map_follow_in_session: async () => snapshotJson,

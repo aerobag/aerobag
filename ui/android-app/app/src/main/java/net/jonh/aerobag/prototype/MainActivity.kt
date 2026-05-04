@@ -444,6 +444,7 @@ private const val UiPrefsOfflinePackagePreferencesKey = "offline_package_prefere
 private const val UiPrefsPackageSourceBaseUrlKey = "package_source_base_url"
 private const val MapViewportLogTag = "MapViewport"
 private const val MaxViewHistoryDepth = 64
+private const val OverlayPlaneControls = 10f
 private const val OverlayPlaneModalScrim = 80f
 private const val OverlayPlaneModal = 90f
 private fun defaultUiDebugState() = UiDebugState(
@@ -5923,6 +5924,41 @@ private fun MapExplorerPage(
                 .padding(bottom = ThumbGap),
         )
 
+        DebugDock(
+            open = debugPanelOpen,
+            onToggle = { debugPanelOpen = !debugPanelOpen },
+            highlight = committedMapOverlay.warnings.isNotEmpty() || mapOverlayError != null,
+            expandAbove = true,
+            modifier = Modifier
+                .zIndex(OverlayPlaneControls)
+                .align(Alignment.BottomEnd)
+                .padding(end = ThumbSize + (ThumbGap * 2f)),
+        ) {
+            Text("up: $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("${String.format("%.3f", center.first)}/${String.format("%.3f", center.second)} z${String.format("%.2f", viewport.zoom)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Checkbox(
+                    checked = debugTileLabels,
+                    onCheckedChange = { debugTileLabels = it },
+                    modifier = Modifier.size(ThumbSize * 0.36f),
+                )
+                Text("tile labels", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Checkbox(
+                    checked = debugFastTiles,
+                    onCheckedChange = onDebugFastTilesChange,
+                    modifier = Modifier.size(ThumbSize * 0.36f),
+                )
+                Text("fast tiles", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            }
+        }
     }
 }
 

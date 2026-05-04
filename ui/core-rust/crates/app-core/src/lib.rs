@@ -1116,13 +1116,25 @@ pub fn materialize_procedure_from_records(
     )>::new();
 
     if kind == ProcedureKind::Approach {
+        let common_route_type = approach_common_route_type(&rows);
+        let common_legs = common_route_type.as_deref().map(|route_type| {
+            filter_procedure_records(&legs, airport_id, procedure_id, route_type, "")
+        });
+
         if let Some(enroute_transition) = requested.enroute_transition.as_deref() {
-            for transition_legs in chained_approach_transition_segments(
+            for mut transition_legs in chained_approach_transition_segments(
                 &legs,
                 airport_id,
                 procedure_id,
                 enroute_transition,
             ) {
+                if let Some(common_legs) = common_legs.as_deref() {
+                    borrow_sibling_transition_hold_for_common_if_course_reversal(
+                        &legs,
+                        &mut transition_legs,
+                        common_legs,
+                    );
+                }
                 let items = concretize_procedure_materialization_legs(&transition_legs, false);
                 segments.push((
                     MaterializedSegmentRole::EnrouteTransition,
@@ -1133,9 +1145,7 @@ pub fn materialize_procedure_from_records(
             }
         }
 
-        if let Some(common_route_type) = approach_common_route_type(&rows) {
-            let common_legs =
-                filter_procedure_records(&legs, airport_id, procedure_id, &common_route_type, "");
+        if let Some(common_legs) = common_legs {
             let items = concretize_procedure_materialization_legs(&common_legs, false);
             segments.push((MaterializedSegmentRole::Common, common_legs, items, false));
         }
@@ -1461,6 +1471,82 @@ fn chained_approach_transition_segments(
     }
 
     segments
+}
+
+fn borrow_sibling_transition_hold_for_common_if_course_reversal(
+    all_legs: &[ProcedureLegMaterializationRecord],
+    transition_legs: &mut Vec<ProcedureLegMaterializationRecord>,
+    common_legs: &[ProcedureLegMaterializationRecord],
+) {
+    let Some(last_transition_leg) = transition_legs.last() else {
+        return;
+    };
+    let Some(common_if) = common_legs
+        .iter()
+        .find(|record| record.path_termination.trim() == "IF")
+    else {
+        return;
+    };
+    if last_transition_leg.nav_ref.is_none() || last_transition_leg.nav_ref != common_if.nav_ref {
+        return;
+    }
+    if transition_legs.iter().any(|record| {
+        matches!(record.path_termination.trim(), "HF" | "HM")
+            && record.nav_ref.is_some()
+            && record.nav_ref == common_if.nav_ref
+    }) {
+        return;
+    }
+    let Some(first_common_course) = common_legs
+        .iter()
+        .filter(|record| record.sequence > common_if.sequence)
+        .find(|record| record.path_termination.trim() == "CF")
+        .and_then(|record| record.magnetic_course_deg)
+    else {
+        return;
+    };
+    let Some(arrival_course) = last_transition_leg.magnetic_course_deg else {
+        return;
+    };
+    let turn_to_common_course_deg = angular_difference_degrees(arrival_course, first_common_course);
+    if !arinc_ambiguity_resolutions::borrow_sibling_transition_hold_for_common_if_course_reversal(
+        last_transition_leg.key.airport_id.trim(),
+        last_transition_leg.key.procedure_id.trim(),
+        last_transition_leg.key.transition_id.trim(),
+        common_if.sequence,
+        turn_to_common_course_deg,
+    ) {
+        return;
+    }
+
+    let Some(mut borrowed_hold) = all_legs
+        .iter()
+        .find(|candidate| {
+            candidate.key.airport_id == last_transition_leg.key.airport_id
+                && candidate.key.procedure_id == last_transition_leg.key.procedure_id
+                && candidate.key.route_type.trim() == "A"
+                && candidate.key.transition_id != last_transition_leg.key.transition_id
+                && matches!(candidate.path_termination.trim(), "HF" | "HM")
+                && candidate.nav_ref.is_some()
+                && candidate.nav_ref == common_if.nav_ref
+                && candidate.magnetic_course_deg.is_some()
+                && matches!(
+                    candidate.turn_direction.as_deref().map(str::trim),
+                    Some("L" | "R")
+                )
+                && candidate.route_distance_or_time.as_deref().is_some_and(|value| {
+                    let value = value.trim();
+                    !value.is_empty()
+                })
+        })
+        .cloned()
+    else {
+        return;
+    };
+
+    borrowed_hold.key.transition_id = last_transition_leg.key.transition_id.clone();
+    borrowed_hold.sequence = last_transition_leg.sequence + 1;
+    transition_legs.push(borrowed_hold);
 }
 
 fn resolve_procedure_materialization_legs_with_provenance(
@@ -6579,19 +6665,10 @@ mod tests {
         path.components()
             .filter_map(|component| component.as_os_str().to_str())
             .filter_map(|component| {
-                let digits = component
-                    .chars()
-                    .rev()
-                    .take_while(|ch| ch.is_ascii_digit())
-                    .collect::<String>()
-                    .chars()
-                    .rev()
-                    .collect::<String>();
-                if digits.len() == 4 {
-                    digits.parse::<u32>().ok()
-                } else {
-                    None
-                }
+                component
+                    .split('_')
+                    .find(|part| part.len() == 4 && part.chars().all(|ch| ch.is_ascii_digit()))
+                    .and_then(|part| part.parse::<u32>().ok())
             })
             .max()
             .unwrap_or(0)
@@ -7443,6 +7520,19 @@ mod tests {
         } else {
             std::env::remove_var("AEROBAG_DEBUG_RENDER_AMBIGUOUS_MISSED_TURN");
         }
+    }
+
+    #[test]
+    #[ignore = "manual buexre render for current worst audit failure"]
+    fn writes_current_buexre_overlay() {
+        clean_procedure_plot_output_dir();
+        render_procedure_overlay_to_paths(
+            "KGSP",
+            "I04",
+            "SPA",
+            "logical_heading_KGSP_I04_SPA",
+            true,
+        );
     }
 
     #[test]

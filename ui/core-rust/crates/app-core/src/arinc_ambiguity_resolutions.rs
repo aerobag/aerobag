@@ -10,6 +10,53 @@ impl ResolvedTurnDirection {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InventedPiEntryCourseReversal {
+    pub turn_direction: ResolvedTurnDirection,
+    pub outbound_intercept_angle_deg: f64,
+}
+
+pub fn invent_pi_entry_course_reversal_when_no_hold_is_available(
+    airport_id: &str,
+    procedure_id: &str,
+    route_type: &str,
+    transition_id: &str,
+    sequence: i32,
+    turn_to_pi_outbound_deg: f64,
+    clockwise_short_turn_to_pi_outbound: bool,
+) -> Option<InventedPiEntryCourseReversal> {
+    // KOMA I32R/OVR is the motivating case: the A-route arrives at BEEFF and
+    // ARINC immediately starts a PI row whose initial outbound course is nearly
+    // reciprocal. Unlike KILE VOR-A/SLIMM, this procedure does not encode a
+    // later same-fix hold that we can borrow as an authoritative course reversal.
+    //
+    // AIM says the depicted PT is still required without NoPT or straight-in
+    // clearance, but it does not specify exactly how to reverse from this awkward
+    // arrival geometry. We therefore invent a conservative first reversal: a
+    // turn in the short-turn direction until the airplane is on a 30-degree
+    // intercept heading for the PI outbound course. Keep this decision here so
+    // it stays visible as an ARINC/source-data apology rather than becoming
+    // ordinary planner logic.
+    let _ = (
+        airport_id,
+        procedure_id,
+        route_type,
+        transition_id,
+        sequence,
+    );
+    if turn_to_pi_outbound_deg < 150.0 {
+        return None;
+    }
+    Some(InventedPiEntryCourseReversal {
+        turn_direction: if clockwise_short_turn_to_pi_outbound {
+            ResolvedTurnDirection::Right
+        } else {
+            ResolvedTurnDirection::Left
+        },
+        outbound_intercept_angle_deg: 30.0,
+    })
+}
+
 pub fn borrow_later_same_fix_hold_for_excessive_pi_entry_turn(
     airport_id: &str,
     procedure_id: &str,
@@ -29,8 +76,41 @@ pub fn borrow_later_same_fix_hold_for_excessive_pi_entry_turn(
     // outbound, so the threshold must not convert ordinary PI entries into
     // borrowed holds. We chose 150 degrees as the line between "just turn
     // outbound" and "use the charted same-fix hold to reverse first."
-    let _ = (airport_id, procedure_id, route_type, transition_id, sequence);
+    let _ = (
+        airport_id,
+        procedure_id,
+        route_type,
+        transition_id,
+        sequence,
+    );
     turn_to_pi_outbound_deg >= 150.0
+}
+
+pub fn borrow_sibling_transition_hold_for_common_if_course_reversal(
+    airport_id: &str,
+    procedure_id: &str,
+    selected_transition_id: &str,
+    common_if_sequence: i32,
+    turn_to_common_course_deg: f64,
+) -> bool {
+    // KGSP I04/SPA and L04/SPA are the motivating cases. The selected SPA
+    // transition ends at OXABY on an outbound-ish CF, then the common segment
+    // begins inbound from OXABY. ARINC does encode the charted hold-in-lieu at
+    // OXABY, but as a different A-route transition ("A OXABY HF"), not inside
+    // the selected SPA transition. Borrow that sibling same-fix hold only when
+    // the selected transition cannot sensibly continue into the common course.
+    //
+    // This is the same kind of source-data apology as borrowing a later missed
+    // hold for a PI: the authority is the same-fix hold row, while the angle
+    // gate keeps us from turning every sibling IAF hold into ordinary handoff
+    // logic.
+    let _ = (
+        airport_id,
+        procedure_id,
+        selected_transition_id,
+        common_if_sequence,
+    );
+    turn_to_common_course_deg >= 150.0
 }
 
 pub fn handle_unspecified_missed_turn_to_same_fix_hold(

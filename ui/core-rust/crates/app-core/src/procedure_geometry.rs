@@ -925,7 +925,11 @@ fn build_procedure_leg_display_path(
                             )
                         {
                             let (mut hold_entry, mut hold_roles) =
-                                borrowed_hold_entry_elements_for_pi(step, hold_record, arrival_course_deg)?;
+                                borrowed_hold_entry_elements_for_pi(
+                                    step,
+                                    hold_record,
+                                    arrival_course_deg,
+                                )?;
                             let mut hold_sources = vec![debug_source!(); hold_entry.len()];
                             tag_hold_debug_sources(&mut hold_sources, &hold_roles);
                             if let Some(terminal_position) =
@@ -937,6 +941,20 @@ fn build_procedure_leg_display_path(
                             elements.append(&mut hold_entry);
                             debug_sources.append(&mut hold_sources);
                             hold_roles.clear();
+                        }
+                        if procedure_turn_start.is_none() {
+                            if let Some((
+                                mut reversal_elements,
+                                mut reversal_sources,
+                                terminal_position,
+                            )) =
+                                invented_pi_entry_course_reversal_elements(step, arrival_course_deg)
+                            {
+                                current_position = terminal_position;
+                                procedure_turn_start = Some(terminal_position);
+                                elements.append(&mut reversal_elements);
+                                debug_sources.append(&mut reversal_sources);
+                            }
                         }
                     }
                 }
@@ -1986,6 +2004,61 @@ fn borrowed_hold_entry_elements_for_pi(
         return None;
     }
     Some((elements, roles))
+}
+
+fn invented_pi_entry_course_reversal_elements(
+    pi_step: &ProcedureLegMaterializationRecord,
+    arrival_course_deg: f64,
+) -> Option<(Vec<LegDisplayElement>, Vec<String>, LatLon)> {
+    let fix = pi_step.nav_position?;
+    let pi_outbound_course_deg = procedure_turn_initial_outbound_course_deg(pi_step)?;
+    let turn_to_pi_outbound_deg =
+        angular_difference_degrees(arrival_course_deg, pi_outbound_course_deg);
+    let clockwise_short_turn = shortest_turn_clockwise(arrival_course_deg, pi_outbound_course_deg);
+    let resolution =
+        arinc_ambiguity_resolutions::invent_pi_entry_course_reversal_when_no_hold_is_available(
+            pi_step.key.airport_id.trim(),
+            pi_step.key.procedure_id.trim(),
+            pi_step.key.route_type.trim(),
+            pi_step.key.transition_id.trim(),
+            pi_step.sequence,
+            turn_to_pi_outbound_deg,
+            clockwise_short_turn,
+        )?;
+    let clockwise = resolution.turn_direction.clockwise();
+    let intercept_angle_deg = resolution.outbound_intercept_angle_deg;
+    let exit_heading_deg = if clockwise {
+        normalize_bearing_degrees(pi_outbound_course_deg + intercept_angle_deg)
+    } else {
+        normalize_bearing_degrees(pi_outbound_course_deg - intercept_angle_deg)
+    };
+    let sweep_degrees = heading_sweep_degrees(arrival_course_deg, exit_heading_deg, clockwise);
+    let turn_radius_nm = nominal_standard_rate_turn_radius_nm();
+    let turn_center =
+        turn_center_for_heading_change(fix, arrival_course_deg, clockwise, turn_radius_nm);
+    let turn_end = point_on_turn_center(turn_center, exit_heading_deg, clockwise, turn_radius_nm);
+    let intercept = true_intersect_heading_with_course(
+        turn_end,
+        exit_heading_deg,
+        fix,
+        pi_outbound_course_deg,
+    )?;
+    let mut elements = vec![LegDisplayElement::Arc {
+        center: turn_center,
+        radius_nm: turn_radius_nm,
+        start: fix,
+        end: turn_end,
+        clockwise,
+        sweep_degrees,
+    }];
+    if distance_between_points_nm(turn_end, intercept) > MIN_GEOMETRY_DISTANCE_NM {
+        elements.push(LegDisplayElement::Segment {
+            start: turn_end,
+            end: intercept,
+        });
+    }
+    let sources = vec![debug_source!(); elements.len()];
+    Some((elements, sources, intercept))
 }
 
 fn procedure_turn_initial_outbound_course_deg(

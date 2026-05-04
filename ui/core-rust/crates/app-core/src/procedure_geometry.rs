@@ -2024,8 +2024,7 @@ fn borrowed_same_fix_hold_for_excessive_pi_entry_turn<'a>(
     }
     following_segment_records.iter().find(|candidate| {
         matches!(candidate.path_termination.trim(), "HF" | "HM")
-            && candidate.nav_ref.is_some()
-            && candidate.nav_ref == pi_step.nav_ref
+            && same_fix_or_position(candidate, pi_step)
             && candidate.magnetic_course_deg.is_some()
             && matches!(
                 candidate.turn_direction.as_deref().map(str::trim),
@@ -2033,6 +2032,21 @@ fn borrowed_same_fix_hold_for_excessive_pi_entry_turn<'a>(
             )
             && nominal_hold_leg_length_nm(candidate.route_distance_or_time.as_deref()).is_some()
     })
+}
+
+fn same_fix_or_position(
+    candidate: &ProcedureLegMaterializationRecord,
+    pi_step: &ProcedureLegMaterializationRecord,
+) -> bool {
+    if candidate.nav_ref.is_some() && candidate.nav_ref == pi_step.nav_ref {
+        return true;
+    }
+    match (candidate.nav_position, pi_step.nav_position) {
+        (Some(candidate_position), Some(pi_position)) => {
+            distance_between_points_nm(candidate_position, pi_position) <= MIN_GEOMETRY_DISTANCE_NM
+        }
+        _ => false,
+    }
 }
 
 fn borrowed_hold_entry_elements_for_pi(
@@ -2049,63 +2063,49 @@ fn borrowed_hold_entry_elements_for_pi(
         _ => return None,
     };
     let leg_length_nm = nominal_hold_leg_length_nm(hold_record.route_distance_or_time.as_deref())?;
-    let (elements, mut roles) = hold_entry_elements(
+    let pi_outbound_course_deg = procedure_turn_initial_outbound_course_deg(pi_step)?;
+    let entry = hold_entry_elements_with_optional_protected_exit(
         fix,
         inbound_course_deg,
         clockwise,
         Some(arrival_course_deg),
         leg_length_nm,
         nominal_standard_rate_turn_radius_nm(),
+        Some(pi_outbound_course_deg),
+        true,
     );
-    let elements = if elements.is_empty() {
-        // If we arrive already on the hold inbound course, a normal direct hold
-        // entry has no separate entry leg. For PI borrowing, we still need the
-        // hold's protected-side turn to join the charted PT outbound course;
-        // KSJN VOR-A/PERRL is the motivating case.
-        borrowed_protected_side_turn_to_pi_outbound(
-            pi_step,
-            fix,
-            inbound_course_deg,
-            clockwise,
-            arrival_course_deg,
-            nominal_standard_rate_turn_radius_nm(),
-        )?
-    } else {
-        elements
-    };
-    if elements.is_empty() {
+    if entry.elements.is_empty() {
         return None;
     }
+    let elements = entry.elements;
+    let mut roles = entry.roles;
     if roles.is_empty() {
         roles = vec![HOLD_ENTRY_ELEMENT_ROLE.to_string(); elements.len()];
     }
     Some((elements, roles))
 }
 
-fn borrowed_protected_side_turn_to_pi_outbound(
-    pi_step: &ProcedureLegMaterializationRecord,
+fn protected_side_turn_to_course_intercept(
     fix: LatLon,
-    inbound_course_deg: f64,
-    clockwise: bool,
     arrival_course_deg: f64,
+    target_course_deg: f64,
+    clockwise: bool,
     turn_radius_nm: f64,
 ) -> Option<Vec<LegDisplayElement>> {
-    if angular_difference_degrees(arrival_course_deg, inbound_course_deg) > 5.0 {
-        return None;
-    }
-    let pi_outbound_course_deg = procedure_turn_initial_outbound_course_deg(pi_step)?;
-    protected_side_turn_to_course_intercept(
+    protected_side_turn_from_position_to_course_intercept(
         fix,
         arrival_course_deg,
-        pi_outbound_course_deg,
+        fix,
+        target_course_deg,
         clockwise,
         turn_radius_nm,
     )
 }
 
-fn protected_side_turn_to_course_intercept(
-    fix: LatLon,
+fn protected_side_turn_from_position_to_course_intercept(
+    start: LatLon,
     arrival_course_deg: f64,
+    target_course_anchor: LatLon,
     target_course_deg: f64,
     clockwise: bool,
     turn_radius_nm: f64,
@@ -2116,7 +2116,7 @@ fn protected_side_turn_to_course_intercept(
         normalize_bearing_degrees(target_course_deg - NOMINAL_COURSE_INTERCEPT_ANGLE_DEG)
     };
     let turn_center =
-        turn_center_for_heading_change(fix, arrival_course_deg, clockwise, turn_radius_nm);
+        turn_center_for_heading_change(start, arrival_course_deg, clockwise, turn_radius_nm);
     let turn_end = point_on_turn_center(
         turn_center,
         intercept_heading_deg,
@@ -2126,18 +2126,20 @@ fn protected_side_turn_to_course_intercept(
     let intercept = intersect_heading_with_course(
         turn_end,
         intercept_heading_deg,
-        fix,
+        target_course_anchor,
         target_course_deg,
-        fix,
+        target_course_anchor,
     )?;
     let target_course_unit = bearing_unit_vector(target_course_deg);
-    if projection_along_course_nm(fix, intercept, target_course_unit) <= MIN_GEOMETRY_DISTANCE_NM {
+    if projection_along_course_nm(target_course_anchor, intercept, target_course_unit)
+        <= MIN_GEOMETRY_DISTANCE_NM
+    {
         return None;
     }
     let mut elements = vec![LegDisplayElement::Arc {
         center: turn_center,
         radius_nm: turn_radius_nm,
-        start: fix,
+        start,
         end: turn_end,
         clockwise,
         sweep_degrees: heading_sweep_degrees(arrival_course_deg, intercept_heading_deg, clockwise),
@@ -3424,6 +3426,118 @@ fn nominal_standard_rate_turn_radius_nm() -> f64 {
     speed_nm_per_sec / rate_rad_per_sec
 }
 
+struct HoldEntryPrelude {
+    elements: Vec<LegDisplayElement>,
+    roles: Vec<String>,
+    entry_kind: Option<HoldEntryKind>,
+    terminal_course_deg: f64,
+}
+
+fn hold_entry_elements_with_optional_protected_exit(
+    fix: LatLon,
+    inbound_course_deg: f64,
+    clockwise: bool,
+    arrival_course_deg: Option<f64>,
+    leg_length_nm: f64,
+    turn_radius_nm: f64,
+    requested_exit_course_deg: Option<f64>,
+    allow_empty_entry_exit: bool,
+) -> HoldEntryPrelude {
+    let entry_kind = arrival_course_deg.map(|arrival_course_deg| {
+        classify_hold_entry(arrival_course_deg, inbound_course_deg, clockwise)
+    });
+    let (mut elements, mut roles) = hold_entry_elements(
+        fix,
+        inbound_course_deg,
+        clockwise,
+        arrival_course_deg,
+        leg_length_nm,
+        turn_radius_nm,
+    );
+    let mut terminal_course_deg = inbound_course_deg;
+    let Some(exit_course_deg) = requested_exit_course_deg else {
+        return HoldEntryPrelude {
+            elements,
+            roles,
+            entry_kind,
+            terminal_course_deg,
+        };
+    };
+    if elements.is_empty() {
+        if !allow_empty_entry_exit {
+            return HoldEntryPrelude {
+                elements,
+                roles,
+                entry_kind,
+                terminal_course_deg,
+            };
+        }
+        if let Some(arrival_course_deg) = arrival_course_deg {
+            if angular_difference_degrees(arrival_course_deg, inbound_course_deg) <= 5.0 {
+                if let Some(mut exit_elements) = protected_side_turn_to_course_intercept(
+                    fix,
+                    arrival_course_deg,
+                    exit_course_deg,
+                    clockwise,
+                    turn_radius_nm,
+                ) {
+                    roles.extend(vec![
+                        HOLD_ENTRY_ELEMENT_ROLE.to_string();
+                        exit_elements.len()
+                    ]);
+                    elements.append(&mut exit_elements);
+                    terminal_course_deg = exit_course_deg;
+                }
+            }
+        }
+        return HoldEntryPrelude {
+            elements,
+            roles,
+            entry_kind,
+            terminal_course_deg,
+        };
+    }
+    let drawn_terminal_course_deg = elements
+        .last()
+        .and_then(display_element_end_course_deg)
+        .unwrap_or(inbound_course_deg);
+    let terminal_position = elements
+        .last()
+        .and_then(display_element_end_position)
+        .unwrap_or(fix);
+    if angular_difference_degrees(inbound_course_deg, exit_course_deg) > 45.0
+        || angular_difference_degrees(drawn_terminal_course_deg, exit_course_deg) > 45.0
+        || !current_position_is_on_track(
+            terminal_position,
+            fix,
+            exit_course_deg,
+            MIN_GEOMETRY_DISTANCE_NM,
+        )
+    {
+        if let Some(mut exit_elements) = protected_side_turn_from_position_to_course_intercept(
+            terminal_position,
+            drawn_terminal_course_deg,
+            fix,
+            exit_course_deg,
+            clockwise,
+            turn_radius_nm,
+        ) {
+            roles.extend(vec![
+                HOLD_ENTRY_ELEMENT_ROLE.to_string();
+                exit_elements.len()
+            ]);
+            elements.append(&mut exit_elements);
+            terminal_course_deg = exit_course_deg;
+        }
+    }
+    HoldEntryPrelude {
+        elements,
+        roles,
+        entry_kind,
+        terminal_course_deg,
+    }
+}
+
 fn build_hold_display_path(
     fix: LatLon,
     inbound_course_deg: f64,
@@ -3443,16 +3557,30 @@ fn build_hold_display_path(
     };
 
     let inbound_end = fix;
-    let entry_kind = arrival_course_deg.map(|arrival_course_deg| {
-        classify_hold_entry(arrival_course_deg, inbound_course_deg, clockwise)
-    });
-    let (mut elements, mut element_roles) = hold_entry_elements(
+    let requested_entry_exit_course_deg = if stop_when_established_inbound {
+        arrival_course_deg
+            .map(|arrival_course_deg| {
+                classify_hold_entry(arrival_course_deg, inbound_course_deg, clockwise)
+            })
+            .filter(|entry_kind| !matches!(entry_kind, HoldEntryKind::Direct))
+            .and(following_course_deg)
+    } else {
+        None
+    };
+    let HoldEntryPrelude {
+        mut elements,
+        roles: mut element_roles,
+        entry_kind,
+        terminal_course_deg,
+    } = hold_entry_elements_with_optional_protected_exit(
         fix,
         inbound_course_deg,
         clockwise,
         arrival_course_deg,
         leg_length_nm,
         turn_radius_nm,
+        requested_entry_exit_course_deg,
+        false,
     );
     let mut debug_sources = vec![debug_source!(); elements.len()];
     let standard_first_turn_center = offset_latlon(
@@ -3492,32 +3620,6 @@ fn build_hold_display_path(
     );
     if stop_when_established_inbound {
         if !matches!(entry_kind, Some(HoldEntryKind::Direct) | None) {
-            let mut terminal_course_deg = inbound_course_deg;
-            let drawn_terminal_course_deg = elements
-                .last()
-                .and_then(display_element_end_course_deg)
-                .unwrap_or(inbound_course_deg);
-            let requested_exit_course_deg = following_course_deg.filter(|course| {
-                angular_difference_degrees(inbound_course_deg, *course) > 45.0
-                    || angular_difference_degrees(drawn_terminal_course_deg, *course) > 45.0
-            });
-            if let Some(exit_course_deg) = requested_exit_course_deg {
-                if let Some(mut exit_elements) = protected_side_turn_to_course_intercept(
-                    fix,
-                    drawn_terminal_course_deg,
-                    exit_course_deg,
-                    clockwise,
-                    turn_radius_nm,
-                ) {
-                    debug_sources.extend(vec![debug_source!(); exit_elements.len()]);
-                    element_roles.extend(vec![
-                        HOLD_ENTRY_ELEMENT_ROLE.to_string();
-                        exit_elements.len()
-                    ]);
-                    elements.append(&mut exit_elements);
-                    terminal_course_deg = exit_course_deg;
-                }
-            }
             prune_degenerate_display_elements_with_sources_and_roles(
                 &mut elements,
                 &mut debug_sources,

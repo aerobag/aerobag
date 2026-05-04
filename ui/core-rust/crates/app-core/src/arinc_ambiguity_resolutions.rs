@@ -16,6 +16,8 @@ pub struct InventedPiEntryCourseReversal {
     pub outbound_intercept_angle_deg: f64,
 }
 
+pub const SIMPLE_PI_ENTRY_MAX_TURN_DEG: f64 = 75.0;
+
 pub fn invent_pi_entry_course_reversal_when_no_hold_is_available(
     airport_id: &str,
     procedure_id: &str,
@@ -79,8 +81,11 @@ pub fn borrow_later_same_fix_hold_for_excessive_pi_entry_turn(
     //
     // DARTE on the same plate needs the PI but only turns about 67 degrees to
     // outbound, so the threshold must not convert ordinary PI entries into
-    // borrowed holds. Use the same 120-degree continuity budget as invented PI
-    // entry reversals; if a charted same-fix hold exists, prefer it.
+    // borrowed holds. Use SIMPLE_PI_ENTRY_MAX_TURN_DEG as the single boundary:
+    // if the turn is small enough to fillet later, keep the simple PI entry;
+    // otherwise, borrow a charted same-fix/same-position hold when one exists.
+    // KABI I35R/MEDLY is the motivating same-position case, where TOMHI and the
+    // later AB hold are co-located but not the same ARINC nav_ref.
     let _ = (
         airport_id,
         procedure_id,
@@ -88,7 +93,7 @@ pub fn borrow_later_same_fix_hold_for_excessive_pi_entry_turn(
         transition_id,
         sequence,
     );
-    turn_to_pi_outbound_deg > 120.0
+    turn_to_pi_outbound_deg > SIMPLE_PI_ENTRY_MAX_TURN_DEG
 }
 
 pub fn borrow_sibling_transition_hold_for_common_if_course_reversal(

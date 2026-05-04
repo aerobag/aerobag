@@ -2552,6 +2552,7 @@ enum HeadingContinuityAllowance {
     PublishedWaypointTurnWithRoom,
     DeferredFlyByTfTurn,
     PublishedCourseIntercept,
+    PublishedProcedureTurnEntry,
     PublishedMissedRouteTurnWithRoom,
 }
 
@@ -2570,12 +2571,13 @@ impl HeadingContinuityAllowance {
             Self::PublishedWaypointTurnWithRoom => "published_waypoint_turn_with_room",
             Self::DeferredFlyByTfTurn => "deferred_fly_by_tf_turn",
             Self::PublishedCourseIntercept => "published_course_intercept",
+            Self::PublishedProcedureTurnEntry => "published_procedure_turn_entry",
             Self::PublishedMissedRouteTurnWithRoom => "published_missed_route_turn_with_room",
         }
     }
 
     #[cfg(test)]
-    fn all() -> [Self; 12] {
+    fn all() -> [Self; 13] {
         [
             Self::PublishedAcuteTurn,
             Self::InternalGeneratedDisplayPathTurn,
@@ -2588,6 +2590,7 @@ impl HeadingContinuityAllowance {
             Self::PublishedWaypointTurnWithRoom,
             Self::DeferredFlyByTfTurn,
             Self::PublishedCourseIntercept,
+            Self::PublishedProcedureTurnEntry,
             Self::PublishedMissedRouteTurnWithRoom,
         ]
     }
@@ -2891,6 +2894,12 @@ fn named_heading_continuity_allowance_with_next(
     if is_published_course_intercept(previous, current) {
         return Some((HeadingContinuityAllowance::PublishedCourseIntercept, 120.0));
     }
+    if is_published_procedure_turn_entry(previous, current) {
+        return Some((
+            HeadingContinuityAllowance::PublishedProcedureTurnEntry,
+            arinc_ambiguity_resolutions::SIMPLE_PI_ENTRY_MAX_TURN_DEG,
+        ));
+    }
     if is_published_missed_route_turn_with_room(previous, current) {
         return Some((
             HeadingContinuityAllowance::PublishedMissedRouteTurnWithRoom,
@@ -2940,12 +2949,18 @@ fn is_hold_entry_generated_course_intercept(
     previous: &DisplayElementHeadingSignature,
     current: &DisplayElementHeadingSignature,
 ) -> bool {
-    matches!(previous.element_role.as_deref(), Some("hold_entry"))
-        && matches!(current.element_role.as_deref(), Some("hold_entry"))
-        && previous.end_label == "synthesized-path"
-        && current.start_label == "synthesized-path"
-        && previous.element_kind == DisplayElementKind::Arc
-        && current.element_kind == DisplayElementKind::Segment
+    if !matches!(previous.element_role.as_deref(), Some("hold_entry"))
+        || previous.end_label != "synthesized-path"
+        || current.start_label != "synthesized-path"
+        || current.element_kind != DisplayElementKind::Segment
+    {
+        return false;
+    }
+    (matches!(current.element_role.as_deref(), Some("hold_entry"))
+        && previous.element_kind == DisplayElementKind::Arc)
+        || (previous.element_kind == DisplayElementKind::Segment
+            && current.path_termination == "PI"
+            && current.element_role.is_none())
 }
 
 fn is_internal_hold_geometry_turn(
@@ -3062,7 +3077,15 @@ fn is_published_waypoint_turn_with_room(
     }
     let previous_len_nm = great_circle_distance_nm(previous.start_position, previous.end_position);
     let current_len_nm = great_circle_distance_nm(current.start_position, current.end_position);
-    previous_len_nm >= 1.5 && current_len_nm >= 1.5
+    let minimum_leg_len_nm =
+        if previous.path_termination == "TF" && current.path_termination == "TF" {
+            // Short RNAV stepdown fixes can be close together but still chart a real fly-by
+            // waypoint turn; KMCI I01R/HELAN at UJGAV is the motivating example.
+            1.0
+        } else {
+            1.5
+        };
+    previous_len_nm >= minimum_leg_len_nm && current_len_nm >= minimum_leg_len_nm
 }
 
 fn is_published_waypoint_turn_via_short_fc_stub(
@@ -3149,6 +3172,34 @@ fn is_published_course_intercept(
     let previous_len_nm = great_circle_distance_nm(previous.start_position, previous.end_position);
     let current_len_nm = great_circle_distance_nm(current.start_position, current.end_position);
     previous_len_nm >= 1.5 && current_len_nm >= 1.5
+}
+
+fn is_published_procedure_turn_entry(
+    previous: &DisplayElementHeadingSignature,
+    current: &DisplayElementHeadingSignature,
+) -> bool {
+    if previous.path_termination != "TF" || current.path_termination != "PI" {
+        return false;
+    }
+    if previous.element_kind != DisplayElementKind::Segment
+        || current.element_kind != DisplayElementKind::Segment
+    {
+        return false;
+    }
+    if previous.end_label == "synthesized-path"
+        || current.start_label == "synthesized-path"
+        || previous.end_label != current.start_label
+    {
+        return false;
+    }
+    if !positions_nearly_equal(previous.end_position, current.start_position) {
+        return false;
+    }
+    let previous_len_nm = great_circle_distance_nm(previous.start_position, previous.end_position);
+    let current_len_nm = great_circle_distance_nm(current.start_position, current.end_position);
+    // Short feeders into a charted PI are legitimate intercepts, but keep this
+    // below the deferred KCBF/OVR 95-degree case that still needs resolver work.
+    previous_len_nm >= 0.9 && current_len_nm >= 3.0
 }
 
 fn is_published_missed_route_turn_with_room(
@@ -7956,10 +8007,10 @@ mod tests {
     fn writes_current_buexre_overlay() {
         clean_procedure_plot_output_dir();
         render_procedure_overlay_to_paths(
-            "KCGZ",
-            "R23",
-            "TFD",
-            "drawn_heading_KCGZ_R23_TFD",
+            "KABI",
+            "I35R",
+            "MEDLY",
+            "logical_heading_KABI_I35R_MEDLY",
             true,
         );
     }

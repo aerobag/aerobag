@@ -7102,12 +7102,6 @@ mod tests {
             .unwrap_or(0)
     }
 
-    fn plate_pixel_area_sort_key(path: &Path) -> u64 {
-        image::image_dimensions(path)
-            .map(|(width, height)| u64::from(width) * u64::from(height))
-            .unwrap_or(0)
-    }
-
     fn find_matching_plate_path(
         plate_index: &HashMap<String, Vec<PathBuf>>,
         airport_id: &str,
@@ -7137,9 +7131,6 @@ mod tests {
             .max_by(|left, right| {
                 plate_cycle_sort_key(left)
                     .cmp(&plate_cycle_sort_key(right))
-                    .then_with(|| {
-                        plate_pixel_area_sort_key(left).cmp(&plate_pixel_area_sort_key(right))
-                    })
                     .then_with(|| right.cmp(left))
             })
             .cloned()

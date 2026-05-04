@@ -318,6 +318,9 @@ def stage_nav_kv() -> None:
 def stage_bundle_manifests() -> None:
     ensure_hard_link(CURRENT_ARTIFACTS_FILE, WEB_STATIC_ROOT / "current-artifacts.json")
     ensure_hard_link(PRODUCT_BUILD_FILE, WEB_STATIC_ROOT / "cycle-bundle.json")
+    build_status = ARTIFACT_ROOT / PACKAGED_DIR / "build-status.html"
+    if build_status.is_file():
+        ensure_hard_link(build_status, WEB_STATIC_ROOT / "build-status.html")
 
 
 def stage_icons() -> None:
@@ -367,7 +370,7 @@ def current_stage_stamp() -> dict:
             for package in PRODUCT_BUILD.get("packages", [])
             if isinstance(package, dict)
         ],
-        "version": 9,
+        "version": 10,
     }
 
 

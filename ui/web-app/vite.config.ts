@@ -414,6 +414,12 @@ function aerobagStaticPlugin(): Plugin {
         const targetRoot = path.join(outputDir, targetName);
         ensureLinkedTree(sourceRoot, targetRoot);
       }
+      for (const filename of ["build-status.html"] as const) {
+        const sourcePath = path.join(staticRoot, filename);
+        if (fs.existsSync(sourcePath)) {
+          ensureLinkedFile(sourcePath, path.join(outputDir, filename));
+        }
+      }
       for (const productId of currentStaticProductIdsWithPrefix("shaded-relief-")) {
         const sourceRoot = resolveCurrentStaticProductRoot(productId);
         if (!sourceRoot) {

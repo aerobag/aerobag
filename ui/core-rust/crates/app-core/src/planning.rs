@@ -2305,11 +2305,17 @@ fn waypoint_actions_for_row(
 fn top_level_waypoint_row_leg_index(plan: &FlightPlan, component_index: usize) -> Option<usize> {
     let leg_index = component_index.checked_sub(1).unwrap_or(0);
     let leg = plan.resolved_legs.get(leg_index)?;
-    match leg.source {
-        ResolvedLegSource::RouteComponent {
-            component_index: source_component_index,
-        } if source_component_index == leg_index => Some(leg_index),
-        _ => None,
+    let Some(RouteComponent::Waypoint { waypoint }) = plan.route_components.get(component_index)
+    else {
+        return None;
+    };
+    if component_index == 0 {
+        return Some(leg_index);
+    }
+    if &leg.to == waypoint {
+        Some(leg_index)
+    } else {
+        None
     }
 }
 
@@ -6395,6 +6401,45 @@ mod tests {
                 .and_then(|guidance| guidance.active_to_row_uid.as_ref()),
             Some(&clicked_duplicate_uid)
         );
+    }
+
+    #[test]
+    fn appending_duplicate_waypoint_preserves_active_row_and_activate_leg_actions() {
+        let appended = insert_waypoint(
+            &sample_duplicate_waypoint_plan(),
+            4,
+            false,
+            NavRef::Airport("KAAA".to_string()),
+        )
+        .unwrap();
+        let ui = project_ui_state(&appended);
+        let rows = ui.display_rows;
+        let guidance = ui.guidance.as_ref().expect("guidance");
+        let active_to_uid = guidance
+            .active_to_row_uid
+            .as_ref()
+            .expect("active to row uid");
+        let active_to_row = rows
+            .iter()
+            .find(|row| row.uid == *active_to_uid)
+            .expect("active to row");
+
+        assert_eq!(guidance.active_leg_index, Some(0));
+        assert_eq!(active_to_row.nav_ref, Some(NavRef::Fix("IAF".to_string())));
+        for row in rows.iter().filter(|row| {
+            row.row_kind == FlightPlanDisplayRowKind::Waypoint && row.component_index.is_some()
+        }) {
+            let activate_leg = row
+                .actions
+                .iter()
+                .find(|action| action.id == FlightPlanRowActionId::ActivateLeg)
+                .expect("activate-leg action");
+            assert!(
+                activate_leg.enabled,
+                "activate leg should stay enabled for {}",
+                row.uid
+            );
+        }
     }
 
     #[test]

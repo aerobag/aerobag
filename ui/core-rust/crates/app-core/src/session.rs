@@ -2774,6 +2774,83 @@ mod tests {
     }
 
     #[test]
+    fn row_action_activate_leg_works_after_on_plan_direct_to() {
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            sample_guided_plan(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+        push_situation_sample_in_session(
+            init.handle,
+            SituationSample {
+                source_id: OwnshipSourceId("test-gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 1_000,
+                received_time_epoch_ms: 1_000,
+                position: Some(LatLon {
+                    lat: 47.5,
+                    lon: -122.0,
+                }),
+                track_deg_true: Some(45.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: Some(3000.0),
+                pressure_altitude_ft: None,
+            },
+        )
+        .expect("push sample");
+
+        let after_direct_to = activate_direct_to_nav_ref_in_session(
+            init.handle,
+            NavRef::Fix("VPDUB".to_string()),
+        )
+        .expect("direct-to on-plan fix");
+        let target_row = after_direct_to
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .expect("plan ui")
+            .display_rows
+            .iter()
+            .find(|row| row.nav_ref == Some(NavRef::Airport("KVCB".to_string())))
+            .expect("destination row")
+            .clone();
+        let activate_leg = target_row
+            .actions
+            .iter()
+            .find(|action| action.id == FlightPlanRowActionId::ActivateLeg)
+            .expect("activate-leg action");
+        assert!(
+            target_row.enabled,
+            "on-plan direct-to must not disable underlying rows"
+        );
+        assert!(
+            activate_leg.enabled,
+            "on-plan direct-to must leave activate-leg available"
+        );
+
+        let after_activate_leg = perform_flight_plan_row_action_in_session(
+            init.handle,
+            target_row.uid,
+            activate_leg.uid.clone(),
+        )
+        .expect("activate leg after direct-to");
+        let guidance = after_activate_leg
+            .app_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .expect("guidance");
+
+        assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
+        assert!(guidance.direct_to.is_none());
+        assert_eq!(guidance.active_leg_index, 1);
+    }
+
+    #[test]
     fn straight_leg_bearing_uses_geographic_course() {
         let from = LatLon {
             lat: 47.0,

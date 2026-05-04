@@ -157,6 +157,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -263,6 +265,7 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
 
@@ -283,6 +286,7 @@ private const val TerrainAltitudeBucketFt = 200
 private const val MapLayerLogTag = "MapLayers"
 private const val TileBudgetLogTag = "AerobagTileBudget"
 private const val DecodedTileCacheMaxBytes = 96L * 1024L * 1024L
+private const val MapTileLoadWorkerCount = 4
 private val VampsPosition = LatLon(47.3648944444444, -121.980275)
 
 private data class PageTilePaintTiming(
@@ -1109,6 +1113,11 @@ private data class LoadedTileBitmap(
     val decodeMs: Long,
 )
 
+private data class LoadedRenderTileBitmap(
+    val tile: net.jonh.aerobag.prototype.domain.RenderTile,
+    val result: LoadedTileBitmap,
+)
+
 private data class DecodedTileCacheEntry(
     val bitmap: androidx.compose.ui.graphics.ImageBitmap,
     val decodedBytes: Long,
@@ -1438,6 +1447,68 @@ private fun screenToWorldOffset(
 }
 
 private fun terrainAltitudeBucketForOwnship(ownship: OwnshipRenderState): Double? = null
+
+private suspend fun loadVisibleTileBitmaps(
+    context: Context,
+    mapId: String,
+    missingTiles: List<net.jonh.aerobag.prototype.domain.RenderTile>,
+): List<LoadedRenderTileBitmap> = coroutineScope {
+    if (missingTiles.isEmpty()) {
+        return@coroutineScope emptyList()
+    }
+    val workQueue = Channel<net.jonh.aerobag.prototype.domain.RenderTile>(capacity = missingTiles.size)
+    val resultQueue = Channel<LoadedRenderTileBitmap>(capacity = missingTiles.size)
+    val workerCount = min(MapTileLoadWorkerCount, missingTiles.size)
+    repeat(workerCount) {
+        launch(Dispatchers.IO) {
+            for (tile in workQueue) {
+                currentCoroutineContext().ensureActive()
+                resultQueue.send(LoadedRenderTileBitmap(tile, loadOneVisibleTileBitmap(context, mapId, tile)))
+            }
+        }
+    }
+    missingTiles.forEach { tile ->
+        currentCoroutineContext().ensureActive()
+        workQueue.send(tile)
+    }
+    workQueue.close()
+    List(missingTiles.size) {
+        currentCoroutineContext().ensureActive()
+        resultQueue.receive()
+    }
+}
+
+private suspend fun loadOneVisibleTileBitmap(
+    context: Context,
+    mapId: String,
+    tile: net.jonh.aerobag.prototype.domain.RenderTile,
+): LoadedTileBitmap {
+    val key = renderTileKey(tile)
+    return try {
+        val readStartMs = SystemClock.elapsedRealtime()
+        val bytes = SectionalPackages.loadTileBytes(context, tile)
+        val readMs = SystemClock.elapsedRealtime() - readStartMs
+        currentCoroutineContext().ensureActive()
+        if (bytes == null) {
+            LoadedTileBitmap(key, null, 0, 0L, readMs, 0L)
+        } else {
+            val decodeStartMs = SystemClock.elapsedRealtime()
+            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            val decodeMs = SystemClock.elapsedRealtime() - decodeStartMs
+            currentCoroutineContext().ensureActive()
+            LoadedTileBitmap(key, bitmap?.asImageBitmap(), bytes.size, bitmap?.byteCount?.toLong() ?: 0L, readMs, decodeMs)
+        }
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Throwable) {
+        Log.w(
+            TileBudgetLogTag,
+            "tile load failed map=$mapId package=${tile.mapView.packageName ?: tile.mapViewId} storage=${tile.mapView.storageKind} z=${tile.zoom} x=${tile.x} y=${tile.yTms}",
+            error,
+        )
+        LoadedTileBitmap(key, null, 0, 0L, 0L, 0L)
+    }
+}
 
 private fun packTerrainTileBytes(tileBytesList: List<ByteArray>): ByteArray {
     val totalBytes = 4 + tileBytesList.sumOf { 4 + it.size }
@@ -4297,38 +4368,10 @@ private fun MapExplorerPage(
             return@LaunchedEffect
         }
         val loadStartMs = SystemClock.elapsedRealtime()
-        val tileResults = withContext(Dispatchers.IO) {
-            missingTiles.map { tile ->
-                currentCoroutineContext().ensureActive()
-                val key = renderTileKey(tile)
-                try {
-                    val readStartMs = SystemClock.elapsedRealtime()
-                    val bytes = SectionalPackages.loadTileBytes(context, tile)
-                    val readMs = SystemClock.elapsedRealtime() - readStartMs
-                    currentCoroutineContext().ensureActive()
-                    if (bytes == null) {
-                        LoadedTileBitmap(key, null, 0, 0L, readMs, 0L)
-                    } else {
-                        val decodeStartMs = SystemClock.elapsedRealtime()
-                        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                        val decodeMs = SystemClock.elapsedRealtime() - decodeStartMs
-                        currentCoroutineContext().ensureActive()
-                        LoadedTileBitmap(key, bitmap?.asImageBitmap(), bytes.size, bitmap?.byteCount?.toLong() ?: 0L, readMs, decodeMs)
-                    }
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (error: Throwable) {
-                    Log.w(
-                        TileBudgetLogTag,
-                        "tile load failed map=${selectedMap.id} package=${tile.mapView.packageName ?: tile.mapViewId} storage=${tile.mapView.storageKind} z=${tile.zoom} x=${tile.x} y=${tile.yTms}",
-                        error,
-                    )
-                    LoadedTileBitmap(key, null, 0, 0L, 0L, 0L)
-                }
-            }
-        }
+        val loadedTiles = loadVisibleTileBitmaps(context.applicationContext, selectedMap.id, missingTiles)
+        val tileResults = loadedTiles.map { it.result }
         tileBitmapCache.putAll(tileResults.associate { it.key to it.bitmap })
-        missingTiles.zip(tileResults).forEach { (tile, result) ->
+        loadedTiles.forEach { (tile, result) ->
             val bitmap = result.bitmap ?: return@forEach
             decodedTileBitmapCache.put(decodedTileCacheKey(tile), bitmap, result.decodedBytes)
         }

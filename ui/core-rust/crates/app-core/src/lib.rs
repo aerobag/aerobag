@@ -2709,9 +2709,10 @@ fn validate_heading_continuity_checks(
         &DisplayElementHeadingSignature,
         &DisplayElementHeadingSignature,
     )> = None;
-    for window in checks.windows(2) {
-        let previous = &window[0];
-        let current = &window[1];
+    for index in 0..checks.len().saturating_sub(1) {
+        let previous = &checks[index];
+        let current = &checks[index + 1];
+        let next = checks.get(index + 2);
         if !positions_nearly_equal(previous.end_position, current.start_position) {
             let gap_nm = great_circle_distance_nm(previous.end_position, current.start_position);
             if worst_gap
@@ -2722,7 +2723,7 @@ fn validate_heading_continuity_checks(
             }
             continue;
         }
-        let allowed_delta_deg = continuity_heading_tolerance_deg(previous, current);
+        let allowed_delta_deg = continuity_heading_tolerance_deg(previous, current, next);
         for (delta, heading_mode) in [
             (
                 angular_difference_degrees(previous.end_course_deg, current.start_course_deg),
@@ -2822,16 +2823,20 @@ fn positions_nearly_equal(a: LatLon, b: LatLon) -> bool {
 fn continuity_heading_tolerance_deg(
     previous: &DisplayElementHeadingSignature,
     current: &DisplayElementHeadingSignature,
+    next: Option<&DisplayElementHeadingSignature>,
 ) -> f64 {
-    if let Some((_, allowed_delta_deg)) = named_heading_continuity_allowance(previous, current) {
+    if let Some((_, allowed_delta_deg)) =
+        named_heading_continuity_allowance_with_next(previous, current, next)
+    {
         return allowed_delta_deg;
     }
     continuity_path_boundary_tolerance_deg(previous, current)
 }
 
-fn named_heading_continuity_allowance(
+fn named_heading_continuity_allowance_with_next(
     previous: &DisplayElementHeadingSignature,
     current: &DisplayElementHeadingSignature,
+    next: Option<&DisplayElementHeadingSignature>,
 ) -> Option<(HeadingContinuityAllowance, f64)> {
     if let Some(allowed_delta_deg) = published_acute_turn_heading_tolerance_deg(previous, current) {
         return Some((
@@ -2889,6 +2894,12 @@ fn named_heading_continuity_allowance(
         ));
     }
     if is_published_waypoint_turn_with_room(previous, current) {
+        return Some((
+            HeadingContinuityAllowance::PublishedWaypointTurnWithRoom,
+            120.0,
+        ));
+    }
+    if is_published_waypoint_turn_via_short_fc_stub(previous, current, next) {
         return Some((
             HeadingContinuityAllowance::PublishedWaypointTurnWithRoom,
             120.0,
@@ -3039,6 +3050,46 @@ fn is_published_waypoint_turn_with_room(
     let previous_len_nm = great_circle_distance_nm(previous.start_position, previous.end_position);
     let current_len_nm = great_circle_distance_nm(current.start_position, current.end_position);
     previous_len_nm >= 1.5 && current_len_nm >= 1.5
+}
+
+fn is_published_waypoint_turn_via_short_fc_stub(
+    previous: &DisplayElementHeadingSignature,
+    current: &DisplayElementHeadingSignature,
+    next: Option<&DisplayElementHeadingSignature>,
+) -> bool {
+    let Some(next) = next else {
+        return false;
+    };
+    if !matches!(current.path_termination.as_str(), "FC" | "CF") {
+        return false;
+    }
+    if previous.element_kind != DisplayElementKind::Segment
+        || current.element_kind != DisplayElementKind::Segment
+        || next.element_kind != DisplayElementKind::Segment
+    {
+        return false;
+    }
+    if previous.end_label == "synthesized-path"
+        || current.start_label == "synthesized-path"
+        || current.end_label != "synthesized-path"
+        || next.start_label != "synthesized-path"
+        || next.end_label == "synthesized-path"
+    {
+        return false;
+    }
+    if previous.end_label != current.start_label {
+        return false;
+    }
+    if !positions_nearly_equal(current.end_position, next.start_position) {
+        return false;
+    }
+    if angular_difference_degrees(current.end_course_deg, next.start_course_deg) > 10.0 {
+        return false;
+    }
+    let previous_len_nm = great_circle_distance_nm(previous.start_position, previous.end_position);
+    let current_len_nm = great_circle_distance_nm(current.start_position, current.end_position);
+    let next_len_nm = great_circle_distance_nm(next.start_position, next.end_position);
+    previous_len_nm >= 1.5 && current_len_nm <= 1.0 && next_len_nm >= 1.5
 }
 
 fn is_deferred_fly_by_tf_turn(
@@ -7475,11 +7526,12 @@ mod tests {
                 &case.airport_id,
                 &materialized,
             );
-            for window in signatures.windows(2) {
-                let previous = &window[0];
-                let current = &window[1];
+            for index in 0..signatures.len().saturating_sub(1) {
+                let previous = &signatures[index];
+                let current = &signatures[index + 1];
+                let next = signatures.get(index + 2);
                 let Some((allowance, allowed_delta_deg)) =
-                    named_heading_continuity_allowance(previous, current)
+                    named_heading_continuity_allowance_with_next(previous, current, next)
                 else {
                     continue;
                 };

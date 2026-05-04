@@ -417,17 +417,6 @@ export type NavSymbolFeature = {
   longest_runway_heading_true_deg: number | null;
 };
 
-export type ProcedureLoadTarget = {
-  airport_id: string;
-  procedure_id: string;
-  kind: ProcedureKind;
-  replace_component_index: number | null;
-  start_component_index: number;
-  end_component_index: number;
-  preferred_choice: ProcedureSpecChoice | null;
-  valid_choices: ProcedureSpecChoice[];
-};
-
 export type PlateProcedureLoadCandidateInput = {
   airport_id: string;
   cifp_id: string;
@@ -436,15 +425,8 @@ export type PlateProcedureLoadCandidateInput = {
 };
 
 export type ProcedureLoadOption = {
+  load_id: string;
   label: string;
-  airport_id: string;
-  procedure_id: string;
-  kind: ProcedureKind;
-  replace_component_index: number | null;
-  start_component_index: number;
-  end_component_index: number;
-  runway_transition: string | null;
-  enroute_transition: string | null;
 };
 
 export type FlightPlanUiMutation = {

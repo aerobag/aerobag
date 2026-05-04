@@ -134,9 +134,10 @@ pub use session::{
     ingest_tfrs_in_session, insert_airway_at_flight_plan_row_in_session,
     insert_nav_kv_page_for_attached_sessions, insert_waypoint_at_flight_plan_row_in_session,
     insert_waypoint_best_position_in_session, load_playback_trace_in_session,
-    move_waypoint_in_session, pause_playback_in_session, perform_flight_plan_row_action_in_session,
-    play_playback_in_session, push_situation_sample_in_session, register_ownship_source_in_session,
-    remove_leg_in_session, remove_top_level_waypoint_by_nav_ref_in_session,
+    load_plate_procedure_in_session, move_waypoint_in_session, pause_playback_in_session,
+    perform_flight_plan_row_action_in_session, play_playback_in_session,
+    push_situation_sample_in_session, register_ownship_source_in_session, remove_leg_in_session,
+    remove_top_level_waypoint_by_nav_ref_in_session,
     render_terrain_overlay_tile_in_session, render_terrain_overlay_tiles_in_session,
     replace_flight_plan_in_session, restore_chart_page_state_in_session,
     restore_direct_to_in_session, seek_playback_in_session, select_airport_in_session,
@@ -224,13 +225,15 @@ pub struct PlateProcedureLoadCandidateInput {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcedureLoadOption {
+    pub load_id: String,
     pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcedureLoadCommand {
     pub airport_id: String,
     pub procedure_id: String,
     pub kind: ProcedureKind,
-    pub replace_component_index: Option<usize>,
-    pub start_component_index: usize,
-    pub end_component_index: usize,
     pub runway_transition: Option<String>,
     pub enroute_transition: Option<String>,
 }
@@ -880,20 +883,24 @@ pub fn describe_plate_procedure_load_options(
             .unwrap_or_else(|| target.valid_choices.clone());
         let include_procedure_id = choices.len() > 1 || target.valid_choices.len() > 1;
         for choice in choices {
-            loads.push(ProcedureLoadOption {
-                label: format_procedure_load_option_label(
-                    &target.procedure_id,
-                    &choice,
-                    include_procedure_id,
-                ),
+            let label = format_procedure_load_option_label(
+                &target.procedure_id,
+                &choice,
+                include_procedure_id,
+            );
+            let command = ProcedureLoadCommand {
                 airport_id: target.airport_id.clone(),
                 procedure_id: target.procedure_id.clone(),
                 kind: target.kind.clone(),
-                replace_component_index: target.replace_component_index,
-                start_component_index: target.start_component_index,
-                end_component_index: target.end_component_index,
                 runway_transition: choice.runway_transition,
                 enroute_transition: choice.enroute_transition,
+            };
+            loads.push(ProcedureLoadOption {
+                load_id: serde_json::to_string(&command).map_err(|err| AppError {
+                    kind: AppErrorKind::Internal,
+                    message: err.to_string(),
+                })?,
+                label,
             });
         }
     }

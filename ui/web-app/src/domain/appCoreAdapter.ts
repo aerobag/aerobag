@@ -19,7 +19,6 @@ import type {
   MapFollowUiState,
   GeometryJson,
   MapViewOptionJson,
-  MaterializedProcedure,
   NavRef,
   NavSymbolFeature,
   OwnshipSelectionCommand,
@@ -444,6 +443,7 @@ export interface UiSession {
   insertWaypointAtFlightPlanRow(rowUid: string, before: boolean, waypoint: NavRef): Promise<UiSessionSnapshot>;
   insertAirwayAtFlightPlanRow(rowUid: string, presentation: AirwayPresentationPlan, entryIndex: number, exitIndex: number): Promise<UiSessionSnapshot>;
   selectProcedureAtFlightPlanRow(rowUid: string, airportId: string, procedureId: string, kind: ProcedureKind, runwayTransition: string | null, enrouteTransition: string | null): Promise<UiSessionSnapshot>;
+  loadPlateProcedure(loadId: string): Promise<UiSessionSnapshot>;
   removeTopLevelWaypointByNavRef(navRef: NavRef): Promise<UiSessionSnapshot>;
   activateDirectTo(navRef: NavRef): Promise<UiSessionSnapshot>;
   restoreDirectTo(): Promise<UiSessionSnapshot>;
@@ -522,25 +522,6 @@ export interface AppCoreAdapter {
   ): Promise<AirwayPresentationPlan>;
   listProcedures(airportId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureSummary[]>;
   describeProcedureOptions(airportId: string, procedureId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureOptions>;
-  insertProcedureMaterializedUi(
-    plan: FlightPlan,
-    startComponentIndex: number,
-    endComponentIndex: number,
-    built: MaterializedProcedure,
-  ): Promise<FlightPlanUiMutation>;
-  replaceProcedureMaterializedUi(
-    plan: FlightPlan,
-    componentIndex: number,
-    built: MaterializedProcedure,
-  ): Promise<FlightPlanUiMutation>;
-  materializeProcedure(
-    airportId: string,
-    procedureId: string,
-    kind: "sid" | "star" | "approach",
-    runwayTransition: string | null,
-    enrouteTransition: string | null,
-    componentIndex: number,
-  ): Promise<MaterializedProcedure>;
   findProcedurePlateMatch(airportId: string, cifpId: string): Promise<CifpTppMatch | null>;
   describePlateProcedureLoads(plan: FlightPlan, plateId: string): Promise<ProcedureLoadOption[]>;
 }
@@ -678,6 +659,7 @@ type WasmModule = {
     runwayTransitionJson: string,
     enrouteTransitionJson: string,
   ): Promise<string> | string;
+  load_plate_procedure_in_session(sessionHandle: number, loadId: string): Promise<string> | string;
   activate_direct_to_nav_ref_in_session(sessionHandle: number, targetJson: string): Promise<string> | string;
   restore_direct_to_in_session(sessionHandle: number): Promise<string> | string;
   perform_flight_plan_row_action_in_session(sessionHandle: number, rowUid: string, actionUid: string): Promise<string> | string;
@@ -709,17 +691,6 @@ type WasmModule = {
   suspend_sequencing_ui(planJson: string): Promise<string> | string;
   unsuspend_sequencing_ui(planJson: string): Promise<string> | string;
   sequence_active_leg_ui(planJson: string): Promise<string> | string;
-  insert_procedure_materialized_ui(
-    planJson: string,
-    startComponentIndex: number,
-    endComponentIndex: number,
-    builtJson: string,
-  ): Promise<string> | string;
-  replace_procedure_materialized_ui(
-    planJson: string,
-    componentIndex: number,
-    builtJson: string,
-  ): Promise<string> | string;
 };
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
@@ -939,6 +910,15 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
               JSON.stringify(runwayTransition),
               JSON.stringify(enrouteTransition),
             ),
+          ),
+        );
+        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        return snapshot;
+      },
+      loadPlateProcedure: async (loadId) => {
+        snapshot = await withSessionRetry(async () =>
+          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+            this.module.load_plate_procedure_in_session(handle, loadId),
           ),
         );
         await syncGuidanceGeometry(snapshot.app_state.active_plan);
@@ -1390,63 +1370,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     });
   }
 
-  async insertProcedureMaterializedUi(
-    plan: FlightPlan,
-    startComponentIndex: number,
-    endComponentIndex: number,
-    built: MaterializedProcedure,
-  ): Promise<FlightPlanUiMutation> {
-    const result = JSON.parse(
-      await this.module.insert_procedure_materialized_ui(
-        JSON.stringify(plan),
-        startComponentIndex,
-        endComponentIndex,
-        JSON.stringify(built),
-      ),
-    ) as { mutation: { plan: FlightPlan }; ui_state: FlightPlanUiState };
-    return {
-      plan: result.mutation.plan,
-      ui_state: await this.enrichFlightPlanUiState(result.mutation.plan, result.ui_state),
-    };
-  }
-
-  async replaceProcedureMaterializedUi(
-    plan: FlightPlan,
-    componentIndex: number,
-    built: MaterializedProcedure,
-  ): Promise<FlightPlanUiMutation> {
-    const result = JSON.parse(
-      await this.module.replace_procedure_materialized_ui(
-        JSON.stringify(plan),
-        componentIndex,
-        JSON.stringify(built),
-      ),
-    ) as { mutation: { plan: FlightPlan }; ui_state: FlightPlanUiState };
-    return {
-      plan: result.mutation.plan,
-      ui_state: await this.enrichFlightPlanUiState(result.mutation.plan, result.ui_state),
-    };
-  }
-
-  async materializeProcedure(
-    airportId: string,
-    procedureId: string,
-    kind: "sid" | "star" | "approach",
-    runwayTransition: string | null,
-    enrouteTransition: string | null,
-    componentIndex: number,
-  ): Promise<MaterializedProcedure> {
-    return runCoreHadOperation<MaterializedProcedure>({
-      kind: "materialize_procedure",
-      airport_id: airportId,
-      procedure_id: procedureId,
-      procedure_kind: kind,
-      runway_transition: runwayTransition,
-      enroute_transition: enrouteTransition,
-      component_index: componentIndex,
-    });
-  }
-
   async findProcedurePlateMatch(airportId: string, cifpId: string): Promise<CifpTppMatch | null> {
     return runCoreHadOperation<CifpTppMatch | null>({
       kind: "find_procedure_plate_match",
@@ -1522,12 +1445,11 @@ export async function loadBestAvailableAdapter(
     typeof mod.insert_waypoint_at_flight_plan_row_in_session !== "function" ||
     typeof mod.insert_airway_at_flight_plan_row_in_session !== "function" ||
     typeof mod.select_procedure_at_flight_plan_row_in_session !== "function" ||
+    typeof mod.load_plate_procedure_in_session !== "function" ||
     typeof mod.activate_next_leg_ui !== "function" ||
     typeof mod.suspend_sequencing_ui !== "function" ||
     typeof mod.unsuspend_sequencing_ui !== "function" ||
     typeof mod.sequence_active_leg_ui !== "function" ||
-    typeof mod.insert_procedure_materialized_ui !== "function" ||
-    typeof mod.replace_procedure_materialized_ui !== "function" ||
     typeof mod.nav_kv_open !== "function" ||
     typeof mod.nav_kv_insert_page !== "function" ||
     typeof mod.nav_kv_destroy !== "function" ||

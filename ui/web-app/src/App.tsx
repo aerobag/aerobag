@@ -1821,9 +1821,6 @@ export default function App() {
             });
           }}
           ownship={appUiState.ownship.render}
-          onApplyMutation={async (mutation) => {
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
-          }}
           playbackUiState={playbackUiState}
           playbackSourcePath={playbackSourcePath}
           onPlaybackSourcePathChange={setPlaybackSourcePath}
@@ -5886,7 +5883,6 @@ function ChartsPage(props: {
   onOpenPlan: () => void;
   onSelectAirport: (airportId: string) => void;
   onSelectChart: (chartId: string) => void;
-  onApplyMutation: (mutation: FlightPlanUiMutation) => void | Promise<void>;
   playbackUiState: PlaybackUiState;
   playbackSourcePath: string;
   onPlaybackSourcePathChange: Dispatch<SetStateAction<string>>;
@@ -5897,7 +5893,7 @@ function ChartsPage(props: {
   debugWarningActive: boolean;
   onFirstVisualReady: () => void;
 }) {
-  const { appCoreAdapter, page, pageHistory, uptimeLabel, plan, planUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, onApplyMutation, ownship, onFirstVisualReady } = props;
+  const { appCoreAdapter, page, pageHistory, uptimeLabel, plan, planUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, ownship, onFirstVisualReady } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -6073,31 +6069,20 @@ function ChartsPage(props: {
 
   const loadProcedureOptions = useMemo(() => {
     return plateProcedureLoads.map((load, index) => ({
-        id: `${load.procedure_id}:${load.runway_transition ?? "none"}:${load.enroute_transition ?? "none"}:${index}`,
+        id: `${load.load_id}:${index}`,
         label: load.label,
         active: false,
         onSelect: () => {
-          if (!appCoreAdapter) {
+          if (!props.uiSession) {
             return;
           }
-          void appCoreAdapter.materializeProcedure(
-            load.airport_id,
-            load.procedure_id,
-            load.kind,
-            load.runway_transition ?? null,
-            load.enroute_transition ?? null,
-            load.replace_component_index ?? load.start_component_index,
-          ).then(async (built) => {
-            const mutation =
-              load.replace_component_index != null
-                ? await appCoreAdapter.replaceProcedureMaterializedUi(plan, load.replace_component_index, built)
-                : await appCoreAdapter.insertProcedureMaterializedUi(plan, load.start_component_index, load.end_component_index, built);
-            await onApplyMutation(mutation);
+          void props.uiSession.loadPlateProcedure(load.load_id).then((nextSnapshot) => {
+            props.onPlaybackSnapshotChange(nextSnapshot);
             trayGroup.close("load");
           }).catch(() => {});
         },
       }));
-  }, [appCoreAdapter, onApplyMutation, plan, plateProcedureLoads, trayGroup]);
+  }, [plateProcedureLoads, props, trayGroup]);
   const loadApproachEnabled = loadProcedureOptions.length > 0;
 
   function localPointFromPointerEvent(

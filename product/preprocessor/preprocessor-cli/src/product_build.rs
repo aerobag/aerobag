@@ -360,7 +360,16 @@ struct BuildStatusDocument {
     build_root: String,
     current_artifacts: String,
     disk: BuildStatusDisk,
+    warnings: Vec<BuildStatusWarning>,
     products: Vec<BuildStatusProduct>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BuildStatusWarning {
+    severity: String,
+    code: String,
+    path: String,
+    message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -10539,7 +10548,16 @@ fn build_current_bundle_entries(
         let metadata = fs::metadata(&bundle_path)
             .with_context(|| format!("failed to stat {}", bundle_path.display()))?;
         let modified_at = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        let entry = current_bundle_entry_from_path(&bundle_path)?;
+        let entry = match current_bundle_entry_from_path(&bundle_path) {
+            Ok(entry) => entry,
+            Err(error) => {
+                eprintln!(
+                    "WARNING skipping invalid public bundle candidate {}: {error:#}",
+                    bundle_path.display()
+                );
+                continue;
+            }
+        };
         let filename = entry.filename.clone();
         if filename.starts_with("bundle_cycle_") {
             let end_valid_date = NaiveDate::parse_from_str(&entry.end_valid, "%Y-%m-%d")
@@ -10547,11 +10565,19 @@ fn build_current_bundle_entries(
             if end_valid_date < as_of_date {
                 continue;
             }
-            let bundle_manifest: serde_json::Value = serde_json::from_slice(
+            let bundle_manifest: serde_json::Value = match serde_json::from_slice(
                 &fs::read(&bundle_path)
                     .with_context(|| format!("failed to read {}", bundle_path.display()))?,
-            )
-            .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!(
+                        "WARNING skipping invalid public cycle bundle candidate {}: {error:#}",
+                        bundle_path.display()
+                    );
+                    continue;
+                }
+            };
             let generated_at_utc = bundle_manifest
                 .get("generated_at_utc")
                 .and_then(|value| value.as_str())
@@ -10583,11 +10609,19 @@ fn build_current_bundle_entries(
             continue;
         }
         if filename.starts_with("bundle_fast_") {
-            let bundle_manifest: FastBundleManifest = serde_json::from_slice(
+            let bundle_manifest: FastBundleManifest = match serde_json::from_slice(
                 &fs::read(&bundle_path)
                     .with_context(|| format!("failed to read {}", bundle_path.display()))?,
-            )
-            .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!(
+                        "WARNING skipping invalid public fast bundle candidate {}: {error:#}",
+                        bundle_path.display()
+                    );
+                    continue;
+                }
+            };
             let published_at_utc = bundle_manifest.published_at_utc.clone();
             let should_replace = match &latest_fast_bundle {
                 Some((existing_published_at_utc, existing_modified_at, _)) => {
@@ -10879,8 +10913,36 @@ fn build_status_document(
         build_root: build_root.display().to_string(),
         current_artifacts: filename_string(current_artifacts_path)?,
         disk: build_status_disk(build_root)?,
+        warnings: build_status_warnings(build_root)?,
         products,
     })
+}
+
+fn build_status_warnings(build_root: &Path) -> anyhow::Result<Vec<BuildStatusWarning>> {
+    let mut warnings = Vec::new();
+    for entry in fs::read_dir(build_root)
+        .with_context(|| format!("failed to read {}", build_root.display()))?
+    {
+        let path = entry?.path();
+        let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !((filename.starts_with("bundle_cycle_") || filename.starts_with("bundle_fast_"))
+            && filename.ends_with(".json"))
+        {
+            continue;
+        }
+        if let Err(error) = load_bundle_manifest_like(&path) {
+            warnings.push(BuildStatusWarning {
+                severity: "WARNING".to_string(),
+                code: "invalid_public_bundle_manifest".to_string(),
+                path: filename.to_string(),
+                message: error.to_string(),
+            });
+        }
+    }
+    warnings.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(warnings)
 }
 
 fn build_status_product(
@@ -10968,6 +11030,7 @@ th {{ position: sticky; top: 0; background: Canvas; }}
 .card {{ border: 1px solid #9996; border-radius: 0.5rem; padding: 0.75rem 1rem; }}
 .muted {{ color: #777; }}
 .warn {{ color: #9a6700; font-weight: 700; }}
+.ok {{ color: #1a7f37; font-weight: 700; }}
 </style>
 </head>
 <body>
@@ -11004,16 +11067,35 @@ const text = (value) => value == null || value === '' ? '' : String(value);
 const esc = (value) => text(value).replace(/[&<>"']/g, (ch) => ({{'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}})[ch]);
 const timeCell = (value) => value ? `${{esc(value)}} <span class="muted">(${{fmtAge(value)}})</span>` : '<span class="muted">n/a</span>';
 const diskClass = status.disk.percent_free < 10 ? 'warn' : '';
+const warningClass = status.warnings.length > 0 ? 'warn' : 'ok';
+const warningText = status.warnings.length > 0 ? `${{status.warnings.length}} warning(s)` : 'clean';
 app.innerHTML = `
   <div class="summary">
     <div class="card"><b>Generated</b><br>${{esc(status.generated_at_utc)}} <span class="muted">(${{fmtAge(status.generated_at_utc)}})</span></div>
     <div class="card"><b>Current Artifacts</b><br>${{esc(status.current_artifacts)}}</div>
     <div class="card"><b>Build Root</b><br>${{esc(status.build_root)}}</div>
+    <div class="card"><b>Diagnostics</b><br><span class="${{warningClass}}">${{warningText}}</span></div>
     <div class="card"><b>Disk</b><br>
       used ${{fmtBytes(status.disk.used_bytes)}} / total ${{fmtBytes(status.disk.total_bytes)}}<br>
       free ${{fmtBytes(status.disk.available_bytes)}} <span class="${{diskClass}}">(${{status.disk.percent_free.toFixed(1)}}% free)</span>
     </div>
   </div>
+  ${{status.warnings.length > 0 ? `
+    <h2>Warnings</h2>
+    <table>
+      <thead><tr><th>Severity</th><th>Code</th><th>Path</th><th>Message</th></tr></thead>
+      <tbody>
+        ${{status.warnings.map((warning) => `
+          <tr>
+            <td class="warn">${{esc(warning.severity)}}</td>
+            <td>${{esc(warning.code)}}</td>
+            <td><code>${{esc(warning.path)}}</code></td>
+            <td>${{esc(warning.message)}}</td>
+          </tr>
+        `).join('')}}
+      </tbody>
+    </table>
+  ` : ''}}
   <h2>Products</h2>
   <table>
     <thead><tr>
@@ -15503,9 +15585,12 @@ mod tests {
         };
         let current_path = root.join("current_artifacts.json");
         fs::write(&current_path, serde_json::to_vec_pretty(&current).unwrap()).unwrap();
+        fs::write(root.join("bundle_fast_stale_empty.json"), []).unwrap();
 
         let status = build_status_document(root, &current_path).unwrap();
         assert_eq!(status.products.len(), 2);
+        assert_eq!(status.warnings.len(), 1);
+        assert_eq!(status.warnings[0].code, "invalid_public_bundle_manifest");
         assert!(status
             .products
             .iter()
@@ -15516,6 +15601,7 @@ mod tests {
             .any(|product| product.bundle_type == "fast" && product.family_id == "metars"));
         let html = render_build_status_html(&status).unwrap();
         assert!(html.contains("Aerobag Build Status"));
+        assert!(html.contains("bundle_fast_stale_empty.json"));
         assert!(html.contains("metars_"));
         assert!(html.contains("vectors_data_"));
     }
@@ -15597,6 +15683,34 @@ mod tests {
         assert_eq!(
             fs::read_to_string(marker_path).unwrap().trim(),
             checksum_sha256.as_str()
+        );
+    }
+
+    #[test]
+    fn current_artifacts_selection_ignores_invalid_stale_bundle_candidates() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        let fast_bundle = FastBundleManifest {
+            schema_version: 1,
+            bundle_id: "fast_current".to_string(),
+            bundle_type: "fast".to_string(),
+            published_at_utc: "2026-05-03T18:00:00Z".to_string(),
+            packages: vec![],
+        };
+        let fast_bundle_path = write_hashed_fast_bundle_manifest(root, &fast_bundle).unwrap();
+        fs::write(root.join("bundle_fast_stale_empty.json"), []).unwrap();
+
+        let bundles =
+            build_current_bundle_entries(root, NaiveDate::from_ymd_opt(2026, 5, 3).unwrap())
+                .unwrap();
+
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(
+            bundles[0].filename,
+            fast_bundle_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap()
         );
     }
 

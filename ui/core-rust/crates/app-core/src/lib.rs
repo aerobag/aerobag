@@ -2850,6 +2850,12 @@ fn named_heading_continuity_allowance(
             35.0,
         ));
     }
+    if is_internal_hold_geometry_turn(previous, current) {
+        return Some((
+            HeadingContinuityAllowance::InternalGeneratedDisplayPathTurn,
+            120.0,
+        ));
+    }
     if leaves_hold_entry_to_published_course(previous, current) {
         return Some((
             HeadingContinuityAllowance::HoldEntryExitToPublishedCourse,
@@ -2921,6 +2927,24 @@ fn is_hold_entry_generated_course_intercept(
         && current.start_label == "synthesized-path"
         && previous.element_kind == DisplayElementKind::Arc
         && current.element_kind == DisplayElementKind::Segment
+}
+
+fn is_internal_hold_geometry_turn(
+    previous: &DisplayElementHeadingSignature,
+    current: &DisplayElementHeadingSignature,
+) -> bool {
+    let previous_is_hold = matches!(
+        previous.element_role.as_deref(),
+        Some("hold_entry" | "hold_racetrack")
+    );
+    let current_is_hold = matches!(
+        current.element_role.as_deref(),
+        Some("hold_entry" | "hold_racetrack")
+    );
+    previous_is_hold
+        && current_is_hold
+        && previous.end_label == "synthesized-path"
+        && current.start_label == "synthesized-path"
 }
 
 fn leaves_hold_entry_to_published_course(

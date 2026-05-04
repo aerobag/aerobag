@@ -4527,12 +4527,12 @@ function FlightPlanPage(props: {
             : null,
         id:
           row.row_kind === "group"
-            ? `group:${row.component_index ?? index}`
+            ? row.uid
             : row.row_kind === "discontinuity"
-              ? `disc:${row.component_index ?? "x"}:${index}`
+              ? row.uid
               : row.depth === 0
-                ? `component:${row.component_index ?? index}`
-                : `item:${row.component_index ?? "x"}:${row.label}:${index}`,
+                ? row.uid
+                : row.uid,
         rowUid: row.uid,
         label: row.label,
         distance: row.row_kind === "group" ? "" : formatPlanDistance(row.distance_nm),
@@ -4547,12 +4547,12 @@ function FlightPlanPage(props: {
         rowKind: row.row_kind,
         refKey:
           row.row_kind === "group"
-            ? `group:${row.component_kind ?? "group"}:${row.label}:${row.origin_anchor ? navRefKey(row.origin_anchor) : "none"}:${row.destination_anchor ? navRefKey(row.destination_anchor) : "none"}`
+            ? row.uid
             : row.row_kind === "discontinuity"
-              ? `disc:${row.component_kind ?? "row"}:${index}`
+              ? row.uid
               : row.depth === 0
-                ? `waypoint:${row.nav_ref ? navRefKey(row.nav_ref) : "none"}`
-                : `child:${row.component_kind ?? "row"}:${row.nav_ref ? navRefKey(row.nav_ref) : "none"}:${index}`,
+                ? row.uid
+                : row.uid,
         chartAirportId: row.chart_airport_id,
         legIndex: row.leg_index,
         removeLegIndex: null as number | null,
@@ -4563,7 +4563,7 @@ function FlightPlanPage(props: {
         destinationAnchor: row.destination_anchor,
         navRef: row.nav_ref,
         symbolFeature: row.symbol_feature,
-        groupKey: row.row_kind === "group" || row.depth > 0 ? `group:${row.component_index ?? index}` : null,
+        groupKey: row.row_kind === "group" || row.depth > 0 ? `group:${row.component_uid ?? row.component_index ?? index}` : null,
         componentIndex: row.component_index,
         componentKind: row.component_kind,
         procedureId: row.procedure_id,
@@ -4625,25 +4625,6 @@ function FlightPlanPage(props: {
           }
           if (action.execution === "core_session") {
             void props.onPerformFlightPlanRowAction(selectedRow.rowUid, action.uid);
-            closeTray();
-            return;
-          }
-          if (action.id === "activate_leg") {
-            void props.onActivateLeg(selectedRow.legIndex!);
-            closeTray();
-            return;
-          }
-          if (action.id === "remove" || action.id === "remove_airway" || action.id === "remove_procedure") {
-            void props.onDeleteComponent(selectedRow.componentIndex!);
-            closeTray();
-            return;
-          }
-          if (action.id === "remove_all_above") {
-            if (selectedRow.componentIndex == null) {
-              return;
-            }
-            void Promise.resolve(props.onRemoveAllAbove(selectedRow.componentIndex))
-              .catch(() => {});
             closeTray();
             return;
           }

@@ -758,17 +758,24 @@ pub fn perform_flight_plan_row_action_in_session(
         });
     }
 
-    let from_position = session
-        .app_state
-        .ownship
-        .render
-        .position
-        .ok_or_else(|| AppError {
-            kind: AppErrorKind::UnsupportedOperation,
-            message: "cannot activate direct-to without ownship position".to_string(),
-        })?;
     let next_plan = match &action.id {
+        FlightPlanRowActionId::ActivateLeg => {
+            let leg_index = row.leg_index.ok_or_else(|| AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: "activate-leg row has no leg index".to_string(),
+            })?;
+            crate::activate_leg(&plan, leg_index)?
+        }
         FlightPlanRowActionId::DirectTo => {
+            let from_position = session
+                .app_state
+                .ownship
+                .render
+                .position
+                .ok_or_else(|| AppError {
+                    kind: AppErrorKind::UnsupportedOperation,
+                    message: "cannot activate direct-to without ownship position".to_string(),
+                })?;
             if let Some(target_leg_index) = row.leg_index {
                 let target_leg_id = plan
                     .resolved_legs
@@ -780,12 +787,35 @@ pub fn perform_flight_plan_row_action_in_session(
                     })?;
                 crate::activate_direct_to_leg(&plan, from_position, &target_leg_id)?
             } else {
-                let target = row.nav_ref.clone().ok_or_else(|| AppError {
-                    kind: AppErrorKind::InvalidFlightPlan,
-                    message: "direct-to row has no nav reference".to_string(),
-                })?;
-                crate::activate_direct_to(&plan, from_position, target)?
+                match row.component_index {
+                    Some(component_index) => {
+                        crate::activate_direct_to_component(&plan, from_position, component_index)?
+                    }
+                    None => {
+                        let target = row.nav_ref.clone().ok_or_else(|| AppError {
+                            kind: AppErrorKind::InvalidFlightPlan,
+                            message: "direct-to row has no nav reference".to_string(),
+                        })?;
+                        crate::activate_direct_to(&plan, from_position, target)?
+                    }
+                }
             }
+        }
+        FlightPlanRowActionId::Remove
+        | FlightPlanRowActionId::RemoveAirway
+        | FlightPlanRowActionId::RemoveProcedure => {
+            let component_index = row.component_index.ok_or_else(|| AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: "remove row has no route component".to_string(),
+            })?;
+            crate::delete_component(&plan, component_index)?
+        }
+        FlightPlanRowActionId::RemoveAllAbove => {
+            let component_index = row.component_index.ok_or_else(|| AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: "remove-to-here row has no route component".to_string(),
+            })?;
+            crate::remove_all_above(&plan, component_index)?
         }
         _ => {
             return Err(AppError {
@@ -2075,6 +2105,8 @@ mod tests {
                     waypoint: NavRef::Airport("KVCB".to_string()),
                 },
             ],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
             resolved_legs: vec![
                 ResolvedLeg {
                     id: "component-0-1".to_string(),

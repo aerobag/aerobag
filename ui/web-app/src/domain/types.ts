@@ -26,6 +26,8 @@ export type FlightPlan = {
     airway: string | null;
   }>;
   route_components: RouteComponent[];
+  route_component_uids: string[];
+  route_component_uid_counter: number;
   resolved_legs: ResolvedLeg[];
   guidance: GuidanceState | null;
   departure: string | null;
@@ -285,6 +287,7 @@ export type ConcretizedNavItem =
 export type RouteComponentViewKind = "waypoint" | "airway" | "procedure";
 
 export type RouteComponentUiView = {
+  uid: string;
   component_index: number;
   kind: RouteComponentViewKind;
   summary: string;
@@ -367,6 +370,7 @@ export type FlightPlanDisplayRowUiView = {
   label: string;
   row_kind: FlightPlanDisplayRowKind;
   component_kind: RouteComponentViewKind | null;
+  component_uid: string | null;
   component_index: number | null;
   procedure_id: string | null;
   procedure_kind: ProcedureKind | null;

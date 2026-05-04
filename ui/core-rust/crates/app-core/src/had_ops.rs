@@ -2165,6 +2165,8 @@ mod tests {
                     waypoint: NavRef::Airport("KPAE".to_string()),
                 },
             ],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
             resolved_legs: Vec::new(),
             guidance: Some(crate::GuidanceState {
                 active_leg_index: 0,
@@ -2254,6 +2256,8 @@ mod tests {
                     waypoint: NavRef::Airport("KWLW".to_string()),
                 },
             ],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
             resolved_legs: Vec::new(),
             guidance: Some(crate::GuidanceState {
                 active_leg_index: 0,
@@ -2360,6 +2364,8 @@ mod tests {
                     waypoint: NavRef::Airport("KPAE".to_string()),
                 },
             ],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
             resolved_legs: Vec::new(),
             guidance: Some(crate::GuidanceState {
                 active_leg_index: 0,
@@ -2786,6 +2792,8 @@ mod tests {
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Airport("KRNT".to_string()),
             }],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
             resolved_legs: Vec::new(),
             guidance: None,
             departure: Some(AirportId("KRNT".to_string())),
@@ -2844,6 +2852,8 @@ mod tests {
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Airport("KRNT".to_string()),
             }],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
             resolved_legs: Vec::new(),
             guidance: None,
             departure: Some(AirportId("KRNT".to_string())),
@@ -2900,6 +2910,8 @@ mod tests {
             name: "Empty".to_string(),
             legs: Vec::new(),
             route_components: Vec::new(),
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
             resolved_legs: Vec::new(),
             guidance: None,
             departure: None,
@@ -2952,6 +2964,8 @@ mod tests {
                     waypoint: NavRef::Airport("KUAO".to_string()),
                 },
             ],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
             resolved_legs: Vec::new(),
             guidance: None,
             departure: Some(AirportId("KPAE".to_string())),
@@ -2984,6 +2998,8 @@ mod tests {
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Navaid("SEA".to_string()),
             }],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
             resolved_legs: Vec::new(),
             guidance: None,
             departure: None,

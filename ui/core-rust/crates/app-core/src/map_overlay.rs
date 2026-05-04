@@ -4132,6 +4132,8 @@ mod tests {
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Airport("KSEA".to_string()),
             }],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
             resolved_legs: Vec::new(),
             guidance: None,
             departure: None,

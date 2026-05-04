@@ -82,6 +82,7 @@ import type {
   MapOverlayQueryResult,
   MetarTilePayload,
   MetarProductPayload,
+  TafProductPayload,
   TerrainOverlayQueryResult,
   TerrainOverlayTileRequest,
   TfrProductPayload,
@@ -1988,6 +1989,7 @@ function MapPage(props: {
     point: ScreenPoint;
     result: MapSelectionQueryResult;
     selectedItem: MapSelectionItem | null;
+    detailModal: { title: string; text: string } | null;
   } | null>(null);
   const firstVisualReadyRef = useRef(false);
   const lastOverlayWarningKeyRef = useRef("");
@@ -2677,6 +2679,24 @@ function MapPage(props: {
           }
           const payload = (await response.json()) as MetarProductPayload;
           await session.ingestMetars(payload);
+          try {
+            const tafResponse = await fetch("/fast-products/metars/tafs.json", {
+              signal: controller.signal,
+            });
+            if (tafResponse.ok) {
+              await session.ingestTafs((await tafResponse.json()) as TafProductPayload);
+            } else if (tafResponse.status !== 404) {
+              throw new Error(`failed to load TAF product: ${tafResponse.status}`);
+            }
+          } catch (error) {
+            if (isAbortError(error)) {
+              throw error;
+            }
+            debugLog("map.overlay.tafs.ingest.error", {
+              zoom: viewport.zoom,
+              error: errorMessage(error),
+            });
+          }
           debugLog("map.overlay.metars.ingest.done", {
             zoom: viewport.zoom,
             records: payload.metar_count ?? Object.keys(payload.metars_by_station).length,
@@ -3122,6 +3142,7 @@ function MapPage(props: {
             point: clickCandidate.latest,
             result,
             selectedItem: null,
+            detailModal: null,
           });
         })
         .catch((error) => {
@@ -3338,52 +3359,60 @@ function MapPage(props: {
         {mapSelection ? (
           <>
             <TrayScrim ariaLabel="Close map selection" onClose={() => setMapSelection(null)} />
-            <MapSelectionTray
-              point={mapSelection.point}
-              result={mapSelection.result}
-              selectedItem={mapSelection.selectedItem}
-              onSelectItem={(item) => setMapSelection((current) => current ? { ...current, selectedItem: item } : current)}
-              onSelectAction={async (item, action) => {
-                if (!appCoreAdapter) {
-                  return;
-                }
-                if (action.id === "plates" || action.id === "csup") {
-                  const airportId = airportIdFromNavRef(item.nav_ref);
-                  if (!airportId) {
+            {mapSelection.detailModal ? (
+              <MapSelectionDetailModal
+                title={mapSelection.detailModal.title}
+                text={mapSelection.detailModal.text}
+              />
+            ) : (
+              <MapSelectionTray
+                point={mapSelection.point}
+                result={mapSelection.result}
+                selectedItem={mapSelection.selectedItem}
+                onSelectItem={(item) => setMapSelection((current) => current ? { ...current, selectedItem: item, detailModal: null } : current)}
+                onSelectDetail={(title, text) => setMapSelection((current) => current ? { ...current, detailModal: { title, text } } : current)}
+                onSelectAction={async (item, action) => {
+                  if (!appCoreAdapter) {
                     return;
                   }
-                  onOpenPlateTarget(airportId, action.id === "csup" ? "CSup" : "Folder");
-                  setMapSelection(null);
-                  return;
-                }
-                if (!item.nav_ref) {
-                  return;
-                }
-                try {
-                  if (!uiSession) {
-                    throw new Error("map selection flight-plan action requires live core session");
-                  }
-                  const nextSnapshot = action.id === "remove_from_flight_plan"
-                    ? await uiSession.removeTopLevelWaypointByNavRef(item.nav_ref)
-                    : action.id === "direct_to"
-                      ? await uiSession.activateDirectTo(item.nav_ref)
-                    : action.id === "insert"
-                      ? await uiSession.insertWaypointBestPosition(item.nav_ref)
-                      : null;
-                  if (!nextSnapshot) {
+                  if (action.id === "plates" || action.id === "csup") {
+                    const airportId = airportIdFromNavRef(item.nav_ref);
+                    if (!airportId) {
+                      return;
+                    }
+                    onOpenPlateTarget(airportId, action.id === "csup" ? "CSup" : "Folder");
+                    setMapSelection(null);
                     return;
                   }
-                  onPlaybackSnapshotChange(nextSnapshot);
-                  setMapSelection(null);
-                } catch (error) {
-                  debugLog("map.selection.flight_plan_action.failed", {
-                    action_id: action.id,
-                    nav_ref: item.nav_ref,
-                    error: errorMessage(error),
-                  });
-                }
-              }}
-            />
+                  if (!item.nav_ref) {
+                    return;
+                  }
+                  try {
+                    if (!uiSession) {
+                      throw new Error("map selection flight-plan action requires live core session");
+                    }
+                    const nextSnapshot = action.id === "remove_from_flight_plan"
+                      ? await uiSession.removeTopLevelWaypointByNavRef(item.nav_ref)
+                      : action.id === "direct_to"
+                        ? await uiSession.activateDirectTo(item.nav_ref)
+                      : action.id === "insert"
+                        ? await uiSession.insertWaypointBestPosition(item.nav_ref)
+                        : null;
+                    if (!nextSnapshot) {
+                      return;
+                    }
+                    onPlaybackSnapshotChange(nextSnapshot);
+                    setMapSelection(null);
+                  } catch (error) {
+                    debugLog("map.selection.flight_plan_action.failed", {
+                      action_id: action.id,
+                      nav_ref: item.nav_ref,
+                      error: errorMessage(error),
+                    });
+                  }
+                }}
+              />
+            )}
           </>
         ) : null}
         <div
@@ -5690,9 +5719,10 @@ function MapSelectionTray(props: {
   result: MapSelectionQueryResult;
   selectedItem: MapSelectionItem | null;
   onSelectItem: (item: MapSelectionItem) => void;
+  onSelectDetail: (title: string, text: string) => void;
   onSelectAction: (item: MapSelectionItem, action: MapSelectionItem["actions"][number]) => void | Promise<void>;
 }) {
-  const { point, result, selectedItem, onSelectItem, onSelectAction } = props;
+  const { point, result, selectedItem, onSelectItem, onSelectDetail, onSelectAction } = props;
   const edgePad = thumbPixels(0.1);
   type MapSelectionActionSlot = MapSelectionItem["actions"][number] & { placeholder?: boolean };
   const actionSlots: MapSelectionActionSlot[] = selectedItem
@@ -5775,6 +5805,10 @@ function MapSelectionTray(props: {
               onPointerUp={stopPointer}
               onDoubleClick={stopDoubleClick}
               onClick={() => {
+                if (selectedItem && action.enabled && action.detail_text) {
+                  onSelectDetail(action.label, action.detail_text);
+                  return;
+                }
                 if (selectedItem && action.enabled && !action.display_only) {
                   void onSelectAction(selectedItem, action);
                 }
@@ -5790,10 +5824,24 @@ function MapSelectionTray(props: {
             </button>
           ))}
           {selectedItem?.detail_text ? (
-            <div className="mapSelectionDetailText">{selectedItem.detail_text}</div>
+            <div className="mapSelectionDetailText mapSelectionInlineDetailText">{selectedItem.detail_text}</div>
           ) : null}
         </div>
       </div>
+    </section>
+  );
+}
+
+function MapSelectionDetailModal(props: { title: string; text: string }) {
+  return (
+    <section
+      className="mapSelectionDetailModal"
+      aria-label={props.title}
+      onPointerDown={stopPointer}
+      onPointerUp={stopPointer}
+    >
+      <div className="mapSelectionDetailTitle">{props.title}</div>
+      <div className="mapSelectionDetailText">{props.text}</div>
     </section>
   );
 }

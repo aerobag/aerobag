@@ -1093,7 +1093,11 @@ fn normalize_route_component_uids(plan: &mut FlightPlan) {
     let mut next_counter = plan.route_component_uid_counter;
     let mut normalized = Vec::with_capacity(plan.route_components.len());
     for index in 0..plan.route_components.len() {
-        let existing = plan.route_component_uids.get(index).cloned().unwrap_or_default();
+        let existing = plan
+            .route_component_uids
+            .get(index)
+            .cloned()
+            .unwrap_or_default();
         let uid = if !existing.is_empty() && !seen.contains_key(&existing) {
             existing
         } else {
@@ -1896,10 +1900,7 @@ fn project_display_rows(
         } else {
             let origin_anchor = component.preceding_waypoint.clone();
             let destination_anchor = component.following_waypoint.clone();
-            let uid = format!(
-                "component:{}:{:?}:group",
-                component.uid, component.kind
-            );
+            let uid = format!("component:{}:{:?}:group", component.uid, component.kind);
             rows.push(FlightPlanDisplayRowUiView {
                 uid: uid.clone(),
                 label: structured_component_label(component),
@@ -2270,7 +2271,10 @@ fn waypoint_actions_for_row(
                 FlightPlanRowActionId::Remove,
                 component_index.is_some() && can_remove_component,
             ),
-            core_session_action(FlightPlanRowActionId::RemoveAllAbove, component_index.is_some()),
+            core_session_action(
+                FlightPlanRowActionId::RemoveAllAbove,
+                component_index.is_some(),
+            ),
             action(
                 FlightPlanRowActionId::InsertBefore,
                 component_index.is_some(),
@@ -5943,8 +5947,14 @@ mod tests {
         assert_eq!(inserted.route_component_uids.len(), 3);
         assert_eq!(inserted.route_component_uids[0], original_uids[0]);
         assert_eq!(inserted.route_component_uids[2], original_uids[1]);
-        assert_ne!(inserted.route_component_uids[1], inserted.route_component_uids[0]);
-        assert_ne!(inserted.route_component_uids[1], inserted.route_component_uids[2]);
+        assert_ne!(
+            inserted.route_component_uids[1],
+            inserted.route_component_uids[0]
+        );
+        assert_ne!(
+            inserted.route_component_uids[1],
+            inserted.route_component_uids[2]
+        );
     }
 
     #[test]

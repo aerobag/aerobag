@@ -321,6 +321,13 @@ export type MetarProductPayload = {
   metars_by_station: Record<string, unknown>;
 };
 
+export type TafProductPayload = {
+  schema_version: number;
+  version_label: string;
+  taf_count?: number | null;
+  tafs_by_station: Record<string, unknown>;
+};
+
 export type MapOverlayQueryResult = {
   needed_point_tiles: VectorTileRequest[];
   needed_metar_tiles: VectorTileRequest[];
@@ -376,6 +383,7 @@ export type MapSelectionAction = {
   label: string;
   enabled: boolean;
   display_only: boolean;
+  detail_text?: string | null;
   airspace_limit?: AirspaceLimitGlyph | null;
 };
 
@@ -478,6 +486,7 @@ export interface UiSession {
   ingestAirspaceLabelTiles(tiles: AirspaceLabelTilePayload[]): Promise<void>;
   ingestTfrs(payload: TfrProductPayload): Promise<void>;
   ingestMetars(payload: MetarProductPayload): Promise<void>;
+  ingestTafs(payload: TafProductPayload): Promise<void>;
   queryMapOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<MapOverlayQueryResult>;
   queryMapSelection(viewport: MapViewportState, widthPx: number, heightPx: number, click: LatLon, hitRadiusPx: number): Promise<MapSelectionQueryResult>;
   queryTerrainOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<TerrainOverlayQueryResult>;
@@ -674,6 +683,7 @@ type WasmModule = {
   ingest_airspace_label_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   ingest_tfrs_in_session(handle: number, payloadJson: string): Promise<void> | void;
   ingest_metars_in_session(handle: number, payloadJson: string): Promise<void> | void;
+  ingest_tafs_in_session(handle: number, payloadJson: string): Promise<void> | void;
   get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
   get_map_selection_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, clickJson: string, hitRadiusPx: number): Promise<string> | string;
   get_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
@@ -1165,6 +1175,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           await this.module.ingest_metars_in_session(handle, JSON.stringify(payload));
         });
       },
+      ingestTafs: async (payload) => {
+        await withSessionRetry(async () => {
+          await this.module.ingest_tafs_in_session(handle, JSON.stringify(payload));
+        });
+      },
       queryMapOverlay: async (viewport, widthPx, heightPx) =>
         withSessionRetry(async () =>
           runCoreHadSessionOperation<MapOverlayQueryResult>(() =>
@@ -1430,6 +1445,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.ingest_airspace_label_tiles_in_session !== "function" ||
     typeof mod.ingest_tfrs_in_session !== "function" ||
     typeof mod.ingest_metars_in_session !== "function" ||
+    typeof mod.ingest_tafs_in_session !== "function" ||
     typeof mod.get_map_overlay_in_session !== "function" ||
     typeof mod.get_map_selection_in_session !== "function" ||
     typeof mod.get_terrain_overlay_in_session !== "function" ||

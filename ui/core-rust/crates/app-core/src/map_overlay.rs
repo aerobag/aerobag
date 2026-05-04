@@ -146,6 +146,25 @@ pub struct MetarRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TafRecord {
+    pub raw_text: String,
+    #[serde(default)]
+    pub issued_at_utc: Option<String>,
+    pub station_id: String,
+    pub longitude: f64,
+    pub latitude: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TafProductPayload {
+    pub schema_version: u32,
+    pub version_label: String,
+    #[serde(default)]
+    pub taf_count: Option<u32>,
+    pub tafs_by_station: HashMap<String, TafRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetarProductPayload {
     pub schema_version: u32,
     pub version_label: String,
@@ -447,6 +466,8 @@ pub struct MapSelectionAction {
     pub label: String,
     pub enabled: bool,
     pub display_only: bool,
+    #[serde(default)]
+    pub detail_text: Option<String>,
     #[serde(default)]
     pub airspace_limit: Option<AirspaceLimitGlyph>,
 }
@@ -1171,6 +1192,7 @@ pub fn query_map_selection(
     point_tile_cache: &HashMap<String, PointTilePayload>,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
+    taf_payload: Option<&TafProductPayload>,
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
@@ -1220,7 +1242,15 @@ pub fn query_map_selection(
                         _ => None,
                     })
                     .unwrap_or_default();
-                let item = selection_item_for_point(record, &symbol, plan, availability);
+                let airport_id =
+                    selection_nav_ref(record, true).and_then(|nav_ref| match nav_ref {
+                        NavRef::Airport(airport_id) => Some(airport_id),
+                        _ => None,
+                    });
+                let taf = airport_id.as_deref().and_then(|airport_id| {
+                    taf_payload.and_then(|payload| payload.tafs_by_station.get(airport_id))
+                });
+                let item = selection_item_for_point(record, &symbol, plan, availability, taf);
                 airports.push(MapSelectionPointMatch { item, distance_px });
             } else if record.style_class == "fix" || record.style_class == "nav" {
                 let item = selection_item_for_point(
@@ -1228,6 +1258,7 @@ pub fn query_map_selection(
                     &symbol,
                     plan,
                     AirportPlateAvailability::default(),
+                    None,
                 );
                 navaids.push(MapSelectionPointMatch { item, distance_px });
             }
@@ -1259,6 +1290,7 @@ pub fn query_map_selection(
             hit_radius_px,
             metar_tile_cache,
             metar_payload,
+            taf_payload,
         ));
     }
 
@@ -1314,6 +1346,7 @@ fn query_metar_selection_matches(
     hit_radius_px: f64,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: &MetarProductPayload,
+    taf_payload: Option<&TafProductPayload>,
 ) -> Vec<MapSelectionPointMatch> {
     let Some(metar_layer) = config.metar_layer.as_ref() else {
         return Vec::new();
@@ -1339,7 +1372,13 @@ fn query_metar_selection_matches(
             .sqrt();
             if distance_px <= hit_radius_px {
                 matches.push(MapSelectionPointMatch {
-                    item: selection_item_for_metar(record, feature),
+                    item: selection_item_for_metar(
+                        record,
+                        taf_payload.and_then(|payload| {
+                            payload.tafs_by_station.get(record.station_id.trim())
+                        }),
+                        feature,
+                    ),
                     distance_px,
                 });
             }
@@ -1353,6 +1392,7 @@ fn selection_item_for_point(
     symbol: &NavSymbolFeature,
     plan: Option<&FlightPlan>,
     airport_plate_availability: AirportPlateAvailability,
+    taf: Option<&TafRecord>,
 ) -> MapSelectionItem {
     let is_airport = record.style_class == "airport"
         || record.kind.eq_ignore_ascii_case("airport")
@@ -1385,6 +1425,8 @@ fn selection_item_for_point(
             insert_action,
             action_for_availability("plates", "Plates", airport_plate_availability.plates),
             action_for_availability("csup", "Chart Supp", airport_plate_availability.csup),
+            taf.map(|record| detail_action("taf", "TAF", record.raw_text.clone()))
+                .unwrap_or_else(|| disabled_action("taf", "TAF")),
             disabled_action("runways", "Runways"),
         ]
     } else {
@@ -1446,6 +1488,7 @@ fn spot_selection_item(click: LatLon) -> MapSelectionItem {
 
 fn selection_item_for_metar(
     record: &MetarRecord,
+    taf: Option<&TafRecord>,
     feature: VisibleMetarFeature,
 ) -> MapSelectionItem {
     MapSelectionItem {
@@ -1463,7 +1506,8 @@ fn selection_item_for_metar(
         airspace_icon: None,
         actions: vec![
             display_action("metar", "METAR"),
-            disabled_action("taf", "TAF"),
+            taf.map(|record| detail_action("taf", "TAF", record.raw_text.clone()))
+                .unwrap_or_else(|| disabled_action("taf", "TAF")),
         ],
     }
 }
@@ -1678,6 +1722,18 @@ fn display_action(id: &str, label: &str) -> MapSelectionAction {
         label: label.to_string(),
         enabled: false,
         display_only: true,
+        detail_text: None,
+        airspace_limit: None,
+    }
+}
+
+fn detail_action(id: &str, label: &str, detail_text: String) -> MapSelectionAction {
+    MapSelectionAction {
+        id: id.to_string(),
+        label: label.to_string(),
+        enabled: true,
+        display_only: false,
+        detail_text: Some(detail_text),
         airspace_limit: None,
     }
 }
@@ -1688,6 +1744,7 @@ fn enabled_action(id: &str, label: &str) -> MapSelectionAction {
         label: label.to_string(),
         enabled: true,
         display_only: false,
+        detail_text: None,
         airspace_limit: None,
     }
 }
@@ -1698,6 +1755,7 @@ fn disabled_action(id: &str, label: &str) -> MapSelectionAction {
         label: label.to_string(),
         enabled: false,
         display_only: false,
+        detail_text: None,
         airspace_limit: None,
     }
 }
@@ -1713,6 +1771,7 @@ fn airspace_limit_action_from_parts(
         label: format!("{upper}/{lower}"),
         enabled: false,
         display_only: true,
+        detail_text: None,
         airspace_limit: Some(AirspaceLimitGlyph {
             upper,
             lower,
@@ -3487,6 +3546,22 @@ mod tests {
             metar_count: Some(1),
             metars_by_station,
         };
+        let taf_raw_text = "TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020";
+        let tafs = TafProductPayload {
+            schema_version: 1,
+            version_label: "test".to_string(),
+            taf_count: Some(1),
+            tafs_by_station: HashMap::from([(
+                "KAAA".to_string(),
+                TafRecord {
+                    raw_text: taf_raw_text.to_string(),
+                    issued_at_utc: Some("2026-05-03T00:00:00.000Z".to_string()),
+                    station_id: "KAAA".to_string(),
+                    longitude: viewport.center.lon,
+                    latitude: viewport.center.lat,
+                },
+            )]),
+        };
 
         let result = query_map_selection(
             &viewport,
@@ -3499,6 +3574,7 @@ mod tests {
             &HashMap::new(),
             &metar_tile_cache,
             Some(&metars),
+            Some(&tafs),
             &HashMap::new(),
             None,
             &mut |_| AirportPlateAvailability::default(),
@@ -3523,10 +3599,13 @@ mod tests {
             Some("sct")
         );
         assert!(item.actions.iter().any(|action| action.id == "metar"));
-        assert!(item
+        let taf_action = item
             .actions
             .iter()
-            .any(|action| action.id == "taf" && !action.enabled));
+            .find(|action| action.id == "taf")
+            .expect("TAF action");
+        assert!(taf_action.enabled);
+        assert_eq!(taf_action.detail_text.as_deref(), Some(taf_raw_text));
     }
 
     #[test]
@@ -4086,6 +4165,7 @@ mod tests {
             &cache,
             &HashMap::new(),
             None,
+            None,
             &HashMap::new(),
             None,
             &mut |_| AirportPlateAvailability {
@@ -4162,6 +4242,13 @@ mod tests {
                 plates: true,
                 csup: true,
             },
+            Some(&TafRecord {
+                raw_text: "TAF KSEA 010000Z 0100/0124 00000KT P6SM SCT020".to_string(),
+                issued_at_utc: Some("2026-05-03T00:00:00.000Z".to_string()),
+                station_id: "KSEA".to_string(),
+                longitude: record.lon,
+                latitude: record.lat,
+            }),
         );
         let remove = item
             .actions
@@ -4181,6 +4268,16 @@ mod tests {
             .actions
             .iter()
             .any(|action| action.id == "csup" && action.enabled));
+        let taf = item
+            .actions
+            .iter()
+            .find(|action| action.id == "taf")
+            .expect("TAF action");
+        assert!(taf.enabled);
+        assert_eq!(
+            taf.detail_text.as_deref(),
+            Some("TAF KSEA 010000Z 0100/0124 00000KT P6SM SCT020")
+        );
     }
 
     #[test]
@@ -4240,6 +4337,7 @@ mod tests {
                 plates: false,
                 csup: false,
             },
+            None,
         );
 
         assert_eq!(item.label, "SEA");
@@ -4449,6 +4547,7 @@ mod tests {
             32.0,
             &cache,
             &HashMap::new(),
+            None,
             None,
             &HashMap::new(),
             None,

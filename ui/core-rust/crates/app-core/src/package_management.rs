@@ -1689,8 +1689,8 @@ fn cycle_selection(selections: &mut BTreeMap<String, OfflinePackageSelection>, i
 
 fn bundle_package_to_artifact(pkg: &BundlePackageArtifact) -> Option<AvailablePackageArtifact> {
     match pkg.family_id.as_str() {
-        "sec" | "tac" | "shaded-relief" | "enr-l" | "enr-h" | "tpp" | "csup" | "nav-db"
-        | "geo" | "terrain" => Some(AvailablePackageArtifact {
+        "sec" | "tac" | "shaded-relief" | "enr-l" | "enr-h" | "tpp" | "csup" | "nav-db" | "geo"
+        | "terrain" => Some(AvailablePackageArtifact {
             artifact_id: pkg.id.clone(),
             filename: pkg.filename.clone(),
             product_id: pkg.family_id.clone(),
@@ -2017,12 +2017,7 @@ mod tests {
 
         assert_eq!(
             plan.fetch,
-            vec![
-                "NAV_DB_2604",
-                "GEO_STATIC",
-                "NW_SEC_2603",
-                "NW_TAC_2603",
-            ]
+            vec!["NAV_DB_2604", "GEO_STATIC", "NW_SEC_2603", "NW_TAC_2603",]
         );
     }
 
@@ -2030,7 +2025,10 @@ mod tests {
     fn obsolete_standalone_vectors_package_is_ignored_by_sync_plan() {
         let input = PackageManagementInput {
             now_epoch_ms: 200,
-            preferences: default_offline_package_preferences(Vec::<String>::new(), Vec::<String>::new()),
+            preferences: default_offline_package_preferences(
+                Vec::<String>::new(),
+                Vec::<String>::new(),
+            ),
             bundle: BundleManifest {
                 packages: vec![
                     pkg(

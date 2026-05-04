@@ -166,11 +166,9 @@ pub fn run_had_operation(store: &NavKvStore, op: HadOperation) -> AppResult<HadO
 
 fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value, HadReadError> {
     let value = match op {
-        HadOperation::VectorManifest => read_required::<Value>(
-            store,
-            NavKvQuery::VectorManifest,
-            "vector manifest",
-        )?,
+        HadOperation::VectorManifest => {
+            read_required::<Value>(store, NavKvQuery::VectorManifest, "vector manifest")?
+        }
         HadOperation::ChartCatalog => serde_json::to_value(chart_catalog(store)?)?,
         HadOperation::MapSelectorState { selected_map_id } => {
             serde_json::to_value(map_selector_state(store, selected_map_id.as_deref())?)?

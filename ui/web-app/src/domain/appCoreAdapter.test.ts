@@ -93,6 +93,7 @@ describe("loadBestAvailableAdapter", () => {
       ingest_airspace_label_tiles_in_session: async () => {},
       ingest_tfrs_in_session: async () => {},
       ingest_metars_in_session: async () => {},
+      ingest_tafs_in_session: async () => {},
       get_map_overlay_in_session: async () => "{\"state\":\"complete\",\"result\":{\"visible_features\":[],\"visible_metars\":[],\"needed_point_tiles\":[],\"needed_metar_tiles\":[],\"needed_metars\":false,\"needed_airspace_ref_tiles\":[],\"needed_airspace_features\":[],\"needed_airspace_label_tiles\":[],\"needed_tfrs\":false,\"airspace_paths\":[],\"tfr_paths\":[],\"airspace_labels\":[],\"warnings\":[]}}",
       get_map_selection_in_session: async () => "{\"state\":\"complete\",\"result\":{\"click_lat\":0,\"click_lon\":0,\"categories\":[]}}",
       get_terrain_overlay_in_session: async () => "{\"needed_terrain_tiles\":[],\"status\":\"hidden\"}",

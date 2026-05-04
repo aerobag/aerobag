@@ -21,12 +21,12 @@ use crate::{
     playback::PlaybackSessionState,
     query_map_overlay, query_map_selection, remove_flight_plan_leg, state,
     AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
-    AirspaceReferenceTilePayload, AppError, AppErrorKind, AppEvent, AppResult, AppState,
-    AirwayPresentationPlan, AppUiState, FlightPlan, FlightPlanRowActionExecution,
+    AirspaceReferenceTilePayload, AirwayPresentationPlan, AppError, AppErrorKind, AppEvent,
+    AppResult, AppState, AppUiState, FlightPlan, FlightPlanRowActionExecution,
     FlightPlanRowActionId, LatLon, MapOverlayConfig, MapOverlayQueryResult, MapViewport,
     MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore, NavRef, PlanLeg,
-    PlaybackUiState, PointTilePayload, ProcedureKind, ProcedureLoadCommand,
-    RasterMapCatalog, RasterTilePlan, RouteComponentViewKind, SequencingMode,
+    PlaybackUiState, PointTilePayload, ProcedureKind, ProcedureLoadCommand, RasterMapCatalog,
+    RasterTilePlan, RouteComponentViewKind, SequencingMode, TafProductPayload,
     TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
 };
 
@@ -107,6 +107,7 @@ struct UiSession {
     point_tile_cache: HashMap<String, PointTilePayload>,
     metar_tile_cache: HashMap<String, MetarTilePayload>,
     metar_payload: Option<MetarProductPayload>,
+    taf_payload: Option<TafProductPayload>,
     airspace_ref_tile_cache: HashMap<String, AirspaceReferenceTilePayload>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
     airspace_label_tile_cache: HashMap<String, AirspaceLabelTilePayload>,
@@ -258,6 +259,7 @@ fn create_ui_session_inner(
             point_tile_cache: HashMap::new(),
             metar_tile_cache: HashMap::new(),
             metar_payload: None,
+            taf_payload: None,
             airspace_ref_tile_cache: HashMap::new(),
             airspace_feature_cache: HashMap::new(),
             airspace_label_tile_cache: HashMap::new(),
@@ -741,23 +743,19 @@ pub fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
             message: format!("flight-plan waypoint suggestion component is stale: {component_uid}"),
         })?;
     let store = session_nav_kv_store(session)?;
-    let suggestions = match suggest_waypoint_identifiers(
-        store,
-        &plan,
-        component_index,
-        before,
-        &prefix,
-        limit,
-    ) {
-        Ok(suggestions) => suggestions,
-        Err(HadReadError::NeedPages(pages)) => return Ok(HadOperationOutcome::NeedPages { pages }),
-        Err(HadReadError::Fatal(message)) => {
-            return Err(AppError {
-                kind: AppErrorKind::InvalidFlightPlan,
-                message,
-            });
-        }
-    };
+    let suggestions =
+        match suggest_waypoint_identifiers(store, &plan, component_index, before, &prefix, limit) {
+            Ok(suggestions) => suggestions,
+            Err(HadReadError::NeedPages(pages)) => {
+                return Ok(HadOperationOutcome::NeedPages { pages })
+            }
+            Err(HadReadError::Fatal(message)) => {
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message,
+                });
+            }
+        };
     Ok(HadOperationOutcome::Complete {
         result: serde_json::to_value(suggestions).map_err(|err| AppError {
             kind: AppErrorKind::Internal,
@@ -871,7 +869,9 @@ pub fn select_procedure_at_flight_plan_row_in_session(
     if row_airport_id != airport_id {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
-            message: format!("procedure airport mismatch: row has {row_airport_id}, requested {airport_id}"),
+            message: format!(
+                "procedure airport mismatch: row has {row_airport_id}, requested {airport_id}"
+            ),
         });
     }
     let component_uid = row.component_uid.as_deref().ok_or_else(|| AppError {
@@ -887,20 +887,22 @@ pub fn select_procedure_at_flight_plan_row_in_session(
             message: format!("procedure target component is stale: {component_uid}"),
         })?;
     let replace_component_index =
-        airport_component_index
-            .checked_sub(1)
-            .and_then(|index| match plan.route_components.get(index) {
+        airport_component_index.checked_sub(1).and_then(|index| {
+            match plan.route_components.get(index) {
                 Some(crate::RouteComponent::Procedure { procedure })
                     if procedure.kind == kind && procedure.airport_id.0 == airport_id =>
                 {
                     Some(index)
                 }
                 _ => None,
-            });
-    let start_component_index = airport_component_index.checked_sub(1).ok_or_else(|| AppError {
-        kind: AppErrorKind::InvalidFlightPlan,
-        message: "procedure insert target has no preceding component".to_string(),
-    })?;
+            }
+        });
+    let start_component_index = airport_component_index
+        .checked_sub(1)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "procedure insert target has no preceding component".to_string(),
+        })?;
     let store = session_nav_kv_store(session)?;
     let built = match materialize_procedure(
         store,
@@ -961,13 +963,15 @@ pub fn load_plate_procedure_in_session(
     ) else {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
-            message: format!("procedure load airport is not in the flight plan: {}", command.airport_id),
+            message: format!(
+                "procedure load airport is not in the flight plan: {}",
+                command.airport_id
+            ),
         });
     };
     let replace_component_index =
-        airport_component_index
-            .checked_sub(1)
-            .and_then(|index| match plan.route_components.get(index) {
+        airport_component_index.checked_sub(1).and_then(|index| {
+            match plan.route_components.get(index) {
                 Some(crate::RouteComponent::Procedure { procedure })
                     if procedure.kind == command.kind
                         && procedure.airport_id.0.trim() == command.airport_id.trim() =>
@@ -975,11 +979,14 @@ pub fn load_plate_procedure_in_session(
                     Some(index)
                 }
                 _ => None,
-            });
-    let start_component_index = airport_component_index.checked_sub(1).ok_or_else(|| AppError {
-        kind: AppErrorKind::InvalidFlightPlan,
-        message: "procedure load target has no preceding component".to_string(),
-    })?;
+            }
+        });
+    let start_component_index = airport_component_index
+        .checked_sub(1)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "procedure load target has no preceding component".to_string(),
+        })?;
     let store = session_nav_kv_store(session)?;
     let built = match materialize_procedure(
         store,
@@ -1169,12 +1176,8 @@ pub fn perform_flight_plan_row_action_in_session(
         FlightPlanRowActionId::RemoveAllAbove => {
             crate::remove_all_above(&plan, row_component_index()?)?
         }
-        FlightPlanRowActionId::MoveUp => {
-            crate::move_component(&plan, row_component_index()?, -1)?
-        }
-        FlightPlanRowActionId::MoveDown => {
-            crate::move_component(&plan, row_component_index()?, 1)?
-        }
+        FlightPlanRowActionId::MoveUp => crate::move_component(&plan, row_component_index()?, -1)?,
+        FlightPlanRowActionId::MoveDown => crate::move_component(&plan, row_component_index()?, 1)?,
         _ => {
             return Err(AppError {
                 kind: AppErrorKind::UnsupportedOperation,
@@ -1408,6 +1411,13 @@ pub fn ingest_metars_in_session(handle: u32, payload: &MetarProductPayload) -> A
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     session.metar_payload = Some(payload.clone());
+    Ok(())
+}
+
+pub fn ingest_tafs_in_session(handle: u32, payload: &TafProductPayload) -> AppResult<()> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session.taf_payload = Some(payload.clone());
     Ok(())
 }
 
@@ -1758,6 +1768,7 @@ pub fn get_map_selection_in_session(
         &session.point_tile_cache,
         &session.metar_tile_cache,
         session.metar_payload.as_ref(),
+        session.taf_payload.as_ref(),
         &session.airspace_feature_cache,
         session.tfr_payload.as_ref(),
         &mut availability,
@@ -2803,11 +2814,9 @@ mod tests {
         )
         .expect("push sample");
 
-        let after_direct_to = activate_direct_to_nav_ref_in_session(
-            init.handle,
-            NavRef::Fix("VPDUB".to_string()),
-        )
-        .expect("direct-to on-plan fix");
+        let after_direct_to =
+            activate_direct_to_nav_ref_in_session(init.handle, NavRef::Fix("VPDUB".to_string()))
+                .expect("direct-to on-plan fix");
         let target_row = after_direct_to
             .app_ui_state
             .active_plan

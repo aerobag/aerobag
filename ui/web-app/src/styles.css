@@ -857,6 +857,14 @@ button {
   gap: calc(var(--thumb-gap) * 0.8);
 }
 
+.mapSelectionDetailTitle {
+  margin-bottom: calc(var(--thumb-gap) * 0.5);
+  font-size: calc(var(--thumb) * 0.15);
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .mapSelectionAction {
   width: var(--thumb);
   height: var(--thumb);
@@ -877,16 +885,38 @@ button {
 }
 
 .mapSelectionDetailText {
+  font-size: calc(var(--thumb) * 0.17);
+  font-weight: 700;
+  line-height: 1.12;
+  white-space: pre-wrap;
+}
+
+.mapSelectionInlineDetailText {
   grid-column: 1 / -1;
   height: var(--thumb);
   padding: calc(var(--thumb) * 0.07) calc(var(--thumb) * 0.08);
   border-radius: var(--thumb-radius);
   background: rgba(255, 255, 255, 0.82);
   color: #24333a;
-  font-size: calc(var(--thumb) * 0.17);
-  font-weight: 700;
-  line-height: 1.08;
   overflow: hidden;
+}
+
+.mapSelectionDetailModal {
+  position: fixed;
+  z-index: 9;
+  left: 50%;
+  top: 50%;
+  width: min(calc(var(--thumb) * 8), calc(100vw - var(--safe-left) - var(--safe-right) - var(--thumb)));
+  max-height: min(calc(var(--thumb) * 7), calc(var(--app-height) - var(--safe-top) - var(--safe-bottom) - var(--thumb)));
+  overflow-y: auto;
+  padding: calc(var(--thumb) * 0.18);
+  border: 1px solid rgba(19, 33, 41, 0.14);
+  border-radius: calc(var(--thumb-radius) + 4px);
+  background: rgba(252, 248, 241, 0.98);
+  color: #24333a;
+  box-shadow: var(--shadow);
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
 }
 
 .mapSelectionAction:disabled {

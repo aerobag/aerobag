@@ -180,8 +180,8 @@ pub fn insert_airway_at_flight_plan_row_in_session(
     entry_index: usize,
     exit_index: usize,
 ) -> Result<String, JsValue> {
-    let presentation: app_core::AirwayPresentationPlan =
-        serde_json::from_str(presentation_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let presentation: app_core::AirwayPresentationPlan = serde_json::from_str(presentation_json)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
     let outcome = app_core::session::insert_airway_at_flight_plan_row_in_session(
         session_handle,
         row_uid.to_string(),
@@ -203,12 +203,12 @@ pub fn select_procedure_at_flight_plan_row_in_session(
     runway_transition_json: &str,
     enroute_transition_json: &str,
 ) -> Result<String, JsValue> {
-    let procedure_kind: app_core::ProcedureKind =
-        serde_json::from_str(procedure_kind_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let runway_transition: Option<String> =
-        serde_json::from_str(runway_transition_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let enroute_transition: Option<String> =
-        serde_json::from_str(enroute_transition_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let procedure_kind: app_core::ProcedureKind = serde_json::from_str(procedure_kind_json)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let runway_transition: Option<String> = serde_json::from_str(runway_transition_json)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let enroute_transition: Option<String> = serde_json::from_str(enroute_transition_json)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
     let outcome = app_core::session::select_procedure_at_flight_plan_row_in_session(
         session_handle,
         row_uid.to_string(),
@@ -227,8 +227,9 @@ pub fn load_plate_procedure_in_session(
     session_handle: u32,
     load_id: &str,
 ) -> Result<String, JsValue> {
-    let outcome = app_core::session::load_plate_procedure_in_session(session_handle, load_id.to_string())
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome =
+        app_core::session::load_plate_procedure_in_session(session_handle, load_id.to_string())
+            .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
@@ -631,6 +632,11 @@ pub fn ingest_tfrs_in_session(handle: u32, payload_json: &str) -> Result<(), JsV
 #[wasm_bindgen]
 pub fn ingest_metars_in_session(handle: u32, payload_json: &str) -> Result<(), JsValue> {
     ingest_metars_in_session_json(handle, payload_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn ingest_tafs_in_session(handle: u32, payload_json: &str) -> Result<(), JsValue> {
+    ingest_tafs_in_session_json(handle, payload_json).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -1227,6 +1233,12 @@ fn ingest_metars_in_session_json(handle: u32, payload_json: &str) -> Result<(), 
     app_core::ingest_metars_in_session(handle, &payload).map_err(|err| err.to_string())
 }
 
+fn ingest_tafs_in_session_json(handle: u32, payload_json: &str) -> Result<(), String> {
+    let payload: app_core::TafProductPayload =
+        serde_json::from_str(payload_json).map_err(|err| err.to_string())?;
+    app_core::ingest_tafs_in_session(handle, &payload).map_err(|err| err.to_string())
+}
+
 fn get_map_overlay_in_session_json(
     handle: u32,
     viewport_json: &str,
@@ -1334,5 +1346,4 @@ mod tests {
             vec![vec![1, 2, 3], vec![4, 5]]
         );
     }
-
 }

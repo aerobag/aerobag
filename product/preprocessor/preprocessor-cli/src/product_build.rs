@@ -3016,22 +3016,47 @@ fn sync_referenced_fast_bundle_unpacked_zips(
         products_by_filename.insert(filename, product.clone());
     }
     for discovery_path in discovery_manifest_paths(build_root, current_artifacts_path)? {
-        let current: CurrentArtifactsManifest = serde_json::from_slice(
+        let is_current_discovery = same_path(&discovery_path, current_artifacts_path);
+        let current: CurrentArtifactsManifest = match serde_json::from_slice(
             &fs::read(&discovery_path)
                 .with_context(|| format!("failed to read {}", discovery_path.display()))?,
-        )
-        .with_context(|| format!("failed to parse {}", discovery_path.display()))?;
+        ) {
+            Ok(current) => current,
+            Err(error) if !is_current_discovery => {
+                eprintln!(
+                    "WARNING skipping stale historical discovery {} during fast unpack sync: {error:#}",
+                    discovery_path.display()
+                );
+                continue;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to parse {}", discovery_path.display()));
+            }
+        };
         for bundle in current
             .bundles
             .iter()
             .filter(|bundle| bundle.bundle_type == "fast")
         {
             let bundle_path = build_root.join(&bundle.filename);
-            let fast_bundle: FastBundleManifest = serde_json::from_slice(
+            let fast_bundle: FastBundleManifest = match serde_json::from_slice(
                 &fs::read(&bundle_path)
                     .with_context(|| format!("failed to read {}", bundle_path.display()))?,
-            )
-            .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
+            ) {
+                Ok(bundle) => bundle,
+                Err(error) if !is_current_discovery => {
+                    eprintln!(
+                        "WARNING skipping stale historical fast bundle {} during unpack sync: {error:#}",
+                        bundle_path.display()
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to parse {}", bundle_path.display()));
+                }
+            };
             for product in fast_bundle_products_from_manifest(&bundle_path, &fast_bundle)? {
                 let Some(filename) = product
                     .published_zip
@@ -3057,6 +3082,14 @@ fn sync_referenced_fast_bundle_unpacked_zips(
                     continue;
                 }
                 let Some(product) = products_by_filename.get(&package.filename) else {
+                    if !is_current_discovery {
+                        eprintln!(
+                            "WARNING skipping stale historical fast package {} from {}: no source mapping available",
+                            package.filename,
+                            discovery_path.display()
+                        );
+                        continue;
+                    }
                     bail!(
                         "no source mapping available to mirror historical fast package {}",
                         package.filename
@@ -11232,21 +11265,44 @@ fn collect_reachable_packaged_entries(
 ) -> anyhow::Result<BTreeSet<String>> {
     let mut keep = BTreeSet::new();
     for discovery_path in discovery_manifest_paths(packaged_root, current_artifacts_path)? {
-        let current = load_current_artifacts_manifest(&discovery_path)?;
-        keep.insert(filename_string(&discovery_path)?);
-        if let Some(diagnostics) = &current.diagnostics {
-            keep.insert(diagnostics.filename.clone());
+        let is_current_discovery = same_path(&discovery_path, current_artifacts_path);
+        match collect_reachable_packaged_entries_for_discovery(packaged_root, &discovery_path) {
+            Ok(entries) => keep.extend(entries),
+            Err(error) if !is_current_discovery => {
+                eprintln!(
+                    "WARNING dropping stale historical discovery {} from packaged publication: {error:#}",
+                    discovery_path.display()
+                );
+            }
+            Err(error) => return Err(error),
         }
-        for bundle_ref in &current.bundles {
-            keep.insert(bundle_ref.filename.clone());
-            let bundle = load_bundle_manifest_like(&packaged_root.join(&bundle_ref.filename))?;
-            let bundle_refs = bundle.bundle_refs();
-            for artifact in bundle_refs.ancillary {
-                keep.insert(artifact.filename.clone());
-            }
-            for package in bundle_refs.packages {
-                keep.insert(package.filename.clone());
-            }
+    }
+    Ok(keep)
+}
+
+fn collect_reachable_packaged_entries_for_discovery(
+    packaged_root: &Path,
+    discovery_path: &Path,
+) -> anyhow::Result<BTreeSet<String>> {
+    let current = load_current_artifacts_manifest(discovery_path)?;
+    let mut keep = BTreeSet::from([filename_string(discovery_path)?]);
+    if let Some(diagnostics) = &current.diagnostics {
+        ensure_public_file_exists(&packaged_root.join(&diagnostics.filename))?;
+        keep.insert(diagnostics.filename.clone());
+    }
+    for bundle_ref in &current.bundles {
+        let bundle_path = packaged_root.join(&bundle_ref.filename);
+        ensure_public_file_exists(&bundle_path)?;
+        keep.insert(bundle_ref.filename.clone());
+        let bundle = load_bundle_manifest_like(&bundle_path)?;
+        let bundle_refs = bundle.bundle_refs();
+        for artifact in bundle_refs.ancillary {
+            ensure_public_file_exists(&packaged_root.join(&artifact.filename))?;
+            keep.insert(artifact.filename.clone());
+        }
+        for package in bundle_refs.packages {
+            ensure_public_file_exists(&packaged_root.join(&package.filename))?;
+            keep.insert(package.filename.clone());
         }
     }
     Ok(keep)
@@ -11260,26 +11316,51 @@ fn collect_reachable_unpacked_entries(
         .parent()
         .context("current artifacts path missing parent")?;
     for discovery_path in discovery_manifest_paths(unpacked_root, current_artifacts_path)? {
-        let current = load_current_artifacts_manifest(&discovery_path)?;
-        keep.insert(filename_string(&discovery_path)?);
-        if let Some(diagnostics) = &current.diagnostics {
-            keep.insert(diagnostics.filename.clone());
+        let is_current_discovery = same_path(&discovery_path, current_artifacts_path);
+        match collect_reachable_unpacked_entries_for_discovery(unpacked_root, &discovery_path) {
+            Ok(entries) => keep.extend(entries),
+            Err(error) if !is_current_discovery => {
+                eprintln!(
+                    "WARNING dropping stale historical discovery {} from unpacked publication: {error:#}",
+                    discovery_path.display()
+                );
+            }
+            Err(error) => return Err(error),
         }
-        for bundle_ref in &current.bundles {
-            keep.insert(bundle_ref.filename.clone());
-            let bundle_path = unpacked_root.join(&bundle_ref.filename);
-            let bundle = load_bundle_manifest_like(&bundle_path)?;
-            let bundle_refs = bundle.bundle_refs();
-            for artifact in bundle_refs.ancillary {
-                if artifact.filename.ends_with(".zip") {
-                    keep.insert(zip_stem(&artifact.filename)?);
-                } else {
-                    keep.insert(artifact.filename.clone());
-                }
+    }
+    Ok(keep)
+}
+
+fn collect_reachable_unpacked_entries_for_discovery(
+    unpacked_root: &Path,
+    discovery_path: &Path,
+) -> anyhow::Result<BTreeSet<String>> {
+    let current = load_current_artifacts_manifest(discovery_path)?;
+    let mut keep = BTreeSet::from([filename_string(discovery_path)?]);
+    if let Some(diagnostics) = &current.diagnostics {
+        ensure_public_file_exists(&unpacked_root.join(&diagnostics.filename))?;
+        keep.insert(diagnostics.filename.clone());
+    }
+    for bundle_ref in &current.bundles {
+        let bundle_path = unpacked_root.join(&bundle_ref.filename);
+        ensure_public_file_exists(&bundle_path)?;
+        keep.insert(bundle_ref.filename.clone());
+        let bundle = load_bundle_manifest_like(&bundle_path)?;
+        let bundle_refs = bundle.bundle_refs();
+        for artifact in bundle_refs.ancillary {
+            if artifact.filename.ends_with(".zip") {
+                let stem = zip_stem(&artifact.filename)?;
+                ensure_public_dir_exists(&unpacked_root.join(&stem))?;
+                keep.insert(stem);
+            } else {
+                ensure_public_file_exists(&unpacked_root.join(&artifact.filename))?;
+                keep.insert(artifact.filename.clone());
             }
-            for package in bundle_refs.packages {
-                keep.insert(zip_stem(&package.filename)?);
-            }
+        }
+        for package in bundle_refs.packages {
+            let stem = zip_stem(&package.filename)?;
+            ensure_public_dir_exists(&unpacked_root.join(&stem))?;
+            keep.insert(stem);
         }
     }
     Ok(keep)
@@ -11310,6 +11391,13 @@ fn discovery_manifest_paths(
     }
     paths.sort();
     Ok(paths)
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    left == right
+        || (left.exists()
+            && right.exists()
+            && fs::canonicalize(left).ok() == fs::canonicalize(right).ok())
 }
 
 fn prune_root_to_keep_set(root: &Path, keep: &BTreeSet<String>) -> anyhow::Result<()> {
@@ -15712,6 +15800,80 @@ mod tests {
                 .and_then(|name| name.to_str())
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn packaged_cleanup_prunes_historical_discovery_with_missing_package() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        let current_fast_bundle = FastBundleManifest {
+            schema_version: 1,
+            bundle_id: "fast_current".to_string(),
+            bundle_type: "fast".to_string(),
+            published_at_utc: "2026-05-04T00:00:00Z".to_string(),
+            packages: vec![],
+        };
+        let current_fast_bundle_path =
+            write_hashed_fast_bundle_manifest(root, &current_fast_bundle).unwrap();
+        let current = CurrentArtifactsManifest {
+            schema_version: 1,
+            as_of_date: "2026-05-04".to_string(),
+            as_of_utc: "2026-05-04T00:00:00Z".to_string(),
+            bundles: vec![current_bundle_entry_from_path(&current_fast_bundle_path).unwrap()],
+            diagnostics: None,
+        };
+        let current_path = root.join("current_artifacts.json");
+        fs::write(&current_path, serde_json::to_vec_pretty(&current).unwrap()).unwrap();
+
+        let stale_cycle_bundle = BundleManifest {
+            schema_version: 1,
+            bundle_id: "cycle_2604_01".to_string(),
+            bundle_type: "cycle".to_string(),
+            cycle: "2604".to_string(),
+            cycle_version: "01".to_string(),
+            generated_at_utc: "2026-05-03T00:00:00Z".to_string(),
+            effective_date: "2026-04-16".to_string(),
+            expiration_date: "2026-05-14".to_string(),
+            start_valid: "2026-04-16".to_string(),
+            end_valid: "2026-05-14".to_string(),
+            packages: vec![BundlePackageArtifact {
+                id: "enr_l_ec_2603_01".to_string(),
+                family_id: "enr_l".to_string(),
+                region_id: Some("ec".to_string()),
+                filename: "enr_l_ec_2603_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip".to_string(),
+                relative_path: "enr_l_ec_2603_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip".to_string(),
+                cycle: Some("2603".to_string()),
+                cycle_version: Some("01".to_string()),
+                checksum_sha256: "a".repeat(64),
+                size_bytes: 123,
+                published_at_utc: None,
+                source_generated_at_utc: None,
+                source_version: None,
+                source_fetched_at_utc: None,
+                effective_date: Some("2026-03-19".to_string()),
+                expiration_date: Some("2026-04-16".to_string()),
+                metadata: BTreeMap::new(),
+            }],
+            ancillary: vec![],
+        };
+        let stale_cycle_bundle_path =
+            write_hashed_bundle_manifest(root, &stale_cycle_bundle).unwrap();
+        let stale = CurrentArtifactsManifest {
+            schema_version: 1,
+            as_of_date: "2026-05-03".to_string(),
+            as_of_utc: "2026-05-03T00:00:00Z".to_string(),
+            bundles: vec![current_bundle_entry_from_path(&stale_cycle_bundle_path).unwrap()],
+            diagnostics: None,
+        };
+        let stale_path = root.join("current_artifacts_20260503T000000Z.json");
+        fs::write(&stale_path, serde_json::to_vec_pretty(&stale).unwrap()).unwrap();
+
+        cleanup_published_packaged_root(root, &current_path).unwrap();
+
+        assert!(current_path.is_file());
+        assert!(current_fast_bundle_path.is_file());
+        assert!(!stale_path.exists());
+        assert!(!stale_cycle_bundle_path.exists());
     }
 
     #[test]

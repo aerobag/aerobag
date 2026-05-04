@@ -442,6 +442,8 @@ private const val UiPrefsOfflinePackagePreferencesKey = "offline_package_prefere
 private const val UiPrefsPackageSourceBaseUrlKey = "package_source_base_url"
 private const val MapViewportLogTag = "MapViewport"
 private const val MaxViewHistoryDepth = 64
+private const val OverlayPlaneModalScrim = 80f
+private const val OverlayPlaneModal = 90f
 private val PackageManagementJson = Json {
     encodeDefaults = true
     ignoreUnknownKeys = true
@@ -5924,10 +5926,11 @@ private fun MapExplorerPage(
         }
 
         mapSelection?.let { selection ->
-            Scrim { mapSelection = null }
+            Scrim(modifier = Modifier.zIndex(OverlayPlaneModalScrim)) { mapSelection = null }
             MapSelectionTray(
                 state = selection,
                 modifier = Modifier
+                    .zIndex(OverlayPlaneModal)
                     .align(
                         when {
                             selection.point.x < surfaceWidthPx / 2f && selection.point.y < surfaceHeightPx / 2f -> Alignment.BottomEnd
@@ -9623,9 +9626,9 @@ private fun CompactSquareButton(
 }
 
 @Composable
-private fun Scrim(onDismiss: () -> Unit) {
+private fun Scrim(modifier: Modifier = Modifier, onDismiss: () -> Unit) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxSize()
             .background(Color(0x3D0A1014))
             .clickable(

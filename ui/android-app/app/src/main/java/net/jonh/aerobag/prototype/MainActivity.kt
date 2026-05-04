@@ -5504,8 +5504,7 @@ private fun MapExplorerPage(
                                     with(density) { (ThumbSize * 0.5f).toPx().toDouble() },
                                 )
                             }.onSuccess { result ->
-                                val firstItem = result.categories.firstNotNullOfOrNull { category -> category.items.firstOrNull() }
-                                mapSelection = MapSelectionUiState(point = point, result = result, selectedItem = firstItem)
+                                mapSelection = MapSelectionUiState(point = point, result = result, selectedItem = null)
                                 chartTrayOpen = false
                                 layerTrayOpen = false
                             }.onFailure { error ->

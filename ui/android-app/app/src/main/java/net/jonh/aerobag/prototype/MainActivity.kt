@@ -188,8 +188,12 @@ import net.jonh.aerobag.prototype.domain.FlightPlanUiState
 import net.jonh.aerobag.prototype.domain.GuidanceState
 import net.jonh.aerobag.prototype.domain.InstalledPackageKind
 import net.jonh.aerobag.prototype.domain.InstalledPackages
+import net.jonh.aerobag.prototype.domain.AirspaceDisplayDecoration
+import net.jonh.aerobag.prototype.domain.AirspaceDisplayLabel
 import net.jonh.aerobag.prototype.domain.AirspaceDisplayPath
+import net.jonh.aerobag.prototype.domain.AirspaceDisplaySubpath
 import net.jonh.aerobag.prototype.domain.AirspaceLimitGlyph
+import net.jonh.aerobag.prototype.domain.AirspaceScreenPoint
 import net.jonh.aerobag.prototype.domain.LatLonPoint
 import net.jonh.aerobag.prototype.domain.MapChartFamily
 import net.jonh.aerobag.prototype.domain.MapLayerId
@@ -1914,17 +1918,157 @@ private fun transformVisibleFeature(
     toViewport: MapViewportState,
     toSurface: OverlaySurfaceUnits,
 ): net.jonh.aerobag.prototype.domain.VisibleMapFeature {
+    val transformed = transformScreenPoint(
+        x = feature.screenX,
+        y = feature.screenY,
+        fromViewport = fromViewport,
+        fromSurface = fromSurface,
+        toViewport = toViewport,
+        toSurface = toSurface,
+    )
+    return feature.copy(screenX = transformed.x, screenY = transformed.y)
+}
+
+private fun transformMapOverlayForDisplay(
+    overlay: MapOverlayQueryResult,
+    fromViewport: MapViewportState?,
+    fromSurface: OverlaySurfaceUnits?,
+    toViewport: MapViewportState,
+    toSurface: OverlaySurfaceUnits,
+): MapOverlayQueryResult {
+    if (fromViewport == null ||
+        fromSurface == null ||
+        fromSurface.width <= 0f ||
+        fromSurface.height <= 0f ||
+        toSurface.width <= 0f ||
+        toSurface.height <= 0f
+    ) {
+        return overlay
+    }
+    return overlay.copy(
+        visibleFeatures = overlay.visibleFeatures.map { feature ->
+            transformVisibleFeature(feature, fromViewport, fromSurface, toViewport, toSurface)
+        },
+        visibleMetars = overlay.visibleMetars.map { feature ->
+            transformVisibleMetarFeature(feature, fromViewport, fromSurface, toViewport, toSurface)
+        },
+        airspacePaths = overlay.airspacePaths.map { feature ->
+            transformAirspaceDisplayPath(feature, fromViewport, fromSurface, toViewport, toSurface)
+        },
+        tfrPaths = overlay.tfrPaths.map { feature ->
+            transformAirspaceDisplayPath(feature, fromViewport, fromSurface, toViewport, toSurface)
+        },
+        airspaceLabels = overlay.airspaceLabels.map { label ->
+            transformAirspaceDisplayLabel(label, fromViewport, fromSurface, toViewport, toSurface)
+        },
+    )
+}
+
+private fun transformVisibleMetarFeature(
+    feature: VisibleMetarFeature,
+    fromViewport: MapViewportState,
+    fromSurface: OverlaySurfaceUnits,
+    toViewport: MapViewportState,
+    toSurface: OverlaySurfaceUnits,
+): VisibleMetarFeature {
+    val transformed = transformScreenPoint(
+        x = feature.screenX,
+        y = feature.screenY,
+        fromViewport = fromViewport,
+        fromSurface = fromSurface,
+        toViewport = toViewport,
+        toSurface = toSurface,
+    )
+    return feature.copy(screenX = transformed.x, screenY = transformed.y)
+}
+
+private fun transformAirspaceDisplayLabel(
+    label: AirspaceDisplayLabel,
+    fromViewport: MapViewportState,
+    fromSurface: OverlaySurfaceUnits,
+    toViewport: MapViewportState,
+    toSurface: OverlaySurfaceUnits,
+): AirspaceDisplayLabel {
+    val transformed = transformScreenPoint(
+        x = label.screenX,
+        y = label.screenY,
+        fromViewport = fromViewport,
+        fromSurface = fromSurface,
+        toViewport = toViewport,
+        toSurface = toSurface,
+    )
+    return label.copy(screenX = transformed.x, screenY = transformed.y)
+}
+
+private fun transformAirspaceDisplayPath(
+    feature: AirspaceDisplayPath,
+    fromViewport: MapViewportState,
+    fromSurface: OverlaySurfaceUnits,
+    toViewport: MapViewportState,
+    toSurface: OverlaySurfaceUnits,
+): AirspaceDisplayPath =
+    feature.copy(
+        paths = feature.paths.map { subpath ->
+            transformAirspaceDisplaySubpath(subpath, fromViewport, fromSurface, toViewport, toSurface)
+        },
+        decorations = feature.decorations.map { decoration ->
+            transformAirspaceDisplayDecoration(decoration, fromViewport, fromSurface, toViewport, toSurface)
+        },
+    )
+
+private fun transformAirspaceDisplayDecoration(
+    decoration: AirspaceDisplayDecoration,
+    fromViewport: MapViewportState,
+    fromSurface: OverlaySurfaceUnits,
+    toViewport: MapViewportState,
+    toSurface: OverlaySurfaceUnits,
+): AirspaceDisplayDecoration =
+    decoration.copy(
+        paths = decoration.paths.map { subpath ->
+            transformAirspaceDisplaySubpath(subpath, fromViewport, fromSurface, toViewport, toSurface)
+        },
+    )
+
+private fun transformAirspaceDisplaySubpath(
+    subpath: AirspaceDisplaySubpath,
+    fromViewport: MapViewportState,
+    fromSurface: OverlaySurfaceUnits,
+    toViewport: MapViewportState,
+    toSurface: OverlaySurfaceUnits,
+): AirspaceDisplaySubpath =
+    subpath.copy(
+        points = subpath.points.map { point ->
+            val transformed = transformScreenPoint(
+                x = point.x,
+                y = point.y,
+                fromViewport = fromViewport,
+                fromSurface = fromSurface,
+                toViewport = toViewport,
+                toSurface = toSurface,
+            )
+            AirspaceScreenPoint(transformed.x, transformed.y)
+        },
+    )
+
+private fun transformScreenPoint(
+    x: Double,
+    y: Double,
+    fromViewport: MapViewportState,
+    fromSurface: OverlaySurfaceUnits,
+    toViewport: MapViewportState,
+    toSurface: OverlaySurfaceUnits,
+): AirspaceScreenPoint {
     val world =
         screenToWorld(
             viewport = fromViewport,
-            point = ScreenPoint(feature.screenX.toFloat(), feature.screenY.toFloat()),
+            point = ScreenPoint(x.toFloat(), y.toFloat()),
             widthPx = fromSurface.width,
             heightPx = fromSurface.height,
         )
     val nextScale = scaleForZoom(toViewport.zoom)
-    return feature.copy(
-        screenX = (world.x - toViewport.centerWorldX) * nextScale + toSurface.width / 2.0,
-        screenY = (world.y - toViewport.centerWorldY) * nextScale + toSurface.height / 2.0,
+    return AirspaceScreenPoint(
+        x = (world.x - toViewport.centerWorldX) * nextScale + toSurface.width / 2.0,
+        y = (world.y - toViewport.centerWorldY) * nextScale + toSurface.height / 2.0,
     )
 }
 
@@ -5080,7 +5224,7 @@ private fun MapExplorerPage(
             Log.w("AerobagLayers", "terrain overlay unavailable", error)
         }
     }
-    val displayedOverlayFeatures = remember(
+    val displayedMapOverlay = remember(
         committedMapOverlay,
         committedOverlayViewport,
         committedOverlaySurfaceUnits,
@@ -5088,21 +5232,13 @@ private fun MapExplorerPage(
         surfaceWidthPx,
         surfaceHeightPx,
     ) {
-        val baseViewport = committedOverlayViewport
-        val baseSurface = committedOverlaySurfaceUnits
-        if (baseViewport == null || baseSurface == null || baseSurface.width <= 0f || baseSurface.height <= 0f || surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) {
-            committedMapOverlay.visibleFeatures
-        } else {
-            committedMapOverlay.visibleFeatures.map { feature ->
-                transformVisibleFeature(
-                    feature = feature,
-                    fromViewport = baseViewport,
-                    fromSurface = baseSurface,
-                    toViewport = currentViewport,
-                    toSurface = OverlaySurfaceUnits(surfaceWidthPx, surfaceHeightPx),
-                )
-            }
-        }
+        transformMapOverlayForDisplay(
+            overlay = committedMapOverlay,
+            fromViewport = committedOverlayViewport,
+            fromSurface = committedOverlaySurfaceUnits,
+            toViewport = currentViewport,
+            toSurface = OverlaySurfaceUnits(surfaceWidthPx, surfaceHeightPx),
+        )
     }
     LaunchedEffect(currentViewport, surfaceWidthPx, surfaceHeightPx, tiles, nexradFrames, nexradFrameIndex, terrainOverlay) {
         if (surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) return@LaunchedEffect
@@ -5449,12 +5585,12 @@ private fun MapExplorerPage(
                 }
             }
         }
-        if (committedMapOverlay.airspacePaths.isNotEmpty() || committedMapOverlay.tfrPaths.isNotEmpty() || committedMapOverlay.airspaceLabels.isNotEmpty()) {
+        if (displayedMapOverlay.airspacePaths.isNotEmpty() || displayedMapOverlay.tfrPaths.isNotEmpty() || displayedMapOverlay.airspaceLabels.isNotEmpty()) {
             Canvas(modifier = Modifier.fillMaxSize()) {
-                (committedMapOverlay.airspacePaths + committedMapOverlay.tfrPaths).forEach { feature ->
+                (displayedMapOverlay.airspacePaths + displayedMapOverlay.tfrPaths).forEach { feature ->
                     drawAirspaceDisplayPath(feature)
                 }
-                committedMapOverlay.airspaceLabels.forEach { label ->
+                displayedMapOverlay.airspaceLabels.forEach { label ->
                     drawAirspaceLimitGlyph(
                         glyph = AirspaceLimitGlyph(label.text, label.styleKey, label.colorKey),
                         center = Offset(label.screenX.toFloat(), label.screenY.toFloat()),
@@ -5463,7 +5599,7 @@ private fun MapExplorerPage(
                 }
             }
         }
-        if (displayedOverlayFeatures.isNotEmpty()) {
+        if (displayedMapOverlay.visibleFeatures.isNotEmpty()) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val densityScale = density.density
                 fixLabelStrokePaint.textSize = 14f * densityScale
@@ -5474,7 +5610,7 @@ private fun MapExplorerPage(
                 airportToweredLabelFillPaint.textSize = 14f * densityScale
                 airportUntoweredLabelFillPaint.textSize = 14f * densityScale
                 vorLabelFillPaint.textSize = 14f * densityScale
-                displayedOverlayFeatures.forEach { feature ->
+                displayedMapOverlay.visibleFeatures.forEach { feature ->
                     val center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat())
                     val isAirport = feature.styleClass == "airport" || feature.kind.equals("airport", ignoreCase = true)
                     val isVor = feature.styleClass == "nav" || feature.kind.lowercase().contains("vor")
@@ -5541,9 +5677,9 @@ private fun MapExplorerPage(
                 }
             }
         }
-        if (committedMapOverlay.visibleMetars.isNotEmpty()) {
+        if (displayedMapOverlay.visibleMetars.isNotEmpty()) {
             Canvas(modifier = Modifier.fillMaxSize()) {
-                committedMapOverlay.visibleMetars.forEach { feature ->
+                displayedMapOverlay.visibleMetars.forEach { feature ->
                     drawMetarSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), density.density)
                 }
             }
@@ -5552,16 +5688,16 @@ private fun MapExplorerPage(
             Canvas(modifier = Modifier.fillMaxSize()) {
                 when (val highlight = item.highlight) {
                     is MapSelectionHighlight.FeatureRef -> {
-                        val feature = displayedOverlayFeatures.firstOrNull { it.id == highlight.id }
+                        val feature = displayedMapOverlay.visibleFeatures.firstOrNull { it.id == highlight.id }
                         if (feature != null) {
                             drawCircle(Color.White, radius = 20f * density.density, center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), style = Stroke(width = 4f * density.density))
                         }
-                        (committedMapOverlay.airspacePaths + committedMapOverlay.tfrPaths).firstOrNull { it.id == highlight.id }?.let { path ->
+                        (displayedMapOverlay.airspacePaths + displayedMapOverlay.tfrPaths).firstOrNull { it.id == highlight.id }?.let { path ->
                             drawAirspaceDisplayPath(path)
                         }
                     }
                     is MapSelectionHighlight.Metar -> {
-                        val feature = committedMapOverlay.visibleMetars.firstOrNull { it.stationId == highlight.stationId } ?: item.metarFeature
+                        val feature = displayedMapOverlay.visibleMetars.firstOrNull { it.stationId == highlight.stationId } ?: item.metarFeature
                         if (feature != null) {
                             drawCircle(Color.White, radius = 16f * density.density, center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), style = Stroke(width = 4f * density.density))
                             drawMetarSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), density.density)

@@ -1425,7 +1425,7 @@ fn selection_item_for_point(
             insert_action,
             action_for_availability("plates", "Plates", airport_plate_availability.plates),
             action_for_availability("csup", "Chart Supp", airport_plate_availability.csup),
-            taf.map(|record| detail_action("taf", "TAF", record.raw_text.clone()))
+            taf.map(|record| detail_action("taf", "TAF", taf_detail_text(record)))
                 .unwrap_or_else(|| disabled_action("taf", "TAF")),
             disabled_action("runways", "Runways"),
         ]
@@ -1506,10 +1506,14 @@ fn selection_item_for_metar(
         airspace_icon: None,
         actions: vec![
             display_action("metar", "METAR"),
-            taf.map(|record| detail_action("taf", "TAF", record.raw_text.clone()))
+            taf.map(|record| detail_action("taf", "TAF", taf_detail_text(record)))
                 .unwrap_or_else(|| disabled_action("taf", "TAF")),
         ],
     }
+}
+
+fn taf_detail_text(record: &TafRecord) -> String {
+    record.raw_text.replace(" BECMG", "\nBECMG")
 }
 
 fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelectionItem {
@@ -3546,7 +3550,7 @@ mod tests {
             metar_count: Some(1),
             metars_by_station,
         };
-        let taf_raw_text = "TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020";
+        let taf_raw_text = "TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020 BECMG 0102/0104 BKN030";
         let tafs = TafProductPayload {
             schema_version: 1,
             version_label: "test".to_string(),
@@ -3605,7 +3609,10 @@ mod tests {
             .find(|action| action.id == "taf")
             .expect("TAF action");
         assert!(taf_action.enabled);
-        assert_eq!(taf_action.detail_text.as_deref(), Some(taf_raw_text));
+        assert_eq!(
+            taf_action.detail_text.as_deref(),
+            Some("TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020\nBECMG 0102/0104 BKN030")
+        );
     }
 
     #[test]
@@ -4243,7 +4250,8 @@ mod tests {
                 csup: true,
             },
             Some(&TafRecord {
-                raw_text: "TAF KSEA 010000Z 0100/0124 00000KT P6SM SCT020".to_string(),
+                raw_text: "TAF KSEA 010000Z 0100/0124 00000KT P6SM SCT020 BECMG 0102/0104 BKN030"
+                    .to_string(),
                 issued_at_utc: Some("2026-05-03T00:00:00.000Z".to_string()),
                 station_id: "KSEA".to_string(),
                 longitude: record.lon,
@@ -4276,7 +4284,7 @@ mod tests {
         assert!(taf.enabled);
         assert_eq!(
             taf.detail_text.as_deref(),
-            Some("TAF KSEA 010000Z 0100/0124 00000KT P6SM SCT020")
+            Some("TAF KSEA 010000Z 0100/0124 00000KT P6SM SCT020\nBECMG 0102/0104 BKN030")
         );
     }
 

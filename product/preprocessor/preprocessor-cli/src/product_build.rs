@@ -8034,24 +8034,41 @@ fn build_metars_product(
     fs::create_dir_all(&provenance_dir)
         .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
 
-    let url =
-        "https://aviationweather.gov/data/cache/metars.cache.xml.gz#logical_name=metars.cache.xml.gz"
-            .to_string();
-    fs::write(
-        provenance_dir.join("source_urls.jsonl"),
-        format!(
-            "{{\"event\":\"source_url\",\"label\":\"metars\",\"url\":\"{}\"}}\n",
-            url
+    let source_urls = [
+        (
+            "metars",
+            "https://aviationweather.gov/data/cache/metars.cache.xml.gz#logical_name=metars.cache.xml.gz",
         ),
-    )
-    .with_context(|| {
+        (
+            "tafs",
+            "https://aviationweather.gov/data/cache/tafs.cache.xml.gz#logical_name=tafs.cache.xml.gz",
+        ),
+        (
+            "aircraftreports",
+            "https://aviationweather.gov/data/cache/aircraftreports.cache.xml.gz#logical_name=aircraftreports.cache.xml.gz",
+        ),
+    ];
+    let provenance = source_urls
+        .iter()
+        .map(|(label, url)| {
+            format!(
+                "{{\"event\":\"source_url\",\"label\":\"{}\",\"url\":\"{}\"}}\n",
+                label, url
+            )
+        })
+        .collect::<String>();
+    fs::write(provenance_dir.join("source_urls.jsonl"), provenance).with_context(|| {
         format!(
             "failed to write {}",
             provenance_dir.join("source_urls.jsonl").display()
         )
     })?;
+    let urls = source_urls
+        .iter()
+        .map(|(_, url)| (*url).to_string())
+        .collect::<Vec<_>>();
     prefetch_archives_with_provenance(
-        std::slice::from_ref(&url),
+        &urls,
         &input_dir,
         config.fetch_jobs,
         Some(&fetch_cache),
@@ -8059,12 +8076,25 @@ fn build_metars_product(
         "metars",
     )?;
 
-    let gz_path = input_dir.join("metars.cache.xml.gz");
-    run_status_command("gzip", &["-d", gz_path.to_str().unwrap()])?;
-    let input_xml_path = input_dir.join("metars.cache.xml");
+    for file_name in [
+        "metars.cache.xml.gz",
+        "tafs.cache.xml.gz",
+        "aircraftreports.cache.xml.gz",
+    ] {
+        let gz_path = input_dir.join(file_name);
+        run_status_command("gzip", &["-d", gz_path.to_str().unwrap()])?;
+    }
+    let metar_xml_path = input_dir.join("metars.cache.xml");
+    let taf_xml_path = input_dir.join("tafs.cache.xml");
+    let pirep_xml_path = input_dir.join("aircraftreports.cache.xml");
     let source_fingerprint = hash_tree(&input_dir)?;
     let important_station_ids = load_towered_metar_station_ids_from_current_vectors(config)?;
-    let content_fingerprint = metar_content_fingerprint(&input_xml_path, &important_station_ids)?;
+    let content_fingerprint = metar_content_fingerprint(
+        &metar_xml_path,
+        &taf_xml_path,
+        &pirep_xml_path,
+        &important_station_ids,
+    )?;
     let version_label = fast_product_version_label(&content_fingerprint);
     let inputs = fast_product_node_inputs("metars", &source_fingerprint)?;
     let build_version_label = version_label.clone();
@@ -8076,7 +8106,9 @@ fn build_metars_product(
         inputs,
         move |output_dir| {
             let result = build_metar_dataset(&BuildMetarRequest {
-                input_xml_path,
+                metar_xml_path,
+                taf_xml_path,
+                pirep_xml_path,
                 output_dir,
                 version_label: build_version_label,
                 generated_at_utc,
@@ -10424,27 +10456,75 @@ fn fast_product_source_generated_at(
     .with_context(|| format!("failed to parse {}", structured_json_path.display()))?;
     match product_id {
         "metars" => {
-            let records = value
+            let mut timestamps = value
                 .get("metars_by_station")
                 .and_then(|value| value.as_object())
-                .map(|records| records.values().collect::<Vec<_>>())
+                .map(|records| {
+                    records
+                        .values()
+                        .filter_map(|record| {
+                            record
+                                .get("observed_at_utc")
+                                .and_then(|value| value.as_str())
+                                .map(ToOwned::to_owned)
+                        })
+                        .collect::<Vec<_>>()
+                })
                 .or_else(|| {
                     value
                         .get("metars")
                         .and_then(|value| value.as_array())
-                        .map(|records| records.iter().collect::<Vec<_>>())
+                        .map(|records| {
+                            records
+                                .iter()
+                                .filter_map(|record| {
+                                    record
+                                        .get("observed_at_utc")
+                                        .and_then(|value| value.as_str())
+                                        .map(ToOwned::to_owned)
+                                })
+                                .collect::<Vec<_>>()
+                        })
                 })
                 .context("METAR product had no records")?;
-            records
+            let product_dir = structured_json_path
+                .parent()
+                .context("METAR structured JSON had no parent dir")?;
+            for (file_name, table_name, time_field) in [
+                ("tafs.json", "tafs_by_station", "issued_at_utc"),
+                ("pireps.json", "pireps", "observed_at_utc"),
+            ] {
+                let path = product_dir.join(file_name);
+                if !path.is_file() {
+                    continue;
+                }
+                let extra: serde_json::Value = serde_json::from_slice(
+                    &fs::read(&path)
+                        .with_context(|| format!("failed to read {}", path.display()))?,
+                )
+                .with_context(|| format!("failed to parse {}", path.display()))?;
+                if let Some(records) = extra.get(table_name).and_then(|value| value.as_object()) {
+                    timestamps.extend(records.values().filter_map(|record| {
+                        record
+                            .get(time_field)
+                            .and_then(|value| value.as_str())
+                            .map(ToOwned::to_owned)
+                    }));
+                } else if let Some(records) =
+                    extra.get(table_name).and_then(|value| value.as_array())
+                {
+                    timestamps.extend(records.iter().filter_map(|record| {
+                        record
+                            .get(time_field)
+                            .and_then(|value| value.as_str())
+                            .map(ToOwned::to_owned)
+                    }));
+                }
+            }
+            timestamps
                 .into_iter()
-                .filter_map(|record| {
-                    record
-                        .get("observed_at_utc")
-                        .and_then(|value| value.as_str())
-                })
                 .max()
-                .map(ToOwned::to_owned)
-                .context("METAR product had no observed_at_utc values")
+                .context("METAR product had no weather timestamps")
         }
         "nexrad" => value
             .get("frames")

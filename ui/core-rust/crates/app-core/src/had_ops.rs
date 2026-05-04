@@ -31,6 +31,7 @@ pub enum HadOperationOutcome {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HadOperation {
+    VectorManifest,
     ChartCatalog,
     MapSelectorState {
         selected_map_id: Option<String>,
@@ -165,6 +166,11 @@ pub fn run_had_operation(store: &NavKvStore, op: HadOperation) -> AppResult<HadO
 
 fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value, HadReadError> {
     let value = match op {
+        HadOperation::VectorManifest => read_required::<Value>(
+            store,
+            NavKvQuery::VectorManifest,
+            "vector manifest",
+        )?,
         HadOperation::ChartCatalog => serde_json::to_value(chart_catalog(store)?)?,
         HadOperation::MapSelectorState { selected_map_id } => {
             serde_json::to_value(map_selector_state(store, selected_map_id.as_deref())?)?
@@ -1981,6 +1987,24 @@ mod tests {
                 result: serde_json::json!({"charts":[]})
             }
         );
+    }
+
+    #[test]
+    fn vector_manifest_operation_reads_core_owned_key() {
+        let manifest = br#"{"point_layers":{},"airspace":{"reference_tile_min_zoom":0,"reference_tile_max_zoom":12,"label_tile_min_zoom":0,"label_tile_max_zoom":12}}"#;
+        let (root, pages) = fixture(&[("vector/manifest", manifest.as_slice())], 32);
+        let mut store = NavKvStore::new(root);
+        for (index, page) in pages.into_iter().enumerate() {
+            store.insert_page(index as u32, page);
+        }
+
+        let outcome = run_had_operation(&store, HadOperation::VectorManifest).unwrap();
+        match outcome {
+            HadOperationOutcome::Complete { result } => {
+                assert_eq!(result["airspace"]["reference_tile_max_zoom"], 12);
+            }
+            HadOperationOutcome::NeedPages { pages } => panic!("unexpected pages: {pages:?}"),
+        }
     }
 
     #[test]

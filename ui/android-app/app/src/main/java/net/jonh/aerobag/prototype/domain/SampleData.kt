@@ -97,7 +97,11 @@ object SampleData {
     ): ContentFixture {
         val startMs = SystemClock.elapsedRealtime()
         val vectorManifestStartMs = SystemClock.elapsedRealtime()
-        val vectorManifestJson = FALLBACK_VECTOR_MANIFEST_JSON
+        val vectorManifestJson = navKvStore.runCoreOperationElement(
+            buildJsonObject {
+                put("kind", "vector_manifest")
+            },
+        ).toString()
         val vectorManifestMs = SystemClock.elapsedRealtime() - vectorManifestStartMs
         val chartCatalogStartMs = SystemClock.elapsedRealtime()
         val mapViews =

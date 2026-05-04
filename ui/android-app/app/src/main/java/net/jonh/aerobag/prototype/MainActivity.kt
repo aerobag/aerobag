@@ -152,10 +152,14 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.window.Popup
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
@@ -259,6 +263,9 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.net.URL
 import java.security.MessageDigest
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.atan2
@@ -287,6 +294,8 @@ private const val MapLayerLogTag = "MapLayers"
 private const val TileBudgetLogTag = "AerobagTileBudget"
 private const val DecodedTileCacheMaxBytes = 96L * 1024L * 1024L
 private const val MapTileLoadWorkerCount = 4
+private const val SlowTileLoadLogMs = 1000L
+private val TileLoadGenerationIds = AtomicLong()
 private val VampsPosition = LatLon(47.3648944444444, -121.980275)
 
 private data class PageTilePaintTiming(
@@ -1058,6 +1067,27 @@ private data class LoadedRenderTileBitmap(
     val result: LoadedTileBitmap,
 )
 
+private data class TileLoadWork(
+    val generationId: Long,
+    val mapId: String,
+    val tile: net.jonh.aerobag.prototype.domain.RenderTile,
+    val result: CompletableDeferred<LoadedRenderTileBitmap?>,
+)
+
+private data class TileBitmapFallback(
+    val bitmap: androidx.compose.ui.graphics.ImageBitmap,
+    val sourceLevelDelta: Int,
+    val sourceColumn: Int,
+    val sourceRow: Int,
+)
+
+private data class ChildTileBitmapFallback(
+    val bitmap: androidx.compose.ui.graphics.ImageBitmap,
+    val targetLevelDelta: Int,
+    val targetColumn: Int,
+    val targetRow: Int,
+)
+
 private data class DecodedTileCacheEntry(
     val bitmap: androidx.compose.ui.graphics.ImageBitmap,
     val decodedBytes: Long,
@@ -1388,39 +1418,143 @@ private fun screenToWorldOffset(
 
 private fun terrainAltitudeBucketForOwnship(ownship: OwnshipRenderState): Double? = null
 
-private suspend fun loadVisibleTileBitmaps(
-    context: Context,
-    mapId: String,
-    missingTiles: List<net.jonh.aerobag.prototype.domain.RenderTile>,
-): List<LoadedRenderTileBitmap> = coroutineScope {
-    if (missingTiles.isEmpty()) {
-        return@coroutineScope emptyList()
-    }
-    val workQueue = Channel<net.jonh.aerobag.prototype.domain.RenderTile>(capacity = missingTiles.size)
-    val resultQueue = Channel<LoadedRenderTileBitmap>(capacity = missingTiles.size)
-    val workerCount = min(MapTileLoadWorkerCount, missingTiles.size)
-    repeat(workerCount) {
-        launch(Dispatchers.IO) {
-            for (tile in workQueue) {
-                currentCoroutineContext().ensureActive()
-                resultQueue.send(LoadedRenderTileBitmap(tile, loadOneVisibleTileBitmap(context, mapId, tile)))
+private class RasterTileBitmapLoader(
+    private val context: Context,
+    scope: CoroutineScope,
+    workerCount: Int = MapTileLoadWorkerCount,
+) {
+    private val workerThreadIds = AtomicInteger()
+    private val workerDispatcher = Executors.newFixedThreadPool(workerCount) { task ->
+        Thread(task, "AerobagRasterTile-${workerThreadIds.incrementAndGet()}").apply {
+            isDaemon = true
+        }
+    }.asCoroutineDispatcher()
+    private val workerScope = CoroutineScope(SupervisorJob(scope.coroutineContext[Job]) + workerDispatcher)
+    private val latestGenerationId = AtomicLong()
+    private val queueSignal = Channel<Unit>(capacity = Channel.UNLIMITED)
+    private val queueMutex = Mutex()
+    private val pendingWork = ArrayDeque<TileLoadWork>()
+
+    init {
+        repeat(workerCount) { workerIndex ->
+            workerScope.launch {
+                Log.i(TileBudgetLogTag, "worker-start worker=$workerIndex")
+                try {
+                    while (true) {
+                        queueSignal.receive()
+                        while (true) {
+                            val work = queueMutex.withLock {
+                                while (pendingWork.isNotEmpty() && pendingWork.first().generationId != latestGenerationId.get()) {
+                                    pendingWork.removeFirst().result.complete(null)
+                                }
+                                pendingWork.removeFirstOrNull()
+                            } ?: break
+                            if (work.generationId != latestGenerationId.get()) {
+                                work.result.complete(null)
+                                continue
+                            }
+                            try {
+                                currentCoroutineContext().ensureActive()
+                                val workerStartMs = SystemClock.elapsedRealtime()
+                                val result = loadOneVisibleTileBitmap(context, work.mapId, work.generationId, work.tile)
+                                val workerElapsedMs = SystemClock.elapsedRealtime() - workerStartMs
+                                if (workerElapsedMs >= SlowTileLoadLogMs) {
+                                    Log.w(
+                                        TileBudgetLogTag,
+                                        "tile-slow gen=${work.generationId} worker=$workerIndex elapsedMs=$workerElapsedMs loaded=${result.bitmap != null} bytes=${result.bytes} readMs=${result.readMs} decodeMs=${result.decodeMs} ${formatTileRef(work.tile)}",
+                                    )
+                                }
+                                if (work.generationId == latestGenerationId.get()) {
+                                    work.result.complete(LoadedRenderTileBitmap(work.tile, result))
+                                } else {
+                                    work.result.complete(null)
+                                }
+                            } catch (error: CancellationException) {
+                                work.result.cancel()
+                                throw error
+                            } catch (error: Throwable) {
+                                Log.e(TileBudgetLogTag, "worker failed worker=$workerIndex gen=${work.generationId} ${formatTileRef(work.tile)}", error)
+                                work.result.complete(null)
+                            }
+                        }
+                    }
+                } finally {
+                    Log.w(TileBudgetLogTag, "worker-stop worker=$workerIndex")
+                }
             }
         }
     }
-    missingTiles.forEach { tile ->
-        currentCoroutineContext().ensureActive()
-        workQueue.send(tile)
+
+    fun close() {
+        queueSignal.close()
+        workerScope.coroutineContext[Job]?.cancel()
+        workerDispatcher.close()
     }
-    workQueue.close()
-    List(missingTiles.size) {
-        currentCoroutineContext().ensureActive()
-        resultQueue.receive()
+
+    suspend fun loadVisibleTileBitmaps(
+        mapId: String,
+        generationId: Long,
+        missingTiles: List<net.jonh.aerobag.prototype.domain.RenderTile>,
+        onTileLoaded: suspend (LoadedRenderTileBitmap) -> Unit = {},
+    ): List<LoadedRenderTileBitmap> {
+        if (missingTiles.isEmpty()) {
+            return emptyList()
+        }
+        latestGenerationId.set(generationId)
+        val batchStartMs = SystemClock.elapsedRealtime()
+        val deferredResults = missingTiles.map { tile ->
+            TileLoadWork(
+                generationId = generationId,
+                mapId = mapId,
+                tile = tile,
+                result = CompletableDeferred(),
+            )
+        }
+        Log.i(
+            TileBudgetLogTag,
+            "load-start gen=$generationId map=$mapId missing=${missingTiles.size} workers=$MapTileLoadWorkerCount groups=[${formatTileBudgetSummary(missingTiles)}] first=${missingTiles.firstOrNull()?.let(::formatTileRef) ?: "none"}",
+        )
+        try {
+            val droppedCount = queueMutex.withLock {
+                val dropped = pendingWork.size
+                while (pendingWork.isNotEmpty()) {
+                    pendingWork.removeFirst().result.complete(null)
+                }
+                pendingWork.addAll(deferredResults)
+                dropped
+            }
+            repeat(MapTileLoadWorkerCount) {
+                queueSignal.send(Unit)
+            }
+            Log.i(
+                TileBudgetLogTag,
+                "load-enqueued gen=$generationId map=$mapId count=${missingTiles.size} droppedQueued=$droppedCount enqueueMs=${SystemClock.elapsedRealtime() - batchStartMs}",
+            )
+            val loadedTiles = mutableListOf<LoadedRenderTileBitmap>()
+            deferredResults.forEach { work ->
+                currentCoroutineContext().ensureActive()
+                val loaded = work.result.await() ?: return@forEach
+                loadedTiles += loaded
+                onTileLoaded(loaded)
+            }
+            return loadedTiles
+        } catch (error: CancellationException) {
+            deferredResults.forEach { work ->
+                work.result.cancel()
+            }
+            Log.w(
+                TileBudgetLogTag,
+                "load-cancel gen=$generationId map=$mapId missing=${missingTiles.size} elapsedMs=${SystemClock.elapsedRealtime() - batchStartMs}",
+            )
+            throw error
+        }
     }
 }
 
 private suspend fun loadOneVisibleTileBitmap(
     context: Context,
     mapId: String,
+    generationId: Long,
     tile: net.jonh.aerobag.prototype.domain.RenderTile,
 ): LoadedTileBitmap {
     val key = renderTileKey(tile)
@@ -1443,7 +1577,7 @@ private suspend fun loadOneVisibleTileBitmap(
     } catch (error: Throwable) {
         Log.w(
             TileBudgetLogTag,
-            "tile load failed map=$mapId package=${tile.mapView.packageName ?: tile.mapViewId} storage=${tile.mapView.storageKind} z=${tile.zoom} x=${tile.x} y=${tile.yTms}",
+            "tile load failed gen=$generationId map=$mapId ${formatTileRef(tile)}",
             error,
         )
         LoadedTileBitmap(key, null, 0, 0L, 0L, 0L)
@@ -1494,6 +1628,9 @@ private fun formatTileBudgetSummary(
         .joinToString(", ") { entry -> "${entry.key}=${entry.value}" }
 }
 
+private fun formatTileRef(tile: net.jonh.aerobag.prototype.domain.RenderTile): String =
+    "package=${tile.mapView.packageName ?: tile.mapViewId} storage=${tile.mapView.storageKind} z=${tile.zoom} x=${tile.x} y=${tile.yTms} candidates=${tile.candidateMapViews.size}"
+
 private fun decodedTileCacheKey(tile: net.jonh.aerobag.prototype.domain.RenderTile): String {
     val candidates = tile.candidateMapViews
         .distinctBy { "${it.packageName}:${it.tileRoot}:${it.chartIndex}" }
@@ -1501,6 +1638,65 @@ private fun decodedTileCacheKey(tile: net.jonh.aerobag.prototype.domain.RenderTi
             "${mapView.packageName}:${mapView.storageKind}:${tileRelativePath(tile, mapView)}"
         }
     return "${tile.zoom}:${tile.x}:${tile.yTms}:$candidates"
+}
+
+private fun findParentTileFallback(
+    tile: net.jonh.aerobag.prototype.domain.RenderTile,
+    decodedTileBitmapCache: DecodedTileBitmapCache,
+    maxLevelDelta: Int = 4,
+): TileBitmapFallback? {
+    for (levelDelta in 1..maxLevelDelta) {
+        val factor = 1 shl levelDelta
+        val parentZoom = tile.zoom - levelDelta
+        if (parentZoom < 0) {
+            break
+        }
+        val parentTile = tile.copy(
+            x = tile.x / factor,
+            yTms = tile.yTms / factor,
+            zoom = parentZoom,
+        )
+        val bitmap = decodedTileBitmapCache.get(decodedTileCacheKey(parentTile)) ?: continue
+        return TileBitmapFallback(
+            bitmap = bitmap,
+            sourceLevelDelta = levelDelta,
+            sourceColumn = tile.x % factor,
+            sourceRow = factor - 1 - (tile.yTms % factor),
+        )
+    }
+    return null
+}
+
+private fun findChildTileFallbacks(
+    tile: net.jonh.aerobag.prototype.domain.RenderTile,
+    decodedTileBitmapCache: DecodedTileBitmapCache,
+    maxLevelDelta: Int = 3,
+): List<ChildTileBitmapFallback> {
+    for (levelDelta in 1..maxLevelDelta) {
+        val factor = 1 shl levelDelta
+        val childZoom = tile.zoom + levelDelta
+        val fallbacks = mutableListOf<ChildTileBitmapFallback>()
+        for (row in 0 until factor) {
+            for (column in 0 until factor) {
+                val childTile = tile.copy(
+                    x = tile.x * factor + column,
+                    yTms = tile.yTms * factor + row,
+                    zoom = childZoom,
+                )
+                val bitmap = decodedTileBitmapCache.get(decodedTileCacheKey(childTile)) ?: continue
+                fallbacks += ChildTileBitmapFallback(
+                    bitmap = bitmap,
+                    targetLevelDelta = levelDelta,
+                    targetColumn = column,
+                    targetRow = factor - 1 - row,
+                )
+            }
+        }
+        if (fallbacks.isNotEmpty()) {
+            return fallbacks
+        }
+    }
+    return emptyList()
 }
 
 private fun projectAhead(lat: Double, lon: Double, bearingDeg: Double, distanceNm: Double): LatLon {
@@ -4387,6 +4583,15 @@ private fun MapExplorerPage(
     val tileBitmapCache = remember(selectedMap.id, installRevision, tileDisplayMultiplier) {
         mutableStateMapOf<net.jonh.aerobag.prototype.domain.RenderTileKey, androidx.compose.ui.graphics.ImageBitmap?>()
     }
+    val rasterTileBitmapLoaderScope = rememberCoroutineScope()
+    val rasterTileBitmapLoader = remember(context.applicationContext, rasterTileBitmapLoaderScope) {
+        RasterTileBitmapLoader(context.applicationContext, rasterTileBitmapLoaderScope)
+    }
+    DisposableEffect(rasterTileBitmapLoader) {
+        onDispose {
+            rasterTileBitmapLoader.close()
+        }
+    }
     LaunchedEffect(tiles, selectedMap.id, installRevision, tileDisplayMultiplier) {
         var decodedCacheHits = 0
         tiles.forEach { tile ->
@@ -4417,18 +4622,47 @@ private fun MapExplorerPage(
             return@LaunchedEffect
         }
         val loadStartMs = SystemClock.elapsedRealtime()
-        val loadedTiles = loadVisibleTileBitmaps(context.applicationContext, selectedMap.id, missingTiles)
-        val tileResults = loadedTiles.map { it.result }
-        tileBitmapCache.putAll(tileResults.associate { it.key to it.bitmap })
-        loadedTiles.forEach { (tile, result) ->
-            val bitmap = result.bitmap ?: return@forEach
-            decodedTileBitmapCache.put(decodedTileCacheKey(tile), bitmap, result.decodedBytes)
+        val generationId = TileLoadGenerationIds.incrementAndGet()
+        val (viewportLat, viewportLon) = viewportCenterLatLon(currentViewport)
+        Log.i(
+            TileBudgetLogTag,
+            "generation-start gen=$generationId map=${selectedMap.id} zoom=${"%.2f".format(currentViewport.zoom)} center=${"%.3f".format(viewportLat)},${"%.3f".format(viewportLon)} total=${tiles.size} missing=${missingTiles.size} cache=${tileBitmapCache.size}",
+        )
+        var loadedThisPassCount = 0
+        val loadedTiles = try {
+            rasterTileBitmapLoader.loadVisibleTileBitmaps(
+                selectedMap.id,
+                generationId,
+                missingTiles,
+            ) { loaded ->
+                tileBitmapCache[loaded.result.key] = loaded.result.bitmap
+                val bitmap = loaded.result.bitmap
+                if (bitmap != null) {
+                    loadedThisPassCount += 1
+                    decodedTileBitmapCache.put(decodedTileCacheKey(loaded.tile), bitmap, loaded.result.decodedBytes)
+                } else {
+                    Log.w(
+                        TileBudgetLogTag,
+                        "generation-empty gen=$generationId key=${loaded.result.key} ${formatTileRef(loaded.tile)}",
+                    )
+                }
+            }
+        } catch (error: CancellationException) {
+            Log.w(
+                TileBudgetLogTag,
+                "generation-cancel gen=$generationId map=${selectedMap.id} loaded=$loadedThisPassCount/${missingTiles.size} elapsedMs=${SystemClock.elapsedRealtime() - loadStartMs}",
+            )
+            throw error
         }
+        val tileResults = loadedTiles.map { it.result }
         val readElapsedMs = tileResults.sumOf { it.readMs }
         val decodeElapsedMs = tileResults.sumOf { it.decodeMs }
         val loadedBytes = tileResults.sumOf { it.bytes.toLong() }
         val loadedDecodedBytes = tileResults.sumOf { it.decodedBytes }
-        val loadedThisPassCount = tileResults.count { it.bitmap != null }
+        Log.i(
+            TileBudgetLogTag,
+            "generation-finish gen=$generationId map=${selectedMap.id} loaded=$loadedThisPassCount/${missingTiles.size} bytes=$loadedBytes decodedBytes=$loadedDecodedBytes elapsedMs=${SystemClock.elapsedRealtime() - loadStartMs} readMs=$readElapsedMs decodeMs=$decodeElapsedMs",
+        )
         Log.i(
             TileBudgetLogTag,
             "batch map=${selectedMap.id} loaded=$loadedThisPassCount/${missingTiles.size} bytes=$loadedBytes decodedBytes=$loadedDecodedBytes elapsedMs=${SystemClock.elapsedRealtime() - loadStartMs}",
@@ -4599,6 +4833,8 @@ private fun MapExplorerPage(
             mapOverlayError = null
             return@LaunchedEffect
         }
+        val overlayWidthPx = surfaceSize.width.toFloat()
+        val overlayHeightPx = surfaceSize.height.toFloat()
         if (!mapLayerState.vectors.visible && !mapLayerState.metars.visible) {
             committedMapOverlay = MapOverlayQueryResult(
                 neededPointTiles = emptyList(),
@@ -4616,18 +4852,22 @@ private fun MapExplorerPage(
                 warnings = emptyList(),
             )
             committedOverlayViewport = viewport
-            committedOverlaySurfaceUnits = OverlaySurfaceUnits(surfaceWidthPx, surfaceHeightPx)
+            committedOverlaySurfaceUnits = OverlaySurfaceUnits(overlayWidthPx, overlayHeightPx)
             mapOverlayError = null
             return@LaunchedEffect
         }
         val overlay = try {
             currentCoroutineContext().ensureActive()
-            var overlay = uiSession.queryMapOverlay(viewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble())
+            val overlayStartMs = SystemClock.elapsedRealtime()
+            var overlay = uiSession.queryMapOverlay(viewport, overlayWidthPx.toDouble(), overlayHeightPx.toDouble())
             repeat(8) {
                 var ingested = false
                 if (overlay.neededMetars) {
                     val payloadJson = withContext(Dispatchers.IO) {
-                        URL(resolvePlaybackTraceUrl("/fast-products/metars/metars.json", devServerBaseUrl)).readText()
+                        fetchJsonOrEmpty(
+                            resolvePlaybackTraceUrl("/fast-products/metars/metars.json", devServerBaseUrl),
+                            """{"schema_version":1,"version_label":"unavailable","metars_by_station":{}}""",
+                        )
                     }
                     currentCoroutineContext().ensureActive()
                     uiSession.ingestMetarsJson(payloadJson)
@@ -4648,7 +4888,10 @@ private fun MapExplorerPage(
                 }
                 if (overlay.neededTfrs) {
                     val payloadJson = withContext(Dispatchers.IO) {
-                        URL(resolvePlaybackTraceUrl("/fast-products/tfrs/tfrs.json", devServerBaseUrl)).readText()
+                        fetchJsonOrEmpty(
+                            resolvePlaybackTraceUrl("/fast-products/tfrs/tfrs.json", devServerBaseUrl),
+                            """{"schema_version":1,"version_label":"unavailable","notam_count":0,"area_group_count":0,"areas":[]}""",
+                        )
                     }
                     currentCoroutineContext().ensureActive()
                     uiSession.ingestTfrsJson(payloadJson)
@@ -4658,19 +4901,25 @@ private fun MapExplorerPage(
                     return@repeat
                 }
                 currentCoroutineContext().ensureActive()
-                overlay = uiSession.queryMapOverlay(viewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble())
+                overlay = uiSession.queryMapOverlay(viewport, overlayWidthPx.toDouble(), overlayHeightPx.toDouble())
             }
+            val (centerLat, centerLon) = viewportCenterLatLon(viewport)
+            Log.i(
+                MapLayerLogTag,
+                "overlay center=${"%.3f".format(centerLat)},${"%.3f".format(centerLon)} zoom=${"%.2f".format(viewport.zoom)} size=${surfaceSize.width}x${surfaceSize.height} vectorsVisible=${mapLayerState.vectors.visible} metarsVisible=${mapLayerState.metars.visible} neededMetars=${overlay.neededMetars} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} airspaceLabels=${overlay.airspaceLabels.size} metars=${overlay.visibleMetars.size} neededPoints=${overlay.neededPointTiles.size} neededAirspaceRefs=${overlay.neededAirspaceRefTiles.size} neededAirspaceFeatures=${overlay.neededAirspaceFeatures.size} neededAirspaceLabels=${overlay.neededAirspaceLabelTiles.size} warnings=${overlay.warnings.size} elapsedMs=${SystemClock.elapsedRealtime() - overlayStartMs}",
+            )
             overlay
         } catch (error: CancellationException) {
             mapOverlayError = null
             throw error
         } catch (error: Throwable) {
             mapOverlayError = error.message ?: error::class.java.simpleName
+            Log.e(MapLayerLogTag, "overlay failed: $mapOverlayError", error)
             return@LaunchedEffect
         }
         committedMapOverlay = overlay
         committedOverlayViewport = viewport
-        committedOverlaySurfaceUnits = OverlaySurfaceUnits(surfaceWidthPx, surfaceHeightPx)
+        committedOverlaySurfaceUnits = OverlaySurfaceUnits(overlayWidthPx, overlayHeightPx)
         mapOverlayError = null
     }
     LaunchedEffect(uiSession, mapLayerState.nexrad.visible, mapLayerState.nexrad.enabled, devServerBaseUrl) {
@@ -5095,6 +5344,36 @@ private fun MapExplorerPage(
                         dstOffset = IntOffset(tileRect.leftPx, tileRect.topPx),
                         dstSize = IntSize(tileRect.widthPx, tileRect.heightPx),
                     )
+                } else {
+                    val fallback = findParentTileFallback(tile, decodedTileBitmapCache)
+                    if (fallback != null) {
+                        val factor = 1 shl fallback.sourceLevelDelta
+                        val sourceWidth = max(1, fallback.bitmap.width / factor)
+                        val sourceHeight = max(1, fallback.bitmap.height / factor)
+                        drawImage(
+                            image = fallback.bitmap,
+                            srcOffset = IntOffset(
+                                fallback.sourceColumn * sourceWidth,
+                                fallback.sourceRow * sourceHeight,
+                            ),
+                            srcSize = IntSize(sourceWidth, sourceHeight),
+                            dstOffset = IntOffset(tileRect.leftPx, tileRect.topPx),
+                            dstSize = IntSize(tileRect.widthPx, tileRect.heightPx),
+                        )
+                    } else {
+                        findChildTileFallbacks(tile, decodedTileBitmapCache).forEach { child ->
+                            val factor = 1 shl child.targetLevelDelta
+                            val childLeft = tileRect.leftPx + tileRect.widthPx * child.targetColumn / factor
+                            val childTop = tileRect.topPx + tileRect.heightPx * child.targetRow / factor
+                            val childRight = tileRect.leftPx + tileRect.widthPx * (child.targetColumn + 1) / factor
+                            val childBottom = tileRect.topPx + tileRect.heightPx * (child.targetRow + 1) / factor
+                            drawImage(
+                                image = child.bitmap,
+                                dstOffset = IntOffset(childLeft, childTop),
+                                dstSize = IntSize(max(1, childRight - childLeft), max(1, childBottom - childTop)),
+                            )
+                        }
+                    }
                 }
                 if (debugTileLabels) {
                     val label = "z${tile.zoom} x${tile.x} y${tile.yTms}"

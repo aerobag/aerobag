@@ -366,6 +366,7 @@ export type FlightPlanRowActionUiView = {
   label: string;
   enabled: boolean;
   execution?: "ui_controller" | "core_session";
+  dismiss_tray_on_success?: boolean;
 };
 
 export type FlightPlanDisplayRowUiView = {

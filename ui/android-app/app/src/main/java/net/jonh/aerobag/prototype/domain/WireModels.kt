@@ -1314,6 +1314,7 @@ data class WireFlightPlanRowActionUiView(
     val label: String,
     val enabled: Boolean,
     val execution: String = "ui_controller",
+    val dismiss_tray_on_success: Boolean = true,
 )
 
 @Serializable

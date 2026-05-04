@@ -2561,6 +2561,7 @@ private fun WireFlightPlanRowActionUiView.toUi() = FlightPlanRowActionUiView(
     label = label,
     enabled = enabled,
     execution = execution,
+    dismissTrayOnSuccess = dismiss_tray_on_success,
 )
 
 private fun FlightPlanRowActionUiView.toWire() = WireFlightPlanRowActionUiView(
@@ -2569,6 +2570,7 @@ private fun FlightPlanRowActionUiView.toWire() = WireFlightPlanRowActionUiView(
     label = label,
     enabled = enabled,
     execution = execution,
+    dismiss_tray_on_success = dismissTrayOnSuccess,
 )
 
 private fun WireFlightPlanUiMutation.toUi() = FlightPlanUiMutation(

@@ -6999,7 +6999,7 @@ private fun FlightPlanPage(
                                             error,
                                         )
                                     }
-                                    if (action.id != "move_up" && action.id != "move_down") {
+                                    if (action.dismissTrayOnSuccess) {
                                         closePanels()
                                     }
                                     return@MenuPanelRow

@@ -916,6 +916,10 @@ fn default_row_action_execution() -> FlightPlanRowActionExecution {
     FlightPlanRowActionExecution::UiController
 }
 
+fn default_dismiss_tray_on_success() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlightPlanRowActionUiView {
     pub id: FlightPlanRowActionId,
@@ -925,6 +929,8 @@ pub struct FlightPlanRowActionUiView {
     pub enabled: bool,
     #[serde(default = "default_row_action_execution")]
     pub execution: FlightPlanRowActionExecution,
+    #[serde(default = "default_dismiss_tray_on_success")]
+    pub dismiss_tray_on_success: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2373,16 +2379,22 @@ fn action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView
         id,
         enabled,
         execution: FlightPlanRowActionExecution::UiController,
+        dismiss_tray_on_success: true,
     }
 }
 
 fn core_session_action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView {
+    let dismiss_tray_on_success = !matches!(
+        id,
+        FlightPlanRowActionId::MoveUp | FlightPlanRowActionId::MoveDown
+    );
     FlightPlanRowActionUiView {
         label: action_label(&id).to_string(),
         uid: String::new(),
         id,
         enabled,
         execution: FlightPlanRowActionExecution::CoreSession,
+        dismiss_tray_on_success,
     }
 }
 

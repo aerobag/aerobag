@@ -4558,20 +4558,21 @@ function FlightPlanPage(props: {
       setAirportInsert(null);
     };
 
-    return (selectedRow.actions as Array<{ id: string; uid: string; label: string; enabled: boolean; execution?: string }>).map((action) => {
+    return (selectedRow.actions as Array<{ id: string; uid: string; label: string; enabled: boolean; execution?: string; dismiss_tray_on_success?: boolean }>).map((action) => {
       return {
         id: action.id,
         uid: action.uid,
         label: action.label,
         enabled: action.enabled,
         execution: action.execution,
+        dismissTrayOnSuccess: action.dismiss_tray_on_success ?? true,
         onSelect: () => {
           if (!action.enabled) {
             return;
           }
           if (action.execution === "core_session") {
             void props.onPerformFlightPlanRowAction(selectedRow.rowUid, action.uid);
-            if (action.id !== "move_up" && action.id !== "move_down") {
+            if (action.dismiss_tray_on_success ?? true) {
               closeTray();
             }
             return;

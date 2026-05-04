@@ -381,6 +381,7 @@ data class FlightPlanRowActionUiView(
     val label: String,
     val enabled: Boolean,
     val execution: String = "ui_controller",
+    val dismissTrayOnSuccess: Boolean = true,
 )
 
 data class FlightPlanDisplayRowUiView(

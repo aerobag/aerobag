@@ -19,10 +19,11 @@ use crate::{
     query_map_overlay, query_map_selection, remove_flight_plan_leg, state,
     AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
     AirspaceReferenceTilePayload, AppError, AppErrorKind, AppEvent, AppResult, AppState,
-    AppUiState, FlightPlan, LatLon, MapOverlayConfig, MapOverlayQueryResult, MapViewport,
-    MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore, NavRef, PlanLeg,
-    PlaybackUiState, PointTilePayload, RasterMapCatalog, RasterTilePlan, SequencingMode,
-    TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
+    AppUiState, FlightPlan, FlightPlanRowActionExecution, FlightPlanRowActionId, LatLon,
+    MapOverlayConfig, MapOverlayQueryResult, MapViewport, MetarProductPayload, MetarTilePayload,
+    NavKvLookup, NavKvQuery, NavKvStore, NavRef, PlanLeg, PlaybackUiState, PointTilePayload,
+    RasterMapCatalog, RasterTilePlan, SequencingMode, TerrainOverlayQueryResult, TfrProductPayload,
+    UiSnapshotAppState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -686,6 +687,109 @@ pub fn activate_direct_to_nav_ref_in_session(
             message: "cannot activate direct-to without ownship position".to_string(),
         })?;
     let next_plan = crate::activate_direct_to(&plan, from_position, target)?;
+    replace_session_flight_plan(session, next_plan)?;
+    Ok(snapshot_for_session(session))
+}
+
+pub fn activate_direct_to_leg_in_session(
+    handle: u32,
+    target_leg_index: usize,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let plan = session_plan(session)?;
+    let target_leg_id = plan
+        .resolved_legs
+        .get(target_leg_index)
+        .map(|leg| leg.id.clone())
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("invalid direct-to leg index: {target_leg_index}"),
+        })?;
+    let from_position = session
+        .app_state
+        .ownship
+        .render
+        .position
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: "cannot activate direct-to without ownship position".to_string(),
+        })?;
+    let next_plan = crate::activate_direct_to_leg(&plan, from_position, &target_leg_id)?;
+    replace_session_flight_plan(session, next_plan)?;
+    Ok(snapshot_for_session(session))
+}
+
+pub fn perform_flight_plan_row_action_in_session(
+    handle: u32,
+    row_index: usize,
+    action_id: FlightPlanRowActionId,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let plan = session_plan(session)?;
+    let ui = crate::project_ui_state(&plan);
+    let row = ui.display_rows.get(row_index).ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: format!("invalid flight-plan row index: {row_index}"),
+    })?;
+    let action = row
+        .actions
+        .iter()
+        .find(|action| action.id == action_id)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("flight-plan row action is unavailable: {action_id:?}"),
+        })?;
+    if !action.enabled {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("flight-plan row action is disabled: {action_id:?}"),
+        });
+    }
+    if action.execution != FlightPlanRowActionExecution::CoreSession {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("flight-plan row action is UI-controller owned: {action_id:?}"),
+        });
+    }
+
+    let from_position = session
+        .app_state
+        .ownship
+        .render
+        .position
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: "cannot activate direct-to without ownship position".to_string(),
+        })?;
+    let next_plan = match action_id {
+        FlightPlanRowActionId::DirectTo => {
+            if let Some(target_leg_index) = row.leg_index {
+                let target_leg_id = plan
+                    .resolved_legs
+                    .get(target_leg_index)
+                    .map(|leg| leg.id.clone())
+                    .ok_or_else(|| AppError {
+                        kind: AppErrorKind::InvalidFlightPlan,
+                        message: format!("invalid direct-to leg index: {target_leg_index}"),
+                    })?;
+                crate::activate_direct_to_leg(&plan, from_position, &target_leg_id)?
+            } else {
+                let target = row.nav_ref.clone().ok_or_else(|| AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message: "direct-to row has no nav reference".to_string(),
+                })?;
+                crate::activate_direct_to(&plan, from_position, target)?
+            }
+        }
+        _ => {
+            return Err(AppError {
+                kind: AppErrorKind::UnsupportedOperation,
+                message: format!("unsupported core flight-plan row action: {action_id:?}"),
+            });
+        }
+    };
     replace_session_flight_plan(session, next_plan)?;
     Ok(snapshot_for_session(session))
 }

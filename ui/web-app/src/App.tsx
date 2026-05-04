@@ -1750,6 +1750,11 @@ export default function App() {
             const nextSnapshot = await uiSession.restoreDirectTo();
             setSessionSnapshot(nextSnapshot);
           }}
+          onPerformFlightPlanRowAction={async (rowIndex, actionId) => {
+            if (!uiSession) return;
+            const nextSnapshot = await uiSession.performFlightPlanRowAction(rowIndex, actionId);
+            setSessionSnapshot(nextSnapshot);
+          }}
           onInsertAirway={async (startComponentIndex, endComponentIndex, entryIndex, exitIndex, presentation, originAnchor, destinationAnchor) => {
             if (!appCoreAdapter) return;
             const entry = airwayEntryCandidateFromPresentation(presentation, entryIndex);
@@ -4352,6 +4357,7 @@ function FlightPlanPage(props: {
   onUnsuspendSequencing: () => void | Promise<void>;
   onSequenceActiveLeg: () => void | Promise<void>;
   onRestoreDirectTo: () => void | Promise<void>;
+  onPerformFlightPlanRowAction: (rowIndex: number, actionId: string) => void | Promise<void>;
   onInsertAirway: (
     startComponentIndex: number,
     endComponentIndex: number | null,
@@ -4527,6 +4533,7 @@ function FlightPlanPage(props: {
               : row.depth === 0
                 ? `component:${row.component_index ?? index}`
                 : `item:${row.component_index ?? "x"}:${row.label}:${index}`,
+        rowIndex: index,
         label: row.label,
         distance: row.row_kind === "group" ? "" : formatPlanDistance(row.distance_nm),
         eta: row.eta_text,
@@ -4594,7 +4601,7 @@ function FlightPlanPage(props: {
 
   const rowActions = useMemo(() => {
     if (!selectedRow) {
-      return [] as Array<{ id: string; label: string; enabled: boolean; onSelect: () => void }>;
+      return [] as Array<{ id: string; label: string; enabled: boolean; execution?: string; onSelect: () => void }>;
     }
 
     const closeTray = () => {
@@ -4605,13 +4612,19 @@ function FlightPlanPage(props: {
       setAirportInsert(null);
     };
 
-    return (selectedRow.actions as Array<{ id: string; label: string; enabled: boolean }>).map((action) => {
+    return (selectedRow.actions as Array<{ id: string; label: string; enabled: boolean; execution?: string }>).map((action) => {
       return {
         id: action.id,
         label: action.label,
         enabled: action.enabled,
+        execution: action.execution,
         onSelect: () => {
           if (!action.enabled) {
+            return;
+          }
+          if (action.execution === "core_session") {
+            void props.onPerformFlightPlanRowAction(selectedRow.rowIndex, action.id);
+            closeTray();
             return;
           }
           if (action.id === "activate_leg") {

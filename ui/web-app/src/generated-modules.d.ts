@@ -24,6 +24,7 @@ declare module "@generated/app_wasm.js" {
   export const suspend_sequencing_ui: (...args: unknown[]) => string;
   export const unsuspend_sequencing_ui: (...args: unknown[]) => string;
   export const sequence_active_leg_ui: (...args: unknown[]) => string;
+  export const perform_flight_plan_row_action_in_session: (...args: unknown[]) => string;
   export const insert_airway_materialized_ui: (...args: unknown[]) => string;
   export const replace_airway_materialized_ui: (...args: unknown[]) => string;
   export const insert_procedure_materialized_ui: (...args: unknown[]) => string;

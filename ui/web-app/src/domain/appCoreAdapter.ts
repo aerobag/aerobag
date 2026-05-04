@@ -447,6 +447,7 @@ export interface UiSession {
   removeTopLevelWaypointByNavRef(navRef: NavRef): Promise<UiSessionSnapshot>;
   activateDirectTo(navRef: NavRef): Promise<UiSessionSnapshot>;
   restoreDirectTo(): Promise<UiSessionSnapshot>;
+  performFlightPlanRowAction(rowIndex: number, actionId: string): Promise<UiSessionSnapshot>;
   setSituation(situation: Situation): Promise<UiSessionSnapshot>;
   loadPlaybackTrace(sourcePath: string, traceJson: string): Promise<UiSessionSnapshot>;
   playPlayback(nowEpochMs: number): Promise<UiSessionSnapshot>;
@@ -699,6 +700,7 @@ type WasmModule = {
   insert_waypoint_best_position_in_session(sessionHandle: number, waypointJson: string): Promise<string> | string;
   activate_direct_to_nav_ref_in_session(sessionHandle: number, targetJson: string): Promise<string> | string;
   restore_direct_to_in_session(sessionHandle: number): Promise<string> | string;
+  perform_flight_plan_row_action_in_session(sessionHandle: number, rowIndex: number, actionIdJson: string): Promise<string> | string;
   set_guidance_leg_geometry_in_session(handle: number, geometriesJson: string): Promise<string> | string;
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
@@ -948,6 +950,13 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       restoreDirectTo: async () => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.restore_direct_to_in_session(handle)),
+        );
+        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        return snapshot;
+      },
+      performFlightPlanRowAction: async (rowIndex, actionId) => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(this.module.perform_flight_plan_row_action_in_session(handle, rowIndex, JSON.stringify(actionId))),
         );
         await syncGuidanceGeometry(snapshot.app_state.active_plan);
         return snapshot;
@@ -1566,6 +1575,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.remove_leg_in_session !== "function" ||
     typeof mod.move_waypoint_in_session !== "function" ||
     typeof mod.remove_top_level_waypoint_by_nav_ref_in_session !== "function" ||
+    typeof mod.perform_flight_plan_row_action_in_session !== "function" ||
     typeof mod.set_situation_in_session !== "function" ||
     typeof mod.engage_map_follow_in_session !== "function" ||
     typeof mod.disengage_map_follow_in_session !== "function" ||

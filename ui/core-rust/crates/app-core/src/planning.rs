@@ -886,6 +886,7 @@ pub enum FlightPlanDisplayRowKind {
 #[serde(rename_all = "snake_case")]
 pub enum FlightPlanRowActionId {
     ActivateLeg,
+    DirectTo,
     Remove,
     RemoveAllAbove,
     InsertBefore,
@@ -902,10 +903,23 @@ pub enum FlightPlanRowActionId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlightPlanRowActionExecution {
+    UiController,
+    CoreSession,
+}
+
+fn default_row_action_execution() -> FlightPlanRowActionExecution {
+    FlightPlanRowActionExecution::UiController
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlightPlanRowActionUiView {
     pub id: FlightPlanRowActionId,
     pub label: String,
     pub enabled: bool,
+    #[serde(default = "default_row_action_execution")]
+    pub execution: FlightPlanRowActionExecution,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2018,6 +2032,7 @@ fn waypoint_or_discontinuity_actions(
     if row.depth == 0 {
         vec![
             action(FlightPlanRowActionId::ActivateLeg, row.leg_index.is_some()),
+            core_session_action(FlightPlanRowActionId::DirectTo, row.nav_ref.is_some()),
             action(
                 FlightPlanRowActionId::Remove,
                 row.component_index.is_some() && row.can_remove_component,
@@ -2057,6 +2072,7 @@ fn waypoint_or_discontinuity_actions(
     } else {
         vec![
             action(FlightPlanRowActionId::ActivateLeg, row.leg_index.is_some()),
+            core_session_action(FlightPlanRowActionId::DirectTo, row.nav_ref.is_some()),
             action(FlightPlanRowActionId::WaypointInfo, false),
             action(
                 FlightPlanRowActionId::Plates,
@@ -2071,12 +2087,23 @@ fn action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView
         label: action_label(&id).to_string(),
         id,
         enabled,
+        execution: FlightPlanRowActionExecution::UiController,
+    }
+}
+
+fn core_session_action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView {
+    FlightPlanRowActionUiView {
+        label: action_label(&id).to_string(),
+        id,
+        enabled,
+        execution: FlightPlanRowActionExecution::CoreSession,
     }
 }
 
 fn action_label(id: &FlightPlanRowActionId) -> &'static str {
     match id {
         FlightPlanRowActionId::ActivateLeg => "Activate Leg",
+        FlightPlanRowActionId::DirectTo => "Direct-To",
         FlightPlanRowActionId::Remove => "Remove",
         FlightPlanRowActionId::RemoveAllAbove => "Remove All Above",
         FlightPlanRowActionId::InsertBefore => "Insert Before",
@@ -5804,6 +5831,35 @@ mod tests {
                 .as_ref()
                 .map(|guidance| guidance.can_restore_direct_to),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn waypoint_rows_expose_core_session_direct_to_action() {
+        let inserted = insert_airway_between_waypoints(
+            &sample_waypoint_only_plan(),
+            0,
+            1,
+            sample_inserted_airway().0,
+            sample_inserted_airway().1,
+        )
+        .unwrap();
+        let ui = project_ui_state(&inserted);
+        let child_row = ui
+            .display_rows
+            .iter()
+            .find(|row| row.depth == 1 && row.row_kind == FlightPlanDisplayRowKind::Waypoint)
+            .expect("nested airway waypoint row");
+        let direct_to = child_row
+            .actions
+            .iter()
+            .find(|action| action.id == FlightPlanRowActionId::DirectTo)
+            .expect("direct-to action");
+
+        assert!(direct_to.enabled);
+        assert_eq!(
+            direct_to.execution,
+            FlightPlanRowActionExecution::CoreSession
         );
     }
 

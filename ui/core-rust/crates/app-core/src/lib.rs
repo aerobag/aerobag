@@ -7956,10 +7956,10 @@ mod tests {
     fn writes_current_buexre_overlay() {
         clean_procedure_plot_output_dir();
         render_procedure_overlay_to_paths(
-            "KSEA",
-            "I16C",
-            "ERYKA",
-            "drawn_heading_KSEA_I16C_ERYKA",
+            "KCGZ",
+            "R23",
+            "TFD",
+            "drawn_heading_KCGZ_R23_TFD",
             true,
         );
     }

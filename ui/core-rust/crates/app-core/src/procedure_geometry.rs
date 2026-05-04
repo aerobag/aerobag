@@ -3493,12 +3493,18 @@ fn build_hold_display_path(
     if stop_when_established_inbound {
         if !matches!(entry_kind, Some(HoldEntryKind::Direct) | None) {
             let mut terminal_course_deg = inbound_course_deg;
-            let requested_exit_course_deg = following_course_deg
-                .filter(|course| angular_difference_degrees(inbound_course_deg, *course) > 45.0);
+            let drawn_terminal_course_deg = elements
+                .last()
+                .and_then(display_element_end_course_deg)
+                .unwrap_or(inbound_course_deg);
+            let requested_exit_course_deg = following_course_deg.filter(|course| {
+                angular_difference_degrees(inbound_course_deg, *course) > 45.0
+                    || angular_difference_degrees(drawn_terminal_course_deg, *course) > 45.0
+            });
             if let Some(exit_course_deg) = requested_exit_course_deg {
                 if let Some(mut exit_elements) = protected_side_turn_to_course_intercept(
                     fix,
-                    inbound_course_deg,
+                    drawn_terminal_course_deg,
                     exit_course_deg,
                     clockwise,
                     turn_radius_nm,

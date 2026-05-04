@@ -3077,15 +3077,15 @@ fn is_published_waypoint_turn_with_room(
     }
     let previous_len_nm = great_circle_distance_nm(previous.start_position, previous.end_position);
     let current_len_nm = great_circle_distance_nm(current.start_position, current.end_position);
-    let minimum_leg_len_nm =
-        if previous.path_termination == "TF" && current.path_termination == "TF" {
-            // Short RNAV stepdown fixes can be close together but still chart a real fly-by
-            // waypoint turn; KMCI I01R/HELAN at UJGAV is the motivating example.
-            1.0
-        } else {
-            1.5
-        };
-    previous_len_nm >= minimum_leg_len_nm && current_len_nm >= minimum_leg_len_nm
+    if previous.path_termination == "TF" && current.path_termination == "TF" {
+        // Short published TF feeders can still chart a real fly-by waypoint turn
+        // when the outbound leg gives enough room; KIND I05L/KELLY at CFVDC is
+        // the motivating example. Preserve the earlier short-RNAV-stepdown rule
+        // for tightly spaced fixes like KMCI I01R/HELAN at UJGAV.
+        return (previous_len_nm >= 1.0 && current_len_nm >= 1.0)
+            || (previous_len_nm >= 0.8 && current_len_nm >= 3.0);
+    }
+    previous_len_nm >= 1.5 && current_len_nm >= 1.5
 }
 
 fn is_published_waypoint_turn_via_short_fc_stub(

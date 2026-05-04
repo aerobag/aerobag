@@ -2665,6 +2665,7 @@ private fun AerobagApp() {
                 onToggle = { debugPanelOpen = !debugPanelOpen },
                 expandAbove = true,
                 modifier = Modifier
+                    .zIndex(OverlayPlaneControls)
                     .align(Alignment.BottomEnd)
                     .padding(end = ThumbSize + (ThumbGap * 2f)),
             ) {
@@ -4402,6 +4403,8 @@ private fun MapExplorerPage(
     var chartTrayOpen by remember { mutableStateOf(false) }
     var layerTrayOpen by remember { mutableStateOf(false) }
     var mapSelection by remember { mutableStateOf<MapSelectionUiState?>(null) }
+    var mapSurfaceBounds by remember { mutableStateOf<Rect?>(null) }
+    var mapSelectionTrayBounds by remember { mutableStateOf<Rect?>(null) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
     var committedMapOverlay by remember(uiSession) {
         mutableStateOf(
@@ -5300,12 +5303,27 @@ private fun MapExplorerPage(
             }
         }
     }
+    LaunchedEffect(mapSelection) {
+        if (mapSelection == null) {
+            mapSelectionTrayBounds = null
+        }
+    }
+    fun mapInputBlockedAt(position: Offset): Boolean {
+        if (topLeftTrayOpen) {
+            return true
+        }
+        val mapBounds = mapSurfaceBounds ?: return false
+        val windowPosition = Offset(mapBounds.left + position.x, mapBounds.top + position.y)
+        val selectionTrayBlocks = mapSelection != null && mapSelectionTrayBounds?.contains(windowPosition) == true
+        return selectionTrayBlocks
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(uiTheme.controls.chartSurfaceBg)
             .onSizeChanged { surfaceSize = it }
+            .onGloballyPositioned { coordinates -> mapSurfaceBounds = coordinates.boundsInWindow() }
             .focusRequester(focusRequester)
             .onPreviewKeyEvent { keyEvent ->
                 if (keyEvent.nativeKeyEvent.action != AndroidKeyEvent.ACTION_DOWN ||
@@ -5343,7 +5361,7 @@ private fun MapExplorerPage(
                 true
             }
             .focusable()
-            .pointerInput(selectedMap.mapView, surfaceSize) {
+            .pointerInput(selectedMap.mapView, surfaceSize, topLeftTrayOpen, mapSelection, mapSelectionTrayBounds, mapSurfaceBounds) {
                 if (surfaceWidthPx == 0f || surfaceHeightPx == 0f) {
                     return@pointerInput
                 }
@@ -5359,9 +5377,8 @@ private fun MapExplorerPage(
                             val event = awaitPointerEvent()
                             val pressed = event.changes.filter { it.pressed && !it.isConsumed }
                             if (pressed.isEmpty()) break
-                            if (topLeftTrayOpen) {
-                                pressed.forEach { it.consume() }
-                                continue
+                            if (pressed.any { mapInputBlockedAt(it.position) }) {
+                                break
                             }
                             mapGestureActive = true
                             if (!loggedGestureSeed) {
@@ -5455,6 +5472,9 @@ private fun MapExplorerPage(
             }
             .pointerInteropFilter { event ->
                 if (surfaceWidthPx == 0f || surfaceHeightPx == 0f) {
+                    return@pointerInteropFilter false
+                }
+                if (mapInputBlockedAt(Offset(event.x, event.y))) {
                     return@pointerInteropFilter false
                 }
                 if (event.action == MotionEvent.ACTION_SCROLL) {
@@ -5867,6 +5887,7 @@ private fun MapExplorerPage(
             Scrim(modifier = Modifier.zIndex(OverlayPlaneModalScrim)) { mapSelection = null }
             MapSelectionTray(
                 state = selection,
+                onBoundsChange = { mapSelectionTrayBounds = it },
                 modifier = Modifier
                     .zIndex(OverlayPlaneModal)
                     .align(
@@ -5924,41 +5945,6 @@ private fun MapExplorerPage(
                 .padding(bottom = ThumbGap),
         )
 
-        DebugDock(
-            open = debugPanelOpen,
-            onToggle = { debugPanelOpen = !debugPanelOpen },
-            highlight = committedMapOverlay.warnings.isNotEmpty() || mapOverlayError != null,
-            expandAbove = true,
-            modifier = Modifier
-                .zIndex(OverlayPlaneControls)
-                .align(Alignment.BottomEnd)
-                .padding(end = ThumbSize + (ThumbGap * 2f)),
-        ) {
-            Text("up: $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text("${String.format("%.3f", center.first)}/${String.format("%.3f", center.second)} z${String.format("%.2f", viewport.zoom)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Checkbox(
-                    checked = debugTileLabels,
-                    onCheckedChange = { debugTileLabels = it },
-                    modifier = Modifier.size(ThumbSize * 0.36f),
-                )
-                Text("tile labels", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Checkbox(
-                    checked = debugFastTiles,
-                    onCheckedChange = onDebugFastTilesChange,
-                    modifier = Modifier.size(ThumbSize * 0.36f),
-                )
-                Text("fast tiles", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            }
-        }
     }
 }
 
@@ -5966,6 +5952,7 @@ private fun MapExplorerPage(
 private fun MapSelectionTray(
     state: MapSelectionUiState,
     modifier: Modifier,
+    onBoundsChange: (Rect?) -> Unit = {},
     onSelectItem: (MapSelectionItem) -> Unit,
     onSelectAction: (MapSelectionItem, MapSelectionAction) -> Unit,
 ) {
@@ -5974,7 +5961,11 @@ private fun MapSelectionTray(
     val actionSlots = selectedItem?.actions.orEmpty()
     val visibleActions = if (selectedItem?.detailText != null) actionSlots.take(3) else actionSlots.take(6)
     Surface(
-        modifier = modifier.width(ThumbSize * 4.4f),
+        modifier = modifier
+            .onGloballyPositioned { coordinates ->
+                onBoundsChange(coordinates.boundsInWindow())
+            }
+            .width(ThumbSize * 4.4f),
         shape = RoundedCornerShape(ThumbRadius),
         color = uiTheme.controls.panelBg.copy(alpha = 0.96f),
         contentColor = uiTheme.controls.panelFg,
@@ -9233,7 +9224,10 @@ private fun DebugDock(
             enter = slideInVertically(initialOffsetY = { it / 3 }) + fadeIn(),
             exit = slideOutVertically(targetOffsetY = { it / 3 }) + fadeOut(),
         ) {
-            Card(modifier = Modifier.width(ThumbSize * 4f)) {
+            Card(
+                modifier = Modifier
+                    .width(ThumbSize * 4f),
+            ) {
                 Column(
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),

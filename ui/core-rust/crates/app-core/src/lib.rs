@@ -1664,6 +1664,10 @@ fn resolve_procedure_materialization_legs_with_provenance(
             } else {
                 next_segment_records
                     .and_then(|records| {
+                        let allow_hold_exit_to_following_course =
+                            window_link.hold_record.is_some_and(|hold| {
+                                matches!(hold.path_termination.trim(), "HF" | "HM")
+                            });
                         display_path_for_procedure_leg_before_following_segment(
                             leg_records,
                             window_link.display_leg_start,
@@ -1672,7 +1676,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                             initial_position_override,
                             initial_course_override,
                             records,
-                            false,
+                            allow_hold_exit_to_following_course,
                         )
                     })
                     .or_else(|| {

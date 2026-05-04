@@ -7527,10 +7527,10 @@ mod tests {
     fn writes_current_buexre_overlay() {
         clean_procedure_plot_output_dir();
         render_procedure_overlay_to_paths(
-            "KGSP",
-            "I04",
-            "SPA",
-            "logical_heading_KGSP_I04_SPA",
+            "KCWI",
+            "I03",
+            "CVA",
+            "logical_heading_KCWI_I03_CVA",
             true,
         );
     }

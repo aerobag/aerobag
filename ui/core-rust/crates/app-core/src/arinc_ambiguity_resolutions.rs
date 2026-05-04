@@ -25,10 +25,12 @@ pub fn invent_pi_entry_course_reversal_when_no_hold_is_available(
     turn_to_pi_outbound_deg: f64,
     clockwise_short_turn_to_pi_outbound: bool,
 ) -> Option<InventedPiEntryCourseReversal> {
-    // KOMA I32R/OVR is the motivating case: the A-route arrives at BEEFF and
-    // ARINC immediately starts a PI row whose initial outbound course is nearly
-    // reciprocal. Unlike KILE VOR-A/SLIMM, this procedure does not encode a
-    // later same-fix hold that we can borrow as an authoritative course reversal.
+    // KOMA I32R/OVR is the original motivating case: the A-route arrives at
+    // BEEFF and ARINC immediately starts a PI row whose initial outbound course
+    // is nearly reciprocal. KCWI I03/CVA shows the same issue at HILLZ with a
+    // less-extreme, but still invalid, 147-degree direct turn into the PI
+    // outbound. Unlike KILE VOR-A/SLIMM, these procedures do not encode a later
+    // same-fix hold that we can borrow as an authoritative course reversal.
     //
     // AIM says the depicted PT is still required without NoPT or straight-in
     // clearance, but it does not specify exactly how to reverse from this awkward
@@ -44,7 +46,7 @@ pub fn invent_pi_entry_course_reversal_when_no_hold_is_available(
         transition_id,
         sequence,
     );
-    if turn_to_pi_outbound_deg < 150.0 {
+    if turn_to_pi_outbound_deg <= 120.0 {
         return None;
     }
     Some(InventedPiEntryCourseReversal {

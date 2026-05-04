@@ -420,7 +420,10 @@ fn hold_display_path(
     ))
 }
 
-fn procedure_turn_display_path(leg: &ProcedureLegMaterializationRecord) -> Option<LegDisplayPath> {
+fn procedure_turn_display_path_from_start(
+    leg: &ProcedureLegMaterializationRecord,
+    start_override: Option<LatLon>,
+) -> Option<LegDisplayPath> {
     let fix = leg.nav_position?;
     let barb_course_deg = leg.magnetic_course_deg? + course_reference_variation_deg(leg);
     let clockwise = match leg.turn_direction.as_deref().unwrap_or("").trim() {
@@ -459,7 +462,8 @@ fn procedure_turn_display_path(leg: &ProcedureLegMaterializationRecord) -> Optio
     )?;
     let mut elements = Vec::new();
     let mut sources = Vec::new();
-    push_segment!(elements, sources, fix, outbound_end);
+    let outbound_start = start_override.unwrap_or(fix);
+    push_segment!(elements, sources, outbound_start, outbound_end);
     push_segment!(elements, sources, outbound_end, barb_end);
     push_arc!(
         elements,
@@ -907,7 +911,36 @@ fn build_procedure_leg_display_path(
             }
             "PI" => {
                 let fix = step.nav_position?;
-                let path = procedure_turn_display_path(step)?;
+                let mut procedure_turn_start = None;
+                if let (Some(arrival_course_deg), Some(following_segment_records)) =
+                    (current_course_deg, following_segment_records)
+                {
+                    if distance_between_points_nm(current_position, fix) <= MIN_GEOMETRY_DISTANCE_NM
+                    {
+                        if let Some(hold_record) =
+                            borrowed_same_fix_hold_for_excessive_pi_entry_turn(
+                                step,
+                                following_segment_records,
+                                arrival_course_deg,
+                            )
+                        {
+                            let (mut hold_entry, mut hold_roles) =
+                                borrowed_hold_entry_elements_for_pi(step, hold_record, arrival_course_deg)?;
+                            let mut hold_sources = vec![debug_source!(); hold_entry.len()];
+                            tag_hold_debug_sources(&mut hold_sources, &hold_roles);
+                            if let Some(terminal_position) =
+                                hold_entry.last().and_then(display_element_end_position)
+                            {
+                                current_position = terminal_position;
+                                procedure_turn_start = Some(terminal_position);
+                            }
+                            elements.append(&mut hold_entry);
+                            debug_sources.append(&mut hold_sources);
+                            hold_roles.clear();
+                        }
+                    }
+                }
+                let path = procedure_turn_display_path_from_start(step, procedure_turn_start)?;
                 let next_cf_course_deg = steps
                     .iter()
                     .skip(index + 1)
@@ -918,7 +951,9 @@ fn build_procedure_leg_display_path(
                             .magnetic_course_deg
                             .map(|course| course + course_reference_variation_deg(candidate))
                     });
-                if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
+                if procedure_turn_start.is_none()
+                    && distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM
+                {
                     push_segment!(elements, debug_sources, current_position, fix);
                 }
                 current_position = fix;
@@ -1889,6 +1924,79 @@ fn ambiguous_missed_direct_to_same_fix_hold_after_climb(
 
 fn debug_allows_ambiguous_missed_turn_rendering() -> bool {
     cfg!(test) && std::env::var_os("AEROBAG_DEBUG_RENDER_AMBIGUOUS_MISSED_TURN").is_some()
+}
+
+fn borrowed_same_fix_hold_for_excessive_pi_entry_turn<'a>(
+    pi_step: &ProcedureLegMaterializationRecord,
+    following_segment_records: &'a [ProcedureLegMaterializationRecord],
+    arrival_course_deg: f64,
+) -> Option<&'a ProcedureLegMaterializationRecord> {
+    if pi_step.path_termination.trim() != "PI" {
+        return None;
+    }
+    let pi_outbound_course_deg = procedure_turn_initial_outbound_course_deg(pi_step)?;
+    let turn_to_pi_outbound_deg =
+        angular_difference_degrees(arrival_course_deg, pi_outbound_course_deg);
+    if !arinc_ambiguity_resolutions::borrow_later_same_fix_hold_for_excessive_pi_entry_turn(
+        pi_step.key.airport_id.trim(),
+        pi_step.key.procedure_id.trim(),
+        pi_step.key.route_type.trim(),
+        pi_step.key.transition_id.trim(),
+        pi_step.sequence,
+        turn_to_pi_outbound_deg,
+    ) {
+        return None;
+    }
+    following_segment_records.iter().find(|candidate| {
+        matches!(candidate.path_termination.trim(), "HF" | "HM")
+            && candidate.nav_ref.is_some()
+            && candidate.nav_ref == pi_step.nav_ref
+            && candidate.magnetic_course_deg.is_some()
+            && matches!(
+                candidate.turn_direction.as_deref().map(str::trim),
+                Some("L" | "R")
+            )
+            && nominal_hold_leg_length_nm(candidate.route_distance_or_time.as_deref()).is_some()
+    })
+}
+
+fn borrowed_hold_entry_elements_for_pi(
+    pi_step: &ProcedureLegMaterializationRecord,
+    hold_record: &ProcedureLegMaterializationRecord,
+    arrival_course_deg: f64,
+) -> Option<(Vec<LegDisplayElement>, Vec<String>)> {
+    let fix = pi_step.nav_position?;
+    let inbound_course_deg =
+        hold_record.magnetic_course_deg? + course_reference_variation_deg(hold_record);
+    let clockwise = match hold_record.turn_direction.as_deref().unwrap_or("").trim() {
+        "L" => false,
+        "R" => true,
+        _ => return None,
+    };
+    let leg_length_nm = nominal_hold_leg_length_nm(hold_record.route_distance_or_time.as_deref())?;
+    let (elements, roles) = hold_entry_elements(
+        fix,
+        inbound_course_deg,
+        clockwise,
+        Some(arrival_course_deg),
+        leg_length_nm,
+        nominal_standard_rate_turn_radius_nm(),
+    );
+    if elements.is_empty() {
+        return None;
+    }
+    Some((elements, roles))
+}
+
+fn procedure_turn_initial_outbound_course_deg(
+    leg: &ProcedureLegMaterializationRecord,
+) -> Option<f64> {
+    let barb_course_deg = leg.magnetic_course_deg? + course_reference_variation_deg(leg);
+    match leg.turn_direction.as_deref().unwrap_or("").trim() {
+        "L" => Some(normalize_bearing_degrees(barb_course_deg - 45.0)),
+        "R" => Some(normalize_bearing_degrees(barb_course_deg + 45.0)),
+        _ => None,
+    }
 }
 
 fn best_nominal_intercept_track_join(

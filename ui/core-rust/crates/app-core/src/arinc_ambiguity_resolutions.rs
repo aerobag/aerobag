@@ -10,6 +10,29 @@ impl ResolvedTurnDirection {
     }
 }
 
+pub fn borrow_later_same_fix_hold_for_excessive_pi_entry_turn(
+    airport_id: &str,
+    procedure_id: &str,
+    route_type: &str,
+    transition_id: &str,
+    sequence: i32,
+    turn_to_pi_outbound_deg: f64,
+) -> bool {
+    // KILE VOR-A/SLIMM is the motivating case: the A-route arrives at GRK
+    // almost inbound on the later charted hold, then the next ARINC row is a PI
+    // course reversal whose initial outbound course is nearly reciprocal. ARINC
+    // does encode the GRK hold, but only later in the missed route. There is no
+    // official guidance here; we are choosing to borrow that same-fix hold entry
+    // only when the direct arrival-to-PI-outbound turn would be absurdly sharp.
+    //
+    // DARTE on the same plate needs the PI but only turns about 67 degrees to
+    // outbound, so the threshold must not convert ordinary PI entries into
+    // borrowed holds. We chose 150 degrees as the line between "just turn
+    // outbound" and "use the charted same-fix hold to reverse first."
+    let _ = (airport_id, procedure_id, route_type, transition_id, sequence);
+    turn_to_pi_outbound_deg >= 150.0
+}
+
 pub fn handle_unspecified_missed_turn_to_same_fix_hold(
     airport_id: &str,
     procedure_id: &str,

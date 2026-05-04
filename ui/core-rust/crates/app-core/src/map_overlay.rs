@@ -1513,7 +1513,22 @@ fn selection_item_for_metar(
 }
 
 fn taf_detail_text(record: &TafRecord) -> String {
-    record.raw_text.replace(" BECMG", "\nBECMG")
+    let mut formatted = String::new();
+    for token in record.raw_text.split_whitespace() {
+        if token == "BECMG" || taf_token_is_from_time_group(token) {
+            formatted.push('\n');
+        } else if !formatted.is_empty() {
+            formatted.push(' ');
+        }
+        formatted.push_str(token);
+    }
+    formatted
+}
+
+fn taf_token_is_from_time_group(token: &str) -> bool {
+    token
+        .strip_prefix("FM")
+        .is_some_and(|suffix| suffix.len() >= 6 && suffix.chars().all(|ch| ch.is_ascii_digit()))
 }
 
 fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelectionItem {
@@ -3550,7 +3565,7 @@ mod tests {
             metar_count: Some(1),
             metars_by_station,
         };
-        let taf_raw_text = "TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020 BECMG 0102/0104 BKN030";
+        let taf_raw_text = "TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020 BECMG 0102/0104 BKN030 FM010600 22008KT P6SM SCT050";
         let tafs = TafProductPayload {
             schema_version: 1,
             version_label: "test".to_string(),
@@ -3611,7 +3626,7 @@ mod tests {
         assert!(taf_action.enabled);
         assert_eq!(
             taf_action.detail_text.as_deref(),
-            Some("TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020\nBECMG 0102/0104 BKN030")
+            Some("TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020\nBECMG 0102/0104 BKN030\nFM010600 22008KT P6SM SCT050")
         );
     }
 
@@ -4250,7 +4265,7 @@ mod tests {
                 csup: true,
             },
             Some(&TafRecord {
-                raw_text: "TAF KSEA 010000Z 0100/0124 00000KT P6SM SCT020 BECMG 0102/0104 BKN030"
+                raw_text: "TAF KSEA 010000Z 0100/0124 00000KT P6SM SCT020 BECMG 0102/0104 BKN030 FM010600 22008KT P6SM SCT050"
                     .to_string(),
                 issued_at_utc: Some("2026-05-03T00:00:00.000Z".to_string()),
                 station_id: "KSEA".to_string(),
@@ -4284,7 +4299,7 @@ mod tests {
         assert!(taf.enabled);
         assert_eq!(
             taf.detail_text.as_deref(),
-            Some("TAF KSEA 010000Z 0100/0124 00000KT P6SM SCT020\nBECMG 0102/0104 BKN030")
+            Some("TAF KSEA 010000Z 0100/0124 00000KT P6SM SCT020\nBECMG 0102/0104 BKN030\nFM010600 22008KT P6SM SCT050")
         );
     }
 

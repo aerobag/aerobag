@@ -4347,7 +4347,7 @@ function FlightPlanPage(props: {
   onSelectProcedureAtRow: (rowUid: string, airportId: string, procedureId: string, enrouteTransition: string | null) => void | Promise<void>;
   debugWarningActive: boolean;
 }) {
-  const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
+  const [selectedWaypointUid, setSelectedWaypointUid] = useState<string | null>(null);
   const [selectedWaypointAnchor, setSelectedWaypointAnchor] = useState<{ top: number; height: number } | null>(null);
   const [airwayPicker, setAirwayPicker] = useState<{
     loading: boolean;
@@ -4539,7 +4539,12 @@ function FlightPlanPage(props: {
         actions: row.actions,
       }));
   }, [planUiState.display_rows]);
-  const selectedRow = selectedWaypointIndex !== null ? displayRows[selectedWaypointIndex] ?? null : null;
+  const selectedWaypointIndex = selectedWaypointUid === null
+    ? null
+    : displayRows.findIndex((row) => row.rowUid === selectedWaypointUid);
+  const selectedRow = selectedWaypointIndex !== null && selectedWaypointIndex >= 0
+    ? displayRows[selectedWaypointIndex] ?? null
+    : null;
 
   const rowActions = useMemo(() => {
     if (!selectedRow) {
@@ -4547,7 +4552,7 @@ function FlightPlanPage(props: {
     }
 
     const closeTray = () => {
-      setSelectedWaypointIndex(null);
+      setSelectedWaypointUid(null);
       setAirwayPicker(null);
       setProcedurePicker(null);
       setAirportInsert(null);
@@ -4566,7 +4571,9 @@ function FlightPlanPage(props: {
           }
           if (action.execution === "core_session") {
             void props.onPerformFlightPlanRowAction(selectedRow.rowUid, action.uid);
-            closeTray();
+            if (action.id !== "move_up" && action.id !== "move_down") {
+              closeTray();
+            }
             return;
           }
           if (action.id === "insert_before" || action.id === "insert_after") {
@@ -4820,7 +4827,7 @@ function FlightPlanPage(props: {
   }, [displayRows, guidance?.active_leg]);
 
   useEffect(() => {
-    if (selectedWaypointIndex === null) {
+    if (selectedRow === null) {
       setWaypointModalTop(null);
       setWaypointModalMaxHeight(null);
       return;
@@ -4840,7 +4847,7 @@ function FlightPlanPage(props: {
 
     setWaypointModalTop(top);
     setWaypointModalMaxHeight(maxHeight);
-  }, [airwayPicker, selectedWaypointIndex, rowActions.length]);
+  }, [airwayPicker, selectedRow, rowActions.length]);
 
   useEffect(() => {
     if (!airwayPicker || airwayPicker.loading) {
@@ -4915,7 +4922,7 @@ function FlightPlanPage(props: {
                   className={[
                     "planWaypointCell",
 	                    "planWaypointButton",
-	                    selectedWaypointIndex === index ? "isSelected" : "",
+                    selectedWaypointIndex === index ? "isSelected" : "",
                     row.active ? "isActiveLeg" : "",
                     !row.enabled ? "isDisabled" : "",
                     row.syntheticDirectTo ? "isSyntheticDirectTo" : "",
@@ -4937,7 +4944,7 @@ function FlightPlanPage(props: {
                         height: rowRect.height,
                       });
                     }
-                    setSelectedWaypointIndex(index);
+                    setSelectedWaypointUid(row.rowUid);
                     setAirwayPicker(null);
                     setProcedurePicker(null);
                   }}
@@ -5093,14 +5100,14 @@ function FlightPlanPage(props: {
         />
       </div>
 
-      {selectedWaypointIndex !== null ? (
+      {selectedRow !== null ? (
         <>
           <button
             type="button"
             className="trayScrim"
             aria-label="Close waypoint actions"
             onClick={() => {
-              setSelectedWaypointIndex(null);
+              setSelectedWaypointUid(null);
               setSelectedWaypointAnchor(null);
               setAirwayPicker(null);
               setProcedurePicker(null);
@@ -5129,7 +5136,7 @@ function FlightPlanPage(props: {
                   try {
                     await props.onInsertAirportWaypointAtRow(airportInsert.rowUid, airportInsert.before, airportId);
                     setAirportInsert(null);
-                    setSelectedWaypointIndex(null);
+                    setSelectedWaypointUid(null);
                   } catch (error) {
                     setAirportInsert((current) => current ? {
                       ...current,
@@ -5180,7 +5187,7 @@ function FlightPlanPage(props: {
                               suggestion.identifier,
                             );
                             setAirportInsert(null);
-                            setSelectedWaypointIndex(null);
+                            setSelectedWaypointUid(null);
                           } catch (error) {
                             setAirportInsert((current) => current ? {
                               ...current,
@@ -5273,7 +5280,7 @@ function FlightPlanPage(props: {
                               choice.enroute_transition,
                             );
                             setProcedurePicker(null);
-                            setSelectedWaypointIndex(null);
+                            setSelectedWaypointUid(null);
                           } catch (error) {
                             setProcedurePicker((current) => current ? {
                               ...current,
@@ -5423,7 +5430,7 @@ function FlightPlanPage(props: {
                               throw new Error("airway picker missing insertion row");
                             }
                             setAirwayPicker(null);
-                            setSelectedWaypointIndex(null);
+                            setSelectedWaypointUid(null);
                           } catch (error) {
                             setAirwayPicker((current) => current ? {
                               ...current,

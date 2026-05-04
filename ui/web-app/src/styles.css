@@ -2075,27 +2075,6 @@ button {
   font-weight: 700;
 }
 
-.planTableWrap.isReordering .planStructuredWaypointCell.isChildRow,
-.planTableWrap.isReordering .planStructuredDataCell.isChildRow {
-  min-height: calc(var(--thumb) * 0.34);
-  padding-top: calc(var(--thumb) * 0.05);
-  padding-bottom: calc(var(--thumb) * 0.05);
-  opacity: 0.72;
-}
-
-.planTableWrap.isReordering .planStructuredWaypointCell.isChildRow {
-  margin-left: calc(var(--thumb) * 0.48);
-}
-
-.planTableWrap.isReordering .planStructuredWaypointCell.isChildRow .planStructuredLabel {
-  transform: scaleY(0.72);
-  transform-origin: left center;
-}
-
-.planTableWrap.isReordering .planStructuredDataCell.isChildRow {
-  font-size: calc(var(--thumb) * 0.18);
-}
-
 .planFooter {
   position: absolute;
   left: 50%;
@@ -2175,25 +2154,8 @@ button {
   box-shadow: var(--shadow);
 }
 
-.waypointModal.isReorder {
-  width: min(calc(var(--thumb) * 4), calc(100% - var(--thumb-gap) * 2 - var(--thumb) * 3.15));
-  right: auto;
-  bottom: auto;
-  align-items: center;
-  justify-content: flex-start;
-}
-
 .waypointModal.isAirportInsert {
   width: calc(100% - var(--thumb-gap) * 2 - var(--thumb) * 3.15);
-}
-
-.waypointReorderTray {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--thumb-gap);
-  width: 100%;
 }
 
 .waypointActionTray {

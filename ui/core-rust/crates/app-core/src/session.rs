@@ -670,6 +670,41 @@ pub fn insert_waypoint_best_position_in_session(
     })
 }
 
+pub fn insert_waypoint_at_flight_plan_row_in_session(
+    handle: u32,
+    row_uid: String,
+    before: bool,
+    waypoint: NavRef,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let plan = session_plan(session)?;
+    let ui = crate::project_ui_state(&plan);
+    let row = ui
+        .display_rows
+        .iter()
+        .find(|row| row.uid == row_uid)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("flight-plan insert target is stale: {row_uid}"),
+        })?;
+    let component_uid = row.component_uid.as_deref().ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: "flight-plan insert row has no route component uid".to_string(),
+    })?;
+    let component_index = plan
+        .route_component_uids
+        .iter()
+        .position(|uid| uid == component_uid)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("flight-plan insert target component is stale: {component_uid}"),
+        })?;
+    let next_plan = crate::insert_waypoint(&plan, component_index, before, waypoint)?;
+    replace_session_flight_plan(session, next_plan)?;
+    Ok(snapshot_for_session(session))
+}
+
 pub fn activate_direct_to_nav_ref_in_session(
     handle: u32,
     target: NavRef,
@@ -757,6 +792,19 @@ pub fn perform_flight_plan_row_action_in_session(
             message: format!("flight-plan row action is UI-controller owned: {action_uid}"),
         });
     }
+    let row_component_index = || -> AppResult<usize> {
+        let component_uid = row.component_uid.as_deref().ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "flight-plan row has no route component uid".to_string(),
+        })?;
+        plan.route_component_uids
+            .iter()
+            .position(|uid| uid == component_uid)
+            .ok_or_else(|| AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: format!("flight-plan row component is stale: {component_uid}"),
+            })
+    };
 
     let next_plan = match &action.id {
         FlightPlanRowActionId::ActivateLeg => {
@@ -787,35 +835,30 @@ pub fn perform_flight_plan_row_action_in_session(
                     })?;
                 crate::activate_direct_to_leg(&plan, from_position, &target_leg_id)?
             } else {
-                match row.component_index {
-                    Some(component_index) => {
-                        crate::activate_direct_to_component(&plan, from_position, component_index)?
-                    }
-                    None => {
-                        let target = row.nav_ref.clone().ok_or_else(|| AppError {
-                            kind: AppErrorKind::InvalidFlightPlan,
-                            message: "direct-to row has no nav reference".to_string(),
-                        })?;
-                        crate::activate_direct_to(&plan, from_position, target)?
-                    }
+                if row.component_uid.is_some() {
+                    crate::activate_direct_to_component(&plan, from_position, row_component_index()?)?
+                } else {
+                    let target = row.nav_ref.clone().ok_or_else(|| AppError {
+                        kind: AppErrorKind::InvalidFlightPlan,
+                        message: "direct-to row has no nav reference".to_string(),
+                    })?;
+                    crate::activate_direct_to(&plan, from_position, target)?
                 }
             }
         }
         FlightPlanRowActionId::Remove
         | FlightPlanRowActionId::RemoveAirway
         | FlightPlanRowActionId::RemoveProcedure => {
-            let component_index = row.component_index.ok_or_else(|| AppError {
-                kind: AppErrorKind::InvalidFlightPlan,
-                message: "remove row has no route component".to_string(),
-            })?;
-            crate::delete_component(&plan, component_index)?
+            crate::delete_component(&plan, row_component_index()?)?
         }
         FlightPlanRowActionId::RemoveAllAbove => {
-            let component_index = row.component_index.ok_or_else(|| AppError {
-                kind: AppErrorKind::InvalidFlightPlan,
-                message: "remove-to-here row has no route component".to_string(),
-            })?;
-            crate::remove_all_above(&plan, component_index)?
+            crate::remove_all_above(&plan, row_component_index()?)?
+        }
+        FlightPlanRowActionId::MoveUp => {
+            crate::move_component(&plan, row_component_index()?, -1)?
+        }
+        FlightPlanRowActionId::MoveDown => {
+            crate::move_component(&plan, row_component_index()?, 1)?
         }
         _ => {
             return Err(AppError {

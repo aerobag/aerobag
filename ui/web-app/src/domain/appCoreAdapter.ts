@@ -444,6 +444,7 @@ export interface UiSession {
   removeLeg(index: number): Promise<UiSessionSnapshot>;
   moveWaypoint(index: number, delta: number): Promise<UiSessionSnapshot>;
   insertWaypointBestPosition(waypoint: NavRef): Promise<UiSessionSnapshot>;
+  insertWaypointAtFlightPlanRow(rowUid: string, before: boolean, waypoint: NavRef): Promise<UiSessionSnapshot>;
   removeTopLevelWaypointByNavRef(navRef: NavRef): Promise<UiSessionSnapshot>;
   activateDirectTo(navRef: NavRef): Promise<UiSessionSnapshot>;
   restoreDirectTo(): Promise<UiSessionSnapshot>;
@@ -504,18 +505,13 @@ export interface AppCoreAdapter {
   ): Promise<DerivedChartPageState>;
   deriveMapSelectorState(selectedMapId?: string): Promise<DerivedMapSelectorState>;
   projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]>;
-  activateLegUi(plan: FlightPlan, legIndex: number): Promise<FlightPlanUiMutation>;
   activateNextLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
-  deleteComponentUi(plan: FlightPlan, componentIndex: number): Promise<FlightPlanUiMutation>;
-  moveComponentUi(plan: FlightPlan, componentIndex: number, delta: number): Promise<FlightPlanUiMutation>;
-  removeAllAboveUi(plan: FlightPlan, componentIndex: number): Promise<FlightPlanUiMutation>;
   previewFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanEntryPreview>;
   appendFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanUiMutation>;
   resolveWaypointIdentifier(identifier: string): Promise<NavRef | null>;
   resolveNavRefPosition(navRef: NavRef): Promise<LatLon>;
   suggestWaypointIdentifiers(plan: FlightPlan, componentIndex: number, before: boolean, prefix: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
   suggestWaypointIdentifiersNear(anchor: LatLon, prefix: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
-  insertWaypointUi(plan: FlightPlan, componentIndex: number, before: boolean, waypoint: NavRef): Promise<FlightPlanUiMutation>;
   suspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
   unsuspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
   sequenceActiveLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
@@ -698,6 +694,7 @@ type WasmModule = {
   select_map_in_session(handle: number, selectedMapIdJson: string): Promise<string> | string;
   replace_flight_plan_in_session(handle: number, planJson: string): Promise<string> | string;
   insert_waypoint_best_position_in_session(sessionHandle: number, waypointJson: string): Promise<string> | string;
+  insert_waypoint_at_flight_plan_row_in_session(sessionHandle: number, rowUid: string, before: boolean, waypointJson: string): Promise<string> | string;
   activate_direct_to_nav_ref_in_session(sessionHandle: number, targetJson: string): Promise<string> | string;
   restore_direct_to_in_session(sessionHandle: number): Promise<string> | string;
   perform_flight_plan_row_action_in_session(sessionHandle: number, rowUid: string, actionUid: string): Promise<string> | string;
@@ -725,12 +722,7 @@ type WasmModule = {
   nav_kv_destroy(handle: number): Promise<void> | void;
   attach_nav_kv_store_to_session(navKvHandle: number, sessionHandle: number): Promise<void> | void;
   core_had_operation(handle: number, operationJson: string): Promise<string> | string;
-  activate_leg_ui(planJson: string, legIndex: number): Promise<string> | string;
   activate_next_leg_ui(planJson: string): Promise<string> | string;
-  delete_component_ui(planJson: string, componentIndex: number): Promise<string> | string;
-  move_component_ui(planJson: string, componentIndex: number, delta: number): Promise<string> | string;
-  remove_all_above_ui(planJson: string, componentIndex: number): Promise<string> | string;
-  insert_waypoint_ui(planJson: string, componentIndex: number, before: boolean, waypointJson: string): Promise<string> | string;
   suspend_sequencing_ui(planJson: string): Promise<string> | string;
   unsuspend_sequencing_ui(planJson: string): Promise<string> | string;
   sequence_active_leg_ui(planJson: string): Promise<string> | string;
@@ -936,6 +928,18 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           runCoreHadSessionOperation<UiSessionSnapshot>(() =>
             this.module.insert_waypoint_best_position_in_session(handle, JSON.stringify(waypoint)),
           ),
+        );
+        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        return snapshot;
+      },
+      insertWaypointAtFlightPlanRow: async (rowUid, before, waypoint) => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(this.module.insert_waypoint_at_flight_plan_row_in_session(
+            handle,
+            rowUid,
+            before,
+            JSON.stringify(waypoint),
+          )),
         );
         await syncGuidanceGeometry(snapshot.app_state.active_plan);
         return snapshot;
@@ -1274,33 +1278,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     return runCoreHadOperation<FlightPlanRouteSegment[]>({ kind: "project_flight_plan_route", plan });
   }
 
-  async activateLegUi(plan: FlightPlan, legIndex: number): Promise<FlightPlanUiMutation> {
-    return this.enrichFlightPlanUiMutation(JSON.parse(
-      await this.module.activate_leg_ui(JSON.stringify(plan), legIndex),
-    ) as FlightPlanUiMutation);
-  }
-
   async activateNextLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
     return this.enrichFlightPlanUiMutation(JSON.parse(
       await this.module.activate_next_leg_ui(JSON.stringify(plan)),
-    ) as FlightPlanUiMutation);
-  }
-
-  async deleteComponentUi(plan: FlightPlan, componentIndex: number): Promise<FlightPlanUiMutation> {
-    return this.enrichFlightPlanUiMutation(JSON.parse(
-      await this.module.delete_component_ui(JSON.stringify(plan), componentIndex),
-    ) as FlightPlanUiMutation);
-  }
-
-  async moveComponentUi(plan: FlightPlan, componentIndex: number, delta: number): Promise<FlightPlanUiMutation> {
-    return this.enrichFlightPlanUiMutation(JSON.parse(
-      await this.module.move_component_ui(JSON.stringify(plan), componentIndex, delta),
-    ) as FlightPlanUiMutation);
-  }
-
-  async removeAllAboveUi(plan: FlightPlan, componentIndex: number): Promise<FlightPlanUiMutation> {
-    return this.enrichFlightPlanUiMutation(JSON.parse(
-      await this.module.remove_all_above_ui(JSON.stringify(plan), componentIndex),
     ) as FlightPlanUiMutation);
   }
 
@@ -1352,12 +1332,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       prefix,
       limit,
     });
-  }
-
-  async insertWaypointUi(plan: FlightPlan, componentIndex: number, before: boolean, waypoint: NavRef): Promise<FlightPlanUiMutation> {
-    return this.enrichFlightPlanUiMutation(JSON.parse(
-      await this.module.insert_waypoint_ui(JSON.stringify(plan), componentIndex, before, JSON.stringify(waypoint)),
-    ) as FlightPlanUiMutation);
   }
 
   async suspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
@@ -1616,11 +1590,8 @@ export async function loadBestAvailableAdapter(
     typeof mod.get_session_snapshot !== "function" ||
     typeof mod.restore_chart_page_state_in_session !== "function" ||
     typeof mod.destroy_session !== "function" ||
-    typeof mod.activate_leg_ui !== "function" ||
+    typeof mod.insert_waypoint_at_flight_plan_row_in_session !== "function" ||
     typeof mod.activate_next_leg_ui !== "function" ||
-    typeof mod.delete_component_ui !== "function" ||
-    typeof mod.move_component_ui !== "function" ||
-    typeof mod.insert_waypoint_ui !== "function" ||
     typeof mod.suspend_sequencing_ui !== "function" ||
     typeof mod.unsuspend_sequencing_ui !== "function" ||
     typeof mod.sequence_active_leg_ui !== "function" ||

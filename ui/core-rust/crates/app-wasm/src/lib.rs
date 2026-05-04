@@ -135,6 +135,25 @@ pub fn insert_waypoint_best_position_in_session(
 }
 
 #[wasm_bindgen]
+pub fn insert_waypoint_at_flight_plan_row_in_session(
+    session_handle: u32,
+    row_uid: &str,
+    before: bool,
+    waypoint_json: &str,
+) -> Result<String, JsValue> {
+    let waypoint: app_core::NavRef =
+        serde_json::from_str(waypoint_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let snapshot = app_core::insert_waypoint_at_flight_plan_row_in_session(
+        session_handle,
+        row_uid.to_string(),
+        before,
+        waypoint,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn activate_direct_to_nav_ref_in_session(
     session_handle: u32,
     target_json: &str,
@@ -209,43 +228,8 @@ pub fn classify_procedure_identifier(
 }
 
 #[wasm_bindgen]
-pub fn activate_leg_ui(plan_json: &str, leg_index: usize) -> Result<String, JsValue> {
-    activate_leg_ui_json(plan_json, leg_index).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
 pub fn activate_next_leg_ui(plan_json: &str) -> Result<String, JsValue> {
     activate_next_leg_ui_json(plan_json).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn delete_component_ui(plan_json: &str, component_index: usize) -> Result<String, JsValue> {
-    delete_component_ui_json(plan_json, component_index).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn remove_all_above_ui(plan_json: &str, component_index: usize) -> Result<String, JsValue> {
-    remove_all_above_ui_json(plan_json, component_index).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn move_component_ui(
-    plan_json: &str,
-    component_index: usize,
-    delta: isize,
-) -> Result<String, JsValue> {
-    move_component_ui_json(plan_json, component_index, delta).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn insert_waypoint_ui(
-    plan_json: &str,
-    component_index: usize,
-    before: bool,
-    waypoint_json: &str,
-) -> Result<String, JsValue> {
-    insert_waypoint_ui_json(plan_json, component_index, before, waypoint_json)
-        .map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -799,60 +783,10 @@ fn build_flight_plan_json(plan_json: &str) -> Result<String, String> {
     serde_json::to_string(&plan).map_err(|err| err.to_string())
 }
 
-fn activate_leg_ui_json(plan_json: &str, leg_index: usize) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation = app_core::activate_leg_ui(&plan, leg_index).map_err(|err| err.to_string())?;
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
 fn activate_next_leg_ui_json(plan_json: &str) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let mutation = app_core::activate_next_leg_ui(&plan).map_err(|err| err.to_string())?;
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
-fn delete_component_ui_json(plan_json: &str, component_index: usize) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation =
-        app_core::delete_component_ui(&plan, component_index).map_err(|err| err.to_string())?;
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
-fn remove_all_above_ui_json(plan_json: &str, component_index: usize) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation =
-        app_core::remove_all_above_ui(&plan, component_index).map_err(|err| err.to_string())?;
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
-fn move_component_ui_json(
-    plan_json: &str,
-    component_index: usize,
-    delta: isize,
-) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation = app_core::move_component_ui(&plan, component_index, delta)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
-fn insert_waypoint_ui_json(
-    plan_json: &str,
-    component_index: usize,
-    before: bool,
-    waypoint_json: &str,
-) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let waypoint: app_core::NavRef =
-        serde_json::from_str(waypoint_json).map_err(|err| err.to_string())?;
-    let mutation = app_core::insert_waypoint_ui(&plan, component_index, before, waypoint)
-        .map_err(|err| err.to_string())?;
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
@@ -1476,46 +1410,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn activate_leg_ui_json_returns_projected_mutation() {
-        let plan_json = serde_json::json!({
-            "id": "plan-2",
-            "name": "Guided",
-            "legs": [],
-            "route_components": [
-                {"kind":"waypoint","waypoint":{"Airport":"KRNT"}},
-                {"kind":"waypoint","waypoint":{"Navaid":"SEA"}},
-                {"kind":"waypoint","waypoint":{"Airport":"KUAO"}}
-            ],
-            "resolved_legs": [
-                {"id":"component-0-1","from":{"Airport":"KRNT"},"to":{"Navaid":"SEA"},"source":{"kind":"route_component","component_index":0}},
-                {"id":"component-1-2","from":{"Navaid":"SEA"},"to":{"Airport":"KUAO"},"source":{"kind":"route_component","component_index":1}}
-            ],
-            "guidance": {"active_leg_index":0,"sequencing_mode":"follow_plan","direct_to":null},
-            "departure": "KRNT",
-            "destination": "KUAO",
-            "alternate": null,
-            "cruise_altitude_ft": null,
-            "notes": null,
-            "updated_at_epoch_ms": 0,
-            "version": 1
-        })
-        .to_string();
-
-        let next_json = activate_leg_ui_json(&plan_json, 1).unwrap();
-        let next: app_core::FlightPlanUiMutation = serde_json::from_str(&next_json).unwrap();
-
-        assert_eq!(
-            next.ui_state.guidance.as_ref().unwrap().active_leg_index,
-            Some(1)
-        );
-        assert_eq!(
-            next.ui_state
-                .guidance
-                .as_ref()
-                .unwrap()
-                .active_component_index,
-            Some(1)
-        );
-    }
 }

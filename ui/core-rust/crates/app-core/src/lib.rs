@@ -132,7 +132,8 @@ pub use session::{
     ingest_airspace_label_tiles_in_session, ingest_airspace_ref_tiles_in_session,
     ingest_metar_tiles_in_session, ingest_metars_in_session, ingest_point_tiles_in_session,
     ingest_tfrs_in_session, insert_nav_kv_page_for_attached_sessions,
-    insert_waypoint_best_position_in_session, load_playback_trace_in_session,
+    insert_waypoint_at_flight_plan_row_in_session, insert_waypoint_best_position_in_session,
+    load_playback_trace_in_session,
     move_waypoint_in_session, pause_playback_in_session, perform_flight_plan_row_action_in_session,
     play_playback_in_session, push_situation_sample_in_session, register_ownship_source_in_session,
     remove_leg_in_session, remove_top_level_waypoint_by_nav_ref_in_session,
@@ -3874,11 +3875,6 @@ pub fn sequence_active_leg_ui(plan: &FlightPlan) -> AppResult<FlightPlanUiMutati
     Ok(project_plan_mutation(plan))
 }
 
-pub fn activate_leg_ui(plan: &FlightPlan, leg_index: usize) -> AppResult<FlightPlanUiMutation> {
-    let plan = activate_leg(plan, leg_index)?;
-    Ok(project_plan_mutation(plan))
-}
-
 pub fn activate_next_leg_ui(plan: &FlightPlan) -> AppResult<FlightPlanUiMutation> {
     let plan = activate_next_leg(plan)?;
     Ok(project_plan_mutation(plan))
@@ -3891,41 +3887,6 @@ pub fn suspend_sequencing_ui(plan: &FlightPlan) -> AppResult<FlightPlanUiMutatio
 
 pub fn unsuspend_sequencing_ui(plan: &FlightPlan) -> AppResult<FlightPlanUiMutation> {
     let plan = unsuspend_sequencing(plan)?;
-    Ok(project_plan_mutation(plan))
-}
-
-pub fn delete_component_ui(
-    plan: &FlightPlan,
-    component_index: usize,
-) -> AppResult<FlightPlanUiMutation> {
-    let plan = delete_component(plan, component_index)?;
-    Ok(project_plan_mutation(plan))
-}
-
-pub fn remove_all_above_ui(
-    plan: &FlightPlan,
-    component_index: usize,
-) -> AppResult<FlightPlanUiMutation> {
-    let plan = remove_all_above(plan, component_index)?;
-    Ok(project_plan_mutation(plan))
-}
-
-pub fn move_component_ui(
-    plan: &FlightPlan,
-    component_index: usize,
-    delta: isize,
-) -> AppResult<FlightPlanUiMutation> {
-    let plan = move_component(plan, component_index, delta)?;
-    Ok(project_plan_mutation(plan))
-}
-
-pub fn insert_waypoint_ui(
-    plan: &FlightPlan,
-    component_index: usize,
-    before: bool,
-    waypoint: NavRef,
-) -> AppResult<FlightPlanUiMutation> {
-    let plan = insert_waypoint(plan, component_index, before, waypoint)?;
     Ok(project_plan_mutation(plan))
 }
 
@@ -5612,8 +5573,8 @@ mod tests {
     }
 
     #[test]
-    fn delete_component_ui_allows_removing_last_waypoint() {
-        let mutation = delete_component_ui(
+    fn delete_component_allows_removing_last_waypoint() {
+        let plan = delete_component(
             &FlightPlan {
                 id: "single-waypoint".to_string(),
                 name: "Single waypoint".to_string(),
@@ -5637,15 +5598,16 @@ mod tests {
         )
         .unwrap();
 
-        assert!(mutation.plan.route_components.is_empty());
-        assert!(mutation.plan.resolved_legs.is_empty());
-        assert!(mutation.ui_state.components.is_empty());
-        assert!(mutation.ui_state.display_rows.is_empty());
+        assert!(plan.route_components.is_empty());
+        assert!(plan.resolved_legs.is_empty());
+        let ui_state = project_ui_state(&plan);
+        assert!(ui_state.components.is_empty());
+        assert!(ui_state.display_rows.is_empty());
     }
 
     #[test]
-    fn delete_component_ui_clears_stale_legacy_legs_when_removing_last_waypoint() {
-        let mutation = delete_component_ui(
+    fn delete_component_clears_stale_legacy_legs_when_removing_last_waypoint() {
+        let plan = delete_component(
             &FlightPlan {
                 id: "single-waypoint".to_string(),
                 name: "Single waypoint".to_string(),
@@ -5673,9 +5635,9 @@ mod tests {
         )
         .unwrap();
 
-        assert!(mutation.plan.route_components.is_empty());
-        assert!(mutation.plan.resolved_legs.is_empty());
-        assert!(mutation.plan.legs.is_empty());
+        assert!(plan.route_components.is_empty());
+        assert!(plan.resolved_legs.is_empty());
+        assert!(plan.legs.is_empty());
     }
 
     #[test]

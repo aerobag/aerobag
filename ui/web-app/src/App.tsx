@@ -1685,24 +1685,14 @@ export default function App() {
               chartFolderOpen: !chartId,
             });
           }}
-          onMoveComponent={async (componentIndex, delta) => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.moveComponentUi(currentPlan, componentIndex, delta);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
-          }}
-          onRemoveAllAbove={async (componentIndex) => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.removeAllAboveUi(currentPlan, componentIndex);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
-          }}
-          onInsertAirportWaypoint={async (componentIndex, before, airportId) => {
+          onInsertAirportWaypointAtRow={async (rowUid, before, airportId) => {
             if (!appCoreAdapter) return;
             const waypoint = await appCoreAdapter.resolveWaypointIdentifier(airportId);
             if (!waypoint) {
               throw new Error(`Unknown waypoint ${airportId}`);
             }
-            const mutation = await appCoreAdapter.insertWaypointUi(currentPlan, componentIndex, before, waypoint);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
+            const nextSnapshot = await uiSession.insertWaypointAtFlightPlanRow(rowUid, before, waypoint);
+            setSessionSnapshot(nextSnapshot);
           }}
           onPreviewFlightPlanEntry={async (input) => {
             if (!appCoreAdapter) {
@@ -1713,16 +1703,6 @@ export default function App() {
           onAppendFlightPlanEntry={async (input) => {
             if (!appCoreAdapter) return;
             const mutation = await appCoreAdapter.appendFlightPlanEntry(currentPlan, input);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
-          }}
-          onActivateLeg={async (legIndex) => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.activateLegUi(currentPlan, legIndex);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
-          }}
-          onDeleteComponent={async (componentIndex) => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.deleteComponentUi(currentPlan, componentIndex);
             await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
           }}
           onActivateNextLeg={async () => {
@@ -4345,13 +4325,9 @@ function FlightPlanPage(props: {
   onOpenRecentChartOrPlate: () => void;
   onSelectPage: (page: AppPage) => void;
   onOpenCharts: (airportId: string | null, chartId?: string | null) => void;
-  onMoveComponent: (componentIndex: number, delta: number) => void | Promise<void>;
-  onRemoveAllAbove: (componentIndex: number) => void | Promise<void>;
-  onInsertAirportWaypoint: (componentIndex: number, before: boolean, airportId: string) => void | Promise<void>;
+  onInsertAirportWaypointAtRow: (rowUid: string, before: boolean, airportId: string) => void | Promise<void>;
   onPreviewFlightPlanEntry: (input: string) => Promise<FlightPlanEntryPreview>;
   onAppendFlightPlanEntry: (input: string) => void | Promise<void>;
-  onActivateLeg: (index: number) => void | Promise<void>;
-  onDeleteComponent: (componentIndex: number) => void | Promise<void>;
   onActivateNextLeg: () => void | Promise<void>;
   onSuspendSequencing: () => void | Promise<void>;
   onUnsuspendSequencing: () => void | Promise<void>;
@@ -4384,9 +4360,7 @@ function FlightPlanPage(props: {
   debugWarningActive: boolean;
 }) {
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
-  const [pendingSelectedComponentIndex, setPendingSelectedComponentIndex] = useState<number | null>(null);
   const [selectedWaypointAnchor, setSelectedWaypointAnchor] = useState<{ top: number; height: number } | null>(null);
-  const [reorderOpen, setReorderOpen] = useState(false);
   const [airwayPicker, setAirwayPicker] = useState<{
     loading: boolean;
     error: string | null;
@@ -4413,6 +4387,7 @@ function FlightPlanPage(props: {
     options: ProcedureOptions | null;
   } | null>(null);
   const [airportInsert, setAirportInsert] = useState<{
+    rowUid: string;
     componentIndex: number;
     before: boolean;
     airportId: string;
@@ -4568,11 +4543,6 @@ function FlightPlanPage(props: {
         componentKind: row.component_kind,
         procedureId: row.procedure_id,
         procedureKind: row.procedure_kind,
-        canAddAirwayAfter: row.can_add_airway_after,
-        canAddProcedureBefore: row.can_add_procedure_before,
-        canChangeAirway: row.can_change_airway,
-        canRemoveComponent: row.can_remove_component,
-        canReorderComponent: row.can_reorder_component,
         precedingWaypoint: row.preceding_waypoint,
         followingWaypoint: row.following_waypoint,
         actions: row.actions,
@@ -4580,32 +4550,12 @@ function FlightPlanPage(props: {
   }, [planUiState.display_rows]);
   const selectedRow = selectedWaypointIndex !== null ? displayRows[selectedWaypointIndex] ?? null : null;
 
-  useEffect(() => {
-    if (pendingSelectedComponentIndex === null) {
-      return;
-    }
-    const nextIndex = displayRows.findIndex(
-      (row) =>
-        row.componentIndex === pendingSelectedComponentIndex &&
-        row.depth === 0 &&
-        (row.rowKind === "waypoint" || row.rowKind === "group"),
-    );
-    if (nextIndex >= 0) {
-      setSelectedWaypointIndex(nextIndex);
-    } else {
-      setSelectedWaypointIndex(null);
-      setReorderOpen(false);
-    }
-    setPendingSelectedComponentIndex(null);
-  }, [displayRows, pendingSelectedComponentIndex]);
-
   const rowActions = useMemo(() => {
     if (!selectedRow) {
       return [] as Array<{ id: string; uid: string; label: string; enabled: boolean; execution?: string; onSelect: () => void }>;
     }
 
     const closeTray = () => {
-      setReorderOpen(false);
       setSelectedWaypointIndex(null);
       setAirwayPicker(null);
       setProcedurePicker(null);
@@ -4628,15 +4578,12 @@ function FlightPlanPage(props: {
             closeTray();
             return;
           }
-          if (action.id === "reorder") {
-            setReorderOpen(true);
-            return;
-          }
           if (action.id === "insert_before" || action.id === "insert_after") {
             if (selectedRow.componentIndex === null) {
               return;
             }
             setAirportInsert({
+              rowUid: selectedRow.rowUid,
               componentIndex: selectedRow.componentIndex,
               before: action.id === "insert_before",
               airportId: "",
@@ -4804,7 +4751,7 @@ function FlightPlanPage(props: {
       window.clearTimeout(settleTimer);
       table.removeEventListener("transitionend", handleTransitionEnd);
     };
-  }, [displayRows, reorderOpen]);
+  }, [displayRows]);
 
   useEffect(() => {
     if (!guidance?.active_leg) {
@@ -4919,7 +4866,7 @@ function FlightPlanPage(props: {
 
     setWaypointModalTop(top);
     setWaypointModalMaxHeight(maxHeight);
-  }, [airwayPicker, reorderOpen, selectedWaypointIndex, rowActions.length]);
+  }, [airwayPicker, selectedWaypointIndex, rowActions.length]);
 
   useEffect(() => {
     if (!airwayPicker || airwayPicker.loading) {
@@ -4944,24 +4891,6 @@ function FlightPlanPage(props: {
     airwayPicker?.selectedEntryIndex,
   ]);
 
-  useEffect(() => {
-    if (!reorderOpen || selectedWaypointIndex === null) {
-      return;
-    }
-    const row = displayRows[selectedWaypointIndex];
-    if (!row?.refKey) {
-      return;
-    }
-    const element = structuredRowRefs.current.get(row.refKey);
-    if (!element) {
-      return;
-    }
-    const handle = window.requestAnimationFrame(() => {
-      element.scrollIntoView({ block: "nearest", inline: "nearest" });
-    });
-    return () => window.cancelAnimationFrame(handle);
-  }, [displayRows, reorderOpen, selectedWaypointIndex]);
-
   return (
     <section className="appPage planPage" ref={pageRef}>
       <div className="chartDock">
@@ -4977,7 +4906,7 @@ function FlightPlanPage(props: {
             </svg>
           ) : null}
           <div className="planScrollSurface" ref={planScrollSurfaceRef}>
-            <div className={`planTableWrap isStructured${reorderOpen ? " isReordering" : ""}`} ref={structuredSurfaceRef}>
+            <div className="planTableWrap isStructured" ref={structuredSurfaceRef}>
               <div className="planStructuredGroupBoxLayer" aria-hidden="true">
                 {structuredGroupBoxes.map((box) => (
                   <div
@@ -5035,7 +4964,6 @@ function FlightPlanPage(props: {
                       });
                     }
                     setSelectedWaypointIndex(index);
-                    setReorderOpen(false);
                     setAirwayPicker(null);
                     setProcedurePicker(null);
                   }}
@@ -5200,7 +5128,6 @@ function FlightPlanPage(props: {
             onClick={() => {
               setSelectedWaypointIndex(null);
               setSelectedWaypointAnchor(null);
-              setReorderOpen(false);
               setAirwayPicker(null);
               setProcedurePicker(null);
               setAirportInsert(null);
@@ -5208,7 +5135,7 @@ function FlightPlanPage(props: {
           />
           <section
             ref={waypointModalRef}
-            className={`waypointModal${reorderOpen ? " isReorder" : ""}${airportInsert ? " isAirportInsert" : ""}`}
+            className={`waypointModal${airportInsert ? " isAirportInsert" : ""}`}
             aria-label="Waypoint actions"
             style={waypointModalTop === null ? undefined : {
               top: `${waypointModalTop}px`,
@@ -5226,7 +5153,7 @@ function FlightPlanPage(props: {
                     return;
                   }
                   try {
-                    await props.onInsertAirportWaypoint(airportInsert.componentIndex, airportInsert.before, airportId);
+                    await props.onInsertAirportWaypointAtRow(airportInsert.rowUid, airportInsert.before, airportId);
                     setAirportInsert(null);
                     setSelectedWaypointIndex(null);
                   } catch (error) {
@@ -5273,8 +5200,8 @@ function FlightPlanPage(props: {
                         onPointerUp={stopPointer}
                         onClick={async () => {
                           try {
-                            await props.onInsertAirportWaypoint(
-                              airportInsert.componentIndex,
+                            await props.onInsertAirportWaypointAtRow(
+                              airportInsert.rowUid,
                               airportInsert.before,
                               suggestion.identifier,
                             );
@@ -5577,44 +5504,6 @@ function FlightPlanPage(props: {
                     </button>
                   </>
                 )}
-              </div>
-            ) : reorderOpen ? (
-              <div className="waypointReorderTray">
-                <button
-                  type="button"
-                  className="trayButton trayButtonSquare"
-                  disabled={selectedRow?.componentIndex == null || selectedRow.componentIndex <= 0}
-                  onPointerDown={stopPointer}
-                  onPointerUp={stopPointer}
-                  onClick={async () => {
-                    if (selectedRow?.componentIndex == null) {
-                      return;
-                    }
-                    await props.onMoveComponent(selectedRow.componentIndex, -1);
-                    setPendingSelectedComponentIndex(selectedRow.componentIndex - 1);
-                  }}
-                >
-                  Up
-                </button>
-                <button
-                  type="button"
-                  className="trayButton trayButtonSquare"
-                  disabled={
-                    selectedRow?.componentIndex == null ||
-                    selectedRow.componentIndex >= componentViews.length - 1
-                  }
-                  onPointerDown={stopPointer}
-                  onPointerUp={stopPointer}
-                  onClick={async () => {
-                    if (selectedRow?.componentIndex == null) {
-                      return;
-                    }
-                    await props.onMoveComponent(selectedRow.componentIndex, 1);
-                    setPendingSelectedComponentIndex(selectedRow.componentIndex + 1);
-                  }}
-                >
-                  Down
-                </button>
               </div>
             ) : rowActions.map((action) => {
               return (

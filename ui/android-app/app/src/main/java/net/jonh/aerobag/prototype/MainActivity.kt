@@ -1,10 +1,14 @@
 package net.jonh.aerobag.prototype
 
+import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
@@ -15,6 +19,7 @@ import java.net.HttpURLConnection
 import java.util.concurrent.atomic.AtomicReference
 import androidx.annotation.DrawableRes
 import androidx.appcompat.content.res.AppCompatResources
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -147,6 +152,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.window.Popup
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -198,9 +204,6 @@ import net.jonh.aerobag.prototype.domain.NavRef
 import net.jonh.aerobag.prototype.domain.NavElementUiView
 import net.jonh.aerobag.prototype.domain.OwnshipMode
 import net.jonh.aerobag.prototype.domain.OwnshipRenderState
-import net.jonh.aerobag.prototype.domain.OwnshipSourceKind
-import net.jonh.aerobag.prototype.domain.OwnshipSourceRegistration
-import net.jonh.aerobag.prototype.domain.OwnshipSourceStatusUpdate
 import net.jonh.aerobag.prototype.domain.PackageZipStore
 import net.jonh.aerobag.prototype.domain.PlaybackStatus
 import net.jonh.aerobag.prototype.domain.PlaybackUiState
@@ -219,8 +222,6 @@ import net.jonh.aerobag.prototype.domain.SectionalPackages
 import net.jonh.aerobag.prototype.domain.SampleData
 import net.jonh.aerobag.prototype.domain.SequencingMode
 import net.jonh.aerobag.prototype.domain.SituationRingCandidate
-import net.jonh.aerobag.prototype.domain.SituationSample
-import net.jonh.aerobag.prototype.domain.SourceConnectionState
 import net.jonh.aerobag.prototype.domain.TileStorageKind
 import net.jonh.aerobag.prototype.domain.UiMapLayerToggleState
 import net.jonh.aerobag.prototype.domain.UiTheme
@@ -1196,29 +1197,6 @@ private fun latLonToScreenPoint(
 private fun plateFolderColor(uiTheme: UiTheme, category: String): Color =
     uiTheme.plateFolder.labelColors[category] ?: uiTheme.plateFolder.labelColors["other"] ?: Color(0xFF52656D)
 
-private fun demoOwnshipSourceRegistration() =
-    OwnshipSourceRegistration(
-        sourceId = "demo-gps",
-        sourceKind = OwnshipSourceKind.DeviceGps,
-        displayName = "Demo GPS",
-        selectable = true,
-        autoEligible = true,
-    )
-
-private fun demoSituationSample() =
-    SituationSample(
-        sourceId = "demo-gps",
-        sourceKind = OwnshipSourceKind.DeviceGps,
-        eventTimeEpochMs = System.currentTimeMillis(),
-        receivedTimeEpochMs = System.currentTimeMillis(),
-        position = LatLonPoint(lat = VampsPosition.lat, lon = VampsPosition.lon),
-        trackDegTrue = 135.0,
-        headingDegTrue = 135.0,
-        groundSpeedKt = 105.0,
-        altitudeMslFt = null,
-        pressureAltitudeFt = null,
-    )
-
 private fun buildSeededDevPlan(
     adapter: NativeAppCoreAdapter,
     plan: net.jonh.aerobag.prototype.domain.FlightPlan,
@@ -1751,8 +1729,18 @@ private fun summarizeRuntimeBootstrapFailure(error: Throwable): String {
 class MainActivity : ComponentActivity() {
     var onHardwareZoomDelta: ((Double) -> Boolean)? = null
 
+    private val gpsPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+            if (grants[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
+                startAndroidGpsService()
+            } else {
+                AndroidGpsSource.publishStatus(AndroidGpsSource.unavailableStatus("Precise location required"))
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestAndroidGps()
         setContent {
             MaterialTheme {
                 Surface(
@@ -1780,6 +1768,31 @@ class MainActivity : ComponentActivity() {
             }
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    private fun requestAndroidGps() {
+        if (hasPreciseLocationPermission()) {
+            startAndroidGpsService()
+            return
+        }
+        gpsPermissionLauncher.launch(requiredGpsPermissions())
+    }
+
+    private fun hasPreciseLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    private fun requiredGpsPermissions(): Array<String> =
+        buildList {
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
+            add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }.toTypedArray()
+
+    private fun startAndroidGpsService() {
+        AndroidGpsSource.publishStatus(AndroidGpsSource.searchingStatus())
+        ContextCompat.startForegroundService(this, Intent(this, AndroidGpsService::class.java))
     }
 }
 
@@ -1955,16 +1968,18 @@ private fun AerobagApp() {
             )
     }
     LaunchedEffect(uiSession) {
-        uiSession.registerOwnshipSource(demoOwnshipSourceRegistration())
-        uiSession.updateOwnshipSourceStatus(
-            OwnshipSourceStatusUpdate(
-                sourceId = "demo-gps",
-                connectionState = SourceConnectionState.Connected,
-                enabled = true,
-                statusLabel = "Connected",
-            ),
-        )
-        sessionSnapshot = uiSession.pushSituationSample(demoSituationSample())
+        sessionSnapshot = uiSession.registerOwnshipSource(AndroidGpsSource.registration())
+        sessionSnapshot = uiSession.updateOwnshipSourceStatus(AndroidGpsSource.status.value)
+        launch {
+            AndroidGpsSource.status.collect { status ->
+                sessionSnapshot = uiSession.updateOwnshipSourceStatus(status)
+            }
+        }
+        launch {
+            AndroidGpsSource.samples.collect { sample ->
+                sessionSnapshot = uiSession.pushSituationSample(sample)
+            }
+        }
     }
     LaunchedEffect(uiSession, sessionSnapshot.playbackUiState.status) {
         while (sessionSnapshot.playbackUiState.status == PlaybackStatus.Playing) {

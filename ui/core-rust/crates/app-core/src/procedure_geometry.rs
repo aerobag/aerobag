@@ -912,35 +912,35 @@ fn build_procedure_leg_display_path(
             "PI" => {
                 let fix = step.nav_position?;
                 let mut procedure_turn_start = None;
-                if let (Some(arrival_course_deg), Some(following_segment_records)) =
-                    (current_course_deg, following_segment_records)
-                {
+                if let Some(arrival_course_deg) = current_course_deg {
                     if distance_between_points_nm(current_position, fix) <= MIN_GEOMETRY_DISTANCE_NM
                     {
-                        if let Some(hold_record) =
-                            borrowed_same_fix_hold_for_excessive_pi_entry_turn(
-                                step,
-                                following_segment_records,
-                                arrival_course_deg,
-                            )
-                        {
-                            let (mut hold_entry, mut hold_roles) =
-                                borrowed_hold_entry_elements_for_pi(
+                        if let Some(following_segment_records) = following_segment_records {
+                            if let Some(hold_record) =
+                                borrowed_same_fix_hold_for_excessive_pi_entry_turn(
                                     step,
-                                    hold_record,
+                                    following_segment_records,
                                     arrival_course_deg,
-                                )?;
-                            let mut hold_sources = vec![debug_source!(); hold_entry.len()];
-                            tag_hold_debug_sources(&mut hold_sources, &hold_roles);
-                            if let Some(terminal_position) =
-                                hold_entry.last().and_then(display_element_end_position)
+                                )
                             {
-                                current_position = terminal_position;
-                                procedure_turn_start = Some(terminal_position);
+                                let (mut hold_entry, mut hold_roles) =
+                                    borrowed_hold_entry_elements_for_pi(
+                                        step,
+                                        hold_record,
+                                        arrival_course_deg,
+                                    )?;
+                                let mut hold_sources = vec![debug_source!(); hold_entry.len()];
+                                tag_hold_debug_sources(&mut hold_sources, &hold_roles);
+                                if let Some(terminal_position) =
+                                    hold_entry.last().and_then(display_element_end_position)
+                                {
+                                    current_position = terminal_position;
+                                    procedure_turn_start = Some(terminal_position);
+                                }
+                                elements.append(&mut hold_entry);
+                                debug_sources.append(&mut hold_sources);
+                                hold_roles.clear();
                             }
-                            elements.append(&mut hold_entry);
-                            debug_sources.append(&mut hold_sources);
-                            hold_roles.clear();
                         }
                         if procedure_turn_start.is_none() {
                             if let Some((

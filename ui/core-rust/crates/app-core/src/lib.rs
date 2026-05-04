@@ -1570,6 +1570,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
     let mut next_heading_step_index = 0usize;
     let required_procedure_turn_sequences =
         required_procedure_turn_sequences_for_segments(segments);
+    let mut row_ledger = ProcedureRowDispositionLedger::new(segments);
 
     for (segment_index, (role, leg_records, _, reversed)) in segments.iter().enumerate() {
         let next_segment_records = segments
@@ -1593,6 +1594,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
 
         for (index, pair) in fix_records.windows(2).enumerate() {
             if traversal_policy.should_skip_window(index) {
+                row_ledger.mark_ignored(pair[1], "skipped by segment traversal policy");
                 continue;
             }
             let previous_path_state = previous_display_path_state(previous_display_path.as_ref());
@@ -1613,6 +1615,13 @@ fn resolve_procedure_materialization_legs_with_provenance(
             else {
                 continue;
             };
+            row_ledger.mark_window_consumed(
+                leg_records,
+                window_link.display_leg_start,
+                window_link.effective_leg_end,
+                window_link.hold_record,
+                window_link.provenance_record,
+            );
             let initial_position_override = if window_link.inherit_previous_state {
                 previous_path_state.terminal_position
             } else {
@@ -1706,6 +1715,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     },
                 )?;
                 if let Some(tail_link) = trailing_plan {
+                    row_ledger.mark_tail_consumed(last_fix, tail_link.provenance_record);
                     let previous_to = tail_link.nav_ref.clone();
                     previous_display_path = append_resolved_procedure_leg(
                         &mut resolved,
@@ -1738,6 +1748,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 let Some(tail_link) = standalone_plan else {
                     continue;
                 };
+                row_ledger.mark_emitted(standalone);
                 let previous_to = tail_link.nav_ref.clone();
                 previous_display_path = append_resolved_procedure_leg(
                     &mut resolved,
@@ -1757,10 +1768,12 @@ fn resolve_procedure_materialization_legs_with_provenance(
 
     if validate_display_geometry {
         validate_no_zero_length_legs(&resolved, procedure_id);
+        validate_materialized_geometry_rows_have_display_paths(&resolved, procedure_id)?;
         validate_no_absurdly_long_display_elements(&resolved, procedure_id)?;
         validate_display_path_geometry_stitches(&resolved, procedure_id);
     }
     if validate_heading_continuity {
+        row_ledger.validate_all_rows_explained(procedure_id)?;
         validate_required_procedure_turns_materialized(
             &required_procedure_turn_sequences,
             &resolved,
@@ -1771,6 +1784,201 @@ fn resolve_procedure_materialization_legs_with_provenance(
     validate_heading_continuity_checks(&heading_checks, validate_heading_continuity, procedure_id)?;
 
     Ok(resolved)
+}
+
+fn validate_materialized_geometry_rows_have_display_paths(
+    resolved: &[ResolvedLeg],
+    procedure_id: &str,
+) -> AppResult<()> {
+    for leg in resolved {
+        let Some(provenance) = leg.procedure_provenance.as_ref() else {
+            continue;
+        };
+        if !procedure_path_termination_requires_geometry(&provenance.path_termination) {
+            continue;
+        }
+        if leg.from == leg.to
+            && !matches!(
+                provenance.path_termination,
+                PathTermination::Other(ref label) if matches!(label.trim(), "PI" | "HF" | "HM")
+            )
+        {
+            continue;
+        }
+        if provenance
+            .display_path
+            .as_ref()
+            .is_some_and(|path| !path.elements.is_empty())
+        {
+            continue;
+        }
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!(
+                "procedure geometry row has no drawable display path for {} route {:?} seq {} {:?}",
+                procedure_id.trim(),
+                provenance.role,
+                provenance.leg_sequence,
+                provenance.path_termination,
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn procedure_path_termination_requires_geometry(path_termination: &PathTermination) -> bool {
+    match path_termination {
+        PathTermination::InitialFix => false,
+        PathTermination::Other(label) => matches!(
+            label.trim(),
+            "AF" | "CF" | "DF" | "FA" | "FC" | "HF" | "HM" | "PI" | "RF" | "TF"
+        ),
+        _ => true,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ProcedureRowDispositionKey {
+    route_type: String,
+    transition_id: String,
+    sequence: i32,
+}
+
+impl ProcedureRowDispositionKey {
+    fn from_record(record: &ProcedureLegMaterializationRecord) -> Self {
+        Self {
+            route_type: record.key.route_type.trim().to_string(),
+            transition_id: record.key.transition_id.trim().to_string(),
+            sequence: record.sequence,
+        }
+    }
+}
+
+struct ProcedureRowDispositionLedger {
+    rows: std::collections::BTreeMap<
+        ProcedureRowDispositionKey,
+        ProcedureLegMaterializationRecord,
+    >,
+    dispositions: std::collections::BTreeMap<ProcedureRowDispositionKey, Vec<String>>,
+}
+
+impl ProcedureRowDispositionLedger {
+    fn new(
+        segments: &[(
+            MaterializedSegmentRole,
+            Vec<ProcedureLegMaterializationRecord>,
+            Vec<ConcretizedNavItem>,
+            bool,
+        )],
+    ) -> Self {
+        let mut ledger = Self {
+            rows: std::collections::BTreeMap::new(),
+            dispositions: std::collections::BTreeMap::new(),
+        };
+        for (_, records, _, _) in segments {
+            let fix_record_count = records
+                .iter()
+                .filter(|record| record.nav_ref.is_some())
+                .count();
+            for record in records {
+                let key = ProcedureRowDispositionKey::from_record(record);
+                ledger.rows.entry(key.clone()).or_insert_with(|| record.clone());
+                if record.path_termination.trim() == "IF" {
+                    ledger.mark(record, "deliberately ignored: IF anchor");
+                } else if record.nav_ref.is_none() {
+                    ledger.mark(record, "deliberately ignored: non-fix procedural row");
+                } else if fix_record_count == 1
+                    && matches!(record.path_termination.trim(), "HF" | "HM")
+                {
+                    ledger.mark(
+                        record,
+                        "deliberately ignored: standalone hold row without an inbound segment",
+                    );
+                }
+            }
+        }
+        ledger
+    }
+
+    fn mark(&mut self, record: &ProcedureLegMaterializationRecord, reason: impl Into<String>) {
+        let key = ProcedureRowDispositionKey::from_record(record);
+        self.dispositions.entry(key).or_default().push(reason.into());
+    }
+
+    fn mark_emitted(&mut self, record: &ProcedureLegMaterializationRecord) {
+        self.mark(record, "emitted geometry/provenance");
+    }
+
+    fn mark_ignored(&mut self, record: &ProcedureLegMaterializationRecord, reason: &str) {
+        self.mark(record, format!("deliberately ignored: {reason}"));
+    }
+
+    fn mark_tail_consumed(
+        &mut self,
+        anchor_record: &ProcedureLegMaterializationRecord,
+        provenance_record: &ProcedureLegMaterializationRecord,
+    ) {
+        if anchor_record.sequence != provenance_record.sequence {
+            self.mark(anchor_record, "consumed as tail anchor");
+        }
+        self.mark_emitted(provenance_record);
+    }
+
+    fn mark_window_consumed(
+        &mut self,
+        leg_records: &[ProcedureLegMaterializationRecord],
+        display_leg_start: &ProcedureLegMaterializationRecord,
+        effective_leg_end: &ProcedureLegMaterializationRecord,
+        hold_record: Option<&ProcedureLegMaterializationRecord>,
+        provenance_record: &ProcedureLegMaterializationRecord,
+    ) {
+        let start = display_leg_start.sequence.min(effective_leg_end.sequence);
+        let end = display_leg_start.sequence.max(effective_leg_end.sequence);
+        for record in leg_records.iter().filter(|record| {
+            record.sequence >= start
+                && record.sequence <= end
+                && record.key.route_type == display_leg_start.key.route_type
+                && record.key.transition_id == display_leg_start.key.transition_id
+        }) {
+            if record.sequence == provenance_record.sequence
+                && record.key.route_type == provenance_record.key.route_type
+                && record.key.transition_id == provenance_record.key.transition_id
+            {
+                self.mark_emitted(record);
+            } else {
+                self.mark(record, "consumed by rendered window");
+            }
+        }
+        if let Some(hold_record) = hold_record {
+            if hold_record.sequence < start || hold_record.sequence > end {
+                self.mark(hold_record, "used as auxiliary hold record");
+            }
+        }
+    }
+
+    fn validate_all_rows_explained(&self, procedure_id: &str) -> AppResult<()> {
+        for (key, record) in &self.rows {
+            if self
+                .dispositions
+                .get(key)
+                .is_some_and(|dispositions| !dispositions.is_empty())
+            {
+                continue;
+            }
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: format!(
+                    "procedure row has no resolver disposition for {} route {} transition {} seq {} {}",
+                    procedure_id.trim(),
+                    record.key.route_type.trim(),
+                    record.key.transition_id.trim(),
+                    record.sequence,
+                    record.path_termination.trim(),
+                ),
+            });
+        }
+        Ok(())
+    }
 }
 
 fn display_element_start_position_for_validation(element: &LegDisplayElement) -> LatLon {
@@ -7527,10 +7735,10 @@ mod tests {
     fn writes_current_buexre_overlay() {
         clean_procedure_plot_output_dir();
         render_procedure_overlay_to_paths(
-            "KCWI",
-            "I03",
-            "CVA",
-            "logical_heading_KCWI_I03_CVA",
+            "KSJN",
+            "VOR-A",
+            "PERRL",
+            "logical_heading_KSJN_VOR-A_PERRL",
             true,
         );
     }

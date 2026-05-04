@@ -88,7 +88,7 @@ import type {
   VisibleMapFeature,
   VisibleMetarFeature,
 } from "./domain/appCoreAdapter";
-import { airwayEntryCandidateFromPresentation, airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
+import { airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
 import { debugLog, debugTiming, installGlobalErrorLogging } from "./domain/debugLog";
 import { TerrainRenderWorkerClient } from "./domain/terrainRenderWorkerClient";
 
@@ -1739,26 +1739,6 @@ export default function App() {
             if (!uiSession) return;
             const nextSnapshot = await uiSession.insertAirwayAtFlightPlanRow(rowUid, presentation, entryIndex, exitIndex);
             setSessionSnapshot(nextSnapshot);
-          }}
-          onReplaceAirway={async (componentIndex, entryIndex, exitIndex, presentation, originAnchor, destinationAnchor) => {
-            if (!appCoreAdapter) return;
-            const entry = airwayEntryCandidateFromPresentation(presentation, entryIndex);
-            const exit = airwayExitCandidatesFromPresentation(presentation, entryIndex)[exitIndex];
-            const materialized = await appCoreAdapter.materializeAirwaySelection(
-              componentIndex,
-              entry,
-              exit,
-              originAnchor,
-              destinationAnchor,
-            );
-            const mutation = await appCoreAdapter.replaceAirwayMaterializedUi(
-              currentPlan,
-              componentIndex,
-              materialized.selection,
-              materialized.airway,
-              materialized.resolvedLegs,
-            );
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
           }}
           onInsertProcedure={async (startComponentIndex, endComponentIndex, built) => {
             if (!appCoreAdapter) return;
@@ -4324,14 +4304,6 @@ function FlightPlanPage(props: {
     exitIndex: number,
     presentation: AirwayPresentationPlan,
   ) => void | Promise<void>;
-  onReplaceAirway: (
-    componentIndex: number,
-    entryIndex: number,
-    exitIndex: number,
-    presentation: AirwayPresentationPlan,
-    originAnchor: NavRef,
-    destinationAnchor: NavRef | null,
-  ) => void | Promise<void>;
   onInsertProcedure: (
     startComponentIndex: number,
     endComponentIndex: number,
@@ -4345,8 +4317,7 @@ function FlightPlanPage(props: {
   const [airwayPicker, setAirwayPicker] = useState<{
     loading: boolean;
     error: string | null;
-    mode: "insert" | "replace";
-    componentIndex: number | null;
+    mode: "insert";
     rowUid: string | null;
     originAnchor: NavRef;
     destinationAnchor: NavRef | null;
@@ -4582,7 +4553,6 @@ function FlightPlanPage(props: {
               loading: true,
               error: null,
               mode: "insert",
-              componentIndex: null,
               rowUid: selectedRow.rowUid,
               originAnchor: selectedRow.originAnchor!,
               destinationAnchor: selectedRow.destinationAnchor!,
@@ -5428,16 +5398,7 @@ function FlightPlanPage(props: {
                           }
                           setAirwayPicker((current) => current ? { ...current, loading: true, error: null } : current);
                           try {
-                            if (airwayPicker.mode === "replace" && airwayPicker.componentIndex !== null) {
-                              await props.onReplaceAirway(
-                                airwayPicker.componentIndex,
-                                selectedEntryIndex,
-                                index,
-                                presentation,
-                                airwayPicker.originAnchor,
-                                airwayPicker.destinationAnchor,
-                              );
-                            } else if (airwayPicker.rowUid !== null) {
+                            if (airwayPicker.rowUid !== null) {
                               await props.onInsertAirwayAtRow(
                                 airwayPicker.rowUid,
                                 selectedEntryIndex,

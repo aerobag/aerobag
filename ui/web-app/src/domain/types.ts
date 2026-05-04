@@ -298,7 +298,6 @@ export type RouteComponentUiView = {
   active: boolean;
   can_add_airway_after: boolean;
   can_add_procedure_before: boolean;
-  can_change_airway: boolean;
   can_remove: boolean;
   can_reorder: boolean;
   can_reorder_up: boolean;
@@ -390,7 +389,6 @@ export type FlightPlanDisplayRowUiView = {
   synthetic_direct_to?: boolean;
   can_add_airway_after: boolean;
   can_add_procedure_before: boolean;
-  can_change_airway: boolean;
   can_remove_component: boolean;
   can_reorder_component: boolean;
   can_reorder_up: boolean;

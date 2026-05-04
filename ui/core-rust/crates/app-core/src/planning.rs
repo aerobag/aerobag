@@ -900,7 +900,6 @@ pub enum FlightPlanRowActionId {
     SelectProcedure,
     Plates,
     ShowPlate,
-    ChangeAirway,
     RemoveAirway,
     RemoveProcedure,
 }
@@ -963,7 +962,6 @@ pub struct FlightPlanDisplayRowUiView {
     pub synthetic_direct_to: bool,
     pub can_add_airway_after: bool,
     pub can_add_procedure_before: bool,
-    pub can_change_airway: bool,
     pub can_remove_component: bool,
     pub can_reorder_component: bool,
     pub can_reorder_up: bool,
@@ -999,7 +997,6 @@ pub struct RouteComponentUiView {
     pub active: bool,
     pub can_add_airway_after: bool,
     pub can_add_procedure_before: bool,
-    pub can_change_airway: bool,
     pub can_remove: bool,
     pub can_reorder: bool,
     pub can_reorder_up: bool,
@@ -1640,9 +1637,6 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
                         .and_then(|index| plan.route_components.get(index)),
                     Some(RouteComponent::Waypoint { .. })
                 ) || replace_procedure_component_index.is_some()),
-                can_change_airway: matches!(component, RouteComponent::Airway { .. })
-                    && preceding_waypoint.is_some()
-                    && following_waypoint.is_some(),
                 can_remove: can_remove_component(&plan, component_index),
                 can_reorder: can_reorder_component(&plan, component_index),
                 can_reorder_up: can_reorder_component_in_direction(&plan, component_index, -1),
@@ -1873,7 +1867,6 @@ fn project_display_rows(
                 synthetic_direct_to: false,
                 can_add_airway_after: component.can_add_airway_after,
                 can_add_procedure_before: component.can_add_procedure_before,
-                can_change_airway: component.can_change_airway,
                 can_remove_component: component.can_remove,
                 can_reorder_component: component.can_reorder,
                 can_reorder_up: component.can_reorder_up,
@@ -1919,7 +1912,6 @@ fn project_display_rows(
                 synthetic_direct_to: false,
                 can_add_airway_after: component.can_add_airway_after,
                 can_add_procedure_before: component.can_add_procedure_before,
-                can_change_airway: component.can_change_airway,
                 can_remove_component: component.can_remove,
                 can_reorder_component: component.can_reorder,
                 can_reorder_up: component.can_reorder_up,
@@ -1999,7 +1991,6 @@ fn project_display_rows(
                             synthetic_direct_to: false,
                             can_add_airway_after: false,
                             can_add_procedure_before: false,
-                            can_change_airway: false,
                             can_remove_component: false,
                             can_reorder_component: false,
                             can_reorder_up: false,
@@ -2048,7 +2039,6 @@ fn project_display_rows(
                             synthetic_direct_to: false,
                             can_add_airway_after: false,
                             can_add_procedure_before: false,
-                            can_change_airway: false,
                             can_remove_component: false,
                             can_reorder_component: false,
                             can_reorder_up: false,
@@ -2096,7 +2086,6 @@ fn project_display_rows(
             synthetic_direct_to: true,
             can_add_airway_after: false,
             can_add_procedure_before: false,
-            can_change_airway: false,
             can_remove_component: false,
             can_reorder_component: false,
             can_reorder_up: false,
@@ -2153,10 +2142,6 @@ fn replaceable_procedure_component_before(
 fn group_row_actions(component: &RouteComponentUiView) -> Vec<FlightPlanRowActionUiView> {
     match component.kind {
         RouteComponentViewKind::Airway => vec![
-            action(
-                FlightPlanRowActionId::ChangeAirway,
-                component.can_change_airway,
-            ),
             core_session_action(FlightPlanRowActionId::RemoveAirway, component.can_remove),
             core_session_action(FlightPlanRowActionId::RemoveAllAbove, true),
         ],
@@ -2339,7 +2324,6 @@ fn action_label(id: &FlightPlanRowActionId) -> &'static str {
         FlightPlanRowActionId::SelectProcedure => "Select Procedure",
         FlightPlanRowActionId::Plates => "Plates",
         FlightPlanRowActionId::ShowPlate => "Show Plate",
-        FlightPlanRowActionId::ChangeAirway => "Change Airway",
         FlightPlanRowActionId::RemoveAirway => "Remove Airway",
         FlightPlanRowActionId::RemoveProcedure => "Remove Procedure",
     }
@@ -5439,7 +5423,6 @@ mod tests {
 
         assert!(ui.components[2].can_add_airway_after);
 
-        assert!(ui.components[1].can_change_airway);
         assert!(ui.components[1].can_remove);
         assert_eq!(
             ui.components[1].preceding_waypoint,

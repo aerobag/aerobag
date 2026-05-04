@@ -1,13 +1,10 @@
 import type {
   UiSnapshotAppState,
   AppUiState,
-  AirwayAutoSelection,
   AirwayBranch,
-  AirwayEntryCandidate,
   AirwayExitCandidate,
   AirwayPresentationPlan,
   AirwaySuggestion,
-  AirwaySegment,
   CifpTppMatch,
   ChartPageData,
   FlightPlan,
@@ -33,7 +30,6 @@ import type {
   ProcedureLoadOption,
   ProcedureOptions,
   ProcedureSummary,
-  ResolvedLeg,
   ResolvedLegUiView,
   RouteComponentUiView,
   SequencingMode,
@@ -522,24 +518,6 @@ export interface AppCoreAdapter {
     originAnchor: NavRef,
     destinationAnchor: NavRef | null,
   ): Promise<AirwayPresentationPlan>;
-  materializeAirwaySelection(
-    startComponentIndex: number,
-    entry: AirwayEntryCandidate,
-    exit: AirwayExitCandidate,
-    originAnchor: NavRef,
-    destinationAnchor: NavRef | null,
-  ): Promise<{
-    selection: AirwayAutoSelection;
-    airway: AirwaySegment;
-    resolvedLegs: ResolvedLeg[];
-  }>;
-  replaceAirwayMaterializedUi(
-    plan: FlightPlan,
-    componentIndex: number,
-    selection: AirwayAutoSelection,
-    airway: AirwaySegment,
-    resolvedLegs: ResolvedLeg[],
-  ): Promise<FlightPlanUiMutation>;
   listProcedures(airportId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureSummary[]>;
   describeProcedureOptions(airportId: string, procedureId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureOptions>;
   insertProcedureMaterializedUi(
@@ -720,13 +698,6 @@ type WasmModule = {
   suspend_sequencing_ui(planJson: string): Promise<string> | string;
   unsuspend_sequencing_ui(planJson: string): Promise<string> | string;
   sequence_active_leg_ui(planJson: string): Promise<string> | string;
-  replace_airway_materialized_ui(
-    planJson: string,
-    componentIndex: number,
-    selectionJson: string,
-    airwayJson: string,
-    resolvedLegsJson: string,
-  ): Promise<string> | string;
   insert_procedure_materialized_ui(
     planJson: string,
     startComponentIndex: number,
@@ -1374,53 +1345,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     });
   }
 
-  async materializeAirwaySelection(
-    startComponentIndex: number,
-    entry: AirwayEntryCandidate,
-    exit: AirwayExitCandidate,
-    originAnchor: NavRef,
-    destinationAnchor: NavRef | null,
-  ): Promise<{
-    selection: AirwayAutoSelection;
-    airway: AirwaySegment;
-    resolvedLegs: ResolvedLeg[];
-  }> {
-    return runCoreHadOperation<{
-      selection: AirwayAutoSelection;
-      airway: AirwaySegment;
-      resolvedLegs: ResolvedLeg[];
-    }>({
-      kind: "materialize_airway_selection",
-      start_component_index: startComponentIndex,
-      entry,
-      exit,
-      origin_anchor: originAnchor,
-      destination_anchor: destinationAnchor,
-    });
-  }
-
-  async replaceAirwayMaterializedUi(
-    plan: FlightPlan,
-    componentIndex: number,
-    selection: AirwayAutoSelection,
-    airway: AirwaySegment,
-    resolvedLegs: ResolvedLeg[],
-  ): Promise<FlightPlanUiMutation> {
-    const result = JSON.parse(
-      await this.module.replace_airway_materialized_ui(
-        JSON.stringify(plan),
-        componentIndex,
-        JSON.stringify(selection),
-        JSON.stringify(airway),
-        JSON.stringify(resolvedLegs),
-      ),
-    ) as { mutation: { plan: FlightPlan }; ui_state: FlightPlanUiState };
-    return {
-      plan: result.mutation.plan,
-      ui_state: await this.enrichFlightPlanUiState(result.mutation.plan, result.ui_state),
-    };
-  }
-
   async listProcedures(airportId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureSummary[]> {
     return runCoreHadOperation<ProcedureSummary[]>({
       kind: "list_procedures",
@@ -1573,7 +1497,6 @@ export async function loadBestAvailableAdapter(
     typeof mod.suspend_sequencing_ui !== "function" ||
     typeof mod.unsuspend_sequencing_ui !== "function" ||
     typeof mod.sequence_active_leg_ui !== "function" ||
-    typeof mod.replace_airway_materialized_ui !== "function" ||
     typeof mod.insert_procedure_materialized_ui !== "function" ||
     typeof mod.replace_procedure_materialized_ui !== "function" ||
     typeof mod.nav_kv_open !== "function" ||

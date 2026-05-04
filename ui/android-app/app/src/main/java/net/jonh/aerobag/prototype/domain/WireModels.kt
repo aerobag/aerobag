@@ -603,7 +603,6 @@ data class WireAirspaceDisplayDecoration(
 data class WireAirspaceDisplayPath(
     val id: String,
     val name: String,
-    val label: String,
     val style_key: String,
     val style: WireAirspaceDisplayStyle,
     val paths: List<WireAirspaceDisplaySubpath> = emptyList(),
@@ -613,16 +612,15 @@ data class WireAirspaceDisplayPath(
 @Serializable
 data class WireAirspaceDisplayLabel(
     val feature_id: String,
-    val text: String,
-    val style_key: String,
-    val color_key: String,
+    val glyph: WireAirspaceLimitGlyph,
     val screen_x: Double,
     val screen_y: Double,
 )
 
 @Serializable
 data class WireAirspaceLimitGlyph(
-    val text: String,
+    val upper: String,
+    val lower: String,
     val style_key: String,
     val color_key: String,
 )

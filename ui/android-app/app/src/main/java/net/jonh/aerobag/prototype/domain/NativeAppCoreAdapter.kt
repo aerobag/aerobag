@@ -119,7 +119,6 @@ data class AirspaceDisplayDecoration(
 data class AirspaceDisplayPath(
     val id: String,
     val name: String,
-    val label: String,
     val styleKey: String,
     val style: AirspaceDisplayStyle,
     val paths: List<AirspaceDisplaySubpath>,
@@ -128,15 +127,14 @@ data class AirspaceDisplayPath(
 
 data class AirspaceDisplayLabel(
     val featureId: String,
-    val text: String,
-    val styleKey: String,
-    val colorKey: String,
+    val glyph: AirspaceLimitGlyph,
     val screenX: Double,
     val screenY: Double,
 )
 
 data class AirspaceLimitGlyph(
-    val text: String,
+    val upper: String,
+    val lower: String,
     val styleKey: String,
     val colorKey: String,
 )
@@ -1783,7 +1781,6 @@ private fun WireAirspaceDisplayDecoration.toUi() = AirspaceDisplayDecoration(
 private fun WireAirspaceDisplayPath.toUi() = AirspaceDisplayPath(
     id = id,
     name = name,
-    label = label,
     styleKey = style_key,
     style = style.toUi(),
     paths = paths.map { it.toUi() },
@@ -1792,15 +1789,14 @@ private fun WireAirspaceDisplayPath.toUi() = AirspaceDisplayPath(
 
 private fun WireAirspaceDisplayLabel.toUi() = AirspaceDisplayLabel(
     featureId = feature_id,
-    text = text,
-    styleKey = style_key,
-    colorKey = color_key,
+    glyph = glyph.toUi(),
     screenX = screen_x,
     screenY = screen_y,
 )
 
 private fun WireAirspaceLimitGlyph.toUi() = AirspaceLimitGlyph(
-    text = text,
+    upper = upper,
+    lower = lower,
     styleKey = style_key,
     colorKey = color_key,
 )

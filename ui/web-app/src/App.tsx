@@ -130,19 +130,6 @@ function svgStrokeLinecap(lineCap: string): "butt" | "round" | "square" {
   return lineCap === "butt" || lineCap === "square" ? lineCap : "round";
 }
 
-function airspaceLabelParts(text: string): { upper: string; lower: string } | null {
-  const parts = text.split("/");
-  if (parts.length !== 2) {
-    return null;
-  }
-  const upper = parts[0].trim();
-  const lower = parts[1].trim();
-  if (!upper || !lower) {
-    return null;
-  }
-  return { upper, lower };
-}
-
 function airspaceLabelDividerWidth(parts: { upper: string; lower: string }): number {
   return Math.max(parts.upper.length, parts.lower.length, 2) * 7.2 + 6;
 }
@@ -3497,11 +3484,11 @@ function MapPage(props: {
             {mapOverlay.airspace_labels.map((label) => {
               return (
                 <g
-                  key={`${label.feature_id}:${label.text}:${label.screen_x}:${label.screen_y}`}
-                  className={`airspaceFractionLabel airspaceLabel-${label.style_key}`}
+                  key={`${label.feature_id}:${label.glyph.upper}:${label.glyph.lower}:${label.screen_x}:${label.screen_y}`}
+                  className={`airspaceFractionLabel airspaceLabel-${label.glyph.style_key}`}
                   transform={`translate(${label.screen_x} ${label.screen_y})`}
                 >
-                  <AirspaceLimitGlyph glyph={{ text: label.text, style_key: label.style_key, color_key: label.color_key }} />
+                  <AirspaceLimitGlyph glyph={label.glyph} />
                 </g>
               );
             })}
@@ -6009,20 +5996,11 @@ function MapSelectionTray(props: {
   );
 }
 
-function AirspaceLimitGlyph(props: { glyph: { text: string; style_key: string; color_key: string }; scale?: number }) {
+function AirspaceLimitGlyph(props: { glyph: { upper: string; lower: string; style_key: string; color_key: string }; scale?: number }) {
   const { glyph, scale = 1 } = props;
-  const parts = airspaceLabelParts(glyph.text);
   const color = aviationThemeColor(glyph.color_key);
   const labelStyle = { fill: color, fontSize: `${14 * scale}px` };
-  if (!parts) {
-    return (
-      <g className={`airspaceLabel-${glyph.style_key}`} style={{ "--airspace-label-color": color } as React.CSSProperties}>
-        <text className="airspaceLabel" style={labelStyle} x="0" y="0">
-          {glyph.text}
-        </text>
-      </g>
-    );
-  }
+  const parts = { upper: glyph.upper, lower: glyph.lower };
   const dividerWidth = airspaceLabelDividerWidth(parts) * scale;
   return (
     <g className={`airspaceLabel-${glyph.style_key}`} style={{ "--airspace-label-color": color } as React.CSSProperties}>

@@ -355,7 +355,6 @@ struct AirspaceFeature {
     airspace_class: String,
     local_type: String,
     style_hint: String,
-    vertical_label: String,
     vertical: AirspaceVertical,
     bbox: [f64; 4],
     label: AirspaceLabel,
@@ -1694,7 +1693,6 @@ fn load_class_airspace_features(
             airspace_class: class.to_string(),
             local_type: local_type.to_string(),
             style_hint: airspace_style_hint(class, local_type),
-            vertical_label: vertical_label.clone(),
             vertical,
             bbox: shape.bbox,
             label: AirspaceLabel {
@@ -1795,7 +1793,6 @@ fn controlled_airspace_outline_feature(
         airspace_class: representative.airspace_class.clone(),
         local_type: format!("{}_OUTLINE", representative.local_type),
         style_hint: representative.style_hint.clone(),
-        vertical_label: String::new(),
         vertical: AirspaceVertical {
             lower: AirspaceLimit {
                 display: String::new(),
@@ -2234,7 +2231,6 @@ fn parse_saa_xml(
         airspace_class: saa_type.clone(),
         local_type: "SAA".to_string(),
         style_hint: saa_style_hint(&saa_type),
-        vertical_label: vertical_label.clone(),
         vertical,
         bbox,
         label: AirspaceLabel {

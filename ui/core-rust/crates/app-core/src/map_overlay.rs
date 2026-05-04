@@ -195,9 +195,20 @@ pub struct AirspaceFeaturePayload {
     pub ident: String,
     pub airspace_class: String,
     pub style_hint: String,
-    pub vertical_label: String,
+    pub vertical: AirspaceVerticalPayload,
     pub bbox: [f64; 4],
     pub paths: Vec<AirspaceFeaturePath>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirspaceVerticalPayload {
+    pub upper: AirspaceLimitPayload,
+    pub lower: AirspaceLimitPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirspaceLimitPayload {
+    pub display: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -322,7 +333,6 @@ pub struct AirspaceDecorationPath {
 pub struct AirspaceDisplayPath {
     pub id: String,
     pub name: String,
-    pub label: String,
     pub style_key: String,
     pub style: AirspaceDisplayStyle,
     pub paths: Vec<AirspaceDisplaySubpath>,
@@ -332,16 +342,15 @@ pub struct AirspaceDisplayPath {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AirspaceDisplayLabel {
     pub feature_id: String,
-    pub text: String,
-    pub style_key: String,
-    pub color_key: String,
+    pub glyph: AirspaceLimitGlyph,
     pub screen_x: f64,
     pub screen_y: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AirspaceLimitGlyph {
-    pub text: String,
+    pub upper: String,
+    pub lower: String,
     pub style_key: String,
     pub color_key: String,
 }
@@ -1463,9 +1472,10 @@ fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelection
         symbol_feature: None,
         metar_feature: None,
         airspace_icon: airspace_selection_icon(feature),
-        actions: vec![airspace_limit_action(
+        actions: vec![airspace_limit_action_from_parts(
             "limits",
-            feature.vertical_label.trim(),
+            feature.vertical.upper.display.trim().to_string(),
+            feature.vertical.lower.display.trim().to_string(),
             &airspace_style_key(&feature.style_hint),
         )],
     }
@@ -1508,7 +1518,6 @@ fn airspace_selection_icon(feature: &AirspaceFeaturePayload) -> Option<AirspaceD
         }),
         &feature.id,
         &feature.name,
-        &feature.vertical_label,
         &airspace_style_key(&feature.style_hint),
         None,
     )
@@ -1527,7 +1536,6 @@ fn tfr_selection_icon(area: &TfrAreaPayload) -> Option<AirspaceDisplayPath> {
         }),
         &format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
         area.notam_id.trim(),
-        area.notam_id.trim(),
         "tfr",
         Some(tfr_display_style()),
     )
@@ -1543,7 +1551,6 @@ fn airspace_icon_paths_from_lon_lat_paths(
     source_paths: impl IntoIterator<Item = AirspaceIconSourcePath>,
     id: &str,
     name: &str,
-    label: &str,
     style_key: &str,
     style_override: Option<AirspaceDisplayStyle>,
 ) -> Option<AirspaceDisplayPath> {
@@ -1625,7 +1632,6 @@ fn airspace_icon_paths_from_lon_lat_paths(
     Some(AirspaceDisplayPath {
         id: id.to_string(),
         name: name.to_string(),
-        label: label.to_string(),
         style_key: style_key.to_string(),
         style,
         decorations: airspace_decorations(style_key, &paths, &mut decoration_budget),
@@ -1647,13 +1653,11 @@ fn selection_item_for_tfr(area: &TfrAreaPayload) -> MapSelectionItem {
         symbol_feature: None,
         metar_feature: None,
         airspace_icon: tfr_selection_icon(area),
-        actions: vec![display_action(
+        actions: vec![airspace_limit_action_from_parts(
             "limits",
-            &format!(
-                "{}/{}",
-                tfr_limit_label(&area.upper_limit),
-                tfr_limit_label(&area.lower_limit)
-            ),
+            tfr_limit_label(&area.upper_limit),
+            tfr_limit_label(&area.lower_limit),
+            "tfr",
         )],
     }
 }
@@ -1688,17 +1692,53 @@ fn disabled_action(id: &str, label: &str) -> MapSelectionAction {
     }
 }
 
-fn airspace_limit_action(id: &str, label: &str, style_key: &str) -> MapSelectionAction {
+fn airspace_limit_action_from_parts(
+    id: &str,
+    upper: String,
+    lower: String,
+    style_key: &str,
+) -> MapSelectionAction {
     MapSelectionAction {
         id: id.to_string(),
-        label: label.to_string(),
+        label: format!("{upper}/{lower}"),
         enabled: false,
         display_only: true,
         airspace_limit: Some(AirspaceLimitGlyph {
-            text: label.to_string(),
+            upper,
+            lower,
             style_key: style_key.to_string(),
             color_key: airspace_label_color_key(style_key).to_string(),
         }),
+    }
+}
+
+fn airspace_limit_label_parts(label: &str) -> Option<(&str, &str)> {
+    let (upper, lower) = label.trim().split_once('/')?;
+    let upper = upper.trim();
+    let lower = lower.trim();
+    if upper.is_empty() || lower.is_empty() {
+        None
+    } else {
+        Some((upper, lower))
+    }
+}
+
+fn airspace_limit_glyph_from_label(label: &str, style_key: &str) -> Option<AirspaceLimitGlyph> {
+    let (upper, lower) = airspace_limit_label_parts(label)?;
+    Some(AirspaceLimitGlyph {
+        upper: upper.to_string(),
+        lower: lower.to_string(),
+        style_key: style_key.to_string(),
+        color_key: airspace_label_color_key(style_key).to_string(),
+    })
+}
+
+fn airspace_limit_glyph(upper: String, lower: String, style_key: &str) -> AirspaceLimitGlyph {
+    AirspaceLimitGlyph {
+        upper,
+        lower,
+        style_key: style_key.to_string(),
+        color_key: airspace_label_color_key(style_key).to_string(),
     }
 }
 
@@ -1919,22 +1959,18 @@ fn suppress_overlapping_vector_labels(
 }
 
 fn airspace_label_rect(label: &AirspaceDisplayLabel) -> Option<LabelRect> {
-    let text = label.text.trim();
-    if text.is_empty() || !label.screen_x.is_finite() || !label.screen_y.is_finite() {
+    if !label.screen_x.is_finite() || !label.screen_y.is_finite() {
         return None;
     }
-    let (width, height) = if let Some((upper, lower)) = text.split_once('/') {
-        let width = upper
-            .trim()
-            .chars()
-            .count()
-            .max(lower.trim().chars().count()) as f64
-            * 8.2
-            + 10.0;
-        (width, 30.0)
-    } else {
-        (text.chars().count() as f64 * 8.2 + 8.0, 18.0)
-    };
+    let width = label
+        .glyph
+        .upper
+        .chars()
+        .count()
+        .max(label.glyph.lower.chars().count()) as f64
+        * 8.2
+        + 10.0;
+    let height = 30.0;
     Some(centered_rect(label.screen_x, label.screen_y, width, height))
 }
 
@@ -2047,13 +2083,11 @@ fn query_tfr_overlay(
         ) {
             labels.push(AirspaceDisplayLabel {
                 feature_id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
-                text: format!(
-                    "{}/{}",
+                glyph: airspace_limit_glyph(
                     tfr_limit_label(&area.upper_limit),
-                    tfr_limit_label(&area.lower_limit)
+                    tfr_limit_label(&area.lower_limit),
+                    "tfr",
                 ),
-                style_key: "tfr".to_string(),
-                color_key: airspace_label_color_key("tfr").to_string(),
                 screen_x: label_point.x,
                 screen_y: label_point.y,
             });
@@ -2061,7 +2095,6 @@ fn query_tfr_overlay(
         paths.push(AirspaceDisplayPath {
             id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
             name: area.notam_id.trim().to_string(),
-            label: area.notam_id.trim().to_string(),
             style_key: "tfr".to_string(),
             style: tfr_display_style(),
             paths: vec![AirspaceDisplaySubpath {
@@ -2342,11 +2375,14 @@ fn query_airspace_overlay(
                 rank: label.rank,
                 label: {
                     let style_key = airspace_style_key(&label.style_hint);
+                    let Some(glyph) =
+                        airspace_limit_glyph_from_label(label.text.trim(), &style_key)
+                    else {
+                        continue;
+                    };
                     AirspaceDisplayLabel {
                         feature_id: label.feature_id.clone(),
-                        text: label.text.trim().to_string(),
-                        color_key: airspace_label_color_key(&style_key).to_string(),
-                        style_key,
+                        glyph,
                         screen_x: point.x,
                         screen_y: point.y,
                     }
@@ -2367,7 +2403,8 @@ fn query_airspace_overlay(
     labels.sort_by(|left, right| {
         left.feature_id
             .cmp(&right.feature_id)
-            .then_with(|| left.text.cmp(&right.text))
+            .then_with(|| left.glyph.upper.cmp(&right.glyph.upper))
+            .then_with(|| left.glyph.lower.cmp(&right.glyph.lower))
     });
 
     let mut warnings = Vec::new();
@@ -2494,7 +2531,6 @@ fn project_airspace_feature(
     AirspaceDisplayPath {
         id: feature.id.clone(),
         name: feature.name.clone(),
-        label: feature.vertical_label.clone(),
         style: airspace_display_style(&style_key),
         decorations: airspace_decorations(&style_key, &paths, decoration_budget),
         style_key,
@@ -2985,6 +3021,17 @@ mod tests {
     use super::*;
     use crate::RouteComponent;
 
+    fn test_airspace_vertical(upper: &str, lower: &str) -> AirspaceVerticalPayload {
+        AirspaceVerticalPayload {
+            upper: AirspaceLimitPayload {
+                display: upper.to_string(),
+            },
+            lower: AirspaceLimitPayload {
+                display: lower.to_string(),
+            },
+        }
+    }
+
     fn test_map_overlay_config() -> MapOverlayConfig {
         MapOverlayConfig {
             airspace_reference_tile_min_zoom: 0,
@@ -3230,7 +3277,7 @@ mod tests {
                 labels: vec![
                     AirspaceLabelRecord {
                         feature_id: "feature-a".to_string(),
-                        text: "A-OFFSCREEN".to_string(),
+                        text: "A-OFFSCREEN/SFC".to_string(),
                         lon: 10.0,
                         lat: 0.0,
                         rank: 0,
@@ -3239,7 +3286,7 @@ mod tests {
                     },
                     AirspaceLabelRecord {
                         feature_id: "feature-a".to_string(),
-                        text: "A2".to_string(),
+                        text: "A2/SFC".to_string(),
                         lon: -1.5,
                         lat: 0.0,
                         rank: 2,
@@ -3248,7 +3295,7 @@ mod tests {
                     },
                     AirspaceLabelRecord {
                         feature_id: "feature-a".to_string(),
-                        text: "A1".to_string(),
+                        text: "A1/SFC".to_string(),
                         lon: -1.5,
                         lat: 0.0,
                         rank: 1,
@@ -3257,7 +3304,7 @@ mod tests {
                     },
                     AirspaceLabelRecord {
                         feature_id: "feature-b".to_string(),
-                        text: "B1".to_string(),
+                        text: "B1/SFC".to_string(),
                         lon: 1.5,
                         lat: 0.0,
                         rank: 1,
@@ -3266,7 +3313,7 @@ mod tests {
                     },
                     AirspaceLabelRecord {
                         feature_id: "feature-b".to_string(),
-                        text: "B0".to_string(),
+                        text: "B0/SFC".to_string(),
                         lon: 1.5,
                         lat: 0.0,
                         rank: 0,
@@ -3290,8 +3337,8 @@ mod tests {
         assert_eq!(result.airspace_labels.len(), 2);
         assert_eq!(result.airspace_labels[0].feature_id, "feature-a");
         assert_eq!(result.airspace_labels[1].feature_id, "feature-b");
-        assert_eq!(result.airspace_labels[0].text, "A1");
-        assert_eq!(result.airspace_labels[1].text, "B0");
+        assert_eq!(result.airspace_labels[0].glyph.upper, "A1");
+        assert_eq!(result.airspace_labels[1].glyph.upper, "B0");
     }
 
     #[test]
@@ -3480,7 +3527,7 @@ mod tests {
             ident: "NHANFORD".to_string(),
             airspace_class: "NSA".to_string(),
             style_hint: "national_security".to_string(),
-            vertical_label: "UNL/SFC".to_string(),
+            vertical: test_airspace_vertical("UNL", "SFC"),
             bbox: [-120.0, 46.0, -119.0, 47.0],
             paths: vec![AirspaceFeaturePath {
                 role: "boundary".to_string(),
@@ -3500,7 +3547,8 @@ mod tests {
                 .find(|action| action.id == "limits")
                 .and_then(|action| action.airspace_limit.as_ref()),
             Some(&AirspaceLimitGlyph {
-                text: "UNL/SFC".to_string(),
+                upper: "UNL".to_string(),
+                lower: "SFC".to_string(),
                 style_key: "national_security".to_string(),
                 color_key: "class_c_magenta".to_string(),
             })
@@ -3538,7 +3586,7 @@ mod tests {
                 ident: "TEST".to_string(),
                 airspace_class: "MOA".to_string(),
                 style_hint: "moa".to_string(),
-                vertical_label: "100/50".to_string(),
+                vertical: test_airspace_vertical("100", "50"),
                 bbox: [-0.1, -0.1, 0.1, 0.1],
                 paths: vec![AirspaceFeaturePath {
                     role: "boundary".to_string(),
@@ -3607,7 +3655,7 @@ mod tests {
                 ident: "TEST".to_string(),
                 airspace_class: "MOA".to_string(),
                 style_hint: "moa".to_string(),
-                vertical_label: "100/50".to_string(),
+                vertical: test_airspace_vertical("100", "50"),
                 bbox: [-0.1, -0.1, 0.1, 0.1],
                 paths: vec![AirspaceFeaturePath {
                     role: "boundary".to_string(),
@@ -3784,8 +3832,9 @@ mod tests {
 
         assert_eq!(result.paths.len(), 1);
         assert_eq!(result.labels.len(), 1);
-        assert_eq!(result.labels[0].style_key, "tfr");
-        assert_eq!(result.labels[0].text, "FL180/SFC");
+        assert_eq!(result.labels[0].glyph.style_key, "tfr");
+        assert_eq!(result.labels[0].glyph.upper, "FL180");
+        assert_eq!(result.labels[0].glyph.lower, "SFC");
         assert!((result.labels[0].screen_x - width_px / 2.0).abs() < 1.0);
         assert!((result.labels[0].screen_y - height_px / 2.0).abs() < 1.0);
     }
@@ -3946,9 +3995,12 @@ mod tests {
         )];
         let mut airspace_labels = vec![AirspaceDisplayLabel {
             feature_id: "airspace:a".to_string(),
-            text: "100/50".to_string(),
-            style_key: "class_b".to_string(),
-            color_key: "class_b_d_blue".to_string(),
+            glyph: AirspaceLimitGlyph {
+                upper: "100".to_string(),
+                lower: "50".to_string(),
+                style_key: "class_b".to_string(),
+                color_key: "class_b_d_blue".to_string(),
+            },
             screen_x: 100.0,
             screen_y: 100.0,
         }];

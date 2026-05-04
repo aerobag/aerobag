@@ -188,7 +188,10 @@ export type AirspaceFeaturePayload = {
   ident: string;
   airspace_class: string;
   style_hint: string;
-  vertical_label: string;
+  vertical: {
+    upper: { display: string };
+    lower: { display: string };
+  };
   bbox: [number, number, number, number];
   paths: Array<{
     role: string;
@@ -237,7 +240,6 @@ export type AirspaceFeatureRequest = {
 export type AirspaceDisplayPath = {
   id: string;
   name: string;
-  label: string;
   style_key: string;
   style: {
     fill_color_key: string;
@@ -266,15 +268,14 @@ export type AirspaceDisplayPath = {
 
 export type AirspaceDisplayLabel = {
   feature_id: string;
-  text: string;
-  style_key: string;
-  color_key: string;
+  glyph: AirspaceLimitGlyph;
   screen_x: number;
   screen_y: number;
 };
 
 export type AirspaceLimitGlyph = {
-  text: string;
+  upper: string;
+  lower: string;
   style_key: string;
   color_key: string;
 };

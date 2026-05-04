@@ -5663,7 +5663,7 @@ private fun MapExplorerPage(
                 }
                 displayedMapOverlay.airspaceLabels.forEach { label ->
                     drawAirspaceLimitGlyph(
-                        glyph = AirspaceLimitGlyph(label.text, label.styleKey, label.colorKey),
+                        glyph = label.glyph,
                         center = Offset(label.screenX.toFloat(), label.screenY.toFloat()),
                         scale = 1f,
                     )
@@ -8926,21 +8926,12 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceDisplay
     }
 }
 
-private fun airspaceLabelParts(text: String): Pair<String, String>? {
-    val parts = text.trim().split(Regex("""[/\r\n]+"""))
-    if (parts.size != 2) return null
-    val upper = parts[0].trim()
-    val lower = parts[1].trim()
-    return if (upper.isNotEmpty() && lower.isNotEmpty()) upper to lower else null
-}
-
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceLimitGlyph(
     glyph: AirspaceLimitGlyph,
     center: Offset,
     scale: Float,
 ) {
     val color = aviationColor(glyph.colorKey)
-    val parts = airspaceLabelParts(glyph.text)
     val paint = Paint().apply {
         isAntiAlias = true
         style = Paint.Style.FILL
@@ -8952,23 +8943,37 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceLimitGl
     val strokePaint = Paint(paint).apply {
         style = Paint.Style.STROKE
         strokeWidth = 3.5f * scale * density
-        this.color = android.graphics.Color.argb(190, 252, 248, 241)
+        this.color = android.graphics.Color.argb(235, 255, 255, 255)
+    }
+    val dividerContrastPaint = Paint().apply {
+        isAntiAlias = true
+        style = Paint.Style.STROKE
+        strokeWidth = 4f * scale * density
+        strokeCap = Paint.Cap.SQUARE
+        this.color = android.graphics.Color.argb(235, 255, 255, 255)
+    }
+    val dividerPaint = Paint(dividerContrastPaint).apply {
+        strokeWidth = 1.6f * scale * density
+        this.color = color.toArgb()
     }
     drawContext.canvas.nativeCanvas.apply {
-        if (parts == null) {
-            drawText(glyph.text, center.x, center.y, strokePaint)
-            drawText(glyph.text, center.x, center.y, paint)
-        } else {
-            val upperY = center.y - 7f * scale * density
-            val lowerY = center.y + 9f * scale * density
-            val dividerWidth = (max(parts.first.length, parts.second.length).coerceAtLeast(2) * 7.2f + 6f) * scale * density
-            drawText(parts.first, center.x, upperY, strokePaint)
-            drawText(parts.first, center.x, upperY, paint)
-            drawLine(center.x - dividerWidth / 2f, center.y, center.x + dividerWidth / 2f, center.y, strokePaint)
-            drawLine(center.x - dividerWidth / 2f, center.y, center.x + dividerWidth / 2f, center.y, paint)
-            drawText(parts.second, center.x, lowerY, strokePaint)
-            drawText(parts.second, center.x, lowerY, paint)
-        }
+        val fontCenterToBaseline = -(paint.fontMetrics.ascent + paint.fontMetrics.descent) / 2f
+        val textHeight = paint.fontMetrics.descent - paint.fontMetrics.ascent
+        val dividerGap = 2.5f * scale * density
+        val upperCenterY = center.y - dividerGap - textHeight / 2f
+        val lowerCenterY = center.y + dividerGap + textHeight / 2f
+        val upperY = upperCenterY + fontCenterToBaseline
+        val lowerY = lowerCenterY + fontCenterToBaseline
+        val dividerWidth = max(
+            paint.measureText(glyph.upper),
+            paint.measureText(glyph.lower),
+        ) + 8f * scale * density
+        drawText(glyph.upper, center.x, upperY, strokePaint)
+        drawText(glyph.upper, center.x, upperY, paint)
+        drawLine(center.x - dividerWidth / 2f, center.y, center.x + dividerWidth / 2f, center.y, dividerContrastPaint)
+        drawLine(center.x - dividerWidth / 2f, center.y, center.x + dividerWidth / 2f, center.y, dividerPaint)
+        drawText(glyph.lower, center.x, lowerY, strokePaint)
+        drawText(glyph.lower, center.x, lowerY, paint)
     }
 }
 

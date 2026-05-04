@@ -135,6 +135,25 @@ pub fn insert_waypoint_best_position_in_session(
 }
 
 #[wasm_bindgen]
+pub fn activate_direct_to_nav_ref_in_session(
+    session_handle: u32,
+    target_json: &str,
+) -> Result<String, JsValue> {
+    let target: app_core::NavRef =
+        serde_json::from_str(target_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let snapshot = app_core::activate_direct_to_nav_ref_in_session(session_handle, target)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn restore_direct_to_in_session(session_handle: u32) -> Result<String, JsValue> {
+    let snapshot = app_core::restore_direct_to_in_session(session_handle)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn attach_nav_kv_store_to_session(
     nav_kv_handle: u32,
     session_handle: u32,

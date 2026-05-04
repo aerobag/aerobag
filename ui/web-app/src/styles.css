@@ -1895,6 +1895,18 @@ button {
   border-color: color-mix(in srgb, var(--theme-button-bg) 68%, black);
 }
 
+.planWaypointButton.isDisabled {
+  color: color-mix(in srgb, var(--theme-button-fg) 48%, #87919a);
+  background: color-mix(in srgb, var(--theme-button-bg) 42%, #59636c);
+  border-color: color-mix(in srgb, var(--theme-button-bg) 30%, #4f5962);
+  opacity: 0.72;
+}
+
+.planWaypointButton.isSyntheticDirectTo {
+  border-color: #ff4fcf;
+  box-shadow: inset 0 0 0 2px rgba(255, 79, 207, 0.52);
+}
+
 .planStructuredWaypointCell {
   position: relative;
   position: sticky;

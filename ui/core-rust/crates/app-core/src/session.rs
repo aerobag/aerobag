@@ -669,6 +669,36 @@ pub fn insert_waypoint_best_position_in_session(
     })
 }
 
+pub fn activate_direct_to_nav_ref_in_session(
+    handle: u32,
+    target: NavRef,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let plan = session_plan(session)?;
+    let from_position = session
+        .app_state
+        .ownship
+        .render
+        .position
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: "cannot activate direct-to without ownship position".to_string(),
+        })?;
+    let next_plan = crate::activate_direct_to(&plan, from_position, target)?;
+    replace_session_flight_plan(session, next_plan)?;
+    Ok(snapshot_for_session(session))
+}
+
+pub fn restore_direct_to_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let plan = session_plan(session)?;
+    let next_plan = crate::restore_direct_to(&plan)?;
+    replace_session_flight_plan(session, next_plan)?;
+    Ok(snapshot_for_session(session))
+}
+
 pub fn attach_nav_kv_store_to_session(
     handle: u32,
     store_id: u32,
@@ -1633,14 +1663,16 @@ fn active_leg_geometry(
     }
     let guidance = plan.guidance.as_ref()?;
     if guidance.sequencing_mode == SequencingMode::DirectTo {
-        return guidance
-            .direct_to
-            .as_ref()
-            .and_then(|direct_to| direct_to.target_leg_id.as_ref())
-            .and_then(|_| guidance.active_detail_index)
-            .and_then(|detail_index| guidance_detail_id_for_index(plan, detail_index))
-            .and_then(|detail_id| geometry_by_leg_id.get(&detail_id))
-            .map(|geometry| {
+        return guidance.direct_to.as_ref().and_then(|direct_to| {
+            let geometry = if direct_to.target_leg_id.is_some() {
+                guidance
+                    .active_detail_index
+                    .and_then(|detail_index| guidance_detail_id_for_index(plan, detail_index))
+                    .and_then(|detail_id| geometry_by_leg_id.get(&detail_id))
+            } else {
+                geometry_by_leg_id.get("direct-to")
+            }?;
+            Some({
                 let from = match &active_leg.from {
                     NavRef::LatLon(position) => *position,
                     _ => geometry.from,
@@ -1659,7 +1691,8 @@ fn active_leg_geometry(
                         geometry.path.clone()
                     },
                 }
-            });
+            })
+        });
     }
     guidance
         .active_detail_index

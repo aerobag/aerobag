@@ -95,7 +95,7 @@ pub use planning::{
     insert_airway_between_waypoints, insert_procedure_between_waypoints, insert_waypoint,
     intercept_course_requirement, move_component, project_ui_state, reconcile_handoff,
     reentry_to_anchor_requirement, remove_all_above, remove_top_level_waypoint_by_nav_ref,
-    replace_airway_component, replace_procedure_component, sequence_active_leg,
+    replace_airway_component, replace_procedure_component, restore_direct_to, sequence_active_leg,
     start_requirement_from_leg_characteristics, suspend_sequencing,
     terminal_state_with_leg_characteristics, top_level_waypoint_component_index,
     unsuspend_sequencing, yieldable_course_to_fix_requirement, AirwaySegment, CodedFixSatisfaction,
@@ -124,11 +124,11 @@ pub use raster_tiles::{
     RasterTileDraw, RasterTileLevel, RasterTilePlan, RasterTilePlanOptions, RasterTileSource,
 };
 pub use session::{
-    attach_nav_kv_store_to_session, create_ui_session, create_ui_session_profiled, destroy_session,
-    disengage_map_follow_in_session, engage_map_follow_in_session, get_map_overlay_in_session,
-    get_map_selection_in_session, get_raster_tile_plan_in_session,
-    get_raster_tile_plan_in_session_with_options, get_session_snapshot,
-    get_terrain_overlay_in_session, ingest_airspace_features_in_session,
+    activate_direct_to_nav_ref_in_session, attach_nav_kv_store_to_session, create_ui_session,
+    create_ui_session_profiled, destroy_session, disengage_map_follow_in_session,
+    engage_map_follow_in_session, get_map_overlay_in_session, get_map_selection_in_session,
+    get_raster_tile_plan_in_session, get_raster_tile_plan_in_session_with_options,
+    get_session_snapshot, get_terrain_overlay_in_session, ingest_airspace_features_in_session,
     ingest_airspace_label_tiles_in_session, ingest_airspace_ref_tiles_in_session,
     ingest_metar_tiles_in_session, ingest_metars_in_session, ingest_point_tiles_in_session,
     ingest_tfrs_in_session, insert_nav_kv_page_for_attached_sessions,
@@ -137,9 +137,9 @@ pub use session::{
     push_situation_sample_in_session, register_ownship_source_in_session, remove_leg_in_session,
     remove_top_level_waypoint_by_nav_ref_in_session, render_terrain_overlay_tile_in_session,
     render_terrain_overlay_tiles_in_session, replace_flight_plan_in_session,
-    restore_chart_page_state_in_session, seek_playback_in_session, select_airport_in_session,
-    select_chart_in_session, select_map_in_session, select_ownship_source_in_session,
-    set_debug_flag_in_session, set_guidance_leg_geometry_in_session,
+    restore_chart_page_state_in_session, restore_direct_to_in_session, seek_playback_in_session,
+    select_airport_in_session, select_chart_in_session, select_map_in_session,
+    select_ownship_source_in_session, set_debug_flag_in_session, set_guidance_leg_geometry_in_session,
     set_map_follow_offset_in_session, set_map_layer_enabled_in_session,
     set_map_layer_visibility_in_session, set_playback_rate_in_session,
     set_raster_map_catalog_in_session, set_situation_in_session, sync_map_follow_in_session,
@@ -331,6 +331,9 @@ fn route_status_for_detail(
     let Some(guidance) = plan.guidance.as_ref() else {
         return FlightPlanRouteSegmentStatus::Remaining;
     };
+    if guidance.sequencing_mode == SequencingMode::DirectTo {
+        return FlightPlanRouteSegmentStatus::Completed;
+    }
     let Some(detail_index) = guidance_detail_index_for_leg_element(plan, leg_index, element_index)
     else {
         return FlightPlanRouteSegmentStatus::Remaining;
@@ -524,6 +527,31 @@ where
                 status: route_status_for_detail(&plan, leg_index, 0),
             });
         }
+    }
+    if let Some(direct_to) = plan
+        .guidance
+        .as_ref()
+        .filter(|guidance| guidance.sequencing_mode == SequencingMode::DirectTo)
+        .and_then(|guidance| guidance.direct_to.as_ref())
+    {
+        let from = resolve_position(&direct_to.start, None)?;
+        let to = resolve_position(&direct_to.target, None)?;
+        let geometry = GuidanceRouteGeometry::Segment {
+            start: from,
+            end: to,
+        };
+        route.push(FlightPlanRouteSegment {
+            id: "direct-to".to_string(),
+            leg_id: "direct-to".to_string(),
+            from,
+            to,
+            path: guidance_route_path_from_geometry(&geometry),
+            style: LegDisplayPathStyle::Solid,
+            geometry: geometry.clone(),
+            distance_nm: guidance_route_distance_nm(&geometry),
+            course_deg: guidance_route_course_deg(&geometry),
+            status: FlightPlanRouteSegmentStatus::Active,
+        });
     }
     Ok(route)
 }
@@ -4066,6 +4094,77 @@ mod tests {
             .join("../../../../")
             .canonicalize()
             .expect("canonicalize fixture repo root")
+    }
+
+    #[test]
+    fn direct_to_route_projection_adds_active_synthetic_segment_and_grays_plan() {
+        let plan = FlightPlan {
+            id: "direct-to-route".to_string(),
+            name: "Direct To Route".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRNT".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+            ],
+            resolved_legs: vec![ResolvedLeg {
+                id: "component-0-1".to_string(),
+                from: NavRef::Airport("KRNT".to_string()),
+                to: NavRef::Airport("KPAE".to_string()),
+                source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                procedure_provenance: None,
+            }],
+            guidance: Some(GuidanceState {
+                active_leg_index: 0,
+                active_detail_index: Some(0),
+                display_split_leg_id: None,
+                sequencing_mode: SequencingMode::DirectTo,
+                direct_to: Some(DirectToState {
+                    start: NavRef::LatLon(LatLon {
+                        lat: 47.0,
+                        lon: -122.0,
+                    }),
+                    target: NavRef::Airport("KPSC".to_string()),
+                    target_leg_id: None,
+                    resume_leg_id: None,
+                }),
+                suspend_reason: None,
+            }),
+            departure: Some(AirportId("KRNT".to_string())),
+            destination: Some(AirportId("KPAE".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+        let route = project_flight_plan_route_with_resolver(&plan, |nav_ref, _| {
+            Ok::<LatLon, String>(match nav_ref {
+                NavRef::Airport(id) if id == "KRNT" => LatLon {
+                    lat: 47.5,
+                    lon: -122.2,
+                },
+                NavRef::Airport(id) if id == "KPAE" => LatLon {
+                    lat: 47.9,
+                    lon: -122.3,
+                },
+                NavRef::Airport(id) if id == "KPSC" => LatLon {
+                    lat: 46.3,
+                    lon: -119.1,
+                },
+                NavRef::LatLon(position) => *position,
+                _ => LatLon { lat: 0.0, lon: 0.0 },
+            })
+        })
+        .unwrap();
+
+        assert_eq!(route.len(), 2);
+        assert_eq!(route[0].status, FlightPlanRouteSegmentStatus::Completed);
+        assert_eq!(route[1].id, "direct-to");
+        assert_eq!(route[1].status, FlightPlanRouteSegmentStatus::Active);
     }
 
     fn load_snapshot_nav_kv_store() -> crate::NavKvStore {

@@ -935,6 +935,10 @@ pub struct FlightPlanDisplayRowUiView {
     pub symbol_feature: Option<NavSymbolFeature>,
     pub depth: usize,
     pub active: bool,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub synthetic_direct_to: bool,
     pub can_add_airway_after: bool,
     pub can_add_procedure_before: bool,
     pub can_change_airway: bool,
@@ -1007,6 +1011,8 @@ pub struct GuidanceUiView {
     pub can_activate_next_leg: bool,
     pub can_suspend: bool,
     pub can_unsuspend: bool,
+    #[serde(default)]
+    pub can_restore_direct_to: bool,
     pub suspend_boundary_after_active_leg: bool,
 }
 
@@ -1043,6 +1049,10 @@ impl NavRef {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl FlightPlan {
     pub fn normalized(mut self) -> Self {
         if self.resolved_legs.is_empty() && !self.route_components.is_empty() {
@@ -1065,12 +1075,6 @@ pub fn activate_direct_to(
     target: NavRef,
 ) -> AppResult<FlightPlan> {
     let plan = plan.clone().normalized();
-    if plan.resolved_legs.is_empty() {
-        return Err(AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: "cannot activate direct-to without a resolved route".to_string(),
-        });
-    }
 
     let target_leg_index = plan.resolved_legs.iter().position(|leg| leg.to == target);
     let resume_leg_index = plan.resolved_legs.iter().position(|leg| leg.from == target);
@@ -1100,6 +1104,47 @@ pub fn activate_direct_to(
                 resume_leg_id,
             }),
             suspend_reason: None,
+        }),
+        ..plan
+    })
+}
+
+pub fn restore_direct_to(plan: &FlightPlan) -> AppResult<FlightPlan> {
+    let plan = plan.clone().normalized();
+    let Some(guidance) = plan.guidance.as_ref() else {
+        return Ok(plan);
+    };
+    if guidance.sequencing_mode != SequencingMode::DirectTo {
+        return Ok(plan);
+    }
+    let has_route = !plan.resolved_legs.is_empty();
+    let active_leg_index = if has_route {
+        guidance
+            .active_leg_index
+            .min(plan.resolved_legs.len().saturating_sub(1))
+    } else {
+        0
+    };
+    Ok(FlightPlan {
+        guidance: Some(GuidanceState {
+            active_leg_index,
+            active_detail_index: if has_route {
+                first_guidance_detail_index_for_leg(&plan, active_leg_index)
+            } else {
+                None
+            },
+            display_split_leg_id: None,
+            sequencing_mode: if has_route {
+                SequencingMode::FollowPlan
+            } else {
+                SequencingMode::Suspended
+            },
+            direct_to: None,
+            suspend_reason: if has_route {
+                None
+            } else {
+                Some(SuspendReason::RouteEnd)
+            },
         }),
         ..plan
     })
@@ -1553,6 +1598,11 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
         can_activate_next_leg: guidance.active_leg_index + 1 < plan.resolved_legs.len(),
         can_suspend: guidance.sequencing_mode != SequencingMode::Suspended,
         can_unsuspend: guidance.sequencing_mode == SequencingMode::Suspended,
+        can_restore_direct_to: guidance.sequencing_mode == SequencingMode::DirectTo
+            && guidance
+                .direct_to
+                .as_ref()
+                .is_some_and(|direct_to| direct_to.target_leg_id.is_none()),
         suspend_boundary_after_active_leg: should_suspend_after_active_leg(
             &plan,
             guidance.active_leg_index,
@@ -1633,10 +1683,19 @@ pub fn guidance_detail_ref_by_index(
 }
 
 fn project_display_rows(
-    _plan: &FlightPlan,
+    plan: &FlightPlan,
     components: &[RouteComponentUiView],
     resolved_legs: &[ResolvedLegUiView],
 ) -> Vec<FlightPlanDisplayRowUiView> {
+    let direct_to = plan.guidance.as_ref().and_then(|guidance| {
+        (guidance.sequencing_mode == SequencingMode::DirectTo)
+            .then_some(guidance.direct_to.as_ref())
+            .flatten()
+    });
+    let direct_to_target_on_plan = direct_to
+        .as_ref()
+        .is_some_and(|state| state.target_leg_id.is_some());
+    let direct_to_overlay = direct_to.is_some() && !direct_to_target_on_plan;
     let mut rows = Vec::new();
     for component in components {
         let chart_airport_id = component.chart_airport_id.clone();
@@ -1671,6 +1730,8 @@ fn project_display_rows(
                 symbol_feature: None,
                 depth: 0,
                 active: component.active,
+                enabled: !direct_to_overlay,
+                synthetic_direct_to: false,
                 can_add_airway_after: component.can_add_airway_after,
                 can_add_procedure_before: component.can_add_procedure_before,
                 can_change_airway: component.can_change_airway,
@@ -1709,6 +1770,8 @@ fn project_display_rows(
                 symbol_feature: None,
                 depth: 0,
                 active: component.active,
+                enabled: !direct_to_overlay,
+                synthetic_direct_to: false,
                 can_add_airway_after: component.can_add_airway_after,
                 can_add_procedure_before: component.can_add_procedure_before,
                 can_change_airway: component.can_change_airway,
@@ -1747,6 +1810,8 @@ fn project_display_rows(
                             symbol_feature: None,
                             depth: 1,
                             active: component.active,
+                            enabled: !direct_to_overlay,
+                            synthetic_direct_to: false,
                             can_add_airway_after: false,
                             can_add_procedure_before: false,
                             can_change_airway: false,
@@ -1784,6 +1849,8 @@ fn project_display_rows(
                             symbol_feature: None,
                             depth: 1,
                             active: false,
+                            enabled: !direct_to_overlay,
+                            synthetic_direct_to: false,
                             can_add_airway_after: false,
                             can_add_procedure_before: false,
                             can_change_airway: false,
@@ -1804,6 +1871,47 @@ fn project_display_rows(
                 }
             }
         }
+    }
+
+    if let Some(direct_to) = direct_to.filter(|_| !direct_to_target_on_plan) {
+        let chart_airport_id = airport_id_from_nav_ref(&direct_to.target);
+        rows.push(FlightPlanDisplayRowUiView {
+            label: nav_ref_label(&direct_to.target),
+            row_kind: FlightPlanDisplayRowKind::Waypoint,
+            component_kind: Some(RouteComponentViewKind::Waypoint),
+            component_index: None,
+            procedure_id: None,
+            procedure_kind: None,
+            leg_index: None,
+            distance_nm: None,
+            course_deg: None,
+            eta_text: String::new(),
+            leg_time_text: String::new(),
+            fuel_gal_text: String::new(),
+            show_plate_target_id: None,
+            chart_airport_id,
+            nav_ref: Some(direct_to.target.clone()),
+            symbol_feature: None,
+            depth: 0,
+            active: true,
+            enabled: true,
+            synthetic_direct_to: true,
+            can_add_airway_after: false,
+            can_add_procedure_before: false,
+            can_change_airway: false,
+            can_remove_component: false,
+            can_reorder_component: false,
+            can_reorder_up: false,
+            can_reorder_down: false,
+            replace_procedure_component_index: None,
+            start_component_index: None,
+            end_component_index: None,
+            origin_anchor: Some(direct_to.start.clone()),
+            destination_anchor: Some(direct_to.target.clone()),
+            preceding_waypoint: None,
+            following_waypoint: None,
+            actions: vec![action(FlightPlanRowActionId::WaypointInfo, false)],
+        });
     }
 
     let mut next_leg_cursor = 0usize;
@@ -1840,6 +1948,17 @@ fn project_display_rows(
     for index in 0..rows.len() {
         if rows[index].actions.is_empty() {
             rows[index].actions = waypoint_or_discontinuity_actions(&rows, index);
+        }
+    }
+
+    if direct_to_overlay {
+        for row in &mut rows {
+            if !row.synthetic_direct_to {
+                row.enabled = false;
+                for action in &mut row.actions {
+                    action.enabled = false;
+                }
+            }
         }
     }
 
@@ -5618,6 +5737,74 @@ mod tests {
         assert!(direct_to.on_plan_target);
         assert_eq!(direct_to.target, NavRef::Fix("IAF".to_string()));
         assert_eq!(direct_to.target_leg_id.as_deref(), Some("component-2-3"));
+    }
+
+    #[test]
+    fn off_plan_direct_to_projects_disabled_plan_and_synthetic_target_row() {
+        let activated = activate_direct_to(
+            &sample_guided_waypoint_plan(),
+            LatLon {
+                lat: 47.5,
+                lon: -122.0,
+            },
+            NavRef::Airport("KPSC".to_string()),
+        )
+        .unwrap();
+        let ui = project_ui_state(&activated);
+        let rows = ui.display_rows;
+
+        assert!(rows[..rows.len() - 1].iter().all(|row| !row.enabled));
+        assert!(rows[..rows.len() - 1]
+            .iter()
+            .flat_map(|row| row.actions.iter())
+            .all(|action| !action.enabled));
+        let direct_row = rows.last().expect("synthetic direct-to row");
+        assert_eq!(direct_row.label, "KPSC");
+        assert_eq!(
+            direct_row.nav_ref,
+            Some(NavRef::Airport("KPSC".to_string()))
+        );
+        assert!(direct_row.active);
+        assert!(direct_row.enabled);
+        assert!(direct_row.synthetic_direct_to);
+        assert_eq!(
+            ui.guidance
+                .as_ref()
+                .and_then(|guidance| guidance.direct_to.as_ref())
+                .map(|direct_to| direct_to.on_plan_target),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn on_plan_direct_to_keeps_flight_plan_projection_enabled() {
+        let activated = activate_direct_to(
+            &sample_guided_waypoint_plan(),
+            LatLon {
+                lat: 47.5,
+                lon: -122.0,
+            },
+            NavRef::Fix("OLM".to_string()),
+        )
+        .unwrap();
+        let ui = project_ui_state(&activated);
+        let rows = ui.display_rows;
+
+        assert!(rows.iter().all(|row| row.enabled));
+        assert!(rows.iter().all(|row| !row.synthetic_direct_to));
+        assert_eq!(
+            ui.guidance
+                .as_ref()
+                .and_then(|guidance| guidance.direct_to.as_ref())
+                .map(|direct_to| direct_to.on_plan_target),
+            Some(true)
+        );
+        assert_eq!(
+            ui.guidance
+                .as_ref()
+                .map(|guidance| guidance.can_restore_direct_to),
+            Some(false)
+        );
     }
 
     #[test]

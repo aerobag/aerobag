@@ -335,6 +335,7 @@ export type GuidanceUiView = {
   can_activate_next_leg: boolean;
   can_suspend: boolean;
   can_unsuspend: boolean;
+  can_restore_direct_to?: boolean;
   suspend_boundary_after_active_leg: boolean;
 };
 
@@ -378,6 +379,8 @@ export type FlightPlanDisplayRowUiView = {
   symbol_feature: NavSymbolFeature | null;
   depth: number;
   active: boolean;
+  enabled?: boolean;
+  synthetic_direct_to?: boolean;
   can_add_airway_after: boolean;
   can_add_procedure_before: boolean;
   can_change_airway: boolean;

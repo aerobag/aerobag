@@ -50,6 +50,8 @@ declare module "@generated/app_wasm.js" {
   export const set_map_layer_visibility_in_session: (...args: unknown[]) => string;
   export const set_map_layer_enabled_in_session: (...args: unknown[]) => string;
   export const replace_flight_plan_in_session: (...args: unknown[]) => string;
+  export const activate_direct_to_nav_ref_in_session: (...args: unknown[]) => string;
+  export const restore_direct_to_in_session: (...args: unknown[]) => string;
   export const select_airport_in_session: (...args: unknown[]) => string;
   export const select_chart_in_session: (...args: unknown[]) => string;
   export const ingest_point_tiles_in_session: (...args: unknown[]) => void;

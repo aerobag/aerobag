@@ -1745,6 +1745,11 @@ export default function App() {
             const mutation = await appCoreAdapter.sequenceActiveLegUi(currentPlan);
             await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
           }}
+          onRestoreDirectTo={async () => {
+            if (!uiSession) return;
+            const nextSnapshot = await uiSession.restoreDirectTo();
+            setSessionSnapshot(nextSnapshot);
+          }}
           onInsertAirway={async (startComponentIndex, endComponentIndex, entryIndex, exitIndex, presentation, originAnchor, destinationAnchor) => {
             if (!appCoreAdapter) return;
             const entry = airwayEntryCandidateFromPresentation(presentation, entryIndex);
@@ -3419,6 +3424,8 @@ function MapPage(props: {
                   }
                   const nextSnapshot = action.id === "remove_from_flight_plan"
                     ? await uiSession.removeTopLevelWaypointByNavRef(item.nav_ref)
+                    : action.id === "direct_to"
+                      ? await uiSession.activateDirectTo(item.nav_ref)
                     : action.id === "insert"
                       ? await uiSession.insertWaypointBestPosition(item.nav_ref)
                       : null;
@@ -4344,6 +4351,7 @@ function FlightPlanPage(props: {
   onSuspendSequencing: () => void | Promise<void>;
   onUnsuspendSequencing: () => void | Promise<void>;
   onSequenceActiveLeg: () => void | Promise<void>;
+  onRestoreDirectTo: () => void | Promise<void>;
   onInsertAirway: (
     startComponentIndex: number,
     endComponentIndex: number | null,
@@ -4526,6 +4534,8 @@ function FlightPlanPage(props: {
         fuel: row.fuel_gal_text,
         course: row.row_kind === "group" ? "" : formatPlanCourse(row.course_deg),
         active: row.active,
+        enabled: row.enabled ?? true,
+        syntheticDirectTo: row.synthetic_direct_to ?? false,
         depth: row.depth,
         rowKind: row.row_kind,
         refKey:
@@ -4815,13 +4825,8 @@ function FlightPlanPage(props: {
     }
 
     const fromIndex = displayRows.findIndex((row) => row.rowKind === "waypoint" && navRefsEqual(row.navRef, activeLeg.from));
-    if (fromIndex < 0) {
-      setStructuredArrow(null);
-      return;
-    }
-
     let toIndex = -1;
-    for (let index = fromIndex + 1; index < displayRows.length; index += 1) {
+    for (let index = Math.max(0, fromIndex + 1); index < displayRows.length; index += 1) {
       const row = displayRows[index];
       if (row.rowKind === "waypoint" && navRefsEqual(row.navRef, activeLeg.to)) {
         toIndex = index;
@@ -4836,9 +4841,9 @@ function FlightPlanPage(props: {
       return;
     }
 
-    const fromElement = structuredRowRefs.current.get(displayRows[fromIndex]?.refKey ?? "");
     const toElement = structuredRowRefs.current.get(displayRows[toIndex]?.refKey ?? "");
-    if (!fromElement || !toElement) {
+    const fromElement = fromIndex >= 0 ? structuredRowRefs.current.get(displayRows[fromIndex]?.refKey ?? "") : null;
+    if (!toElement || (fromIndex >= 0 && !fromElement)) {
       setStructuredArrow(null);
       return;
     }
@@ -4846,15 +4851,10 @@ function FlightPlanPage(props: {
     let animationFrame = 0;
     const measureArrow = () => {
       const surfaceRect = content.getBoundingClientRect();
-      const fromRect = fromElement.getBoundingClientRect();
       const toRect = toElement.getBoundingClientRect();
       const leftGutterX = thumbPixels(0.12);
       const waypointColumnLeftX = thumbPixels(0.5);
       const waypointColumnHeadInsetX = thumbPixels(0.08);
-      const fromPoint = {
-        x: waypointColumnLeftX,
-        y: fromRect.top - surfaceRect.top + fromRect.height / 2,
-      };
       const toPoint = {
         x: waypointColumnLeftX + waypointColumnHeadInsetX,
         y: toRect.top - surfaceRect.top + toRect.height / 2,
@@ -4862,6 +4862,20 @@ function FlightPlanPage(props: {
       const elbowX = leftGutterX;
       const headLength = 20;
       const shaftEnd = { x: Math.max(elbowX, toPoint.x - headLength + 5), y: toPoint.y };
+      if (!fromElement) {
+        const stubStart = { x: elbowX, y: toPoint.y };
+        setStructuredArrow({
+          path: `M ${stubStart.x} ${stubStart.y} H ${shaftEnd.x}`,
+          head: arrowHeadPoints(shaftEnd, toPoint),
+        });
+        return;
+      }
+
+      const fromRect = fromElement.getBoundingClientRect();
+      const fromPoint = {
+        x: waypointColumnLeftX,
+        y: fromRect.top - surfaceRect.top + fromRect.height / 2,
+      };
 
       setStructuredArrow({
         path: `M ${fromPoint.x} ${fromPoint.y} H ${elbowX} V ${toPoint.y} H ${shaftEnd.x}`,
@@ -4876,7 +4890,7 @@ function FlightPlanPage(props: {
     measureArrow();
 
     const handle = window.requestAnimationFrame(() => {
-      fromElement.scrollIntoView({ block: "nearest", inline: "nearest" });
+      fromElement?.scrollIntoView({ block: "nearest", inline: "nearest" });
       toElement.scrollIntoView({ block: "nearest", inline: "nearest" });
     });
     scrollPane?.addEventListener("scroll", scheduleMeasure, { passive: true });
@@ -5004,13 +5018,18 @@ function FlightPlanPage(props: {
                     "planWaypointCell",
 	                    "planWaypointButton",
 	                    selectedWaypointIndex === index ? "isSelected" : "",
-	                    row.active ? "isActiveLeg" : "",
+                    row.active ? "isActiveLeg" : "",
+                    !row.enabled ? "isDisabled" : "",
+                    row.syntheticDirectTo ? "isSyntheticDirectTo" : "",
 	                    "planStructuredWaypointCell",
 	                    row.rowKind === "group" ? "isGroupHeader" : "",
 	                    row.depth > 0 ? "isChildRow" : "",
 	                    row.rowKind === "discontinuity" ? "isDiscontinuityItem" : "",
 	                  ].filter(Boolean).join(" ")}
                   onClick={(event) => {
+                    if (!row.enabled && !row.syntheticDirectTo) {
+                      return;
+                    }
                     const page = pageRef.current;
                     if (page) {
                       const pageRect = page.getBoundingClientRect();
@@ -5148,6 +5167,11 @@ function FlightPlanPage(props: {
         <button type="button" className="trayButton planControlButton" disabled={!guidance?.can_activate_next_leg} onClick={() => void props.onActivateNextLeg()}>
           Next Leg
         </button>
+        {guidance?.can_restore_direct_to ? (
+          <button type="button" className="trayButton planControlButton" onClick={() => void props.onRestoreDirectTo()}>
+            Restore FP
+          </button>
+        ) : null}
         <button
           type="button"
           className="trayButton planControlButton"

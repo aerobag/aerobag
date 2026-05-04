@@ -1374,14 +1374,17 @@ fn selection_item_for_point(
     };
     let mut actions = if is_airport {
         vec![
-            disabled_action("direct_to", "Direct-to"),
+            action_for_availability("direct_to", "Direct-to", nav_ref.is_some()),
             insert_action,
             action_for_availability("plates", "Plates", airport_plate_availability.plates),
             action_for_availability("csup", "Chart Supp", airport_plate_availability.csup),
             disabled_action("runways", "Runways"),
         ]
     } else {
-        vec![disabled_action("direct_to", "Direct-to"), insert_action]
+        vec![
+            action_for_availability("direct_to", "Direct-to", nav_ref.is_some()),
+            insert_action,
+        ]
     };
     MapSelectionItem {
         id: record.id.clone(),

@@ -445,6 +445,8 @@ export interface UiSession {
   moveWaypoint(index: number, delta: number): Promise<UiSessionSnapshot>;
   insertWaypointBestPosition(waypoint: NavRef): Promise<UiSessionSnapshot>;
   removeTopLevelWaypointByNavRef(navRef: NavRef): Promise<UiSessionSnapshot>;
+  activateDirectTo(navRef: NavRef): Promise<UiSessionSnapshot>;
+  restoreDirectTo(): Promise<UiSessionSnapshot>;
   setSituation(situation: Situation): Promise<UiSessionSnapshot>;
   loadPlaybackTrace(sourcePath: string, traceJson: string): Promise<UiSessionSnapshot>;
   playPlayback(nowEpochMs: number): Promise<UiSessionSnapshot>;
@@ -695,6 +697,8 @@ type WasmModule = {
   select_map_in_session(handle: number, selectedMapIdJson: string): Promise<string> | string;
   replace_flight_plan_in_session(handle: number, planJson: string): Promise<string> | string;
   insert_waypoint_best_position_in_session(sessionHandle: number, waypointJson: string): Promise<string> | string;
+  activate_direct_to_nav_ref_in_session(sessionHandle: number, targetJson: string): Promise<string> | string;
+  restore_direct_to_in_session(sessionHandle: number): Promise<string> | string;
   set_guidance_leg_geometry_in_session(handle: number, geometriesJson: string): Promise<string> | string;
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
@@ -852,7 +856,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     const syncGuidanceGeometry = async (nextPlan: FlightPlan | null) => {
       try {
         const geometries =
-          nextPlan && (nextPlan.resolved_legs ?? []).length > 0
+          nextPlan
             ? (await this.projectFlightPlanRoute(nextPlan, null)).map((segment) => ({
                 leg_id: segment.id,
                 from: segment.from,
@@ -930,6 +934,20 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           runCoreHadSessionOperation<UiSessionSnapshot>(() =>
             this.module.insert_waypoint_best_position_in_session(handle, JSON.stringify(waypoint)),
           ),
+        );
+        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        return snapshot;
+      },
+      activateDirectTo: async (navRef) => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(this.module.activate_direct_to_nav_ref_in_session(handle, JSON.stringify(navRef))),
+        );
+        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        return snapshot;
+      },
+      restoreDirectTo: async () => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(this.module.restore_direct_to_in_session(handle)),
         );
         await syncGuidanceGeometry(snapshot.app_state.active_plan);
         return snapshot;

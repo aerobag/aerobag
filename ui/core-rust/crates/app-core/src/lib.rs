@@ -6405,13 +6405,15 @@ mod tests {
         if key == ("KMSN", "I36", Some("JVL")) {
             return true;
         }
-        // KCBF I36/L36 OVR and KROC I28/L28 LORTH both chart very short feeders
-        // into large course changes. Keep them failing instead of weakening the
-        // validator around turns no pilot could physically make in the encoded
-        // distance.
+        // KCBF I36/L36 OVR, KROC I28/L28 LORTH, and KBGR I15-Y/L15-Y RINTH
+        // all chart very short feeders into large course changes. Keep them
+        // failing instead of weakening the validator around turns no pilot could
+        // physically make in the encoded distance.
         matches!(
             key,
-            ("KCBF", "I36", Some("OVR"))
+            ("KBGR", "I15-Y", Some("RINTH"))
+                | ("KBGR", "L15-Y", Some("RINTH"))
+                | ("KCBF", "I36", Some("OVR"))
                 | ("KCBF", "L36", Some("OVR"))
                 | ("KROC", "I28", Some("LORTH"))
                 | ("KROC", "L28", Some("LORTH"))

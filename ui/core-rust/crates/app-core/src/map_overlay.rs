@@ -1819,20 +1819,14 @@ fn row_action(
 }
 
 fn direct_to_action(
-    plan: Option<&FlightPlan>,
+    _plan: Option<&FlightPlan>,
     nav_ref: Option<&NavRef>,
     flight_plan_row_action: Option<MapSelectionFlightPlanRowAction>,
 ) -> MapSelectionAction {
     if let Some(flight_plan_row_action) = flight_plan_row_action {
         return row_action("direct_to", "Direct-to", Some(flight_plan_row_action));
     }
-    match nav_ref {
-        Some(nav_ref) if selection_plan_contains_nav_ref(plan, nav_ref) => {
-            disabled_action("direct_to", "Direct-to ambiguous")
-        }
-        Some(_) => enabled_action("direct_to", "Direct-to"),
-        None => disabled_action("direct_to", "Direct-to"),
-    }
+    action_for_availability("direct_to", "Direct-to", nav_ref.is_some())
 }
 
 fn airspace_limit_action_from_parts(
@@ -4423,8 +4417,8 @@ mod tests {
             .iter()
             .find(|action| action.id == "direct_to")
             .expect("direct-to action");
-        assert!(!duplicate_direct_to.enabled);
-        assert_eq!(duplicate_direct_to.label, "Direct-to ambiguous");
+        assert!(duplicate_direct_to.enabled);
+        assert_eq!(duplicate_direct_to.label, "Direct-to");
         assert!(duplicate_direct_to.flight_plan_row_action.is_none());
     }
 

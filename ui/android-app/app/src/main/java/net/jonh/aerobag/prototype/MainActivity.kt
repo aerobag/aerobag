@@ -4908,7 +4908,9 @@ private fun MapExplorerPage(
                         heightPx = surfaceHeightPx,
                         nextZoom = clampZoom(viewportState.value.zoom + delta, selectedMap.mapView),
                     ),
+                    syncFollow = false,
                 )
+                syncFollowStateForViewport(viewportState.value)
                 true
             }
             .focusable()
@@ -4957,7 +4959,7 @@ private fun MapExplorerPage(
                                         dy = change.position.y - last.y,
                                     )
                                     movedViewportDuringGesture = true
-                                    updateViewport(gestureViewport)
+                                    updateViewport(gestureViewport, syncFollow = false)
                                     dragLastPosition = change.position
                                 }
                                 change.consume()
@@ -4985,7 +4987,7 @@ private fun MapExplorerPage(
                                         heightPx = surfaceHeightPx,
                                     )
                                 movedViewportDuringGesture = true
-                                updateViewport(gestureViewport)
+                                updateViewport(gestureViewport, syncFollow = false)
                                 first.consume()
                                 second.consume()
                             }
@@ -5039,7 +5041,9 @@ private fun MapExplorerPage(
                             heightPx = surfaceHeightPx,
                             nextZoom = clampZoom(viewportState.value.zoom - wheelDelta * 0.28, selectedMap.mapView),
                         ),
+                        syncFollow = false,
                     )
+                    syncFollowStateForViewport(viewportState.value)
                     true
                 } else {
                     false

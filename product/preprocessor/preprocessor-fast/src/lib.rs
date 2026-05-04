@@ -18,7 +18,7 @@ const WX_TILE_MIN_ZOOM: u8 = 5;
 const WX_TILE_MAX_ZOOM: u8 = 7;
 const WX_TILE_PATH_TEMPLATE: &str = "points/wx/{z}/{x}/{y}.json";
 const WX_TILE_SIZE: u16 = 256;
-const METAR_PRODUCT_CONTRACT_VERSION: u32 = 5;
+const METAR_PRODUCT_CONTRACT_VERSION: u32 = 6;
 const METAR_TREND_TOKENS: &[&str] = &["BECMG", "TEMPO", "INTER", "NOSIG", "PROB30", "PROB40"];
 
 #[derive(Debug, Clone)]
@@ -455,6 +455,9 @@ pub struct StructuredPirepRecord {
     report_type: Option<String>,
     longitude: Option<f64>,
     latitude: Option<f64>,
+    symbol: String,
+    icing: String,
+    turbulence: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1363,6 +1366,7 @@ fn structured_pirep_records(input_xml_path: &Path) -> anyhow::Result<Vec<Structu
             BTreeMap::<String, usize>::new(),
             |occurrence_counts, record| -> Option<anyhow::Result<StructuredPirepRecord>> {
                 let result = (|| -> anyhow::Result<StructuredPirepRecord> {
+                    let hazards = parse_pirep_hazards(&record.raw_text);
                     let identity = serde_json::to_vec(&(
                         &record.observation_time,
                         &record.raw_text,
@@ -1387,12 +1391,157 @@ fn structured_pirep_records(input_xml_path: &Path) -> anyhow::Result<Vec<Structu
                         report_type: empty_to_none(record.report_type),
                         longitude: parse_optional_f64(&record.longitude)?,
                         latitude: parse_optional_f64(&record.latitude)?,
+                        symbol: hazards.symbol().to_string(),
+                        icing: hazards.icing.as_str().to_string(),
+                        turbulence: hazards.turbulence.as_str().to_string(),
                     })
                 })();
                 Some(result)
             },
         )
         .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PirepHazardSeverity {
+    None,
+    Unknown,
+    Light,
+    Moderate,
+    Severe,
+}
+
+impl PirepHazardSeverity {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Unknown => "unknown",
+            Self::Light => "light",
+            Self::Moderate => "moderate",
+            Self::Severe => "severe",
+        }
+    }
+
+    fn actionable(self) -> bool {
+        matches!(self, Self::Light | Self::Moderate | Self::Severe)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PirepHazards {
+    icing: PirepHazardSeverity,
+    turbulence: PirepHazardSeverity,
+}
+
+impl PirepHazards {
+    fn symbol(self) -> &'static str {
+        match (self.icing.actionable(), self.turbulence.actionable()) {
+            (false, false) => "generic",
+            (true, false) => pirep_symbol(self.icing, "icing"),
+            (false, true) => pirep_symbol(self.turbulence, "turbulence"),
+            (true, true) => {
+                if self.icing >= self.turbulence {
+                    pirep_symbol(self.icing, "icing")
+                } else {
+                    pirep_symbol(self.turbulence, "turbulence")
+                }
+            }
+        }
+    }
+}
+
+fn pirep_symbol(severity: PirepHazardSeverity, hazard: &'static str) -> &'static str {
+    match (severity, hazard) {
+        (PirepHazardSeverity::Light, "icing") => "light-icing",
+        (PirepHazardSeverity::Moderate, "icing") => "moderate-icing",
+        (PirepHazardSeverity::Severe, "icing") => "severe-icing",
+        (PirepHazardSeverity::Light, "turbulence") => "light-turbulence",
+        (PirepHazardSeverity::Moderate, "turbulence") => "moderate-turbulence",
+        (PirepHazardSeverity::Severe, "turbulence") => "severe-turbulence",
+        _ => "generic",
+    }
+}
+
+fn parse_pirep_hazards(raw_text: &str) -> PirepHazards {
+    let sections = pirep_hazard_sections(raw_text);
+    let mut icing = PirepHazardSeverity::None;
+    let mut turbulence = PirepHazardSeverity::None;
+
+    for section in sections {
+        let tokens = pirep_hazard_tokens(&section);
+        if tokens.is_empty() {
+            continue;
+        }
+        let severity = pirep_hazard_severity(&tokens);
+        if pirep_section_mentions_icing(&tokens) {
+            icing = icing.max(severity);
+        }
+        if pirep_section_mentions_turbulence(&tokens) {
+            turbulence = turbulence.max(severity);
+        }
+    }
+
+    PirepHazards { icing, turbulence }
+}
+
+fn pirep_hazard_sections(raw_text: &str) -> Vec<String> {
+    let upper = raw_text.to_ascii_uppercase();
+    let slash_sections = upper
+        .split('/')
+        .map(str::trim)
+        .filter(|section| !section.is_empty());
+    if slash_sections.clone().count() > 1 {
+        slash_sections.map(str::to_string).collect()
+    } else {
+        vec![upper]
+    }
+}
+
+fn pirep_hazard_tokens(section: &str) -> Vec<String> {
+    section
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn pirep_section_mentions_icing(tokens: &[String]) -> bool {
+    tokens.iter().any(|token| {
+        matches!(
+            token.as_str(),
+            "IC" | "ICE" | "ICING" | "RIME" | "CLRICE" | "MXD" | "MXDICE"
+        )
+    })
+}
+
+fn pirep_section_mentions_turbulence(tokens: &[String]) -> bool {
+    tokens.iter().any(|token| {
+        matches!(
+            token.as_str(),
+            "TB" | "TURB" | "TURBC" | "TURBULENCE" | "CHOP"
+        )
+    })
+}
+
+fn pirep_hazard_severity(tokens: &[String]) -> PirepHazardSeverity {
+    let mut saw_negative = false;
+    let mut best = PirepHazardSeverity::Unknown;
+    for token in tokens {
+        match token.as_str() {
+            "NEG" | "NONE" | "NO" | "NIL" => saw_negative = true,
+            "LGT" | "LIGHT" => best = best.max(PirepHazardSeverity::Light),
+            "MOD" | "MODERATE" => best = best.max(PirepHazardSeverity::Moderate),
+            "SEV" | "SEVERE" | "EXTREME" | "EXTRM" => best = best.max(PirepHazardSeverity::Severe),
+            _ => {}
+        }
+    }
+    if best.actionable() {
+        best
+    } else if saw_negative {
+        PirepHazardSeverity::None
+    } else {
+        PirepHazardSeverity::Unknown
+    }
 }
 
 fn structured_metar_clouds(raw_text: &str) -> StructuredMetarClouds {
@@ -3555,6 +3704,24 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("AIREP"),
         );
+        assert_eq!(
+            pireps
+                .pointer("/pireps/0/symbol")
+                .and_then(|value| value.as_str()),
+            Some("generic"),
+        );
+        assert_eq!(
+            pireps
+                .pointer("/pireps/0/icing")
+                .and_then(|value| value.as_str()),
+            Some("none"),
+        );
+        assert_eq!(
+            pireps
+                .pointer("/pireps/0/turbulence")
+                .and_then(|value| value.as_str()),
+            Some("none"),
+        );
 
         let (x, y) = wx_slippy_tile(1.0, 2.0, WX_TILE_MAX_ZOOM);
         let tile_path = first_result
@@ -3586,6 +3753,59 @@ mod tests {
         let zip_listing = String::from_utf8(zip_listing.stdout)?;
         assert!(zip_listing.lines().any(|line| line == "manifest.json"));
         Ok(())
+    }
+
+    #[test]
+    fn pirep_hazard_parser_computes_render_symbol_and_detail_fields() {
+        for (raw_text, symbol, icing, turbulence) in [
+            (
+                "DUT UA /OV DUT/TM 0443/FL020/TP SB20/SK BASE020 TOP050/TB NEG/IC NEG/RM DURC ZAN",
+                "generic",
+                "none",
+                "none",
+            ),
+            (
+                "ABC UA /OV ABC/TM 0443/FL080/IC LGT/TB NEG",
+                "light-icing",
+                "light",
+                "none",
+            ),
+            (
+                "ABC UA /OV ABC/TM 0443/FL080/IC LGT/RM TB MODERATE",
+                "moderate-turbulence",
+                "light",
+                "moderate",
+            ),
+            (
+                "ABC UA /OV ABC/TM 0443/FL080/IC MOD/TB SEV",
+                "severe-turbulence",
+                "moderate",
+                "severe",
+            ),
+            (
+                "ABC UA /OV ABC/TM 0443/FL080/IC MOD/TB MOD",
+                "moderate-icing",
+                "moderate",
+                "moderate",
+            ),
+            (
+                "ABC UA /OV ABC/TM 0443/FL080/IC RIME/TB CHOP",
+                "generic",
+                "unknown",
+                "unknown",
+            ),
+            (
+                "ABC UA /OV ABC/TM 0443/FL080/IC NEG OCNL LGT/TB NONE",
+                "light-icing",
+                "light",
+                "none",
+            ),
+        ] {
+            let hazards = parse_pirep_hazards(raw_text);
+            assert_eq!(hazards.symbol(), symbol, "{raw_text}");
+            assert_eq!(hazards.icing.as_str(), icing, "{raw_text}");
+            assert_eq!(hazards.turbulence.as_str(), turbulence, "{raw_text}");
+        }
     }
 
     #[test]

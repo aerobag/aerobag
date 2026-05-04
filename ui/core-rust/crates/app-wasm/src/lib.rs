@@ -154,6 +154,25 @@ pub fn insert_waypoint_at_flight_plan_row_in_session(
 }
 
 #[wasm_bindgen]
+pub fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
+    session_handle: u32,
+    row_uid: &str,
+    before: bool,
+    prefix: &str,
+    limit: usize,
+) -> Result<String, JsValue> {
+    let outcome = app_core::session::suggest_waypoint_identifiers_at_flight_plan_row_in_session(
+        session_handle,
+        row_uid.to_string(),
+        before,
+        prefix.to_string(),
+        limit,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn insert_airway_at_flight_plan_row_in_session(
     session_handle: u32,
     row_uid: &str,

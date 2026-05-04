@@ -441,6 +441,7 @@ export interface UiSession {
   moveWaypoint(index: number, delta: number): Promise<UiSessionSnapshot>;
   insertWaypointBestPosition(waypoint: NavRef): Promise<UiSessionSnapshot>;
   insertWaypointAtFlightPlanRow(rowUid: string, before: boolean, waypoint: NavRef): Promise<UiSessionSnapshot>;
+  suggestWaypointIdentifiersAtFlightPlanRow(rowUid: string, before: boolean, prefix: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
   insertAirwayAtFlightPlanRow(rowUid: string, presentation: AirwayPresentationPlan, entryIndex: number, exitIndex: number): Promise<UiSessionSnapshot>;
   selectProcedureAtFlightPlanRow(rowUid: string, airportId: string, procedureId: string, kind: ProcedureKind, runwayTransition: string | null, enrouteTransition: string | null): Promise<UiSessionSnapshot>;
   loadPlateProcedure(loadId: string): Promise<UiSessionSnapshot>;
@@ -509,7 +510,6 @@ export interface AppCoreAdapter {
   appendFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanUiMutation>;
   resolveWaypointIdentifier(identifier: string): Promise<NavRef | null>;
   resolveNavRefPosition(navRef: NavRef): Promise<LatLon>;
-  suggestWaypointIdentifiers(plan: FlightPlan, componentIndex: number, before: boolean, prefix: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
   suggestWaypointIdentifiersNear(anchor: LatLon, prefix: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
   suspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
   unsuspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
@@ -649,6 +649,7 @@ type WasmModule = {
   replace_flight_plan_in_session(handle: number, planJson: string): Promise<string> | string;
   insert_waypoint_best_position_in_session(sessionHandle: number, waypointJson: string): Promise<string> | string;
   insert_waypoint_at_flight_plan_row_in_session(sessionHandle: number, rowUid: string, before: boolean, waypointJson: string): Promise<string> | string;
+  suggest_waypoint_identifiers_at_flight_plan_row_in_session(sessionHandle: number, rowUid: string, before: boolean, prefix: string, limit: number): Promise<string> | string;
   insert_airway_at_flight_plan_row_in_session(sessionHandle: number, rowUid: string, presentationJson: string, entryIndex: number, exitIndex: number): Promise<string> | string;
   select_procedure_at_flight_plan_row_in_session(
     sessionHandle: number,
@@ -882,6 +883,19 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         await syncGuidanceGeometry(snapshot.app_state.active_plan);
         return snapshot;
+      },
+      suggestWaypointIdentifiersAtFlightPlanRow: async (rowUid, before, prefix, limit = 8) => {
+        return withSessionRetry(async () =>
+          runCoreHadSessionOperation<WaypointIdentifierSuggestion[]>(() =>
+            this.module.suggest_waypoint_identifiers_at_flight_plan_row_in_session(
+              handle,
+              rowUid,
+              before,
+              prefix,
+              limit,
+            ),
+          ),
+        );
       },
       insertAirwayAtFlightPlanRow: async (rowUid, presentation, entryIndex, exitIndex) => {
         snapshot = await withSessionRetry(async () =>
@@ -1288,23 +1302,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     return runCoreHadOperation<LatLon>({ kind: "resolve_nav_ref_position", nav_ref: navRef });
   }
 
-  async suggestWaypointIdentifiers(
-    plan: FlightPlan,
-    componentIndex: number,
-    before: boolean,
-    prefix: string,
-    limit = 8,
-  ): Promise<WaypointIdentifierSuggestion[]> {
-    return runCoreHadOperation<WaypointIdentifierSuggestion[]>({
-      kind: "suggest_waypoint_identifiers",
-      plan,
-      component_index: componentIndex,
-      before,
-      prefix,
-      limit,
-    });
-  }
-
   async suggestWaypointIdentifiersNear(anchor: LatLon, prefix: string, limit = 8): Promise<WaypointIdentifierSuggestion[]> {
     return runCoreHadOperation<WaypointIdentifierSuggestion[]>({
       kind: "suggest_waypoint_identifiers_near",
@@ -1443,6 +1440,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.restore_chart_page_state_in_session !== "function" ||
     typeof mod.destroy_session !== "function" ||
     typeof mod.insert_waypoint_at_flight_plan_row_in_session !== "function" ||
+    typeof mod.suggest_waypoint_identifiers_at_flight_plan_row_in_session !== "function" ||
     typeof mod.insert_airway_at_flight_plan_row_in_session !== "function" ||
     typeof mod.select_procedure_at_flight_plan_row_in_session !== "function" ||
     typeof mod.load_plate_procedure_in_session !== "function" ||

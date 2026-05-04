@@ -44,6 +44,7 @@ declare module "@generated/app_wasm.js" {
   export const set_map_layer_enabled_in_session: (...args: unknown[]) => string;
   export const replace_flight_plan_in_session: (...args: unknown[]) => string;
   export const insert_waypoint_at_flight_plan_row_in_session: (...args: unknown[]) => string;
+  export const suggest_waypoint_identifiers_at_flight_plan_row_in_session: (...args: unknown[]) => string;
   export const insert_airway_at_flight_plan_row_in_session: (...args: unknown[]) => string;
   export const select_procedure_at_flight_plan_row_in_session: (...args: unknown[]) => string;
   export const load_plate_procedure_in_session: (...args: unknown[]) => string;

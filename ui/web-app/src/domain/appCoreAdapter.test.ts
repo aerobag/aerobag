@@ -105,6 +105,7 @@ describe("loadBestAvailableAdapter", () => {
       nav_kv_destroy: async () => {},
       attach_nav_kv_store_to_session: async () => {},
       core_had_operation: async () => JSON.stringify({ state: "complete", result: null }),
+      suggest_waypoint_identifiers_at_flight_plan_row_in_session: async () => JSON.stringify({ state: "complete", result: [] }),
       insert_airway_at_flight_plan_row_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       select_procedure_at_flight_plan_row_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       load_plate_procedure_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),

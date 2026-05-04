@@ -13,7 +13,7 @@ use crate::{
     guidance_detail_id_for_index,
     had_ops::{
         insert_waypoint_best_position, materialize_airway_presentation_selection,
-        materialize_procedure, HadOperationOutcome, HadReadError,
+        materialize_procedure, suggest_waypoint_identifiers, HadOperationOutcome, HadReadError,
     },
     map_follow::{MapFollowSessionState, MapFollowUiState},
     map_overlay_config_from_vector_manifest_json, move_flight_plan_waypoint, nav_kv_key_for_query,
@@ -707,6 +707,63 @@ pub fn insert_waypoint_at_flight_plan_row_in_session(
     let next_plan = crate::insert_waypoint(&plan, component_index, before, waypoint)?;
     replace_session_flight_plan(session, next_plan)?;
     Ok(snapshot_for_session(session))
+}
+
+pub fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
+    handle: u32,
+    row_uid: String,
+    before: bool,
+    prefix: String,
+    limit: usize,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let plan = session_plan(session)?;
+    let ui = crate::project_ui_state(&plan);
+    let row = ui
+        .display_rows
+        .iter()
+        .find(|row| row.uid == row_uid)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("flight-plan waypoint suggestion target is stale: {row_uid}"),
+        })?;
+    let component_uid = row.component_uid.as_deref().ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: "flight-plan waypoint suggestion row has no route component uid".to_string(),
+    })?;
+    let component_index = plan
+        .route_component_uids
+        .iter()
+        .position(|uid| uid == component_uid)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("flight-plan waypoint suggestion component is stale: {component_uid}"),
+        })?;
+    let store = session_nav_kv_store(session)?;
+    let suggestions = match suggest_waypoint_identifiers(
+        store,
+        &plan,
+        component_index,
+        before,
+        &prefix,
+        limit,
+    ) {
+        Ok(suggestions) => suggestions,
+        Err(HadReadError::NeedPages(pages)) => return Ok(HadOperationOutcome::NeedPages { pages }),
+        Err(HadReadError::Fatal(message)) => {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message,
+            });
+        }
+    };
+    Ok(HadOperationOutcome::Complete {
+        result: serde_json::to_value(suggestions).map_err(|err| AppError {
+            kind: AppErrorKind::Internal,
+            message: err.to_string(),
+        })?,
+    })
 }
 
 pub fn insert_airway_at_flight_plan_row_in_session(

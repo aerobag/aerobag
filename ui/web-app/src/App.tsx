@@ -1636,6 +1636,7 @@ export default function App() {
       <div className={`pageLayer${page === "plan" ? " isActive" : ""}`} aria-hidden={page !== "plan"}>
         <FlightPlanPage
           appCoreAdapter={appCoreAdapter}
+          uiSession={uiSession}
           page={page}
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
@@ -4269,6 +4270,7 @@ function PlaybackWidget(props: {
 
 function FlightPlanPage(props: {
   appCoreAdapter: AppCoreAdapter | null;
+  uiSession: UiSession | null;
   page: AppPage;
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
@@ -4321,7 +4323,6 @@ function FlightPlanPage(props: {
   } | null>(null);
   const [airportInsert, setAirportInsert] = useState<{
     rowUid: string;
-    componentIndex: number;
     before: boolean;
     airportId: string;
     error: string | null;
@@ -4364,8 +4365,16 @@ function FlightPlanPage(props: {
   const waypointSuggestionPlanKey = useMemo(() => JSON.stringify(props.plan), [props.plan]);
   useEffect(() => {
     const editor = airportInsert;
-    const adapter = props.appCoreAdapter;
-    if (!editor || !adapter) {
+    if (!editor) {
+      return;
+    }
+    if (!props.uiSession) {
+      setAirportInsert((current) => current ? {
+        ...current,
+        loading: false,
+        suggestions: [],
+        error: "core session unavailable",
+      } : current);
       return;
     }
     const prefix = editor.airportId.trim().toUpperCase();
@@ -4375,8 +4384,8 @@ function FlightPlanPage(props: {
     }
     let cancelled = false;
     setAirportInsert((current) => current ? { ...current, loading: true } : current);
-    adapter
-      .suggestWaypointIdentifiers(props.plan, editor.componentIndex, editor.before, prefix, 8)
+    props.uiSession
+      .suggestWaypointIdentifiersAtFlightPlanRow(editor.rowUid, editor.before, prefix, 8)
       .then((suggestions) => {
         if (!cancelled) {
           setAirportInsert((current) => current ? { ...current, loading: false, suggestions } : current);
@@ -4395,7 +4404,7 @@ function FlightPlanPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [airportInsert?.airportId, airportInsert?.before, airportInsert?.componentIndex, props.appCoreAdapter, waypointSuggestionPlanKey]);
+  }, [airportInsert?.airportId, airportInsert?.before, airportInsert?.rowUid, props.uiSession, waypointSuggestionPlanKey]);
   useEffect(() => {
     if (!routeEntryText.trim()) {
       setRouteEntryPreview({
@@ -4512,12 +4521,8 @@ function FlightPlanPage(props: {
             return;
           }
           if (action.id === "insert_before" || action.id === "insert_after") {
-            if (selectedRow.componentIndex === null) {
-              return;
-            }
             setAirportInsert({
               rowUid: selectedRow.rowUid,
-              componentIndex: selectedRow.componentIndex,
               before: action.id === "insert_before",
               airportId: "",
               error: null,

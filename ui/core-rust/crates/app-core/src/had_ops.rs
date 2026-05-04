@@ -847,7 +847,7 @@ fn component_insert_anchor(
         .ok_or_else(|| HadReadError::Fatal("selected component has no waypoint anchor".to_string()))
 }
 
-fn suggest_waypoint_identifiers(
+pub(crate) fn suggest_waypoint_identifiers(
     store: &NavKvStore,
     plan: &FlightPlan,
     component_index: usize,

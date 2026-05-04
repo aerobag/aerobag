@@ -67,17 +67,20 @@ pub fn borrow_later_same_fix_hold_for_excessive_pi_entry_turn(
     sequence: i32,
     turn_to_pi_outbound_deg: f64,
 ) -> bool {
-    // KILE VOR-A/SLIMM is the motivating case: the A-route arrives at GRK
-    // almost inbound on the later charted hold, then the next ARINC row is a PI
-    // course reversal whose initial outbound course is nearly reciprocal. ARINC
-    // does encode the GRK hold, but only later in the missed route. There is no
-    // official guidance here; we are choosing to borrow that same-fix hold entry
-    // only when the direct arrival-to-PI-outbound turn would be absurdly sharp.
+    // KILE VOR-A/SLIMM is the original motivating case: the A-route arrives at
+    // GRK almost inbound on the later charted hold, then the next ARINC row is a
+    // PI course reversal whose initial outbound course is nearly reciprocal.
+    // KSJN VOR-A/PERRL shows the same shape below the old 150-degree threshold:
+    // the missed hold at SJN stays on the protected side, while inventing a
+    // free-form reversal overshoots the final course to intercept the PI
+    // outbound. ARINC does encode these same-fix holds, but only later in the
+    // procedure. There is no official guidance here; we are choosing to borrow
+    // that same-fix hold entry before inventing fallback PI-entry geometry.
     //
     // DARTE on the same plate needs the PI but only turns about 67 degrees to
     // outbound, so the threshold must not convert ordinary PI entries into
-    // borrowed holds. We chose 150 degrees as the line between "just turn
-    // outbound" and "use the charted same-fix hold to reverse first."
+    // borrowed holds. Use the same 120-degree continuity budget as invented PI
+    // entry reversals; if a charted same-fix hold exists, prefer it.
     let _ = (
         airport_id,
         procedure_id,
@@ -85,7 +88,7 @@ pub fn borrow_later_same_fix_hold_for_excessive_pi_entry_turn(
         transition_id,
         sequence,
     );
-    turn_to_pi_outbound_deg >= 150.0
+    turn_to_pi_outbound_deg > 120.0
 }
 
 pub fn borrow_sibling_transition_hold_for_common_if_course_reversal(

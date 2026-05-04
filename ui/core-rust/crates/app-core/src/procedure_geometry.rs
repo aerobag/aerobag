@@ -436,8 +436,9 @@ fn procedure_turn_display_path_from_start(
     } else {
         normalize_bearing_degrees(barb_course_deg - 45.0)
     };
+    let outbound_start = start_override.unwrap_or(fix);
     let outbound_end = destination_point(
-        fix,
+        outbound_start,
         outbound_course_deg,
         NOMINAL_PROCEDURE_TURN_INITIAL_OUTBOUND_DISTANCE_NM,
     );
@@ -462,7 +463,6 @@ fn procedure_turn_display_path_from_start(
     )?;
     let mut elements = Vec::new();
     let mut sources = Vec::new();
-    let outbound_start = start_override.unwrap_or(fix);
     push_segment!(elements, sources, outbound_start, outbound_end);
     push_segment!(elements, sources, outbound_end, barb_end);
     push_arc!(
@@ -1992,7 +1992,7 @@ fn borrowed_hold_entry_elements_for_pi(
         _ => return None,
     };
     let leg_length_nm = nominal_hold_leg_length_nm(hold_record.route_distance_or_time.as_deref())?;
-    let (elements, roles) = hold_entry_elements(
+    let (elements, mut roles) = hold_entry_elements(
         fix,
         inbound_course_deg,
         clockwise,
@@ -2000,10 +2000,78 @@ fn borrowed_hold_entry_elements_for_pi(
         leg_length_nm,
         nominal_standard_rate_turn_radius_nm(),
     );
+    let elements = if elements.is_empty() {
+        // If we arrive already on the hold inbound course, a normal direct hold
+        // entry has no separate entry leg. For PI borrowing, we still need the
+        // hold's protected-side turn to join the charted PT outbound course;
+        // KSJN VOR-A/PERRL is the motivating case.
+        borrowed_protected_side_turn_to_pi_outbound(
+            pi_step,
+            fix,
+            inbound_course_deg,
+            clockwise,
+            arrival_course_deg,
+            nominal_standard_rate_turn_radius_nm(),
+        )?
+    } else {
+        elements
+    };
     if elements.is_empty() {
         return None;
     }
+    if roles.is_empty() {
+        roles = vec![HOLD_ENTRY_ELEMENT_ROLE.to_string(); elements.len()];
+    }
     Some((elements, roles))
+}
+
+fn borrowed_protected_side_turn_to_pi_outbound(
+    pi_step: &ProcedureLegMaterializationRecord,
+    fix: LatLon,
+    inbound_course_deg: f64,
+    clockwise: bool,
+    arrival_course_deg: f64,
+    turn_radius_nm: f64,
+) -> Option<Vec<LegDisplayElement>> {
+    if angular_difference_degrees(arrival_course_deg, inbound_course_deg) > 5.0 {
+        return None;
+    }
+    let pi_outbound_course_deg = procedure_turn_initial_outbound_course_deg(pi_step)?;
+    let intercept_heading_deg = if clockwise {
+        normalize_bearing_degrees(pi_outbound_course_deg + NOMINAL_COURSE_INTERCEPT_ANGLE_DEG)
+    } else {
+        normalize_bearing_degrees(pi_outbound_course_deg - NOMINAL_COURSE_INTERCEPT_ANGLE_DEG)
+    };
+    let turn_center =
+        turn_center_for_heading_change(fix, arrival_course_deg, clockwise, turn_radius_nm);
+    let turn_end = point_on_turn_center(
+        turn_center,
+        intercept_heading_deg,
+        clockwise,
+        turn_radius_nm,
+    );
+    let intercept = intersect_heading_with_course(
+        turn_end,
+        intercept_heading_deg,
+        fix,
+        pi_outbound_course_deg,
+        fix,
+    )?;
+    let mut elements = vec![LegDisplayElement::Arc {
+        center: turn_center,
+        radius_nm: turn_radius_nm,
+        start: fix,
+        end: turn_end,
+        clockwise,
+        sweep_degrees: heading_sweep_degrees(arrival_course_deg, intercept_heading_deg, clockwise),
+    }];
+    if distance_between_points_nm(turn_end, intercept) > MIN_GEOMETRY_DISTANCE_NM {
+        elements.push(LegDisplayElement::Segment {
+            start: turn_end,
+            end: intercept,
+        });
+    }
+    Some(elements)
 }
 
 fn invented_pi_entry_course_reversal_elements(

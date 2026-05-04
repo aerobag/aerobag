@@ -2402,9 +2402,15 @@ private fun HomePage(
         offlinePackageOperationJob = job
     }
     suspend fun dispatchOfflinePackagesController(event: OfflinePackagesControllerEventWire) {
+        val startMs = SystemClock.elapsedRealtime()
+        Log.i(
+            "OfflinePackages",
+            "controller event=${event::class.simpleName} handle=$offlinePackagesControllerHandle scanning installed packages",
+        )
         val installed = withContext(Dispatchers.IO) {
             listInstalledPackageArtifacts(context.applicationContext)
         }
+        val installedScanElapsedMs = SystemClock.elapsedRealtime() - startMs
         val input = OfflinePackagesControllerInputWire(
             packageSourceBaseUrl = packageSourceBaseUrl,
             discoveryFilenames = bootstrap.packageManagementDiscoveryFilenames,
@@ -2418,7 +2424,7 @@ private fun HomePage(
         Log.i(
             "OfflinePackages",
             "controller event=${event::class.simpleName} handle=$offlinePackagesControllerHandle " +
-                "installed=${installed.size} inputBytes=${inputJson.length}",
+                "installed=${installed.size} installedScanMs=$installedScanElapsedMs inputBytes=${inputJson.length}",
         )
         val result = PackageManagementJson.decodeFromString<OfflinePackagesControllerResultWire>(
             NativeBindings.dispatchOfflinePackagesControllerJson(offlinePackagesControllerHandle, inputJson),
@@ -2616,11 +2622,17 @@ private fun HomePage(
                 )
             }
             if (controllerUiState == null || (controllerUiState.plannerUiState == null && !controllerUiState.libraryLoaded)) {
+                val packageOperationActive = offlinePackageOperationJob?.isActive == true
+                val libraryRefreshInFlight = controllerUiState?.libraryLoading == true ||
+                    (controllerUiState == null && packageOperationActive)
+                val packageSourceEditable = controllerUiState?.packageSourceEditable ?: !packageOperationActive
+                val libraryRefreshEnabled = controllerUiState?.refreshEnabled ?: !packageOperationActive
+                val libraryRefreshCancelEnabled = controllerUiState?.refreshCancelEnabled ?: packageOperationActive
                 OfflinePackagesLibraryPanel(
                     message = listOfNotNull(
                         bootstrapMessage,
                         controllerUiState?.libraryErrorMessage,
-                        if (controllerUiState?.libraryLoading == true) {
+                        if (libraryRefreshInFlight) {
                             "Refreshing package library..."
                         } else {
                             "Refresh package library to continue."
@@ -2628,20 +2640,20 @@ private fun HomePage(
                     ).joinToString("\n\n"),
                     packageSourceBaseUrl = packageSourceBaseUrl,
                     onPackageSourceBaseUrlChange = { nextBaseUrl ->
-                        if (controllerUiState?.packageSourceEditable != true) {
+                        if (!packageSourceEditable) {
                             return@OfflinePackagesLibraryPanel
                         }
                         packageSourceBaseUrl = nextBaseUrl
                         writePackageSourceBaseUrl(prefs, nextBaseUrl)
                         offlinePackagesControllerResult = null
                     },
-                    refreshInFlight = controllerUiState?.libraryLoading == true,
-                    sourceEditable = controllerUiState?.packageSourceEditable == true,
-                    refreshEnabled = controllerUiState?.refreshEnabled == true,
-                    refreshCancelEnabled = controllerUiState?.refreshCancelEnabled == true,
+                    refreshInFlight = libraryRefreshInFlight,
+                    sourceEditable = packageSourceEditable,
+                    refreshEnabled = libraryRefreshEnabled,
+                    refreshCancelEnabled = libraryRefreshCancelEnabled,
                     cancelRequested = offlinePackageCancelRequested,
                     onRefresh = {
-                        if (controllerUiState?.refreshEnabled != true) {
+                        if (!libraryRefreshEnabled) {
                             return@OfflinePackagesLibraryPanel
                         }
                         launchOfflinePackageOperation {

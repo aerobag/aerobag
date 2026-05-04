@@ -900,6 +900,7 @@ pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagemen
                     // Known-bad immutable remote artifact for this app run; do not requeue fetch.
                 } else {
                     fetch.insert(artifact.artifact_id.clone());
+                    retain_installed.extend(matching_installed_filenames);
                 }
             }
             ArtifactPolicy::ProtectedByPause => {
@@ -1840,6 +1841,15 @@ mod tests {
         }
     }
 
+    fn installed_with_filename(id: &str, filename: &str) -> InstalledArtifact {
+        InstalledArtifact {
+            artifact_id: id.to_string(),
+            filename: filename.to_string(),
+            size_bytes: None,
+            checksum_sha256: None,
+        }
+    }
+
     #[test]
     fn selected_expired_package_is_retained_until_replacement_is_installed() {
         let input = PackageManagementInput {
@@ -1873,6 +1883,62 @@ mod tests {
         assert_eq!(plan.fetch, vec!["NW_SEC_2604"]);
         assert_eq!(plan.retain_installed, vec!["NW_SEC_2603.zip"]);
         assert!(plan.gc.is_empty());
+    }
+
+    #[test]
+    fn selected_package_with_stale_filename_is_visible_until_replacement_is_installed() {
+        let current = with_cycle_and_size(
+            pkg(
+                "NW_SEC_2603",
+                "sec",
+                Some("nw"),
+                Some("2026-03-19"),
+                Some("2099-01-01"),
+            ),
+            "2603",
+            1_000,
+        );
+        let stale_filename = "sec_nw_2603_01_old.zip";
+        let current_filename = current.filename.clone();
+        let input = PackageManagementInput {
+            now_epoch_ms: 200,
+            preferences: default_offline_package_preferences(["nw"], ["sec"]),
+            bundle: BundleManifest {
+                packages: vec![current],
+            },
+            installed: vec![installed_with_filename("NW_SEC_2603", stale_filename)],
+            forced_gc_installed_filenames: vec![],
+            suppressed_fetch_filenames: vec![],
+        };
+
+        let plan = plan_offline_packages(&input);
+
+        assert_eq!(plan.fetch, vec!["NW_SEC_2603"]);
+        assert_eq!(plan.retain_installed, vec![stale_filename]);
+        assert!(plan.gc.is_empty());
+
+        let rows = plan_rows_by_dimension(&input, &plan, &BTreeMap::new(), None);
+        let row = offline_packages_ui_row(
+            "nw".to_string(),
+            OfflinePackageSelection::Play,
+            rows.regions.get("nw"),
+        );
+        assert_eq!(
+            row.plan_entries,
+            vec![
+                OfflinePackagesUiPlanEntry {
+                    action: OfflinePackagesUiPlanAction::Keep,
+                    count: 1,
+                    cycles: vec!["2603".to_string()],
+                },
+                OfflinePackagesUiPlanEntry {
+                    action: OfflinePackagesUiPlanAction::Fetch,
+                    count: 1,
+                    cycles: vec!["2603".to_string()],
+                },
+            ]
+        );
+        assert!(!plan.retain_installed.contains(&current_filename));
     }
 
     #[test]

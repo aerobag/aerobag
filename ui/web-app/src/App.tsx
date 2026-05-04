@@ -74,6 +74,7 @@ import {
   type ImageViewportState,
 } from "./domain/imageViewport";
 import {
+  loadMetarTilePathTemplate,
   metarTileUrl,
 } from "./domain/vectorTiles";
 import type {
@@ -2697,9 +2698,10 @@ function MapPage(props: {
       if (overlay.needed_metar_tiles.length > 0) {
         const startedAt = performance.now();
         try {
+          const metarTilePathTemplate = await loadMetarTilePathTemplate(controller.signal);
           const tiles = await Promise.all(
             overlay.needed_metar_tiles.map(async (tile) => {
-              const response = await fetch(metarTileUrl(tile.z, tile.x, tile.y), {
+              const response = await fetch(metarTileUrl(metarTilePathTemplate, tile.z, tile.x, tile.y), {
                 signal: controller.signal,
               });
               if (response.status === 404) {

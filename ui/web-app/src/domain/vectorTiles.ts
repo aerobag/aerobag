@@ -97,8 +97,43 @@ export function visiblePointRecords(
   return visible;
 }
 
-export function metarTileUrl(zoom: number, x: number, y: number) {
-  return `/fast-products/metars/points/metars/${zoom}/${x}/${y}.json`;
+let metarTilePathTemplatePromise: Promise<string> | null = null;
+
+export async function loadMetarTilePathTemplate(signal?: AbortSignal): Promise<string> {
+  if (!metarTilePathTemplatePromise) {
+    metarTilePathTemplatePromise = fetch("/fast-products/metars/manifest.json", {
+      cache: "no-cache",
+      signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`failed to load METAR manifest: ${response.status}`);
+        }
+        const manifest = await response.json() as {
+          map_view?: {
+            tile_path_template?: unknown;
+          };
+        };
+        const template = manifest.map_view?.tile_path_template;
+        if (typeof template !== "string" || template.length === 0) {
+          throw new Error("METAR manifest missing map_view.tile_path_template");
+        }
+        return template;
+      })
+      .catch((error) => {
+        metarTilePathTemplatePromise = null;
+        throw error;
+      });
+  }
+  return metarTilePathTemplatePromise;
+}
+
+export function metarTileUrl(tilePathTemplate: string, zoom: number, x: number, y: number) {
+  const relativePath = tilePathTemplate
+    .replaceAll("{z}", String(zoom))
+    .replaceAll("{x}", String(x))
+    .replaceAll("{y}", String(y));
+  return `/fast-products/metars/${relativePath}`;
 }
 
 export function tileKey(z: number, x: number, y: number) {

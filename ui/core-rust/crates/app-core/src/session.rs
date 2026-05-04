@@ -1346,7 +1346,7 @@ pub fn ingest_metar_tiles_in_session(handle: u32, tiles: &[MetarTilePayload]) ->
     let session = session_mut(&mut sessions, handle)?;
     for tile in tiles {
         session.metar_tile_cache.insert(
-            crate::tile_key(&tile.layer, tile.z, tile.x, tile.y),
+            crate::tile_key("metars", tile.z, tile.x, tile.y),
             tile.clone(),
         );
     }

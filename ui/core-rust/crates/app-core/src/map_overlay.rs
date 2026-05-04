@@ -111,7 +111,8 @@ pub struct PointTilePayload {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetarTileRecord {
-    pub station_id: String,
+    pub kind: String,
+    pub id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1060,11 +1061,14 @@ fn query_metar_overlay(
             continue;
         };
         for record_ref in &tile_payload.records {
+            if record_ref.kind != "metar" {
+                continue;
+            }
             if visible_metars.len() >= METAR_DISPLAY_FEATURE_LIMIT {
                 limit_hit = true;
                 break;
             }
-            let Some(record) = metars.metars_by_station.get(&record_ref.station_id) else {
+            let Some(record) = metars.metars_by_station.get(&record_ref.id) else {
                 continue;
             };
             let feature = visible_metar_feature(record, center_world, scale, width_px, height_px);
@@ -1323,7 +1327,10 @@ fn query_metar_selection_matches(
             continue;
         };
         for record_ref in &tile_payload.records {
-            let Some(record) = metar_payload.metars_by_station.get(&record_ref.station_id) else {
+            if record_ref.kind != "metar" {
+                continue;
+            }
+            let Some(record) = metar_payload.metars_by_station.get(&record_ref.id) else {
                 continue;
             };
             let feature = visible_metar_feature(record, center_world, scale, width_px, height_px);
@@ -3382,7 +3389,8 @@ mod tests {
                 x: tile.x,
                 y: tile.y,
                 records: vec![MetarTileRecord {
-                    station_id: "KAAA".to_string(),
+                    kind: "metar".to_string(),
+                    id: "KAAA".to_string(),
                 }],
             },
         );
@@ -3452,7 +3460,8 @@ mod tests {
                 x: tile.x,
                 y: tile.y,
                 records: vec![MetarTileRecord {
-                    station_id: "KAAA".to_string(),
+                    kind: "metar".to_string(),
+                    id: "KAAA".to_string(),
                 }],
             },
         );

@@ -157,7 +157,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -205,6 +204,7 @@ import net.jonh.aerobag.prototype.domain.NavElementUiView
 import net.jonh.aerobag.prototype.domain.OwnshipMode
 import net.jonh.aerobag.prototype.domain.OwnshipRenderState
 import net.jonh.aerobag.prototype.domain.PackageZipStore
+import net.jonh.aerobag.prototype.domain.PointTilePayload
 import net.jonh.aerobag.prototype.domain.PlaybackStatus
 import net.jonh.aerobag.prototype.domain.PlaybackUiState
 import net.jonh.aerobag.prototype.domain.ProcedureKind
@@ -408,6 +408,68 @@ private data class SituationCardinalLabel(
     val pointUnits: Offset,
     val rotationDeg: Float,
 )
+
+private object VectorTileAssets {
+    private val json = Json {
+        ignoreUnknownKeys = true
+    }
+    private val cache = mutableMapOf<String, PointTilePayload?>()
+
+    suspend fun loadPointTiles(
+        context: Context,
+        vectorPackageId: String,
+        requests: List<net.jonh.aerobag.prototype.domain.VectorTileRequest>,
+    ): List<PointTilePayload> =
+        withContext(Dispatchers.IO) {
+            if (requests.isEmpty()) {
+                return@withContext emptyList()
+            }
+            val entryNames = requests.map { request ->
+                "points/${request.layer}/${request.z}/${request.x}/${request.y}.json"
+            }
+            val missing = synchronized(cache) { entryNames.filter { !cache.containsKey(it) }.toSet() }
+            if (missing.isNotEmpty()) {
+                val vectorZip = InstalledPackages.existingInstalledFile(context, InstalledPackageKind.Data, vectorPackageId)
+                    ?: error("missing installed data package $vectorPackageId")
+                missing.forEach { entryName ->
+                    currentCoroutineContext().ensureActive()
+                    val payload = try {
+                        PackageZipStore.readEntryBytes(vectorZip, entryName)?.decodeToString()?.let {
+                            json.decodeFromString<PointTilePayload>(it)
+                        }
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Throwable) {
+                        null
+                    }
+                    currentCoroutineContext().ensureActive()
+                    synchronized(cache) {
+                        cache[entryName] = payload
+                    }
+                }
+                synchronized(cache) {
+                    missing.filter { cache[it] == null }.forEach { entryName ->
+                        val parts = entryName.removePrefix("points/").removeSuffix(".json").split("/")
+                        synchronized(cache) {
+                            if (parts.size == 4) {
+                                cache[entryName] = PointTilePayload(
+                                    schemaVersion = 1,
+                                    layer = parts[0],
+                                    z = parts[1].toIntOrNull() ?: 0,
+                                    x = parts[2].toIntOrNull() ?: 0,
+                                    y = parts[3].toIntOrNull() ?: 0,
+                                    records = emptyList(),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            synchronized(cache) {
+                entryNames.mapNotNull { cache[it] }
+            }
+        }
+}
 
 private val ThumbRadius = 10.dp
 private val FolderThumbGutter = ThumbSize * 0.3f
@@ -4237,28 +4299,33 @@ private fun MapExplorerPage(
         val loadStartMs = SystemClock.elapsedRealtime()
         val tileResults = withContext(Dispatchers.IO) {
             missingTiles.map { tile ->
-                async {
-                    val key = renderTileKey(tile)
-                    runCatching {
-                        val readStartMs = SystemClock.elapsedRealtime()
-                        val bytes = SectionalPackages.loadTileBytes(context, tile)
-                        val readMs = SystemClock.elapsedRealtime() - readStartMs
-                        if (bytes == null) {
-                            return@runCatching LoadedTileBitmap(key, null, 0, 0L, readMs, 0L)
-                        }
+                currentCoroutineContext().ensureActive()
+                val key = renderTileKey(tile)
+                try {
+                    val readStartMs = SystemClock.elapsedRealtime()
+                    val bytes = SectionalPackages.loadTileBytes(context, tile)
+                    val readMs = SystemClock.elapsedRealtime() - readStartMs
+                    currentCoroutineContext().ensureActive()
+                    if (bytes == null) {
+                        LoadedTileBitmap(key, null, 0, 0L, readMs, 0L)
+                    } else {
                         val decodeStartMs = SystemClock.elapsedRealtime()
                         val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                         val decodeMs = SystemClock.elapsedRealtime() - decodeStartMs
+                        currentCoroutineContext().ensureActive()
                         LoadedTileBitmap(key, bitmap?.asImageBitmap(), bytes.size, bitmap?.byteCount?.toLong() ?: 0L, readMs, decodeMs)
-                    }.onFailure { error ->
-                        Log.w(
-                            TileBudgetLogTag,
-                            "tile load failed map=${selectedMap.id} package=${tile.mapView.packageName ?: tile.mapViewId} storage=${tile.mapView.storageKind} z=${tile.zoom} x=${tile.x} y=${tile.yTms}",
-                            error,
-                        )
-                    }.getOrNull() ?: LoadedTileBitmap(key, null, 0, 0L, 0L, 0L)
+                    }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    Log.w(
+                        TileBudgetLogTag,
+                        "tile load failed map=${selectedMap.id} package=${tile.mapView.packageName ?: tile.mapViewId} storage=${tile.mapView.storageKind} z=${tile.zoom} x=${tile.x} y=${tile.yTms}",
+                        error,
+                    )
+                    LoadedTileBitmap(key, null, 0, 0L, 0L, 0L)
                 }
-            }.map { it.await() }
+            }
         }
         tileBitmapCache.putAll(tileResults.associate { it.key to it.bitmap })
         missingTiles.zip(tileResults).forEach { (tile, result) ->
@@ -4461,14 +4528,30 @@ private fun MapExplorerPage(
             mapOverlayError = null
             return@LaunchedEffect
         }
-        runCatching {
+        val overlay = try {
+            currentCoroutineContext().ensureActive()
             var overlay = uiSession.queryMapOverlay(viewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble())
             repeat(8) {
                 var ingested = false
+                if (overlay.neededPointTiles.isNotEmpty()) {
+                    val payloads = fixture.vectorPackageId?.let { vectorPackageId ->
+                        VectorTileAssets.loadPointTiles(
+                            context.applicationContext,
+                            vectorPackageId,
+                            overlay.neededPointTiles,
+                        )
+                    } ?: emptyList()
+                    currentCoroutineContext().ensureActive()
+                    if (payloads.isNotEmpty()) {
+                        uiSession.ingestPointTiles(payloads)
+                        ingested = true
+                    }
+                }
                 if (overlay.neededMetars) {
                     val payloadJson = withContext(Dispatchers.IO) {
                         URL(resolvePlaybackTraceUrl("/fast-products/metars/metars.json", devServerBaseUrl)).readText()
                     }
+                    currentCoroutineContext().ensureActive()
                     uiSession.ingestMetarsJson(payloadJson)
                     ingested = true
                 }
@@ -4481,6 +4564,7 @@ private fun MapExplorerPage(
                             )
                         }.joinToString(prefix = "[", postfix = "]")
                     }
+                    currentCoroutineContext().ensureActive()
                     uiSession.ingestMetarTilesJson(tilesJson)
                     ingested = true
                 }
@@ -4488,27 +4572,28 @@ private fun MapExplorerPage(
                     val payloadJson = withContext(Dispatchers.IO) {
                         URL(resolvePlaybackTraceUrl("/fast-products/tfrs/tfrs.json", devServerBaseUrl)).readText()
                     }
+                    currentCoroutineContext().ensureActive()
                     uiSession.ingestTfrsJson(payloadJson)
                     ingested = true
                 }
                 if (!ingested) {
                     return@repeat
                 }
+                currentCoroutineContext().ensureActive()
                 overlay = uiSession.queryMapOverlay(viewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble())
             }
             overlay
-        }.onSuccess { overlay ->
-            committedMapOverlay = overlay
-            committedOverlayViewport = viewport
-            committedOverlaySurfaceUnits = OverlaySurfaceUnits(surfaceWidthPx, surfaceHeightPx)
+        } catch (error: CancellationException) {
             mapOverlayError = null
-        }.onFailure { error ->
-            if (error is CancellationException) {
-                mapOverlayError = null
-            } else {
-                mapOverlayError = error.message ?: error::class.java.simpleName
-            }
+            throw error
+        } catch (error: Throwable) {
+            mapOverlayError = error.message ?: error::class.java.simpleName
+            return@LaunchedEffect
         }
+        committedMapOverlay = overlay
+        committedOverlayViewport = viewport
+        committedOverlaySurfaceUnits = OverlaySurfaceUnits(surfaceWidthPx, surfaceHeightPx)
+        mapOverlayError = null
     }
     LaunchedEffect(uiSession, mapLayerState.nexrad.visible, mapLayerState.nexrad.enabled, devServerBaseUrl) {
         val effectStartMs = SystemClock.elapsedRealtime()

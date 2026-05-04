@@ -917,6 +917,11 @@ class NativeUiSession internal constructor(
         return syncGuidanceGeometryFromPlan()
     }
 
+    fun performFlightPlanRowAction(rowUid: String, actionUid: String): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.performFlightPlanRowActionInSessionJson(handle, rowUid, actionUid))
+        return syncGuidanceGeometryFromPlan()
+    }
+
     private fun syncGuidanceGeometry(geometries: List<SessionGuidanceGeometry>): UiSessionSnapshot {
         snapshot =
             decodeSnapshot(
@@ -1071,6 +1076,8 @@ private fun FlightPlan.toWire() = WireFlightPlan(
     name = name,
     legs = legs.map { it.toWire() },
     route_components = routeComponents.map { it.toWire() },
+    route_component_uids = routeComponentUids,
+    route_component_uid_counter = routeComponentUidCounter,
     resolved_legs = resolvedLegs.map { it.toWire() },
     guidance = guidance?.toWire(),
     departure = departure,
@@ -1435,6 +1442,8 @@ internal fun WireFlightPlan.toUiFlightPlan() = FlightPlan(
     name = name,
     legs = legs.map { it.toUi() },
     routeComponents = route_components.map { it.toUi() },
+    routeComponentUids = route_component_uids,
+    routeComponentUidCounter = route_component_uid_counter,
     resolvedLegs = resolved_legs.map { it.toUi() },
     guidance = guidance?.toUi(),
     departure = departure,
@@ -2195,6 +2204,7 @@ private fun WireGuidanceState.toUi() = GuidanceState(
 private fun DirectToState.toWire() = WireDirectToState(
     start = start.toWire(),
     target = target.toWire(),
+    target_component_uid = targetComponentUid,
     target_leg_id = targetLegId,
     resume_leg_id = resumeLegId,
 )
@@ -2202,6 +2212,7 @@ private fun DirectToState.toWire() = WireDirectToState(
 private fun WireDirectToState.toUi() = DirectToState(
     start = start.toUi(),
     target = target.toUi(),
+    targetComponentUid = target_component_uid,
     targetLegId = target_leg_id,
     resumeLegId = resume_leg_id,
 )
@@ -2315,6 +2326,7 @@ private fun ResolvedLegUiView.toWire() = WireResolvedLegUiView(
 private fun WireDirectToUiView.toUi() = DirectToUiView(
     start = start.toUi(),
     target = target.toUi(),
+    targetComponentUid = target_component_uid,
     targetLegId = target_leg_id,
     resumeLegId = resume_leg_id,
     onPlanTarget = on_plan_target,
@@ -2323,6 +2335,7 @@ private fun WireDirectToUiView.toUi() = DirectToUiView(
 private fun DirectToUiView.toWire() = WireDirectToUiView(
     start = start.toWire(),
     target = target.toWire(),
+    target_component_uid = targetComponentUid,
     target_leg_id = targetLegId,
     resume_leg_id = resumeLegId,
     on_plan_target = onPlanTarget,
@@ -2332,6 +2345,8 @@ private fun WireGuidanceUiView.toUi() = GuidanceUiView(
     sequencingMode = sequencing_mode.toUi(),
     activeLegIndex = active_leg_index,
     displaySplitLegIndex = display_split_leg_index,
+    activeFromRowUid = active_from_row_uid,
+    activeToRowUid = active_to_row_uid,
     activeComponentIndex = active_component_index,
     activeLeg = active_leg?.toUiPlanLeg(),
     navElement = nav_element.toUi(),
@@ -2347,6 +2362,8 @@ private fun GuidanceUiView.toWire() = WireGuidanceUiView(
     sequencing_mode = sequencingMode.toWire(),
     active_leg_index = activeLegIndex,
     display_split_leg_index = displaySplitLegIndex,
+    active_from_row_uid = activeFromRowUid,
+    active_to_row_uid = activeToRowUid,
     active_component_index = activeComponentIndex,
     active_leg = activeLeg?.toWire(),
     nav_element = navElement.toWire(),
@@ -2436,9 +2453,11 @@ private fun FlightPlanUiState.toWire() = WireFlightPlanUiState(
 )
 
 private fun WireFlightPlanDisplayRowUiView.toUi() = FlightPlanDisplayRowUiView(
+    uid = uid,
     label = label,
     rowKind = row_kind.toUi(),
     componentKind = component_kind?.toUi(),
+    componentUid = component_uid,
     componentIndex = component_index,
     legIndex = leg_index,
     distanceNm = distance_nm,
@@ -2466,9 +2485,11 @@ private fun WireFlightPlanDisplayRowUiView.toUi() = FlightPlanDisplayRowUiView(
 )
 
 private fun FlightPlanDisplayRowUiView.toWire() = WireFlightPlanDisplayRowUiView(
+    uid = uid,
     label = label,
     row_kind = rowKind.toWire(),
     component_kind = componentKind?.toWire(),
+    component_uid = componentUid,
     component_index = componentIndex,
     leg_index = legIndex,
     distance_nm = distanceNm,
@@ -2509,14 +2530,18 @@ private fun FlightPlanDisplayRowKind.toWire() = when (this) {
 
 private fun WireFlightPlanRowActionUiView.toUi() = FlightPlanRowActionUiView(
     id = id,
+    uid = uid,
     label = label,
     enabled = enabled,
+    execution = execution,
 )
 
 private fun FlightPlanRowActionUiView.toWire() = WireFlightPlanRowActionUiView(
     id = id,
+    uid = uid,
     label = label,
     enabled = enabled,
+    execution = execution,
 )
 
 private fun WireFlightPlanUiMutation.toUi() = FlightPlanUiMutation(

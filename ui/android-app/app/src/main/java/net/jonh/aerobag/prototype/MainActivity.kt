@@ -25,7 +25,6 @@ import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -103,7 +102,6 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.PathFillType
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.graphicsLayer
@@ -176,7 +174,6 @@ import net.jonh.aerobag.prototype.domain.AppState
 import net.jonh.aerobag.prototype.domain.AirwayPresentationPlan
 import net.jonh.aerobag.prototype.domain.AirwaySuggestion
 import net.jonh.aerobag.prototype.domain.WaypointIdentifierSuggestion
-import net.jonh.aerobag.prototype.domain.ConcretizedNavItem
 import net.jonh.aerobag.prototype.domain.CoreMapViewport
 import net.jonh.aerobag.prototype.domain.DerivedChartPageState
 import net.jonh.aerobag.prototype.domain.FlightPlanUiMutation
@@ -224,7 +221,6 @@ import net.jonh.aerobag.prototype.domain.ResolvedLeg
 import net.jonh.aerobag.prototype.domain.ResolvedLegSource
 import net.jonh.aerobag.prototype.domain.RenderTile
 import net.jonh.aerobag.prototype.domain.RouteSegmentStatus
-import net.jonh.aerobag.prototype.domain.RouteComponentUiView
 import net.jonh.aerobag.prototype.domain.RouteComponentViewKind
 import net.jonh.aerobag.prototype.domain.RouteComponent
 import net.jonh.aerobag.prototype.domain.ScreenPoint
@@ -490,6 +486,7 @@ private data class FlightPlanDisplayRow(
     val label: String,
     val rowKind: String,
     val componentKind: RouteComponentViewKind? = null,
+    val componentUid: String? = null,
     val componentIndex: Int? = null,
     val legIndex: Int? = null,
     val distanceNm: Double? = null,
@@ -2566,6 +2563,7 @@ private fun AerobagApp() {
                 AppPage.Plan -> {
                     FlightPlanPage(
                         appCore = appCore,
+                        uiSession = uiSession,
                         page = page,
                         pageHistory = pageHistory,
                         uptimeLabel = uptimeLabel,
@@ -2577,6 +2575,9 @@ private fun AerobagApp() {
                         onSelectPage = ::navigateToPage,
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
                         onOpenCharts = { airportId -> if (airportId != null) openChartsForAirport(airportId) },
+                        onApplySessionSnapshot = { snapshot ->
+                            sessionSnapshot = snapshot
+                        },
                         onApplyMutation = { mutation ->
                             sessionSnapshot = uiSession.replaceFlightPlan(mutation.plan)
                         },
@@ -6250,6 +6251,7 @@ private fun AirportInsertPanel(
 @Composable
 private fun FlightPlanPage(
     appCore: NativeAppCoreAdapter,
+    uiSession: NativeUiSession,
     page: AppPage,
     pageHistory: List<AppViewSnapshot>,
     uptimeLabel: String,
@@ -6261,6 +6263,7 @@ private fun FlightPlanPage(
     onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
     onOpenCharts: (String?) -> Unit,
+    onApplySessionSnapshot: (UiSessionSnapshot) -> Unit,
     onApplyMutation: (FlightPlanUiMutation) -> Unit,
 ) {
     val planWaypointTrayStart = ThumbGap + PlanArrowLane + ThumbSize * 2.5f + PlanGridGap
@@ -6275,19 +6278,6 @@ private fun FlightPlanPage(
     var trayOpenedAtMs by remember { mutableStateOf(0L) }
     val projectedPlanUiState = requireNotNull(planUiState) { "FlightPlanPage requires core-projected FlightPlanUiState" }
     val guidance = projectedPlanUiState.guidance
-    val componentViews = remember(projectedPlanUiState.components) { projectedPlanUiState.components }
-    val topLevelOrderSummary = remember(componentViews) {
-        componentViews.joinToString(" | ") { component ->
-            val label =
-                when (component.kind) {
-                    RouteComponentViewKind.Waypoint -> navRefLabel(component.items.filterIsInstance<ConcretizedNavItem.Waypoint>().firstOrNull()?.navRef ?: component.precedingWaypoint ?: component.followingWaypoint ?: NavRef.Fix("?"))
-                    RouteComponentViewKind.Airway,
-                    RouteComponentViewKind.Procedure,
-                    -> structuredComponentLabel(component)
-                }
-            "${component.componentIndex}:$label"
-        }
-    }
     val rows = remember(projectedPlanUiState.displayRows) {
         buildFlightPlanDisplayRows(projectedPlanUiState)
     }
@@ -6309,7 +6299,6 @@ private fun FlightPlanPage(
                 val paneTop = defaultTop + ThumbSize * 0.1f
                 val estimatedRows =
                     when {
-                        reorderOpen -> 2
                         airportInsert != null -> 5
                         procedurePicker != null -> {
                             val picker = procedurePicker!!
@@ -6344,7 +6333,6 @@ private fun FlightPlanPage(
                 val paneTop = defaultTop + ThumbSize * 0.1f
                 val estimatedRows =
                     when {
-                        reorderOpen -> 2
                         airportInsert != null -> 5
                         procedurePicker != null -> {
                             val picker = procedurePicker!!
@@ -6373,34 +6361,29 @@ private fun FlightPlanPage(
         }
     val waypointTrayWidth = ThumbSize * 2.35f
     val structuredArrow =
-        remember(rows, guidance?.activeLeg, structuredSurfaceBounds, structuredRowBounds.toMap(), density) {
+        remember(rows, guidance?.activeFromRowUid, guidance?.activeToRowUid, structuredSurfaceBounds, structuredRowBounds.toMap(), density) {
             val surfaceBounds = structuredSurfaceBounds ?: return@remember null
-            val activeLeg = guidance?.activeLeg ?: return@remember null
+            val guidanceView = guidance ?: return@remember null
             val visibleIndices =
                 rows.mapIndexedNotNull { index, row ->
                     if (structuredRowBounds.containsKey(row.id)) index else null
                 }
             val firstVisibleIndex = visibleIndices.minOrNull()
             val lastVisibleIndex = visibleIndices.maxOrNull()
-            val fromIndex =
-                rows.indexOfFirst { row ->
-                    row.rowKind == "waypoint" && navRefsEqual(row.navRef, activeLeg.from)
-                }
-            if (fromIndex < 0) {
+            val toRowUid = guidanceView.activeToRowUid ?: return@remember null
+            val toIndex = rows.indexOfFirst { row -> row.id == toRowUid }
+            if (toIndex < 0) {
                 return@remember null
             }
-            var toIndex = -1
-            for (index in (fromIndex + 1) until rows.size) {
-                val row = rows[index]
-                if (row.rowKind == "waypoint" && navRefsEqual(row.navRef, activeLeg.to)) {
-                    toIndex = index
-                    break
-                }
-            }
+            val fromIndex =
+                guidanceView.activeFromRowUid
+                    ?.let { uid -> rows.indexOfFirst { row -> row.id == uid } }
+                    ?: -1
             val lanePx = with(density) { PlanArrowLane.toPx() }
             val headLength = with(density) { 12.dp.toPx() }
             val textInsetPx = with(density) { PlanArrowButtonInset.toPx() }
             val surfaceHeight = surfaceBounds.height
+            val elbowX = lanePx * 0.25f
             fun rowPoint(index: Int, preferBelow: Boolean): StructuredArrowEndpoint? {
                 val row = rows[index]
                 val indentPx = with(density) { (row.depth * 18).dp.toPx() }
@@ -6445,32 +6428,21 @@ private fun FlightPlanPage(
                     else -> null
                 }
             }
-            val fromEndpoint = rowPoint(fromIndex, preferBelow = false) ?: return@remember null
-            val toEndpoint =
-                if (toIndex >= 0) {
-                    rowPoint(toIndex, preferBelow = toIndex > fromIndex)
-                } else {
-                    StructuredArrowEndpoint(
-                        point = Offset(x = fromEndpoint.point.x, y = surfaceHeight),
-                        clipped = true,
-                        clippedAbove = false,
-                        clippedBelow = true,
-                    )
-                } ?: return@remember null
-            if (fromEndpoint.clipped && toEndpoint.clipped) {
-                return@remember null
-            }
+            val toEndpoint = rowPoint(toIndex, preferBelow = fromIndex >= 0 && toIndex > fromIndex) ?: return@remember null
             if (toEndpoint.clippedAbove) {
                 return@remember null
             }
-            val fromPoint = fromEndpoint.point
+            val fromEndpoint = if (fromIndex >= 0) rowPoint(fromIndex, preferBelow = false) else null
+            if (fromEndpoint?.clipped == true && toEndpoint.clipped) {
+                return@remember null
+            }
+            val fromPoint = fromEndpoint?.point ?: Offset(x = elbowX, y = toEndpoint.point.y)
             val toPoint = toEndpoint.point
-            val elbowX = lanePx * 0.25f
             StructuredArrowSpec(
                 fromPoint = fromPoint,
                 toPoint = toPoint,
                 toClipped = toEndpoint.clipped,
-                fromClippedAbove = fromEndpoint.clippedAbove,
+                fromClippedAbove = fromEndpoint?.clippedAbove ?: false,
                 elbowX = elbowX,
                 shaftEndX = maxOf(elbowX, toPoint.x - headLength + with(density) { 1.5.dp.toPx() }),
                 headLength = headLength,
@@ -6481,7 +6453,6 @@ private fun FlightPlanPage(
         selectedWaypointIndex = null
         selectedWaypointTrayAnchor = null
         pendingSelectedRowKey = null
-        reorderOpen = false
         airwayPicker = null
         procedurePicker = null
         airportInsert = null
@@ -6517,13 +6488,8 @@ private fun FlightPlanPage(
             selectedWaypointIndex = nextIndex
         } else {
             selectedWaypointIndex = null
-            reorderOpen = false
         }
         pendingSelectedRowKey = null
-    }
-
-    LaunchedEffect(topLevelOrderSummary) {
-        Log.d("AerobagReorder", "topLevelOrder $topLevelOrderSummary")
     }
 
     Box(
@@ -6573,7 +6539,6 @@ private fun FlightPlanPage(
                                     FlightPlanDataRow(
                                         row = block.row,
                                         selected = selectedWaypointIndex == block.index,
-                                        reorderOpen = reorderOpen,
                                         structuredRowBounds = structuredRowBounds,
                                         onWaypointClick = {
                                             trayOpenedAtMs = SystemClock.elapsedRealtime()
@@ -6585,7 +6550,6 @@ private fun FlightPlanPage(
                                                 }
                                             selectedWaypointIndex = block.index
                                             pendingSelectedRowKey = block.row.selectionKey
-                                            reorderOpen = false
                                             airwayPicker = null
                                             procedurePicker = null
                                             airportInsert = null
@@ -6597,7 +6561,6 @@ private fun FlightPlanPage(
                                     FlightPlanGroupBlock(
                                         header = block.header,
                                         headerSelected = selectedWaypointIndex == block.headerIndex,
-                                        reorderOpen = reorderOpen,
                                         structuredRowBounds = structuredRowBounds,
                                         onHeaderClick = {
                                             trayOpenedAtMs = SystemClock.elapsedRealtime()
@@ -6609,7 +6572,6 @@ private fun FlightPlanPage(
                                                 }
                                             selectedWaypointIndex = block.headerIndex
                                             pendingSelectedRowKey = block.header.selectionKey
-                                            reorderOpen = false
                                             airwayPicker = null
                                             procedurePicker = null
                                             airportInsert = null
@@ -6628,7 +6590,6 @@ private fun FlightPlanPage(
                                                 }
                                             selectedWaypointIndex = childIndex
                                             pendingSelectedRowKey = block.children.firstOrNull { it.first == childIndex }?.second?.selectionKey
-                                            reorderOpen = false
                                             airwayPicker = null
                                             procedurePicker = null
                                             airportInsert = null
@@ -7003,57 +6964,6 @@ private fun FlightPlanPage(
                         MenuPanelRow(label = "Back", active = false, enabled = true, onSelect = { airwayPicker = picker.copy(selectedEntryIndex = null) })
                     }
                 }
-            } else if (reorderOpen) {
-                BoxWithConstraints(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .zIndex(5f),
-                ) {
-                    val trayWidth = minOf(ThumbSize * 4f, maxWidth - waypointTrayStart - ThumbGap)
-                    MenuPanel(
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(top = waypointTrayTop, start = waypointTrayStart, end = ThumbGap),
-                        width = trayWidth,
-                    ) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(ThumbGap),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            CompactSquareButton(
-                                label = "Up",
-                                modifier = Modifier.size(ThumbSize),
-                                enabled = selectedRow.componentIndex != null && selectedRow.canReorderUp,
-                                onClick = {
-                                    selectedRow.componentIndex?.let {
-                                        Log.d(
-                                            "AerobagReorder",
-                                            "request move dir=-1 selectedIndex=$selectedWaypointIndex key=${selectedRow.selectionKey} component=$it row=${selectedRow.label} orderBefore=$topLevelOrderSummary",
-                                        )
-                                        pendingSelectedRowKey = selectedRow.selectionKey
-                                        onApplyMutation(appCore.moveComponentUi(samplePlan, it, -1))
-                                    }
-                                },
-                            )
-                            CompactSquareButton(
-                                label = "Down",
-                                modifier = Modifier.size(ThumbSize),
-                                enabled = selectedRow.componentIndex != null && selectedRow.canReorderDown,
-                                onClick = {
-                                    selectedRow.componentIndex?.let {
-                                        Log.d(
-                                            "AerobagReorder",
-                                            "request move dir=1 selectedIndex=$selectedWaypointIndex key=${selectedRow.selectionKey} component=$it row=${selectedRow.label} orderBefore=$topLevelOrderSummary",
-                                        )
-                                        pendingSelectedRowKey = selectedRow.selectionKey
-                                        onApplyMutation(appCore.moveComponentUi(samplePlan, it, 1))
-                                    }
-                                },
-                            )
-                        }
-                    }
-                }
             } else {
                 MenuPanel(
                     modifier = Modifier
@@ -7071,32 +6981,22 @@ private fun FlightPlanPage(
                                 if (!action.enabled) {
                                     return@MenuPanelRow
                                 }
+                                if (action.execution == "core_session") {
+                                    runCatching {
+                                        uiSession.performFlightPlanRowAction(selectedRow.id, action.uid)
+                                    }.onSuccess { snapshot ->
+                                        onApplySessionSnapshot(snapshot)
+                                    }.onFailure { error ->
+                                        Log.e(
+                                            "AerobagPlan",
+                                            "core row action failed row=${selectedRow.id} action=${action.uid}",
+                                            error,
+                                        )
+                                    }
+                                    closePanels()
+                                    return@MenuPanelRow
+                                }
                                 when (action.id) {
-                                    "activate_leg" -> {
-                                        selectedRow.legIndex?.let {
-                                            onApplyMutation(appCore.activateLegUi(samplePlan, it))
-                                        }
-                                        closePanels()
-                                    }
-                                    "remove",
-                                    "remove_all_above",
-                                    "remove_airway",
-                                    "remove_procedure",
-                                    -> {
-                                        selectedRow.componentIndex?.let {
-                                            onApplyMutation(
-                                                if (action.id == "remove_all_above") {
-                                                    appCore.removeAllAboveUi(samplePlan, it)
-                                                } else {
-                                                    appCore.deleteComponentUi(samplePlan, it)
-                                                },
-                                            )
-                                        }
-                                        closePanels()
-                                    }
-                                    "reorder" -> {
-                                        reorderOpen = true
-                                    }
                                     "insert_before",
                                     "insert_after",
                                     -> {
@@ -8639,48 +8539,10 @@ private fun PlanHeaderRow() {
     }
 }
 
-private fun concretizedNavItemLabel(item: ConcretizedNavItem): String = when (item) {
-    is ConcretizedNavItem.Waypoint -> navRefLabel(item.navRef)
-    is ConcretizedNavItem.Discontinuity -> item.label
-}
-
-private fun structuredComponentLabel(component: RouteComponentUiView): String =
-    if (component.kind == RouteComponentViewKind.Airway) {
-        component.summary.substringBefore("(").trim()
-    } else {
-        component.summary
-    }
-
-private fun componentWaypointNavRef(component: RouteComponentUiView?): NavRef? {
-    val item = component?.items?.firstOrNull()
-    return if (item is ConcretizedNavItem.Waypoint) item.navRef else null
-}
-
-private fun navRefsEqual(left: NavRef?, right: NavRef?): Boolean = when {
-    left == null || right == null -> false
-    left is NavRef.Airport && right is NavRef.Airport -> left.code == right.code
-    left is NavRef.Navaid && right is NavRef.Navaid -> left.code == right.code
-    left is NavRef.Fix && right is NavRef.Fix -> left.code == right.code
-    left is NavRef.LatLon && right is NavRef.LatLon -> left.lat == right.lat && left.lon == right.lon
-    else -> false
-}
-
-private fun navRefSelectionKey(navRef: NavRef?): String = when (navRef) {
-    is NavRef.Airport -> "airport:${navRef.code}"
-    is NavRef.Navaid -> "navaid:${navRef.code}"
-    is NavRef.Fix -> "fix:${navRef.code}"
-    is NavRef.LatLon -> "latlon:${navRef.lat},${navRef.lon}"
-    null -> "none"
-}
-
 private fun buildFlightPlanDisplayRows(planUiState: FlightPlanUiState): List<FlightPlanDisplayRow> =
     planUiState.displayRows.mapIndexed { index, row ->
         FlightPlanDisplayRow(
-            id = when (row.rowKind) {
-                FlightPlanDisplayRowKind.Waypoint -> if (row.depth == 0) "component:${row.componentIndex ?: index}" else "item:${row.componentIndex ?: "x"}:${row.label}:$index"
-                FlightPlanDisplayRowKind.Group -> "group:${row.componentIndex ?: index}"
-                FlightPlanDisplayRowKind.Discontinuity -> "disc:${row.componentIndex ?: "x"}:$index"
-            },
+            id = row.uid,
             selectionKey = selectionKeyForDisplayRow(row, index),
             label = row.label,
             rowKind =
@@ -8690,6 +8552,7 @@ private fun buildFlightPlanDisplayRows(planUiState: FlightPlanUiState): List<Fli
                     FlightPlanDisplayRowKind.Discontinuity -> "discontinuity"
                 },
             componentKind = row.componentKind,
+            componentUid = row.componentUid,
             componentIndex = row.componentIndex,
             legIndex = row.legIndex,
             distanceNm = row.distanceNm,
@@ -8715,18 +8578,7 @@ private fun buildFlightPlanDisplayRows(planUiState: FlightPlanUiState): List<Fli
     }
 
 private fun selectionKeyForDisplayRow(row: FlightPlanDisplayRowUiView, index: Int): String =
-    when (row.rowKind) {
-        FlightPlanDisplayRowKind.Waypoint ->
-            if (row.depth == 0) {
-                "waypoint:${navRefSelectionKey(row.navRef)}"
-            } else {
-                "child:${row.componentKind?.name ?: "row"}:${navRefSelectionKey(row.navRef)}:$index"
-            }
-        FlightPlanDisplayRowKind.Group ->
-            "group:${row.componentKind?.name ?: "group"}:${row.label}:${navRefSelectionKey(row.originAnchor)}:${navRefSelectionKey(row.destinationAnchor)}"
-        FlightPlanDisplayRowKind.Discontinuity ->
-            "disc:${row.componentKind?.name ?: "row"}:$index"
-    }
+    row.uid.ifEmpty { "row:$index" }
 
 private fun buildFlightPlanDisplayBlocks(rows: List<FlightPlanDisplayRow>): List<FlightPlanDisplayBlock> {
     val blocks = mutableListOf<FlightPlanDisplayBlock>()
@@ -8999,27 +8851,14 @@ private fun PlanWaypointSymbol(
 private fun FlightPlanDataRow(
     row: FlightPlanDisplayRow,
     selected: Boolean,
-    reorderOpen: Boolean = false,
     modifier: Modifier = Modifier,
     structuredRowBounds: MutableMap<String, Rect>? = null,
     onWaypointClick: () -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
-    val childRow = row.depth > 0
     val targetIndent = ThumbSize * (row.depth * 0.5f)
     val indent by animateDpAsState(targetValue = targetIndent, label = "planRowIndent")
-    val rowOpacity by animateFloatAsState(
-        targetValue = if (reorderOpen && childRow) 0.72f else 1f,
-        label = "planRowOpacity",
-    )
-    val labelScaleY by animateFloatAsState(
-        targetValue = if (reorderOpen && childRow) 0.72f else 1f,
-        label = "planRowLabelScaleY",
-    )
-    val cellHeight by animateDpAsState(
-        targetValue = if (reorderOpen && childRow) ThumbSize * 0.34f else ThumbSize,
-        label = "planRowCellHeight",
-    )
+    val cellHeight = ThumbSize
     val rowBoundsModifier =
         if (structuredRowBounds != null) {
             rememberStructuredRowBounds(row.id, structuredRowBounds)
@@ -9050,7 +8889,7 @@ private fun FlightPlanDataRow(
                         .height(cellHeight)
                         .width(ThumbSize * 2.5f - indent)
                         .align(Alignment.CenterEnd)
-                        .alpha(rowOpacity),
+                        .alpha(1f),
                 centered = false,
                 textStartPadding = 10.dp,
                 backgroundColor = defaultButtonColor,
@@ -9058,11 +8897,7 @@ private fun FlightPlanDataRow(
                 selectedColor = selectedButtonColor,
                 textModifier =
                     Modifier
-                        .padding(end = ThumbSize * 0.78f)
-                        .graphicsLayer {
-                            scaleY = labelScaleY
-                            transformOrigin = TransformOrigin(0f, 0.5f)
-                        },
+                        .padding(end = ThumbSize * 0.78f),
                 onClick = onWaypointClick,
             )
             PlanWaypointSymbol(
@@ -9070,12 +8905,12 @@ private fun FlightPlanDataRow(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
                     .padding(end = ThumbSize * 0.12f)
-                    .alpha(rowOpacity),
+                    .alpha(1f),
             )
         }
-        PlanCell(formatPlanDistance(row.distanceNm), Modifier.weight(1f), cellHeight = cellHeight, alpha = rowOpacity)
-        PlanCell("—", Modifier.weight(1f), cellHeight = cellHeight, alpha = rowOpacity)
-        PlanCell(formatPlanCourse(row.courseDeg), Modifier.weight(1f), cellHeight = cellHeight, alpha = rowOpacity)
+        PlanCell(formatPlanDistance(row.distanceNm), Modifier.weight(1f), cellHeight = cellHeight)
+        PlanCell("—", Modifier.weight(1f), cellHeight = cellHeight)
+        PlanCell(formatPlanCourse(row.courseDeg), Modifier.weight(1f), cellHeight = cellHeight)
     }
 }
 
@@ -9083,7 +8918,6 @@ private fun FlightPlanDataRow(
 private fun FlightPlanGroupBlock(
     header: FlightPlanDisplayRow,
     headerSelected: Boolean,
-    reorderOpen: Boolean,
     structuredRowBounds: MutableMap<String, Rect>? = null,
     onHeaderClick: () -> Unit,
     children: List<Pair<Int, FlightPlanDisplayRow>>,
@@ -9120,7 +8954,6 @@ private fun FlightPlanGroupBlock(
         FlightPlanDataRow(
             row = header,
             selected = headerSelected,
-            reorderOpen = reorderOpen,
             structuredRowBounds = structuredRowBounds,
             onWaypointClick = onHeaderClick,
         )
@@ -9128,7 +8961,6 @@ private fun FlightPlanGroupBlock(
             FlightPlanDataRow(
                 row = childRow,
                 selected = selectedWaypointIndex == childIndex,
-                reorderOpen = reorderOpen,
                 structuredRowBounds = structuredRowBounds,
                 onWaypointClick = { onChildClick(childIndex) },
             )

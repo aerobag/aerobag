@@ -244,6 +244,12 @@ interface NativeBridge {
         planJson: String,
     ): String
 
+    fun performFlightPlanRowActionInSessionJson(
+        handle: Long,
+        rowUid: String,
+        actionUid: String,
+    ): String
+
     fun setGuidanceLegGeometryInSessionJson(
         handle: Long,
         geometriesJson: String,
@@ -610,6 +616,12 @@ object NativeBindings : NativeBridge {
     external override fun replaceFlightPlanInSessionJson(
         handle: Long,
         planJson: String,
+    ): String
+
+    external override fun performFlightPlanRowActionInSessionJson(
+        handle: Long,
+        rowUid: String,
+        actionUid: String,
     ): String
 
     external override fun setGuidanceLegGeometryInSessionJson(

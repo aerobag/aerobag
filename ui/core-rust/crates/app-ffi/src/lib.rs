@@ -25,16 +25,18 @@ pub fn remove_flight_plan_leg_json(plan_json: &str, index: usize) -> Result<Stri
 pub fn delete_component_ui_json(plan_json: &str, component_index: usize) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation =
-        app_core::delete_component_ui(&plan, component_index).map_err(|err| err.to_string())?;
+    let mutation = project_plan_mutation(
+        app_core::delete_component(&plan, component_index).map_err(|err| err.to_string())?,
+    );
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
 pub fn remove_all_above_ui_json(plan_json: &str, component_index: usize) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation =
-        app_core::remove_all_above_ui(&plan, component_index).map_err(|err| err.to_string())?;
+    let mutation = project_plan_mutation(
+        app_core::remove_all_above(&plan, component_index).map_err(|err| err.to_string())?,
+    );
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
@@ -45,8 +47,9 @@ pub fn move_component_ui_json(
 ) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation = app_core::move_component_ui(&plan, component_index, delta)
-        .map_err(|err| err.to_string())?;
+    let mutation = project_plan_mutation(
+        app_core::move_component(&plan, component_index, delta).map_err(|err| err.to_string())?,
+    );
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
@@ -60,16 +63,25 @@ pub fn insert_waypoint_ui_json(
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let waypoint: app_core::NavRef =
         serde_json::from_str(waypoint_json).map_err(|err| err.to_string())?;
-    let mutation = app_core::insert_waypoint_ui(&plan, component_index, before, waypoint)
-        .map_err(|err| err.to_string())?;
+    let mutation = project_plan_mutation(
+        app_core::insert_waypoint(&plan, component_index, before, waypoint)
+            .map_err(|err| err.to_string())?,
+    );
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
 pub fn activate_leg_ui_json(plan_json: &str, leg_index: usize) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation = app_core::activate_leg_ui(&plan, leg_index).map_err(|err| err.to_string())?;
+    let mutation = project_plan_mutation(
+        app_core::activate_leg(&plan, leg_index).map_err(|err| err.to_string())?,
+    );
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
+fn project_plan_mutation(plan: app_core::FlightPlan) -> app_core::FlightPlanUiMutation {
+    let ui_state = app_core::project_ui_state(&plan);
+    app_core::FlightPlanUiMutation { plan, ui_state }
 }
 
 pub fn activate_next_leg_ui_json(plan_json: &str) -> Result<String, String> {
@@ -426,6 +438,20 @@ pub fn replace_flight_plan_in_session_json(handle: u64, plan_json: &str) -> Resu
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let snapshot = app_core::replace_flight_plan_in_session(handle as u32, plan)
         .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn perform_flight_plan_row_action_in_session_json(
+    handle: u64,
+    row_uid: &str,
+    action_uid: &str,
+) -> Result<String, String> {
+    let snapshot = app_core::perform_flight_plan_row_action_in_session(
+        handle as u32,
+        row_uid.to_string(),
+        action_uid.to_string(),
+    )
+    .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -1866,6 +1892,22 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_rep
     let result = (|| {
         let plan_json = get_java_string(&mut env, plan_json)?;
         replace_flight_plan_in_session_json(handle as u64, &plan_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_performFlightPlanRowActionInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    row_uid: JString,
+    action_uid: JString,
+) -> jstring {
+    let result = (|| {
+        let row_uid = get_java_string(&mut env, row_uid)?;
+        let action_uid = get_java_string(&mut env, action_uid)?;
+        perform_flight_plan_row_action_in_session_json(handle as u64, &row_uid, &action_uid)
     })();
     return_string(&mut env, result)
 }

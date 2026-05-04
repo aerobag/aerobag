@@ -170,6 +170,8 @@ data class WireFlightPlan(
     val name: String,
     val legs: List<WirePlanLeg>,
     val route_components: List<WireRouteComponent> = emptyList(),
+    val route_component_uids: List<String> = emptyList(),
+    val route_component_uid_counter: Long = 0,
     val resolved_legs: List<WireResolvedLeg> = emptyList(),
     val guidance: WireGuidanceState? = null,
     val departure: String? = null,
@@ -1069,6 +1071,7 @@ enum class WireSequencingMode {
 data class WireDirectToState(
     val start: WireNavRef,
     val target: WireNavRef,
+    val target_component_uid: String? = null,
     val target_leg_id: String? = null,
     val resume_leg_id: String? = null,
 )
@@ -1243,6 +1246,7 @@ data class WireResolvedLegUiView(
 data class WireDirectToUiView(
     val start: WireNavRef,
     val target: WireNavRef,
+    val target_component_uid: String? = null,
     val target_leg_id: String? = null,
     val resume_leg_id: String? = null,
     val on_plan_target: Boolean,
@@ -1253,6 +1257,8 @@ data class WireGuidanceUiView(
     val sequencing_mode: WireSequencingMode,
     val active_leg_index: Int? = null,
     val display_split_leg_index: Int? = null,
+    val active_from_row_uid: String? = null,
+    val active_to_row_uid: String? = null,
     val active_component_index: Int? = null,
     val active_leg: WirePlanLeg? = null,
     val nav_element: WireNavElementUiView = WireNavElementUiView(),
@@ -1294,15 +1300,19 @@ enum class WireFlightPlanDisplayRowKind {
 @Serializable
 data class WireFlightPlanRowActionUiView(
     val id: String,
+    val uid: String = "",
     val label: String,
     val enabled: Boolean,
+    val execution: String = "ui_controller",
 )
 
 @Serializable
 data class WireFlightPlanDisplayRowUiView(
+    val uid: String = "",
     val label: String,
     val row_kind: WireFlightPlanDisplayRowKind,
     val component_kind: WireRouteComponentViewKind? = null,
+    val component_uid: String? = null,
     val component_index: Int? = null,
     val leg_index: Int? = null,
     val distance_nm: Double? = null,

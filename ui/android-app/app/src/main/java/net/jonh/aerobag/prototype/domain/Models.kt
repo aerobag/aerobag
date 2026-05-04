@@ -54,6 +54,8 @@ data class FlightPlan(
     val name: String,
     val legs: List<FlightPlanLeg>,
     val routeComponents: List<RouteComponent> = emptyList(),
+    val routeComponentUids: List<String> = emptyList(),
+    val routeComponentUidCounter: Long = 0,
     val resolvedLegs: List<ResolvedLeg> = emptyList(),
     val guidance: GuidanceState? = null,
     val departure: String?,
@@ -273,6 +275,7 @@ enum class SuspendReason {
 data class DirectToState(
     val start: NavRef,
     val target: NavRef,
+    val targetComponentUid: String? = null,
     val targetLegId: String?,
     val resumeLegId: String?,
 )
@@ -327,6 +330,7 @@ data class ResolvedLegUiView(
 data class DirectToUiView(
     val start: NavRef,
     val target: NavRef,
+    val targetComponentUid: String? = null,
     val targetLegId: String?,
     val resumeLegId: String?,
     val onPlanTarget: Boolean,
@@ -336,6 +340,8 @@ data class GuidanceUiView(
     val sequencingMode: SequencingMode,
     val activeLegIndex: Int?,
     val displaySplitLegIndex: Int?,
+    val activeFromRowUid: String? = null,
+    val activeToRowUid: String? = null,
     val activeComponentIndex: Int?,
     val activeLeg: PlanLeg?,
     val navElement: NavElementUiView,
@@ -368,14 +374,18 @@ enum class FlightPlanDisplayRowKind {
 
 data class FlightPlanRowActionUiView(
     val id: String,
+    val uid: String = "",
     val label: String,
     val enabled: Boolean,
+    val execution: String = "ui_controller",
 )
 
 data class FlightPlanDisplayRowUiView(
+    val uid: String = "",
     val label: String,
     val rowKind: FlightPlanDisplayRowKind,
     val componentKind: RouteComponentViewKind?,
+    val componentUid: String? = null,
     val componentIndex: Int?,
     val legIndex: Int?,
     val distanceNm: Double?,

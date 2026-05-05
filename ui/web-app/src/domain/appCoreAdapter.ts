@@ -158,7 +158,8 @@ export type MetarTilePayload = {
   x: number;
   y: number;
   records: Array<{
-    station_id: string;
+    kind: string;
+    id: string;
   }>;
 };
 
@@ -236,6 +237,23 @@ export type VisibleMetarFeature = {
   screen_y: number;
   flight_category: "vfr" | "mvfr" | "ifr" | "lifr" | "missing" | string;
   ceiling_amount: "skc" | "few" | "sct" | "bkn" | "ovc" | "missing" | string;
+};
+
+export type VisiblePirepFeature = {
+  id: string;
+  screen_x: number;
+  screen_y: number;
+  symbol:
+    | "generic"
+    | "light-icing"
+    | "moderate-icing"
+    | "severe-icing"
+    | "light-turbulence"
+    | "moderate-turbulence"
+    | "severe-turbulence"
+    | string;
+  icing: "none" | "light" | "moderate" | "severe" | "unknown" | string;
+  turbulence: "none" | "light" | "moderate" | "severe" | "unknown" | string;
 };
 
 export type AirspaceFeatureRequest = {
@@ -319,6 +337,7 @@ export type MetarProductPayload = {
   version_label: string;
   metar_count?: number | null;
   metars_by_station: Record<string, unknown>;
+  pireps?: unknown[];
 };
 
 export type TafProductPayload = {
@@ -338,6 +357,7 @@ export type MapOverlayQueryResult = {
   needed_tfrs: boolean;
   visible_features: VisibleMapFeature[];
   visible_metars: VisibleMetarFeature[];
+  visible_pireps: VisiblePirepFeature[];
   airspace_paths: AirspaceDisplayPath[];
   tfr_paths: AirspaceDisplayPath[];
   airspace_labels: AirspaceDisplayLabel[];
@@ -369,6 +389,7 @@ export type MapSelectionItem = {
   nav_ref?: NavRef | null;
   symbol_feature?: NavSymbolFeature | null;
   metar_feature?: VisibleMetarFeature | null;
+  pirep_feature?: VisiblePirepFeature | null;
   airspace_icon?: AirspaceDisplayPath | null;
   actions: MapSelectionAction[];
 };
@@ -376,6 +397,7 @@ export type MapSelectionItem = {
 export type MapSelectionHighlight =
   | { kind: "feature_ref"; id: string }
   | { kind: "metar"; station_id: string }
+  | { kind: "pirep"; id: string }
   | { kind: "spot"; lat: number; lon: number };
 
 export type MapSelectionAction = {

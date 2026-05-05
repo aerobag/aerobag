@@ -49,10 +49,12 @@ pub use map_overlay::{
     AirspaceReferenceTilePayload, AirspaceScreenPoint, MapOverlayConfig, MapOverlayQueryResult,
     MapOverlayWarning, MapSelectionAction, MapSelectionCategory, MapSelectionHighlight,
     MapSelectionItem, MapSelectionQueryResult, MapSelectionSessionAction, MetarProductPayload,
-    MetarRecord, MetarTilePayload, NavSymbolFeature, ObstacleOverlayContext, PointTilePayload,
-    PointVectorRecord, TafProductPayload, TafRecord, TfrAltitudeLimit, TfrAreaPayload,
-    TfrLatLonPoint, TfrProductPayload, TfrScheduleFragment, VectorTileRequest, VisibleMapFeature,
-    VisibleMetarFeature, AIRSPACE_DISPLAY_FEATURE_LIMIT, VECTOR_DISPLAY_FEATURE_LIMIT,
+    MetarRecord, MetarTilePayload, NavSymbolFeature, ObstacleOverlayContext, PirepRecord,
+    PointTilePayload, PointVectorRecord,
+    TafProductPayload, TafRecord, TfrAltitudeLimit, TfrAreaPayload, TfrLatLonPoint,
+    TfrProductPayload, TfrScheduleFragment, VectorTileRequest, VisibleMapFeature,
+    VisibleMetarFeature, VisiblePirepFeature, AIRSPACE_DISPLAY_FEATURE_LIMIT,
+    VECTOR_DISPLAY_FEATURE_LIMIT,
 };
 pub use navdb_types::{
     AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,

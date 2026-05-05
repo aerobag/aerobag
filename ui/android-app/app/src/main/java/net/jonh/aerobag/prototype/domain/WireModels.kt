@@ -551,6 +551,7 @@ data class WireMapOverlayQueryResult(
     val needed_tfrs: Boolean = false,
     val visible_features: List<WireVisibleMapFeature>,
     val visible_metars: List<WireVisibleMetarFeature> = emptyList(),
+    val visible_pireps: List<WireVisiblePirepFeature> = emptyList(),
     val airspace_paths: List<WireAirspaceDisplayPath> = emptyList(),
     val tfr_paths: List<WireAirspaceDisplayPath> = emptyList(),
     val airspace_labels: List<WireAirspaceDisplayLabel> = emptyList(),
@@ -564,6 +565,16 @@ data class WireVisibleMetarFeature(
     val screen_y: Double,
     val flight_category: String,
     val ceiling_amount: String,
+)
+
+@Serializable
+data class WireVisiblePirepFeature(
+    val id: String,
+    val screen_x: Double,
+    val screen_y: Double,
+    val symbol: String,
+    val icing: String,
+    val turbulence: String,
 )
 
 @Serializable
@@ -652,6 +663,7 @@ data class WireMapSelectionItem(
     val nav_ref: WireNavRef? = null,
     val symbol_feature: WireNavSymbolFeature? = null,
     val metar_feature: WireVisibleMetarFeature? = null,
+    val pirep_feature: WireVisiblePirepFeature? = null,
     val airspace_icon: WireAirspaceDisplayPath? = null,
     val actions: List<WireMapSelectionAction> = emptyList(),
 )
@@ -660,6 +672,7 @@ data class WireMapSelectionItem(
 sealed interface WireMapSelectionHighlight {
     data class FeatureRef(val id: String) : WireMapSelectionHighlight
     data class Metar(val station_id: String) : WireMapSelectionHighlight
+    data class Pirep(val id: String) : WireMapSelectionHighlight
     data class Spot(val lat: Double, val lon: Double) : WireMapSelectionHighlight
 }
 
@@ -668,6 +681,7 @@ object WireMapSelectionHighlightSerializer : JsonContentPolymorphicSerializer<Wi
         return when (element.jsonObject["kind"]?.jsonPrimitive?.content) {
             "feature_ref" -> WireMapSelectionHighlightFeatureRef.serializer()
             "metar" -> WireMapSelectionHighlightMetar.serializer()
+            "pirep" -> WireMapSelectionHighlightPirep.serializer()
             "spot" -> WireMapSelectionHighlightSpot.serializer()
             else -> WireMapSelectionHighlightSpot.serializer()
         }
@@ -686,6 +700,13 @@ data class WireMapSelectionHighlightFeatureRef(
 data class WireMapSelectionHighlightMetar(
     val kind: String = "metar",
     val station_id: String,
+) : WireMapSelectionHighlight
+
+@Serializable
+@SerialName("pirep")
+data class WireMapSelectionHighlightPirep(
+    val kind: String = "pirep",
+    val id: String,
 ) : WireMapSelectionHighlight
 
 @Serializable

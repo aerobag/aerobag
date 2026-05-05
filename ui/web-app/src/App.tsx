@@ -88,6 +88,7 @@ import type {
   TfrProductPayload,
   VisibleMapFeature,
   VisibleMetarFeature,
+  VisiblePirepFeature,
 } from "./domain/appCoreAdapter";
 import { airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
 import { debugLog, debugTiming, installGlobalErrorLogging } from "./domain/debugLog";
@@ -904,6 +905,67 @@ function MetarSymbol(props: { feature: VisibleMetarFeature }) {
         <text x="0" y="4" textAnchor="middle" className="metarMissingGlyph">
           M
         </text>
+      ) : null}
+    </g>
+  );
+}
+
+function pirepStrokeColor(symbol: string): string {
+  switch (symbol) {
+    case "light-turbulence":
+      return "#e9be5e";
+    case "moderate-turbulence":
+      return "#e79347";
+    case "severe-turbulence":
+      return "#d24700";
+    case "light-icing":
+      return "#64c6e9";
+    case "moderate-icing":
+      return "#3c7ee0";
+    case "severe-icing":
+      return "#0018e0";
+    default:
+      return "#071015";
+  }
+}
+
+function PirepSymbol(props: { feature: VisiblePirepFeature; scale?: number }) {
+  const { feature, scale = 1 } = props;
+  const stroke = pirepStrokeColor(feature.symbol);
+  const common = {
+    fill: "none",
+    stroke,
+    strokeWidth: 4.8,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+  };
+  return (
+    <g className="pirepSymbol" transform={scale === 1 ? undefined : `scale(${scale})`} aria-hidden="true">
+      <path
+        d="M -27 -5 C -27 -22 -15 -32 3 -32 C 22 -32 36 -22 36 -5 C 36 10 24 21 6 23 L -19 41 L -9 22 C -20 18 -27 8 -27 -5 Z"
+        fill="#fffef8"
+        stroke="#071015"
+        strokeWidth="3.8"
+        strokeLinejoin="round"
+      />
+      {feature.symbol === "generic" ? (
+        <>
+          <circle cx="-8" cy="-6" r="3.2" fill="#071015" />
+          <circle cx="3" cy="-6" r="3.2" fill="#071015" />
+          <circle cx="14" cy="-6" r="3.2" fill="#071015" />
+        </>
+      ) : feature.symbol === "light-turbulence" ? (
+        <path d="M -13 7 L 3 -17 L 19 7" {...common} />
+      ) : feature.symbol === "moderate-turbulence" ? (
+        <path d="M -21 7 H -15 L 3 -17 L 21 7 H 27" {...common} />
+      ) : feature.symbol === "severe-turbulence" ? (
+        <path d="M 17 -10 L 3 -30 L -11 -10 M -22 12 H -15 L 3 -14 L 21 12 H 28" {...common} />
+      ) : feature.symbol === "light-icing" ? (
+        <path d="M 3 -10 V 23 M -19 -16 A 22 22 0 0 0 25 -16" {...common} />
+      ) : feature.symbol === "moderate-icing" ? (
+        <path d="M -19 -16 A 22 22 0 0 0 25 -16 M 8 -10 V 23 M -2 -10 V 23" {...common} />
+      ) : feature.symbol === "severe-icing" ? (
+        <path d="M -7 -10 V 23 M 11 -10 V 23 M 2 -10 V 23 M -19 -16 A 22 22 0 0 0 25 -16" {...common} />
       ) : null}
     </g>
   );
@@ -1955,6 +2017,7 @@ function MapPage(props: {
     needed_tfrs: false,
     visible_features: [],
     visible_metars: [],
+    visible_pireps: [],
     airspace_paths: [],
     tfr_paths: [],
     airspace_labels: [],
@@ -2603,6 +2666,7 @@ function MapPage(props: {
         needed_tfrs: false,
         visible_features: [],
         visible_metars: [],
+        visible_pireps: [],
         airspace_paths: [],
         tfr_paths: [],
         airspace_labels: [],
@@ -2622,6 +2686,7 @@ function MapPage(props: {
         needed_tfrs: false,
         visible_features: [],
         visible_metars: [],
+        visible_pireps: [],
         airspace_paths: [],
         tfr_paths: [],
         airspace_labels: [],
@@ -2678,6 +2743,25 @@ function MapPage(props: {
             throw new Error(`failed to load METAR product: ${response.status}`);
           }
           const payload = (await response.json()) as MetarProductPayload;
+          try {
+            const pirepResponse = await fetch("/fast-products/metars/pireps.json", {
+              signal: controller.signal,
+            });
+            if (pirepResponse.ok) {
+              const pirepPayload = (await pirepResponse.json()) as { pireps?: unknown[] };
+              payload.pireps = Array.isArray(pirepPayload.pireps) ? pirepPayload.pireps : [];
+            } else if (pirepResponse.status !== 404) {
+              throw new Error(`failed to load PIREP product: ${pirepResponse.status}`);
+            }
+          } catch (error) {
+            if (isAbortError(error)) {
+              throw error;
+            }
+            debugLog("map.overlay.pireps.ingest.error", {
+              zoom: viewport.zoom,
+              error: errorMessage(error),
+            });
+          }
           await session.ingestMetars(payload);
           try {
             const tafResponse = await fetch("/fast-products/metars/tafs.json", {
@@ -2810,6 +2894,7 @@ function MapPage(props: {
           needed_tfrs: overlay.needed_tfrs,
           visible_features: overlay.visible_features.length,
           visible_metars: overlay.visible_metars.length,
+          visible_pireps: overlay.visible_pireps.length,
           airspace_paths: overlay.airspace_paths.length,
           airspace_labels: overlay.airspace_labels.length,
           warnings: overlay.warnings.map((warning) => warning.code),
@@ -2863,6 +2948,7 @@ function MapPage(props: {
           needed_tfrs: overlay.needed_tfrs,
           visible_features: overlay.visible_features.length,
           visible_metars: overlay.visible_metars.length,
+          visible_pireps: overlay.visible_pireps.length,
           airspace_paths: overlay.airspace_paths.length,
           airspace_labels: overlay.airspace_labels.length,
           warnings: overlay.warnings.map((warning) => warning.code),
@@ -2934,6 +3020,17 @@ function MapPage(props: {
       }
       return null;
     }
+    if (highlight.kind === "pirep") {
+      const pirepFeature = mapOverlay.visible_pireps.find((feature) => feature.id === highlight.id);
+      if (pirepFeature) {
+        return { kind: "pirep" as const, feature: pirepFeature };
+      }
+      const selectedPirepFeature = mapSelection?.selectedItem?.pirep_feature;
+      if (selectedPirepFeature?.id === highlight.id) {
+        return { kind: "pirep" as const, feature: selectedPirepFeature };
+      }
+      return null;
+    }
     const pointFeature = mapOverlay.visible_features.find((feature) => feature.id === highlight.id);
     if (pointFeature) {
       return { kind: "point" as const, feature: pointFeature };
@@ -2947,7 +3044,7 @@ function MapPage(props: {
       return { kind: "path" as const, feature: tfrPath };
     }
     return null;
-  }, [mapOverlay.airspace_paths, mapOverlay.tfr_paths, mapOverlay.visible_features, mapOverlay.visible_metars, mapSelection?.selectedItem, surfaceSize.height, surfaceSize.width, viewport]);
+  }, [mapOverlay.airspace_paths, mapOverlay.tfr_paths, mapOverlay.visible_features, mapOverlay.visible_metars, mapOverlay.visible_pireps, mapSelection?.selectedItem, surfaceSize.height, surfaceSize.width, viewport]);
   const rasterTileTransform = useMemo(() => {
     if (!rasterTileViewport) {
       return undefined;
@@ -3316,7 +3413,7 @@ function MapPage(props: {
     },
     {
       id: "metars",
-      label: "METARs",
+      label: "Observations",
       iconSrc: layerIconSrc("metars"),
       toggleState: mapLayerState.metars,
       disabled: !mapLayerState.metars.enabled,
@@ -3567,6 +3664,20 @@ function MapPage(props: {
             ))}
           </svg>
         ) : null}
+        {mapIsVisible && mapOverlay.visible_pireps.length > 0 ? (
+          <svg
+            className="metarOverlay"
+            viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
+            preserveAspectRatio="none"
+            style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+          >
+            {mapOverlay.visible_pireps.map((feature) => (
+              <g key={feature.id} transform={`translate(${feature.screen_x} ${feature.screen_y})`}>
+                <PirepSymbol feature={feature} scale={0.32} />
+              </g>
+            ))}
+          </svg>
+        ) : null}
         {mapIsVisible && selectedMapHighlight ? (
           <svg
             className="mapSelectionHighlightOverlay"
@@ -3587,6 +3698,13 @@ function MapPage(props: {
                   <MetarSymbol feature={selectedMapHighlight.feature} />
                 </g>
                 <MetarSymbol feature={selectedMapHighlight.feature} />
+              </g>
+            ) : selectedMapHighlight.kind === "pirep" ? (
+              <g transform={`translate(${selectedMapHighlight.feature.screen_x} ${selectedMapHighlight.feature.screen_y})`}>
+                <g className="mapSelectionFeatureContrast">
+                  <PirepSymbol feature={selectedMapHighlight.feature} scale={0.32} />
+                </g>
+                <PirepSymbol feature={selectedMapHighlight.feature} scale={0.32} />
               </g>
             ) : selectedMapHighlight.kind === "path" ? (
               <g>
@@ -5913,6 +6031,13 @@ function MapSelectionItemIcon(props: { item: MapSelectionItem }) {
     return (
       <svg className="mapSelectionItemIcon mapSelectionMetarIcon" viewBox="-20 -20 40 40" aria-hidden="true">
         <MetarSymbol feature={item.metar_feature} />
+      </svg>
+    );
+  }
+  if (item.pirep_feature) {
+    return (
+      <svg className="mapSelectionItemIcon mapSelectionMetarIcon" viewBox="-34 -34 74 78" aria-hidden="true">
+        <PirepSymbol feature={item.pirep_feature} />
       </svg>
     );
   }

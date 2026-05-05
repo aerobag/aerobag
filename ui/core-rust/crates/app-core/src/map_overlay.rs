@@ -23,7 +23,7 @@ const OBSTACLE_LOOKAHEAD_CENTER_OFFSET_DIAMETER_RATIO: f64 = 0.3;
 const OBSTACLE_BELOW_OWNERSHIP_HIDE_FT: f64 = 1000.0;
 const OBSTACLE_CAUTION_LOWER_FT: f64 = 800.0;
 const OBSTACLE_DANGER_LOWER_FT: f64 = 200.0;
-const METAR_DISPLAY_FEATURE_LIMIT: usize = 1_000;
+const WEATHER_DISPLAY_FEATURE_LIMIT: usize = 1_000;
 const WORLD_SIZE: f64 = 256.0;
 const MAX_LATITUDE: f64 = 85.051_128_78;
 
@@ -146,6 +146,21 @@ pub struct MetarRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PirepRecord {
+    pub id: String,
+    pub raw_text: String,
+    #[serde(default)]
+    pub observed_at_utc: Option<String>,
+    #[serde(default)]
+    pub report_type: Option<String>,
+    pub longitude: f64,
+    pub latitude: f64,
+    pub symbol: String,
+    pub icing: String,
+    pub turbulence: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TafRecord {
     pub raw_text: String,
     #[serde(default)]
@@ -171,6 +186,8 @@ pub struct MetarProductPayload {
     #[serde(default)]
     pub metar_count: Option<u32>,
     pub metars_by_station: HashMap<String, MetarRecord>,
+    #[serde(default)]
+    pub pireps: Vec<PirepRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -313,6 +330,16 @@ pub struct VisibleMetarFeature {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VisiblePirepFeature {
+    pub id: String,
+    pub screen_x: f64,
+    pub screen_y: f64,
+    pub symbol: String,
+    pub icing: String,
+    pub turbulence: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AirspaceDisplayStyle {
     pub fill_color_key: String,
     pub fill_opacity: f64,
@@ -411,6 +438,7 @@ pub struct MapOverlayQueryResult {
     pub needed_tfrs: bool,
     pub visible_features: Vec<VisibleMapFeature>,
     pub visible_metars: Vec<VisibleMetarFeature>,
+    pub visible_pireps: Vec<VisiblePirepFeature>,
     pub airspace_paths: Vec<AirspaceDisplayPath>,
     pub tfr_paths: Vec<AirspaceDisplayPath>,
     pub airspace_labels: Vec<AirspaceDisplayLabel>,
@@ -448,6 +476,8 @@ pub struct MapSelectionItem {
     #[serde(default)]
     pub metar_feature: Option<VisibleMetarFeature>,
     #[serde(default)]
+    pub pirep_feature: Option<VisiblePirepFeature>,
+    #[serde(default)]
     pub airspace_icon: Option<AirspaceDisplayPath>,
     pub actions: Vec<MapSelectionAction>,
 }
@@ -457,6 +487,7 @@ pub struct MapSelectionItem {
 pub enum MapSelectionHighlight {
     FeatureRef { id: String },
     Metar { station_id: String },
+    Pirep { id: String },
     Spot { lat: f64, lon: f64 },
 }
 
@@ -1030,6 +1061,7 @@ pub fn query_map_overlay(
             needed_tiles: Vec::new(),
             needed_metars: false,
             visible_metars: Vec::new(),
+            visible_pireps: Vec::new(),
             warnings: Vec::new(),
         }
     };
@@ -1052,6 +1084,7 @@ pub fn query_map_overlay(
         needed_tfrs: tfrs.needed_tfrs,
         visible_features,
         visible_metars: metars.visible_metars,
+        visible_pireps: metars.visible_pireps,
         airspace_paths: airspace.paths,
         tfr_paths: tfrs.paths,
         airspace_labels,
@@ -1063,6 +1096,7 @@ struct MetarOverlayProjection {
     needed_tiles: Vec<VectorTileRequest>,
     needed_metars: bool,
     visible_metars: Vec<VisibleMetarFeature>,
+    visible_pireps: Vec<VisiblePirepFeature>,
     warnings: Vec<MapOverlayWarning>,
 }
 
@@ -1081,12 +1115,14 @@ fn query_metar_overlay(
             needed_tiles: Vec::new(),
             needed_metars: false,
             visible_metars: Vec::new(),
+            visible_pireps: Vec::new(),
             warnings: Vec::new(),
         };
     };
     let needed_metars = metar_payload.is_none();
     let mut needed_tiles = Vec::new();
     let mut visible_metars = Vec::new();
+    let mut visible_pireps = Vec::new();
     let mut limit_hit = false;
     let metar_zoom = nearest_available_layer_zoom(metar_layer, viewport.zoom.floor() as u32);
     for tile in visible_layer_tile_window("metars", metar_zoom, viewport, width_px, height_px) {
@@ -1099,25 +1135,30 @@ fn query_metar_overlay(
             continue;
         };
         for record_ref in &tile_payload.records {
-            if record_ref.kind != "metar" {
-                continue;
-            }
-            if visible_metars.len() >= METAR_DISPLAY_FEATURE_LIMIT {
+            if visible_metars.len() + visible_pireps.len() >= WEATHER_DISPLAY_FEATURE_LIMIT {
                 limit_hit = true;
                 break;
             }
-            let Some(record) = metars.metars_by_station.get(&record_ref.id) else {
-                continue;
-            };
-            let feature = visible_metar_feature(record, center_world, scale, width_px, height_px);
-            if feature.screen_x < -32.0
-                || feature.screen_x > width_px + 32.0
-                || feature.screen_y < -32.0
-                || feature.screen_y > height_px + 32.0
-            {
-                continue;
+            if record_ref.kind == "metar" {
+                let Some(record) = metars.metars_by_station.get(&record_ref.id) else {
+                    continue;
+                };
+                let feature =
+                    visible_metar_feature(record, center_world, scale, width_px, height_px);
+                if weather_feature_is_on_screen(feature.screen_x, feature.screen_y, width_px, height_px) {
+                    visible_metars.push(feature);
+                }
+            } else if record_ref.kind == "pirep" {
+                let Some(record) = metars.pireps.iter().find(|record| record.id == record_ref.id)
+                else {
+                    continue;
+                };
+                let feature =
+                    visible_pirep_feature(record, center_world, scale, width_px, height_px);
+                if weather_feature_is_on_screen(feature.screen_x, feature.screen_y, width_px, height_px) {
+                    visible_pireps.push(feature);
+                }
             }
-            visible_metars.push(feature);
         }
         if limit_hit {
             break;
@@ -1127,8 +1168,8 @@ fn query_metar_overlay(
         vec![MapOverlayWarning {
             code: "metar_display_feature_limit".to_string(),
             message: format!(
-                "display capped at {} visible METAR features",
-                METAR_DISPLAY_FEATURE_LIMIT
+                "display capped at {} visible weather features",
+                WEATHER_DISPLAY_FEATURE_LIMIT
             ),
         }]
     } else {
@@ -1138,8 +1179,16 @@ fn query_metar_overlay(
         needed_tiles,
         needed_metars,
         visible_metars,
+        visible_pireps,
         warnings,
     }
+}
+
+fn weather_feature_is_on_screen(screen_x: f64, screen_y: f64, width_px: f64, height_px: f64) -> bool {
+    screen_x >= -32.0
+        && screen_x <= width_px + 32.0
+        && screen_y >= -32.0
+        && screen_y <= height_px + 32.0
 }
 
 fn normalized_metar_flight_category(record: &MetarRecord) -> String {
@@ -1195,6 +1244,55 @@ fn visible_metar_feature(
         screen_y: point.y,
         flight_category: normalized_metar_flight_category(record),
         ceiling_amount: normalized_metar_ceiling_amount(record),
+    }
+}
+
+fn visible_pirep_feature(
+    record: &PirepRecord,
+    center_world: WorldPoint,
+    scale: f64,
+    width_px: f64,
+    height_px: f64,
+) -> VisiblePirepFeature {
+    let point = world_to_screen(
+        center_world,
+        scale,
+        width_px,
+        height_px,
+        LatLon {
+            lat: record.latitude,
+            lon: record.longitude,
+        },
+    );
+    VisiblePirepFeature {
+        id: record.id.clone(),
+        screen_x: point.x,
+        screen_y: point.y,
+        symbol: normalized_pirep_symbol(&record.symbol),
+        icing: normalized_pirep_hazard(&record.icing),
+        turbulence: normalized_pirep_hazard(&record.turbulence),
+    }
+}
+
+fn normalized_pirep_symbol(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "light-icing" => "light-icing".to_string(),
+        "moderate-icing" => "moderate-icing".to_string(),
+        "severe-icing" => "severe-icing".to_string(),
+        "light-turbulence" => "light-turbulence".to_string(),
+        "moderate-turbulence" => "moderate-turbulence".to_string(),
+        "severe-turbulence" => "severe-turbulence".to_string(),
+        _ => "generic".to_string(),
+    }
+}
+
+fn normalized_pirep_hazard(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "light" => "light".to_string(),
+        "moderate" => "moderate".to_string(),
+        "severe" => "severe".to_string(),
+        "unknown" => "unknown".to_string(),
+        _ => "none".to_string(),
     }
 }
 
@@ -1306,8 +1404,20 @@ pub fn query_map_selection(
             click_screen,
             hit_radius_px,
             metar_tile_cache,
+        metar_payload,
+        taf_payload,
+    ));
+        weather.extend(query_pirep_selection_matches(
+            viewport,
+            width_px,
+            height_px,
+            config,
+            center_world,
+            scale,
+            click_screen,
+            hit_radius_px,
+            metar_tile_cache,
             metar_payload,
-            taf_payload,
         ));
     }
 
@@ -1404,6 +1514,55 @@ fn query_metar_selection_matches(
     matches
 }
 
+fn query_pirep_selection_matches(
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    config: &MapOverlayConfig,
+    center_world: WorldPoint,
+    scale: f64,
+    click_screen: WorldPoint,
+    hit_radius_px: f64,
+    metar_tile_cache: &HashMap<String, MetarTilePayload>,
+    metar_payload: &MetarProductPayload,
+) -> Vec<MapSelectionPointMatch> {
+    let Some(metar_layer) = config.metar_layer.as_ref() else {
+        return Vec::new();
+    };
+    let mut matches = Vec::new();
+    let metar_zoom = nearest_available_layer_zoom(metar_layer, viewport.zoom.floor() as u32);
+    for tile in visible_layer_tile_window("metars", metar_zoom, viewport, width_px, height_px) {
+        let Some(tile_payload) =
+            metar_tile_cache.get(&tile_key(&tile.layer, tile.z, tile.x, tile.y))
+        else {
+            continue;
+        };
+        for record_ref in &tile_payload.records {
+            if record_ref.kind != "pirep" {
+                continue;
+            }
+            let Some(record) = metar_payload
+                .pireps
+                .iter()
+                .find(|record| record.id == record_ref.id)
+            else {
+                continue;
+            };
+            let feature = visible_pirep_feature(record, center_world, scale, width_px, height_px);
+            let distance_px = ((feature.screen_x - click_screen.x).powi(2)
+                + (feature.screen_y - click_screen.y).powi(2))
+            .sqrt();
+            if distance_px <= hit_radius_px {
+                matches.push(MapSelectionPointMatch {
+                    item: selection_item_for_pirep(record, feature),
+                    distance_px,
+                });
+            }
+        }
+    }
+    matches
+}
+
 fn selection_item_for_point(
     record: &PointVectorRecord,
     symbol: &NavSymbolFeature,
@@ -1479,6 +1638,7 @@ fn selection_item_for_point(
         nav_ref,
         symbol_feature: Some(symbol_feature),
         metar_feature: None,
+        pirep_feature: None,
         airspace_icon: None,
         actions: {
             actions.shrink_to_fit();
@@ -1509,6 +1669,7 @@ fn spot_selection_item(click: LatLon) -> MapSelectionItem {
         nav_ref: None,
         symbol_feature: None,
         metar_feature: None,
+        pirep_feature: None,
         airspace_icon: None,
         actions: vec![
             display_action("terrain", "Terrain --"),
@@ -1535,12 +1696,52 @@ fn selection_item_for_metar(
         nav_ref: None,
         symbol_feature: None,
         metar_feature: Some(feature),
+        pirep_feature: None,
         airspace_icon: None,
         actions: vec![
             display_action("metar", "METAR"),
             taf.map(|record| detail_action("taf", "TAF", taf_detail_text(record)))
                 .unwrap_or_else(|| disabled_action("taf", "TAF")),
         ],
+    }
+}
+
+fn selection_item_for_pirep(record: &PirepRecord, feature: VisiblePirepFeature) -> MapSelectionItem {
+    let hazard_label = pirep_hazard_label(record);
+    MapSelectionItem {
+        id: record.id.clone(),
+        label: hazard_label,
+        sublabel: record
+            .report_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("PIREP")
+            .to_ascii_uppercase(),
+        description: record.observed_at_utc.clone(),
+        detail_text: Some(record.raw_text.clone()),
+        highlight: MapSelectionHighlight::Pirep {
+            id: record.id.clone(),
+        },
+        nav_ref: None,
+        symbol_feature: None,
+        metar_feature: None,
+        pirep_feature: Some(feature),
+        airspace_icon: None,
+        actions: vec![display_action("pirep", "PIREP")],
+    }
+}
+
+fn pirep_hazard_label(record: &PirepRecord) -> String {
+    let symbol = normalized_pirep_symbol(&record.symbol);
+    match symbol.as_str() {
+        "light-icing" => "Light icing".to_string(),
+        "moderate-icing" => "Moderate icing".to_string(),
+        "severe-icing" => "Severe icing".to_string(),
+        "light-turbulence" => "Light turbulence".to_string(),
+        "moderate-turbulence" => "Moderate turbulence".to_string(),
+        "severe-turbulence" => "Severe turbulence".to_string(),
+        _ => "PIREP".to_string(),
     }
 }
 
@@ -1576,6 +1777,7 @@ fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelection
         nav_ref: None,
         symbol_feature: None,
         metar_feature: None,
+        pirep_feature: None,
         airspace_icon: airspace_selection_icon(feature),
         actions: vec![airspace_limit_action_from_parts(
             "limits",
@@ -1757,6 +1959,7 @@ fn selection_item_for_tfr(area: &TfrAreaPayload) -> MapSelectionItem {
         nav_ref: None,
         symbol_feature: None,
         metar_feature: None,
+        pirep_feature: None,
         airspace_icon: tfr_selection_icon(area),
         actions: vec![airspace_limit_action_from_parts(
             "limits",
@@ -3610,6 +3813,7 @@ mod tests {
             version_label: "test".to_string(),
             metar_count: Some(1),
             metars_by_station,
+            pireps: Vec::new(),
         };
         let result = super::query_map_overlay(
             &viewport,
@@ -3682,6 +3886,7 @@ mod tests {
             version_label: "test".to_string(),
             metar_count: Some(1),
             metars_by_station,
+            pireps: Vec::new(),
         };
         let taf_raw_text = "TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020 BECMG 0102/0104 BKN030 FM010600 22008KT P6SM SCT050";
         let tafs = TafProductPayload {

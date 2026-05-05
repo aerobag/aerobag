@@ -106,6 +106,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.rotate
@@ -236,6 +237,7 @@ import net.jonh.aerobag.prototype.domain.UiThemeLoader
 import net.jonh.aerobag.prototype.domain.UiSessionSnapshot
 import net.jonh.aerobag.prototype.domain.VisibleMapFeature
 import net.jonh.aerobag.prototype.domain.VisibleMetarFeature
+import net.jonh.aerobag.prototype.domain.VisiblePirepFeature
 import net.jonh.aerobag.prototype.domain.applyPinchGesture
 import net.jonh.aerobag.prototype.domain.clampZoom
 import net.jonh.aerobag.prototype.domain.createInitialImageViewport
@@ -255,6 +257,9 @@ import net.jonh.aerobag.prototype.domain.worldToLatLon
 import net.jonh.aerobag.prototype.domain.zoomAroundPoint
 import net.jonh.aerobag.prototype.domain.zoomImageAroundPoint
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -1974,6 +1979,9 @@ private fun transformMapOverlayForDisplay(
         visibleMetars = overlay.visibleMetars.map { feature ->
             transformVisibleMetarFeature(feature, fromViewport, fromSurface, toViewport, toSurface)
         },
+        visiblePireps = overlay.visiblePireps.map { feature ->
+            transformVisiblePirepFeature(feature, fromViewport, fromSurface, toViewport, toSurface)
+        },
         airspacePaths = overlay.airspacePaths.map { feature ->
             transformAirspaceDisplayPath(feature, fromViewport, fromSurface, toViewport, toSurface)
         },
@@ -1993,6 +2001,24 @@ private fun transformVisibleMetarFeature(
     toViewport: MapViewportState,
     toSurface: OverlaySurfaceUnits,
 ): VisibleMetarFeature {
+    val transformed = transformScreenPoint(
+        x = feature.screenX,
+        y = feature.screenY,
+        fromViewport = fromViewport,
+        fromSurface = fromSurface,
+        toViewport = toViewport,
+        toSurface = toSurface,
+    )
+    return feature.copy(screenX = transformed.x, screenY = transformed.y)
+}
+
+private fun transformVisiblePirepFeature(
+    feature: VisiblePirepFeature,
+    fromViewport: MapViewportState,
+    fromSurface: OverlaySurfaceUnits,
+    toViewport: MapViewportState,
+    toSurface: OverlaySurfaceUnits,
+): VisiblePirepFeature {
     val transformed = transformScreenPoint(
         x = feature.screenX,
         y = feature.screenY,
@@ -4418,6 +4444,7 @@ private fun MapExplorerPage(
                 neededTfrs = false,
                 visibleFeatures = emptyList(),
                 visibleMetars = emptyList(),
+                visiblePireps = emptyList(),
                 airspacePaths = emptyList(),
                 tfrPaths = emptyList(),
                 airspaceLabels = emptyList(),
@@ -4568,7 +4595,7 @@ private fun MapExplorerPage(
             },
             MenuDockOption(
                 key = "metars",
-                label = "METARs",
+                label = "Observations",
                 enabled = mapLayerState.metars.enabled,
                 toggleState = mapLayerState.metars,
                 iconResId = mapLayerIconResId(MapLayerId.Metars),
@@ -5002,6 +5029,7 @@ private fun MapExplorerPage(
                 neededTfrs = false,
                 visibleFeatures = emptyList(),
                 visibleMetars = emptyList(),
+                visiblePireps = emptyList(),
                 airspacePaths = emptyList(),
                 tfrPaths = emptyList(),
                 airspaceLabels = emptyList(),
@@ -5020,10 +5048,14 @@ private fun MapExplorerPage(
                 var ingested = false
                 if (overlay.neededMetars) {
                     val payloadJson = withContext(Dispatchers.IO) {
-                        fetchJsonOrEmpty(
+                        val metarsJson = fetchJsonOrEmpty(
                             resolvePlaybackTraceUrl("/fast-products/metars/metars.json", devServerBaseUrl),
                             """{"schema_version":1,"version_label":"unavailable","metars_by_station":{}}""",
                         )
+                        val pirepsJson = fetchJsonOrNull(
+                            resolvePlaybackTraceUrl("/fast-products/metars/pireps.json", devServerBaseUrl),
+                        )
+                        mergePirepsIntoMetarProductJson(json, metarsJson, pirepsJson)
                     }
                     currentCoroutineContext().ensureActive()
                     uiSession.ingestMetarsJson(payloadJson)
@@ -5031,9 +5063,13 @@ private fun MapExplorerPage(
                 }
                 if (overlay.neededMetarTiles.isNotEmpty()) {
                     val tilesJson = withContext(Dispatchers.IO) {
+                        val manifestJson = fetchJsonOrNull(
+                            resolvePlaybackTraceUrl("/fast-products/metars/manifest.json", devServerBaseUrl),
+                        ) ?: error("weather manifest unavailable")
                         overlay.neededMetarTiles.map { tile ->
+                            val relativePath = weatherTileRelativePath(manifestJson, tile.z, tile.x, tile.y)
                             fetchJsonOrEmpty(
-                                resolvePlaybackTraceUrl("/fast-products/metars/points/metars/${tile.z}/${tile.x}/${tile.y}.json", devServerBaseUrl),
+                                resolvePlaybackTraceUrl("/fast-products/metars/$relativePath", devServerBaseUrl),
                                 """{"schema_version":1,"layer":"metars","z":${tile.z},"x":${tile.x},"y":${tile.y},"records":[]}""",
                             )
                         }.joinToString(prefix = "[", postfix = "]")
@@ -5062,7 +5098,7 @@ private fun MapExplorerPage(
             val (centerLat, centerLon) = viewportCenterLatLon(viewport)
             Log.i(
                 MapLayerLogTag,
-                "overlay center=${"%.3f".format(centerLat)},${"%.3f".format(centerLon)} zoom=${"%.2f".format(viewport.zoom)} size=${surfaceSize.width}x${surfaceSize.height} vectorsVisible=${mapLayerState.vectors.visible} metarsVisible=${mapLayerState.metars.visible} neededMetars=${overlay.neededMetars} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} airspaceLabels=${overlay.airspaceLabels.size} metars=${overlay.visibleMetars.size} neededPoints=${overlay.neededPointTiles.size} neededAirspaceRefs=${overlay.neededAirspaceRefTiles.size} neededAirspaceFeatures=${overlay.neededAirspaceFeatures.size} neededAirspaceLabels=${overlay.neededAirspaceLabelTiles.size} warnings=${overlay.warnings.size} elapsedMs=${SystemClock.elapsedRealtime() - overlayStartMs}",
+                "overlay center=${"%.3f".format(centerLat)},${"%.3f".format(centerLon)} zoom=${"%.2f".format(viewport.zoom)} size=${surfaceSize.width}x${surfaceSize.height} vectorsVisible=${mapLayerState.vectors.visible} metarsVisible=${mapLayerState.metars.visible} neededMetars=${overlay.neededMetars} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} airspaceLabels=${overlay.airspaceLabels.size} metars=${overlay.visibleMetars.size} pireps=${overlay.visiblePireps.size} neededPoints=${overlay.neededPointTiles.size} neededAirspaceRefs=${overlay.neededAirspaceRefTiles.size} neededAirspaceFeatures=${overlay.neededAirspaceFeatures.size} neededAirspaceLabels=${overlay.neededAirspaceLabelTiles.size} warnings=${overlay.warnings.size} elapsedMs=${SystemClock.elapsedRealtime() - overlayStartMs}",
             )
             overlay
         } catch (error: CancellationException) {
@@ -5712,6 +5748,13 @@ private fun MapExplorerPage(
                 }
             }
         }
+        if (displayedMapOverlay.visiblePireps.isNotEmpty()) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                displayedMapOverlay.visiblePireps.forEach { feature ->
+                    drawPirepSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), density.density, symbolScale = 0.32f)
+                }
+            }
+        }
         mapSelection?.selectedItem?.let { item ->
             Canvas(modifier = Modifier.fillMaxSize()) {
                 when (val highlight = item.highlight) {
@@ -5729,6 +5772,14 @@ private fun MapExplorerPage(
                         if (feature != null) {
                             drawCircle(Color.White, radius = 16f * density.density, center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), style = Stroke(width = 4f * density.density))
                             drawMetarSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), density.density)
+                        }
+                    }
+                    is MapSelectionHighlight.Pirep -> {
+                        val feature = displayedMapOverlay.visiblePireps.firstOrNull { it.id == highlight.id } ?: item.pirepFeature
+                        if (feature != null) {
+                            val center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat())
+                            drawCircle(Color.White, radius = 25f * density.density, center = center, style = Stroke(width = 4f * density.density))
+                            drawPirepSymbol(feature, center, density.density, symbolScale = 0.32f)
                         }
                     }
                     is MapSelectionHighlight.Spot -> {
@@ -6079,6 +6130,9 @@ private fun MapSelectionItemIcon(item: MapSelectionItem, modifier: Modifier) {
         item.symbolFeature != null -> PlanWaypointSymbol(item.symbolFeature, modifier)
         item.metarFeature != null -> Canvas(modifier = modifier) {
             drawMetarSymbol(item.metarFeature, Offset(size.width / 2f, size.height / 2f), density)
+        }
+        item.pirepFeature != null -> Canvas(modifier = modifier) {
+            drawPirepSymbol(item.pirepFeature, Offset(size.width / 2f, size.height * 0.43f), density)
         }
         item.highlight is MapSelectionHighlight.Spot -> Canvas(modifier = modifier) {
             val center = Offset(size.width / 2f, size.height * 0.45f)
@@ -8462,6 +8516,28 @@ private fun fetchJsonOrNull(url: String): String? =
 private fun fetchJsonOrEmpty(url: String, emptyJson: String): String =
     fetchJsonOrNull(url) ?: emptyJson
 
+private fun mergePirepsIntoMetarProductJson(json: Json, metarsJson: String, pirepsJson: String?): String {
+    val metars = json.parseToJsonElement(metarsJson) as? JsonObject ?: return metarsJson
+    val pireps = pirepsJson
+        ?.let { json.parseToJsonElement(it) as? JsonObject }
+        ?.get("pireps")
+        ?: JsonArray(emptyList())
+    return JsonObject(metars + ("pireps" to pireps)).toString()
+}
+
+private fun weatherTileRelativePath(manifestJson: String, z: Int, x: Int, y: Int): String {
+    val manifest = PackageManagementJson.parseToJsonElement(manifestJson) as? JsonObject
+        ?: error("weather manifest is not a JSON object")
+    val mapView = manifest["map_view"] as? JsonObject
+        ?: error("weather manifest missing map_view")
+    val template = mapView["tile_path_template"]?.jsonPrimitive?.content
+        ?: error("weather manifest missing map_view.tile_path_template")
+    return template
+        .replace("{z}", z.toString())
+        .replace("{x}", x.toString())
+        .replace("{y}", y.toString())
+}
+
 @Composable
 private fun PlanHeaderRow() {
     Row(horizontalArrangement = Arrangement.spacedBy(PlanGridGap)) {
@@ -8717,6 +8793,73 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMetarSymbol(
     }
     drawCircle(Color(0xE6081218), radius = radius + 2f * densityScale, center = center, style = Stroke(width = 3f * densityScale))
     drawCircle(fillColor, radius = radius, center = center, style = Stroke(width = 2.2f * densityScale))
+}
+
+private fun pirepColor(symbol: String): Color = when (symbol.lowercase()) {
+    "light-turbulence" -> Color(0xFFE9BE5E)
+    "moderate-turbulence" -> Color(0xFFE79347)
+    "severe-turbulence" -> Color(0xFFD24700)
+    "light-icing" -> Color(0xFF64C6E9)
+    "moderate-icing" -> Color(0xFF3C7EE0)
+    "severe-icing" -> Color(0xFF0018E0)
+    else -> Color(0xFF071015)
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPirepSymbol(
+    feature: VisiblePirepFeature,
+    center: Offset,
+    densityScale: Float,
+    symbolScale: Float = 1f,
+) {
+    val scale = densityScale * symbolScale
+    val bubble = Path().apply {
+        moveTo(center.x - 27f * scale, center.y - 5f * scale)
+        cubicTo(center.x - 27f * scale, center.y - 22f * scale, center.x - 15f * scale, center.y - 32f * scale, center.x + 3f * scale, center.y - 32f * scale)
+        cubicTo(center.x + 22f * scale, center.y - 32f * scale, center.x + 36f * scale, center.y - 22f * scale, center.x + 36f * scale, center.y - 5f * scale)
+        cubicTo(center.x + 36f * scale, center.y + 10f * scale, center.x + 24f * scale, center.y + 21f * scale, center.x + 6f * scale, center.y + 23f * scale)
+        lineTo(center.x - 19f * scale, center.y + 41f * scale)
+        lineTo(center.x - 9f * scale, center.y + 22f * scale)
+        cubicTo(center.x - 20f * scale, center.y + 18f * scale, center.x - 27f * scale, center.y + 8f * scale, center.x - 27f * scale, center.y - 5f * scale)
+        close()
+    }
+    drawPath(bubble, Color(0xFFFFFEF8))
+    drawPath(bubble, Color(0xFF071015), style = Stroke(width = 3.8f * scale, join = StrokeJoin.Round))
+    val glyphColor = pirepColor(feature.symbol)
+    val glyphStroke = Stroke(width = 4.8f * scale, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    fun point(x: Float, y: Float) = Offset(center.x + x * scale, center.y + y * scale)
+    fun drawPolyline(points: List<Offset>) {
+        for (index in 0 until points.lastIndex) {
+            drawLine(glyphColor, points[index], points[index + 1], strokeWidth = glyphStroke.width, cap = StrokeCap.Round)
+        }
+    }
+    when (feature.symbol.lowercase()) {
+        "light-turbulence" -> drawPolyline(listOf(point(-13f, 7f), point(3f, -17f), point(19f, 7f)))
+        "moderate-turbulence" -> drawPolyline(listOf(point(-21f, 7f), point(-15f, 7f), point(3f, -17f), point(21f, 7f), point(27f, 7f)))
+        "severe-turbulence" -> {
+            drawPolyline(listOf(point(17f, -10f), point(3f, -30f), point(-11f, -10f)))
+            drawPolyline(listOf(point(-22f, 12f), point(-15f, 12f), point(3f, -14f), point(21f, 12f), point(28f, 12f)))
+        }
+        "light-icing" -> {
+            drawArc(glyphColor, 180f, -180f, useCenter = false, topLeft = point(-19f, -38f), size = Size(44f * scale, 44f * scale), style = glyphStroke)
+            drawLine(glyphColor, point(3f, -10f), point(3f, 23f), strokeWidth = glyphStroke.width, cap = StrokeCap.Round)
+        }
+        "moderate-icing" -> {
+            drawArc(glyphColor, 180f, -180f, useCenter = false, topLeft = point(-19f, -38f), size = Size(44f * scale, 44f * scale), style = glyphStroke)
+            drawLine(glyphColor, point(8f, -10f), point(8f, 23f), strokeWidth = glyphStroke.width, cap = StrokeCap.Round)
+            drawLine(glyphColor, point(-2f, -10f), point(-2f, 23f), strokeWidth = glyphStroke.width, cap = StrokeCap.Round)
+        }
+        "severe-icing" -> {
+            drawArc(glyphColor, 180f, -180f, useCenter = false, topLeft = point(-19f, -38f), size = Size(44f * scale, 44f * scale), style = glyphStroke)
+            drawLine(glyphColor, point(-7f, -10f), point(-7f, 23f), strokeWidth = glyphStroke.width, cap = StrokeCap.Round)
+            drawLine(glyphColor, point(2f, -10f), point(2f, 23f), strokeWidth = glyphStroke.width, cap = StrokeCap.Round)
+            drawLine(glyphColor, point(11f, -10f), point(11f, 23f), strokeWidth = glyphStroke.width, cap = StrokeCap.Round)
+        }
+        else -> {
+            drawCircle(Color(0xFF071015), radius = 3.2f * scale, center = point(-8f, -6f))
+            drawCircle(Color(0xFF071015), radius = 3.2f * scale, center = point(3f, -6f))
+            drawCircle(Color(0xFF071015), radius = 3.2f * scale, center = point(14f, -6f))
+        }
+    }
 }
 
 @Composable

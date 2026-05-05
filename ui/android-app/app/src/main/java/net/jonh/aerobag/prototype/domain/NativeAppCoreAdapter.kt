@@ -86,6 +86,15 @@ data class VisibleMetarFeature(
     val ceilingAmount: String,
 )
 
+data class VisiblePirepFeature(
+    val id: String,
+    val screenX: Double,
+    val screenY: Double,
+    val symbol: String,
+    val icing: String,
+    val turbulence: String,
+)
+
 data class AirspaceDisplayStroke(
     val colorKey: String,
     val widthPx: Double,
@@ -186,6 +195,7 @@ data class MapOverlayQueryResult(
     val neededTfrs: Boolean,
     val visibleFeatures: List<VisibleMapFeature>,
     val visibleMetars: List<VisibleMetarFeature>,
+    val visiblePireps: List<VisiblePirepFeature>,
     val airspacePaths: List<AirspaceDisplayPath>,
     val tfrPaths: List<AirspaceDisplayPath>,
     val airspaceLabels: List<AirspaceDisplayLabel>,
@@ -214,6 +224,7 @@ data class MapSelectionItem(
     val navRef: NavRef?,
     val symbolFeature: NavSymbolFeature?,
     val metarFeature: VisibleMetarFeature?,
+    val pirepFeature: VisiblePirepFeature?,
     val airspaceIcon: AirspaceDisplayPath?,
     val actions: List<MapSelectionAction>,
 )
@@ -221,6 +232,7 @@ data class MapSelectionItem(
 sealed interface MapSelectionHighlight {
     data class FeatureRef(val id: String) : MapSelectionHighlight
     data class Metar(val stationId: String) : MapSelectionHighlight
+    data class Pirep(val id: String) : MapSelectionHighlight
     data class Spot(val lat: Double, val lon: Double) : MapSelectionHighlight
 }
 
@@ -1787,6 +1799,7 @@ private fun WireMapOverlayQueryResult.toUi() = MapOverlayQueryResult(
     neededTfrs = needed_tfrs,
     visibleFeatures = visible_features.map { it.toUi() },
     visibleMetars = visible_metars.map { it.toUi() },
+    visiblePireps = visible_pireps.map { it.toUi() },
     airspacePaths = airspace_paths.map { it.toUi() },
     tfrPaths = tfr_paths.map { it.toUi() },
     airspaceLabels = airspace_labels.map { it.toUi() },
@@ -1858,6 +1871,15 @@ private fun WireVisibleMetarFeature.toUi() = VisibleMetarFeature(
     screenY = screen_y,
     flightCategory = flight_category,
     ceilingAmount = ceiling_amount,
+)
+
+private fun WireVisiblePirepFeature.toUi() = VisiblePirepFeature(
+    id = id,
+    screenX = screen_x,
+    screenY = screen_y,
+    symbol = symbol,
+    icing = icing,
+    turbulence = turbulence,
 )
 
 private fun WireAirspaceDisplayStroke.toUi() = AirspaceDisplayStroke(
@@ -1935,6 +1957,7 @@ private fun WireMapSelectionItem.toUi() = MapSelectionItem(
     navRef = nav_ref?.toUi(),
     symbolFeature = symbol_feature?.toUi(),
     metarFeature = metar_feature?.toUi(),
+    pirepFeature = pirep_feature?.toUi(),
     airspaceIcon = airspace_icon?.toUi(),
     actions = actions.map { it.toUi() },
 )
@@ -1942,9 +1965,11 @@ private fun WireMapSelectionItem.toUi() = MapSelectionItem(
 private fun WireMapSelectionHighlight.toUi(): MapSelectionHighlight = when (this) {
     is WireMapSelectionHighlightFeatureRef -> MapSelectionHighlight.FeatureRef(id)
     is WireMapSelectionHighlightMetar -> MapSelectionHighlight.Metar(station_id)
+    is WireMapSelectionHighlightPirep -> MapSelectionHighlight.Pirep(id)
     is WireMapSelectionHighlightSpot -> MapSelectionHighlight.Spot(lat, lon)
     is WireMapSelectionHighlight.FeatureRef -> MapSelectionHighlight.FeatureRef(id)
     is WireMapSelectionHighlight.Metar -> MapSelectionHighlight.Metar(station_id)
+    is WireMapSelectionHighlight.Pirep -> MapSelectionHighlight.Pirep(id)
     is WireMapSelectionHighlight.Spot -> MapSelectionHighlight.Spot(lat, lon)
 }
 

@@ -2109,6 +2109,7 @@ fn empty_map_overlay_query() -> MapOverlayQueryResult {
         needed_tfrs: false,
         visible_features: Vec::new(),
         visible_metars: Vec::new(),
+        visible_pireps: Vec::new(),
         airspace_paths: Vec::new(),
         tfr_paths: Vec::new(),
         airspace_labels: Vec::new(),

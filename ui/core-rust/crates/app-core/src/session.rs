@@ -16,18 +16,17 @@ use crate::{
         materialize_procedure, suggest_waypoint_identifiers, HadOperationOutcome, HadReadError,
     },
     map_follow::{MapFollowSessionState, MapFollowUiState},
-    map_overlay_config_from_vector_manifest_json, move_flight_plan_waypoint, nav_kv_key_for_query,
+    map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
     planning::NavElementUiView,
     playback::PlaybackSessionState,
-    query_map_overlay, query_map_selection, remove_flight_plan_leg, state,
-    AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
-    AirspaceReferenceTilePayload, AirwayPresentationPlan, AppError, AppErrorKind, AppEvent,
-    AppResult, AppState, AppUiState, FlightPlan, FlightPlanRowActionExecution,
-    FlightPlanRowActionId, LatLon, MapOverlayConfig, MapOverlayQueryResult, MapViewport,
-    MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore, NavRef, PlanLeg,
-    PlaybackUiState, PointTilePayload, ProcedureKind, ProcedureLoadCommand, RasterMapCatalog,
-    RasterTilePlan, RouteComponentViewKind, SequencingMode, TafProductPayload,
-    TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
+    query_map_overlay, query_map_selection, state, AirportPlateAvailability,
+    AirspaceFeaturePayload, AirspaceLabelTilePayload, AirspaceReferenceTilePayload,
+    AirwayPresentationPlan, AppError, AppErrorKind, AppEvent, AppResult, AppState, AppUiState,
+    FlightPlan, FlightPlanRowActionExecution, FlightPlanRowActionId, LatLon, MapOverlayConfig,
+    MapOverlayQueryResult, MapViewport, MetarProductPayload, MetarTilePayload, NavKvLookup,
+    NavKvQuery, NavKvStore, NavRef, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureKind,
+    ProcedureLoadCommand, RasterMapCatalog, RasterTilePlan, RouteComponentViewKind, SequencingMode,
+    TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -272,25 +271,6 @@ fn create_ui_session_inner(
     Ok(UiSessionInitResult { handle, snapshot })
 }
 
-pub fn remove_leg_in_session(handle: u32, index: usize) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
-    let session = session_mut(&mut sessions, handle)?;
-    let plan = session_plan(session)?;
-    let next_plan = remove_flight_plan_leg(&plan, index)?;
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::ReplaceFlightPlan(next_plan.clone()),
-    )?;
-    session.guidance_leg_geometry.clear();
-    session.chart_page_state = derive_compact_chart_page_state(
-        &next_plan,
-        &session.chart_page_state.recent_airport_ids,
-        Some(&session.chart_page_state.selected_airport_id),
-        Some(&session.chart_page_state.selected_chart_id),
-    );
-    Ok(snapshot_for_session(session))
-}
-
 pub fn set_map_layer_visibility_in_session(
     handle: u32,
     layer_id: &str,
@@ -385,29 +365,6 @@ pub fn set_map_layer_enabled_in_session(
     if !enabled {
         toggle.visible = false;
     }
-    Ok(snapshot_for_session(session))
-}
-
-pub fn move_waypoint_in_session(
-    handle: u32,
-    waypoint_index: usize,
-    delta: isize,
-) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
-    let session = session_mut(&mut sessions, handle)?;
-    let plan = session_plan(session)?;
-    let next_plan = move_flight_plan_waypoint(&plan, waypoint_index, delta)?;
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::ReplaceFlightPlan(next_plan.clone()),
-    )?;
-    session.guidance_leg_geometry.clear();
-    session.chart_page_state = derive_compact_chart_page_state(
-        &next_plan,
-        &session.chart_page_state.recent_airport_ids,
-        Some(&session.chart_page_state.selected_airport_id),
-        Some(&session.chart_page_state.selected_chart_id),
-    );
     Ok(snapshot_for_session(session))
 }
 

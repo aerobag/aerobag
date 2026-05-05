@@ -565,10 +565,7 @@ private fun rememberStructuredRowBounds(
 private data class AndroidAirwayPickerState(
     val loading: Boolean,
     val error: String?,
-    val mode: String,
-    val componentIndex: Int?,
-    val startComponentIndex: Int?,
-    val endComponentIndex: Int?,
+    val rowUid: String,
     val originAnchor: NavRef,
     val destinationAnchor: NavRef?,
     val suggestions: List<AirwaySuggestion>,
@@ -580,16 +577,15 @@ private data class AndroidAirwayPickerState(
 private data class AndroidProcedurePickerState(
     val loading: Boolean,
     val error: String?,
+    val rowUid: String,
     val airportId: String,
-    val startComponentIndex: Int,
-    val endComponentIndex: Int,
     val procedures: List<ProcedureSummary>,
     val selectedProcedureId: String?,
     val options: ProcedureOptions?,
 )
 
 private data class AndroidAirportInsertState(
-    val componentIndex: Int,
+    val rowUid: String,
     val before: Boolean,
     val airportId: String,
     val error: String?,
@@ -6157,7 +6153,7 @@ private fun AirportInsertPanel(
 ) {
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
-    LaunchedEffect(state.componentIndex, state.before) {
+    LaunchedEffect(state.rowUid, state.before) {
         focusRequester.requestFocus()
         keyboardController?.show()
     }
@@ -6464,7 +6460,7 @@ private fun FlightPlanPage(
         airportInsert = null
     }
 
-    LaunchedEffect(airportInsert?.componentIndex, airportInsert?.before, airportInsert?.airportId, samplePlan) {
+    LaunchedEffect(airportInsert?.rowUid, airportInsert?.before, airportInsert?.airportId) {
         val editor = airportInsert ?: return@LaunchedEffect
         val prefix = editor.airportId.trim().uppercase()
         if (prefix.isEmpty()) {
@@ -6474,7 +6470,7 @@ private fun FlightPlanPage(
         airportInsert = editor.copy(loading = true)
         runCatching {
             withContext(Dispatchers.IO) {
-                appCore.suggestWaypointIdentifiers(samplePlan, editor.componentIndex, editor.before, prefix, 8)
+                uiSession.suggestWaypointIdentifiersAtFlightPlanRow(editor.rowUid, editor.before, prefix, 8)
             }
         }.onSuccess { suggestions ->
             airportInsert = airportInsert?.copy(loading = false, suggestions = suggestions)
@@ -6738,9 +6734,9 @@ private fun FlightPlanPage(
                             }
                             runCatching {
                                 val waypoint = appCore.resolveNavRefIdentifier(airportId)
-                                appCore.insertWaypointUi(samplePlan, editor.componentIndex, editor.before, waypoint)
-                            }.onSuccess { mutation ->
-                                onApplyMutation(mutation)
+                                uiSession.insertWaypointAtFlightPlanRow(editor.rowUid, editor.before, waypoint)
+                            }.onSuccess { snapshot ->
+                                onApplySessionSnapshot(snapshot)
                                 closePanels()
                             }.onFailure { error ->
                                 airportInsert = editor.copy(error = error.message ?: error.toString())
@@ -6748,9 +6744,9 @@ private fun FlightPlanPage(
                         },
                         onSuggestionClick = { suggestion ->
                             runCatching {
-                                appCore.insertWaypointUi(samplePlan, editor.componentIndex, editor.before, suggestion.navRef)
-                            }.onSuccess { mutation ->
-                                onApplyMutation(mutation)
+                                uiSession.insertWaypointAtFlightPlanRow(editor.rowUid, editor.before, suggestion.navRef)
+                            }.onSuccess { snapshot ->
+                                onApplySessionSnapshot(snapshot)
                                 closePanels()
                             }.onFailure { error ->
                                 airportInsert = editor.copy(error = error.message ?: error.toString())
@@ -6810,28 +6806,21 @@ private fun FlightPlanPage(
                                 onSelect = {
                                     procedurePicker = picker.copy(loading = true, error = null)
                                     runCatching {
-                                        appCore.materializeProcedureSelection(
+                                        uiSession.selectProcedureAtFlightPlanRow(
+                                            picker.rowUid,
                                             picker.airportId,
                                             picker.selectedProcedureId,
                                             ProcedureKind.Approach,
                                             null,
                                             choice.enrouteTransition,
-                                            picker.startComponentIndex + 1,
                                         )
-                                    }.map { built ->
-                                        appCore.insertProcedureMaterializedUi(
-                                            samplePlan,
-                                            picker.startComponentIndex,
-                                            picker.endComponentIndex,
-                                            built,
-                                        )
-                                    }.onSuccess { mutation ->
-                                        onApplyMutation(mutation)
+                                    }.onSuccess { snapshot ->
+                                        onApplySessionSnapshot(snapshot)
                                         closePanels()
                                     }.onFailure { error ->
                                         Log.e(
                                             "AerobagProcedure",
-                                            "materialize/insert procedure failed airport=${picker.airportId} procedure=${picker.selectedProcedureId} enroute=${choice.enrouteTransition}",
+                                            "select procedure failed row=${picker.rowUid} airport=${picker.airportId} procedure=${picker.selectedProcedureId} enroute=${choice.enrouteTransition}",
                                             error,
                                         )
                                         procedurePicker = picker.copy(loading = false, error = error.message ?: error.toString())
@@ -6926,40 +6915,14 @@ private fun FlightPlanPage(
                                     if (isEntry) return@MenuPanelRow
                                     airwayPicker = picker.copy(loading = true, error = null)
                                     runCatching {
-                                        val startComponentIndex = if (picker.mode == "replace" && picker.componentIndex != null) {
-                                            picker.componentIndex
-                                        } else {
-                                            picker.startComponentIndex ?: error("missing insertion start")
-                                        }
-                                        appCore.materializeAirwayPresentationSelection(
-                                            startComponentIndex,
+                                        uiSession.insertAirwayAtFlightPlanRow(
+                                            picker.rowUid,
                                             presentation,
                                             picker.selectedEntryIndex,
                                             exitIndex,
-                                            picker.originAnchor,
-                                            picker.destinationAnchor,
                                         )
-                                    }.map { built ->
-                                        if (picker.mode == "replace" && picker.componentIndex != null) {
-                                            appCore.replaceAirwayMaterializedUi(
-                                                samplePlan,
-                                                picker.componentIndex,
-                                                built.selection,
-                                                built.airway,
-                                                built.resolvedLegs,
-                                            )
-                                        } else {
-                                            appCore.insertAirwayMaterializedUi(
-                                                samplePlan,
-                                                picker.startComponentIndex ?: error("missing insertion start"),
-                                                picker.endComponentIndex,
-                                                built.selection,
-                                                built.airway,
-                                                built.resolvedLegs,
-                                            )
-                                        }
-                                    }.onSuccess { mutation ->
-                                        onApplyMutation(mutation)
+                                    }.onSuccess { snapshot ->
+                                        onApplySessionSnapshot(snapshot)
                                         closePanels()
                                     }.onFailure { error ->
                                         airwayPicker = picker.copy(error = error.message ?: error.toString())
@@ -7008,10 +6971,9 @@ private fun FlightPlanPage(
                                     "insert_before",
                                     "insert_after",
                                     -> {
-                                        val componentIndex = selectedRow.componentIndex ?: return@MenuPanelRow
                                         airportInsert =
                                             AndroidAirportInsertState(
-                                                componentIndex = componentIndex,
+                                                rowUid = selectedRow.id,
                                                 before = action.id == "insert_before",
                                                 airportId = "",
                                                 error = null,
@@ -7024,36 +6986,8 @@ private fun FlightPlanPage(
                                             AndroidAirwayPickerState(
                                                 loading = true,
                                                 error = null,
-                                                mode = "insert",
-                                                componentIndex = null,
-                                                startComponentIndex = selectedRow.startComponentIndex,
-                                                endComponentIndex = selectedRow.endComponentIndex,
+                                                rowUid = selectedRow.id,
                                                 originAnchor = selectedRow.originAnchor!!,
-                                                destinationAnchor = selectedRow.destinationAnchor,
-                                                suggestions = emptyList(),
-                                                selectedAirwayName = null,
-                                                presentation = null,
-                                                selectedEntryIndex = null,
-                                            )
-                                        runCatching {
-                                            appCore.suggestAirwaysNear(selectedRow.originAnchor!!)
-                                        }.onSuccess { suggestions ->
-                                            airwayPicker = airwayPicker?.copy(loading = false, suggestions = suggestions)
-                                        }.onFailure { error ->
-                                            airwayPicker = airwayPicker?.copy(loading = false, error = error.message ?: error.toString())
-                                        }
-                                    }
-                                    "change_airway" -> {
-                                        val componentIndex = selectedRow.componentIndex ?: return@MenuPanelRow
-                                        airwayPicker =
-                                            AndroidAirwayPickerState(
-                                                loading = true,
-                                                error = null,
-                                                mode = "replace",
-                                                componentIndex = componentIndex,
-                                                startComponentIndex = null,
-                                                endComponentIndex = null,
-                                                originAnchor = selectedRow.originAnchor ?: return@MenuPanelRow,
                                                 destinationAnchor = selectedRow.destinationAnchor,
                                                 suggestions = emptyList(),
                                                 selectedAirwayName = null,
@@ -7070,14 +7004,12 @@ private fun FlightPlanPage(
                                     }
                                     "select_procedure" -> {
                                         val airportId = selectedRow.chartAirportId ?: return@MenuPanelRow
-                                        val componentIndex = selectedRow.componentIndex ?: return@MenuPanelRow
                                         procedurePicker =
                                             AndroidProcedurePickerState(
                                                 loading = true,
                                                 error = null,
+                                                rowUid = selectedRow.id,
                                                 airportId = airportId,
-                                                startComponentIndex = componentIndex - 1,
-                                                endComponentIndex = componentIndex,
                                                 procedures = emptyList(),
                                                 selectedProcedureId = null,
                                                 options = null,

@@ -22,9 +22,7 @@ declare module "@generated/app_wasm.js" {
   export const sequence_active_leg_ui: (...args: unknown[]) => string;
   export const perform_flight_plan_row_action_in_session: (...args: unknown[]) => string;
   export const create_ui_session: (...args: unknown[]) => string;
-  export const remove_leg_in_session: (...args: unknown[]) => string;
   export const set_guidance_leg_geometry_in_session: (...args: unknown[]) => string;
-  export const move_waypoint_in_session: (...args: unknown[]) => string;
   export const set_situation_in_session: (...args: unknown[]) => string;
   export const engage_map_follow_in_session: (...args: unknown[]) => string;
   export const disengage_map_follow_in_session: (...args: unknown[]) => string;

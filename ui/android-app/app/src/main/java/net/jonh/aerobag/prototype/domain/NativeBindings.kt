@@ -108,20 +108,42 @@ interface NativeBridge {
         selectedChartIdJson: String,
     ): String
 
-    fun removeLegInSessionJson(
-        handle: Long,
-        index: Int,
-    ): String
-
-    fun moveWaypointInSessionJson(
-        handle: Long,
-        waypointIndex: Int,
-        delta: Int,
-    ): String
-
     fun insertWaypointBestPositionInSessionJson(
         handle: Long,
         waypointJson: String,
+    ): String
+
+    fun insertWaypointAtFlightPlanRowInSessionJson(
+        handle: Long,
+        rowUid: String,
+        before: Boolean,
+        waypointJson: String,
+    ): String
+
+    fun suggestWaypointIdentifiersAtFlightPlanRowInSessionJson(
+        handle: Long,
+        rowUid: String,
+        before: Boolean,
+        prefix: String,
+        limit: Int,
+    ): String
+
+    fun insertAirwayAtFlightPlanRowInSessionJson(
+        handle: Long,
+        rowUid: String,
+        presentationJson: String,
+        entryIndex: Int,
+        exitIndex: Int,
+    ): String
+
+    fun selectProcedureAtFlightPlanRowInSessionJson(
+        handle: Long,
+        rowUid: String,
+        airportId: String,
+        procedureId: String,
+        kindJson: String,
+        runwayTransitionJson: String,
+        enrouteTransitionJson: String,
     ): String
 
     fun registerOwnshipSourceInSessionJson(
@@ -477,20 +499,42 @@ object NativeBindings : NativeBridge {
         selectedChartIdJson: String,
     ): String
 
-    external override fun removeLegInSessionJson(
-        handle: Long,
-        index: Int,
-    ): String
-
-    external override fun moveWaypointInSessionJson(
-        handle: Long,
-        waypointIndex: Int,
-        delta: Int,
-    ): String
-
     external override fun insertWaypointBestPositionInSessionJson(
         handle: Long,
         waypointJson: String,
+    ): String
+
+    external override fun insertWaypointAtFlightPlanRowInSessionJson(
+        handle: Long,
+        rowUid: String,
+        before: Boolean,
+        waypointJson: String,
+    ): String
+
+    external override fun suggestWaypointIdentifiersAtFlightPlanRowInSessionJson(
+        handle: Long,
+        rowUid: String,
+        before: Boolean,
+        prefix: String,
+        limit: Int,
+    ): String
+
+    external override fun insertAirwayAtFlightPlanRowInSessionJson(
+        handle: Long,
+        rowUid: String,
+        presentationJson: String,
+        entryIndex: Int,
+        exitIndex: Int,
+    ): String
+
+    external override fun selectProcedureAtFlightPlanRowInSessionJson(
+        handle: Long,
+        rowUid: String,
+        airportId: String,
+        procedureId: String,
+        kindJson: String,
+        runwayTransitionJson: String,
+        enrouteTransitionJson: String,
     ): String
 
     external override fun registerOwnshipSourceInSessionJson(

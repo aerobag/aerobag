@@ -449,8 +449,6 @@ export type RasterTilePlan = {
 export interface UiSession {
   snapshot(): Promise<UiSessionSnapshot>;
   replaceFlightPlan(plan: FlightPlan): Promise<UiSessionSnapshot>;
-  removeLeg(index: number): Promise<UiSessionSnapshot>;
-  moveWaypoint(index: number, delta: number): Promise<UiSessionSnapshot>;
   insertWaypointBestPosition(waypoint: NavRef): Promise<UiSessionSnapshot>;
   insertWaypointAtFlightPlanRow(rowUid: string, before: boolean, waypoint: NavRef): Promise<UiSessionSnapshot>;
   suggestWaypointIdentifiersAtFlightPlanRow(rowUid: string, before: boolean, prefix: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
@@ -635,8 +633,6 @@ type WasmModule = {
   situation_ring_candidates_json(): Promise<string> | string;
   create_ui_session(vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   create_ui_session_profiled?: (vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
-  remove_leg_in_session(handle: number, index: number): Promise<string> | string;
-  move_waypoint_in_session(handle: number, waypointIndex: number, delta: number): Promise<string> | string;
   set_situation_in_session(handle: number, situationJson: string): Promise<string> | string;
   engage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
   disengage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
@@ -857,20 +853,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       replaceFlightPlan: async (plan) => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.replace_flight_plan_in_session(handle, JSON.stringify(plan))),
-        );
-        await syncGuidanceGeometry(snapshot.app_state.active_plan);
-        return snapshot;
-      },
-      removeLeg: async (index) => {
-        snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.remove_leg_in_session(handle, index)),
-        );
-        await syncGuidanceGeometry(snapshot.app_state.active_plan);
-        return snapshot;
-      },
-      moveWaypoint: async (index, delta) => {
-        snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.move_waypoint_in_session(handle, index, delta)),
         );
         await syncGuidanceGeometry(snapshot.app_state.active_plan);
         return snapshot;
@@ -1405,8 +1387,6 @@ export async function loadBestAvailableAdapter(
   if (
     typeof mod.situation_ring_candidates_json !== "function" ||
     typeof mod.create_ui_session !== "function" ||
-    typeof mod.remove_leg_in_session !== "function" ||
-    typeof mod.move_waypoint_in_session !== "function" ||
     typeof mod.perform_flight_plan_row_action_in_session !== "function" ||
     typeof mod.set_situation_in_session !== "function" ||
     typeof mod.engage_map_follow_in_session !== "function" ||

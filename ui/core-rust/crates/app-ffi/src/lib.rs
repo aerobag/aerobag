@@ -427,12 +427,6 @@ pub fn create_ui_session_json(
     serde_json::to_string(&result).map_err(|err| err.to_string())
 }
 
-pub fn remove_leg_in_session_json(handle: u64, index: usize) -> Result<String, String> {
-    let snapshot =
-        app_core::remove_leg_in_session(handle as u32, index).map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
-}
-
 pub fn replace_flight_plan_in_session_json(handle: u64, plan_json: &str) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
@@ -466,16 +460,6 @@ pub fn set_guidance_leg_geometry_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-pub fn move_waypoint_in_session_json(
-    handle: u64,
-    waypoint_index: usize,
-    delta: isize,
-) -> Result<String, String> {
-    let snapshot = app_core::move_waypoint_in_session(handle as u32, waypoint_index, delta)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
-}
-
 pub fn insert_waypoint_best_position_in_session_json(
     handle: u64,
     waypoint_json: &str,
@@ -484,6 +468,90 @@ pub fn insert_waypoint_best_position_in_session_json(
         serde_json::from_str(waypoint_json).map_err(|err| err.to_string())?;
     let outcome = app_core::insert_waypoint_best_position_in_session(handle as u32, waypoint)
         .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
+pub fn insert_waypoint_at_flight_plan_row_in_session_json(
+    handle: u64,
+    row_uid: &str,
+    before: bool,
+    waypoint_json: &str,
+) -> Result<String, String> {
+    let waypoint: app_core::NavRef =
+        serde_json::from_str(waypoint_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::insert_waypoint_at_flight_plan_row_in_session(
+        handle as u32,
+        row_uid.to_string(),
+        before,
+        waypoint,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn suggest_waypoint_identifiers_at_flight_plan_row_in_session_json(
+    handle: u64,
+    row_uid: &str,
+    before: bool,
+    prefix: &str,
+    limit: usize,
+) -> Result<String, String> {
+    let outcome = app_core::suggest_waypoint_identifiers_at_flight_plan_row_in_session(
+        handle as u32,
+        row_uid.to_string(),
+        before,
+        prefix.to_string(),
+        limit,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
+pub fn insert_airway_at_flight_plan_row_in_session_json(
+    handle: u64,
+    row_uid: &str,
+    presentation_json: &str,
+    entry_index: usize,
+    exit_index: usize,
+) -> Result<String, String> {
+    let presentation: app_core::AirwayPresentationPlan =
+        serde_json::from_str(presentation_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::insert_airway_at_flight_plan_row_in_session(
+        handle as u32,
+        row_uid.to_string(),
+        presentation,
+        entry_index,
+        exit_index,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
+pub fn select_procedure_at_flight_plan_row_in_session_json(
+    handle: u64,
+    row_uid: &str,
+    airport_id: &str,
+    procedure_id: &str,
+    kind_json: &str,
+    runway_transition_json: &str,
+    enroute_transition_json: &str,
+) -> Result<String, String> {
+    let kind: app_core::ProcedureKind =
+        serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
+    let runway_transition: Option<String> =
+        serde_json::from_str(runway_transition_json).map_err(|err| err.to_string())?;
+    let enroute_transition: Option<String> =
+        serde_json::from_str(enroute_transition_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::select_procedure_at_flight_plan_row_in_session(
+        handle as u32,
+        row_uid.to_string(),
+        airport_id.to_string(),
+        procedure_id.to_string(),
+        kind,
+        runway_transition,
+        enroute_transition,
+    )
+    .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
@@ -1858,19 +1926,6 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_cre
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_removeLegInSessionJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: i64,
-    index: i32,
-) -> jstring {
-    return_string(
-        &mut env,
-        remove_leg_in_session_json(handle as u64, index as usize),
-    )
-}
-
-#[unsafe(no_mangle)]
 pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_replaceFlightPlanInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -1915,20 +1970,6 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_set
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_moveWaypointInSessionJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: i64,
-    waypoint_index: i32,
-    delta: i32,
-) -> jstring {
-    return_string(
-        &mut env,
-        move_waypoint_in_session_json(handle as u64, waypoint_index as usize, delta as isize),
-    )
-}
-
-#[unsafe(no_mangle)]
 pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_insertWaypointBestPositionInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -1938,6 +1979,108 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ins
     let result = (|| {
         let waypoint = get_java_string(&mut env, waypoint_json)?;
         insert_waypoint_best_position_in_session_json(handle as u64, &waypoint)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_insertWaypointAtFlightPlanRowInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    row_uid: JString,
+    before: bool,
+    waypoint_json: JString,
+) -> jstring {
+    let result = (|| {
+        let row_uid = get_java_string(&mut env, row_uid)?;
+        let waypoint_json = get_java_string(&mut env, waypoint_json)?;
+        insert_waypoint_at_flight_plan_row_in_session_json(
+            handle as u64,
+            &row_uid,
+            before,
+            &waypoint_json,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_suggestWaypointIdentifiersAtFlightPlanRowInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    row_uid: JString,
+    before: bool,
+    prefix: JString,
+    limit: i32,
+) -> jstring {
+    let result = (|| {
+        let row_uid = get_java_string(&mut env, row_uid)?;
+        let prefix = get_java_string(&mut env, prefix)?;
+        suggest_waypoint_identifiers_at_flight_plan_row_in_session_json(
+            handle as u64,
+            &row_uid,
+            before,
+            &prefix,
+            limit as usize,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_insertAirwayAtFlightPlanRowInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    row_uid: JString,
+    presentation_json: JString,
+    entry_index: i32,
+    exit_index: i32,
+) -> jstring {
+    let result = (|| {
+        let row_uid = get_java_string(&mut env, row_uid)?;
+        let presentation_json = get_java_string(&mut env, presentation_json)?;
+        insert_airway_at_flight_plan_row_in_session_json(
+            handle as u64,
+            &row_uid,
+            &presentation_json,
+            entry_index as usize,
+            exit_index as usize,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_selectProcedureAtFlightPlanRowInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    row_uid: JString,
+    airport_id: JString,
+    procedure_id: JString,
+    kind_json: JString,
+    runway_transition_json: JString,
+    enroute_transition_json: JString,
+) -> jstring {
+    let result = (|| {
+        let row_uid = get_java_string(&mut env, row_uid)?;
+        let airport_id = get_java_string(&mut env, airport_id)?;
+        let procedure_id = get_java_string(&mut env, procedure_id)?;
+        let kind_json = get_java_string(&mut env, kind_json)?;
+        let runway_transition_json = get_java_string(&mut env, runway_transition_json)?;
+        let enroute_transition_json = get_java_string(&mut env, enroute_transition_json)?;
+        select_procedure_at_flight_plan_row_in_session_json(
+            handle as u64,
+            &row_uid,
+            &airport_id,
+            &procedure_id,
+            &kind_json,
+            &runway_transition_json,
+            &enroute_transition_json,
+        )
     })();
     return_string(&mut env, result)
 }

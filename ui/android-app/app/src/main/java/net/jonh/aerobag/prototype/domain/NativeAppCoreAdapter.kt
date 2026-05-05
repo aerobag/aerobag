@@ -752,16 +752,6 @@ class NativeUiSession internal constructor(
         }
     }
 
-    fun removeLeg(index: Int): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.removeLegInSessionJson(handle, index))
-        return syncGuidanceGeometryFromPlan()
-    }
-
-    fun moveWaypoint(index: Int, delta: Int): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.moveWaypointInSessionJson(handle, index, delta))
-        return syncGuidanceGeometryFromPlan()
-    }
-
     fun insertWaypointBestPosition(waypoint: NavRef): UiSessionSnapshot {
         val store = navKvStore ?: error("nav_kv store is required to insert waypoint")
         while (true) {
@@ -778,6 +768,118 @@ class NativeUiSession internal constructor(
                     store.ensurePages(outcome.getValue("pages").jsonArray.map { it.jsonPrimitive.content.toInt() })
                 }
                 else -> error("unknown insert waypoint outcome: $outcome")
+            }
+        }
+    }
+
+    fun insertWaypointAtFlightPlanRow(rowUid: String, before: Boolean, waypoint: NavRef): UiSessionSnapshot {
+        snapshot =
+            decodeSnapshot(
+                bridge.insertWaypointAtFlightPlanRowInSessionJson(
+                    handle,
+                    rowUid,
+                    before,
+                    json.encodeToString(waypoint.toWire()),
+                ),
+            )
+        return syncGuidanceGeometryFromPlan()
+    }
+
+    fun suggestWaypointIdentifiersAtFlightPlanRow(
+        rowUid: String,
+        before: Boolean,
+        prefix: String,
+        limit: Int = 8,
+    ): List<WaypointIdentifierSuggestion> {
+        val store = navKvStore ?: error("nav_kv store is required to suggest waypoints")
+        while (true) {
+            val outcome =
+                json.parseToJsonElement(
+                    bridge.suggestWaypointIdentifiersAtFlightPlanRowInSessionJson(
+                        handle,
+                        rowUid,
+                        before,
+                        prefix,
+                        limit,
+                    ),
+                ).jsonObject
+            when (outcome.getValue("state").jsonPrimitive.content) {
+                "complete" -> {
+                    val result = outcome["result"] ?: error("waypoint suggestions missing result: $outcome")
+                    return json.decodeFromJsonElement<List<WireWaypointIdentifierSuggestion>>(result).map { it.toUi() }
+                }
+                "need_pages" -> {
+                    store.ensurePages(outcome.getValue("pages").jsonArray.map { it.jsonPrimitive.content.toInt() })
+                }
+                else -> error("unknown waypoint suggestion outcome: $outcome")
+            }
+        }
+    }
+
+    fun insertAirwayAtFlightPlanRow(
+        rowUid: String,
+        presentation: AirwayPresentationPlan,
+        entryIndex: Int,
+        exitIndex: Int,
+    ): UiSessionSnapshot {
+        val store = navKvStore ?: error("nav_kv store is required to insert airway")
+        while (true) {
+            val outcome =
+                json.parseToJsonElement(
+                    bridge.insertAirwayAtFlightPlanRowInSessionJson(
+                        handle,
+                        rowUid,
+                        json.encodeToString(presentation.toWire()),
+                        entryIndex,
+                        exitIndex,
+                    ),
+                ).jsonObject
+            when (outcome.getValue("state").jsonPrimitive.content) {
+                "complete" -> {
+                    val result = outcome["result"] ?: error("airway insert missing result: $outcome")
+                    snapshot = enrichSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi())
+                    return syncGuidanceGeometryFromPlan()
+                }
+                "need_pages" -> {
+                    store.ensurePages(outcome.getValue("pages").jsonArray.map { it.jsonPrimitive.content.toInt() })
+                }
+                else -> error("unknown airway insert outcome: $outcome")
+            }
+        }
+    }
+
+    fun selectProcedureAtFlightPlanRow(
+        rowUid: String,
+        airportId: String,
+        procedureId: String,
+        kind: ProcedureKind,
+        runwayTransition: String?,
+        enrouteTransition: String?,
+    ): UiSessionSnapshot {
+        val store = navKvStore ?: error("nav_kv store is required to select procedure")
+        while (true) {
+            val outcome =
+                json.parseToJsonElement(
+                    bridge.selectProcedureAtFlightPlanRowInSessionJson(
+                        handle,
+                        rowUid,
+                        airportId,
+                        procedureId,
+                        json.encodeToString(kind.toWire()),
+                        json.encodeToString(runwayTransition),
+                        json.encodeToString(enrouteTransition),
+                    ),
+                ).jsonObject
+            when (outcome.getValue("state").jsonPrimitive.content) {
+                "complete" -> {
+                    val result = outcome["result"] ?: error("procedure selection missing result: $outcome")
+                    snapshot = enrichSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi())
+                    return syncGuidanceGeometryFromPlan()
+                }
+                "need_pages" -> {
+                    store.ensurePages(outcome.getValue("pages").jsonArray.map { it.jsonPrimitive.content.toInt() })
+                }
+                else -> error("unknown procedure selection outcome: $outcome")
             }
         }
     }

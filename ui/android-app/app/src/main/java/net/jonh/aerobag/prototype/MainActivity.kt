@@ -132,6 +132,8 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -5357,6 +5359,7 @@ private fun MapExplorerPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .semantics { contentDescription = "parity:map-surface" }
             .background(uiTheme.controls.chartSurfaceBg)
             .onSizeChanged { surfaceSize = it }
             .onGloballyPositioned { coordinates -> mapSurfaceBounds = coordinates.boundsInWindow() }
@@ -6011,6 +6014,7 @@ private fun MapSelectionTray(
     val visibleActions = if (selectedItem?.detailText != null) actionSlots.take(3) else actionSlots.take(6)
     Surface(
         modifier = modifier
+            .semantics { contentDescription = "parity:map-selection-tray" }
             .onGloballyPositioned { coordinates ->
                 onBoundsChange(coordinates.boundsInWindow())
             }
@@ -6098,6 +6102,7 @@ private fun MapSelectionItemButton(
     Surface(
         modifier = Modifier
             .size(ThumbSize)
+            .semantics { contentDescription = "parity:map-selection-item:${item.label}" }
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(ThumbRadius),
         color = if (selected) lerp(uiTheme.controls.buttonBg, Color.White, 0.28f) else uiTheme.controls.buttonBg,
@@ -6160,6 +6165,7 @@ private fun MapSelectionActionButton(
         modifier = Modifier
             .width(ThumbSize * 1.2f)
             .height(ThumbSize)
+            .semantics { contentDescription = "parity:map-selection-action:${action.id}" }
             .alpha(if (action.label.isBlank()) 0f else 1f)
             .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
         shape = RoundedCornerShape(ThumbRadius),
@@ -7845,6 +7851,7 @@ private fun NavElementDock(
             modifier
                 .width(ThumbSize * 3f)
                 .height(ThumbSize * 0.67f)
+                .semantics { contentDescription = "parity:nav-cdi" }
                 .then(
                     if (onClick != null) {
                         Modifier.clickable(
@@ -9362,6 +9369,7 @@ private fun CompactSquareButton(
     val iconShape = RoundedCornerShape(ThumbRadius)
     Surface(
         modifier = modifier
+            .semantics { contentDescription = "parity:button:$label" }
             .then(
                 if (enabled) {
                     Modifier.pointerInput(onClick) {

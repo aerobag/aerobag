@@ -3442,6 +3442,7 @@ function MapPage(props: {
       <div
         ref={containerRef}
         className="mapSurface chartSurface"
+        data-testid="map-surface"
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerRelease}
@@ -3899,6 +3900,7 @@ function MapPage(props: {
             open={trayGroup.isOpen("family")}
             onToggle={() => trayGroup.toggle("family")}
             ariaLabel="Chart family"
+            testId="chart-family-button"
             options={familyOptions.map((family) => ({
               id: family.id,
               label: family.label,
@@ -3922,6 +3924,7 @@ function MapPage(props: {
             open={trayGroup.isOpen("layers")}
             onToggle={() => trayGroup.toggle("layers")}
             ariaLabel="Layers"
+            testId="layers-button"
             options={layerTrayOptions}
           />
           <ChartSearchBox
@@ -4009,6 +4012,7 @@ function NavElementButton(props: {
     <button
       type="button"
       className={className}
+      data-testid="nav-cdi"
       onPointerDown={onPointerDown}
       onPointerUp={onPointerUp}
       onDoubleClick={onDoubleClick}
@@ -5024,6 +5028,7 @@ function FlightPlanPage(props: {
                     <button
                       key={`${row.id}:waypoint`}
 	                  type="button"
+                      data-testid={`plan-row-${row.rowUid}`}
 	                  ref={(node) => {
 	                    if (row.refKey === null) {
 	                      return;
@@ -5159,6 +5164,7 @@ function FlightPlanPage(props: {
                   )}
                   <input
                     className="planEntryInput"
+                    data-testid="plan-append-route-input"
                     value={routeEntryText}
                     spellCheck={false}
                     autoCapitalize="characters"
@@ -5609,6 +5615,7 @@ function ChartPlateToggleButton(props: {
     <button
       type="button"
       className="chartButton pageToggleButton"
+      data-testid={chartSelected ? "page-button-plate" : "page-button-chart"}
       onPointerDown={stopPointer}
       onPointerUp={stopPointer}
       onDoubleClick={stopDoubleClick}
@@ -5632,6 +5639,7 @@ function HomeNavButton(props: {
     <button
       type="button"
       className={`chartButton${props.active ? " isOpen" : ""}`}
+      data-testid="page-button-home"
       onPointerDown={stopPointer}
       onPointerUp={stopPointer}
       onDoubleClick={stopDoubleClick}
@@ -5655,8 +5663,9 @@ function TrayDock(props: {
   launcherClassName?: string;
   launcherAccentColor?: string;
   options: TrayOption[];
+  testId?: string;
 }) {
-  const { launcherLabel, launcherImageSrc, launcherStyle, open, onToggle, ariaLabel, disabled = false, style = "compact", launcherClassName, launcherAccentColor, options } = props;
+  const { launcherLabel, launcherImageSrc, launcherStyle, open, onToggle, ariaLabel, disabled = false, style = "compact", launcherClassName, launcherAccentColor, options, testId } = props;
   const launcherRef = useRef<HTMLButtonElement | null>(null);
   const trayRef = useRef<HTMLElement | null>(null);
   const [trayPosition, setTrayPosition] = useState<{ left: number; top: number } | null>(null);
@@ -5709,6 +5718,7 @@ function TrayDock(props: {
         ref={launcherRef}
         type="button"
         className={`chartButton${launcherWide ? " chartButtonWide" : ""}${launcherClassName ? ` ${launcherClassName}` : ""}${open ? " isOpen" : ""}${launcherDisabled ? " isDisabled" : ""}`}
+        data-testid={testId}
         aria-disabled={launcherDisabled}
         style={{
           ...launcherStyle,
@@ -5741,6 +5751,7 @@ function TrayDock(props: {
                   key={option.id}
                   type="button"
                   className={`trayButton${option.active ? " isActive" : ""}${option.iconSrc ? " trayButtonWithIcon" : ""}${option.toggleState ? " trayButtonHasToggle" : ""}${option.toggleState?.visible && option.toggleState.enabled ? " isOn" : ""}${option.toggleState && option.toggleState.enabled && !option.toggleState.visible ? " isOff" : ""}`}
+                  data-testid={`tray-option-${option.id}`}
                   disabled={option.disabled}
                   style={option.accentColor ? ({ ["--tray-accent" as string]: option.accentColor } as CSSProperties) : undefined}
                   onPointerDown={stopPointer}
@@ -5797,6 +5808,7 @@ function ChartSearchBox(props: {
     <div className="chartSearch">
       <input
         className="chartSearchInput"
+        data-testid="chart-search-input"
         type="text"
         value={state.query}
         placeholder="SEARCH"
@@ -5836,6 +5848,7 @@ function ChartSearchBox(props: {
               key={`${suggestion.kind}:${suggestion.identifier}`}
               type="button"
               className="trayButton airwayChoiceButton airportInsertSuggestion chartSearchSuggestion"
+              data-testid={`chart-search-suggestion-${suggestion.identifier}`}
               onPointerDown={stopPointer}
               onPointerUp={stopPointer}
               onDoubleClick={stopDoubleClick}
@@ -5893,6 +5906,7 @@ function MapSelectionTray(props: {
   return (
     <section
       className="mapSelectionTray"
+      data-testid="map-selection-tray"
       style={{ ...horizontalStyle, ...verticalStyle }}
       aria-label="Map selection"
       onPointerDown={stopPointer}
@@ -5910,6 +5924,7 @@ function MapSelectionTray(props: {
                 key={item.id}
                 type="button"
                 className={`mapSelectionItem${selectedItem?.id === item.id ? " isSelected" : ""}`}
+                data-testid={`map-selection-item-${category.id}-${item.label}`}
                 onPointerDown={stopPointer}
                 onPointerUp={stopPointer}
                 onDoubleClick={stopDoubleClick}
@@ -5940,6 +5955,7 @@ function MapSelectionTray(props: {
               key={action.id}
               type="button"
               className={`mapSelectionAction${action.display_only ? " isDisplayOnly" : ""}${action.placeholder ? " isPlaceholder" : ""}`}
+              data-testid={action.placeholder ? undefined : `map-selection-action-${action.id}`}
               disabled={!action.enabled}
               onPointerDown={stopPointer}
               onPointerUp={stopPointer}

@@ -178,7 +178,12 @@ pub fn display_path_for_resumed_common_cf(
     let mut elements = Vec::new();
     let mut debug_sources = Vec::new();
 
-    if angular_difference_degrees(current_heading_deg, course_deg) > 5.0 {
+    let heading_delta_deg = angular_difference_degrees(current_heading_deg, course_deg);
+    if heading_delta_deg > 5.0 && heading_delta_deg <= 20.0 {
+        // Resuming the common CF with a small heading delta is a fly-by corner.
+        // KALO I12/MCW reaches EYUCE on the feeder course, then joins final; a
+        // tiny synthetic arc here is non-charted geometry for the fillet pass.
+    } else if heading_delta_deg > 5.0 {
         let prior_len = elements.len();
         let turn_end = append_heading_change(
             &mut elements,
@@ -273,10 +278,13 @@ fn append_arrival_turn_to_fix_course(
     target_course_deg: f64,
 ) -> Option<()> {
     let direct_course_deg = bearing_from(current_position, fix);
-    if angular_difference_degrees(direct_course_deg, target_course_deg) <= 12.0 {
+    if angular_difference_degrees(current_heading_deg, target_course_deg) <= 20.0
+        || angular_difference_degrees(direct_course_deg, target_course_deg) <= 12.0
+    {
         // TF fixes are normally fly-by unless coded otherwise. Until we have a
         // later filleting pass, prefer the non-overshooting direct leg when it
-        // already satisfies the following common course (KMCI I01L WARMM).
+        // already satisfies the following common course (KMCI I01L WARMM), or
+        // when the heading delta is a small no-turn final intercept (KALO I12/MCW).
         push_segment!(elements, debug_sources, current_position, fix);
         return Some(());
     }
@@ -1300,27 +1308,40 @@ fn build_procedure_leg_display_path(
                     if let Some(current_heading_deg) = current_course_deg {
                         if angular_difference_degrees(current_heading_deg, direct_course_deg) > 5.0
                         {
-                            let turn_prior_len = elements.len();
-                            let turn_end = append_heading_change(
-                                &mut elements,
-                                current_position,
-                                current_heading_deg,
-                                direct_course_deg,
-                                cf_turn_direction(step).unwrap_or_else(|| {
-                                    shortest_turn_clockwise(current_heading_deg, direct_course_deg)
-                                }),
-                                0.0,
-                                missed_approach_turn_radius_nm(),
-                            );
-                            extend_sources_for_new_elements(
-                                &mut debug_sources,
-                                turn_prior_len,
-                                &elements,
-                                debug_source!(),
-                            );
-                            if distance_between_points_nm(turn_end, fix) > MIN_GEOMETRY_DISTANCE_NM
+                            if cf_turn_direction(step).is_none()
+                                && angular_difference_degrees(current_heading_deg, direct_course_deg)
+                                    <= 20.0
                             {
-                                push_segment!(elements, debug_sources, turn_end, fix);
+                                // Small no-turn CF fixes are fly-by corners; do not synthesize
+                                // a tiny arc that a later fillet pass should own (KALO I12/MCW).
+                                push_segment!(elements, debug_sources, current_position, fix);
+                            } else {
+                                let turn_prior_len = elements.len();
+                                let turn_end = append_heading_change(
+                                    &mut elements,
+                                    current_position,
+                                    current_heading_deg,
+                                    direct_course_deg,
+                                    cf_turn_direction(step).unwrap_or_else(|| {
+                                        shortest_turn_clockwise(
+                                            current_heading_deg,
+                                            direct_course_deg,
+                                        )
+                                    }),
+                                    0.0,
+                                    missed_approach_turn_radius_nm(),
+                                );
+                                extend_sources_for_new_elements(
+                                    &mut debug_sources,
+                                    turn_prior_len,
+                                    &elements,
+                                    debug_source!(),
+                                );
+                                if distance_between_points_nm(turn_end, fix)
+                                    > MIN_GEOMETRY_DISTANCE_NM
+                                {
+                                    push_segment!(elements, debug_sources, turn_end, fix);
+                                }
                             }
                         } else if distance_between_points_nm(current_position, fix)
                             > MIN_GEOMETRY_DISTANCE_NM
@@ -1826,23 +1847,32 @@ fn append_course_track_path(
                     current_position
                 }
             } else {
-                let (join_elements, intercept) = best_nominal_intercept_track_join(
-                    current_position,
-                    current_heading_deg,
-                    None,
-                    course_anchor,
-                    course_deg,
-                    track_limit,
-                    missed_approach_turn_radius_nm(),
-                )?;
-                extend_elements_with_sources(
-                    elements,
-                    debug_sources,
-                    join_elements,
-                    Vec::new(),
-                    debug_source!(),
-                );
-                intercept
+                if matches!(termination, TrackTermination::ToFix(_))
+                    && angular_difference_degrees(current_heading_deg, course_deg) <= 20.0
+                {
+                    // No-turn CF joins with small heading deltas are fly-by corners.
+                    // KALO I12/MCW used to draw tiny non-charted arcs around EYUCE;
+                    // keep the straight legs exact and defer smoothing to filleting.
+                    current_position
+                } else {
+                    let (join_elements, intercept) = best_nominal_intercept_track_join(
+                        current_position,
+                        current_heading_deg,
+                        None,
+                        course_anchor,
+                        course_deg,
+                        track_limit,
+                        missed_approach_turn_radius_nm(),
+                    )?;
+                    extend_elements_with_sources(
+                        elements,
+                        debug_sources,
+                        join_elements,
+                        Vec::new(),
+                        debug_source!(),
+                    );
+                    intercept
+                }
             };
             intercept
         }

@@ -1610,7 +1610,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 continue;
             }
             let previous_path_state = previous_display_path_state(previous_display_path.as_ref());
-            let Some(window_link) = plan_procedure_window(
+            let planned_window = plan_procedure_window(
                 index,
                 [pair[0], pair[1]],
                 ProcedureWindowPlanningContext {
@@ -1623,8 +1623,31 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     next_segment_records,
                     resolved_last: resolved.last().cloned(),
                 },
-            )?
-            else {
+            )?;
+            let Some(window_link) = planned_window else {
+                let previous_context =
+                    previous_window_context(previous_display_path.as_ref(), resolved.last(), pair[0]);
+                if common_resume_yields_current_feeder_cf(
+                    [pair[0], pair[1]],
+                    leg_records,
+                    previous_display_path.as_ref(),
+                    previous_context,
+                    next_segment_records,
+                    role.clone(),
+                ) {
+                    row_ledger
+                        .mark_ignored(pair[1], "common segment supersedes current feeder CF");
+                } else if same_fix_df_between_fa_and_hold(fix_records.as_slice(), index) {
+                    row_ledger.mark_ignored(
+                        pair[1],
+                        "same-fix DF superseded by preceding FA and following hold",
+                    );
+                } else if same_fix_hold_after_redundant_df(fix_records.as_slice(), index) {
+                    row_ledger.mark_ignored(
+                        pair[1],
+                        "same-fix hold follows redundant DF after FA",
+                    );
+                }
                 continue;
             };
             row_ledger.mark_window_consumed(
@@ -1634,6 +1657,12 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 window_link.hold_record,
                 window_link.provenance_record,
             );
+            if let Some(suppressed_record) = window_link.suppressed_record {
+                row_ledger.mark_ignored(
+                    suppressed_record,
+                    "common segment supersedes current feeder CF",
+                );
+            }
             if window_link.render_as_empty_join {
                 previous_leg_to = Some(window_link.to);
                 continue;
@@ -3847,6 +3876,15 @@ fn resumed_common_target_supersedes_feeder_cf(
     feeder_course_to_fix_record: &ProcedureLegMaterializationRecord,
     next_segment_records: &[ProcedureLegMaterializationRecord],
 ) -> bool {
+    if same_fix_feeder_cf_is_common_if_course(
+        previous_terminal_position,
+        previous_terminal_course,
+        previous_terminal_anchor.as_ref(),
+        feeder_course_to_fix_record,
+        next_segment_records,
+    ) {
+        return true;
+    }
     resumed_common_target(previous_display_path, false, next_segment_records).is_some_and(
         |resumed_common_target| {
             resumed_common_target.record.nav_ref.as_ref()
@@ -3860,6 +3898,107 @@ fn resumed_common_target_supersedes_feeder_cf(
                 )
         },
     )
+}
+
+fn same_fix_feeder_cf_is_common_if_course(
+    previous_terminal_position: Option<LatLon>,
+    previous_terminal_course: Option<f64>,
+    previous_terminal_anchor: Option<&NavRef>,
+    feeder_course_to_fix_record: &ProcedureLegMaterializationRecord,
+    next_segment_records: &[ProcedureLegMaterializationRecord],
+) -> bool {
+    if feeder_course_to_fix_record.path_termination.trim() != "CF" {
+        return false;
+    }
+    if previous_terminal_anchor != feeder_course_to_fix_record.nav_ref.as_ref() {
+        return false;
+    }
+    let Some(feeder_fix) = feeder_course_to_fix_record.nav_position else {
+        return false;
+    };
+    if !previous_terminal_position
+        .is_some_and(|position| great_circle_distance_nm(position, feeder_fix) <= 0.05)
+    {
+        return false;
+    }
+    let Some(feeder_course_deg) = feeder_course_to_fix_record
+        .magnetic_course_deg
+        .map(|course| course + record_magnetic_variation_deg(feeder_course_to_fix_record).unwrap_or(0.0))
+    else {
+        return false;
+    };
+    if !previous_terminal_course
+        .is_some_and(|course| angular_difference_degrees(course, feeder_course_deg) <= 10.0)
+    {
+        return false;
+    }
+    let Some(common_if) = next_segment_records
+        .iter()
+        .find(|record| record.path_termination.trim() == "IF")
+    else {
+        return false;
+    };
+    if !same_materialized_fix(common_if, feeder_course_to_fix_record) {
+        return false;
+    }
+    let Some(first_common_cf) = next_segment_records
+        .iter()
+        .filter(|record| record.sequence > common_if.sequence)
+        .find(|record| record.path_termination.trim() == "CF")
+    else {
+        return false;
+    };
+    let Some(common_course_deg) = first_common_cf
+        .magnetic_course_deg
+        .map(|course| course + record_magnetic_variation_deg(first_common_cf).unwrap_or(0.0))
+    else {
+        return false;
+    };
+    angular_difference_degrees(feeder_course_deg, common_course_deg) <= 10.0
+}
+
+fn same_fix_df_between_fa_and_hold(
+    fix_records: &[&ProcedureLegMaterializationRecord],
+    current_window_index: usize,
+) -> bool {
+    let (Some(from), Some(direct_to)) = (
+        fix_records.get(current_window_index),
+        fix_records.get(current_window_index + 1),
+    ) else {
+        return false;
+    };
+    if from.path_termination.trim() != "FA" || direct_to.path_termination.trim() != "DF" {
+        return false;
+    }
+    if !same_materialized_fix(from, direct_to) {
+        return false;
+    }
+    fix_records
+        .get(current_window_index + 2)
+        .is_some_and(|hold| {
+            matches!(hold.path_termination.trim(), "HF" | "HM")
+                && same_materialized_fix(direct_to, hold)
+        })
+}
+
+fn same_fix_hold_after_redundant_df(
+    fix_records: &[&ProcedureLegMaterializationRecord],
+    current_window_index: usize,
+) -> bool {
+    let (Some(prior), Some(direct_to), Some(hold)) = (
+        current_window_index
+            .checked_sub(1)
+            .and_then(|index| fix_records.get(index)),
+        fix_records.get(current_window_index),
+        fix_records.get(current_window_index + 1),
+    ) else {
+        return false;
+    };
+    prior.path_termination.trim() == "FA"
+        && direct_to.path_termination.trim() == "DF"
+        && matches!(hold.path_termination.trim(), "HF" | "HM")
+        && same_materialized_fix(prior, direct_to)
+        && same_materialized_fix(direct_to, hold)
 }
 
 fn should_skip_degenerate_or_duplicate_window(
@@ -4023,6 +4162,7 @@ struct ProcedureWindowLink<'a> {
     render_as_empty_join: bool,
     render_as_resumed_common_cf: bool,
     render_inherited_single_tf_step: bool,
+    suppressed_record: Option<&'a ProcedureLegMaterializationRecord>,
 }
 
 #[derive(Clone)]
@@ -4490,6 +4630,11 @@ fn plan_procedure_window<'a>(
         render_as_empty_join: behavior.render_as_empty_join,
         render_as_resumed_common_cf: behavior.render_as_resumed_common_cf,
         render_inherited_single_tf_step: behavior.render_inherited_single_tf_step,
+        suppressed_record: if common_resume_skips_current_feeder_cf {
+            Some(pair[1])
+        } else {
+            None
+        },
     }))
 }
 

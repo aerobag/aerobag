@@ -57,7 +57,7 @@ describe("loadBestAvailableAdapter", () => {
     const loaded = await loadBestAvailableAdapter(async () => ({
       situation_ring_candidates_json: () => "[]",
       create_ui_session: async () => JSON.stringify({ handle: 1, snapshot: JSON.parse(snapshotJson) }),
-      insert_waypoint_best_position_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
+      perform_map_selection_action_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       set_situation_in_session: async () => snapshotJson,
       engage_map_follow_in_session: async () => snapshotJson,
       disengage_map_follow_in_session: async () => snapshotJson,

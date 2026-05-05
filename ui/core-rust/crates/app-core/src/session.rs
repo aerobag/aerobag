@@ -23,10 +23,11 @@ use crate::{
     AirspaceFeaturePayload, AirspaceLabelTilePayload, AirspaceReferenceTilePayload,
     AirwayPresentationPlan, AppError, AppErrorKind, AppEvent, AppResult, AppState, AppUiState,
     FlightPlan, FlightPlanRowActionExecution, FlightPlanRowActionId, LatLon, MapOverlayConfig,
-    MapOverlayQueryResult, MapViewport, MetarProductPayload, MetarTilePayload, NavKvLookup,
-    NavKvQuery, NavKvStore, NavRef, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureKind,
-    ProcedureLoadCommand, RasterMapCatalog, RasterTilePlan, RouteComponentViewKind, SequencingMode,
-    TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
+    MapOverlayQueryResult, MapSelectionSessionAction, MapViewport, MetarProductPayload,
+    MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore, NavRef, PlanLeg, PlaybackUiState,
+    PointTilePayload, ProcedureKind, ProcedureLoadCommand, RasterMapCatalog, RasterTilePlan,
+    RouteComponentViewKind, SequencingMode, TafProductPayload, TerrainOverlayQueryResult,
+    TfrProductPayload, UiSnapshotAppState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -605,7 +606,32 @@ pub fn replace_flight_plan_in_session(
     Ok(snapshot_for_session(session))
 }
 
-pub fn insert_waypoint_best_position_in_session(
+pub fn perform_map_selection_action_in_session(
+    handle: u32,
+    action_json: String,
+) -> AppResult<HadOperationOutcome> {
+    let action: MapSelectionSessionAction =
+        serde_json::from_str(&action_json).map_err(|err| AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("invalid map selection session action: {err}"),
+        })?;
+    match action {
+        MapSelectionSessionAction::InsertWaypointBestPosition { nav_ref } => {
+            insert_waypoint_best_position_for_session(handle, nav_ref)
+        }
+        MapSelectionSessionAction::ActivateDirectToNavRef { nav_ref } => {
+            let snapshot = activate_direct_to_nav_ref_in_session(handle, nav_ref)?;
+            Ok(HadOperationOutcome::Complete {
+                result: serde_json::to_value(snapshot).map_err(|err| AppError {
+                    kind: AppErrorKind::Internal,
+                    message: err.to_string(),
+                })?,
+            })
+        }
+    }
+}
+
+fn insert_waypoint_best_position_for_session(
     handle: u32,
     waypoint: NavRef,
 ) -> AppResult<HadOperationOutcome> {
@@ -1001,7 +1027,7 @@ pub fn load_plate_procedure_in_session(
     })
 }
 
-pub fn activate_direct_to_nav_ref_in_session(
+fn activate_direct_to_nav_ref_in_session(
     handle: u32,
     target: NavRef,
 ) -> AppResult<UiSessionSnapshot> {

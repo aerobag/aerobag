@@ -471,6 +471,8 @@ pub struct MapSelectionAction {
     #[serde(default)]
     pub airspace_limit: Option<AirspaceLimitGlyph>,
     #[serde(default)]
+    pub session_action: Option<String>,
+    #[serde(default)]
     pub flight_plan_row_action: Option<MapSelectionFlightPlanRowAction>,
 }
 
@@ -478,6 +480,13 @@ pub struct MapSelectionAction {
 pub struct MapSelectionFlightPlanRowAction {
     pub row_uid: String,
     pub action_uid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MapSelectionSessionAction {
+    InsertWaypointBestPosition { nav_ref: NavRef },
+    ActivateDirectToNavRef { nav_ref: NavRef },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1432,9 +1441,13 @@ fn selection_item_for_point(
         Some(nav_ref) if selection_plan_top_level_waypoint_count(plan, nav_ref) > 1 => {
             disabled_action("remove_from_flight_plan", "Remove ambiguous")
         }
-        Some(nav_ref) if !selection_plan_contains_nav_ref(plan, nav_ref) => {
-            enabled_action("insert", "Insert in flight plan")
-        }
+        Some(nav_ref) if !selection_plan_contains_nav_ref(plan, nav_ref) => session_action(
+            "insert",
+            "Insert in flight plan",
+            MapSelectionSessionAction::InsertWaypointBestPosition {
+                nav_ref: nav_ref.clone(),
+            },
+        ),
         Some(_) => disabled_action("insert", "In grouped route"),
         None => disabled_action("insert", "Insert unavailable"),
     };
@@ -1762,6 +1775,7 @@ fn display_action(id: &str, label: &str) -> MapSelectionAction {
         display_only: true,
         detail_text: None,
         airspace_limit: None,
+        session_action: None,
         flight_plan_row_action: None,
     }
 }
@@ -1774,6 +1788,7 @@ fn detail_action(id: &str, label: &str, detail_text: String) -> MapSelectionActi
         display_only: false,
         detail_text: Some(detail_text),
         airspace_limit: None,
+        session_action: None,
         flight_plan_row_action: None,
     }
 }
@@ -1786,6 +1801,7 @@ fn enabled_action(id: &str, label: &str) -> MapSelectionAction {
         display_only: false,
         detail_text: None,
         airspace_limit: None,
+        session_action: None,
         flight_plan_row_action: None,
     }
 }
@@ -1798,6 +1814,7 @@ fn disabled_action(id: &str, label: &str) -> MapSelectionAction {
         display_only: false,
         detail_text: None,
         airspace_limit: None,
+        session_action: None,
         flight_plan_row_action: None,
     }
 }
@@ -1814,7 +1831,22 @@ fn row_action(
         display_only: false,
         detail_text: None,
         airspace_limit: None,
+        session_action: None,
         flight_plan_row_action,
+    }
+}
+
+fn session_action(id: &str, label: &str, action: MapSelectionSessionAction) -> MapSelectionAction {
+    let session_action = serde_json::to_string(&action).ok();
+    MapSelectionAction {
+        id: id.to_string(),
+        label: label.to_string(),
+        enabled: session_action.is_some(),
+        display_only: false,
+        detail_text: None,
+        airspace_limit: None,
+        session_action,
+        flight_plan_row_action: None,
     }
 }
 
@@ -1826,7 +1858,16 @@ fn direct_to_action(
     if let Some(flight_plan_row_action) = flight_plan_row_action {
         return row_action("direct_to", "Direct-to", Some(flight_plan_row_action));
     }
-    action_for_availability("direct_to", "Direct-to", nav_ref.is_some())
+    if let Some(nav_ref) = nav_ref {
+        return session_action(
+            "direct_to",
+            "Direct-to",
+            MapSelectionSessionAction::ActivateDirectToNavRef {
+                nav_ref: nav_ref.clone(),
+            },
+        );
+    }
+    disabled_action("direct_to", "Direct-to")
 }
 
 fn airspace_limit_action_from_parts(
@@ -1847,6 +1888,7 @@ fn airspace_limit_action_from_parts(
             style_key: style_key.to_string(),
             color_key: airspace_label_color_key(style_key).to_string(),
         }),
+        session_action: None,
         flight_plan_row_action: None,
     }
 }
@@ -4420,6 +4462,36 @@ mod tests {
         assert!(duplicate_direct_to.enabled);
         assert_eq!(duplicate_direct_to.label, "Direct-to");
         assert!(duplicate_direct_to.flight_plan_row_action.is_none());
+
+        let off_plan_item = selection_item_for_point(
+            &record,
+            &symbol,
+            Some(&FlightPlan {
+                route_components: Vec::new(),
+                route_component_uids: Vec::new(),
+                route_component_uid_counter: 0,
+                ..duplicate_plan
+            }),
+            AirportPlateAvailability::default(),
+            None,
+        );
+        let insert = off_plan_item
+            .actions
+            .iter()
+            .find(|action| action.id == "insert")
+            .expect("insert action");
+        assert!(insert.enabled);
+        assert_eq!(insert.label, "Insert in flight plan");
+        assert!(insert.flight_plan_row_action.is_none());
+        assert_eq!(
+            serde_json::from_str::<MapSelectionSessionAction>(
+                insert.session_action.as_deref().expect("session action"),
+            )
+            .expect("session action decodes"),
+            MapSelectionSessionAction::InsertWaypointBestPosition {
+                nav_ref: NavRef::Airport("KSEA".to_string()),
+            }
+        );
     }
 
     #[test]

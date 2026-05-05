@@ -21,6 +21,7 @@ declare module "@generated/app_wasm.js" {
   export const unsuspend_sequencing_ui: (...args: unknown[]) => string;
   export const sequence_active_leg_ui: (...args: unknown[]) => string;
   export const perform_flight_plan_row_action_in_session: (...args: unknown[]) => string;
+  export const perform_map_selection_action_in_session: (...args: unknown[]) => string;
   export const create_ui_session: (...args: unknown[]) => string;
   export const set_guidance_leg_geometry_in_session: (...args: unknown[]) => string;
   export const set_situation_in_session: (...args: unknown[]) => string;
@@ -46,7 +47,6 @@ declare module "@generated/app_wasm.js" {
   export const insert_airway_at_flight_plan_row_in_session: (...args: unknown[]) => string;
   export const select_procedure_at_flight_plan_row_in_session: (...args: unknown[]) => string;
   export const load_plate_procedure_in_session: (...args: unknown[]) => string;
-  export const activate_direct_to_nav_ref_in_session: (...args: unknown[]) => string;
   export const restore_direct_to_in_session: (...args: unknown[]) => string;
   export const select_airport_in_session: (...args: unknown[]) => string;
   export const select_chart_in_session: (...args: unknown[]) => string;

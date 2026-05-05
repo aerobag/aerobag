@@ -412,14 +412,13 @@ pub fn set_guidance_leg_geometry_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-pub fn insert_waypoint_best_position_in_session_json(
+pub fn perform_map_selection_action_in_session_json(
     handle: u64,
-    waypoint_json: &str,
+    action_json: &str,
 ) -> Result<String, String> {
-    let waypoint: app_core::NavRef =
-        serde_json::from_str(waypoint_json).map_err(|err| err.to_string())?;
-    let outcome = app_core::insert_waypoint_best_position_in_session(handle as u32, waypoint)
-        .map_err(|err| err.to_string())?;
+    let outcome =
+        app_core::perform_map_selection_action_in_session(handle as u32, action_json.to_string())
+            .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
@@ -1862,15 +1861,15 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_set
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_insertWaypointBestPositionInSessionJson(
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_performMapSelectionActionInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
-    waypoint_json: JString,
+    action_json: JString,
 ) -> jstring {
     let result = (|| {
-        let waypoint = get_java_string(&mut env, waypoint_json)?;
-        insert_waypoint_best_position_in_session_json(handle as u64, &waypoint)
+        let action = get_java_string(&mut env, action_json)?;
+        perform_map_selection_action_in_session_json(handle as u64, &action)
     })();
     return_string(&mut env, result)
 }

@@ -230,6 +230,7 @@ data class MapSelectionAction(
     val enabled: Boolean,
     val displayOnly: Boolean,
     val airspaceLimit: AirspaceLimitGlyph?,
+    val sessionAction: String?,
     val flightPlanRowAction: MapSelectionFlightPlanRowAction?,
 )
 
@@ -732,22 +733,22 @@ class NativeUiSession internal constructor(
         }
     }
 
-    fun insertWaypointBestPosition(waypoint: NavRef): UiSessionSnapshot {
-        val store = navKvStore ?: error("nav_kv store is required to insert waypoint")
+    fun performMapSelectionAction(action: String): UiSessionSnapshot {
+        val store = navKvStore ?: error("nav_kv store is required to perform map selection action")
         while (true) {
             val outcome = json.parseToJsonElement(
-                bridge.insertWaypointBestPositionInSessionJson(handle, json.encodeToString(waypoint.toWire())),
+                bridge.performMapSelectionActionInSessionJson(handle, action),
             ).jsonObject
             when (outcome.getValue("state").jsonPrimitive.content) {
                 "complete" -> {
-                    val result = outcome["result"] ?: error("insert waypoint missing result: $outcome")
+                    val result = outcome["result"] ?: error("map selection action missing result: $outcome")
                     snapshot = enrichSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi())
                     return syncGuidanceGeometryFromPlan()
                 }
                 "need_pages" -> {
                     store.ensurePages(outcome.getValue("pages").jsonArray.map { it.jsonPrimitive.content.toInt() })
                 }
-                else -> error("unknown insert waypoint outcome: $outcome")
+                else -> error("unknown map selection action outcome: $outcome")
             }
         }
     }
@@ -1953,6 +1954,7 @@ private fun WireMapSelectionAction.toUi() = MapSelectionAction(
     enabled = enabled,
     displayOnly = display_only,
     airspaceLimit = airspace_limit?.toUi(),
+    sessionAction = session_action,
     flightPlanRowAction = flight_plan_row_action?.toUi(),
 )
 

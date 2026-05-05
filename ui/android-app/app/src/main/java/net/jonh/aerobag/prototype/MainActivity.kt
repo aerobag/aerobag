@@ -5914,6 +5914,13 @@ private fun MapExplorerPage(
                         mapSelection = null
                         return@MapSelectionTray
                     }
+                    action.sessionAction?.let { sessionAction ->
+                        runCatching { uiSession.performMapSelectionAction(sessionAction) }
+                            .onSuccess(onSessionSnapshotChange)
+                            .onFailure { Log.w("AerobagSelection", "map selection action failed", it) }
+                        mapSelection = null
+                        return@MapSelectionTray
+                    }
                     when (action.id) {
                         "plates", "csup" -> {
                             val airportId = (item.navRef as? NavRef.Airport)?.code
@@ -5924,14 +5931,6 @@ private fun MapExplorerPage(
                                 runCatching { uiSession.selectChart("Plate:$airportId:$target") }
                                     .onSuccess(onSessionSnapshotChange)
                                 onSelectPage(AppPage.Charts)
-                                mapSelection = null
-                            }
-                        }
-                        "insert" -> {
-                            item.navRef?.let { navRef ->
-                                runCatching { uiSession.insertWaypointBestPosition(navRef) }
-                                    .onSuccess(onSessionSnapshotChange)
-                                    .onFailure { Log.w("AerobagSelection", "insert waypoint failed", it) }
                                 mapSelection = null
                             }
                         }

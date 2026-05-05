@@ -385,6 +385,7 @@ export type MapSelectionAction = {
   display_only: boolean;
   detail_text?: string | null;
   airspace_limit?: AirspaceLimitGlyph | null;
+  session_action?: string | null;
   flight_plan_row_action?: {
     row_uid: string;
     action_uid: string;
@@ -449,15 +450,14 @@ export type RasterTilePlan = {
 export interface UiSession {
   snapshot(): Promise<UiSessionSnapshot>;
   replaceFlightPlan(plan: FlightPlan): Promise<UiSessionSnapshot>;
-  insertWaypointBestPosition(waypoint: NavRef): Promise<UiSessionSnapshot>;
   insertWaypointAtFlightPlanRow(rowUid: string, before: boolean, waypoint: NavRef): Promise<UiSessionSnapshot>;
   suggestWaypointIdentifiersAtFlightPlanRow(rowUid: string, before: boolean, prefix: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
   insertAirwayAtFlightPlanRow(rowUid: string, presentation: AirwayPresentationPlan, entryIndex: number, exitIndex: number): Promise<UiSessionSnapshot>;
   selectProcedureAtFlightPlanRow(rowUid: string, airportId: string, procedureId: string, kind: ProcedureKind, runwayTransition: string | null, enrouteTransition: string | null): Promise<UiSessionSnapshot>;
   loadPlateProcedure(loadId: string): Promise<UiSessionSnapshot>;
-  activateDirectTo(navRef: NavRef): Promise<UiSessionSnapshot>;
   restoreDirectTo(): Promise<UiSessionSnapshot>;
   performFlightPlanRowAction(rowUid: string, actionUid: string): Promise<UiSessionSnapshot>;
+  performMapSelectionAction(action: string): Promise<UiSessionSnapshot>;
   setSituation(situation: Situation): Promise<UiSessionSnapshot>;
   loadPlaybackTrace(sourcePath: string, traceJson: string): Promise<UiSessionSnapshot>;
   playPlayback(nowEpochMs: number): Promise<UiSessionSnapshot>;
@@ -654,7 +654,7 @@ type WasmModule = {
   set_raster_map_catalog_in_session(handle: number, catalogJson: string): Promise<string> | string;
   select_map_in_session(handle: number, selectedMapIdJson: string): Promise<string> | string;
   replace_flight_plan_in_session(handle: number, planJson: string): Promise<string> | string;
-  insert_waypoint_best_position_in_session(sessionHandle: number, waypointJson: string): Promise<string> | string;
+  perform_map_selection_action_in_session(sessionHandle: number, actionJson: string): Promise<string> | string;
   insert_waypoint_at_flight_plan_row_in_session(sessionHandle: number, rowUid: string, before: boolean, waypointJson: string): Promise<string> | string;
   suggest_waypoint_identifiers_at_flight_plan_row_in_session(sessionHandle: number, rowUid: string, before: boolean, prefix: string, limit: number): Promise<string> | string;
   insert_airway_at_flight_plan_row_in_session(sessionHandle: number, rowUid: string, presentationJson: string, entryIndex: number, exitIndex: number): Promise<string> | string;
@@ -668,7 +668,6 @@ type WasmModule = {
     enrouteTransitionJson: string,
   ): Promise<string> | string;
   load_plate_procedure_in_session(sessionHandle: number, loadId: string): Promise<string> | string;
-  activate_direct_to_nav_ref_in_session(sessionHandle: number, targetJson: string): Promise<string> | string;
   restore_direct_to_in_session(sessionHandle: number): Promise<string> | string;
   perform_flight_plan_row_action_in_session(sessionHandle: number, rowUid: string, actionUid: string): Promise<string> | string;
   set_guidance_leg_geometry_in_session(handle: number, geometriesJson: string): Promise<string> | string;
@@ -857,10 +856,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         await syncGuidanceGeometry(snapshot.app_state.active_plan);
         return snapshot;
       },
-      insertWaypointBestPosition: async (waypoint) => {
+      performMapSelectionAction: async (action) => {
         snapshot = await withSessionRetry(async () =>
           runCoreHadSessionOperation<UiSessionSnapshot>(() =>
-            this.module.insert_waypoint_best_position_in_session(handle, JSON.stringify(waypoint)),
+            this.module.perform_map_selection_action_in_session(handle, action),
           ),
         );
         await syncGuidanceGeometry(snapshot.app_state.active_plan);
@@ -928,13 +927,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           runCoreHadSessionOperation<UiSessionSnapshot>(() =>
             this.module.load_plate_procedure_in_session(handle, loadId),
           ),
-        );
-        await syncGuidanceGeometry(snapshot.app_state.active_plan);
-        return snapshot;
-      },
-      activateDirectTo: async (navRef) => {
-        snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.activate_direct_to_nav_ref_in_session(handle, JSON.stringify(navRef))),
         );
         await syncGuidanceGeometry(snapshot.app_state.active_plan);
         return snapshot;
@@ -1409,6 +1401,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.set_raster_map_catalog_in_session !== "function" ||
     typeof mod.select_map_in_session !== "function" ||
     typeof mod.replace_flight_plan_in_session !== "function" ||
+    typeof mod.perform_map_selection_action_in_session !== "function" ||
     typeof mod.set_guidance_leg_geometry_in_session !== "function" ||
     typeof mod.select_airport_in_session !== "function" ||
     typeof mod.select_chart_in_session !== "function" ||

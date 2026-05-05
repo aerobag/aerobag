@@ -100,9 +100,9 @@ interface NativeBridge {
         selectedChartIdJson: String,
     ): String
 
-    fun insertWaypointBestPositionInSessionJson(
+    fun performMapSelectionActionInSessionJson(
         handle: Long,
-        waypointJson: String,
+        actionJson: String,
     ): String
 
     fun insertWaypointAtFlightPlanRowInSessionJson(
@@ -483,9 +483,9 @@ object NativeBindings : NativeBridge {
         selectedChartIdJson: String,
     ): String
 
-    external override fun insertWaypointBestPositionInSessionJson(
+    external override fun performMapSelectionActionInSessionJson(
         handle: Long,
-        waypointJson: String,
+        actionJson: String,
     ): String
 
     external override fun insertWaypointAtFlightPlanRowInSessionJson(

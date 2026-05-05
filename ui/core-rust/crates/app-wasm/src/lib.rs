@@ -123,14 +123,13 @@ pub fn core_had_operation(nav_kv_handle: u32, operation_json: &str) -> Result<St
 }
 
 #[wasm_bindgen]
-pub fn insert_waypoint_best_position_in_session(
+pub fn perform_map_selection_action_in_session(
     session_handle: u32,
-    waypoint_json: &str,
+    action_json: &str,
 ) -> Result<String, JsValue> {
-    let waypoint: app_core::NavRef =
-        serde_json::from_str(waypoint_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let outcome = app_core::insert_waypoint_best_position_in_session(session_handle, waypoint)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome =
+        app_core::perform_map_selection_action_in_session(session_handle, action_json.to_string())
+            .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
@@ -231,18 +230,6 @@ pub fn load_plate_procedure_in_session(
         app_core::session::load_plate_procedure_in_session(session_handle, load_id.to_string())
             .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
-}
-
-#[wasm_bindgen]
-pub fn activate_direct_to_nav_ref_in_session(
-    session_handle: u32,
-    target_json: &str,
-) -> Result<String, JsValue> {
-    let target: app_core::NavRef =
-        serde_json::from_str(target_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let snapshot = app_core::session::activate_direct_to_nav_ref_in_session(session_handle, target)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[wasm_bindgen]

@@ -3404,30 +3404,26 @@ function MapPage(props: {
                     }
                     return;
                   }
-                  if (!item.nav_ref) {
+                  if (action.session_action) {
+                    try {
+                      if (!uiSession) {
+                        throw new Error("map selection session action requires live core session");
+                      }
+                      const nextSnapshot = await uiSession.performMapSelectionAction(action.session_action);
+                      onPlaybackSnapshotChange(nextSnapshot);
+                      setMapSelection(null);
+                    } catch (error) {
+                      debugLog("map.selection.session_action.failed", {
+                        action_id: action.id,
+                        error: errorMessage(error),
+                      });
+                    }
                     return;
                   }
-                  try {
-                    if (!uiSession) {
-                      throw new Error("map selection flight-plan action requires live core session");
-                    }
-                    const nextSnapshot = action.id === "direct_to"
-                        ? await uiSession.activateDirectTo(item.nav_ref)
-                      : action.id === "insert"
-                        ? await uiSession.insertWaypointBestPosition(item.nav_ref)
-                        : null;
-                    if (!nextSnapshot) {
-                      return;
-                    }
-                    onPlaybackSnapshotChange(nextSnapshot);
-                    setMapSelection(null);
-                  } catch (error) {
-                    debugLog("map.selection.flight_plan_action.failed", {
-                      action_id: action.id,
-                      nav_ref: item.nav_ref,
-                      error: errorMessage(error),
-                    });
-                  }
+                  debugLog("map.selection.action.unhandled", {
+                    action_id: action.id,
+                    item_id: item.id,
+                  });
                 }}
               />
             )}

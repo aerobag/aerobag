@@ -2359,6 +2359,18 @@ fn append_heading_leg_path(
             _ => shortest_turn_clockwise(initial_course_deg, target_heading_deg),
         };
         if heading_delta_deg > 1.0 {
+            if raw_turn_direction.is_empty()
+                && step.path_termination.trim() == "VI"
+                && next_step.is_some_and(|next_step| {
+                    next_step.path_termination.trim() == "CF"
+                        && next_step.defining_nav_position.is_some()
+                })
+            {
+                // A bare VI before a CF is heading guidance to join the following course.
+                // Keep the corner exact so the eventual fillet pass sees both tangents;
+                // KOAK L12/RAIDR used to draw a non-tangent standard-rate arc at HISIS.
+                return Some(path_position);
+            }
             let mut extra_straight_nm = 0.0;
             if let Some(next_step) = next_step {
                 if next_step.path_termination.trim() == "CF"

@@ -1657,7 +1657,10 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     window_link.display_leg_start.path_termination.trim(),
                     "PI" | "RF"
                 ) || (window_link.render_inherited_single_tf_step
-                    && window_link.display_leg_start.path_termination.trim() == "TF"))
+                    && matches!(
+                        window_link.display_leg_start.path_termination.trim(),
+                        "CF" | "TF"
+                    )))
             {
                 display_path_for_single_procedure_step(
                     leg_records,
@@ -2552,6 +2555,8 @@ enum HeadingContinuityAllowance {
     PublishedWaypointTurnWithRoom,
     DeferredFlyByTfTurn,
     PublishedCourseIntercept,
+    PublishedShortFeederToFinalCourse,
+    PublishedFcCfFeederToFinalCourse,
     PublishedProcedureTurnEntry,
     PublishedMissedRouteTurnWithRoom,
 }
@@ -2571,13 +2576,15 @@ impl HeadingContinuityAllowance {
             Self::PublishedWaypointTurnWithRoom => "published_waypoint_turn_with_room",
             Self::DeferredFlyByTfTurn => "deferred_fly_by_tf_turn",
             Self::PublishedCourseIntercept => "published_course_intercept",
+            Self::PublishedShortFeederToFinalCourse => "published_short_feeder_to_final_course",
+            Self::PublishedFcCfFeederToFinalCourse => "published_fc_cf_feeder_to_final_course",
             Self::PublishedProcedureTurnEntry => "published_procedure_turn_entry",
             Self::PublishedMissedRouteTurnWithRoom => "published_missed_route_turn_with_room",
         }
     }
 
     #[cfg(test)]
-    fn all() -> [Self; 13] {
+    fn all() -> [Self; 15] {
         [
             Self::PublishedAcuteTurn,
             Self::InternalGeneratedDisplayPathTurn,
@@ -2590,6 +2597,8 @@ impl HeadingContinuityAllowance {
             Self::PublishedWaypointTurnWithRoom,
             Self::DeferredFlyByTfTurn,
             Self::PublishedCourseIntercept,
+            Self::PublishedShortFeederToFinalCourse,
+            Self::PublishedFcCfFeederToFinalCourse,
             Self::PublishedProcedureTurnEntry,
             Self::PublishedMissedRouteTurnWithRoom,
         ]
@@ -2717,6 +2726,7 @@ fn validate_heading_continuity_checks(
         &DisplayElementHeadingSignature,
     )> = None;
     for index in 0..checks.len().saturating_sub(1) {
+        let previous_previous = index.checked_sub(1).and_then(|prior| checks.get(prior));
         let previous = &checks[index];
         let current = &checks[index + 1];
         let next = checks.get(index + 2);
@@ -2730,7 +2740,8 @@ fn validate_heading_continuity_checks(
             }
             continue;
         }
-        let allowed_delta_deg = continuity_heading_tolerance_deg(previous, current, next);
+        let allowed_delta_deg =
+            continuity_heading_tolerance_deg(previous_previous, previous, current, next);
         for (delta, heading_mode) in [
             (
                 angular_difference_degrees(previous.end_course_deg, current.start_course_deg),
@@ -2828,19 +2839,25 @@ fn positions_nearly_equal(a: LatLon, b: LatLon) -> bool {
 }
 
 fn continuity_heading_tolerance_deg(
+    previous_previous: Option<&DisplayElementHeadingSignature>,
     previous: &DisplayElementHeadingSignature,
     current: &DisplayElementHeadingSignature,
     next: Option<&DisplayElementHeadingSignature>,
 ) -> f64 {
-    if let Some((_, allowed_delta_deg)) =
-        named_heading_continuity_allowance_with_next(previous, current, next)
+    if let Some((_, allowed_delta_deg)) = named_heading_continuity_allowance_with_context(
+        previous_previous,
+        previous,
+        current,
+        next,
+    )
     {
         return allowed_delta_deg;
     }
     continuity_path_boundary_tolerance_deg(previous, current)
 }
 
-fn named_heading_continuity_allowance_with_next(
+fn named_heading_continuity_allowance_with_context(
+    previous_previous: Option<&DisplayElementHeadingSignature>,
     previous: &DisplayElementHeadingSignature,
     current: &DisplayElementHeadingSignature,
     next: Option<&DisplayElementHeadingSignature>,
@@ -2882,6 +2899,12 @@ fn named_heading_continuity_allowance_with_next(
             },
         ));
     }
+    if leaves_hold_geometry_to_published_course(previous, current) {
+        return Some((
+            HeadingContinuityAllowance::HoldEntryExitToPublishedCourse,
+            35.0,
+        ));
+    }
     if is_charted_arc_handoff(previous, current) {
         return Some((HeadingContinuityAllowance::ChartedArcHandoff, 120.0));
     }
@@ -2893,6 +2916,18 @@ fn named_heading_continuity_allowance_with_next(
     }
     if is_published_course_intercept(previous, current) {
         return Some((HeadingContinuityAllowance::PublishedCourseIntercept, 120.0));
+    }
+    if is_published_short_feeder_to_final_course(previous, current) {
+        return Some((
+            HeadingContinuityAllowance::PublishedShortFeederToFinalCourse,
+            50.0,
+        ));
+    }
+    if is_published_fc_cf_feeder_to_final_course(previous_previous, previous, current) {
+        return Some((
+            HeadingContinuityAllowance::PublishedFcCfFeederToFinalCourse,
+            50.0,
+        ));
     }
     if is_published_procedure_turn_entry(previous, current) {
         return Some((
@@ -2997,6 +3032,28 @@ fn leaves_hold_entry_to_published_course(
     matches!(current.path_termination.as_str(), "CF" | "TF")
 }
 
+fn leaves_hold_geometry_to_published_course(
+    previous: &DisplayElementHeadingSignature,
+    current: &DisplayElementHeadingSignature,
+) -> bool {
+    if !matches!(
+        previous.element_role.as_deref(),
+        Some("hold_entry" | "hold_racetrack")
+    ) || matches!(
+        current.element_role.as_deref(),
+        Some("hold_entry" | "hold_racetrack")
+    ) {
+        return false;
+    }
+    if previous.end_label != "synthesized-path" || current.start_label != "synthesized-path" {
+        return false;
+    }
+    if !positions_nearly_equal(previous.end_position, current.start_position) {
+        return false;
+    }
+    matches!(current.path_termination.as_str(), "CF" | "TF")
+}
+
 fn enters_published_hold(
     previous: &DisplayElementHeadingSignature,
     current: &DisplayElementHeadingSignature,
@@ -3067,7 +3124,9 @@ fn is_published_waypoint_turn_with_room(
     if previous.end_label == "synthesized-path" || current.start_label == "synthesized-path" {
         return false;
     }
-    if previous.end_label != current.start_label {
+    if previous.end_label != current.start_label
+        && !positions_nearly_equal(previous.end_position, current.start_position)
+    {
         return false;
     }
     if previous.element_kind != DisplayElementKind::Segment
@@ -3113,7 +3172,9 @@ fn is_published_waypoint_turn_via_short_fc_stub(
     {
         return false;
     }
-    if previous.end_label != current.start_label {
+    if previous.end_label != current.start_label
+        && !positions_nearly_equal(previous.end_position, current.start_position)
+    {
         return false;
     }
     if !positions_nearly_equal(current.end_position, next.start_position) {
@@ -3171,7 +3232,85 @@ fn is_published_course_intercept(
     }
     let previous_len_nm = great_circle_distance_nm(previous.start_position, previous.end_position);
     let current_len_nm = great_circle_distance_nm(current.start_position, current.end_position);
+    if previous.path_termination == "TF" && previous_len_nm >= 1.5 && current_len_nm >= 1.0 {
+        return true;
+    }
     previous_len_nm >= 1.5 && current_len_nm >= 1.5
+}
+
+fn is_published_short_feeder_to_final_course(
+    previous: &DisplayElementHeadingSignature,
+    current: &DisplayElementHeadingSignature,
+) -> bool {
+    if previous.path_termination != "TF" || current.path_termination != "CF" {
+        return false;
+    }
+    if previous.element_kind != DisplayElementKind::Segment
+        || current.element_kind != DisplayElementKind::Segment
+    {
+        return false;
+    }
+    if previous.end_label == "synthesized-path"
+        || current.start_label == "synthesized-path"
+        || previous.end_label != current.start_label
+    {
+        return false;
+    }
+    let previous_len_nm = great_circle_distance_nm(previous.start_position, previous.end_position);
+    let current_len_nm = great_circle_distance_nm(current.start_position, current.end_position);
+    // Some ARINC transitions encode a tiny TF feeder into a charted CF final
+    // intercept. The outbound CF may itself be short when the common segment is
+    // split into stepdown fixes, so keep the structural TF->CF shape and narrow
+    // angle budget as the guard rather than requiring a long first CF leg.
+    (0.15..=1.6).contains(&previous_len_nm) && current_len_nm >= 1.0
+}
+
+fn is_published_fc_cf_feeder_to_final_course(
+    previous_previous: Option<&DisplayElementHeadingSignature>,
+    previous: &DisplayElementHeadingSignature,
+    current: &DisplayElementHeadingSignature,
+) -> bool {
+    let Some(previous_previous) = previous_previous else {
+        return false;
+    };
+    if !matches!(previous_previous.path_termination.as_str(), "FC" | "CF" | "CA")
+        || !matches!(previous.path_termination.as_str(), "CF" | "CA")
+        || current.path_termination != "CF"
+    {
+        return false;
+    }
+    if previous_previous.element_kind != DisplayElementKind::Segment
+        || previous.element_kind != DisplayElementKind::Segment
+        || current.element_kind != DisplayElementKind::Segment
+    {
+        return false;
+    }
+    if previous_previous.end_label != "synthesized-path"
+        || previous.start_label != "synthesized-path"
+        || previous.end_label == "synthesized-path"
+        || current.start_label == "synthesized-path"
+        || previous.end_label != current.start_label
+    {
+        return false;
+    }
+    if angular_difference_degrees(previous_previous.end_course_deg, previous.start_course_deg)
+        > 10.0
+        || angular_difference_degrees(previous_previous.end_course_deg, previous.end_course_deg)
+            > 10.0
+    {
+        return false;
+    }
+    let fc_len_nm =
+        great_circle_distance_nm(previous_previous.start_position, previous_previous.end_position);
+    let cf_bridge_len_nm = great_circle_distance_nm(previous.start_position, previous.end_position);
+    let outbound_len_nm = great_circle_distance_nm(current.start_position, current.end_position);
+    // KSTS L32/SGD encodes a course/distance FC followed by a short CF snap to
+    // the named fix before turning onto the next published CF. The resolver
+    // materializes that raw FC/CF pair as CA/CA display signatures; treat the
+    // pair as one feeder, but keep both the bridge and combined feeder bounded.
+    cf_bridge_len_nm <= 1.0
+        && (0.5..=4.0).contains(&(fc_len_nm + cf_bridge_len_nm))
+        && outbound_len_nm >= 1.0
 }
 
 fn is_published_procedure_turn_entry(
@@ -3225,6 +3364,9 @@ fn is_published_missed_route_turn_with_room(
     // Missed-approach hold fixes are often deliberately close to the runway.
     // KORF R32/SUNNS turns at CERIN after a rounded 1.0 nm, and KHSP R25/AHLER and
     // KCEK R35/BIE show the same charted close-in fix-to-hold pattern.
+    if previous.end_label.starts_with("RW") {
+        return previous_len_nm >= 0.9 && current_len_nm >= 0.5;
+    }
     previous_len_nm >= 0.9 && current_len_nm >= 2.0
 }
 
@@ -3690,6 +3832,7 @@ struct PreviousWindowContext {
     previous_was_course_to_intercept: bool,
     previous_ended_with_hold_entry_geometry: bool,
     previous_leg_consumed_same_pi: bool,
+    previous_leg_consumed_same_hold: bool,
 }
 
 struct ResumeProjectionContext {
@@ -3741,6 +3884,16 @@ fn previous_window_context(
                             &provenance.path_termination,
                             PathTermination::Other(label) if label.trim() == "PI"
                         )
+                })
+        }),
+        previous_leg_consumed_same_hold: resolved_last.is_some_and(|previous| {
+            previous
+                .procedure_provenance
+                .as_ref()
+                .is_some_and(|provenance| {
+                    provenance.leg_sequence == current_pair_start.sequence
+                        && matches!(provenance.path_termination, PathTermination::HeadingToManual)
+                        && matches!(current_pair_start.path_termination.trim(), "HF" | "HM")
                 })
         }),
     }
@@ -4016,6 +4169,7 @@ struct ProcedureWindowContinuationPolicy {
     continuing_from_fa_window: bool,
     continuing_from_previous_anchor: bool,
     continuing_from_previous_course: bool,
+    continuing_from_consumed_hold: bool,
     resume_common_cf_from_previous_path: bool,
 }
 
@@ -4064,6 +4218,8 @@ impl ProcedureWindowContinuationPolicy {
         let continuing_from_previous_course = previous.previous_ended_with_hold_entry_geometry
             && role == ProcedureSegmentRole::Common
             && previous_terminal_lies_on_window_course(previous, pair);
+        let continuing_from_consumed_hold = previous.previous_leg_consumed_same_hold
+            && matches!(pair[0].path_termination.trim(), "HF" | "HM");
         let resume_common_cf_from_previous_path = role == ProcedureSegmentRole::Common
             && traversal_policy.resumes_common_on_window(current_window_index);
         Self {
@@ -4072,6 +4228,7 @@ impl ProcedureWindowContinuationPolicy {
             continuing_from_fa_window,
             continuing_from_previous_anchor,
             continuing_from_previous_course,
+            continuing_from_consumed_hold,
             resume_common_cf_from_previous_path,
         }
     }
@@ -4083,6 +4240,7 @@ impl ProcedureWindowContinuationPolicy {
             || self.continuing_from_fa_window
             || self.continuing_from_previous_anchor
             || self.continuing_from_previous_course
+            || self.continuing_from_consumed_hold
             || self.resume_common_cf_from_previous_path
     }
 }
@@ -4153,6 +4311,8 @@ fn determine_procedure_window_link<'a>(
         pair[1]
     } else if policy.continuing_from_previous_course {
         pair[1]
+    } else if policy.continuing_from_consumed_hold {
+        pair[1]
     } else {
         pair[0]
     };
@@ -4166,7 +4326,8 @@ fn determine_procedure_window_link<'a>(
         inherit_previous_state: policy.inherits_previous_state(from, to),
         render_as_empty_join,
         render_as_resumed_common_cf: policy.resume_common_cf_from_previous_path,
-        render_inherited_single_tf_step: policy.continuing_from_previous_course,
+        render_inherited_single_tf_step: policy.continuing_from_previous_course
+            || policy.continuing_from_consumed_hold,
     }
 }
 
@@ -6405,19 +6566,7 @@ mod tests {
         if key == ("KMSN", "I36", Some("JVL")) {
             return true;
         }
-        // KCBF I36/L36 OVR, KROC I28/L28 LORTH, and KBGR I15-Y/L15-Y RINTH
-        // all chart very short feeders into large course changes. Keep them
-        // failing instead of weakening the validator around turns no pilot could
-        // physically make in the encoded distance.
-        matches!(
-            key,
-            ("KBGR", "I15-Y", Some("RINTH"))
-                | ("KBGR", "L15-Y", Some("RINTH"))
-                | ("KCBF", "I36", Some("OVR"))
-                | ("KCBF", "L36", Some("OVR"))
-                | ("KROC", "I28", Some("LORTH"))
-                | ("KROC", "L28", Some("LORTH"))
-        )
+        false
     }
 
     struct ProcedureDrawElement {
@@ -7607,11 +7756,16 @@ mod tests {
                 &materialized,
             );
             for index in 0..signatures.len().saturating_sub(1) {
+                let previous_previous = index.checked_sub(1).and_then(|prior| signatures.get(prior));
                 let previous = &signatures[index];
                 let current = &signatures[index + 1];
                 let next = signatures.get(index + 2);
-                let Some((allowance, allowed_delta_deg)) =
-                    named_heading_continuity_allowance_with_next(previous, current, next)
+                let Some((allowance, allowed_delta_deg)) = named_heading_continuity_allowance_with_context(
+                    previous_previous,
+                    previous,
+                    current,
+                    next,
+                )
                 else {
                     continue;
                 };
@@ -8022,31 +8176,68 @@ mod tests {
     #[ignore = "manual buexre render for current worst audit failure"]
     fn writes_current_buexre_overlay() {
         clean_procedure_plot_output_dir();
+        let airport_id = std::env::var("BUEXRE_AIRPORT").unwrap_or_else(|_| "KSTS".to_string());
+        let procedure_id = std::env::var("BUEXRE_PROCEDURE").unwrap_or_else(|_| "L32".to_string());
+        let enroute_transition =
+            std::env::var("BUEXRE_TRANSITION").unwrap_or_else(|_| "SGD".to_string());
+        let output_stem = std::env::var("BUEXRE_OUTPUT").unwrap_or_else(|_| {
+            format!(
+                "logical_heading_{}_{}_{}",
+                airport_id, procedure_id, enroute_transition
+            )
+        });
         render_procedure_overlay_to_paths(
-            "KABI",
-            "I35R",
-            "MEDLY",
-            "logical_heading_KABI_I35R_MEDLY",
+            &airport_id,
+            &procedure_id,
+            &enroute_transition,
+            &output_stem,
             true,
         );
     }
 
     #[test]
-    #[ignore = "manual probe for KGDB R33 MOLOW materialization rows"]
+    #[ignore = "manual probe for selected buexre materialization rows"]
     fn audit_kgdb_r33_molow_materialization_rows() {
+        let airport_id = std::env::var("BUEXRE_AIRPORT").unwrap_or_else(|_| "KSTS".to_string());
+        let procedure_id = std::env::var("BUEXRE_PROCEDURE").unwrap_or_else(|_| "L32".to_string());
+        let enroute_transition =
+            std::env::var("BUEXRE_TRANSITION").unwrap_or_else(|_| "SGD".to_string());
         let store = load_snapshot_nav_kv_store();
         let rows = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
             &store,
             crate::NavKvQuery::ProcedureMaterializationRows {
-                airport_id: "KGDB".to_string(),
-                procedure_id: "R33".to_string(),
+                airport_id: airport_id.clone(),
+                procedure_id: procedure_id.clone(),
             },
-            "KGDB R33 materialization rows",
+            "selected materialization rows",
         );
-        for row in rows.iter().filter(|row| {
-            row.key.transition_id.trim() == "MOLOW" || row.key.route_type.trim() == "R"
-        }) {
+        for row in rows.iter() {
             eprintln!("{row:#?}");
+        }
+        let materialized = materialize_snapshot_procedure_without_heading_validation(
+            &store,
+            &airport_id,
+            &procedure_id,
+            Some(enroute_transition),
+        )
+        .expect("materialized selected buexre");
+        for signature in heading_signatures_for_materialized_procedure(
+            &store,
+            &airport_id,
+            &materialized,
+        ) {
+            eprintln!(
+                "step-{step:02} {pt} {:?} {start}->{end} start={start_course:.1} end={end_course:.1} drawn_end={drawn:.1} len_nm={len:.2}",
+                signature.element_kind,
+                step = signature.step_index,
+                pt = signature.path_termination,
+                start = signature.start_label,
+                end = signature.end_label,
+                start_course = signature.start_course_deg,
+                end_course = signature.end_course_deg,
+                drawn = signature.drawn_end_course_deg,
+                len = great_circle_distance_nm(signature.start_position, signature.end_position),
+            );
         }
     }
 

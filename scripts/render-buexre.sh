@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BUEXRE_AIRPORT="${BUEXRE_AIRPORT:-KOAK}"
+BUEXRE_PROCEDURE="${BUEXRE_PROCEDURE:-L12}"
+BUEXRE_TRANSITION="${BUEXRE_TRANSITION:-RAIDR}"
+BUEXRE_OUTPUT="${BUEXRE_OUTPUT:-logical_heading_${BUEXRE_AIRPORT}_${BUEXRE_PROCEDURE}_${BUEXRE_TRANSITION}}"
+BUEXRE_TEST="${BUEXRE_TEST:-writes_current_buexre_overlay}"
+
+rm -f /tmp/procedure-plots/*
+
+cd "$(dirname "$0")/../ui/core-rust"
+
+BUEXRE_AIRPORT="$BUEXRE_AIRPORT" \
+BUEXRE_PROCEDURE="$BUEXRE_PROCEDURE" \
+BUEXRE_TRANSITION="$BUEXRE_TRANSITION" \
+BUEXRE_OUTPUT="$BUEXRE_OUTPUT" \
+cargo test -p app-core "$BUEXRE_TEST" -- --ignored --nocapture

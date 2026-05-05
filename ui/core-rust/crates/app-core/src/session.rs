@@ -606,6 +606,34 @@ pub fn replace_flight_plan_in_session(
     Ok(snapshot_for_session(session))
 }
 
+pub fn activate_next_leg_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
+    mutate_session_flight_plan(handle, crate::activate_next_leg)
+}
+
+pub fn suspend_sequencing_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
+    mutate_session_flight_plan(handle, crate::suspend_sequencing)
+}
+
+pub fn unsuspend_sequencing_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
+    mutate_session_flight_plan(handle, crate::unsuspend_sequencing)
+}
+
+pub fn sequence_active_leg_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
+    mutate_session_flight_plan(handle, crate::sequence_active_leg)
+}
+
+fn mutate_session_flight_plan(
+    handle: u32,
+    mutation: impl FnOnce(&FlightPlan) -> AppResult<FlightPlan>,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let plan = session_plan(session)?;
+    let next_plan = mutation(&plan)?;
+    replace_session_flight_plan(session, next_plan)?;
+    Ok(snapshot_for_session(session))
+}
+
 pub fn perform_map_selection_action_in_session(
     handle: u32,
     action_json: String,

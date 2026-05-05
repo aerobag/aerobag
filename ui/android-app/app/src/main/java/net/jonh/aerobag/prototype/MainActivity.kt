@@ -2571,7 +2571,6 @@ private fun AerobagApp() {
                         pageHistory = pageHistory,
                         uptimeLabel = uptimeLabel,
                         navElement = navElement,
-                        samplePlan = currentPlan,
                         planUiState = sessionPlanUiState,
                         planListState = planListState,
                         uiTheme = uiTheme,
@@ -2580,9 +2579,6 @@ private fun AerobagApp() {
                         onOpenCharts = { airportId -> if (airportId != null) openChartsForAirport(airportId) },
                         onApplySessionSnapshot = { snapshot ->
                             sessionSnapshot = snapshot
-                        },
-                        onApplyMutation = { mutation ->
-                            sessionSnapshot = uiSession.replaceFlightPlan(mutation.plan)
                         },
                     )
                 }
@@ -6257,7 +6253,6 @@ private fun FlightPlanPage(
     pageHistory: List<AppViewSnapshot>,
     uptimeLabel: String,
     navElement: NavElementUiView?,
-    samplePlan: net.jonh.aerobag.prototype.domain.FlightPlan,
     planUiState: FlightPlanUiState?,
     planListState: LazyListState,
     uiTheme: UiTheme,
@@ -6265,7 +6260,6 @@ private fun FlightPlanPage(
     onOpenPlan: () -> Unit,
     onOpenCharts: (String?) -> Unit,
     onApplySessionSnapshot: (UiSessionSnapshot) -> Unit,
-    onApplyMutation: (FlightPlanUiMutation) -> Unit,
 ) {
     val planWaypointTrayStart = ThumbGap + PlanArrowLane + ThumbSize * 2.5f + PlanGridGap
     val density = LocalDensity.current
@@ -6668,25 +6662,25 @@ private fun FlightPlanPage(
                     label = "Next Leg",
                     modifier = Modifier.width(ThumbSize * 1.8f).height(ThumbSize),
                     enabled = guidance?.canActivateNextLeg == true,
-                    onClick = { onApplyMutation(appCore.activateNextLegUi(samplePlan)) },
+                    onClick = { onApplySessionSnapshot(uiSession.activateNextLeg()) },
                 )
                 CompactSquareButton(
                     label = "Sequence",
                     modifier = Modifier.width(ThumbSize * 1.8f).height(ThumbSize),
                     enabled = guidance?.canSequenceActiveLeg == true,
-                    onClick = { onApplyMutation(appCore.sequenceActiveLegUi(samplePlan)) },
+                    onClick = { onApplySessionSnapshot(uiSession.sequenceActiveLeg()) },
                 )
                 CompactSquareButton(
                     label = "Suspend",
                     modifier = Modifier.width(ThumbSize * 1.8f).height(ThumbSize),
                     enabled = guidance?.canSuspend == true,
-                    onClick = { onApplyMutation(appCore.suspendSequencingUi(samplePlan)) },
+                    onClick = { onApplySessionSnapshot(uiSession.suspendSequencing()) },
                 )
                 CompactSquareButton(
                     label = "Unsusp",
                     modifier = Modifier.width(ThumbSize * 1.8f).height(ThumbSize),
                     enabled = guidance?.canUnsuspend == true,
-                    onClick = { onApplyMutation(appCore.unsuspendSequencingUi(samplePlan)) },
+                    onClick = { onApplySessionSnapshot(uiSession.unsuspendSequencing()) },
                 )
             }
             NavElementDock(

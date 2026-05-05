@@ -16,10 +16,10 @@ declare module "@shared-bootstrap" {
 declare module "@generated/app_wasm.js" {
   const init: (...args: unknown[]) => Promise<unknown>;
   export default init;
-  export const activate_next_leg_ui: (...args: unknown[]) => string;
-  export const suspend_sequencing_ui: (...args: unknown[]) => string;
-  export const unsuspend_sequencing_ui: (...args: unknown[]) => string;
-  export const sequence_active_leg_ui: (...args: unknown[]) => string;
+  export const activate_next_leg_in_session: (...args: unknown[]) => string;
+  export const suspend_sequencing_in_session: (...args: unknown[]) => string;
+  export const unsuspend_sequencing_in_session: (...args: unknown[]) => string;
+  export const sequence_active_leg_in_session: (...args: unknown[]) => string;
   export const perform_flight_plan_row_action_in_session: (...args: unknown[]) => string;
   export const perform_map_selection_action_in_session: (...args: unknown[]) => string;
   export const create_ui_session: (...args: unknown[]) => string;

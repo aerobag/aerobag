@@ -109,10 +109,10 @@ describe("loadBestAvailableAdapter", () => {
       insert_airway_at_flight_plan_row_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       select_procedure_at_flight_plan_row_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       load_plate_procedure_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      activate_next_leg_ui: async () => "{\"plan\":{\"id\":\"p\",\"name\":\"Plan\",\"legs\":[],\"route_components\":[],\"resolved_legs\":[],\"guidance\":null,\"departure\":null,\"destination\":null,\"alternate\":null,\"cruise_altitude_ft\":null,\"notes\":null,\"updated_at_epoch_ms\":0,\"version\":0},\"ui_state\":{\"components\":[],\"resolved_legs\":[],\"display_rows\":[],\"guidance\":null}}",
-      suspend_sequencing_ui: async () => "{\"plan\":{\"id\":\"p\",\"name\":\"Plan\",\"legs\":[],\"route_components\":[],\"resolved_legs\":[],\"guidance\":null,\"departure\":null,\"destination\":null,\"alternate\":null,\"cruise_altitude_ft\":null,\"notes\":null,\"updated_at_epoch_ms\":0,\"version\":0},\"ui_state\":{\"components\":[],\"resolved_legs\":[],\"display_rows\":[],\"guidance\":null}}",
-      unsuspend_sequencing_ui: async () => "{\"plan\":{\"id\":\"p\",\"name\":\"Plan\",\"legs\":[],\"route_components\":[],\"resolved_legs\":[],\"guidance\":null,\"departure\":null,\"destination\":null,\"alternate\":null,\"cruise_altitude_ft\":null,\"notes\":null,\"updated_at_epoch_ms\":0,\"version\":0},\"ui_state\":{\"components\":[],\"resolved_legs\":[],\"display_rows\":[],\"guidance\":null}}",
-      sequence_active_leg_ui: async () => "{\"plan\":{\"id\":\"p\",\"name\":\"Plan\",\"legs\":[],\"route_components\":[],\"resolved_legs\":[],\"guidance\":null,\"departure\":null,\"destination\":null,\"alternate\":null,\"cruise_altitude_ft\":null,\"notes\":null,\"updated_at_epoch_ms\":0,\"version\":0},\"ui_state\":{\"components\":[],\"resolved_legs\":[],\"display_rows\":[],\"guidance\":null}}",
+      activate_next_leg_in_session: async () => snapshotJson,
+      suspend_sequencing_in_session: async () => snapshotJson,
+      unsuspend_sequencing_in_session: async () => snapshotJson,
+      sequence_active_leg_in_session: async () => snapshotJson,
     }));
 
     expect(loaded.backend).toBe("wasm");

@@ -36,34 +36,6 @@ fn project_plan_mutation(plan: app_core::FlightPlan) -> app_core::FlightPlanUiMu
     app_core::FlightPlanUiMutation { plan, ui_state }
 }
 
-pub fn activate_next_leg_ui_json(plan_json: &str) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation = app_core::activate_next_leg_ui(&plan).map_err(|err| err.to_string())?;
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
-pub fn suspend_sequencing_ui_json(plan_json: &str) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation = app_core::suspend_sequencing_ui(&plan).map_err(|err| err.to_string())?;
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
-pub fn unsuspend_sequencing_ui_json(plan_json: &str) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation = app_core::unsuspend_sequencing_ui(&plan).map_err(|err| err.to_string())?;
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
-pub fn sequence_active_leg_ui_json(plan_json: &str) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation = app_core::sequence_active_leg_ui(&plan).map_err(|err| err.to_string())?;
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
 pub fn activate_direct_to_leg_ui_json(
     plan_json: &str,
     lat: f64,
@@ -398,6 +370,30 @@ pub fn perform_flight_plan_row_action_in_session_json(
         action_uid.to_string(),
     )
     .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn activate_next_leg_in_session_json(handle: u64) -> Result<String, String> {
+    let snapshot =
+        app_core::activate_next_leg_in_session(handle as u32).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn suspend_sequencing_in_session_json(handle: u64) -> Result<String, String> {
+    let snapshot =
+        app_core::suspend_sequencing_in_session(handle as u32).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn unsuspend_sequencing_in_session_json(handle: u64) -> Result<String, String> {
+    let snapshot =
+        app_core::unsuspend_sequencing_in_session(handle as u32).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn sequence_active_leg_in_session_json(handle: u64) -> Result<String, String> {
+    let snapshot =
+        app_core::sequence_active_leg_in_session(handle as u32).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -1549,58 +1545,6 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_act
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_activateNextLegUiJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    plan_json: JString,
-) -> jstring {
-    let result = (|| {
-        let plan_json = get_java_string(&mut env, plan_json)?;
-        activate_next_leg_ui_json(&plan_json)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_suspendSequencingUiJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    plan_json: JString,
-) -> jstring {
-    let result = (|| {
-        let plan_json = get_java_string(&mut env, plan_json)?;
-        suspend_sequencing_ui_json(&plan_json)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_unsuspendSequencingUiJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    plan_json: JString,
-) -> jstring {
-    let result = (|| {
-        let plan_json = get_java_string(&mut env, plan_json)?;
-        unsuspend_sequencing_ui_json(&plan_json)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sequenceActiveLegUiJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    plan_json: JString,
-) -> jstring {
-    let result = (|| {
-        let plan_json = get_java_string(&mut env, plan_json)?;
-        sequence_active_leg_ui_json(&plan_json)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
 pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_prepareAirwayPresentationJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -1843,6 +1787,46 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_per
         let action_uid = get_java_string(&mut env, action_uid)?;
         perform_flight_plan_row_action_in_session_json(handle as u64, &row_uid, &action_uid)
     })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_activateNextLegInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    let result = (|| activate_next_leg_in_session_json(handle as u64))();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_suspendSequencingInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    let result = (|| suspend_sequencing_in_session_json(handle as u64))();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_unsuspendSequencingInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    let result = (|| unsuspend_sequencing_in_session_json(handle as u64))();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sequenceActiveLegInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    let result = (|| sequence_active_leg_in_session_json(handle as u64))();
     return_string(&mut env, result)
 }
 

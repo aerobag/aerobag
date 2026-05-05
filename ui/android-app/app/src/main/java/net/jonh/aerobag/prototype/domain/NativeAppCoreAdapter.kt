@@ -564,26 +564,6 @@ class NativeAppCoreAdapter(
         return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
     }
 
-    fun activateNextLegUi(plan: FlightPlan): FlightPlanUiMutation {
-        val nextJson = bridge.activateNextLegUiJson(json.encodeToString(plan.toWire()))
-        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
-    }
-
-    fun suspendSequencingUi(plan: FlightPlan): FlightPlanUiMutation {
-        val nextJson = bridge.suspendSequencingUiJson(json.encodeToString(plan.toWire()))
-        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
-    }
-
-    fun unsuspendSequencingUi(plan: FlightPlan): FlightPlanUiMutation {
-        val nextJson = bridge.unsuspendSequencingUiJson(json.encodeToString(plan.toWire()))
-        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
-    }
-
-    fun sequenceActiveLegUi(plan: FlightPlan): FlightPlanUiMutation {
-        val nextJson = bridge.sequenceActiveLegUiJson(json.encodeToString(plan.toWire()))
-        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
-    }
-
     fun prepareAirwayPresentation(
         airwayName: String,
         branches: List<AirwayBranch>,
@@ -1003,6 +983,26 @@ class NativeUiSession internal constructor(
 
     fun performFlightPlanRowAction(rowUid: String, actionUid: String): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.performFlightPlanRowActionInSessionJson(handle, rowUid, actionUid))
+        return syncGuidanceGeometryFromPlan()
+    }
+
+    fun activateNextLeg(): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.activateNextLegInSessionJson(handle))
+        return syncGuidanceGeometryFromPlan()
+    }
+
+    fun suspendSequencing(): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.suspendSequencingInSessionJson(handle))
+        return syncGuidanceGeometryFromPlan()
+    }
+
+    fun unsuspendSequencing(): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.unsuspendSequencingInSessionJson(handle))
+        return syncGuidanceGeometryFromPlan()
+    }
+
+    fun sequenceActiveLeg(): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.sequenceActiveLegInSessionJson(handle))
         return syncGuidanceGeometryFromPlan()
     }
 

@@ -125,11 +125,11 @@ pub use raster_tiles::{
     RasterTileDraw, RasterTileLevel, RasterTilePlan, RasterTilePlanOptions, RasterTileSource,
 };
 pub use session::{
-    attach_nav_kv_store_to_session, create_ui_session, create_ui_session_profiled, destroy_session,
-    disengage_map_follow_in_session, engage_map_follow_in_session, get_map_overlay_in_session,
-    get_map_selection_in_session, get_raster_tile_plan_in_session,
-    get_raster_tile_plan_in_session_with_options, get_session_snapshot,
-    get_terrain_overlay_in_session, ingest_airspace_features_in_session,
+    activate_next_leg_in_session, attach_nav_kv_store_to_session, create_ui_session,
+    create_ui_session_profiled, destroy_session, disengage_map_follow_in_session,
+    engage_map_follow_in_session, get_map_overlay_in_session, get_map_selection_in_session,
+    get_raster_tile_plan_in_session, get_raster_tile_plan_in_session_with_options,
+    get_session_snapshot, get_terrain_overlay_in_session, ingest_airspace_features_in_session,
     ingest_airspace_label_tiles_in_session, ingest_airspace_ref_tiles_in_session,
     ingest_metar_tiles_in_session, ingest_metars_in_session, ingest_point_tiles_in_session,
     ingest_tafs_in_session, ingest_tfrs_in_session, insert_airway_at_flight_plan_row_in_session,
@@ -141,14 +141,15 @@ pub use session::{
     replace_flight_plan_in_session, restore_chart_page_state_in_session,
     restore_direct_to_in_session, seek_playback_in_session, select_airport_in_session,
     select_chart_in_session, select_map_in_session, select_ownship_source_in_session,
-    select_procedure_at_flight_plan_row_in_session, set_debug_flag_in_session,
-    set_guidance_leg_geometry_in_session, set_map_follow_offset_in_session,
-    set_map_layer_enabled_in_session, set_map_layer_visibility_in_session,
-    set_playback_rate_in_session, set_raster_map_catalog_in_session, set_situation_in_session,
-    suggest_waypoint_identifiers_at_flight_plan_row_in_session, sync_map_follow_in_session,
-    tick_playback_in_session, update_ownship_source_status_in_session, GuidanceLegGeometry,
-    UiCautionState, UiChartPageState, UiDebugState, UiMapLayerState, UiMapLayerToggleState,
-    UiSessionInitResult, UiSessionSnapshot,
+    select_procedure_at_flight_plan_row_in_session, sequence_active_leg_in_session,
+    set_debug_flag_in_session, set_guidance_leg_geometry_in_session,
+    set_map_follow_offset_in_session, set_map_layer_enabled_in_session,
+    set_map_layer_visibility_in_session, set_playback_rate_in_session,
+    set_raster_map_catalog_in_session, set_situation_in_session,
+    suggest_waypoint_identifiers_at_flight_plan_row_in_session, suspend_sequencing_in_session,
+    sync_map_follow_in_session, tick_playback_in_session, unsuspend_sequencing_in_session,
+    update_ownship_source_status_in_session, GuidanceLegGeometry, UiCautionState, UiChartPageState,
+    UiDebugState, UiMapLayerState, UiMapLayerToggleState, UiSessionInitResult, UiSessionSnapshot,
 };
 pub use situation::{Situation, SituationPosition};
 pub use state::{
@@ -3894,26 +3895,6 @@ pub fn replace_procedure_materialized_ui(
         plan: replaced,
         component_index,
     }))
-}
-
-pub fn sequence_active_leg_ui(plan: &FlightPlan) -> AppResult<FlightPlanUiMutation> {
-    let plan = sequence_active_leg(plan)?;
-    Ok(project_plan_mutation(plan))
-}
-
-pub fn activate_next_leg_ui(plan: &FlightPlan) -> AppResult<FlightPlanUiMutation> {
-    let plan = activate_next_leg(plan)?;
-    Ok(project_plan_mutation(plan))
-}
-
-pub fn suspend_sequencing_ui(plan: &FlightPlan) -> AppResult<FlightPlanUiMutation> {
-    let plan = suspend_sequencing(plan)?;
-    Ok(project_plan_mutation(plan))
-}
-
-pub fn unsuspend_sequencing_ui(plan: &FlightPlan) -> AppResult<FlightPlanUiMutation> {
-    let plan = unsuspend_sequencing(plan)?;
-    Ok(project_plan_mutation(plan))
 }
 
 pub fn activate_direct_to_ui(

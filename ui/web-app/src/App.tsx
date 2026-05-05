@@ -1708,24 +1708,24 @@ export default function App() {
             await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
           }}
           onActivateNextLeg={async () => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.activateNextLegUi(currentPlan);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
+            if (!uiSession) return;
+            const nextSnapshot = await uiSession.activateNextLeg();
+            setSessionSnapshot(nextSnapshot);
           }}
           onSuspendSequencing={async () => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.suspendSequencingUi(currentPlan);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
+            if (!uiSession) return;
+            const nextSnapshot = await uiSession.suspendSequencing();
+            setSessionSnapshot(nextSnapshot);
           }}
           onUnsuspendSequencing={async () => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.unsuspendSequencingUi(currentPlan);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
+            if (!uiSession) return;
+            const nextSnapshot = await uiSession.unsuspendSequencing();
+            setSessionSnapshot(nextSnapshot);
           }}
           onSequenceActiveLeg={async () => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.sequenceActiveLegUi(currentPlan);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
+            if (!uiSession) return;
+            const nextSnapshot = await uiSession.sequenceActiveLeg();
+            setSessionSnapshot(nextSnapshot);
           }}
           onRestoreDirectTo={async () => {
             if (!uiSession) return;

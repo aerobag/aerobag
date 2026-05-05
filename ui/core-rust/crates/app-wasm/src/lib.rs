@@ -255,6 +255,34 @@ pub fn perform_flight_plan_row_action_in_session(
 }
 
 #[wasm_bindgen]
+pub fn activate_next_leg_in_session(session_handle: u32) -> Result<String, JsValue> {
+    let snapshot = app_core::activate_next_leg_in_session(session_handle)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn suspend_sequencing_in_session(session_handle: u32) -> Result<String, JsValue> {
+    let snapshot = app_core::suspend_sequencing_in_session(session_handle)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn unsuspend_sequencing_in_session(session_handle: u32) -> Result<String, JsValue> {
+    let snapshot = app_core::unsuspend_sequencing_in_session(session_handle)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn sequence_active_leg_in_session(session_handle: u32) -> Result<String, JsValue> {
+    let snapshot = app_core::sequence_active_leg_in_session(session_handle)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn attach_nav_kv_store_to_session(
     nav_kv_handle: u32,
     session_handle: u32,
@@ -292,26 +320,6 @@ pub fn classify_procedure_identifier(
         exists_as_fix,
     )
     .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn activate_next_leg_ui(plan_json: &str) -> Result<String, JsValue> {
-    activate_next_leg_ui_json(plan_json).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn suspend_sequencing_ui(plan_json: &str) -> Result<String, JsValue> {
-    suspend_sequencing_ui_json(plan_json).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn unsuspend_sequencing_ui(plan_json: &str) -> Result<String, JsValue> {
-    unsuspend_sequencing_ui_json(plan_json).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn sequence_active_leg_ui(plan_json: &str) -> Result<String, JsValue> {
-    sequence_active_leg_ui_json(plan_json).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -765,34 +773,6 @@ fn build_flight_plan_json(plan_json: &str) -> Result<String, String> {
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let plan = app_core::build_flight_plan(plan).map_err(|err| err.to_string())?;
     serde_json::to_string(&plan).map_err(|err| err.to_string())
-}
-
-fn activate_next_leg_ui_json(plan_json: &str) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation = app_core::activate_next_leg_ui(&plan).map_err(|err| err.to_string())?;
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
-fn suspend_sequencing_ui_json(plan_json: &str) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation = app_core::suspend_sequencing_ui(&plan).map_err(|err| err.to_string())?;
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
-fn unsuspend_sequencing_ui_json(plan_json: &str) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation = app_core::unsuspend_sequencing_ui(&plan).map_err(|err| err.to_string())?;
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
-fn sequence_active_leg_ui_json(plan_json: &str) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation = app_core::sequence_active_leg_ui(&plan).map_err(|err| err.to_string())?;
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
 fn activate_direct_to_leg_ui_json(

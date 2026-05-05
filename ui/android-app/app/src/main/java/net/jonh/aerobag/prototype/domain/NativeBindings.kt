@@ -27,14 +27,6 @@ interface NativeBridge {
 
     fun activateLegUiJson(planJson: String, legIndex: Int): String
 
-    fun activateNextLegUiJson(planJson: String): String
-
-    fun suspendSequencingUiJson(planJson: String): String
-
-    fun unsuspendSequencingUiJson(planJson: String): String
-
-    fun sequenceActiveLegUiJson(planJson: String): String
-
     fun prepareAirwayPresentationJson(
         airwayName: String,
         branchesJson: String,
@@ -259,6 +251,14 @@ interface NativeBridge {
         actionUid: String,
     ): String
 
+    fun activateNextLegInSessionJson(handle: Long): String
+
+    fun suspendSequencingInSessionJson(handle: Long): String
+
+    fun unsuspendSequencingInSessionJson(handle: Long): String
+
+    fun sequenceActiveLegInSessionJson(handle: Long): String
+
     fun setGuidanceLegGeometryInSessionJson(
         handle: Long,
         geometriesJson: String,
@@ -409,14 +409,6 @@ object NativeBindings : NativeBridge {
     external override fun situationRingCandidatesJson(): String
 
     external override fun activateLegUiJson(planJson: String, legIndex: Int): String
-
-    external override fun activateNextLegUiJson(planJson: String): String
-
-    external override fun suspendSequencingUiJson(planJson: String): String
-
-    external override fun unsuspendSequencingUiJson(planJson: String): String
-
-    external override fun sequenceActiveLegUiJson(planJson: String): String
 
     external override fun prepareAirwayPresentationJson(
         airwayName: String,
@@ -641,6 +633,14 @@ object NativeBindings : NativeBridge {
         rowUid: String,
         actionUid: String,
     ): String
+
+    external override fun activateNextLegInSessionJson(handle: Long): String
+
+    external override fun suspendSequencingInSessionJson(handle: Long): String
+
+    external override fun unsuspendSequencingInSessionJson(handle: Long): String
+
+    external override fun sequenceActiveLegInSessionJson(handle: Long): String
 
     external override fun setGuidanceLegGeometryInSessionJson(
         handle: Long,

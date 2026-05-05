@@ -458,6 +458,10 @@ export interface UiSession {
   restoreDirectTo(): Promise<UiSessionSnapshot>;
   performFlightPlanRowAction(rowUid: string, actionUid: string): Promise<UiSessionSnapshot>;
   performMapSelectionAction(action: string): Promise<UiSessionSnapshot>;
+  activateNextLeg(): Promise<UiSessionSnapshot>;
+  suspendSequencing(): Promise<UiSessionSnapshot>;
+  unsuspendSequencing(): Promise<UiSessionSnapshot>;
+  sequenceActiveLeg(): Promise<UiSessionSnapshot>;
   setSituation(situation: Situation): Promise<UiSessionSnapshot>;
   loadPlaybackTrace(sourcePath: string, traceJson: string): Promise<UiSessionSnapshot>;
   playPlayback(nowEpochMs: number): Promise<UiSessionSnapshot>;
@@ -515,15 +519,11 @@ export interface AppCoreAdapter {
   ): Promise<DerivedChartPageState>;
   deriveMapSelectorState(selectedMapId?: string): Promise<DerivedMapSelectorState>;
   projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]>;
-  activateNextLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
   previewFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanEntryPreview>;
   appendFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanUiMutation>;
   resolveWaypointIdentifier(identifier: string): Promise<NavRef | null>;
   resolveNavRefPosition(navRef: NavRef): Promise<LatLon>;
   suggestWaypointIdentifiersNear(anchor: LatLon, prefix: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
-  suspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
-  unsuspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
-  sequenceActiveLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
   suggestAirwaysNearAnchor(anchor: NavRef, limit?: number): Promise<AirwaySuggestion[]>;
   prepareAirwayPresentationForAnchors(
     airwayName: string,
@@ -670,6 +670,10 @@ type WasmModule = {
   load_plate_procedure_in_session(sessionHandle: number, loadId: string): Promise<string> | string;
   restore_direct_to_in_session(sessionHandle: number): Promise<string> | string;
   perform_flight_plan_row_action_in_session(sessionHandle: number, rowUid: string, actionUid: string): Promise<string> | string;
+  activate_next_leg_in_session(sessionHandle: number): Promise<string> | string;
+  suspend_sequencing_in_session(sessionHandle: number): Promise<string> | string;
+  unsuspend_sequencing_in_session(sessionHandle: number): Promise<string> | string;
+  sequence_active_leg_in_session(sessionHandle: number): Promise<string> | string;
   set_guidance_leg_geometry_in_session(handle: number, geometriesJson: string): Promise<string> | string;
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
@@ -695,10 +699,6 @@ type WasmModule = {
   nav_kv_destroy(handle: number): Promise<void> | void;
   attach_nav_kv_store_to_session(navKvHandle: number, sessionHandle: number): Promise<void> | void;
   core_had_operation(handle: number, operationJson: string): Promise<string> | string;
-  activate_next_leg_ui(planJson: string): Promise<string> | string;
-  suspend_sequencing_ui(planJson: string): Promise<string> | string;
-  unsuspend_sequencing_ui(planJson: string): Promise<string> | string;
-  sequence_active_leg_ui(planJson: string): Promise<string> | string;
 };
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
@@ -941,6 +941,34 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       performFlightPlanRowAction: async (rowUid, actionUid) => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.perform_flight_plan_row_action_in_session(handle, rowUid, actionUid)),
+        );
+        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        return snapshot;
+      },
+      activateNextLeg: async () => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(this.module.activate_next_leg_in_session(handle)),
+        );
+        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        return snapshot;
+      },
+      suspendSequencing: async () => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(this.module.suspend_sequencing_in_session(handle)),
+        );
+        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        return snapshot;
+      },
+      unsuspendSequencing: async () => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(this.module.unsuspend_sequencing_in_session(handle)),
+        );
+        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        return snapshot;
+      },
+      sequenceActiveLeg: async () => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(this.module.sequence_active_leg_in_session(handle)),
         );
         await syncGuidanceGeometry(snapshot.app_state.active_plan);
         return snapshot;
@@ -1256,12 +1284,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     return runCoreHadOperation<FlightPlanRouteSegment[]>({ kind: "project_flight_plan_route", plan });
   }
 
-  async activateNextLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
-    return this.enrichFlightPlanUiMutation(JSON.parse(
-      await this.module.activate_next_leg_ui(JSON.stringify(plan)),
-    ) as FlightPlanUiMutation);
-  }
-
   async previewFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanEntryPreview> {
     return runCoreHadOperation<FlightPlanEntryPreview>({
       kind: "preview_flight_plan_entry",
@@ -1293,24 +1315,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       prefix,
       limit,
     });
-  }
-
-  async suspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
-    return this.enrichFlightPlanUiMutation(JSON.parse(
-      await this.module.suspend_sequencing_ui(JSON.stringify(plan)),
-    ) as FlightPlanUiMutation);
-  }
-
-  async unsuspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
-    return this.enrichFlightPlanUiMutation(JSON.parse(
-      await this.module.unsuspend_sequencing_ui(JSON.stringify(plan)),
-    ) as FlightPlanUiMutation);
-  }
-
-  async sequenceActiveLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
-    return this.enrichFlightPlanUiMutation(JSON.parse(
-      await this.module.sequence_active_leg_ui(JSON.stringify(plan)),
-    ) as FlightPlanUiMutation);
   }
 
   async suggestAirwaysNearAnchor(anchor: NavRef, limit = 5): Promise<AirwaySuggestion[]> {
@@ -1427,10 +1431,10 @@ export async function loadBestAvailableAdapter(
     typeof mod.insert_airway_at_flight_plan_row_in_session !== "function" ||
     typeof mod.select_procedure_at_flight_plan_row_in_session !== "function" ||
     typeof mod.load_plate_procedure_in_session !== "function" ||
-    typeof mod.activate_next_leg_ui !== "function" ||
-    typeof mod.suspend_sequencing_ui !== "function" ||
-    typeof mod.unsuspend_sequencing_ui !== "function" ||
-    typeof mod.sequence_active_leg_ui !== "function" ||
+    typeof mod.activate_next_leg_in_session !== "function" ||
+    typeof mod.suspend_sequencing_in_session !== "function" ||
+    typeof mod.unsuspend_sequencing_in_session !== "function" ||
+    typeof mod.sequence_active_leg_in_session !== "function" ||
     typeof mod.nav_kv_open !== "function" ||
     typeof mod.nav_kv_insert_page !== "function" ||
     typeof mod.nav_kv_destroy !== "function" ||

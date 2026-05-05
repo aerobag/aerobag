@@ -7195,6 +7195,18 @@ private fun FlightPlanRouteEntryRow(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.35f),
     ) {
+        val feedback =
+            error
+                ?: preview.issues.firstOrNull()?.message
+                ?: if (loading) "Checking..." else null
+        Text(
+            text = feedback ?: " ",
+            modifier = Modifier.testTag("parity:plan-append-route-feedback"),
+            style = MaterialTheme.typography.labelSmall,
+            color = if (error != null || preview.issues.isNotEmpty()) Color(0xFFC23A2C) else uiTheme.controls.panelFg,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
         BasicTextField(
             value = text,
             onValueChange = onTextChange,
@@ -7249,19 +7261,6 @@ private fun FlightPlanRouteEntryRow(
                 }
             },
         )
-        val feedback =
-            error
-                ?: preview.issues.firstOrNull()?.message
-                ?: if (loading) "Checking..." else null
-        if (feedback != null) {
-            Text(
-                text = feedback,
-                style = MaterialTheme.typography.labelSmall,
-                color = if (error != null || preview.issues.isNotEmpty()) Color(0xFFC23A2C) else uiTheme.controls.panelFg,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
     }
 }
 
@@ -9056,14 +9055,31 @@ private fun PlanWaypointSymbol(
         val fixMarkerStrokeColor = Color(0xB3081218)
         val fixMarkerFillColor = Color(0xFF39D9FF)
         val airportMarkerStrokeColor = Color(0xB3081218)
-        val airportFillColor = Color(0xFFFF4FD8)
+        val airportFillColor = if (feature.towered) Color(0xFF4AA3FF) else Color(0xFFFF4FD8)
         val vorMarkerColor = Color(0xFF4AA3FF)
         val isAirport = feature.styleClass == "airport" || feature.kind.equals("airport", ignoreCase = true)
         val isVor = feature.styleClass == "nav" || feature.kind.contains("vor", ignoreCase = true)
         when {
             isAirport -> {
                 val airportRadius = 12f * scale
-                if (feature.fuelAvailable) {
+                val usesOpenAirportCircle =
+                    feature.heliport == true ||
+                        feature.hasWaterRunway == true ||
+                        feature.hasPavedRunway == false
+                if (usesOpenAirportCircle) {
+                    drawCircle(
+                        Color.White.copy(alpha = 0.86f),
+                        radius = airportRadius,
+                        center = center,
+                        style = Stroke(width = 5f * scale),
+                    )
+                    drawCircle(
+                        airportFillColor,
+                        radius = airportRadius,
+                        center = center,
+                        style = Stroke(width = 2.5f * scale),
+                    )
+                } else if (feature.fuelAvailable) {
                     val markerPath = airportFuelMarkerPath(center, scale)
                     drawPath(markerPath, airportFillColor)
                     drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * scale))
@@ -9071,7 +9087,44 @@ private fun PlanWaypointSymbol(
                     drawCircle(airportFillColor, radius = airportRadius, center = center)
                     drawCircle(airportMarkerStrokeColor, radius = airportRadius, center = center, style = Stroke(width = 2f * scale))
                 }
-                feature.longestRunwayHeadingTrueDeg?.let { heading ->
+                if (feature.heliport == true) {
+                    drawContext.canvas.nativeCanvas.apply {
+                        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                            color = airportMarkerStrokeColor.toArgb()
+                            textAlign = Paint.Align.CENTER
+                            textSize = 13f * scale
+                            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                        }
+                        drawText("H", center.x, center.y + 4.5f * scale, paint)
+                    }
+                } else if (feature.hasWaterRunway == true) {
+                    rotate(15f, center) {
+                        drawLine(
+                            color = airportMarkerStrokeColor,
+                            start = Offset(center.x, center.y - 9f * scale),
+                            end = Offset(center.x, center.y + 5f * scale),
+                            strokeWidth = 2.4f * scale,
+                            cap = StrokeCap.Round,
+                        )
+                        drawLine(
+                            color = airportMarkerStrokeColor,
+                            start = Offset(center.x - 5f * scale, center.y - 5f * scale),
+                            end = Offset(center.x + 5f * scale, center.y - 5f * scale),
+                            strokeWidth = 2.4f * scale,
+                            cap = StrokeCap.Round,
+                        )
+                        drawArc(
+                            color = airportMarkerStrokeColor,
+                            startAngle = 18f,
+                            sweepAngle = 144f,
+                            useCenter = false,
+                            topLeft = Offset(center.x - 7f * scale, center.y - 4f * scale),
+                            size = Size(14f * scale, 14f * scale),
+                            style = Stroke(width = 2.2f * scale, cap = StrokeCap.Round),
+                        )
+                    }
+                }
+                if (!usesOpenAirportCircle) feature.longestRunwayHeadingTrueDeg?.let { heading ->
                     val runwayHalfLength = 8f * feature.runwayLengthRatio.coerceAtLeast(0.2).toFloat() * scale
                     rotate(heading.toFloat(), center) {
                         drawLine(

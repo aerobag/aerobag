@@ -539,6 +539,27 @@ async function androidJourney(serial) {
   if (planXml.includes("Append route") || planXml.includes("parity:plan-append-route-input")) {
     recordStep(out, "free-form append route present");
     if (await androidTapTag(serial, out, "focused free-form append route", "parity:plan-append-route-input")) {
+      adb(serial, ["shell", "input", "text", "KRNT"]);
+      adb(serial, ["shell", "input", "keyevent", "KEYCODE_SPACE"]);
+      adb(serial, ["shell", "input", "text", "V2"]);
+      adb(serial, ["shell", "input", "keyevent", "KEYCODE_SPACE"]);
+      adb(serial, ["shell", "input", "text", "ZZZZZ"]);
+      adb(serial, ["shell", "input", "keyevent", "KEYCODE_SPACE"]);
+      try {
+        const feedback = await androidWaitForNode(
+          serial,
+          (node) => hasAndroidTag(node, "parity:plan-append-route-feedback") && (node.text ?? "").trim() !== "",
+          7000,
+          "append route feedback visible",
+        );
+        recordStep(out, "append route feedback visible", "ok", feedback.text);
+      } catch (_error) {
+        recordGap(out, "append route feedback visible", "no non-empty feedback appeared after typing KRNT V2 ZZZZZ");
+      }
+      for (let i = 0; i < 24; i += 1) {
+        adb(serial, ["shell", "input", "keyevent", "KEYCODE_DEL"]);
+      }
+      await delay(300);
       adb(serial, ["shell", "input", "text", "KBFI"]);
       await delay(300);
       adb(serial, ["shell", "input", "keyevent", "ENTER"]);

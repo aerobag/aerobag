@@ -1854,6 +1854,7 @@ fn project_display_rows(
                     component.can_reorder_up,
                     component.can_reorder_down,
                     component.component_index.into(),
+                    plan.route_components.len(),
                     chart_airport_id.as_ref(),
                     origin_anchor.as_ref(),
                 ),
@@ -1978,6 +1979,7 @@ fn project_display_rows(
                                 false,
                                 false,
                                 None,
+                                plan.route_components.len(),
                                 airport_id_from_nav_ref(nav_ref).as_ref(),
                                 None,
                             ),
@@ -2263,6 +2265,7 @@ fn waypoint_actions_for_row(
     can_reorder_up: bool,
     can_reorder_down: bool,
     component_index: Option<usize>,
+    route_component_count: usize,
     chart_airport_id: Option<&String>,
     origin_anchor: Option<&NavRef>,
 ) -> Vec<FlightPlanRowActionUiView> {
@@ -2289,8 +2292,18 @@ fn waypoint_actions_for_row(
                 FlightPlanRowActionId::InsertAfter,
                 component_index.is_some(),
             ),
-            core_session_action(FlightPlanRowActionId::MoveUp, can_reorder_up),
-            core_session_action(FlightPlanRowActionId::MoveDown, can_reorder_down),
+            move_action(
+                FlightPlanRowActionId::MoveUp,
+                can_reorder_up,
+                component_index,
+                route_component_count,
+            ),
+            move_action(
+                FlightPlanRowActionId::MoveDown,
+                can_reorder_down,
+                component_index,
+                route_component_count,
+            ),
             action(FlightPlanRowActionId::WaypointInfo, false),
             action(
                 FlightPlanRowActionId::AddAirway,
@@ -2348,11 +2361,8 @@ fn child_waypoint_row_leg_index(
 
 fn top_level_waypoint_row_uid(
     component: &RouteComponentUiView,
-    leg_index: Option<usize>,
+    _leg_index: Option<usize>,
 ) -> String {
-    if let Some(leg_index) = leg_index {
-        return format!("leg-index:{leg_index}:component:{}", component.uid);
-    }
     format!("component:{}:{:?}:waypoint", component.uid, component.kind)
 }
 
@@ -2361,11 +2371,8 @@ fn child_waypoint_row_uid(
     kind: RouteComponentViewKind,
     occurrence: usize,
     nav_ref: &NavRef,
-    leg_index: Option<usize>,
+    _leg_index: Option<usize>,
 ) -> String {
-    if let Some(leg_index) = leg_index {
-        return format!("leg-index:{leg_index}:component:{component_uid}:child:{occurrence}");
-    }
     format!(
         "component:{component_uid}:{kind:?}:child:{occurrence}:{}",
         nav_ref_key(nav_ref)
@@ -2384,10 +2391,27 @@ fn action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView
 }
 
 fn core_session_action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView {
-    let dismiss_tray_on_success = !matches!(
+    FlightPlanRowActionUiView {
+        label: action_label(&id).to_string(),
+        uid: String::new(),
         id,
-        FlightPlanRowActionId::MoveUp | FlightPlanRowActionId::MoveDown
-    );
+        enabled,
+        execution: FlightPlanRowActionExecution::CoreSession,
+        dismiss_tray_on_success: true,
+    }
+}
+
+fn move_action(
+    id: FlightPlanRowActionId,
+    enabled: bool,
+    component_index: Option<usize>,
+    route_component_count: usize,
+) -> FlightPlanRowActionUiView {
+    let dismiss_tray_on_success = match (id.clone(), enabled, component_index) {
+        (FlightPlanRowActionId::MoveUp, true, Some(index)) => index <= 1,
+        (FlightPlanRowActionId::MoveDown, true, Some(index)) => index + 2 >= route_component_count,
+        _ => true,
+    };
     FlightPlanRowActionUiView {
         label: action_label(&id).to_string(),
         uid: String::new(),
@@ -5568,6 +5592,47 @@ mod tests {
         assert!(grouped.components[0].can_reorder);
         assert!(!grouped.components[0].can_reorder_up);
         assert!(grouped.components[0].can_reorder_down);
+    }
+
+    #[test]
+    fn move_row_actions_dismiss_only_when_next_move_would_be_disabled() {
+        let ui = project_ui_state(&sample_waypoint_only_plan());
+        let action_for_component = |component_index: usize, id: FlightPlanRowActionId| {
+            ui.display_rows
+                .iter()
+                .find(|row| row.component_index == Some(component_index))
+                .and_then(|row| row.actions.iter().find(|action| action.id == id))
+                .expect("row action")
+        };
+
+        assert!(!action_for_component(0, FlightPlanRowActionId::MoveDown).dismiss_tray_on_success);
+        assert!(action_for_component(1, FlightPlanRowActionId::MoveUp).dismiss_tray_on_success);
+        assert!(action_for_component(1, FlightPlanRowActionId::MoveDown).dismiss_tray_on_success);
+        assert!(!action_for_component(2, FlightPlanRowActionId::MoveUp).dismiss_tray_on_success);
+    }
+
+    #[test]
+    fn top_level_waypoint_row_uid_survives_reorder() {
+        let plan = sample_waypoint_only_plan().normalized();
+        let before_ui = project_ui_state(&plan);
+        let moved_row = before_ui
+            .display_rows
+            .iter()
+            .find(|row| row.nav_ref == Some(NavRef::Airport("KHIO".to_string())))
+            .expect("moved row");
+        let moved_uid = moved_row.uid.clone();
+        let moved_component_uid = moved_row.component_uid.clone();
+
+        let after = move_component(&plan, 2, -1).expect("move component");
+        let after_ui = project_ui_state(&after);
+        let after_row = after_ui
+            .display_rows
+            .iter()
+            .find(|row| row.component_uid == moved_component_uid)
+            .expect("moved row after reorder");
+
+        assert_eq!(after_row.uid, moved_uid);
+        assert_eq!(after_row.component_index, Some(1));
     }
 
     #[test]

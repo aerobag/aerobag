@@ -4316,11 +4316,15 @@ fn determine_procedure_window_link<'a>(
     } else {
         pair[0]
     };
-    let render_as_empty_join = policy.continuing_if_to_cf_join
-        && previous
-            .terminal_position
-            .zip(pair[1].nav_position)
-            .is_some_and(|(start, end)| great_circle_distance_nm(start, end) <= 0.05);
+    let terminal_at_window_end = previous
+        .terminal_position
+        .zip(pair[1].nav_position)
+        .is_some_and(|(start, end)| great_circle_distance_nm(start, end) <= 0.05);
+    let same_fix_course_handoff_after_hold_reversal = from == to
+        && policy.continuing_from_consumed_hold
+        && pair[1].path_termination.trim() == "CF";
+    let render_as_empty_join = terminal_at_window_end
+        && (policy.continuing_if_to_cf_join || same_fix_course_handoff_after_hold_reversal);
     ProcedureWindowLinkBehavior {
         display_leg_start,
         inherit_previous_state: policy.inherits_previous_state(from, to),

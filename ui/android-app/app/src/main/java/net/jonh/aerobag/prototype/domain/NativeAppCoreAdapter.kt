@@ -568,26 +568,6 @@ class NativeAppCoreAdapter(
         return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
     }
 
-    fun deleteComponentUi(plan: FlightPlan, componentIndex: Int): FlightPlanUiMutation {
-        val nextJson = bridge.deleteComponentUiJson(json.encodeToString(plan.toWire()), componentIndex)
-        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
-    }
-
-    fun removeAllAboveUi(plan: FlightPlan, componentIndex: Int): FlightPlanUiMutation {
-        val nextJson = bridge.removeAllAboveUiJson(json.encodeToString(plan.toWire()), componentIndex)
-        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
-    }
-
-    fun moveComponentUi(plan: FlightPlan, componentIndex: Int, delta: Int): FlightPlanUiMutation {
-        val nextJson = bridge.moveComponentUiJson(json.encodeToString(plan.toWire()), componentIndex, delta)
-        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
-    }
-
-    fun insertWaypointUi(plan: FlightPlan, componentIndex: Int, before: Boolean, waypoint: NavRef): FlightPlanUiMutation {
-        val nextJson = bridge.insertWaypointUiJson(json.encodeToString(plan.toWire()), componentIndex, before, json.encodeToString(waypoint.toWire()))
-        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
-    }
-
     fun suspendSequencingUi(plan: FlightPlan): FlightPlanUiMutation {
         val nextJson = bridge.suspendSequencingUiJson(json.encodeToString(plan.toWire()))
         return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()

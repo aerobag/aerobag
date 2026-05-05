@@ -205,6 +205,7 @@ pub struct ProcedurePlanUiMutation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcedureLoadTarget {
+    pub row_uid: String,
     pub airport_id: String,
     pub procedure_id: String,
     pub kind: ProcedureKind,
@@ -231,6 +232,7 @@ pub struct ProcedureLoadOption {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcedureLoadCommand {
+    pub row_uid: String,
     pub airport_id: String,
     pub procedure_id: String,
     pub kind: ProcedureKind,
@@ -889,6 +891,7 @@ pub fn describe_plate_procedure_load_options(
                 include_procedure_id,
             );
             let command = ProcedureLoadCommand {
+                row_uid: target.row_uid.clone(),
                 airport_id: target.airport_id.clone(),
                 procedure_id: target.procedure_id.clone(),
                 kind: target.kind.clone(),
@@ -929,6 +932,21 @@ pub fn describe_load_procedure_from_plate(
     if terminal_airport_index == 0 {
         return Ok(None);
     }
+    let terminal_airport_row_uid = project_ui_state(&plan)
+        .display_rows
+        .into_iter()
+        .find(|row| {
+            row.depth == 0
+                && row.component_index == Some(terminal_airport_index)
+                && row.nav_ref
+                    .as_ref()
+                    .is_some_and(|nav_ref| matches!(nav_ref, NavRef::Airport(code) if code.trim() == airport_id.trim()))
+        })
+        .map(|row| row.uid)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("procedure load target row missing for airport {airport_id}"),
+        })?;
 
     let replace_component_index = match plan.route_components.get(terminal_airport_index - 1) {
         Some(RouteComponent::Procedure { procedure })
@@ -943,6 +961,7 @@ pub fn describe_load_procedure_from_plate(
     let preferred_choice = choose_obvious_procedure_choice(&plan, terminal_airport_index, &options);
 
     Ok(Some(ProcedureLoadTarget {
+        row_uid: terminal_airport_row_uid,
         airport_id: airport_id.trim().to_string(),
         procedure_id: procedure_id.trim().to_string(),
         kind,
@@ -4059,6 +4078,66 @@ mod tests {
             updated_at_epoch_ms: 0,
             version: 1,
         }
+    }
+
+    #[test]
+    fn plate_procedure_load_command_targets_row_uid_not_airport_ident() {
+        let plan = FlightPlan {
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRNT".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRNT".to_string()),
+                },
+            ],
+            departure: Some(AirportId("KRNT".to_string())),
+            destination: Some(AirportId("KRNT".to_string())),
+            ..sample_plan()
+        }
+        .normalized();
+        let terminal_row = project_ui_state(&plan)
+            .display_rows
+            .into_iter()
+            .find(|row| row.component_index == Some(2))
+            .expect("terminal duplicate row");
+        let options = ProcedureOptions {
+            airport_id: "KRNT".to_string(),
+            procedure_id: "RNAV 16".to_string(),
+            kind: ProcedureKind::Approach,
+            runway_transitions: Vec::new(),
+            enroute_transitions: Vec::new(),
+            has_common_segment: false,
+            valid_choices: vec![ProcedureSpecChoice {
+                runway_transition: None,
+                enroute_transition: None,
+            }],
+        };
+        let target = describe_load_procedure_from_plate(
+            &plan,
+            "KRNT",
+            "RNAV 16",
+            ProcedureKind::Approach,
+            options,
+        )
+        .expect("describe load")
+        .expect("load target");
+        let command = ProcedureLoadCommand {
+            row_uid: target.row_uid.clone(),
+            airport_id: target.airport_id,
+            procedure_id: target.procedure_id,
+            kind: target.kind,
+            runway_transition: None,
+            enroute_transition: None,
+        };
+        let encoded = serde_json::to_string(&command).expect("encode command");
+        let decoded: ProcedureLoadCommand = serde_json::from_str(&encoded).expect("decode command");
+
+        assert_eq!(target.row_uid, terminal_row.uid);
+        assert_eq!(decoded.row_uid, terminal_row.uid);
     }
 
     fn fixture_repo_root() -> PathBuf {

@@ -910,22 +910,40 @@ pub fn load_plate_procedure_in_session(
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
-    let Some(airport_component_index) = plan.route_components.iter().enumerate().rev().find_map(
-        |(index, component)| match component {
-            crate::RouteComponent::Waypoint {
-                waypoint: NavRef::Airport(code),
-            } if code.trim() == command.airport_id.trim() => Some(index),
-            _ => None,
-        },
-    ) else {
+    let ui = crate::project_ui_state(&plan);
+    let row = ui
+        .display_rows
+        .iter()
+        .find(|row| row.uid == command.row_uid)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("procedure load target row is stale: {}", command.row_uid),
+        })?;
+    let row_airport_id = row.chart_airport_id.as_deref().ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: "procedure load target row has no airport".to_string(),
+    })?;
+    if row_airport_id != command.airport_id {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message: format!(
-                "procedure load airport is not in the flight plan: {}",
+                "procedure load airport mismatch: row has {row_airport_id}, requested {}",
                 command.airport_id
             ),
         });
-    };
+    }
+    let component_uid = row.component_uid.as_deref().ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: "procedure load target row has no route component uid".to_string(),
+    })?;
+    let airport_component_index = plan
+        .route_component_uids
+        .iter()
+        .position(|uid| uid == component_uid)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("procedure load target component is stale: {component_uid}"),
+        })?;
     let replace_component_index =
         airport_component_index.checked_sub(1).and_then(|index| {
             match plan.route_components.get(index) {

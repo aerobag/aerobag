@@ -22,54 +22,6 @@ pub fn remove_flight_plan_leg_json(plan_json: &str, index: usize) -> Result<Stri
     serde_json::to_string(&plan).map_err(|err| err.to_string())
 }
 
-pub fn delete_component_ui_json(plan_json: &str, component_index: usize) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation = project_plan_mutation(
-        app_core::delete_component(&plan, component_index).map_err(|err| err.to_string())?,
-    );
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
-pub fn remove_all_above_ui_json(plan_json: &str, component_index: usize) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation = project_plan_mutation(
-        app_core::remove_all_above(&plan, component_index).map_err(|err| err.to_string())?,
-    );
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
-pub fn move_component_ui_json(
-    plan_json: &str,
-    component_index: usize,
-    delta: isize,
-) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation = project_plan_mutation(
-        app_core::move_component(&plan, component_index, delta).map_err(|err| err.to_string())?,
-    );
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
-pub fn insert_waypoint_ui_json(
-    plan_json: &str,
-    component_index: usize,
-    before: bool,
-    waypoint_json: &str,
-) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let waypoint: app_core::NavRef =
-        serde_json::from_str(waypoint_json).map_err(|err| err.to_string())?;
-    let mutation = project_plan_mutation(
-        app_core::insert_waypoint(&plan, component_index, before, waypoint)
-            .map_err(|err| err.to_string())?,
-    );
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
 pub fn activate_leg_ui_json(plan_json: &str, leg_index: usize) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
@@ -1606,66 +1558,6 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_act
     let result = (|| {
         let plan_json = get_java_string(&mut env, plan_json)?;
         activate_next_leg_ui_json(&plan_json)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_deleteComponentUiJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    plan_json: JString,
-    component_index: i32,
-) -> jstring {
-    let result = (|| {
-        let plan_json = get_java_string(&mut env, plan_json)?;
-        delete_component_ui_json(&plan_json, component_index as usize)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_removeAllAboveUiJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    plan_json: JString,
-    component_index: i32,
-) -> jstring {
-    let result = (|| {
-        let plan_json = get_java_string(&mut env, plan_json)?;
-        remove_all_above_ui_json(&plan_json, component_index as usize)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_moveComponentUiJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    plan_json: JString,
-    component_index: i32,
-    delta: i32,
-) -> jstring {
-    let result = (|| {
-        let plan_json = get_java_string(&mut env, plan_json)?;
-        move_component_ui_json(&plan_json, component_index as usize, delta as isize)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_insertWaypointUiJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    plan_json: JString,
-    component_index: i32,
-    before: bool,
-    waypoint_json: JString,
-) -> jstring {
-    let result = (|| {
-        let plan_json = get_java_string(&mut env, plan_json)?;
-        let waypoint_json = get_java_string(&mut env, waypoint_json)?;
-        insert_waypoint_ui_json(&plan_json, component_index as usize, before, &waypoint_json)
     })();
     return_string(&mut env, result)
 }

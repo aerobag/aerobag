@@ -1735,12 +1735,12 @@ fn selection_item_for_pirep(record: &PirepRecord, feature: VisiblePirepFeature) 
 fn pirep_hazard_label(record: &PirepRecord) -> String {
     let symbol = normalized_pirep_symbol(&record.symbol);
     match symbol.as_str() {
-        "light-icing" => "Light icing".to_string(),
-        "moderate-icing" => "Moderate icing".to_string(),
-        "severe-icing" => "Severe icing".to_string(),
-        "light-turbulence" => "Light turbulence".to_string(),
-        "moderate-turbulence" => "Moderate turbulence".to_string(),
-        "severe-turbulence" => "Severe turbulence".to_string(),
+        "light-icing" => "Lgt Ice".to_string(),
+        "moderate-icing" => "Mod Ice".to_string(),
+        "severe-icing" => "Sev Ice".to_string(),
+        "light-turbulence" => "Lgt Turb".to_string(),
+        "moderate-turbulence" => "Mod Turb".to_string(),
+        "severe-turbulence" => "Sev Turb".to_string(),
         _ => "PIREP".to_string(),
     }
 }

@@ -675,6 +675,7 @@ fn build_procedure_leg_display_path(
     let mut elements = Vec::new();
     let mut debug_sources = Vec::new();
     let mut pending_direct_turn_clockwise: Option<bool> = None;
+    let mut skip_next_sequence: Option<i32> = None;
 
     let mut steps = segment_records
         .iter()
@@ -685,6 +686,10 @@ fn build_procedure_leg_display_path(
     steps.sort_by_key(|record| record.sequence);
 
     for (index, step) in steps.iter().enumerate() {
+        if skip_next_sequence == Some(step.sequence) {
+            skip_next_sequence = None;
+            continue;
+        }
         let pending_direct_turn_for_step = pending_direct_turn_clockwise.take();
         match step.path_termination.trim() {
             "FM" | "HA" => {
@@ -756,6 +761,10 @@ fn build_procedure_leg_display_path(
                         step,
                         next_step,
                         steps.get(index + 2).copied(),
+                    ) || ca_climb_should_not_stop_at_fa_reciprocal_cf_reversal(
+                        step,
+                        next_step,
+                        steps.get(index + 2).copied(),
                     ) {
                         return None;
                     }
@@ -782,6 +791,22 @@ fn build_procedure_leg_display_path(
                 current_course_deg = Some(course_deg);
             }
             "FA" => {
+                if let Some(next_step) = steps.get(index + 1).copied() {
+                    if let Some((new_position, course_deg)) = append_fa_reciprocal_cf_reversal_path(
+                        &mut elements,
+                        &mut debug_sources,
+                        current_position,
+                        current_course_deg,
+                        &mut current_altitude_ft,
+                        step,
+                        next_step,
+                    ) {
+                        current_position = new_position;
+                        current_course_deg = Some(course_deg);
+                        skip_next_sequence = Some(next_step.sequence);
+                        continue;
+                    }
+                }
                 let termination = step
                     .altitude_1_ft
                     .map(|altitude_ft| TrackTermination::ToAltitude(Some(altitude_ft)))
@@ -1947,6 +1972,9 @@ fn append_course_track_path(
             end
         }
     };
+    if matches!(termination, TrackTermination::ToFix(_)) && step.altitude_1_ft.is_some() {
+        *current_altitude_ft = step.altitude_1_ft;
+    }
     Some((final_position, course_deg))
 }
 
@@ -2035,6 +2063,151 @@ fn ca_climb_should_not_stop_at_direct_same_fix_hold(
     // CMX and hold". The nearby CMX fix is the target of the directed turn, not
     // a hard stop for the straight climb segment.
     true
+}
+
+fn ca_climb_should_not_stop_at_fa_reciprocal_cf_reversal(
+    ca_step: &ProcedureLegMaterializationRecord,
+    next_step: &ProcedureLegMaterializationRecord,
+    following_step: Option<&ProcedureLegMaterializationRecord>,
+) -> bool {
+    if ca_step.path_termination.trim() != "CA" || next_step.path_termination.trim() != "FA" {
+        return false;
+    }
+    // FA rows use their navaid as the course anchor for a fix-to-altitude leg,
+    // not as a hard stop for the preceding straight-ahead climb. KCOE I06
+    // needs the CA climb to pass COE before joining COE R-350 outbound.
+    if following_step.is_none() {
+        return true;
+    }
+    let Some(following_step) = following_step else {
+        return false;
+    };
+    if following_step.path_termination.trim() != "CF" || cf_turn_direction(following_step).is_none()
+    {
+        return false;
+    }
+    let Some(anchor) = next_step.defining_nav_position else {
+        return false;
+    };
+    if following_step.defining_nav_position != Some(anchor)
+        || following_step.nav_position != Some(anchor)
+    {
+        return false;
+    }
+    let Some(outbound_course_deg) = next_step
+        .magnetic_course_deg
+        .map(|course| course + course_reference_variation_deg(next_step))
+    else {
+        return false;
+    };
+    let Some(inbound_course_deg) = following_step
+        .magnetic_course_deg
+        .map(|course| course + course_reference_variation_deg(following_step))
+    else {
+        return false;
+    };
+    // KCOE I06: after the initial climb, the FA/CF pair describes an outbound
+    // radial and a directed reversal back inbound. Do not cap the straight climb
+    // at the nearby navaid; the aircraft should pass it before joining outbound.
+    angular_difference_degrees(outbound_course_deg, inbound_course_deg) >= 150.0
+}
+
+fn append_fa_reciprocal_cf_reversal_path(
+    elements: &mut Vec<LegDisplayElement>,
+    debug_sources: &mut Vec<String>,
+    current_position: LatLon,
+    current_course_deg: Option<f64>,
+    current_altitude_ft: &mut Option<f64>,
+    fa_step: &ProcedureLegMaterializationRecord,
+    cf_step: &ProcedureLegMaterializationRecord,
+) -> Option<(LatLon, f64)> {
+    if fa_step.path_termination.trim() != "FA" || cf_step.path_termination.trim() != "CF" {
+        return None;
+    }
+    let turn_clockwise = cf_turn_direction(cf_step)?;
+    let anchor = fa_step.defining_nav_position?;
+    if cf_step.defining_nav_position? != anchor || cf_step.nav_position? != anchor {
+        return None;
+    }
+    let outbound_course_deg =
+        fa_step.magnetic_course_deg? + course_reference_variation_deg(fa_step);
+    let inbound_course_deg = cf_step.magnetic_course_deg? + course_reference_variation_deg(cf_step);
+    if angular_difference_degrees(outbound_course_deg, inbound_course_deg) < 150.0 {
+        return None;
+    }
+
+    let current_heading_deg = current_course_deg?;
+    let turn_radius_nm = missed_approach_turn_radius_nm();
+    let mut path_position = current_position;
+    if current_position_is_on_track(
+        current_position,
+        anchor,
+        outbound_course_deg,
+        MIN_GEOMETRY_DISTANCE_NM,
+    ) && angular_difference_degrees(current_heading_deg, outbound_course_deg) <= 5.0
+    {
+        // Already established outbound.
+    } else {
+        let (join_elements, intercept) = best_nominal_intercept_track_join(
+            current_position,
+            current_heading_deg,
+            None,
+            anchor,
+            outbound_course_deg,
+            None,
+            turn_radius_nm,
+        )?;
+        extend_elements_with_sources(
+            elements,
+            debug_sources,
+            join_elements,
+            Vec::new(),
+            debug_source!(),
+        );
+        path_position = intercept;
+    }
+
+    let prior_len = elements.len();
+    path_position = extend_climb_segment(
+        elements,
+        path_position,
+        outbound_course_deg,
+        current_altitude_ft,
+        fa_step.altitude_1_ft,
+        None,
+    );
+    extend_sources_for_new_elements(debug_sources, prior_len, elements, debug_source!());
+
+    let intercept_heading_deg = if turn_clockwise {
+        normalize_bearing_degrees(inbound_course_deg + NOMINAL_COURSE_INTERCEPT_ANGLE_DEG)
+    } else {
+        normalize_bearing_degrees(inbound_course_deg - NOMINAL_COURSE_INTERCEPT_ANGLE_DEG)
+    };
+    let reversal = build_track_join_candidate(
+        path_position,
+        outbound_course_deg,
+        turn_clockwise,
+        intercept_heading_deg,
+        0.0,
+        anchor,
+        inbound_course_deg,
+        Some(anchor),
+        turn_radius_nm,
+    )?;
+    extend_elements_with_sources(
+        elements,
+        debug_sources,
+        reversal.elements,
+        Vec::new(),
+        debug_source!(),
+    );
+    if distance_between_points_nm(reversal.intercept, anchor) > MIN_GEOMETRY_DISTANCE_NM {
+        push_segment!(elements, debug_sources, reversal.intercept, anchor);
+    }
+    // KCOE I06 missed approach encodes FA outbound on COE R-350, then CF with
+    // explicit left turn back inbound to COE. Treat that pair as one compound
+    // lateral instruction rather than letting the FA collapse back to the VOR.
+    Some((anchor, inbound_course_deg))
 }
 
 fn ambiguous_missed_direct_to_same_fix_hold_after_climb(

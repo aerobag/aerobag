@@ -744,6 +744,13 @@ fn build_procedure_leg_display_path(
                 }
                 let course_deg = current_or_step_course_deg(step, current_course_deg)?;
                 let climb_limit = steps.get(index + 1).and_then(|next_step| {
+                    if ca_climb_should_not_stop_at_direct_same_fix_hold(
+                        step,
+                        next_step,
+                        steps.get(index + 2).copied(),
+                    ) {
+                        return None;
+                    }
                     next_step.nav_position.filter(|fix| {
                         angular_difference_degrees(bearing_from(current_position, *fix), course_deg)
                             <= 30.0
@@ -1969,6 +1976,35 @@ fn ca_is_altitude_note_before_climbing_turn(
         (Some(ca_altitude_ft), Some(next_altitude_ft)) => next_altitude_ft > ca_altitude_ft,
         _ => false,
     }
+}
+
+fn ca_climb_should_not_stop_at_direct_same_fix_hold(
+    ca_step: &ProcedureLegMaterializationRecord,
+    next_step: &ProcedureLegMaterializationRecord,
+    following_step: Option<&ProcedureLegMaterializationRecord>,
+) -> bool {
+    if ca_step.path_termination.trim() != "CA" || next_step.path_termination.trim() != "DF" {
+        return false;
+    }
+    if !matches!(
+        next_step.turn_direction.as_deref().map(str::trim),
+        Some("L" | "R")
+    ) {
+        return false;
+    }
+    let Some(following_step) = following_step else {
+        return false;
+    };
+    if !matches!(following_step.path_termination.trim(), "HF" | "HM") {
+        return false;
+    }
+    if next_step.nav_ref.is_none() || next_step.nav_ref != following_step.nav_ref {
+        return false;
+    }
+    // KCMX I32 reaches RW32 with CA/DF/HM missed rows: "climbing right turn to
+    // CMX and hold". The nearby CMX fix is the target of the directed turn, not
+    // a hard stop for the straight climb segment.
+    true
 }
 
 fn ambiguous_missed_direct_to_same_fix_hold_after_climb(

@@ -449,6 +449,28 @@ class NativeAppCoreAdapter(
         return json.decodeFromJsonElement<List<WireFlightPlanRouteSegment>>(result).map { it.toUi() }
     }
 
+    fun previewFlightPlanEntry(plan: FlightPlan, input: String): FlightPlanEntryPreview {
+        val result = runHadOperationElement(
+            buildJsonObject {
+                put("kind", "preview_flight_plan_entry")
+                put("plan", json.encodeToJsonElement(plan.toWire()))
+                put("input", input)
+            },
+        )
+        return json.decodeFromJsonElement<WireFlightPlanEntryPreview>(result).toUi()
+    }
+
+    fun appendFlightPlanEntry(plan: FlightPlan, input: String): FlightPlanUiMutation {
+        val result = runHadOperationElement(
+            buildJsonObject {
+                put("kind", "append_flight_plan_entry")
+                put("plan", json.encodeToJsonElement(plan.toWire()))
+                put("input", input)
+            },
+        )
+        return json.decodeFromJsonElement<WireFlightPlanUiMutation>(result).toUi()
+    }
+
     fun prepareAirwayPresentationForAnchors(
         airwayName: String,
         originAnchor: NavRef,
@@ -2685,6 +2707,24 @@ private fun FlightPlanRowActionUiView.toWire() = WireFlightPlanRowActionUiView(
 private fun WireFlightPlanUiMutation.toUi() = FlightPlanUiMutation(
     plan = plan.toUiFlightPlan(),
     uiState = ui_state.toUi(),
+)
+
+private fun WireFlightPlanEntryPreview.toUi() = FlightPlanEntryPreview(
+    canCommit = can_commit,
+    tokens = tokens.map { it.toUi() },
+    issues = issues.map { it.toUi() },
+)
+
+private fun WireFlightPlanEntryToken.toUi() = FlightPlanEntryToken(
+    start = start,
+    end = end,
+    state = state,
+)
+
+private fun WireFlightPlanEntryIssue.toUi() = FlightPlanEntryIssue(
+    start = start,
+    end = end,
+    message = message,
 )
 
 private fun WireAirwayPlanUiMutation.toUi() = FlightPlanUiMutation(

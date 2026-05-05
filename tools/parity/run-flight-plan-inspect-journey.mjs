@@ -538,6 +538,18 @@ async function androidJourney(serial) {
   const planXml = dumpAndroid(serial);
   if (planXml.includes("Append route") || planXml.includes("parity:plan-append-route-input")) {
     recordStep(out, "free-form append route present");
+    if (await androidTapTag(serial, out, "focused free-form append route", "parity:plan-append-route-input")) {
+      adb(serial, ["shell", "input", "text", "KBFI"]);
+      await delay(300);
+      adb(serial, ["shell", "input", "keyevent", "ENTER"]);
+      await delay(1200);
+      const appendedXml = dumpAndroid(serial);
+      if (hasAndroidText(appendedXml, "KBFI")) {
+        recordStep(out, "appended KBFI to flight plan");
+      } else {
+        recordGap(out, "appended KBFI to flight plan", "KBFI was not visible after submitting the append route field");
+      }
+    }
   } else {
     recordGap(out, "free-form append route present", "Android currently has no parity-tagged free-form flight-plan entry field");
   }

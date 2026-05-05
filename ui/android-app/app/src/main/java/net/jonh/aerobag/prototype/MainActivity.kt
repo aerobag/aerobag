@@ -180,6 +180,8 @@ import net.jonh.aerobag.prototype.domain.AirwaySuggestion
 import net.jonh.aerobag.prototype.domain.WaypointIdentifierSuggestion
 import net.jonh.aerobag.prototype.domain.CoreMapViewport
 import net.jonh.aerobag.prototype.domain.DerivedChartPageState
+import net.jonh.aerobag.prototype.domain.FlightPlan
+import net.jonh.aerobag.prototype.domain.FlightPlanEntryPreview
 import net.jonh.aerobag.prototype.domain.FlightPlanUiMutation
 import net.jonh.aerobag.prototype.domain.FlightPlanDisplayRowKind
 import net.jonh.aerobag.prototype.domain.FlightPlanDisplayRowUiView
@@ -2605,6 +2607,7 @@ private fun AerobagApp() {
                         navElement = navElement,
                         planUiState = sessionPlanUiState,
                         planListState = planListState,
+                        plan = currentPlan,
                         uiTheme = uiTheme,
                         onSelectPage = ::navigateToPage,
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
@@ -6319,6 +6322,7 @@ private fun FlightPlanPage(
     navElement: NavElementUiView?,
     planUiState: FlightPlanUiState?,
     planListState: LazyListState,
+    plan: FlightPlan,
     uiTheme: UiTheme,
     onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
@@ -6334,6 +6338,11 @@ private fun FlightPlanPage(
     var airwayPicker by remember { mutableStateOf<AndroidAirwayPickerState?>(null) }
     var procedurePicker by remember { mutableStateOf<AndroidProcedurePickerState?>(null) }
     var airportInsert by remember { mutableStateOf<AndroidAirportInsertState?>(null) }
+    var routeEntryText by remember { mutableStateOf("") }
+    var routeEntryPreview by remember { mutableStateOf(emptyFlightPlanEntryPreview()) }
+    var routeEntryLoading by remember { mutableStateOf(false) }
+    var routeEntryError by remember { mutableStateOf<String?>(null) }
+    var routeEntrySubmitting by remember { mutableStateOf(false) }
     var trayOpenedAtMs by remember { mutableStateOf(0L) }
     val projectedPlanUiState = requireNotNull(planUiState) { "FlightPlanPage requires core-projected FlightPlanUiState" }
     val guidance = projectedPlanUiState.guidance
@@ -6517,6 +6526,47 @@ private fun FlightPlanPage(
         airportInsert = null
     }
 
+    fun submitRouteEntry() {
+        val input = routeEntryText.trim()
+        if (input.isEmpty() || !routeEntryPreview.canCommit || routeEntrySubmitting) {
+            return
+        }
+        routeEntrySubmitting = true
+        routeEntryError = null
+        runCatching {
+            val mutation = appCore.appendFlightPlanEntry(plan, input)
+            uiSession.replaceFlightPlan(mutation.plan)
+        }.onSuccess { snapshot ->
+            onApplySessionSnapshot(snapshot)
+            routeEntryText = ""
+            routeEntryPreview = emptyFlightPlanEntryPreview()
+        }.onFailure { error ->
+            routeEntryError = error.message ?: error.toString()
+        }
+        routeEntrySubmitting = false
+    }
+
+    LaunchedEffect(plan, routeEntryText) {
+        val input = routeEntryText.trim()
+        if (input.isEmpty()) {
+            routeEntryLoading = false
+            routeEntryPreview = emptyFlightPlanEntryPreview()
+            return@LaunchedEffect
+        }
+        routeEntryLoading = true
+        runCatching {
+            withContext(Dispatchers.IO) {
+                appCore.previewFlightPlanEntry(plan, routeEntryText)
+            }
+        }.onSuccess { preview ->
+            routeEntryPreview = preview
+        }.onFailure { error ->
+            routeEntryPreview = emptyFlightPlanEntryPreview()
+            routeEntryError = error.message ?: error.toString()
+        }
+        routeEntryLoading = false
+    }
+
     LaunchedEffect(airportInsert?.rowUid, airportInsert?.before, airportInsert?.airportId) {
         val editor = airportInsert ?: return@LaunchedEffect
         val prefix = editor.airportId.trim().uppercase()
@@ -6656,6 +6706,20 @@ private fun FlightPlanPage(
                                     )
                                 }
                             }
+                        }
+                        item {
+                            FlightPlanRouteEntryRow(
+                                text = routeEntryText,
+                                preview = routeEntryPreview,
+                                loading = routeEntryLoading,
+                                error = routeEntryError,
+                                submitting = routeEntrySubmitting,
+                                onTextChange = { value ->
+                                    routeEntryText = value.uppercase()
+                                    routeEntryError = null
+                                },
+                                onSubmit = { submitRouteEntry() },
+                            )
                         }
                     }
                 }
@@ -7092,6 +7156,111 @@ private fun FlightPlanPage(
                     }
                 }
             }
+        }
+    }
+}
+
+private fun emptyFlightPlanEntryPreview(): FlightPlanEntryPreview =
+    FlightPlanEntryPreview(
+        canCommit = false,
+        tokens = emptyList(),
+        issues = emptyList(),
+    )
+
+@Composable
+private fun FlightPlanRouteEntryRow(
+    text: String,
+    preview: FlightPlanEntryPreview,
+    loading: Boolean,
+    error: String?,
+    submitting: Boolean,
+    onTextChange: (String) -> Unit,
+    onSubmit: () -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    val fieldShape = RoundedCornerShape(ThumbRadius * 0.82f)
+    val textColor =
+        when {
+            error != null || preview.issues.isNotEmpty() -> Color(0xFFC23A2C)
+            preview.canCommit -> Color(0xFF12683C)
+            else -> Color(0xFF132129)
+        }
+    val borderColor =
+        when {
+            error != null || preview.issues.isNotEmpty() -> Color(0xFFC23A2C)
+            preview.canCommit -> Color(0xFF12683C)
+            else -> Color(0x554E626C)
+        }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.35f),
+    ) {
+        BasicTextField(
+            value = text,
+            onValueChange = onTextChange,
+            singleLine = true,
+            enabled = !submitting,
+            keyboardOptions =
+                KeyboardOptions(
+                    capitalization = KeyboardCapitalization.Characters,
+                    autoCorrectEnabled = false,
+                    keyboardType = KeyboardType.Password,
+                    imeAction = ImeAction.Done,
+                    platformImeOptions =
+                        PlatformImeOptions(
+                            privateImeOptions = "com.google.android.inputmethod.latin.forceAscii",
+                        ),
+                ),
+            keyboardActions = KeyboardActions(onDone = { onSubmit() }),
+            textStyle =
+                MaterialTheme.typography.titleMedium.copy(
+                    color = textColor,
+                    fontWeight = FontWeight.ExtraBold,
+                ),
+            modifier =
+                Modifier
+                    .testTag("parity:plan-append-route-input")
+                    .fillMaxWidth()
+                    .height(ThumbSize)
+                    .clip(fieldShape)
+                    .background(Color.White.copy(alpha = 0.96f))
+                    .border(1.5.dp, borderColor, fieldShape)
+                    .onPreviewKeyEvent { event ->
+                        if (event.nativeKeyEvent.action == AndroidKeyEvent.ACTION_DOWN &&
+                            event.nativeKeyEvent.keyCode == AndroidKeyEvent.KEYCODE_ENTER
+                        ) {
+                            onSubmit()
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    .padding(horizontal = ThumbGap, vertical = ThumbSize * 0.22f),
+            decorationBox = { innerTextField ->
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.CenterStart) {
+                    if (text.isBlank()) {
+                        Text(
+                            text = "Append route...",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.ExtraBold),
+                            color = Color(0x884E626C),
+                        )
+                    }
+                    innerTextField()
+                }
+            },
+        )
+        val feedback =
+            error
+                ?: preview.issues.firstOrNull()?.message
+                ?: if (loading) "Checking..." else null
+        if (feedback != null) {
+            Text(
+                text = feedback,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (error != null || preview.issues.isNotEmpty()) Color(0xFFC23A2C) else uiTheme.controls.panelFg,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }

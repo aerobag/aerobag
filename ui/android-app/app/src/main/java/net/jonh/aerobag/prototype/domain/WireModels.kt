@@ -1386,6 +1386,27 @@ data class WireFlightPlanUiMutation(
 )
 
 @Serializable
+data class WireFlightPlanEntryToken(
+    val start: Int,
+    val end: Int,
+    val state: String,
+)
+
+@Serializable
+data class WireFlightPlanEntryIssue(
+    val start: Int,
+    val end: Int,
+    val message: String,
+)
+
+@Serializable
+data class WireFlightPlanEntryPreview(
+    val can_commit: Boolean,
+    val tokens: List<WireFlightPlanEntryToken>,
+    val issues: List<WireFlightPlanEntryIssue>,
+)
+
+@Serializable
 data class WireAirwayPlanMutation(
     val plan: WireFlightPlan,
     val selection: WireAirwayAutoSelection,

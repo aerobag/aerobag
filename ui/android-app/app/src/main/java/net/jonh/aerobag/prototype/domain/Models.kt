@@ -428,6 +428,24 @@ data class FlightPlanUiMutation(
     val uiState: FlightPlanUiState,
 )
 
+data class FlightPlanEntryToken(
+    val start: Int,
+    val end: Int,
+    val state: String,
+)
+
+data class FlightPlanEntryIssue(
+    val start: Int,
+    val end: Int,
+    val message: String,
+)
+
+data class FlightPlanEntryPreview(
+    val canCommit: Boolean,
+    val tokens: List<FlightPlanEntryToken>,
+    val issues: List<FlightPlanEntryIssue>,
+)
+
 data class MaterializedProcedure(
     val procedure: ProcedureSegment,
     val concretizedItems: List<ConcretizedNavItem>,

@@ -1127,6 +1127,7 @@ pub fn materialize_procedure_from_records(
                 airport_id,
                 procedure_id,
                 enroute_transition,
+                common_legs.as_deref(),
             ) {
                 if let Some(common_legs) = common_legs.as_deref() {
                     borrow_sibling_transition_hold_for_common_if_course_reversal(
@@ -1432,6 +1433,7 @@ fn chained_approach_transition_segments(
     airport_id: &str,
     procedure_id: &str,
     selected_transition: &str,
+    common_legs: Option<&[ProcedureLegMaterializationRecord]>,
 ) -> Vec<Vec<ProcedureLegMaterializationRecord>> {
     let mut segments = Vec::new();
     let mut current_transition = selected_transition.trim().to_string();
@@ -1452,16 +1454,25 @@ fn chained_approach_transition_segments(
         // A/JOTTA ends at YIDPO, then A/YIDPO continues to ZUGMY before the
         // runway route begins. Without following that chain, we create a real
         // gap from YIDPO to the runway segment.
-        let next_transition = transition_legs
+        let next_transition_nav_ref = transition_legs
             .last()
             .and_then(|record| record.nav_ref.as_ref())
-            .map(describe_nav_ref);
+            .cloned();
 
         segments.push(transition_legs);
 
-        let Some(next_transition) = next_transition else {
+        let Some(next_transition_nav_ref) = next_transition_nav_ref else {
             break;
         };
+        if common_legs.is_some_and(|records| {
+            records.iter().any(|record| {
+                record.path_termination.trim() == "IF"
+                    && record.nav_ref.as_ref() == Some(&next_transition_nav_ref)
+            })
+        }) {
+            break;
+        }
+        let next_transition = describe_nav_ref(&next_transition_nav_ref);
         if filter_procedure_records(legs, airport_id, procedure_id, "A", &next_transition)
             .is_empty()
         {
@@ -1908,6 +1919,11 @@ impl ProcedureRowDispositionLedger {
                         record,
                         "deliberately ignored: standalone hold row without an inbound segment",
                     );
+                } else if same_fix_hold_without_inbound_segment(records, record) {
+                    ledger.mark(
+                        record,
+                        "deliberately ignored: same-fix hold row without an inbound segment",
+                    );
                 }
             }
         }
@@ -1995,6 +2011,39 @@ impl ProcedureRowDispositionLedger {
             });
         }
         Ok(())
+    }
+}
+
+fn same_fix_hold_without_inbound_segment(
+    records: &[ProcedureLegMaterializationRecord],
+    hold_record: &ProcedureLegMaterializationRecord,
+) -> bool {
+    if !matches!(hold_record.path_termination.trim(), "HF" | "HM") {
+        return false;
+    }
+    if !records.iter().any(|record| {
+        record.sequence < hold_record.sequence
+            && record.path_termination.trim() == "IF"
+            && same_materialized_fix(record, hold_record)
+    }) {
+        return false;
+    }
+    records
+        .iter()
+        .filter(|record| record.nav_ref.is_some())
+        .all(|record| same_materialized_fix(record, hold_record))
+}
+
+fn same_materialized_fix(
+    first: &ProcedureLegMaterializationRecord,
+    second: &ProcedureLegMaterializationRecord,
+) -> bool {
+    if first.nav_ref.is_some() && first.nav_ref == second.nav_ref {
+        return true;
+    }
+    match (first.nav_position, second.nav_position) {
+        (Some(first), Some(second)) => great_circle_distance_nm(first, second) <= 0.05,
+        _ => false,
     }
 }
 
@@ -5951,12 +6000,16 @@ mod tests {
                 Vec<ConcretizedNavItem>,
                 bool,
             )>::new();
+            let common_legs_for_chain = approach_common_route_type(&rows).map(|common_route_type| {
+                filter_procedure_records(&records, airport_id, procedure_id, &common_route_type, "")
+            });
             if let Some(transition) = selected_enroute_transition.as_deref() {
                 for transition_legs in chained_approach_transition_segments(
                     &records,
                     airport_id,
                     procedure_id,
                     transition,
+                    common_legs_for_chain.as_deref(),
                 ) {
                     let transition_items =
                         concretize_procedure_materialization_legs(&transition_legs, false);
@@ -6391,9 +6444,17 @@ mod tests {
             Vec<ConcretizedNavItem>,
             bool,
         )>::new();
+        let common_legs_for_chain = approach_common_route_type(&rows).map(|common_route_type| {
+            filter_procedure_records(&records, airport_id, procedure_id, &common_route_type, "")
+        });
         if let Some(transition) = selected_enroute_transition.as_deref() {
-            for transition_legs in
-                chained_approach_transition_segments(&records, airport_id, procedure_id, transition)
+            for transition_legs in chained_approach_transition_segments(
+                &records,
+                airport_id,
+                procedure_id,
+                transition,
+                common_legs_for_chain.as_deref(),
+            )
             {
                 let transition_items =
                     concretize_procedure_materialization_legs(&transition_legs, false);

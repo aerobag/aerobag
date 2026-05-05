@@ -7,6 +7,7 @@ import kotlinx.serialization.json.Json
 
 data class UiTheme(
     val controls: ControlsTheme,
+    val aviation: AviationTheme,
     val plateFolder: PlateFolderTheme,
 )
 
@@ -29,9 +30,18 @@ data class PlateFolderTheme(
     val labelColors: Map<String, Color>,
 )
 
+data class AviationTheme(
+    val classBDBlue: Color,
+    val classCMagenta: Color,
+    val tfrRed: Color,
+    val intersectionCyan: Color,
+    val darkGray: Color,
+)
+
 @Serializable
 private data class WireUiTheme(
     val controls: WireControlsTheme,
+    val aviation: WireAviationTheme,
     val plate_folder: WirePlateFolderTheme,
 )
 
@@ -54,6 +64,15 @@ private data class WireControlsTheme(
 private data class WirePlateFolderTheme(
     val thumbnail_bg: String,
     val label_colors: Map<String, String>,
+)
+
+@Serializable
+private data class WireAviationTheme(
+    val class_b_d_blue: String,
+    val class_c_magenta: String,
+    val tfr_red: String,
+    val intersection_cyan: String,
+    val dark_gray: String,
 )
 
 object UiThemeLoader {
@@ -79,6 +98,13 @@ object UiThemeLoader {
                 mapSelectionDisplayFg = wire.controls.map_selection_display_fg.toColor(),
                 chartSurfaceBg = wire.controls.chart_surface_bg.toColor(),
                 cdiPointer = wire.controls.cdi_pointer.toColor(),
+            ),
+            aviation = AviationTheme(
+                classBDBlue = wire.aviation.class_b_d_blue.toColor(),
+                classCMagenta = wire.aviation.class_c_magenta.toColor(),
+                tfrRed = wire.aviation.tfr_red.toColor(),
+                intersectionCyan = wire.aviation.intersection_cyan.toColor(),
+                darkGray = wire.aviation.dark_gray.toColor(),
             ),
             plateFolder = PlateFolderTheme(
                 thumbnailBg = wire.plate_folder.thumbnail_bg.toColor(),

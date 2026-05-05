@@ -141,11 +141,15 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.PlatformImeOptions
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.Dp
@@ -1859,13 +1863,14 @@ private fun fixTrianglePath(center: Offset, radius: Float): Path =
     }
 
 private fun vorHexPoints(center: Offset, radius: Float): List<Offset> =
-    List(6) { index ->
-        val angle = Math.toRadians((-90 + index * 60).toDouble())
-        Offset(
-            x = center.x + (radius * cos(angle)).toFloat(),
-            y = center.y + (radius * sin(angle)).toFloat(),
-        )
-    }
+    listOf(
+        Offset(center.x - radius, center.y),
+        Offset(center.x - radius * 0.5f, center.y - radius * 0.875f),
+        Offset(center.x + radius * 0.5f, center.y - radius * 0.875f),
+        Offset(center.x + radius, center.y),
+        Offset(center.x + radius * 0.5f, center.y + radius * 0.875f),
+        Offset(center.x - radius * 0.5f, center.y + radius * 0.875f),
+    )
 
 private fun polygonSignedArea(points: List<Offset>): Float {
     var area = 0f
@@ -1929,12 +1934,12 @@ private fun polygonPath(points: List<Offset>): Path =
 private fun vorBandPath(center: Offset, radius: Float): Path {
     val outer = vorHexPoints(center, radius)
     val inner = offsetPolygonByEdgeDistances(outer, listOf(
-        radius * 0.47f,
-        radius * 0.24f,
-        radius * 0.47f,
-        radius * 0.24f,
-        radius * 0.47f,
-        radius * 0.24f,
+        radius * 0.475f,
+        radius * 0.2375f,
+        radius * 0.475f,
+        radius * 0.2375f,
+        radius * 0.475f,
+        radius * 0.2375f,
     ))
     return Path().apply {
         fillType = PathFillType.EvenOdd
@@ -4906,11 +4911,11 @@ private fun MapExplorerPage(
         }
     }
     val fixMarkerStrokeColor = Color(0xB3081218)
-    val fixMarkerFillColor = Color(0xFF39D9FF)
+    val fixMarkerFillColor = uiTheme.aviation.intersectionCyan
     val airportMarkerStrokeColor = Color(0xB3081218)
-    val airportToweredFillColor = Color(0xFF4AA3FF)
-    val airportUntoweredFillColor = Color(0xFFFF4FD8)
-    val vorMarkerColor = Color(0xFF4AA3FF)
+    val airportToweredFillColor = uiTheme.aviation.classBDBlue
+    val airportUntoweredFillColor = uiTheme.aviation.classCMagenta
+    val vorMarkerColor = uiTheme.aviation.classBDBlue
     val vorMarkerStrokeColor = Color(0xD1081218)
     val fixLabelStrokePaint = remember {
         Paint().apply {
@@ -5662,10 +5667,11 @@ private fun MapExplorerPage(
         if (displayedMapOverlay.airspacePaths.isNotEmpty() || displayedMapOverlay.tfrPaths.isNotEmpty() || displayedMapOverlay.airspaceLabels.isNotEmpty()) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 (displayedMapOverlay.airspacePaths + displayedMapOverlay.tfrPaths).forEach { feature ->
-                    drawAirspaceDisplayPath(feature)
+                    drawAirspaceDisplayPath(uiTheme, feature)
                 }
                 displayedMapOverlay.airspaceLabels.forEach { label ->
                     drawAirspaceLimitGlyph(
+                        uiTheme = uiTheme,
                         glyph = label.glyph,
                         center = Offset(label.screenX.toFloat(), label.screenY.toFloat()),
                         scale = 1f,
@@ -5774,7 +5780,7 @@ private fun MapExplorerPage(
                             drawCircle(Color.White, radius = 20f * density.density, center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), style = Stroke(width = 4f * density.density))
                         }
                         (displayedMapOverlay.airspacePaths + displayedMapOverlay.tfrPaths).firstOrNull { it.id == highlight.id }?.let { path ->
-                            drawAirspaceDisplayPath(path)
+                            drawAirspaceDisplayPath(uiTheme, path)
                         }
                     }
                     is MapSelectionHighlight.Metar -> {
@@ -6138,6 +6144,7 @@ private fun MapSelectionItemButton(
 
 @Composable
 private fun MapSelectionItemIcon(item: MapSelectionItem, modifier: Modifier) {
+    val uiTheme = LocalAerobagUiTheme.current
     when {
         item.symbolFeature != null -> PlanWaypointSymbol(item.symbolFeature, modifier)
         item.metarFeature != null -> Canvas(modifier = modifier) {
@@ -6153,7 +6160,7 @@ private fun MapSelectionItemIcon(item: MapSelectionItem, modifier: Modifier) {
             drawCircle(Color(0xFFFF4FD8), radius = 5f, center = center)
         }
         item.airspaceIcon != null -> Canvas(modifier = modifier) {
-            drawAirspaceDisplayPath(item.airspaceIcon)
+            drawAirspaceDisplayPath(uiTheme, item.airspaceIcon)
         }
         else -> Box(modifier = modifier, contentAlignment = Alignment.Center) {
             Text(item.sublabel.ifBlank { item.label }, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
@@ -6190,7 +6197,7 @@ private fun MapSelectionActionButton(
         Box(modifier = Modifier.fillMaxSize().padding(4.dp), contentAlignment = Alignment.Center) {
             if (action.airspaceLimit != null) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
-                    drawAirspaceLimitGlyph(action.airspaceLimit, Offset(size.width / 2f, size.height / 2f), 1.45f)
+                    drawAirspaceLimitGlyph(uiTheme, action.airspaceLimit, Offset(size.width / 2f, size.height / 2f), 1.45f)
                 }
             } else {
                 Text(
@@ -7167,6 +7174,45 @@ private fun emptyFlightPlanEntryPreview(): FlightPlanEntryPreview =
         issues = emptyList(),
     )
 
+private fun routeEntryVisualTransformation(
+    preview: FlightPlanEntryPreview,
+    neutralColor: Color,
+    recognizedColor: Color,
+    invalidColor: Color,
+): VisualTransformation =
+    VisualTransformation { text ->
+        val annotated =
+            buildAnnotatedString {
+                append(text.text)
+                preview.tokens.forEach { token ->
+                    val start = token.start.coerceIn(0, text.text.length)
+                    val end = token.end.coerceIn(start, text.text.length)
+                    if (start == end) {
+                        return@forEach
+                    }
+                    val color =
+                        when (token.state) {
+                            "recognized" -> recognizedColor
+                            "invalid" -> invalidColor
+                            else -> neutralColor
+                        }
+                    addStyle(SpanStyle(color = color), start, end)
+                }
+                preview.issues.forEach { issue ->
+                    val start = issue.start.coerceIn(0, text.text.length)
+                    val end = issue.end.coerceIn(start, text.text.length)
+                    if (start != end) {
+                        addStyle(
+                            SpanStyle(color = invalidColor, textDecoration = TextDecoration.Underline),
+                            start,
+                            end,
+                        )
+                    }
+                }
+            }
+        TransformedText(annotated, OffsetMapping.Identity)
+    }
+
 @Composable
 private fun FlightPlanRouteEntryRow(
     text: String,
@@ -7179,34 +7225,23 @@ private fun FlightPlanRouteEntryRow(
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val fieldShape = RoundedCornerShape(ThumbRadius * 0.82f)
-    val textColor =
-        when {
-            error != null || preview.issues.isNotEmpty() -> Color(0xFFC23A2C)
-            preview.canCommit -> Color(0xFF12683C)
-            else -> Color(0xFF132129)
-        }
+    val neutralTextColor = uiTheme.controls.panelFg
+    val recognizedTextColor = Color(0xFF12683C)
+    val invalidTextColor = Color(0xFFC23A2C)
     val borderColor =
         when {
-            error != null || preview.issues.isNotEmpty() -> Color(0xFFC23A2C)
-            preview.canCommit -> Color(0xFF12683C)
+            error != null || preview.issues.isNotEmpty() -> invalidTextColor
+            preview.canCommit -> recognizedTextColor
             else -> Color(0x554E626C)
         }
+    val feedback =
+        error
+            ?: preview.issues.firstOrNull()?.message
+            ?: if (loading) "Checking..." else null
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.35f),
     ) {
-        val feedback =
-            error
-                ?: preview.issues.firstOrNull()?.message
-                ?: if (loading) "Checking..." else null
-        Text(
-            text = feedback ?: " ",
-            modifier = Modifier.testTag("parity:plan-append-route-feedback"),
-            style = MaterialTheme.typography.labelSmall,
-            color = if (error != null || preview.issues.isNotEmpty()) Color(0xFFC23A2C) else uiTheme.controls.panelFg,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
         BasicTextField(
             value = text,
             onValueChange = onTextChange,
@@ -7226,9 +7261,15 @@ private fun FlightPlanRouteEntryRow(
             keyboardActions = KeyboardActions(onDone = { onSubmit() }),
             textStyle =
                 MaterialTheme.typography.titleMedium.copy(
-                    color = textColor,
+                    color = neutralTextColor,
                     fontWeight = FontWeight.ExtraBold,
                 ),
+            visualTransformation = routeEntryVisualTransformation(
+                preview = preview,
+                neutralColor = neutralTextColor,
+                recognizedColor = recognizedTextColor,
+                invalidColor = invalidTextColor,
+            ),
             modifier =
                 Modifier
                     .testTag("parity:plan-append-route-input")
@@ -7261,6 +7302,16 @@ private fun FlightPlanRouteEntryRow(
                 }
             },
         )
+        if (feedback != null) {
+            Text(
+                text = feedback,
+                modifier = Modifier.testTag("parity:plan-append-route-feedback"),
+                style = MaterialTheme.typography.labelSmall,
+                color = if (error != null || preview.issues.isNotEmpty()) invalidTextColor else uiTheme.controls.panelFg,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
@@ -8840,12 +8891,13 @@ private fun airportFuelMarkerPath(center: Offset, scale: Float): Path {
     }
 }
 
-private fun aviationColor(colorKey: String): Color = when (colorKey) {
-    "class_c_magenta", "magenta" -> Color(0xFFFF4FD8)
-    "class_b_d_blue", "blue" -> Color(0xFF2D8CFF)
-    "tfr_red", "red" -> Color(0xFFE03131)
-    "dark_gray" -> Color(0xFF26333A)
-    else -> Color(0xFF2D8CFF)
+private fun aviationColor(uiTheme: UiTheme, colorKey: String): Color = when (colorKey) {
+    "class_c_magenta", "magenta" -> uiTheme.aviation.classCMagenta
+    "class_b_d_blue", "blue" -> uiTheme.aviation.classBDBlue
+    "tfr_red", "red" -> uiTheme.aviation.tfrRed
+    "intersection_cyan", "cyan" -> uiTheme.aviation.intersectionCyan
+    "dark_gray" -> uiTheme.aviation.darkGray
+    else -> uiTheme.aviation.classBDBlue
 }
 
 private fun airspacePath(subpath: net.jonh.aerobag.prototype.domain.AirspaceDisplaySubpath): Path =
@@ -8864,19 +8916,19 @@ private fun strokeCapFor(lineCap: String): StrokeCap = when (lineCap) {
     else -> StrokeCap.Round
 }
 
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceDisplayPath(feature: AirspaceDisplayPath) {
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceDisplayPath(uiTheme: UiTheme, feature: AirspaceDisplayPath) {
     feature.paths.forEach { subpath ->
         val path = airspacePath(subpath)
         if (subpath.closed && feature.style.fillOpacity > 0.0) {
             drawPath(
                 path = path,
-                color = aviationColor(feature.style.fillColorKey).copy(alpha = feature.style.fillOpacity.toFloat()),
+                color = aviationColor(uiTheme, feature.style.fillColorKey).copy(alpha = feature.style.fillOpacity.toFloat()),
             )
         }
         feature.style.strokes.forEach { stroke ->
             drawPath(
                 path = path,
-                color = aviationColor(stroke.colorKey),
+                color = aviationColor(uiTheme, stroke.colorKey),
                 style = Stroke(
                     width = stroke.widthPx.toFloat(),
                     cap = strokeCapFor(stroke.lineCap),
@@ -8891,7 +8943,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceDisplay
         decoration.paths.forEach { subpath ->
             drawPath(
                 path = airspacePath(subpath),
-                color = aviationColor(decoration.colorKey),
+                color = aviationColor(uiTheme, decoration.colorKey),
                 style = Stroke(width = decoration.widthPx.toFloat(), cap = strokeCapFor(decoration.lineCap)),
             )
         }
@@ -8899,11 +8951,12 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceDisplay
 }
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceLimitGlyph(
+    uiTheme: UiTheme,
     glyph: AirspaceLimitGlyph,
     center: Offset,
     scale: Float,
 ) {
-    val color = aviationColor(glyph.colorKey)
+    val color = aviationColor(uiTheme, glyph.colorKey)
     val paint = Paint().apply {
         isAntiAlias = true
         style = Paint.Style.FILL
@@ -9049,14 +9102,16 @@ private fun PlanWaypointSymbol(
     if (feature == null) {
         return
     }
+    val uiTheme = LocalAerobagUiTheme.current
     Canvas(modifier = modifier.size(ThumbSize * 0.78f)) {
         val scale = size.minDimension / 40f
         val center = Offset(size.width / 2f, size.height / 2f)
         val fixMarkerStrokeColor = Color(0xB3081218)
-        val fixMarkerFillColor = Color(0xFF39D9FF)
+        val fixMarkerFillColor = uiTheme.aviation.intersectionCyan
         val airportMarkerStrokeColor = Color(0xB3081218)
-        val airportFillColor = if (feature.towered) Color(0xFF4AA3FF) else Color(0xFFFF4FD8)
-        val vorMarkerColor = Color(0xFF4AA3FF)
+        val airportFillColor = if (feature.towered) uiTheme.aviation.classBDBlue else uiTheme.aviation.classCMagenta
+        val openAirportStrokeColor = uiTheme.aviation.classCMagenta
+        val vorMarkerColor = uiTheme.aviation.classBDBlue
         val isAirport = feature.styleClass == "airport" || feature.kind.equals("airport", ignoreCase = true)
         val isVor = feature.styleClass == "nav" || feature.kind.contains("vor", ignoreCase = true)
         when {
@@ -9074,7 +9129,7 @@ private fun PlanWaypointSymbol(
                         style = Stroke(width = 5f * scale),
                     )
                     drawCircle(
-                        airportFillColor,
+                        openAirportStrokeColor,
                         radius = airportRadius,
                         center = center,
                         style = Stroke(width = 2.5f * scale),

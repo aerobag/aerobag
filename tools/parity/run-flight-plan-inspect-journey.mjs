@@ -9,6 +9,8 @@ import { spawn, spawnSync } from "node:child_process";
 
 const DEFAULT_WEB_URL = "http://127.0.0.1:8082/";
 const JOURNEY_NAME = "flight-plan-inspect-insert";
+const ANDROID_PACKAGE = "net.jonh.aerobag.prototype";
+const ANDROID_ACTIVITY = `${ANDROID_PACKAGE}/.MainActivity`;
 
 function usage() {
   console.log(`Usage:
@@ -17,7 +19,7 @@ function usage() {
   node tools/parity/run-flight-plan-inspect-journey.mjs both [--url http://127.0.0.1:8082/] [--serial emulator-5554]
 
 The web runner launches a temporary headless Chrome through CDP. Set CHROME_BIN if Chrome is not on PATH.
-The Android runner expects the app to already be installed/launched and uses adb + uiautomator XML dumps.`);
+The Android runner expects the app to be installed and uses adb + uiautomator XML dumps.`);
 }
 
 function parseArgs(argv) {
@@ -425,6 +427,30 @@ function findNode(xml, predicate) {
   return null;
 }
 
+function hasAndroidTag(node, tag) {
+  const contentDescription = node["content-desc"] ?? "";
+  const resourceId = node["resource-id"] ?? "";
+  return (
+    contentDescription === tag ||
+    resourceId === tag ||
+    resourceId.endsWith(`:id/${tag}`) ||
+    resourceId.endsWith(`/id/${tag}`)
+  );
+}
+
+function androidTag(node) {
+  const contentDescription = node["content-desc"] ?? "";
+  if (contentDescription.startsWith("parity:")) return contentDescription;
+  const resourceId = node["resource-id"] ?? "";
+  const marker = "parity:";
+  const offset = resourceId.indexOf(marker);
+  return offset >= 0 ? resourceId.slice(offset) : "";
+}
+
+function hasAndroidText(xml, text) {
+  return findNode(xml, (node) => node.text === text) !== null;
+}
+
 function decodeXml(text) {
   return text
     .replaceAll("&quot;", "\"")
@@ -454,18 +480,59 @@ function androidTapNode(serial, out, label, predicate) {
   return true;
 }
 
+function androidTapResolvedNode(serial, out, label, node) {
+  const { x, y } = centerOfBounds(node.bounds);
+  adb(serial, ["shell", "input", "tap", String(x), String(y)]);
+  recordStep(out, label);
+}
+
+async function androidWaitForNode(serial, predicate, timeoutMs, message) {
+  let found = null;
+  await waitFor(async () => {
+    found = findNode(dumpAndroid(serial), predicate);
+    return found !== null;
+  }, timeoutMs, message);
+  return found;
+}
+
+async function androidTapTag(serial, out, label, tag, timeoutMs = 5000) {
+  let node;
+  try {
+    node = await androidWaitForNode(serial, (candidate) => hasAndroidTag(candidate, tag), timeoutMs, label);
+  } catch (_error) {
+    recordGap(out, label, "control not found in UIAutomator dump");
+    return false;
+  }
+  const { x, y } = centerOfBounds(node.bounds);
+  adb(serial, ["shell", "input", "tap", String(x), String(y)]);
+  recordStep(out, label);
+  return true;
+}
+
 async function androidJourney(serial) {
   const out = result("android");
   adb(serial, ["wait-for-device"]);
+  adb(serial, ["shell", "am", "force-stop", ANDROID_PACKAGE]);
+  adb(serial, ["shell", "am", "start", "-n", ANDROID_ACTIVITY]);
+  await androidWaitForNode(
+    serial,
+    (node) => node.package === ANDROID_PACKAGE,
+    12000,
+    "Aerobag app visible",
+  );
   const xml = dumpAndroid(serial);
-  if (!xml.includes("Aerobag") && !xml.includes("parity:")) {
-    recordGap(out, "app visible", "Aerobag app is not visible; install/launch it before running this journey");
+  if (!xml.includes(`package="${ANDROID_PACKAGE}"`) && !xml.includes("parity:")) {
+    recordGap(out, "app visible", "Aerobag app is not visible; install it before running this journey");
     out.status = "gaps";
     return out;
   }
   recordStep(out, "app visible");
 
-  androidTapNode(serial, out, "opened plan page", (node) => node["content-desc"] === "parity:nav-cdi");
+  if (hasAndroidText(xml, "Waypoint")) {
+    recordStep(out, "opened plan page", "already on plan page");
+  } else {
+    await androidTapTag(serial, out, "opened plan page", "parity:nav-cdi", 12000);
+  }
   await delay(500);
 
   const planXml = dumpAndroid(serial);
@@ -475,19 +542,50 @@ async function androidJourney(serial) {
     recordGap(out, "free-form append route present", "Android currently has no parity-tagged free-form flight-plan entry field");
   }
 
-  androidTapNode(serial, out, "returned chart page", (node) => node["content-desc"] === "parity:nav-cdi");
+  await androidTapTag(serial, out, "opened home page", "parity:button:HOME");
   await delay(500);
-  androidTapNode(serial, out, "drag/click map surface", (node) => node["content-desc"] === "parity:map-surface");
+  await androidTapTag(serial, out, "returned chart page", "parity:button:CHART");
+  await androidTapTag(serial, out, "drag/click map surface", "parity:map-surface");
   await delay(500);
 
   const selectionXml = dumpAndroid(serial);
-  if (selectionXml.includes("parity:map-selection-tray")) {
+  if (findNode(selectionXml, (node) => hasAndroidTag(node, "parity:map-selection-tray"))) {
     recordStep(out, "map inspection tray appeared");
   } else {
     recordGap(out, "map inspection tray appeared", "tap did not open an inspect tray at the tapped map location");
   }
-  if (selectionXml.includes("parity:map-selection-action:insert")) {
-    recordStep(out, "inspect insert action present");
+
+  let selectedLabel = "";
+  try {
+    const firstInspectableItem = await androidWaitForNode(
+      serial,
+      (node) => androidTag(node).startsWith("parity:map-selection-item:"),
+      5000,
+      "first inspect item",
+    );
+    const tag = androidTag(firstInspectableItem);
+    selectedLabel = tag.slice("parity:map-selection-item:".length);
+    androidTapResolvedNode(serial, out, "selected first inspect item", firstInspectableItem);
+    await delay(500);
+  } catch (_error) {
+    recordGap(out, "selected first inspect item", "no inspect item was visible");
+  }
+
+  const selectedXml = dumpAndroid(serial);
+  const insertAction = findNode(selectedXml, (node) => hasAndroidTag(node, "parity:map-selection-action:insert"));
+  if (insertAction) {
+    androidTapResolvedNode(serial, out, "inspect insert action present", insertAction);
+    await delay(500);
+    if (selectedLabel) {
+      await androidTapTag(serial, out, "opened plan page after insert", "parity:nav-cdi");
+      await delay(500);
+      const insertedPlanXml = dumpAndroid(serial);
+      if (hasAndroidText(insertedPlanXml, selectedLabel)) {
+        recordStep(out, "verified inspected item in flight plan", selectedLabel);
+      } else {
+        recordGap(out, "verified inspected item in flight plan", `${selectedLabel} was not visible in the plan after insert`);
+      }
+    }
   } else {
     recordGap(out, "inspect insert action present", "no insert action was visible in the current inspect tray");
   }

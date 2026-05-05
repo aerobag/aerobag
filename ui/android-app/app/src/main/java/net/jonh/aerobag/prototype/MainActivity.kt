@@ -92,6 +92,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -113,7 +114,6 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.lerp
-import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
@@ -131,9 +131,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -2201,13 +2202,16 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    @OptIn(ExperimentalComposeUiApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestAndroidGps()
         setContent {
             MaterialTheme {
                 Surface(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .semantics { testTagsAsResourceId = true },
                     color = Color(0xFFF3EFE4),
                 ) {
                     AerobagApp()
@@ -5359,7 +5363,7 @@ private fun MapExplorerPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .semantics { contentDescription = "parity:map-surface" }
+            .testTag("parity:map-surface")
             .background(uiTheme.controls.chartSurfaceBg)
             .onSizeChanged { surfaceSize = it }
             .onGloballyPositioned { coordinates -> mapSurfaceBounds = coordinates.boundsInWindow() }
@@ -6014,7 +6018,7 @@ private fun MapSelectionTray(
     val visibleActions = if (selectedItem?.detailText != null) actionSlots.take(3) else actionSlots.take(6)
     Surface(
         modifier = modifier
-            .semantics { contentDescription = "parity:map-selection-tray" }
+            .testTag("parity:map-selection-tray")
             .onGloballyPositioned { coordinates ->
                 onBoundsChange(coordinates.boundsInWindow())
             }
@@ -6102,7 +6106,7 @@ private fun MapSelectionItemButton(
     Surface(
         modifier = Modifier
             .size(ThumbSize)
-            .semantics { contentDescription = "parity:map-selection-item:${item.label}" }
+            .testTag("parity:map-selection-item:${item.label}")
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(ThumbRadius),
         color = if (selected) lerp(uiTheme.controls.buttonBg, Color.White, 0.28f) else uiTheme.controls.buttonBg,
@@ -6165,7 +6169,7 @@ private fun MapSelectionActionButton(
         modifier = Modifier
             .width(ThumbSize * 1.2f)
             .height(ThumbSize)
-            .semantics { contentDescription = "parity:map-selection-action:${action.id}" }
+            .testTag("parity:map-selection-action:${action.id}")
             .alpha(if (action.label.isBlank()) 0f else 1f)
             .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
         shape = RoundedCornerShape(ThumbRadius),
@@ -7851,7 +7855,7 @@ private fun NavElementDock(
             modifier
                 .width(ThumbSize * 3f)
                 .height(ThumbSize * 0.67f)
-                .semantics { contentDescription = "parity:nav-cdi" }
+                .testTag("parity:nav-cdi")
                 .then(
                     if (onClick != null) {
                         Modifier.clickable(
@@ -9369,7 +9373,7 @@ private fun CompactSquareButton(
     val iconShape = RoundedCornerShape(ThumbRadius)
     Surface(
         modifier = modifier
-            .semantics { contentDescription = "parity:button:$label" }
+            .testTag("parity:button:$label")
             .then(
                 if (enabled) {
                     Modifier.pointerInput(onClick) {

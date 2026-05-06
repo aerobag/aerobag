@@ -5599,7 +5599,6 @@ fn build_nav_kv_procedure_pairs(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<Vec<NavKvPair>> {
     let mut pairs = Vec::new();
-    let airport_ids = load_nav_kv_airport_ids(connection)?;
     let cifp_matches = load_nav_kv_cifp_tpp_matches(connection)?;
     let mut matches_by_procedure = BTreeMap::<(String, String), Vec<serde_json::Value>>::new();
     let mut matches_by_plate = BTreeMap::<String, Vec<serde_json::Value>>::new();
@@ -5681,21 +5680,6 @@ fn build_nav_kv_procedure_pairs(
     }
 
     Ok(pairs)
-}
-
-fn load_nav_kv_airport_ids(connection: &rusqlite::Connection) -> anyhow::Result<Vec<String>> {
-    let mut stmt = connection.prepare(
-        "
-        SELECT trim(LocationID)
-        FROM airports
-        WHERE trim(LocationID) <> ''
-        ORDER BY trim(LocationID)
-        ",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(row.get::<_, String>(0)?.trim().to_ascii_uppercase())
-    })?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
 fn load_nav_kv_cifp_tpp_matches(

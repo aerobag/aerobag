@@ -1074,7 +1074,7 @@ pub fn materialize_procedure_from_records(
     enroute_transition: Option<String>,
     component_index: usize,
     rows: Vec<ProcedureDistinctRow>,
-    legs: Vec<ProcedureLegMaterializationRecord>,
+    mut legs: Vec<ProcedureLegMaterializationRecord>,
 ) -> AppResult<MaterializedProcedure> {
     let options =
         describe_procedure_options_from_rows(airport_id, procedure_id, kind.clone(), rows.clone())?;
@@ -1107,6 +1107,12 @@ pub fn materialize_procedure_from_records(
             ),
         });
     }
+
+    arinc_ambiguity_resolutions::repair_known_bad_course_fields(
+        airport_id,
+        procedure_id,
+        &mut legs,
+    );
 
     let mut segments = Vec::<(
         MaterializedSegmentRole,
@@ -1625,8 +1631,11 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 },
             )?;
             let Some(window_link) = planned_window else {
-                let previous_context =
-                    previous_window_context(previous_display_path.as_ref(), resolved.last(), pair[0]);
+                let previous_context = previous_window_context(
+                    previous_display_path.as_ref(),
+                    resolved.last(),
+                    pair[0],
+                );
                 if common_resume_yields_current_feeder_cf(
                     [pair[0], pair[1]],
                     leg_records,
@@ -1635,17 +1644,18 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     next_segment_records,
                     role.clone(),
                 ) {
-                    row_ledger
-                        .mark_ignored(pair[1], "common segment supersedes current feeder CF");
+                    row_ledger.mark_ignored(pair[1], "common segment supersedes current feeder CF");
                 } else if same_fix_df_between_fa_and_hold(fix_records.as_slice(), index) {
                     row_ledger.mark_ignored(
                         pair[1],
                         "same-fix DF superseded by preceding FA and following hold",
                     );
                 } else if same_fix_hold_after_redundant_df(fix_records.as_slice(), index) {
+                    row_ledger.mark_ignored(pair[1], "same-fix hold follows redundant DF after FA");
+                } else if same_fix_cf_after_pi_course_reversal(fix_records.as_slice(), index) {
                     row_ledger.mark_ignored(
                         pair[1],
-                        "same-fix hold follows redundant DF after FA",
+                        "same-fix CF satisfied by preceding PI course reversal",
                     );
                 }
                 continue;
@@ -2922,12 +2932,8 @@ fn continuity_heading_tolerance_deg(
     current: &DisplayElementHeadingSignature,
     next: Option<&DisplayElementHeadingSignature>,
 ) -> f64 {
-    if let Some((_, allowed_delta_deg)) = named_heading_continuity_allowance_with_context(
-        previous_previous,
-        previous,
-        current,
-        next,
-    )
+    if let Some((_, allowed_delta_deg)) =
+        named_heading_continuity_allowance_with_context(previous_previous, previous, current, next)
     {
         return allowed_delta_deg;
     }
@@ -3351,8 +3357,10 @@ fn is_published_fc_cf_feeder_to_final_course(
     let Some(previous_previous) = previous_previous else {
         return false;
     };
-    if !matches!(previous_previous.path_termination.as_str(), "FC" | "CF" | "CA")
-        || !matches!(previous.path_termination.as_str(), "CF" | "CA")
+    if !matches!(
+        previous_previous.path_termination.as_str(),
+        "FC" | "CF" | "CA"
+    ) || !matches!(previous.path_termination.as_str(), "CF" | "CA")
         || current.path_termination != "CF"
     {
         return false;
@@ -3378,8 +3386,10 @@ fn is_published_fc_cf_feeder_to_final_course(
     {
         return false;
     }
-    let fc_len_nm =
-        great_circle_distance_nm(previous_previous.start_position, previous_previous.end_position);
+    let fc_len_nm = great_circle_distance_nm(
+        previous_previous.start_position,
+        previous_previous.end_position,
+    );
     let cf_bridge_len_nm = great_circle_distance_nm(previous.start_position, previous.end_position);
     let outbound_len_nm = great_circle_distance_nm(current.start_position, current.end_position);
     // KSTS L32/SGD encodes a course/distance FC followed by a short CF snap to
@@ -3923,7 +3933,9 @@ fn same_fix_feeder_cf_is_common_if_course(
     }
     let Some(feeder_course_deg) = feeder_course_to_fix_record
         .magnetic_course_deg
-        .map(|course| course + record_magnetic_variation_deg(feeder_course_to_fix_record).unwrap_or(0.0))
+        .map(|course| {
+            course + record_magnetic_variation_deg(feeder_course_to_fix_record).unwrap_or(0.0)
+        })
     else {
         return false;
     };
@@ -3999,6 +4011,23 @@ fn same_fix_hold_after_redundant_df(
         && matches!(hold.path_termination.trim(), "HF" | "HM")
         && same_materialized_fix(prior, direct_to)
         && same_materialized_fix(direct_to, hold)
+}
+
+fn same_fix_cf_after_pi_course_reversal(
+    fix_records: &[&ProcedureLegMaterializationRecord],
+    current_window_index: usize,
+) -> bool {
+    let (Some(procedure_turn), Some(course_to_fix)) = (
+        fix_records.get(current_window_index),
+        fix_records.get(current_window_index + 1),
+    ) else {
+        return false;
+    };
+    procedure_turn.path_termination.trim() == "PI"
+        && course_to_fix.path_termination.trim() == "CF"
+        && same_materialized_fix(procedure_turn, course_to_fix)
+        && procedure_turn.defining_nav_ref == course_to_fix.defining_nav_ref
+        && procedure_turn.defining_nav_position == course_to_fix.defining_nav_position
 }
 
 fn should_skip_degenerate_or_duplicate_window(
@@ -4080,7 +4109,10 @@ fn previous_window_context(
                 .as_ref()
                 .is_some_and(|provenance| {
                     provenance.leg_sequence == current_pair_start.sequence
-                        && matches!(provenance.path_termination, PathTermination::HeadingToManual)
+                        && matches!(
+                            provenance.path_termination,
+                            PathTermination::HeadingToManual
+                        )
                         && matches!(current_pair_start.path_termination.trim(), "HF" | "HM")
                 })
         }),
@@ -6145,9 +6177,16 @@ mod tests {
                 Vec<ConcretizedNavItem>,
                 bool,
             )>::new();
-            let common_legs_for_chain = approach_common_route_type(&rows).map(|common_route_type| {
-                filter_procedure_records(&records, airport_id, procedure_id, &common_route_type, "")
-            });
+            let common_legs_for_chain =
+                approach_common_route_type(&rows).map(|common_route_type| {
+                    filter_procedure_records(
+                        &records,
+                        airport_id,
+                        procedure_id,
+                        &common_route_type,
+                        "",
+                    )
+                });
             if let Some(transition) = selected_enroute_transition.as_deref() {
                 for transition_legs in chained_approach_transition_segments(
                     &records,
@@ -6557,8 +6596,13 @@ mod tests {
             },
             "procedure materialization rows",
         );
-        let records =
+        let mut records =
             enrich_procedure_materialization_records_from_store(store, airport_id, records);
+        arinc_ambiguity_resolutions::repair_known_bad_course_fields(
+            airport_id,
+            procedure_id,
+            &mut records,
+        );
         let options = describe_procedure_options_from_rows(
             airport_id,
             procedure_id,
@@ -6599,8 +6643,7 @@ mod tests {
                 procedure_id,
                 transition,
                 common_legs_for_chain.as_deref(),
-            )
-            {
+            ) {
                 let transition_items =
                     concretize_procedure_materialization_legs(&transition_legs, false);
                 segments.push((
@@ -7966,16 +8009,18 @@ mod tests {
                 &materialized,
             );
             for index in 0..signatures.len().saturating_sub(1) {
-                let previous_previous = index.checked_sub(1).and_then(|prior| signatures.get(prior));
+                let previous_previous =
+                    index.checked_sub(1).and_then(|prior| signatures.get(prior));
                 let previous = &signatures[index];
                 let current = &signatures[index + 1];
                 let next = signatures.get(index + 2);
-                let Some((allowance, allowed_delta_deg)) = named_heading_continuity_allowance_with_context(
-                    previous_previous,
-                    previous,
-                    current,
-                    next,
-                )
+                let Some((allowance, allowed_delta_deg)) =
+                    named_heading_continuity_allowance_with_context(
+                        previous_previous,
+                        previous,
+                        current,
+                        next,
+                    )
                 else {
                     continue;
                 };
@@ -8431,11 +8476,9 @@ mod tests {
             Some(enroute_transition),
         )
         .expect("materialized selected buexre");
-        for signature in heading_signatures_for_materialized_procedure(
-            &store,
-            &airport_id,
-            &materialized,
-        ) {
+        for signature in
+            heading_signatures_for_materialized_procedure(&store, &airport_id, &materialized)
+        {
             eprintln!(
                 "step-{step:02} {pt} {:?} {start}->{end} start={start_course:.1} end={end_course:.1} drawn_end={drawn:.1} len_nm={len:.2}",
                 signature.element_kind,

@@ -1,3 +1,5 @@
+use crate::{initial_course_deg, ProcedureLegMaterializationRecord};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolvedTurnDirection {
     Left,
@@ -146,6 +148,76 @@ pub fn handle_unspecified_missed_turn_to_same_fix_hold(
     }
 }
 
+pub fn repair_known_bad_course_fields(
+    airport_id: &str,
+    procedure_id: &str,
+    records: &mut [ProcedureLegMaterializationRecord],
+) {
+    repair_kjst_rnav_rwy_33_ca_true_course_encoded_as_magnetic(airport_id, procedure_id, records);
+}
+
+fn repair_kjst_rnav_rwy_33_ca_true_course_encoded_as_magnetic(
+    airport_id: &str,
+    procedure_id: &str,
+    records: &mut [ProcedureLegMaterializationRecord],
+) {
+    // KJST RNAV RWY 33 is encoded with a CA "magnetic_course" of 324.2,
+    // matching the runway true heading instead of the charted APP CRS 334
+    // magnetic. Keep the repair narrow: only rewrite the CA row when the
+    // preceding WASDO->RW33 TF leg is still present and independently confirms
+    // the expected magnetic course.
+    if airport_id.trim() != "KJST" || procedure_id.trim() != "R33" {
+        return;
+    }
+
+    let Some(wasdo) = records.iter().find(|record| {
+        record.key.route_type.trim() == "R"
+            && record.key.transition_id.trim().is_empty()
+            && record.sequence == 21
+            && record.path_termination.trim() == "TF"
+            && record_anchor_name(record) == Some("WASDO")
+    }) else {
+        return;
+    };
+    let Some(rw33) = records.iter().find(|record| {
+        record.key.route_type.trim() == "R"
+            && record.key.transition_id.trim().is_empty()
+            && record.sequence == 30
+            && record.path_termination.trim() == "TF"
+            && record_anchor_name(record) == Some("RW33")
+    }) else {
+        return;
+    };
+    let (Some(wasdo_position), Some(rw33_position), Some(variation_deg)) = (
+        wasdo.nav_position,
+        rw33.nav_position,
+        rw33.airport_magnetic_variation_deg,
+    ) else {
+        return;
+    };
+
+    let inbound_true_course_deg = initial_course_deg(wasdo_position, rw33_position);
+    let inbound_magnetic_course_deg =
+        normalize_bearing_degrees(inbound_true_course_deg - variation_deg);
+    if angular_difference_degrees(inbound_magnetic_course_deg, 334.0) > 1.0 {
+        return;
+    }
+
+    let Some(ca) = records.iter_mut().find(|record| {
+        record.key.route_type.trim() == "R"
+            && record.key.transition_id.trim().is_empty()
+            && record.sequence == 40
+            && record.path_termination.trim() == "CA"
+    }) else {
+        return;
+    };
+    if ca.magnetic_course_deg != Some(324.2) {
+        return;
+    }
+
+    ca.magnetic_course_deg = Some(inbound_magnetic_course_deg);
+}
+
 pub fn acute_turn_ksan_09_family_at_pgy(
     previous_airport_id: &str,
     current_airport_id: &str,
@@ -180,6 +252,17 @@ pub fn acute_turn_kykm_vora_missed_at_ykm(
         && current_start_label == "YKM"
         && angular_difference_degrees(inbound_magnetic_heading_deg, 274.0) <= 10.0
         && angular_difference_degrees(outbound_magnetic_heading_deg, 94.0) <= 10.0
+}
+
+fn record_anchor_name(record: &ProcedureLegMaterializationRecord) -> Option<&str> {
+    match record.nav_ref.as_ref()? {
+        crate::NavRef::Airport(code) | crate::NavRef::Navaid(code) | crate::NavRef::Fix(code) => {
+            Some(code.as_str())
+        }
+        crate::NavRef::ArincNavaid { identifier, .. }
+        | crate::NavRef::TerminalNavaid { identifier, .. } => Some(identifier.as_str()),
+        crate::NavRef::LatLon(_) => None,
+    }
 }
 
 fn angular_difference_degrees(left: f64, right: f64) -> f64 {

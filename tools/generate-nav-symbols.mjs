@@ -6,13 +6,28 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const specPath = path.join(repoRoot, "ui/shared-symbols/nav-symbols.json");
+const cwdPackageJsonPath = path.join(process.cwd(), "package.json");
 
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
   args.set(process.argv[index], process.argv[index + 1]);
 }
 
-const webOut = args.get("--web-out") ?? path.join(repoRoot, "ui/web-app/src/generated/navSymbols.ts");
+function defaultWebOutPath() {
+  if (fs.existsSync(cwdPackageJsonPath)) {
+    try {
+      const packageJson = JSON.parse(fs.readFileSync(cwdPackageJsonPath, "utf8"));
+      if (packageJson.name === "aerobag-web") {
+        return path.join(process.cwd(), "src/generated/navSymbols.ts");
+      }
+    } catch {
+      // Fall through to the source-tree default.
+    }
+  }
+  return path.join(repoRoot, "ui/web-app/src/generated/navSymbols.ts");
+}
+
+const webOut = args.get("--web-out") ?? defaultWebOutPath();
 const androidOut =
   args.get("--android-out") ??
   path.join(

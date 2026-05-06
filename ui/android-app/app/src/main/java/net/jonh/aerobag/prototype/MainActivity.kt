@@ -4480,6 +4480,11 @@ private fun MapExplorerPage(
     val focusRequester = remember { FocusRequester() }
     var chartTrayOpen by remember { mutableStateOf(false) }
     var layerTrayOpen by remember { mutableStateOf(false) }
+    var chartSearchText by remember { mutableStateOf("") }
+    var chartSearchOpen by remember { mutableStateOf(false) }
+    var chartSearchLoading by remember { mutableStateOf(false) }
+    var chartSearchError by remember { mutableStateOf<String?>(null) }
+    var chartSearchSuggestions by remember { mutableStateOf<List<WaypointIdentifierSuggestion>>(emptyList()) }
     var mapSelection by remember { mutableStateOf<MapSelectionUiState?>(null) }
     var mapSurfaceBounds by remember { mutableStateOf<Rect?>(null) }
     var mapSelectionTrayBounds by remember { mutableStateOf<Rect?>(null) }
@@ -4773,6 +4778,74 @@ private fun MapExplorerPage(
         onViewportChange(nextViewport)
         if (syncFollow) {
             syncFollowStateForViewport(nextViewport)
+        }
+    }
+
+    fun recenterOnNavRef(navRef: NavRef) {
+        runCatching {
+            val position = appCore.resolveNavRefPosition(navRef)
+            val center = latLonToWorld(position.lat, position.lon)
+            updateViewport(
+                currentViewport.copy(
+                    centerWorldX = center.x,
+                    centerWorldY = center.y,
+                ),
+            )
+            chartSearchText = ""
+            chartSearchOpen = false
+            chartSearchLoading = false
+            chartSearchError = null
+            chartSearchSuggestions = emptyList()
+        }.onFailure { error ->
+            chartSearchLoading = false
+            chartSearchError = "Search failed: ${error.message ?: error.toString()}"
+        }
+    }
+
+    fun submitChartSearch() {
+        val query = chartSearchText.trim().uppercase()
+        if (query.isBlank()) {
+            return
+        }
+        chartSearchLoading = true
+        chartSearchError = null
+        runCatching {
+            chartSearchSuggestions.firstOrNull()?.navRef ?: appCore.resolveNavRefIdentifier(query)
+        }.onSuccess { navRef ->
+            recenterOnNavRef(navRef)
+        }.onFailure { error ->
+            chartSearchLoading = false
+            chartSearchError = "No waypoint match for $query: ${error.message ?: error.toString()}"
+            chartSearchSuggestions = emptyList()
+        }
+    }
+
+    LaunchedEffect(chartSearchText, currentViewport.centerWorldX, currentViewport.centerWorldY) {
+        val prefix = chartSearchText.trim().uppercase()
+        if (prefix.isBlank()) {
+            chartSearchLoading = false
+            chartSearchError = null
+            chartSearchSuggestions = emptyList()
+            return@LaunchedEffect
+        }
+        chartSearchLoading = true
+        chartSearchError = null
+        val (centerLat, centerLon) = viewportCenterLatLon(currentViewport)
+        runCatching {
+            withContext(Dispatchers.IO) {
+                appCore.suggestWaypointIdentifiersNear(
+                    anchor = LatLonPoint(centerLat, centerLon),
+                    prefix = prefix,
+                    limit = 8,
+                )
+            }
+        }.onSuccess { suggestions ->
+            chartSearchLoading = false
+            chartSearchSuggestions = suggestions
+        }.onFailure { error ->
+            chartSearchLoading = false
+            chartSearchSuggestions = emptyList()
+            chartSearchError = error.message ?: error.toString()
         }
     }
 
@@ -5947,6 +6020,18 @@ private fun MapExplorerPage(
                 chartTrayOpen = false
             },
             layerOptions = layerTrayOptions,
+            chartSearchText = chartSearchText,
+            chartSearchOpen = chartSearchOpen,
+            chartSearchLoading = chartSearchLoading,
+            chartSearchError = chartSearchError,
+            chartSearchSuggestions = chartSearchSuggestions,
+            onChartSearchTextChange = { value ->
+                chartSearchText = value.uppercase().filter { it in 'A'..'Z' || it in '0'..'9' }.take(8)
+                chartSearchOpen = true
+            },
+            onChartSearchFocus = { chartSearchOpen = true },
+            onChartSearchSubmit = { submitChartSearch() },
+            onChartSearchSuggestionClick = { suggestion -> recenterOnNavRef(suggestion.navRef) },
         )
 
         val playbackLeftRoomUnits = surfaceWidthDp / 2f - (ThumbSize.value * 1.5f) - (ThumbGap.value * 2f)
@@ -7775,6 +7860,15 @@ private fun MapTopLeftControls(
     layerTrayOpen: Boolean,
     onToggleLayerTray: () -> Unit,
     layerOptions: List<MenuDockOption>,
+    chartSearchText: String,
+    chartSearchOpen: Boolean,
+    chartSearchLoading: Boolean,
+    chartSearchError: String?,
+    chartSearchSuggestions: List<WaypointIdentifierSuggestion>,
+    onChartSearchTextChange: (String) -> Unit,
+    onChartSearchFocus: () -> Unit,
+    onChartSearchSubmit: () -> Unit,
+    onChartSearchSuggestionClick: (WaypointIdentifierSuggestion) -> Unit,
 ) {
     Row(
         modifier = modifier.padding(ThumbGap),
@@ -7809,6 +7903,163 @@ private fun MapTopLeftControls(
             style = MenuDockStyle.Layers,
             options = layerOptions,
         )
+        AndroidChartSearchBox(
+            text = chartSearchText,
+            open = chartSearchOpen,
+            loading = chartSearchLoading,
+            error = chartSearchError,
+            suggestions = chartSearchSuggestions,
+            onTextChange = onChartSearchTextChange,
+            onFocus = onChartSearchFocus,
+            onSubmit = onChartSearchSubmit,
+            onSuggestionClick = onChartSearchSuggestionClick,
+        )
+    }
+}
+
+@Composable
+private fun AndroidChartSearchBox(
+    text: String,
+    open: Boolean,
+    loading: Boolean,
+    error: String?,
+    suggestions: List<WaypointIdentifierSuggestion>,
+    onTextChange: (String) -> Unit,
+    onFocus: () -> Unit,
+    onSubmit: () -> Unit,
+    onSuggestionClick: (WaypointIdentifierSuggestion) -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val showTray = open && (text.isNotBlank() || loading || error != null || suggestions.isNotEmpty())
+    Box {
+        BasicTextField(
+            value = text,
+            onValueChange = onTextChange,
+            singleLine = true,
+            keyboardOptions =
+                KeyboardOptions(
+                    capitalization = KeyboardCapitalization.Characters,
+                    autoCorrectEnabled = false,
+                    keyboardType = KeyboardType.Password,
+                    imeAction = ImeAction.Done,
+                    platformImeOptions =
+                        PlatformImeOptions(
+                            privateImeOptions = "com.google.android.inputmethod.latin.forceAscii",
+                        ),
+                ),
+            keyboardActions =
+                KeyboardActions(
+                    onDone = {
+                        keyboardController?.hide()
+                        onSubmit()
+                    },
+                ),
+            textStyle =
+                MaterialTheme.typography.titleMedium.copy(
+                    color = uiTheme.controls.panelFg,
+                    fontWeight = FontWeight.ExtraBold,
+                    textAlign = TextAlign.Center,
+                ),
+            modifier =
+                Modifier
+                    .testTag("chart-search-input")
+                    .width(ThumbSize * 2f)
+                    .height(ThumbSize)
+                    .clip(RoundedCornerShape(ThumbRadius))
+                    .background(Color.White.copy(alpha = 0.96f))
+                    .border(1.5.dp, uiTheme.controls.panelBorder, RoundedCornerShape(ThumbRadius))
+                    .onFocusChanged { state -> if (state.isFocused) onFocus() }
+                    .onPreviewKeyEvent { event ->
+                        if (event.nativeKeyEvent.action == AndroidKeyEvent.ACTION_DOWN &&
+                            event.nativeKeyEvent.keyCode == AndroidKeyEvent.KEYCODE_ENTER
+                        ) {
+                            keyboardController?.hide()
+                            onSubmit()
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    .padding(horizontal = ThumbGap, vertical = ThumbSize * 0.22f),
+            decorationBox = { innerTextField ->
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    if (text.isBlank()) {
+                        Text(
+                            text = "SEARCH",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.ExtraBold),
+                            color = Color(0x884E626C),
+                        )
+                    }
+                    innerTextField()
+                }
+            },
+        )
+        if (showTray) {
+            Surface(
+                modifier =
+                    Modifier
+                        .align(Alignment.TopStart)
+                        .padding(top = ThumbSize + ThumbGap)
+                        .width(ThumbSize * 3.4f),
+                shape = RoundedCornerShape(ThumbRadius),
+                color = Color(0xF7FCF8F1),
+                contentColor = uiTheme.controls.panelFg,
+                border = BorderStroke(1.dp, uiTheme.controls.panelBorder),
+                shadowElevation = 8.dp,
+            ) {
+                Column(modifier = Modifier.padding(ThumbGap), verticalArrangement = Arrangement.spacedBy(ThumbGap)) {
+                    if (loading) {
+                        Text("Searching...", style = MaterialTheme.typography.labelSmall, color = uiTheme.controls.panelMuted)
+                    }
+                    error?.let {
+                        Text(it, style = MaterialTheme.typography.labelSmall, color = Color(0xFFAA2233), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                    if (!loading && error == null && text.isNotBlank() && suggestions.isEmpty()) {
+                        Text("No matches", style = MaterialTheme.typography.labelSmall, color = uiTheme.controls.panelMuted)
+                    }
+                    suggestions.forEach { suggestion ->
+                        Surface(
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(ThumbSize)
+                                    .testTag("chart-search-suggestion-${suggestion.identifier}")
+                                    .clickable {
+                                        keyboardController?.hide()
+                                        onSuggestionClick(suggestion)
+                                    },
+                            shape = RoundedCornerShape(ThumbRadius),
+                            color = uiTheme.controls.buttonBg,
+                            contentColor = uiTheme.controls.buttonFg,
+                            border = BorderStroke(1.dp, lerp(uiTheme.controls.buttonBg, Color.Black, 0.22f)),
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxSize().padding(horizontal = ThumbGap),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(suggestion.identifier, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.ExtraBold)
+                                    if (suggestion.displayName.isNotBlank()) {
+                                        Text(
+                                            suggestion.displayName,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                                Text(
+                                    "${suggestion.kind.uppercase()} ${"%.1f".format(suggestion.distanceFromAnchorNm)}nm",
+                                    style = MaterialTheme.typography.labelSmall,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

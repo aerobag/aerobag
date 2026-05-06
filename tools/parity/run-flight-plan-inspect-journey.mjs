@@ -48,11 +48,16 @@ function result(platform) {
     started_at: new Date().toISOString(),
     steps: [],
     gaps: [],
+    checks: {},
   };
 }
 
 function recordStep(out, name, status = "ok", detail = undefined) {
   out.steps.push({ name, status, ...(detail === undefined ? {} : { detail }) });
+}
+
+function recordCheck(out, name, value) {
+  out.checks[name] = value;
 }
 
 function recordGap(out, name, detail) {
@@ -273,14 +278,27 @@ async function webJourney(url) {
     await webClick(cdp, "[data-testid=\"nav-cdi\"]");
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"plan-append-route-input\"]') !== null", "plan append input");
     recordStep(out, "opened plan page");
+    recordCheck(out, "openedPlanFromCdi", true);
 
     await webClick(cdp, "[data-testid=\"nav-cdi\"]");
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-surface\"]') !== null", "chart after plan CDI");
     recordStep(out, "plan CDI returned to chart");
+    recordCheck(out, "planCdiReturnsToChart", true);
 
     await webClick(cdp, "[data-testid=\"nav-cdi\"]");
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"plan-append-route-input\"]') !== null", "plan after chart CDI");
     recordStep(out, "chart CDI returned to plan");
+    recordCheck(out, "chartCdiReturnsToPlan", true);
+    recordCheck(out, "appendRoutePresent", true);
+
+    await webSetInput(cdp, "[data-testid=\"plan-append-route-input\"]", "KRNT V2 ZZZZZ ");
+    await waitForWeb(
+      cdp,
+      "document.body.innerText.includes('unknown route element ZZZZZ')",
+      "append route feedback",
+    );
+    recordStep(out, "append route feedback visible");
+    recordCheck(out, "appendRouteFeedbackVisible", true);
 
     await webSetInput(cdp, "[data-testid=\"plan-append-route-input\"]", "KBFI");
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"plan-append-route-input\"]')?.closest('form') !== null", "plan append form");
@@ -290,6 +308,7 @@ async function webJourney(url) {
     });
     await waitForWeb(cdp, "document.body.innerText.includes('KBFI')", "appended KBFI");
     recordStep(out, "appended KBFI to flight plan");
+    recordCheck(out, "appendRouteCommitsKBFI", true);
 
     await webClick(cdp, "[data-testid=\"nav-cdi\"]");
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-surface\"]') !== null", "returned chart");
@@ -311,6 +330,7 @@ async function webJourney(url) {
     await webClickVectorPointByLabel(cdp, "TIW");
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-selection-tray\"]') !== null", "map selection tray");
     recordStep(out, "opened map inspection tray");
+    recordCheck(out, "inspectTrayAppears", true);
 
     await cdp.send("Runtime.evaluate", {
       expression: `
@@ -319,13 +339,16 @@ async function webJourney(url) {
       `,
       awaitPromise: true,
     });
+    recordCheck(out, "inspectItemSelected", true);
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-selection-action-insert\"]:not(:disabled)') !== null", "insert action enabled");
+    recordCheck(out, "inspectInsertActionPresent", true);
     await webClick(cdp, "[data-testid=\"map-selection-action-insert\"]");
     recordStep(out, "inserted inspected airport into flight plan");
 
     await webClick(cdp, "[data-testid=\"nav-cdi\"]");
     await waitForWeb(cdp, "document.body.innerText.includes('TIW') || document.body.innerText.includes('KTIW')", "TIW visible in plan");
     recordStep(out, "verified TIW in flight plan");
+    recordCheck(out, "inspectInsertAddsSelectedItem", true);
     out.finished_at = new Date().toISOString();
     out.status = out.gaps.length === 0 ? "pass" : "gaps";
     return out;
@@ -664,6 +687,13 @@ function androidDeleteChars(serial, count) {
 }
 
 async function androidScrollUntilTag(serial, tag, maxSwipes = 8) {
+  if (await androidScrollUntilTagInDirection(serial, tag, "down", maxSwipes)) {
+    return true;
+  }
+  return androidScrollUntilTagInDirection(serial, tag, "up", maxSwipes);
+}
+
+async function androidScrollUntilTagInDirection(serial, tag, direction, maxSwipes) {
   for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
     const xml = dumpAndroid(serial);
     if (findNode(xml, (node) => hasAndroidTag(node, tag))) {
@@ -674,8 +704,13 @@ async function androidScrollUntilTag(serial, tag, maxSwipes = 8) {
       findNode(xml, (node) => node.scrollable === "true" && node.package === ANDROID_PACKAGE);
     const bounds = rectOfBounds(scrollSurface?.bounds ?? "[90,383][1065,2021]");
     const x = Math.round((bounds.left + bounds.right) / 2);
-    const startY = Math.round(bounds.bottom - Math.min(80, bounds.height / 5));
-    const endY = Math.round(bounds.top + Math.min(80, bounds.height / 5));
+    const inset = Math.min(80, bounds.height / 5);
+    const startY = direction === "down"
+      ? Math.round(bounds.bottom - inset)
+      : Math.round(bounds.top + inset);
+    const endY = direction === "down"
+      ? Math.round(bounds.top + inset)
+      : Math.round(bounds.bottom - inset);
     adb(serial, ["shell", "input", "swipe", String(x), String(startY), String(x), String(endY), "450"]);
     await delay(250);
   }
@@ -683,6 +718,13 @@ async function androidScrollUntilTag(serial, tag, maxSwipes = 8) {
 }
 
 async function androidScrollUntilText(serial, text, maxSwipes = 8) {
+  if (await androidScrollUntilTextInDirection(serial, text, "down", maxSwipes)) {
+    return true;
+  }
+  return androidScrollUntilTextInDirection(serial, text, "up", maxSwipes);
+}
+
+async function androidScrollUntilTextInDirection(serial, text, direction, maxSwipes) {
   for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
     const xml = dumpAndroid(serial);
     if (hasAndroidText(xml, text)) {
@@ -693,8 +735,13 @@ async function androidScrollUntilText(serial, text, maxSwipes = 8) {
       findNode(xml, (node) => node.scrollable === "true" && node.package === ANDROID_PACKAGE);
     const bounds = rectOfBounds(scrollSurface?.bounds ?? "[90,383][1065,2021]");
     const x = Math.round((bounds.left + bounds.right) / 2);
-    const startY = Math.round(bounds.top + Math.min(80, bounds.height / 5));
-    const endY = Math.round(bounds.bottom - Math.min(80, bounds.height / 5));
+    const inset = Math.min(80, bounds.height / 5);
+    const startY = direction === "down"
+      ? Math.round(bounds.bottom - inset)
+      : Math.round(bounds.top + inset);
+    const endY = direction === "down"
+      ? Math.round(bounds.top + inset)
+      : Math.round(bounds.bottom - inset);
     adb(serial, ["shell", "input", "swipe", String(x), String(startY), String(x), String(endY), "450"]);
     await delay(250);
   }
@@ -780,8 +827,9 @@ async function androidJourney(serial) {
 
   if (hasAndroidText(xml, "Waypoint")) {
     recordStep(out, "opened plan page", "already on plan page");
+    recordCheck(out, "openedPlanFromCdi", true);
   } else {
-    await androidTapTag(serial, out, "opened plan page", "parity:nav-cdi", 12000);
+    recordCheck(out, "openedPlanFromCdi", await androidTapTag(serial, out, "opened plan page", "parity:nav-cdi", 12000));
   }
   await delay(500);
 
@@ -789,8 +837,10 @@ async function androidJourney(serial) {
     try {
       await androidWaitForNode(serial, (node) => hasAndroidTag(node, "parity:map-surface"), 7000, "chart after plan CDI");
       recordStep(out, "chart visible after plan CDI");
+      recordCheck(out, "planCdiReturnsToChart", true);
     } catch (_error) {
       recordGap(out, "chart visible after plan CDI", "map surface was not visible after tapping CDI from PLAN");
+      recordCheck(out, "planCdiReturnsToChart", false);
     }
     if (await androidTapTag(serial, out, "chart CDI returned to plan", "parity:nav-cdi", 7000)) {
       try {
@@ -801,8 +851,10 @@ async function androidJourney(serial) {
           "plan after chart CDI",
         );
         recordStep(out, "plan visible after chart CDI");
+        recordCheck(out, "chartCdiReturnsToPlan", true);
       } catch (_error) {
         recordGap(out, "plan visible after chart CDI", "plan page was not visible after tapping CDI from CHART");
+        recordCheck(out, "chartCdiReturnsToPlan", false);
       }
     }
   }
@@ -810,6 +862,7 @@ async function androidJourney(serial) {
   const planXml = dumpAndroid(serial);
   if (planXml.includes("Append route") || planXml.includes("parity:plan-append-route-input")) {
     recordStep(out, "free-form append route present");
+    recordCheck(out, "appendRoutePresent", true);
     if (await androidTapTag(serial, out, "focused free-form append route", "parity:plan-append-route-input")) {
       androidTypeRouteTokens(serial, ["KRNT", "V2", "ZZZZZ"]);
       try {
@@ -820,10 +873,12 @@ async function androidJourney(serial) {
           "append route feedback visible",
         );
         recordStep(out, "append route feedback visible", "ok", feedback.text);
+        recordCheck(out, "appendRouteFeedbackVisible", true);
         androidAssertFeedbackHasBottomControlClearance(serial, out, feedback);
         androidAssertNodeAboveIme(serial, out, "append route feedback above IME", feedback);
       } catch (_error) {
         recordGap(out, "append route feedback visible", "no non-empty feedback appeared after typing KRNT V2 ZZZZZ");
+        recordCheck(out, "appendRouteFeedbackVisible", false);
       }
       androidDeleteChars(serial, 24);
       await delay(300);
@@ -831,16 +886,18 @@ async function androidJourney(serial) {
       await delay(300);
       adb(serial, ["shell", "input", "keyevent", "ENTER"]);
       await delay(1200);
-      const appendedXml = dumpAndroid(serial);
-      if (hasAndroidText(appendedXml, "KBFI")) {
+      adb(serial, ["shell", "input", "keyevent", "BACK"]);
+      await delay(500);
+      if (hasAndroidText(dumpAndroid(serial), "KBFI") || await androidScrollUntilText(serial, "KBFI")) {
         recordStep(out, "appended KBFI to flight plan");
+        recordCheck(out, "appendRouteCommitsKBFI", true);
         if (await androidTapTag(serial, out, "focused append route for long plan", "parity:plan-append-route-input")) {
           androidTypeRouteTokens(serial, ["KRNT", "SEA", "KPAE", "KBFI", "KRNT", "SEA", "KPAE", "KBFI", "KRNT", "SEA"]);
           await delay(300);
           adb(serial, ["shell", "input", "keyevent", "ENTER"]);
           await delay(1200);
           recordStep(out, "expanded flight plan for long-route feedback");
-          if (await androidScrollUntilTag(serial, "parity:plan-append-route-input")) {
+          if (await androidScrollUntilTag(serial, "parity:plan-append-route-input", 30)) {
             if (await androidTapTag(serial, out, "focused long-plan append route", "parity:plan-append-route-input")) {
               const longInput = await androidWaitForFocusedTag(serial, out, "long-plan append route input focused", "parity:plan-append-route-input");
               if (longInput) {
@@ -868,44 +925,65 @@ async function androidJourney(serial) {
         }
       } else {
         recordGap(out, "appended KBFI to flight plan", "KBFI was not visible after submitting the append route field");
+        recordCheck(out, "appendRouteCommitsKBFI", false);
       }
     }
   } else {
     recordGap(out, "free-form append route present", "Android currently has no parity-tagged free-form flight-plan entry field");
+    recordCheck(out, "appendRoutePresent", false);
   }
 
   await androidTapTag(serial, out, "opened home page", "parity:button:HOME");
   await delay(500);
   await androidTapTag(serial, out, "returned chart page", "parity:button:CHART");
+
+  if (await androidTapTag(serial, out, "focused chart search", "chart-search-input", 5000)) {
+    adb(serial, ["shell", "input", "text", "KTIW"]);
+    try {
+      await androidTapTag(serial, out, "recentered on KTIW via chart search", "chart-search-suggestion-KTIW", 10000);
+      await delay(1000);
+    } catch (_error) {
+      recordGap(out, "recentered on KTIW via chart search", "KTIW search suggestion was not visible");
+    }
+  }
+
   await androidTapTag(serial, out, "drag/click map surface", "parity:map-surface");
   await delay(500);
 
   const selectionXml = dumpAndroid(serial);
   if (findNode(selectionXml, (node) => hasAndroidTag(node, "parity:map-selection-tray"))) {
     recordStep(out, "map inspection tray appeared");
+    recordCheck(out, "inspectTrayAppears", true);
   } else {
     recordGap(out, "map inspection tray appeared", "tap did not open an inspect tray at the tapped map location");
+    recordCheck(out, "inspectTrayAppears", false);
   }
 
   let selectedLabel = "";
   try {
     const firstInspectableItem = await androidWaitForNode(
       serial,
-      (node) => androidTag(node).startsWith("parity:map-selection-item:"),
+      (node) => {
+        const tag = androidTag(node);
+        return tag.startsWith("parity:map-selection-item:") && tag !== "parity:map-selection-item:SPOT";
+      },
       5000,
       "first inspect item",
     );
     const tag = androidTag(firstInspectableItem);
     selectedLabel = tag.slice("parity:map-selection-item:".length);
     androidTapResolvedNode(serial, out, "selected first inspect item", firstInspectableItem);
+    recordCheck(out, "inspectItemSelected", true);
     await delay(500);
   } catch (_error) {
     recordGap(out, "selected first inspect item", "no inspect item was visible");
+    recordCheck(out, "inspectItemSelected", false);
   }
 
   const selectedXml = dumpAndroid(serial);
   const insertAction = findNode(selectedXml, (node) => hasAndroidTag(node, "parity:map-selection-action:insert"));
   if (insertAction) {
+    recordCheck(out, "inspectInsertActionPresent", true);
     androidTapResolvedNode(serial, out, "inspect insert action present", insertAction);
     await delay(500);
     if (selectedLabel) {
@@ -913,17 +991,55 @@ async function androidJourney(serial) {
       await delay(500);
       if (hasAndroidText(dumpAndroid(serial), selectedLabel) || await androidScrollUntilText(serial, selectedLabel)) {
         recordStep(out, "verified inspected item in flight plan", selectedLabel);
+        recordCheck(out, "inspectInsertAddsSelectedItem", true);
       } else {
         recordGap(out, "verified inspected item in flight plan", `${selectedLabel} was not visible in the plan after insert`);
+        recordCheck(out, "inspectInsertAddsSelectedItem", false);
       }
     }
   } else {
     recordGap(out, "inspect insert action present", "no insert action was visible in the current inspect tray");
+    recordCheck(out, "inspectInsertActionPresent", false);
   }
 
   out.finished_at = new Date().toISOString();
   out.status = out.gaps.length === 0 ? "pass" : "gaps";
   return out;
+}
+
+function comparePlatformOutputs(outputs) {
+  const web = outputs.find((entry) => entry.platform === "web");
+  const android = outputs.find((entry) => entry.platform === "android");
+  if (!web || !android) return null;
+  const comparison = {
+    journey: JOURNEY_NAME,
+    platform: "parity",
+    status: "pass",
+    divergences: [],
+  };
+  const checkNames = [
+    "openedPlanFromCdi",
+    "planCdiReturnsToChart",
+    "chartCdiReturnsToPlan",
+    "appendRoutePresent",
+    "appendRouteFeedbackVisible",
+    "appendRouteCommitsKBFI",
+    "inspectTrayAppears",
+    "inspectItemSelected",
+    "inspectInsertActionPresent",
+    "inspectInsertAddsSelectedItem",
+  ];
+  for (const name of checkNames) {
+    const webValue = web.checks[name] ?? null;
+    const androidValue = android.checks[name] ?? null;
+    if (webValue !== androidValue) {
+      comparison.divergences.push({ name, web: webValue, android: androidValue });
+    }
+  }
+  if (comparison.divergences.length > 0) {
+    comparison.status = "diverged";
+  }
+  return comparison;
 }
 
 async function main() {
@@ -939,8 +1055,10 @@ async function main() {
   if (args.platform === "android" || args.platform === "both") {
     outputs.push(await androidJourney(args.serial));
   }
-  console.log(JSON.stringify(outputs.length === 1 ? outputs[0] : outputs, null, 2));
-  if (outputs.some((entry) => entry.status !== "pass")) {
+  const comparison = args.platform === "both" ? comparePlatformOutputs(outputs) : null;
+  const payload = outputs.length === 1 ? outputs[0] : { journeys: outputs, comparison };
+  console.log(JSON.stringify(payload, null, 2));
+  if (outputs.some((entry) => entry.status !== "pass") || comparison?.status !== "pass") {
     process.exitCode = 1;
   }
 }

@@ -439,6 +439,22 @@ class NativeAppCoreAdapter(
         return json.decodeFromJsonElement<List<WireWaypointIdentifierSuggestion>>(result).map { it.toUi() }
     }
 
+    fun suggestWaypointIdentifiersNear(
+        anchor: LatLonPoint,
+        prefix: String,
+        limit: Int = 8,
+    ): List<WaypointIdentifierSuggestion> {
+        val result = runHadOperationElement(
+            buildJsonObject {
+                put("kind", "suggest_waypoint_identifiers_near")
+                put("anchor", json.encodeToJsonElement(WireLatLon.serializer(), anchor.toWire()))
+                put("prefix", prefix)
+                put("limit", limit)
+            },
+        )
+        return json.decodeFromJsonElement<List<WireWaypointIdentifierSuggestion>>(result).map { it.toUi() }
+    }
+
     fun projectFlightPlanRoute(plan: FlightPlan): List<FlightPlanRouteSegment> {
         val result = runHadOperationElement(
             buildJsonObject {

@@ -244,56 +244,6 @@ pub fn replace_procedure_materialized_ui_json(
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
-pub fn describe_procedure_options_from_rows_json(
-    airport_id: &str,
-    procedure_id: &str,
-    kind_json: &str,
-    rows_json: &str,
-) -> Result<String, String> {
-    let kind: app_core::ProcedureKind =
-        serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
-    let rows: Vec<app_core::ProcedureDistinctRow> =
-        serde_json::from_str(rows_json).map_err(|err| err.to_string())?;
-    let options =
-        app_core::describe_procedure_options_from_rows(airport_id, procedure_id, kind, rows)
-            .map_err(|err| err.to_string())?;
-    serde_json::to_string(&options).map_err(|err| err.to_string())
-}
-
-pub fn materialize_procedure_from_records_json(
-    airport_id: &str,
-    procedure_id: &str,
-    kind_json: &str,
-    runway_transition_json: &str,
-    enroute_transition_json: &str,
-    component_index: usize,
-    rows_json: &str,
-    legs_json: &str,
-) -> Result<String, String> {
-    let kind: app_core::ProcedureKind =
-        serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
-    let runway_transition: Option<String> =
-        serde_json::from_str(runway_transition_json).map_err(|err| err.to_string())?;
-    let enroute_transition: Option<String> =
-        serde_json::from_str(enroute_transition_json).map_err(|err| err.to_string())?;
-    let rows: Vec<app_core::ProcedureDistinctRow> =
-        serde_json::from_str(rows_json).map_err(|err| err.to_string())?;
-    let legs: Vec<app_core::ProcedureLegMaterializationRecord> =
-        serde_json::from_str(legs_json).map_err(|err| err.to_string())?;
-    let built = app_core::materialize_procedure_from_records(
-        airport_id,
-        procedure_id,
-        kind,
-        runway_transition,
-        enroute_transition,
-        component_index,
-        rows,
-        legs,
-    )
-    .map_err(|err| err.to_string())?;
-    serde_json::to_string(&built).map_err(|err| err.to_string())
-}
-
 pub fn select_preferred_cifp_tpp_match_json(rows_json: &str) -> Result<String, String> {
     let rows: Vec<app_core::CifpTppMatchRow> =
         serde_json::from_str(rows_json).map_err(|err| err.to_string())?;
@@ -1670,65 +1620,6 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_rep
         let plan_json = get_java_string(&mut env, plan_json)?;
         let built_json = get_java_string(&mut env, built_json)?;
         replace_procedure_materialized_ui_json(&plan_json, component_index as usize, &built_json)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_describeProcedureOptionsFromRowsJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    airport_id: JString,
-    procedure_id: JString,
-    kind_json: JString,
-    rows_json: JString,
-) -> jstring {
-    let result = (|| {
-        let airport_id = get_java_string(&mut env, airport_id)?;
-        let procedure_id = get_java_string(&mut env, procedure_id)?;
-        let kind_json = get_java_string(&mut env, kind_json)?;
-        let rows_json = get_java_string(&mut env, rows_json)?;
-        describe_procedure_options_from_rows_json(
-            &airport_id,
-            &procedure_id,
-            &kind_json,
-            &rows_json,
-        )
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_materializeProcedureFromRecordsJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    airport_id: JString,
-    procedure_id: JString,
-    kind_json: JString,
-    runway_transition_json: JString,
-    enroute_transition_json: JString,
-    component_index: i32,
-    rows_json: JString,
-    legs_json: JString,
-) -> jstring {
-    let result = (|| {
-        let airport_id = get_java_string(&mut env, airport_id)?;
-        let procedure_id = get_java_string(&mut env, procedure_id)?;
-        let kind_json = get_java_string(&mut env, kind_json)?;
-        let runway_transition_json = get_java_string(&mut env, runway_transition_json)?;
-        let enroute_transition_json = get_java_string(&mut env, enroute_transition_json)?;
-        let rows_json = get_java_string(&mut env, rows_json)?;
-        let legs_json = get_java_string(&mut env, legs_json)?;
-        materialize_procedure_from_records_json(
-            &airport_id,
-            &procedure_id,
-            &kind_json,
-            &runway_transition_json,
-            &enroute_transition_json,
-            component_index as usize,
-            &rows_json,
-            &legs_json,
-        )
     })();
     return_string(&mut env, result)
 }

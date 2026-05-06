@@ -2453,6 +2453,21 @@ fn nav_ref_key(nav_ref: &NavRef) -> String {
     match nav_ref {
         NavRef::Airport(id) => format!("airport:{id}"),
         NavRef::Navaid(id) => format!("navaid:{id}"),
+        NavRef::ArincNavaid {
+            identifier,
+            icao_code,
+            section_code,
+            subsection_code,
+        } => format!("arinc-navaid:{section_code}:{subsection_code}:{icao_code}:{identifier}"),
+        NavRef::TerminalNavaid {
+            airport_id,
+            identifier,
+            icao_code,
+            section_code,
+            subsection_code,
+        } => format!(
+            "terminal-navaid:{airport_id}:{section_code}:{subsection_code}:{icao_code}:{identifier}"
+        ),
         NavRef::Fix(id) => format!("fix:{id}"),
         NavRef::LatLon(position) => format!("latlon:{:.7}:{:.7}", position.lat, position.lon),
     }

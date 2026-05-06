@@ -66,24 +66,6 @@ interface NativeBridge {
         builtJson: String,
     ): String
 
-    fun describeProcedureOptionsFromRowsJson(
-        airportId: String,
-        procedureId: String,
-        kindJson: String,
-        rowsJson: String,
-    ): String
-
-    fun materializeProcedureFromRecordsJson(
-        airportId: String,
-        procedureId: String,
-        kindJson: String,
-        runwayTransitionJson: String,
-        enrouteTransitionJson: String,
-        componentIndex: Int,
-        rowsJson: String,
-        legsJson: String,
-    ): String
-
     fun createUiSessionJson(
         vectorManifestJson: String,
         planJson: String,
@@ -447,24 +429,6 @@ object NativeBindings : NativeBridge {
         planJson: String,
         componentIndex: Int,
         builtJson: String,
-    ): String
-
-    external override fun describeProcedureOptionsFromRowsJson(
-        airportId: String,
-        procedureId: String,
-        kindJson: String,
-        rowsJson: String,
-    ): String
-
-    external override fun materializeProcedureFromRecordsJson(
-        airportId: String,
-        procedureId: String,
-        kindJson: String,
-        runwayTransitionJson: String,
-        enrouteTransitionJson: String,
-        componentIndex: Int,
-        rowsJson: String,
-        legsJson: String,
     ): String
 
     external override fun createUiSessionJson(

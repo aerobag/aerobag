@@ -967,9 +967,11 @@ fn canonical_waypoint_identifier_record_for_ui(
     }
     match &record.nav_ref {
         NavRef::Airport(code) => record.identifier = code.trim().to_ascii_uppercase(),
-        NavRef::Navaid(_) | NavRef::Fix(_) | NavRef::LatLon(_) => {
-            record.identifier = record.identifier.trim().to_ascii_uppercase()
-        }
+        NavRef::Navaid(_)
+        | NavRef::ArincNavaid { .. }
+        | NavRef::TerminalNavaid { .. }
+        | NavRef::Fix(_)
+        | NavRef::LatLon(_) => record.identifier = record.identifier.trim().to_ascii_uppercase(),
     }
     if record.identifier.is_empty() {
         Ok(None)
@@ -983,7 +985,9 @@ fn waypoint_identifier_nav_ref_is_acceptable_for_ui(
     nav_ref: &NavRef,
 ) -> Result<bool, HadReadError> {
     match nav_ref {
-        NavRef::Navaid(_) => Ok(nav_symbol_feature(store, nav_ref)?.is_some()),
+        NavRef::Navaid(_) | NavRef::ArincNavaid { .. } | NavRef::TerminalNavaid { .. } => {
+            Ok(nav_symbol_feature(store, nav_ref)?.is_some())
+        }
         NavRef::Airport(_) | NavRef::Fix(_) | NavRef::LatLon(_) => Ok(true),
     }
 }
@@ -991,7 +995,11 @@ fn waypoint_identifier_nav_ref_is_acceptable_for_ui(
 fn waypoint_identifier_is_canonical_for_ui(identifier: &str, nav_ref: &NavRef) -> bool {
     match nav_ref {
         NavRef::Airport(code) => identifier.trim().eq_ignore_ascii_case(code.trim()),
-        NavRef::Navaid(_) | NavRef::Fix(_) | NavRef::LatLon(_) => true,
+        NavRef::Navaid(_)
+        | NavRef::ArincNavaid { .. }
+        | NavRef::TerminalNavaid { .. }
+        | NavRef::Fix(_)
+        | NavRef::LatLon(_) => true,
     }
 }
 

@@ -1,5 +1,9 @@
 use crate::arinc_ambiguity_resolutions;
 use crate::planning::LegDisplayPathStyle;
+use crate::procedure_geometry_constants::{
+    EXPLICIT_MISSED_TURN_SOURCE_PREFIX, INFERRED_MISSED_TURN_SOURCE_PREFIX, MIN_ARC_SWEEP_DEG,
+    MIN_GEOMETRY_DISTANCE_NM, PLATE_EXCEPTION_MISSED_TURN_SOURCE_PREFIX, POSITION_EPSILON_DEG,
+};
 use crate::{
     basic_terminal_state, direct_to_fix_with_course_continuation_requirement, reconcile_handoff,
     HandoffDecision, LatLon, LegDisplayElement, LegDisplayPath, ProcedureLegMaterializationRecord,
@@ -97,15 +101,9 @@ const SHORT_PROCEDURE_TURN_INITIAL_OUTBOUND_DISTANCE_NM: f64 = 0.5;
 const SHORT_PROCEDURE_TURN_GROUND_SPEED_KT: f64 = 90.0;
 const NOMINAL_PROCEDURE_TURN_BARB_TIME_MIN: f64 = 2.0;
 const NOMINAL_MANUAL_TERMINATION_DISTANCE_NM: f64 = 4.0;
-const MIN_GEOMETRY_DISTANCE_NM: f64 = 0.05;
 const NEAR_INTERCEPT_SNAP_DISTANCE_NM: f64 = 0.1;
 const TO_FIX_TERMINATION_SNAP_DISTANCE_NM: f64 = 0.1;
 const LATE_TO_FIX_CORRECTION_SNAP_DISTANCE_NM: f64 = 0.3;
-const MIN_ARC_SWEEP_DEG: f64 = 0.5;
-const POSITION_EPSILON_DEG: f64 = 0.0005;
-const EXPLICIT_MISSED_TURN_SOURCE_PREFIX: &str = "explicit_missed_turn@";
-const INFERRED_MISSED_TURN_SOURCE_PREFIX: &str = "inferred_missed_turn@";
-const PLATE_EXCEPTION_MISSED_TURN_SOURCE_PREFIX: &str = "plate_exception_missed_turn@";
 
 pub fn display_path_for_procedure_leg(
     segment_records: &[ProcedureLegMaterializationRecord],

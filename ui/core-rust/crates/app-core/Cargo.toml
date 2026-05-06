@@ -5,6 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+procedure-geometry-types = { path = "../../../../crates/procedure-geometry-types" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

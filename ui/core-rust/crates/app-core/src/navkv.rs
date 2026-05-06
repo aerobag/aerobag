@@ -60,17 +60,12 @@ pub enum NavKvQuery {
     PlateProcedureCandidates {
         plate_id: String,
     },
-    ProcedureList {
+    ProcedureGeometry {
         airport_id: String,
         procedure_kind: ProcedureKind,
-    },
-    ProcedureDistinctRows {
-        airport_id: String,
         procedure_id: String,
-    },
-    ProcedureMaterializationRows {
-        airport_id: String,
-        procedure_id: String,
+        runway_transition: Option<String>,
+        enroute_transition: Option<String>,
     },
     NavRefPosition {
         nav_ref: NavRef,
@@ -319,29 +314,18 @@ pub fn nav_kv_key_for_query(query: &NavKvQuery) -> Option<String> {
             "plate/procedure-candidates/{}",
             component(plate_id)
         )),
-        NavKvQuery::ProcedureList {
+        NavKvQuery::ProcedureGeometry {
             airport_id,
             procedure_kind,
-        } => Some(format!(
-            "procedure/list/{}/{}",
-            upper_component(airport_id),
-            procedure_kind_component(procedure_kind)
-        )),
-        NavKvQuery::ProcedureDistinctRows {
-            airport_id,
             procedure_id,
-        } => Some(format!(
-            "procedure/distinct-rows/{}/{}",
-            upper_component(airport_id),
-            upper_component(procedure_id)
-        )),
-        NavKvQuery::ProcedureMaterializationRows {
+            runway_transition,
+            enroute_transition,
+        } => Some(procedure_geometry_key(
             airport_id,
+            procedure_kind,
             procedure_id,
-        } => Some(format!(
-            "procedure/materialization-rows/{}/{}",
-            upper_component(airport_id),
-            upper_component(procedure_id)
+            runway_transition.as_deref(),
+            enroute_transition.as_deref(),
         )),
         NavKvQuery::NavRefPosition {
             nav_ref,
@@ -446,6 +430,50 @@ fn procedure_kind_component(kind: &ProcedureKind) -> &'static str {
         ProcedureKind::Star => "STAR",
         ProcedureKind::Approach => "APPROACH",
     }
+}
+
+pub fn procedure_geometry_prefix(
+    airport_id: &str,
+    procedure_kind: &ProcedureKind,
+    procedure_id: &str,
+) -> String {
+    format!(
+        "procedure/geometry/{}/{}/{}/",
+        upper_component(airport_id),
+        procedure_kind_component(procedure_kind),
+        upper_component(procedure_id)
+    )
+}
+
+pub fn procedure_geometry_kind_prefix(airport_id: &str, procedure_kind: &ProcedureKind) -> String {
+    format!(
+        "procedure/geometry/{}/{}/",
+        upper_component(airport_id),
+        procedure_kind_component(procedure_kind)
+    )
+}
+
+pub fn procedure_geometry_key(
+    airport_id: &str,
+    procedure_kind: &ProcedureKind,
+    procedure_id: &str,
+    runway_transition: Option<&str>,
+    enroute_transition: Option<&str>,
+) -> String {
+    format!(
+        "{}{}/{}",
+        procedure_geometry_prefix(airport_id, procedure_kind, procedure_id),
+        optional_transition_component(runway_transition),
+        optional_transition_component(enroute_transition)
+    )
+}
+
+fn optional_transition_component(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(upper_component)
+        .unwrap_or_else(|| "_".to_string())
 }
 
 fn upper_component(value: &str) -> String {
@@ -588,11 +616,14 @@ mod tests {
             Some("plate/by-id/plate%3AKRDD%3AIAP-CA-ILS%20OR%20LOC%20RWY%2034.png".to_string())
         );
         assert_eq!(
-            nav_kv_key_for_query(&NavKvQuery::ProcedureList {
-                airport_id: "krdd".to_string(),
+            nav_kv_key_for_query(&NavKvQuery::ProcedureGeometry {
+                airport_id: "kgrk".to_string(),
                 procedure_kind: ProcedureKind::Approach,
+                procedure_id: "vor-a".to_string(),
+                runway_transition: None,
+                enroute_transition: Some("darte".to_string()),
             }),
-            Some("procedure/list/KRDD/APPROACH".to_string())
+            Some("procedure/geometry/KGRK/APPROACH/VOR-A/_/DARTE".to_string())
         );
     }
 

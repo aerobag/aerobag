@@ -3455,7 +3455,15 @@ pub fn change_procedure_runway_transition(
 }
 
 pub fn interpret_path_termination(code: &str) -> PathTermination {
-    crate::procedure_legs::interpret_path_termination(code)
+    match code.trim() {
+        "IF" => PathTermination::InitialFix,
+        "TF" => PathTermination::TrackToFix,
+        "CF" => PathTermination::CourseToFix,
+        "DF" => PathTermination::DirectToFix,
+        "VM" | "FM" => PathTermination::HeadingToManual,
+        "VA" | "CA" => PathTermination::HeadingToAltitude,
+        other => PathTermination::Other(other.to_string()),
+    }
 }
 
 fn resolved_legs_from_waypoint_components(components: &[RouteComponent]) -> Vec<ResolvedLeg> {

@@ -38,6 +38,9 @@ use preprocessor_fetch::{
     prefetch_requests_with_provenance, read_source_urls_jsonl, write_package_outputs_jsonl,
     CacheLayout, FetchCacheConfig, FetchCacheMode, PackageOutputRecord, PrefetchRequest,
 };
+use preprocessor_procedure_geometry::{
+    build_procedure_geometry_records, procedure_kinds_from_lists,
+};
 use preprocessor_resource_index::{
     write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource, ResourceIndex,
     TileLevelRecord,
@@ -47,6 +50,7 @@ use preprocessor_vectors::{
     build_obstacle_dataset, build_vectors_dataset, BuildObstacleDatasetRequest, BuildVectorsRequest,
 };
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
+use procedure_geometry_types as pgt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zip::ZipArchive;
@@ -5651,28 +5655,6 @@ fn build_nav_kv_procedure_pairs(
             "plate procedure candidates",
         )?);
     }
-    for airport_id in &airport_ids {
-        let procedure_ids = approach_lists.remove(airport_id).unwrap_or_default();
-        let rows = procedure_ids
-            .into_iter()
-            .map(|procedure_id| {
-                serde_json::json!({
-                    "airport_id": airport_id,
-                    "procedure_id": procedure_id,
-                    "kind": "approach",
-                })
-            })
-            .collect::<Vec<_>>();
-        pairs.push(json_pair(
-            format!(
-                "procedure/list/{}/APPROACH",
-                had_upper_key_component(&airport_id)
-            ),
-            &serde_json::Value::Array(rows),
-            "approach procedure list",
-        )?);
-    }
-
     let mut sid_lists = BTreeMap::<String, BTreeSet<String>>::new();
     let mut star_lists = BTreeMap::<String, BTreeSet<String>>::new();
     let mut distinct_by_procedure = BTreeMap::<(String, String), Vec<serde_json::Value>>::new();
@@ -5685,40 +5667,16 @@ fn build_nav_kv_procedure_pairs(
         &mut distinct_by_procedure,
         &mut materialization_by_procedure,
     )?;
-    for airport_id in &airport_ids {
-        pairs.push(nav_kv_procedure_list_pair(
-            airport_id,
-            "SID",
-            "sid",
-            sid_lists.remove(airport_id).unwrap_or_default(),
-        )?);
-        pairs.push(nav_kv_procedure_list_pair(
-            airport_id,
-            "STAR",
-            "star",
-            star_lists.remove(airport_id).unwrap_or_default(),
-        )?);
-    }
-    for ((airport_id, procedure_id), rows) in distinct_by_procedure {
+    let procedure_kinds = procedure_kinds_from_lists(approach_lists, sid_lists, star_lists);
+    for record in build_procedure_geometry_records(
+        procedure_kinds,
+        distinct_by_procedure,
+        materialization_by_procedure,
+    )? {
         pairs.push(json_pair(
-            format!(
-                "procedure/distinct-rows/{}/{}",
-                had_upper_key_component(&airport_id),
-                had_upper_key_component(&procedure_id)
-            ),
-            &serde_json::Value::Array(rows),
-            "procedure distinct rows",
-        )?);
-    }
-    for ((airport_id, procedure_id), rows) in materialization_by_procedure {
-        pairs.push(json_pair(
-            format!(
-                "procedure/materialization-rows/{}/{}",
-                had_upper_key_component(&airport_id),
-                had_upper_key_component(&procedure_id)
-            ),
-            &serde_json::Value::Array(rows),
-            "procedure materialization rows",
+            pgt::procedure_geometry_navdb_key(&record.key),
+            &serde_json::to_value(record)?,
+            "procedure geometry",
         )?);
     }
 
@@ -5766,33 +5724,6 @@ fn load_nav_kv_cifp_tpp_matches(
         }))
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-}
-
-fn nav_kv_procedure_list_pair(
-    airport_id: &str,
-    kind_key: &str,
-    kind_value: &str,
-    procedure_ids: BTreeSet<String>,
-) -> anyhow::Result<NavKvPair> {
-    let rows = procedure_ids
-        .into_iter()
-        .map(|procedure_id| {
-            serde_json::json!({
-                "airport_id": airport_id,
-                "procedure_id": procedure_id,
-                "kind": kind_value,
-            })
-        })
-        .collect::<Vec<_>>();
-    json_pair(
-        format!(
-            "procedure/list/{}/{}",
-            had_upper_key_component(airport_id),
-            kind_key
-        ),
-        &serde_json::Value::Array(rows),
-        "procedure list",
-    )
 }
 
 fn load_nav_kv_procedure_rows(

@@ -1,23 +1,24 @@
 use std::collections::{HashMap, HashSet};
 
+use procedure_geometry_types as pgt;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::planning::FlightPlanRowActionId;
 use crate::{
     chart_page::{airport_ids_from_plan, derive_chart_page_state_from_airports},
-    describe_plate_procedure_load_options, describe_procedure_options_from_rows,
-    describe_show_plate_for_procedure, enrich_procedure_materialization_records_from_store,
+    describe_plate_procedure_load_options, describe_show_plate_for_procedure,
     flight_leg_distance_nm, flight_plan_contains_nav_ref, insert_airway_after_waypoint,
-    insert_waypoint, materialize_procedure_from_records, prepare_airway_presentation,
-    project_flight_plan_route_with_resolver, AirwayAutoSelection, AirwayBranch,
-    AirwayEntryCandidate, AirwayExitCandidate, AirwayPresentationPlan, AirwaySegment,
-    AirwaySpatialPoint, AirwaySuggestion, AppError, AppErrorKind, AppResult, CifpTppMatchRow,
-    FlightPlan, FlightPlanRouteSegment, FlightPlanUiMutation, FlightPlanUiState, LatLon,
-    MaterializedProcedure, NavKvLookup, NavKvQuery, NavKvStore, NavRef, NavSymbolFeature,
-    PlateProcedureLoadCandidateInput, PolygonRecord, ProcedureDistinctRow, ProcedureKind,
-    ProcedureLegMaterializationRecord, ProcedureLoadOption, ProcedureOptions, ProcedureSummary,
-    ResolvedLeg, ResolvedLegSource, RouteComponent, WaypointIdentifierRecord,
+    insert_waypoint, prepare_airway_presentation, project_flight_plan_route_with_resolver,
+    AirportId, AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,
+    AirwayPresentationPlan, AirwaySegment, AirwaySpatialPoint, AirwaySuggestion, AppError,
+    AppErrorKind, AppResult, CifpTppMatchRow, ConcretizedNavItem, FlightPlan,
+    FlightPlanRouteSegment, FlightPlanUiMutation, FlightPlanUiState, LatLon, LegDisplayElement,
+    LegDisplayPath, LegDisplayPathStyle, MaterializedProcedure, NavKvLookup, NavKvQuery,
+    NavKvStore, NavRef, NavSymbolFeature, PathTermination, PlateProcedureLoadCandidateInput,
+    PolygonRecord, ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance,
+    ProcedureLoadOption, ProcedureOptions, ProcedureSegment, ProcedureSegmentRole,
+    ProcedureSummary, ResolvedLeg, ResolvedLegSource, RouteComponent, WaypointIdentifierRecord,
     WaypointIdentifierSuggestion,
 };
 
@@ -295,14 +296,11 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
         HadOperation::ListProcedures {
             airport_id,
             procedure_kind,
-        } => serde_json::to_value(read_required::<Vec<ProcedureSummary>>(
+        } => serde_json::to_value(list_procedures_from_geometry(
             store,
-            NavKvQuery::ProcedureList {
-                airport_id,
-                procedure_kind,
-            },
-            "procedure list",
-        )?)?,
+            &airport_id,
+            procedure_kind,
+        ))?,
         HadOperation::DescribeProcedureOptions {
             airport_id,
             procedure_id,
@@ -1405,15 +1403,12 @@ fn describe_procedure_options(
     procedure_id: &str,
     kind: ProcedureKind,
 ) -> Result<ProcedureOptions, HadReadError> {
-    let rows = read_required::<Vec<ProcedureDistinctRow>>(
+    Ok(describe_procedure_options_from_geometry_keys(
         store,
-        NavKvQuery::ProcedureDistinctRows {
-            airport_id: airport_id.to_string(),
-            procedure_id: procedure_id.to_string(),
-        },
-        "procedure distinct rows",
-    )?;
-    describe_procedure_options_from_rows(airport_id, procedure_id, kind, rows).map_err(Into::into)
+        airport_id,
+        procedure_id,
+        kind,
+    ))
 }
 
 pub(crate) fn materialize_procedure(
@@ -1425,33 +1420,343 @@ pub(crate) fn materialize_procedure(
     enroute_transition: Option<&str>,
     component_index: usize,
 ) -> Result<MaterializedProcedure, HadReadError> {
-    let rows = read_required::<Vec<ProcedureDistinctRow>>(
+    let record = read_required::<pgt::ProcedureGeometryRecord>(
         store,
-        NavKvQuery::ProcedureDistinctRows {
+        NavKvQuery::ProcedureGeometry {
             airport_id: airport_id.to_string(),
+            procedure_kind: kind,
             procedure_id: procedure_id.to_string(),
+            runway_transition: runway_transition.map(str::to_string),
+            enroute_transition: enroute_transition.map(str::to_string),
         },
-        "procedure distinct rows",
+        "procedure geometry",
     )?;
-    let legs = read_required::<Vec<ProcedureLegMaterializationRecord>>(
-        store,
-        NavKvQuery::ProcedureMaterializationRows {
-            airport_id: airport_id.to_string(),
-            procedure_id: procedure_id.to_string(),
-        },
-        "procedure materialization rows",
-    )?;
-    materialize_procedure_from_records(
-        airport_id,
-        procedure_id,
+    materialized_procedure_from_geometry_record(record, component_index).map_err(Into::into)
+}
+
+fn list_procedures_from_geometry(
+    store: &NavKvStore,
+    airport_id: &str,
+    kind: ProcedureKind,
+) -> Vec<ProcedureSummary> {
+    let prefix = crate::navkv::procedure_geometry_kind_prefix(airport_id, &kind);
+    let mut procedure_ids = store
+        .keys_with_prefix(&prefix)
+        .into_iter()
+        .filter_map(|key| {
+            let suffix = key.strip_prefix(&prefix)?;
+            let procedure_id = suffix.split('/').next()?;
+            decode_key_component(procedure_id).ok()
+        })
+        .collect::<Vec<_>>();
+    procedure_ids.sort();
+    procedure_ids.dedup();
+    procedure_ids
+        .into_iter()
+        .map(|procedure_id| ProcedureSummary {
+            airport_id: airport_id.trim().to_string(),
+            procedure_id,
+            kind: kind.clone(),
+        })
+        .collect()
+}
+
+fn describe_procedure_options_from_geometry_keys(
+    store: &NavKvStore,
+    airport_id: &str,
+    procedure_id: &str,
+    kind: ProcedureKind,
+) -> ProcedureOptions {
+    let prefix = crate::navkv::procedure_geometry_prefix(airport_id, &kind, procedure_id);
+    let mut valid_choices = store
+        .keys_with_prefix(&prefix)
+        .into_iter()
+        .filter_map(|key| {
+            let suffix = key.strip_prefix(&prefix)?;
+            let mut parts = suffix.split('/');
+            let runway_transition = decode_optional_transition_component(parts.next()?)?;
+            let enroute_transition = decode_optional_transition_component(parts.next()?)?;
+            if parts.next().is_some() {
+                return None;
+            }
+            Some(crate::ProcedureSpecChoice {
+                runway_transition,
+                enroute_transition,
+            })
+        })
+        .collect::<Vec<_>>();
+    valid_choices.sort_by(|left, right| {
+        left.runway_transition
+            .cmp(&right.runway_transition)
+            .then_with(|| left.enroute_transition.cmp(&right.enroute_transition))
+    });
+    valid_choices.dedup();
+
+    let mut runway_transitions = valid_choices
+        .iter()
+        .filter_map(|choice| choice.runway_transition.clone())
+        .collect::<Vec<_>>();
+    runway_transitions.sort();
+    runway_transitions.dedup();
+
+    let mut enroute_transitions = valid_choices
+        .iter()
+        .filter_map(|choice| choice.enroute_transition.clone())
+        .collect::<Vec<_>>();
+    enroute_transitions.sort();
+    enroute_transitions.dedup();
+
+    ProcedureOptions {
+        airport_id: airport_id.trim().to_string(),
+        procedure_id: procedure_id.trim().to_string(),
         kind,
-        runway_transition.map(str::to_string),
-        enroute_transition.map(str::to_string),
-        component_index,
-        rows,
-        enrich_procedure_materialization_records_from_store(store, airport_id, legs),
-    )
-    .map_err(Into::into)
+        runway_transitions,
+        enroute_transitions,
+        has_common_segment: valid_choices.len() > 1,
+        valid_choices,
+    }
+}
+
+fn decode_optional_transition_component(component: &str) -> Option<Option<String>> {
+    if component == "_" {
+        Some(None)
+    } else {
+        decode_key_component(component).ok().map(Some)
+    }
+}
+
+fn decode_key_component(component: &str) -> Result<String, String> {
+    let bytes = component.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = bytes.get(index + 1).copied().ok_or("truncated escape")?;
+            let low = bytes.get(index + 2).copied().ok_or("truncated escape")?;
+            out.push((hex_value(high)? << 4) | hex_value(low)?);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|err| err.to_string())
+}
+
+fn hex_value(byte: u8) -> Result<u8, String> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(format!("invalid hex digit {}", byte as char)),
+    }
+}
+
+fn materialized_procedure_from_geometry_record(
+    record: pgt::ProcedureGeometryRecord,
+    component_index: usize,
+) -> AppResult<MaterializedProcedure> {
+    let kind = procedure_kind_from_geometry(record.key.kind.clone());
+    let terminal_discontinuity = record
+        .terminal_discontinuity
+        .clone()
+        .map(procedure_discontinuity_from_geometry);
+    let concretized_items = concretized_items_from_geometry_record(&record);
+    let resolved_legs = record
+        .leg_bundles
+        .iter()
+        .map(|bundle| resolved_leg_from_geometry_bundle(&record, bundle, component_index))
+        .collect::<AppResult<Vec<_>>>()?;
+
+    Ok(MaterializedProcedure {
+        procedure: ProcedureSegment {
+            airport_id: AirportId(record.key.airport_id.trim().to_string()),
+            procedure_id: record.key.procedure_id.trim().to_string(),
+            kind,
+            runway_transition: record.key.runway_transition,
+            enroute_transition: record.key.enroute_transition,
+            terminal_discontinuity,
+        },
+        concretized_items,
+        resolved_legs,
+        data_quality: record
+            .data_quality
+            .into_iter()
+            .map(|annotation| annotation.message)
+            .collect(),
+    })
+}
+
+fn concretized_items_from_geometry_record(
+    record: &pgt::ProcedureGeometryRecord,
+) -> Vec<ConcretizedNavItem> {
+    let mut items = Vec::new();
+    for bundle in &record.leg_bundles {
+        for waypoint in &bundle.waypoints {
+            let item = ConcretizedNavItem::Waypoint {
+                nav_ref: nav_ref_from_geometry(waypoint.nav_ref.clone()),
+            };
+            if !matches!(
+                (items.last(), &item),
+                (
+                    Some(ConcretizedNavItem::Waypoint { nav_ref: left }),
+                    ConcretizedNavItem::Waypoint { nav_ref: right }
+                ) if left == right
+            ) {
+                items.push(item);
+            }
+        }
+    }
+    if let Some(discontinuity) = record
+        .terminal_discontinuity
+        .clone()
+        .map(procedure_discontinuity_from_geometry)
+    {
+        items.push(ConcretizedNavItem::Discontinuity {
+            label: discontinuity.display_label().to_string(),
+            discontinuity,
+        });
+    }
+    items
+}
+
+fn resolved_leg_from_geometry_bundle(
+    record: &pgt::ProcedureGeometryRecord,
+    bundle: &pgt::ProcedureGeometryLegBundle,
+    component_index: usize,
+) -> AppResult<ResolvedLeg> {
+    Ok(ResolvedLeg {
+        id: bundle.id.clone(),
+        from: nav_ref_from_geometry(bundle.from.clone()),
+        to: nav_ref_from_geometry(bundle.to.clone()),
+        source: ResolvedLegSource::RouteComponent { component_index },
+        procedure_provenance: Some(ProcedureLegProvenance {
+            airport_id: record.key.airport_id.clone(),
+            procedure_id: record.key.procedure_id.clone(),
+            kind: procedure_kind_from_geometry(record.key.kind.clone()),
+            role: procedure_segment_role_from_geometry(bundle.role.clone()),
+            path_termination: path_termination_from_geometry(bundle.path_termination.clone()),
+            leg_sequence: bundle.leg_sequence,
+            display_path: Some(display_path_from_geometry(bundle.path.clone())),
+        }),
+    })
+}
+
+fn display_path_from_geometry(path: pgt::ProcedureGeometryPath) -> LegDisplayPath {
+    LegDisplayPath {
+        style: match path.style {
+            pgt::ProcedureGeometryPathStyle::Solid => LegDisplayPathStyle::Solid,
+            pgt::ProcedureGeometryPathStyle::Dashed => LegDisplayPathStyle::Dashed,
+        },
+        elements: path
+            .elements
+            .into_iter()
+            .map(|element| match element {
+                pgt::ProcedureGeometryElement::Segment { start, end } => {
+                    LegDisplayElement::Segment {
+                        start: lat_lon_from_geometry(start),
+                        end: lat_lon_from_geometry(end),
+                    }
+                }
+                pgt::ProcedureGeometryElement::Arc {
+                    center,
+                    radius_nm,
+                    start,
+                    end,
+                    clockwise,
+                    sweep_degrees,
+                } => LegDisplayElement::Arc {
+                    center: lat_lon_from_geometry(center),
+                    radius_nm,
+                    start: lat_lon_from_geometry(start),
+                    end: lat_lon_from_geometry(end),
+                    clockwise,
+                    sweep_degrees,
+                },
+            })
+            .collect(),
+        effective_terminal_course_deg: path.effective_terminal_course_deg,
+        debug_element_sources: Vec::new(),
+        debug_element_roles: Vec::new(),
+    }
+}
+
+fn lat_lon_from_geometry(value: pgt::ProcedureLatLon) -> LatLon {
+    LatLon {
+        lat: value.lat,
+        lon: value.lon,
+    }
+}
+
+fn nav_ref_from_geometry(value: pgt::ProcedureNavRef) -> NavRef {
+    match value {
+        pgt::ProcedureNavRef::Airport(id) => NavRef::Airport(id),
+        pgt::ProcedureNavRef::Navaid(id) => NavRef::Navaid(id),
+        pgt::ProcedureNavRef::Fix(id) => NavRef::Fix(id),
+        pgt::ProcedureNavRef::ArincNavaid {
+            identifier,
+            icao_code,
+            section_code,
+            subsection_code,
+        } => NavRef::ArincNavaid {
+            identifier,
+            icao_code,
+            section_code,
+            subsection_code,
+        },
+        pgt::ProcedureNavRef::TerminalNavaid {
+            airport_id,
+            identifier,
+            icao_code,
+            section_code,
+            subsection_code,
+        } => NavRef::TerminalNavaid {
+            airport_id,
+            identifier,
+            icao_code,
+            section_code,
+            subsection_code,
+        },
+        pgt::ProcedureNavRef::LatLon(value) => NavRef::LatLon(lat_lon_from_geometry(value)),
+    }
+}
+
+fn procedure_kind_from_geometry(kind: pgt::ProcedureKind) -> ProcedureKind {
+    match kind {
+        pgt::ProcedureKind::Sid => ProcedureKind::Sid,
+        pgt::ProcedureKind::Star => ProcedureKind::Star,
+        pgt::ProcedureKind::Approach => ProcedureKind::Approach,
+    }
+}
+
+fn procedure_discontinuity_from_geometry(
+    discontinuity: pgt::ProcedureDiscontinuity,
+) -> ProcedureDiscontinuity {
+    match discontinuity {
+        pgt::ProcedureDiscontinuity::Vectors => ProcedureDiscontinuity::Vectors,
+        pgt::ProcedureDiscontinuity::Hold => ProcedureDiscontinuity::Hold,
+        pgt::ProcedureDiscontinuity::Other(label) => ProcedureDiscontinuity::Other(label),
+    }
+}
+
+fn procedure_segment_role_from_geometry(role: pgt::ProcedureSegmentRole) -> ProcedureSegmentRole {
+    match role {
+        pgt::ProcedureSegmentRole::EnrouteTransition => ProcedureSegmentRole::EnrouteTransition,
+        pgt::ProcedureSegmentRole::Common => ProcedureSegmentRole::Common,
+        pgt::ProcedureSegmentRole::RunwayTransition => ProcedureSegmentRole::RunwayTransition,
+    }
+}
+
+fn path_termination_from_geometry(path: pgt::ProcedurePathTermination) -> PathTermination {
+    match path {
+        pgt::ProcedurePathTermination::InitialFix => PathTermination::InitialFix,
+        pgt::ProcedurePathTermination::TrackToFix => PathTermination::TrackToFix,
+        pgt::ProcedurePathTermination::CourseToFix => PathTermination::CourseToFix,
+        pgt::ProcedurePathTermination::DirectToFix => PathTermination::DirectToFix,
+        pgt::ProcedurePathTermination::HeadingToManual => PathTermination::HeadingToManual,
+        pgt::ProcedurePathTermination::HeadingToAltitude => PathTermination::HeadingToAltitude,
+        pgt::ProcedurePathTermination::Other(value) => PathTermination::Other(value),
+    }
 }
 
 fn preview_flight_plan_entry(
@@ -1996,22 +2301,20 @@ fn describe_plate_loads(
         let Some(preferred) = crate::select_preferred_cifp_tpp_match(match_rows.clone()) else {
             continue;
         };
-        let distinct_rows = read_required::<Vec<ProcedureDistinctRow>>(
+        let options = describe_procedure_options_from_geometry_keys(
             store,
-            NavKvQuery::ProcedureDistinctRows {
-                airport_id: preferred.airport_id.clone(),
-                procedure_id: preferred.cifp_id.clone(),
-            },
-            "procedure distinct rows",
-        )?;
-        if distinct_rows.is_empty() {
+            &preferred.airport_id,
+            &preferred.cifp_id,
+            ProcedureKind::Approach,
+        );
+        if options.valid_choices.is_empty() {
             continue;
         }
         candidates.push(PlateProcedureLoadCandidateInput {
             airport_id: preferred.airport_id,
             cifp_id: preferred.cifp_id,
             match_rows,
-            distinct_rows,
+            options,
         });
     }
     describe_plate_procedure_load_options(plan, candidates).map_err(Into::into)

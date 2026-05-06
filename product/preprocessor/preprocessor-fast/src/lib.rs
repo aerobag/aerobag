@@ -1472,13 +1472,9 @@ fn parse_pirep_hazards(raw_text: &str) -> PirepHazards {
         if tokens.is_empty() {
             continue;
         }
-        let severity = pirep_hazard_severity(&tokens);
-        if pirep_section_mentions_icing(&tokens) {
-            icing = icing.max(severity);
-        }
-        if pirep_section_mentions_turbulence(&tokens) {
-            turbulence = turbulence.max(severity);
-        }
+        let section_hazards = pirep_section_hazards(&tokens);
+        icing = icing.max(section_hazards.icing);
+        turbulence = turbulence.max(section_hazards.turbulence);
     }
 
     PirepHazards { icing, turbulence }
@@ -1505,22 +1501,56 @@ fn pirep_hazard_tokens(section: &str) -> Vec<String> {
         .collect()
 }
 
-fn pirep_section_mentions_icing(tokens: &[String]) -> bool {
-    tokens.iter().any(|token| {
-        matches!(
-            token.as_str(),
-            "IC" | "ICE" | "ICING" | "RIME" | "CLRICE" | "MXD" | "MXDICE"
-        )
-    })
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PirepHazardKind {
+    Icing,
+    Turbulence,
 }
 
-fn pirep_section_mentions_turbulence(tokens: &[String]) -> bool {
-    tokens.iter().any(|token| {
-        matches!(
-            token.as_str(),
-            "TB" | "TURB" | "TURBC" | "TURBULENCE" | "CHOP"
-        )
-    })
+fn pirep_section_hazards(tokens: &[String]) -> PirepHazards {
+    let anchors = tokens
+        .iter()
+        .enumerate()
+        .filter_map(|(index, token)| pirep_hazard_kind(token).map(|kind| (index, kind)))
+        .collect::<Vec<_>>();
+    let mut icing = PirepHazardSeverity::None;
+    let mut turbulence = PirepHazardSeverity::None;
+
+    for (anchor_index, (token_index, kind)) in anchors.iter().enumerate() {
+        let next_hazard_index = anchors
+            .get(anchor_index + 1)
+            .map(|(index, _)| *index)
+            .unwrap_or(tokens.len());
+        let mut span_end = next_hazard_index;
+        if let Some(relative_index) = tokens[token_index + 1..span_end]
+            .iter()
+            .position(|token| matches!(token.as_str(), "RM" | "RMK"))
+        {
+            span_end = token_index + 1 + relative_index;
+        }
+
+        let mut severity = pirep_hazard_severity(&tokens[token_index + 1..span_end]);
+        if severity == PirepHazardSeverity::Unknown && *token_index > 0 {
+            severity = pirep_hazard_severity(&tokens[token_index - 1..*token_index]);
+        }
+
+        match kind {
+            PirepHazardKind::Icing => icing = icing.max(severity),
+            PirepHazardKind::Turbulence => turbulence = turbulence.max(severity),
+        }
+    }
+
+    PirepHazards { icing, turbulence }
+}
+
+fn pirep_hazard_kind(token: &str) -> Option<PirepHazardKind> {
+    match token {
+        "IC" | "ICE" | "ICING" | "RIME" | "CLRICE" | "MXD" | "MXDICE" => {
+            Some(PirepHazardKind::Icing)
+        }
+        "TB" | "TURB" | "TURBC" | "TURBULENCE" | "CHOP" => Some(PirepHazardKind::Turbulence),
+        _ => None,
+    }
 }
 
 fn pirep_hazard_severity(tokens: &[String]) -> PirepHazardSeverity {
@@ -3799,6 +3829,12 @@ mod tests {
                 "light-icing",
                 "light",
                 "none",
+            ),
+            (
+                "ARP SWR7C 4306N 05511W 2242 F390 MS54 253/130KT TB OCNL SEV CAT IC RM A333",
+                "severe-turbulence",
+                "unknown",
+                "severe",
             ),
         ] {
             let hazards = parse_pirep_hazards(raw_text);

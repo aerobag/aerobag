@@ -155,3 +155,33 @@ rows and columns (regions and products), the user can "pause all" and then unpau
 row+columns they want, and get the right effect for the example use case of "I just want these
 three charts." So the first cut of the user state is actually {unselected, pause, play} for
 each region and for each product.
+
+# UI
+
+On the offline package selection page:
+Let's divide the rows up into columnar sections.
+at the left, the PLAY/PAUSE/OFF is replaced with media-play (in magenta), media-pause (in orange), and delete (circle with a line through it, in red) icons. It's the only active surface; pressing it cycles the request state (in
+the in-core planner, obvs.)
+After that is the row label ("East Central", "Plates").
+After that is the plan:
+    Compute the set of changes we're going to make that match this row, for
+    (region,product,cycle) tuples. For example, if the row is Northwest, suppose our plan now says:
+        we're going to GC 2603 NW TPP and 2603 NW TAC
+        we're keeping 2604 NW SEC and 2604 NW TAC because they're in "play"
+        we're fetching 2605 NW SEC and 2605 NW TPP and 2604 TAC
+        we're NOT fetching 2605 NW IFR-L because it's in "pause" (even though NW is in "play")
+    then we're going to write
+        ( del ) 2 2603
+        ( keep) 2 2604
+        (pause) 1 2605
+        (fetch) 3 2604, 2605
+    Each (label) is an icon, and the text for each row is a color associated with that label:
+        (del) is the slashed-circle, text is red
+        (keep) is a white disc, text is white
+        (pause) is media-pause, text is orange
+        (fetch) is media-play, text is magenta
+    (The plan may need to be two lines or truncated with ellipses...)
+After that is size info: [white text] 3.6G [magenta text] +0.8G = 4.4G
+    White says how much space the packages in that row are occupying in storage now.
+    Magenta says how much will be downloaded/removed and (after the =) the new total
+    when the sync+gc is complete.

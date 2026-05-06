@@ -881,9 +881,48 @@ x   4. keep webNavDb.ts only if it remains necessary as a transport/bootstrap la
   - core owns the higher-level “open nav-db artifact” workflow
   - then core could be the one concluding “this artifact is unreadable”
 
+------------------------------------------------------------------------------
+
+x Let's add a facility for selecting items on the chart and learing about them.
+x A "click" (which we need to differentiate from a drag-- will both platforms have
+x good UI filtering for that so we can ignore it?) on a spot on the chart should:
+x 
+x - identify all the clickable points in a 1-thumb diameter from the click (using
+x 	vector tiles for performance. We may have to check four tiles, if the click is near an intersection.)
+x - union in all the polygon regions that the exact click intersects. (No thumb-diameter
+x 	slop here; if the poly is too small to click accurately, user can zoom or didn't mean it)
+x 	
+x - pop up a menu tray with categories:
+x 	airport
+x 	navaid (VORs, intersections)
+x 	airspace (polygons)
+x 	spot (a special item that is always present, representing the exact lat/lon of the click)
+x Each tray row will have a (possibly-empty) list of matching items, 1x1 thumb
+x each. The tray is 3.5 thumb wide, so if there are >3 items in a row, the user
+x will see the 4th hiding under the edge, as a hint to scroll. Each row
+x drag-scrolls horizontally separately, so the user can slide a long list without
+x shifting the other rows.
+x 
+x When the user selects an item from a list, an item-specific sub-tray will pop up with options:
+x navaids: [one cell is display-only: show the freq for a VOR], [direct-to], [Insert in flight plan]
+x airports: [one cell is display-only: show elev], [direct-to], [Insert in flight plan],
+x 	[plates], [Chart Supp (jumps straight to csup on plate page)], [runways].
+x 	(later we'll add WX, Notams)
+x airspace: [display-only cell: shows the type, bottom and top altitude limits]
+x spot: [display-only cell shows point elevation from terrain tile], [direct-to], [Insert in flight plan (we'll have to discuss representation)]
+x 
+x As you plan this feature, remember: the feature should occur almost entirely in core.
+x The ONLY thing you can do in UI is: send the lat/lon down on click, receive the tray info and
+x render it (including which buttons/cells are enabled), forward tray-button clicks.
+x Trays are modal like any other tray, with scrim.
+x Some of these behaviors may not be well-defined yet; for those, let's put in placeholders (wired
+x all the way into core) until we want to fill them out.
 
 ------------------------------------------------------------------------------
 Bugs/Incomplete
+
+Android says "LIVE POSITION", web says "NO GPS POSITION". Why do those diverge?
+M-VC split failure?
 
 Approaches:
 CEC ILS or LOC RWY 12: 10 nm from SLAMM. We good?
@@ -911,6 +950,32 @@ it opens a page with the active warnings.
 Warnings include:
 - Procedure contains procedure turn; confirm it stays within plate limits
 - {ADSB, NEXRAD, METAR} data is old
+data age cautions for NEXRAD, METARs, ADSB, NOTAMs, TFRs.
+
+I think we're ready to productionize this thing. Here's what we're going to do:
+1. Move procedure decoding into preproc. Where are you finding the "preprocessed" rows
+right now? They're in the internal sqlitedb, not the nav-db, right?
+2. You're going to emit nav-db records with a key scheme like:
+procedure-geometry/KRGK/VOR-A/DARTE -> json{}
+The key fields should be standard keys; if we don't have one already, stop and discuss.
+Right now, I can select KRGK/VOR A/DARTE from the flight plan page; we should be using
+the unique keys that match those.
+3. We want four things in the output:
+- the sequence of geometry elements (segments & arcs) we're going to draw (and
+  sequence through as ownship moves)
+- the named waypoints from the input rows along that geometry. In the UI, we might
+  have an "active leg" that's actually a sequence of geometric steps but is conceptually
+  one "leg" from the FP point of view. The user wants to see step-down fixes sequencing
+  in the CDI.
+- the sequencing rule at the end of each of these leg bundles. Do we sequence to the next
+  one, or suspend (because we're in a hold)? I think the raw rows are supposed to tell us
+  this, right?
+- An annotation indicating data quality. The default is None. But for every place we have
+  an explicit validator apology, we're going to generate Some(str) where the string
+  describes what's suspicious. For example,
+  "Procedure encoding says remain within 1.0NM, assumed error; read plate for controlling value."
+  (We're going to surface this in the UI with a caution icon that can be expanded to show
+  this message.)
 
 SIDs and STARs
 
@@ -920,6 +985,8 @@ Validate approach plates by drawing the approaches over them from db with crossh
 Missing full_coverage_zoom behavior for shaded relief and terrain.
 Those require some re-architecting at the preproc level to assemble results
 from various regions.
+
+CDI arrow should flip on passing the leg-end waypoint (notable if we're suspended)
 
 x aerobag-four:
 x Long flight plan lines are straight on web mercator. We're not doing great circles,
@@ -956,6 +1023,17 @@ x And even the class B stuff is way too detailed out there. Could we keep only
 x the outer perimeter (the union of all the paths) at high zooms, and then let the
 x shelves materialize as the user zooms in?
 
+x Hit-testing for airports only selects those that survive our rendering filter. But it
+x should include all airports, because if I click on KGRF or a seaport, I might want to
+x know about it, and there's room in the tray.
+x 
+x METARs shouldn't render past z5 OR we should have some "high priority filter" for big stations.
+
+METAR icon
+
+Click testing should look for METARs (in z7 tiles), and if it finds one, paint the
+symbol in a cell on the tray. It goes in the same row as SPOT, and sorted after SPOT.
+
 ------------------------------------------------------------------------------
 Refactoring & Cleanups
 
@@ -973,9 +1051,9 @@ Divide this task into: ui-core, ui-web, ui-android, and preprocessor.
 Look through the source tree to find leftover development fixtures and cruft.
 What can we clean out?
 
-Look through the source tree with an eye towards cleanup. Are there things
-we're doing k times that might be candidates for factoring into a common
-place?
+x Look through the source tree with an eye towards cleanup. Are there things
+x we're doing k times that might be candidates for factoring into a common
+x place?
 
 Go through all the logging. Turn it all off? Maybe comment out stuff that's
 valuable / guard it with a flag we can turn back on.
@@ -984,15 +1062,41 @@ Control any upstream backchannel path so when we deploy this, end-users don't
 find themselves streaming log data back to my server.
 
 
-› The detour: We changed the nav_db contract and re-ran production and took a
-  snapshot. But our publish dirs still have the historical
-  current_artifacts_DATE files (GC roots) that reference nav_dbs with the old
-  contract, which is confusing the app (which we rolled forward to the new
-  contract). Can we (a) re-run those historical builds to get new manifests,
-  (b) delete the old manifests so they're not discoverable by the app (in
-  history-debugging mode), and then (c) run GC to clean up the bogus nav_dbs
-  they point at?
 
+x It's easy to develop features first on web.
+x I spend a lot of time trying to get Android back to parity with web.
+x I wonder if I can get you to do that. What if you could:
+x - launch web in a headless chrome designed for automated UI testing.
+x - launch android in a corresponding test environment.
+x - navigate the UIs. Develop "user journeys" through the map, through the plates,
+x across the pages, through the flight plan. Then confirm that the journeys
+x work the same on both, that the widgets used for the journeys are present
+x on both, look basically the same, work the same. Drive the user journeys to
+x touch all the surfaces & appearances.
+x - It's okay to "cheat" (use app metadata) to find the buttons and things if
+x image interpretation is tricky, but either is fine.
+x 
+x Sound feasible?
+
+Need to do the symbol commoning treatment for:
+seaports
+heliports
+private airports
+SPOT symbol
+wx + pirep symbols
+
+airspace normalization for button appearance on android doesn't match web, which fills the icon
+and centers.
+
+
+  On shared symbol assets: yes, we should do that. The clean version is a single
+  shared symbol spec directory, probably SVG/path-oriented, plus a build step that
+  emits web constants and Android Path builders from the same source. I did not do
+  that generator in this pass; I fixed the current mismatches directly first.
+
+
+Clean up stale avare refs
+rename java namespace to org.aerobag
 
 ------------------------------------------------------------------------------
 Major missing features
@@ -1002,6 +1106,9 @@ Ownship from real GPS!
   Altitude optimizer!
 
 Download manager
+- progress
+- background downloads with dropdown progress
+- unattended download update checks
 
 Long-press to select vector features:
 - Selects items in a reasonable radius of your click (based on zoom level)
@@ -1072,6 +1179,7 @@ The last field is the available cycles (or prod date for non-cycle products).
 		Fetching: Yellow text with a "+" prefix, bottom row
 		Removing: Gray text with a strikethrough, bottom row
 		Uninstalled: Gray text, bottom row
+	Display GB to fetch / to GC free / total used / device available
 
 
 wx cams (eg SAC 150 13nm)
@@ -1183,6 +1291,8 @@ Airport selector list:
 - we'll maintain an LRU-cache list of "recently touched airports"
 - maybe a list of "first 5 towered airports by distance from airplane."
 
+Search for airports by city/friendly name. Just a full-text scan? Or fancy prefix index?
+
 Should we make some adjustments to zoom fallback to reduce the phase-in effect
 at startup / improve performance? Maybe it's too little to worry about.
 
@@ -1194,13 +1304,47 @@ Flight plan munging/hiding. When you select a procedure, does it *replace* the
 airport? (For approaches, I think it does on the 750.) If so, we should put the
 airport name and symbol in the procedure heading.
 
+x Upper-left button on CHART page is now a toggle. If we're on the chart page, it shows CHART and the
+x chart icon, has a little toggle icon at the top center, and when you click it, we jump to the plate
+x page. On the PLATE page, same idea, shows PLATE and the plate icon, toggle is slid the other way, and
+x when you click it, you jump back to the CHART page.
+x 
+x Okay, but now scoot all the buttons over one space and insert a HOME button. That takes us to what is
+x now called the Settings page. We're going to rename that the HOME page. (So we'll need that HOME button
+x on the PLAN page, too, to be able to get anywhere interesting.)
+x 
+x The buttons on the home page become: CHART, PLATE, FLIGHT PLAN, and OFFLINE PACKAGES (which only shows
+x up on Android right now.)
+
+
+We need health monitoring on the preprocessing pipeline:
+- are the charts arriving on time?
+- are the fast products coming in on time? Latency? Gaps? (enough data to tune the poll period)
+
+
 ------------------------------------------------------------------------------
 Android parity gaps
 
-Shaded relief menu.
-
-Terrain
+Airspace boundary rendering.
 
 free text flight plan input
 
+change package path to org.aerobag.app?
+
+
+Perf
+  - Add a bounded cross-page bitmap LRU for raster tiles. Not “keep page alive”, just retain maybe the last N                                                                       
+    decoded tiles or last selected map bundle. This directly attacks PLATE -> CHART reload without preserving                                                                       
+    whole UI state.                          
+  - Limit concurrent zip reads/decode to a sane number. Current full-batch parallelism improved crispness but   
+    may create zip/file contention. A dispatcher/semaphore around reads may reduce worst-case wall time.                                                                            
+  - Prefetch on PLATE page after leaving CHART. If memory budget allows bytes but not bitmaps, retain                                                                               
+    compressed tile bytes or warm zip entries for the likely return viewport.             
+  - Reduce planned Android raster count if density/viewport math is over-eager. This is the first thing I’d                                                                         
+    measure next, because 96 vs 22 is a much bigger gap than 300ms vs 200ms.              
+
 ------------------------------------------------------------------------------
+
+Hot list
+
+Nasty delay on refresh operation.

@@ -1,7 +1,20 @@
 Debt of gratitude. Flew behind Avare for ten years (?) and a thousand hours.
 
+Same UI on web and android! Plan on your desktop; use the same app in the plane.
+Logic in a shared core to keep the apps behaving the same.
+
 Vector-rendering on shaded relief: enables track-up
 
 Terrain warning layer
 
+Flight plans
+	- free text entry with dynamic validation
+	- airways
+	- procedures, including drawing them on the chart
 
+Offline download selection
+	- simpler matrix selection
+	- fetches next cycle when it's ready, which can be up to 20 days before the
+	cycle begins. Good if you're on the road when the cycle changes!
+
+Flight track replay.

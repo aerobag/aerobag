@@ -37,7 +37,14 @@ import planViewIcon from "./assets/plan-view-icon.svg";
 import {
   airportCircleMarkerPath,
   airportFuelMarkerPath,
+  heliportHPath,
   mapSelectionSpotPegPath,
+  obstacleDotRadius,
+  obstacleShortDotY,
+  obstacleShortPath,
+  obstacleTallDotY,
+  obstacleTallPath,
+  seaplaneAnchorPath,
   vorBandPath,
   vorOuterHexPath,
 } from "./generated/navSymbols";
@@ -696,12 +703,10 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
           <path d={airportCircleMarkerPath} className={airportClass} />
         )}
         {isHeliport ? (
-          <text x="0" y="6" textAnchor="middle" className="airportSpecialGlyph airportHeliportGlyph">
-            H
-          </text>
+          <path d={heliportHPath} className="airportSpecialGlyph airportHeliportGlyph" />
         ) : isSeaplaneBase ? (
           <path
-            d="M 0 -9 L 0 5 M -5 -5 L 5 -5 M -7 2 C -5 8 5 8 7 2"
+            d={seaplaneAnchorPath}
             transform="rotate(15)"
             className="airportSpecialGlyph airportAnchorGlyph"
           />
@@ -759,11 +764,8 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
         ? "obstacleDot obstacleMutedFill"
         : "obstacleDot obstacleCautionFill";
     const isTallObstacle = feature.obstacle_variant === "tall";
-    const obstaclePath = isTallObstacle
-      ? "M -8 7.2 Q -6.6 4.4 -4.2 -1.2 Q -2.4 -7.0 -1.2 -15.6 Q -0.4 -24.0 0 -34.0 Q 0.4 -24.0 1.2 -15.6 Q 2.4 -7.0 4.2 -1.2 Q 6.6 4.4 8 7.2"
-      : "M -7.2 7.2 L 0 -14.4 L 7.2 7.2";
-    const obstacleDotY = isTallObstacle ? 6.0 : 4.8;
-    const obstacleDotRadius = isTallObstacle ? 2.05 : 2.05;
+    const obstaclePath = isTallObstacle ? obstacleTallPath : obstacleShortPath;
+    const obstacleDotY = isTallObstacle ? obstacleTallDotY : obstacleShortDotY;
     return (
       <>
         <path d={obstaclePath} className={`${obstacleClass} obstacleMarkerUnder`} />

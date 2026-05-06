@@ -4,7 +4,16 @@
     "airport_circle_marker": "M 0 -12 A 12 12 0 1 1 0 12 A 12 12 0 1 1 0 -12 Z",
     "airport_fuel_marker": "M -4 -17 H 4 V -11.314 A 12 12 0 0 1 11.314 -4 H 17 V 4 H 11.314 A 12 12 0 0 1 4 11.314 V 17 H -4 V 11.314 A 12 12 0 0 1 -11.314 4 H -17 V -4 H -11.314 A 12 12 0 0 1 -4 -11.314 Z",
     "fix_triangle": "M 0 -8 L 7 6 L -7 6 Z",
+    "heliport_h": "M -5 -7 V 7 M 5 -7 V 7 M -5 0 H 5",
+    "seaplane_anchor": "M 0 -9 L 0 5 M -5 -5 L 5 -5 M -7 2 C -5 8 5 8 7 2",
+    "obstacle_short": "M -7.2 7.2 L 0 -14.4 L 7.2 7.2",
+    "obstacle_tall": "M -8 7.2 Q -6.6 4.4 -4.2 -1.2 Q -2.4 -7 -1.2 -15.6 Q -0.4 -24 0 -34 Q 0.4 -24 1.2 -15.6 Q 2.4 -7 4.2 -1.2 Q 6.6 4.4 8 7.2",
     "map_selection_spot_peg": "M 0 0 C -9 -9 -12 -16 -12 -23 A 12 12 0 1 1 12 -23 C 12 -16 9 -9 0 0 Z"
+  },
+  "obstacle_dot": {
+    "short_y": 4.8,
+    "tall_y": 6.0,
+    "radius": 2.05
   },
   "airport_fuel_marker": {
     "circle_radius": 12,

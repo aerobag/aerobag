@@ -278,6 +278,13 @@ import kotlinx.serialization.json.jsonPrimitive
 import net.jonh.aerobag.prototype.generated.airportCircleMarkerPath
 import net.jonh.aerobag.prototype.generated.airportFuelMarkerPath
 import net.jonh.aerobag.prototype.generated.fixTrianglePath
+import net.jonh.aerobag.prototype.generated.heliportHPath
+import net.jonh.aerobag.prototype.generated.obstacleDotRadius
+import net.jonh.aerobag.prototype.generated.obstacleShortDotY
+import net.jonh.aerobag.prototype.generated.obstacleShortPath
+import net.jonh.aerobag.prototype.generated.obstacleTallDotY
+import net.jonh.aerobag.prototype.generated.obstacleTallPath
+import net.jonh.aerobag.prototype.generated.seaplaneAnchorPath
 import net.jonh.aerobag.prototype.generated.vorBandPath
 import net.jonh.aerobag.prototype.generated.vorOuterHexPath
 import kotlinx.serialization.SerialName
@@ -5793,10 +5800,30 @@ private fun MapExplorerPage(
                     val center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat())
                     val isAirport = feature.styleClass == "airport" || feature.kind.equals("airport", ignoreCase = true)
                     val isVor = feature.styleClass == "nav" || feature.kind.lowercase().contains("vor")
+                    val isObstacle =
+                        feature.styleClass.startsWith("obstacle") ||
+                            feature.kind.equals("obs", ignoreCase = true) ||
+                            feature.kind.equals("obstacle", ignoreCase = true)
                     if (isAirport) {
                         val airportFillColor = if (feature.towered) airportToweredFillColor else airportUntoweredFillColor
                         val airportLabelPaint = if (feature.towered) airportToweredLabelFillPaint else airportUntoweredLabelFillPaint
-                        if (feature.fuelAvailable) {
+                        val usesOpenAirportCircle =
+                            feature.heliport == true ||
+                                feature.hasWaterRunway == true ||
+                                feature.hasPavedRunway == false
+                        if (usesOpenAirportCircle) {
+                            val markerPath = airportCircleMarkerPath(center, densityScale)
+                            drawPath(
+                                markerPath,
+                                Color.White.copy(alpha = 0.86f),
+                                style = Stroke(width = 5f * densityScale),
+                            )
+                            drawPath(
+                                markerPath,
+                                airportUntoweredFillColor,
+                                style = Stroke(width = 2.5f * densityScale),
+                            )
+                        } else if (feature.fuelAvailable) {
                             val markerPath = airportFuelMarkerPath(center, densityScale)
                             drawPath(markerPath, airportFillColor)
                             drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * densityScale))
@@ -5805,7 +5832,24 @@ private fun MapExplorerPage(
                             drawPath(markerPath, airportFillColor)
                             drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * densityScale))
                         }
-                        feature.longestRunwayHeadingTrueDeg?.let { headingDeg ->
+                        if (feature.heliport == true) {
+                            val heliportPath = heliportHPath(center, densityScale)
+                            drawPath(
+                                heliportPath,
+                                airportUntoweredFillColor,
+                                style = Stroke(width = 2.4f * densityScale, cap = StrokeCap.Round),
+                            )
+                        } else if (feature.hasWaterRunway == true) {
+                            rotate(15f, center) {
+                                val anchorPath = seaplaneAnchorPath(center, densityScale)
+                                drawPath(
+                                    anchorPath,
+                                    airportUntoweredFillColor,
+                                    style = Stroke(width = 2.2f * densityScale, cap = StrokeCap.Round),
+                                )
+                            }
+                        }
+                        if (!usesOpenAirportCircle) feature.longestRunwayHeadingTrueDeg?.let { headingDeg ->
                             val headingRad = Math.toRadians(headingDeg)
                             val runwayHalfLength = (8f * feature.runwayLengthRatio.toFloat().coerceIn(0f, 1f)).coerceAtLeast(1.6f) * densityScale
                             val dx = kotlin.math.sin(headingRad).toFloat() * runwayHalfLength
@@ -5842,6 +5886,47 @@ private fun MapExplorerPage(
                             val textY = center.y - 24f * densityScale
                             drawText(feature.label, center.x, textY, fixLabelStrokePaint)
                             drawText(feature.label, center.x, textY, vorLabelFillPaint)
+                        }
+                    } else if (isObstacle) {
+                        val isTallObstacle = feature.obstacleVariant == "tall"
+                        val obstaclePath = if (isTallObstacle) {
+                            obstacleTallPath(center, densityScale)
+                        } else {
+                            obstacleShortPath(center, densityScale)
+                        }
+                        val dotY = if (isTallObstacle) obstacleTallDotY else obstacleShortDotY
+                        val obstacleColor = when (feature.styleClass) {
+                            "obstacle-danger" -> Color(0xFFD83A2E)
+                            "obstacle-muted" -> Color(0xB8FFD34D)
+                            else -> Color(0xFFFFD34D)
+                        }
+                        val obstacleUnderColor = Color(0xD1081218)
+                        drawPath(
+                            obstaclePath,
+                            obstacleUnderColor,
+                            style = Stroke(width = 2.4f * densityScale, join = StrokeJoin.Miter),
+                        )
+                        drawPath(
+                            obstaclePath,
+                            obstacleColor,
+                            style = Stroke(width = 1.2f * densityScale, join = StrokeJoin.Miter),
+                        )
+                        drawCircle(
+                            color = obstacleUnderColor,
+                            radius = obstacleDotRadius * densityScale,
+                            center = Offset(center.x, center.y + dotY * densityScale),
+                        )
+                        drawCircle(
+                            color = obstacleColor,
+                            radius = obstacleDotRadius * densityScale,
+                            center = Offset(center.x, center.y + dotY * densityScale),
+                        )
+                        if (feature.label.isNotEmpty()) {
+                            drawContext.canvas.nativeCanvas.apply {
+                                val textY = center.y - 14f * densityScale
+                                drawText(feature.label, center.x, textY, fixLabelStrokePaint)
+                                drawText(feature.label, center.x, textY, fixLabelFillPaint)
+                            }
                         }
                     } else {
                         val triangle = fixTrianglePath(center, 8f * densityScale)
@@ -9406,6 +9491,10 @@ private fun PlanWaypointSymbol(
         val vorMarkerColor = uiTheme.aviation.classBDBlue
         val isAirport = feature.styleClass == "airport" || feature.kind.equals("airport", ignoreCase = true)
         val isVor = feature.styleClass == "nav" || feature.kind.contains("vor", ignoreCase = true)
+        val isObstacle =
+            feature.styleClass.startsWith("obstacle") ||
+                feature.kind.equals("obs", ignoreCase = true) ||
+                feature.kind.equals("obstacle", ignoreCase = true)
         when {
             isAirport -> {
                 val usesOpenAirportCircle =
@@ -9434,38 +9523,18 @@ private fun PlanWaypointSymbol(
                     drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * scale))
                 }
                 if (feature.heliport == true) {
-                    drawContext.canvas.nativeCanvas.apply {
-                        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                            color = airportMarkerStrokeColor.toArgb()
-                            textAlign = Paint.Align.CENTER
-                            textSize = 13f * scale
-                            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                        }
-                        drawText("H", center.x, center.y + 4.5f * scale, paint)
-                    }
+                    val heliportPath = heliportHPath(center, scale)
+                    drawPath(
+                        heliportPath,
+                        openAirportStrokeColor,
+                        style = Stroke(width = 2.4f * scale, cap = StrokeCap.Round),
+                    )
                 } else if (feature.hasWaterRunway == true) {
                     rotate(15f, center) {
-                        drawLine(
-                            color = airportMarkerStrokeColor,
-                            start = Offset(center.x, center.y - 9f * scale),
-                            end = Offset(center.x, center.y + 5f * scale),
-                            strokeWidth = 2.4f * scale,
-                            cap = StrokeCap.Round,
-                        )
-                        drawLine(
-                            color = airportMarkerStrokeColor,
-                            start = Offset(center.x - 5f * scale, center.y - 5f * scale),
-                            end = Offset(center.x + 5f * scale, center.y - 5f * scale),
-                            strokeWidth = 2.4f * scale,
-                            cap = StrokeCap.Round,
-                        )
-                        drawArc(
-                            color = airportMarkerStrokeColor,
-                            startAngle = 18f,
-                            sweepAngle = 144f,
-                            useCenter = false,
-                            topLeft = Offset(center.x - 7f * scale, center.y - 4f * scale),
-                            size = Size(14f * scale, 14f * scale),
+                        val anchorPath = seaplaneAnchorPath(center, scale)
+                        drawPath(
+                            anchorPath,
+                            openAirportStrokeColor,
                             style = Stroke(width = 2.2f * scale, cap = StrokeCap.Round),
                         )
                     }
@@ -9498,6 +9567,42 @@ private fun PlanWaypointSymbol(
                 drawPath(band, vorMarkerColor)
                 drawPath(band, fixMarkerStrokeColor, style = Stroke(width = 1.6f * scale))
                 drawPath(outerHex, fixMarkerStrokeColor, style = Stroke(width = 1.6f * scale))
+            }
+
+            isObstacle -> {
+                val isTallObstacle = feature.obstacleVariant == "tall"
+                val obstaclePath = if (isTallObstacle) {
+                    obstacleTallPath(center, scale)
+                } else {
+                    obstacleShortPath(center, scale)
+                }
+                val dotY = if (isTallObstacle) obstacleTallDotY else obstacleShortDotY
+                val obstacleColor = when (feature.styleClass) {
+                    "obstacle-danger" -> Color(0xFFD83A2E)
+                    "obstacle-muted" -> Color(0xB8FFD34D)
+                    else -> Color(0xFFFFD34D)
+                }
+                val obstacleUnderColor = Color(0xD1081218)
+                drawPath(
+                    obstaclePath,
+                    obstacleUnderColor,
+                    style = Stroke(width = 2.4f * scale, join = StrokeJoin.Miter),
+                )
+                drawPath(
+                    obstaclePath,
+                    obstacleColor,
+                    style = Stroke(width = 1.2f * scale, join = StrokeJoin.Miter),
+                )
+                drawCircle(
+                    color = obstacleUnderColor,
+                    radius = obstacleDotRadius * scale,
+                    center = Offset(center.x, center.y + dotY * scale),
+                )
+                drawCircle(
+                    color = obstacleColor,
+                    radius = obstacleDotRadius * scale,
+                    center = Offset(center.x, center.y + dotY * scale),
+                )
             }
 
             else -> {

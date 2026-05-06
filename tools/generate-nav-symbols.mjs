@@ -98,6 +98,56 @@ function ktFloat(value) {
   return `${fmtNumber(value)}f`;
 }
 
+function parsePathCommands(pathData) {
+  const tokens = pathData.match(/[A-Za-z]|-?(?:\d+\.?\d*|\.\d+)/g) ?? [];
+  const commands = [];
+  let index = 0;
+  const readNumber = () => {
+    const token = tokens[index++];
+    if (token == null || /[A-Za-z]/.test(token)) {
+      throw new Error(`expected number in path ${pathData}`);
+    }
+    return Number(token);
+  };
+  while (index < tokens.length) {
+    const command = tokens[index++];
+    if (!/[A-Za-z]/.test(command)) {
+      throw new Error(`expected command in path ${pathData}`);
+    }
+    switch (command) {
+      case "M":
+      case "L":
+        commands.push({ command, values: [readNumber(), readNumber()] });
+        break;
+      case "H":
+      case "V":
+        commands.push({ command, values: [readNumber()] });
+        break;
+      case "Q":
+        commands.push({ command, values: [readNumber(), readNumber(), readNumber(), readNumber()] });
+        break;
+      case "C":
+        commands.push({
+          command,
+          values: [readNumber(), readNumber(), readNumber(), readNumber(), readNumber(), readNumber()],
+        });
+        break;
+      case "Z":
+        commands.push({ command, values: [] });
+        break;
+      default:
+        throw new Error(`unsupported generated Compose path command ${command}`);
+    }
+  }
+  return commands;
+}
+
+function ktPathCommands(pathData) {
+  return parsePathCommands(pathData)
+    .map(({ command, values }) => `SymbolPathCommand("${command}", listOf(${values.map(ktFloat).join(", ")}))`)
+    .join(",\n    ");
+}
+
 function ktPointArray(points) {
   return points.map(([x, y]) => `SymbolPoint(${ktFloat(x)}, ${ktFloat(y)})`).join(",\n    ");
 }
@@ -114,6 +164,13 @@ const webSource = `${generatedBanner}
 export const airportCircleMarkerPath = ${JSON.stringify(spec.paths.airport_circle_marker)};
 export const airportFuelMarkerPath = ${JSON.stringify(spec.paths.airport_fuel_marker)};
 export const fixTrianglePath = ${JSON.stringify(spec.paths.fix_triangle)};
+export const heliportHPath = ${JSON.stringify(spec.paths.heliport_h)};
+export const seaplaneAnchorPath = ${JSON.stringify(spec.paths.seaplane_anchor)};
+export const obstacleShortPath = ${JSON.stringify(spec.paths.obstacle_short)};
+export const obstacleTallPath = ${JSON.stringify(spec.paths.obstacle_tall)};
+export const obstacleShortDotY = ${JSON.stringify(spec.obstacle_dot.short_y)};
+export const obstacleTallDotY = ${JSON.stringify(spec.obstacle_dot.tall_y)};
+export const obstacleDotRadius = ${JSON.stringify(spec.obstacle_dot.radius)};
 export const mapSelectionSpotPegPath = ${JSON.stringify(spec.paths.map_selection_spot_peg)};
 export const vorOuterHexPath = ${JSON.stringify(vorOuterHexPath)};
 export const vorBandPath = ${JSON.stringify(vorBandPath)};
@@ -129,6 +186,23 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathFillType
 
 private data class SymbolPoint(val x: Float, val y: Float)
+private data class SymbolPathCommand(val command: String, val values: List<Float>)
+
+private val heliportHCommands = listOf(
+    ${ktPathCommands(spec.paths.heliport_h)}
+)
+
+private val seaplaneAnchorCommands = listOf(
+    ${ktPathCommands(spec.paths.seaplane_anchor)}
+)
+
+private val obstacleShortCommands = listOf(
+    ${ktPathCommands(spec.paths.obstacle_short)}
+)
+
+private val obstacleTallCommands = listOf(
+    ${ktPathCommands(spec.paths.obstacle_tall)}
+)
 
 private val vorOuterHexPoints = listOf(
     ${ktPointArray(vorOuterHexPoints)}
@@ -146,6 +220,58 @@ private fun polygonPath(points: List<SymbolPoint>, center: Offset, scale: Float)
             lineTo(center.x + point.x * scale, center.y + point.y * scale)
         }
         close()
+    }
+
+private fun symbolPath(commands: List<SymbolPathCommand>, center: Offset, scale: Float): Path =
+    Path().apply {
+        var currentX = 0f
+        var currentY = 0f
+        commands.forEach { command ->
+            val values = command.values
+            when (command.command) {
+                "M" -> {
+                    currentX = values[0]
+                    currentY = values[1]
+                    moveTo(center.x + currentX * scale, center.y + currentY * scale)
+                }
+                "L" -> {
+                    currentX = values[0]
+                    currentY = values[1]
+                    lineTo(center.x + currentX * scale, center.y + currentY * scale)
+                }
+                "H" -> {
+                    currentX = values[0]
+                    lineTo(center.x + currentX * scale, center.y + currentY * scale)
+                }
+                "V" -> {
+                    currentY = values[0]
+                    lineTo(center.x + currentX * scale, center.y + currentY * scale)
+                }
+                "Q" -> {
+                    currentX = values[2]
+                    currentY = values[3]
+                    quadraticTo(
+                        center.x + values[0] * scale,
+                        center.y + values[1] * scale,
+                        center.x + currentX * scale,
+                        center.y + currentY * scale,
+                    )
+                }
+                "C" -> {
+                    currentX = values[4]
+                    currentY = values[5]
+                    cubicTo(
+                        center.x + values[0] * scale,
+                        center.y + values[1] * scale,
+                        center.x + values[2] * scale,
+                        center.y + values[3] * scale,
+                        center.x + currentX * scale,
+                        center.y + currentY * scale,
+                    )
+                }
+                "Z" -> close()
+            }
+        }
     }
 
 fun airportCircleMarkerPath(center: Offset, scale: Float): Path =
@@ -196,6 +322,22 @@ fun fixTrianglePath(center: Offset, radius: Float): Path =
         lineTo(center.x - 7f * scale, center.y + 6f * scale)
         close()
     }
+
+fun heliportHPath(center: Offset, scale: Float): Path =
+    symbolPath(heliportHCommands, center, scale)
+
+fun seaplaneAnchorPath(center: Offset, scale: Float): Path =
+    symbolPath(seaplaneAnchorCommands, center, scale)
+
+fun obstacleShortPath(center: Offset, scale: Float): Path =
+    symbolPath(obstacleShortCommands, center, scale)
+
+fun obstacleTallPath(center: Offset, scale: Float): Path =
+    symbolPath(obstacleTallCommands, center, scale)
+
+const val obstacleShortDotY: Float = ${ktFloat(spec.obstacle_dot.short_y)}
+const val obstacleTallDotY: Float = ${ktFloat(spec.obstacle_dot.tall_y)}
+const val obstacleDotRadius: Float = ${ktFloat(spec.obstacle_dot.radius)}
 
 fun vorOuterHexPath(center: Offset, radius: Float): Path =
     polygonPath(vorOuterHexPoints, center, radius / 8f)

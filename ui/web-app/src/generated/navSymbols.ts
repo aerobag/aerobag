@@ -3,6 +3,13 @@
 export const airportCircleMarkerPath = "M 0 -12 A 12 12 0 1 1 0 12 A 12 12 0 1 1 0 -12 Z";
 export const airportFuelMarkerPath = "M -4 -17 H 4 V -11.314 A 12 12 0 0 1 11.314 -4 H 17 V 4 H 11.314 A 12 12 0 0 1 4 11.314 V 17 H -4 V 11.314 A 12 12 0 0 1 -11.314 4 H -17 V -4 H -11.314 A 12 12 0 0 1 -4 -11.314 Z";
 export const fixTrianglePath = "M 0 -8 L 7 6 L -7 6 Z";
+export const heliportHPath = "M -5 -7 V 7 M 5 -7 V 7 M -5 0 H 5";
+export const seaplaneAnchorPath = "M 0 -9 L 0 5 M -5 -5 L 5 -5 M -7 2 C -5 8 5 8 7 2";
+export const obstacleShortPath = "M -7.2 7.2 L 0 -14.4 L 7.2 7.2";
+export const obstacleTallPath = "M -8 7.2 Q -6.6 4.4 -4.2 -1.2 Q -2.4 -7 -1.2 -15.6 Q -0.4 -24 0 -34 Q 0.4 -24 1.2 -15.6 Q 2.4 -7 4.2 -1.2 Q 6.6 4.4 8 7.2";
+export const obstacleShortDotY = 4.8;
+export const obstacleTallDotY = 6;
+export const obstacleDotRadius = 2.05;
 export const mapSelectionSpotPegPath = "M 0 0 C -9 -9 -12 -16 -12 -23 A 12 12 0 1 1 12 -23 C 12 -16 9 -9 0 0 Z";
 export const vorOuterHexPath = "M -8 0 L -4 -7 L 4 -7 L 8 0 L 4 7 L -4 7 Z";
 export const vorBandPath = "M -8 0 L -4 -7 L 4 -7 L 8 0 L 4 7 L -4 7 Z M -11.282 -1.915 L -7.291 -8.9 L 7.291 -8.9 L 11.282 -1.915 L 4.017 10.8 L -4.017 10.8 Z";

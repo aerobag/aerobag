@@ -373,11 +373,10 @@ button {
 }
 
 .airportHeliportGlyph {
-  fill: var(--theme-class-c-magenta);
-  stroke: rgba(8, 18, 24, 0.7);
-  stroke-width: 1.5px;
-  font-size: 17px;
-  font-weight: 800;
+  fill: none;
+  stroke: var(--theme-class-c-magenta);
+  stroke-width: 2.4px;
+  filter: drop-shadow(0 0 1px rgba(8, 18, 24, 0.85));
 }
 
 .airportAnchorGlyph {

@@ -2856,7 +2856,7 @@ fn nav_ref_label(nav_ref: &NavRef) -> String {
             identifier.clone()
         }
         NavRef::LatLon(position) => format!("{:.4},{:.4}", position.lat, position.lon),
-        NavRef::Spot(position) => format!("SPOT {:.4},{:.4}", position.lat, position.lon),
+        NavRef::Spot(_) => "SPOT".to_string(),
     }
 }
 
@@ -3012,6 +3012,17 @@ mod tests {
         ResolvedLeg, ResolvedLegSource, RouteComponent, SequencingMode, Situation,
         SituationPosition, SituationSample,
     };
+
+    #[test]
+    fn spot_cdi_label_omits_coordinates() {
+        assert_eq!(
+            nav_ref_label(&NavRef::Spot(LatLon {
+                lat: 47.626,
+                lon: -122.194,
+            })),
+            "SPOT"
+        );
+    }
 
     fn minimal_vector_manifest_json() -> &'static str {
         r#"{

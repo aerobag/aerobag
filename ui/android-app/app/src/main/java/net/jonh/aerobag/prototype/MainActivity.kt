@@ -9691,6 +9691,7 @@ private fun FlightPlanDataRow(
                 backgroundColor = defaultButtonColor,
                 selected = selected,
                 selectedColor = selectedButtonColor,
+                maxLines = 2,
                 textModifier =
                     Modifier
                         .padding(end = ThumbSize * 0.78f),
@@ -10182,6 +10183,7 @@ private fun CompactSquareButton(
                     text = label,
                     modifier = (if (centered) Modifier else Modifier.padding(start = textStartPadding, end = 8.dp)).then(textModifier),
                     style = MaterialTheme.typography.labelSmall,
+                    textAlign = if (centered) TextAlign.Center else TextAlign.Start,
                     maxLines = maxLines,
                     overflow = TextOverflow.Clip,
                 )

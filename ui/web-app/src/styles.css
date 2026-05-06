@@ -1983,6 +1983,7 @@ button {
   position: relative;
   justify-content: space-between;
   gap: calc(var(--thumb) * 0.08);
+  text-align: left;
   border-color: color-mix(in srgb, var(--theme-button-bg) 78%, black);
   background: var(--theme-button-bg);
   color: var(--theme-button-fg);
@@ -2034,12 +2035,14 @@ button {
 }
 
 .planStructuredLabel {
+  display: block;
   position: relative;
   z-index: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-line;
+  line-height: 1.05;
   padding-right: calc(var(--thumb) * 0.1);
 }
 

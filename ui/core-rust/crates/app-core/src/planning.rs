@@ -3744,7 +3744,7 @@ fn nav_ref_label(nav_ref: &NavRef) -> String {
             identifier.clone()
         }
         NavRef::LatLon(position) => format!("{:.4},{:.4}", position.lat, position.lon),
-        NavRef::Spot(position) => format!("SPOT {:.4},{:.4}", position.lat, position.lon),
+        NavRef::Spot(position) => format!("SPOT\n{:.2},{:.2}", position.lat, position.lon),
     }
 }
 
@@ -3962,6 +3962,17 @@ fn resume_leg_id_after_leg(plan: &FlightPlan, leg_index: usize) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spot_flight_plan_label_uses_two_lines_and_coarse_coordinates() {
+        assert_eq!(
+            nav_ref_label(&NavRef::Spot(LatLon {
+                lat: 47.626,
+                lon: -122.194,
+            })),
+            "SPOT\n47.63,-122.19"
+        );
+    }
 
     fn sample_airway_component_plan() -> FlightPlan {
         FlightPlan {

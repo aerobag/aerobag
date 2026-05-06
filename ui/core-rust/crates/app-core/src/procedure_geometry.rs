@@ -89,10 +89,12 @@ fn extend_sources_for_new_elements(
 
 const NOMINAL_HOLD_GROUND_SPEED_KT: f64 = 120.0;
 const STANDARD_RATE_TURN_DEG_PER_SEC: f64 = 3.0;
-const NOMINAL_PROCEDURE_TURN_INITIAL_OUTBOUND_DISTANCE_NM: f64 = 5.0;
+const NOMINAL_PROCEDURE_TURN_INITIAL_OUTBOUND_DISTANCE_NM: f64 = 3.0;
 const HOLD_ENTRY_ELEMENT_ROLE: &str = "hold_entry";
 const HOLD_RACETRACK_ELEMENT_ROLE: &str = "hold_racetrack";
-const NOMINAL_PROCEDURE_TURN_GROUND_SPEED_KT: f64 = 120.0;
+const NOMINAL_PROCEDURE_TURN_GROUND_SPEED_KT: f64 = 90.0;
+const SHORT_PROCEDURE_TURN_INITIAL_OUTBOUND_DISTANCE_NM: f64 = 0.5;
+const SHORT_PROCEDURE_TURN_GROUND_SPEED_KT: f64 = 90.0;
 const NOMINAL_PROCEDURE_TURN_BARB_TIME_MIN: f64 = 2.0;
 const NOMINAL_MANUAL_TERMINATION_DISTANCE_NM: f64 = 4.0;
 const MIN_GEOMETRY_DISTANCE_NM: f64 = 0.05;
@@ -479,16 +481,13 @@ fn procedure_turn_display_path_from_start(
     } else {
         fix
     };
+    let dimensions = procedure_turn_dimensions(leg);
     let outbound_end = destination_point(
         outbound_start,
         outbound_course_deg,
-        NOMINAL_PROCEDURE_TURN_INITIAL_OUTBOUND_DISTANCE_NM,
+        dimensions.initial_outbound_distance_nm,
     );
-    let barb_end = destination_point(
-        outbound_end,
-        barb_course_deg,
-        nominal_procedure_turn_barb_distance_nm(),
-    );
+    let barb_end = destination_point(outbound_end, barb_course_deg, dimensions.barb_distance_nm);
     let turn_radius_nm = missed_approach_turn_radius_nm();
     let turn_center =
         turn_center_for_heading_change(barb_end, barb_course_deg, clockwise, turn_radius_nm);
@@ -520,6 +519,30 @@ fn procedure_turn_display_path_from_start(
     push_segment!(elements, sources, intercept_start, intercept);
     push_segment!(elements, sources, intercept, inbound_target);
     Some(dashed_path(elements, sources))
+}
+
+#[derive(Clone, Copy)]
+struct ProcedureTurnDimensions {
+    initial_outbound_distance_nm: f64,
+    barb_distance_nm: f64,
+}
+
+fn procedure_turn_dimensions(leg: &ProcedureLegMaterializationRecord) -> ProcedureTurnDimensions {
+    if parse_distance_tenths_nm(leg.route_distance_or_time.as_deref())
+        .is_some_and(|stay_within_nm| stay_within_nm < 10.0)
+    {
+        return ProcedureTurnDimensions {
+            initial_outbound_distance_nm: SHORT_PROCEDURE_TURN_INITIAL_OUTBOUND_DISTANCE_NM,
+            barb_distance_nm: distance_nm_for_minutes_at_speed_kt(
+                SHORT_PROCEDURE_TURN_GROUND_SPEED_KT,
+                NOMINAL_PROCEDURE_TURN_BARB_TIME_MIN,
+            ),
+        };
+    }
+    ProcedureTurnDimensions {
+        initial_outbound_distance_nm: NOMINAL_PROCEDURE_TURN_INITIAL_OUTBOUND_DISTANCE_NM,
+        barb_distance_nm: nominal_procedure_turn_barb_distance_nm(),
+    }
 }
 
 fn procedure_turn_course_line_start(

@@ -6038,6 +6038,62 @@ mod tests {
         points
     }
 
+    fn sample_display_element_positions(element: &LegDisplayElement) -> Vec<LatLon> {
+        match element {
+            LegDisplayElement::Segment { start, end } => vec![*start, *end],
+            LegDisplayElement::Arc {
+                center,
+                radius_nm,
+                start,
+                clockwise,
+                sweep_degrees,
+                ..
+            } => {
+                let start_bearing = bearing_from(*center, *start);
+                let sweep = if *clockwise {
+                    sweep_degrees.abs()
+                } else {
+                    -sweep_degrees.abs()
+                };
+                let steps = usize::max(16, (sweep.abs() / 2.0).ceil() as usize);
+                (0..=steps)
+                    .map(|index| {
+                        let fraction = index as f64 / steps as f64;
+                        destination_point(*center, start_bearing + sweep * fraction, *radius_nm)
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    fn encoded_pi_stay_within_nm(record: &ProcedureLegMaterializationRecord) -> Option<f64> {
+        record
+            .route_distance_or_time
+            .as_deref()
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .map(|encoded| encoded / 10.0)
+    }
+
+    fn farthest_display_path_distance_nm(
+        path: &LegDisplayPath,
+        reference: LatLon,
+    ) -> (f64, LatLon) {
+        let mut farthest = reference;
+        let mut farthest_distance_nm = 0.0;
+        for point in path
+            .elements
+            .iter()
+            .flat_map(sample_display_element_positions)
+        {
+            let distance_nm = great_circle_distance_nm(reference, point);
+            if distance_nm > farthest_distance_nm {
+                farthest_distance_nm = distance_nm;
+                farthest = point;
+            }
+        }
+        (farthest_distance_nm, farthest)
+    }
+
     fn draw_polyline(image: &mut RgbaImage, points: &[(f64, f64)], color: Rgba<u8>, radius: i32) {
         for pair in points.windows(2) {
             let (x0, y0) = pair[0];
@@ -8502,6 +8558,389 @@ mod tests {
             &enroute_transition,
             &output_stem,
             true,
+        );
+    }
+
+    #[test]
+    #[ignore = "manual probe for PI stay-within geometry"]
+    fn writes_pi_stay_within_probe_overlay() {
+        let output_dir = clean_procedure_plot_output_dir();
+        let airport_id = std::env::var("PI_PROBE_AIRPORT").unwrap_or_else(|_| "KSPW".to_string());
+        let procedure_id =
+            std::env::var("PI_PROBE_PROCEDURE").unwrap_or_else(|_| "I12".to_string());
+        let enroute_transition =
+            std::env::var("PI_PROBE_TRANSITION").unwrap_or_else(|_| "DOSN1".to_string());
+        let selected_enroute_transition =
+            (!enroute_transition.trim().is_empty()).then(|| enroute_transition.trim().to_string());
+
+        let store = load_snapshot_nav_kv_store();
+        let records = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: airport_id.clone(),
+                procedure_id: procedure_id.clone(),
+            },
+            "procedure materialization rows",
+        );
+        let pi_records = records
+            .iter()
+            .filter(|record| {
+                record.path_termination.trim() == "PI"
+                    && record.key.transition_id.trim() == enroute_transition.trim()
+            })
+            .collect::<Vec<_>>();
+        let pi_record = pi_records.first().unwrap_or_else(|| {
+            panic!("find PI record for {airport_id} {procedure_id} {enroute_transition}")
+        });
+        let reference_position = pi_record
+            .nav_position
+            .unwrap_or_else(|| panic!("PI record lacks reference position: {pi_record:#?}"));
+        let stay_within_nm = encoded_pi_stay_within_nm(pi_record);
+
+        let materialized = materialize_snapshot_procedure_without_heading_validation(
+            &store,
+            &airport_id,
+            &procedure_id,
+            selected_enroute_transition.clone(),
+        )
+        .unwrap_or_else(|err| {
+            panic!(
+                "materialize {} {} {:?}: {}",
+                airport_id, procedure_id, selected_enroute_transition, err
+            )
+        });
+
+        let pi_leg = materialized
+            .resolved_legs
+            .iter()
+            .find(|leg| {
+                leg.procedure_provenance.as_ref().is_some_and(|provenance| {
+                    provenance.leg_sequence == pi_record.sequence
+                        && matches!(
+                            provenance.path_termination,
+                            PathTermination::Other(ref label) if label.trim() == "PI"
+                        )
+                })
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "find resolved PI leg for {} {} {} seq {}",
+                    airport_id, procedure_id, enroute_transition, pi_record.sequence
+                )
+            });
+        let pi_path = pi_leg
+            .procedure_provenance
+            .as_ref()
+            .and_then(|provenance| provenance.display_path.as_ref())
+            .unwrap_or_else(|| panic!("PI leg lacks display path: {pi_leg:#?}"));
+
+        let (farthest_distance_nm, farthest) =
+            farthest_display_path_distance_nm(pi_path, reference_position);
+
+        let unpacked_root = latest_snapshot_unpacked_root();
+        let georef_plates = collect_georeferenced_plates_from_packages(&unpacked_root);
+        let plate_paths = georef_plates.keys().cloned().collect::<Vec<_>>();
+        let plate_index = build_plate_index(&plate_paths);
+        let plate_path = find_matching_plate_path(&plate_index, &airport_id, &procedure_id)
+            .unwrap_or_else(|| panic!("find {} {} plate path", airport_id, procedure_id));
+        let plate = georef_plates
+            .get(&plate_path)
+            .cloned()
+            .unwrap_or_else(|| panic!("load {} {} plate georef", airport_id, procedure_id));
+        let base_canvas = match image::open(&plate.path).expect("open plate png") {
+            DynamicImage::ImageRgba8(image) => image,
+            other => other.to_rgba8(),
+        };
+        let padding = default_overlay_padding(&plate);
+        let padded_plate = padded_plate_georef(&plate, padding);
+        let mut canvas = padded_canvas(&base_canvas, padding);
+
+        for leg in &materialized.resolved_legs {
+            let Some(path) = leg
+                .procedure_provenance
+                .as_ref()
+                .and_then(|provenance| provenance.display_path.as_ref())
+            else {
+                continue;
+            };
+            let is_pi_leg = leg.id == pi_leg.id;
+            for element in &path.elements {
+                let points = generic_plate_points_for_display_elements(
+                    &padded_plate,
+                    std::slice::from_ref(element),
+                );
+                if points.len() < 2 {
+                    continue;
+                }
+                draw_polyline(&mut canvas, &points, Rgba([0, 0, 0, 130]), 5);
+                draw_polyline(
+                    &mut canvas,
+                    &points,
+                    if is_pi_leg {
+                        Rgba([255, 140, 0, 255])
+                    } else {
+                        Rgba([150, 150, 150, 220])
+                    },
+                    if is_pi_leg { 3 } else { 2 },
+                );
+            }
+        }
+        let reference_line = [
+            generic_plate_pixel(&padded_plate, reference_position),
+            generic_plate_pixel(&padded_plate, farthest),
+        ];
+        draw_polyline(&mut canvas, &reference_line, Rgba([0, 0, 0, 220]), 6);
+        draw_polyline(&mut canvas, &reference_line, Rgba([0, 90, 255, 255]), 4);
+        stamp_circle(
+            &mut canvas,
+            reference_line[0].0.round() as i32,
+            reference_line[0].1.round() as i32,
+            7,
+            Rgba([0, 90, 255, 255]),
+        );
+        stamp_circle(
+            &mut canvas,
+            reference_line[1].0.round() as i32,
+            reference_line[1].1.round() as i32,
+            7,
+            Rgba([0, 90, 255, 255]),
+        );
+
+        let output_stem = format!(
+            "pi_stay_within_{}_{}_{}",
+            sanitize_plot_filename_part(&airport_id),
+            sanitize_plot_filename_part(&procedure_id),
+            sanitize_plot_filename_part(&enroute_transition)
+        );
+        let output_path = output_dir.join(format!("{output_stem}.png"));
+        canvas.save(&output_path).expect("write PI probe png");
+        let note = format!(
+            "airport={airport_id}\nprocedure={procedure_id}\nenroute_transition={enroute_transition}\npi_sequence={}\nreference={}\nstay_within_nm={:?}\nfarthest_distance_nm={:.2}\nfarthest_lat={:.6}\nfarthest_lon={:.6}\nplate={}\n",
+            pi_record.sequence,
+            pi_record
+                .nav_ref
+                .as_ref()
+                .map(describe_nav_ref)
+                .unwrap_or_else(|| "unknown".to_string()),
+            stay_within_nm,
+            farthest_distance_nm,
+            farthest.lat,
+            farthest.lon,
+            plate.path.display(),
+        );
+        fs::write(output_dir.join(format!("{output_stem}.txt")), &note)
+            .expect("write PI probe note");
+        eprintln!("{note}");
+        eprintln!("wrote {}", output_path.display());
+    }
+
+    #[derive(Serialize)]
+    struct PiStayWithinAuditIssue {
+        kind: String,
+        airport_id: String,
+        procedure_id: String,
+        enroute_transition: Option<String>,
+        sequence: i32,
+        reference: String,
+        stay_within_nm: Option<f64>,
+        farthest_distance_nm: Option<f64>,
+        margin_nm: Option<f64>,
+        farthest_lat: Option<f64>,
+        farthest_lon: Option<f64>,
+        message: String,
+    }
+
+    #[test]
+    #[ignore = "manual whole-snapshot audit for PI stay-within geometry"]
+    fn audit_all_pi_stay_within_geometry() {
+        let store = load_snapshot_nav_kv_store();
+        let output_path = PathBuf::from("/tmp/aerobag-pi-stay-within-audit.jsonl");
+        let mut output = fs::File::create(&output_path)
+            .unwrap_or_else(|err| panic!("create {}: {err}", output_path.display()));
+        let mut materialized_pi_count = 0usize;
+        let mut pass_count = 0usize;
+        let mut fail_count = 0usize;
+        let mut unknown_count = 0usize;
+        let tolerance_nm = 0.05;
+
+        for case in enumerate_snapshot_approach_cases(&store) {
+            let records = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+                &store,
+                crate::NavKvQuery::ProcedureMaterializationRows {
+                    airport_id: case.airport_id.clone(),
+                    procedure_id: case.procedure_id.clone(),
+                },
+                "procedure materialization rows",
+            );
+            let Ok(materialized) = materialize_snapshot_procedure_without_heading_validation(
+                &store,
+                &case.airport_id,
+                &case.procedure_id,
+                case.enroute_transition.clone(),
+            ) else {
+                continue;
+            };
+
+            for leg in materialized.resolved_legs.iter() {
+                let Some(provenance) = leg.procedure_provenance.as_ref() else {
+                    continue;
+                };
+                if !matches!(
+                    provenance.path_termination,
+                    PathTermination::Other(ref label) if label.trim() == "PI"
+                ) {
+                    continue;
+                }
+                materialized_pi_count += 1;
+                let transition = case.enroute_transition.as_deref().unwrap_or("");
+                let candidates = records
+                    .iter()
+                    .filter(|record| {
+                        record.path_termination.trim() == "PI"
+                            && record.sequence == provenance.leg_sequence
+                            && (record.key.transition_id.trim() == transition
+                                || record.key.transition_id.trim().is_empty())
+                    })
+                    .collect::<Vec<_>>();
+                let pi_record = if candidates.len() == 1 {
+                    candidates[0]
+                } else {
+                    unknown_count += 1;
+                    let issue = PiStayWithinAuditIssue {
+                        kind: "unknown".to_string(),
+                        airport_id: case.airport_id.clone(),
+                        procedure_id: case.procedure_id.clone(),
+                        enroute_transition: case.enroute_transition.clone(),
+                        sequence: provenance.leg_sequence,
+                        reference: "unknown".to_string(),
+                        stay_within_nm: None,
+                        farthest_distance_nm: None,
+                        margin_nm: None,
+                        farthest_lat: None,
+                        farthest_lon: None,
+                        message: format!(
+                            "expected exactly one PI source row, found {}",
+                            candidates.len()
+                        ),
+                    };
+                    writeln!(output, "{}", serde_json::to_string(&issue).unwrap())
+                        .expect("write PI audit issue");
+                    continue;
+                };
+                let Some(reference_position) = pi_record.nav_position else {
+                    unknown_count += 1;
+                    let issue = PiStayWithinAuditIssue {
+                        kind: "unknown".to_string(),
+                        airport_id: case.airport_id.clone(),
+                        procedure_id: case.procedure_id.clone(),
+                        enroute_transition: case.enroute_transition.clone(),
+                        sequence: provenance.leg_sequence,
+                        reference: pi_record
+                            .nav_ref
+                            .as_ref()
+                            .map(describe_nav_ref)
+                            .unwrap_or_else(|| "unknown".to_string()),
+                        stay_within_nm: encoded_pi_stay_within_nm(pi_record),
+                        farthest_distance_nm: None,
+                        margin_nm: None,
+                        farthest_lat: None,
+                        farthest_lon: None,
+                        message: "PI source row has no reference position".to_string(),
+                    };
+                    writeln!(output, "{}", serde_json::to_string(&issue).unwrap())
+                        .expect("write PI audit issue");
+                    continue;
+                };
+                let Some(stay_within_nm) = encoded_pi_stay_within_nm(pi_record) else {
+                    unknown_count += 1;
+                    let issue = PiStayWithinAuditIssue {
+                        kind: "unknown".to_string(),
+                        airport_id: case.airport_id.clone(),
+                        procedure_id: case.procedure_id.clone(),
+                        enroute_transition: case.enroute_transition.clone(),
+                        sequence: provenance.leg_sequence,
+                        reference: pi_record
+                            .nav_ref
+                            .as_ref()
+                            .map(describe_nav_ref)
+                            .unwrap_or_else(|| "unknown".to_string()),
+                        stay_within_nm: None,
+                        farthest_distance_nm: None,
+                        margin_nm: None,
+                        farthest_lat: None,
+                        farthest_lon: None,
+                        message: "PI source row has no parseable stay-within distance".to_string(),
+                    };
+                    writeln!(output, "{}", serde_json::to_string(&issue).unwrap())
+                        .expect("write PI audit issue");
+                    continue;
+                };
+                let Some(path) = provenance.display_path.as_ref() else {
+                    unknown_count += 1;
+                    let issue = PiStayWithinAuditIssue {
+                        kind: "unknown".to_string(),
+                        airport_id: case.airport_id.clone(),
+                        procedure_id: case.procedure_id.clone(),
+                        enroute_transition: case.enroute_transition.clone(),
+                        sequence: provenance.leg_sequence,
+                        reference: pi_record
+                            .nav_ref
+                            .as_ref()
+                            .map(describe_nav_ref)
+                            .unwrap_or_else(|| "unknown".to_string()),
+                        stay_within_nm: Some(stay_within_nm),
+                        farthest_distance_nm: None,
+                        margin_nm: None,
+                        farthest_lat: None,
+                        farthest_lon: None,
+                        message: "materialized PI leg has no display path".to_string(),
+                    };
+                    writeln!(output, "{}", serde_json::to_string(&issue).unwrap())
+                        .expect("write PI audit issue");
+                    continue;
+                };
+
+                let (farthest_distance_nm, farthest) =
+                    farthest_display_path_distance_nm(path, reference_position);
+                let margin_nm = farthest_distance_nm - stay_within_nm;
+                if margin_nm <= tolerance_nm {
+                    pass_count += 1;
+                } else {
+                    fail_count += 1;
+                    let issue = PiStayWithinAuditIssue {
+                        kind: "failure".to_string(),
+                        airport_id: case.airport_id.clone(),
+                        procedure_id: case.procedure_id.clone(),
+                        enroute_transition: case.enroute_transition.clone(),
+                        sequence: provenance.leg_sequence,
+                        reference: pi_record
+                            .nav_ref
+                            .as_ref()
+                            .map(describe_nav_ref)
+                            .unwrap_or_else(|| "unknown".to_string()),
+                        stay_within_nm: Some(stay_within_nm),
+                        farthest_distance_nm: Some(farthest_distance_nm),
+                        margin_nm: Some(margin_nm),
+                        farthest_lat: Some(farthest.lat),
+                        farthest_lon: Some(farthest.lon),
+                        message: format!(
+                            "PI display path exceeds stay-within radius by {:.2} nm",
+                            margin_nm
+                        ),
+                    };
+                    writeln!(output, "{}", serde_json::to_string(&issue).unwrap())
+                        .expect("write PI audit issue");
+                }
+            }
+        }
+        eprintln!(
+            "pi_stay_within_audit materialized_pi={} pass={} fail={} unknown={} tolerance_nm={:.2} issues={}",
+            materialized_pi_count,
+            pass_count,
+            fail_count,
+            unknown_count,
+            tolerance_nm,
+            output_path.display(),
         );
     }
 

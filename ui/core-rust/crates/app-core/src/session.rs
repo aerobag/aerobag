@@ -27,7 +27,8 @@ use crate::{
     MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore, NavRef, PlanLeg, PlaybackUiState,
     PointTilePayload, ProcedureKind, ProcedureLoadCommand, RasterMapCatalog, RasterTilePlan,
     ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode, SituationControlInput,
-    TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
+    SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload,
+    UiSnapshotAppState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -520,35 +521,7 @@ pub fn apply_situation_control_input_in_session(
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
-    let active_source_kind = session.app_state.ownship.resolved.active_source_kind;
-    match active_source_kind {
-        Some(crate::OwnshipSourceKind::FlightPlanSimulator) => {
-            apply_plan_preview_input(session, input)?;
-        }
-        Some(
-            crate::OwnshipSourceKind::GpxPlayback
-            | crate::OwnshipSourceKind::AdsbTrackPlayback
-            | crate::OwnshipSourceKind::LiveNetworkTrack,
-        ) => {
-            let delta_seconds = match input {
-                SituationControlInput::SkipBackward => -600.0,
-                SituationControlInput::FastRewind => -30.0,
-                SituationControlInput::FastForward => 30.0,
-                SituationControlInput::SkipForward => 600.0,
-            };
-            if let Some(situation) = session.playback.jog(delta_seconds, now_epoch_ms) {
-                apply_situation_to_ownship(
-                    session,
-                    PLAYBACK_SOURCE_ID,
-                    crate::OwnshipSourceKind::AdsbTrackPlayback,
-                    "ADS-B Trace Playback",
-                    situation,
-                    now_epoch_ms as i64,
-                )?;
-            }
-        }
-        _ => {}
-    }
+    situation_source_handler_for_session(session).apply_input(session, input, now_epoch_ms)?;
     Ok(snapshot_for_session(session))
 }
 
@@ -2121,8 +2094,7 @@ fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
 
 fn debug_state_for_app_state(debug_state: &UiDebugState, app_state: &AppState) -> UiDebugState {
     let mut next = debug_state.clone();
-    next.playback_visible =
-        selected_ownship_source_kind(&app_state.ownship).is_some_and(is_replay_ownship_source);
+    next.playback_visible = situation_source_handler_for_ownship(&app_state.ownship).is_replay();
     next
 }
 
@@ -2242,12 +2214,156 @@ fn empty_map_overlay_query() -> MapOverlayQueryResult {
 
 fn project_session_app_ui_state(session: &UiSession) -> AppUiState {
     let mut app_ui_state = state::project_app_ui_state(&session.app_state);
+    app_ui_state.ownship.controls.situation_controls = project_situation_controls(session);
     if let Some(active_plan) = app_ui_state.active_plan.as_mut() {
         if let Some(guidance) = active_plan.guidance.as_mut() {
             guidance.nav_element = project_active_leg_nav_element(session);
         }
     }
     app_ui_state
+}
+
+fn project_situation_controls(session: &UiSession) -> Vec<SituationControlMenuItem> {
+    situation_source_handler_for_session(session).menu_items(session)
+}
+
+trait SessionSituationSourceHandler {
+    fn is_replay(&self) -> bool {
+        false
+    }
+
+    fn apply_input(
+        &self,
+        _session: &mut UiSession,
+        _input: SituationControlInput,
+        _now_epoch_ms: f64,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn input_enabled(&self, _session: &UiSession, _input: SituationControlInput) -> bool {
+        false
+    }
+
+    fn menu_items(&self, session: &UiSession) -> Vec<SituationControlMenuItem> {
+        vec![
+            SituationControlMenuItem {
+                input: SituationControlInput::SkipBackward,
+                label: "⏮".to_string(),
+                enabled: self.input_enabled(session, SituationControlInput::SkipBackward),
+            },
+            SituationControlMenuItem {
+                input: SituationControlInput::FastRewind,
+                label: "⏪".to_string(),
+                enabled: self.input_enabled(session, SituationControlInput::FastRewind),
+            },
+            SituationControlMenuItem {
+                input: SituationControlInput::FastForward,
+                label: "⏩".to_string(),
+                enabled: self.input_enabled(session, SituationControlInput::FastForward),
+            },
+            SituationControlMenuItem {
+                input: SituationControlInput::SkipForward,
+                label: "⏭".to_string(),
+                enabled: self.input_enabled(session, SituationControlInput::SkipForward),
+            },
+        ]
+    }
+}
+
+struct NullSituationSourceHandler;
+struct LiveSituationSourceHandler;
+struct ReplaySituationSourceHandler;
+struct PlanPreviewSituationSourceHandler;
+
+impl SessionSituationSourceHandler for NullSituationSourceHandler {}
+impl SessionSituationSourceHandler for LiveSituationSourceHandler {}
+
+impl SessionSituationSourceHandler for ReplaySituationSourceHandler {
+    fn is_replay(&self) -> bool {
+        true
+    }
+
+    fn apply_input(
+        &self,
+        session: &mut UiSession,
+        input: SituationControlInput,
+        now_epoch_ms: f64,
+    ) -> AppResult<()> {
+        let delta_seconds = match input {
+            SituationControlInput::SkipBackward => -600.0,
+            SituationControlInput::FastRewind => -30.0,
+            SituationControlInput::FastForward => 30.0,
+            SituationControlInput::SkipForward => 600.0,
+        };
+        if let Some(situation) = session.playback.jog(delta_seconds, now_epoch_ms) {
+            apply_situation_to_ownship(
+                session,
+                PLAYBACK_SOURCE_ID,
+                crate::OwnshipSourceKind::AdsbTrackPlayback,
+                "ADS-B Trace Playback",
+                situation,
+                now_epoch_ms as i64,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn input_enabled(&self, session: &UiSession, input: SituationControlInput) -> bool {
+        let ui_state = session.playback.ui_state();
+        match input {
+            SituationControlInput::SkipBackward | SituationControlInput::FastRewind => {
+                ui_state.cursor_seconds > 1e-6
+            }
+            SituationControlInput::FastForward | SituationControlInput::SkipForward => {
+                ui_state.duration_seconds - ui_state.cursor_seconds > 1e-6
+            }
+        }
+    }
+}
+
+impl SessionSituationSourceHandler for PlanPreviewSituationSourceHandler {
+    fn apply_input(
+        &self,
+        session: &mut UiSession,
+        input: SituationControlInput,
+        _now_epoch_ms: f64,
+    ) -> AppResult<()> {
+        apply_plan_preview_input(session, input)
+    }
+
+    fn input_enabled(&self, session: &UiSession, input: SituationControlInput) -> bool {
+        let (can_rewind, can_forward) = plan_preview_control_bounds(session);
+        match input {
+            SituationControlInput::SkipBackward | SituationControlInput::FastRewind => can_rewind,
+            SituationControlInput::FastForward | SituationControlInput::SkipForward => can_forward,
+        }
+    }
+}
+
+static NULL_SITUATION_SOURCE_HANDLER: NullSituationSourceHandler = NullSituationSourceHandler;
+static LIVE_SITUATION_SOURCE_HANDLER: LiveSituationSourceHandler = LiveSituationSourceHandler;
+static REPLAY_SITUATION_SOURCE_HANDLER: ReplaySituationSourceHandler = ReplaySituationSourceHandler;
+static PLAN_PREVIEW_SITUATION_SOURCE_HANDLER: PlanPreviewSituationSourceHandler =
+    PlanPreviewSituationSourceHandler;
+
+fn situation_source_handler_for_session(
+    session: &UiSession,
+) -> &'static dyn SessionSituationSourceHandler {
+    situation_source_handler_for_ownship(&session.app_state.ownship)
+}
+
+fn situation_source_handler_for_ownship(
+    ownship: &crate::OwnshipState,
+) -> &'static dyn SessionSituationSourceHandler {
+    match selected_ownship_source_kind(ownship) {
+        Some(crate::OwnshipSourceKind::FlightPlanSimulator) => {
+            &PLAN_PREVIEW_SITUATION_SOURCE_HANDLER
+        }
+        Some(kind) if is_replay_ownship_source(kind) => &REPLAY_SITUATION_SOURCE_HANDLER,
+        Some(_) => &LIVE_SITUATION_SOURCE_HANDLER,
+        None => &NULL_SITUATION_SOURCE_HANDLER,
+    }
 }
 
 fn project_active_leg_nav_element(session: &UiSession) -> NavElementUiView {
@@ -2460,6 +2576,34 @@ fn apply_plan_preview_input(
 }
 
 const PLAN_PREVIEW_FAST_STEP_NM: f64 = 20.0;
+
+fn plan_preview_control_bounds(session: &UiSession) -> (bool, bool) {
+    let records = session
+        .app_state
+        .active_plan
+        .as_ref()
+        .map(|plan| plan_preview_legs(plan, &session.guidance_leg_geometry))
+        .unwrap_or_default();
+    if records.is_empty() {
+        return (false, false);
+    }
+    let Some(pointer) = session.plan_preview.pointer.as_ref() else {
+        return (false, true);
+    };
+    let Some(record_index) = records
+        .iter()
+        .position(|record| record.from_row_uid == pointer.row_uid)
+    else {
+        return (false, true);
+    };
+    let offset_nm = pointer
+        .offset_nm
+        .clamp(0.0, records[record_index].distance_nm);
+    let at_start = record_index == 0 && offset_nm <= 1e-6;
+    let at_end =
+        record_index + 1 == records.len() && offset_nm >= records[record_index].distance_nm - 1e-6;
+    (!at_start, !at_end)
+}
 
 fn resolve_plan_preview_pointer(
     state: &PlanPreviewState,
@@ -3146,6 +3290,25 @@ mod tests {
             .expect("ownship position")
     }
 
+    fn enabled_situation_controls(snapshot: &UiSessionSnapshot) -> Vec<SituationControlInput> {
+        snapshot
+            .app_ui_state
+            .ownship
+            .controls
+            .situation_controls
+            .iter()
+            .filter(|control| control.enabled)
+            .map(|control| control.input)
+            .collect()
+    }
+
+    fn assert_enabled_situation_controls(
+        snapshot: &UiSessionSnapshot,
+        expected: &[SituationControlInput],
+    ) {
+        assert_eq!(enabled_situation_controls(snapshot), expected);
+    }
+
     fn assert_near(left: f64, right: f64) {
         assert!((left - right).abs() < 1e-4, "{left} != {right}");
     }
@@ -3231,16 +3394,7 @@ mod tests {
             !init.snapshot.debug_state.playback_visible,
             "playback panel starts hidden until Replay is active",
         );
-        assert!(
-            init.snapshot
-                .app_ui_state
-                .ownship
-                .controls
-                .situation_controls
-                .iter()
-                .all(|control| !control.enabled),
-            "no source selected means transport controls are disabled",
-        );
+        assert_enabled_situation_controls(&init.snapshot, &[]);
 
         let replay = select_ownship_source_in_session(
             init.handle,
@@ -3250,6 +3404,31 @@ mod tests {
         )
         .expect("select Replay");
         assert!(replay.debug_state.playback_visible);
+        assert_enabled_situation_controls(&replay, &[]);
+
+        let replay_with_trace = load_playback_trace_in_session(
+            init.handle,
+            "test-trace.json",
+            r#"{"trace":[[0.0,10.0,20.0,0,100.0,90.0],[120.0,10.1,20.1,0,100.0,90.0]]}"#,
+        )
+        .expect("load replay trace");
+        assert_enabled_situation_controls(
+            &replay_with_trace,
+            &[
+                SituationControlInput::FastForward,
+                SituationControlInput::SkipForward,
+            ],
+        );
+
+        let replay_at_end =
+            seek_playback_in_session(init.handle, 120.0, 0.0).expect("seek replay to end");
+        assert_enabled_situation_controls(
+            &replay_at_end,
+            &[
+                SituationControlInput::SkipBackward,
+                SituationControlInput::FastRewind,
+            ],
+        );
 
         let gps = push_situation_sample_in_session(
             init.handle,
@@ -3276,14 +3455,12 @@ mod tests {
             gps.debug_state.playback_visible,
             "pushing GPS must not change a manual Replay selection",
         );
-        assert!(
-            gps.app_ui_state
-                .ownship
-                .controls
-                .situation_controls
-                .iter()
-                .all(|control| control.enabled),
-            "Replay source owns enabled transport controls",
+        assert_enabled_situation_controls(
+            &gps,
+            &[
+                SituationControlInput::SkipBackward,
+                SituationControlInput::FastRewind,
+            ],
         );
 
         let gps = select_ownship_source_in_session(
@@ -3307,15 +3484,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["GPS", "Plan\nPreview", "Replay"]
         );
-        assert!(
-            gps.app_ui_state
-                .ownship
-                .controls
-                .situation_controls
-                .iter()
-                .all(|control| !control.enabled),
-            "GPS source owns disabled transport controls",
-        );
+        assert_enabled_situation_controls(&gps, &[]);
     }
 
     #[test]
@@ -3566,7 +3735,16 @@ mod tests {
             None,
         )
         .expect("create session");
-        select_plan_preview(init.handle);
+        let selected = select_plan_preview(init.handle);
+        assert_enabled_situation_controls(
+            &selected,
+            &[
+                SituationControlInput::SkipBackward,
+                SituationControlInput::FastRewind,
+                SituationControlInput::FastForward,
+                SituationControlInput::SkipForward,
+            ],
+        );
 
         let after_skip_end = apply_situation_control_input_in_session(
             init.handle,
@@ -3577,6 +3755,13 @@ mod tests {
         let position = ownship_position(&after_skip_end);
         assert_near(position.lat, 41.0);
         assert_near(position.lon, -119.0);
+        assert_enabled_situation_controls(
+            &after_skip_end,
+            &[
+                SituationControlInput::SkipBackward,
+                SituationControlInput::FastRewind,
+            ],
+        );
 
         let after_past_end = apply_situation_control_input_in_session(
             init.handle,
@@ -3596,6 +3781,15 @@ mod tests {
         let position = ownship_position(&after_skip_start);
         assert_near(position.lat, 40.0);
         assert_near(position.lon, -119.0);
+        assert_enabled_situation_controls(
+            &after_skip_start,
+            &[
+                SituationControlInput::SkipBackward,
+                SituationControlInput::FastRewind,
+                SituationControlInput::FastForward,
+                SituationControlInput::SkipForward,
+            ],
+        );
 
         let after_previous = apply_situation_control_input_in_session(
             init.handle,
@@ -3606,6 +3800,13 @@ mod tests {
         let position = ownship_position(&after_previous);
         assert_near(position.lat, 40.0);
         assert_near(position.lon, -120.0);
+        assert_enabled_situation_controls(
+            &after_previous,
+            &[
+                SituationControlInput::FastForward,
+                SituationControlInput::SkipForward,
+            ],
+        );
     }
 
     #[test]

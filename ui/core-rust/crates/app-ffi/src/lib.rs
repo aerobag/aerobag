@@ -507,6 +507,19 @@ pub fn select_ownship_source_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn apply_situation_control_input_in_session_json(
+    handle: u64,
+    input_json: &str,
+    now_epoch_ms: f64,
+) -> Result<String, String> {
+    let input: app_core::SituationControlInput =
+        serde_json::from_str(input_json).map_err(|err| err.to_string())?;
+    let snapshot =
+        app_core::apply_situation_control_input_in_session(handle as u32, input, now_epoch_ms)
+            .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn engage_map_follow_in_session_json(
     handle: u64,
     viewport_json: &str,
@@ -1917,6 +1930,21 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sel
     let result = (|| {
         let selection_json = get_java_string(&mut env, selection_json)?;
         select_ownship_source_in_session_json(handle as u64, &selection_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_applySituationControlInputInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    input_json: JString,
+    now_epoch_ms: f64,
+) -> jstring {
+    let result = (|| {
+        let input_json = get_java_string(&mut env, input_json)?;
+        apply_situation_control_input_in_session_json(handle as u64, &input_json, now_epoch_ms)
     })();
     return_string(&mut env, result)
 }

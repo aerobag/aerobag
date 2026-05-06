@@ -75,6 +75,7 @@ describe("loadBestAvailableAdapter", () => {
       update_ownship_source_status_in_session: async () => snapshotJson,
       push_situation_sample_in_session: async () => snapshotJson,
       select_ownship_source_in_session: async () => snapshotJson,
+      apply_situation_control_input_in_session: async () => snapshotJson,
       set_map_layer_visibility_in_session: async () => snapshotJson,
       set_map_layer_enabled_in_session: async () => snapshotJson,
       set_debug_flag_in_session: async () => snapshotJson,

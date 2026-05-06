@@ -242,6 +242,7 @@ import net.jonh.aerobag.prototype.domain.ScreenPoint
 import net.jonh.aerobag.prototype.domain.SectionalPackages
 import net.jonh.aerobag.prototype.domain.SampleData
 import net.jonh.aerobag.prototype.domain.SequencingMode
+import net.jonh.aerobag.prototype.domain.SituationControlInput
 import net.jonh.aerobag.prototype.domain.SituationRingCandidate
 import net.jonh.aerobag.prototype.domain.TileStorageKind
 import net.jonh.aerobag.prototype.domain.UiDebugState
@@ -1362,6 +1363,7 @@ private fun SituationStatusBadge(
     controls: OwnshipControlModel,
     modifier: Modifier = Modifier,
     onSelectSource: (String) -> Unit = {},
+    onSituationControlInput: (SituationControlInput) -> Unit = {},
 ) {
     var open by remember { mutableStateOf(false) }
     val options = controls.sources.map { source ->
@@ -1383,8 +1385,42 @@ private fun SituationStatusBadge(
             onToggle = { open = !open },
             style = MenuDockStyle.Situation,
             options = options,
+            footer = {
+                SituationTransportRow(onInput = onSituationControlInput)
+            },
         )
     }
+}
+
+@Composable
+private fun SituationTransportRow(
+    onInput: (SituationControlInput) -> Unit,
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        SituationTransportButton("⏮", SituationControlInput.SkipBackward, onInput)
+        SituationTransportButton("⏪", SituationControlInput.FastRewind, onInput)
+        SituationTransportButton("⏩", SituationControlInput.FastForward, onInput)
+        SituationTransportButton("⏭", SituationControlInput.SkipForward, onInput)
+    }
+}
+
+@Composable
+private fun SituationTransportButton(
+    label: String,
+    input: SituationControlInput,
+    onInput: (SituationControlInput) -> Unit,
+) {
+    CompactSquareButton(
+        label = label,
+        enabled = true,
+        wide = false,
+        modifier = Modifier
+            .size(ThumbSize),
+        onClick = { onInput(input) },
+    )
 }
 
 private fun resolveSituationOverlay(
@@ -2122,6 +2158,7 @@ private fun summarizeRuntimeBootstrapFailure(error: Throwable): String {
 
 class MainActivity : ComponentActivity() {
     var onHardwareZoomDelta: ((Double) -> Boolean)? = null
+    var onSituationControlInput: ((SituationControlInput) -> Boolean)? = null
 
     private val gpsPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
@@ -2152,6 +2189,10 @@ class MainActivity : ComponentActivity() {
 
     override fun dispatchKeyEvent(event: AndroidKeyEvent): Boolean {
         if (event.action == AndroidKeyEvent.ACTION_DOWN) {
+            val situationInput = situationControlInputForKeyEvent(event)
+            if (situationInput != null && (onSituationControlInput?.invoke(situationInput) == true)) {
+                return true
+            }
             val delta = when (event.keyCode) {
                 AndroidKeyEvent.KEYCODE_EQUALS,
                 AndroidKeyEvent.KEYCODE_PLUS,
@@ -2192,6 +2233,15 @@ class MainActivity : ComponentActivity() {
         ContextCompat.startForegroundService(this, Intent(this, AndroidGpsService::class.java))
     }
 }
+
+private fun situationControlInputForKeyEvent(event: AndroidKeyEvent): SituationControlInput? =
+    when (event.unicodeChar.takeIf { it != 0 }?.toChar()) {
+        '<' -> SituationControlInput.SkipBackward
+        '(' -> SituationControlInput.FastRewind
+        ')' -> SituationControlInput.FastForward
+        '>' -> SituationControlInput.SkipForward
+        else -> null
+    }
 
 @Composable
 private fun AerobagApp() {
@@ -2311,6 +2361,18 @@ private fun AerobagApp() {
         onDispose { uiSession.destroy() }
     }
     var sessionSnapshot by remember(uiSession) { mutableStateOf(uiSession.snapshot) }
+    DisposableEffect(uiSession, context) {
+        val activity = context as? MainActivity
+        activity?.onSituationControlInput = { input ->
+            sessionSnapshot = uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble())
+            true
+        }
+        onDispose {
+            if (activity?.onSituationControlInput != null) {
+                activity.onSituationControlInput = null
+            }
+        }
+    }
     val appState = sessionSnapshot.appState
     val appUiState = sessionSnapshot.appUiState
     val currentPlan = appState.activePlan ?: initialPlanMutation.plan
@@ -2527,6 +2589,9 @@ private fun AerobagApp() {
                         onSessionSnapshotChange = { sessionSnapshot = it },
                         onSelectOwnshipSource = { sourceId ->
                             sessionSnapshot = uiSession.selectOwnshipSource(OwnshipSelection.Source(sourceId))
+                        },
+                        onSituationControlInput = { input ->
+                            sessionSnapshot = uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble())
                         },
                         onPlaybackSourcePathChange = { playbackSourcePath = it },
                         onSelectMapId = {
@@ -4372,6 +4437,7 @@ private fun MapExplorerPage(
     onViewportChange: (MapViewportState) -> Unit,
     onSessionSnapshotChange: (UiSessionSnapshot) -> Unit,
     onSelectOwnshipSource: (String) -> Unit,
+    onSituationControlInput: (SituationControlInput) -> Unit,
     onPlaybackSourcePathChange: (String) -> Unit,
     onSelectMapId: (String) -> Unit,
     onSelectPage: (AppPage) -> Unit,
@@ -5833,6 +5899,7 @@ private fun MapExplorerPage(
                 .align(Alignment.TopEnd)
                 .padding(top = ThumbGap, end = ThumbGap),
             onSelectSource = onSelectOwnshipSource,
+            onSituationControlInput = onSituationControlInput,
         )
 
         MapTopLeftControls(
@@ -7559,6 +7626,9 @@ private fun ChartsPage(
             onSelectSource = { sourceId ->
                 onSessionSnapshotChange(uiSession.selectOwnshipSource(OwnshipSelection.Source(sourceId)))
             },
+            onSituationControlInput = { input ->
+                onSessionSnapshotChange(uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble()))
+            },
         )
 
         ChartViewerSelectors(
@@ -7866,6 +7936,7 @@ private fun MenuDock(
     onToggle: () -> Unit,
     style: MenuDockStyle,
     options: List<MenuDockOption>,
+    footer: (@Composable ColumnScope.() -> Unit)? = null,
 ) {
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
@@ -7922,6 +7993,7 @@ private fun MenuDock(
                             )
                         }
                     }
+                    footer?.invoke(this)
                 }
             }
         }

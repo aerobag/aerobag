@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type Dispatch, type MouseEvent, type PointerEvent, type SetStateAction } from "react";
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type Dispatch, type MouseEvent, type PointerEvent, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import bootstrapJson from "@shared-bootstrap";
 import type {
@@ -26,6 +26,7 @@ import type {
   ProcedureOptions,
   ProcedureLoadOption,
   ProcedureSummary,
+  SituationControlInput,
   SituationSample,
   SituationRingCandidate,
   WaypointIdentifierSuggestion,
@@ -1071,6 +1072,12 @@ export default function App() {
     }
     setSessionSnapshot(await uiSession.setDebugFlag(flagId, enabled));
   }, [uiSession]);
+  const applySituationControlInput = useCallback(async (input: SituationControlInput) => {
+    if (!uiSession) {
+      return;
+    }
+    setSessionSnapshot(await uiSession.applySituationControlInput(input, Date.now()));
+  }, [uiSession]);
   const reportStartupVisualReady = useCallback(() => {
     if (startupVisualReadyRef.current) {
       return;
@@ -1138,6 +1145,25 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, [playbackUiState.status, uiSession]);
+
+  useEffect(() => {
+    if (!uiSession) {
+      return;
+    }
+    const handler = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || isEditableTarget(event.target)) {
+        return;
+      }
+      const input = situationInputForKey(event.key);
+      if (!input) {
+        return;
+      }
+      event.preventDefault();
+      void applySituationControlInput(input);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [applySituationControlInput, uiSession]);
 
   useEffect(() => {
     if (!uiSession) {
@@ -1734,6 +1760,7 @@ export default function App() {
           playbackSourcePath={playbackSourcePath}
           onPlaybackSourcePathChange={setPlaybackSourcePath}
           onPlaybackSnapshotChange={setSessionSnapshot}
+          onSituationControlInput={applySituationControlInput}
           uiSession={uiSession}
           debugWarningActive={debugWarningActive}
           onDebugWarning={logDebugWarning}
@@ -1936,6 +1963,7 @@ export default function App() {
           playbackSourcePath={playbackSourcePath}
           onPlaybackSourcePathChange={setPlaybackSourcePath}
           onPlaybackSnapshotChange={setSessionSnapshot}
+          onSituationControlInput={applySituationControlInput}
           debugState={sessionSnapshot.debug_state}
           uiSession={uiSession}
           debugWarningActive={debugWarningActive}
@@ -1999,6 +2027,7 @@ function MapPage(props: {
   playbackSourcePath: string;
   onPlaybackSourcePathChange: Dispatch<SetStateAction<string>>;
   onPlaybackSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
+  onSituationControlInput: (input: SituationControlInput) => void;
   uiSession: UiSession | null;
   debugWarningActive: boolean;
   onDebugWarning: (tag: string, data?: unknown) => void;
@@ -2032,6 +2061,7 @@ function MapPage(props: {
     planUiState,
     uiSession,
     onPlaybackSnapshotChange,
+    onSituationControlInput,
     mapFollowUiState,
     mapFollowTargetViewport,
     debugWarningActive,
@@ -3800,6 +3830,7 @@ function MapPage(props: {
           open={trayGroup.isOpen("ownship")}
           onToggle={() => trayGroup.toggle("ownship")}
           options={ownshipSourceOptions}
+          transportControls={<SituationTransportRow onInput={onSituationControlInput} />}
         />
         {mapIsVisible && situationOverlay ? (
           <>
@@ -5731,9 +5762,10 @@ function TrayDock(props: {
   launcherClassName?: string;
   launcherAccentColor?: string;
   options: TrayOption[];
+  footer?: ReactNode;
   testId?: string;
 }) {
-  const { launcherLabel, launcherImageSrc, launcherStyle, open, onToggle, ariaLabel, disabled = false, style = "compact", launcherClassName, launcherAccentColor, options, testId } = props;
+  const { launcherLabel, launcherImageSrc, launcherStyle, open, onToggle, ariaLabel, disabled = false, style = "compact", launcherClassName, launcherAccentColor, options, footer, testId } = props;
   const launcherRef = useRef<HTMLButtonElement | null>(null);
   const trayRef = useRef<HTMLElement | null>(null);
   const [trayPosition, setTrayPosition] = useState<{ left: number; top: number } | null>(null);
@@ -5847,6 +5879,7 @@ function TrayDock(props: {
                   ) : option.label}
                 </button>
               ))}
+              {footer}
             </section>,
             document.body,
           )
@@ -6166,6 +6199,7 @@ function ChartsPage(props: {
   playbackSourcePath: string;
   onPlaybackSourcePathChange: Dispatch<SetStateAction<string>>;
   onPlaybackSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
+  onSituationControlInput: (input: SituationControlInput) => void;
   debugState: UiDebugState;
   uiSession: UiSession | null;
   ownship: OwnshipRenderState;
@@ -6561,6 +6595,7 @@ function ChartsPage(props: {
           open={trayGroup.isOpen("ownship")}
           onToggle={() => trayGroup.toggle("ownship")}
           options={ownshipSourceOptions}
+          transportControls={<SituationTransportRow onInput={props.onSituationControlInput} />}
         />
         {trayOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
 
@@ -7039,6 +7074,7 @@ function SituationStatusBadge(props: {
   open: boolean;
   onToggle: () => void;
   options: TrayOption[];
+  transportControls?: ReactNode;
 }) {
   return (
     <div className="situationDock">
@@ -7050,9 +7086,64 @@ function SituationStatusBadge(props: {
         ariaLabel="Ownship source"
         style="situation"
         options={props.options}
+        footer={props.transportControls}
       />
     </div>
   );
+}
+
+function SituationTransportRow(props: {
+  onInput: (input: SituationControlInput) => void;
+}) {
+  return (
+    <div className="situationTransportRow" role="group" aria-label="Plan preview and replay controls">
+      {situationTransportButtons.map((button) => (
+        <button
+          key={button.input}
+          type="button"
+          className="trayButton trayButtonSquare situationTransportButton"
+          aria-label={button.label}
+          title={button.label}
+          onPointerDown={stopPointer}
+          onPointerUp={stopPointer}
+          onDoubleClick={stopDoubleClick}
+          onClick={() => props.onInput(button.input)}
+        >
+          {button.glyph}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+const situationTransportButtons: Array<{ input: SituationControlInput; glyph: string; label: string }> = [
+  { input: "skip_backward", glyph: "⏮", label: "Skip backward" },
+  { input: "fast_rewind", glyph: "⏪", label: "Fast rewind" },
+  { input: "fast_forward", glyph: "⏩", label: "Fast forward" },
+  { input: "skip_forward", glyph: "⏭", label: "Skip forward" },
+];
+
+function situationInputForKey(key: string): SituationControlInput | null {
+  switch (key) {
+    case "<":
+      return "skip_backward";
+    case "(":
+      return "fast_rewind";
+    case ")":
+      return "fast_forward";
+    case ">":
+      return "skip_forward";
+    default:
+      return null;
+  }
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  const tagName = target.tagName.toLowerCase();
+  return tagName === "input" || tagName === "textarea" || tagName === "select" || target.isContentEditable;
 }
 
 function sourceIdString(sourceId: { 0: string } | string): string {

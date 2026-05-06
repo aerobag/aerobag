@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     chart_page::airport_ids_from_plan,
-    guidance_detail_id_for_index,
+    guidance_detail_id_for_index, guidance_detail_id_for_leg_element,
     had_ops::{
         insert_waypoint_best_position, materialize_airway_presentation_selection,
         materialize_procedure, suggest_waypoint_identifiers, HadOperationOutcome, HadReadError,
@@ -26,8 +26,8 @@ use crate::{
     MapOverlayQueryResult, MapSelectionSessionAction, MapViewport, MetarProductPayload,
     MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore, NavRef, PlanLeg, PlaybackUiState,
     PointTilePayload, ProcedureKind, ProcedureLoadCommand, RasterMapCatalog, RasterTilePlan,
-    RouteComponentViewKind, SequencingMode, TafProductPayload, TerrainOverlayQueryResult,
-    TfrProductPayload, UiSnapshotAppState,
+    ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode, SituationControlInput,
+    TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -93,6 +93,7 @@ pub struct UiSessionCreateTiming {
 struct UiSession {
     app_state: AppState,
     playback: PlaybackSessionState,
+    plan_preview: PlanPreviewState,
     map_follow: MapFollowSessionState,
     guidance_leg_geometry: HashMap<String, GuidanceLegGeometry>,
     map_overlay_config: MapOverlayConfig,
@@ -112,6 +113,17 @@ struct UiSession {
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
     airspace_label_tile_cache: HashMap<String, AirspaceLabelTilePayload>,
     tfr_payload: Option<TfrProductPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+struct PlanPreviewState {
+    pointer: Option<PlanPreviewPointer>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PlanPreviewPointer {
+    row_uid: String,
+    offset_nm: f64,
 }
 
 const DIRECT_SITUATION_SOURCE_ID: &str = "__direct_situation__";
@@ -245,6 +257,7 @@ fn create_ui_session_inner(
         UiSession {
             app_state,
             playback,
+            plan_preview: PlanPreviewState::default(),
             map_follow,
             guidance_leg_geometry: HashMap::new(),
             map_overlay_config,
@@ -379,6 +392,12 @@ pub fn set_guidance_leg_geometry_in_session(
         .into_iter()
         .map(|geometry| (geometry.leg_id.clone(), geometry))
         .collect();
+    if session.app_state.ownship.resolved.active_source_kind
+        == Some(crate::OwnshipSourceKind::FlightPlanSimulator)
+        && session.plan_preview.pointer.is_none()
+    {
+        sync_plan_preview_to_active_leg(session)?;
+    }
     Ok(snapshot_for_session(session))
 }
 
@@ -480,6 +499,9 @@ pub fn select_ownship_source_in_session(
     if selected_source_kind.is_some_and(ownship_source_kind_opens_playback) {
         session.debug_state.playback_visible = true;
     }
+    if selected_source_kind == Some(crate::OwnshipSourceKind::FlightPlanSimulator) {
+        sync_plan_preview_to_active_leg(session)?;
+    }
     Ok(snapshot_for_session(session))
 }
 
@@ -490,6 +512,45 @@ fn ownship_source_kind_opens_playback(kind: crate::OwnshipSourceKind) -> bool {
             | crate::OwnshipSourceKind::AdsbTrackPlayback
             | crate::OwnshipSourceKind::LiveNetworkTrack
     )
+}
+
+pub fn apply_situation_control_input_in_session(
+    handle: u32,
+    input: SituationControlInput,
+    now_epoch_ms: f64,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let active_source_kind = session.app_state.ownship.resolved.active_source_kind;
+    match active_source_kind {
+        Some(crate::OwnshipSourceKind::FlightPlanSimulator) => {
+            apply_plan_preview_input(session, input)?;
+        }
+        Some(
+            crate::OwnshipSourceKind::GpxPlayback
+            | crate::OwnshipSourceKind::AdsbTrackPlayback
+            | crate::OwnshipSourceKind::LiveNetworkTrack,
+        ) => {
+            let delta_seconds = match input {
+                SituationControlInput::SkipBackward => -600.0,
+                SituationControlInput::FastRewind => -30.0,
+                SituationControlInput::FastForward => 30.0,
+                SituationControlInput::SkipForward => 600.0,
+            };
+            if let Some(situation) = session.playback.jog(delta_seconds, now_epoch_ms) {
+                apply_situation_to_ownship(
+                    session,
+                    PLAYBACK_SOURCE_ID,
+                    crate::OwnshipSourceKind::AdsbTrackPlayback,
+                    "ADS-B Trace Playback",
+                    situation,
+                    now_epoch_ms as i64,
+                )?;
+            }
+        }
+        _ => {}
+    }
+    Ok(snapshot_for_session(session))
 }
 
 pub fn load_playback_trace_in_session(
@@ -2248,6 +2309,258 @@ fn active_leg_geometry(
         .cloned()
 }
 
+#[derive(Debug, Clone)]
+struct PlanPreviewLeg {
+    from_row_uid: String,
+    geometry: GuidanceLegGeometry,
+    distance_nm: f64,
+}
+
+fn sync_plan_preview_to_active_leg(session: &mut UiSession) -> AppResult<()> {
+    let Some(plan) = session.app_state.active_plan.as_ref() else {
+        return Ok(());
+    };
+    let leg_index = plan
+        .guidance
+        .as_ref()
+        .map(|guidance| guidance.active_leg_index)
+        .unwrap_or(0);
+    let Some(record) = plan_preview_legs(plan, &session.guidance_leg_geometry)
+        .get(leg_index)
+        .cloned()
+    else {
+        return Ok(());
+    };
+    session.plan_preview.pointer = Some(PlanPreviewPointer {
+        row_uid: record.from_row_uid.clone(),
+        offset_nm: 0.0,
+    });
+    apply_plan_preview_pointer(session, record, 0.0)
+}
+
+fn apply_plan_preview_input(
+    session: &mut UiSession,
+    input: SituationControlInput,
+) -> AppResult<()> {
+    let records = session
+        .app_state
+        .active_plan
+        .as_ref()
+        .map(|plan| plan_preview_legs(plan, &session.guidance_leg_geometry))
+        .unwrap_or_default();
+    if records.is_empty() {
+        return Ok(());
+    }
+    let pointer_on_plan = session
+        .plan_preview
+        .pointer
+        .as_ref()
+        .is_some_and(|pointer| {
+            records
+                .iter()
+                .any(|record| record.from_row_uid == pointer.row_uid)
+        });
+    if !pointer_on_plan
+        && matches!(
+            input,
+            SituationControlInput::SkipBackward | SituationControlInput::SkipForward
+        )
+    {
+        let record = records[0].clone();
+        session.plan_preview.pointer = Some(PlanPreviewPointer {
+            row_uid: record.from_row_uid.clone(),
+            offset_nm: 0.0,
+        });
+        return apply_plan_preview_pointer(session, record, 0.0);
+    }
+    let (record_index, mut offset_nm) =
+        resolve_plan_preview_pointer(&session.plan_preview, &records);
+    let mut next_index = record_index;
+    let distance_nm = records[record_index].distance_nm;
+    match input {
+        SituationControlInput::SkipBackward => {
+            if offset_nm > 1e-6 {
+                offset_nm = 0.0;
+            } else if record_index > 0 {
+                next_index = record_index - 1;
+                offset_nm = 0.0;
+            }
+        }
+        SituationControlInput::SkipForward => {
+            if offset_nm < distance_nm - 1e-6 {
+                offset_nm = distance_nm;
+            } else if record_index + 1 < records.len() {
+                next_index = record_index + 1;
+                offset_nm = records[next_index].distance_nm;
+            }
+        }
+        SituationControlInput::FastRewind => {
+            offset_nm = (offset_nm - PLAN_PREVIEW_FAST_STEP_NM).max(0.0);
+        }
+        SituationControlInput::FastForward => {
+            offset_nm = (offset_nm + PLAN_PREVIEW_FAST_STEP_NM).min(distance_nm);
+        }
+    }
+    let record = records[next_index].clone();
+    session.plan_preview.pointer = Some(PlanPreviewPointer {
+        row_uid: record.from_row_uid.clone(),
+        offset_nm,
+    });
+    apply_plan_preview_pointer(session, record, offset_nm)
+}
+
+const PLAN_PREVIEW_FAST_STEP_NM: f64 = 20.0;
+
+fn resolve_plan_preview_pointer(
+    state: &PlanPreviewState,
+    records: &[PlanPreviewLeg],
+) -> (usize, f64) {
+    let Some(pointer) = state.pointer.as_ref() else {
+        return (0, 0.0);
+    };
+    records
+        .iter()
+        .position(|record| record.from_row_uid == pointer.row_uid)
+        .map(|index| {
+            (
+                index,
+                pointer.offset_nm.clamp(0.0, records[index].distance_nm),
+            )
+        })
+        .unwrap_or((0, 0.0))
+}
+
+fn apply_plan_preview_pointer(
+    session: &mut UiSession,
+    record: PlanPreviewLeg,
+    offset_nm: f64,
+) -> AppResult<()> {
+    let position = position_along_geometry(&record.geometry, offset_nm);
+    let heading = heading_along_geometry(&record.geometry, offset_nm)
+        .unwrap_or_else(|| bearing_degrees(record.geometry.from, record.geometry.to));
+    apply_situation_to_ownship(
+        session,
+        DIRECT_SITUATION_SOURCE_ID,
+        crate::OwnshipSourceKind::FlightPlanSimulator,
+        "Plan Preview",
+        crate::Situation {
+            position: crate::SituationPosition::LatLon {
+                lat: position.lat,
+                lon: position.lon,
+            },
+            orientation_deg: Some(heading),
+            speed_kt: Some(0.0),
+            altitude_msl_ft: None,
+        },
+        0,
+    )
+}
+
+fn plan_preview_legs(
+    plan: &FlightPlan,
+    geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
+) -> Vec<PlanPreviewLeg> {
+    plan.resolved_legs
+        .iter()
+        .filter_map(|leg| {
+            let from_row_uid = row_uid_for_leg_start(plan, leg)?;
+            let geometry = geometry_for_resolved_leg(leg, geometry_by_leg_id)?;
+            let distance_nm = geometry_distance_nm(&geometry);
+            Some(PlanPreviewLeg {
+                from_row_uid,
+                geometry,
+                distance_nm,
+            })
+        })
+        .collect()
+}
+
+fn row_uid_for_leg_start(plan: &FlightPlan, leg: &ResolvedLeg) -> Option<String> {
+    match leg.source {
+        ResolvedLegSource::RouteComponent { component_index }
+        | ResolvedLegSource::SyntheticBridge {
+            from_component_index: component_index,
+            ..
+        } => plan.route_component_uids.get(component_index).cloned(),
+        ResolvedLegSource::LegacyPlanLeg { leg_index } => Some(format!("legacy:{leg_index}:from")),
+    }
+}
+
+fn geometry_for_resolved_leg(
+    leg: &ResolvedLeg,
+    geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
+) -> Option<GuidanceLegGeometry> {
+    if let Some(geometry) = geometry_by_leg_id
+        .get(&guidance_detail_id_for_leg_element(leg, 0))
+        .or_else(|| geometry_by_leg_id.get(&leg.id))
+    {
+        return Some(geometry.clone());
+    }
+    if let (NavRef::LatLon(from), NavRef::LatLon(to)) = (&leg.from, &leg.to) {
+        return Some(GuidanceLegGeometry {
+            leg_id: leg.id.clone(),
+            from: *from,
+            to: *to,
+            path: vec![*from, *to],
+        });
+    }
+    None
+}
+
+fn geometry_points(geometry: &GuidanceLegGeometry) -> Vec<LatLon> {
+    if geometry.path.len() >= 2 {
+        geometry.path.clone()
+    } else {
+        vec![geometry.from, geometry.to]
+    }
+}
+
+fn geometry_distance_nm(geometry: &GuidanceLegGeometry) -> f64 {
+    geometry_points(geometry)
+        .windows(2)
+        .map(|segment| crate::great_circle_distance_nm(segment[0], segment[1]))
+        .sum()
+}
+
+fn position_along_geometry(geometry: &GuidanceLegGeometry, offset_nm: f64) -> LatLon {
+    let points = geometry_points(geometry);
+    let mut remaining_nm = offset_nm.max(0.0);
+    for segment in points.windows(2) {
+        let from = segment[0];
+        let to = segment[1];
+        let distance_nm = crate::great_circle_distance_nm(from, to);
+        if distance_nm <= f64::EPSILON {
+            continue;
+        }
+        if remaining_nm <= distance_nm {
+            return crate::great_circle_intermediate(from, to, remaining_nm / distance_nm);
+        }
+        remaining_nm -= distance_nm;
+    }
+    points.last().copied().unwrap_or(geometry.to)
+}
+
+fn heading_along_geometry(geometry: &GuidanceLegGeometry, offset_nm: f64) -> Option<f64> {
+    let points = geometry_points(geometry);
+    let mut remaining_nm = offset_nm.max(0.0);
+    for segment in points.windows(2) {
+        let from = segment[0];
+        let to = segment[1];
+        let distance_nm = crate::great_circle_distance_nm(from, to);
+        if distance_nm <= f64::EPSILON {
+            continue;
+        }
+        if remaining_nm <= distance_nm {
+            return Some(bearing_degrees(from, to));
+        }
+        remaining_nm -= distance_nm;
+    }
+    points
+        .windows(2)
+        .last()
+        .map(|segment| bearing_degrees(segment[0], segment[1]))
+}
+
 fn cdi_dots_for_leg(from: LatLon, to: LatLon, position: LatLon) -> f32 {
     if crate::great_circle_distance_nm(from, to) <= f64::EPSILON {
         return 0.0;
@@ -2488,7 +2801,8 @@ mod tests {
     use super::*;
     use crate::{
         AirportId, FlightPlan, GuidanceState, NavRef, OwnshipSourceId, OwnshipSourceKind,
-        ResolvedLeg, ResolvedLegSource, RouteComponent, SequencingMode, SituationSample,
+        ResolvedLeg, ResolvedLegSource, RouteComponent, SequencingMode, Situation,
+        SituationPosition, SituationSample,
     };
 
     fn minimal_vector_manifest_json() -> &'static str {
@@ -2615,6 +2929,107 @@ mod tests {
             updated_at_epoch_ms: 0,
             version: 1,
         }
+    }
+
+    fn lat_lon_preview_plan() -> FlightPlan {
+        let a = LatLon {
+            lat: 40.0,
+            lon: -120.0,
+        };
+        let b = LatLon {
+            lat: 40.0,
+            lon: -119.0,
+        };
+        let c = LatLon {
+            lat: 41.0,
+            lon: -119.0,
+        };
+        FlightPlan {
+            id: "plan-preview".to_string(),
+            name: "A B C".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::LatLon(a),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::LatLon(b),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::LatLon(c),
+                },
+            ],
+            route_component_uids: vec![
+                "row-a".to_string(),
+                "row-b".to_string(),
+                "row-c".to_string(),
+            ],
+            route_component_uid_counter: 3,
+            resolved_legs: vec![
+                ResolvedLeg {
+                    id: "leg-a-b".to_string(),
+                    from: NavRef::LatLon(a),
+                    to: NavRef::LatLon(b),
+                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "leg-b-c".to_string(),
+                    from: NavRef::LatLon(b),
+                    to: NavRef::LatLon(c),
+                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
+                    procedure_provenance: None,
+                },
+            ],
+            guidance: Some(GuidanceState {
+                active_leg_index: 1,
+                active_detail_index: Some(1),
+                display_split_leg_id: None,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        }
+    }
+
+    fn select_plan_preview(handle: u32) -> UiSessionSnapshot {
+        set_situation_in_session(
+            handle,
+            Situation {
+                position: SituationPosition::LatLon { lat: 0.0, lon: 0.0 },
+                orientation_deg: None,
+                speed_kt: None,
+                altitude_msl_ft: None,
+            },
+        )
+        .expect("register plan preview");
+        select_ownship_source_in_session(
+            handle,
+            crate::OwnshipSelectionCommand::Source {
+                source_id: crate::OwnshipSourceId(DIRECT_SITUATION_SOURCE_ID.to_string()),
+            },
+        )
+        .expect("select plan preview")
+    }
+
+    fn ownship_position(snapshot: &UiSessionSnapshot) -> LatLon {
+        snapshot
+            .app_ui_state
+            .ownship
+            .render
+            .position
+            .expect("ownship position")
+    }
+
+    fn assert_near(left: f64, right: f64) {
+        assert!((left - right).abs() < 1e-4, "{left} != {right}");
     }
 
     #[test]
@@ -2879,6 +3294,155 @@ mod tests {
         assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
         assert!(guidance.direct_to.is_none());
         assert_eq!(guidance.active_leg_index, 1);
+    }
+
+    #[test]
+    fn plan_preview_enters_at_active_leg_start() {
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            lat_lon_preview_plan(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+        let snapshot = select_plan_preview(init.handle);
+        let position = ownship_position(&snapshot);
+        assert_near(position.lat, 40.0);
+        assert_near(position.lon, -119.0);
+    }
+
+    #[test]
+    fn plan_preview_controls_stop_at_waypoints_and_plan_ends() {
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            lat_lon_preview_plan(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+        select_plan_preview(init.handle);
+
+        let after_skip_end = apply_situation_control_input_in_session(
+            init.handle,
+            SituationControlInput::SkipForward,
+            0.0,
+        )
+        .expect("skip to active leg end");
+        let position = ownship_position(&after_skip_end);
+        assert_near(position.lat, 41.0);
+        assert_near(position.lon, -119.0);
+
+        let after_past_end = apply_situation_control_input_in_session(
+            init.handle,
+            SituationControlInput::SkipForward,
+            0.0,
+        )
+        .expect("skip past end");
+        assert_near(ownship_position(&after_past_end).lat, 41.0);
+        assert_near(ownship_position(&after_past_end).lon, -119.0);
+
+        let after_skip_start = apply_situation_control_input_in_session(
+            init.handle,
+            SituationControlInput::SkipBackward,
+            0.0,
+        )
+        .expect("skip to active leg start");
+        let position = ownship_position(&after_skip_start);
+        assert_near(position.lat, 40.0);
+        assert_near(position.lon, -119.0);
+
+        let after_previous = apply_situation_control_input_in_session(
+            init.handle,
+            SituationControlInput::SkipBackward,
+            0.0,
+        )
+        .expect("skip to previous waypoint");
+        let position = ownship_position(&after_previous);
+        assert_near(position.lat, 40.0);
+        assert_near(position.lon, -120.0);
+    }
+
+    #[test]
+    fn plan_preview_skip_from_off_plan_returns_to_first_waypoint() {
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            lat_lon_preview_plan(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+        select_plan_preview(init.handle);
+        {
+            let mut sessions = sessions().lock().expect("session store poisoned");
+            session_mut(&mut sessions, init.handle)
+                .expect("session")
+                .plan_preview
+                .pointer = Some(PlanPreviewPointer {
+                row_uid: "missing-row".to_string(),
+                offset_nm: 12.0,
+            });
+        }
+
+        let snapshot = apply_situation_control_input_in_session(
+            init.handle,
+            SituationControlInput::SkipForward,
+            0.0,
+        )
+        .expect("skip from off-plan");
+        let position = ownship_position(&snapshot);
+        assert_near(position.lat, 40.0);
+        assert_near(position.lon, -120.0);
+    }
+
+    #[test]
+    fn plan_preview_pointer_follows_row_uid_after_reorder() {
+        let mut plan = lat_lon_preview_plan();
+        plan.guidance.as_mut().expect("guidance").active_leg_index = 0;
+        let init = create_ui_session(minimal_vector_manifest_json(), plan, &[], None, None)
+            .expect("create session");
+        select_plan_preview(init.handle);
+        apply_situation_control_input_in_session(
+            init.handle,
+            SituationControlInput::FastForward,
+            0.0,
+        )
+        .expect("advance on first leg");
+
+        let mut reordered = lat_lon_preview_plan();
+        reordered.route_components.swap(0, 1);
+        reordered.route_component_uids.swap(0, 1);
+        reordered.resolved_legs = vec![ResolvedLeg {
+            id: "leg-a-c".to_string(),
+            from: NavRef::LatLon(LatLon {
+                lat: 40.0,
+                lon: -120.0,
+            }),
+            to: NavRef::LatLon(LatLon {
+                lat: 41.0,
+                lon: -119.0,
+            }),
+            source: ResolvedLegSource::RouteComponent { component_index: 1 },
+            procedure_provenance: None,
+        }];
+        replace_flight_plan_in_session(init.handle, reordered).expect("replace reordered plan");
+        let snapshot = apply_situation_control_input_in_session(
+            init.handle,
+            SituationControlInput::FastForward,
+            0.0,
+        )
+        .expect("advance after reorder");
+        let position = ownship_position(&snapshot);
+        assert!(
+            position.lat > 40.0,
+            "expected pointer to stay on row-a leg after reorder"
+        );
+        assert!(
+            position.lon > -120.0,
+            "expected pointer to stay on row-a leg after reorder"
+        );
     }
 
     #[test]

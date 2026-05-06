@@ -408,6 +408,16 @@ pub fn select_ownship_source_in_session(
 }
 
 #[wasm_bindgen]
+pub fn apply_situation_control_input_in_session(
+    handle: u32,
+    input_json: &str,
+    now_epoch_ms: f64,
+) -> Result<String, JsValue> {
+    apply_situation_control_input_in_session_json(handle, input_json, now_epoch_ms)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn set_situation_in_session(handle: u32, situation_json: &str) -> Result<String, JsValue> {
     set_situation_in_session_json(handle, situation_json).map_err(|err| JsValue::from_str(&err))
 }
@@ -911,6 +921,18 @@ fn select_ownship_source_in_session_json(
     let selection: app_core::OwnshipSelectionCommand =
         serde_json::from_str(selection_json).map_err(|err| err.to_string())?;
     let snapshot = app_core::select_ownship_source_in_session(handle, selection)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn apply_situation_control_input_in_session_json(
+    handle: u32,
+    input_json: &str,
+    now_epoch_ms: f64,
+) -> Result<String, String> {
+    let input: app_core::SituationControlInput =
+        serde_json::from_str(input_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::apply_situation_control_input_in_session(handle, input, now_epoch_ms)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }

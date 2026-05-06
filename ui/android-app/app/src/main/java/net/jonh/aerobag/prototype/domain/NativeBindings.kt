@@ -132,6 +132,12 @@ interface NativeBridge {
         selectionJson: String,
     ): String
 
+    fun applySituationControlInputInSessionJson(
+        handle: Long,
+        inputJson: String,
+        nowEpochMs: Double,
+    ): String
+
     fun engageMapFollowInSessionJson(
         handle: Long,
         viewportJson: String,
@@ -495,6 +501,12 @@ object NativeBindings : NativeBridge {
     external override fun selectOwnshipSourceInSessionJson(
         handle: Long,
         selectionJson: String,
+    ): String
+
+    external override fun applySituationControlInputInSessionJson(
+        handle: Long,
+        inputJson: String,
+        nowEpochMs: Double,
     ): String
 
     external override fun engageMapFollowInSessionJson(

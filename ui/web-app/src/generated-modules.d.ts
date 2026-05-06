@@ -39,6 +39,7 @@ declare module "@generated/app_wasm.js" {
   export const update_ownship_source_status_in_session: (...args: unknown[]) => string;
   export const push_situation_sample_in_session: (...args: unknown[]) => string;
   export const select_ownship_source_in_session: (...args: unknown[]) => string;
+  export const apply_situation_control_input_in_session: (...args: unknown[]) => string;
   export const set_map_layer_visibility_in_session: (...args: unknown[]) => string;
   export const set_map_layer_enabled_in_session: (...args: unknown[]) => string;
   export const replace_flight_plan_in_session: (...args: unknown[]) => string;

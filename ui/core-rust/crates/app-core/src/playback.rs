@@ -158,6 +158,16 @@ impl PlaybackSessionState {
         self.current_situation()
     }
 
+    pub fn jog(&mut self, delta_seconds: f64, now_epoch_ms: f64) -> Option<Situation> {
+        let trace = self.trace.as_ref()?;
+        self.cursor_seconds = move_cursor_skipping_gaps(trace, self.cursor_seconds, delta_seconds);
+        if self.status == PlaybackStatus::Playing {
+            self.anchor_wallclock_epoch_ms = Some(now_epoch_ms);
+            self.anchor_cursor_seconds = self.cursor_seconds;
+        }
+        self.current_situation()
+    }
+
     pub fn set_rate(&mut self, rate: f64, now_epoch_ms: f64) -> Option<Situation> {
         let _trace = self.trace.as_ref()?;
         let clamped_rate = if rate.is_finite() {
@@ -372,6 +382,65 @@ fn skip_gap_at_or_after(trace: &PlaybackTrace, cursor_seconds: f64) -> f64 {
     cursor_seconds
 }
 
+fn move_cursor_skipping_gaps(
+    trace: &PlaybackTrace,
+    cursor_seconds: f64,
+    delta_seconds: f64,
+) -> f64 {
+    if delta_seconds == 0.0 {
+        return skip_gap_at_or_after(trace, clamp_cursor(trace, cursor_seconds));
+    }
+    if delta_seconds > 0.0 {
+        move_cursor_forward_skipping_gaps(trace, cursor_seconds, delta_seconds)
+    } else {
+        move_cursor_backward_skipping_gaps(trace, cursor_seconds, -delta_seconds)
+    }
+}
+
+fn move_cursor_forward_skipping_gaps(
+    trace: &PlaybackTrace,
+    cursor_seconds: f64,
+    mut remaining_seconds: f64,
+) -> f64 {
+    let mut cursor = skip_gap_at_or_after(trace, clamp_cursor(trace, cursor_seconds));
+    for gap in &trace.gap_spans {
+        if gap.end_seconds <= cursor {
+            continue;
+        }
+        if cursor < gap.start_seconds {
+            let usable_seconds = gap.start_seconds - cursor;
+            if remaining_seconds <= usable_seconds {
+                return clamp_cursor(trace, cursor + remaining_seconds);
+            }
+            remaining_seconds -= usable_seconds;
+        }
+        cursor = gap.end_seconds;
+    }
+    clamp_cursor(trace, cursor + remaining_seconds)
+}
+
+fn move_cursor_backward_skipping_gaps(
+    trace: &PlaybackTrace,
+    cursor_seconds: f64,
+    mut remaining_seconds: f64,
+) -> f64 {
+    let mut cursor = clamp_cursor(trace, cursor_seconds);
+    for gap in trace.gap_spans.iter().rev() {
+        if gap.start_seconds >= cursor {
+            continue;
+        }
+        if cursor > gap.end_seconds {
+            let usable_seconds = cursor - gap.end_seconds;
+            if remaining_seconds <= usable_seconds {
+                return clamp_cursor(trace, cursor - remaining_seconds);
+            }
+            remaining_seconds -= usable_seconds;
+        }
+        cursor = gap.start_seconds;
+    }
+    clamp_cursor(trace, cursor - remaining_seconds)
+}
+
 fn build_profile(
     trace: &PlaybackTrace,
     value_for_point: impl Fn(&PlaybackPoint) -> Option<f64>,
@@ -544,6 +613,32 @@ mod tests {
                 lat: 11.0,
                 lon: 21.0
             },
+        );
+    }
+
+    #[test]
+    fn playback_jog_preserves_motion_across_gaps() {
+        let mut playback = PlaybackSessionState::default();
+        playback
+            .load_trace_json(
+                "test.json".to_string(),
+                r#"{"trace":[[0.0,10.0,20.0,0,100.0,90.0],[60.0,10.1,20.1,0,100.0,90.0],[400.0,11.0,21.0,0,100.0,90.0],[520.0,12.0,22.0,0,100.0,90.0]]}"#,
+            )
+            .unwrap();
+
+        playback.seek(30.0, 0.0);
+        playback.jog(120.0, 0.0);
+        let cursor = playback.ui_state().cursor_seconds;
+        assert!(
+            (cursor - 490.0).abs() < 1e-6,
+            "forward jog should spend remaining distance after the dead region, got {cursor}",
+        );
+
+        playback.jog(-120.0, 0.0);
+        let cursor = playback.ui_state().cursor_seconds;
+        assert!(
+            (cursor - 30.0).abs() < 1e-6,
+            "backward jog should spend remaining distance before the dead region, got {cursor}",
         );
     }
 }

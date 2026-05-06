@@ -899,6 +899,18 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
+    fun applySituationControlInput(input: SituationControlInput, nowEpochMs: Double): UiSessionSnapshot {
+        snapshot =
+            decodeSnapshot(
+                bridge.applySituationControlInputInSessionJson(
+                    handle,
+                    input.toCoreJson(json),
+                    nowEpochMs,
+                ),
+            )
+        return snapshot
+    }
+
     fun engageMapFollow(viewport: MapViewportState): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.engageMapFollowInSessionJson(handle, viewport.toCoreViewport().toCoreJson(json)))
         return snapshot
@@ -1555,6 +1567,16 @@ private fun SituationSample.toCoreJson(json: Json): String =
 
 private fun OwnshipSelection.toCoreJson(json: Json): String =
     json.encodeToString(WireOwnshipSelectionSerializer, toWire())
+
+private fun SituationControlInput.toCoreJson(json: Json): String =
+    json.encodeToString(
+        when (this) {
+            SituationControlInput.SkipBackward -> "skip_backward"
+            SituationControlInput.FastRewind -> "fast_rewind"
+            SituationControlInput.FastForward -> "fast_forward"
+            SituationControlInput.SkipForward -> "skip_forward"
+        },
+    )
 
 private fun CoreMapViewport.toCoreJson(json: Json): String =
     json.encodeToString(WireMapViewport.serializer(), toWire())

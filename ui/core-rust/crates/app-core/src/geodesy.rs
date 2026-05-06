@@ -46,7 +46,7 @@ pub fn great_circle_display_path(from: LatLon, to: LatLon) -> Vec<LatLon> {
         .collect()
 }
 
-fn great_circle_intermediate(from: LatLon, to: LatLon, fraction: f64) -> LatLon {
+pub fn great_circle_intermediate(from: LatLon, to: LatLon, fraction: f64) -> LatLon {
     if fraction <= 0.0 {
         return from;
     }

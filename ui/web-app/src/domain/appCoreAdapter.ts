@@ -34,6 +34,7 @@ import type {
   RouteComponentUiView,
   SequencingMode,
   Situation,
+  SituationControlInput,
   SituationRingCandidate,
   SituationSample,
   WaypointIdentifierSuggestion,
@@ -499,6 +500,7 @@ export interface UiSession {
   updateOwnshipSourceStatus(update: OwnshipSourceStatusUpdate): Promise<UiSessionSnapshot>;
   pushSituationSample(sample: SituationSample): Promise<UiSessionSnapshot>;
   selectOwnshipSource(selection: OwnshipSelectionCommand): Promise<UiSessionSnapshot>;
+  applySituationControlInput(input: SituationControlInput, nowEpochMs: number): Promise<UiSessionSnapshot>;
   setMapLayerVisibility(layerId: MapLayerId, visible: boolean): Promise<UiSessionSnapshot>;
   setMapLayerEnabled(layerId: MapLayerId, enabled: boolean): Promise<UiSessionSnapshot>;
   setDebugFlag(flagId: DebugFlagId, enabled: boolean): Promise<UiSessionSnapshot>;
@@ -685,6 +687,7 @@ type WasmModule = {
   update_ownship_source_status_in_session(handle: number, updateJson: string): Promise<string> | string;
   push_situation_sample_in_session(handle: number, sampleJson: string): Promise<string> | string;
   select_ownship_source_in_session(handle: number, selectionJson: string): Promise<string> | string;
+  apply_situation_control_input_in_session(handle: number, inputJson: string, nowEpochMs: number): Promise<string> | string;
   set_map_layer_visibility_in_session(handle: number, layerIdJson: string, visible: boolean): Promise<string> | string;
   set_map_layer_enabled_in_session(handle: number, layerIdJson: string, enabled: boolean): Promise<string> | string;
   set_debug_flag_in_session(handle: number, flagIdJson: string, enabled: boolean): Promise<string> | string;
@@ -1037,6 +1040,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       selectOwnshipSource: async (selection) => {
         snapshot = await parseSessionSnapshot(
           this.module.select_ownship_source_in_session(handle, JSON.stringify(ownshipSelectionToCore(selection))),
+        );
+        return snapshot;
+      },
+      applySituationControlInput: async (input, nowEpochMs) => {
+        snapshot = await parseSessionSnapshot(
+          this.module.apply_situation_control_input_in_session(handle, JSON.stringify(input), nowEpochMs),
         );
         return snapshot;
       },
@@ -1436,6 +1445,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.update_ownship_source_status_in_session !== "function" ||
     typeof mod.push_situation_sample_in_session !== "function" ||
     typeof mod.select_ownship_source_in_session !== "function" ||
+    typeof mod.apply_situation_control_input_in_session !== "function" ||
     typeof mod.set_map_layer_visibility_in_session !== "function" ||
     typeof mod.set_map_layer_enabled_in_session !== "function" ||
     typeof mod.set_debug_flag_in_session !== "function" ||

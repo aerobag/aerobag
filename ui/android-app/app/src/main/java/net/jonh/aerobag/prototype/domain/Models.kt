@@ -634,6 +634,13 @@ enum class OwnshipControlTone {
     Neutral,
 }
 
+enum class SituationControlInput {
+    SkipBackward,
+    FastRewind,
+    FastForward,
+    SkipForward,
+}
+
 data class OwnshipRenderState(
     val mode: OwnshipMode = OwnshipMode.None,
     val bannerText: String = "NO GPS POSITION",

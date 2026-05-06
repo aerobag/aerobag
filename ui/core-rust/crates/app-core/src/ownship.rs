@@ -293,6 +293,15 @@ pub struct OwnshipSourceStatusUpdate {
     pub status_label: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SituationControlInput {
+    SkipBackward,
+    FastRewind,
+    FastForward,
+    SkipForward,
+}
+
 pub fn register_source(
     state: &OwnshipState,
     registration: OwnshipSourceRegistration,

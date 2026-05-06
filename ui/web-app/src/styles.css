@@ -1268,6 +1268,19 @@ button {
   flex: 0 0 auto;
 }
 
+.situationTransportRow {
+  display: grid;
+  grid-template-columns: repeat(4, var(--thumb));
+  gap: calc(var(--thumb) * 0.05);
+}
+
+.chartTraySituation .situationTransportButton {
+  width: var(--thumb);
+  min-width: var(--thumb);
+  font-size: calc(var(--thumb) * 0.34);
+  text-align: center;
+}
+
 .trayButton.isActive {
   background:
     linear-gradient(

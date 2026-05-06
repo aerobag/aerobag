@@ -615,6 +615,8 @@ export type OwnshipBannerSeverity = "info" | "caution" | "warning";
 
 export type OwnshipControlTone = "ready" | "unavailable" | "neutral";
 
+export type SituationControlInput = "skip_backward" | "fast_rewind" | "fast_forward" | "skip_forward";
+
 export type OwnshipSourceKind =
   | "device_gps"
   | "external_gps"

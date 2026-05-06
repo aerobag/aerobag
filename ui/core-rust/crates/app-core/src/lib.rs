@@ -31,7 +31,8 @@ pub use content::{
 };
 pub use errors::{AppError, AppErrorKind, AppResult};
 pub use geodesy::{
-    cross_track_left_nm, great_circle_display_path, great_circle_distance_nm, initial_course_deg,
+    cross_track_left_nm, great_circle_display_path, great_circle_distance_nm,
+    great_circle_intermediate, initial_course_deg,
 };
 pub use geometry::{GeoBounds, GeometryBundle, LatLon, MapViewport, PolygonRecord};
 pub use had_ops::{run_had_operation, HadOperation, HadOperationOutcome};
@@ -48,10 +49,9 @@ pub use map_overlay::{
     MapOverlayWarning, MapSelectionAction, MapSelectionCategory, MapSelectionHighlight,
     MapSelectionItem, MapSelectionQueryResult, MapSelectionSessionAction, MetarProductPayload,
     MetarRecord, MetarTilePayload, NavSymbolFeature, ObstacleOverlayContext, PirepRecord,
-    PointTilePayload, PointVectorRecord,
-    TafProductPayload, TafRecord, TfrAltitudeLimit, TfrAreaPayload, TfrLatLonPoint,
-    TfrProductPayload, TfrScheduleFragment, VectorTileRequest, VisibleMapFeature,
-    VisibleMetarFeature, VisiblePirepFeature, AIRSPACE_DISPLAY_FEATURE_LIMIT,
+    PointTilePayload, PointVectorRecord, TafProductPayload, TafRecord, TfrAltitudeLimit,
+    TfrAreaPayload, TfrLatLonPoint, TfrProductPayload, TfrScheduleFragment, VectorTileRequest,
+    VisibleMapFeature, VisibleMetarFeature, VisiblePirepFeature, AIRSPACE_DISPLAY_FEATURE_LIMIT,
     VECTOR_DISPLAY_FEATURE_LIMIT,
 };
 pub use navdb_types::{
@@ -68,7 +68,8 @@ pub use ownship::{
     OwnshipSelectionCommand, OwnshipSelectionPolicy, OwnshipSourceId, OwnshipSourceKind,
     OwnshipSourceMenuItem, OwnshipSourceRegistration, OwnshipSourceStatus,
     OwnshipSourceStatusUpdate, OwnshipState, OwnshipUiState, ResolvedOwnshipState,
-    SituationKinematics, SituationRingCandidate, SituationSample, SourceConnectionState,
+    SituationControlInput, SituationKinematics, SituationRingCandidate, SituationSample,
+    SourceConnectionState,
 };
 pub use package_management::{
     default_offline_package_preferences, initialize_offline_packages, plan_offline_packages,
@@ -115,11 +116,12 @@ pub use raster_tiles::{
     RasterTileDraw, RasterTileLevel, RasterTilePlan, RasterTilePlanOptions, RasterTileSource,
 };
 pub use session::{
-    activate_next_leg_in_session, attach_nav_kv_store_to_session, create_ui_session,
-    create_ui_session_profiled, destroy_session, disengage_map_follow_in_session,
-    engage_map_follow_in_session, get_map_overlay_in_session, get_map_selection_in_session,
-    get_raster_tile_plan_in_session, get_raster_tile_plan_in_session_with_options,
-    get_session_snapshot, get_terrain_overlay_in_session, ingest_airspace_features_in_session,
+    activate_next_leg_in_session, apply_situation_control_input_in_session,
+    attach_nav_kv_store_to_session, create_ui_session, create_ui_session_profiled, destroy_session,
+    disengage_map_follow_in_session, engage_map_follow_in_session, get_map_overlay_in_session,
+    get_map_selection_in_session, get_raster_tile_plan_in_session,
+    get_raster_tile_plan_in_session_with_options, get_session_snapshot,
+    get_terrain_overlay_in_session, ingest_airspace_features_in_session,
     ingest_airspace_label_tiles_in_session, ingest_airspace_ref_tiles_in_session,
     ingest_metar_tiles_in_session, ingest_metars_in_session, ingest_point_tiles_in_session,
     ingest_tafs_in_session, ingest_tfrs_in_session, insert_airway_at_flight_plan_row_in_session,

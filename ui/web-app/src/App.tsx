@@ -1762,6 +1762,9 @@ export default function App() {
           onPlaybackSnapshotChange={setSessionSnapshot}
           onSituationControlInput={applySituationControlInput}
           uiSession={uiSession}
+          debugOpen={debugOpen}
+          onDebugToggle={() => setDebugOpen((open) => !open)}
+          onDebugFlagChange={(flagId, enabled) => void setDebugFlag(flagId, enabled)}
           debugWarningActive={debugWarningActive}
           onDebugWarning={logDebugWarning}
           onHighLatencyWarning={logHighLatencyWarning}
@@ -1982,15 +1985,6 @@ export default function App() {
           debugWarningActive={debugWarningActive}
         />
       </div>
-      <div className="debugDock">
-        <DebugDock open={debugOpen} warn={debugWarningActive} onToggle={() => setDebugOpen((open) => !open)}>
-          <CommonDebugPanel
-            uptimeLabel={uptimeLabel}
-            debugState={sessionSnapshot.debug_state}
-            onDebugFlagChange={(flagId, enabled) => void setDebugFlag(flagId, enabled)}
-          />
-        </DebugDock>
-      </div>
     </main>
   );
 }
@@ -2029,6 +2023,9 @@ function MapPage(props: {
   onPlaybackSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
   onSituationControlInput: (input: SituationControlInput) => void;
   uiSession: UiSession | null;
+  debugOpen: boolean;
+  onDebugToggle: () => void;
+  onDebugFlagChange: (flagId: DebugFlagId, enabled: boolean) => void;
   debugWarningActive: boolean;
   onDebugWarning: (tag: string, data?: unknown) => void;
   onHighLatencyWarning: (tag: string, data?: unknown) => void;
@@ -2060,6 +2057,9 @@ function MapPage(props: {
     plan,
     planUiState,
     uiSession,
+    debugOpen,
+    onDebugToggle,
+    onDebugFlagChange,
     onPlaybackSnapshotChange,
     onSituationControlInput,
     mapFollowUiState,
@@ -4074,22 +4074,33 @@ function MapPage(props: {
           onZoomChange={setViewportZoom}
         />
 
-        <button
-          type="button"
-          className={`centerHereButton${mapFollowUiState.following ? " isActive" : ""}`}
-          disabled={!mapFollowUiState.can_center_here}
-          onPointerDown={stopPointer}
-          onPointerUp={stopPointer}
-          onDoubleClick={stopDoubleClick}
-          onClick={() => {
-            if (!uiSession) {
-              return;
-            }
-            void uiSession.engageMapFollow(viewport).then(props.onPlaybackSnapshotChange).catch(() => {});
-          }}
-        >
-          CTR
-        </button>
+        <div className="mapBottomRightDock">
+          <div className="debugDock mapDebugDock isRightAligned">
+            <DebugDock open={debugOpen} warn={debugWarningActive} onToggle={onDebugToggle}>
+              <CommonDebugPanel
+                uptimeLabel={uptimeLabel}
+                debugState={debugState}
+                onDebugFlagChange={onDebugFlagChange}
+              />
+            </DebugDock>
+          </div>
+          <button
+            type="button"
+            className={`centerHereButton${mapFollowUiState.following ? " isActive" : ""}`}
+            disabled={!mapFollowUiState.can_center_here}
+            onPointerDown={stopPointer}
+            onPointerUp={stopPointer}
+            onDoubleClick={stopDoubleClick}
+            onClick={() => {
+              if (!uiSession) {
+                return;
+              }
+              void uiSession.engageMapFollow(viewport).then(props.onPlaybackSnapshotChange).catch(() => {});
+            }}
+          >
+            CTR
+          </button>
+        </div>
       </div>
     </section>
   );
@@ -6804,7 +6815,6 @@ function CommonDebugPanel(props: {
 }) {
   const flags: Array<{ id: DebugFlagId; label: string }> = [
     { id: "tile_labels", label: "tile labels" },
-    { id: "playback_visible", label: "playback" },
     { id: "fast_tiles", label: "fast tiles" },
     { id: "offline_simulated_clock_buttons", label: "offline simulated clock buttons" },
   ];

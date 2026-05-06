@@ -88,7 +88,7 @@ export type UiSessionSnapshot = {
   debug_state: UiDebugState;
 };
 
-export type DebugFlagId = "tile_labels" | "playback_visible" | "fast_tiles" | "offline_simulated_clock_buttons";
+export type DebugFlagId = "tile_labels" | "fast_tiles" | "offline_simulated_clock_buttons";
 
 export type UiDebugState = {
   tile_labels: boolean;

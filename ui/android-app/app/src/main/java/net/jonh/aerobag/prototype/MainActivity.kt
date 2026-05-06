@@ -2718,7 +2718,7 @@ private fun AerobagApp() {
                 modifier = Modifier
                     .zIndex(OverlayPlaneControls)
                     .align(Alignment.BottomEnd)
-                    .padding(end = ThumbSize + (ThumbGap * 2f)),
+                    .padding(end = ThumbSize + (ThumbSize * 0.1f)),
             ) {
                 CommonDebugPanel(
                     uptimeLabel = uptimeLabel,
@@ -9394,7 +9394,6 @@ private fun CommonDebugPanel(
 ) {
     Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
     DebugCheckbox("tile labels", debugState.tileLabels) { onDebugFlagChange("tile_labels", it) }
-    DebugCheckbox("playback", debugState.playbackVisible) { onDebugFlagChange("playback_visible", it) }
     DebugCheckbox("fast tiles", debugState.fastTiles) { onDebugFlagChange("fast_tiles", it) }
     DebugCheckbox("offline simulated clock buttons", debugState.offlineSimulatedClockButtons) {
         onDebugFlagChange("offline_simulated_clock_buttons", it)

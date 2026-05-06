@@ -1357,6 +1357,27 @@ button {
   pointer-events: none;
 }
 
+.mapBottomRightDock {
+  position: absolute;
+  right: var(--thumb-gap);
+  bottom: calc(var(--thumb-gap) + var(--safe-bottom));
+  z-index: 4;
+  display: flex;
+  align-items: flex-end;
+  gap: calc(var(--thumb) * 0.1);
+  pointer-events: none;
+}
+
+.mapDebugDock {
+  position: relative;
+  left: auto;
+  bottom: auto;
+}
+
+.mapDebugDock .debugPanel {
+  bottom: calc(var(--thumb) + var(--thumb-gap));
+}
+
 .debugLauncher {
   position: absolute;
   left: 0;
@@ -1718,10 +1739,7 @@ button {
 }
 
 .centerHereButton {
-  position: absolute;
-  right: var(--thumb-gap);
-  bottom: calc(var(--thumb-gap) + var(--safe-bottom));
-  z-index: 4;
+  position: relative;
   width: var(--thumb);
   height: var(--thumb);
   border: 1px solid color-mix(in srgb, var(--theme-button-bg) 78%, black);
@@ -1732,6 +1750,7 @@ button {
   font-size: calc(var(--thumb) * 0.2);
   font-weight: 800;
   letter-spacing: 0.06em;
+  pointer-events: auto;
 }
 
 .centerHereButton.isActive {

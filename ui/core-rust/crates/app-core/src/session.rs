@@ -206,6 +206,7 @@ fn create_ui_session_inner(
         &AppState::default(),
         AppEvent::ReplaceFlightPlan(plan.clone()),
     )?;
+    let app_state = register_replay_source(app_state)?;
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_reduce_replace_flight_plan");
     }
@@ -240,6 +241,7 @@ fn create_ui_session_inner(
     }
     let caution_state = default_caution_state();
     let debug_state = default_debug_state();
+    let snapshot_debug_state = debug_state_for_app_state(&debug_state, &app_state);
     let snapshot = UiSessionSnapshot {
         app_state: snapshot_app_state,
         app_ui_state,
@@ -249,7 +251,7 @@ fn create_ui_session_inner(
         chart_page_state: chart_page_state.clone(),
         map_layer_state: map_layer_state.clone(),
         caution_state: caution_state.clone(),
-        debug_state: debug_state.clone(),
+        debug_state: snapshot_debug_state,
     };
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
     sessions().lock().expect("session store poisoned").insert(
@@ -496,16 +498,13 @@ pub fn select_ownship_source_in_session(
     };
     session.app_state =
         state::reduce(&session.app_state, AppEvent::SelectOwnshipSource(selection))?;
-    if selected_source_kind.is_some_and(ownship_source_kind_opens_playback) {
-        session.debug_state.playback_visible = true;
-    }
     if selected_source_kind == Some(crate::OwnshipSourceKind::FlightPlanSimulator) {
         sync_plan_preview_to_active_leg(session)?;
     }
     Ok(snapshot_for_session(session))
 }
 
-fn ownship_source_kind_opens_playback(kind: crate::OwnshipSourceKind) -> bool {
+fn is_replay_ownship_source(kind: crate::OwnshipSourceKind) -> bool {
     matches!(
         kind,
         crate::OwnshipSourceKind::GpxPlayback
@@ -1411,7 +1410,6 @@ pub fn set_debug_flag_in_session(
     let session = session_mut(&mut sessions, handle)?;
     match flag_id {
         "tile_labels" => session.debug_state.tile_labels = enabled,
-        "playback_visible" => session.debug_state.playback_visible = enabled,
         "fast_tiles" => session.debug_state.fast_tiles = enabled,
         "offline_simulated_clock_buttons" => {
             session.debug_state.offline_simulated_clock_buttons = enabled
@@ -2103,6 +2101,7 @@ fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> App
 
 fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
     let app_ui_state = project_session_app_ui_state(session);
+    let debug_state = debug_state_for_app_state(&session.debug_state, &session.app_state);
     UiSessionSnapshot {
         app_state: state::project_ui_snapshot_app_state(&session.app_state),
         app_ui_state,
@@ -2116,8 +2115,39 @@ fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
         chart_page_state: session.chart_page_state.clone(),
         map_layer_state: session.map_layer_state.clone(),
         caution_state: session.caution_state.clone(),
-        debug_state: session.debug_state.clone(),
+        debug_state,
     }
+}
+
+fn debug_state_for_app_state(debug_state: &UiDebugState, app_state: &AppState) -> UiDebugState {
+    let mut next = debug_state.clone();
+    next.playback_visible =
+        selected_ownship_source_kind(&app_state.ownship).is_some_and(is_replay_ownship_source);
+    next
+}
+
+fn selected_ownship_source_kind(ownship: &crate::OwnshipState) -> Option<crate::OwnshipSourceKind> {
+    match &ownship.policy.selection {
+        crate::OwnshipSelectionPolicy::Manual { source_id } => ownship
+            .sources
+            .iter()
+            .find(|source| source.source_id == *source_id)
+            .map(|source| source.source_kind),
+        crate::OwnshipSelectionPolicy::Auto => ownship.resolved.active_source_kind,
+    }
+}
+
+fn register_replay_source(app_state: AppState) -> AppResult<AppState> {
+    state::reduce(
+        &app_state,
+        AppEvent::RegisterOwnshipSource(crate::OwnshipSourceRegistration {
+            source_id: crate::OwnshipSourceId(PLAYBACK_SOURCE_ID.to_string()),
+            source_kind: crate::OwnshipSourceKind::AdsbTrackPlayback,
+            display_name: "Replay".to_string(),
+            selectable: true,
+            auto_eligible: false,
+        }),
+    )
 }
 
 fn default_map_layer_state() -> UiMapLayerState {
@@ -3150,6 +3180,83 @@ mod tests {
         );
         assert_eq!(cdi_offscale_readout(10.0), Some("10nm\u{2192}".to_string()));
         assert_eq!(cdi_offscale_readout(11.4), Some("11nm\u{2192}".to_string()));
+    }
+
+    #[test]
+    fn replay_source_is_selectable_and_controls_playback_panel_visibility() {
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            sample_guided_plan(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+        assert!(
+            init.snapshot
+                .app_ui_state
+                .ownship
+                .controls
+                .sources
+                .iter()
+                .any(|source| {
+                    source.source_id.0 == PLAYBACK_SOURCE_ID
+                        && source.source_kind == OwnshipSourceKind::AdsbTrackPlayback
+                        && source.label == "Replay"
+                }),
+            "Replay must be available in the ownship source tray",
+        );
+        assert!(
+            !init.snapshot.debug_state.playback_visible,
+            "playback panel starts hidden until Replay is active",
+        );
+
+        let replay = select_ownship_source_in_session(
+            init.handle,
+            crate::OwnshipSelectionCommand::Source {
+                source_id: OwnshipSourceId(PLAYBACK_SOURCE_ID.to_string()),
+            },
+        )
+        .expect("select Replay");
+        assert!(replay.debug_state.playback_visible);
+
+        let gps = push_situation_sample_in_session(
+            init.handle,
+            SituationSample {
+                source_id: OwnshipSourceId("test-gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 1_000,
+                received_time_epoch_ms: 1_000,
+                position: Some(LatLon {
+                    lat: 37.6,
+                    lon: -122.05,
+                }),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(45.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: Some(3000.0),
+                pressure_altitude_ft: None,
+            },
+        )
+        .expect("push gps sample");
+        assert!(
+            gps.debug_state.playback_visible,
+            "pushing GPS must not change a manual Replay selection",
+        );
+
+        let gps = select_ownship_source_in_session(
+            init.handle,
+            crate::OwnshipSelectionCommand::Source {
+                source_id: OwnshipSourceId("test-gps".to_string()),
+            },
+        )
+        .expect("select GPS");
+        assert!(
+            !gps.debug_state.playback_visible,
+            "playback panel hides as soon as Replay is not the active source",
+        );
     }
 
     #[test]

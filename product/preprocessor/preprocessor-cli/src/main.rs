@@ -2977,8 +2977,15 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             let main_db = main_db.ok_or_else(|| anyhow::anyhow!("{}", long_usage()))?;
-            let count = audit_procedure_geometry_from_sqlite(&main_db, filter)?;
-            println!("procedure_geometry_records {count}");
+            let summary = audit_procedure_geometry_from_sqlite(&main_db, filter)?;
+            println!("procedure_geometry_records {}", summary.record_count);
+            println!(
+                "procedure_geometry_records_with_data_quality {}",
+                summary.records_with_data_quality
+            );
+            for (message, count) in summary.data_quality_messages {
+                println!("procedure_geometry_data_quality {count} {message}");
+            }
         }
         Some("publish-discovery-manifest") => {
             let config = ProductBuildConfig::from_env_and_args(&args[2..])?;

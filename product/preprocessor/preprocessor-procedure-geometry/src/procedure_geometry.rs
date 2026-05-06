@@ -1,8 +1,10 @@
 use crate::arinc_ambiguity_resolutions;
 use crate::planning::LegDisplayPathStyle;
 use crate::procedure_geometry_constants::{
-    EXPLICIT_MISSED_TURN_SOURCE_PREFIX, INFERRED_MISSED_TURN_SOURCE_PREFIX, MIN_ARC_SWEEP_DEG,
-    MIN_GEOMETRY_DISTANCE_NM, PLATE_EXCEPTION_MISSED_TURN_SOURCE_PREFIX, POSITION_EPSILON_DEG,
+    BORROWED_LATER_HOLD_FOR_PI_SOURCE_PREFIX, EXPLICIT_MISSED_TURN_SOURCE_PREFIX,
+    INFERRED_MISSED_TURN_SOURCE_PREFIX, INVENTED_PI_ENTRY_REVERSAL_SOURCE_PREFIX,
+    MIN_ARC_SWEEP_DEG, MIN_GEOMETRY_DISTANCE_NM, PLATE_EXCEPTION_MISSED_TURN_SOURCE_PREFIX,
+    POSITION_EPSILON_DEG,
 };
 use crate::{
     basic_terminal_state, direct_to_fix_with_course_continuation_requirement, reconcile_handoff,
@@ -1045,6 +1047,10 @@ fn build_procedure_leg_display_path(
                                     )?;
                                 let mut hold_sources = vec![debug_source!(); hold_entry.len()];
                                 tag_hold_debug_sources(&mut hold_sources, &hold_roles);
+                                tag_debug_sources_with_prefix(
+                                    &mut hold_sources,
+                                    BORROWED_LATER_HOLD_FOR_PI_SOURCE_PREFIX,
+                                );
                                 if let Some(terminal_position) =
                                     hold_entry.last().and_then(display_element_end_position)
                                 {
@@ -2520,7 +2526,14 @@ fn invented_pi_entry_course_reversal_elements(
             end: intercept,
         });
     }
-    let sources = vec![debug_source!(); elements.len()];
+    let sources = vec![
+        format!(
+            "{}{}",
+            INVENTED_PI_ENTRY_REVERSAL_SOURCE_PREFIX,
+            debug_source!()
+        );
+        elements.len()
+    ];
     Some((elements, sources, intercept))
 }
 
@@ -4010,6 +4023,14 @@ fn tag_hold_debug_sources(debug_sources: &mut [String], element_roles: &[String]
         ) && !source.starts_with("hold_")
         {
             *source = format!("{role}@{source}");
+        }
+    }
+}
+
+fn tag_debug_sources_with_prefix(debug_sources: &mut [String], prefix: &str) {
+    for source in debug_sources {
+        if !source.contains(prefix) {
+            *source = format!("{prefix}{source}");
         }
     }
 }

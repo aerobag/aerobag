@@ -20,6 +20,19 @@ pub struct InventedPiEntryCourseReversal {
 
 pub const SIMPLE_PI_ENTRY_MAX_TURN_DEG: f64 = 120.0;
 
+pub const INVENTED_PI_ENTRY_REVERSAL_WARNING: &str =
+    "Procedure encoding requires a PI/course reversal from an excessive inbound turn and provides no same-fix hold to define protected-side reversal geometry; invented a conservative intercept to the PI outbound course.";
+pub const BORROWED_LATER_HOLD_FOR_PI_WARNING: &str =
+    "Procedure encoding requires a PI/course reversal from an excessive inbound turn; borrowed a later same-fix hold to define protected-side reversal geometry.";
+pub const BORROWED_SIBLING_TRANSITION_HOLD_WARNING: &str =
+    "Procedure encoding resumes the common segment through a sharp course reversal without including the charted hold-in-lieu in this transition; borrowed a sibling same-fix transition hold.";
+pub const UNSPECIFIED_MISSED_TURN_FROM_GEOMETRY_WARNING: &str =
+    "Missed-approach encoding omits an explicit turn direction; inferred the turn direction from geometry or same-fix hold context.";
+pub const UNSPECIFIED_MISSED_TURN_PLATE_EXCEPTION_WARNING: &str =
+    "Missed-approach encoding omits an explicit turn direction where geometry is ambiguous; applied a plate-read exception for the published turn direction.";
+pub const KNOWN_BAD_COURSE_FIELD_WARNING: &str =
+    "Procedure encoding contains a known-bad course field contradicted by adjacent procedure geometry; repaired the course before constructing geometry.";
+
 pub fn invent_pi_entry_course_reversal_when_no_hold_is_available(
     airport_id: &str,
     procedure_id: &str,
@@ -152,22 +165,27 @@ pub fn repair_known_bad_course_fields(
     airport_id: &str,
     procedure_id: &str,
     records: &mut [ProcedureLegMaterializationRecord],
-) {
-    repair_kjst_rnav_rwy_33_ca_true_course_encoded_as_magnetic(airport_id, procedure_id, records);
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if repair_kjst_rnav_rwy_33_ca_true_course_encoded_as_magnetic(airport_id, procedure_id, records)
+    {
+        warnings.push(KNOWN_BAD_COURSE_FIELD_WARNING.to_string());
+    }
+    warnings
 }
 
 fn repair_kjst_rnav_rwy_33_ca_true_course_encoded_as_magnetic(
     airport_id: &str,
     procedure_id: &str,
     records: &mut [ProcedureLegMaterializationRecord],
-) {
+) -> bool {
     // KJST RNAV RWY 33 is encoded with a CA "magnetic_course" of 324.2,
     // matching the runway true heading instead of the charted APP CRS 334
     // magnetic. Keep the repair narrow: only rewrite the CA row when the
     // preceding WASDO->RW33 TF leg is still present and independently confirms
     // the expected magnetic course.
     if airport_id.trim() != "KJST" || procedure_id.trim() != "R33" {
-        return;
+        return false;
     }
 
     let Some(wasdo) = records.iter().find(|record| {
@@ -177,7 +195,7 @@ fn repair_kjst_rnav_rwy_33_ca_true_course_encoded_as_magnetic(
             && record.path_termination.trim() == "TF"
             && record_anchor_name(record) == Some("WASDO")
     }) else {
-        return;
+        return false;
     };
     let Some(rw33) = records.iter().find(|record| {
         record.key.route_type.trim() == "R"
@@ -186,21 +204,21 @@ fn repair_kjst_rnav_rwy_33_ca_true_course_encoded_as_magnetic(
             && record.path_termination.trim() == "TF"
             && record_anchor_name(record) == Some("RW33")
     }) else {
-        return;
+        return false;
     };
     let (Some(wasdo_position), Some(rw33_position), Some(variation_deg)) = (
         wasdo.nav_position,
         rw33.nav_position,
         rw33.airport_magnetic_variation_deg,
     ) else {
-        return;
+        return false;
     };
 
     let inbound_true_course_deg = initial_course_deg(wasdo_position, rw33_position);
     let inbound_magnetic_course_deg =
         normalize_bearing_degrees(inbound_true_course_deg - variation_deg);
     if angular_difference_degrees(inbound_magnetic_course_deg, 334.0) > 1.0 {
-        return;
+        return false;
     }
 
     let Some(ca) = records.iter_mut().find(|record| {
@@ -209,13 +227,14 @@ fn repair_kjst_rnav_rwy_33_ca_true_course_encoded_as_magnetic(
             && record.sequence == 40
             && record.path_termination.trim() == "CA"
     }) else {
-        return;
+        return false;
     };
     if ca.magnetic_course_deg != Some(324.2) {
-        return;
+        return false;
     }
 
     ca.magnetic_course_deg = Some(inbound_magnetic_course_deg);
+    true
 }
 
 pub fn acute_turn_ksan_09_family_at_pgy(

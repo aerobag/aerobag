@@ -5727,17 +5727,50 @@ fn build_nav_kv_procedure_pairs(
     Ok(pairs)
 }
 
+#[derive(Debug, Clone)]
+pub struct ProcedureGeometryAuditSummary {
+    pub record_count: usize,
+    pub records_with_data_quality: usize,
+    pub data_quality_messages: BTreeMap<String, usize>,
+}
+
 pub fn audit_procedure_geometry_from_sqlite(
     main_db_path: &Path,
     filter: ProcedureGeometryAuditFilter,
-) -> anyhow::Result<usize> {
+) -> anyhow::Result<ProcedureGeometryAuditSummary> {
     let connection = rusqlite::Connection::open(main_db_path)
         .with_context(|| format!("failed to open {}", main_db_path.display()))?;
     let pairs = build_nav_kv_procedure_pairs(&connection, Some(&filter))?;
-    Ok(pairs
+    let mut summary = ProcedureGeometryAuditSummary {
+        record_count: 0,
+        records_with_data_quality: 0,
+        data_quality_messages: BTreeMap::new(),
+    };
+    for pair in pairs
         .iter()
         .filter(|pair| pair.key.starts_with("procedure/geometry/"))
-        .count())
+    {
+        summary.record_count += 1;
+        let value: serde_json::Value = serde_json::from_slice(&pair.value)
+            .with_context(|| format!("failed to decode {}", pair.key))?;
+        let annotations = value
+            .get("data_quality")
+            .and_then(|value| value.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        if !annotations.is_empty() {
+            summary.records_with_data_quality += 1;
+        }
+        for annotation in annotations {
+            if let Some(message) = annotation.get("message").and_then(|value| value.as_str()) {
+                *summary
+                    .data_quality_messages
+                    .entry(message.to_string())
+                    .or_default() += 1;
+            }
+        }
+    }
+    Ok(summary)
 }
 
 fn load_nav_kv_cifp_tpp_matches(

@@ -3,7 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::procedure_geometry_constants::{
-    EXPLICIT_MISSED_TURN_SOURCE_PREFIX, INFERRED_MISSED_TURN_SOURCE_PREFIX,
+    BORROWED_LATER_HOLD_FOR_PI_SOURCE_PREFIX, EXPLICIT_MISSED_TURN_SOURCE_PREFIX,
+    INFERRED_MISSED_TURN_SOURCE_PREFIX, INVENTED_PI_ENTRY_REVERSAL_SOURCE_PREFIX,
     MAX_APPROACH_DISPLAY_ELEMENT_DISTANCE_NM, MAX_ENROUTE_TRANSITION_DISPLAY_ELEMENT_DISTANCE_NM,
     MAX_PUBLISHED_HOLD_OR_MISSED_SEGMENT_DISTANCE_NM, MIN_ARC_SWEEP_DEG, MIN_GEOMETRY_DISTANCE_NM,
     PLATE_EXCEPTION_MISSED_TURN_SOURCE_PREFIX, POSITION_EPSILON_DEG,
@@ -364,7 +365,7 @@ pub fn materialize_procedure_from_records(
         });
     }
 
-    arinc_ambiguity_resolutions::repair_known_bad_course_fields(
+    let mut data_quality = arinc_ambiguity_resolutions::repair_known_bad_course_fields(
         airport_id,
         procedure_id,
         &mut legs,
@@ -396,6 +397,7 @@ pub fn materialize_procedure_from_records(
                         &legs,
                         &mut transition_legs,
                         common_legs,
+                        &mut data_quality,
                     );
                 }
                 let items = concretize_procedure_materialization_legs(&transition_legs, false);
@@ -434,6 +436,7 @@ pub fn materialize_procedure_from_records(
             true,
             &segments,
         )?;
+        append_data_quality_from_resolved_legs(&mut data_quality, &resolved_legs);
 
         return Ok(MaterializedProcedure {
             procedure: ProcedureSegment {
@@ -446,7 +449,7 @@ pub fn materialize_procedure_from_records(
             },
             concretized_items,
             resolved_legs,
-            data_quality: Vec::new(),
+            data_quality,
         });
     }
 
@@ -524,6 +527,7 @@ pub fn materialize_procedure_from_records(
         true,
         &segments,
     )?;
+    append_data_quality_from_resolved_legs(&mut data_quality, &resolved_legs);
 
     Ok(MaterializedProcedure {
         procedure: ProcedureSegment {
@@ -536,7 +540,7 @@ pub fn materialize_procedure_from_records(
         },
         concretized_items,
         resolved_legs,
-        data_quality: Vec::new(),
+        data_quality,
     })
 }
 
@@ -752,6 +756,7 @@ fn borrow_sibling_transition_hold_for_common_if_course_reversal(
     all_legs: &[ProcedureLegMaterializationRecord],
     transition_legs: &mut Vec<ProcedureLegMaterializationRecord>,
     common_legs: &[ProcedureLegMaterializationRecord],
+    data_quality: &mut Vec<String>,
 ) {
     let Some(last_transition_leg) = transition_legs.last() else {
         return;
@@ -823,6 +828,52 @@ fn borrow_sibling_transition_hold_for_common_if_course_reversal(
     borrowed_hold.key.transition_id = last_transition_leg.key.transition_id.clone();
     borrowed_hold.sequence = last_transition_leg.sequence + 1;
     transition_legs.push(borrowed_hold);
+    push_unique_data_quality(
+        data_quality,
+        arinc_ambiguity_resolutions::BORROWED_SIBLING_TRANSITION_HOLD_WARNING,
+    );
+}
+
+fn append_data_quality_from_resolved_legs(
+    data_quality: &mut Vec<String>,
+    resolved_legs: &[ResolvedLeg],
+) {
+    for source in resolved_legs
+        .iter()
+        .filter_map(|leg| leg.procedure_provenance.as_ref())
+        .filter_map(|provenance| provenance.display_path.as_ref())
+        .flat_map(|path| path.debug_element_sources.iter())
+    {
+        if source.contains(BORROWED_LATER_HOLD_FOR_PI_SOURCE_PREFIX) {
+            push_unique_data_quality(
+                data_quality,
+                arinc_ambiguity_resolutions::BORROWED_LATER_HOLD_FOR_PI_WARNING,
+            );
+        }
+        if source.contains(INVENTED_PI_ENTRY_REVERSAL_SOURCE_PREFIX) {
+            push_unique_data_quality(
+                data_quality,
+                arinc_ambiguity_resolutions::INVENTED_PI_ENTRY_REVERSAL_WARNING,
+            );
+        }
+        if source.contains(PLATE_EXCEPTION_MISSED_TURN_SOURCE_PREFIX) {
+            push_unique_data_quality(
+                data_quality,
+                arinc_ambiguity_resolutions::UNSPECIFIED_MISSED_TURN_PLATE_EXCEPTION_WARNING,
+            );
+        } else if source.contains(INFERRED_MISSED_TURN_SOURCE_PREFIX) {
+            push_unique_data_quality(
+                data_quality,
+                arinc_ambiguity_resolutions::UNSPECIFIED_MISSED_TURN_FROM_GEOMETRY_WARNING,
+            );
+        }
+    }
+}
+
+fn push_unique_data_quality(data_quality: &mut Vec<String>, message: &str) {
+    if !data_quality.iter().any(|existing| existing == message) {
+        data_quality.push(message.to_string());
+    }
 }
 
 fn resolve_procedure_materialization_legs_with_provenance(

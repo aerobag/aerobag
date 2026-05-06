@@ -222,8 +222,10 @@ import net.jonh.aerobag.prototype.domain.NativeUiSession
 import net.jonh.aerobag.prototype.domain.NavKvStore
 import net.jonh.aerobag.prototype.domain.NavRef
 import net.jonh.aerobag.prototype.domain.NavElementUiView
+import net.jonh.aerobag.prototype.domain.OwnshipControlModel
 import net.jonh.aerobag.prototype.domain.OwnshipMode
 import net.jonh.aerobag.prototype.domain.OwnshipRenderState
+import net.jonh.aerobag.prototype.domain.OwnshipSelection
 import net.jonh.aerobag.prototype.domain.PackageZipStore
 import net.jonh.aerobag.prototype.domain.PlaybackStatus
 import net.jonh.aerobag.prototype.domain.PlaybackUiState
@@ -1043,6 +1045,11 @@ private enum class MenuDockStyle(
         trayWidth = ThumbSize * 4f,
         launcherMaxLines = 2,
     ),
+    Situation(
+        buttonWidth = ThumbSize * 2.4f,
+        trayWidth = ThumbSize * 2f,
+        launcherMaxLines = 1,
+    ),
 }
 
 private val PageOptions = listOf(
@@ -1352,28 +1359,30 @@ private fun sameMapViewport(left: MapViewportState, right: MapViewportState): Bo
 
 @Composable
 private fun SituationStatusBadge(
-    ownship: OwnshipRenderState,
+    controls: OwnshipControlModel,
     modifier: Modifier = Modifier,
+    onSelectSource: (String) -> Unit = {},
 ) {
-    val tone = when (ownship.mode) {
-        OwnshipMode.None -> Triple(ownship.bannerText, Color(0xFFB3261E), "unknown")
-        OwnshipMode.Simulated -> Triple(ownship.bannerText, Color(0xFFB1591A), "simulated")
-        OwnshipMode.Live,
-        OwnshipMode.Replay,
-        -> Triple(ownship.bannerText, Color(0xFF2A4F66), "live")
+    var open by remember { mutableStateOf(false) }
+    val options = controls.sources.map { source ->
+        MenuDockOption(
+            key = source.sourceId,
+            label = source.label,
+            active = source.active,
+            enabled = source.enabled,
+            onSelect = {
+                open = false
+                onSelectSource(source.sourceId)
+            },
+        )
     }
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(ThumbSize * 0.22f),
-        color = Color(0xE6FCF8F1),
-        shadowElevation = 4.dp,
-    ) {
-        Text(
-            text = tone.first,
-            color = tone.second,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(horizontal = ThumbSize * 0.18f, vertical = ThumbSize * 0.12f),
+    Box(modifier = modifier.wrapContentSize(unbounded = true, align = Alignment.TopEnd)) {
+        MenuDock(
+            launcherLabel = controls.launcherLabel,
+            open = open,
+            onToggle = { open = !open },
+            style = MenuDockStyle.Situation,
+            options = options,
         )
     }
 }
@@ -2508,6 +2517,7 @@ private fun AerobagApp() {
                         decodedTileBitmapCache = decodedTileBitmapCache,
                         debugState = sessionSnapshot.debugState,
                         pageTilePaintTiming = pageTilePaintTiming,
+                        ownshipControls = appUiState.ownship.controls,
                         onPageTilePaintTimingComplete = { completedId ->
                             if (pageTilePaintTiming?.id == completedId) {
                                 pageTilePaintTiming = null
@@ -2515,6 +2525,9 @@ private fun AerobagApp() {
                         },
                         onViewportChange = { mapViewport = it },
                         onSessionSnapshotChange = { sessionSnapshot = it },
+                        onSelectOwnshipSource = { sourceId ->
+                            sessionSnapshot = uiSession.selectOwnshipSource(OwnshipSelection.Source(sourceId))
+                        },
                         onPlaybackSourcePathChange = { playbackSourcePath = it },
                         onSelectMapId = {
                             restoreSnapshot(
@@ -2562,10 +2575,13 @@ private fun AerobagApp() {
                         selectedChart = selectedChart,
                         uiTheme = uiTheme,
                         ownship = appUiState.ownship.render,
+                        ownshipControls = appUiState.ownship.controls,
+                        uiSession = uiSession,
                         navElement = navElement,
                         folderOpen = chartFolderOpen,
                         viewport = chartViewport,
                         onViewportChange = { chartViewport = it },
+                        onSessionSnapshotChange = { sessionSnapshot = it },
                         onFolderOpenChange = {
                             restoreSnapshot(
                                 currentSnapshot().copy(
@@ -4351,9 +4367,11 @@ private fun MapExplorerPage(
     decodedTileBitmapCache: DecodedTileBitmapCache,
     debugState: UiDebugState,
     pageTilePaintTiming: PageTilePaintTiming?,
+    ownshipControls: OwnshipControlModel,
     onPageTilePaintTimingComplete: (Long) -> Unit,
     onViewportChange: (MapViewportState) -> Unit,
     onSessionSnapshotChange: (UiSessionSnapshot) -> Unit,
+    onSelectOwnshipSource: (String) -> Unit,
     onPlaybackSourcePathChange: (String) -> Unit,
     onSelectMapId: (String) -> Unit,
     onSelectPage: (AppPage) -> Unit,
@@ -5810,10 +5828,11 @@ private fun MapExplorerPage(
             }
         }
         SituationStatusBadge(
-            ownship = ownship,
+            controls = ownshipControls,
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(top = ThumbGap, end = ThumbGap),
+            onSelectSource = onSelectOwnshipSource,
         )
 
         MapTopLeftControls(
@@ -7285,10 +7304,13 @@ private fun ChartsPage(
     selectedChart: ChartAsset?,
     uiTheme: UiTheme,
     ownship: OwnshipRenderState,
+    ownshipControls: OwnshipControlModel,
+    uiSession: NativeUiSession,
     navElement: NavElementUiView?,
     folderOpen: Boolean,
     viewport: net.jonh.aerobag.prototype.domain.ImageViewportState?,
     onViewportChange: (net.jonh.aerobag.prototype.domain.ImageViewportState?) -> Unit,
+    onSessionSnapshotChange: (UiSessionSnapshot) -> Unit,
     onFolderOpenChange: (Boolean) -> Unit,
     onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
@@ -7530,10 +7552,13 @@ private fun ChartsPage(
         }
 
         SituationStatusBadge(
-            ownship = ownship,
+            controls = ownshipControls,
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(top = ThumbGap, end = ThumbGap),
+            onSelectSource = { sourceId ->
+                onSessionSnapshotChange(uiSession.selectOwnshipSource(OwnshipSelection.Source(sourceId)))
+            },
         )
 
         ChartViewerSelectors(

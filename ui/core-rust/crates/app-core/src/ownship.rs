@@ -73,6 +73,14 @@ pub enum OwnshipBannerSeverity {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum OwnshipControlTone {
+    Ready,
+    Unavailable,
+    Neutral,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SourceConnectionState {
     Unavailable,
     Searching,
@@ -216,7 +224,10 @@ pub struct OwnshipRenderState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OwnshipSourceMenuItem {
     pub source_id: OwnshipSourceId,
+    pub source_kind: OwnshipSourceKind,
     pub label: String,
+    pub launcher_label: String,
+    pub tone: OwnshipControlTone,
     pub enabled: bool,
     pub active: bool,
     pub status_label: String,
@@ -226,6 +237,8 @@ pub struct OwnshipSourceMenuItem {
 pub struct OwnshipControlModel {
     pub mode: OwnshipMode,
     pub selection: OwnshipSelectionCommand,
+    pub launcher_label: String,
+    pub launcher_tone: OwnshipControlTone,
     pub sources: Vec<OwnshipSourceMenuItem>,
 }
 
@@ -253,6 +266,8 @@ impl Default for OwnshipState {
             controls: OwnshipControlModel {
                 mode: resolved.mode,
                 selection: OwnshipSelectionCommand::Auto,
+                launcher_label: "No GPS".to_string(),
+                launcher_tone: OwnshipControlTone::Unavailable,
                 sources: Vec::new(),
             },
             resolved,
@@ -591,6 +606,19 @@ fn project_controls(
     sources: &[OwnshipSourceStatus],
     mode: OwnshipMode,
 ) -> OwnshipControlModel {
+    let menu_sources = sources
+        .iter()
+        .filter(|source| source.selectable)
+        .map(|source| project_source_menu_item(source, policy))
+        .collect::<Vec<_>>();
+    let active = menu_sources.iter().find(|source| source.active);
+    let launcher_label = active
+        .map(|source| source.launcher_label.clone())
+        .unwrap_or_else(|| "No GPS".to_string());
+    let launcher_tone = active
+        .map(|source| source.tone)
+        .unwrap_or(OwnshipControlTone::Unavailable);
+
     OwnshipControlModel {
         mode,
         selection: match &policy.selection {
@@ -599,17 +627,78 @@ fn project_controls(
                 source_id: source_id.clone(),
             },
         },
-        sources: sources
-            .iter()
-            .filter(|source| source.selectable)
-            .map(|source| OwnshipSourceMenuItem {
-                source_id: source.source_id.clone(),
-                label: source.display_name.clone(),
-                enabled: source.enabled,
-                active: source.active,
-                status_label: source.status_label.clone(),
-            })
-            .collect(),
+        launcher_label,
+        launcher_tone,
+        sources: menu_sources,
+    }
+}
+
+fn project_source_menu_item(
+    source: &OwnshipSourceStatus,
+    policy: &OwnshipPolicy,
+) -> OwnshipSourceMenuItem {
+    let launcher_label = source_launcher_label(source);
+    OwnshipSourceMenuItem {
+        source_id: source.source_id.clone(),
+        source_kind: source.source_kind,
+        label: source_menu_label(source),
+        launcher_label,
+        tone: source_control_tone(source),
+        enabled: source.selectable,
+        active: source.active || source_selected_by_policy(source, policy),
+        status_label: source.status_label.clone(),
+    }
+}
+
+fn source_selected_by_policy(source: &OwnshipSourceStatus, policy: &OwnshipPolicy) -> bool {
+    matches!(
+        &policy.selection,
+        OwnshipSelectionPolicy::Manual { source_id } if *source_id == source.source_id
+    )
+}
+
+fn source_menu_label(source: &OwnshipSourceStatus) -> String {
+    match source.source_kind {
+        OwnshipSourceKind::DeviceGps | OwnshipSourceKind::ExternalGps => "GPS".to_string(),
+        OwnshipSourceKind::ExternalAhrs => "AHARS".to_string(),
+        OwnshipSourceKind::GpxPlayback
+        | OwnshipSourceKind::AdsbTrackPlayback
+        | OwnshipSourceKind::LiveNetworkTrack => "Replay".to_string(),
+        OwnshipSourceKind::FlightPlanSimulator => "Plan Preview".to_string(),
+    }
+}
+
+fn source_launcher_label(source: &OwnshipSourceStatus) -> String {
+    match source.source_kind {
+        OwnshipSourceKind::DeviceGps | OwnshipSourceKind::ExternalGps => {
+            if matches!(source.connection_state, SourceConnectionState::Connected) {
+                "GPS".to_string()
+            } else {
+                "No GPS".to_string()
+            }
+        }
+        OwnshipSourceKind::ExternalAhrs => "AHARS".to_string(),
+        OwnshipSourceKind::GpxPlayback
+        | OwnshipSourceKind::AdsbTrackPlayback
+        | OwnshipSourceKind::LiveNetworkTrack => "Replay".to_string(),
+        OwnshipSourceKind::FlightPlanSimulator => "Plan Preview".to_string(),
+    }
+}
+
+fn source_control_tone(source: &OwnshipSourceStatus) -> OwnshipControlTone {
+    match source.source_kind {
+        OwnshipSourceKind::DeviceGps | OwnshipSourceKind::ExternalGps => {
+            if matches!(source.connection_state, SourceConnectionState::Connected) {
+                OwnshipControlTone::Ready
+            } else {
+                OwnshipControlTone::Unavailable
+            }
+        }
+        OwnshipSourceKind::ExternalAhrs
+        | OwnshipSourceKind::GpxPlayback
+        | OwnshipSourceKind::AdsbTrackPlayback
+        | OwnshipSourceKind::LiveNetworkTrack
+        | OwnshipSourceKind::FlightPlanSimulator => OwnshipControlTone::Neutral,
     }
 }
 

@@ -465,9 +465,31 @@ pub fn select_ownship_source_in_session(
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
+    let selected_source_kind = match &selection {
+        crate::OwnshipSelectionCommand::Source { source_id } => session
+            .app_state
+            .ownship
+            .sources
+            .iter()
+            .find(|source| source.source_id == *source_id)
+            .map(|source| source.source_kind),
+        crate::OwnshipSelectionCommand::Auto => None,
+    };
     session.app_state =
         state::reduce(&session.app_state, AppEvent::SelectOwnshipSource(selection))?;
+    if selected_source_kind.is_some_and(ownship_source_kind_opens_playback) {
+        session.debug_state.playback_visible = true;
+    }
     Ok(snapshot_for_session(session))
+}
+
+fn ownship_source_kind_opens_playback(kind: crate::OwnshipSourceKind) -> bool {
+    matches!(
+        kind,
+        crate::OwnshipSourceKind::GpxPlayback
+            | crate::OwnshipSourceKind::AdsbTrackPlayback
+            | crate::OwnshipSourceKind::LiveNetworkTrack
+    )
 }
 
 pub fn load_playback_trace_in_session(
@@ -588,8 +610,8 @@ pub fn set_situation_in_session(
     apply_situation_to_ownship(
         session,
         DIRECT_SITUATION_SOURCE_ID,
-        crate::OwnshipSourceKind::LiveNetworkTrack,
-        "Direct Situation",
+        crate::OwnshipSourceKind::FlightPlanSimulator,
+        "Plan Preview",
         situation,
         0,
     )?;

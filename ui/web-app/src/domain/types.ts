@@ -613,6 +613,8 @@ export type OwnshipMode = "none" | "live" | "replay" | "simulated";
 
 export type OwnshipBannerSeverity = "info" | "caution" | "warning";
 
+export type OwnshipControlTone = "ready" | "unavailable" | "neutral";
+
 export type OwnshipSourceKind =
   | "device_gps"
   | "external_gps"
@@ -676,9 +678,14 @@ export type OwnshipControlModel = {
   mode: OwnshipMode;
   selection?: OwnshipSelectionCommand;
   policy?: OwnshipSelectionCommand;
+  launcher_label: string;
+  launcher_tone: OwnshipControlTone;
   sources: Array<{
     source_id: { 0: string } | string;
+    source_kind: OwnshipSourceKind;
     label: string;
+    launcher_label: string;
+    tone: OwnshipControlTone;
     enabled: boolean;
     active: boolean;
     status_label: string;

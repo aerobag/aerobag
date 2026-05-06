@@ -628,6 +628,12 @@ enum class SourceConnectionState {
     Failed,
 }
 
+enum class OwnshipControlTone {
+    Ready,
+    Unavailable,
+    Neutral,
+}
+
 data class OwnshipRenderState(
     val mode: OwnshipMode = OwnshipMode.None,
     val bannerText: String = "NO GPS POSITION",
@@ -643,6 +649,8 @@ data class OwnshipRenderState(
 data class OwnshipControlModel(
     val mode: OwnshipMode = OwnshipMode.None,
     val selection: OwnshipSelection = OwnshipSelection.Auto,
+    val launcherLabel: String = "No GPS",
+    val launcherTone: OwnshipControlTone = OwnshipControlTone.Unavailable,
     val sources: List<OwnshipSourceMenuItem> = emptyList(),
 )
 
@@ -658,7 +666,10 @@ data class SituationRingCandidate(
 
 data class OwnshipSourceMenuItem(
     val sourceId: String,
+    val sourceKind: OwnshipSourceKind,
     val label: String,
+    val launcherLabel: String,
+    val tone: OwnshipControlTone,
     val enabled: Boolean,
     val active: Boolean,
     val statusLabel: String,

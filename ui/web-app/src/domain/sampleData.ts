@@ -118,6 +118,8 @@ export const emptyState: AppState = {
     controls: {
       mode: "none",
       selection: { kind: "auto" },
+      launcher_label: "No GPS",
+      launcher_tone: "unavailable",
       sources: [],
     },
     sources: [],

@@ -566,6 +566,21 @@ export type LoadedAdapter = {
   detail: string;
 };
 
+function ownshipSelectionToCore(selection: OwnshipSelectionCommand): "auto" | { source: { source_id: string } } {
+  if (selection.kind === "auto") {
+    return "auto";
+  }
+  return {
+    source: {
+      source_id: sourceIdString(selection.source_id),
+    },
+  };
+}
+
+function sourceIdString(sourceId: { 0: string } | string): string {
+  return typeof sourceId === "string" ? sourceId : sourceId[0];
+}
+
 async function fetchVectorManifestJson(): Promise<string> {
   const baseManifest: Record<string, unknown> = {
     airspace: {
@@ -1021,7 +1036,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       selectOwnshipSource: async (selection) => {
         snapshot = await parseSessionSnapshot(
-          this.module.select_ownship_source_in_session(handle, JSON.stringify(selection)),
+          this.module.select_ownship_source_in_session(handle, JSON.stringify(ownshipSelectionToCore(selection))),
         );
         return snapshot;
       },

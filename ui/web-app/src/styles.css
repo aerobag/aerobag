@@ -529,30 +529,48 @@ button {
   stroke-linecap: round;
 }
 
-.situationStatus {
+.situationDock {
   position: absolute;
   top: var(--thumb-gap);
   right: var(--thumb-gap);
   z-index: 4;
+}
+
+.situationStatusLauncher.chartButtonWide {
+  width: auto;
+  min-width: calc(var(--thumb) * 1.55);
+  height: auto;
+  border: 0;
   padding: calc(var(--thumb) * 0.12) calc(var(--thumb) * 0.18);
   border-radius: calc(var(--thumb-radius) * 0.85);
   background: rgba(252, 248, 241, 0.9);
+  background-image: none;
+  box-shadow: var(--shadow);
+}
+
+.situationStatusLauncher.chartButtonWide.isOpen {
+  background: rgba(252, 248, 241, 0.9);
+  background-image: none;
+}
+
+.situationStatusLauncher .chartButtonLabelWide {
+  max-width: calc(var(--thumb) * 2.5);
   font-size: calc(var(--thumb) * 0.2);
   font-weight: 800;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  box-shadow: var(--shadow);
+  text-shadow: none;
 }
 
-.situationStatus-live {
-  color: #2a4f66;
+.situationStatusLauncher.situationStatus-ready {
+  color: #0d6f67;
 }
 
-.situationStatus-simulated {
-  color: #b1591a;
+.situationStatusLauncher.situationStatus-neutral {
+  color: #111111;
 }
 
-.situationStatus-unknown {
+.situationStatusLauncher.situationStatus-unavailable {
   color: #b3261e;
 }
 
@@ -1239,6 +1257,13 @@ button {
 .chartTray.chartTrayWide .trayButton {
   width: calc(var(--thumb) * 4);
   min-width: calc(var(--thumb) * 4);
+  height: var(--thumb);
+  flex: 0 0 auto;
+}
+
+.chartTraySituation .trayButton {
+  width: calc(var(--thumb) * 2);
+  min-width: calc(var(--thumb) * 2);
   height: var(--thumb);
   flex: 0 0 auto;
 }

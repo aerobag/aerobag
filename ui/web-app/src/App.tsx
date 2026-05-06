@@ -20,6 +20,7 @@ import type {
   NavRef,
   PlaybackUiState,
   MapFollowUiState,
+  OwnshipControlModel,
   OwnshipRenderState,
   PlateGeoref,
   ProcedureOptions,
@@ -250,7 +251,7 @@ type UiThemeJson = {
 
 type AviationThemeColorKey = keyof UiThemeJson["aviation"];
 
-type TrayDockStyle = "compact" | "plate_narrow" | "plate_wide" | "wide";
+type TrayDockStyle = "compact" | "plate_narrow" | "plate_wide" | "wide" | "situation";
 type PlateFolderCategory = ChartAsset["folder_category"];
 
 type NexradManifest = {
@@ -1021,6 +1022,8 @@ export default function App() {
         controls: {
           mode: "none",
           selection: { kind: "auto" },
+          launcher_label: "No GPS",
+          launcher_tone: "unavailable",
           sources: [],
         },
       },
@@ -1722,6 +1725,7 @@ export default function App() {
           onOpenPlateTarget={openPlateTarget}
           legSummary={legSummary}
           ownship={appUiState.ownship.render}
+          ownshipControls={appUiState.ownship.controls}
           plan={currentPlan}
           planUiState={planUiState}
           playbackUiState={playbackUiState}
@@ -1927,6 +1931,7 @@ export default function App() {
             });
           }}
           ownship={appUiState.ownship.render}
+          ownshipControls={appUiState.ownship.controls}
           playbackUiState={playbackUiState}
           playbackSourcePath={playbackSourcePath}
           onPlaybackSourcePathChange={setPlaybackSourcePath}
@@ -1985,6 +1990,7 @@ function MapPage(props: {
   onOpenPlateTarget: (airportId: string, target: "Folder" | "CSup") => void;
   legSummary: string;
   ownship: OwnshipRenderState;
+  ownshipControls: OwnshipControlModel;
   plan: FlightPlan;
   planUiState: FlightPlanUiState | null;
   playbackUiState: PlaybackUiState;
@@ -2021,6 +2027,7 @@ function MapPage(props: {
     onOpenPlateTarget,
     legSummary,
     ownship,
+    ownshipControls,
     plan,
     planUiState,
     uiSession,
@@ -2033,7 +2040,7 @@ function MapPage(props: {
     onFirstVisualReady,
   } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const trayGroup = useModalTrayGroup(["family", "layers"] as const);
+  const trayGroup = useModalTrayGroup(["family", "layers", "ownship"] as const);
   const [layerToggleBusyId, setLayerToggleBusyId] = useState<MapLayerId | null>(null);
   const [chartSearch, setChartSearch] = useState<{
     query: string;
@@ -3477,6 +3484,21 @@ function MapPage(props: {
       onSelect: () => void setMapLayerVisible("terrain_warning", !mapLayerState.terrain_warning.visible),
     },
   ];
+  const ownshipSourceOptions: TrayOption[] = ownshipControls.sources.map((source) => ({
+    id: sourceIdString(source.source_id),
+    label: source.label,
+    active: source.active,
+    disabled: !source.enabled || !uiSession,
+    onSelect: () => {
+      if (!uiSession) {
+        return;
+      }
+      void uiSession
+        .selectOwnshipSource({ kind: "source", source_id: sourceIdString(source.source_id) })
+        .then(onPlaybackSnapshotChange)
+        .finally(() => trayGroup.close("ownship"));
+    },
+  }));
 
   return (
     <section className="pageSurface">
@@ -3773,7 +3795,12 @@ function MapPage(props: {
             )}
           </svg>
         ) : null}
-        <SituationStatusBadge ownship={ownship} />
+        <SituationStatusBadge
+          controls={ownshipControls}
+          open={trayGroup.isOpen("ownship")}
+          onToggle={() => trayGroup.toggle("ownship")}
+          options={ownshipSourceOptions}
+        />
         {mapIsVisible && situationOverlay ? (
           <>
             <svg className="situationOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
@@ -5711,7 +5738,7 @@ function TrayDock(props: {
   const trayRef = useRef<HTMLElement | null>(null);
   const [trayPosition, setTrayPosition] = useState<{ left: number; top: number } | null>(null);
   const [trayThemeStyle, setTrayThemeStyle] = useState<CSSProperties | null>(null);
-  const launcherWide = style === "plate_wide" || style === "wide";
+  const launcherWide = style === "plate_wide" || style === "wide" || style === "situation";
   const trayWide = style === "plate_narrow" || style === "plate_wide" || style === "wide";
   const launcherDisabled = disabled && !open;
 
@@ -5777,7 +5804,7 @@ function TrayDock(props: {
         ? createPortal(
             <section
               ref={trayRef}
-              className={`chartTray chartTrayPortal${trayWide ? " chartTrayWide" : ""} isOpen`}
+              className={`chartTray chartTrayPortal${trayWide ? " chartTrayWide" : ""}${style === "situation" ? " chartTraySituation" : ""} isOpen`}
               aria-label={ariaLabel}
               style={
                 trayPosition
@@ -6142,10 +6169,11 @@ function ChartsPage(props: {
   debugState: UiDebugState;
   uiSession: UiSession | null;
   ownship: OwnshipRenderState;
+  ownshipControls: OwnshipControlModel;
   debugWarningActive: boolean;
   onFirstVisualReady: () => void;
 }) {
-  const { appCoreAdapter, page, pageHistory, uptimeLabel, plan, planUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, ownship, onFirstVisualReady } = props;
+  const { appCoreAdapter, page, pageHistory, uptimeLabel, plan, planUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, ownship, ownshipControls, onFirstVisualReady } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -6158,7 +6186,7 @@ function ChartsPage(props: {
   const pinchRef = useRef<{ viewport: ImageViewportState; distance: number; midpoint: ScreenPoint } | null>(null);
   const lastChartLayoutKeyRef = useRef("");
   const firstVisualReadyRef = useRef(false);
-  const trayGroup = useModalTrayGroup(["airport", "chart", "load"] as const);
+  const trayGroup = useModalTrayGroup(["airport", "chart", "load", "ownship"] as const);
   const [plateProcedureLoads, setPlateProcedureLoads] = useState<ProcedureLoadOption[]>([]);
   const trayOpen = trayGroup.scrimOpen;
   const sortedCharts = selectedAirport?.charts ?? [];
@@ -6335,6 +6363,21 @@ function ChartsPage(props: {
         },
       }));
   }, [plateProcedureLoads, props, trayGroup]);
+  const ownshipSourceOptions: TrayOption[] = ownshipControls.sources.map((source) => ({
+    id: sourceIdString(source.source_id),
+    label: source.label,
+    active: source.active,
+    disabled: !source.enabled || !props.uiSession,
+    onSelect: () => {
+      if (!props.uiSession) {
+        return;
+      }
+      void props.uiSession
+        .selectOwnshipSource({ kind: "source", source_id: sourceIdString(source.source_id) })
+        .then(props.onPlaybackSnapshotChange)
+        .finally(() => trayGroup.close("ownship"));
+    },
+  }));
   const loadApproachEnabled = loadProcedureOptions.length > 0;
 
   function localPointFromPointerEvent(
@@ -6513,7 +6556,12 @@ function ChartsPage(props: {
         onDoubleClick={handleDoubleClick}
       >
         <div className="mapBackdrop" />
-        <SituationStatusBadge ownship={ownship} />
+        <SituationStatusBadge
+          controls={ownshipControls}
+          open={trayGroup.isOpen("ownship")}
+          onToggle={() => trayGroup.toggle("ownship")}
+          options={ownshipSourceOptions}
+        />
         {trayOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
 
         {folderOpen ? (
@@ -6986,15 +7034,29 @@ function filterRenderableFamilyMapViews(
     });
 }
 
-function SituationStatusBadge(props: { ownship: OwnshipRenderState }) {
-  const tone =
-    props.ownship.mode === "none"
-      ? "unknown"
-      : props.ownship.mode === "simulated"
-        ? "simulated"
-        : "live";
-  const label = props.ownship.banner_text;
-  return <div className={`situationStatus situationStatus-${tone}`}>{label}</div>;
+function SituationStatusBadge(props: {
+  controls: OwnshipControlModel;
+  open: boolean;
+  onToggle: () => void;
+  options: TrayOption[];
+}) {
+  return (
+    <div className="situationDock">
+      <TrayDock
+        launcherLabel={props.controls.launcher_label}
+        launcherClassName={`situationStatusLauncher situationStatus-${props.controls.launcher_tone}`}
+        open={props.open}
+        onToggle={props.onToggle}
+        ariaLabel="Ownship source"
+        style="situation"
+        options={props.options}
+      />
+    </div>
+  );
+}
+
+function sourceIdString(sourceId: { 0: string } | string): string {
+  return typeof sourceId === "string" ? sourceId : sourceId[0];
 }
 
 function SituationAircraftSvg(props: {

@@ -93,6 +93,8 @@ data class WireOwnshipRenderState(
 data class WireOwnshipControlModel(
     val mode: WireOwnshipMode = WireOwnshipMode.None,
     val selection: WireOwnshipSelection = WireOwnshipSelection.Auto,
+    val launcher_label: String = "No GPS",
+    val launcher_tone: WireOwnshipControlTone = WireOwnshipControlTone.Unavailable,
     val sources: List<WireOwnshipSourceMenuItem> = emptyList(),
 )
 
@@ -142,7 +144,10 @@ data class WirePlaybackGapSpan(
 @Serializable
 data class WireOwnshipSourceMenuItem(
     val source_id: String,
+    val source_kind: WireOwnshipSourceKind,
     val label: String,
+    val launcher_label: String,
+    val tone: WireOwnshipControlTone = WireOwnshipControlTone.Neutral,
     val enabled: Boolean,
     val active: Boolean,
     val status_label: String,
@@ -333,6 +338,18 @@ enum class WireOwnshipBannerSeverity {
 
     @SerialName("warning")
     Warning,
+}
+
+@Serializable
+enum class WireOwnshipControlTone {
+    @SerialName("ready")
+    Ready,
+
+    @SerialName("unavailable")
+    Unavailable,
+
+    @SerialName("neutral")
+    Neutral,
 }
 
 @Serializable

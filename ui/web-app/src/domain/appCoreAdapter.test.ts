@@ -24,6 +24,8 @@ const snapshotJson = JSON.stringify({
       controls: {
         mode: "none",
         selection: { kind: "auto" },
+        launcher_label: "No GPS",
+        launcher_tone: "unavailable",
         sources: [],
       },
     },
@@ -75,6 +77,7 @@ describe("loadBestAvailableAdapter", () => {
       select_ownship_source_in_session: async () => snapshotJson,
       set_map_layer_visibility_in_session: async () => snapshotJson,
       set_map_layer_enabled_in_session: async () => snapshotJson,
+      set_debug_flag_in_session: async () => snapshotJson,
       set_raster_map_catalog_in_session: async () => snapshotJson,
       select_map_in_session: async () => snapshotJson,
       replace_flight_plan_in_session: async () => snapshotJson,

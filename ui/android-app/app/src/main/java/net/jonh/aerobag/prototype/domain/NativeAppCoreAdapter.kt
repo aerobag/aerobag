@@ -1284,12 +1284,17 @@ private fun OwnshipRenderState.toWire() = WireOwnshipRenderState(
 private fun OwnshipControlModel.toWire() = WireOwnshipControlModel(
     mode = mode.toWire(),
     selection = selection.toWire(),
+    launcher_label = launcherLabel,
+    launcher_tone = launcherTone.toWire(),
     sources = sources.map { it.toWire() },
 )
 
 private fun OwnshipSourceMenuItem.toWire() = WireOwnshipSourceMenuItem(
     source_id = sourceId,
+    source_kind = sourceKind.toWire(),
     label = label,
+    launcher_label = launcherLabel,
+    tone = tone.toWire(),
     enabled = enabled,
     active = active,
     status_label = statusLabel,
@@ -1384,6 +1389,8 @@ private fun WireOwnshipRenderState.toUi() = OwnshipRenderState(
 private fun WireOwnshipControlModel.toUi() = OwnshipControlModel(
     mode = mode.toUi(),
     selection = selection.toUi(),
+    launcherLabel = launcher_label,
+    launcherTone = launcher_tone.toUi(),
     sources = sources.map { it.toUi() },
 )
 
@@ -1422,7 +1429,10 @@ private fun WirePlaybackUiState.toUi() = PlaybackUiState(
 
 private fun WireOwnshipSourceMenuItem.toUi() = OwnshipSourceMenuItem(
     sourceId = source_id,
+    sourceKind = source_kind.toUi(),
     label = label,
+    launcherLabel = launcher_label,
+    tone = tone.toUi(),
     enabled = enabled,
     active = active,
     statusLabel = status_label,
@@ -1458,6 +1468,18 @@ private fun OwnshipBannerSeverity.toWire(): WireOwnshipBannerSeverity = when (th
     OwnshipBannerSeverity.Info -> WireOwnshipBannerSeverity.Info
     OwnshipBannerSeverity.Caution -> WireOwnshipBannerSeverity.Caution
     OwnshipBannerSeverity.Warning -> WireOwnshipBannerSeverity.Warning
+}
+
+private fun WireOwnshipControlTone.toUi(): OwnshipControlTone = when (this) {
+    WireOwnshipControlTone.Ready -> OwnshipControlTone.Ready
+    WireOwnshipControlTone.Unavailable -> OwnshipControlTone.Unavailable
+    WireOwnshipControlTone.Neutral -> OwnshipControlTone.Neutral
+}
+
+private fun OwnshipControlTone.toWire(): WireOwnshipControlTone = when (this) {
+    OwnshipControlTone.Ready -> WireOwnshipControlTone.Ready
+    OwnshipControlTone.Unavailable -> WireOwnshipControlTone.Unavailable
+    OwnshipControlTone.Neutral -> WireOwnshipControlTone.Neutral
 }
 
 private fun WireOwnshipSourceKind.toUi(): OwnshipSourceKind = when (this) {

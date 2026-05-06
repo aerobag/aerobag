@@ -212,9 +212,9 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
         HadOperation::ProjectFlightPlanRoute { plan } => {
             serde_json::to_value(project_flight_plan_route(store, &plan)?)?
         }
-        HadOperation::ResolveWaypointIdentifier { identifier } => serde_json::to_value(
-            read_optional::<NavRef>(store, NavKvQuery::WaypointIdentifier { identifier })?,
-        )?,
+        HadOperation::ResolveWaypointIdentifier { identifier } => {
+            serde_json::to_value(resolve_waypoint_identifier_for_ui(store, &identifier)?)?
+        }
         HadOperation::ResolveNavRefPosition { nav_ref } => {
             serde_json::to_value(nav_ref_position(store, &nav_ref, None)?)?
         }
@@ -889,6 +889,11 @@ fn suggest_waypoint_identifier_candidates(
     )?;
     let mut suggestions = candidates
         .into_iter()
+        .filter_map(|candidate| {
+            canonical_waypoint_identifier_record_for_ui(store, candidate).transpose()
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
         .filter(|candidate| {
             candidate
                 .identifier
@@ -918,8 +923,78 @@ fn suggest_waypoint_identifier_candidates(
                 nav_ref_kind_order(&left.nav_ref).cmp(&nav_ref_kind_order(&right.nav_ref))
             })
     });
+    let mut seen = Vec::<(String, NavRef)>::new();
+    suggestions.retain(|suggestion| {
+        let key = (suggestion.identifier.clone(), suggestion.nav_ref.clone());
+        if seen.contains(&key) {
+            false
+        } else {
+            seen.push(key);
+            true
+        }
+    });
     suggestions.truncate(limit);
     Ok(suggestions)
+}
+
+fn resolve_waypoint_identifier_for_ui(
+    store: &NavKvStore,
+    identifier: &str,
+) -> Result<Option<NavRef>, HadReadError> {
+    let normalized_identifier = identifier.trim().to_ascii_uppercase();
+    let nav_ref = read_optional::<NavRef>(
+        store,
+        NavKvQuery::WaypointIdentifier {
+            identifier: normalized_identifier.clone(),
+        },
+    )?;
+    let Some(nav_ref) = nav_ref else {
+        return Ok(None);
+    };
+    if !waypoint_identifier_is_canonical_for_ui(&normalized_identifier, &nav_ref) {
+        return Ok(None);
+    }
+    if !waypoint_identifier_nav_ref_is_acceptable_for_ui(store, &nav_ref)? {
+        return Ok(None);
+    }
+    Ok(Some(nav_ref))
+}
+
+fn canonical_waypoint_identifier_record_for_ui(
+    store: &NavKvStore,
+    mut record: WaypointIdentifierRecord,
+) -> Result<Option<WaypointIdentifierRecord>, HadReadError> {
+    if !waypoint_identifier_nav_ref_is_acceptable_for_ui(store, &record.nav_ref)? {
+        return Ok(None);
+    }
+    match &record.nav_ref {
+        NavRef::Airport(code) => record.identifier = code.trim().to_ascii_uppercase(),
+        NavRef::Navaid(_) | NavRef::Fix(_) | NavRef::LatLon(_) => {
+            record.identifier = record.identifier.trim().to_ascii_uppercase()
+        }
+    }
+    if record.identifier.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(record))
+    }
+}
+
+fn waypoint_identifier_nav_ref_is_acceptable_for_ui(
+    store: &NavKvStore,
+    nav_ref: &NavRef,
+) -> Result<bool, HadReadError> {
+    match nav_ref {
+        NavRef::Navaid(_) => Ok(nav_symbol_feature(store, nav_ref)?.is_some()),
+        NavRef::Airport(_) | NavRef::Fix(_) | NavRef::LatLon(_) => Ok(true),
+    }
+}
+
+fn waypoint_identifier_is_canonical_for_ui(identifier: &str, nav_ref: &NavRef) -> bool {
+    match nav_ref {
+        NavRef::Airport(code) => identifier.trim().eq_ignore_ascii_case(code.trim()),
+        NavRef::Navaid(_) | NavRef::Fix(_) | NavRef::LatLon(_) => true,
+    }
 }
 
 fn waypoint_identifier_display_name(
@@ -1611,12 +1686,7 @@ fn recognize_flight_plan_entry_token(
     if token.trim().is_empty() {
         return Ok(None);
     }
-    if let Some(nav_ref) = read_optional::<NavRef>(
-        store,
-        NavKvQuery::WaypointIdentifier {
-            identifier: token.to_string(),
-        },
-    )? {
+    if let Some(nav_ref) = resolve_waypoint_identifier_for_ui(store, token)? {
         return Ok(Some(RecognizedInputToken::Waypoint(nav_ref)));
     }
     if let Some(branches) = read_optional::<Vec<AirwayBranch>>(
@@ -2138,6 +2208,28 @@ mod tests {
     fn load_fixture_nav_kv_store() -> NavKvStore {
         let (root_bytes, pages) = load_fixture_nav_kv_pages();
         let root = NavKvRoot::parse(&root_bytes).expect("parse fixture nav_kv root");
+        let mut store = NavKvStore::new(root);
+        for (index, page) in pages.into_iter().enumerate() {
+            store.insert_page(index as u32, page);
+        }
+        store
+    }
+
+    fn test_nav_kv_store(entries: &[(&str, serde_json::Value)]) -> NavKvStore {
+        let encoded = entries
+            .iter()
+            .map(|(key, value)| {
+                (
+                    *key,
+                    serde_json::to_vec(value).expect("encode test nav_kv value"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let entry_refs = encoded
+            .iter()
+            .map(|(key, value)| (*key, value.as_slice()))
+            .collect::<Vec<_>>();
+        let (root, pages) = fixture(&entry_refs, 4096);
         let mut store = NavKvStore::new(root);
         for (index, page) in pages.into_iter().enumerate() {
             store.insert_page(index as u32, page);
@@ -2944,6 +3036,81 @@ mod tests {
         assert!(matches!(
             mutation.plan.route_components[0],
             RouteComponent::Waypoint { waypoint: NavRef::Airport(ref id) } if id == "KPAE"
+        ));
+    }
+
+    #[test]
+    fn waypoint_identifier_ui_rule_rejects_short_airport_aliases() {
+        let store = test_nav_kv_store(&[(
+            "navref/symbol/navaid/SEA",
+            serde_json::json!({
+                "kind": "vortac",
+                "label": "SEA 116.80",
+                "style_class": "nav",
+                "towered": false,
+                "fuel_available": false,
+                "runway_length_ratio": 0.0,
+                "longest_runway_heading_true_deg": null
+            }),
+        )]);
+        let short_alias = WaypointIdentifierRecord {
+            identifier: "RNT".to_string(),
+            nav_ref: NavRef::Airport("KRNT".to_string()),
+            kind: "airport".to_string(),
+            city: "Renton".to_string(),
+            state: "WA".to_string(),
+            facility_name: "Renton Municipal".to_string(),
+            position: LatLon {
+                lat: 47.493,
+                lon: -122.216,
+            },
+        };
+        let canonical = WaypointIdentifierRecord {
+            identifier: "KRNT".to_string(),
+            ..short_alias.clone()
+        };
+        let navaid = WaypointIdentifierRecord {
+            identifier: "SEA".to_string(),
+            nav_ref: NavRef::Navaid("SEA".to_string()),
+            ..short_alias.clone()
+        };
+        let ndb = WaypointIdentifierRecord {
+            identifier: "RNT".to_string(),
+            nav_ref: NavRef::Navaid("RNT".to_string()),
+            ..short_alias.clone()
+        };
+
+        assert_eq!(
+            canonical_waypoint_identifier_record_for_ui(&store, short_alias)
+                .expect("canonicalize short airport alias")
+                .expect("short airport alias canonicalizes for suggestions")
+                .identifier,
+            "KRNT"
+        );
+        assert_eq!(
+            canonical_waypoint_identifier_record_for_ui(&store, canonical)
+                .expect("canonicalize airport")
+                .expect("canonical airport")
+                .identifier,
+            "KRNT"
+        );
+        assert_eq!(
+            canonical_waypoint_identifier_record_for_ui(&store, navaid)
+                .expect("canonicalize VOR-family navaid")
+                .expect("navaid identifier")
+                .identifier,
+            "SEA"
+        );
+        assert!(canonical_waypoint_identifier_record_for_ui(&store, ndb)
+            .expect("canonicalize NDB")
+            .is_none());
+        assert!(!waypoint_identifier_is_canonical_for_ui(
+            "RNT",
+            &NavRef::Airport("KRNT".to_string())
+        ));
+        assert!(waypoint_identifier_is_canonical_for_ui(
+            "SEA",
+            &NavRef::Navaid("SEA".to_string())
         ));
     }
 

@@ -1349,6 +1349,39 @@ pub fn activate_leg(plan: &FlightPlan, leg_index: usize) -> AppResult<FlightPlan
     })
 }
 
+pub fn activate_leg_at_detail_index(
+    plan: &FlightPlan,
+    leg_index: usize,
+    detail_index: usize,
+) -> AppResult<FlightPlan> {
+    let plan = plan.clone().normalized();
+    let detail = guidance_detail_ref_by_index(&plan, detail_index).ok_or_else(|| AppError {
+        kind: AppErrorKind::UnsupportedOperation,
+        message: format!("guidance detail index out of bounds: {detail_index}"),
+    })?;
+    if detail.leg_index != leg_index {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!(
+                "guidance detail {detail_index} belongs to leg {}, not {leg_index}",
+                detail.leg_index
+            ),
+        });
+    }
+
+    Ok(FlightPlan {
+        guidance: Some(GuidanceState {
+            active_leg_index: leg_index,
+            active_detail_index: Some(detail_index),
+            display_split_leg_id: plan.resolved_legs.get(leg_index).map(|leg| leg.id.clone()),
+            sequencing_mode: SequencingMode::FollowPlan,
+            direct_to: None,
+            suspend_reason: None,
+        }),
+        ..plan
+    })
+}
+
 pub fn activate_next_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
     let plan = plan.clone().normalized();
     let guidance = plan.guidance.clone().ok_or_else(|| AppError {
@@ -2171,11 +2204,29 @@ fn project_display_rows(
         (guidance.sequencing_mode == SequencingMode::FollowPlan)
             .then_some(guidance.active_leg_index)
     }) {
+        let active_detail = plan
+            .guidance
+            .as_ref()
+            .and_then(|guidance| guidance.active_detail_index)
+            .and_then(|detail_index| guidance_detail_ref_by_index(plan, detail_index));
+        let active_hold_detail_start =
+            terminal_hold_start_detail_index_for_leg(plan, active_leg_index);
         for row in &mut rows {
             if row.leg_index == Some(active_leg_index) {
                 for action in &mut row.actions {
                     if action.id == FlightPlanRowActionId::ActivateLeg {
-                        action.enabled = false;
+                        let hold_row = row.row_kind == FlightPlanDisplayRowKind::Discontinuity
+                            && row.label == ProcedureDiscontinuity::Hold.display_label();
+                        let hold_already_active = hold_row
+                            && active_hold_detail_start.is_some_and(|hold_start| {
+                                active_detail.as_ref().is_some_and(|detail| {
+                                    detail.leg_index == active_leg_index
+                                        && detail.detail_index >= hold_start
+                                })
+                            });
+                        if !hold_row || hold_already_active {
+                            action.enabled = false;
+                        }
                     }
                 }
             }
@@ -2195,6 +2246,33 @@ fn active_guidance_row_uids(
     let Some(active_leg) = active_guidance_leg(plan) else {
         return (None, None);
     };
+
+    if let Some(hold_start_detail) =
+        terminal_hold_start_detail_index_for_leg(plan, guidance.active_leg_index)
+    {
+        let active_hold_detail = guidance
+            .active_detail_index
+            .is_some_and(|detail_index| detail_index >= hold_start_detail);
+        if active_hold_detail {
+            let to_index = rows.iter().position(|row| {
+                row.row_kind == FlightPlanDisplayRowKind::Discontinuity
+                    && row.label == ProcedureDiscontinuity::Hold.display_label()
+                    && row.leg_index == Some(guidance.active_leg_index)
+            });
+            let Some(to_index) = to_index else {
+                return (None, None);
+            };
+            let from_index = rows[..to_index].iter().rposition(|row| {
+                row.row_kind == FlightPlanDisplayRowKind::Waypoint
+                    && row.leg_index == Some(guidance.active_leg_index)
+                    && row.nav_ref.as_ref() == Some(&active_leg.to)
+            });
+            return (
+                from_index.map(|index| rows[index].uid.clone()),
+                Some(rows[to_index].uid.clone()),
+            );
+        }
+    }
 
     let to_index = match guidance.sequencing_mode {
         SequencingMode::DirectTo => {
@@ -2249,6 +2327,43 @@ fn active_guidance_row_uids(
         from_index.map(|index| rows[index].uid.clone()),
         Some(rows[to_index].uid.clone()),
     )
+}
+
+pub fn terminal_hold_start_element_index_for_leg(
+    plan: &FlightPlan,
+    leg_index: usize,
+) -> Option<usize> {
+    let leg = plan.resolved_legs.get(leg_index)?;
+    let ResolvedLegSource::RouteComponent { component_index } = leg.source else {
+        return None;
+    };
+    let Some(RouteComponent::Procedure { procedure }) = plan.route_components.get(component_index)
+    else {
+        return None;
+    };
+    if procedure.terminal_discontinuity != Some(ProcedureDiscontinuity::Hold) {
+        return None;
+    }
+    if last_guidance_leg_index_for_component(plan, component_index) != Some(leg_index) {
+        return None;
+    }
+    let element_count = leg
+        .procedure_provenance
+        .as_ref()
+        .and_then(|provenance| provenance.display_path.as_ref())
+        .map(|path| path.elements.len())?;
+    (element_count >= 5).then_some(element_count - 4)
+}
+
+pub fn terminal_hold_start_detail_index_for_leg(
+    plan: &FlightPlan,
+    leg_index: usize,
+) -> Option<usize> {
+    let hold_start_element = terminal_hold_start_element_index_for_leg(plan, leg_index)?;
+    guidance_detail_refs(plan)
+        .into_iter()
+        .find(|detail| detail.leg_index == leg_index && detail.element_index == hold_start_element)
+        .map(|detail| detail.detail_index)
 }
 
 fn waypoint_row_index_by_nav_ref(
@@ -2382,6 +2497,13 @@ fn top_level_waypoint_row_leg_index(plan: &FlightPlan, component_index: usize) -
     }
     if &leg.to == waypoint {
         Some(leg_index)
+    } else if matches!(
+        component_index
+            .checked_sub(1)
+            .and_then(|index| plan.route_components.get(index)),
+        Some(RouteComponent::Procedure { .. })
+    ) {
+        last_guidance_leg_index_for_component(plan, component_index - 1)
     } else {
         None
     }
@@ -3248,7 +3370,7 @@ pub fn insert_procedure_between_waypoints(
         route_component_uids,
         route_component_uid_counter,
         resolved_legs: resolved_legs.clone(),
-        guidance: None,
+        guidance: revalidate_guidance_after_plan_edit(plan.guidance.clone(), &resolved_legs),
         ..plan
     })
 }
@@ -3311,7 +3433,7 @@ pub fn replace_airway_component(
         route_component_uids,
         route_component_uid_counter,
         resolved_legs: resolved_legs.clone(),
-        guidance: None,
+        guidance: revalidate_guidance_after_plan_edit(plan.guidance.clone(), &resolved_legs),
         ..plan
     })
 }
@@ -5042,6 +5164,34 @@ mod tests {
             .resolved_legs
             .iter()
             .all(|leg| leg.to != NavRef::Airport("KUAO".to_string())));
+    }
+
+    #[test]
+    fn insert_procedure_between_waypoints_preserves_active_guidance_before_insertion() {
+        let mut plan = sample_four_waypoint_plan();
+        plan.guidance = Some(GuidanceState {
+            active_leg_index: 0,
+            active_detail_index: Some(0),
+            display_split_leg_id: None,
+            sequencing_mode: SequencingMode::FollowPlan,
+            direct_to: None,
+            suspend_reason: None,
+        });
+        let (procedure, procedure_legs) = sample_inserted_procedure();
+
+        let inserted =
+            insert_procedure_between_waypoints(&plan, 1, 2, procedure, procedure_legs).unwrap();
+
+        let guidance = inserted
+            .guidance
+            .as_ref()
+            .expect("procedure insertion should not drop active guidance");
+        assert_eq!(guidance.active_leg_index, 0);
+        assert_eq!(guidance.active_detail_index, Some(0));
+        assert_eq!(
+            inserted.resolved_legs[guidance.active_leg_index].to,
+            NavRef::Airport("KBFI".to_string())
+        );
     }
 
     #[test]

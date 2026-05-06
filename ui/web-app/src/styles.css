@@ -1515,6 +1515,10 @@ button {
   text-align: center;
 }
 
+.navElement.isUnavailable {
+  color: rgba(255, 255, 255, 0.72);
+}
+
 .navElementStatic {
   position: static;
   left: auto;

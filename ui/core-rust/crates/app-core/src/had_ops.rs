@@ -2732,6 +2732,27 @@ mod tests {
                     }),
                     "already-active guidance leg row should disable Activate Leg"
                 );
+                let active_hold_row = activated_ui
+                    .display_rows
+                    .iter()
+                    .find(|row| row.depth == 1 && row.label == "HOLD")
+                    .expect("active plan hold row");
+                assert!(
+                    active_hold_row.actions.iter().any(|action| {
+                        action.id == crate::FlightPlanRowActionId::ActivateLeg && action.enabled
+                    }),
+                    "hold row should still activate the hold detail when the inbound leg is active"
+                );
+                let airport_row = activated_ui
+                    .display_rows
+                    .iter()
+                    .find(|row| row.depth == 0 && row.label == "KPAE")
+                    .expect("destination airport row");
+                assert_eq!(
+                    airport_row.leg_index,
+                    Some(5),
+                    "destination airport after a procedure should activate the procedure's last guidance leg"
+                );
 
                 let activated_route =
                     project_flight_plan_route(&store, &activated).expect("project active route");
@@ -2746,10 +2767,93 @@ mod tests {
                     "active guidance leg should have a CDI-active path element"
                 );
                 assert!(
-                    active_leg_segments.iter().any(|segment| {
-                        segment.status == crate::FlightPlanRouteSegmentStatus::ActiveLegRemaining
+                    active_leg_segments
+                        .iter()
+                        .take(4)
+                        .filter(|segment| {
+                            segment.status == crate::FlightPlanRouteSegmentStatus::Active
+                        })
+                        .count()
+                        == 1,
+                    "XUKRE -> ECEPO should have exactly one CDI-active path element"
+                );
+                assert!(
+                    active_leg_segments
+                        .iter()
+                        .take(4)
+                        .filter(|segment| {
+                            segment.status
+                                == crate::FlightPlanRouteSegmentStatus::ActiveLegRemaining
+                        })
+                        .count()
+                        == 3,
+                    "XUKRE -> ECEPO should light the remaining non-hold path elements"
+                );
+                assert!(
+                    active_leg_segments.iter().skip(4).all(|segment| {
+                        segment.status == crate::FlightPlanRouteSegmentStatus::Remaining
                     }),
-                    "active guidance leg should paint remaining path elements as active-leg remaining"
+                    "hold path elements should not light up until the hold row is activated"
+                );
+
+                let hold_detail = crate::terminal_hold_start_detail_index_for_leg(&activated, 5)
+                    .expect("hold detail start");
+                let hold_activated =
+                    crate::activate_leg_at_detail_index(&activated, 5, hold_detail)
+                        .expect("activate hold detail");
+                let hold_activated_ui = crate::project_ui_state(&hold_activated);
+                let guidance = hold_activated_ui.guidance.as_ref().expect("guidance");
+                let active_from_row = hold_activated_ui
+                    .display_rows
+                    .iter()
+                    .find(|row| guidance.active_from_row_uid.as_ref() == Some(&row.uid))
+                    .expect("hold active from row");
+                let active_to_row = hold_activated_ui
+                    .display_rows
+                    .iter()
+                    .find(|row| guidance.active_to_row_uid.as_ref() == Some(&row.uid))
+                    .expect("hold active to row");
+                assert_eq!(active_from_row.label, "ECEPO");
+                assert_eq!(active_to_row.label, "HOLD");
+
+                let hold_activated_route =
+                    project_flight_plan_route(&store, &hold_activated).expect("project hold route");
+                let hold_segments = hold_activated_route
+                    .iter()
+                    .filter(|segment| segment.leg_id == "procedure-VOR-A-S-70")
+                    .collect::<Vec<_>>();
+                assert!(
+                    hold_segments
+                        .iter()
+                        .take(4)
+                        .all(|segment| segment.status
+                            == crate::FlightPlanRouteSegmentStatus::Completed),
+                    "activating HOLD should mark the inbound elements complete"
+                );
+                assert!(
+                    hold_segments.iter().skip(4).any(|segment| {
+                        segment.status == crate::FlightPlanRouteSegmentStatus::Active
+                    }),
+                    "activating HOLD should light the racetrack"
+                );
+
+                let zelig_activated = crate::activate_leg(&mutation.mutation.plan, 4)
+                    .expect("activate ZELIG -> XUKRE guidance leg");
+                let zelig_route = project_flight_plan_route(&store, &zelig_activated)
+                    .expect("project ZELIG route");
+                let zelig_segments = zelig_route
+                    .iter()
+                    .filter(|segment| segment.leg_id == "procedure-VOR-A-S-30")
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    zelig_segments.len(),
+                    1,
+                    "ZELIG -> XUKRE should have one path element"
+                );
+                assert_eq!(
+                    zelig_segments[0].status,
+                    crate::FlightPlanRouteSegmentStatus::Active,
+                    "ZELIG -> XUKRE should highlight only its single path element"
                 );
             }
             HadOperationOutcome::NeedPages { pages } => {

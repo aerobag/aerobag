@@ -4298,20 +4298,22 @@ function NavElementButton(props: {
   onDoubleClick?: (event: MouseEvent<HTMLElement>) => void;
 }) {
   const { navElement, className = "navElement", onClick, onPointerDown, onPointerUp, onDoubleClick } = props;
-  if (!navElement) {
-    return null;
-  }
+  const displayedNavElement = navElement ?? {
+    active_leg_summary: "NO ACTIVE LEG",
+    cdi_indicator_dots: null,
+    cdi_offscale_readout: null,
+  };
   return (
     <button
       type="button"
-      className={className}
+      className={`${className}${navElement ? "" : " isUnavailable"}`}
       data-testid="nav-cdi"
       onPointerDown={onPointerDown}
       onPointerUp={onPointerUp}
       onDoubleClick={onDoubleClick}
       onClick={onClick}
     >
-      <NavElementView navElement={navElement} />
+      <NavElementView navElement={displayedNavElement} />
     </button>
   );
 }

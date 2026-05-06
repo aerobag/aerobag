@@ -8619,6 +8619,12 @@ private fun NavElementDock(
     onClick: (() -> Unit)? = null,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
+    val displayedActiveLegSummary = navElement?.activeLegSummary ?: "NO ACTIVE LEG"
+    val displayedTextColor = if (navElement == null) {
+        Color.White.copy(alpha = 0.72f)
+    } else {
+        Color.White
+    }
     val shape = RoundedCornerShape(ThumbRadius * 0.9f)
     Surface(
         modifier =
@@ -8652,12 +8658,12 @@ private fun NavElementDock(
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    text = navElement?.activeLegSummary.orEmpty(),
+                    text = displayedActiveLegSummary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White,
+                    color = displayedTextColor,
                 )
             }
             Canvas(

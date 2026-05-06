@@ -87,27 +87,29 @@ pub use package_management::{
 };
 pub use planning::{
     activate_direct_to, activate_direct_to_component, activate_direct_to_leg, activate_leg,
-    activate_next_leg, active_guidance_leg, at_fix_requirement, basic_terminal_state,
-    change_airway_entry, change_airway_exit, change_procedure_enroute_transition,
-    change_procedure_runway_transition, common_resume_candidate_decision, delete_component,
-    delete_waypoint_component, direct_to_fix_with_course_continuation_requirement,
-    enter_hold_requirement, established_on_course_requirement, flatten_component_to_waypoints,
+    activate_leg_at_detail_index, activate_next_leg, active_guidance_leg, at_fix_requirement,
+    basic_terminal_state, change_airway_entry, change_airway_exit,
+    change_procedure_enroute_transition, change_procedure_runway_transition,
+    common_resume_candidate_decision, delete_component, delete_waypoint_component,
+    direct_to_fix_with_course_continuation_requirement, enter_hold_requirement,
+    established_on_course_requirement, flatten_component_to_waypoints,
     flight_plan_contains_nav_ref, flight_plan_has_direct_to_overlay, insert_airport_waypoint,
     insert_airway_after_waypoint, insert_airway_between_waypoints,
     insert_procedure_between_waypoints, insert_waypoint, intercept_course_requirement,
     move_component, project_ui_state, reconcile_handoff, reentry_to_anchor_requirement,
     remove_all_above, replace_airway_component, replace_procedure_component, restore_direct_to,
     sequence_active_leg, start_requirement_from_leg_characteristics, suspend_sequencing,
+    terminal_hold_start_detail_index_for_leg, terminal_hold_start_element_index_for_leg,
     terminal_state_with_leg_characteristics, top_level_waypoint_component_count,
     top_level_waypoint_component_index, unsuspend_sequencing, yieldable_course_to_fix_requirement,
     AirwaySegment, CodedFixSatisfaction, CommonSegmentTerminalState, ConcretizedNavItem,
-    DirectToState, DirectToUiView, FlightPlan, FlightPlanRowActionExecution, FlightPlanRowActionId,
-    FlightPlanUiState, GuidanceState, GuidanceUiView, HandoffDecision, HoldTerminalState,
-    LegDisplayElement, LegDisplayPath, LegDisplayPathStyle, NavRef, PathTermination, PlanLeg,
-    ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance, ProcedureSegment,
-    ProcedureSegmentRole, ProcedureTurnTerminalState, ResolvedLeg, ResolvedLegSource,
-    ResolvedLegUiView, RouteComponent, RouteComponentUiView, RouteComponentViewKind,
-    SequencingMode, StartRequirement, TerminalState,
+    DirectToState, DirectToUiView, FlightPlan, FlightPlanDisplayRowKind,
+    FlightPlanRowActionExecution, FlightPlanRowActionId, FlightPlanUiState, GuidanceState,
+    GuidanceUiView, HandoffDecision, HoldTerminalState, LegDisplayElement, LegDisplayPath,
+    LegDisplayPathStyle, NavRef, PathTermination, PlanLeg, ProcedureDiscontinuity, ProcedureKind,
+    ProcedureLegProvenance, ProcedureSegment, ProcedureSegmentRole, ProcedureTurnTerminalState,
+    ResolvedLeg, ResolvedLegSource, ResolvedLegUiView, RouteComponent, RouteComponentUiView,
+    RouteComponentViewKind, SequencingMode, StartRequirement, TerminalState,
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use raster_tiles::{
@@ -343,6 +345,11 @@ fn route_status_for_detail(
     let Some(active_detail_index) = active_detail_index else {
         return FlightPlanRouteSegmentStatus::Remaining;
     };
+    let active_element_index = planning::guidance_detail_ref_by_index(plan, active_detail_index)
+        .filter(|detail| detail.leg_index == guidance.active_leg_index)
+        .map(|detail| detail.element_index);
+    let terminal_hold_start_element =
+        planning::terminal_hold_start_element_index_for_leg(plan, guidance.active_leg_index);
     if leg_index < guidance.active_leg_index {
         FlightPlanRouteSegmentStatus::Completed
     } else if leg_index > guidance.active_leg_index {
@@ -351,6 +358,11 @@ fn route_status_for_detail(
         FlightPlanRouteSegmentStatus::Completed
     } else if detail_index == active_detail_index {
         FlightPlanRouteSegmentStatus::Active
+    } else if terminal_hold_start_element.is_some_and(|hold_start| {
+        active_element_index.is_some_and(|active_element| active_element < hold_start)
+            && element_index >= hold_start
+    }) {
+        FlightPlanRouteSegmentStatus::Remaining
     } else {
         FlightPlanRouteSegmentStatus::ActiveLegRemaining
     }

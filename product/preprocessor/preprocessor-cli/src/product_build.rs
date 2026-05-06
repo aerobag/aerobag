@@ -5682,6 +5682,16 @@ fn build_nav_kv_procedure_pairs(
     Ok(pairs)
 }
 
+pub fn audit_procedure_geometry_from_sqlite(main_db_path: &Path) -> anyhow::Result<usize> {
+    let connection = rusqlite::Connection::open(main_db_path)
+        .with_context(|| format!("failed to open {}", main_db_path.display()))?;
+    let pairs = build_nav_kv_procedure_pairs(&connection)?;
+    Ok(pairs
+        .iter()
+        .filter(|pair| pair.key.starts_with("procedure/geometry/"))
+        .count())
+}
+
 fn load_nav_kv_cifp_tpp_matches(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<Vec<serde_json::Value>> {

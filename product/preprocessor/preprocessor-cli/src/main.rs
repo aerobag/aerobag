@@ -43,10 +43,10 @@ use preprocessor_vectors::{
     BuildObstacleDatasetRequest, BuildVectorsRequest,
 };
 use product_build::{
-    build_cycle, build_fast_subset, build_product, default_artifact_write_path,
-    explain_product_build, gc_build_cache, maybe_reexec_build_cycle_under_cgroup,
-    publish_discovery_manifest, BuildCacheGcConfig, BuildCacheGcMode, ProductBuildConfig,
-    ProductBuildProfile,
+    audit_procedure_geometry_from_sqlite, build_cycle, build_fast_subset, build_product,
+    default_artifact_write_path, explain_product_build, gc_build_cache,
+    maybe_reexec_build_cycle_under_cgroup, publish_discovery_manifest, BuildCacheGcConfig,
+    BuildCacheGcMode, ProductBuildConfig, ProductBuildProfile,
 };
 use sha2::{Digest, Sha256};
 
@@ -105,6 +105,7 @@ fn long_usage() -> &'static str {
   preprocessor-cli run-native-csup --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli run-native-tpp --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli build-data --input-dir <path> --output-dir <path> --manifest-version <cycle> [--resource-index-output <path>] [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>:<package_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>:<package_root>]...
+  preprocessor-cli audit-procedure-geometry --main-db <path>
   preprocessor-cli build-vectors --main-db <path> --output-dir <path> --version-label <label> [--data-input-dir <path>] [--include-class-e-airspace]
   preprocessor-cli audit-bravo-unions --class-airspace-shp <path> --output-svg <path> [--version-label <label>]
   preprocessor-cli build-obstacles [--build-root <path>] [--fetch-jobs <count>] [--snapshot-date <YYYY-MM-DD>]
@@ -2934,6 +2935,25 @@ fn main() -> anyhow::Result<()> {
                 "current_artifacts {}",
                 result.current_artifacts_path.display()
             );
+        }
+        Some("audit-procedure-geometry") => {
+            let mut main_db = None;
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--main-db" => {
+                        main_db = Some(PathBuf::from(
+                            args.get(index + 1)
+                                .ok_or_else(|| anyhow::anyhow!("{}", long_usage()))?,
+                        ));
+                        index += 2;
+                    }
+                    _ => return Err(anyhow::anyhow!("{}", long_usage())),
+                }
+            }
+            let main_db = main_db.ok_or_else(|| anyhow::anyhow!("{}", long_usage()))?;
+            let count = audit_procedure_geometry_from_sqlite(&main_db)?;
+            println!("procedure_geometry_records {count}");
         }
         Some("publish-discovery-manifest") => {
             let config = ProductBuildConfig::from_env_and_args(&args[2..])?;

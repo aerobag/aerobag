@@ -515,6 +515,92 @@ function androidAssertFeedbackHasBottomControlClearance(serial, out, feedbackNod
   recordStep(out, "append route feedback bottom-control clearance", "ok", `${clearancePx}px`);
 }
 
+function androidImeTop(serial) {
+  const dump = adb(serial, ["shell", "dumpsys", "window", "windows"]);
+  const inputMethodStart = dump.search(/Window #\d+ Window\{[^}]+ InputMethod\}/);
+  if (inputMethodStart < 0) return null;
+  const inputMethodBlock = dump.slice(inputMethodStart, inputMethodStart + 5000);
+  const regionMatch = /touchable region=SkRegion\(\((\d+),(\d+),(\d+),(\d+)\)\)/.exec(inputMethodBlock);
+  if (regionMatch) {
+    return Number(regionMatch[2]);
+  }
+  const insetMatch = /mGivenVisibleInsets=\[0,(\d+)\]\[0,0\]/.exec(inputMethodBlock);
+  if (insetMatch) {
+    return Number(insetMatch[1]) + 128;
+  }
+  return null;
+}
+
+function androidAssertNodeAboveIme(serial, out, label, node, minimumClearancePx = 24) {
+  const imeTop = androidImeTop(serial);
+  if (imeTop === null) {
+    recordGap(out, label, "IME top could not be determined from dumpsys window");
+    return;
+  }
+  const rect = rectOfBounds(node.bounds);
+  const clearancePx = imeTop - rect.bottom;
+  if (clearancePx < minimumClearancePx) {
+    recordGap(
+      out,
+      label,
+      `node bottom ${rect.bottom}px is ${clearancePx}px above IME top ${imeTop}px; expected >= ${minimumClearancePx}px`,
+    );
+    return;
+  }
+  recordStep(out, label, "ok", `${clearancePx}px`);
+}
+
+function androidTypeRouteTokens(serial, tokens) {
+  for (const token of tokens) {
+    adb(serial, ["shell", "input", "text", token]);
+    adb(serial, ["shell", "input", "keyevent", "KEYCODE_SPACE"]);
+  }
+}
+
+function androidDeleteChars(serial, count) {
+  for (let i = 0; i < count; i += 1) {
+    adb(serial, ["shell", "input", "keyevent", "KEYCODE_DEL"]);
+  }
+}
+
+async function androidScrollUntilTag(serial, tag, maxSwipes = 8) {
+  for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
+    const xml = dumpAndroid(serial);
+    if (findNode(xml, (node) => hasAndroidTag(node, tag))) {
+      return true;
+    }
+    const scrollSurface =
+      findNode(xml, (node) => hasAndroidTag(node, "parity:plan-list")) ??
+      findNode(xml, (node) => node.scrollable === "true" && node.package === ANDROID_PACKAGE);
+    const bounds = rectOfBounds(scrollSurface?.bounds ?? "[90,383][1065,2021]");
+    const x = Math.round((bounds.left + bounds.right) / 2);
+    const startY = Math.round(bounds.bottom - Math.min(80, bounds.height / 5));
+    const endY = Math.round(bounds.top + Math.min(80, bounds.height / 5));
+    adb(serial, ["shell", "input", "swipe", String(x), String(startY), String(x), String(endY), "450"]);
+    await delay(250);
+  }
+  return findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, tag)) !== null;
+}
+
+async function androidScrollUntilText(serial, text, maxSwipes = 8) {
+  for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
+    const xml = dumpAndroid(serial);
+    if (hasAndroidText(xml, text)) {
+      return true;
+    }
+    const scrollSurface =
+      findNode(xml, (node) => hasAndroidTag(node, "parity:plan-list")) ??
+      findNode(xml, (node) => node.scrollable === "true" && node.package === ANDROID_PACKAGE);
+    const bounds = rectOfBounds(scrollSurface?.bounds ?? "[90,383][1065,2021]");
+    const x = Math.round((bounds.left + bounds.right) / 2);
+    const startY = Math.round(bounds.top + Math.min(80, bounds.height / 5));
+    const endY = Math.round(bounds.bottom - Math.min(80, bounds.height / 5));
+    adb(serial, ["shell", "input", "swipe", String(x), String(startY), String(x), String(endY), "450"]);
+    await delay(250);
+  }
+  return hasAndroidText(dumpAndroid(serial), text);
+}
+
 function androidTapNode(serial, out, label, predicate) {
   const xml = dumpAndroid(serial);
   const node = findNode(xml, predicate);
@@ -557,6 +643,22 @@ async function androidTapTag(serial, out, label, tag, timeoutMs = 5000) {
   return true;
 }
 
+async function androidWaitForFocusedTag(serial, out, label, tag, timeoutMs = 5000) {
+  try {
+    const node = await androidWaitForNode(
+      serial,
+      (candidate) => hasAndroidTag(candidate, tag) && candidate.focused === "true",
+      timeoutMs,
+      label,
+    );
+    recordStep(out, label);
+    return node;
+  } catch (_error) {
+    recordGap(out, label, "control did not become focused in UIAutomator dump");
+    return null;
+  }
+}
+
 async function androidJourney(serial) {
   const out = result("android");
   adb(serial, ["wait-for-device"]);
@@ -587,12 +689,7 @@ async function androidJourney(serial) {
   if (planXml.includes("Append route") || planXml.includes("parity:plan-append-route-input")) {
     recordStep(out, "free-form append route present");
     if (await androidTapTag(serial, out, "focused free-form append route", "parity:plan-append-route-input")) {
-      adb(serial, ["shell", "input", "text", "KRNT"]);
-      adb(serial, ["shell", "input", "keyevent", "KEYCODE_SPACE"]);
-      adb(serial, ["shell", "input", "text", "V2"]);
-      adb(serial, ["shell", "input", "keyevent", "KEYCODE_SPACE"]);
-      adb(serial, ["shell", "input", "text", "ZZZZZ"]);
-      adb(serial, ["shell", "input", "keyevent", "KEYCODE_SPACE"]);
+      androidTypeRouteTokens(serial, ["KRNT", "V2", "ZZZZZ"]);
       try {
         const feedback = await androidWaitForNode(
           serial,
@@ -602,12 +699,11 @@ async function androidJourney(serial) {
         );
         recordStep(out, "append route feedback visible", "ok", feedback.text);
         androidAssertFeedbackHasBottomControlClearance(serial, out, feedback);
+        androidAssertNodeAboveIme(serial, out, "append route feedback above IME", feedback);
       } catch (_error) {
         recordGap(out, "append route feedback visible", "no non-empty feedback appeared after typing KRNT V2 ZZZZZ");
       }
-      for (let i = 0; i < 24; i += 1) {
-        adb(serial, ["shell", "input", "keyevent", "KEYCODE_DEL"]);
-      }
+      androidDeleteChars(serial, 24);
       await delay(300);
       adb(serial, ["shell", "input", "text", "KBFI"]);
       await delay(300);
@@ -616,6 +712,38 @@ async function androidJourney(serial) {
       const appendedXml = dumpAndroid(serial);
       if (hasAndroidText(appendedXml, "KBFI")) {
         recordStep(out, "appended KBFI to flight plan");
+        if (await androidTapTag(serial, out, "focused append route for long plan", "parity:plan-append-route-input")) {
+          androidTypeRouteTokens(serial, ["KRNT", "SEA", "KPAE", "KBFI", "KRNT", "SEA", "KPAE", "KBFI", "KRNT", "SEA"]);
+          await delay(300);
+          adb(serial, ["shell", "input", "keyevent", "ENTER"]);
+          await delay(1200);
+          recordStep(out, "expanded flight plan for long-route feedback");
+          if (await androidScrollUntilTag(serial, "parity:plan-append-route-input")) {
+            if (await androidTapTag(serial, out, "focused long-plan append route", "parity:plan-append-route-input")) {
+              const longInput = await androidWaitForFocusedTag(serial, out, "long-plan append route input focused", "parity:plan-append-route-input");
+              if (longInput) {
+                androidAssertNodeAboveIme(serial, out, "long-plan append route input above IME", longInput);
+              }
+              await delay(700);
+              androidTypeRouteTokens(serial, ["ZZZZZ"]);
+              try {
+                const longFeedback = await androidWaitForNode(
+                  serial,
+                  (node) => hasAndroidTag(node, "parity:plan-append-route-feedback") && (node.text ?? "").trim() !== "",
+                  7000,
+                  "long-plan append route feedback",
+                );
+                recordStep(out, "long-plan append route feedback visible", "ok", longFeedback.text);
+                androidAssertNodeAboveIme(serial, out, "long-plan append route feedback above IME", longFeedback);
+                androidDeleteChars(serial, 8);
+              } catch (_error) {
+                recordGap(out, "long-plan append route feedback visible", "no non-empty feedback appeared after extending the plan");
+              }
+            }
+          } else {
+            recordGap(out, "focused long-plan append route", "append route field was not reachable after extending the plan");
+          }
+        }
       } else {
         recordGap(out, "appended KBFI to flight plan", "KBFI was not visible after submitting the append route field");
       }
@@ -661,8 +789,7 @@ async function androidJourney(serial) {
     if (selectedLabel) {
       await androidTapTag(serial, out, "opened plan page after insert", "parity:nav-cdi");
       await delay(500);
-      const insertedPlanXml = dumpAndroid(serial);
-      if (hasAndroidText(insertedPlanXml, selectedLabel)) {
+      if (hasAndroidText(dumpAndroid(serial), selectedLabel) || await androidScrollUntilText(serial, selectedLabel)) {
         recordStep(out, "verified inspected item in flight plan", selectedLabel);
       } else {
         recordGap(out, "verified inspected item in flight plan", `${selectedLabel} was not visible in the plan after insert`);

@@ -51,9 +51,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -119,6 +122,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.pointerInput
@@ -6350,6 +6354,7 @@ private fun FlightPlanPage(
     var routeEntryLoading by remember { mutableStateOf(false) }
     var routeEntryError by remember { mutableStateOf<String?>(null) }
     var routeEntrySubmitting by remember { mutableStateOf(false) }
+    var routeEntryFocused by remember { mutableStateOf(false) }
     var trayOpenedAtMs by remember { mutableStateOf(0L) }
     val projectedPlanUiState = requireNotNull(planUiState) { "FlightPlanPage requires core-projected FlightPlanUiState" }
     val guidance = projectedPlanUiState.guidance
@@ -6359,6 +6364,21 @@ private fun FlightPlanPage(
     val blocks = remember(rows) {
         buildFlightPlanDisplayBlocks(rows)
     }
+    val configuration = LocalConfiguration.current
+    val imeBottomPadding = with(density) { WindowInsets.ime.getBottom(this).toDp() }
+    val fallbackKeyboardPadding = (configuration.screenHeightDp * 0.38f).dp
+    val keyboardAvoidancePadding =
+        if (imeBottomPadding > 0.dp) {
+            imeBottomPadding
+        } else {
+            fallbackKeyboardPadding
+        }
+    val planListBottomPadding =
+        if (routeEntryFocused) {
+            keyboardAvoidancePadding + ThumbSize + ThumbGap * 2f
+        } else {
+            0.dp
+        }
     var structuredSurfaceBounds by remember { mutableStateOf<Rect?>(null) }
     val structuredRowBounds = remember { mutableStateMapOf<String, Rect>() }
     val selectedRow = selectedWaypointIndex?.let(rows::getOrNull)
@@ -6608,6 +6628,13 @@ private fun FlightPlanPage(
         pendingSelectedRowKey = null
     }
 
+    LaunchedEffect(routeEntryFocused, keyboardAvoidancePadding, blocks.size) {
+        if (routeEntryFocused) {
+            delay(250)
+            planListState.animateScrollToItem(blocks.size)
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -6646,7 +6673,10 @@ private fun FlightPlanPage(
                     PlanHeaderRow()
                     LazyColumn(
                         state = planListState,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("parity:plan-list"),
+                        contentPadding = PaddingValues(bottom = planListBottomPadding),
                         verticalArrangement = Arrangement.spacedBy(PlanGridGap),
                     ) {
                         items(blocks.size) { blockIndex ->
@@ -6725,6 +6755,7 @@ private fun FlightPlanPage(
                                     routeEntryText = value.uppercase()
                                     routeEntryError = null
                                 },
+                                onFocusChange = { focused -> routeEntryFocused = focused },
                                 onSubmit = { submitRouteEntry() },
                             )
                         }
@@ -7221,6 +7252,7 @@ private fun FlightPlanRouteEntryRow(
     error: String?,
     submitting: Boolean,
     onTextChange: (String) -> Unit,
+    onFocusChange: (Boolean) -> Unit,
     onSubmit: () -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
@@ -7273,6 +7305,7 @@ private fun FlightPlanRouteEntryRow(
             modifier =
                 Modifier
                     .testTag("parity:plan-append-route-input")
+                    .onFocusChanged { state -> onFocusChange(state.isFocused) }
                     .fillMaxWidth()
                     .height(ThumbSize)
                     .clip(fieldShape)

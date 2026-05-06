@@ -817,15 +817,13 @@ fn build_procedure_leg_display_path(
                 }
                 let course_deg = current_or_step_course_deg(step, current_course_deg)?;
                 let climb_limit = steps.get(index + 1).and_then(|next_step| {
-                    if ca_climb_should_not_stop_at_direct_same_fix_hold(
-                        step,
-                        next_step,
-                        steps.get(index + 2).copied(),
-                    ) || ca_climb_should_not_stop_at_fa_reciprocal_cf_reversal(
-                        step,
-                        next_step,
-                        steps.get(index + 2).copied(),
-                    ) {
+                    if ca_climb_should_not_stop_at_explicit_direct_turn(step, next_step)
+                        || ca_climb_should_not_stop_at_fa_reciprocal_cf_reversal(
+                            step,
+                            next_step,
+                            steps.get(index + 2).copied(),
+                        )
+                    {
                         return None;
                     }
                     next_step.nav_position.filter(|fix| {
@@ -1181,6 +1179,20 @@ fn build_procedure_leg_display_path(
                                 current_heading_deg,
                                 direct_course_deg,
                             ));
+                        }
+                        if let Some(next_hold_turn_direction) = steps
+                            .get(index + 1)
+                            .and_then(|next_step| next_step.turn_direction.as_deref())
+                            .map(str::trim)
+                        {
+                            // KDLC RNV-A misses straight ahead, then returns 180 degrees to
+                            // FIPRI and its same-fix hold. The DF row omits L/R, but the
+                            // following HM row publishes the protected hold direction.
+                            match next_hold_turn_direction {
+                                "L" => return Some(false),
+                                "R" => return Some(true),
+                                _ => {}
+                            }
                         }
                         if let Some(resolution) =
                             arinc_ambiguity_resolutions::handle_unspecified_missed_turn_to_same_fix_hold(
@@ -2110,10 +2122,9 @@ fn ca_is_altitude_note_before_climbing_turn(
     }
 }
 
-fn ca_climb_should_not_stop_at_direct_same_fix_hold(
+fn ca_climb_should_not_stop_at_explicit_direct_turn(
     ca_step: &ProcedureLegMaterializationRecord,
     next_step: &ProcedureLegMaterializationRecord,
-    following_step: Option<&ProcedureLegMaterializationRecord>,
 ) -> bool {
     if ca_step.path_termination.trim() != "CA" || next_step.path_termination.trim() != "DF" {
         return false;
@@ -2124,18 +2135,10 @@ fn ca_climb_should_not_stop_at_direct_same_fix_hold(
     ) {
         return false;
     }
-    let Some(following_step) = following_step else {
-        return false;
-    };
-    if !matches!(following_step.path_termination.trim(), "HF" | "HM") {
-        return false;
-    }
-    if next_step.nav_ref.is_none() || next_step.nav_ref != following_step.nav_ref {
-        return false;
-    }
-    // KCMX I32 reaches RW32 with CA/DF/HM missed rows: "climbing right turn to
-    // CMX and hold". The nearby CMX fix is the target of the directed turn, not
-    // a hard stop for the straight climb segment.
+    // KDEN R35RY reaches EVAFA on the straight climb if we cap CA at the next
+    // fix, which consumes the following "DF R" before the turn renderer sees it.
+    // Explicit direct turns are lateral instructions after the climb segment,
+    // not hard stops for the straight-ahead altitude leg.
     true
 }
 

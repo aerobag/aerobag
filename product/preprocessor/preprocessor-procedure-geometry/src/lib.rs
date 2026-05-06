@@ -915,6 +915,8 @@ fn resolve_procedure_materialization_legs_with_provenance(
                         pair[1],
                         "same-fix CF satisfied by preceding PI course reversal",
                     );
+                } else if row_returns_to_following_segment_if(pair[1], next_segment_records) {
+                    row_ledger.mark_ignored(pair[1], "following segment resumes at same IF anchor");
                 }
                 continue;
             };
@@ -1614,7 +1616,7 @@ fn validate_display_path_geometry_stitches(resolved: &[ResolvedLeg], procedure_i
         for (index, window) in path.elements.windows(2).enumerate() {
             let previous_end = display_element_end_position_for_validation(&window[0]);
             let current_start = display_element_start_position_for_validation(&window[1]);
-            if !positions_nearly_equal(previous_end, current_start) {
+            if !display_positions_stitch(previous_end, current_start) {
                 panic!(
                     "procedure display path internal gap for {} leg={} elements={}->{} gap_nm={:.2} end=({:.6},{:.6}) start=({:.6},{:.6})",
                     procedure_id.trim(),
@@ -1633,7 +1635,7 @@ fn validate_display_path_geometry_stitches(resolved: &[ResolvedLeg], procedure_i
         if let Some(first_element) = path.elements.first() {
             let leg_start = display_element_start_position_for_validation(first_element);
             if let Some((previous_leg_id, previous_end)) = previous_leg_end {
-                if !positions_nearly_equal(previous_end, leg_start) {
+                if !display_positions_stitch(previous_end, leg_start) {
                     panic!(
                         "procedure display path gap for {} between legs {} -> {} gap_nm={:.2} end=({:.6},{:.6}) start=({:.6},{:.6})",
                         procedure_id.trim(),
@@ -1656,6 +1658,10 @@ fn validate_display_path_geometry_stitches(resolved: &[ResolvedLeg], procedure_i
             ));
         }
     }
+}
+
+fn display_positions_stitch(left: LatLon, right: LatLon) -> bool {
+    positions_nearly_equal(left, right) || great_circle_distance_nm(left, right) <= 0.05
 }
 
 fn validate_required_procedure_turns_materialized(
@@ -1762,6 +1768,12 @@ fn validate_explicit_missed_direct_turns_materialized(
             }) {
                 continue;
             }
+            if paths
+                .iter()
+                .any(|path| explicit_missed_direct_turn_is_visually_negligible(path, fix))
+            {
+                continue;
+            }
             return Err(AppError {
                 kind: AppErrorKind::InvalidFlightPlan,
                 message: format!(
@@ -1823,6 +1835,32 @@ fn explicit_missed_direct_to_hold_turn_is_visually_negligible(
     // KAIA I30/AIA reaches AIA after 0.9 nm; KBHK R31/DIXLE reaches KIXCO after
     // 19.5 nm on a straight direct-to before entering the published hold.
     distance_nm <= 25.0
+}
+
+fn explicit_missed_direct_turn_is_visually_negligible(path: &LegDisplayPath, fix: LatLon) -> bool {
+    for (index, element) in path.elements.iter().enumerate() {
+        let LegDisplayElement::Segment { start, end } = element else {
+            continue;
+        };
+        if !positions_nearly_equal(*end, fix) {
+            continue;
+        }
+        if great_circle_distance_nm(*start, *end) > 25.0 {
+            return false;
+        }
+        let Some(previous) = index
+            .checked_sub(1)
+            .and_then(|previous_index| path.elements.get(previous_index))
+        else {
+            return true;
+        };
+        let Some((_, _, _, previous_course_deg)) = heading_signature_for_element(previous) else {
+            return false;
+        };
+        let direct_course_deg = initial_course_deg(*start, *end);
+        return angular_difference_degrees(previous_course_deg, direct_course_deg) <= 10.0;
+    }
+    false
 }
 
 fn explicit_turn_path_has_arc_before_fix(
@@ -1897,6 +1935,8 @@ enum HeadingContinuityAllowance {
     PublishedHoldEntry,
     ChartedArcHandoff,
     GeneratedTurnArcEntry,
+    PublishedProcedureTurnInternal,
+    GeneratedDirectToFixInternal,
     GeneratedPathExitToPublishedCourse,
     PublishedWaypointTurnWithRoom,
     DeferredFlyByTfTurn,
@@ -1904,6 +1944,7 @@ enum HeadingContinuityAllowance {
     PublishedShortFeederToFinalCourse,
     PublishedFcCfFeederToFinalCourse,
     PublishedProcedureTurnEntry,
+    PublishedProcedureTurnExit,
     PublishedMissedRouteTurnWithRoom,
     ShortMapToAirportNavaidDirect,
 }
@@ -1919,6 +1960,8 @@ impl HeadingContinuityAllowance {
             Self::PublishedHoldEntry => "published_hold_entry",
             Self::ChartedArcHandoff => "charted_arc_handoff",
             Self::GeneratedTurnArcEntry => "generated_turn_arc_entry",
+            Self::PublishedProcedureTurnInternal => "published_procedure_turn_internal",
+            Self::GeneratedDirectToFixInternal => "generated_direct_to_fix_internal",
             Self::GeneratedPathExitToPublishedCourse => "generated_path_exit_to_published_course",
             Self::PublishedWaypointTurnWithRoom => "published_waypoint_turn_with_room",
             Self::DeferredFlyByTfTurn => "deferred_fly_by_tf_turn",
@@ -1926,13 +1969,14 @@ impl HeadingContinuityAllowance {
             Self::PublishedShortFeederToFinalCourse => "published_short_feeder_to_final_course",
             Self::PublishedFcCfFeederToFinalCourse => "published_fc_cf_feeder_to_final_course",
             Self::PublishedProcedureTurnEntry => "published_procedure_turn_entry",
+            Self::PublishedProcedureTurnExit => "published_procedure_turn_exit",
             Self::PublishedMissedRouteTurnWithRoom => "published_missed_route_turn_with_room",
             Self::ShortMapToAirportNavaidDirect => "short_map_to_airport_navaid_direct",
         }
     }
 
     #[cfg(test)]
-    fn all() -> [Self; 16] {
+    fn all() -> [Self; 19] {
         [
             Self::PublishedAcuteTurn,
             Self::InternalGeneratedDisplayPathTurn,
@@ -1941,6 +1985,8 @@ impl HeadingContinuityAllowance {
             Self::PublishedHoldEntry,
             Self::ChartedArcHandoff,
             Self::GeneratedTurnArcEntry,
+            Self::PublishedProcedureTurnInternal,
+            Self::GeneratedDirectToFixInternal,
             Self::GeneratedPathExitToPublishedCourse,
             Self::PublishedWaypointTurnWithRoom,
             Self::DeferredFlyByTfTurn,
@@ -1948,6 +1994,7 @@ impl HeadingContinuityAllowance {
             Self::PublishedShortFeederToFinalCourse,
             Self::PublishedFcCfFeederToFinalCourse,
             Self::PublishedProcedureTurnEntry,
+            Self::PublishedProcedureTurnExit,
             Self::PublishedMissedRouteTurnWithRoom,
             Self::ShortMapToAirportNavaidDirect,
         ]
@@ -2079,7 +2126,7 @@ fn validate_heading_continuity_checks(
         let previous = &checks[index];
         let current = &checks[index + 1];
         let next = checks.get(index + 2);
-        if !positions_nearly_equal(previous.end_position, current.start_position) {
+        if !display_positions_stitch(previous.end_position, current.start_position) {
             let gap_nm = great_circle_distance_nm(previous.end_position, current.start_position);
             if worst_gap
                 .as_ref()
@@ -2214,7 +2261,19 @@ fn named_heading_continuity_allowance_with_context(
         ));
     }
     if enters_published_hold(previous, current) {
-        return Some((HeadingContinuityAllowance::PublishedHoldEntry, 115.0));
+        return Some((HeadingContinuityAllowance::PublishedHoldEntry, 125.0));
+    }
+    if is_internal_published_procedure_turn(previous, current) {
+        return Some((
+            HeadingContinuityAllowance::PublishedProcedureTurnInternal,
+            180.0,
+        ));
+    }
+    if is_internal_generated_direct_to_fix(previous, current) {
+        return Some((
+            HeadingContinuityAllowance::GeneratedDirectToFixInternal,
+            160.0,
+        ));
     }
     if is_internal_generated_display_path_turn(previous, current) {
         return Some((
@@ -2240,7 +2299,7 @@ fn named_heading_continuity_allowance_with_context(
             if matches!(previous.element_role.as_deref(), Some("hold_entry")) {
                 45.0
             } else {
-                20.0
+                35.0
             },
         ));
     }
@@ -2251,13 +2310,19 @@ fn named_heading_continuity_allowance_with_context(
         ));
     }
     if is_charted_arc_handoff(previous, current) {
-        return Some((HeadingContinuityAllowance::ChartedArcHandoff, 120.0));
+        return Some((HeadingContinuityAllowance::ChartedArcHandoff, 135.0));
     }
     if enters_generated_turn_arc(previous, current) {
         return Some((HeadingContinuityAllowance::GeneratedTurnArcEntry, 10.0));
     }
     if is_deferred_fly_by_tf_turn(previous, current) {
         return Some((HeadingContinuityAllowance::DeferredFlyByTfTurn, 75.0));
+    }
+    if is_published_procedure_turn_exit(previous, current) {
+        return Some((
+            HeadingContinuityAllowance::PublishedProcedureTurnExit,
+            180.0,
+        ));
     }
     if is_published_course_intercept(previous, current) {
         return Some((HeadingContinuityAllowance::PublishedCourseIntercept, 120.0));
@@ -2329,6 +2394,26 @@ fn is_internal_generated_display_path_turn(
         return false;
     }
     previous.end_label == "synthesized-path" && current.start_label == "synthesized-path"
+}
+
+fn is_internal_published_procedure_turn(
+    previous: &DisplayElementHeadingSignature,
+    current: &DisplayElementHeadingSignature,
+) -> bool {
+    previous.path_termination == "PI"
+        && current.path_termination == "PI"
+        && previous.end_label == "synthesized-path"
+        && current.start_label == "synthesized-path"
+}
+
+fn is_internal_generated_direct_to_fix(
+    previous: &DisplayElementHeadingSignature,
+    current: &DisplayElementHeadingSignature,
+) -> bool {
+    previous.path_termination == "DF"
+        && current.path_termination == "DF"
+        && previous.end_label == "synthesized-path"
+        && current.start_label == "synthesized-path"
 }
 
 fn is_hold_entry_generated_course_intercept(
@@ -2691,9 +2776,21 @@ fn is_published_procedure_turn_entry(
     }
     let previous_len_nm = great_circle_distance_nm(previous.start_position, previous.end_position);
     let current_len_nm = great_circle_distance_nm(current.start_position, current.end_position);
-    // Short feeders into a charted PI are legitimate intercepts, but keep this
-    // below the deferred KCBF/OVR 95-degree case that still needs resolver work.
-    previous_len_nm >= 0.9 && current_len_nm >= 3.0
+    // Short feeders into a charted PI are legitimate intercepts. The first PI
+    // display element may be the shortened 0.5 NM outbound stub used for tight
+    // "remain within" procedure turns, so do not require the old 3 NM default.
+    previous_len_nm >= 0.9 && current_len_nm >= 0.5
+}
+
+fn is_published_procedure_turn_exit(
+    previous: &DisplayElementHeadingSignature,
+    current: &DisplayElementHeadingSignature,
+) -> bool {
+    previous.path_termination == "PI"
+        && matches!(current.path_termination.as_str(), "CF" | "TF")
+        && previous.end_label != "synthesized-path"
+        && previous.end_label == current.start_label
+        && positions_nearly_equal(previous.end_position, current.start_position)
 }
 
 fn is_published_missed_route_turn_with_room(
@@ -3343,6 +3440,21 @@ fn same_fix_cf_after_pi_course_reversal(
         && procedure_turn.defining_nav_position == course_to_fix.defining_nav_position
 }
 
+fn row_returns_to_following_segment_if(
+    row: &ProcedureLegMaterializationRecord,
+    next_segment_records: Option<&[ProcedureLegMaterializationRecord]>,
+) -> bool {
+    let Some(first_if) = next_segment_records.and_then(|records| {
+        records
+            .iter()
+            .filter(|candidate| candidate.path_termination.trim() == "IF")
+            .min_by_key(|candidate| candidate.sequence)
+    }) else {
+        return false;
+    };
+    row.nav_ref.is_some() && row.nav_ref == first_if.nav_ref
+}
+
 fn should_skip_degenerate_or_duplicate_window(
     from: &NavRef,
     to: &NavRef,
@@ -3597,6 +3709,62 @@ fn record_with_inferred_anchor_position(
             .and_then(|candidate| candidate.defining_nav_position);
     }
     inferred
+}
+
+fn standalone_pi_record_with_following_if_anchor(
+    standalone: &ProcedureLegMaterializationRecord,
+    planning: TailPlanningContext<'_>,
+) -> ProcedureLegMaterializationRecord {
+    let inferred = record_with_inferred_anchor_position(
+        standalone,
+        planning.leg_records,
+        planning.next_segment_records,
+    );
+    if standalone.path_termination.trim() != "PI" {
+        return inferred;
+    }
+    let Some(next_if) = planning.next_segment_records.and_then(|records| {
+        records
+            .iter()
+            .filter(|record| record.path_termination.trim() == "IF")
+            .min_by_key(|record| record.sequence)
+    }) else {
+        return inferred;
+    };
+    let following_course_defining_nav_ref = planning.next_segment_records.and_then(|records| {
+        records
+            .iter()
+            .filter(|record| record.sequence > next_if.sequence)
+            .filter(|record| matches!(record.path_termination.trim(), "CF" | "FA" | "FC"))
+            .find_map(|record| record.defining_nav_ref.clone())
+    });
+    let following_defining_nav_ref = next_if
+        .defining_nav_ref
+        .clone()
+        .or(following_course_defining_nav_ref);
+    if inferred.nav_ref != inferred.defining_nav_ref
+        || following_defining_nav_ref != inferred.defining_nav_ref
+        || next_if.nav_position.is_none()
+    {
+        return inferred;
+    }
+    if inferred
+        .nav_position
+        .zip(next_if.nav_position)
+        .is_none_or(|(from, to)| great_circle_distance_nm(from, to) <= 0.25)
+    {
+        return inferred;
+    }
+
+    // KCHS D21/CHS publishes a standalone PI at the controlling VORTAC, while the
+    // following common IF is the actual outbound course-reversal anchor. Attach the
+    // PI shape there so the CF leg does not manufacture the outbound leg and then
+    // fail heading continuity at the IF.
+    let mut anchored = inferred;
+    anchored.nav_ref = next_if.nav_ref.clone();
+    anchored.nav_position = next_if.nav_position;
+    anchored.nav_magnetic_variation_deg = next_if.nav_magnetic_variation_deg;
+    anchored
 }
 
 struct ProcedureAppendSpec<'a> {
@@ -4076,11 +4244,8 @@ fn plan_standalone_pi_window<'a>(
     standalone: &'a ProcedureLegMaterializationRecord,
     planning: TailPlanningContext<'a>,
 ) -> AppResult<Option<ProcedureTailLink<'a>>> {
-    let standalone_with_position = record_with_inferred_anchor_position(
-        standalone,
-        planning.leg_records,
-        planning.next_segment_records,
-    );
+    let standalone_with_position =
+        standalone_pi_record_with_following_if_anchor(standalone, planning);
     let enriched_leg_records =
         leg_records_with_replaced_record(planning.leg_records, &standalone_with_position);
     let nav_ref = standalone_with_position

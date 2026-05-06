@@ -979,7 +979,6 @@ export default function App() {
     family_options: [],
   });
   const [mapSelectorLoadError, setMapSelectorLoadError] = useState<string | null>(null);
-  const [selectedMapId, setSelectedMapId] = useState<string>("");
   const initialRecentAirportIds = useMemo(
     () => mergeRecentAirportIds(emptyChartPage.airports, persistedUiState.recentAirportIds ?? []),
     [persistedUiState],
@@ -1417,13 +1416,12 @@ export default function App() {
     }
     debugTiming(
       "map.selector_state.load",
-      () => appCoreAdapter.deriveMapSelectorState(selectedMapId || undefined),
+      () => appCoreAdapter.deriveMapSelectorState(undefined),
     ).then((state) => {
       if (cancelled) {
         return;
       }
       setMapSelectorState(state);
-      setSelectedMapId(state.selected_map_id);
       void uiSession?.installRasterMapCatalog(state).catch((error) => {
         console.error("failed to install raster map catalog in core session", error);
       });
@@ -1436,7 +1434,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [appCoreAdapter, selectedMapId, uiSession]);
+  }, [appCoreAdapter, uiSession]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1499,7 +1497,7 @@ export default function App() {
   function currentSnapshot(): AppViewSnapshot {
     return {
       page,
-      selectedMapId,
+      selectedMapId: mapSelectorState.selected_map_id,
       mapViewport,
       selectedAirportId,
       selectedChartId,
@@ -1513,12 +1511,18 @@ export default function App() {
   function restoreSnapshot(snapshot: AppViewSnapshot, history: AppViewSnapshot[]) {
     setPageHistory(history);
     setPage(snapshot.page);
-    setSelectedMapId(snapshot.selectedMapId);
+    if (snapshot.selectedMapId && appCoreAdapter) {
+      void appCoreAdapter.deriveMapSelectorState(snapshot.selectedMapId).then((state) => {
+        setMapSelectorState(state);
+        return uiSession?.installRasterMapCatalog(state);
+      }).catch((error) => {
+        setMapSelectorLoadError(`failed to restore map selector state: ${errorMessage(error)}`);
+      });
+    }
     setMapViewport(snapshot.mapViewport);
     setChartViewport(snapshot.chartViewport);
     setChartFolderOpen(snapshot.chartFolderOpen);
     if (uiSession) {
-      void uiSession.selectMap(snapshot.selectedMapId).catch(() => {});
       void uiSession.restoreChartPageState(
         snapshot.recentAirportIds,
         snapshot.selectedAirportId || undefined,
@@ -1546,7 +1550,7 @@ export default function App() {
       window.history.replaceState(state, "");
     }, 120);
     return () => window.clearTimeout(timeoutId);
-  }, [page, pageHistory, selectedMapId, mapViewport, selectedAirportId, selectedChartId, recentAirportIds, chartViewport, chartFolderOpen]);
+  }, [page, pageHistory, mapSelectorState.selected_map_id, mapViewport, selectedAirportId, selectedChartId, recentAirportIds, chartViewport, chartFolderOpen]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -1727,7 +1731,6 @@ export default function App() {
           uptimeLabel={uptimeLabel}
           debugState={sessionSnapshot.debug_state}
           mapLayerState={sessionSnapshot.map_layer_state}
-          selectedMapId={selectedMapId}
           selectedMap={selectedMap}
           selectedFamilyMapViews={selectedFamilyMapViews}
           geometry={mapSelectorState.geometry}
@@ -1741,10 +1744,17 @@ export default function App() {
             }
           }}
           onViewportChange={setMapViewport}
-          onSelectMapId={(mapId) => {
-            pushViewSnapshot({
-              page: "map",
-              selectedMapId: mapId,
+          onSelectMapFamily={(familyId) => {
+            void appCoreAdapter.deriveMapSelectorStateForFamily(familyId).then((state) => {
+              setMapSelectorState(state);
+              return uiSession?.installRasterMapCatalog(state);
+            }).then(() => {
+              if (uiSession) {
+                return uiSession.selectMapFamily(familyId).then(setSessionSnapshot);
+              }
+              return undefined;
+            }).catch((error) => {
+              setMapSelectorLoadError(`failed to select map family: ${errorMessage(error)}`);
             });
           }}
           onSelectPage={navigateToPage}
@@ -1997,7 +2007,6 @@ function MapPage(props: {
   uptimeLabel: string;
   debugState: UiDebugState;
   mapLayerState: UiMapLayerState;
-  selectedMapId: string;
   selectedMap: MapViewOptionJson;
   selectedFamilyMapViews: MapViewOptionJson[];
   geometry: GeometryJson;
@@ -2007,7 +2016,7 @@ function MapPage(props: {
   pageTilePaintTiming: WebPageTilePaintTiming | null;
   onPageTilePaintTimingComplete: (id: number) => void;
   onViewportChange: (next: MapViewportState) => void;
-  onSelectMapId: (mapId: string) => void;
+  onSelectMapFamily: (familyId: ChartFamilyId) => void;
   onSelectPage: (page: AppPage) => void;
   onOpenPlan: () => void;
   onOpenPlateTarget: (airportId: string, target: "Folder" | "CSup") => void;
@@ -2048,7 +2057,7 @@ function MapPage(props: {
     pageTilePaintTiming,
     onPageTilePaintTimingComplete,
     onViewportChange,
-    onSelectMapId,
+    onSelectMapFamily,
     onSelectPage,
     onOpenPlan,
     onOpenPlateTarget,
@@ -4006,11 +4015,9 @@ function MapPage(props: {
               label: family.label,
               iconSrc: chartFamilyIconSrc(family.id),
               active: family.active,
-              disabled: !family.enabled || !family.next_map_id,
+              disabled: !family.enabled,
               onSelect: () => {
-                if (family.next_map_id) {
-                  onSelectMapId(family.next_map_id);
-                }
+                onSelectMapFamily(family.id);
                 trayGroup.close("family");
               },
             }))}
@@ -7023,65 +7030,6 @@ function sameIds(left: string[], right: string[]) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-function pageLabel(page: AppPage) {
-  return pageOptions.find((option) => option.id === page)?.launcherLabel ?? page.toUpperCase();
-}
-
-function formatSnapshot(snapshot: Pick<AppViewSnapshot, "page" | "selectedMapId" | "selectedChartId" | "selectedChartLabel" | "chartFolderOpen">) {
-  const label = pageLabel(snapshot.page);
-  if (snapshot.page === "map") {
-    return snapshot.selectedMapId ? `${label}-${snapshot.selectedMapId.toUpperCase()}` : label;
-  }
-  if (snapshot.page !== "charts") {
-    return label;
-  }
-  if (snapshot.chartFolderOpen) {
-    return `${label}-FLDR`;
-  }
-  const suffixSource = snapshot.selectedChartLabel || resolveChartLabel(snapshot.selectedChartId) || snapshot.selectedChartId;
-  const suffix = suffixSource.slice(-3).toUpperCase();
-  return suffix ? `${label}-${suffix}` : label;
-}
-
-function formatPageStack(pageHistory: AppViewSnapshot[], currentSnapshot: Pick<AppViewSnapshot, "page" | "selectedMapId" | "selectedChartId" | "selectedChartLabel" | "chartFolderOpen">) {
-  return [currentSnapshot, ...pageHistory.slice().reverse()].map(formatSnapshot).join(" > ");
-}
-
-function filterRenderableFamilyMapViews(
-  selectedMap: MapViewOptionJson,
-  familyMapViews: MapViewOptionJson[],
-  viewport: MapViewportState,
-): MapViewOptionJson[] {
-  const grouped = new Map<string, MapViewOptionJson[]>();
-  for (const view of familyMapViews) {
-    const key = view.map_view.chart_family;
-    const group = grouped.get(key);
-    if (group) {
-      group.push(view);
-    } else {
-      grouped.set(key, [view]);
-    }
-  }
-  return [...grouped.values()]
-    .flatMap((views) => {
-      const fullCoverageZooms = views
-        .map((view) => view.map_view.full_coverage_zoom)
-        .filter((zoom): zoom is number => zoom != null);
-      const collapseBelowZoom = fullCoverageZooms.length > 0 ? Math.min(...fullCoverageZooms) : null;
-      if (collapseBelowZoom == null || viewport.zoom > collapseBelowZoom || views.length <= 1) {
-        return views;
-      }
-      return [views.find((view) => view.region_id === selectedMap.region_id) ?? views[0]];
-    })
-    .sort((left, right) => {
-      const familyDelta = left.map_view.chart_family.localeCompare(right.map_view.chart_family);
-      if (familyDelta !== 0) {
-        return familyDelta;
-      }
-      return left.id.localeCompare(right.id);
-    });
-}
-
 function SituationStatusBadge(props: {
   controls: OwnshipControlModel;
   open: boolean;
@@ -7581,10 +7529,6 @@ function routeSegmentColor(status: FlightPlanRouteSegment["status"]) {
     return "#ff4fcf";
   }
   return "#ffffff";
-}
-
-function resolveChartLabel(chartId: string) {
-  return "";
 }
 
 function distanceBetween(first: ScreenPoint, second: ScreenPoint) {

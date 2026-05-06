@@ -310,7 +310,7 @@ pub fn set_raster_map_catalog_in_session(
     Ok(snapshot_for_session(session))
 }
 
-pub fn select_map_in_session(handle: u32, selected_map_id: &str) -> AppResult<UiSessionSnapshot> {
+pub fn select_map_family_in_session(handle: u32, family_id: &str) -> AppResult<UiSessionSnapshot> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     let Some(catalog) = session.raster_map_catalog.as_mut() else {
@@ -319,7 +319,7 @@ pub fn select_map_in_session(handle: u32, selected_map_id: &str) -> AppResult<Ui
             message: "session missing raster map catalog".to_string(),
         });
     };
-    crate::select_map_in_catalog(catalog, selected_map_id);
+    crate::select_map_family_in_catalog(catalog, family_id);
     Ok(snapshot_for_session(session))
 }
 

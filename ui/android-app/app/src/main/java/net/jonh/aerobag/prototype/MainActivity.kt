@@ -213,6 +213,7 @@ import net.jonh.aerobag.prototype.domain.MapSelectionAction
 import net.jonh.aerobag.prototype.domain.MapSelectionHighlight
 import net.jonh.aerobag.prototype.domain.MapSelectionItem
 import net.jonh.aerobag.prototype.domain.MapSelectionQueryResult
+import net.jonh.aerobag.prototype.domain.MapFamilyOption
 import net.jonh.aerobag.prototype.domain.MapView
 import net.jonh.aerobag.prototype.domain.MapViewOption
 import net.jonh.aerobag.prototype.domain.MapViewportState
@@ -256,7 +257,6 @@ import net.jonh.aerobag.prototype.domain.VisiblePirepFeature
 import net.jonh.aerobag.prototype.domain.applyPinchGesture
 import net.jonh.aerobag.prototype.domain.clampZoom
 import net.jonh.aerobag.prototype.domain.createInitialImageViewport
-import net.jonh.aerobag.prototype.domain.createInitialViewport
 import net.jonh.aerobag.prototype.domain.createPinchSnapshot
 import net.jonh.aerobag.prototype.domain.dragImageViewport
 import net.jonh.aerobag.prototype.domain.dragViewport
@@ -352,27 +352,6 @@ private data class WireRasterTileDraw(
 private data class WireRasterTileSource(
     val map_view_id: String,
 )
-
-private fun filterRenderableFamilyMapViews(
-    selectedMap: MapViewOption,
-    familyMapViews: List<MapViewOption>,
-    viewport: MapViewportState,
-): List<MapViewOption> =
-    familyMapViews
-        .groupBy { it.mapView.chartFamily }
-        .values
-        .flatMap { views ->
-            val collapseBelowZoom = views.mapNotNull { it.mapView.fullCoverageZoom }.minOrNull()
-            if (collapseBelowZoom == null || viewport.zoom > collapseBelowZoom || views.size <= 1) {
-                views
-            } else {
-                listOf(
-                    views.firstOrNull { it.regionId == selectedMap.regionId }
-                        ?: views.first(),
-                )
-            }
-        }
-        .sortedWith(compareBy<MapViewOption> { it.mapView.chartFamily.name }.thenBy { it.id })
 
 private data class LatLon(val lat: Double, val lon: Double)
 
@@ -490,6 +469,7 @@ private enum class AppPage {
 private data class AppViewSnapshot(
     val page: AppPage,
     val selectedMapId: String,
+    val selectedMapLauncherLabel: String,
     val mapViewport: MapViewportState,
     val selectedAirportId: String,
     val selectedChartId: String,
@@ -1188,12 +1168,6 @@ private data class OverlaySurfaceUnits(
     val height: Float,
 )
 
-private fun initialMapId(fixture: net.jonh.aerobag.prototype.domain.ContentFixture): String {
-    return fixture.mapViews.firstOrNull {
-        it.mapView.chartFamily == MapChartFamily.Tac
-    }?.id ?: fixture.mapViews.first().id
-}
-
 private fun mergeRecentAirportIds(
     airports: List<ChartAirport>,
     storedIds: List<String>,
@@ -1217,6 +1191,14 @@ private fun chartFamilyIconResId(chartFamily: MapChartFamily): Int = when (chart
     MapChartFamily.EnrL -> R.drawable.ifr_l_icon
     MapChartFamily.EnrH -> R.drawable.ifr_h_icon
     MapChartFamily.ShadedRelief -> R.drawable.shaded_relief_icon
+}
+
+private fun chartFamilyId(chartFamily: MapChartFamily): String = when (chartFamily) {
+    MapChartFamily.Sec -> "sec"
+    MapChartFamily.Tac -> "tac"
+    MapChartFamily.EnrL -> "enr-l"
+    MapChartFamily.EnrH -> "enr-h"
+    MapChartFamily.ShadedRelief -> "shaded-relief"
 }
 
 @DrawableRes
@@ -2372,7 +2354,9 @@ private fun AerobagApp() {
         )
     }
     var pageHistory by remember { mutableStateOf<List<AppViewSnapshot>>(emptyList()) }
-    var selectedMapId by remember { mutableStateOf(initialMapId(fixture)) }
+    val initialMapSelectorState = remember(appCore) { appCore.deriveMapSelectorState(null) }
+    var mapSelectorState by remember(appCore) { mutableStateOf(initialMapSelectorState) }
+    var selectedMapId by remember(appCore) { mutableStateOf(initialMapSelectorState.selectedMapId) }
     val uiSession = remember(appCore) {
         appCore.createUiSession(
             initialPlanMutation.plan,
@@ -2410,8 +2394,8 @@ private fun AerobagApp() {
             ),
         )
     }
-    val selectedMap = remember(selectedMapId, fixture.mapViews) {
-        fixture.mapViews.find { it.id == selectedMapId } ?: fixture.mapViews.first()
+    val selectedMap = remember(mapSelectorState) {
+        mapSelectorState.selectedMap ?: error("core map selector returned no selected map")
     }
     var mapViewport by remember { mutableStateOf(createInitialSituationViewport(selectedMap.mapView)) }
     var chartViewport by remember { mutableStateOf<net.jonh.aerobag.prototype.domain.ImageViewportState?>(null) }
@@ -2488,6 +2472,8 @@ private fun AerobagApp() {
     fun currentSnapshot(): AppViewSnapshot = AppViewSnapshot(
         page = page,
         selectedMapId = selectedMapId,
+        selectedMapLauncherLabel =
+            mapSelectorState.familyOptions.firstOrNull { it.active }?.launcherLabel.orEmpty(),
         mapViewport = mapViewport,
         selectedAirportId = selectedAirportId,
         selectedChartId = selectedChartId,
@@ -2509,10 +2495,10 @@ private fun AerobagApp() {
         pageHistory = history
         page = snapshot.page
         runCatching {
-            uiSession.installRasterMapCatalogForSelection(snapshot.selectedMapId)
-            uiSession.selectMap(snapshot.selectedMapId)
+            val nextMapSelectorState = appCore.deriveMapSelectorState(snapshot.selectedMapId.ifBlank { null })
+            mapSelectorState = nextMapSelectorState
+            selectedMapId = nextMapSelectorState.selectedMapId
         }
-        selectedMapId = snapshot.selectedMapId
         mapViewport = snapshot.mapViewport
         chartViewport = snapshot.chartViewport
         chartFolderOpen = snapshot.chartFolderOpen
@@ -2598,7 +2584,8 @@ private fun AerobagApp() {
                         mapFollowUiState = sessionSnapshot.mapFollowUiState,
                         mapFollowTargetViewport = sessionSnapshot.mapFollowTargetViewport,
                         situationRingCandidates = situationRingCandidates,
-                        selectedMapId = selectedMapId,
+                        selectedMap = selectedMap,
+                        mapFamilyOptions = mapSelectorState.familyOptions,
                         viewport = mapViewport,
                         decodedTileBitmapCache = decodedTileBitmapCache,
                         debugState = sessionSnapshot.debugState,
@@ -2618,14 +2605,18 @@ private fun AerobagApp() {
                             sessionSnapshot = uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble())
                         },
                         onPlaybackSourcePathChange = { playbackSourcePath = it },
-                        onSelectMapId = {
+                        onSelectMapFamily = {
+                            val nextMapSelectorState = appCore.deriveMapSelectorStateForFamily(it)
                             restoreSnapshot(
                                 currentSnapshot().copy(
                                     page = AppPage.Map,
-                                    selectedMapId = it,
+                                    selectedMapId = nextMapSelectorState.selectedMapId,
+                                    selectedMapLauncherLabel =
+                                        nextMapSelectorState.familyOptions.firstOrNull { option -> option.active }?.launcherLabel.orEmpty(),
                                 ),
                                 boundedHistory(pageHistory + currentSnapshot()),
                             )
+                            sessionSnapshot = uiSession.selectMapFamily(it)
                         },
                         onSelectPage = ::navigateToPage,
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
@@ -4451,7 +4442,8 @@ private fun MapExplorerPage(
     mapFollowUiState: MapFollowUiState,
     mapFollowTargetViewport: CoreMapViewport?,
     situationRingCandidates: List<SituationRingCandidate>,
-    selectedMapId: String,
+    selectedMap: MapViewOption,
+    mapFamilyOptions: List<MapFamilyOption>,
     viewport: MapViewportState,
     decodedTileBitmapCache: DecodedTileBitmapCache,
     debugState: UiDebugState,
@@ -4463,7 +4455,7 @@ private fun MapExplorerPage(
     onSelectOwnshipSource: (String) -> Unit,
     onSituationControlInput: (SituationControlInput) -> Unit,
     onPlaybackSourcePathChange: (String) -> Unit,
-    onSelectMapId: (String) -> Unit,
+    onSelectMapFamily: (MapChartFamily) -> Unit,
     onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
     navElement: NavElementUiView?,
@@ -4521,9 +4513,6 @@ private fun MapExplorerPage(
     var mapGestureActive by remember { mutableStateOf(false) }
     var installingPackage by remember { mutableStateOf<String?>(null) }
     var installRevision by remember { mutableStateOf(0) }
-    val selectedMap = remember(selectedMapId, fixture.mapViews) {
-        fixture.mapViews.find { it.id == selectedMapId } ?: fixture.mapViews.first()
-    }
     val selectedFamilyMapViews = remember(selectedMap, fixture.mapViews) {
         val chartFamilies =
             when (selectedMap.mapView.chartFamily) {
@@ -4621,19 +4610,18 @@ private fun MapExplorerPage(
             else -> "Package missing"
         }
     }
-    val trayOptions = remember(selectedMap.id, fixture.mapViews) {
-        val secTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.Sec }
-        val tacTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.Tac }
-        val enrLTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.EnrL }
-        val enrHTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.EnrH }
-        val shadedReliefTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.ShadedRelief }
-        listOf(
-            ChartTrayOption("sec", "SECTIONAL", "SEC", secTarget != null, R.drawable.sectional_icon) { secTarget?.let { onSelectMapId(it.id) } },
-            ChartTrayOption("tac", "TAC", "TAC", tacTarget != null, R.drawable.tac_icon) { tacTarget?.let { onSelectMapId(it.id) } },
-            ChartTrayOption("enr-l", "IFR LOW", "IFR LOW", enrLTarget != null, R.drawable.ifr_l_icon) { enrLTarget?.let { onSelectMapId(it.id) } },
-            ChartTrayOption("enr-h", "IFR HIGH", "IFR HIGH", enrHTarget != null, R.drawable.ifr_h_icon) { enrHTarget?.let { onSelectMapId(it.id) } },
-            ChartTrayOption("shaded-relief", "SHADED RELIEF", "RELIEF", shadedReliefTarget != null, R.drawable.shaded_relief_icon) { shadedReliefTarget?.let { onSelectMapId(it.id) } },
-        )
+    val trayOptions = remember(mapFamilyOptions) {
+        mapFamilyOptions.map { option ->
+            ChartTrayOption(
+                id = chartFamilyId(option.id),
+                label = option.label,
+                launcherLabel = option.launcherLabel,
+                available = option.enabled,
+                iconResId = chartFamilyIconResId(option.id),
+            ) {
+                onSelectMapFamily(option.id)
+            }
+        }
     }
     val layerTrayOptions = remember(mapLayerState) {
         listOf(
@@ -9775,13 +9763,7 @@ private fun formatSnapshot(snapshot: AppViewSnapshot): String {
 private fun formatSnapshot(snapshot: AppViewSnapshot, chartLabelsById: Map<String, String>): String {
     val label = pageLabel(snapshot.page)
     if (snapshot.page == AppPage.Map) {
-        val family = when (snapshot.selectedMapId.substringBefore(':')) {
-            "sec" -> "SEC"
-            "tac" -> "TAC"
-            "enr-l" -> "IFR L"
-            "enr-h" -> "IFR H"
-            else -> ""
-        }
+        val family = snapshot.selectedMapLauncherLabel
         return if (family.isBlank()) label else "$label-$family"
     }
     if (snapshot.page != AppPage.Charts) {
@@ -9801,6 +9783,7 @@ private fun formatPageStack(
     pageHistory: List<AppViewSnapshot>,
     currentPage: AppPage,
     selectedMapId: String = "",
+    selectedMapLauncherLabel: String = "",
     selectedAirportId: String = "",
     selectedChartId: String = "",
     selectedChartLabel: String = "",
@@ -9811,6 +9794,7 @@ private fun formatPageStack(
         AppViewSnapshot(
         page = currentPage,
         selectedMapId = selectedMapId,
+        selectedMapLauncherLabel = selectedMapLauncherLabel,
         mapViewport = MapViewportState(0.0, 0.0, 0.0),
         selectedAirportId = selectedAirportId,
         selectedChartId = selectedChartId,

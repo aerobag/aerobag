@@ -185,6 +185,21 @@ data class UiMapLayerState(
     val terrainWarning: UiMapLayerToggleState,
 )
 
+data class DerivedMapSelectorState(
+    val selectedMapId: String,
+    val selectedMap: MapViewOption?,
+    val displayedMaps: List<MapViewOption>,
+    val familyOptions: List<MapFamilyOption>,
+)
+
+data class MapFamilyOption(
+    val id: MapChartFamily,
+    val label: String,
+    val launcherLabel: String,
+    val enabled: Boolean,
+    val active: Boolean,
+)
+
 data class MapOverlayQueryResult(
     val neededPointTiles: List<VectorTileRequest>,
     val neededMetarTiles: List<VectorTileRequest>,
@@ -322,6 +337,7 @@ class NativeAppCoreAdapter(
                 buildJsonObject {
                     put("kind", "map_selector_state")
                     put("selected_map_id", JsonNull)
+                    put("selected_family_id", JsonNull)
                 },
             )
             session.installRasterMapCatalogJson(catalog.toString())
@@ -453,6 +469,28 @@ class NativeAppCoreAdapter(
             },
         )
         return json.decodeFromJsonElement<List<WireWaypointIdentifierSuggestion>>(result).map { it.toUi() }
+    }
+
+    fun deriveMapSelectorState(selectedMapId: String?): DerivedMapSelectorState {
+        val result = runHadOperationElement(
+            buildJsonObject {
+                put("kind", "map_selector_state")
+                put("selected_map_id", selectedMapId?.let { json.encodeToJsonElement(it) } ?: JsonNull)
+                put("selected_family_id", JsonNull)
+            },
+        )
+        return json.decodeFromJsonElement<WireMapSelectorState>(result).toUi()
+    }
+
+    fun deriveMapSelectorStateForFamily(familyId: MapChartFamily): DerivedMapSelectorState {
+        val result = runHadOperationElement(
+            buildJsonObject {
+                put("kind", "map_selector_state")
+                put("selected_map_id", JsonNull)
+                put("selected_family_id", json.encodeToJsonElement(familyId.toWireName()))
+            },
+        )
+        return json.decodeFromJsonElement<WireMapSelectorState>(result).toUi()
     }
 
     fun projectFlightPlanRoute(plan: FlightPlan): List<FlightPlanRouteSegment> {
@@ -1017,19 +1055,8 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
-    fun installRasterMapCatalogForSelection(mapId: String?): UiSessionSnapshot {
-        val store = navKvStore ?: return snapshot
-        val catalog = store.runCoreOperationElement(
-            buildJsonObject {
-                put("kind", "map_selector_state")
-                put("selected_map_id", json.encodeToJsonElement(mapId))
-            },
-        )
-        return installRasterMapCatalogJson(catalog.toString())
-    }
-
-    fun selectMap(mapId: String): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.selectMapInSessionJson(handle, json.encodeToString(mapId)))
+    fun selectMapFamily(familyId: MapChartFamily): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.selectMapFamilyInSessionJson(handle, json.encodeToString(familyId.toWireName())))
         return snapshot
     }
 
@@ -1717,6 +1744,23 @@ private data class WireUiSessionSnapshot(
 )
 
 @kotlinx.serialization.Serializable
+private data class WireMapSelectorState(
+    val selected_map_id: String = "",
+    val selected_map: WireMapViewOption? = null,
+    val displayed_maps: List<WireMapViewOption> = emptyList(),
+    val family_options: List<WireMapFamilyOption> = emptyList(),
+)
+
+@kotlinx.serialization.Serializable
+private data class WireMapFamilyOption(
+    val id: WireChartFamilyId,
+    val label: String,
+    val launcher_label: String,
+    val enabled: Boolean,
+    val active: Boolean,
+)
+
+@kotlinx.serialization.Serializable
 private data class WireUiSessionInitResult(
     val handle: Long,
     val snapshot: WireUiSessionSnapshot,
@@ -1780,6 +1824,90 @@ data class UiChartPageState(
     val selectedAirportId: String,
     val selectedChartId: String,
 )
+
+private fun WireMapSelectorState.toUi() = DerivedMapSelectorState(
+    selectedMapId = selected_map_id,
+    selectedMap = selected_map?.toUi(),
+    displayedMaps = displayed_maps.map { it.toUi() },
+    familyOptions = family_options.map { it.toUi() },
+)
+
+private fun WireMapFamilyOption.toUi() = MapFamilyOption(
+    id = id.toUi(),
+    label = label,
+    launcherLabel = launcher_label,
+    enabled = enabled,
+    active = active,
+)
+
+private fun WireMapViewOption.toUi() = MapViewOption(
+    id = id,
+    label = label,
+    regionId = region_id.toCode(),
+    mapView = map_view.toUi(),
+)
+
+private fun WireMapView.toUi() = MapView(
+    chartFamily = chart_family.toUi(),
+    chartName = chart_name,
+    chartIndex = chart_index,
+    tileRoot = tile_root,
+    tileUrlRoot = tile_url_root,
+    tileSize = tile_size,
+    minZoom = min_zoom,
+    maxZoom = max_zoom,
+    storageKind = storage_kind.toUi(),
+    packageName = package_name,
+    fullCoverageZoom = full_coverage_zoom,
+    initialViewport = MapViewportSeed(
+        lat = initial_viewport.lat,
+        lon = initial_viewport.lon,
+        zoom = initial_viewport.zoom,
+    ),
+    levels = levels.map { it.toUi() },
+)
+
+private fun WireTileLevelAvailability.toUi() = TileLevelAvailability(
+    zoom = zoom,
+    xMin = x_min,
+    xMax = x_max,
+    yTmsMin = y_tms_min,
+    yTmsMax = y_tms_max,
+)
+
+private fun WireTileStorageKind.toUi() = when (this) {
+    WireTileStorageKind.AssetTree -> TileStorageKind.AssetTree
+    WireTileStorageKind.SectionalPackage -> TileStorageKind.SectionalPackage
+    WireTileStorageKind.StaticProduct -> TileStorageKind.StaticProduct
+}
+
+private fun WireChartFamilyId.toUi() = when (this) {
+    WireChartFamilyId.Sec -> MapChartFamily.Sec
+    WireChartFamilyId.Tac -> MapChartFamily.Tac
+    WireChartFamilyId.EnrL -> MapChartFamily.EnrL
+    WireChartFamilyId.EnrH -> MapChartFamily.EnrH
+    WireChartFamilyId.ShadedRelief -> MapChartFamily.ShadedRelief
+}
+
+private fun MapChartFamily.toWireName(): String = when (this) {
+    MapChartFamily.Sec -> "sec"
+    MapChartFamily.Tac -> "tac"
+    MapChartFamily.EnrL -> "enr-l"
+    MapChartFamily.EnrH -> "enr-h"
+    MapChartFamily.ShadedRelief -> "shaded-relief"
+}
+
+private fun WireRegionId.toCode() = when (this) {
+    WireRegionId.Nw -> "nw"
+    WireRegionId.Sw -> "sw"
+    WireRegionId.Nc -> "nc"
+    WireRegionId.Sc -> "sc"
+    WireRegionId.Ne -> "ne"
+    WireRegionId.Se -> "se"
+    WireRegionId.Ec -> "ec"
+    WireRegionId.Ak -> "ak"
+    WireRegionId.Pac -> "pac"
+}
 
 private fun WireDerivedChartPageState.toUi() = DerivedChartPageState(
     airports = airports.map { it.toUi() },

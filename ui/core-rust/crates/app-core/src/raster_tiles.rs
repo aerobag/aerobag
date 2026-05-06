@@ -24,7 +24,6 @@ pub struct RasterMapFamilyOption {
     pub launcher_label: String,
     pub enabled: bool,
     pub active: bool,
-    pub next_map_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -181,6 +180,41 @@ pub fn select_map_in_catalog(catalog: &mut RasterMapCatalog, selected_map_id: &s
             .find(|view| view.id == selected_map_id)
             .cloned();
     }
+}
+
+pub fn select_map_family_in_catalog(catalog: &mut RasterMapCatalog, family_id: &str) {
+    let selected_region_id = catalog
+        .selected_map
+        .as_ref()
+        .map(|view| view.region_id.as_str());
+    let Some(selected_map) =
+        preferred_family_map(&catalog.displayed_maps, family_id, selected_region_id).cloned()
+    else {
+        return;
+    };
+    catalog.selected_map_id = selected_map.id.clone();
+    catalog.selected_map = Some(selected_map);
+    for option in &mut catalog.family_options {
+        option.active = option.id == family_id;
+    }
+}
+
+pub fn preferred_family_map<'a>(
+    map_views: &'a [RasterMapViewOption],
+    family_id: &str,
+    selected_region_id: Option<&str>,
+) -> Option<&'a RasterMapViewOption> {
+    map_views
+        .iter()
+        .find(|view| {
+            view.map_view.chart_family == family_id
+                && Some(view.region_id.as_str()) == selected_region_id
+        })
+        .or_else(|| {
+            map_views
+                .iter()
+                .find(|view| view.map_view.chart_family == family_id)
+        })
 }
 
 pub fn raster_tile_plan(

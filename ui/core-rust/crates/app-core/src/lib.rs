@@ -110,7 +110,8 @@ pub use planning::{
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use raster_tiles::{
-    raster_tile_plan, raster_tile_plan_with_options, select_map_in_catalog, RasterChartCoverage,
+    preferred_family_map, raster_tile_plan, raster_tile_plan_with_options,
+    select_map_family_in_catalog, select_map_in_catalog, RasterChartCoverage,
     RasterDisplayGeometry, RasterDisplayPolygonSet, RasterInitialViewport, RasterMapCatalog,
     RasterMapFamilyOption, RasterMapView, RasterMapViewOption, RasterPolygon, RasterPolygonSetRef,
     RasterTileDraw, RasterTileLevel, RasterTilePlan, RasterTilePlanOptions, RasterTileSource,
@@ -132,7 +133,7 @@ pub use session::{
     render_terrain_overlay_tile_in_session, render_terrain_overlay_tiles_in_session,
     replace_flight_plan_in_session, restore_chart_page_state_in_session,
     restore_direct_to_in_session, seek_playback_in_session, select_airport_in_session,
-    select_chart_in_session, select_map_in_session, select_ownship_source_in_session,
+    select_chart_in_session, select_map_family_in_session, select_ownship_source_in_session,
     select_procedure_at_flight_plan_row_in_session, sequence_active_leg_in_session,
     set_debug_flag_in_session, set_guidance_leg_geometry_in_session,
     set_map_follow_offset_in_session, set_map_layer_enabled_in_session,

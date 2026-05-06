@@ -662,13 +662,12 @@ pub fn set_raster_map_catalog_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-pub fn select_map_in_session_json(
+pub fn select_map_family_in_session_json(
     handle: u64,
-    selected_map_id_json: &str,
+    family_id_json: &str,
 ) -> Result<String, String> {
-    let selected_map_id: String =
-        serde_json::from_str(selected_map_id_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::select_map_in_session(handle as u32, &selected_map_id)
+    let family_id: String = serde_json::from_str(family_id_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::select_map_family_in_session(handle as u32, &family_id)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
@@ -2155,15 +2154,15 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_set
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_selectMapInSessionJson(
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_selectMapFamilyInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
-    selected_map_id_json: JString,
+    family_id_json: JString,
 ) -> jstring {
     let result = (|| {
-        let selected_map_id = get_java_string(&mut env, selected_map_id_json)?;
-        select_map_in_session_json(handle as u64, &selected_map_id)
+        let family_id = get_java_string(&mut env, family_id_json)?;
+        select_map_family_in_session_json(handle as u64, &family_id)
     })();
     return_string(&mut env, result)
 }

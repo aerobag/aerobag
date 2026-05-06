@@ -1145,17 +1145,30 @@ fn query_metar_overlay(
                 };
                 let feature =
                     visible_metar_feature(record, center_world, scale, width_px, height_px);
-                if weather_feature_is_on_screen(feature.screen_x, feature.screen_y, width_px, height_px) {
+                if weather_feature_is_on_screen(
+                    feature.screen_x,
+                    feature.screen_y,
+                    width_px,
+                    height_px,
+                ) {
                     visible_metars.push(feature);
                 }
             } else if record_ref.kind == "pirep" {
-                let Some(record) = metars.pireps.iter().find(|record| record.id == record_ref.id)
+                let Some(record) = metars
+                    .pireps
+                    .iter()
+                    .find(|record| record.id == record_ref.id)
                 else {
                     continue;
                 };
                 let feature =
                     visible_pirep_feature(record, center_world, scale, width_px, height_px);
-                if weather_feature_is_on_screen(feature.screen_x, feature.screen_y, width_px, height_px) {
+                if weather_feature_is_on_screen(
+                    feature.screen_x,
+                    feature.screen_y,
+                    width_px,
+                    height_px,
+                ) {
                     visible_pireps.push(feature);
                 }
             }
@@ -1184,7 +1197,12 @@ fn query_metar_overlay(
     }
 }
 
-fn weather_feature_is_on_screen(screen_x: f64, screen_y: f64, width_px: f64, height_px: f64) -> bool {
+fn weather_feature_is_on_screen(
+    screen_x: f64,
+    screen_y: f64,
+    width_px: f64,
+    height_px: f64,
+) -> bool {
     screen_x >= -32.0
         && screen_x <= width_px + 32.0
         && screen_y >= -32.0
@@ -1404,9 +1422,9 @@ pub fn query_map_selection(
             click_screen,
             hit_radius_px,
             metar_tile_cache,
-        metar_payload,
-        taf_payload,
-    ));
+            metar_payload,
+            taf_payload,
+        ));
         weather.extend(query_pirep_selection_matches(
             viewport,
             width_px,
@@ -1706,7 +1724,10 @@ fn selection_item_for_metar(
     }
 }
 
-fn selection_item_for_pirep(record: &PirepRecord, feature: VisiblePirepFeature) -> MapSelectionItem {
+fn selection_item_for_pirep(
+    record: &PirepRecord,
+    feature: VisiblePirepFeature,
+) -> MapSelectionItem {
     let hazard_label = pirep_hazard_label(record);
     MapSelectionItem {
         id: record.id.clone(),

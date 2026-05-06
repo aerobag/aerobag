@@ -221,9 +221,9 @@ interface NativeBridge {
         catalogJson: String,
     ): String
 
-    fun selectMapInSessionJson(
+    fun selectMapFamilyInSessionJson(
         handle: Long,
-        selectedMapIdJson: String,
+        familyIdJson: String,
     ): String
 
     fun getSessionSnapshotJson(handle: Long): String
@@ -592,9 +592,9 @@ object NativeBindings : NativeBridge {
         catalogJson: String,
     ): String
 
-    external override fun selectMapInSessionJson(
+    external override fun selectMapFamilyInSessionJson(
         handle: Long,
-        selectedMapIdJson: String,
+        familyIdJson: String,
     ): String
 
     external override fun getSessionSnapshotJson(handle: Long): String

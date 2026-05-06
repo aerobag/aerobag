@@ -61,7 +61,6 @@ export type DerivedMapSelectorState = {
     launcher_label: string;
     enabled: boolean;
     active: boolean;
-    next_map_id: string | null;
   }>;
 };
 
@@ -505,7 +504,7 @@ export interface UiSession {
   setMapLayerEnabled(layerId: MapLayerId, enabled: boolean): Promise<UiSessionSnapshot>;
   setDebugFlag(flagId: DebugFlagId, enabled: boolean): Promise<UiSessionSnapshot>;
   installRasterMapCatalog(catalog: DerivedMapSelectorState): Promise<UiSessionSnapshot>;
-  selectMap(mapId: string): Promise<UiSessionSnapshot>;
+  selectMapFamily(familyId: ChartFamilyId): Promise<UiSessionSnapshot>;
   selectAirport(airportId: string): Promise<UiSessionSnapshot>;
   selectChart(chartId: string): Promise<UiSessionSnapshot>;
   ingestPointTiles(tiles: PointTilePayload[]): Promise<void>;
@@ -542,6 +541,7 @@ export interface AppCoreAdapter {
     selectedChartId?: string,
   ): Promise<DerivedChartPageState>;
   deriveMapSelectorState(selectedMapId?: string): Promise<DerivedMapSelectorState>;
+  deriveMapSelectorStateForFamily(familyId: ChartFamilyId): Promise<DerivedMapSelectorState>;
   projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]>;
   previewFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanEntryPreview>;
   appendFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanUiMutation>;
@@ -692,7 +692,7 @@ type WasmModule = {
   set_map_layer_enabled_in_session(handle: number, layerIdJson: string, enabled: boolean): Promise<string> | string;
   set_debug_flag_in_session(handle: number, flagIdJson: string, enabled: boolean): Promise<string> | string;
   set_raster_map_catalog_in_session(handle: number, catalogJson: string): Promise<string> | string;
-  select_map_in_session(handle: number, selectedMapIdJson: string): Promise<string> | string;
+  select_map_family_in_session(handle: number, familyIdJson: string): Promise<string> | string;
   replace_flight_plan_in_session(handle: number, planJson: string): Promise<string> | string;
   perform_map_selection_action_in_session(sessionHandle: number, actionJson: string): Promise<string> | string;
   insert_waypoint_at_flight_plan_row_in_session(sessionHandle: number, rowUid: string, before: boolean, waypointJson: string): Promise<string> | string;
@@ -1081,9 +1081,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         return snapshot;
       },
-      selectMap: async (mapId) => {
+      selectMapFamily: async (familyId) => {
         snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.select_map_in_session(handle, JSON.stringify(mapId))),
+          parseSessionSnapshot(this.module.select_map_family_in_session(handle, JSON.stringify(familyId))),
         );
         return snapshot;
       },
@@ -1315,6 +1315,22 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     const state = await runCoreHadOperation<Partial<DerivedMapSelectorState>>({
       kind: "map_selector_state",
       selected_map_id: selectedMapId ?? null,
+      selected_family_id: null,
+    });
+    return {
+      selected_map_id: state.selected_map_id ?? "",
+      selected_map: state.selected_map ?? null,
+      displayed_maps: state.displayed_maps ?? [],
+      geometry: state.geometry ?? EMPTY_GEOMETRY,
+      family_options: state.family_options ?? [],
+    };
+  }
+
+  async deriveMapSelectorStateForFamily(familyId: ChartFamilyId): Promise<DerivedMapSelectorState> {
+    const state = await runCoreHadOperation<Partial<DerivedMapSelectorState>>({
+      kind: "map_selector_state",
+      selected_map_id: null,
+      selected_family_id: familyId,
     });
     return {
       selected_map_id: state.selected_map_id ?? "",
@@ -1450,7 +1466,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.set_map_layer_enabled_in_session !== "function" ||
     typeof mod.set_debug_flag_in_session !== "function" ||
     typeof mod.set_raster_map_catalog_in_session !== "function" ||
-    typeof mod.select_map_in_session !== "function" ||
+    typeof mod.select_map_family_in_session !== "function" ||
     typeof mod.replace_flight_plan_in_session !== "function" ||
     typeof mod.perform_map_selection_action_in_session !== "function" ||
     typeof mod.set_guidance_leg_geometry_in_session !== "function" ||

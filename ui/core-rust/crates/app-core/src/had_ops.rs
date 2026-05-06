@@ -36,6 +36,7 @@ pub enum HadOperation {
     ChartCatalog,
     MapSelectorState {
         selected_map_id: Option<String>,
+        selected_family_id: Option<String>,
     },
     ChartPageState {
         plan: FlightPlan,
@@ -171,9 +172,14 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
             read_required::<Value>(store, NavKvQuery::VectorManifest, "vector manifest")?
         }
         HadOperation::ChartCatalog => serde_json::to_value(chart_catalog(store)?)?,
-        HadOperation::MapSelectorState { selected_map_id } => {
-            serde_json::to_value(map_selector_state(store, selected_map_id.as_deref())?)?
-        }
+        HadOperation::MapSelectorState {
+            selected_map_id,
+            selected_family_id,
+        } => serde_json::to_value(map_selector_state(
+            store,
+            selected_map_id.as_deref(),
+            selected_family_id.as_deref(),
+        )?)?,
         HadOperation::ChartPageState {
             plan,
             recent_airport_ids,
@@ -363,7 +369,6 @@ struct MapFamilyOption {
     launcher_label: String,
     enabled: bool,
     active: bool,
-    next_map_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -634,14 +639,19 @@ fn chart_page_airport_candidates(
 fn map_selector_state(
     store: &NavKvStore,
     selected_map_id: Option<&str>,
+    selected_family_id: Option<&str>,
 ) -> Result<MapSelectorState, HadReadError> {
     let map_views = chart_catalog(store)?;
-    let selected_map = map_views
+    let seed_map = map_views
         .iter()
-        .find(|view| Some(view.id.as_str()) == selected_map_id)
-        .cloned()
-        .or_else(|| preferred_family_map(&map_views, "tac", Some("nw")).cloned())
-        .or_else(|| map_views.first().cloned());
+        .find(|view| Some(view.id.as_str()) == selected_map_id);
+    let seed_region_id = seed_map.map(|view| view.region_id.as_str()).or(Some("nw"));
+    let selected_map = selected_family_id
+        .and_then(|family_id| preferred_family_map(&map_views, family_id, seed_region_id))
+        .or(seed_map)
+        .or_else(|| preferred_family_map(&map_views, "tac", Some("nw")))
+        .or_else(|| map_views.first())
+        .cloned();
     let selected_family_id = selected_map
         .as_ref()
         .map(|view| view.map_view.chart_family.as_str())
@@ -652,7 +662,6 @@ fn map_selector_state(
             .cloned()
             .collect();
     let geometry = displayed_geometry(store, &displayed_maps)?;
-    let selected_region_id = selected_map.as_ref().map(|view| view.region_id.as_str());
     let family_options = supported_chart_families()
         .into_iter()
         .map(|(id, label, launcher_label)| MapFamilyOption {
@@ -663,8 +672,6 @@ fn map_selector_state(
                 .iter()
                 .any(|view| view.map_view.chart_family == id),
             active: selected_family_id == id,
-            next_map_id: preferred_family_map(&map_views, id, selected_region_id)
-                .map(|view| view.id.clone()),
         })
         .collect();
     Ok(MapSelectorState {
@@ -2432,7 +2439,7 @@ mod tests {
             store.insert_page(index as u32, page);
         }
 
-        let state = map_selector_state(&store, Some("sec:nw")).expect("map selector state");
+        let state = map_selector_state(&store, Some("sec:nw"), None).expect("map selector state");
         assert_eq!(
             state
                 .selected_map
@@ -2846,6 +2853,7 @@ mod tests {
             &store,
             HadOperation::MapSelectorState {
                 selected_map_id: None,
+                selected_family_id: None,
             },
         )
         .expect("load generated map selector state")
@@ -2919,6 +2927,7 @@ mod tests {
             &store,
             HadOperation::MapSelectorState {
                 selected_map_id: None,
+                selected_family_id: None,
             },
         )
         .expect("load generated map selector state")

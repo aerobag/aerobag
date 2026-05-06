@@ -295,6 +295,29 @@ def stage_bundle_manifests() -> None:
         ensure_hard_link(build_status, WEB_STATIC_ROOT / "build-status.html")
 
 
+def stage_shaded_relief_products() -> None:
+    """Symlink each shaded-relief-* package's unpacked dir into the
+    staging tree under shaded-relief-products/<id>/. Previously done by
+    vite's writeBundle hook; moved here so nginx can serve the staged
+    tree directly without vite linking copies into dist/."""
+    target = WEB_STATIC_ROOT / "shaded-relief-products"
+    reset_dir(target)
+    for package in PRODUCT_BUILD.get("packages", []):
+        if not isinstance(package, dict):
+            continue
+        package_id = package.get("id")
+        if not isinstance(package_id, str) or not package_id.startswith("shaded-relief-"):
+            continue
+        package_filename = package.get("filename")
+        if not isinstance(package_filename, str) or not package_filename:
+            continue
+        product_root = unpacked_dir_from_relative_zip(package_filename)
+        if not product_root.is_dir():
+            print(f"warning: shaded-relief product unavailable {package_id}: {product_root}")
+            continue
+        ensure_symlink(product_root, target / package_id)
+
+
 def stage_icons() -> None:
     """Mirror ui/icons/ into the staging dir, preserving subdir structure.
 
@@ -385,6 +408,7 @@ def main() -> None:
     stage_chart_assets()
     stage_fast_products()
     stage_nav_kv()
+    stage_shaded_relief_products()
     write_stage_stamp()
 
 

@@ -383,42 +383,14 @@ function aerobagStaticPlugin(): Plugin {
     configurePreviewServer(server) {
       installMiddlewares(server);
     },
-    writeBundle(outputOptions) {
-      const outputDir = outputOptions.dir;
-      if (!outputDir) {
-        return;
-      }
-      for (const [sourceRoot, targetName] of [
-        [sectionalRoot, "sectional-packages"],
-        [plateRoot, "plates"],
-        [csupRoot, "afd"],
-        [thumbnailRoot, "thumbnails"],
-        [navDbRoot, "nav-db"],
-        [navKvRoot, "nav-kv"],
-        [fastProductRoot, "fast-products"],
-        [iconsRoot, "icons"],
-        [adsbTraceRoot, "adsb-traces"],
-      ] as const) {
-        if (!fs.existsSync(sourceRoot)) {
-          continue;
-        }
-        const targetRoot = path.join(outputDir, targetName);
-        ensureLinkedTree(sourceRoot, targetRoot);
-      }
-      for (const filename of ["build-status.html"] as const) {
-        const sourcePath = path.join(staticRoot, filename);
-        if (fs.existsSync(sourcePath)) {
-          ensureLinkedFile(sourcePath, path.join(outputDir, filename));
-        }
-      }
-      for (const productId of currentStaticProductIdsWithPrefix("shaded-relief-")) {
-        const sourceRoot = resolveCurrentStaticProductRoot(productId);
-        if (!sourceRoot) {
-          continue;
-        }
-        ensureLinkedTree(sourceRoot, path.join(outputDir, "shaded-relief-products", productId));
-      }
-    },
+    // Note: vite previously linked the artifact trees (sectional-packages,
+    // plates, afd, …, shaded-relief-products, build-status.html) into
+    // dist/ via a writeBundle hook. That was a dev-box convenience — vite
+    // "helped out" so a single dist/ tree could be served. In production,
+    // nginx is the static server and aliases /plates/, /afd/, … directly
+    // into web/generated-static/. The writeBundle hook would (a) be
+    // redundant and (b) race with concurrent stage_dev_assets.py
+    // invocations. So it's gone.
   };
 }
 

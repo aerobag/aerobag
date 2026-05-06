@@ -467,6 +467,54 @@ function centerOfBounds(bounds) {
   return { x: Math.round((x1 + x2) / 2), y: Math.round((y1 + y2) / 2) };
 }
 
+function rectOfBounds(bounds) {
+  const match = /^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$/.exec(bounds ?? "");
+  if (!match) throw new Error(`invalid Android bounds: ${bounds}`);
+  const [, left, top, right, bottom] = match.map(Number);
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
+
+function findNodes(xml, predicate) {
+  const nodes = [];
+  const nodeRegex = /<node\b[^>]*>/g;
+  let match;
+  while ((match = nodeRegex.exec(xml))) {
+    const attrs = Object.fromEntries([...match[0].matchAll(/([a-zA-Z0-9_-]+)="([^"]*)"/g)].map((entry) => [entry[1], decodeXml(entry[2])]));
+    if (predicate(attrs)) nodes.push(attrs);
+  }
+  return nodes;
+}
+
+function androidAssertFeedbackHasBottomControlClearance(serial, out, feedbackNode) {
+  const feedback = rectOfBounds(feedbackNode.bounds);
+  const xml = dumpAndroid(serial);
+  const bottomControlTags = new Set([
+    "parity:button:Next Leg",
+    "parity:button:Sequence",
+    "parity:button:Suspend",
+    "parity:button:Unsusp",
+    "parity:nav-cdi",
+    "parity:button:DBG",
+  ]);
+  const controls = findNodes(xml, (node) => bottomControlTags.has(androidTag(node)));
+  if (controls.length === 0) {
+    recordGap(out, "append route feedback bottom-control clearance", "no bottom controls found while checking IME layout");
+    return;
+  }
+  const nearestTop = Math.min(...controls.map((node) => rectOfBounds(node.bounds).top).filter((top) => top >= feedback.bottom));
+  const clearancePx = nearestTop - feedback.bottom;
+  const minimumClearancePx = 64;
+  if (!Number.isFinite(clearancePx) || clearancePx < minimumClearancePx) {
+    recordGap(
+      out,
+      "append route feedback bottom-control clearance",
+      `feedback bottom ${feedback.bottom}px is only ${Number.isFinite(clearancePx) ? clearancePx : "no"}px above bottom controls; expected >= ${minimumClearancePx}px`,
+    );
+    return;
+  }
+  recordStep(out, "append route feedback bottom-control clearance", "ok", `${clearancePx}px`);
+}
+
 function androidTapNode(serial, out, label, predicate) {
   const xml = dumpAndroid(serial);
   const node = findNode(xml, predicate);
@@ -553,6 +601,7 @@ async function androidJourney(serial) {
           "append route feedback visible",
         );
         recordStep(out, "append route feedback visible", "ok", feedback.text);
+        androidAssertFeedbackHasBottomControlClearance(serial, out, feedback);
       } catch (_error) {
         recordGap(out, "append route feedback visible", "no non-empty feedback appeared after typing KRNT V2 ZZZZZ");
       }

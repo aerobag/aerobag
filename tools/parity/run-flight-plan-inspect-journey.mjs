@@ -267,6 +267,14 @@ async function webJourney(url) {
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"plan-append-route-input\"]') !== null", "plan append input");
     recordStep(out, "opened plan page");
 
+    await webClick(cdp, "[data-testid=\"nav-cdi\"]");
+    await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-surface\"]') !== null", "chart after plan CDI");
+    recordStep(out, "plan CDI returned to chart");
+
+    await webClick(cdp, "[data-testid=\"nav-cdi\"]");
+    await waitForWeb(cdp, "document.querySelector('[data-testid=\"plan-append-route-input\"]') !== null", "plan after chart CDI");
+    recordStep(out, "chart CDI returned to plan");
+
     await webSetInput(cdp, "[data-testid=\"plan-append-route-input\"]", "KBFI");
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"plan-append-route-input\"]')?.closest('form') !== null", "plan append form");
     await cdp.send("Runtime.evaluate", {
@@ -684,6 +692,28 @@ async function androidJourney(serial) {
     await androidTapTag(serial, out, "opened plan page", "parity:nav-cdi", 12000);
   }
   await delay(500);
+
+  if (await androidTapTag(serial, out, "plan CDI returned to chart", "parity:nav-cdi", 12000)) {
+    try {
+      await androidWaitForNode(serial, (node) => hasAndroidTag(node, "parity:map-surface"), 7000, "chart after plan CDI");
+      recordStep(out, "chart visible after plan CDI");
+    } catch (_error) {
+      recordGap(out, "chart visible after plan CDI", "map surface was not visible after tapping CDI from PLAN");
+    }
+    if (await androidTapTag(serial, out, "chart CDI returned to plan", "parity:nav-cdi", 7000)) {
+      try {
+        await androidWaitForNode(
+          serial,
+          (node) => hasAndroidTag(node, "parity:plan-append-route-input") || node.text === "Waypoint",
+          7000,
+          "plan after chart CDI",
+        );
+        recordStep(out, "plan visible after chart CDI");
+      } catch (_error) {
+        recordGap(out, "plan visible after chart CDI", "plan page was not visible after tapping CDI from CHART");
+      }
+    }
+  }
 
   const planXml = dumpAndroid(serial);
   if (planXml.includes("Append route") || planXml.includes("parity:plan-append-route-input")) {

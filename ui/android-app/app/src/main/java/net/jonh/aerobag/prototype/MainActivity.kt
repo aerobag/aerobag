@@ -2442,6 +2442,22 @@ private fun AerobagApp() {
         Log.i("AerobagNavigation", "navigate committed page=$page history=${pageHistory.size}")
     }
 
+    fun pushViewSnapshot(snapshot: AppViewSnapshot) {
+        restoreSnapshot(snapshot, boundedHistory(pageHistory + currentSnapshot()))
+    }
+
+    fun navigateToMostRecentChartOrPlate() {
+        val target =
+            pageHistory
+                .asReversed()
+                .firstOrNull { it.page == AppPage.Map || it.page == AppPage.Charts }
+        if (target != null) {
+            pushViewSnapshot(target)
+        } else {
+            navigateToPage(AppPage.Map)
+        }
+    }
+
     fun setDebugFlag(flagId: String, enabled: Boolean) {
         sessionSnapshot = uiSession.setDebugFlag(flagId, enabled)
     }
@@ -2529,7 +2545,7 @@ private fun AerobagApp() {
                         plan = currentPlan,
                         uiTheme = uiTheme,
                         onSelectPage = ::navigateToPage,
-                        onOpenPlan = { navigateToPage(AppPage.Plan) },
+                        onOpenPlan = ::navigateToMostRecentChartOrPlate,
                         onOpenCharts = { airportId -> if (airportId != null) openChartsForAirport(airportId) },
                         onApplySessionSnapshot = { snapshot ->
                             sessionSnapshot = snapshot

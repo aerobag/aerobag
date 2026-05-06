@@ -2700,6 +2700,57 @@ mod tests {
                         "procedure waypoint row {label} should expose enabled Activate Leg"
                     );
                 }
+                let hold_row = ui_state
+                    .display_rows
+                    .iter()
+                    .find(|row| row.depth == 1 && row.label == "HOLD")
+                    .expect("expected procedure hold row");
+                assert_eq!(
+                    hold_row.leg_index,
+                    Some(5),
+                    "hold row should activate the guidance leg carrying the hold geometry"
+                );
+                assert!(
+                    hold_row.actions.iter().any(|action| {
+                        action.id == crate::FlightPlanRowActionId::ActivateLeg && action.enabled
+                    }),
+                    "hold row should expose enabled Activate Leg"
+                );
+
+                let activated = crate::activate_leg(&mutation.mutation.plan, 5)
+                    .expect("activate XUKRE -> ECEPO guidance leg");
+                let activated_ui = crate::project_ui_state(&activated);
+                let active_ecepo_row = activated_ui
+                    .display_rows
+                    .iter()
+                    .filter(|row| row.depth == 1 && row.label == "ECEPO")
+                    .find(|row| row.leg_index == Some(5))
+                    .expect("active ECEPO row");
+                assert!(
+                    active_ecepo_row.actions.iter().any(|action| {
+                        action.id == crate::FlightPlanRowActionId::ActivateLeg && !action.enabled
+                    }),
+                    "already-active guidance leg row should disable Activate Leg"
+                );
+
+                let activated_route =
+                    project_flight_plan_route(&store, &activated).expect("project active route");
+                let active_leg_segments = activated_route
+                    .iter()
+                    .filter(|segment| segment.leg_id == "procedure-VOR-A-S-70")
+                    .collect::<Vec<_>>();
+                assert!(
+                    active_leg_segments.iter().any(
+                        |segment| segment.status == crate::FlightPlanRouteSegmentStatus::Active
+                    ),
+                    "active guidance leg should have a CDI-active path element"
+                );
+                assert!(
+                    active_leg_segments.iter().any(|segment| {
+                        segment.status == crate::FlightPlanRouteSegmentStatus::ActiveLegRemaining
+                    }),
+                    "active guidance leg should paint remaining path elements as active-leg remaining"
+                );
             }
             HadOperationOutcome::NeedPages { pages } => {
                 panic!("expected complete outcome, got missing pages: {pages:?}");

@@ -1507,18 +1507,9 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
                     kind: AppErrorKind::InvalidFlightPlan,
                     message: format!("guidance detail index out of bounds: {active_detail_index}"),
                 })?;
-            if let Some(next_detail) = guidance_detail_ref_by_index(&plan, active_detail_index + 1)
-            {
-                if next_detail.leg_index == active_detail.leg_index {
-                    GuidanceState {
-                        active_leg_index: guidance.active_leg_index,
-                        active_detail_index: Some(next_detail.detail_index),
-                        display_split_leg_id: guidance.display_split_leg_id.clone(),
-                        sequencing_mode: SequencingMode::FollowPlan,
-                        direct_to: None,
-                        suspend_reason: None,
-                    }
-                } else if should_suspend_after_active_leg(&plan, guidance.active_leg_index) {
+            let next_leg_index = guidance.active_leg_index + 1;
+            if next_leg_index < plan.resolved_legs.len() {
+                if should_suspend_after_active_leg(&plan, guidance.active_leg_index) {
                     GuidanceState {
                         active_leg_index: guidance.active_leg_index,
                         active_detail_index: Some(active_detail.detail_index),
@@ -1529,11 +1520,14 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
                     }
                 } else {
                     GuidanceState {
-                        active_leg_index: next_detail.leg_index,
-                        active_detail_index: Some(next_detail.detail_index),
+                        active_leg_index: next_leg_index,
+                        active_detail_index: first_guidance_detail_index_for_leg(
+                            &plan,
+                            next_leg_index,
+                        ),
                         display_split_leg_id: plan
                             .resolved_legs
-                            .get(next_detail.leg_index)
+                            .get(next_leg_index)
                             .map(|leg| leg.id.clone()),
                         sequencing_mode: SequencingMode::FollowPlan,
                         direct_to: None,
@@ -2045,7 +2039,10 @@ fn project_display_rows(
                             actions,
                         })
                     }
-                    ConcretizedNavItem::Discontinuity { label, .. } => {
+                    ConcretizedNavItem::Discontinuity {
+                        discontinuity,
+                        label,
+                    } => {
                         let occurrence = child_occurrences
                             .entry(component.component_index)
                             .and_modify(|count| *count += 1)
@@ -2054,8 +2051,17 @@ fn project_display_rows(
                             "component:{}:{:?}:disc:{}:{}",
                             component.uid, component.kind, occurrence, label
                         );
+                        let leg_index = match discontinuity {
+                            ProcedureDiscontinuity::Hold => last_guidance_leg_index_for_component(
+                                plan,
+                                component.component_index,
+                            ),
+                            ProcedureDiscontinuity::Vectors | ProcedureDiscontinuity::Other(_) => {
+                                None
+                            }
+                        };
                         rows.push(FlightPlanDisplayRowUiView {
-                            uid,
+                            uid: uid.clone(),
                             label: label.clone(),
                             row_kind: FlightPlanDisplayRowKind::Discontinuity,
                             component_kind: Some(component.kind.clone()),
@@ -2063,7 +2069,7 @@ fn project_display_rows(
                             component_index: Some(component.component_index),
                             procedure_id: component.procedure_id.clone(),
                             procedure_kind: component.procedure_kind.clone(),
-                            leg_index: None,
+                            leg_index,
                             distance_nm: None,
                             course_deg: None,
                             eta_text: "—".to_string(),
@@ -2090,7 +2096,13 @@ fn project_display_rows(
                             destination_anchor: None,
                             preceding_waypoint: component.preceding_waypoint.clone(),
                             following_waypoint: component.following_waypoint.clone(),
-                            actions: Vec::new(),
+                            actions: assign_action_uids(
+                                &uid,
+                                vec![core_session_action(
+                                    FlightPlanRowActionId::ActivateLeg,
+                                    leg_index.is_some(),
+                                )],
+                            ),
                         })
                     }
                 }
@@ -2150,6 +2162,21 @@ fn project_display_rows(
                 row.enabled = false;
                 for action in &mut row.actions {
                     action.enabled = false;
+                }
+            }
+        }
+    }
+
+    if let Some(active_leg_index) = plan.guidance.as_ref().and_then(|guidance| {
+        (guidance.sequencing_mode == SequencingMode::FollowPlan)
+            .then_some(guidance.active_leg_index)
+    }) {
+        for row in &mut rows {
+            if row.leg_index == Some(active_leg_index) {
+                for action in &mut row.actions {
+                    if action.id == FlightPlanRowActionId::ActivateLeg {
+                        action.enabled = false;
+                    }
                 }
             }
         }
@@ -2375,6 +2402,20 @@ fn child_waypoint_row_leg_index(
                 && &leg.to == nav_ref
         })
         .nth(waypoint_occurrence)
+        .map(|(index, _)| index)
+}
+
+fn last_guidance_leg_index_for_component(
+    plan: &FlightPlan,
+    component_index: usize,
+) -> Option<usize> {
+    plan.resolved_legs
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, leg)| {
+            matches!(leg.source, ResolvedLegSource::RouteComponent { component_index: source_component_index } if source_component_index == component_index)
+        })
         .map(|(index, _)| index)
 }
 

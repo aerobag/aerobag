@@ -7730,6 +7730,9 @@ function routeSegmentColor(status: FlightPlanRouteSegment["status"]) {
   if (status === "active") {
     return "#ff4fcf";
   }
+  if (status === "active_leg_remaining") {
+    return "#ff9fe6";
+  }
   return "#ffffff";
 }
 

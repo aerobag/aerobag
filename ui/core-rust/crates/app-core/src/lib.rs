@@ -235,6 +235,7 @@ pub struct ProcedureLoadCommand {
 pub enum FlightPlanRouteSegmentStatus {
     Completed,
     Active,
+    ActiveLegRemaining,
     Remaining,
 }
 
@@ -342,12 +343,16 @@ fn route_status_for_detail(
     let Some(active_detail_index) = active_detail_index else {
         return FlightPlanRouteSegmentStatus::Remaining;
     };
-    if detail_index < active_detail_index {
+    if leg_index < guidance.active_leg_index {
+        FlightPlanRouteSegmentStatus::Completed
+    } else if leg_index > guidance.active_leg_index {
+        FlightPlanRouteSegmentStatus::Remaining
+    } else if detail_index < active_detail_index {
         FlightPlanRouteSegmentStatus::Completed
     } else if detail_index == active_detail_index {
         FlightPlanRouteSegmentStatus::Active
     } else {
-        FlightPlanRouteSegmentStatus::Remaining
+        FlightPlanRouteSegmentStatus::ActiveLegRemaining
     }
 }
 

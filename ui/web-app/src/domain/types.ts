@@ -296,7 +296,7 @@ export type FlightPlanRouteSegment = {
   style: "solid" | "dashed";
   distance_nm: number;
   course_deg: number;
-  status: "completed" | "active" | "remaining";
+  status: "completed" | "active" | "active_leg_remaining" | "remaining";
 };
 
 export type SequencingMode = "follow_plan" | "suspended" | "direct_to";

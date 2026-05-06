@@ -1472,7 +1472,28 @@ export default function App() {
         initialPlan.selectedAirportId ?? initialChartPageState.selected_airport_id,
         initialPlan.selectedChartId ?? initialChartPageState.selected_chart_id,
       ));
-      let createdSnapshot = await debugTiming("startup.session.ownship_start", () => created.setSituation({
+      let createdSnapshot = await created.snapshot();
+      if (initialPlan.seedProcedure) {
+        const targetRow = createdSnapshot.app_ui_state.active_plan?.display_rows.find((row) =>
+          row.chart_airport_id === initialPlan.seedProcedure?.airportId &&
+          row.component_kind === "waypoint"
+        );
+        if (targetRow) {
+          createdSnapshot = await debugTiming("startup.session.seed_procedure", () => created.selectProcedureAtFlightPlanRow(
+            targetRow.uid,
+            initialPlan.seedProcedure!.airportId,
+            initialPlan.seedProcedure!.procedureId,
+            initialPlan.seedProcedure!.kind,
+            initialPlan.seedProcedure!.runwayTransition,
+            initialPlan.seedProcedure!.enrouteTransition,
+          ));
+        } else {
+          debugLog("startup.session.seed_procedure.no_target_row", {
+            airport_id: initialPlan.seedProcedure.airportId,
+          });
+        }
+      }
+      createdSnapshot = await debugTiming("startup.session.ownship_start", () => created.setSituation({
         position: { kind: "lat_lon", lat: NRVNA_POSITION.lat, lon: NRVNA_POSITION.lon },
         orientation_deg: 342,
         speed_kt: 0,
@@ -7589,6 +7610,13 @@ async function buildSeededDevPlan(): Promise<{
   selectedAirportId?: string;
   selectedChartId?: string;
   recentAirportIds?: string[];
+  seedProcedure?: {
+    airportId: string;
+    procedureId: string;
+    kind: "approach";
+    runwayTransition: string | null;
+    enrouteTransition: string | null;
+  };
 }> {
   const waypoints: Array<{ Airport: string } | { Navaid: string } | { Fix: string }> = [
     { Airport: "KRNT" },
@@ -7621,6 +7649,13 @@ async function buildSeededDevPlan(): Promise<{
     plan,
     selectedAirportId: "KPAE",
     recentAirportIds: ["KPAE", "KRNT"],
+    seedProcedure: {
+      airportId: "KPAE",
+      procedureId: "VOR-A",
+      kind: "approach",
+      runwayTransition: null,
+      enrouteTransition: "ECEPO",
+    },
   };
 }
 
@@ -7666,6 +7701,14 @@ function navRefKey(value: NavRef) {
   if ("Airport" in value) return `airport:${value.Airport}`;
   if ("Navaid" in value) return `navaid:${value.Navaid}`;
   if ("Fix" in value) return `fix:${value.Fix}`;
+  if ("ArincNavaid" in value) {
+    const nav = value.ArincNavaid;
+    return `arinc-navaid:${nav.identifier}:${nav.icao_code}:${nav.section_code}:${nav.subsection_code}`;
+  }
+  if ("TerminalNavaid" in value) {
+    const nav = value.TerminalNavaid;
+    return `terminal-navaid:${nav.airport_id}:${nav.identifier}:${nav.icao_code}:${nav.section_code}:${nav.subsection_code}`;
+  }
   if ("LatLon" in value) return `latlon:${value.LatLon.lat}:${value.LatLon.lon}`;
   return `spot:${value.Spot.lat}:${value.Spot.lon}`;
 }
@@ -7674,6 +7717,8 @@ function navRefLabel(value: NavRef) {
   if ("Airport" in value) return value.Airport;
   if ("Navaid" in value) return value.Navaid;
   if ("Fix" in value) return value.Fix;
+  if ("ArincNavaid" in value) return value.ArincNavaid.identifier;
+  if ("TerminalNavaid" in value) return value.TerminalNavaid.identifier;
   if ("LatLon" in value) return `${value.LatLon.lat.toFixed(3)}, ${value.LatLon.lon.toFixed(3)}`;
   return `SPOT ${value.Spot.lat.toFixed(3)}, ${value.Spot.lon.toFixed(3)}`;
 }

@@ -2641,6 +2641,19 @@ mod tests {
         };
         let mutation = crate::insert_procedure_materialized_ui(&plan, 1, 2, built)
             .expect("insert KPAE VOR-A ECEPO");
+        let route =
+            project_flight_plan_route(&store, &mutation.mutation.plan).expect("project route");
+        assert!(
+            route.iter().any(|segment| matches!(
+                segment.geometry,
+                crate::GuidanceRouteGeometry::Arc { .. }
+            )),
+            "procedure route should preserve fine-grained arc geometry"
+        );
+        assert!(
+            route.len() > mutation.mutation.plan.resolved_legs.len(),
+            "procedure route should split coarse legs into drawable fine-grained segments"
+        );
 
         let outcome = run_had_operation(
             &store,

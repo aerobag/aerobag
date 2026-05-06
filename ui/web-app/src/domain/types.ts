@@ -43,6 +43,8 @@ export type NavRef =
   | { Airport: string }
   | { Navaid: string }
   | { Fix: string }
+  | { ArincNavaid: { identifier: string; icao_code: string; section_code: string; subsection_code: string } }
+  | { TerminalNavaid: { airport_id: string; identifier: string; icao_code: string; subsection_code: string } }
   | { LatLon: { lat: number; lon: number } }
   | { Spot: { lat: number; lon: number } };
 
@@ -247,11 +249,43 @@ export type ResolvedLeg =
     from: NavRef;
     to: NavRef;
     procedure_airport_id?: string | null;
+    procedure_provenance?: ProcedureLegProvenance | null;
   } & (
   | { source: { kind: "legacy_plan_leg"; leg_index: number } }
     | { source: { kind: "route_component"; component_index: number } }
     | { source: { kind: "synthetic_bridge"; from_component_index: number; to_component_index: number } }
   );
+
+export type ProcedureLegProvenance = {
+  airport_id: string;
+  procedure_id: string;
+  kind: ProcedureKind;
+  role: "enroute_transition" | "common" | "runway_transition";
+  path_termination: string | { other: string };
+  leg_sequence: number;
+  display_path?: LegDisplayPath | null;
+};
+
+export type LegDisplayPath = {
+  style?: "solid" | "dashed";
+  elements: LegDisplayElement[];
+  effective_terminal_course_deg?: number | null;
+  debug_element_sources?: string[];
+  debug_element_roles?: string[];
+};
+
+export type LegDisplayElement =
+  | { segment: { start: LatLon; end: LatLon } }
+  | {
+      arc: {
+        center: LatLon;
+        radius_nm: number;
+        start: LatLon;
+        end: LatLon;
+        clockwise: boolean;
+        sweep_degrees: number;
+      };
+    };
 
 export type FlightPlanRouteSegment = {
   id: string;
@@ -317,6 +351,7 @@ export type ResolvedLegUiView = {
   to: NavRef;
   active: boolean;
   suspend_boundary_after: boolean;
+  display_path?: LegDisplayPath | null;
 };
 
 export type DirectToUiView = {

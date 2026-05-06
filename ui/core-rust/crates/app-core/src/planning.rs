@@ -150,7 +150,7 @@ impl Serialize for ResolvedLeg {
                 .procedure_provenance
                 .as_ref()
                 .map(|provenance| provenance.airport_id.clone()),
-            procedure_provenance: None,
+            procedure_provenance: self.procedure_provenance.clone(),
         }
         .serialize(serializer)
     }

@@ -4587,6 +4587,13 @@ pub fn build_procedure_geometry_records(
         else {
             continue;
         };
+        if kind != ProcedureKind::Approach {
+            // The exported geometry contract is currently productionized for approaches.
+            // SID/STAR materialization still produces logical legs that may lack display
+            // paths (for example STAR LUCIT3 LUCIT -> WYDIK), so do not publish partial
+            // geometry for them until that decoder has gone through the same audit.
+            continue;
+        }
         let Some(materialization_rows_value) =
             materialization_by_procedure.get(&(airport_id.clone(), procedure_id.clone()))
         else {
@@ -4620,6 +4627,40 @@ pub fn build_procedure_geometry_records(
         }
     }
     Ok(records)
+}
+
+#[cfg(test)]
+mod published_geometry_build_tests {
+    use super::*;
+
+    #[test]
+    fn build_procedure_geometry_records_skips_unaudited_sid_star_geometry() {
+        let mut kinds = BTreeMap::new();
+        kinds.insert(
+            ("KTEST".to_string(), "LUCIT3".to_string()),
+            ProcedureKind::Star,
+        );
+        kinds.insert(
+            ("KTEST".to_string(), "TEST1".to_string()),
+            ProcedureKind::Sid,
+        );
+
+        let mut distinct_by_procedure = BTreeMap::new();
+        distinct_by_procedure.insert(
+            ("KTEST".to_string(), "LUCIT3".to_string()),
+            vec![serde_json::json!({ "not": "a parsed row" })],
+        );
+        distinct_by_procedure.insert(
+            ("KTEST".to_string(), "TEST1".to_string()),
+            vec![serde_json::json!({ "not": "a parsed row" })],
+        );
+
+        let records =
+            build_procedure_geometry_records(kinds, distinct_by_procedure, BTreeMap::new())
+                .expect("SID/STAR procedures should be skipped before row parsing");
+
+        assert!(records.is_empty());
+    }
 }
 
 pub fn procedure_kinds_from_lists(

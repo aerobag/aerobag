@@ -634,6 +634,8 @@ export type SituationSample = {
   event_time_epoch_ms: number;
   received_time_epoch_ms: number;
   position: LatLon | null;
+  horizontal_accuracy_m?: number | null;
+  vertical_accuracy_m?: number | null;
   track_deg_true: number | null;
   heading_deg_true: number | null;
   ground_speed_kt: number | null;

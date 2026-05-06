@@ -25,6 +25,7 @@ import type {
   ProcedureOptions,
   ProcedureLoadOption,
   ProcedureSummary,
+  SituationSample,
   SituationRingCandidate,
   WaypointIdentifierSuggestion,
 } from "./domain/types";
@@ -108,6 +109,10 @@ type SurfaceSize = {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function finiteOrNull(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function isInvalidUiSessionHandleError(error: unknown): boolean {
@@ -568,6 +573,9 @@ const VAMPS_POSITION = { lat: 47.3648944444444, lon: -121.980275 };
 const NRVNA_POSITION = { lat: 47.37208888888889, lon: -122.16950277777778 };
 const defaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json";
 const startupHighLatencyWarningGraceMs = 10_000;
+const browserGeolocationSourceId = "browser-geolocation";
+const metersPerSecondToKnots = 1.9438444924406;
+const metersToFeet = 3.280839895;
 
 type PersistedWebUiState = {
   page?: AppPage;
@@ -1127,6 +1135,124 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, [playbackUiState.status, uiSession]);
+
+  useEffect(() => {
+    if (!uiSession) {
+      return;
+    }
+    let cancelled = false;
+    let watchId: number | null = null;
+    let selectedAutoAfterFirstFix = false;
+
+    const updateStatus = (connectionState: "unavailable" | "searching" | "connected" | "stale" | "failed", enabled: boolean, statusLabel: string) => {
+      void uiSession.updateOwnshipSourceStatus({
+        source_id: browserGeolocationSourceId,
+        connection_state: connectionState,
+        enabled,
+        status_label: statusLabel,
+      }).then((nextSnapshot) => {
+        if (!cancelled) {
+          setSessionSnapshot(nextSnapshot);
+        }
+      }).catch((error) => {
+        debugLog("geolocation.status_update_failed", { error: errorMessage(error) });
+      });
+    };
+
+    void (async () => {
+      try {
+        let nextSnapshot = await uiSession.registerOwnshipSource({
+          source_id: browserGeolocationSourceId,
+          source_kind: "device_gps",
+          display_name: "Browser Location",
+          selectable: true,
+          auto_eligible: true,
+        });
+        if (cancelled) {
+          return;
+        }
+        setSessionSnapshot(nextSnapshot);
+
+        if (typeof navigator === "undefined" || !navigator.geolocation) {
+          updateStatus("unavailable", false, "Browser geolocation unavailable");
+          return;
+        }
+
+        nextSnapshot = await uiSession.updateOwnshipSourceStatus({
+          source_id: browserGeolocationSourceId,
+          connection_state: "searching",
+          enabled: true,
+          status_label: "Waiting for browser location",
+        });
+        if (cancelled) {
+          return;
+        }
+        setSessionSnapshot(nextSnapshot);
+
+        watchId = navigator.geolocation.watchPosition(
+          (position) => {
+            const coords = position.coords;
+            const eventTimeEpochMs = Number.isFinite(position.timestamp) ? Math.trunc(position.timestamp) : Date.now();
+            const receivedTimeEpochMs = Date.now();
+            const speedMps = finiteOrNull(coords.speed);
+            const altitudeM = finiteOrNull(coords.altitude);
+            const sample: SituationSample = {
+              source_id: browserGeolocationSourceId,
+              source_kind: "device_gps",
+              event_time_epoch_ms: eventTimeEpochMs,
+              received_time_epoch_ms: receivedTimeEpochMs,
+              position: { lat: coords.latitude, lon: coords.longitude },
+              horizontal_accuracy_m: finiteOrNull(coords.accuracy),
+              vertical_accuracy_m: finiteOrNull(coords.altitudeAccuracy),
+              track_deg_true: finiteOrNull(coords.heading),
+              heading_deg_true: null,
+              ground_speed_kt: speedMps == null ? null : speedMps * metersPerSecondToKnots,
+              altitude_msl_ft: altitudeM == null ? null : altitudeM * metersToFeet,
+              pressure_altitude_ft: null,
+            };
+            void uiSession.pushSituationSample(sample).then(async (pushedSnapshot) => {
+              if (cancelled) {
+                return;
+              }
+              setSessionSnapshot(pushedSnapshot);
+              if (selectedAutoAfterFirstFix) {
+                return;
+              }
+              selectedAutoAfterFirstFix = true;
+              const selectedSnapshot = await uiSession.selectOwnshipSource({ kind: "auto" });
+              if (!cancelled) {
+                setSessionSnapshot(selectedSnapshot);
+              }
+            }).catch((error) => {
+              debugLog("geolocation.sample_failed", { error: errorMessage(error) });
+            });
+          },
+          (error) => {
+            const permissionDenied = error.code === error.PERMISSION_DENIED;
+            updateStatus(
+              permissionDenied ? "unavailable" : "failed",
+              !permissionDenied,
+              permissionDenied ? "Browser location permission denied" : error.message || "Browser location failed",
+            );
+          },
+          {
+            enableHighAccuracy: true,
+            maximumAge: 1_000,
+            timeout: 15_000,
+          },
+        );
+      } catch (error) {
+        updateStatus("failed", false, errorMessage(error));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (watchId !== null && typeof navigator !== "undefined" && navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+    };
+  }, [uiSession]);
   const currentPlan = appState.active_plan;
   const planUiState = appUiState.active_plan;
   const recentAirportIds = derivedChartPageState.recent_airport_ids;

@@ -179,6 +179,8 @@ mod tests {
                     lat: 47.5,
                     lon: -122.3,
                 }),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
                 track_deg_true: Some(90.0),
                 heading_deg_true: None,
                 ground_speed_kt: Some(120.0),

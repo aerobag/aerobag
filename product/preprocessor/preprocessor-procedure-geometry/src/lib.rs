@@ -3865,7 +3865,10 @@ fn determine_procedure_window_link<'a>(
         render_as_empty_join,
         render_as_resumed_common_cf: policy.resume_common_cf_from_previous_path,
         render_inherited_single_tf_step: policy.continuing_from_previous_course
-            || policy.continuing_from_consumed_hold,
+            || policy.continuing_from_consumed_hold
+            || (pair[0].path_termination.trim() == "RF"
+                && policy.continuing_from_previous_anchor
+                && pair[1].path_termination.trim() == "TF"),
     }
 }
 

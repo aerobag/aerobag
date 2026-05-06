@@ -277,13 +277,29 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.jonh.aerobag.prototype.generated.airportCircleMarkerPath
 import net.jonh.aerobag.prototype.generated.airportFuelMarkerPath
+import net.jonh.aerobag.prototype.generated.airportOpenMarkerSymbol
 import net.jonh.aerobag.prototype.generated.fixTrianglePath
 import net.jonh.aerobag.prototype.generated.heliportHPath
+import net.jonh.aerobag.prototype.generated.mapSelectionSpotSymbol
+import net.jonh.aerobag.prototype.generated.metarBknSymbol
+import net.jonh.aerobag.prototype.generated.metarClearSymbol
+import net.jonh.aerobag.prototype.generated.metarFewSymbol
+import net.jonh.aerobag.prototype.generated.metarMissingSymbol
+import net.jonh.aerobag.prototype.generated.metarOvcSymbol
+import net.jonh.aerobag.prototype.generated.metarSctSymbol
+import net.jonh.aerobag.prototype.generated.NavSymbolLayer
 import net.jonh.aerobag.prototype.generated.obstacleDotRadius
 import net.jonh.aerobag.prototype.generated.obstacleShortDotY
 import net.jonh.aerobag.prototype.generated.obstacleShortPath
 import net.jonh.aerobag.prototype.generated.obstacleTallDotY
 import net.jonh.aerobag.prototype.generated.obstacleTallPath
+import net.jonh.aerobag.prototype.generated.pirepGenericSymbol
+import net.jonh.aerobag.prototype.generated.pirepLightIcingSymbol
+import net.jonh.aerobag.prototype.generated.pirepLightTurbulenceSymbol
+import net.jonh.aerobag.prototype.generated.pirepModerateIcingSymbol
+import net.jonh.aerobag.prototype.generated.pirepModerateTurbulenceSymbol
+import net.jonh.aerobag.prototype.generated.pirepSevereIcingSymbol
+import net.jonh.aerobag.prototype.generated.pirepSevereTurbulenceSymbol
 import net.jonh.aerobag.prototype.generated.seaplaneAnchorPath
 import net.jonh.aerobag.prototype.generated.vorBandPath
 import net.jonh.aerobag.prototype.generated.vorOuterHexPath
@@ -5812,17 +5828,9 @@ private fun MapExplorerPage(
                                 feature.hasWaterRunway == true ||
                                 feature.hasPavedRunway == false
                         if (usesOpenAirportCircle) {
-                            val markerPath = airportCircleMarkerPath(center, densityScale)
-                            drawPath(
-                                markerPath,
-                                Color.White.copy(alpha = 0.86f),
-                                style = Stroke(width = 5f * densityScale),
-                            )
-                            drawPath(
-                                markerPath,
-                                airportUntoweredFillColor,
-                                style = Stroke(width = 2.5f * densityScale),
-                            )
+                            airportOpenMarkerSymbol(center, densityScale).forEach { layer ->
+                                drawNavSymbolLayer(layer, densityScale, uiTheme)
+                            }
                         } else if (feature.fuelAvailable) {
                             val markerPath = airportFuelMarkerPath(center, densityScale)
                             drawPath(markerPath, airportFillColor)
@@ -5944,14 +5952,14 @@ private fun MapExplorerPage(
         if (displayedMapOverlay.visibleMetars.isNotEmpty()) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 displayedMapOverlay.visibleMetars.forEach { feature ->
-                    drawMetarSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), density.density)
+                    drawMetarSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), density.density, uiTheme)
                 }
             }
         }
         if (displayedMapOverlay.visiblePireps.isNotEmpty()) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 displayedMapOverlay.visiblePireps.forEach { feature ->
-                    drawPirepSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), density.density, symbolScale = 0.32f)
+                    drawPirepSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), density.density, uiTheme, symbolScale = 0.32f)
                 }
             }
         }
@@ -5971,7 +5979,7 @@ private fun MapExplorerPage(
                         val feature = displayedMapOverlay.visibleMetars.firstOrNull { it.stationId == highlight.stationId } ?: item.metarFeature
                         if (feature != null) {
                             drawCircle(Color.White, radius = 16f * density.density, center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), style = Stroke(width = 4f * density.density))
-                            drawMetarSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), density.density)
+                            drawMetarSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), density.density, uiTheme)
                         }
                     }
                     is MapSelectionHighlight.Pirep -> {
@@ -5979,13 +5987,12 @@ private fun MapExplorerPage(
                         if (feature != null) {
                             val center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat())
                             drawCircle(Color.White, radius = 25f * density.density, center = center, style = Stroke(width = 4f * density.density))
-                            drawPirepSymbol(feature, center, density.density, symbolScale = 0.32f)
+                            drawPirepSymbol(feature, center, density.density, uiTheme, symbolScale = 0.32f)
                         }
                     }
                     is MapSelectionHighlight.Spot -> {
                         val point = latLonToScreen(highlight.lat, highlight.lon, currentViewport, surfaceWidthPx, surfaceHeightPx)
-                        drawLine(Color(0xE6FFFFFF), point, Offset(point.x, point.y + 32f * density.density), strokeWidth = 6f * density.density, cap = StrokeCap.Round)
-                        drawCircle(Color(0xFFFF4FD8), radius = 7f * density.density, center = point)
+                        drawMapSelectionSpotSymbol(point, density.density, uiTheme)
                     }
                 }
             }
@@ -6346,16 +6353,15 @@ private fun MapSelectionItemIcon(item: MapSelectionItem, modifier: Modifier) {
     when {
         item.symbolFeature != null -> PlanWaypointSymbol(item.symbolFeature, modifier)
         item.metarFeature != null -> Canvas(modifier = modifier) {
-            drawMetarSymbol(item.metarFeature, Offset(size.width / 2f, size.height / 2f), density)
+            drawMetarSymbol(item.metarFeature, Offset(size.width / 2f, size.height / 2f), density, uiTheme)
         }
         item.pirepFeature != null -> Canvas(modifier = modifier) {
-            drawPirepSymbol(item.pirepFeature, Offset(size.width / 2f, size.height * 0.43f), density)
+            drawPirepSymbol(item.pirepFeature, Offset(size.width / 2f, size.height * 0.43f), density, uiTheme)
         }
         item.highlight is MapSelectionHighlight.Spot -> Canvas(modifier = modifier) {
-            val center = Offset(size.width / 2f, size.height * 0.45f)
-            drawLine(Color(0xD0081218), center, Offset(center.x, size.height * 0.9f), strokeWidth = 5f, cap = StrokeCap.Round)
-            drawLine(Color(0xFFFF4FD8), center, Offset(center.x, size.height * 0.9f), strokeWidth = 2.4f, cap = StrokeCap.Round)
-            drawCircle(Color(0xFFFF4FD8), radius = 5f, center = center)
+            val scale = size.minDimension / 46f
+            val center = Offset(size.width / 2f, size.height * 0.9f)
+            drawMapSelectionSpotSymbol(center, scale, uiTheme)
         }
         item.airspaceIcon != null -> Canvas(modifier = modifier) {
             drawAirspaceDisplayPath(uiTheme, item.airspaceIcon)
@@ -6364,6 +6370,67 @@ private fun MapSelectionItemIcon(item: MapSelectionItem, modifier: Modifier) {
             Text(item.sublabel.ifBlank { item.label }, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
         }
     }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMapSelectionSpotSymbol(center: Offset, scale: Float, uiTheme: UiTheme) {
+    mapSelectionSpotSymbol(center, scale).forEach { layer ->
+        val drawLayer = {
+            drawNavSymbolLayer(layer, scale, uiTheme)
+        }
+        if (layer.transformDegrees != null) {
+            rotate(layer.transformDegrees, center) { drawLayer() }
+        } else {
+            drawLayer()
+        }
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawNavSymbolLayer(
+    layer: NavSymbolLayer,
+    scale: Float,
+    uiTheme: UiTheme,
+    dynamicColors: Map<String, Color> = emptyMap(),
+) {
+    navSymbolColor(layer.fill, uiTheme, dynamicColors)?.let { fill ->
+        drawPath(layer.path, fill)
+    }
+    navSymbolColor(layer.stroke, uiTheme, dynamicColors)?.let { stroke ->
+        drawPath(
+            layer.path,
+            stroke,
+            style = Stroke(
+                width = (layer.strokeWidth ?: 1f) * scale,
+                cap = navSymbolStrokeCap(layer.lineCap),
+                join = navSymbolStrokeJoin(layer.lineJoin),
+            ),
+        )
+    }
+}
+
+private fun navSymbolColor(token: String?, uiTheme: UiTheme, dynamicColors: Map<String, Color>): Color? = when (token) {
+    null, "none" -> null
+    "white" -> Color.White
+    "white_90" -> Color.White.copy(alpha = 0.9f)
+    "white_68" -> Color.White.copy(alpha = 0.68f)
+    "paper" -> Color(0xFFFFFEF8)
+    "pirep_ink" -> Color(0xFF071015)
+    "ink_70" -> Color(0xB3081218)
+    "ink_75" -> Color(0xBF081218)
+    "class_c_magenta" -> uiTheme.aviation.classCMagenta
+    "button_bg" -> uiTheme.controls.buttonBg
+    else -> dynamicColors[token]
+}
+
+private fun navSymbolStrokeCap(value: String?): StrokeCap = when (value) {
+    "round" -> StrokeCap.Round
+    "square" -> StrokeCap.Square
+    else -> StrokeCap.Butt
+}
+
+private fun navSymbolStrokeJoin(value: String?): StrokeJoin = when (value) {
+    "bevel" -> StrokeJoin.Bevel
+    "miter" -> StrokeJoin.Miter
+    else -> StrokeJoin.Round
 }
 
 @Composable
@@ -9391,17 +9458,20 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMetarSymbol(
     feature: VisibleMetarFeature,
     center: Offset,
     densityScale: Float,
+    uiTheme: UiTheme,
 ) {
-    val radius = 8f * densityScale
     val fillColor = metarColor(feature.flightCategory)
-    when (feature.ceilingAmount.lowercase()) {
-        "ovc" -> drawCircle(fillColor, radius = radius, center = center)
-        "few" -> drawLine(fillColor, Offset(center.x, center.y - radius), Offset(center.x, center.y + radius), strokeWidth = 3f * densityScale)
-        "sct" -> drawArc(fillColor, -90f, 90f, useCenter = true, topLeft = Offset(center.x - radius, center.y - radius), size = Size(radius * 2f, radius * 2f))
-        "bkn" -> drawArc(fillColor, -90f, 270f, useCenter = true, topLeft = Offset(center.x - radius, center.y - radius), size = Size(radius * 2f, radius * 2f))
+    val layers = when (feature.ceilingAmount.lowercase()) {
+        "few" -> metarFewSymbol(center, densityScale)
+        "sct" -> metarSctSymbol(center, densityScale)
+        "bkn" -> metarBknSymbol(center, densityScale)
+        "ovc" -> metarOvcSymbol(center, densityScale)
+        "missing" -> metarMissingSymbol(center, densityScale)
+        else -> metarClearSymbol(center, densityScale)
     }
-    drawCircle(Color(0xE6081218), radius = radius + 2f * densityScale, center = center, style = Stroke(width = 3f * densityScale))
-    drawCircle(fillColor, radius = radius, center = center, style = Stroke(width = 2.2f * densityScale))
+    layers.forEach { layer ->
+        drawNavSymbolLayer(layer, densityScale, uiTheme, mapOf("metar_category" to fillColor))
+    }
 }
 
 private fun pirepColor(symbol: String): Color = when (symbol.lowercase()) {
@@ -9418,56 +9488,22 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPirepSymbol(
     feature: VisiblePirepFeature,
     center: Offset,
     densityScale: Float,
+    uiTheme: UiTheme,
     symbolScale: Float = 1f,
 ) {
     val scale = densityScale * symbolScale
-    val bubble = Path().apply {
-        moveTo(center.x - 27f * scale, center.y - 5f * scale)
-        cubicTo(center.x - 27f * scale, center.y - 22f * scale, center.x - 15f * scale, center.y - 32f * scale, center.x + 3f * scale, center.y - 32f * scale)
-        cubicTo(center.x + 22f * scale, center.y - 32f * scale, center.x + 36f * scale, center.y - 22f * scale, center.x + 36f * scale, center.y - 5f * scale)
-        cubicTo(center.x + 36f * scale, center.y + 10f * scale, center.x + 24f * scale, center.y + 21f * scale, center.x + 6f * scale, center.y + 23f * scale)
-        lineTo(center.x - 19f * scale, center.y + 41f * scale)
-        lineTo(center.x - 9f * scale, center.y + 22f * scale)
-        cubicTo(center.x - 20f * scale, center.y + 18f * scale, center.x - 27f * scale, center.y + 8f * scale, center.x - 27f * scale, center.y - 5f * scale)
-        close()
-    }
-    drawPath(bubble, Color(0xFFFFFEF8))
-    drawPath(bubble, Color(0xFF071015), style = Stroke(width = 3.8f * scale, join = StrokeJoin.Round))
     val glyphColor = pirepColor(feature.symbol)
-    val glyphStroke = Stroke(width = 4.8f * scale, cap = StrokeCap.Round, join = StrokeJoin.Round)
-    fun point(x: Float, y: Float) = Offset(center.x + x * scale, center.y + y * scale)
-    fun drawPolyline(points: List<Offset>) {
-        for (index in 0 until points.lastIndex) {
-            drawLine(glyphColor, points[index], points[index + 1], strokeWidth = glyphStroke.width, cap = StrokeCap.Round)
-        }
+    val layers = when (feature.symbol.lowercase()) {
+        "light-turbulence" -> pirepLightTurbulenceSymbol(center, scale)
+        "moderate-turbulence" -> pirepModerateTurbulenceSymbol(center, scale)
+        "severe-turbulence" -> pirepSevereTurbulenceSymbol(center, scale)
+        "light-icing" -> pirepLightIcingSymbol(center, scale)
+        "moderate-icing" -> pirepModerateIcingSymbol(center, scale)
+        "severe-icing" -> pirepSevereIcingSymbol(center, scale)
+        else -> pirepGenericSymbol(center, scale)
     }
-    when (feature.symbol.lowercase()) {
-        "light-turbulence" -> drawPolyline(listOf(point(-13f, 7f), point(3f, -17f), point(19f, 7f)))
-        "moderate-turbulence" -> drawPolyline(listOf(point(-21f, 7f), point(-15f, 7f), point(3f, -17f), point(21f, 7f), point(27f, 7f)))
-        "severe-turbulence" -> {
-            drawPolyline(listOf(point(17f, -10f), point(3f, -30f), point(-11f, -10f)))
-            drawPolyline(listOf(point(-22f, 12f), point(-15f, 12f), point(3f, -14f), point(21f, 12f), point(28f, 12f)))
-        }
-        "light-icing" -> {
-            drawArc(glyphColor, 180f, -180f, useCenter = false, topLeft = point(-19f, -38f), size = Size(44f * scale, 44f * scale), style = glyphStroke)
-            drawLine(glyphColor, point(3f, -10f), point(3f, 23f), strokeWidth = glyphStroke.width, cap = StrokeCap.Round)
-        }
-        "moderate-icing" -> {
-            drawArc(glyphColor, 180f, -180f, useCenter = false, topLeft = point(-19f, -38f), size = Size(44f * scale, 44f * scale), style = glyphStroke)
-            drawLine(glyphColor, point(8f, -10f), point(8f, 23f), strokeWidth = glyphStroke.width, cap = StrokeCap.Round)
-            drawLine(glyphColor, point(-2f, -10f), point(-2f, 23f), strokeWidth = glyphStroke.width, cap = StrokeCap.Round)
-        }
-        "severe-icing" -> {
-            drawArc(glyphColor, 180f, -180f, useCenter = false, topLeft = point(-19f, -38f), size = Size(44f * scale, 44f * scale), style = glyphStroke)
-            drawLine(glyphColor, point(-7f, -10f), point(-7f, 23f), strokeWidth = glyphStroke.width, cap = StrokeCap.Round)
-            drawLine(glyphColor, point(2f, -10f), point(2f, 23f), strokeWidth = glyphStroke.width, cap = StrokeCap.Round)
-            drawLine(glyphColor, point(11f, -10f), point(11f, 23f), strokeWidth = glyphStroke.width, cap = StrokeCap.Round)
-        }
-        else -> {
-            drawCircle(Color(0xFF071015), radius = 3.2f * scale, center = point(-8f, -6f))
-            drawCircle(Color(0xFF071015), radius = 3.2f * scale, center = point(3f, -6f))
-            drawCircle(Color(0xFF071015), radius = 3.2f * scale, center = point(14f, -6f))
-        }
+    layers.forEach { layer ->
+        drawNavSymbolLayer(layer, scale, uiTheme, mapOf("pirep_symbol" to glyphColor))
     }
 }
 
@@ -9502,17 +9538,9 @@ private fun PlanWaypointSymbol(
                         feature.hasWaterRunway == true ||
                         feature.hasPavedRunway == false
                 if (usesOpenAirportCircle) {
-                    val markerPath = airportCircleMarkerPath(center, scale)
-                    drawPath(
-                        markerPath,
-                        Color.White.copy(alpha = 0.86f),
-                        style = Stroke(width = 5f * scale),
-                    )
-                    drawPath(
-                        markerPath,
-                        openAirportStrokeColor,
-                        style = Stroke(width = 2.5f * scale),
-                    )
+                    airportOpenMarkerSymbol(center, scale).forEach { layer ->
+                        drawNavSymbolLayer(layer, scale, uiTheme)
+                    }
                 } else if (feature.fuelAvailable) {
                     val markerPath = airportFuelMarkerPath(center, scale)
                     drawPath(markerPath, airportFillColor)

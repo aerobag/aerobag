@@ -37,13 +37,27 @@ import planViewIcon from "./assets/plan-view-icon.svg";
 import {
   airportCircleMarkerPath,
   airportFuelMarkerPath,
+  airportOpenMarkerSymbol,
   heliportHPath,
-  mapSelectionSpotPegPath,
+  mapSelectionSpotSymbol,
+  metarBknSymbol,
+  metarClearSymbol,
+  metarFewSymbol,
+  metarMissingSymbol,
+  metarOvcSymbol,
+  metarSctSymbol,
   obstacleDotRadius,
   obstacleShortDotY,
   obstacleShortPath,
   obstacleTallDotY,
   obstacleTallPath,
+  pirepGenericSymbol,
+  pirepLightIcingSymbol,
+  pirepLightTurbulenceSymbol,
+  pirepModerateIcingSymbol,
+  pirepModerateTurbulenceSymbol,
+  pirepSevereIcingSymbol,
+  pirepSevereTurbulenceSymbol,
   seaplaneAnchorPath,
   vorBandPath,
   vorOuterHexPath,
@@ -153,6 +167,10 @@ function airspaceDashArray(dashPx: number[]): string | undefined {
 
 function svgStrokeLinecap(lineCap: string): "butt" | "round" | "square" {
   return lineCap === "butt" || lineCap === "square" ? lineCap : "round";
+}
+
+function svgStrokeLinejoin(lineJoin: string): "miter" | "round" | "bevel" {
+  return lineJoin === "miter" || lineJoin === "bevel" ? lineJoin : "round";
 }
 
 function airspaceLabelDividerWidth(parts: { upper: string; lower: string }): number {
@@ -694,8 +712,13 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
       <>
         {usesOpenAirportCircle ? (
           <>
-            <path d={airportCircleMarkerPath} className="airportOpenMarkerUnder" />
-            <path d={airportCircleMarkerPath} className={`${airportClass} airportOpenMarker`} />
+            {airportOpenMarkerSymbol.map((layer) => (
+              <path
+                key={layer.paint}
+                d={layer.path}
+                style={navSymbolLayerStyle(layer)}
+              />
+            ))}
           </>
         ) : feature.fuel_available ? (
           <path d={airportFuelMarkerPath} className={airportClass} />
@@ -792,6 +815,89 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
   );
 }
 
+function spotSymbolClassName(paint: string): string {
+  switch (paint) {
+    case "map_selection_spot_under":
+      return "mapSelectionSpotPegUnder";
+    case "map_selection_spot_dot":
+      return "mapSelectionSpotPegDot";
+    default:
+      return "mapSelectionSpotPeg";
+  }
+}
+
+function navSymbolColor(token: string | null | undefined): string | undefined {
+  switch (token) {
+    case "none":
+      return "none";
+    case "white":
+      return "white";
+    case "ink_70":
+      return "rgba(8, 18, 24, 0.7)";
+    case "ink_75":
+      return "rgba(8, 18, 24, 0.75)";
+    case "class_c_magenta":
+      return "var(--theme-class-c-magenta)";
+    case "button_bg":
+      return "var(--theme-button-bg)";
+    case "white_90":
+      return "rgba(255, 255, 255, 0.9)";
+    case "white_68":
+      return "rgba(255, 255, 255, 0.68)";
+    case "paper":
+      return "#fffef8";
+    case "pirep_ink":
+      return "#071015";
+    case "metar_category":
+      return "var(--metar-color)";
+    case "pirep_symbol":
+      return "var(--pirep-color)";
+    default:
+      return undefined;
+  }
+}
+
+function navSymbolLayerStyle(layer: { fill?: string | null; stroke?: string | null; stroke_width?: number | null; line_cap?: string | null; line_join?: string | null }) {
+  return {
+    fill: navSymbolColor(layer.fill),
+    stroke: navSymbolColor(layer.stroke),
+    strokeWidth: layer.stroke_width ?? undefined,
+    strokeLinecap: svgStrokeLinecap(layer.line_cap ?? "butt"),
+    strokeLinejoin: svgStrokeLinejoin(layer.line_join ?? "miter"),
+  };
+}
+
+function MapSelectionSpotSymbol() {
+  return (
+    <>
+      {mapSelectionSpotSymbol.map((layer) => (
+        <path
+          key={layer.paint}
+          className={spotSymbolClassName(layer.paint)}
+          style={navSymbolLayerStyle(layer)}
+          d={layer.path}
+          transform={layer.transform_degrees != null ? `rotate(${layer.transform_degrees})` : undefined}
+        />
+      ))}
+    </>
+  );
+}
+
+function RenderNavSymbolLayers(props: { layers: readonly { path: string; paint: string; fill?: string | null; stroke?: string | null; stroke_width?: number | null; line_cap?: string | null; line_join?: string | null; transform_degrees?: number | null }[] }) {
+  return (
+    <>
+      {props.layers.map((layer, index) => (
+        <path
+          key={`${layer.paint}:${index}`}
+          style={navSymbolLayerStyle(layer)}
+          d={layer.path}
+          transform={layer.transform_degrees != null ? `rotate(${layer.transform_degrees})` : undefined}
+        />
+      ))}
+    </>
+  );
+}
+
 function metarCategoryClass(category: string): string {
   switch (category) {
     case "vfr":
@@ -810,29 +916,20 @@ function metarCategoryClass(category: string): string {
 function MetarSymbol(props: { feature: VisibleMetarFeature }) {
   const { feature } = props;
   const categoryClass = metarCategoryClass(feature.flight_category);
-  const radius = 8;
-  const quadrantPath = feature.ceiling_amount === "sct"
-    ? `M 0 0 L 0 ${-radius} A ${radius} ${radius} 0 0 1 ${radius} 0 Z`
-    : feature.ceiling_amount === "bkn"
-      ? `M 0 0 L 0 ${-radius} A ${radius} ${radius} 0 1 1 ${-radius} 0 Z`
-      : null;
+  const layers = feature.ceiling_amount === "few"
+    ? metarFewSymbol
+    : feature.ceiling_amount === "sct"
+      ? metarSctSymbol
+      : feature.ceiling_amount === "bkn"
+        ? metarBknSymbol
+        : feature.ceiling_amount === "ovc"
+          ? metarOvcSymbol
+          : feature.ceiling_amount === "missing"
+            ? metarMissingSymbol
+            : metarClearSymbol;
   return (
     <g className={`metarSymbol ${categoryClass}`} aria-hidden="true">
-      {feature.ceiling_amount === "ovc" ? <circle r={radius} className="metarFill" /> : null}
-      {quadrantPath ? <path d={quadrantPath} className="metarFill" /> : null}
-      <circle r={radius} className="metarCircleUnder" />
-      <circle r={radius} className="metarCircle" />
-      {feature.ceiling_amount === "few" ? (
-        <>
-          <line x1="0" y1={-radius + 1.5} x2="0" y2={radius - 1.5} className="metarBarUnder" />
-          <line x1="0" y1={-radius + 1.5} x2="0" y2={radius - 1.5} className="metarBar" />
-        </>
-      ) : null}
-      {feature.ceiling_amount === "missing" ? (
-        <text x="0" y="4" textAnchor="middle" className="metarMissingGlyph">
-          M
-        </text>
-      ) : null}
+      <RenderNavSymbolLayers layers={layers} />
     </g>
   );
 }
@@ -858,42 +955,27 @@ function pirepStrokeColor(symbol: string): string {
 
 function PirepSymbol(props: { feature: VisiblePirepFeature; scale?: number }) {
   const { feature, scale = 1 } = props;
-  const stroke = pirepStrokeColor(feature.symbol);
-  const common = {
-    fill: "none",
-    stroke,
-    strokeWidth: 4.8,
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-  };
+  const layers = feature.symbol === "light-turbulence"
+    ? pirepLightTurbulenceSymbol
+    : feature.symbol === "moderate-turbulence"
+      ? pirepModerateTurbulenceSymbol
+      : feature.symbol === "severe-turbulence"
+        ? pirepSevereTurbulenceSymbol
+        : feature.symbol === "light-icing"
+          ? pirepLightIcingSymbol
+          : feature.symbol === "moderate-icing"
+            ? pirepModerateIcingSymbol
+            : feature.symbol === "severe-icing"
+              ? pirepSevereIcingSymbol
+              : pirepGenericSymbol;
   return (
-    <g className="pirepSymbol" transform={scale === 1 ? undefined : `scale(${scale})`} aria-hidden="true">
-      <path
-        d="M -27 -5 C -27 -22 -15 -32 3 -32 C 22 -32 36 -22 36 -5 C 36 10 24 21 6 23 L -19 41 L -9 22 C -20 18 -27 8 -27 -5 Z"
-        fill="#fffef8"
-        stroke="#071015"
-        strokeWidth="3.8"
-        strokeLinejoin="round"
-      />
-      {feature.symbol === "generic" ? (
-        <>
-          <circle cx="-8" cy="-6" r="3.2" fill="#071015" />
-          <circle cx="3" cy="-6" r="3.2" fill="#071015" />
-          <circle cx="14" cy="-6" r="3.2" fill="#071015" />
-        </>
-      ) : feature.symbol === "light-turbulence" ? (
-        <path d="M -13 7 L 3 -17 L 19 7" {...common} />
-      ) : feature.symbol === "moderate-turbulence" ? (
-        <path d="M -21 7 H -15 L 3 -17 L 21 7 H 27" {...common} />
-      ) : feature.symbol === "severe-turbulence" ? (
-        <path d="M 17 -10 L 3 -30 L -11 -10 M -22 12 H -15 L 3 -14 L 21 12 H 28" {...common} />
-      ) : feature.symbol === "light-icing" ? (
-        <path d="M 3 -10 V 23 M -19 -16 A 22 22 0 0 0 25 -16" {...common} />
-      ) : feature.symbol === "moderate-icing" ? (
-        <path d="M -19 -16 A 22 22 0 0 0 25 -16 M 8 -10 V 23 M -2 -10 V 23" {...common} />
-      ) : feature.symbol === "severe-icing" ? (
-        <path d="M -7 -10 V 23 M 11 -10 V 23 M 2 -10 V 23 M -19 -16 A 22 22 0 0 0 25 -16" {...common} />
-      ) : null}
+    <g
+      className="pirepSymbol"
+      transform={scale === 1 ? undefined : `scale(${scale})`}
+      style={{ "--pirep-color": pirepStrokeColor(feature.symbol) } as CSSProperties}
+      aria-hidden="true"
+    >
+      <RenderNavSymbolLayers layers={layers} />
     </g>
   );
 }
@@ -3830,9 +3912,7 @@ function MapPage(props: {
               </g>
             ) : (
               <g transform={`translate(${selectedMapHighlight.point.x} ${selectedMapHighlight.point.y})`}>
-                <path className="mapSelectionSpotPegUnder" d={mapSelectionSpotPegPath} />
-                <path className="mapSelectionSpotPeg" d={mapSelectionSpotPegPath} />
-                <circle className="mapSelectionSpotPegDot" cx="0" cy="-23" r="4" />
+                <MapSelectionSpotSymbol />
               </g>
             )}
           </svg>
@@ -6184,9 +6264,7 @@ function MapSelectionItemIcon(props: { item: MapSelectionItem }) {
   if (item.highlight.kind === "spot") {
     return (
       <svg className="mapSelectionItemIcon mapSelectionSpotIcon" viewBox="-20 -40 40 46" aria-hidden="true">
-        <path className="mapSelectionSpotPegUnder" d={mapSelectionSpotPegPath} />
-        <path className="mapSelectionSpotPeg" d={mapSelectionSpotPegPath} />
-        <circle className="mapSelectionSpotPegDot" cx="0" cy="-23" r="4" />
+        <MapSelectionSpotSymbol />
       </svg>
     );
   }

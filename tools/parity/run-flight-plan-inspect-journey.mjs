@@ -295,23 +295,27 @@ async function webJourney(url) {
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-surface\"]') !== null", "returned chart");
     recordStep(out, "returned to chart");
 
-    await webSetInput(cdp, "[data-testid=\"chart-search-input\"]", "KOLM");
-    await waitForWeb(cdp, "document.querySelector('[data-testid=\"chart-search-suggestion-KOLM\"]') !== null", "KOLM search suggestion");
-    await webClick(cdp, "[data-testid=\"chart-search-suggestion-KOLM\"]");
-    await delay(500);
-    recordStep(out, "recentered on KOLM via chart search");
-
     await webDrag(cdp, "[data-testid=\"map-surface\"]", 40, 20);
     recordStep(out, "dragged map surface");
 
-    await webClickAtCenter(cdp, "[data-testid=\"map-surface\"]");
+    await webSetInput(cdp, "[data-testid=\"chart-search-input\"]", "KTIW");
+    await waitForWeb(cdp, "document.querySelector('[data-testid=\"chart-search-suggestion-KTIW\"]') !== null", "KTIW search suggestion");
+    await webClick(cdp, "[data-testid=\"chart-search-suggestion-KTIW\"]");
+    await delay(500);
+    recordStep(out, "recentered on KTIW via chart search");
+
+    await waitForWeb(cdp, `
+      [...document.querySelectorAll("svg text")]
+        .some((entry) => entry.textContent.trim() === "TIW" && entry.closest("svg")?.getAttribute("class") === "vectorOverlay")
+    `, "TIW vector label");
+    await webClickVectorPointByLabel(cdp, "TIW");
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-selection-tray\"]') !== null", "map selection tray");
     recordStep(out, "opened map inspection tray");
 
     await cdp.send("Runtime.evaluate", {
       expression: `
         [...document.querySelectorAll('[data-testid^="map-selection-item-airport-"]')]
-          .find((el) => el.textContent.includes('KOLM'))?.click()
+          .find((el) => el.textContent.includes('TIW'))?.click()
       `,
       awaitPromise: true,
     });
@@ -320,8 +324,8 @@ async function webJourney(url) {
     recordStep(out, "inserted inspected airport into flight plan");
 
     await webClick(cdp, "[data-testid=\"nav-cdi\"]");
-    await waitForWeb(cdp, "document.body.innerText.includes('KOLM')", "KOLM visible in plan");
-    recordStep(out, "verified KOLM in flight plan");
+    await waitForWeb(cdp, "document.body.innerText.includes('TIW') || document.body.innerText.includes('KTIW')", "TIW visible in plan");
+    recordStep(out, "verified TIW in flight plan");
     out.finished_at = new Date().toISOString();
     out.status = out.gaps.length === 0 ? "pass" : "gaps";
     return out;
@@ -354,6 +358,7 @@ async function waitForWeb(cdp, expression, label) {
         bodyText: document.body?.innerText?.slice(0, 500) ?? "",
         rootHtml: document.getElementById("root")?.innerHTML?.slice(0, 500) ?? "",
         startupHidden: document.getElementById("startup-shell")?.className ?? null,
+        parityLastVectorClick: window.__parityLastVectorClick ?? null,
         resources: performance.getEntriesByType("resource").slice(-20).map((entry) => ({
           name: entry.name,
           transferSize: entry.transferSize,
@@ -382,9 +387,35 @@ async function webClick(cdp, selector) {
   await dispatchClick(cdp, box.x + box.width / 2, box.y + box.height / 2);
 }
 
-async function webClickAtCenter(cdp, selector) {
-  const box = await webElementBox(cdp, selector);
-  await dispatchClick(cdp, box.x + box.width / 2, box.y + box.height / 2);
+async function webClickVectorPointByLabel(cdp, label) {
+  const point = await webEval(cdp, `
+    (() => {
+      const label = ${JSON.stringify(label)};
+      const text = [...document.querySelectorAll("svg text")]
+        .find((entry) => entry.textContent.trim() === label && entry.closest("svg")?.getAttribute("class") === "vectorOverlay");
+      if (!text) return null;
+      const symbolGroup = text.closest("g");
+      if (!symbolGroup?.getScreenCTM) return null;
+      const point = new DOMPoint(0, 0).matrixTransform(symbolGroup.getScreenCTM());
+      window.__parityLastVectorClick = {
+        label,
+        x: point.x,
+        y: point.y,
+        hit: document.elementFromPoint(point.x, point.y)?.className?.toString?.() ?? document.elementFromPoint(point.x, point.y)?.tagName ?? null,
+      };
+      return { x: point.x, y: point.y };
+    })()
+  `);
+  if (!point) {
+    const labels = await webEval(cdp, `
+      [...document.querySelectorAll("svg text")]
+        .map((entry) => ({ text: entry.textContent.trim(), className: entry.getAttribute("class") ?? "", svgClass: entry.closest("svg")?.getAttribute("class") ?? "" }))
+        .filter((entry) => entry.text)
+        .slice(0, 80)
+    `).catch(() => []);
+    throw new Error(`missing vector point label ${label}; visible labels=${JSON.stringify(labels)}`);
+  }
+  await dispatchClick(cdp, point.x, point.y);
 }
 
 async function webDrag(cdp, selector, dx, dy) {

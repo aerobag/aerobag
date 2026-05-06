@@ -238,6 +238,7 @@ async function launchChrome() {
   const proc = spawn(chrome, [
     "--headless=new",
     "--disable-gpu",
+    "--disable-extensions",
     "--no-sandbox",
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${profile}`,
@@ -256,9 +257,15 @@ async function webJourney(url) {
   let cdp;
   try {
     const tabs = await httpJson(`http://127.0.0.1:${chrome.port}/json`);
-    cdp = await CdpSocket.connect(tabs[0].webSocketDebuggerUrl);
+    const tab = tabs.find((entry) => entry.type === "page" && entry.webSocketDebuggerUrl);
+    if (!tab) {
+      throw new Error(`Chrome did not expose a debuggable page target: ${JSON.stringify(tabs)}`);
+    }
+    cdp = await CdpSocket.connect(tab.webSocketDebuggerUrl);
     await cdp.send("Page.enable");
+    await cdp.send("Network.enable");
     await cdp.send("Runtime.enable");
+    await cdp.send("Console.enable");
     await cdp.send("Page.navigate", { url });
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-surface\"]') !== null", "map surface");
     recordStep(out, "app started");
@@ -320,8 +327,11 @@ async function webJourney(url) {
     return out;
   } finally {
     cdp?.close();
-    chrome.proc.kill("SIGTERM");
-    fs.rmSync(chrome.profile, { recursive: true, force: true });
+    if (chrome.proc.exitCode === null && chrome.proc.signalCode === null) {
+      chrome.proc.kill("SIGTERM");
+    }
+    await waitForProcessExit(chrome.proc);
+    await removeChromeProfile(chrome.profile);
   }
 }
 
@@ -334,7 +344,37 @@ async function webEval(cdp, expression) {
 }
 
 async function waitForWeb(cdp, expression, label) {
-  await waitFor(() => webEval(cdp, `Boolean(${expression})`), 12000, `Timed out waiting for ${label}`);
+  try {
+    await waitFor(() => webEval(cdp, `Boolean(${expression})`), 30000, `Timed out waiting for ${label}`);
+  } catch (error) {
+    const diagnostics = await webEval(cdp, `
+      (() => ({
+        href: location.href,
+        title: document.title,
+        bodyText: document.body?.innerText?.slice(0, 500) ?? "",
+        rootHtml: document.getElementById("root")?.innerHTML?.slice(0, 500) ?? "",
+        startupHidden: document.getElementById("startup-shell")?.className ?? null,
+        resources: performance.getEntriesByType("resource").slice(-20).map((entry) => ({
+          name: entry.name,
+          transferSize: entry.transferSize,
+          encodedBodySize: entry.encodedBodySize,
+        })),
+        testIds: [...document.querySelectorAll("[data-testid]")].slice(0, 40).map((el) => el.getAttribute("data-testid")),
+      }))()
+    `).catch((diagnosticError) => ({ diagnosticError: diagnosticError.message }));
+    const events = cdp.events
+      .filter((event) => [
+        "Runtime.exceptionThrown",
+        "Runtime.consoleAPICalled",
+        "Console.messageAdded",
+        "Log.entryAdded",
+        "Network.loadingFailed",
+        "Network.responseReceived",
+      ].includes(event.method))
+      .slice(-20)
+      .map((event) => event.params);
+    throw new Error(`${error.message}; diagnostics=${JSON.stringify(diagnostics)}; events=${JSON.stringify(events)}`);
+  }
 }
 
 async function webClick(cdp, selector) {
@@ -406,6 +446,27 @@ async function waitFor(fn, timeoutMs, message) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForProcessExit(proc, timeoutMs = 3000) {
+  if (proc.exitCode !== null || proc.signalCode !== null) return;
+  await Promise.race([
+    once(proc, "exit").catch(() => {}),
+    delay(timeoutMs),
+  ]);
+}
+
+async function removeChromeProfile(profile) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      fs.rmSync(profile, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (error?.code !== "ENOTEMPTY" && error?.code !== "EBUSY") throw error;
+      await delay(100 * (attempt + 1));
+    }
+  }
+  fs.rmSync(profile, { recursive: true, force: true });
 }
 
 function adbArgs(serial, args) {

@@ -562,7 +562,7 @@ pub fn reduce_offline_packages_controller(
                 now_epoch_ms: input.now_epoch_ms,
                 discovery_manifests: library_cache.discovery_manifests.clone(),
                 bundle_manifests_by_filename: library_cache.bundle_manifests_by_filename.clone(),
-                installed: input.installed.clone(),
+                installed: effective_installed_artifacts(&state, &input.installed),
                 forced_gc_installed_filenames: forced_gc_installed_filenames(
                     &state,
                     &input.installed,
@@ -605,7 +605,7 @@ pub fn reduce_offline_packages_controller(
                 now_epoch_ms: input.now_epoch_ms,
                 discovery_manifests: library_cache.discovery_manifests.clone(),
                 bundle_manifests_by_filename: library_cache.bundle_manifests_by_filename.clone(),
-                installed: input.installed.clone(),
+                installed: effective_installed_artifacts(&state, &input.installed),
                 forced_gc_installed_filenames: forced_gc_installed_filenames(
                     &state,
                     &input.installed,
@@ -705,6 +705,21 @@ fn library_refresh_needed(
         return true;
     }
     now_epoch_ms - cache.fetched_at_epoch_ms > 60 * 60 * 1000
+}
+
+fn effective_installed_artifacts(
+    state: &OfflinePackagesControllerState,
+    installed: &[InstalledArtifact],
+) -> Vec<InstalledArtifact> {
+    installed
+        .iter()
+        .filter(|artifact| {
+            !state
+                .tombstoned_installed_filename_messages
+                .contains_key(&artifact.filename)
+        })
+        .cloned()
+        .collect()
 }
 
 fn forced_gc_installed_filenames(
@@ -2541,7 +2556,7 @@ mod tests {
             .ui_state
             .planner_ui_state
             .unwrap()
-            .core_products
+            .products
             .into_iter()
             .find(|row| row.id == "nav-db")
             .unwrap();

@@ -2383,7 +2383,7 @@ fn apply_plan_preview_input(
                 offset_nm = 0.0;
             } else if record_index > 0 {
                 next_index = record_index - 1;
-                offset_nm = (records[next_index].distance_nm - PLAN_PREVIEW_FAST_STEP_NM).max(0.0);
+                offset_nm = 0.0;
             }
         }
         SituationControlInput::SkipForward => {
@@ -2391,14 +2391,24 @@ fn apply_plan_preview_input(
                 offset_nm = distance_nm;
             } else if record_index + 1 < records.len() {
                 next_index = record_index + 1;
-                offset_nm = PLAN_PREVIEW_FAST_STEP_NM.min(records[next_index].distance_nm);
+                offset_nm = records[next_index].distance_nm;
             }
         }
         SituationControlInput::FastRewind => {
-            offset_nm = (offset_nm - PLAN_PREVIEW_FAST_STEP_NM).max(0.0);
+            if offset_nm > 1e-6 {
+                offset_nm = (offset_nm - PLAN_PREVIEW_FAST_STEP_NM).max(0.0);
+            } else if record_index > 0 {
+                next_index = record_index - 1;
+                offset_nm = (records[next_index].distance_nm - PLAN_PREVIEW_FAST_STEP_NM).max(0.0);
+            }
         }
         SituationControlInput::FastForward => {
-            offset_nm = (offset_nm + PLAN_PREVIEW_FAST_STEP_NM).min(distance_nm);
+            if offset_nm < distance_nm - 1e-6 {
+                offset_nm = (offset_nm + PLAN_PREVIEW_FAST_STEP_NM).min(distance_nm);
+            } else if record_index + 1 < records.len() {
+                next_index = record_index + 1;
+                offset_nm = PLAN_PREVIEW_FAST_STEP_NM.min(records[next_index].distance_nm);
+            }
         }
     }
     let record = records[next_index].clone();
@@ -2999,6 +3009,74 @@ mod tests {
         }
     }
 
+    fn short_lat_lon_preview_plan() -> FlightPlan {
+        let a = LatLon {
+            lat: 40.0,
+            lon: -120.0,
+        };
+        let b = LatLon {
+            lat: 40.0,
+            lon: -119.95,
+        };
+        let c = LatLon {
+            lat: 40.05,
+            lon: -119.95,
+        };
+        FlightPlan {
+            id: "short-plan-preview".to_string(),
+            name: "A B C".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::LatLon(a),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::LatLon(b),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::LatLon(c),
+                },
+            ],
+            route_component_uids: vec![
+                "short-row-a".to_string(),
+                "short-row-b".to_string(),
+                "short-row-c".to_string(),
+            ],
+            route_component_uid_counter: 3,
+            resolved_legs: vec![
+                ResolvedLeg {
+                    id: "short-leg-a-b".to_string(),
+                    from: NavRef::LatLon(a),
+                    to: NavRef::LatLon(b),
+                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "short-leg-b-c".to_string(),
+                    from: NavRef::LatLon(b),
+                    to: NavRef::LatLon(c),
+                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
+                    procedure_provenance: None,
+                },
+            ],
+            guidance: Some(GuidanceState {
+                active_leg_index: 0,
+                active_detail_index: Some(0),
+                display_split_leg_id: None,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        }
+    }
+
     fn select_plan_preview(handle: u32) -> UiSessionSnapshot {
         set_situation_in_session(
             handle,
@@ -3360,14 +3438,8 @@ mod tests {
         )
         .expect("skip to previous waypoint");
         let position = ownship_position(&after_previous);
-        assert!(
-            position.lon > -120.0 && position.lon < -119.0,
-            "expected skip-back at an intermediate waypoint to enter previous leg, got {position:?}",
-        );
-        assert!(
-            (position.lat - 40.0).abs() < 0.01,
-            "expected skip-back to stay near the previous leg, got {position:?}",
-        );
+        assert_near(position.lat, 40.0);
+        assert_near(position.lon, -120.0);
     }
 
     #[test]
@@ -3404,7 +3476,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_preview_skip_forward_from_waypoint_enters_next_leg() {
+    fn plan_preview_skip_forward_from_waypoint_moves_to_next_waypoint() {
         let mut plan = lat_lon_preview_plan();
         plan.guidance.as_mut().expect("guidance").active_leg_index = 0;
         let init = create_ui_session(minimal_vector_manifest_json(), plan, &[], None, None)
@@ -3421,18 +3493,51 @@ mod tests {
         assert_near(position.lat, 40.0);
         assert_near(position.lon, -119.0);
 
-        let down_next_leg = apply_situation_control_input_in_session(
+        let next_waypoint = apply_situation_control_input_in_session(
             init.handle,
             SituationControlInput::SkipForward,
             0.0,
         )
-        .expect("skip into next leg");
+        .expect("skip to next waypoint");
+        let position = ownship_position(&next_waypoint);
+        assert_near(position.lat, 41.0);
+        assert_near(position.lon, -119.0);
+    }
+
+    #[test]
+    fn plan_preview_fast_forward_from_waypoint_enters_next_leg() {
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            short_lat_lon_preview_plan(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+        select_plan_preview(init.handle);
+
+        let at_intermediate_waypoint = apply_situation_control_input_in_session(
+            init.handle,
+            SituationControlInput::FastForward,
+            0.0,
+        )
+        .expect("fast-forward to intermediate waypoint");
+        let position = ownship_position(&at_intermediate_waypoint);
+        assert_near(position.lat, 40.0);
+        assert_near(position.lon, -119.95);
+
+        let down_next_leg = apply_situation_control_input_in_session(
+            init.handle,
+            SituationControlInput::FastForward,
+            0.0,
+        )
+        .expect("fast-forward into next leg");
         let position = ownship_position(&down_next_leg);
         assert!(
-            position.lat > 40.0 && position.lat < 41.0,
-            "expected preview to move north along the SEA outbound leg, got {position:?}",
+            position.lat > 40.0 && position.lat <= 40.05,
+            "expected fast-forward to move onto the outbound leg, got {position:?}",
         );
-        assert_near(position.lon, -119.0);
+        assert_near(position.lon, -119.95);
     }
 
     #[test]

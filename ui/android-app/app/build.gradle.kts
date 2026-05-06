@@ -87,6 +87,7 @@ val artifactRoot = File(
 
 val uiThemeFile = file("../../shared-fixtures/ui-theme.json")
 val devBootstrapFile = file("../../shared/dev-bootstrap.json")
+val generatedSymbolSourceDir = layout.buildDirectory.dir("generated/aerobagSymbols/kotlin")
 
 fun linkOrCopy(source: File, target: File) {
     target.parentFile.mkdirs()
@@ -140,6 +141,21 @@ val stageCanonicalAndroidAssets by tasks.registering {
     }
 }
 
+val generateSharedNavSymbols by tasks.registering(Exec::class) {
+    workingDir = repoRoot
+    inputs.file(repoRoot.resolve("ui/shared-symbols/nav-symbols.json"))
+    inputs.file(repoRoot.resolve("tools/generate-nav-symbols.mjs"))
+    outputs.dir(generatedSymbolSourceDir)
+    commandLine(
+        "node",
+        repoRoot.resolve("tools/generate-nav-symbols.mjs").absolutePath,
+        "--android-out",
+        generatedSymbolSourceDir.get().asFile.resolve("net/jonh/aerobag/prototype/generated").absolutePath,
+        "--web-out",
+        repoRoot.resolve("ui/web-app/src/generated/navSymbols.ts").absolutePath,
+    )
+}
+
 android {
     namespace = "net.jonh.aerobag.prototype"
     compileSdk = 34
@@ -182,6 +198,7 @@ android {
     }
     sourceSets.getByName("main").jniLibs.setSrcDirs(listOf(rustJniLibsDir))
     sourceSets.getByName("main").assets.setSrcDirs(listOf(generatedPrototypeAssetsDir))
+    sourceSets.getByName("main").java.srcDir(generatedSymbolSourceDir)
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -192,6 +209,7 @@ android {
 tasks.named("preBuild") {
     dependsOn(copyRustLibraries)
     dependsOn(stageCanonicalAndroidAssets)
+    dependsOn(generateSharedNavSymbols)
 }
 
 dependencies {

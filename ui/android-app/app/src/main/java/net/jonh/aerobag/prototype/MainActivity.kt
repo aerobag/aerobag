@@ -105,7 +105,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.graphicsLayer
@@ -273,6 +272,11 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import net.jonh.aerobag.prototype.generated.airportCircleMarkerPath
+import net.jonh.aerobag.prototype.generated.airportFuelMarkerPath
+import net.jonh.aerobag.prototype.generated.fixTrianglePath
+import net.jonh.aerobag.prototype.generated.vorBandPath
+import net.jonh.aerobag.prototype.generated.vorOuterHexPath
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -1855,100 +1859,6 @@ private fun arrowHeadPath(from: Offset, to: Offset): Path {
         lineTo(left.x, left.y)
         lineTo(right.x, right.y)
         close()
-    }
-}
-
-private fun fixTrianglePath(center: Offset, radius: Float): Path =
-    Path().apply {
-        moveTo(center.x, center.y - radius)
-        lineTo(center.x + radius * 0.875f, center.y + radius * 0.75f)
-        lineTo(center.x - radius * 0.875f, center.y + radius * 0.75f)
-        close()
-    }
-
-private fun vorHexPoints(center: Offset, radius: Float): List<Offset> =
-    listOf(
-        Offset(center.x - radius, center.y),
-        Offset(center.x - radius * 0.5f, center.y - radius * 0.875f),
-        Offset(center.x + radius * 0.5f, center.y - radius * 0.875f),
-        Offset(center.x + radius, center.y),
-        Offset(center.x + radius * 0.5f, center.y + radius * 0.875f),
-        Offset(center.x - radius * 0.5f, center.y + radius * 0.875f),
-    )
-
-private fun polygonSignedArea(points: List<Offset>): Float {
-    var area = 0f
-    points.forEachIndexed { index, point ->
-        val next = points[(index + 1) % points.size]
-        area += point.x * next.y - next.x * point.y
-    }
-    return area / 2f
-}
-
-private fun intersectLines(originA: Offset, directionA: Offset, originB: Offset, directionB: Offset): Offset {
-    val cross = directionA.x * directionB.y - directionA.y * directionB.x
-    if (kotlin.math.abs(cross) < 1e-6f) {
-        return originA
-    }
-    val delta = originB - originA
-    val t = (delta.x * directionB.y - delta.y * directionB.x) / cross
-    return originA + directionA * t
-}
-
-private fun offsetPolygonByEdgeDistances(points: List<Offset>, edgeDistances: List<Float>): List<Offset> {
-    val signedArea = polygonSignedArea(points)
-    fun inwardNormal(from: Offset, to: Offset, distance: Float): Offset {
-        val dx = to.x - from.x
-        val dy = to.y - from.y
-        val length = kotlin.math.hypot(dx, dy).takeIf { it > 0f } ?: 1f
-        return if (signedArea > 0f) {
-            Offset((dy / length) * distance, (-dx / length) * distance)
-        } else {
-            Offset((-dy / length) * distance, (dx / length) * distance)
-        }
-    }
-
-    return points.mapIndexed { index, point ->
-        val prevIndex = (index + points.size - 1) % points.size
-        val nextIndex = (index + 1) % points.size
-        val prevPoint = points[prevIndex]
-        val nextPoint = points[nextIndex]
-        val prevShift = inwardNormal(prevPoint, point, edgeDistances[prevIndex])
-        val nextShift = inwardNormal(point, nextPoint, edgeDistances[index])
-        val prevOrigin = prevPoint + prevShift
-        val nextOrigin = point + nextShift
-        intersectLines(
-            prevOrigin,
-            point - prevPoint,
-            nextOrigin,
-            nextPoint - point,
-        )
-    }
-}
-
-private fun polygonPath(points: List<Offset>): Path =
-    Path().apply {
-        if (points.isNotEmpty()) {
-            moveTo(points.first().x, points.first().y)
-            points.drop(1).forEach { point -> lineTo(point.x, point.y) }
-            close()
-        }
-    }
-
-private fun vorBandPath(center: Offset, radius: Float): Path {
-    val outer = vorHexPoints(center, radius)
-    val inner = offsetPolygonByEdgeDistances(outer, listOf(
-        radius * 0.475f,
-        radius * 0.2375f,
-        radius * 0.475f,
-        radius * 0.2375f,
-        radius * 0.475f,
-        radius * 0.2375f,
-    ))
-    return Path().apply {
-        fillType = PathFillType.EvenOdd
-        addPath(polygonPath(outer))
-        addPath(polygonPath(inner))
     }
 }
 
@@ -5701,14 +5611,14 @@ private fun MapExplorerPage(
                     if (isAirport) {
                         val airportFillColor = if (feature.towered) airportToweredFillColor else airportUntoweredFillColor
                         val airportLabelPaint = if (feature.towered) airportToweredLabelFillPaint else airportUntoweredLabelFillPaint
-                        val airportRadius = 12f * densityScale
                         if (feature.fuelAvailable) {
                             val markerPath = airportFuelMarkerPath(center, densityScale)
                             drawPath(markerPath, airportFillColor)
                             drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * densityScale))
                         } else {
-                            drawCircle(airportFillColor, radius = airportRadius, center = center)
-                            drawCircle(airportMarkerStrokeColor, radius = airportRadius, center = center, style = Stroke(width = 2f * densityScale))
+                            val markerPath = airportCircleMarkerPath(center, densityScale)
+                            drawPath(markerPath, airportFillColor)
+                            drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * densityScale))
                         }
                         feature.longestRunwayHeadingTrueDeg?.let { headingDeg ->
                             val headingRad = Math.toRadians(headingDeg)
@@ -5738,7 +5648,7 @@ private fun MapExplorerPage(
                         }
                     } else if (isVor) {
                         val radius = 8f * densityScale
-                        val outerHex = polygonPath(vorHexPoints(center, radius))
+                        val outerHex = vorOuterHexPath(center, radius)
                         val band = vorBandPath(center, radius)
                         drawPath(band, vorMarkerColor)
                         drawPath(band, vorMarkerStrokeColor, style = Stroke(width = 1.6f * densityScale))
@@ -8892,38 +8802,6 @@ private fun navRefLabel(ref: NavRef): String = when (ref) {
     is NavRef.LatLon -> "${"%.3f".format(ref.lat)},${"%.3f".format(ref.lon)}"
 }
 
-private fun airportFuelMarkerPath(center: Offset, scale: Float): Path {
-    val circleRadius = 12f * scale
-    val tabHalf = 4f * scale
-    val tabOuter = 17f * scale
-    val arcJoin = 11.314f * scale
-    val circleBounds = Rect(
-        left = center.x - circleRadius,
-        top = center.y - circleRadius,
-        right = center.x + circleRadius,
-        bottom = center.y + circleRadius,
-    )
-    return Path().apply {
-        moveTo(center.x - tabHalf, center.y - tabOuter)
-        lineTo(center.x + tabHalf, center.y - tabOuter)
-        lineTo(center.x + tabHalf, center.y - arcJoin)
-        arcTo(circleBounds, -70.5288f, 51.0576f, false)
-        lineTo(center.x + tabOuter, center.y - tabHalf)
-        lineTo(center.x + tabOuter, center.y + tabHalf)
-        lineTo(center.x + arcJoin, center.y + tabHalf)
-        arcTo(circleBounds, 19.4712f, 51.0576f, false)
-        lineTo(center.x + tabHalf, center.y + tabOuter)
-        lineTo(center.x - tabHalf, center.y + tabOuter)
-        lineTo(center.x - tabHalf, center.y + arcJoin)
-        arcTo(circleBounds, 109.4712f, 51.0576f, false)
-        lineTo(center.x - tabOuter, center.y + tabHalf)
-        lineTo(center.x - tabOuter, center.y - tabHalf)
-        lineTo(center.x - arcJoin, center.y - tabHalf)
-        arcTo(circleBounds, 199.4712f, 51.0576f, false)
-        close()
-    }
-}
-
 private fun aviationColor(uiTheme: UiTheme, colorKey: String): Color = when (colorKey) {
     "class_c_magenta", "magenta" -> uiTheme.aviation.classCMagenta
     "class_b_d_blue", "blue" -> uiTheme.aviation.classBDBlue
@@ -9149,22 +9027,20 @@ private fun PlanWaypointSymbol(
         val isVor = feature.styleClass == "nav" || feature.kind.contains("vor", ignoreCase = true)
         when {
             isAirport -> {
-                val airportRadius = 12f * scale
                 val usesOpenAirportCircle =
                     feature.heliport == true ||
                         feature.hasWaterRunway == true ||
                         feature.hasPavedRunway == false
                 if (usesOpenAirportCircle) {
-                    drawCircle(
+                    val markerPath = airportCircleMarkerPath(center, scale)
+                    drawPath(
+                        markerPath,
                         Color.White.copy(alpha = 0.86f),
-                        radius = airportRadius,
-                        center = center,
                         style = Stroke(width = 5f * scale),
                     )
-                    drawCircle(
+                    drawPath(
+                        markerPath,
                         openAirportStrokeColor,
-                        radius = airportRadius,
-                        center = center,
                         style = Stroke(width = 2.5f * scale),
                     )
                 } else if (feature.fuelAvailable) {
@@ -9172,8 +9048,9 @@ private fun PlanWaypointSymbol(
                     drawPath(markerPath, airportFillColor)
                     drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * scale))
                 } else {
-                    drawCircle(airportFillColor, radius = airportRadius, center = center)
-                    drawCircle(airportMarkerStrokeColor, radius = airportRadius, center = center, style = Stroke(width = 2f * scale))
+                    val markerPath = airportCircleMarkerPath(center, scale)
+                    drawPath(markerPath, airportFillColor)
+                    drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * scale))
                 }
                 if (feature.heliport == true) {
                     drawContext.canvas.nativeCanvas.apply {
@@ -9235,7 +9112,7 @@ private fun PlanWaypointSymbol(
 
             isVor -> {
                 val radius = 8f * scale
-                val outerHex = polygonPath(vorHexPoints(center, radius))
+                val outerHex = vorOuterHexPath(center, radius)
                 val band = vorBandPath(center, radius)
                 drawPath(band, vorMarkerColor)
                 drawPath(band, fixMarkerStrokeColor, style = Stroke(width = 1.6f * scale))

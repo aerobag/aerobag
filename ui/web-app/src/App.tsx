@@ -32,6 +32,13 @@ import { runCoreHadOperation } from "./domain/navKv";
 import uiTheme from "@shared-ui-theme";
 import planViewIcon from "./assets/plan-view-icon.svg";
 import {
+  airportCircleMarkerPath,
+  airportFuelMarkerPath,
+  mapSelectionSpotPegPath,
+  vorBandPath,
+  vorOuterHexPath,
+} from "./generated/navSymbols";
+import {
   loadBestAvailableAdapter,
   type AdapterBackendKind,
   type AppCoreAdapter,
@@ -561,16 +568,6 @@ const VAMPS_POSITION = { lat: 47.3648944444444, lon: -121.980275 };
 const NRVNA_POSITION = { lat: 47.37208888888889, lon: -122.16950277777778 };
 const defaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json";
 const startupHighLatencyWarningGraceMs = 10_000;
-const vorOuterHexPoints = [
-  { x: -8, y: 0 },
-  { x: -4, y: -7 },
-  { x: 4, y: -7 },
-  { x: 8, y: 0 },
-  { x: 4, y: 7 },
-  { x: -4, y: 7 },
-] as const;
-const vorEdgeInsetDistances = [3.8, 1.9, 3.8, 1.9, 3.8, 1.9] as const;
-const mapSelectionSpotPegPath = "M 0 0 C -9 -9 -12 -16 -12 -23 A 12 12 0 1 1 12 -23 C 12 -16 9 -9 0 0 Z";
 
 type PersistedWebUiState = {
   page?: AppPage;
@@ -629,21 +626,6 @@ function renderTileFromCore(tile: RasterTileDraw, cssScale = 1): RasterRenderTil
   };
 }
 
-type VorPoint = {
-  x: number;
-  y: number;
-};
-
-function polygonSignedArea(points: readonly VorPoint[]) {
-  let area = 0;
-  for (let index = 0; index < points.length; index += 1) {
-    const current = points[index];
-    const next = points[(index + 1) % points.length];
-    area += current.x * next.y - next.x * current.y;
-  }
-  return area / 2;
-}
-
 function thumbPixels(multiplier: number) {
   if (typeof window === "undefined") {
     return 0;
@@ -660,73 +642,6 @@ function thumbPixels(multiplier: number) {
   return parsed * multiplier;
 }
 
-function intersectLines(originA: VorPoint, directionA: VorPoint, originB: VorPoint, directionB: VorPoint): VorPoint {
-  const cross = directionA.x * directionB.y - directionA.y * directionB.x;
-  if (Math.abs(cross) < 1e-6) {
-    return originA;
-  }
-  const deltaX = originB.x - originA.x;
-  const deltaY = originB.y - originA.y;
-  const t = (deltaX * directionB.y - deltaY * directionB.x) / cross;
-  return {
-    x: originA.x + directionA.x * t,
-    y: originA.y + directionA.y * t,
-  };
-}
-
-function offsetPolygonByEdgeDistances(points: readonly VorPoint[], edgeDistances: readonly number[]) {
-  const signedArea = polygonSignedArea(points);
-  const inwardNormalForEdge = (from: VorPoint, to: VorPoint, distance: number): VorPoint => {
-    const dx = to.x - from.x;
-    const dy = to.y - from.y;
-    const length = Math.hypot(dx, dy) || 1;
-    if (signedArea > 0) {
-      return { x: (dy / length) * distance, y: (-dx / length) * distance };
-    }
-    return { x: (-dy / length) * distance, y: (dx / length) * distance };
-  };
-  return points.map((point, index) => {
-    const prevIndex = (index + points.length - 1) % points.length;
-    const nextIndex = (index + 1) % points.length;
-    const prevPoint = points[prevIndex];
-    const nextPoint = points[nextIndex];
-    const prevShift = inwardNormalForEdge(prevPoint, point, edgeDistances[prevIndex]);
-    const nextShift = inwardNormalForEdge(point, nextPoint, edgeDistances[index]);
-    const prevOrigin = { x: prevPoint.x + prevShift.x, y: prevPoint.y + prevShift.y };
-    const nextOrigin = { x: point.x + nextShift.x, y: point.y + nextShift.y };
-    return intersectLines(
-      prevOrigin,
-      { x: point.x - prevPoint.x, y: point.y - prevPoint.y },
-      nextOrigin,
-      { x: nextPoint.x - point.x, y: nextPoint.y - point.y },
-    );
-  });
-}
-
-function polygonPathData(points: readonly VorPoint[]) {
-  return points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ") + " Z";
-}
-
-const vorInnerHexPoints = offsetPolygonByEdgeDistances(vorOuterHexPoints, vorEdgeInsetDistances);
-const vorOuterHexPath = polygonPathData(vorOuterHexPoints);
-const vorBandPath = `${vorOuterHexPath} ${polygonPathData(vorInnerHexPoints)}`;
-const airportFuelMarkerPath = [
-  "M -4 -17 H 4 V -11.314",
-  "A 12 12 0 0 1 11.314 -4",
-  "H 17 V 4 H 11.314",
-  "A 12 12 0 0 1 4 11.314",
-  "V 17 H -4 V 11.314",
-  "A 12 12 0 0 1 -11.314 4",
-  "H -17 V -4 H -11.314",
-  "A 12 12 0 0 1 -4 -11.314",
-  "Z",
-].join(" ");
-const airportCircleMarkerPath = [
-  "M 0 -12",
-  "A 12 12 0 1 1 0 12",
-  "A 12 12 0 1 1 0 -12",
-  "Z",
-].join(" ");
 const airportLabelY = -24;
 const vorLabelY = -24;
 const fixLabelY = -15;

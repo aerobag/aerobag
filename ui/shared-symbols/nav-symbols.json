@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "paths": {
+    "airport_circle_marker": "M 0 -12 A 12 12 0 1 1 0 12 A 12 12 0 1 1 0 -12 Z",
+    "airport_fuel_marker": "M -4 -17 H 4 V -11.314 A 12 12 0 0 1 11.314 -4 H 17 V 4 H 11.314 A 12 12 0 0 1 4 11.314 V 17 H -4 V 11.314 A 12 12 0 0 1 -11.314 4 H -17 V -4 H -11.314 A 12 12 0 0 1 -4 -11.314 Z",
+    "fix_triangle": "M 0 -8 L 7 6 L -7 6 Z",
+    "map_selection_spot_peg": "M 0 0 C -9 -9 -12 -16 -12 -23 A 12 12 0 1 1 12 -23 C 12 -16 9 -9 0 0 Z"
+  },
+  "airport_fuel_marker": {
+    "circle_radius": 12,
+    "tab_half": 4,
+    "tab_outer": 17,
+    "arc_join": 11.314,
+    "arc_start_deg": -70.5288,
+    "arc_sweep_deg": 51.0576
+  },
+  "vor": {
+    "outer_hex_points": [
+      [-8, 0],
+      [-4, -7],
+      [4, -7],
+      [8, 0],
+      [4, 7],
+      [-4, 7]
+    ],
+    "edge_inset_distances": [3.8, 1.9, 3.8, 1.9, 3.8, 1.9]
+  }
+}

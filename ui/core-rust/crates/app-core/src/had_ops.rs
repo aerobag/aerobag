@@ -2675,6 +2675,31 @@ mod tests {
                         .any(|component| component.procedure_id.as_deref() == Some("VOR-A")),
                     "expected inserted procedure component in ui state"
                 );
+                for (label, expected_leg_index) in [
+                    ("ECEPO", 1),
+                    ("YAVUR", 2),
+                    ("ZELIG", 3),
+                    ("XUKRE", 4),
+                    ("ECEPO", 5),
+                ] {
+                    let row = ui_state
+                        .display_rows
+                        .iter()
+                        .filter(|row| row.depth == 1 && row.label == label)
+                        .find(|row| row.leg_index == Some(expected_leg_index))
+                        .unwrap_or_else(|| panic!("expected procedure row for {label}"));
+                    assert_eq!(
+                        row.leg_index,
+                        Some(expected_leg_index),
+                        "procedure waypoint row {label} should activate the guidance leg ending there"
+                    );
+                    assert!(
+                        row.actions.iter().any(|action| {
+                            action.id == crate::FlightPlanRowActionId::ActivateLeg && action.enabled
+                        }),
+                        "procedure waypoint row {label} should expose enabled Activate Leg"
+                    );
+                }
             }
             HadOperationOutcome::NeedPages { pages } => {
                 panic!("expected complete outcome, got missing pages: {pages:?}");

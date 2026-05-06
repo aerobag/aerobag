@@ -7,6 +7,35 @@ Goal:
 Non-goal:
 - do not regress into airport-named geometry hacks when a general handoff interpretation can explain the case
 
+## Flight Plan Leg Vocabulary
+
+Procedure geometry introduces three distinct route granularities. Keep these names
+stable in code, docs, and UI discussions:
+
+- `RouteComponent`: the user-authored flight-plan unit, such as an airport,
+  VOR, airway, whole procedure, or next airport. Components are the editing and
+  replacement boundary.
+- `GuidanceLeg`: a CDI/sequencing unit, usually bounded by named waypoints
+  inside a route component. A procedure `RouteComponent` expands into multiple
+  guidance legs so step-down fixes can sequence and each visible guidance leg
+  can be activated independently.
+- `PathElement`: a drawable/flyable geometry primitive inside a guidance leg,
+  such as a straight segment or arc. Path elements are what map rendering uses
+  now and what future ownship advancement should track at fine granularity.
+
+Relationship:
+
+```text
+RouteComponent -> GuidanceLeg(s) -> PathElement(s)
+```
+
+UI rule:
+- `Activate Leg` on a waypoint row activates the `GuidanceLeg` that ends at that
+  row's waypoint. The button means "give me guidance to this destination." For
+  example, inside `KPAE VOR-A/ECEPO`, the `YAVUR` row activates
+  `ECEPO -> YAVUR`, and the route renderer paints that guidance leg's path
+  elements as active.
+
 ## Why This Refactor Exists
 
 The current implementation still leaks handoff responsibility across many pairs:

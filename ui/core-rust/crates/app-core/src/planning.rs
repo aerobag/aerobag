@@ -1841,6 +1841,7 @@ fn project_display_rows(
     let direct_to_overlay = flight_plan_has_direct_to_overlay(plan);
     let mut rows = Vec::new();
     let mut child_occurrences: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut child_waypoint_occurrences: BTreeMap<(usize, String), usize> = BTreeMap::new();
     for component in components {
         let chart_airport_id = component.chart_airport_id.clone();
         if component.kind == RouteComponentViewKind::Waypoint {
@@ -1966,10 +1967,14 @@ fn project_display_rows(
                             .entry(component.component_index)
                             .and_modify(|count| *count += 1)
                             .or_insert(0);
+                        let waypoint_occurrence = child_waypoint_occurrences
+                            .entry((component.component_index, nav_ref_key(nav_ref)))
+                            .and_modify(|count| *count += 1)
+                            .or_insert(0);
                         let leg_index = child_waypoint_row_leg_index(
                             plan,
                             component.component_index,
-                            *occurrence,
+                            *waypoint_occurrence,
                             nav_ref,
                         );
                         let uid = child_waypoint_row_uid(
@@ -2358,17 +2363,18 @@ fn top_level_waypoint_row_leg_index(plan: &FlightPlan, component_index: usize) -
 fn child_waypoint_row_leg_index(
     plan: &FlightPlan,
     component_index: usize,
-    occurrence: usize,
+    waypoint_occurrence: usize,
     nav_ref: &NavRef,
 ) -> Option<usize> {
     plan.resolved_legs
         .iter()
         .enumerate()
         .filter(|(_, leg)| {
-            matches!(leg.source, ResolvedLegSource::RouteComponent { component_index: source_component_index } if source_component_index == component_index)
+            (matches!(leg.source, ResolvedLegSource::RouteComponent { component_index: source_component_index } if source_component_index == component_index)
+                || matches!(leg.source, ResolvedLegSource::SyntheticBridge { to_component_index, .. } if to_component_index == component_index))
                 && &leg.to == nav_ref
         })
-        .nth(occurrence)
+        .nth(waypoint_occurrence)
         .map(|(index, _)| index)
 }
 

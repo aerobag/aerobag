@@ -43,7 +43,8 @@ export type NavRef =
   | { Airport: string }
   | { Navaid: string }
   | { Fix: string }
-  | { LatLon: { lat: number; lon: number } };
+  | { LatLon: { lat: number; lon: number } }
+  | { Spot: { lat: number; lon: number } };
 
 export type LatLon = {
   lat: number;

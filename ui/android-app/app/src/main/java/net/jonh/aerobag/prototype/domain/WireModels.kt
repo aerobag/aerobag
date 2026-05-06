@@ -227,6 +227,8 @@ sealed interface WireNavRef {
     data class Fix(val code: String) : WireNavRef
 
     data class LatLon(val value: WireLatLon) : WireNavRef
+
+    data class Spot(val value: WireLatLon) : WireNavRef
 }
 
 @Serializable
@@ -250,6 +252,11 @@ object WireNavRefSerializer : KSerializer<WireNavRef> {
                     "LatLon" to encoder.json.encodeToJsonElement(WireLatLon.serializer(), value.value),
                 ),
             )
+            is WireNavRef.Spot -> JsonObject(
+                mapOf(
+                    "Spot" to encoder.json.encodeToJsonElement(WireLatLon.serializer(), value.value),
+                ),
+            )
         }
         encoder.encodeJsonElement(element)
     }
@@ -267,6 +274,7 @@ object WireNavRefSerializer : KSerializer<WireNavRef> {
             "Navaid" -> WireNavRef.Navaid(value.jsonPrimitive.content)
             "Fix" -> WireNavRef.Fix(value.jsonPrimitive.content)
             "LatLon" -> WireNavRef.LatLon(decoder.json.decodeFromJsonElement(WireLatLon.serializer(), value))
+            "Spot" -> WireNavRef.Spot(decoder.json.decodeFromJsonElement(WireLatLon.serializer(), value))
             else -> error("Unsupported NavRef variant: $kind")
         }
     }

@@ -7584,6 +7584,9 @@ function navRefsEqual(left: NavRef | null, right: NavRef | null) {
   if ("LatLon" in left && "LatLon" in right) {
     return left.LatLon.lat === right.LatLon.lat && left.LatLon.lon === right.LatLon.lon;
   }
+  if ("Spot" in left && "Spot" in right) {
+    return left.Spot.lat === right.Spot.lat && left.Spot.lon === right.Spot.lon;
+  }
   return false;
 }
 
@@ -7591,14 +7594,16 @@ function navRefKey(value: NavRef) {
   if ("Airport" in value) return `airport:${value.Airport}`;
   if ("Navaid" in value) return `navaid:${value.Navaid}`;
   if ("Fix" in value) return `fix:${value.Fix}`;
-  return `latlon:${value.LatLon.lat}:${value.LatLon.lon}`;
+  if ("LatLon" in value) return `latlon:${value.LatLon.lat}:${value.LatLon.lon}`;
+  return `spot:${value.Spot.lat}:${value.Spot.lon}`;
 }
 
 function navRefLabel(value: NavRef) {
   if ("Airport" in value) return value.Airport;
   if ("Navaid" in value) return value.Navaid;
   if ("Fix" in value) return value.Fix;
-  return `${value.LatLon.lat.toFixed(3)}, ${value.LatLon.lon.toFixed(3)}`;
+  if ("LatLon" in value) return `${value.LatLon.lat.toFixed(3)}, ${value.LatLon.lon.toFixed(3)}`;
+  return `SPOT ${value.Spot.lat.toFixed(3)}, ${value.Spot.lon.toFixed(3)}`;
 }
 
 function routeSegmentColor(status: FlightPlanRouteSegment["status"]) {

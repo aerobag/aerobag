@@ -408,7 +408,7 @@ fn nav_ref_position_key(nav_ref: &NavRef, procedure_airport_id: Option<&str>) ->
             ))
         }
         NavRef::Fix(id) => Some(format!("navref/position/fix/{}", upper_component(id))),
-        NavRef::LatLon(_) => None,
+        NavRef::LatLon(_) | NavRef::Spot(_) => None,
     }
 }
 
@@ -420,7 +420,7 @@ fn nav_ref_symbol_key(nav_ref: &NavRef) -> Option<String> {
             format!("navref/symbol/navaid/{}", upper_component(identifier)),
         ),
         NavRef::Fix(id) => Some(format!("navref/symbol/fix/{}", upper_component(id))),
-        NavRef::LatLon(_) => None,
+        NavRef::LatLon(_) | NavRef::Spot(_) => None,
     }
 }
 

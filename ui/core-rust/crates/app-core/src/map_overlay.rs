@@ -1448,7 +1448,7 @@ pub fn query_map_selection(
             .then_with(|| left.id.cmp(&right.id))
     });
     navaids.push(MapSelectionPointMatch {
-        item: spot_selection_item(click),
+        item: spot_selection_item(click, plan),
         distance_px: f64::INFINITY,
     });
 
@@ -1618,13 +1618,9 @@ fn selection_item_for_point(
         Some(nav_ref) if selection_plan_top_level_waypoint_count(plan, nav_ref) > 1 => {
             disabled_action("remove_from_flight_plan", "Remove ambiguous")
         }
-        Some(nav_ref) if !selection_plan_contains_nav_ref(plan, nav_ref) => session_action(
-            "insert",
-            "Insert in flight plan",
-            MapSelectionSessionAction::InsertWaypointBestPosition {
-                nav_ref: nav_ref.clone(),
-            },
-        ),
+        Some(nav_ref) if !selection_plan_contains_nav_ref(plan, nav_ref) => {
+            insert_best_position_action(plan, nav_ref)
+        }
         Some(_) => disabled_action("insert", "In grouped route"),
         None => disabled_action("insert", "Insert unavailable"),
     };
@@ -1673,7 +1669,24 @@ fn action_for_availability(id: &str, label: &str, available: bool) -> MapSelecti
     }
 }
 
-fn spot_selection_item(click: LatLon) -> MapSelectionItem {
+fn insert_best_position_action(plan: Option<&FlightPlan>, nav_ref: &NavRef) -> MapSelectionAction {
+    let Some(plan) = plan else {
+        return disabled_action("insert", "Insert in flight plan");
+    };
+    if crate::had_ops::insert_waypoint_best_position_rejection(plan, nav_ref).is_some() {
+        return disabled_action("insert", "Insert in flight plan");
+    }
+    session_action(
+        "insert",
+        "Insert in flight plan",
+        MapSelectionSessionAction::InsertWaypointBestPosition {
+            nav_ref: nav_ref.clone(),
+        },
+    )
+}
+
+fn spot_selection_item(click: LatLon, plan: Option<&FlightPlan>) -> MapSelectionItem {
+    let nav_ref = NavRef::Spot(click);
     MapSelectionItem {
         id: format!("spot:{:.6}:{:.6}", click.lat, click.lon),
         label: "SPOT".to_string(),
@@ -1684,15 +1697,15 @@ fn spot_selection_item(click: LatLon) -> MapSelectionItem {
             lat: click.lat,
             lon: click.lon,
         },
-        nav_ref: None,
+        nav_ref: Some(nav_ref.clone()),
         symbol_feature: None,
         metar_feature: None,
         pirep_feature: None,
         airspace_icon: None,
         actions: vec![
             display_action("terrain", "Terrain --"),
-            disabled_action("direct_to", "Direct-to"),
-            disabled_action("insert", "Insert in flight plan"),
+            direct_to_action(None, Some(&nav_ref), None),
+            insert_best_position_action(plan, &nav_ref),
         ],
     }
 }
@@ -2216,6 +2229,14 @@ fn selection_nav_ref(record: &PointVectorRecord, is_airport: bool) -> Option<Nav
             .map(|tail| tail.split(':').next().unwrap_or(tail).trim())
             .filter(|id| !id.is_empty())
             .map(|id| NavRef::Navaid(id.to_ascii_uppercase()));
+    }
+    if record.style_class == "fix" {
+        return record
+            .id
+            .strip_prefix("fix:")
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(|id| NavRef::Fix(id.to_ascii_uppercase()));
     }
     None
 }
@@ -4519,13 +4540,30 @@ mod tests {
                 }],
             },
         );
+        let plan = FlightPlan {
+            id: "plan".to_string(),
+            name: "Plan".to_string(),
+            legs: Vec::new(),
+            route_components: Vec::new(),
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
 
         let result = query_map_selection(
             &viewport,
             1200.0,
             900.0,
             &test_map_overlay_config(),
-            None,
+            Some(&plan),
             viewport.center,
             32.0,
             &cache,
@@ -4551,10 +4589,77 @@ mod tests {
             .iter()
             .any(|action| action.id == "elevation"));
         assert_eq!(result.categories[1].id, "navaid");
-        assert!(result.categories[1]
+        let spot = result.categories[1]
             .items
             .iter()
-            .any(|item| item.id.starts_with("spot:")));
+            .find(|item| item.id.starts_with("spot:"))
+            .expect("spot selection item");
+        let spot_nav_ref = NavRef::Spot(viewport.center);
+        assert_eq!(spot.nav_ref, Some(spot_nav_ref.clone()));
+        let direct_to = spot
+            .actions
+            .iter()
+            .find(|action| action.id == "direct_to")
+            .expect("direct-to action");
+        assert!(direct_to.enabled);
+        assert_eq!(
+            serde_json::from_str::<MapSelectionSessionAction>(
+                direct_to
+                    .session_action
+                    .as_deref()
+                    .expect("direct-to session action"),
+            )
+            .expect("session action decodes"),
+            MapSelectionSessionAction::ActivateDirectToNavRef {
+                nav_ref: spot_nav_ref.clone(),
+            }
+        );
+        let insert = spot
+            .actions
+            .iter()
+            .find(|action| action.id == "insert")
+            .expect("insert action");
+        assert!(insert.enabled);
+        assert_eq!(
+            serde_json::from_str::<MapSelectionSessionAction>(
+                insert
+                    .session_action
+                    .as_deref()
+                    .expect("insert session action"),
+            )
+            .expect("session action decodes"),
+            MapSelectionSessionAction::InsertWaypointBestPosition {
+                nav_ref: spot_nav_ref,
+            }
+        );
+        let overlay_plan = FlightPlan {
+            guidance: Some(crate::GuidanceState {
+                active_leg_index: 0,
+                active_detail_index: None,
+                display_split_leg_id: None,
+                sequencing_mode: crate::SequencingMode::DirectTo,
+                direct_to: Some(crate::DirectToState {
+                    start: NavRef::LatLon(viewport.center),
+                    target: NavRef::Spot(LatLon {
+                        lat: viewport.center.lat + 0.1,
+                        lon: viewport.center.lon,
+                    }),
+                    target_component_uid: None,
+                    target_leg_id: None,
+                    resume_leg_id: None,
+                }),
+                suspend_reason: None,
+            }),
+            ..plan
+        };
+        let overlay_spot = spot_selection_item(viewport.center, Some(&overlay_plan));
+        let overlay_insert = overlay_spot
+            .actions
+            .iter()
+            .find(|action| action.id == "insert")
+            .expect("insert action");
+        assert!(!overlay_insert.enabled);
+        assert!(overlay_insert.session_action.is_none());
         assert_eq!(result.categories[3].id, "weather");
     }
 
@@ -4717,6 +4822,93 @@ mod tests {
             MapSelectionSessionAction::InsertWaypointBestPosition {
                 nav_ref: NavRef::Airport("KSEA".to_string()),
             }
+        );
+    }
+
+    #[test]
+    fn map_selection_offers_direct_to_and_insert_for_fix_points() {
+        let record = PointVectorRecord {
+            id: "fix:VAMPS".to_string(),
+            kind: "fix".to_string(),
+            lat: 47.0,
+            lon: -122.0,
+            label: "VAMPS".to_string(),
+            style_class: "fix".to_string(),
+            towered: None,
+            fuel_available: None,
+            public_use: None,
+            private_use: None,
+            has_paved_runway: None,
+            heliport: None,
+            has_water_runway: None,
+            longest_runway_length_ft: None,
+            longest_runway_heading_true_deg: None,
+            elevation_msl_ft: None,
+            obstacle: None,
+        };
+        let symbol = point_vector_record_to_symbol_feature(&record, None).unwrap();
+        let plan = FlightPlan {
+            id: "plan".to_string(),
+            name: "Plan".to_string(),
+            legs: Vec::new(),
+            route_components: Vec::new(),
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+
+        let item = selection_item_for_point(
+            &record,
+            &symbol,
+            Some(&plan),
+            AirportPlateAvailability::default(),
+            None,
+        );
+
+        let nav_ref = NavRef::Fix("VAMPS".to_string());
+        assert_eq!(item.nav_ref, Some(nav_ref.clone()));
+        let direct_to = item
+            .actions
+            .iter()
+            .find(|action| action.id == "direct_to")
+            .expect("direct-to action");
+        assert!(direct_to.enabled);
+        assert_eq!(
+            serde_json::from_str::<MapSelectionSessionAction>(
+                direct_to
+                    .session_action
+                    .as_deref()
+                    .expect("direct-to session action"),
+            )
+            .expect("session action decodes"),
+            MapSelectionSessionAction::ActivateDirectToNavRef {
+                nav_ref: nav_ref.clone(),
+            }
+        );
+
+        let insert = item
+            .actions
+            .iter()
+            .find(|action| action.id == "insert")
+            .expect("insert action");
+        assert!(insert.enabled);
+        assert_eq!(
+            serde_json::from_str::<MapSelectionSessionAction>(
+                insert
+                    .session_action
+                    .as_deref()
+                    .expect("insert session action"),
+            )
+            .expect("session action decodes"),
+            MapSelectionSessionAction::InsertWaypointBestPosition { nav_ref }
         );
     }
 

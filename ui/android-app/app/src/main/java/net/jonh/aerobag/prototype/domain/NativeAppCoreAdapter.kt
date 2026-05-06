@@ -1281,6 +1281,7 @@ private fun NavRef.toWire(): WireNavRef = when (this) {
     is NavRef.Navaid -> WireNavRef.Navaid(code)
     is NavRef.Fix -> WireNavRef.Fix(code)
     is NavRef.LatLon -> WireNavRef.LatLon(WireLatLon(lat, lon))
+    is NavRef.Spot -> WireNavRef.Spot(WireLatLon(lat, lon))
 }
 
 private fun ContentPolicy.toWire() = when (this) {
@@ -2976,6 +2977,7 @@ private fun WireNavRef.toUi(): NavRef = when (this) {
     is WireNavRef.Navaid -> NavRef.Navaid(code)
     is WireNavRef.Fix -> NavRef.Fix(code)
     is WireNavRef.LatLon -> NavRef.LatLon(value.lat, value.lon)
+    is WireNavRef.Spot -> NavRef.Spot(value.lat, value.lon)
 }
 
 private fun PackageId.toWire() = WirePackageId(

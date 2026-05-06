@@ -47,6 +47,7 @@ sealed interface NavRef {
     data class Navaid(val code: String) : NavRef
     data class Fix(val code: String) : NavRef
     data class LatLon(val lat: Double, val lon: Double) : NavRef
+    data class Spot(val lat: Double, val lon: Double) : NavRef
 }
 
 data class FlightPlan(

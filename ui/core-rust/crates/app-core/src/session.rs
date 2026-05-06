@@ -2417,12 +2417,15 @@ fn active_leg_geometry(
     active_leg: &PlanLeg,
     geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
 ) -> Option<GuidanceLegGeometry> {
-    if let (NavRef::LatLon(from), NavRef::LatLon(to)) = (&active_leg.from, &active_leg.to) {
+    if let (Some(from), Some(to)) = (
+        nav_ref_embedded_position(&active_leg.from),
+        nav_ref_embedded_position(&active_leg.to),
+    ) {
         return Some(GuidanceLegGeometry {
             leg_id: "__latlon_leg__".to_string(),
-            from: *from,
-            to: *to,
-            path: vec![*from, *to],
+            from,
+            to,
+            path: vec![from, to],
         });
     }
     let guidance = plan.guidance.as_ref()?;
@@ -2438,11 +2441,11 @@ fn active_leg_geometry(
             }?;
             Some({
                 let from = match &active_leg.from {
-                    NavRef::LatLon(position) => *position,
+                    NavRef::LatLon(position) | NavRef::Spot(position) => *position,
                     _ => geometry.from,
                 };
                 let to = match &active_leg.to {
-                    NavRef::LatLon(position) => *position,
+                    NavRef::LatLon(position) | NavRef::Spot(position) => *position,
                     _ => geometry.to,
                 };
                 GuidanceLegGeometry {
@@ -2690,12 +2693,15 @@ fn geometry_for_resolved_leg(
     {
         return Some(geometry.clone());
     }
-    if let (NavRef::LatLon(from), NavRef::LatLon(to)) = (&leg.from, &leg.to) {
+    if let (Some(from), Some(to)) = (
+        nav_ref_embedded_position(&leg.from),
+        nav_ref_embedded_position(&leg.to),
+    ) {
         return Some(GuidanceLegGeometry {
             leg_id: leg.id.clone(),
-            from: *from,
-            to: *to,
-            path: vec![*from, *to],
+            from,
+            to,
+            path: vec![from, to],
         });
     }
     None
@@ -2850,6 +2856,14 @@ fn nav_ref_label(nav_ref: &NavRef) -> String {
             identifier.clone()
         }
         NavRef::LatLon(position) => format!("{:.4},{:.4}", position.lat, position.lon),
+        NavRef::Spot(position) => format!("SPOT {:.4},{:.4}", position.lat, position.lon),
+    }
+}
+
+fn nav_ref_embedded_position(nav_ref: &NavRef) -> Option<LatLon> {
+    match nav_ref {
+        NavRef::LatLon(position) | NavRef::Spot(position) => Some(*position),
+        _ => None,
     }
 }
 

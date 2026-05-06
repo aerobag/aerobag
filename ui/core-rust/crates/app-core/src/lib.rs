@@ -91,12 +91,12 @@ pub use planning::{
     change_procedure_runway_transition, common_resume_candidate_decision, delete_component,
     delete_waypoint_component, direct_to_fix_with_course_continuation_requirement,
     enter_hold_requirement, established_on_course_requirement, flatten_component_to_waypoints,
-    flight_plan_contains_nav_ref, insert_airport_waypoint, insert_airway_after_waypoint,
-    insert_airway_between_waypoints, insert_procedure_between_waypoints, insert_waypoint,
-    intercept_course_requirement, move_component, project_ui_state, reconcile_handoff,
-    reentry_to_anchor_requirement, remove_all_above, replace_airway_component,
-    replace_procedure_component, restore_direct_to, sequence_active_leg,
-    start_requirement_from_leg_characteristics, suspend_sequencing,
+    flight_plan_contains_nav_ref, flight_plan_has_direct_to_overlay, insert_airport_waypoint,
+    insert_airway_after_waypoint, insert_airway_between_waypoints,
+    insert_procedure_between_waypoints, insert_waypoint, intercept_course_requirement,
+    move_component, project_ui_state, reconcile_handoff, reentry_to_anchor_requirement,
+    remove_all_above, replace_airway_component, replace_procedure_component, restore_direct_to,
+    sequence_active_leg, start_requirement_from_leg_characteristics, suspend_sequencing,
     terminal_state_with_leg_characteristics, top_level_waypoint_component_count,
     top_level_waypoint_component_index, unsuspend_sequencing, yieldable_course_to_fix_requirement,
     AirwaySegment, CodedFixSatisfaction, CommonSegmentTerminalState, ConcretizedNavItem,
@@ -934,7 +934,7 @@ fn nav_ref_identifier(nav_ref: &NavRef) -> Option<&str> {
         NavRef::Airport(code) | NavRef::Navaid(code) | NavRef::Fix(code) => Some(code.as_str()),
         NavRef::ArincNavaid { identifier, .. } => Some(identifier.as_str()),
         NavRef::TerminalNavaid { identifier, .. } => Some(identifier.as_str()),
-        NavRef::LatLon(_) => None,
+        NavRef::LatLon(_) | NavRef::Spot(_) => None,
     }
 }
 

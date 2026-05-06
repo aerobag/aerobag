@@ -8,18 +8,18 @@ use crate::planning::FlightPlanRowActionId;
 use crate::{
     chart_page::{airport_ids_from_plan, derive_chart_page_state_from_airports},
     describe_plate_procedure_load_options, describe_show_plate_for_procedure,
-    flight_leg_distance_nm, flight_plan_contains_nav_ref, insert_airway_after_waypoint,
-    insert_waypoint, prepare_airway_presentation, project_flight_plan_route_with_resolver,
-    AirportId, AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,
-    AirwayPresentationPlan, AirwaySegment, AirwaySpatialPoint, AirwaySuggestion, AppError,
-    AppErrorKind, AppResult, CifpTppMatchRow, ConcretizedNavItem, FlightPlan,
-    FlightPlanRouteSegment, FlightPlanUiMutation, FlightPlanUiState, LatLon, LegDisplayElement,
-    LegDisplayPath, LegDisplayPathStyle, MaterializedProcedure, NavKvLookup, NavKvQuery,
-    NavKvStore, NavRef, NavSymbolFeature, PathTermination, PlateProcedureLoadCandidateInput,
-    PolygonRecord, ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance,
-    ProcedureLoadOption, ProcedureOptions, ProcedureSegment, ProcedureSegmentRole,
-    ProcedureSummary, ResolvedLeg, ResolvedLegSource, RouteComponent, WaypointIdentifierRecord,
-    WaypointIdentifierSuggestion,
+    flight_leg_distance_nm, flight_plan_contains_nav_ref, flight_plan_has_direct_to_overlay,
+    insert_airway_after_waypoint, insert_waypoint, prepare_airway_presentation,
+    project_flight_plan_route_with_resolver, AirportId, AirwayAutoSelection, AirwayBranch,
+    AirwayEntryCandidate, AirwayExitCandidate, AirwayPresentationPlan, AirwaySegment,
+    AirwaySpatialPoint, AirwaySuggestion, AppError, AppErrorKind, AppResult, CifpTppMatchRow,
+    ConcretizedNavItem, FlightPlan, FlightPlanRouteSegment, FlightPlanUiMutation,
+    FlightPlanUiState, LatLon, LegDisplayElement, LegDisplayPath, LegDisplayPathStyle,
+    MaterializedProcedure, NavKvLookup, NavKvQuery, NavKvStore, NavRef, NavSymbolFeature,
+    PathTermination, PlateProcedureLoadCandidateInput, PolygonRecord, ProcedureDiscontinuity,
+    ProcedureKind, ProcedureLegProvenance, ProcedureLoadOption, ProcedureOptions, ProcedureSegment,
+    ProcedureSegmentRole, ProcedureSummary, ResolvedLeg, ResolvedLegSource, RouteComponent,
+    WaypointIdentifierRecord, WaypointIdentifierSuggestion,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -491,7 +491,7 @@ fn nav_ref_position(
     nav_ref: &NavRef,
     procedure_airport_id: Option<&str>,
 ) -> Result<LatLon, HadReadError> {
-    if let NavRef::LatLon(position) = nav_ref {
+    if let NavRef::LatLon(position) | NavRef::Spot(position) = nav_ref {
         return Ok(*position);
     }
     read_required(
@@ -978,7 +978,8 @@ fn canonical_waypoint_identifier_record_for_ui(
         | NavRef::ArincNavaid { .. }
         | NavRef::TerminalNavaid { .. }
         | NavRef::Fix(_)
-        | NavRef::LatLon(_) => record.identifier = record.identifier.trim().to_ascii_uppercase(),
+        | NavRef::LatLon(_)
+        | NavRef::Spot(_) => record.identifier = record.identifier.trim().to_ascii_uppercase(),
     }
     if record.identifier.is_empty() {
         Ok(None)
@@ -995,7 +996,7 @@ fn waypoint_identifier_nav_ref_is_acceptable_for_ui(
         NavRef::Navaid(_) | NavRef::ArincNavaid { .. } | NavRef::TerminalNavaid { .. } => {
             Ok(nav_symbol_feature(store, nav_ref)?.is_some())
         }
-        NavRef::Airport(_) | NavRef::Fix(_) | NavRef::LatLon(_) => Ok(true),
+        NavRef::Airport(_) | NavRef::Fix(_) | NavRef::LatLon(_) | NavRef::Spot(_) => Ok(true),
     }
 }
 
@@ -1006,7 +1007,8 @@ fn waypoint_identifier_is_canonical_for_ui(identifier: &str, nav_ref: &NavRef) -
         | NavRef::ArincNavaid { .. }
         | NavRef::TerminalNavaid { .. }
         | NavRef::Fix(_)
-        | NavRef::LatLon(_) => true,
+        | NavRef::LatLon(_)
+        | NavRef::Spot(_) => true,
     }
 }
 
@@ -1040,7 +1042,7 @@ fn nav_ref_kind_order(nav_ref: &NavRef) -> usize {
         NavRef::ArincNavaid { .. } => 1,
         NavRef::TerminalNavaid { .. } => 1,
         NavRef::Fix(_) => 2,
-        NavRef::LatLon(_) => 3,
+        NavRef::LatLon(_) | NavRef::Spot(_) => 3,
     }
 }
 
@@ -1836,16 +1838,8 @@ pub(crate) fn insert_waypoint_best_position(
     plan: &FlightPlan,
     waypoint: NavRef,
 ) -> Result<FlightPlanUiMutation, HadReadError> {
-    if !matches!(waypoint, NavRef::Airport(_) | NavRef::Navaid(_)) {
-        return Err(HadReadError::Fatal(
-            "only airports and navaids can be inserted from map selection".to_string(),
-        ));
-    }
-    if flight_plan_contains_nav_ref(plan, &waypoint) {
-        return Err(HadReadError::Fatal(format!(
-            "{} is already in the flight plan",
-            nav_ref_display_label(&waypoint)
-        )));
+    if let Some(message) = insert_waypoint_best_position_rejection(plan, &waypoint) {
+        return Err(HadReadError::Fatal(message));
     }
 
     let insertion_index = best_top_level_insertion_index(store, plan, &waypoint)?;
@@ -1858,6 +1852,32 @@ pub(crate) fn insert_waypoint_best_position(
         )?,
         plan: inserted,
     })
+}
+
+pub(crate) fn insert_waypoint_best_position_rejection(
+    plan: &FlightPlan,
+    waypoint: &NavRef,
+) -> Option<String> {
+    if flight_plan_has_direct_to_overlay(plan) {
+        return Some("cannot insert while direct-to is off the flight plan".to_string());
+    }
+    if !matches!(
+        waypoint,
+        NavRef::Airport(_)
+            | NavRef::Navaid(_)
+            | NavRef::Fix(_)
+            | NavRef::LatLon(_)
+            | NavRef::Spot(_)
+    ) {
+        return Some("only positioned waypoints can be inserted from map selection".to_string());
+    }
+    if flight_plan_contains_nav_ref(plan, waypoint) {
+        return Some(format!(
+            "{} is already in the flight plan",
+            nav_ref_display_label(waypoint)
+        ));
+    }
+    None
 }
 
 fn best_top_level_insertion_index(
@@ -2287,6 +2307,7 @@ fn nav_ref_display_label(nav_ref: &NavRef) -> String {
             identifier.clone()
         }
         NavRef::LatLon(value) => format!("{:.3},{:.3}", value.lat, value.lon),
+        NavRef::Spot(value) => format!("SPOT {:.3},{:.3}", value.lat, value.lon),
     }
 }
 
@@ -3476,6 +3497,40 @@ mod tests {
             mutation.plan.route_components[1],
             RouteComponent::Waypoint { waypoint: NavRef::Navaid(ref id) } if id == "SEA"
         ));
+    }
+
+    #[test]
+    fn insert_waypoint_best_position_accepts_spot_waypoint() {
+        let store = load_fixture_nav_kv_store();
+        let spot = NavRef::Spot(LatLon {
+            lat: 47.5,
+            lon: -122.2,
+        });
+        let plan = FlightPlan {
+            id: "spot".to_string(),
+            name: "Spot".to_string(),
+            legs: Vec::new(),
+            route_components: Vec::new(),
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+
+        let mutation =
+            insert_waypoint_best_position(&store, &plan, spot.clone()).expect("insert spot");
+
+        assert_eq!(
+            mutation.plan.route_components,
+            vec![RouteComponent::Waypoint { waypoint: spot }]
+        );
     }
 
     #[test]

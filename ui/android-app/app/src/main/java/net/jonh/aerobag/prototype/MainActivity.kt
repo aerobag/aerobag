@@ -9333,6 +9333,7 @@ private fun navRefLabel(ref: NavRef): String = when (ref) {
     is NavRef.Navaid -> ref.code
     is NavRef.Fix -> ref.code
     is NavRef.LatLon -> "${"%.3f".format(ref.lat)},${"%.3f".format(ref.lon)}"
+    is NavRef.Spot -> "SPOT ${"%.3f".format(ref.lat)},${"%.3f".format(ref.lon)}"
 }
 
 private fun aviationColor(uiTheme: UiTheme, colorKey: String): Color = when (colorKey) {

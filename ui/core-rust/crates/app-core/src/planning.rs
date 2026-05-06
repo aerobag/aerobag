@@ -1083,6 +1083,7 @@ pub enum NavRef {
     },
     Fix(String),
     LatLon(LatLon),
+    Spot(LatLon),
 }
 
 impl NavRef {
@@ -1837,10 +1838,7 @@ fn project_display_rows(
             .then_some(guidance.direct_to.as_ref())
             .flatten()
     });
-    let direct_to_target_on_plan = direct_to
-        .as_ref()
-        .is_some_and(|state| direct_to_on_plan(plan, state));
-    let direct_to_overlay = direct_to.is_some() && !direct_to_target_on_plan;
+    let direct_to_overlay = flight_plan_has_direct_to_overlay(plan);
     let mut rows = Vec::new();
     let mut child_occurrences: BTreeMap<usize, usize> = BTreeMap::new();
     for component in components {
@@ -2095,7 +2093,7 @@ fn project_display_rows(
         }
     }
 
-    if let Some(direct_to) = direct_to.filter(|_| !direct_to_target_on_plan) {
+    if let Some(direct_to) = direct_to.filter(|_| direct_to_overlay) {
         let chart_airport_id = airport_id_from_nav_ref(&direct_to.target);
         let uid = format!("direct-to:{}", nav_ref_key(&direct_to.target));
         rows.push(FlightPlanDisplayRowUiView {
@@ -2470,6 +2468,7 @@ fn nav_ref_key(nav_ref: &NavRef) -> String {
         ),
         NavRef::Fix(id) => format!("fix:{id}"),
         NavRef::LatLon(position) => format!("latlon:{:.7}:{:.7}", position.lat, position.lon),
+        NavRef::Spot(position) => format!("spot:{:.7}:{:.7}", position.lat, position.lon),
     }
 }
 
@@ -2719,6 +2718,17 @@ pub fn flight_plan_contains_nav_ref(plan: &FlightPlan, nav_ref: &NavRef) -> bool
                 matches!(nav_ref, NavRef::Airport(id) if id == &procedure.airport_id.0)
             }
         })
+}
+
+pub fn flight_plan_has_direct_to_overlay(plan: &FlightPlan) -> bool {
+    let direct_to = plan.guidance.as_ref().and_then(|guidance| {
+        (guidance.sequencing_mode == SequencingMode::DirectTo)
+            .then_some(guidance.direct_to.as_ref())
+            .flatten()
+    });
+    direct_to
+        .as_ref()
+        .is_some_and(|state| !direct_to_on_plan(plan, state))
 }
 
 fn direct_to_on_plan(plan: &FlightPlan, direct_to: &DirectToState) -> bool {
@@ -3734,6 +3744,7 @@ fn nav_ref_label(nav_ref: &NavRef) -> String {
             identifier.clone()
         }
         NavRef::LatLon(position) => format!("{:.4},{:.4}", position.lat, position.lon),
+        NavRef::Spot(position) => format!("SPOT {:.4},{:.4}", position.lat, position.lon),
     }
 }
 

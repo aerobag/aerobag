@@ -130,6 +130,7 @@ pub fn display_path_for_procedure_leg(
         initial_course_override,
         None,
         false,
+        false,
     )
 }
 
@@ -160,6 +161,9 @@ pub fn display_path_for_procedure_leg_before_following_segment(
         initial_course_override,
         Some(following_segment_records),
         allow_hold_exit_to_following_course,
+        leg_start.path_termination.trim() == "PI"
+            && leg_start.sequence == 10
+            && terminal_record.sequence == leg_start.sequence,
     )
 }
 
@@ -376,6 +380,7 @@ pub fn display_path_for_single_procedure_step(
         initial_course_override,
         None,
         false,
+        false,
     )
 }
 
@@ -446,6 +451,7 @@ fn hold_display_path(
 fn procedure_turn_display_path_from_start(
     leg: &ProcedureLegMaterializationRecord,
     start_override: Option<LatLon>,
+    align_to_defining_course: bool,
 ) -> Option<LegDisplayPath> {
     let fix = leg.nav_position?;
     let barb_course_deg = leg.magnetic_course_deg? + course_reference_variation_deg(leg);
@@ -459,7 +465,20 @@ fn procedure_turn_display_path_from_start(
     } else {
         normalize_bearing_degrees(barb_course_deg - 45.0)
     };
-    let outbound_start = start_override.unwrap_or(fix);
+    let has_start_override = start_override.is_some();
+    let outbound_start = start_override.unwrap_or_else(|| {
+        if align_to_defining_course {
+            let course_anchor = leg.defining_nav_position.unwrap_or(fix);
+            procedure_turn_course_line_start(fix, course_anchor, outbound_course_deg)
+        } else {
+            fix
+        }
+    });
+    let inbound_target = if align_to_defining_course && !has_start_override {
+        outbound_start
+    } else {
+        fix
+    };
     let outbound_end = destination_point(
         outbound_start,
         outbound_course_deg,
@@ -480,9 +499,9 @@ fn procedure_turn_display_path_from_start(
     let intercept = intersect_heading_with_course(
         intercept_start,
         return_heading_deg,
-        fix,
+        inbound_target,
         inbound_course_deg,
-        fix,
+        inbound_target,
     )?;
     let mut elements = Vec::new();
     let mut sources = Vec::new();
@@ -499,8 +518,27 @@ fn procedure_turn_display_path_from_start(
         180.0
     );
     push_segment!(elements, sources, intercept_start, intercept);
-    push_segment!(elements, sources, intercept, fix);
+    push_segment!(elements, sources, intercept, inbound_target);
     Some(dashed_path(elements, sources))
+}
+
+fn procedure_turn_course_line_start(
+    fix: LatLon,
+    course_anchor: LatLon,
+    outbound_course_deg: f64,
+) -> LatLon {
+    let course_unit = bearing_unit_vector(outbound_course_deg);
+    let along_course_nm = projection_along_course_nm(course_anchor, fix, course_unit);
+    let projected = offset_latlon(
+        course_anchor,
+        course_unit.0 * along_course_nm,
+        course_unit.1 * along_course_nm,
+    );
+    if distance_between_points_nm(projected, fix) <= 0.3 {
+        projected
+    } else {
+        fix
+    }
 }
 
 fn arc_to_fix_path_from_start(
@@ -659,6 +697,7 @@ fn build_procedure_leg_display_path(
     initial_course_override: Option<f64>,
     following_segment_records: Option<&[ProcedureLegMaterializationRecord]>,
     allow_hold_exit_to_following_course: bool,
+    align_standalone_pi_to_defining_course: bool,
 ) -> Option<LegDisplayPath> {
     let mut current_position = initial_position_override.or(leg_start.nav_position)?;
     let mut current_course_deg = initial_course_override.or_else(|| {
@@ -1014,7 +1053,15 @@ fn build_procedure_leg_display_path(
                         }
                     }
                 }
-                let path = procedure_turn_display_path_from_start(step, procedure_turn_start)?;
+                let align_pi_to_defining_course = steps.get(index + 1).is_some_and(|next_step| {
+                    next_step.key.route_type.trim() != step.key.route_type.trim()
+                }) || (align_standalone_pi_to_defining_course
+                    && terminal_record.sequence == step.sequence);
+                let path = procedure_turn_display_path_from_start(
+                    step,
+                    procedure_turn_start,
+                    align_pi_to_defining_course,
+                )?;
                 let next_cf_course_deg = steps
                     .iter()
                     .skip(index + 1)
@@ -1030,7 +1077,11 @@ fn build_procedure_leg_display_path(
                 {
                     push_segment!(elements, debug_sources, current_position, fix);
                 }
-                current_position = fix;
+                current_position = path
+                    .elements
+                    .last()
+                    .and_then(display_element_end_position)
+                    .unwrap_or(fix);
                 // Keep the handoff into the procedure turn exact. The arrival-to-PI corner
                 // at fixes such as KPWA VOR-A/IRW MUTTS should be filleted later, not hidden
                 // by an eager fly-over arc that moves the published PI outbound leg.
@@ -1334,8 +1385,10 @@ fn build_procedure_leg_display_path(
                         if angular_difference_degrees(current_heading_deg, direct_course_deg) > 5.0
                         {
                             if cf_turn_direction(step).is_none()
-                                && angular_difference_degrees(current_heading_deg, direct_course_deg)
-                                    <= 20.0
+                                && angular_difference_degrees(
+                                    current_heading_deg,
+                                    direct_course_deg,
+                                ) <= 20.0
                             {
                                 // Small no-turn CF fixes are fly-by corners; do not synthesize
                                 // a tiny arc that a later fillet pass should own (KALO I12/MCW).

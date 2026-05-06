@@ -68,8 +68,8 @@ pub use ownship::{
     OwnshipSelectionCommand, OwnshipSelectionPolicy, OwnshipSourceId, OwnshipSourceKind,
     OwnshipSourceMenuItem, OwnshipSourceRegistration, OwnshipSourceStatus,
     OwnshipSourceStatusUpdate, OwnshipState, OwnshipUiState, ResolvedOwnshipState,
-    SituationControlInput, SituationKinematics, SituationRingCandidate, SituationSample,
-    SourceConnectionState,
+    SituationControlInput, SituationControlMenuItem, SituationKinematics, SituationRingCandidate,
+    SituationSample, SourceConnectionState,
 };
 pub use package_management::{
     default_offline_package_preferences, initialize_offline_packages, plan_offline_packages,

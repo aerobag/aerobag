@@ -96,6 +96,7 @@ data class WireOwnshipControlModel(
     val launcher_label: String = "No GPS",
     val launcher_tone: WireOwnshipControlTone = WireOwnshipControlTone.Unavailable,
     val sources: List<WireOwnshipSourceMenuItem> = emptyList(),
+    val situation_controls: List<WireSituationControlMenuItem> = emptyList(),
 )
 
 @Serializable
@@ -152,6 +153,28 @@ data class WireOwnshipSourceMenuItem(
     val active: Boolean,
     val status_label: String,
 )
+
+@Serializable
+data class WireSituationControlMenuItem(
+    val input: WireSituationControlInput,
+    val label: String,
+    val enabled: Boolean,
+)
+
+@Serializable
+enum class WireSituationControlInput {
+    @SerialName("skip_backward")
+    SkipBackward,
+
+    @SerialName("fast_rewind")
+    FastRewind,
+
+    @SerialName("fast_forward")
+    FastForward,
+
+    @SerialName("skip_forward")
+    SkipForward,
+}
 
 @Serializable
 data class WireOwnshipSourceStatus(

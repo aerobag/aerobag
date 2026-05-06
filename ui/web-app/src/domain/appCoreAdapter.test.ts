@@ -27,6 +27,7 @@ const snapshotJson = JSON.stringify({
         launcher_label: "No GPS",
         launcher_tone: "unavailable",
         sources: [],
+        situation_controls: [],
       },
     },
     content_policy: "PreferLocal",

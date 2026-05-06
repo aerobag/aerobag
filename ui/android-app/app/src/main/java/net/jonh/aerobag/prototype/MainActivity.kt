@@ -1048,7 +1048,7 @@ private enum class MenuDockStyle(
     ),
     Situation(
         buttonWidth = ThumbSize * 2.4f,
-        trayWidth = ThumbSize * 2f,
+        trayWidth = (ThumbSize * 4f) + 9.dp,
         launcherMaxLines = 1,
     ),
 }
@@ -1366,44 +1366,67 @@ private fun SituationStatusBadge(
     onSituationControlInput: (SituationControlInput) -> Unit = {},
 ) {
     var open by remember { mutableStateOf(false) }
-    val options = controls.sources.map { source ->
-        MenuDockOption(
-            key = source.sourceId,
-            label = source.label,
-            active = source.active,
-            enabled = source.enabled,
-            onSelect = {
-                open = false
-                onSelectSource(source.sourceId)
-            },
-        )
-    }
     Box(modifier = modifier.wrapContentSize(unbounded = true, align = Alignment.TopEnd)) {
         MenuDock(
             launcherLabel = controls.launcherLabel,
             open = open,
             onToggle = { open = !open },
             style = MenuDockStyle.Situation,
-            options = options,
+            options = emptyList(),
+            body = {
+                SituationSourceRow(
+                    sources = controls.sources,
+                    onSelectSource = { sourceId ->
+                        open = false
+                        onSelectSource(sourceId)
+                    },
+                )
+            },
             footer = {
-                SituationTransportRow(onInput = onSituationControlInput)
+                SituationTransportRow(
+                    controls = controls.situationControls,
+                    onInput = onSituationControlInput,
+                )
             },
         )
     }
 }
 
 @Composable
+private fun SituationSourceRow(
+    sources: List<net.jonh.aerobag.prototype.domain.OwnshipSourceMenuItem>,
+    onSelectSource: (String) -> Unit,
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        sources.forEach { source ->
+            CompactSquareButton(
+                label = source.label,
+                enabled = source.enabled,
+                selected = source.active,
+                wide = false,
+                modifier = Modifier.size(ThumbSize),
+                maxLines = 2,
+                onClick = { onSelectSource(source.sourceId) },
+            )
+        }
+    }
+}
+
+@Composable
 private fun SituationTransportRow(
+    controls: List<net.jonh.aerobag.prototype.domain.SituationControlMenuItem>,
     onInput: (SituationControlInput) -> Unit,
 ) {
     Row(
         horizontalArrangement = Arrangement.spacedBy(3.dp),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        SituationTransportButton("⏮", SituationControlInput.SkipBackward, onInput)
-        SituationTransportButton("⏪", SituationControlInput.FastRewind, onInput)
-        SituationTransportButton("⏩", SituationControlInput.FastForward, onInput)
-        SituationTransportButton("⏭", SituationControlInput.SkipForward, onInput)
+        controls.forEach { control ->
+            SituationTransportButton(control.label, control.input, control.enabled, onInput)
+        }
     }
 }
 
@@ -1411,11 +1434,12 @@ private fun SituationTransportRow(
 private fun SituationTransportButton(
     label: String,
     input: SituationControlInput,
+    enabled: Boolean,
     onInput: (SituationControlInput) -> Unit,
 ) {
     CompactSquareButton(
         label = label,
-        enabled = true,
+        enabled = enabled,
         wide = false,
         modifier = Modifier
             .size(ThumbSize),
@@ -7936,6 +7960,7 @@ private fun MenuDock(
     onToggle: () -> Unit,
     style: MenuDockStyle,
     options: List<MenuDockOption>,
+    body: (@Composable ColumnScope.() -> Unit)? = null,
     footer: (@Composable ColumnScope.() -> Unit)? = null,
 ) {
     val density = LocalDensity.current
@@ -7979,18 +8004,22 @@ private fun MenuDock(
                         .width(style.trayWidth)
                         .heightIn(max = trayMaxHeight),
                 ) {
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        lazyColumnItems(options) { option ->
-                            MenuPanelRow(
-                                label = option.label,
-                                active = option.active,
-                                enabled = option.enabled,
-                                accentColor = option.accentColor,
-                                toggleState = option.toggleState,
-                                iconResId = option.iconResId,
-                                width = style.trayWidth,
-                                onSelect = option.onSelect,
-                            )
+                    if (body != null) {
+                        body()
+                    } else {
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            lazyColumnItems(options) { option ->
+                                MenuPanelRow(
+                                    label = option.label,
+                                    active = option.active,
+                                    enabled = option.enabled,
+                                    accentColor = option.accentColor,
+                                    toggleState = option.toggleState,
+                                    iconResId = option.iconResId,
+                                    width = style.trayWidth,
+                                    onSelect = option.onSelect,
+                                )
+                            }
                         }
                     }
                     footer?.invoke(this)

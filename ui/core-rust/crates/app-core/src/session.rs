@@ -206,7 +206,7 @@ fn create_ui_session_inner(
         &AppState::default(),
         AppEvent::ReplaceFlightPlan(plan.clone()),
     )?;
-    let app_state = register_replay_source(app_state)?;
+    let app_state = register_default_situation_sources(app_state)?;
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_reduce_replace_flight_plan");
     }
@@ -2137,7 +2137,17 @@ fn selected_ownship_source_kind(ownship: &crate::OwnshipState) -> Option<crate::
     }
 }
 
-fn register_replay_source(app_state: AppState) -> AppResult<AppState> {
+fn register_default_situation_sources(app_state: AppState) -> AppResult<AppState> {
+    let app_state = state::reduce(
+        &app_state,
+        AppEvent::RegisterOwnshipSource(crate::OwnshipSourceRegistration {
+            source_id: crate::OwnshipSourceId(DIRECT_SITUATION_SOURCE_ID.to_string()),
+            source_kind: crate::OwnshipSourceKind::FlightPlanSimulator,
+            display_name: "Plan Preview".to_string(),
+            selectable: true,
+            auto_eligible: false,
+        }),
+    )?;
     state::reduce(
         &app_state,
         AppEvent::RegisterOwnshipSource(crate::OwnshipSourceRegistration {
@@ -3206,9 +3216,30 @@ mod tests {
                 }),
             "Replay must be available in the ownship source tray",
         );
+        assert_eq!(
+            init.snapshot
+                .app_ui_state
+                .ownship
+                .controls
+                .sources
+                .iter()
+                .map(|source| source.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Plan\nPreview", "Replay"]
+        );
         assert!(
             !init.snapshot.debug_state.playback_visible,
             "playback panel starts hidden until Replay is active",
+        );
+        assert!(
+            init.snapshot
+                .app_ui_state
+                .ownship
+                .controls
+                .situation_controls
+                .iter()
+                .all(|control| !control.enabled),
+            "no source selected means transport controls are disabled",
         );
 
         let replay = select_ownship_source_in_session(
@@ -3245,6 +3276,15 @@ mod tests {
             gps.debug_state.playback_visible,
             "pushing GPS must not change a manual Replay selection",
         );
+        assert!(
+            gps.app_ui_state
+                .ownship
+                .controls
+                .situation_controls
+                .iter()
+                .all(|control| control.enabled),
+            "Replay source owns enabled transport controls",
+        );
 
         let gps = select_ownship_source_in_session(
             init.handle,
@@ -3256,6 +3296,25 @@ mod tests {
         assert!(
             !gps.debug_state.playback_visible,
             "playback panel hides as soon as Replay is not the active source",
+        );
+        assert_eq!(
+            gps.app_ui_state
+                .ownship
+                .controls
+                .sources
+                .iter()
+                .map(|source| source.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["GPS", "Plan\nPreview", "Replay"]
+        );
+        assert!(
+            gps.app_ui_state
+                .ownship
+                .controls
+                .situation_controls
+                .iter()
+                .all(|control| !control.enabled),
+            "GPS source owns disabled transport controls",
         );
     }
 

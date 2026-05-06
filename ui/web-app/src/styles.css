@@ -1254,6 +1254,10 @@ button {
   opacity: 0.45;
 }
 
+.trayOptions {
+  display: contents;
+}
+
 .chartTray.chartTrayWide .trayButton {
   width: calc(var(--thumb) * 4);
   min-width: calc(var(--thumb) * 4);
@@ -1261,11 +1265,21 @@ button {
   flex: 0 0 auto;
 }
 
+.situationSourceRow {
+  display: grid;
+  grid-template-columns: repeat(3, var(--thumb));
+  gap: calc(var(--thumb) * 0.05);
+}
+
 .chartTraySituation .trayButton {
-  width: calc(var(--thumb) * 2);
-  min-width: calc(var(--thumb) * 2);
+  width: var(--thumb);
+  min-width: var(--thumb);
   height: var(--thumb);
+  padding: 0 calc(var(--thumb) * 0.04);
   flex: 0 0 auto;
+  white-space: pre-line;
+  text-align: center;
+  line-height: 1.02;
 }
 
 .situationTransportRow {

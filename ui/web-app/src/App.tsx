@@ -1026,6 +1026,7 @@ export default function App() {
           launcher_label: "No GPS",
           launcher_tone: "unavailable",
           sources: [],
+          situation_controls: [],
         },
       },
       content_policy: "PreferLocal",
@@ -3830,7 +3831,7 @@ function MapPage(props: {
           open={trayGroup.isOpen("ownship")}
           onToggle={() => trayGroup.toggle("ownship")}
           options={ownshipSourceOptions}
-          transportControls={<SituationTransportRow onInput={onSituationControlInput} />}
+          transportControls={<SituationTransportRow controls={ownshipControls.situation_controls} onInput={onSituationControlInput} />}
         />
         {mapIsVisible && situationOverlay ? (
           <>
@@ -5857,39 +5858,41 @@ function TrayDock(props: {
               onPointerDown={stopPointer}
               onPointerUp={stopPointer}
             >
-              {options.map((option) => (
-                <button
-                  key={option.id}
-                  type="button"
-                  className={`trayButton${option.active ? " isActive" : ""}${option.iconSrc ? " trayButtonWithIcon" : ""}${option.toggleState ? " trayButtonHasToggle" : ""}${option.toggleState?.visible && option.toggleState.enabled ? " isOn" : ""}${option.toggleState && option.toggleState.enabled && !option.toggleState.visible ? " isOff" : ""}`}
-                  data-testid={`tray-option-${option.id}`}
-                  disabled={option.disabled}
-                  style={option.accentColor ? ({ ["--tray-accent" as string]: option.accentColor } as CSSProperties) : undefined}
-                  onPointerDown={stopPointer}
-                  onPointerUp={stopPointer}
-                  onDoubleClick={stopDoubleClick}
-                  onClick={option.disabled ? undefined : option.onSelect}
-                >
-                  {option.iconSrc || option.toggleState ? (
-                    <span className="trayButtonContent">
-                      {option.iconSrc ? (
-                        <span className="trayButtonIconFrame" aria-hidden="true">
-                          <img className="trayButtonIcon" src={option.iconSrc} alt="" />
-                        </span>
-                      ) : null}
-                      <span className="trayButtonText">{option.label}</span>
-                      {option.toggleState ? (
-                        <span
-                          className={`trayButtonToggle${option.toggleState.visible ? " isOn" : ""}${option.toggleState.enabled ? "" : " isDisabled"}`}
-                          aria-hidden="true"
-                        >
-                          <span className="trayButtonToggleKnob" />
-                        </span>
-                      ) : null}
-                    </span>
-                  ) : option.label}
-                </button>
-              ))}
+              <div className={style === "situation" ? "situationSourceRow" : "trayOptions"}>
+                {options.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    className={`trayButton${option.active ? " isActive" : ""}${option.iconSrc ? " trayButtonWithIcon" : ""}${option.toggleState ? " trayButtonHasToggle" : ""}${option.toggleState?.visible && option.toggleState.enabled ? " isOn" : ""}${option.toggleState && option.toggleState.enabled && !option.toggleState.visible ? " isOff" : ""}`}
+                    data-testid={`tray-option-${option.id}`}
+                    disabled={option.disabled}
+                    style={option.accentColor ? ({ ["--tray-accent" as string]: option.accentColor } as CSSProperties) : undefined}
+                    onPointerDown={stopPointer}
+                    onPointerUp={stopPointer}
+                    onDoubleClick={stopDoubleClick}
+                    onClick={option.disabled ? undefined : option.onSelect}
+                  >
+                    {option.iconSrc || option.toggleState ? (
+                      <span className="trayButtonContent">
+                        {option.iconSrc ? (
+                          <span className="trayButtonIconFrame" aria-hidden="true">
+                            <img className="trayButtonIcon" src={option.iconSrc} alt="" />
+                          </span>
+                        ) : null}
+                        <span className="trayButtonText">{option.label}</span>
+                        {option.toggleState ? (
+                          <span
+                            className={`trayButtonToggle${option.toggleState.visible ? " isOn" : ""}${option.toggleState.enabled ? "" : " isDisabled"}`}
+                            aria-hidden="true"
+                          >
+                            <span className="trayButtonToggleKnob" />
+                          </span>
+                        ) : null}
+                      </span>
+                    ) : option.label}
+                  </button>
+                ))}
+              </div>
               {footer}
             </section>,
             document.body,
@@ -6606,7 +6609,7 @@ function ChartsPage(props: {
           open={trayGroup.isOpen("ownship")}
           onToggle={() => trayGroup.toggle("ownship")}
           options={ownshipSourceOptions}
-          transportControls={<SituationTransportRow onInput={props.onSituationControlInput} />}
+          transportControls={<SituationTransportRow controls={ownshipControls.situation_controls} onInput={props.onSituationControlInput} />}
         />
         {trayOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
 
@@ -7103,35 +7106,30 @@ function SituationStatusBadge(props: {
 }
 
 function SituationTransportRow(props: {
+  controls: OwnshipControlModel["situation_controls"];
   onInput: (input: SituationControlInput) => void;
 }) {
   return (
     <div className="situationTransportRow" role="group" aria-label="Plan preview and replay controls">
-      {situationTransportButtons.map((button) => (
+      {props.controls.map((button) => (
         <button
           key={button.input}
           type="button"
           className="trayButton trayButtonSquare situationTransportButton"
           aria-label={button.label}
           title={button.label}
+          disabled={!button.enabled}
           onPointerDown={stopPointer}
           onPointerUp={stopPointer}
           onDoubleClick={stopDoubleClick}
-          onClick={() => props.onInput(button.input)}
+          onClick={button.enabled ? () => props.onInput(button.input) : undefined}
         >
-          {button.glyph}
+          {button.label}
         </button>
       ))}
     </div>
   );
 }
-
-const situationTransportButtons: Array<{ input: SituationControlInput; glyph: string; label: string }> = [
-  { input: "skip_backward", glyph: "⏮", label: "Skip backward" },
-  { input: "fast_rewind", glyph: "⏪", label: "Fast rewind" },
-  { input: "fast_forward", glyph: "⏩", label: "Fast forward" },
-  { input: "skip_forward", glyph: "⏭", label: "Skip forward" },
-];
 
 function situationInputForKey(key: string): SituationControlInput | null {
   switch (key) {

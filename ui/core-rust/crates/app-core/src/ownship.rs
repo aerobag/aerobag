@@ -234,12 +234,20 @@ pub struct OwnshipSourceMenuItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SituationControlMenuItem {
+    pub input: SituationControlInput,
+    pub label: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OwnshipControlModel {
     pub mode: OwnshipMode,
     pub selection: OwnshipSelectionCommand,
     pub launcher_label: String,
     pub launcher_tone: OwnshipControlTone,
     pub sources: Vec<OwnshipSourceMenuItem>,
+    pub situation_controls: Vec<SituationControlMenuItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -269,6 +277,8 @@ impl Default for OwnshipState {
                 launcher_label: "No GPS".to_string(),
                 launcher_tone: OwnshipControlTone::Unavailable,
                 sources: Vec::new(),
+                situation_controls: situation_control_handler_for_mode(OwnshipMode::None)
+                    .menu_items(),
             },
             resolved,
             sources: Vec::new(),
@@ -615,12 +625,21 @@ fn project_controls(
     sources: &[OwnshipSourceStatus],
     mode: OwnshipMode,
 ) -> OwnshipControlModel {
-    let menu_sources = sources
+    let mut menu_sources = sources
         .iter()
         .filter(|source| source.selectable)
         .map(|source| project_source_menu_item(source, policy))
         .collect::<Vec<_>>();
+    menu_sources.sort_by(|left, right| {
+        source_menu_rank(left.source_kind)
+            .cmp(&source_menu_rank(right.source_kind))
+            .then_with(|| left.label.cmp(&right.label))
+            .then_with(|| left.source_id.0.cmp(&right.source_id.0))
+    });
     let active = menu_sources.iter().find(|source| source.active);
+    let selected_mode = active
+        .map(|source| mode_for_kind(source.source_kind))
+        .unwrap_or(mode);
     let launcher_label = active
         .map(|source| source.launcher_label.clone())
         .unwrap_or_else(|| "No GPS".to_string());
@@ -639,6 +658,7 @@ fn project_controls(
         launcher_label,
         launcher_tone,
         sources: menu_sources,
+        situation_controls: situation_control_handler_for_mode(selected_mode).menu_items(),
     }
 }
 
@@ -673,7 +693,78 @@ fn source_menu_label(source: &OwnshipSourceStatus) -> String {
         OwnshipSourceKind::GpxPlayback
         | OwnshipSourceKind::AdsbTrackPlayback
         | OwnshipSourceKind::LiveNetworkTrack => "Replay".to_string(),
-        OwnshipSourceKind::FlightPlanSimulator => "Plan Preview".to_string(),
+        OwnshipSourceKind::FlightPlanSimulator => "Plan\nPreview".to_string(),
+    }
+}
+
+fn source_menu_rank(kind: OwnshipSourceKind) -> u8 {
+    match kind {
+        OwnshipSourceKind::DeviceGps | OwnshipSourceKind::ExternalGps => 0,
+        OwnshipSourceKind::FlightPlanSimulator => 1,
+        OwnshipSourceKind::GpxPlayback
+        | OwnshipSourceKind::AdsbTrackPlayback
+        | OwnshipSourceKind::LiveNetworkTrack => 2,
+        OwnshipSourceKind::ExternalAhrs => 3,
+    }
+}
+
+trait SituationControlHandler {
+    fn controls_enabled(&self) -> bool;
+
+    fn menu_items(&self) -> Vec<SituationControlMenuItem> {
+        let enabled = self.controls_enabled();
+        vec![
+            SituationControlMenuItem {
+                input: SituationControlInput::SkipBackward,
+                label: "⏮".to_string(),
+                enabled,
+            },
+            SituationControlMenuItem {
+                input: SituationControlInput::FastRewind,
+                label: "⏪".to_string(),
+                enabled,
+            },
+            SituationControlMenuItem {
+                input: SituationControlInput::FastForward,
+                label: "⏩".to_string(),
+                enabled,
+            },
+            SituationControlMenuItem {
+                input: SituationControlInput::SkipForward,
+                label: "⏭".to_string(),
+                enabled,
+            },
+        ]
+    }
+}
+
+struct DisabledSituationControlHandler;
+struct ReplaySituationControlHandler;
+struct PlanPreviewSituationControlHandler;
+
+impl SituationControlHandler for DisabledSituationControlHandler {
+    fn controls_enabled(&self) -> bool {
+        false
+    }
+}
+
+impl SituationControlHandler for ReplaySituationControlHandler {
+    fn controls_enabled(&self) -> bool {
+        true
+    }
+}
+
+impl SituationControlHandler for PlanPreviewSituationControlHandler {
+    fn controls_enabled(&self) -> bool {
+        true
+    }
+}
+
+fn situation_control_handler_for_mode(mode: OwnshipMode) -> Box<dyn SituationControlHandler> {
+    match mode {
+        OwnshipMode::Replay => Box::new(ReplaySituationControlHandler),
+        OwnshipMode::Simulated => Box::new(PlanPreviewSituationControlHandler),
+        OwnshipMode::None | OwnshipMode::Live => Box::new(DisabledSituationControlHandler),
     }
 }
 

@@ -1299,6 +1299,7 @@ private fun OwnshipControlModel.toWire() = WireOwnshipControlModel(
     launcher_label = launcherLabel,
     launcher_tone = launcherTone.toWire(),
     sources = sources.map { it.toWire() },
+    situation_controls = situationControls.map { it.toWire() },
 )
 
 private fun OwnshipSourceMenuItem.toWire() = WireOwnshipSourceMenuItem(
@@ -1311,6 +1312,19 @@ private fun OwnshipSourceMenuItem.toWire() = WireOwnshipSourceMenuItem(
     active = active,
     status_label = statusLabel,
 )
+
+private fun SituationControlMenuItem.toWire() = WireSituationControlMenuItem(
+    input = input.toWire(),
+    label = label,
+    enabled = enabled,
+)
+
+private fun SituationControlInput.toWire(): WireSituationControlInput = when (this) {
+    SituationControlInput.SkipBackward -> WireSituationControlInput.SkipBackward
+    SituationControlInput.FastRewind -> WireSituationControlInput.FastRewind
+    SituationControlInput.FastForward -> WireSituationControlInput.FastForward
+    SituationControlInput.SkipForward -> WireSituationControlInput.SkipForward
+}
 
 private fun WireAppState.toUi() = AppState(
     activePlan = active_plan?.toUiFlightPlan(),
@@ -1404,6 +1418,7 @@ private fun WireOwnshipControlModel.toUi() = OwnshipControlModel(
     launcherLabel = launcher_label,
     launcherTone = launcher_tone.toUi(),
     sources = sources.map { it.toUi() },
+    situationControls = situation_controls.map { it.toUi() },
 )
 
 private fun WireOwnshipUiState.toUi() = OwnshipUiState(
@@ -1449,6 +1464,19 @@ private fun WireOwnshipSourceMenuItem.toUi() = OwnshipSourceMenuItem(
     active = active,
     statusLabel = status_label,
 )
+
+private fun WireSituationControlMenuItem.toUi() = SituationControlMenuItem(
+    input = input.toUi(),
+    label = label,
+    enabled = enabled,
+)
+
+private fun WireSituationControlInput.toUi(): SituationControlInput = when (this) {
+    WireSituationControlInput.SkipBackward -> SituationControlInput.SkipBackward
+    WireSituationControlInput.FastRewind -> SituationControlInput.FastRewind
+    WireSituationControlInput.FastForward -> SituationControlInput.FastForward
+    WireSituationControlInput.SkipForward -> SituationControlInput.SkipForward
+}
 
 private fun WireOwnshipMode.toUi(): OwnshipMode = when (this) {
     WireOwnshipMode.None -> OwnshipMode.None

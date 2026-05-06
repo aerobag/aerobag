@@ -692,6 +692,11 @@ export type OwnshipControlModel = {
     active: boolean;
     status_label: string;
   }>;
+  situation_controls: Array<{
+    input: SituationControlInput;
+    label: string;
+    enabled: boolean;
+  }>;
 };
 
 export type OwnshipUiState = {

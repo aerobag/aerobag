@@ -659,6 +659,7 @@ data class OwnshipControlModel(
     val launcherLabel: String = "No GPS",
     val launcherTone: OwnshipControlTone = OwnshipControlTone.Unavailable,
     val sources: List<OwnshipSourceMenuItem> = emptyList(),
+    val situationControls: List<SituationControlMenuItem> = emptyList(),
 )
 
 data class OwnshipUiState(
@@ -680,6 +681,12 @@ data class OwnshipSourceMenuItem(
     val enabled: Boolean,
     val active: Boolean,
     val statusLabel: String,
+)
+
+data class SituationControlMenuItem(
+    val input: SituationControlInput,
+    val label: String,
+    val enabled: Boolean,
 )
 
 data class SituationSample(

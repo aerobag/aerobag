@@ -2383,7 +2383,7 @@ fn apply_plan_preview_input(
                 offset_nm = 0.0;
             } else if record_index > 0 {
                 next_index = record_index - 1;
-                offset_nm = 0.0;
+                offset_nm = (records[next_index].distance_nm - PLAN_PREVIEW_FAST_STEP_NM).max(0.0);
             }
         }
         SituationControlInput::SkipForward => {
@@ -2391,7 +2391,7 @@ fn apply_plan_preview_input(
                 offset_nm = distance_nm;
             } else if record_index + 1 < records.len() {
                 next_index = record_index + 1;
-                offset_nm = records[next_index].distance_nm;
+                offset_nm = PLAN_PREVIEW_FAST_STEP_NM.min(records[next_index].distance_nm);
             }
         }
         SituationControlInput::FastRewind => {
@@ -3360,8 +3360,14 @@ mod tests {
         )
         .expect("skip to previous waypoint");
         let position = ownship_position(&after_previous);
-        assert_near(position.lat, 40.0);
-        assert_near(position.lon, -120.0);
+        assert!(
+            position.lon > -120.0 && position.lon < -119.0,
+            "expected skip-back at an intermediate waypoint to enter previous leg, got {position:?}",
+        );
+        assert!(
+            (position.lat - 40.0).abs() < 0.01,
+            "expected skip-back to stay near the previous leg, got {position:?}",
+        );
     }
 
     #[test]
@@ -3395,6 +3401,38 @@ mod tests {
         let position = ownship_position(&snapshot);
         assert_near(position.lat, 40.0);
         assert_near(position.lon, -120.0);
+    }
+
+    #[test]
+    fn plan_preview_skip_forward_from_waypoint_enters_next_leg() {
+        let mut plan = lat_lon_preview_plan();
+        plan.guidance.as_mut().expect("guidance").active_leg_index = 0;
+        let init = create_ui_session(minimal_vector_manifest_json(), plan, &[], None, None)
+            .expect("create session");
+        select_plan_preview(init.handle);
+
+        let at_intermediate_waypoint = apply_situation_control_input_in_session(
+            init.handle,
+            SituationControlInput::SkipForward,
+            0.0,
+        )
+        .expect("skip to intermediate waypoint");
+        let position = ownship_position(&at_intermediate_waypoint);
+        assert_near(position.lat, 40.0);
+        assert_near(position.lon, -119.0);
+
+        let down_next_leg = apply_situation_control_input_in_session(
+            init.handle,
+            SituationControlInput::SkipForward,
+            0.0,
+        )
+        .expect("skip into next leg");
+        let position = ownship_position(&down_next_leg);
+        assert!(
+            position.lat > 40.0 && position.lat < 41.0,
+            "expected preview to move north along the SEA outbound leg, got {position:?}",
+        );
+        assert_near(position.lon, -119.0);
     }
 
     #[test]

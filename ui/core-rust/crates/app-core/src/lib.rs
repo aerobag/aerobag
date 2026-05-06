@@ -2647,6 +2647,7 @@ enum HeadingContinuityAllowance {
     PublishedFcCfFeederToFinalCourse,
     PublishedProcedureTurnEntry,
     PublishedMissedRouteTurnWithRoom,
+    ShortMapToAirportNavaidDirect,
 }
 
 impl HeadingContinuityAllowance {
@@ -2668,11 +2669,12 @@ impl HeadingContinuityAllowance {
             Self::PublishedFcCfFeederToFinalCourse => "published_fc_cf_feeder_to_final_course",
             Self::PublishedProcedureTurnEntry => "published_procedure_turn_entry",
             Self::PublishedMissedRouteTurnWithRoom => "published_missed_route_turn_with_room",
+            Self::ShortMapToAirportNavaidDirect => "short_map_to_airport_navaid_direct",
         }
     }
 
     #[cfg(test)]
-    fn all() -> [Self; 15] {
+    fn all() -> [Self; 16] {
         [
             Self::PublishedAcuteTurn,
             Self::InternalGeneratedDisplayPathTurn,
@@ -2689,6 +2691,7 @@ impl HeadingContinuityAllowance {
             Self::PublishedFcCfFeederToFinalCourse,
             Self::PublishedProcedureTurnEntry,
             Self::PublishedMissedRouteTurnWithRoom,
+            Self::ShortMapToAirportNavaidDirect,
         ]
     }
 }
@@ -3023,6 +3026,12 @@ fn named_heading_continuity_allowance_with_context(
         return Some((
             HeadingContinuityAllowance::PublishedMissedRouteTurnWithRoom,
             120.0,
+        ));
+    }
+    if is_short_map_to_airport_navaid_direct(previous, current, next) {
+        return Some((
+            HeadingContinuityAllowance::ShortMapToAirportNavaidDirect,
+            20.0,
         ));
     }
     if is_published_waypoint_turn_with_room(previous, current) {
@@ -3456,6 +3465,52 @@ fn is_published_missed_route_turn_with_room(
         return previous_len_nm >= 0.9 && current_len_nm >= 0.5;
     }
     previous_len_nm >= 0.9 && current_len_nm >= 2.0
+}
+
+fn is_short_map_to_airport_navaid_direct(
+    previous: &DisplayElementHeadingSignature,
+    current: &DisplayElementHeadingSignature,
+    next: Option<&DisplayElementHeadingSignature>,
+) -> bool {
+    fn airport_navaid_label(airport_id: &str) -> &str {
+        airport_id
+            .trim()
+            .strip_prefix('K')
+            .unwrap_or(airport_id.trim())
+    }
+
+    let airport_navaid = airport_navaid_label(&previous.airport_id);
+    if airport_navaid.is_empty()
+        || previous.airport_id != current.airport_id
+        || previous.procedure_id != current.procedure_id
+    {
+        return false;
+    }
+
+    let current_len_nm = great_circle_distance_nm(current.start_position, current.end_position);
+    if current.path_termination == "DF"
+        && current.element_kind == DisplayElementKind::Segment
+        && current.start_label.starts_with("RW")
+        && current.end_label == airport_navaid
+        && current_len_nm <= 1.5
+    {
+        // KSPW I12 and KSTC I13/I31 encode the missed approach as a direct-to
+        // the colocated airport navaid immediately after the MAP/runway fix.
+        // Keep this narrow so arbitrary short post-runway kinks still fail.
+        return next.is_some_and(|next| {
+            next.start_label == current.end_label
+                && matches!(next.path_termination.as_str(), "CF" | "DF" | "HF" | "HM")
+        });
+    }
+
+    let previous_len_nm = great_circle_distance_nm(previous.start_position, previous.end_position);
+    previous.path_termination == "DF"
+        && previous.element_kind == DisplayElementKind::Segment
+        && previous.start_label.starts_with("RW")
+        && previous.end_label == airport_navaid
+        && current.start_label == previous.end_label
+        && matches!(current.path_termination.as_str(), "CF" | "DF" | "HF" | "HM")
+        && previous_len_nm <= 1.5
 }
 
 fn published_acute_turn_heading_tolerance_deg(

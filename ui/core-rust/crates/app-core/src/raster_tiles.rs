@@ -668,10 +668,10 @@ fn pick_level(
     } else {
         WORLD_SIZE
     } * multiplier;
-    let eligible_levels = map_view
-        .levels
-        .iter()
-        .filter(|level| level.zoom <= map_view.max_source_zoom);
+    let max_reasonable_source_zoom = zoom.ceil() as i64;
+    let eligible_levels = map_view.levels.iter().filter(|level| {
+        level.zoom <= map_view.max_source_zoom && level.zoom <= max_reasonable_source_zoom
+    });
     eligible_levels
         .clone()
         .filter(|level| {
@@ -1032,6 +1032,42 @@ mod tests {
         );
         assert!(!plan.tiles.is_empty());
         assert!(plan.tiles.iter().all(|tile| tile.source_zoom == 7));
+    }
+
+    #[test]
+    fn missing_low_zoom_chart_tiles_suppress_layer_instead_of_flooding_high_zoom_tiles() {
+        let catalog = RasterMapCatalog {
+            selected_map_id: "sec:nw".to_string(),
+            selected_map: None,
+            displayed_maps: vec![option(
+                "sec:nw",
+                "sec",
+                "NW_SEC",
+                vec![
+                    level(8, 40, 43, 155, 158),
+                    level(9, 80, 86, 310, 316),
+                    level(10, 160, 172, 620, 632),
+                ],
+            )],
+            geometry: RasterDisplayGeometry::default(),
+            family_options: Vec::new(),
+        };
+        let wide_view = raster_tile_plan(
+            &catalog,
+            &MapViewport {
+                center: LatLon {
+                    lat: 38.13483035117734,
+                    lon: -121.95686691849119,
+                },
+                zoom: 2.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            786.0,
+            708.0,
+        );
+
+        assert!(wide_view.tiles.is_empty());
     }
 
     #[test]

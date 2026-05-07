@@ -1195,6 +1195,10 @@ class NativeUiSession internal constructor(
         bridge.ingestMetarsInSessionJson(handle, payloadJson)
     }
 
+    fun ingestTafsJson(payloadJson: String) {
+        bridge.ingestTafsInSessionJson(handle, payloadJson)
+    }
+
     fun ingestMetarTilesJson(tilesJson: String) {
         bridge.ingestMetarTilesInSessionJson(handle, tilesJson)
     }

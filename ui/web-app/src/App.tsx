@@ -2990,6 +2990,7 @@ function MapPage(props: {
             throw new Error(`failed to load METAR product: ${response.status}`);
           }
           const payload = (await response.json()) as MetarProductPayload;
+          let tafPayload: TafProductPayload | null = null;
           try {
             const pirepResponse = await fetch("/fast-products/metars/pireps.json", {
               signal: controller.signal,
@@ -3009,13 +3010,12 @@ function MapPage(props: {
               error: errorMessage(error),
             });
           }
-          await session.ingestMetars(payload);
           try {
             const tafResponse = await fetch("/fast-products/metars/tafs.json", {
               signal: controller.signal,
             });
             if (tafResponse.ok) {
-              await session.ingestTafs((await tafResponse.json()) as TafProductPayload);
+              tafPayload = (await tafResponse.json()) as TafProductPayload;
             } else if (tafResponse.status !== 404) {
               throw new Error(`failed to load TAF product: ${tafResponse.status}`);
             }
@@ -3027,6 +3027,10 @@ function MapPage(props: {
               zoom: viewport.zoom,
               error: errorMessage(error),
             });
+          }
+          await session.ingestMetars(payload);
+          if (tafPayload) {
+            await session.ingestTafs(tafPayload);
           }
           debugLog("map.overlay.metars.ingest.done", {
             zoom: viewport.zoom,
@@ -4024,7 +4028,11 @@ function MapPage(props: {
           >
             {mapOverlay.visible_features.map((feature) => {
               return (
-                <g key={feature.id} transform={`translate(${feature.screen_x} ${feature.screen_y})`}>
+                <g
+                  key={feature.id}
+                  transform={`translate(${feature.screen_x} ${feature.screen_y})`}
+                  data-testid={feature.label ? `parity:map-feature:${feature.kind}:${feature.label}:${feature.id}` : undefined}
+                >
                   <VectorPointSymbol feature={feature} />
                 </g>
               );

@@ -3,13 +3,23 @@ package net.jonh.aerobag.prototype.domain
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
+import java.net.HttpURLConnection
+import java.net.URL
 import java.time.Instant
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.jsonPrimitive
 
 data class BootstrapFixture(
     val packageManagementNowEpochMsOverride: Long?,
@@ -55,6 +65,8 @@ private data class WireDevBootstrap(
 
 object SampleData {
     private const val BOOTSTRAP_ASSET_PATH = "fixtures/dev-bootstrap.json"
+    private const val DEV_SERVER_BASE_URL_ASSET_PATH = "fixtures/android-dev-server-base-url.txt"
+    private const val DEFAULT_ANDROID_DEV_SERVER_BASE_URL = "http://10.0.2.2:8082"
     private const val TAG = "SampleData"
     private const val FALLBACK_VECTOR_MANIFEST_JSON =
         """{"airspace":{"reference_tile_min_zoom":0,"reference_tile_max_zoom":12,"label_tile_min_zoom":0,"label_tile_max_zoom":12}}"""
@@ -101,7 +113,7 @@ object SampleData {
             buildJsonObject {
                 put("kind", "vector_manifest")
             },
-        ).toString()
+        ).toString().let { augmentVectorManifestWithDynamicPointLayers(context, it) }
         val vectorManifestMs = SystemClock.elapsedRealtime() - vectorManifestStartMs
         val chartCatalogStartMs = SystemClock.elapsedRealtime()
         val mapViews =
@@ -168,6 +180,73 @@ object SampleData {
             )
         }
     }
+
+    private fun augmentVectorManifestWithDynamicPointLayers(context: Context, vectorManifestJson: String): String =
+        runCatching {
+            val devServerBaseUrl = loadAndroidDevServerBaseUrl(context)
+            val metarManifestJson = fetchJsonOrNull(resolveDevServerUrl("/fast-products/metars/manifest.json", devServerBaseUrl))
+                ?: return vectorManifestJson
+            val metarManifest = json.parseToJsonElement(metarManifestJson).jsonObject
+            val mapView = metarManifest["map_view"]?.jsonObject ?: return vectorManifestJson
+            val availableZooms = mapView["levels"]
+                ?.jsonArray
+                ?.mapNotNull { level -> level.jsonObject["zoom"]?.jsonPrimitive?.intOrNull }
+                ?.distinct()
+                ?.sorted()
+                .orEmpty()
+            if (availableZooms.isEmpty()) {
+                return vectorManifestJson
+            }
+
+            val tilePathTemplate = mapView["tile_path_template"]?.jsonPrimitive?.contentOrNull
+                ?: "points/metars/{z}/{x}/{y}.json"
+            val metarLayer = buildJsonObject {
+                put("min_zoom", mapView["min_zoom"] ?: JsonPrimitive(availableZooms.first()))
+                put("max_zoom", mapView["max_zoom"] ?: JsonPrimitive(availableZooms.last()))
+                put("available_zooms", JsonArray(availableZooms.map(::JsonPrimitive)))
+                put("tile_path_template", tilePathTemplate)
+            }
+
+            val baseManifest = json.parseToJsonElement(vectorManifestJson).jsonObject
+            val merged = baseManifest.toMutableMap()
+            val pointLayers = (baseManifest["point_layers"] as? JsonObject)?.toMutableMap() ?: mutableMapOf()
+            pointLayers["metars"] = metarLayer
+            merged["point_layers"] = JsonObject(pointLayers)
+
+            val files = (baseManifest["files"] as? JsonObject)?.toMutableMap() ?: mutableMapOf()
+            files["point_tiles_metars"] = JsonPrimitive(tilePathTemplate)
+            files["metars"] = JsonPrimitive("metars.json")
+            merged["files"] = JsonObject(files)
+
+            Log.i(TAG, "vectorManifest dynamic metars zooms=${availableZooms.joinToString(",")}")
+            JsonObject(merged).toString()
+        }.getOrElse { error ->
+            Log.w(TAG, "dynamic METAR layer metadata unavailable", error)
+            vectorManifestJson
+        }
+
+    private fun loadAndroidDevServerBaseUrl(context: Context): String =
+        runCatching {
+            context.assets.open(DEV_SERVER_BASE_URL_ASSET_PATH)
+                .bufferedReader()
+                .use { it.readText().trim() }
+                .takeIf { it.isNotBlank() }
+        }.getOrNull() ?: DEFAULT_ANDROID_DEV_SERVER_BASE_URL
+
+    private fun resolveDevServerUrl(sourcePath: String, devServerBaseUrl: String): String =
+        when {
+            sourcePath.startsWith("http://") || sourcePath.startsWith("https://") -> sourcePath
+            sourcePath.startsWith("/") -> "$devServerBaseUrl$sourcePath"
+            else -> "$devServerBaseUrl/$sourcePath"
+        }
+
+    private fun fetchJsonOrNull(url: String): String? =
+        runCatching {
+            val connection = URL(url).openConnection() as HttpURLConnection
+            connection.connectTimeout = 1500
+            connection.readTimeout = 2500
+            connection.inputStream.bufferedReader().use { it.readText() }
+        }.getOrNull()
 
     fun inspectNavDbStatus(
         context: Context,

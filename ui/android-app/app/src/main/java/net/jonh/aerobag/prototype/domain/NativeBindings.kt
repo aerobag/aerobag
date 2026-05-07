@@ -296,6 +296,11 @@ interface NativeBridge {
         payloadJson: String,
     ): String
 
+    fun ingestTafsInSessionJson(
+        handle: Long,
+        payloadJson: String,
+    ): String
+
     fun getMapOverlayInSessionJson(
         handle: Long,
         viewportJson: String,
@@ -665,6 +670,11 @@ object NativeBindings : NativeBridge {
     ): String
 
     external override fun ingestMetarsInSessionJson(
+        handle: Long,
+        payloadJson: String,
+    ): String
+
+    external override fun ingestTafsInSessionJson(
         handle: Long,
         payloadJson: String,
     ): String

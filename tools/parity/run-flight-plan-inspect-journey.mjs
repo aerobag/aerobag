@@ -14,6 +14,17 @@ const ANDROID_ACTIVITY = `${ANDROID_PACKAGE}/.MainActivity`;
 const LAYER_OPTION_IDS = ["vectors", "metars", "nexrad", "terrain_warning"];
 const PLAN_CONTROL_IDS = ["next-leg", "sequence", "suspend", "unsuspend"];
 const CORE_ROW_ACTION_IDS = ["activate_leg", "direct_to", "insert_before", "insert_after", "move_up", "move_down"];
+const WEB_PARITY_VIEWPORT = Object.freeze({
+  width: 360,
+  height: 736,
+  deviceScaleFactor: 3,
+  mobile: true,
+});
+const INSPECT_AIRPORT = Object.freeze({
+  ident: "KBFI",
+  label: "BFI",
+  navRefId: "airports:KBFI",
+});
 
 function usage() {
   console.log(`Usage:
@@ -307,6 +318,7 @@ async function webJourney(url) {
     await cdp.send("Network.enable");
     await cdp.send("Runtime.enable");
     await cdp.send("Console.enable");
+    await cdp.send("Emulation.setDeviceMetricsOverride", WEB_PARITY_VIEWPORT);
     await cdp.send("Page.navigate", { url });
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-surface\"]') !== null", "map surface");
     recordStep(out, "app started");
@@ -358,18 +370,14 @@ async function webJourney(url) {
     await webDrag(cdp, "[data-testid=\"map-surface\"]", 40, 20);
     recordStep(out, "dragged map surface");
 
-    await webSetInput(cdp, "[data-testid=\"chart-search-input\"]", "KTIW");
-    await waitForWeb(cdp, "document.querySelector('[data-testid=\"chart-search-suggestion-KTIW\"]') !== null", "KTIW search suggestion");
-    await webClick(cdp, "[data-testid=\"chart-search-suggestion-KTIW\"]");
+    await webSetInput(cdp, "[data-testid=\"chart-search-input\"]", INSPECT_AIRPORT.ident);
+    await waitForWeb(cdp, `document.querySelector('[data-testid="chart-search-suggestion-${INSPECT_AIRPORT.ident}"]') !== null`, `${INSPECT_AIRPORT.ident} search suggestion`);
+    await webClick(cdp, `[data-testid="chart-search-suggestion-${INSPECT_AIRPORT.ident}"]`);
     await delay(500);
-    recordStep(out, "recentered on KTIW via chart search");
-    recordCheck(out, "chartSearchRecentersKTIW", true);
+    recordStep(out, `recentered on ${INSPECT_AIRPORT.ident} via chart search`);
+    recordCheck(out, "chartSearchRecentersInspectAirport", true);
 
-    await waitForWeb(cdp, `
-      [...document.querySelectorAll("svg text")]
-        .some((entry) => entry.textContent.trim() === "TIW" && entry.closest("svg")?.getAttribute("class") === "vectorOverlay")
-    `, "TIW vector label");
-    await webClickVectorPointByLabel(cdp, "TIW");
+    await webClick(cdp, "[data-testid=\"map-surface\"]");
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-selection-tray\"]') !== null", "map selection tray");
     recordStep(out, "opened map inspection tray");
     recordCheck(out, "inspectTrayAppears", true);
@@ -377,12 +385,17 @@ async function webJourney(url) {
 
     const selectedInspectLabel = await webEval(cdp, `
       (() => {
-        const item = [...document.querySelectorAll('[data-testid^="map-selection-item-airport-"]')][0];
+        const items = [...document.querySelectorAll('[data-testid^="map-selection-item-airport-"]')];
+        const item = items.find((entry) => entry.dataset.testid === ${JSON.stringify(`map-selection-item-airport-${INSPECT_AIRPORT.ident}`)});
         item?.click();
         return (item?.textContent ?? "").replace(/\\s+/g, " ").trim();
       })()
     `);
-    recordCheck(out, "inspectItemSelected", true);
+    const inspectItemSelected = selectedInspectLabel.length > 0;
+    recordCheck(out, "inspectItemSelected", inspectItemSelected);
+    if (!inspectItemSelected) {
+      recordGap(out, "selected inspected airport", `${INSPECT_AIRPORT.ident} airport was not visible in the inspect tray`);
+    }
     recordInventory(out, "chart.inspect.selected-actions", await webCollectTestIds(cdp, "map-selection-action-"));
     const insertAvailable = await webExists(cdp, "[data-testid=\"map-selection-action-insert\"]:not(:disabled)");
     recordCheck(out, "inspectInsertActionPresent", insertAvailable);
@@ -459,17 +472,28 @@ async function webClick(cdp, selector) {
   await dispatchClick(cdp, box.x + box.width / 2, box.y + box.height / 2);
 }
 
-async function webClickVectorPointByLabel(cdp, label) {
+async function webClickVectorFeature(cdp, target) {
   const point = await webEval(cdp, `
     (() => {
-      const label = ${JSON.stringify(label)};
-      const text = [...document.querySelectorAll("svg text")]
-        .find((entry) => entry.textContent.trim() === label && entry.closest("svg")?.getAttribute("class") === "vectorOverlay");
-      if (!text) return null;
-      const rect = text.getBoundingClientRect();
+      const target = ${JSON.stringify(target)};
+      const features = [...document.querySelectorAll('[data-testid^="parity:map-feature:"]')];
+      const feature = features.find((entry) => {
+        const tag = entry.getAttribute("data-testid") ?? "";
+        const parts = tag.split(":");
+        const kind = parts[2] ?? "";
+        const label = parts[3] ?? "";
+        const id = parts.slice(4).join(":");
+        return kind.toLowerCase() === target.kind.toLowerCase() &&
+          (!target.idContains || id.includes(target.idContains)) &&
+          (!target.label || label === target.label || id.includes(target.label));
+      });
+      if (!feature) return null;
+      const rect = feature.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
       const point = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
       window.__parityLastVectorClick = {
-        label,
+        target,
+        tag: feature.getAttribute("data-testid"),
         x: point.x,
         y: point.y,
         hit: document.elementFromPoint(point.x, point.y)?.className?.toString?.() ?? document.elementFromPoint(point.x, point.y)?.tagName ?? null,
@@ -479,14 +503,14 @@ async function webClickVectorPointByLabel(cdp, label) {
   `);
   if (!point) {
     const labels = await webEval(cdp, `
-      [...document.querySelectorAll("svg text")]
-        .map((entry) => ({ text: entry.textContent.trim(), className: entry.getAttribute("class") ?? "", svgClass: entry.closest("svg")?.getAttribute("class") ?? "" }))
-        .filter((entry) => entry.text)
+      [...document.querySelectorAll('[data-testid^="parity:map-feature:"]')]
+        .map((entry) => entry.getAttribute("data-testid") ?? "")
+        .filter(Boolean)
         .slice(0, 80)
     `).catch(() => []);
-    throw new Error(`missing vector point label ${label}; visible labels=${JSON.stringify(labels)}`);
+    throw new Error(`missing vector feature ${JSON.stringify(target)}; visible features=${JSON.stringify(labels)}`);
   }
-  await webDispatchPointerClick(cdp, "[data-testid=\"map-surface\"]", point.x, point.y);
+  await dispatchClick(cdp, point.x, point.y);
 }
 
 async function webDispatchPointerClick(cdp, selector, x, y) {
@@ -1285,26 +1309,23 @@ async function androidJourney(serial) {
   await androidCheckPlateActionClasses(serial, out);
 
   if (await androidTapTag(serial, out, "focused chart search", "chart-search-input", 5000)) {
-    adb(serial, ["shell", "input", "text", "KTIW"]);
+    adb(serial, ["shell", "input", "text", INSPECT_AIRPORT.ident]);
     try {
-      await androidTapTag(serial, out, "recentered on KTIW via chart search", "chart-search-suggestion-KTIW", 10000);
+      await androidTapTag(serial, out, `selected ${INSPECT_AIRPORT.ident} chart search suggestion`, `chart-search-suggestion-${INSPECT_AIRPORT.ident}`, 12000);
+      adb(serial, ["shell", "input", "keyevent", "ENTER"]);
       await delay(1000);
-      recordCheck(out, "chartSearchRecentersKTIW", true);
+      recordStep(out, `recentered on ${INSPECT_AIRPORT.ident} via chart search`);
+      recordCheck(out, "chartSearchRecentersInspectAirport", true);
     } catch (_error) {
-      recordGap(out, "recentered on KTIW via chart search", "KTIW search suggestion was not visible");
-      recordCheck(out, "chartSearchRecentersKTIW", false);
+      recordGap(out, `recentered on ${INSPECT_AIRPORT.ident} via chart search`, `${INSPECT_AIRPORT.ident} airport feature was not visible after submitting chart search`);
+      recordCheck(out, "chartSearchRecentersInspectAirport", false);
     }
   } else {
-    recordCheck(out, "chartSearchRecentersKTIW", false);
+    recordCheck(out, "chartSearchRecentersInspectAirport", false);
   }
 
-  if (out.checks.chartSearchRecentersKTIW === true) {
-    const mapSurface = await androidWaitForNode(serial, (node) => hasAndroidTag(node, "parity:map-surface"), 7000, "map surface before inspect tap");
-    const mapRect = rectOfBounds(mapSurface.bounds);
-    const x = Math.round((mapRect.left + mapRect.right) / 2);
-    const y = Math.round((mapRect.top + mapRect.bottom) / 2);
-    adb(serial, ["shell", "input", "tap", String(x), String(y)]);
-    recordStep(out, "clicked recentered map surface");
+  if (out.checks.chartSearchRecentersInspectAirport === true) {
+    await androidTapTag(serial, out, "clicked recentered map surface", "parity:map-surface", 7000);
     await delay(500);
   } else {
     recordGap(out, "clicked recentered map surface", "skipped because chart search did not prove recenter");
@@ -1326,10 +1347,10 @@ async function androidJourney(serial) {
       serial,
       (node) => {
         const tag = androidTag(node);
-        return tag.startsWith("parity:map-selection-item:") && tag !== "parity:map-selection-item:SPOT";
+        return tag === `parity:map-selection-item:airport-${INSPECT_AIRPORT.ident}`;
       },
       5000,
-      "first inspect item",
+      `${INSPECT_AIRPORT.ident} inspect item`,
     );
     const tag = androidTag(firstInspectableItem);
     selectedLabel = tag.slice("parity:map-selection-item:".length).split("-").at(-1) ?? "";
@@ -1383,7 +1404,7 @@ function comparePlatformOutputs(outputs) {
     "openedPlanFromCdi",
     "planCdiReturnsToChart",
     "chartCdiReturnsToPlan",
-    "chartSearchRecentersKTIW",
+    "chartSearchRecentersInspectAirport",
     "appendRoutePresent",
     "appendRouteFeedbackVisible",
     "appendRouteCommitsKAWO",

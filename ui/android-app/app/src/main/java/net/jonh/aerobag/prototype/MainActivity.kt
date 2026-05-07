@@ -5231,7 +5231,7 @@ private fun MapExplorerPage(
             repeat(8) {
                 var ingested = false
                 if (overlay.neededMetars) {
-                    val payloadJson = withContext(Dispatchers.IO) {
+                    val (payloadJson, tafsJson) = withContext(Dispatchers.IO) {
                         val metarsJson = fetchJsonOrEmpty(
                             resolvePlaybackTraceUrl("/fast-products/metars/metars.json", devServerBaseUrl),
                             """{"schema_version":1,"version_label":"unavailable","metars_by_station":{}}""",
@@ -5239,10 +5239,16 @@ private fun MapExplorerPage(
                         val pirepsJson = fetchJsonOrNull(
                             resolvePlaybackTraceUrl("/fast-products/metars/pireps.json", devServerBaseUrl),
                         )
-                        mergePirepsIntoMetarProductJson(json, metarsJson, pirepsJson)
+                        val tafsJson = fetchJsonOrNull(
+                            resolvePlaybackTraceUrl("/fast-products/metars/tafs.json", devServerBaseUrl),
+                        )
+                        mergePirepsIntoMetarProductJson(json, metarsJson, pirepsJson) to tafsJson
                     }
                     currentCoroutineContext().ensureActive()
                     uiSession.ingestMetarsJson(payloadJson)
+                    tafsJson?.let {
+                        uiSession.ingestTafsJson(tafsJson)
+                    }
                     ingested = true
                 }
                 if (overlay.neededMetarTiles.isNotEmpty()) {
@@ -5972,6 +5978,21 @@ private fun MapExplorerPage(
                         }
                     }
                 }
+            }
+            displayedMapOverlay.visibleFeatures.forEach { feature ->
+                val tagLabel = feature.label.trim().takeIf { it.isNotEmpty() } ?: return@forEach
+                Box(
+                    modifier = Modifier
+                        .offset {
+                            val targetSizePx = (ThumbSize * 0.5f).roundToPx()
+                            IntOffset(
+                                x = feature.screenX.toFloat().roundToInt() - targetSizePx / 2,
+                                y = feature.screenY.toFloat().roundToInt() - targetSizePx / 2,
+                            )
+                        }
+                        .size(ThumbSize * 0.5f)
+                        .testTag("parity:map-feature:${feature.kind}:$tagLabel:${feature.id}"),
+                )
             }
         }
         if (displayedMapOverlay.visibleMetars.isNotEmpty()) {

@@ -323,10 +323,7 @@ pub fn perform_flight_plan_row_action_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-pub fn load_plate_procedure_in_session_json(
-    handle: u64,
-    load_id: &str,
-) -> Result<String, String> {
+pub fn load_plate_procedure_in_session_json(handle: u64, load_id: &str) -> Result<String, String> {
     let outcome =
         app_core::session::load_plate_procedure_in_session(handle as u32, load_id.to_string())
             .map_err(|err| err.to_string())?;
@@ -757,6 +754,13 @@ pub fn ingest_metars_in_session_json(handle: u64, payload_json: &str) -> Result<
     let payload: app_core::MetarProductPayload =
         serde_json::from_str(payload_json).map_err(|err| err.to_string())?;
     app_core::ingest_metars_in_session(handle as u32, &payload).map_err(|err| err.to_string())?;
+    Ok("null".to_string())
+}
+
+pub fn ingest_tafs_in_session_json(handle: u64, payload_json: &str) -> Result<String, String> {
+    let payload: app_core::TafProductPayload =
+        serde_json::from_str(payload_json).map_err(|err| err.to_string())?;
+    app_core::ingest_tafs_in_session(handle as u32, &payload).map_err(|err| err.to_string())?;
     Ok("null".to_string())
 }
 
@@ -2308,6 +2312,20 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ing
     let result = (|| {
         let payload = get_java_string(&mut env, payload_json)?;
         ingest_metars_in_session_json(handle as u64, &payload)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ingestTafsInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    payload_json: JString,
+) -> jstring {
+    let result = (|| {
+        let payload = get_java_string(&mut env, payload_json)?;
+        ingest_tafs_in_session_json(handle as u64, &payload)
     })();
     return_string(&mut env, result)
 }

@@ -113,7 +113,9 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.draw.alpha
@@ -6364,7 +6366,7 @@ private fun MapSelectionItemIcon(item: MapSelectionItem, modifier: Modifier) {
             drawMapSelectionSpotSymbol(center, scale, uiTheme)
         }
         item.airspaceIcon != null -> Canvas(modifier = modifier) {
-            drawAirspaceDisplayPath(uiTheme, item.airspaceIcon)
+            drawAirspaceIcon(uiTheme, item.airspaceIcon)
         }
         else -> Box(modifier = modifier, contentAlignment = Alignment.Center) {
             Text(item.sublabel.ifBlank { item.label }, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
@@ -6381,6 +6383,18 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMapSelectionSpo
             rotate(layer.transformDegrees, center) { drawLayer() }
         } else {
             drawLayer()
+        }
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceIcon(uiTheme: UiTheme, feature: AirspaceDisplayPath) {
+    val iconSize = size.minDimension
+    val scale = iconSize / 64f
+    val left = (size.width - iconSize) / 2f
+    val top = (size.height - iconSize) / 2f
+    translate(left = left, top = top) {
+        scale(scale = scale, pivot = Offset.Zero) {
+            drawAirspaceDisplayPath(uiTheme, feature)
         }
     }
 }

@@ -788,6 +788,11 @@ struct BuildLockGuard {
     node_dir: PathBuf,
 }
 
+#[derive(Debug)]
+struct PublicationLockGuard {
+    path: PathBuf,
+}
+
 impl Drop for BuildLockGuard {
     fn drop(&mut self) {
         let _ = set_tree_readonly(&self.node_dir, false);
@@ -797,6 +802,12 @@ impl Drop for BuildLockGuard {
         {
             let _ = set_tree_readonly(&self.node_dir, true);
         }
+    }
+}
+
+impl Drop for PublicationLockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
     }
 }
 
@@ -1166,6 +1177,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         config.max_heavy_jobs,
         config.fetch_cache_mode,
     ))?;
+    let _publication_lock = acquire_publication_lock(&config.build_root, |message| {
+        let _ = master_log.log(message.to_string());
+    })?;
 
     #[derive(Debug, Clone)]
     enum ProductScheduledTaskKind {
@@ -2896,6 +2910,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
 pub fn build_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<FastSubsetBuildResult> {
     fs::create_dir_all(&config.build_root)
         .with_context(|| format!("failed to create {}", config.build_root.display()))?;
+    let _publication_lock = acquire_publication_lock(&config.build_root, |message| {
+        eprintln!("{message}");
+    })?;
     let current_artifacts_path = current_artifacts_path_for_fast_subset(config)?;
     let mut current: CurrentArtifactsManifest = serde_json::from_slice(
         &fs::read(&current_artifacts_path)
@@ -16469,6 +16486,60 @@ fn read_lock_pid(lock_path: &Path) -> anyhow::Result<Option<u32>> {
 
 fn process_is_alive(pid: u32) -> bool {
     Path::new("/proc").join(pid.to_string()).exists()
+}
+
+fn acquire_publication_lock<F>(
+    build_root: &Path,
+    mut log: F,
+) -> anyhow::Result<PublicationLockGuard>
+where
+    F: FnMut(&str),
+{
+    let lock_dir = artifact_root_from_build_root(build_root)
+        .join("private-work")
+        .join("publication-locks");
+    fs::create_dir_all(&lock_dir)
+        .with_context(|| format!("failed to create {}", lock_dir.display()))?;
+    let lock_name = build_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("published");
+    let lock_path = lock_dir.join(format!("{lock_name}.lock"));
+    let mut logged_wait = false;
+    loop {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(mut file) => {
+                let pid = std::process::id();
+                let now = utc_now_string();
+                writeln!(file, "pid={pid}").ok();
+                writeln!(file, "started_at_utc={now}").ok();
+                log(&format!(
+                    "publication-lock acquired path={}",
+                    lock_path.display()
+                ));
+                return Ok(PublicationLockGuard { path: lock_path });
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                remove_stale_lock_if_needed(&lock_path)?;
+                if !logged_wait {
+                    log(&format!(
+                        "publication-lock waiting path={}",
+                        lock_path.display()
+                    ));
+                    logged_wait = true;
+                }
+                thread::sleep(Duration::from_secs(2));
+            }
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to acquire {}", lock_path.display()));
+            }
+        }
+    }
 }
 
 fn normalize_node_record_paths(mut record: NodeRecord, build_root: &Path) -> NodeRecord {

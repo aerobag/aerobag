@@ -1,5 +1,10 @@
 let seq = 0;
 let globalErrorLoggingInstalled = false;
+// Enable verbose bug-hunt logs with ?aerobagVerboseDebug=1 or
+// localStorage.setItem("aerobag.verboseDebug", "1").
+const verboseDebugQueryKeys = ["aerobagVerboseDebug", "debugVerbose", "verboseDebug"];
+const verboseDebugStorageKey = "aerobag.verboseDebug";
+let verboseDebugLoggingEnabledCache: boolean | null = null;
 
 type DebugLogRecord = {
   seq: number;
@@ -51,6 +56,39 @@ export function debugLog(tag: string, data?: unknown) {
     data,
   });
   scheduleFlush();
+}
+
+export function verboseDebugLog(tag: string, data?: unknown) {
+  if (!verboseDebugLoggingEnabled()) {
+    return;
+  }
+  debugLog(tag, data);
+}
+
+export function verboseDebugLoggingEnabled() {
+  if (verboseDebugLoggingEnabledCache !== null) {
+    return verboseDebugLoggingEnabledCache;
+  }
+  if (typeof window === "undefined") {
+    return false;
+  }
+  const params = new URLSearchParams(window.location.search);
+  for (const key of verboseDebugQueryKeys) {
+    const value = params.get(key);
+    if (value === null) {
+      continue;
+    }
+    verboseDebugLoggingEnabledCache = value !== "0" && value !== "false" && value !== "off";
+    return verboseDebugLoggingEnabledCache;
+  }
+  try {
+    const value = window.localStorage.getItem(verboseDebugStorageKey);
+    verboseDebugLoggingEnabledCache = value === "1" || value === "true" || value === "on";
+    return verboseDebugLoggingEnabledCache;
+  } catch {
+    verboseDebugLoggingEnabledCache = false;
+    return false;
+  }
 }
 
 export function installGlobalErrorLogging() {

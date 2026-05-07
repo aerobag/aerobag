@@ -41,7 +41,7 @@ import type {
 } from "./types";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 import { attachNavKvStoreToSession, runCoreHadOperation, runCoreHadSessionOperation } from "./navKv";
-import { debugLog, debugTiming } from "./debugLog";
+import { debugLog, debugTiming, verboseDebugLog } from "./debugLog";
 
 export type DerivedChartPageState = {
   airports: ChartPageData["airports"];
@@ -1381,7 +1381,7 @@ async function loadBestAvailableAdapterUncached(
   if (typeof mod.default === "function") {
     await debugTiming("wasm.init", () => mod.default?.());
   }
-  debugLog("wasm.exports.check.start");
+  verboseDebugLog("wasm.exports.check.start");
   if (
     typeof mod.situation_ring_candidates_json !== "function" ||
     typeof mod.create_ui_session !== "function" ||
@@ -1446,7 +1446,7 @@ async function loadBestAvailableAdapterUncached(
   ) {
     throw new Error("generated wasm module is missing required exports");
   }
-  debugLog("wasm.exports.check.done");
+  verboseDebugLog("wasm.exports.check.done");
 
   return {
     adapter: new WasmAppCoreAdapter(mod as WasmModule),

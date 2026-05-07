@@ -123,7 +123,7 @@ import type {
   VisiblePirepFeature,
 } from "./domain/appCoreAdapter";
 import { airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
-import { debugLog, debugTiming, installGlobalErrorLogging } from "./domain/debugLog";
+import { debugLog, debugTiming, installGlobalErrorLogging, verboseDebugLog } from "./domain/debugLog";
 import { TerrainRenderWorkerClient } from "./domain/terrainRenderWorkerClient";
 
 type SurfaceSize = {
@@ -1412,7 +1412,7 @@ export default function App() {
   );
 
   useEffect(() => {
-    debugLog("charts.selection.render", {
+    verboseDebugLog("charts.selection.render", {
       selected_airport_id: selectedAirportId,
       selected_chart_id: selectedChartId,
       selected_chart_label: selectedChart?.label ?? null,
@@ -1698,7 +1698,7 @@ export default function App() {
       pageTilePaintTimingRef.current = timing;
       debugLog("web.page-to-map.start", { id: timing.id, from_page: timing.fromPage });
       requestAnimationFrame(() => {
-        debugLog("web.page-to-map.visible_frame", {
+        verboseDebugLog("web.page-to-map.visible_frame", {
           id: timing.id,
           from_page: timing.fromPage,
           elapsed_ms: Math.round(performance.now() - timing.startedAt),
@@ -1925,7 +1925,7 @@ export default function App() {
               "";
             const resolvedChartLabel = airport?.charts.find((chart) => chart.id === resolvedChartId)?.label ?? airport?.charts[0]?.label ?? "";
             if (uiSession) {
-              debugLog("charts.open.request", {
+              verboseDebugLog("charts.open.request", {
                 airport_id: airportId,
                 chart_id: resolvedChartId,
                 chart_label: resolvedChartLabel,
@@ -1935,7 +1935,7 @@ export default function App() {
                 airportId,
                 resolvedChartId || undefined,
               ).then((nextSnapshot) => {
-                debugLog("charts.open.snapshot", {
+                verboseDebugLog("charts.open.snapshot", {
                   requested_airport_id: airportId,
                   requested_chart_id: resolvedChartId,
                   selected_airport_id: nextSnapshot.chart_page_state.selected_airport_id,
@@ -2066,7 +2066,7 @@ export default function App() {
           }}
           onSelectChart={(chartId) => {
             const nextChart = selectedAirport?.charts.find((chart) => chart.id === chartId);
-            debugLog("charts.select.request", {
+            verboseDebugLog("charts.select.request", {
               requested_airport_id: selectedAirport?.id ?? null,
               requested_chart_id: chartId,
               requested_chart_label: nextChart?.label ?? null,
@@ -2074,7 +2074,7 @@ export default function App() {
             });
             if (uiSession) {
               void uiSession.selectChart(chartId).then((nextSnapshot) => {
-                debugLog("charts.select.snapshot", {
+                verboseDebugLog("charts.select.snapshot", {
                   requested_chart_id: chartId,
                   selected_airport_id: nextSnapshot.chart_page_state.selected_airport_id,
                   selected_chart_id: nextSnapshot.chart_page_state.selected_chart_id,
@@ -2355,7 +2355,7 @@ function MapPage(props: {
       }
       const requestSummary = terrainRequestSummary(frame.query.tile_requests);
       const missingSummary = terrainRequestSummary(missingRequests);
-      debugLog("terrain.overlay.render.plan", {
+      verboseDebugLog("terrain.overlay.render.plan", {
         request_count: frame.query.tile_requests.length,
         cached_count: cachedCount,
         missing_count: missingRequests.length,
@@ -2382,7 +2382,7 @@ function MapPage(props: {
     if (!activeFrame) {
       return;
     }
-    debugLog("terrain.overlay.frame.incomplete", {
+    verboseDebugLog("terrain.overlay.frame.incomplete", {
       altitude_bucket: activeFrame.altitudeBucket,
       request_count: activeFrame.query.tile_requests.length,
     });
@@ -2426,7 +2426,7 @@ function MapPage(props: {
                 const fetchStartedAt = performance.now();
                 const response = await fetch(`/terrain-products/${sourceTile.product_id}/${sourceTile.path}`);
                 if (response.status === 404) {
-                  debugLog("terrain.overlay.tile.missing", {
+                  verboseDebugLog("terrain.overlay.tile.missing", {
                     key: task.request.key,
                     source: sourceCacheKey,
                   });
@@ -2453,7 +2453,7 @@ function MapPage(props: {
             const renderElapsedMs = performance.now() - renderStartedAt;
             const parsed = parseTerrainRawRgba(rawBytes);
             terrainTileCacheRef.current.set(cacheKey, parsed);
-            debugLog("terrain.overlay.tile.done", {
+            verboseDebugLog("terrain.overlay.tile.done", {
               key: task.request.key,
               altitude_bucket: task.altitudeBucket,
               source_count: tileBytesList.length,
@@ -2594,7 +2594,7 @@ function MapPage(props: {
     )
       .then((plan) => {
         if (!cancelled) {
-          pageTilePaintTiming && debugLog("web.page-to-map.plan", {
+          pageTilePaintTiming && verboseDebugLog("web.page-to-map.plan", {
             id: pageTilePaintTiming.id,
             from_page: pageTilePaintTiming.fromPage,
             elapsed_ms: Math.round(performance.now() - pageTilePaintTiming.startedAt),
@@ -2860,7 +2860,7 @@ function MapPage(props: {
   }, [mapIsVisible, mapLayerState.terrain_warning.visible, surfaceSize.height, surfaceSize.width, terrainAltitudeBucket, uiSession, viewport]);
 
   useEffect(() => {
-    debugLog("map.nav_element.render", {
+    verboseDebugLog("map.nav_element.render", {
       app_state_active_plan: plan?.id ?? null,
       plan_guidance: planUiState?.guidance?.nav_element ?? null,
       ownship_mode: ownship.mode,
@@ -2880,7 +2880,7 @@ function MapPage(props: {
       const startedAt = performance.now();
       const segments = await appCoreAdapter.projectFlightPlanRoute(plan, planUiState);
       const elapsedMs = Math.round(performance.now() - startedAt);
-      debugLog("map.route.segments", {
+      verboseDebugLog("map.route.segments", {
         count: segments.length,
         elapsed_ms: elapsedMs,
         segments: segments.map((segment) => ({
@@ -3161,13 +3161,13 @@ function MapPage(props: {
         }
       }
       try {
-        debugLog("map.overlay.query.start", {
+        verboseDebugLog("map.overlay.query.start", {
           zoom: viewport.zoom,
           width: surfaceSize.width,
           height: surfaceSize.height,
         });
         overlay = await session.queryMapOverlay(viewport, surfaceSize.width, surfaceSize.height);
-        debugLog("map.overlay.query.done", {
+        verboseDebugLog("map.overlay.query.done", {
           zoom: viewport.zoom,
           elapsed_ms: Math.round(performance.now() - startedAt),
           needed_point_tiles: overlay.needed_point_tiles.length,
@@ -3221,7 +3221,7 @@ function MapPage(props: {
           }
           throw error;
         }
-        debugLog("map.overlay.query.refresh.done", {
+        verboseDebugLog("map.overlay.query.refresh.done", {
           zoom: viewport.zoom,
           elapsed_ms: Math.round(performance.now() - refreshStartedAt),
           needed_point_tiles: overlay.needed_point_tiles.length,
@@ -3352,7 +3352,7 @@ function MapPage(props: {
     if (!uiSession || !mapFollowUiState.following || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return;
     }
-    debugLog("map.follow.sync.request", {
+    verboseDebugLog("map.follow.sync.request", {
       zoom: nextViewport.zoom,
       center_world_x: nextViewport.centerWorldX,
       center_world_y: nextViewport.centerWorldY,
@@ -3384,7 +3384,7 @@ function MapPage(props: {
       return;
     }
     if (gestureActiveRef.current) {
-      debugLog("map.follow.target.skip_during_gesture", {
+      verboseDebugLog("map.follow.target.skip_during_gesture", {
         zoom: mapFollowTargetViewport.zoom,
         center_lat: mapFollowTargetViewport.center.lat,
         center_lon: mapFollowTargetViewport.center.lon,
@@ -3393,7 +3393,7 @@ function MapPage(props: {
     }
     const nextViewport = mapViewportFromCore(mapFollowTargetViewport);
     if (!sameMapViewport(nextViewport, viewport)) {
-      debugLog("map.follow.target.apply", {
+      verboseDebugLog("map.follow.target.apply", {
         zoom: nextViewport.zoom,
         center_world_x: nextViewport.centerWorldX,
         center_world_y: nextViewport.centerWorldY,
@@ -3450,7 +3450,7 @@ function MapPage(props: {
       const dx = point.x - dragRef.current.last.x;
       const dy = point.y - dragRef.current.last.y;
       const nextViewport = dragViewport(viewportRef.current, dx, dy);
-      debugLog("map.drag.viewport", {
+      verboseDebugLog("map.drag.viewport", {
         dx,
         dy,
         zoom: nextViewport.zoom,
@@ -3485,7 +3485,7 @@ function MapPage(props: {
         surfaceSize.width,
         surfaceSize.height,
       );
-      debugLog("map.pinch.viewport", {
+      verboseDebugLog("map.pinch.viewport", {
         zoom: nextViewport.zoom,
         center_world_x: nextViewport.centerWorldX,
         center_world_y: nextViewport.centerWorldY,
@@ -4587,7 +4587,7 @@ function PlaybackWidget(props: {
       return;
     }
     if (Math.abs(scrubCursorSeconds - committedCursorSeconds) < 1e-6) {
-      debugLog("playback.seek.scrub_cleared", {
+      verboseDebugLog("playback.seek.scrub_cleared", {
         scrub_cursor_seconds: scrubCursorSeconds,
         committed_cursor_seconds: committedCursorSeconds,
       });
@@ -4596,7 +4596,7 @@ function PlaybackWidget(props: {
   }, [committedCursorSeconds, scrubCursorSeconds]);
 
   useEffect(() => {
-    debugLog("playback.seek.state", {
+    verboseDebugLog("playback.seek.state", {
       committed_cursor_seconds: committedCursorSeconds,
       scrub_cursor_seconds: scrubCursorSeconds,
       displayed_cursor_seconds: cursorSeconds,
@@ -4690,7 +4690,7 @@ function PlaybackWidget(props: {
 
   function beginScrub(clientX: number) {
     const nextCursorSeconds = cursorSecondsForPointer(clientX);
-    debugLog("playback.seek.pointer_move", {
+    verboseDebugLog("playback.seek.pointer_move", {
       pointer_x: clientX,
       next_cursor_seconds: nextCursorSeconds,
       committed_cursor_seconds: committedCursorSeconds,
@@ -4782,7 +4782,7 @@ function PlaybackWidget(props: {
         onPointerUp={(event) => {
           stopPointer(event);
           const nextCursorSeconds = cursorSecondsForPointer(event.clientX);
-          debugLog("playback.seek.pointer_up_custom", {
+          verboseDebugLog("playback.seek.pointer_up_custom", {
             pointer_x: event.clientX,
             next_cursor_seconds: nextCursorSeconds,
             committed_cursor_seconds: committedCursorSeconds,
@@ -5163,7 +5163,7 @@ function FlightPlanPage(props: {
             if (!selectedRow.chartAirportId || !selectedRow.showPlateTargetId) {
               return;
             }
-            debugLog("plan.show_plate.match", {
+            verboseDebugLog("plan.show_plate.match", {
               airport_id: selectedRow.chartAirportId,
               procedure_id: selectedRow.procedureId,
               plate_id: selectedRow.showPlateTargetId,
@@ -6650,9 +6650,9 @@ function ChartsPage(props: {
       return;
     }
     let cancelled = false;
-    debugLog("charts.load_procedure.query", { plate_id: selectedChart.id });
+    verboseDebugLog("charts.load_procedure.query", { plate_id: selectedChart.id });
     void appCoreAdapter.describePlateProcedureLoads(plan, selectedChart.id).then((loads) => {
-      debugLog("charts.load_procedure.result", {
+      verboseDebugLog("charts.load_procedure.result", {
         plate_id: selectedChart.id,
         load_count: loads.length,
         loads,

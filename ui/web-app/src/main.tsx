@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
-import { debugLog } from "./domain/debugLog";
+import { debugLog, verboseDebugLog } from "./domain/debugLog";
 import "./styles.css";
 
 declare global {
@@ -91,7 +91,7 @@ function logStartupResources() {
         decoded_body_size: entry.decodedBodySize,
       }))
       .sort((left, right) => left.start_time_ms - right.start_time_ms);
-    debugLog("PERF_RESOURCES", { resources });
+    verboseDebugLog("PERF_RESOURCES", { resources });
   }, 0);
 }
 

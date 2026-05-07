@@ -4525,6 +4525,7 @@ fn build_offline_region_catalog(resource_index: &ResourceIndex) -> OfflineRegion
         regions.push(chart_offline_region_record(region));
     }
     regions.extend(plate_offline_region_records(resource_index));
+    deconflict_offline_region_labels(&mut regions);
     OfflineRegionCatalogRecord {
         schema_version: 1,
         regions,
@@ -4759,14 +4760,120 @@ fn buffered_segment_polygon(
 }
 
 fn polygon_label_position(polygon: &[OfflineRegionLatLon]) -> OfflineRegionLatLon {
+    let polygon = unwrap_antimeridian_points(polygon.to_vec());
     let (lat_sum, lon_sum) = polygon.iter().fold((0.0, 0.0), |(lat, lon), point| {
         (lat + point.lat, lon + point.lon)
     });
     let count = polygon.len().max(1) as f64;
-    OfflineRegionLatLon {
+    normalize_offline_region_lon(OfflineRegionLatLon {
         lat: lat_sum / count,
         lon: lon_sum / count,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OfflineRegionLabelLayout {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+const OFFLINE_REGION_LABEL_LAYOUT_ZOOM: f64 = 4.0;
+const OFFLINE_REGION_LABEL_TILE_SIZE_PX: f64 = 256.0;
+const OFFLINE_REGION_LABEL_FONT_PX: f64 = 13.0;
+const OFFLINE_REGION_LABEL_WIDTH_PER_CHAR_PX: f64 = 7.5;
+const OFFLINE_REGION_LABEL_BOX_GROWTH: f64 = 1.5;
+const OFFLINE_REGION_LABEL_MIN_SEPARATION_PX: f64 = 2.0;
+const OFFLINE_REGION_LABEL_MAX_ITERATIONS: usize = 32;
+
+fn deconflict_offline_region_labels(regions: &mut [OfflineRegionRecord]) {
+    let mut labels = regions
+        .iter()
+        .map(|region| offline_region_label_layout(region))
+        .collect::<Vec<_>>();
+    let world_size = offline_region_label_world_size();
+
+    for _ in 0..OFFLINE_REGION_LABEL_MAX_ITERATIONS {
+        let mut moved = false;
+        for left_index in 0..labels.len() {
+            for right_index in (left_index + 1)..labels.len() {
+                let (left, right) = labels.split_at_mut(right_index);
+                let left_label = &mut left[left_index];
+                let right_label = &mut right[0];
+                let dx = shortest_world_delta(right_label.x - left_label.x, world_size);
+                let dy = right_label.y - left_label.y;
+                let overlap_x = (left_label.width + right_label.width) / 2.0 - dx.abs();
+                let overlap_y = (left_label.height + right_label.height) / 2.0 - dy.abs();
+                if overlap_x <= 0.0 || overlap_y <= 0.0 {
+                    continue;
+                }
+
+                moved = true;
+                if overlap_x < overlap_y {
+                    let direction = if dx < 0.0 { -1.0 } else { 1.0 };
+                    let shift = (overlap_x + OFFLINE_REGION_LABEL_MIN_SEPARATION_PX) / 2.0;
+                    left_label.x -= direction * shift;
+                    right_label.x += direction * shift;
+                } else {
+                    let direction = if dy < 0.0 { -1.0 } else { 1.0 };
+                    let shift = (overlap_y + OFFLINE_REGION_LABEL_MIN_SEPARATION_PX) / 2.0;
+                    left_label.y -= direction * shift;
+                    right_label.y += direction * shift;
+                }
+                left_label.x = left_label.x.rem_euclid(world_size);
+                right_label.x = right_label.x.rem_euclid(world_size);
+            }
+        }
+        if !moved {
+            break;
+        }
     }
+
+    for (region, label) in regions.iter_mut().zip(labels) {
+        region.label_position = offline_region_label_from_world(label.x, label.y);
+    }
+}
+
+fn offline_region_label_layout(region: &OfflineRegionRecord) -> OfflineRegionLabelLayout {
+    let (x, y) = offline_region_label_to_world(region.label_position);
+    let width = region.label.chars().count() as f64
+        * OFFLINE_REGION_LABEL_WIDTH_PER_CHAR_PX
+        * OFFLINE_REGION_LABEL_BOX_GROWTH;
+    let height = OFFLINE_REGION_LABEL_FONT_PX * OFFLINE_REGION_LABEL_BOX_GROWTH;
+    OfflineRegionLabelLayout {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+fn offline_region_label_world_size() -> f64 {
+    OFFLINE_REGION_LABEL_TILE_SIZE_PX * 2.0_f64.powf(OFFLINE_REGION_LABEL_LAYOUT_ZOOM)
+}
+
+fn offline_region_label_to_world(point: OfflineRegionLatLon) -> (f64, f64) {
+    let world_size = offline_region_label_world_size();
+    let x = ((point.lon + 180.0) / 360.0 * world_size).rem_euclid(world_size);
+    let lat_rad = point.lat.clamp(-85.051_128_78, 85.051_128_78).to_radians();
+    let y = (0.5
+        - ((std::f64::consts::PI / 4.0) + (lat_rad / 2.0)).tan().ln()
+            / (2.0 * std::f64::consts::PI))
+        * world_size;
+    (x, y)
+}
+
+fn offline_region_label_from_world(x: f64, y: f64) -> OfflineRegionLatLon {
+    let world_size = offline_region_label_world_size();
+    let lon = (x.rem_euclid(world_size) / world_size) * 360.0 - 180.0;
+    let mercator = std::f64::consts::PI * (1.0 - 2.0 * (y / world_size).clamp(0.0, 1.0));
+    let lat = mercator.sinh().atan().to_degrees();
+    OfflineRegionLatLon { lat, lon }
+}
+
+fn shortest_world_delta(delta: f64, world_size: f64) -> f64 {
+    delta - (delta / world_size).round() * world_size
 }
 
 fn build_nav_kv_shaded_relief_catalog_entries(
@@ -15367,6 +15474,107 @@ mod tests {
         assert!(
             360.0 - largest_gap < 20.0,
             "hull should occupy the small antimeridian span, got {hull:?}"
+        );
+    }
+
+    #[test]
+    fn offline_region_plate_label_wraps_antimeridian() {
+        let polygon = convex_hull_lat_lon(vec![
+            OfflineRegionLatLon {
+                lat: 52.0,
+                lon: 179.0,
+            },
+            OfflineRegionLatLon {
+                lat: 53.0,
+                lon: -179.0,
+            },
+            OfflineRegionLatLon {
+                lat: 54.0,
+                lon: -172.0,
+            },
+            OfflineRegionLatLon {
+                lat: 51.0,
+                lon: 176.0,
+            },
+        ]);
+        let label = polygon_label_position(&polygon);
+
+        assert!(
+            label.lon.abs() > 170.0,
+            "label should stay near the antimeridian instead of averaging to zero: {label:?}"
+        );
+    }
+
+    #[test]
+    fn pacific_plate_label_uses_short_dateline_span() {
+        let polygon = convex_hull_lat_lon(vec![
+            OfflineRegionLatLon {
+                lat: 21.3,
+                lon: -157.9,
+            },
+            OfflineRegionLatLon {
+                lat: 19.7,
+                lon: -155.1,
+            },
+            OfflineRegionLatLon {
+                lat: 13.5,
+                lon: 144.8,
+            },
+            OfflineRegionLatLon {
+                lat: 7.3,
+                lon: 134.5,
+            },
+        ]);
+        let label = polygon_label_position(&polygon);
+
+        assert!(
+            label.lon.abs() > 150.0,
+            "PAC TPP/CSUP label should use the short Pacific dateline span: {label:?}"
+        );
+    }
+
+    #[test]
+    fn offline_region_labels_are_deconflicted_at_z4() {
+        let mut regions = vec![
+            OfflineRegionRecord {
+                id: "chart:test".to_string(),
+                kind: "chart".to_string(),
+                region_id: "test".to_string(),
+                label: "TEST charts".to_string(),
+                color_key: "class_b_d_blue".to_string(),
+                polygon: Vec::new(),
+                label_position: OfflineRegionLatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                },
+            },
+            OfflineRegionRecord {
+                id: "plate:test".to_string(),
+                kind: "plate".to_string(),
+                region_id: "test".to_string(),
+                label: "TEST TPP/CSUP".to_string(),
+                color_key: "class_c_magenta".to_string(),
+                polygon: Vec::new(),
+                label_position: OfflineRegionLatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                },
+            },
+        ];
+
+        deconflict_offline_region_labels(&mut regions);
+        let labels = regions
+            .iter()
+            .map(offline_region_label_layout)
+            .collect::<Vec<_>>();
+        let dx = shortest_world_delta(labels[1].x - labels[0].x, offline_region_label_world_size());
+        let dy = labels[1].y - labels[0].y;
+        let overlap_x = (labels[0].width + labels[1].width) / 2.0 - dx.abs();
+        let overlap_y = (labels[0].height + labels[1].height) / 2.0 - dy.abs();
+
+        assert!(
+            overlap_x <= 0.0 || overlap_y <= 0.0,
+            "labels should not overlap after deconfliction: {regions:?}"
         );
     }
 

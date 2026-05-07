@@ -5497,13 +5497,11 @@ function FlightPlanPage(props: {
                 }}
               >
                 <div className="airportInsertInputRow">
-                  <div className="planGuidanceSummary airportInsertTitle">
-                    {airportInsert.before ? "INSERT BEFORE" : "INSERT AFTER"}
-                  </div>
                   <input
-                    className="airportInsertInput"
+                    className="chartSearchInput airportInsertInput"
                     autoFocus
                     value={airportInsert.airportId}
+                    placeholder={airportInsert.before ? "INSERT BEFORE" : "INSERT AFTER"}
                     spellCheck={false}
                     autoCapitalize="characters"
                     autoCorrect="off"
@@ -5515,9 +5513,6 @@ function FlightPlanPage(props: {
                       } : current);
                     }}
                   />
-                  <button type="submit" className="trayButton airwayChoiceButton airportInsertEnter" onPointerDown={stopPointer} onPointerUp={stopPointer}>
-                    Enter
-                  </button>
                 </div>
                 {airportInsert.error ? <div className="planGuidanceSummary">{airportInsert.error}</div> : null}
                 {airportInsert.loading ? <div className="planGuidanceSummary">Searching...</div> : null}

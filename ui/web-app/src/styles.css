@@ -2282,7 +2282,7 @@ button {
 }
 
 .waypointModal.isAirportInsert {
-  width: calc(100% - var(--thumb-gap) * 2 - var(--thumb) * 3.15);
+  width: min(calc(var(--thumb) * 2.2), calc(100% - var(--thumb-gap) - var(--waypoint-action-tray-left)));
 }
 
 .waypointActionTray {
@@ -2317,36 +2317,20 @@ button {
 }
 
 .airportInsertTray {
-  align-items: stretch;
+  align-items: flex-start;
   width: 100%;
 }
 
 .airportInsertInputRow {
-  display: flex;
-  align-items: center;
-  gap: var(--thumb-gap);
-}
-
-.airportInsertTitle {
-  flex: 0 0 auto;
+  width: calc(var(--thumb) * 2);
 }
 
 .airportInsertInput {
-  flex: 1 1 auto;
+  display: block;
+  width: calc(var(--thumb) * 2);
   min-width: calc(var(--thumb) * 2);
+  max-width: calc(var(--thumb) * 2);
   height: var(--thumb);
-  border: 1px solid var(--theme-panel-border);
-  border-radius: var(--thumb-radius);
-  background: white;
-  color: var(--theme-panel-fg);
-  font-size: calc(var(--thumb) * 0.46);
-  font-weight: 800;
-  text-align: center;
-  text-transform: uppercase;
-}
-
-.airportInsertEnter {
-  flex: 0 0 calc(var(--thumb) * 1.25);
 }
 
 .airportInsertSuggestions {

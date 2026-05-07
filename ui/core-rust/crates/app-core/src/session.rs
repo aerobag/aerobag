@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     chart_page::airport_ids_from_plan,
-    guidance_detail_id_for_index, guidance_detail_id_for_leg_element,
+    first_guidance_detail_index_for_leg, guidance_detail_id_for_index,
+    guidance_detail_id_for_leg_element,
     had_ops::{
         insert_waypoint_best_position, materialize_airway_presentation_selection,
         materialize_procedure, suggest_waypoint_identifiers, HadOperationOutcome, HadReadError,
@@ -65,6 +66,8 @@ pub struct UiDebugState {
     pub playback_visible: bool,
     pub fast_tiles: bool,
     pub offline_simulated_clock_buttons: bool,
+    #[serde(default)]
+    pub sequencing_finish_lines: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1400,6 +1403,7 @@ pub fn set_debug_flag_in_session(
         "offline_simulated_clock_buttons" => {
             session.debug_state.offline_simulated_clock_buttons = enabled
         }
+        "sequencing_finish_lines" => session.debug_state.sequencing_finish_lines = enabled,
         _ => {
             return Err(AppError {
                 kind: AppErrorKind::Internal,
@@ -2203,6 +2207,7 @@ fn default_debug_state() -> UiDebugState {
         playback_visible: false,
         fast_tiles: false,
         offline_simulated_clock_buttons: false,
+        sequencing_finish_lines: false,
     }
 }
 
@@ -2761,8 +2766,7 @@ fn geometry_for_resolved_leg(
         let mut detail_geometries = Vec::with_capacity(detail_count);
         for element_index in 0..detail_count {
             detail_geometries.push(
-                geometry_by_leg_id
-                    .get(&guidance_detail_id_for_leg_element(leg, element_index))?,
+                geometry_by_leg_id.get(&guidance_detail_id_for_leg_element(leg, element_index))?,
             );
         }
         let from = detail_geometries.first()?.from;
@@ -3010,7 +3014,109 @@ fn apply_situation_to_ownship(
             pressure_altitude_ft: None,
         }),
     )?;
+    sequence_guidance_by_ownship_position(session)?;
     Ok(())
+}
+
+struct SequencingFinishPlane {
+    point: LatLon,
+    normal_course_deg: f64,
+}
+
+fn sequence_guidance_by_ownship_position(session: &mut UiSession) -> AppResult<()> {
+    let Some(position) = session.app_state.ownship.render.position else {
+        return Ok(());
+    };
+    for _ in 0..16 {
+        let Some(plan) = session.app_state.active_plan.as_ref() else {
+            return Ok(());
+        };
+        let Some(guidance) = plan.guidance.as_ref() else {
+            return Ok(());
+        };
+        if guidance.sequencing_mode != SequencingMode::FollowPlan {
+            return Ok(());
+        }
+        let Some(active_detail_index) = guidance
+            .active_detail_index
+            .or_else(|| first_guidance_detail_index_for_leg(plan, guidance.active_leg_index))
+        else {
+            return Ok(());
+        };
+        let Some(finish_plane) =
+            active_detail_finish_plane(plan, active_detail_index, &session.guidance_leg_geometry)
+        else {
+            return Ok(());
+        };
+        if crate::great_circle_distance_nm(position, finish_plane.point) > 10.0
+            || signed_distance_beyond_finish_plane(position, finish_plane) <= 0.05
+        {
+            return Ok(());
+        }
+        let next_plan = crate::sequence_active_detail(plan)?;
+        replace_session_flight_plan(session, next_plan)?;
+    }
+    Ok(())
+}
+
+fn active_detail_finish_plane(
+    plan: &FlightPlan,
+    active_detail_index: usize,
+    geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
+) -> Option<SequencingFinishPlane> {
+    let current_id = guidance_detail_id_for_index(plan, active_detail_index)?;
+    let current = geometry_by_leg_id.get(&current_id)?;
+    let current_course = terminal_course_for_guidance_geometry(current)?;
+    let next_course = guidance_detail_id_for_index(plan, active_detail_index + 1)
+        .and_then(|next_id| geometry_by_leg_id.get(&next_id))
+        .and_then(initial_course_for_guidance_geometry)
+        .unwrap_or(current_course);
+    Some(SequencingFinishPlane {
+        point: current.to,
+        normal_course_deg: finish_line_normal_course_deg(current_course, next_course),
+    })
+}
+
+fn initial_course_for_guidance_geometry(geometry: &GuidanceLegGeometry) -> Option<f64> {
+    geometry_points(geometry)
+        .windows(2)
+        .find(|segment| crate::great_circle_distance_nm(segment[0], segment[1]) > f64::EPSILON)
+        .map(|segment| bearing_degrees(segment[0], segment[1]))
+}
+
+fn terminal_course_for_guidance_geometry(geometry: &GuidanceLegGeometry) -> Option<f64> {
+    geometry_points(geometry)
+        .windows(2)
+        .rev()
+        .find(|segment| crate::great_circle_distance_nm(segment[0], segment[1]) > f64::EPSILON)
+        .map(|segment| bearing_degrees(segment[0], segment[1]))
+}
+
+fn finish_line_normal_course_deg(inbound_course_deg: f64, outbound_course_deg: f64) -> f64 {
+    let inbound = inbound_course_deg.to_radians();
+    let outbound = outbound_course_deg.to_radians();
+    let x = inbound.sin() + outbound.sin();
+    let y = inbound.cos() + outbound.cos();
+    if x.hypot(y) < 1e-9 {
+        normalize_course_degrees(inbound_course_deg)
+    } else {
+        normalize_course_degrees(x.atan2(y).to_degrees())
+    }
+}
+
+fn normalize_course_degrees(course_deg: f64) -> f64 {
+    course_deg.rem_euclid(360.0)
+}
+
+fn signed_distance_beyond_finish_plane(
+    position: LatLon,
+    finish_plane: SequencingFinishPlane,
+) -> f64 {
+    let lat_rad = finish_plane.point.lat.to_radians();
+    let east_nm = (position.lon - finish_plane.point.lon).to_radians() * lat_rad.cos() * 3440.065;
+    let north_nm = (position.lat - finish_plane.point.lat).to_radians() * 3440.065;
+    let normal = finish_plane.normal_course_deg.to_radians();
+    east_nm * normal.sin() + north_nm * normal.cos()
 }
 
 fn derive_compact_chart_page_state(

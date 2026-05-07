@@ -92,24 +92,26 @@ pub use planning::{
     change_procedure_enroute_transition, change_procedure_runway_transition,
     common_resume_candidate_decision, delete_component, delete_waypoint_component,
     direct_to_fix_with_course_continuation_requirement, enter_hold_requirement,
-    established_on_course_requirement, flatten_component_to_waypoints,
-    flight_plan_contains_nav_ref, flight_plan_has_direct_to_overlay, insert_airport_waypoint,
+    established_on_course_requirement, first_guidance_detail_index_for_leg,
+    flatten_component_to_waypoints, flight_plan_contains_nav_ref,
+    flight_plan_has_direct_to_overlay, insert_airport_waypoint,
     insert_airway_after_waypoint, insert_airway_between_waypoints,
     insert_procedure_between_waypoints, insert_waypoint, intercept_course_requirement,
     move_component, project_ui_state, reconcile_handoff, reentry_to_anchor_requirement,
     remove_all_above, replace_airway_component, replace_procedure_component, restore_direct_to,
-    sequence_active_leg, start_requirement_from_leg_characteristics, suspend_sequencing,
-    terminal_hold_start_detail_index_for_leg, terminal_hold_start_element_index_for_leg,
-    terminal_state_with_leg_characteristics, top_level_waypoint_component_count,
-    top_level_waypoint_component_index, unsuspend_sequencing, yieldable_course_to_fix_requirement,
-    AirwaySegment, CodedFixSatisfaction, CommonSegmentTerminalState, ConcretizedNavItem,
-    DirectToState, DirectToUiView, FlightPlan, FlightPlanDisplayRowKind,
-    FlightPlanRowActionExecution, FlightPlanRowActionId, FlightPlanUiState, GuidanceState,
-    GuidanceUiView, HandoffDecision, HoldTerminalState, LegDisplayElement, LegDisplayPath,
-    LegDisplayPathStyle, NavRef, PathTermination, PlanLeg, ProcedureDiscontinuity, ProcedureKind,
-    ProcedureLegProvenance, ProcedureSegment, ProcedureSegmentRole, ProcedureTurnTerminalState,
-    ResolvedLeg, ResolvedLegSource, ResolvedLegUiView, RouteComponent, RouteComponentUiView,
-    RouteComponentViewKind, SequencingMode, StartRequirement, TerminalState,
+    sequence_active_detail, sequence_active_leg, start_requirement_from_leg_characteristics,
+    suspend_sequencing, terminal_hold_start_detail_index_for_leg,
+    terminal_hold_start_element_index_for_leg, terminal_state_with_leg_characteristics,
+    top_level_waypoint_component_count, top_level_waypoint_component_index, unsuspend_sequencing,
+    yieldable_course_to_fix_requirement, AirwaySegment, CodedFixSatisfaction,
+    CommonSegmentTerminalState, ConcretizedNavItem, DirectToState, DirectToUiView, FlightPlan,
+    FlightPlanDisplayRowKind, FlightPlanRowActionExecution, FlightPlanRowActionId,
+    FlightPlanUiState, GuidanceState, GuidanceUiView, HandoffDecision, HoldTerminalState,
+    LegDisplayElement, LegDisplayPath, LegDisplayPathStyle, NavRef, PathTermination, PlanLeg,
+    ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance, ProcedureSegment,
+    ProcedureSegmentRole, ProcedureTurnTerminalState, ResolvedLeg, ResolvedLegSource,
+    ResolvedLegUiView, RouteComponent, RouteComponentUiView, RouteComponentViewKind,
+    SequencingMode, StartRequirement, TerminalState,
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use raster_tiles::{
@@ -254,6 +256,14 @@ pub struct FlightPlanRouteSegment {
     pub distance_nm: f64,
     pub course_deg: f64,
     pub status: FlightPlanRouteSegmentStatus,
+    #[serde(default)]
+    pub finish_line: Option<FlightPlanRouteFinishLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FlightPlanRouteFinishLine {
+    pub start: LatLon,
+    pub end: LatLon,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -456,6 +466,55 @@ fn guidance_route_course_deg(geometry: &GuidanceRouteGeometry) -> f64 {
     }
 }
 
+fn guidance_route_terminal_course_deg(geometry: &GuidanceRouteGeometry) -> f64 {
+    match geometry {
+        GuidanceRouteGeometry::Segment { start, end } => flight_leg_course_deg(*start, *end),
+        GuidanceRouteGeometry::Arc {
+            center,
+            end,
+            clockwise,
+            ..
+        } => {
+            let radial_deg = bearing_degrees(*center, *end);
+            normalize_bearing_degrees(if *clockwise {
+                radial_deg + 90.0
+            } else {
+                radial_deg - 90.0
+            })
+        }
+    }
+}
+
+fn finish_line_normal_course_deg(inbound_course_deg: f64, outbound_course_deg: f64) -> f64 {
+    let inbound = inbound_course_deg.to_radians();
+    let outbound = outbound_course_deg.to_radians();
+    let x = inbound.sin() + outbound.sin();
+    let y = inbound.cos() + outbound.cos();
+    if x.hypot(y) < 1e-9 {
+        normalize_bearing_degrees(inbound_course_deg)
+    } else {
+        normalize_bearing_degrees(x.atan2(y).to_degrees())
+    }
+}
+
+fn sequencing_finish_line(
+    current: &GuidanceRouteGeometry,
+    next: Option<&GuidanceRouteGeometry>,
+) -> FlightPlanRouteFinishLine {
+    let (_, intersection) = guidance_route_endpoints(current);
+    let inbound_course = guidance_route_terminal_course_deg(current);
+    let outbound_course = next
+        .map(guidance_route_course_deg)
+        .unwrap_or(inbound_course);
+    let line_course = normalize_bearing_degrees(
+        finish_line_normal_course_deg(inbound_course, outbound_course) + 90.0,
+    );
+    FlightPlanRouteFinishLine {
+        start: route_destination_point(intersection, line_course + 180.0, 20.0),
+        end: route_destination_point(intersection, line_course, 20.0),
+    }
+}
+
 fn guidance_route_endpoints(geometry: &GuidanceRouteGeometry) -> (LatLon, LatLon) {
     match geometry {
         GuidanceRouteGeometry::Segment { start, end } => (*start, *end),
@@ -522,6 +581,7 @@ where
                     distance_nm: guidance_route_distance_nm(&geometry),
                     course_deg: guidance_route_course_deg(&geometry),
                     status: route_status_for_detail(&plan, leg_index, element_index),
+                    finish_line: None,
                 });
             }
         } else {
@@ -540,8 +600,19 @@ where
                 distance_nm: guidance_route_distance_nm(&geometry),
                 course_deg: guidance_route_course_deg(&geometry),
                 status: route_status_for_detail(&plan, leg_index, 0),
+                finish_line: None,
             });
         }
+    }
+    let route_geometries = route
+        .iter()
+        .map(|segment| segment.geometry.clone())
+        .collect::<Vec<_>>();
+    for index in 0..route.len() {
+        route[index].finish_line = Some(sequencing_finish_line(
+            &route_geometries[index],
+            route_geometries.get(index + 1),
+        ));
     }
     if let Some(direct_to) = plan
         .guidance
@@ -566,6 +637,7 @@ where
             distance_nm: guidance_route_distance_nm(&geometry),
             course_deg: guidance_route_course_deg(&geometry),
             status: FlightPlanRouteSegmentStatus::Active,
+            finish_line: Some(sequencing_finish_line(&geometry, None)),
         });
     }
     Ok(route)

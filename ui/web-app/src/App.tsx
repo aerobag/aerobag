@@ -1042,6 +1042,7 @@ function defaultUiDebugState(): UiDebugState {
     playback_visible: false,
     fast_tiles: false,
     offline_simulated_clock_buttons: false,
+    sequencing_finish_lines: false,
   };
 }
 
@@ -2579,6 +2580,10 @@ function MapPage(props: {
       ...segment,
       path: (segment.path.length > 0 ? segment.path : [segment.from, segment.to])
         .map((point) => worldToScreen(viewport, latLonToWorld(point.lat, point.lon), surfaceSize.width, surfaceSize.height)),
+      finishLinePath: segment.finish_line
+        ? [segment.finish_line.start, segment.finish_line.end]
+            .map((point) => worldToScreen(viewport, latLonToWorld(point.lat, point.lon), surfaceSize.width, surfaceSize.height))
+        : null,
     }));
   }, [flightPlanRoute, surfaceSize.height, surfaceSize.width, viewport]);
 
@@ -3895,6 +3900,18 @@ function MapPage(props: {
           <svg className="flightPlanOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
             {routeScreenSegments.map((segment) => (
               <Fragment key={segment.id}>
+                {debugState.sequencing_finish_lines && segment.status === "active" && segment.finishLinePath ? (
+                  <line
+                    x1={segment.finishLinePath[0].x}
+                    y1={segment.finishLinePath[0].y}
+                    x2={segment.finishLinePath[1].x}
+                    y2={segment.finishLinePath[1].y}
+                    stroke="#b100ff"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    opacity="0.9"
+                  />
+                ) : null}
                 <polyline
                   points={segment.path.map((point) => `${point.x},${point.y}`).join(" ")}
                   fill="none"
@@ -7002,6 +7019,7 @@ function CommonDebugPanel(props: {
     { id: "tile_labels", label: "tile labels" },
     { id: "fast_tiles", label: "fast tiles" },
     { id: "offline_simulated_clock_buttons", label: "offline simulated clock buttons" },
+    { id: "sequencing_finish_lines", label: "sequencing finish lines" },
   ];
 
   return (

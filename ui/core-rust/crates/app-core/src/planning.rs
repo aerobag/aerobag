@@ -1596,6 +1596,60 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
     })
 }
 
+pub fn sequence_active_detail(plan: &FlightPlan) -> AppResult<FlightPlan> {
+    let plan = plan.clone().normalized();
+    let guidance = plan.guidance.clone().ok_or_else(|| AppError {
+        kind: AppErrorKind::UnsupportedOperation,
+        message: "cannot sequence a plan without guidance state".to_string(),
+    })?;
+    if guidance.sequencing_mode != SequencingMode::FollowPlan {
+        return sequence_active_leg(&plan);
+    }
+    let active_detail_index = guidance
+        .active_detail_index
+        .or_else(|| first_guidance_detail_index_for_leg(&plan, guidance.active_leg_index))
+        .unwrap_or(0);
+    let active_detail =
+        guidance_detail_ref_by_index(&plan, active_detail_index).ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("guidance detail index out of bounds: {active_detail_index}"),
+        })?;
+    let next_detail_index = active_detail.detail_index + 1;
+    let Some(next_detail) = guidance_detail_ref_by_index(&plan, next_detail_index) else {
+        return sequence_active_leg(&plan);
+    };
+    if next_detail.leg_index != guidance.active_leg_index {
+        return sequence_active_leg(&plan);
+    }
+    if terminal_hold_start_detail_index_for_leg(&plan, guidance.active_leg_index)
+        == Some(next_detail_index)
+    {
+        return Ok(FlightPlan {
+            guidance: Some(GuidanceState {
+                active_leg_index: guidance.active_leg_index,
+                active_detail_index: Some(active_detail.detail_index),
+                display_split_leg_id: guidance.display_split_leg_id.clone(),
+                sequencing_mode: SequencingMode::Suspended,
+                direct_to: None,
+                suspend_reason: Some(SuspendReason::Boundary),
+            }),
+            ..plan
+        });
+    }
+
+    Ok(FlightPlan {
+        guidance: Some(GuidanceState {
+            active_leg_index: guidance.active_leg_index,
+            active_detail_index: Some(next_detail_index),
+            display_split_leg_id: guidance.display_split_leg_id.clone(),
+            sequencing_mode: SequencingMode::FollowPlan,
+            direct_to: None,
+            suspend_reason: None,
+        }),
+        ..plan
+    })
+}
+
 pub fn active_guidance_leg(plan: &FlightPlan) -> Option<PlanLeg> {
     let plan = plan.clone().normalized();
     let guidance = plan.guidance.clone()?;

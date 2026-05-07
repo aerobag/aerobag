@@ -2581,17 +2581,19 @@ fn selection_flight_plan_row_action(
 }
 
 fn airspace_feature_contains(feature: &AirspaceFeaturePayload, point: LatLon) -> bool {
-    if point.lon < feature.bbox[0]
-        || point.lat < feature.bbox[1]
-        || point.lon > feature.bbox[2]
-        || point.lat > feature.bbox[3]
-    {
-        return false;
-    }
-    feature.paths.iter().any(|path| {
-        path.closed
-            && path.points.len() >= 3
-            && lon_lat_polygon_contains(&path.points, point.lon, point.lat)
+    wrapped_lon_candidates(point.lon).into_iter().any(|lon| {
+        if lon < feature.bbox[0]
+            || point.lat < feature.bbox[1]
+            || lon > feature.bbox[2]
+            || point.lat > feature.bbox[3]
+        {
+            return false;
+        }
+        feature.paths.iter().any(|path| {
+            path.closed
+                && path.points.len() >= 3
+                && lon_lat_polygon_contains(&path.points, lon, point.lat)
+        })
     })
 }
 
@@ -2604,7 +2606,14 @@ fn tfr_area_contains(area: &TfrAreaPayload, point: LatLon) -> bool {
         .iter()
         .map(|point| [point.lon, point.lat])
         .collect::<Vec<_>>();
-    lon_lat_polygon_contains(&polygon, point.lon, point.lat)
+    wrapped_lon_candidates(point.lon)
+        .into_iter()
+        .any(|lon| lon_lat_polygon_contains(&polygon, lon, point.lat))
+}
+
+fn wrapped_lon_candidates(lon: f64) -> [f64; 3] {
+    let normalized = ((lon + 180.0).rem_euclid(360.0)) - 180.0;
+    [lon, normalized, normalized + 360.0]
 }
 
 fn lon_lat_polygon_contains(points: &[[f64; 2]], lon: f64, lat: f64) -> bool {
@@ -4657,6 +4666,61 @@ mod tests {
                 style_key: "national_security".to_string(),
                 color_key: "class_c_magenta".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn airspace_selection_hits_repeated_world_copy() {
+        let feature = AirspaceFeaturePayload {
+            schema_version: 1,
+            id: "airspace:test:wrapped".to_string(),
+            kind: "airspace".to_string(),
+            name: "WRAPPED AREA".to_string(),
+            ident: "WRAP".to_string(),
+            airspace_class: "MOA".to_string(),
+            style_hint: "moa".to_string(),
+            vertical: test_airspace_vertical("100", "SFC"),
+            bbox: [-1.0, -1.0, 1.0, 1.0],
+            paths: vec![AirspaceFeaturePath {
+                role: "boundary".to_string(),
+                closed: true,
+                interior_side: None,
+                points: vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
+            }],
+        };
+        let result = query_map_selection(
+            &MapViewport {
+                center: LatLon { lat: 0.0, lon: 0.0 },
+                zoom: 1.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            1024.0,
+            256.0,
+            &test_map_overlay_config(),
+            None,
+            LatLon {
+                lat: 0.0,
+                lon: 360.0,
+            },
+            32.0,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            None,
+            &HashMap::from([(feature.id.clone(), feature)]),
+            None,
+            &mut |_| AirportPlateAvailability::default(),
+        );
+        let airspace = result
+            .categories
+            .iter()
+            .find(|category| category.id == "airspace")
+            .expect("airspace category");
+
+        assert_eq!(
+            airspace.items.first().map(|item| item.label.as_str()),
+            Some("WRAPPED AREA")
         );
     }
 

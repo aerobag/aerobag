@@ -1,6 +1,14 @@
 # UI Parity Journeys
 
-The parity harness drives the same user journey against web and Android and reports either a pass or explicit gaps. It is intentionally semantic: stable widget IDs/content descriptions identify controls, and screenshots can be layered in later for visual regression.
+The parity harness drives the same semantic journey against web and Android.
+It reports platform gaps and cross-platform divergences as first-class output.
+The harness uses stable view/controller identifiers only; it should not
+duplicate business logic from core.
+
+Detailed action coverage lives in
+[`docs/testing/web-android-action-parity.md`](testing/web-android-action-parity.md).
+Known remaining limitations live in
+[`docs/testing/web-android-action-parity-gaps.md`](testing/web-android-action-parity-gaps.md).
 
 ## Flight Plan Inspect Insert
 
@@ -12,39 +20,40 @@ node tools/parity/run-flight-plan-inspect-journey.mjs android --serial emulator-
 node tools/parity/run-flight-plan-inspect-journey.mjs both --url http://127.0.0.1:8082/ --serial emulator-5554
 ```
 
-Web path:
+Current shared journey:
 
-1. Wait for chart/map surface.
-2. Open the flight-plan page through the CDI/nav element.
-3. Append `KBFI` through the free-form route-entry field.
-4. Return to chart through the CDI/nav element.
-5. Search/recenter on `KOLM`.
-6. Drag the map.
-7. Click the map, open inspector, select `KOLM`, and choose `Insert in flight plan`.
-8. Return to the plan and verify `KOLM` is present.
+1. Wait for the chart/map surface.
+2. Use the CDI/nav element to open PLAN.
+3. Use the CDI/nav element to return to the most recent chart/plate surface.
+4. Use the CDI/nav element to return to PLAN.
+5. Inventory global flight-plan controls and first/last row actions.
+6. Type an invalid free-form route and verify route feedback is visible.
+7. Append `KAWO` through the free-form route-entry field.
+8. Return to CHART and inventory chart layer and map-family trays.
+9. Open PLATE and inventory airport, chart, and load-procedure controls/trays.
+10. Return to CHART, drag the map, search/recenter on `KBFI`, and open the chart inspector.
+11. Select `airport-KBFI`, inventory its action tray, execute `Insert in flight plan`, and verify `KBFI` appears in PLAN.
 
-Android path:
-
-1. Verify the app is visible through UIAutomator.
-2. Open the flight-plan page through the CDI/nav element.
-3. Check whether the free-form route-entry field is present.
-4. Return to chart through the CDI/nav element.
-5. Tap the map surface.
-6. Check whether the inspect tray and insert action are present.
-
-Current Android gaps are reported as first-class journey output rather than hidden by platform-specific fallbacks. When the Android UI gains a parity-tagged free-form route-entry field and chart search, this same journey should be extended to perform the same full route as web.
+The `both` mode compares structured inventories and boolean checks between web
+and Android. It currently gates stable action IDs, enabled/disabled state,
+selected/active state, and layer toggle state. Labels are captured for
+diagnostics and compared when both platforms expose them.
 
 ## Stable Identifiers
 
-Web uses `data-testid`. Android uses accessibility content descriptions prefixed with `parity:` so `adb shell uiautomator dump` can find the same semantic controls.
+Web uses `data-testid`. Android uses accessibility content descriptions
+prefixed with `parity:` so `adb shell uiautomator dump` can find the same
+semantic controls.
 
-The first shared IDs are:
+Examples:
 
 - `nav-cdi`
 - `map-surface`
 - `plan-append-route-input`
-- `map-selection-tray`
-- `map-selection-item:<label>` on Android and `map-selection-item-<category>-<label>` on web
-- `map-selection-action:<id>` on Android and `map-selection-action-<id>` on web
+- `plan-row-action-<action-id>` on web and `parity:plan-row-action:<action-id>` on Android
+- `map-selection-item-<category>-<label>` on web and `parity:map-selection-item:<category>-<label>` on Android
+- `map-selection-action-<id>` on web and `parity:map-selection-action:<id>` on Android
 
-Keep adding IDs at the view/controller boundary only. The harness should never duplicate app business logic.
+Every new reachable tray row or action button should expose a stable
+core-derived ID. If a control cannot be identified by a stable ID, treat that as
+test debt rather than covered UI.

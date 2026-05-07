@@ -17,8 +17,6 @@ import type {
   GuidanceState,
   LatLon,
   MapFollowUiState,
-  GeometryJson,
-  MapViewOptionJson,
   NavRef,
   NavSymbolFeature,
   OwnshipSelectionCommand,
@@ -50,11 +48,19 @@ export type DerivedChartPageState = {
   selected_chart_id: string;
 };
 
-export type DerivedMapSelectorState = {
+export type RasterMapUiState = {
   selected_map_id: string;
-  selected_map: MapViewOptionJson | null;
-  displayed_maps: MapViewOptionJson[];
-  geometry: GeometryJson;
+  selected_map_label: string;
+  selected_family_id: ChartFamilyId;
+  selected_family_label: string;
+  selected_family_launcher_label: string;
+  min_zoom: number;
+  max_zoom: number;
+  initial_viewport: {
+    lat: number;
+    lon: number;
+    zoom: number;
+  };
   family_options: Array<{
     id: ChartFamilyId;
     label: string;
@@ -79,7 +85,7 @@ export type UiSessionSnapshot = {
   map_layer_state: UiMapLayerState;
   caution_state: UiCautionState;
   debug_state: UiDebugState;
-  raster_map_catalog?: DerivedMapSelectorState | null;
+  raster_map?: RasterMapUiState | null;
 };
 
 export type DebugFlagId = "tile_labels" | "fast_tiles" | "offline_simulated_clock_buttons" | "sequencing_finish_lines";

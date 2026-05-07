@@ -216,10 +216,7 @@ interface NativeBridge {
         enabled: Boolean,
     ): String
 
-    fun setRasterMapCatalogInSessionJson(
-        handle: Long,
-        catalogJson: String,
-    ): String
+    fun loadRasterMapCatalogInSessionJson(handle: Long): String
 
     fun selectMapFamilyInSessionJson(
         handle: Long,
@@ -587,10 +584,7 @@ object NativeBindings : NativeBridge {
         enabled: Boolean,
     ): String
 
-    external override fun setRasterMapCatalogInSessionJson(
-        handle: Long,
-        catalogJson: String,
-    ): String
+    external override fun loadRasterMapCatalogInSessionJson(handle: Long): String
 
     external override fun selectMapFamilyInSessionJson(
         handle: Long,

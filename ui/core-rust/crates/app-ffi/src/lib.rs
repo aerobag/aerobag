@@ -651,15 +651,10 @@ pub fn set_debug_flag_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-pub fn set_raster_map_catalog_in_session_json(
-    handle: u64,
-    catalog_json: &str,
-) -> Result<String, String> {
-    let catalog: app_core::RasterMapCatalog =
-        serde_json::from_str(catalog_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::set_raster_map_catalog_in_session(handle as u32, catalog)
+pub fn load_raster_map_catalog_in_session_json(handle: u64) -> Result<String, String> {
+    let outcome = app_core::load_raster_map_catalog_in_session(handle as u32)
         .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
 pub fn select_map_family_in_session_json(
@@ -2140,16 +2135,12 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_set
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setRasterMapCatalogInSessionJson(
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_loadRasterMapCatalogInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
-    catalog_json: JString,
 ) -> jstring {
-    let result = (|| {
-        let catalog = get_java_string(&mut env, catalog_json)?;
-        set_raster_map_catalog_in_session_json(handle as u64, &catalog)
-    })();
+    let result = load_raster_map_catalog_in_session_json(handle as u64);
     return_string(&mut env, result)
 }
 

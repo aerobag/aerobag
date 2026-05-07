@@ -27,6 +27,20 @@ pub struct RasterMapFamilyOption {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RasterMapUiState {
+    pub selected_map_id: String,
+    pub selected_map_label: String,
+    pub selected_family_id: String,
+    pub selected_family_label: String,
+    pub selected_family_launcher_label: String,
+    pub min_zoom: f64,
+    pub max_zoom: f64,
+    pub initial_viewport: RasterInitialViewport,
+    #[serde(default)]
+    pub family_options: Vec<RasterMapFamilyOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RasterMapViewOption {
     pub id: String,
     pub label: String,
@@ -200,6 +214,37 @@ pub fn select_map_family_in_catalog(catalog: &mut RasterMapCatalog, family_id: &
     for option in &mut catalog.family_options {
         option.active = option.id == family_id;
     }
+}
+
+pub fn raster_map_ui_state(catalog: &RasterMapCatalog) -> Option<RasterMapUiState> {
+    let selected_map = catalog.selected_map.as_ref()?;
+    let selected_family = catalog
+        .family_options
+        .iter()
+        .find(|option| option.active)
+        .or_else(|| {
+            catalog
+                .family_options
+                .iter()
+                .find(|option| option.id == selected_map.map_view.chart_family)
+        });
+    Some(RasterMapUiState {
+        selected_map_id: catalog.selected_map_id.clone(),
+        selected_map_label: selected_map.label.clone(),
+        selected_family_id: selected_family
+            .map(|option| option.id.clone())
+            .unwrap_or_else(|| selected_map.map_view.chart_family.clone()),
+        selected_family_label: selected_family
+            .map(|option| option.label.clone())
+            .unwrap_or_else(|| selected_map.map_view.chart_name.clone()),
+        selected_family_launcher_label: selected_family
+            .map(|option| option.launcher_label.clone())
+            .unwrap_or_else(|| selected_map.map_view.chart_family.clone()),
+        min_zoom: selected_map.map_view.min_zoom,
+        max_zoom: selected_map.map_view.max_zoom,
+        initial_viewport: selected_map.map_view.initial_viewport.clone(),
+        family_options: catalog.family_options.clone(),
+    })
 }
 
 pub fn preferred_family_map<'a>(

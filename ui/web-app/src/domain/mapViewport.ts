@@ -1,6 +1,7 @@
 import type { ChartCoverageJson, GeometryJson, MapViewJson } from "./types";
 
-type MapView = MapViewJson & { id?: string; coverage?: ChartCoverageJson | null };
+type ViewportMap = Pick<MapViewJson, "min_zoom" | "max_zoom" | "initial_viewport">;
+type RasterMapView = MapViewJson & { id?: string; coverage?: ChartCoverageJson | null };
 type Polygon = number[][];
 type PolygonSetLookup = Map<string, Polygon[]>;
 
@@ -26,13 +27,13 @@ export type RenderTile = {
   src: string;
   mapViewId: string;
   packageName: string | null;
-  chartFamily: MapView["chart_family"];
+  chartFamily: RasterMapView["chart_family"];
 };
 
 const WORLD_SIZE = 256;
 const MAX_LATITUDE = 85.05112878;
 
-function tileSrcForMapView(mapView: MapView, zoom: number, x: number, yTms: number): string {
+function tileSrcForMapView(mapView: RasterMapView, zoom: number, x: number, yTms: number): string {
   const template = mapView.tile_path_template ?? `${mapView.chart_index}/{z}/{x}/{y}.webp`;
   const path = template
     .replaceAll("{z}", String(zoom))
@@ -156,7 +157,7 @@ function buildPolygonSetLookup(geometry?: GeometryJson | null): PolygonSetLookup
 }
 
 function tileIntersectsCoverage(
-  mapView: MapView,
+  mapView: RasterMapView,
   polygonSets: PolygonSetLookup,
   zoom: number,
   x: number,
@@ -174,7 +175,7 @@ function tileIntersectsCoverage(
   return polygons.some((polygon) => polygonIntersectsRect(polygon, tileBounds));
 }
 
-export function createInitialViewport(mapView: MapView): MapViewportState {
+export function createInitialViewport(mapView: ViewportMap): MapViewportState {
   const center = latLonToWorld(mapView.initial_viewport.lat, mapView.initial_viewport.lon);
   return {
     centerWorldX: center.x,
@@ -185,7 +186,7 @@ export function createInitialViewport(mapView: MapView): MapViewportState {
 
 export function preserveViewportForMap(
   viewport: MapViewportState,
-  _mapView: MapView,
+  _mapView: ViewportMap,
 ): MapViewportState {
   return {
     centerWorldX: viewport.centerWorldX,
@@ -194,7 +195,7 @@ export function preserveViewportForMap(
   };
 }
 
-export function clampZoom(zoom: number, mapView: MapView): number {
+export function clampZoom(zoom: number, mapView: ViewportMap): number {
   return Math.min(mapView.max_zoom, Math.max(mapView.min_zoom, zoom));
 }
 
@@ -258,7 +259,7 @@ export function worldToScreen(
 
 export function zoomAroundPoint(
   viewport: MapViewportState,
-  mapView: MapView,
+  mapView: ViewportMap,
   anchor: ScreenPoint,
   width: number,
   height: number,
@@ -300,7 +301,7 @@ export function applyPinchGesture(
   snapshot: ReturnType<typeof createPinchSnapshot>,
   currentFirst: ScreenPoint,
   currentSecond: ScreenPoint,
-  mapView: MapView,
+  mapView: ViewportMap,
   width: number,
   height: number,
 ): MapViewportState {
@@ -329,7 +330,7 @@ export function viewportCenterLatLon(viewport: MapViewportState): { lat: number;
 }
 
 export function renderTiles(
-  mapViews: Array<MapView & { id?: string }>,
+  mapViews: Array<RasterMapView & { id?: string }>,
   geometry: GeometryJson | null | undefined,
   viewport: MapViewportState,
   width: number,
@@ -337,7 +338,7 @@ export function renderTiles(
 ): RenderTile[] {
   const polygonSets = buildPolygonSetLookup(geometry);
   const tiles: RenderTile[] = [];
-  const mapViewsByFamily = new Map<MapView["chart_family"], Array<MapView & { id?: string }>>();
+  const mapViewsByFamily = new Map<RasterMapView["chart_family"], Array<RasterMapView & { id?: string }>>();
   for (const mapView of mapViews) {
     const group = mapViewsByFamily.get(mapView.chart_family);
     if (group) {
@@ -359,7 +360,7 @@ export function renderTiles(
 }
 
 function renderTilesForFamily(
-  familyMapViews: Array<MapView & { id?: string }>,
+  familyMapViews: Array<RasterMapView & { id?: string }>,
   polygonSets: PolygonSetLookup,
   viewport: MapViewportState,
   width: number,
@@ -428,7 +429,7 @@ function renderTilesForFamily(
   return tiles;
 }
 
-function levelsForMapView(mapView: MapView, zoom: number): MapView["levels"] {
+function levelsForMapView(mapView: RasterMapView, zoom: number): RasterMapView["levels"] {
   const desiredLevel = pickLevel(mapView, zoom);
   if (mapView.storage_kind === "static_product") {
     return [desiredLevel];
@@ -458,7 +459,7 @@ function positiveModulo(value: number, modulus: number): number {
   return ((value % modulus) + modulus) % modulus;
 }
 
-function chartFamilyRenderPriority(chartFamily: MapView["chart_family"]): number {
+function chartFamilyRenderPriority(chartFamily: RasterMapView["chart_family"]): number {
   switch (chartFamily) {
     case "shaded-relief":
       return -10;
@@ -471,11 +472,11 @@ function chartFamilyRenderPriority(chartFamily: MapView["chart_family"]): number
   }
 }
 
-function rasterTileZIndex(zoom: number, chartFamily: MapView["chart_family"]): number {
+function rasterTileZIndex(zoom: number, chartFamily: RasterMapView["chart_family"]): number {
   return zoom * 10 + chartFamilyRenderPriority(chartFamily);
 }
 
-function pickLevel(mapView: MapView, zoom: number): MapView["levels"][number] {
+function pickLevel(mapView: RasterMapView, zoom: number): RasterMapView["levels"][number] {
   return mapView.levels.reduce((best, current) => {
     if (Math.abs(current.zoom - zoom) < Math.abs(best.zoom - zoom)) {
       return current;

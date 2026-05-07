@@ -82,7 +82,7 @@ pub struct UiSessionSnapshot {
     pub map_layer_state: UiMapLayerState,
     pub caution_state: UiCautionState,
     pub debug_state: UiDebugState,
-    pub raster_map_catalog: Option<RasterMapCatalog>,
+    pub raster_map: Option<crate::RasterMapUiState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -298,7 +298,7 @@ fn create_ui_session_inner(
         map_layer_state: map_layer_state.clone(),
         caution_state: caution_state.clone(),
         debug_state: snapshot_debug_state,
-        raster_map_catalog: None,
+        raster_map: None,
     };
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
     sessions().lock().expect("session store poisoned").insert(
@@ -344,16 +344,6 @@ pub fn set_map_layer_visibility_in_session(
     let session = session_mut(&mut sessions, handle)?;
     let layer = parse_map_layer_id(layer_id)?;
     map_layer_toggle_mut(&mut session.map_layer_state, layer).visible = visible;
-    Ok(snapshot_for_session(session))
-}
-
-pub fn set_raster_map_catalog_in_session(
-    handle: u32,
-    catalog: RasterMapCatalog,
-) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
-    let session = session_mut(&mut sessions, handle)?;
-    session.raster_map_catalog = Some(catalog);
     Ok(snapshot_for_session(session))
 }
 
@@ -2253,7 +2243,10 @@ fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
         map_layer_state: session.map_layer_state.clone(),
         caution_state: session.caution_state.clone(),
         debug_state,
-        raster_map_catalog: session.raster_map_catalog.clone(),
+        raster_map: session
+            .raster_map_catalog
+            .as_ref()
+            .and_then(crate::raster_map_ui_state),
     }
 }
 

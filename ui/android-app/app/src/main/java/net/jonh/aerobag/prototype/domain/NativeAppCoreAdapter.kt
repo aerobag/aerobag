@@ -350,18 +350,7 @@ class NativeAppCoreAdapter(
             initialSnapshot = enrichUiSessionSnapshot(result.snapshot.toUi()),
         )
         navKvStore?.attachToSession(result.handle)
-        runCatching {
-            val catalog = runHadOperationElement(
-                buildJsonObject {
-                    put("kind", "map_selector_state")
-                    put("selected_map_id", JsonNull)
-                    put("selected_family_id", JsonNull)
-                },
-            )
-            session.installRasterMapCatalogJson(catalog.toString())
-        }.onFailure { error ->
-            Log.e("AerobagTiles", "failed to install raster map catalog in core session", error)
-        }
+        session.loadRasterMapCatalog()
         return session.apply {
             syncGuidanceGeometryFromPlan()
         }
@@ -1068,8 +1057,15 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
-    fun installRasterMapCatalogJson(catalogJson: String): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.setRasterMapCatalogInSessionJson(handle, catalogJson))
+    fun loadRasterMapCatalog(): UiSessionSnapshot {
+        val store = navKvStore ?: return snapshot
+        snapshot = enrichSnapshot(
+            json.decodeFromJsonElement<WireUiSessionSnapshot>(
+                store.runPagedSessionOperationElement {
+                    bridge.loadRasterMapCatalogInSessionJson(handle)
+                },
+            ).toUi(),
+        )
         return snapshot
     }
 

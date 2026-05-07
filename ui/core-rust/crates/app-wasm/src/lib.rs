@@ -562,15 +562,6 @@ pub fn set_debug_flag_in_session(
 }
 
 #[wasm_bindgen]
-pub fn set_raster_map_catalog_in_session(
-    handle: u32,
-    catalog_json: &str,
-) -> Result<String, JsValue> {
-    set_raster_map_catalog_in_session_json(handle, catalog_json)
-        .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
 pub fn load_raster_map_catalog_in_session(handle: u32) -> Result<String, JsValue> {
     load_raster_map_catalog_in_session_json(handle).map_err(|err| JsValue::from_str(&err))
 }
@@ -1128,17 +1119,6 @@ fn set_debug_flag_in_session_json(
 ) -> Result<String, String> {
     let flag_id: String = serde_json::from_str(flag_id_json).map_err(|err| err.to_string())?;
     let snapshot = app_core::set_debug_flag_in_session(handle, &flag_id, enabled)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
-}
-
-fn set_raster_map_catalog_in_session_json(
-    handle: u32,
-    catalog_json: &str,
-) -> Result<String, String> {
-    let catalog: app_core::RasterMapCatalog =
-        serde_json::from_str(catalog_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::set_raster_map_catalog_in_session(handle, catalog)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }

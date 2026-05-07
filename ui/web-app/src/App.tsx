@@ -12,9 +12,7 @@ import type {
   FlightPlanRouteSegment,
   FlightPlanUiMutation,
   FlightPlanUiState,
-  GeometryJson,
   LatLon,
-  MapViewOptionJson,
   NavSymbolFeature,
   NavElementUiView,
   NavRef,
@@ -66,11 +64,11 @@ import {
   type AdapterBackendKind,
   type AppCoreAdapter,
   type DerivedChartPageState,
-  type DerivedMapSelectorState,
   type DebugFlagId,
   type MapLayerId,
   type MapSelectionItem,
   type MapSelectionQueryResult,
+  type RasterMapUiState,
   type RasterTileDraw,
   type UiMapLayerState,
   type UiMapLayerToggleState,
@@ -80,7 +78,6 @@ import {
 } from "./domain/appCoreAdapter";
 import {
   applyPinchGesture,
-  createInitialViewport,
   createPinchSnapshot,
   dragViewport,
   latLonToWorld,
@@ -1101,13 +1098,7 @@ export default function App() {
   const [debugOpen, setDebugOpen] = useState(false);
   const highLatencyWarningsSuppressedRef = useRef(true);
   const highLatencyWarningTimerRef = useRef<number | null>(null);
-  const [mapSelectorState, setMapSelectorState] = useState<DerivedMapSelectorState>({
-    selected_map_id: "",
-    selected_map: null,
-    displayed_maps: [],
-    geometry: { schema_version: 1, polygons: [], polygon_sets: [] },
-    family_options: [],
-  });
+  const [rasterMapState, setRasterMapState] = useState<RasterMapUiState | null>(null);
   const [mapSelectorLoadError, setMapSelectorLoadError] = useState<string | null>(null);
   const initialRecentAirportIds = useMemo(
     () => mergeRecentAirportIds(emptyChartPage.airports, persistedUiState.recentAirportIds ?? []),
@@ -1175,7 +1166,7 @@ export default function App() {
       obstacle_display_limited: false,
     },
     debug_state: initialDebugState,
-    raster_map_catalog: null,
+    raster_map: null,
   });
   const [playbackSourcePath, setPlaybackSourcePath] = useState(defaultPlaybackTracePath);
   const [debugWarningActive, setDebugWarningActive] = useState(false);
@@ -1449,7 +1440,7 @@ export default function App() {
   const selectedAirportId = derivedChartPageState.selected_airport_id;
   const selectedChartId = derivedChartPageState.selected_chart_id;
 
-  const selectedMap = mapSelectorState.selected_map;
+  const selectedMap = rasterMapState;
   const [mapViewport, setMapViewport] = useState<MapViewportState>(() => {
     const center = latLonToWorld(O88_POSITION.lat, O88_POSITION.lon);
     return {
@@ -1461,10 +1452,9 @@ export default function App() {
   const [chartViewport, setChartViewport] = useState<ImageViewportState | null>(null);
   const [chartFolderOpen, setChartFolderOpen] = useState(false);
   const selectedFamily = useMemo(
-    () => mapSelectorState.family_options.find((family) => family.active) ?? null,
-    [mapSelectorState.family_options],
+    () => rasterMapState?.family_options.find((family) => family.active) ?? null,
+    [rasterMapState],
   );
-  const selectedFamilyMapViews = mapSelectorState.displayed_maps;
   const selectedAirport = useMemo(
     () => chartPageData.airports.find((airport) => airport.id === selectedAirportId) ?? chartPageData.airports[0] ?? null,
     [chartPageData, selectedAirportId],
@@ -1592,12 +1582,12 @@ export default function App() {
   }, [adapterBackend, appCoreAdapter, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, initialDebugState, initialRecentAirportIds]);
 
   useEffect(() => {
-    if (!sessionSnapshot.raster_map_catalog) {
+    if (!sessionSnapshot.raster_map) {
       return;
     }
-    setMapSelectorState(sessionSnapshot.raster_map_catalog);
+    setRasterMapState(sessionSnapshot.raster_map);
     setMapSelectorLoadError(null);
-  }, [sessionSnapshot.raster_map_catalog]);
+  }, [sessionSnapshot.raster_map]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1638,7 +1628,7 @@ export default function App() {
     if (!selectedMap) {
       return;
     }
-    setMapViewport((current) => preserveViewportForMap(current, selectedMap.map_view));
+    setMapViewport((current) => preserveViewportForMap(current, selectedMap));
   }, [selectedMap]);
 
   const appReady =
@@ -1660,7 +1650,7 @@ export default function App() {
   function currentSnapshot(): AppViewSnapshot {
     return {
       page,
-      selectedMapId: mapSelectorState.selected_map_id,
+      selectedMapId: rasterMapState?.selected_map_id ?? "",
       mapViewport,
       selectedAirportId,
       selectedChartId,
@@ -1712,7 +1702,7 @@ export default function App() {
       window.history.replaceState(state, "");
     }, 120);
     return () => window.clearTimeout(timeoutId);
-  }, [page, pageHistory, mapSelectorState.selected_map_id, mapViewport, selectedAirportId, selectedChartId, recentAirportIds, chartViewport, chartFolderOpen]);
+  }, [page, pageHistory, rasterMapState?.selected_map_id, mapViewport, selectedAirportId, selectedChartId, recentAirportIds, chartViewport, chartFolderOpen]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -1894,10 +1884,8 @@ export default function App() {
           debugState={sessionSnapshot.debug_state}
           mapLayerState={sessionSnapshot.map_layer_state}
           selectedMap={selectedMap}
-          selectedFamilyMapViews={selectedFamilyMapViews}
-          geometry={mapSelectorState.geometry}
           selectedFamily={selectedFamily}
-          familyOptions={mapSelectorState.family_options}
+          familyOptions={rasterMapState.family_options}
           viewport={mapViewport}
           pageTilePaintTiming={pageTilePaintTimingRef.current}
           onPageTilePaintTimingComplete={(id) => {
@@ -2164,11 +2152,9 @@ function MapPage(props: {
   uptimeLabel: string;
   debugState: UiDebugState;
   mapLayerState: UiMapLayerState;
-  selectedMap: MapViewOptionJson;
-  selectedFamilyMapViews: MapViewOptionJson[];
-  geometry: GeometryJson;
-  selectedFamily: DerivedMapSelectorState["family_options"][number] | null;
-  familyOptions: DerivedMapSelectorState["family_options"];
+  selectedMap: RasterMapUiState;
+  selectedFamily: RasterMapUiState["family_options"][number] | null;
+  familyOptions: RasterMapUiState["family_options"];
   viewport: MapViewportState;
   pageTilePaintTiming: WebPageTilePaintTiming | null;
   onPageTilePaintTimingComplete: (id: number) => void;
@@ -2206,8 +2192,6 @@ function MapPage(props: {
     pageHistory,
     uptimeLabel,
     selectedMap,
-    selectedFamilyMapViews,
-    geometry,
     selectedFamily,
     familyOptions,
     viewport,
@@ -3455,7 +3439,7 @@ function MapPage(props: {
         pinchRef.current,
         first[1],
         second[1],
-        selectedMap.map_view,
+        selectedMap,
         surfaceSize.width,
         surfaceSize.height,
       );
@@ -3529,7 +3513,7 @@ function MapPage(props: {
     event.preventDefault();
     const nextViewport = zoomAroundPoint(
       viewportRef.current,
-      selectedMap.map_view,
+      selectedMap,
       { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY },
       surfaceSize.width,
       surfaceSize.height,
@@ -3545,7 +3529,7 @@ function MapPage(props: {
     }
     const nextViewport = zoomAroundPoint(
       viewportRef.current,
-      selectedMap.map_view,
+      selectedMap,
       { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY },
       surfaceSize.width,
       surfaceSize.height,
@@ -3561,7 +3545,7 @@ function MapPage(props: {
     }
     const nextViewport = zoomAroundPoint(
       viewportRef.current,
-      selectedMap.map_view,
+      selectedMap,
       { x: surfaceSize.width / 2, y: surfaceSize.height / 2 },
       surfaceSize.width,
       surfaceSize.height,
@@ -3644,7 +3628,7 @@ function MapPage(props: {
 
   function reportRasterTileError(tile: RasterRenderTile) {
     debugLog("map.raster.tile.error", {
-      selected_map_id: selectedMap.id,
+      selected_map_id: selectedMap.selected_map_id,
       selected_family_id: selectedFamily?.id ?? null,
       viewport_zoom: viewportRef.current.zoom,
       zoom: tile.zoom,
@@ -4370,8 +4354,8 @@ function MapPage(props: {
 
         <ZoomControl
           zoom={viewport.zoom}
-          minZoom={selectedMap.map_view.min_zoom}
-          maxZoom={selectedMap.map_view.max_zoom}
+          minZoom={selectedMap.min_zoom}
+          maxZoom={selectedMap.max_zoom}
           onZoomChange={setViewportZoom}
         />
 

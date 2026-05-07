@@ -1600,15 +1600,26 @@ pub fn query_map_selection(
 ) -> MapSelectionQueryResult {
     let center_world = lat_lon_to_world(viewport.center);
     let scale = 2.0_f64.powf(viewport.zoom);
-    let click_screen = world_to_screen(center_world, scale, width_px, height_px, click);
+    let click_screen = world_to_screen_projected(
+        center_world,
+        scale,
+        width_px,
+        height_px,
+        click,
+        WorldXProjection::DisplayCopyOffset(0.0),
+    );
     let mut airports = Vec::new();
     let mut navaids = Vec::new();
     let mut weather = Vec::new();
     let mut airspaces = Vec::new();
 
-    for tile in visible_point_tile_window(config, viewport, width_px, height_px, None) {
-        let Some(payload) = point_tile_cache.get(&tile_key(&tile.layer, tile.z, tile.x, tile.y))
-        else {
+    for tile in visible_point_display_tile_window(config, viewport, width_px, height_px, None) {
+        let Some(payload) = point_tile_cache.get(&tile_key(
+            &tile.request.layer,
+            tile.request.z,
+            tile.request.x,
+            tile.request.y,
+        )) else {
             continue;
         };
         for record in &payload.records {
@@ -1616,7 +1627,7 @@ pub fn query_map_selection(
             if !is_airport && !should_display_record(record) {
                 continue;
             }
-            let point = world_to_screen(
+            let point = world_to_screen_with_x_offset(
                 center_world,
                 scale,
                 width_px,
@@ -1625,6 +1636,7 @@ pub fn query_map_selection(
                     lat: record.lat,
                     lon: record.lon,
                 },
+                tile.world_x_offset,
             );
             let distance_px =
                 ((point.x - click_screen.x).powi(2) + (point.y - click_screen.y).powi(2)).sqrt();
@@ -1766,10 +1778,15 @@ fn query_metar_selection_matches(
     };
     let mut matches = Vec::new();
     let metar_zoom = nearest_available_layer_zoom(metar_layer, viewport.zoom.floor() as u32);
-    for tile in visible_layer_tile_window("metars", metar_zoom, viewport, width_px, height_px) {
-        let Some(tile_payload) =
-            metar_tile_cache.get(&tile_key(&tile.layer, tile.z, tile.x, tile.y))
-        else {
+    for tile in
+        visible_layer_display_tile_window("metars", metar_zoom, viewport, width_px, height_px)
+    {
+        let Some(tile_payload) = metar_tile_cache.get(&tile_key(
+            &tile.request.layer,
+            tile.request.z,
+            tile.request.x,
+            tile.request.y,
+        )) else {
             continue;
         };
         for record_ref in &tile_payload.records {
@@ -1785,7 +1802,7 @@ fn query_metar_selection_matches(
                 scale,
                 width_px,
                 height_px,
-                WorldXProjection::NearestWrappedCopy,
+                WorldXProjection::DisplayCopyOffset(tile.world_x_offset),
             );
             let distance_px = ((feature.screen_x - click_screen.x).powi(2)
                 + (feature.screen_y - click_screen.y).powi(2))
@@ -1824,10 +1841,15 @@ fn query_pirep_selection_matches(
     };
     let mut matches = Vec::new();
     let metar_zoom = nearest_available_layer_zoom(metar_layer, viewport.zoom.floor() as u32);
-    for tile in visible_layer_tile_window("metars", metar_zoom, viewport, width_px, height_px) {
-        let Some(tile_payload) =
-            metar_tile_cache.get(&tile_key(&tile.layer, tile.z, tile.x, tile.y))
-        else {
+    for tile in
+        visible_layer_display_tile_window("metars", metar_zoom, viewport, width_px, height_px)
+    {
+        let Some(tile_payload) = metar_tile_cache.get(&tile_key(
+            &tile.request.layer,
+            tile.request.z,
+            tile.request.x,
+            tile.request.y,
+        )) else {
             continue;
         };
         for record_ref in &tile_payload.records {
@@ -1847,7 +1869,7 @@ fn query_pirep_selection_matches(
                 scale,
                 width_px,
                 height_px,
-                WorldXProjection::NearestWrappedCopy,
+                WorldXProjection::DisplayCopyOffset(tile.world_x_offset),
             );
             let distance_px = ((feature.screen_x - click_screen.x).powi(2)
                 + (feature.screen_y - click_screen.y).powi(2))
@@ -4507,6 +4529,96 @@ mod tests {
         assert_eq!(
             taf_action.detail_text.as_deref(),
             Some("TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020\nBECMG 0102/0104 BKN030\nFM010600 22008KT P6SM SCT050")
+        );
+    }
+
+    #[test]
+    fn map_selection_hits_weather_in_repeated_world_copy() {
+        let viewport = MapViewport {
+            center: LatLon { lat: 0.0, lon: 0.0 },
+            zoom: 1.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let config = test_map_overlay_config();
+        let metar_zoom = nearest_available_layer_zoom(
+            config.metar_layer.as_ref().expect("metar layer"),
+            viewport.zoom.floor() as u32,
+        );
+        let display_tile =
+            visible_layer_display_tile_window("metars", metar_zoom, &viewport, 1024.0, 256.0)
+                .into_iter()
+                .find(|tile| tile.world_x_offset > 0.0)
+                .expect("expected repeated metar world copy");
+        let mut metar_tile_cache = HashMap::new();
+        metar_tile_cache.insert(
+            tile_key(
+                &display_tile.request.layer,
+                display_tile.request.z,
+                display_tile.request.x,
+                display_tile.request.y,
+            ),
+            MetarTilePayload {
+                schema_version: 1,
+                layer: "metars".to_string(),
+                z: display_tile.request.z,
+                x: display_tile.request.x,
+                y: display_tile.request.y,
+                records: vec![MetarTileRecord {
+                    kind: "metar".to_string(),
+                    id: "KAAA".to_string(),
+                }],
+            },
+        );
+        let mut metars_by_station = HashMap::new();
+        metars_by_station.insert(
+            "KAAA".to_string(),
+            MetarRecord {
+                raw_text: "METAR KAAA 010000Z 00000KT 10SM CLR 10/08 A3000".to_string(),
+                observed_at_utc: Some("2026-05-03T00:00:00.000Z".to_string()),
+                station_id: "KAAA".to_string(),
+                flight_category: Some("VFR".to_string()),
+                clouds: None,
+                longitude: 0.0,
+                latitude: 0.0,
+            },
+        );
+        let metars = MetarProductPayload {
+            schema_version: 2,
+            version_label: "test".to_string(),
+            metar_count: Some(1),
+            metars_by_station,
+            pireps: Vec::new(),
+        };
+
+        let result = query_map_selection(
+            &viewport,
+            1024.0,
+            256.0,
+            &config,
+            None,
+            LatLon {
+                lat: 0.0,
+                lon: 360.0,
+            },
+            32.0,
+            &HashMap::new(),
+            &metar_tile_cache,
+            Some(&metars),
+            None,
+            &HashMap::new(),
+            None,
+            &mut |_| AirportPlateAvailability::default(),
+        );
+        let weather = result
+            .categories
+            .iter()
+            .find(|category| category.id == "weather")
+            .expect("weather category");
+
+        assert_eq!(
+            weather.items.first().map(|item| item.label.as_str()),
+            Some("KAAA")
         );
     }
 

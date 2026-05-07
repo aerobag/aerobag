@@ -139,6 +139,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.SpanStyle
@@ -1302,10 +1303,9 @@ private fun buildSeededDevPlan(
 ): FlightPlanUiMutation {
     return runCatching {
         val waypoints = listOf(
-            NavRef.Airport("KPAO"),
-            NavRef.Fix("VPDUB"),
-            NavRef.Airport("KVCB"),
-            NavRef.Airport("KWLW"),
+            NavRef.Airport("KRNT"),
+            NavRef.Navaid("SEA"),
+            NavRef.Airport("KPAE"),
         )
         val resolvedLegs =
             waypoints.zipWithNext().mapIndexed { index, (from, to) ->
@@ -1318,18 +1318,20 @@ private fun buildSeededDevPlan(
             }
         val seededPlan =
             plan.copy(
-                id = "dev-kpao-vpdub-kvcb-kwlw",
-                name = "KPAO VPDUB KVCB KWLW",
+                id = "dev-krnt-sea-kpae",
+                name = "KRNT SEA KPAE",
                 legs = resolvedLegs.map { leg -> net.jonh.aerobag.prototype.domain.FlightPlanLeg(leg.from, leg.to, null) },
                 routeComponents = waypoints.map { waypoint -> RouteComponent.Waypoint(waypoint) },
+                routeComponentUids = waypoints.indices.map { index -> "fpc:${index.toString(16).padStart(16, '0')}" },
+                routeComponentUidCounter = waypoints.size.toLong(),
                 resolvedLegs = resolvedLegs,
                 guidance = GuidanceState(
                     activeLegIndex = 0,
                     sequencingMode = SequencingMode.FollowPlan,
                     directTo = null,
                 ),
-                departure = "KPAO",
-                destination = "KWLW",
+                departure = "KRNT",
+                destination = "KPAE",
                 updatedAtEpochMs = System.currentTimeMillis(),
                 version = plan.version + 1,
             )
@@ -6341,6 +6343,7 @@ private fun MapSelectionTray(
                             MapSelectionItemButton(
                                 item = item,
                                 selected = item.id == selectedItem?.id,
+                                testTag = "parity:map-selection-item:${category.id}-${item.label}",
                                 onClick = { onSelectItem(item) },
                             )
                         }
@@ -6396,13 +6399,14 @@ private fun MapSelectionTray(
 private fun MapSelectionItemButton(
     item: MapSelectionItem,
     selected: Boolean,
+    testTag: String,
     onClick: () -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     Surface(
         modifier = Modifier
             .size(ThumbSize)
-            .testTag("parity:map-selection-item:${item.label}")
+            .testTag(testTag)
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(ThumbRadius),
         color = if (selected) lerp(uiTheme.controls.buttonBg, Color.White, 0.28f) else uiTheme.controls.buttonBg,
@@ -8638,6 +8642,7 @@ private fun MenuPanelRow(
             .then(if (width != Dp.Unspecified) Modifier.width(width) else Modifier.fillMaxWidth())
             .height(ThumbSize)
             .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
+            .semantics { selected = active || isOn }
             .clip(rowShape)
             .background(rowBackground)
             .clickable(

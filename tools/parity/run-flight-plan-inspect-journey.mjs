@@ -52,6 +52,7 @@ function result(platform) {
     steps: [],
     gaps: [],
     checks: {},
+    inventories: {},
   };
 }
 
@@ -61,6 +62,32 @@ function recordStep(out, name, status = "ok", detail = undefined) {
 
 function recordCheck(out, name, value) {
   out.checks[name] = value;
+}
+
+function normalizeInventoryEntry(entry) {
+  return {
+    id: String(entry.id ?? ""),
+    label: String(entry.label ?? "").replace(/\s+/g, " ").trim(),
+    enabled: Boolean(entry.enabled),
+    active: Boolean(entry.active),
+    selected: Boolean(entry.selected),
+    on: Boolean(entry.on),
+    off: Boolean(entry.off),
+    disabled: Boolean(entry.disabled),
+  };
+}
+
+function normalizeInventory(entries) {
+  return entries
+    .map(normalizeInventoryEntry)
+    .sort((left, right) => left.id.localeCompare(right.id) || left.label.localeCompare(right.label));
+}
+
+function recordInventory(out, name, entries) {
+  const normalized = normalizeInventory(entries);
+  out.inventories[name] = normalized;
+  recordStep(out, `inventory: ${name}`, "ok", `${normalized.length} entries`);
+  return normalized;
 }
 
 function recordGap(out, name, detail) {
@@ -340,10 +367,11 @@ async function webJourney(url) {
       [...document.querySelectorAll("svg text")]
         .some((entry) => entry.textContent.trim() === "TIW" && entry.closest("svg")?.getAttribute("class") === "vectorOverlay")
     `, "TIW vector label");
-    await webClickVectorPointByLabel(cdp, "TIW");
+    await webClick(cdp, "[data-testid=\"map-surface\"]");
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-selection-tray\"]') !== null", "map selection tray");
     recordStep(out, "opened map inspection tray");
     recordCheck(out, "inspectTrayAppears", true);
+    recordInventory(out, "chart.inspect.items", await webCollectTestIds(cdp, "map-selection-item-"));
 
     await cdp.send("Runtime.evaluate", {
       expression: `
@@ -354,6 +382,7 @@ async function webJourney(url) {
     });
     recordCheck(out, "inspectItemSelected", true);
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-selection-action-insert\"]:not(:disabled)') !== null", "insert action enabled");
+    recordInventory(out, "chart.inspect.selected-actions", await webCollectTestIds(cdp, "map-selection-action-"));
     recordCheck(out, "inspectInsertActionPresent", true);
     await webClick(cdp, "[data-testid=\"map-selection-action-insert\"]");
     recordStep(out, "inserted inspected airport into flight plan");
@@ -501,12 +530,70 @@ async function webExists(cdp, selector) {
   return webEval(cdp, `document.querySelector(${JSON.stringify(selector)}) !== null`);
 }
 
+async function webCollectTestIds(cdp, prefix) {
+  return webEval(cdp, `
+    (() => {
+      const prefix = ${JSON.stringify(prefix)};
+      return [...document.querySelectorAll('[data-testid]')]
+        .map((el) => {
+          const testId = el.getAttribute("data-testid") ?? "";
+          if (!testId.startsWith(prefix)) return null;
+          const disabled = Boolean(el.disabled) || el.getAttribute("aria-disabled") === "true" || el.classList.contains("isDisabled");
+          return {
+            id: testId.slice(prefix.length),
+            label: (el.innerText ?? el.textContent ?? "").replace(/\\s+/g, " ").trim(),
+            enabled: !disabled,
+            disabled,
+            active: el.classList.contains("isActive") || el.classList.contains("isOpen"),
+            selected: el.classList.contains("isSelected"),
+            on: el.classList.contains("isOn"),
+            off: el.classList.contains("isOff"),
+          };
+        })
+        .filter(Boolean);
+    })()
+  `);
+}
+
+async function webRecordTrayInventory(cdp, out, name, launcherSelector, optionPrefix = "tray-option-") {
+  await webClick(cdp, launcherSelector);
+  await delay(250);
+  const entries = await webCollectTestIds(cdp, optionPrefix);
+  recordInventory(out, name, entries);
+  await webClick(cdp, launcherSelector);
+  return entries;
+}
+
+async function webRecordPlanRowInventory(cdp, out, name, rowIndex) {
+  const rowSelector = await webEval(cdp, `
+    (() => {
+      const rows = [...document.querySelectorAll('[data-testid^="plan-row-"]')];
+      const row = rows[${rowIndex} < 0 ? rows.length + ${rowIndex} : ${rowIndex}];
+      return row ? \`[data-testid="\${row.getAttribute("data-testid")}"]\` : null;
+    })()
+  `);
+  if (!rowSelector) {
+    recordGap(out, `inventory: ${name}`, `no flight-plan row at index ${rowIndex}`);
+    return [];
+  }
+  await webClick(cdp, rowSelector);
+  await waitForWeb(cdp, "document.querySelector('[data-testid^=\"plan-row-action-\"]') !== null", `${name} action tray`);
+  const entries = await webCollectTestIds(cdp, "plan-row-action-");
+  recordInventory(out, name, entries);
+  await cdp.send("Runtime.evaluate", {
+    expression: `document.querySelector('[aria-label="Close waypoint actions"]')?.click()`,
+    awaitPromise: true,
+  });
+  return entries;
+}
+
 async function webCheckChartActionClasses(cdp, out) {
   recordActionClass(out, "chart.drag-pan", await webExists(cdp, "[data-testid=\"map-surface\"]"));
   recordActionClass(out, "chart.search", await webExists(cdp, "[data-testid=\"chart-search-input\"]"));
 
   await webClick(cdp, "[data-testid=\"layers-button\"]");
   await waitForWeb(cdp, "document.querySelector('[data-testid=\"tray-option-vectors\"]') !== null", "layers tray");
+  recordInventory(out, "chart.layers", await webCollectTestIds(cdp, "tray-option-"));
   const layerOptions = await webEval(cdp, `
     ${JSON.stringify(LAYER_OPTION_IDS)}.filter((id) => document.querySelector(\`[data-testid="tray-option-\${id}"]\`) !== null)
   `);
@@ -515,6 +602,7 @@ async function webCheckChartActionClasses(cdp, out) {
 
   await webClick(cdp, "[data-testid=\"chart-family-button\"]");
   await waitForWeb(cdp, "document.querySelector('[data-testid^=\"tray-option-\"]') !== null", "chart family tray");
+  recordInventory(out, "chart.map-family", await webCollectTestIds(cdp, "tray-option-"));
   const familyCount = await webEval(cdp, `document.querySelectorAll('[data-testid^="tray-option-"]').length`);
   recordActionClass(out, "chart.map-family", familyCount > 0, `${familyCount} options`);
   await webClick(cdp, "[data-testid=\"chart-family-button\"]");
@@ -523,10 +611,14 @@ async function webCheckChartActionClasses(cdp, out) {
 async function webCheckPlateActionClasses(cdp, out) {
   await webClick(cdp, "[data-testid=\"page-button-plate\"]");
   await waitForWeb(cdp, "document.querySelector('[data-testid=\"plate-airport-button\"]') !== null", "plate page controls");
+  recordInventory(out, "plate.controls", await webCollectTestIds(cdp, "plate-"));
   recordActionClass(out, "plate.airport-selector", await webExists(cdp, "[data-testid=\"plate-airport-button\"]"));
   recordActionClass(out, "plate.chart-selector", await webExists(cdp, "[data-testid=\"plate-chart-button\"]"));
   recordActionClass(out, "plate.load-procedure", await webExists(cdp, "[data-testid=\"plate-load-button\"]"));
   recordActionClass(out, "plate.folder", await webExists(cdp, "[data-testid=\"plate-folder-button\"]"));
+  await webRecordTrayInventory(cdp, out, "plate.airports", "[data-testid=\"plate-airport-button\"]");
+  await webRecordTrayInventory(cdp, out, "plate.charts", "[data-testid=\"plate-chart-button\"]");
+  await webRecordTrayInventory(cdp, out, "plate.loads", "[data-testid=\"plate-load-button\"]");
   await webClick(cdp, "[data-testid=\"page-button-chart\"]");
   await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-surface\"]') !== null", "return chart from plate");
 }
@@ -547,10 +639,9 @@ async function webCheckPlanActionClasses(cdp, out) {
   }
   await webClick(cdp, firstRowSelector);
   await waitForWeb(cdp, "document.querySelector('[data-testid^=\"plan-row-action-\"]') !== null", "plan row action tray");
-  const rowActions = await webEval(cdp, `
-    [...document.querySelectorAll('[data-testid^="plan-row-action-"]')]
-      .map((el) => el.getAttribute("data-testid").replace("plan-row-action-", ""))
-  `);
+  const rowActionEntries = await webCollectTestIds(cdp, "plan-row-action-");
+  recordInventory(out, "plan.row.first.actions", rowActionEntries);
+  const rowActions = rowActionEntries.map((entry) => entry.id);
   recordActionClass(out, "plan.row-actions", rowActions.length > 0, rowActions.join(","));
   for (const id of CORE_ROW_ACTION_IDS) {
     recordActionClass(out, `plan.row.${id}`, rowActions.includes(id), rowActions.join(","));
@@ -559,6 +650,7 @@ async function webCheckPlanActionClasses(cdp, out) {
     expression: `document.querySelector('[aria-label="Close waypoint actions"]')?.click()`,
     awaitPromise: true,
   });
+  await webRecordPlanRowInventory(cdp, out, "plan.row.last.actions", -1);
 }
 
 async function waitFor(fn, timeoutMs, message) {
@@ -611,6 +703,10 @@ function adb(serial, args, options = {}) {
     throw new Error(`adb ${args.join(" ")} failed: ${detail}`);
   }
   return res.stdout;
+}
+
+function adbBestEffort(serial, args, options = {}) {
+  return spawnSync("adb", adbArgs(serial, args), { encoding: "utf8", timeout: 15000, ...options });
 }
 
 function dumpAndroid(serial) {
@@ -684,6 +780,51 @@ function findNodes(xml, predicate) {
     if (predicate(attrs)) nodes.push(attrs);
   }
   return nodes;
+}
+
+function androidNodeLabel(xml, node) {
+  const rect = rectOfBounds(node.bounds);
+  return findNodes(xml, (candidate) => {
+    const text = (candidate.text ?? "").trim();
+    if (!text) return false;
+    if (candidate.bounds === node.bounds) return true;
+    try {
+      const child = rectOfBounds(candidate.bounds);
+      return child.left >= rect.left && child.right <= rect.right && child.top >= rect.top && child.bottom <= rect.bottom;
+    } catch (_error) {
+      return false;
+    }
+  })
+    .map((candidate) => candidate.text.trim())
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function androidCollectTags(xml, prefix) {
+  return findNodes(xml, (node) => androidTag(node).startsWith(prefix))
+    .map((node) => {
+      const tag = androidTag(node);
+      const selected = node.selected === "true" || node.checked === "true";
+      const enabled = node.enabled !== "false";
+      return {
+        id: tag.slice(prefix.length),
+        label: androidNodeLabel(xml, node),
+        enabled,
+        disabled: !enabled,
+        active: selected,
+        selected,
+        on: false,
+        off: false,
+      };
+    });
+}
+
+function androidRecordInventory(serial, out, name, prefix) {
+  const entries = androidCollectTags(dumpAndroid(serial), prefix);
+  recordInventory(out, name, entries);
+  return entries;
 }
 
 function androidAssertFeedbackHasBottomControlClearance(serial, out, feedbackNode) {
@@ -896,6 +1037,12 @@ async function androidCheckChartActionClasses(serial, out) {
   if (await androidTapTag(serial, out, "opened layers tray for action audit", "parity:layers-button", 5000)) {
     await delay(300);
     const layerXml = dumpAndroid(serial);
+    const layerInventory = androidCollectTags(layerXml, "parity:tray-option:").map((entry) => (
+      LAYER_OPTION_IDS.includes(entry.id)
+        ? { ...entry, on: entry.selected, off: !entry.selected }
+        : entry
+    ));
+    recordInventory(out, "chart.layers", layerInventory);
     const layerOptions = LAYER_OPTION_IDS.filter((id) => findNode(layerXml, (node) => hasAndroidTag(node, `parity:tray-option:${id}`)));
     recordActionClass(out, "chart.layers", layerOptions.length === LAYER_OPTION_IDS.length, layerOptions.join(","));
     adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
@@ -907,7 +1054,9 @@ async function androidCheckChartActionClasses(serial, out) {
 
   if (await androidTapTag(serial, out, "opened map-family tray for action audit", "parity:chart-family-button", 5000)) {
     await delay(300);
-    const familyOptions = findNodes(dumpAndroid(serial), (node) => androidTag(node).startsWith("parity:tray-option:"));
+    const familyXml = dumpAndroid(serial);
+    recordInventory(out, "chart.map-family", androidCollectTags(familyXml, "parity:tray-option:"));
+    const familyOptions = findNodes(familyXml, (node) => androidTag(node).startsWith("parity:tray-option:"));
     recordActionClass(out, "chart.map-family", familyOptions.length > 0, `${familyOptions.length} options`);
     adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
     recordStep(out, "closed map-family tray after action audit");
@@ -926,10 +1075,29 @@ async function androidCheckPlateActionClasses(serial, out) {
     return;
   }
   await delay(500);
+  recordInventory(out, "plate.controls", androidCollectTags(dumpAndroid(serial), "parity:plate-"));
   recordActionClass(out, "plate.airport-selector", androidTagExists(serial, "parity:plate-airport-button"));
   recordActionClass(out, "plate.chart-selector", androidTagExists(serial, "parity:plate-chart-button"));
   recordActionClass(out, "plate.load-procedure", androidTagExists(serial, "parity:plate-load-button"));
   recordActionClass(out, "plate.folder", androidTagExists(serial, "parity:plate-folder-button"));
+  if (await androidTapTag(serial, out, "opened plate airport tray inventory", "parity:plate-airport-button", 5000)) {
+    await delay(300);
+    androidRecordInventory(serial, out, "plate.airports", "parity:tray-option:");
+    adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
+    await delay(200);
+  }
+  if (await androidTapTag(serial, out, "opened plate chart tray inventory", "parity:plate-chart-button", 5000)) {
+    await delay(300);
+    androidRecordInventory(serial, out, "plate.charts", "parity:tray-option:");
+    adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
+    await delay(200);
+  }
+  if (await androidTapTag(serial, out, "opened plate load tray inventory", "parity:plate-load-button", 5000)) {
+    await delay(300);
+    androidRecordInventory(serial, out, "plate.loads", "parity:tray-option:");
+    adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
+    await delay(200);
+  }
   await androidTapTag(serial, out, "returned chart page after plate action audit", "parity:button:PLATE", 5000);
   await delay(500);
 }
@@ -952,20 +1120,32 @@ async function androidCheckPlanActionClasses(serial, out) {
   androidTapResolvedNode(serial, out, "opened first plan row for action audit", row);
   await delay(300);
   const actionXml = dumpAndroid(serial);
-  const rowActions = findNodes(actionXml, (node) => androidTag(node).startsWith("parity:plan-row-action:"))
-    .map((node) => androidTag(node).slice("parity:plan-row-action:".length));
+  const rowActionEntries = androidCollectTags(actionXml, "parity:plan-row-action:");
+  recordInventory(out, "plan.row.first.actions", rowActionEntries);
+  const rowActions = rowActionEntries.map((entry) => entry.id);
   recordActionClass(out, "plan.row-actions", rowActions.length > 0, rowActions.join(","));
   for (const id of CORE_ROW_ACTION_IDS) {
     recordActionClass(out, `plan.row.${id}`, rowActions.includes(id), rowActions.join(","));
   }
   adb(serial, ["shell", "input", "tap", "1040", "1200"]);
   await delay(300);
+  const rows = findNodes(dumpAndroid(serial), (node) => androidTag(node).startsWith("parity:plan-row:"));
+  if (rows.length > 1) {
+    androidTapResolvedNode(serial, out, "opened last plan row for action inventory", rows[rows.length - 1]);
+    await delay(300);
+    androidRecordInventory(serial, out, "plan.row.last.actions", "parity:plan-row-action:");
+    adb(serial, ["shell", "input", "tap", "1040", "1200"]);
+    await delay(300);
+  } else {
+    recordGap(out, "inventory: plan.row.last.actions", "no distinct last flight-plan row found");
+  }
 }
 
 async function androidJourney(serial) {
   const out = result("android");
   adb(serial, ["wait-for-device"]);
   adb(serial, ["shell", "am", "force-stop", ANDROID_PACKAGE]);
+  adbBestEffort(serial, ["shell", "run-as", ANDROID_PACKAGE, "rm", "shared_prefs/aerobag_ui.xml"]);
   adb(serial, ["shell", "am", "start", "-n", ANDROID_ACTIVITY]);
   await androidWaitForNode(
     serial,
@@ -1142,6 +1322,7 @@ async function androidJourney(serial) {
   if (findNode(selectionXml, (node) => hasAndroidTag(node, "parity:map-selection-tray"))) {
     recordStep(out, "map inspection tray appeared");
     recordCheck(out, "inspectTrayAppears", true);
+    recordInventory(out, "chart.inspect.items", androidCollectTags(selectionXml, "parity:map-selection-item:"));
   } else {
     recordGap(out, "map inspection tray appeared", "tap did not open an inspect tray at the tapped map location");
     recordCheck(out, "inspectTrayAppears", false);
@@ -1159,7 +1340,7 @@ async function androidJourney(serial) {
       "first inspect item",
     );
     const tag = androidTag(firstInspectableItem);
-    selectedLabel = tag.slice("parity:map-selection-item:".length);
+    selectedLabel = tag.slice("parity:map-selection-item:".length).split("-").at(-1) ?? "";
     androidTapResolvedNode(serial, out, "selected first inspect item", firstInspectableItem);
     recordCheck(out, "inspectItemSelected", true);
     await delay(500);
@@ -1169,6 +1350,7 @@ async function androidJourney(serial) {
   }
 
   const selectedXml = dumpAndroid(serial);
+  recordInventory(out, "chart.inspect.selected-actions", androidCollectTags(selectedXml, "parity:map-selection-action:"));
   const insertAction = findNode(selectedXml, (node) => hasAndroidTag(node, "parity:map-selection-action:insert"));
   if (insertAction) {
     recordCheck(out, "inspectInsertActionPresent", true);
@@ -1230,10 +1412,40 @@ function comparePlatformOutputs(outputs) {
       comparison.divergences.push({ name, web: webValue, android: androidValue });
     }
   }
+  const inventoryNames = new Set([
+    ...Object.keys(web.inventories ?? {}),
+    ...Object.keys(android.inventories ?? {}),
+  ]);
+  for (const name of [...inventoryNames].sort()) {
+    const webInventory = web.inventories?.[name] ?? [];
+    const androidInventory = android.inventories?.[name] ?? [];
+    const webComparable = comparableInventory(webInventory, androidInventory);
+    const androidComparable = comparableInventory(androidInventory, webInventory);
+    if (JSON.stringify(webComparable) !== JSON.stringify(androidComparable)) {
+      comparison.divergences.push({ name: `inventory.${name}`, web: webComparable, android: androidComparable });
+    }
+  }
   if (comparison.divergences.length > 0) {
     comparison.status = "diverged";
   }
   return comparison;
+}
+
+function comparableInventory(entries, counterpartEntries) {
+  const counterpartById = new Map(counterpartEntries.map((entry) => [entry.id, entry]));
+  return entries.map((entry) => {
+    const counterpart = counterpartById.get(entry.id);
+    const compareAsToggle = Boolean(entry.on || entry.off || counterpart?.on || counterpart?.off);
+    return {
+      id: entry.id,
+      ...(entry.label && counterpart?.label ? { label: entry.label } : {}),
+      enabled: entry.enabled,
+      disabled: entry.disabled,
+      ...(compareAsToggle
+        ? { on: entry.on, off: entry.off }
+        : { active: entry.active || entry.selected }),
+    };
+  });
 }
 
 async function main() {

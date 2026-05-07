@@ -1151,13 +1151,22 @@ async function androidCheckPlateActionClasses(serial, out) {
     adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
     await delay(200);
   }
-  if (await androidTapTag(serial, out, "opened plate load tray inventory", "parity:plate-load-button", 5000)) {
+  const loadButton = findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, "parity:plate-load-button"));
+  if (loadButton?.enabled === "true") {
+    androidTapResolvedNode(serial, out, "opened plate load tray inventory", loadButton);
     await delay(300);
     androidRecordInventory(serial, out, "plate.loads", "parity:tray-option:");
     adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
     await delay(200);
+  } else if (loadButton) {
+    recordInventory(out, "plate.loads", []);
+    recordStep(out, "skipped disabled plate load tray inventory");
   }
-  await androidTapTag(serial, out, "returned chart page after plate action audit", "parity:button:PLATE", 5000);
+  if (androidTagExists(serial, "parity:map-surface")) {
+    recordStep(out, "returned chart page after plate action audit", "already on chart");
+  } else {
+    await androidTapTag(serial, out, "returned chart page after plate action audit", "parity:button:PLATE", 5000);
+  }
   await delay(500);
 }
 
@@ -1373,7 +1382,7 @@ async function androidJourney(serial) {
       await androidTapTag(serial, out, "opened plan page after insert", "parity:nav-cdi");
       await delay(500);
       if (hasAndroidText(dumpAndroid(serial), selectedLabel) || await androidScrollUntilText(serial, selectedLabel)) {
-        recordStep(out, "verified inspected item in flight plan", selectedLabel);
+        recordStep(out, "verified inspected item in flight plan", "ok", selectedLabel);
         recordCheck(out, "inspectInsertAddsSelectedItem", true);
       } else {
         recordGap(out, "verified inspected item in flight plan", `${selectedLabel} was not visible in the plan after insert`);
@@ -1477,7 +1486,7 @@ async function main() {
   const comparison = args.platform === "both" ? comparePlatformOutputs(outputs) : null;
   const payload = outputs.length === 1 ? outputs[0] : { journeys: outputs, comparison };
   console.log(JSON.stringify(payload, null, 2));
-  if (outputs.some((entry) => entry.status !== "pass") || comparison?.status !== "pass") {
+  if (outputs.some((entry) => entry.status !== "pass") || (comparison !== null && comparison.status !== "pass")) {
     process.exitCode = 1;
   }
 }

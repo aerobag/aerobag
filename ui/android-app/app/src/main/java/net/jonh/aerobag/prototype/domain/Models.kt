@@ -496,8 +496,8 @@ data class MapView(
     val tileSize: Int,
     val minZoom: Double,
     val maxZoom: Double,
-    val maxSourceZoom: Int,
-    val maxDisplayZoom: Double,
+    val maxSourceZoom: Int?,
+    val maxDisplayZoom: Double?,
     val storageKind: TileStorageKind,
     val packageName: String?,
     val fullCoverageZoom: Double?,
@@ -627,6 +627,7 @@ enum class OwnshipSourceKind {
     AdsbTrackPlayback,
     LiveNetworkTrack,
     FlightPlanSimulator,
+    DebugOwnshipDriver,
 }
 
 enum class SourceConnectionState {

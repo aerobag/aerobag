@@ -1584,6 +1584,7 @@ private fun WireOwnshipSourceKind.toUi(): OwnshipSourceKind = when (this) {
     WireOwnshipSourceKind.AdsbTrackPlayback -> OwnshipSourceKind.AdsbTrackPlayback
     WireOwnshipSourceKind.LiveNetworkTrack -> OwnshipSourceKind.LiveNetworkTrack
     WireOwnshipSourceKind.FlightPlanSimulator -> OwnshipSourceKind.FlightPlanSimulator
+    WireOwnshipSourceKind.DebugOwnshipDriver -> OwnshipSourceKind.DebugOwnshipDriver
 }
 
 private fun OwnshipSourceKind.toWire(): WireOwnshipSourceKind = when (this) {
@@ -1594,6 +1595,7 @@ private fun OwnshipSourceKind.toWire(): WireOwnshipSourceKind = when (this) {
     OwnshipSourceKind.AdsbTrackPlayback -> WireOwnshipSourceKind.AdsbTrackPlayback
     OwnshipSourceKind.LiveNetworkTrack -> WireOwnshipSourceKind.LiveNetworkTrack
     OwnshipSourceKind.FlightPlanSimulator -> WireOwnshipSourceKind.FlightPlanSimulator
+    OwnshipSourceKind.DebugOwnshipDriver -> WireOwnshipSourceKind.DebugOwnshipDriver
 }
 
 private fun WireSourceConnectionState.toUi(): SourceConnectionState = when (this) {
@@ -1671,6 +1673,7 @@ private fun OwnshipSourceKind.toWireName(): String = when (this) {
     OwnshipSourceKind.AdsbTrackPlayback -> "adsb_track_playback"
     OwnshipSourceKind.LiveNetworkTrack -> "live_network_track"
     OwnshipSourceKind.FlightPlanSimulator -> "flight_plan_simulator"
+    OwnshipSourceKind.DebugOwnshipDriver -> "debug_ownship_driver"
 }
 
 private fun SourceConnectionState.toWireName(): String = when (this) {

@@ -44,7 +44,7 @@ export type NavRef =
   | { Navaid: string }
   | { Fix: string }
   | { ArincNavaid: { identifier: string; icao_code: string; section_code: string; subsection_code: string } }
-  | { TerminalNavaid: { airport_id: string; identifier: string; icao_code: string; subsection_code: string } }
+  | { TerminalNavaid: { airport_id: string; identifier: string; icao_code: string; section_code: string; subsection_code: string } }
   | { LatLon: { lat: number; lon: number } }
   | { Spot: { lat: number; lon: number } };
 

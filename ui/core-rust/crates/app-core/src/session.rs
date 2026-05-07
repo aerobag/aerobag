@@ -29,8 +29,7 @@ use crate::{
     NavRef, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity, ProcedureKind,
     ProcedureLoadCommand, RasterMapCatalog, RasterTilePlan, ResolvedLeg, ResolvedLegSource,
     RouteComponentViewKind, SequencingMode, SituationControlInput, SituationControlMenuItem,
-    TafProductPayload,
-    TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
+    TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2711,7 +2710,7 @@ fn plan_preview_control_bounds(session: &UiSession) -> (bool, bool) {
     };
     let Some(record_index) = records
         .iter()
-        .position(|record| record.from_row_uid == pointer.row_uid)
+        .position(|record| record.pointer_key == pointer.row_uid)
     else {
         return (false, true);
     };

@@ -446,7 +446,7 @@ export default defineConfig({
         artifactReadRoot,
         path.join(artifactReadRoot, unpackedDir),
         fastProductRoot,
-        adsbTraceRoot,
+        ...(fs.existsSync(adsbTraceRoot) ? [adsbTraceRoot] : []),
       ],
     },
   },

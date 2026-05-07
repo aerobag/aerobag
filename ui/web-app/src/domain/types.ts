@@ -444,6 +444,7 @@ export type FlightPlanDisplayRowUiView = {
   preceding_waypoint: NavRef | null;
   following_waypoint: NavRef | null;
   actions: FlightPlanRowActionUiView[];
+  action_matrix?: FlightPlanRowActionUiView[][];
 };
 
 export type NavSymbolFeature = {

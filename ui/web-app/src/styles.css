@@ -2259,7 +2259,7 @@ button {
   position: absolute;
   top: calc(var(--thumb) * 1.25);
   left: calc(var(--thumb-gap) + var(--thumb) * 3.15);
-  width: min(calc(var(--thumb) * 2.35), calc(100% - var(--thumb-gap) * 2 - var(--thumb) * 3.15));
+  width: min(calc(var(--thumb) * 4 + var(--thumb-gap) * 3), calc(100% - var(--thumb-gap) * 2 - var(--thumb) * 3.15));
   max-height: calc(var(--app-height) - var(--safe-top) - var(--safe-bottom) - (var(--thumb) * 2.25));
   overflow-y: auto;
   overflow-x: hidden;
@@ -2286,6 +2286,18 @@ button {
 .waypointActionTray {
   display: flex;
   flex-direction: column;
+  gap: var(--thumb-gap);
+}
+
+.waypointActionGrid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--thumb-gap);
+}
+
+.waypointActionGridRow {
+  display: grid;
+  grid-template-columns: repeat(2, calc(var(--thumb) * 2));
   gap: var(--thumb-gap);
 }
 

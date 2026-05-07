@@ -4870,6 +4870,7 @@ function FlightPlanPage(props: {
         precedingWaypoint: row.preceding_waypoint,
         followingWaypoint: row.following_waypoint,
         actions: row.actions,
+        actionMatrix: row.action_matrix && row.action_matrix.length > 0 ? row.action_matrix : [row.actions],
       }));
   }, [planUiState.display_rows]);
   const selectedWaypointIndex = selectedWaypointUid === null
@@ -4879,9 +4880,9 @@ function FlightPlanPage(props: {
     ? displayRows[selectedWaypointIndex] ?? null
     : null;
 
-  const rowActions = useMemo(() => {
+  const rowActionRows = useMemo(() => {
     if (!selectedRow) {
-      return [] as Array<{ id: string; uid: string; label: string; enabled: boolean; execution?: string; onSelect: () => void }>;
+      return [] as Array<Array<{ id: string; uid: string; label: string; enabled: boolean; execution?: string; onSelect: () => void }>>;
     }
 
     const closeTray = () => {
@@ -4891,7 +4892,7 @@ function FlightPlanPage(props: {
       setAirportInsert(null);
     };
 
-    return (selectedRow.actions as Array<{ id: string; uid: string; label: string; enabled: boolean; execution?: string; dismiss_tray_on_success?: boolean }>).map((action) => {
+    const actionForUi = (action: { id: string; uid: string; label: string; enabled: boolean; execution?: string; dismiss_tray_on_success?: boolean }) => {
       return {
         id: action.id,
         uid: action.uid,
@@ -5004,8 +5005,10 @@ function FlightPlanPage(props: {
           }
         },
       };
-    });
+    };
+    return (selectedRow.actionMatrix as Array<Array<{ id: string; uid: string; label: string; enabled: boolean; execution?: string; dismiss_tray_on_success?: boolean }>>).map((row) => row.map(actionForUi));
   }, [props, selectedRow]);
+  const rowActions = useMemo(() => rowActionRows.flat(), [rowActionRows]);
 
   useEffect(() => {
     const surface = structuredSurfaceRef.current;
@@ -5796,22 +5799,28 @@ function FlightPlanPage(props: {
                   </>
                 )}
               </div>
-            ) : rowActions.map((action) => {
-              return (
-              <button
-                key={action.id}
-                type="button"
-                className="trayButton airwayChoiceButton"
-                data-testid={`plan-row-action-${action.id}`}
-                disabled={!action.enabled}
-                onPointerDown={stopPointer}
-                onPointerUp={stopPointer}
-                onClick={action.onSelect}
-              >
-                {action.label}
-              </button>
-            );
-            })}
+            ) : (
+              <div className="waypointActionGrid">
+                {rowActionRows.map((row, rowIndex) => (
+                  <div key={`row-${rowIndex}`} className="waypointActionGridRow">
+                    {row.map((action) => (
+                      <button
+                        key={action.id}
+                        type="button"
+                        className="trayButton airwayChoiceButton"
+                        data-testid={`plan-row-action-${action.id}`}
+                        disabled={!action.enabled}
+                        onPointerDown={stopPointer}
+                        onPointerUp={stopPointer}
+                        onClick={action.onSelect}
+                      >
+                        {action.label}
+                      </button>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
         </>
       ) : null}

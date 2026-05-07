@@ -983,6 +983,8 @@ pub struct FlightPlanDisplayRowUiView {
     pub preceding_waypoint: Option<NavRef>,
     pub following_waypoint: Option<NavRef>,
     pub actions: Vec<FlightPlanRowActionUiView>,
+    #[serde(default)]
+    pub action_matrix: Vec<Vec<FlightPlanRowActionUiView>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2054,6 +2056,7 @@ fn project_display_rows(
                 preceding_waypoint: component.preceding_waypoint.clone(),
                 following_waypoint: component.following_waypoint.clone(),
                 actions,
+                action_matrix: Vec::new(),
             });
         } else {
             let origin_anchor = component.preceding_waypoint.clone();
@@ -2096,6 +2099,7 @@ fn project_display_rows(
                 preceding_waypoint: component.preceding_waypoint.clone(),
                 following_waypoint: component.following_waypoint.clone(),
                 actions: assign_action_uids(&uid, group_row_actions(component)),
+                action_matrix: Vec::new(),
             });
             for item in &component.items {
                 match item {
@@ -2180,6 +2184,7 @@ fn project_display_rows(
                             preceding_waypoint: component.preceding_waypoint.clone(),
                             following_waypoint: component.following_waypoint.clone(),
                             actions,
+                            action_matrix: Vec::new(),
                         })
                     }
                     ConcretizedNavItem::Discontinuity {
@@ -2246,6 +2251,7 @@ fn project_display_rows(
                                     leg_index.is_some(),
                                 )],
                             ),
+                            action_matrix: Vec::new(),
                         })
                     }
                 }
@@ -2296,6 +2302,7 @@ fn project_display_rows(
                 &uid,
                 vec![action(FlightPlanRowActionId::WaypointInfo, false)],
             ),
+            action_matrix: Vec::new(),
         });
     }
 
@@ -2341,6 +2348,10 @@ fn project_display_rows(
                 }
             }
         }
+    }
+
+    for row in &mut rows {
+        row.action_matrix = action_matrix_from_actions(&row.actions);
     }
 
     rows
@@ -2722,6 +2733,59 @@ fn assign_action_uids(
         }
     }
     actions
+}
+
+fn action_matrix_from_actions(
+    actions: &[FlightPlanRowActionUiView],
+) -> Vec<Vec<FlightPlanRowActionUiView>> {
+    let rows = [
+        [
+            FlightPlanRowActionId::ActivateLeg,
+            FlightPlanRowActionId::DirectTo,
+        ],
+        [
+            FlightPlanRowActionId::InsertBefore,
+            FlightPlanRowActionId::MoveUp,
+        ],
+        [
+            FlightPlanRowActionId::InsertAfter,
+            FlightPlanRowActionId::MoveDown,
+        ],
+        [
+            FlightPlanRowActionId::AddAirway,
+            FlightPlanRowActionId::SelectProcedure,
+        ],
+        [
+            FlightPlanRowActionId::Remove,
+            FlightPlanRowActionId::RemoveAllAbove,
+        ],
+        [
+            FlightPlanRowActionId::WaypointInfo,
+            FlightPlanRowActionId::Plates,
+        ],
+    ];
+    let mut used = Vec::new();
+    let mut matrix = rows
+        .into_iter()
+        .filter_map(|row| {
+            let actions_in_row = row
+                .into_iter()
+                .filter_map(|id| {
+                    actions.iter().find(|action| action.id == id).map(|action| {
+                        used.push(id);
+                        action.clone()
+                    })
+                })
+                .collect::<Vec<_>>();
+            (!actions_in_row.is_empty()).then_some(actions_in_row)
+        })
+        .collect::<Vec<_>>();
+    for action in actions {
+        if !used.iter().any(|id| *id == action.id) {
+            matrix.push(vec![action.clone()]);
+        }
+    }
+    matrix
 }
 
 fn nav_ref_key(nav_ref: &NavRef) -> String {
@@ -6443,6 +6507,50 @@ mod tests {
 
         assert!(action_ids.contains(&(&FlightPlanRowActionId::InsertBefore, true)));
         assert!(action_ids.contains(&(&FlightPlanRowActionId::InsertAfter, true)));
+    }
+
+    #[test]
+    fn project_ui_state_exposes_conceptual_action_matrix_for_waypoint_menu() {
+        let ui = project_ui_state(&sample_two_waypoint_plan());
+        let action_matrix = ui.display_rows[0]
+            .action_matrix
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|action| action.id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            action_matrix,
+            vec![
+                vec![
+                    FlightPlanRowActionId::ActivateLeg,
+                    FlightPlanRowActionId::DirectTo,
+                ],
+                vec![
+                    FlightPlanRowActionId::InsertBefore,
+                    FlightPlanRowActionId::MoveUp,
+                ],
+                vec![
+                    FlightPlanRowActionId::InsertAfter,
+                    FlightPlanRowActionId::MoveDown,
+                ],
+                vec![
+                    FlightPlanRowActionId::AddAirway,
+                    FlightPlanRowActionId::SelectProcedure,
+                ],
+                vec![
+                    FlightPlanRowActionId::Remove,
+                    FlightPlanRowActionId::RemoveAllAbove,
+                ],
+                vec![
+                    FlightPlanRowActionId::WaypointInfo,
+                    FlightPlanRowActionId::Plates
+                ],
+            ]
+        );
     }
 
     #[test]

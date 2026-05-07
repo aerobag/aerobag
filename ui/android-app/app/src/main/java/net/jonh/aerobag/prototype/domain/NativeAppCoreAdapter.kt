@@ -598,6 +598,17 @@ class NativeAppCoreAdapter(
         }
     }
 
+    fun describePlateProcedureLoads(plan: FlightPlan, plateId: String): List<ProcedureLoadOption> {
+        val result = runHadOperationElement(
+            buildJsonObject {
+                put("kind", "describe_plate_procedure_loads")
+                put("plan", json.encodeToJsonElement(plan.toWire()))
+                put("plate_id", plateId)
+            },
+        )
+        return json.decodeFromJsonElement<List<WireProcedureLoadOption>>(result).map { it.toUi() }
+    }
+
     fun materializeProcedureSelection(
         airportId: String,
         procedureId: String,
@@ -824,6 +835,38 @@ class NativeUiSession internal constructor(
                     store.ensurePages(outcome.getValue("pages").jsonArray.map { it.jsonPrimitive.content.toInt() })
                 }
                 else -> error("unknown map selection action outcome: $outcome")
+            }
+        }
+    }
+
+    fun describePlateProcedureLoads(plan: FlightPlan, plateId: String): List<ProcedureLoadOption> {
+        val store = navKvStore ?: error("nav_kv store is required to describe plate procedure loads")
+        return store.runCoreOperation(
+            buildJsonObject {
+                put("kind", "describe_plate_procedure_loads")
+                put("plan", json.encodeToJsonElement(plan.toWire()))
+                put("plate_id", plateId)
+            },
+            ListSerializer(WireProcedureLoadOption.serializer()),
+        ).map { it.toUi() }
+    }
+
+    fun loadPlateProcedure(loadId: String): UiSessionSnapshot {
+        val store = navKvStore ?: error("nav_kv store is required to load a plate procedure")
+        while (true) {
+            val outcome = json.parseToJsonElement(
+                bridge.loadPlateProcedureInSessionJson(handle, loadId),
+            ).jsonObject
+            when (outcome.getValue("state").jsonPrimitive.content) {
+                "complete" -> {
+                    val result = outcome["result"] ?: error("plate procedure load missing result: $outcome")
+                    snapshot = enrichSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi())
+                    return syncGuidanceGeometryFromPlan()
+                }
+                "need_pages" -> {
+                    store.ensurePages(outcome.getValue("pages").jsonArray.map { it.jsonPrimitive.content.toInt() })
+                }
+                else -> error("unknown plate procedure load outcome: $outcome")
             }
         }
     }
@@ -1791,6 +1834,12 @@ private data class WireUiSessionInitResult(
 )
 
 @kotlinx.serialization.Serializable
+private data class WireProcedureLoadOption(
+    val load_id: String,
+    val label: String,
+)
+
+@kotlinx.serialization.Serializable
 internal data class WireDerivedChartAirport(
     val id: String,
     val label: String,
@@ -2507,6 +2556,11 @@ private fun WireProcedureSummary.toUi() = ProcedureSummary(
     airportId = airport_id,
     procedureId = procedure_id,
     kind = kind.toUi(),
+)
+
+private fun WireProcedureLoadOption.toUi() = ProcedureLoadOption(
+    loadId = load_id,
+    label = label,
 )
 
 private fun WireProcedureSpecChoice.toUi() = ProcedureSpecChoice(

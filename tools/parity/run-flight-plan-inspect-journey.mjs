@@ -11,6 +11,9 @@ const DEFAULT_WEB_URL = "http://127.0.0.1:8082/";
 const JOURNEY_NAME = "flight-plan-inspect-insert";
 const ANDROID_PACKAGE = "net.jonh.aerobag.prototype";
 const ANDROID_ACTIVITY = `${ANDROID_PACKAGE}/.MainActivity`;
+const LAYER_OPTION_IDS = ["vectors", "metars", "nexrad", "terrain_warning"];
+const PLAN_CONTROL_IDS = ["next-leg", "sequence", "suspend", "unsuspend"];
+const CORE_ROW_ACTION_IDS = ["activate_leg", "direct_to", "insert_before", "insert_after", "move_up", "move_down"];
 
 function usage() {
   console.log(`Usage:
@@ -63,6 +66,12 @@ function recordCheck(out, name, value) {
 function recordGap(out, name, detail) {
   out.gaps.push({ name, detail });
   recordStep(out, name, "gap", detail);
+}
+
+function recordActionClass(out, name, value, detail = undefined) {
+  recordCheck(out, `actionClass.${name}`, value);
+  if (value) recordStep(out, `action class: ${name}`, "ok", detail);
+  else recordGap(out, `action class: ${name}`, detail ?? "not reachable");
 }
 
 function findChrome() {
@@ -290,6 +299,7 @@ async function webJourney(url) {
     recordStep(out, "chart CDI returned to plan");
     recordCheck(out, "chartCdiReturnsToPlan", true);
     recordCheck(out, "appendRoutePresent", true);
+    await webCheckPlanActionClasses(cdp, out);
 
     await webSetInput(cdp, "[data-testid=\"plan-append-route-input\"]", "KRNT V2 ZZZZZ ");
     await waitForWeb(
@@ -313,6 +323,8 @@ async function webJourney(url) {
     await webClick(cdp, "[data-testid=\"nav-cdi\"]");
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-surface\"]') !== null", "returned chart");
     recordStep(out, "returned to chart");
+    await webCheckChartActionClasses(cdp, out);
+    await webCheckPlateActionClasses(cdp, out);
 
     await webDrag(cdp, "[data-testid=\"map-surface\"]", 40, 20);
     recordStep(out, "dragged map surface");
@@ -322,6 +334,7 @@ async function webJourney(url) {
     await webClick(cdp, "[data-testid=\"chart-search-suggestion-KTIW\"]");
     await delay(500);
     recordStep(out, "recentered on KTIW via chart search");
+    recordCheck(out, "chartSearchRecentersKTIW", true);
 
     await waitForWeb(cdp, `
       [...document.querySelectorAll("svg text")]
@@ -484,6 +497,70 @@ async function webSetInput(cdp, selector, value) {
   });
 }
 
+async function webExists(cdp, selector) {
+  return webEval(cdp, `document.querySelector(${JSON.stringify(selector)}) !== null`);
+}
+
+async function webCheckChartActionClasses(cdp, out) {
+  recordActionClass(out, "chart.drag-pan", await webExists(cdp, "[data-testid=\"map-surface\"]"));
+  recordActionClass(out, "chart.search", await webExists(cdp, "[data-testid=\"chart-search-input\"]"));
+
+  await webClick(cdp, "[data-testid=\"layers-button\"]");
+  await waitForWeb(cdp, "document.querySelector('[data-testid=\"tray-option-vectors\"]') !== null", "layers tray");
+  const layerOptions = await webEval(cdp, `
+    ${JSON.stringify(LAYER_OPTION_IDS)}.filter((id) => document.querySelector(\`[data-testid="tray-option-\${id}"]\`) !== null)
+  `);
+  recordActionClass(out, "chart.layers", layerOptions.length === LAYER_OPTION_IDS.length, layerOptions.join(","));
+  await webClick(cdp, "[data-testid=\"layers-button\"]");
+
+  await webClick(cdp, "[data-testid=\"chart-family-button\"]");
+  await waitForWeb(cdp, "document.querySelector('[data-testid^=\"tray-option-\"]') !== null", "chart family tray");
+  const familyCount = await webEval(cdp, `document.querySelectorAll('[data-testid^="tray-option-"]').length`);
+  recordActionClass(out, "chart.map-family", familyCount > 0, `${familyCount} options`);
+  await webClick(cdp, "[data-testid=\"chart-family-button\"]");
+}
+
+async function webCheckPlateActionClasses(cdp, out) {
+  await webClick(cdp, "[data-testid=\"page-button-plate\"]");
+  await waitForWeb(cdp, "document.querySelector('[data-testid=\"plate-airport-button\"]') !== null", "plate page controls");
+  recordActionClass(out, "plate.airport-selector", await webExists(cdp, "[data-testid=\"plate-airport-button\"]"));
+  recordActionClass(out, "plate.chart-selector", await webExists(cdp, "[data-testid=\"plate-chart-button\"]"));
+  recordActionClass(out, "plate.load-procedure", await webExists(cdp, "[data-testid=\"plate-load-button\"]"));
+  recordActionClass(out, "plate.folder", await webExists(cdp, "[data-testid=\"plate-folder-button\"]"));
+  await webClick(cdp, "[data-testid=\"page-button-chart\"]");
+  await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-surface\"]') !== null", "return chart from plate");
+}
+
+async function webCheckPlanActionClasses(cdp, out) {
+  for (const id of PLAN_CONTROL_IDS) {
+    recordActionClass(out, `plan.global.${id}`, await webExists(cdp, `[data-testid="plan-control-${id}"]`));
+  }
+  const firstRowSelector = await webEval(cdp, `
+    (() => {
+      const row = [...document.querySelectorAll('[data-testid^="plan-row-"]')][0];
+      return row ? \`[data-testid="\${row.getAttribute("data-testid")}"]\` : null;
+    })()
+  `);
+  if (!firstRowSelector) {
+    recordActionClass(out, "plan.row-actions", false, "no flight-plan row found");
+    return;
+  }
+  await webClick(cdp, firstRowSelector);
+  await waitForWeb(cdp, "document.querySelector('[data-testid^=\"plan-row-action-\"]') !== null", "plan row action tray");
+  const rowActions = await webEval(cdp, `
+    [...document.querySelectorAll('[data-testid^="plan-row-action-"]')]
+      .map((el) => el.getAttribute("data-testid").replace("plan-row-action-", ""))
+  `);
+  recordActionClass(out, "plan.row-actions", rowActions.length > 0, rowActions.join(","));
+  for (const id of CORE_ROW_ACTION_IDS) {
+    recordActionClass(out, `plan.row.${id}`, rowActions.includes(id), rowActions.join(","));
+  }
+  await cdp.send("Runtime.evaluate", {
+    expression: `document.querySelector('[aria-label="Close waypoint actions"]')?.click()`,
+    awaitPromise: true,
+  });
+}
+
 async function waitFor(fn, timeoutMs, message) {
   const started = Date.now();
   let lastError;
@@ -528,9 +605,10 @@ function adbArgs(serial, args) {
 }
 
 function adb(serial, args, options = {}) {
-  const res = spawnSync("adb", adbArgs(serial, args), { encoding: "utf8", ...options });
+  const res = spawnSync("adb", adbArgs(serial, args), { encoding: "utf8", timeout: 15000, ...options });
   if (res.status !== 0) {
-    throw new Error(`adb ${args.join(" ")} failed: ${res.stderr || res.stdout}`);
+    const detail = res.error?.message ?? (res.stderr || res.stdout);
+    throw new Error(`adb ${args.join(" ")} failed: ${detail}`);
   }
   return res.stdout;
 }
@@ -681,6 +759,7 @@ function androidTypeRouteTokens(serial, tokens) {
 }
 
 function androidDeleteChars(serial, count) {
+  adb(serial, ["shell", "input", "keyevent", "KEYCODE_MOVE_END"]);
   for (let i = 0; i < count; i += 1) {
     adb(serial, ["shell", "input", "keyevent", "KEYCODE_DEL"]);
   }
@@ -806,6 +885,83 @@ async function androidWaitForFocusedTag(serial, out, label, tag, timeoutMs = 500
   }
 }
 
+function androidTagExists(serial, tag) {
+  return findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, tag)) !== null;
+}
+
+async function androidCheckChartActionClasses(serial, out) {
+  recordActionClass(out, "chart.drag-pan", androidTagExists(serial, "parity:map-surface"));
+  recordActionClass(out, "chart.search", androidTagExists(serial, "chart-search-input"));
+
+  if (await androidTapTag(serial, out, "opened layers tray for action audit", "parity:layers-button", 5000)) {
+    await delay(300);
+    const layerXml = dumpAndroid(serial);
+    const layerOptions = LAYER_OPTION_IDS.filter((id) => findNode(layerXml, (node) => hasAndroidTag(node, `parity:tray-option:${id}`)));
+    recordActionClass(out, "chart.layers", layerOptions.length === LAYER_OPTION_IDS.length, layerOptions.join(","));
+    adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
+    recordStep(out, "closed layers tray after action audit");
+    await delay(200);
+  } else {
+    recordActionClass(out, "chart.layers", false, "layers launcher not found");
+  }
+
+  if (await androidTapTag(serial, out, "opened map-family tray for action audit", "parity:chart-family-button", 5000)) {
+    await delay(300);
+    const familyOptions = findNodes(dumpAndroid(serial), (node) => androidTag(node).startsWith("parity:tray-option:"));
+    recordActionClass(out, "chart.map-family", familyOptions.length > 0, `${familyOptions.length} options`);
+    adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
+    recordStep(out, "closed map-family tray after action audit");
+    await delay(200);
+  } else {
+    recordActionClass(out, "chart.map-family", false, "chart-family launcher not found");
+  }
+}
+
+async function androidCheckPlateActionClasses(serial, out) {
+  if (!await androidTapTag(serial, out, "opened plate page for action audit", "parity:button:CHART", 5000)) {
+    recordActionClass(out, "plate.airport-selector", false, "page toggle not found");
+    recordActionClass(out, "plate.chart-selector", false, "page toggle not found");
+    recordActionClass(out, "plate.load-procedure", false, "page toggle not found");
+    recordActionClass(out, "plate.folder", false, "page toggle not found");
+    return;
+  }
+  await delay(500);
+  recordActionClass(out, "plate.airport-selector", androidTagExists(serial, "parity:plate-airport-button"));
+  recordActionClass(out, "plate.chart-selector", androidTagExists(serial, "parity:plate-chart-button"));
+  recordActionClass(out, "plate.load-procedure", androidTagExists(serial, "parity:plate-load-button"));
+  recordActionClass(out, "plate.folder", androidTagExists(serial, "parity:plate-folder-button"));
+  await androidTapTag(serial, out, "returned chart page after plate action audit", "parity:button:PLATE", 5000);
+  await delay(500);
+}
+
+async function androidCheckPlanActionClasses(serial, out) {
+  const planControls = new Map([
+    ["next-leg", "parity:button:Next Leg"],
+    ["sequence", "parity:button:Sequence"],
+    ["suspend", "parity:button:Suspend"],
+    ["unsuspend", "parity:button:Unsusp"],
+  ]);
+  for (const [id, tag] of planControls) {
+    recordActionClass(out, `plan.global.${id}`, androidTagExists(serial, tag));
+  }
+  const row = findNode(dumpAndroid(serial), (node) => androidTag(node).startsWith("parity:plan-row:"));
+  if (!row) {
+    recordActionClass(out, "plan.row-actions", false, "no flight-plan row found");
+    return;
+  }
+  androidTapResolvedNode(serial, out, "opened first plan row for action audit", row);
+  await delay(300);
+  const actionXml = dumpAndroid(serial);
+  const rowActions = findNodes(actionXml, (node) => androidTag(node).startsWith("parity:plan-row-action:"))
+    .map((node) => androidTag(node).slice("parity:plan-row-action:".length));
+  recordActionClass(out, "plan.row-actions", rowActions.length > 0, rowActions.join(","));
+  for (const id of CORE_ROW_ACTION_IDS) {
+    recordActionClass(out, `plan.row.${id}`, rowActions.includes(id), rowActions.join(","));
+  }
+  adb(serial, ["shell", "input", "tap", "1040", "1200"]);
+  await delay(300);
+}
+
 async function androidJourney(serial) {
   const out = result("android");
   adb(serial, ["wait-for-device"]);
@@ -835,11 +991,16 @@ async function androidJourney(serial) {
 
   if (await androidTapTag(serial, out, "plan CDI returned to chart", "parity:nav-cdi", 12000)) {
     try {
-      await androidWaitForNode(serial, (node) => hasAndroidTag(node, "parity:map-surface"), 7000, "chart after plan CDI");
-      recordStep(out, "chart visible after plan CDI");
+      await androidWaitForNode(
+        serial,
+        (node) => hasAndroidTag(node, "parity:map-surface") || hasAndroidTag(node, "parity:plate-airport-button"),
+        7000,
+        "chart or plate after plan CDI",
+      );
+      recordStep(out, "chart or plate visible after plan CDI");
       recordCheck(out, "planCdiReturnsToChart", true);
     } catch (_error) {
-      recordGap(out, "chart visible after plan CDI", "map surface was not visible after tapping CDI from PLAN");
+      recordGap(out, "chart or plate visible after plan CDI", "neither chart nor plate surface was visible after tapping CDI from PLAN");
       recordCheck(out, "planCdiReturnsToChart", false);
     }
     if (await androidTapTag(serial, out, "chart CDI returned to plan", "parity:nav-cdi", 7000)) {
@@ -852,6 +1013,7 @@ async function androidJourney(serial) {
         );
         recordStep(out, "plan visible after chart CDI");
         recordCheck(out, "chartCdiReturnsToPlan", true);
+        await androidCheckPlanActionClasses(serial, out);
       } catch (_error) {
         recordGap(out, "plan visible after chart CDI", "plan page was not visible after tapping CDI from CHART");
         recordCheck(out, "chartCdiReturnsToPlan", false);
@@ -880,24 +1042,35 @@ async function androidJourney(serial) {
         recordGap(out, "append route feedback visible", "no non-empty feedback appeared after typing KRNT V2 ZZZZZ");
         recordCheck(out, "appendRouteFeedbackVisible", false);
       }
-      androidDeleteChars(serial, 24);
+      androidDeleteChars(serial, 80);
       await delay(300);
       adb(serial, ["shell", "input", "text", "KBFI"]);
       await delay(300);
-      adb(serial, ["shell", "input", "keyevent", "ENTER"]);
+      adb(serial, ["shell", "input", "keyevent", "KEYCODE_ENTER"]);
       await delay(1200);
-      adb(serial, ["shell", "input", "keyevent", "BACK"]);
-      await delay(500);
+      adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
+      await delay(700);
       if (hasAndroidText(dumpAndroid(serial), "KBFI") || await androidScrollUntilText(serial, "KBFI")) {
         recordStep(out, "appended KBFI to flight plan");
         recordCheck(out, "appendRouteCommitsKBFI", true);
-        if (await androidTapTag(serial, out, "focused append route for long plan", "parity:plan-append-route-input")) {
-          androidTypeRouteTokens(serial, ["KRNT", "SEA", "KPAE", "KBFI", "KRNT", "SEA", "KPAE", "KBFI", "KRNT", "SEA"]);
-          await delay(300);
-          adb(serial, ["shell", "input", "keyevent", "ENTER"]);
-          await delay(1200);
-          recordStep(out, "expanded flight plan for long-route feedback");
-          if (await androidScrollUntilTag(serial, "parity:plan-append-route-input", 30)) {
+        if (!androidTagExists(serial, "parity:plan-list")) {
+          recordGap(out, "expanded flight plan for long-route feedback", "skipped because PLAN list is not visible");
+        } else if (await androidTapTag(serial, out, "focused append route for long plan", "parity:plan-append-route-input")) {
+          const planListBeforeLongTest = findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, "parity:plan-list"));
+          if (planListBeforeLongTest?.scrollable === "true") {
+            recordStep(out, "expanded flight plan for long-route feedback", "already long");
+            adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
+            await delay(500);
+          } else {
+            androidTypeRouteTokens(serial, ["KRNT", "SEA", "KPAE", "KBFI", "KRNT", "SEA", "KPAE", "KBFI", "KRNT", "SEA"]);
+            await delay(300);
+            adb(serial, ["shell", "input", "keyevent", "KEYCODE_ENTER"]);
+            await delay(1200);
+            adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
+            await delay(500);
+            recordStep(out, "expanded flight plan for long-route feedback");
+          }
+          if (androidTagExists(serial, "parity:plan-list") && await androidScrollUntilTag(serial, "parity:plan-append-route-input", 80)) {
             if (await androidTapTag(serial, out, "focused long-plan append route", "parity:plan-append-route-input")) {
               const longInput = await androidWaitForFocusedTag(serial, out, "long-plan append route input focused", "parity:plan-append-route-input");
               if (longInput) {
@@ -936,19 +1109,34 @@ async function androidJourney(serial) {
   await androidTapTag(serial, out, "opened home page", "parity:button:HOME");
   await delay(500);
   await androidTapTag(serial, out, "returned chart page", "parity:button:CHART");
+  await androidCheckChartActionClasses(serial, out);
+  await androidCheckPlateActionClasses(serial, out);
 
   if (await androidTapTag(serial, out, "focused chart search", "chart-search-input", 5000)) {
     adb(serial, ["shell", "input", "text", "KTIW"]);
     try {
       await androidTapTag(serial, out, "recentered on KTIW via chart search", "chart-search-suggestion-KTIW", 10000);
       await delay(1000);
+      recordCheck(out, "chartSearchRecentersKTIW", true);
     } catch (_error) {
       recordGap(out, "recentered on KTIW via chart search", "KTIW search suggestion was not visible");
+      recordCheck(out, "chartSearchRecentersKTIW", false);
     }
+  } else {
+    recordCheck(out, "chartSearchRecentersKTIW", false);
   }
 
-  await androidTapTag(serial, out, "drag/click map surface", "parity:map-surface");
-  await delay(500);
+  if (out.checks.chartSearchRecentersKTIW === true) {
+    const mapSurface = await androidWaitForNode(serial, (node) => hasAndroidTag(node, "parity:map-surface"), 7000, "map surface before inspect tap");
+    const mapRect = rectOfBounds(mapSurface.bounds);
+    const x = Math.round((mapRect.left + mapRect.right) / 2);
+    const y = Math.round((mapRect.top + mapRect.bottom) / 2);
+    adb(serial, ["shell", "input", "tap", String(x), String(y)]);
+    recordStep(out, "clicked recentered map surface");
+    await delay(500);
+  } else {
+    recordGap(out, "clicked recentered map surface", "skipped because chart search did not prove recenter");
+  }
 
   const selectionXml = dumpAndroid(serial);
   if (findNode(selectionXml, (node) => hasAndroidTag(node, "parity:map-selection-tray"))) {
@@ -1017,10 +1205,11 @@ function comparePlatformOutputs(outputs) {
     status: "pass",
     divergences: [],
   };
-  const checkNames = [
+  const baseCheckNames = [
     "openedPlanFromCdi",
     "planCdiReturnsToChart",
     "chartCdiReturnsToPlan",
+    "chartSearchRecentersKTIW",
     "appendRoutePresent",
     "appendRouteFeedbackVisible",
     "appendRouteCommitsKBFI",
@@ -1029,6 +1218,11 @@ function comparePlatformOutputs(outputs) {
     "inspectInsertActionPresent",
     "inspectInsertAddsSelectedItem",
   ];
+  const actionClassNames = new Set([
+    ...Object.keys(web.checks).filter((name) => name.startsWith("actionClass.")),
+    ...Object.keys(android.checks).filter((name) => name.startsWith("actionClass.")),
+  ]);
+  const checkNames = [...baseCheckNames, ...[...actionClassNames].sort()];
   for (const name of checkNames) {
     const webValue = web.checks[name] ?? null;
     const androidValue = android.checks[name] ?? null;

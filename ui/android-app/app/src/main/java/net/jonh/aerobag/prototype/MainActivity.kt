@@ -162,6 +162,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -233,6 +234,7 @@ import net.jonh.aerobag.prototype.domain.PackageZipStore
 import net.jonh.aerobag.prototype.domain.PlaybackStatus
 import net.jonh.aerobag.prototype.domain.PlaybackUiState
 import net.jonh.aerobag.prototype.domain.ProcedureKind
+import net.jonh.aerobag.prototype.domain.ProcedureLoadOption
 import net.jonh.aerobag.prototype.domain.ProcedureOptions
 import net.jonh.aerobag.prototype.domain.ProcedureSummary
 import net.jonh.aerobag.prototype.domain.ResolvedLeg
@@ -1042,7 +1044,7 @@ private enum class MenuDockStyle(
         launcherMaxLines = 1,
     ),
     PlateWide(
-        buttonWidth = ThumbSize * 3f,
+        buttonWidth = ThumbSize * 1.75f,
         trayWidth = PlatePageTrayWidth,
         launcherMaxLines = 2,
     ),
@@ -2682,6 +2684,7 @@ private fun AerobagApp() {
                         airports = orderedChartAirports,
                         selectedAirport = selectedAirport,
                         selectedChart = selectedChart,
+                        plan = currentPlan,
                         uiTheme = uiTheme,
                         ownship = appUiState.ownship.render,
                         ownshipControls = appUiState.ownship.controls,
@@ -7457,6 +7460,7 @@ private fun FlightPlanPage(
                             label = action.label,
                             active = false,
                             enabled = action.enabled,
+                            testTag = "parity:plan-row-action:${action.id}",
                             onSelect = {
                                 if (!action.enabled) {
                                     return@MenuPanelRow
@@ -7709,6 +7713,7 @@ private fun ChartsPage(
     airports: List<ChartAirport>,
     selectedAirport: ChartAirport?,
     selectedChart: ChartAsset?,
+    plan: FlightPlan,
     uiTheme: UiTheme,
     ownship: OwnshipRenderState,
     ownshipControls: OwnshipControlModel,
@@ -7733,6 +7738,7 @@ private fun ChartsPage(
     }
     var airportTrayOpen by remember { mutableStateOf(false) }
     var chartTrayOpen by remember { mutableStateOf(false) }
+    var loadTrayOpen by remember { mutableStateOf(false) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
     val sortedCharts = selectedAirport?.charts ?: emptyList()
     val overscrollPx = with(density) { ThumbSize.toPx() }
@@ -7762,7 +7768,19 @@ private fun ChartsPage(
     val viewportState = rememberUpdatedState(viewport)
     val imageWidthPx = bitmap?.width?.toFloat() ?: 0f
     val imageHeightPx = bitmap?.height?.toFloat() ?: 0f
-    val trayOpen = airportTrayOpen || chartTrayOpen
+    val trayOpen = airportTrayOpen || chartTrayOpen || loadTrayOpen
+    val plateProcedureLoads by produceState<List<ProcedureLoadOption>>(initialValue = emptyList(), plan.version, selectedChart?.id) {
+        val chart = selectedChart
+        value = if (chart == null) {
+            emptyList()
+        } else {
+            withContext(Dispatchers.IO) {
+                runCatching { uiSession.describePlateProcedureLoads(plan, chart.id) }
+                    .onFailure { Log.w("AerobagCharts", "plate procedure loads unavailable chart=${chart.id}", it) }
+                    .getOrDefault(emptyList())
+            }
+        }
+    }
 
     LaunchedEffect(bitmap, surfaceSize) {
         val currentBitmap = bitmap
@@ -7980,31 +7998,50 @@ private fun ChartsPage(
             folderOpen = folderOpen,
             airportTrayOpen = airportTrayOpen,
             chartTrayOpen = chartTrayOpen,
+            loadTrayOpen = loadTrayOpen,
+            plateProcedureLoads = plateProcedureLoads,
             onSelectPage = {
                 onSelectPage(it)
                 airportTrayOpen = false
                 chartTrayOpen = false
+                loadTrayOpen = false
             },
             onToggleAirportTray = {
                 airportTrayOpen = !airportTrayOpen
                 chartTrayOpen = false
+                loadTrayOpen = false
             },
             onToggleChartTray = {
                 chartTrayOpen = !chartTrayOpen
                 airportTrayOpen = false
+                loadTrayOpen = false
+            },
+            onToggleLoadTray = {
+                loadTrayOpen = !loadTrayOpen
+                airportTrayOpen = false
+                chartTrayOpen = false
             },
             onToggleFolder = {
                 onFolderOpenChange(!folderOpen)
                 airportTrayOpen = false
                 chartTrayOpen = false
+                loadTrayOpen = false
             },
             onSelectAirport = {
                 onSelectAirport(it)
                 airportTrayOpen = false
+                loadTrayOpen = false
             },
             onSelectChart = {
                 onSelectChart(it)
                 chartTrayOpen = false
+                loadTrayOpen = false
+            },
+            onSelectProcedureLoad = { loadId ->
+                runCatching { uiSession.loadPlateProcedure(loadId) }
+                    .onSuccess(onSessionSnapshotChange)
+                    .onFailure { Log.w("AerobagCharts", "plate procedure load failed", it) }
+                loadTrayOpen = false
             },
         )
 
@@ -8012,6 +8049,7 @@ private fun ChartsPage(
             Scrim {
                 airportTrayOpen = false
                 chartTrayOpen = false
+                loadTrayOpen = false
             }
         }
 
@@ -8119,6 +8157,8 @@ private fun MapTopLeftControls(
         MenuDock(
             launcherLabel = selectedLabel,
             launcherIconResId = trayOptions.firstOrNull { it.launcherLabel == selectedLabel }?.iconResId,
+            launcherTestTag = "parity:chart-family-button",
+            optionTestTagPrefix = "parity:tray-option",
             open = trayOpen,
             onToggle = onToggle,
             style = MenuDockStyle.Compact,
@@ -8129,6 +8169,8 @@ private fun MapTopLeftControls(
         MenuDock(
             launcherLabel = "LAYERS",
             launcherIconResId = mapLayerIconResId(MapLayerId.Vectors),
+            launcherTestTag = "parity:layers-button",
+            optionTestTagPrefix = "parity:tray-option",
             open = layerTrayOpen,
             onToggle = onToggleLayerTray,
             style = MenuDockStyle.Layers,
@@ -8304,15 +8346,19 @@ private fun ChartViewerSelectors(
     folderOpen: Boolean,
     airportTrayOpen: Boolean,
     chartTrayOpen: Boolean,
+    loadTrayOpen: Boolean,
+    plateProcedureLoads: List<ProcedureLoadOption>,
     onSelectPage: (AppPage) -> Unit,
     onToggleAirportTray: () -> Unit,
     onToggleChartTray: () -> Unit,
+    onToggleLoadTray: () -> Unit,
     onToggleFolder: () -> Unit,
     onSelectAirport: (String) -> Unit,
     onSelectChart: (String) -> Unit,
+    onSelectProcedureLoad: (String) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
-    val trayOpen = airportTrayOpen || chartTrayOpen
+    val trayOpen = airportTrayOpen || chartTrayOpen || loadTrayOpen
     Row(
         modifier = modifier.padding(ThumbGap),
         horizontalArrangement = Arrangement.spacedBy(ThumbGap),
@@ -8332,6 +8378,8 @@ private fun ChartViewerSelectors(
 
         MenuDock(
             launcherLabel = selectedAirport?.id ?: "---",
+            launcherTestTag = "parity:plate-airport-button",
+            optionTestTagPrefix = "parity:tray-option",
             open = airportTrayOpen,
             onToggle = onToggleAirportTray,
             style = MenuDockStyle.PlateAirport,
@@ -8342,6 +8390,8 @@ private fun ChartViewerSelectors(
 
         MenuDock(
             launcherLabel = selectedChart?.label ?: "---",
+            launcherTestTag = "parity:plate-chart-button",
+            optionTestTagPrefix = "parity:tray-option",
             open = chartTrayOpen,
             onToggle = onToggleChartTray,
             style = MenuDockStyle.PlateWide,
@@ -8355,9 +8405,22 @@ private fun ChartViewerSelectors(
             },
         )
 
+        MenuDock(
+            launcherLabel = "LOAD",
+            launcherTestTag = "parity:plate-load-button",
+            optionTestTagPrefix = "parity:tray-option",
+            open = loadTrayOpen,
+            onToggle = onToggleLoadTray,
+            style = MenuDockStyle.Compact,
+            options = plateProcedureLoads.map { load ->
+                MenuDockOption(load.loadId, load.label) { onSelectProcedureLoad(load.loadId) }
+            },
+        )
+
         CompactSquareButton(
             label = "FLDR",
             modifier = Modifier.size(ThumbSize),
+            testTag = "parity:plate-folder-button",
             enabled = !trayOpen && !folderOpen,
             onClick = onToggleFolder,
         )
@@ -8434,10 +8497,13 @@ private fun PlateFolderGrid(
 }
 
 @Composable
+@OptIn(ExperimentalComposeUiApi::class)
 private fun MenuDock(
     modifier: Modifier = Modifier,
     launcherLabel: String,
     @DrawableRes launcherIconResId: Int? = null,
+    launcherTestTag: String? = null,
+    optionTestTagPrefix: String? = null,
     open: Boolean,
     onToggle: () -> Unit,
     style: MenuDockStyle,
@@ -8468,6 +8534,7 @@ private fun MenuDock(
             enabled = true,
             accentColor = launcherAccentColor,
             wide = style != MenuDockStyle.Compact,
+            testTag = launcherTestTag,
             modifier = Modifier
                 .width(style.buttonWidth)
                 .height(ThumbSize)
@@ -8480,9 +8547,12 @@ private fun MenuDock(
         if (open) {
             Popup(
                 offset = IntOffset(0, trayOffsetPx.roundToInt()),
+                onDismissRequest = onToggle,
+                properties = PopupProperties(focusable = true),
             ) {
                 MenuPanel(
                     modifier = Modifier
+                        .semantics { testTagsAsResourceId = true }
                         .width(style.trayWidth)
                         .heightIn(max = trayMaxHeight),
                 ) {
@@ -8498,6 +8568,7 @@ private fun MenuDock(
                                     accentColor = option.accentColor,
                                     toggleState = option.toggleState,
                                     iconResId = option.iconResId,
+                                    testTag = optionTestTagPrefix?.let { "$it:${option.key}" },
                                     width = style.trayWidth,
                                     onSelect = option.onSelect,
                                 )
@@ -8543,6 +8614,7 @@ private fun MenuPanelRow(
     accentColor: Color? = null,
     toggleState: UiMapLayerToggleState? = null,
     @DrawableRes iconResId: Int? = null,
+    testTag: String? = null,
     width: Dp = Dp.Unspecified,
     onSelect: () -> Unit,
 ) {
@@ -8565,6 +8637,7 @@ private fun MenuPanelRow(
         modifier = Modifier
             .then(if (width != Dp.Unspecified) Modifier.width(width) else Modifier.fillMaxWidth())
             .height(ThumbSize)
+            .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
             .clip(rowShape)
             .background(rowBackground)
             .clickable(
@@ -9783,6 +9856,7 @@ private fun FlightPlanDataRow(
                         .width(ThumbSize * 2.5f - indent)
                         .align(Alignment.CenterEnd)
                         .alpha(1f),
+                testTag = "parity:plan-row:${row.id}",
                 centered = false,
                 textStartPadding = 10.dp,
                 backgroundColor = defaultButtonColor,
@@ -10161,6 +10235,7 @@ private fun CompactSquareButton(
     centered: Boolean = true,
     textStartPadding: Dp = 0.dp,
     textModifier: Modifier = Modifier,
+    testTag: String? = null,
     onDisabledClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
@@ -10168,7 +10243,7 @@ private fun CompactSquareButton(
     val iconShape = RoundedCornerShape(ThumbRadius)
     Surface(
         modifier = modifier
-            .testTag("parity:button:$label")
+            .testTag(testTag ?: "parity:button:$label")
             .then(
                 if (enabled) {
                     Modifier.pointerInput(onClick) {

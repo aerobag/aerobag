@@ -194,6 +194,11 @@ data class ProcedureSummary(
     val kind: ProcedureKind,
 )
 
+data class ProcedureLoadOption(
+    val loadId: String,
+    val label: String,
+)
+
 data class ProcedureDistinctRow(
     val routeType: String,
     val transitionId: String,

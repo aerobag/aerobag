@@ -5597,7 +5597,7 @@ function FlightPlanPage(props: {
       </div>
 
       <div className="planControls" ref={planControlsRef}>
-        <button type="button" className="trayButton planControlButton" disabled={!guidance?.can_activate_next_leg} onClick={() => void props.onActivateNextLeg()}>
+        <button type="button" className="trayButton planControlButton" data-testid="plan-control-next-leg" disabled={!guidance?.can_activate_next_leg} onClick={() => void props.onActivateNextLeg()}>
           Next Leg
         </button>
         {guidance?.can_restore_direct_to ? (
@@ -5608,15 +5608,16 @@ function FlightPlanPage(props: {
         <button
           type="button"
           className="trayButton planControlButton"
+          data-testid="plan-control-sequence"
           disabled={!guidance?.can_sequence_active_leg}
           onClick={() => void props.onSequenceActiveLeg()}
         >
           Sequence
         </button>
-        <button type="button" className="trayButton planControlButton" disabled={!guidance?.can_suspend} onClick={() => void props.onSuspendSequencing()}>
+        <button type="button" className="trayButton planControlButton" data-testid="plan-control-suspend" disabled={!guidance?.can_suspend} onClick={() => void props.onSuspendSequencing()}>
           Suspend
         </button>
-        <button type="button" className="trayButton planControlButton" disabled={!guidance?.can_unsuspend} onClick={() => void props.onUnsuspendSequencing()}>
+        <button type="button" className="trayButton planControlButton" data-testid="plan-control-unsuspend" disabled={!guidance?.can_unsuspend} onClick={() => void props.onUnsuspendSequencing()}>
           Unsusp
         </button>
       </div>
@@ -5994,6 +5995,7 @@ function FlightPlanPage(props: {
                 key={action.id}
                 type="button"
                 className="trayButton airwayChoiceButton"
+                data-testid={`plan-row-action-${action.id}`}
                 disabled={!action.enabled}
                 onPointerDown={stopPointer}
                 onPointerUp={stopPointer}
@@ -6977,6 +6979,7 @@ function ChartsPage(props: {
             onToggle={() => trayGroup.toggle("airport")}
             ariaLabel="Airport"
             style="plate_narrow"
+            testId="plate-airport-button"
             options={airports.map((airport) => ({
               id: airport.id,
               label: airport.id,
@@ -6995,6 +6998,7 @@ function ChartsPage(props: {
             onToggle={() => trayGroup.toggle("chart")}
             ariaLabel="Chart"
             style="plate_wide"
+            testId="plate-chart-button"
             options={sortedCharts.map((chart) => ({
               id: chart.id,
               label: chart.label,
@@ -7012,6 +7016,7 @@ function ChartsPage(props: {
             disabled={!loadApproachEnabled}
             onToggle={() => trayGroup.toggle("load")}
             ariaLabel="Load procedure"
+            testId="plate-load-button"
             options={loadProcedureOptions}
           />
           <button
@@ -7025,6 +7030,7 @@ function ChartsPage(props: {
             onClick={trayOpen || folderOpen ? undefined : () => onFolderOpenChange(true)}
             aria-pressed={folderOpen}
             aria-label="Open plate folder view"
+            data-testid="plate-folder-button"
           >
             <span className="chartButtonLabel">FLDR</span>
           </button>

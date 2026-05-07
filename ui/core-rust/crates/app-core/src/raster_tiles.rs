@@ -146,6 +146,7 @@ pub struct RasterTileSource {
 
 #[derive(Debug, Clone)]
 struct PlannedTile {
+    display_x: i64,
     x: i64,
     y_tms: i64,
     left_px: f64,
@@ -323,7 +324,8 @@ fn render_tiles_for_family(
             let level_scale = 2_i64.pow(level.zoom as u32);
 
             for y_xyz in y_start..=y_end {
-                for x in x_start..=x_end {
+                for display_x in x_start..=x_end {
+                    let x = positive_mod_i64(display_x, level_scale);
                     let y_tms = (level_scale - 1) - y_xyz;
                     if x < level.x_min
                         || x > level.x_max
@@ -361,8 +363,8 @@ fn render_tiles_for_family(
                     } else {
                         vec![(map_view_id.clone(), map_view.clone())]
                     };
-                    let left_px =
-                        (x as f64 * tile_world_size - center_world.0) * scale + width_px / 2.0;
+                    let left_px = (display_x as f64 * tile_world_size - center_world.0) * scale
+                        + width_px / 2.0;
                     let top_px =
                         (y_xyz as f64 * tile_world_size - center_world.1) * scale + height_px / 2.0;
                     if !screen_rect_intersects_viewport(
@@ -375,6 +377,7 @@ fn render_tiles_for_family(
                         continue;
                     }
                     tiles.push(PlannedTile {
+                        display_x,
                         x,
                         y_tms,
                         left_px,
@@ -509,8 +512,8 @@ fn planned_tile_to_draw(tile: PlannedTile) -> RasterTileDraw {
     let primary = sources.remove(0);
     RasterTileDraw {
         draw_key: format!(
-            "{}:{}:{}:{}",
-            tile.map_view_id, tile.zoom, tile.x, tile.y_tms
+            "{}:{}:{}:{}:{}",
+            tile.map_view_id, tile.zoom, tile.display_x, tile.x, tile.y_tms
         ),
         family: tile.map_view.chart_family.clone(),
         source_zoom: tile.zoom,
@@ -563,8 +566,8 @@ fn dedupe_tiles(tiles: Vec<PlannedTile>) -> Vec<PlannedTile> {
     let mut by_key: HashMap<String, PlannedTile> = HashMap::new();
     for tile in tiles {
         let key = format!(
-            "{}:{}:{}:{}",
-            tile.map_view_id, tile.zoom, tile.x, tile.y_tms
+            "{}:{}:{}:{}:{}",
+            tile.map_view_id, tile.zoom, tile.display_x, tile.x, tile.y_tms
         );
         if let Some(existing) = by_key.get_mut(&key) {
             let mut seen = existing
@@ -624,6 +627,10 @@ fn pick_level(
         })
         .min_by_key(|level| level.zoom)
         .or_else(|| map_view.levels.iter().max_by_key(|level| level.zoom))
+}
+
+fn positive_mod_i64(value: i64, modulus: i64) -> i64 {
+    ((value % modulus) + modulus) % modulus
 }
 
 fn level_contains(map_view: &RasterMapView, zoom: i64, x: i64, y_tms: i64) -> bool {
@@ -1008,6 +1015,95 @@ mod tests {
                 && tile.left_px + tile.size_px > 0.0
                 && tile.top_px + tile.size_px > 0.0
         }));
+    }
+
+    #[test]
+    fn raster_tiles_wrap_source_x_but_draw_in_repeated_world_copy() {
+        let catalog = RasterMapCatalog {
+            selected_map_id: "sec:world".to_string(),
+            selected_map: None,
+            displayed_maps: vec![option(
+                "sec:world",
+                "sec",
+                "WORLD_SEC",
+                vec![level(2, 0, 3, 0, 3)],
+            )],
+            geometry: RasterDisplayGeometry::default(),
+            family_options: Vec::new(),
+        };
+        let plan = raster_tile_plan(
+            &catalog,
+            &MapViewport {
+                center: LatLon {
+                    lat: 0.0,
+                    lon: -540.0,
+                },
+                zoom: 2.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            512.0,
+            256.0,
+        );
+
+        assert!(!plan.tiles.is_empty());
+        assert!(plan.tiles.iter().all(|tile| (0..=3).contains(&tile.x)));
+        assert!(plan.tiles.iter().any(|tile| {
+            tile.left_px < 512.0
+                && tile.top_px < 256.0
+                && tile.left_px + tile.size_px > 0.0
+                && tile.top_px + tile.size_px > 0.0
+        }));
+        assert!(plan
+            .tiles
+            .iter()
+            .any(|tile| tile.draw_key.contains(":-4:0:")));
+    }
+
+    #[test]
+    fn raster_tiles_keep_multiple_visible_copies_of_same_source_tile() {
+        let catalog = RasterMapCatalog {
+            selected_map_id: "sec:world".to_string(),
+            selected_map: None,
+            displayed_maps: vec![option(
+                "sec:world",
+                "sec",
+                "WORLD_SEC",
+                vec![level(1, 0, 1, 0, 1)],
+            )],
+            geometry: RasterDisplayGeometry::default(),
+            family_options: Vec::new(),
+        };
+        let plan = raster_tile_plan(
+            &catalog,
+            &MapViewport {
+                center: LatLon { lat: 0.0, lon: 0.0 },
+                zoom: 1.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            1024.0,
+            256.0,
+        );
+        let copies_of_x0_y1 = plan
+            .tiles
+            .iter()
+            .filter(|tile| tile.x == 0 && tile.y_tms == 1)
+            .count();
+        let copies_of_x1_y1 = plan
+            .tiles
+            .iter()
+            .filter(|tile| tile.x == 1 && tile.y_tms == 1)
+            .count();
+
+        assert!(
+            copies_of_x0_y1 >= 2,
+            "missing repeated x0/y1 tile: {plan:?}"
+        );
+        assert!(
+            copies_of_x1_y1 >= 2,
+            "missing repeated x1/y1 tile: {plan:?}"
+        );
     }
 
     #[test]

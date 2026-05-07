@@ -35,6 +35,12 @@ pub struct VectorTileRequest {
     pub y: u32,
 }
 
+#[derive(Debug, Clone)]
+struct DisplayVectorTile {
+    request: VectorTileRequest,
+    world_x_offset: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObstacleLayerConfig {
     pub min_zoom: u32,
@@ -714,12 +720,23 @@ pub fn visible_point_tile_window(
     height_px: f64,
     obstacle_context: Option<&ObstacleOverlayContext>,
 ) -> Vec<VectorTileRequest> {
-    if width_px <= 0.0 || height_px <= 0.0 {
-        return Vec::new();
-    }
+    dedupe_vector_tile_requests(
+        visible_point_display_tile_window(config, viewport, width_px, height_px, obstacle_context)
+            .into_iter()
+            .map(|tile| tile.request),
+    )
+}
+
+fn visible_point_display_tile_window(
+    config: &MapOverlayConfig,
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    obstacle_context: Option<&ObstacleOverlayContext>,
+) -> Vec<DisplayVectorTile> {
     let mut tiles = Vec::new();
     if viewport.zoom >= AIRPORT_MIN_DISPLAY_ZOOM {
-        tiles.extend(visible_layer_tile_window(
+        tiles.extend(visible_layer_display_tile_window(
             "airport",
             POINT_TILE_ZOOM,
             viewport,
@@ -728,7 +745,7 @@ pub fn visible_point_tile_window(
         ));
     }
     if viewport.zoom >= FIX_MIN_DISPLAY_ZOOM {
-        tiles.extend(visible_layer_tile_window(
+        tiles.extend(visible_layer_display_tile_window(
             "fix",
             POINT_TILE_ZOOM,
             viewport,
@@ -737,7 +754,7 @@ pub fn visible_point_tile_window(
         ));
     }
     if viewport.zoom >= NAV_MIN_DISPLAY_ZOOM {
-        tiles.extend(visible_layer_tile_window(
+        tiles.extend(visible_layer_display_tile_window(
             "nav",
             POINT_TILE_ZOOM,
             viewport,
@@ -746,13 +763,20 @@ pub fn visible_point_tile_window(
         ));
     }
     if let Some(obstacle_layer) = config.obstacle_layer.as_ref() {
-        tiles.extend(visible_obstacle_tile_window(
-            obstacle_layer,
-            viewport,
-            width_px,
-            height_px,
-            obstacle_context,
-        ));
+        tiles.extend(
+            visible_obstacle_tile_window(
+                obstacle_layer,
+                viewport,
+                width_px,
+                height_px,
+                obstacle_context,
+            )
+            .into_iter()
+            .map(|request| DisplayVectorTile {
+                request,
+                world_x_offset: 0.0,
+            }),
+        );
     }
     tiles
 }
@@ -845,6 +869,20 @@ fn visible_layer_tile_window(
     width_px: f64,
     height_px: f64,
 ) -> Vec<VectorTileRequest> {
+    dedupe_vector_tile_requests(
+        visible_layer_display_tile_window(layer, zoom, viewport, width_px, height_px)
+            .into_iter()
+            .map(|tile| tile.request),
+    )
+}
+
+fn visible_layer_display_tile_window(
+    layer: &str,
+    zoom: u32,
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+) -> Vec<DisplayVectorTile> {
     let center_world = lat_lon_to_world(viewport.center);
     let scale = 2.0_f64.powf(viewport.zoom);
     let min_world_x = center_world.x - width_px / 2.0 / scale;
@@ -852,7 +890,8 @@ fn visible_layer_tile_window(
     let min_world_y = center_world.y - height_px / 2.0 / scale;
     let max_world_y = center_world.y + height_px / 2.0 / scale;
     let tile_world_size = WORLD_SIZE / (2_u32.pow(zoom) as f64);
-    let max_index = (2_u32.pow(zoom) - 1) as i32;
+    let level_scale = 2_u32.pow(zoom) as i32;
+    let max_index = level_scale - 1;
     let x_start = (min_world_x / tile_world_size).floor() as i32;
     let x_end = (max_world_x / tile_world_size).floor() as i32;
     let y_start = (min_world_y / tile_world_size).floor() as i32;
@@ -860,17 +899,35 @@ fn visible_layer_tile_window(
     let mut tiles = Vec::new();
 
     for y in y_start.max(0)..=y_end.min(max_index) {
-        for x in x_start.max(0)..=x_end.min(max_index) {
-            tiles.push(VectorTileRequest {
-                layer: layer.to_string(),
-                z: zoom,
-                x: x as u32,
-                y: y as u32,
+        for display_x in x_start..=x_end {
+            let x = positive_mod_i32(display_x, level_scale);
+            let world_copy = (display_x - x) / level_scale;
+            tiles.push(DisplayVectorTile {
+                request: VectorTileRequest {
+                    layer: layer.to_string(),
+                    z: zoom,
+                    x: x as u32,
+                    y: y as u32,
+                },
+                world_x_offset: world_copy as f64 * WORLD_SIZE,
             });
         }
     }
 
     tiles
+}
+
+fn dedupe_vector_tile_requests(
+    requests: impl IntoIterator<Item = VectorTileRequest>,
+) -> Vec<VectorTileRequest> {
+    let mut seen = BTreeSet::new();
+    let mut deduped = Vec::new();
+    for request in requests {
+        if seen.insert((request.layer.clone(), request.z, request.x, request.y)) {
+            deduped.push(request);
+        }
+    }
+    deduped
 }
 
 fn tile_window_for_circle(
@@ -882,7 +939,8 @@ fn tile_window_for_circle(
     let center_world = lat_lon_to_world(center);
     let world_radius = radius_nm / world_nm_per_unit(center.lat);
     let tile_world_size = WORLD_SIZE / (2_u32.pow(zoom) as f64);
-    let max_index = (2_u32.pow(zoom) - 1) as i32;
+    let level_scale = 2_u32.pow(zoom) as i32;
+    let max_index = level_scale - 1;
     let min_world_x = center_world.x - world_radius;
     let max_world_x = center_world.x + world_radius;
     let min_world_y = center_world.y - world_radius;
@@ -893,8 +951,13 @@ fn tile_window_for_circle(
     let y_end = (max_world_y / tile_world_size).floor() as i32;
     let mut tiles = Vec::new();
 
+    let mut seen = BTreeSet::new();
     for y in y_start.max(0)..=y_end.min(max_index) {
-        for x in x_start.max(0)..=x_end.min(max_index) {
+        for display_x in x_start..=x_end {
+            let x = positive_mod_i32(display_x, level_scale);
+            if !seen.insert((x, y)) {
+                continue;
+            }
             if tile_intersects_circle(zoom, x as u32, y as u32, center, radius_nm) {
                 tiles.push(VectorTileRequest {
                     layer: layer.to_string(),
@@ -907,6 +970,10 @@ fn tile_window_for_circle(
     }
 
     tiles
+}
+
+fn positive_mod_i32(value: i32, modulus: i32) -> i32 {
+    ((value % modulus) + modulus) % modulus
 }
 
 fn tile_intersects_circle(zoom: u32, x: u32, y: u32, center: LatLon, radius_nm: f64) -> bool {
@@ -976,12 +1043,25 @@ pub fn query_map_overlay(
     );
 
     if display_vectors {
-        let tile_window =
-            visible_point_tile_window(config, viewport, width_px, height_px, obstacle_context);
+        let tile_window = visible_point_display_tile_window(
+            config,
+            viewport,
+            width_px,
+            height_px,
+            obstacle_context,
+        );
+        let mut needed_seen = BTreeSet::new();
         for tile in tile_window {
-            let key = tile_key(&tile.layer, tile.z, tile.x, tile.y);
+            let key = tile_key(
+                &tile.request.layer,
+                tile.request.z,
+                tile.request.x,
+                tile.request.y,
+            );
             let Some(payload) = point_tile_cache.get(&key) else {
-                needed_point_tiles.push(tile);
+                if needed_seen.insert(key) {
+                    needed_point_tiles.push(tile.request);
+                }
                 continue;
             };
             for record in &payload.records {
@@ -992,7 +1072,7 @@ pub fn query_map_overlay(
                 if !should_display_record(record) {
                     continue;
                 }
-                let point = world_to_screen(
+                let point = world_to_screen_with_x_offset(
                     center_world,
                     scale,
                     width_px,
@@ -1001,6 +1081,7 @@ pub fn query_map_overlay(
                         lat: record.lat,
                         lon: record.lon,
                     },
+                    tile.world_x_offset,
                 );
                 let Some(symbol) = point_vector_record_to_symbol_feature(
                     record,
@@ -1138,15 +1219,35 @@ fn project_offline_regions(
     width_px: f64,
     height_px: f64,
 ) -> Vec<OfflineRegionDisplay> {
-    regions
-        .iter()
-        .filter(|region| region.polygon.len() >= 2)
-        .map(|region| {
-            let points = region
-                .polygon
+    let min_visible_world_x = center_world.x - width_px / 2.0 / scale;
+    let max_visible_world_x = center_world.x + width_px / 2.0 / scale;
+    let mut displays = Vec::new();
+    for region in regions.iter().filter(|region| region.polygon.len() >= 2) {
+        let unwrapped_polygon = unwrap_world_path_near_center(&region.polygon, center_world);
+        let min_polygon_x = unwrapped_polygon
+            .iter()
+            .map(|world| world.x)
+            .fold(f64::INFINITY, f64::min);
+        let max_polygon_x = unwrapped_polygon
+            .iter()
+            .map(|world| world.x)
+            .fold(f64::NEG_INFINITY, f64::max);
+        if !min_polygon_x.is_finite() || !max_polygon_x.is_finite() {
+            continue;
+        }
+        let polygon_average_x = unwrapped_polygon.iter().map(|world| world.x).sum::<f64>()
+            / unwrapped_polygon.len() as f64;
+        let copy_start = ((min_visible_world_x - max_polygon_x) / WORLD_SIZE).floor() as i32;
+        let copy_end = ((max_visible_world_x - min_polygon_x) / WORLD_SIZE).ceil() as i32;
+        for copy in copy_start..=copy_end {
+            let offset = copy as f64 * WORLD_SIZE;
+            let points = unwrapped_polygon
                 .iter()
-                .map(|point| {
-                    let world = unwrap_world_x_near_center(lat_lon_to_world(*point), center_world);
+                .map(|world| WorldPoint {
+                    x: world.x + offset,
+                    y: world.y,
+                })
+                .map(|world| {
                     let screen =
                         projected_world_to_screen(center_world, scale, width_px, height_px, world);
                     AirspaceScreenPoint {
@@ -1155,15 +1256,14 @@ fn project_offline_regions(
                     }
                 })
                 .collect();
-            let label = projected_world_to_screen(
-                center_world,
-                scale,
-                width_px,
-                height_px,
-                unwrap_world_x_near_center(lat_lon_to_world(region.label_position), center_world),
-            );
-            OfflineRegionDisplay {
-                id: region.id.clone(),
+            let mut label_world = lat_lon_to_world(region.label_position);
+            label_world.x +=
+                ((polygon_average_x - label_world.x) / WORLD_SIZE).round() * WORLD_SIZE;
+            label_world.x += offset;
+            let label =
+                projected_world_to_screen(center_world, scale, width_px, height_px, label_world);
+            displays.push(OfflineRegionDisplay {
+                id: format!("{}:{copy}", region.id),
                 kind: region.kind.clone(),
                 region_id: region.region_id.clone(),
                 label: region.label.clone(),
@@ -1171,14 +1271,61 @@ fn project_offline_regions(
                 points,
                 label_x: label.x,
                 label_y: label.y,
-            }
-        })
-        .collect()
+            });
+        }
+    }
+    displays
 }
 
 fn unwrap_world_x_near_center(mut world: WorldPoint, center_world: WorldPoint) -> WorldPoint {
     world.x += ((center_world.x - world.x) / WORLD_SIZE).round() * WORLD_SIZE;
     world
+}
+
+fn unwrap_world_path_near_center(points: &[LatLon], center_world: WorldPoint) -> Vec<WorldPoint> {
+    let mut best = Vec::new();
+    let mut best_span = f64::INFINITY;
+    for start in 0..points.len() {
+        let mut rotated = Vec::with_capacity(points.len());
+        rotated.extend(points[start..].iter().copied());
+        rotated.extend(points[..start].iter().copied());
+        let unwrapped = unwrap_world_path_linear(&rotated);
+        let min_x = unwrapped
+            .iter()
+            .map(|world| world.x)
+            .fold(f64::INFINITY, f64::min);
+        let max_x = unwrapped
+            .iter()
+            .map(|world| world.x)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let span = max_x - min_x;
+        if span < best_span {
+            best_span = span;
+            best = unwrapped;
+        }
+    }
+    if !best.is_empty() {
+        let average_x = best.iter().map(|world| world.x).sum::<f64>() / best.len() as f64;
+        let shift = ((center_world.x - average_x) / WORLD_SIZE).round() * WORLD_SIZE;
+        for world in &mut best {
+            world.x += shift;
+        }
+    }
+    best
+}
+
+fn unwrap_world_path_linear(points: &[LatLon]) -> Vec<WorldPoint> {
+    let mut unwrapped = Vec::with_capacity(points.len());
+    let mut previous_x: Option<f64> = None;
+    for point in points {
+        let mut world = lat_lon_to_world(*point);
+        if let Some(previous_x) = previous_x {
+            world.x += ((previous_x - world.x) / WORLD_SIZE).round() * WORLD_SIZE;
+        }
+        previous_x = Some(world.x);
+        unwrapped.push(world);
+    }
+    unwrapped
 }
 
 struct MetarOverlayProjection {
@@ -1214,10 +1361,20 @@ fn query_metar_overlay(
     let mut visible_pireps = Vec::new();
     let mut limit_hit = false;
     let metar_zoom = nearest_available_layer_zoom(metar_layer, viewport.zoom.floor() as u32);
-    for tile in visible_layer_tile_window("metars", metar_zoom, viewport, width_px, height_px) {
-        let key = tile_key(&tile.layer, tile.z, tile.x, tile.y);
+    let mut needed_seen = BTreeSet::new();
+    for tile in
+        visible_layer_display_tile_window("metars", metar_zoom, viewport, width_px, height_px)
+    {
+        let key = tile_key(
+            &tile.request.layer,
+            tile.request.z,
+            tile.request.x,
+            tile.request.y,
+        );
         let Some(tile_payload) = metar_tile_cache.get(&key) else {
-            needed_tiles.push(tile);
+            if needed_seen.insert(key) {
+                needed_tiles.push(tile.request);
+            }
             continue;
         };
         let Some(metars) = metar_payload else {
@@ -1232,8 +1389,14 @@ fn query_metar_overlay(
                 let Some(record) = metars.metars_by_station.get(&record_ref.id) else {
                     continue;
                 };
-                let feature =
-                    visible_metar_feature(record, center_world, scale, width_px, height_px);
+                let feature = visible_metar_feature_with_x_offset(
+                    record,
+                    center_world,
+                    scale,
+                    width_px,
+                    height_px,
+                    tile.world_x_offset,
+                );
                 if weather_feature_is_on_screen(
                     feature.screen_x,
                     feature.screen_y,
@@ -1250,8 +1413,14 @@ fn query_metar_overlay(
                 else {
                     continue;
                 };
-                let feature =
-                    visible_pirep_feature(record, center_world, scale, width_px, height_px);
+                let feature = visible_pirep_feature_with_x_offset(
+                    record,
+                    center_world,
+                    scale,
+                    width_px,
+                    height_px,
+                    tile.world_x_offset,
+                );
                 if weather_feature_is_on_screen(
                     feature.screen_x,
                     feature.screen_y,
@@ -1354,6 +1523,34 @@ fn visible_metar_feature(
     }
 }
 
+fn visible_metar_feature_with_x_offset(
+    record: &MetarRecord,
+    center_world: WorldPoint,
+    scale: f64,
+    width_px: f64,
+    height_px: f64,
+    world_x_offset: f64,
+) -> VisibleMetarFeature {
+    let point = world_to_screen_with_x_offset(
+        center_world,
+        scale,
+        width_px,
+        height_px,
+        LatLon {
+            lat: record.latitude,
+            lon: record.longitude,
+        },
+        world_x_offset,
+    );
+    VisibleMetarFeature {
+        station_id: record.station_id.clone(),
+        screen_x: point.x,
+        screen_y: point.y,
+        flight_category: normalized_metar_flight_category(record),
+        ceiling_amount: normalized_metar_ceiling_amount(record),
+    }
+}
+
 fn visible_pirep_feature(
     record: &PirepRecord,
     center_world: WorldPoint,
@@ -1370,6 +1567,35 @@ fn visible_pirep_feature(
             lat: record.latitude,
             lon: record.longitude,
         },
+    );
+    VisiblePirepFeature {
+        id: record.id.clone(),
+        screen_x: point.x,
+        screen_y: point.y,
+        symbol: normalized_pirep_symbol(&record.symbol),
+        icing: normalized_pirep_hazard(&record.icing),
+        turbulence: normalized_pirep_hazard(&record.turbulence),
+    }
+}
+
+fn visible_pirep_feature_with_x_offset(
+    record: &PirepRecord,
+    center_world: WorldPoint,
+    scale: f64,
+    width_px: f64,
+    height_px: f64,
+    world_x_offset: f64,
+) -> VisiblePirepFeature {
+    let point = world_to_screen_with_x_offset(
+        center_world,
+        scale,
+        width_px,
+        height_px,
+        LatLon {
+            lat: record.latitude,
+            lon: record.longitude,
+        },
+        world_x_offset,
     );
     VisiblePirepFeature {
         id: record.id.clone(),
@@ -3531,7 +3757,20 @@ fn world_to_screen(
     height_px: f64,
     position: LatLon,
 ) -> WorldPoint {
-    let world = lat_lon_to_world(position);
+    let world = unwrap_world_x_near_center(lat_lon_to_world(position), center_world);
+    projected_world_to_screen(center_world, scale, width_px, height_px, world)
+}
+
+fn world_to_screen_with_x_offset(
+    center_world: WorldPoint,
+    scale: f64,
+    width_px: f64,
+    height_px: f64,
+    position: LatLon,
+    world_x_offset: f64,
+) -> WorldPoint {
+    let mut world = lat_lon_to_world(position);
+    world.x += world_x_offset;
     projected_world_to_screen(center_world, scale, width_px, height_px, world)
 }
 
@@ -3641,6 +3880,180 @@ mod tests {
         assert!(tiles.iter().any(|tile| tile.layer == "airport"));
         assert!(!tiles.iter().any(|tile| tile.layer == "fix"));
         assert!(tiles.iter().any(|tile| tile.layer == "nav"));
+    }
+
+    #[test]
+    fn vector_tile_window_wraps_source_x_for_repeated_worlds() {
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 0.0,
+                lon: -540.0,
+            },
+            zoom: 5.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let tiles = visible_layer_tile_window("airport", 5, &viewport, 800.0, 600.0);
+
+        assert!(!tiles.is_empty());
+        assert!(tiles.iter().all(|tile| tile.x < 32));
+        assert!(tiles.iter().any(|tile| tile.x == 0 || tile.x == 31));
+    }
+
+    #[test]
+    fn vector_display_tile_window_keeps_repeated_world_copies() {
+        let viewport = MapViewport {
+            center: LatLon { lat: 0.0, lon: 0.0 },
+            zoom: 1.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let display_tiles =
+            visible_layer_display_tile_window("airport", 1, &viewport, 1024.0, 256.0);
+        let unique_requests =
+            dedupe_vector_tile_requests(display_tiles.iter().cloned().map(|tile| tile.request));
+
+        assert!(display_tiles.len() > unique_requests.len());
+        assert!(display_tiles
+            .iter()
+            .any(|tile| tile.request.x == 1 && tile.world_x_offset < 0.0));
+        assert!(display_tiles
+            .iter()
+            .any(|tile| tile.request.x == 0 && tile.world_x_offset > 0.0));
+    }
+
+    #[test]
+    fn weather_projection_uses_nearest_wrapped_world_copy() {
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 52.0,
+                lon: -530.0,
+            },
+            zoom: 4.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let center_world = lat_lon_to_world(viewport.center);
+        let feature = visible_pirep_feature(
+            &PirepRecord {
+                id: "pacific".to_string(),
+                raw_text: "UA /OV PAC".to_string(),
+                observed_at_utc: None,
+                report_type: None,
+                longitude: -170.0,
+                latitude: 52.0,
+                symbol: "generic".to_string(),
+                icing: String::new(),
+                turbulence: String::new(),
+            },
+            center_world,
+            2.0_f64.powf(viewport.zoom),
+            800.0,
+            600.0,
+        );
+
+        assert!((feature.screen_x - 400.0).abs() < 2.0);
+        assert!((feature.screen_y - 300.0).abs() < 2.0);
+    }
+
+    #[test]
+    fn offline_region_dateline_polygon_stays_short_in_wrapped_world_copy() {
+        let center_world = lat_lon_to_world(LatLon {
+            lat: 52.0,
+            lon: -530.0,
+        });
+        let regions = vec![OfflineRegionRecord {
+            id: "pacific".to_string(),
+            kind: "plate".to_string(),
+            region_id: "pac".to_string(),
+            label: "PAC".to_string(),
+            color_key: "pac".to_string(),
+            polygon: vec![
+                LatLon {
+                    lat: 45.0,
+                    lon: 170.0,
+                },
+                LatLon {
+                    lat: 45.0,
+                    lon: -170.0,
+                },
+                LatLon {
+                    lat: 55.0,
+                    lon: -170.0,
+                },
+                LatLon {
+                    lat: 55.0,
+                    lon: 170.0,
+                },
+            ],
+            label_position: LatLon {
+                lat: 50.0,
+                lon: -180.0,
+            },
+        }];
+
+        let projected = project_offline_regions(&regions, center_world, 4.0, 800.0, 600.0);
+        let xs = projected[0]
+            .points
+            .iter()
+            .map(|point| point.x)
+            .collect::<Vec<_>>();
+        let span = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+            - xs.iter().copied().fold(f64::INFINITY, f64::min);
+
+        assert!(span < 80.0, "dateline polygon projected too wide: {span}");
+    }
+
+    #[test]
+    fn offline_region_dateline_polygon_copy_uses_polygon_center_not_first_vertex() {
+        let center_world = lat_lon_to_world(LatLon {
+            lat: 52.0,
+            lon: 0.0,
+        });
+        let regions = vec![OfflineRegionRecord {
+            id: "pacific".to_string(),
+            kind: "plate".to_string(),
+            region_id: "pac".to_string(),
+            label: "PAC".to_string(),
+            color_key: "pac".to_string(),
+            polygon: vec![
+                LatLon {
+                    lat: 45.0,
+                    lon: -170.0,
+                },
+                LatLon {
+                    lat: 45.0,
+                    lon: 170.0,
+                },
+                LatLon {
+                    lat: 55.0,
+                    lon: 170.0,
+                },
+                LatLon {
+                    lat: 55.0,
+                    lon: -170.0,
+                },
+            ],
+            label_position: LatLon {
+                lat: 50.0,
+                lon: 180.0,
+            },
+        }];
+
+        let projected = project_offline_regions(&regions, center_world, 4.0, 800.0, 600.0);
+        let xs = projected[0]
+            .points
+            .iter()
+            .map(|point| point.x)
+            .collect::<Vec<_>>();
+        let span = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+            - xs.iter().copied().fold(f64::INFINITY, f64::min);
+
+        assert!(span < 80.0, "dateline polygon projected too wide: {span}");
+        assert!(
+            xs.iter().any(|x| *x > 700.0) || xs.iter().any(|x| *x < 100.0),
+            "dateline polygon should sit at a wrapped viewport edge near Greenwich: {xs:?}"
+        );
     }
 
     #[test]

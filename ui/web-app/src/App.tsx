@@ -408,6 +408,10 @@ function terrainSourceCacheKey(sourceTile: { product_id: string; path: string })
   return `${sourceTile.product_id}/${sourceTile.path}`;
 }
 
+function wrappedFeatureRenderKey(id: string, screenX: number, screenY: number): string {
+  return `${id}:${Math.round(screenX * 10)}:${Math.round(screenY * 10)}`;
+}
+
 function parseTerrainRawRgba(bytes: Uint8Array): TerrainTileCacheEntry {
   if (bytes.byteLength < 4) {
     throw new Error("terrain raw RGBA payload is missing header");
@@ -636,6 +640,7 @@ type WebHistoryState = {
 };
 
 type RasterRenderTile = {
+  drawKey: string;
   x: number;
   yTms: number;
   left: number;
@@ -652,6 +657,7 @@ type RasterRenderTile = {
 
 function renderTileFromCore(tile: RasterTileDraw, cssScale = 1): RasterRenderTile {
   return {
+    drawKey: tile.draw_key,
     x: tile.x,
     yTms: tile.y_tms,
     left: tile.left_px * cssScale,
@@ -2483,7 +2489,7 @@ function MapPage(props: {
   const loadedRasterTileKeysRef = useRef<Set<string>>(new Set());
   const completedPageTilePaintTimingIdsRef = useRef<Set<number>>(new Set());
   const rasterTileKey = useCallback((tile: RasterRenderTile) =>
-    `${tile.chartFamily}-${tile.packageName ?? tile.mapViewId}-${tile.zoom}-${tile.x}-${tile.yTms}`,
+    `${tile.chartFamily}-${tile.packageName ?? tile.mapViewId}-${tile.drawKey}`,
   []);
   const completePageTilePaintTiming = useCallback((timing: WebPageTilePaintTiming, phase: "frame" | "images") => {
     if (completedPageTilePaintTimingIdsRef.current.has(timing.id)) {
@@ -3986,7 +3992,10 @@ function MapPage(props: {
             style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
           >
             {mapOverlay.visible_metars.map((feature) => (
-              <g key={feature.station_id} transform={`translate(${feature.screen_x} ${feature.screen_y})`}>
+              <g
+                key={wrappedFeatureRenderKey(feature.station_id, feature.screen_x, feature.screen_y)}
+                transform={`translate(${feature.screen_x} ${feature.screen_y})`}
+              >
                 <MetarSymbol feature={feature} />
               </g>
             ))}
@@ -4000,7 +4009,10 @@ function MapPage(props: {
             style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
           >
             {mapOverlay.visible_pireps.map((feature) => (
-              <g key={feature.id} transform={`translate(${feature.screen_x} ${feature.screen_y})`}>
+              <g
+                key={wrappedFeatureRenderKey(feature.id, feature.screen_x, feature.screen_y)}
+                transform={`translate(${feature.screen_x} ${feature.screen_y})`}
+              >
                 <PirepSymbol feature={feature} scale={0.32} />
               </g>
             ))}
@@ -7454,8 +7466,9 @@ function plateImagePoint(position: LatLon, georef: PlateGeoref) {
 function latLonToScreen(lat: number, lon: number, viewport: MapViewportState, width: number, height: number) {
   const world = latLonToWorld(lat, lon);
   const scale = scaleForZoom(viewport.zoom);
+  const wrappedX = world.x + Math.round((viewport.centerWorldX - world.x) / WEB_MERCATOR_WORLD_SIZE) * WEB_MERCATOR_WORLD_SIZE;
   return {
-    x: ((world.x - viewport.centerWorldX) * scale) + width / 2,
+    x: ((wrappedX - viewport.centerWorldX) * scale) + width / 2,
     y: ((world.y - viewport.centerWorldY) * scale) + height / 2,
   };
 }

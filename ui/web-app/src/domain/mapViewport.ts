@@ -396,7 +396,8 @@ function renderTilesForFamily(
       const levelScale = 2 ** level.zoom;
 
       for (let yXyz = yStart; yXyz <= yEnd; yXyz += 1) {
-        for (let x = xStart; x <= xEnd; x += 1) {
+        for (let displayX = xStart; displayX <= xEnd; displayX += 1) {
+          const x = positiveModulo(displayX, levelScale);
           const yTms = (levelScale - 1) - yXyz;
           if (x < level.x_min || x > level.x_max || yTms < level.y_tms_min || yTms > level.y_tms_max) {
             continue;
@@ -404,7 +405,7 @@ function renderTilesForFamily(
           if (!tileIntersectsCoverage(mapView, polygonSets, level.zoom, x, yTms)) {
             continue;
           }
-          const left = ((x * tileWorldSize - viewport.centerWorldX) * scale) + width / 2;
+          const left = ((displayX * tileWorldSize - viewport.centerWorldX) * scale) + width / 2;
           const top = ((yXyz * tileWorldSize - viewport.centerWorldY) * scale) + height / 2;
           tiles.push({
             x,
@@ -445,12 +446,16 @@ function levelsForMapView(mapView: MapView, zoom: number): MapView["levels"] {
 function dedupeTiles(tiles: RenderTile[]): RenderTile[] {
   const byScreenKey = new Map<string, RenderTile>();
   for (const tile of tiles) {
-    const key = `${tile.zoom}:${tile.x}:${tile.yTms}:${tile.mapViewId}`;
+    const key = `${tile.zoom}:${tile.x}:${tile.yTms}:${tile.left}:${tile.mapViewId}`;
     if (!byScreenKey.has(key)) {
       byScreenKey.set(key, tile);
     }
   }
   return [...byScreenKey.values()];
+}
+
+function positiveModulo(value: number, modulus: number): number {
+  return ((value % modulus) + modulus) % modulus;
 }
 
 function chartFamilyRenderPriority(chartFamily: MapView["chart_family"]): number {

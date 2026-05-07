@@ -57,7 +57,7 @@ Proposed action:
 Status:
 - Removed on 2026-05-07.
 
-### Reassess `debug_element_sources` / `debug_element_roles` in guidance display paths
+### Quarantined `debug_element_sources` / `debug_element_roles` out of the UI contract
 
 Evidence:
 - `ui/core-rust/crates/app-core/src/planning.rs` includes `LegDisplayPath.debug_element_sources` and `debug_element_roles`.
@@ -73,6 +73,10 @@ Proposed action:
 - Decide whether procedure geometry diagnostics are a product artifact or a debug artifact.
 - If debug only, move them behind a debug operation or build flag, not the primary `LegDisplayPath`.
 - If product-visible, rename them away from `debug_` and document the consumer.
+
+Status:
+- Quarantined on 2026-05-07 by skipping serialization/deserialization in `app-core::LegDisplayPath` and removing the web type mirror.
+- The fields are still used as preprocessor scratch state while building procedure-geometry diagnostics. The final `procedure-geometry-types::ProcedureGeometryPath` product payload does not carry them.
 
 ### Consolidate terrain rendering exports
 

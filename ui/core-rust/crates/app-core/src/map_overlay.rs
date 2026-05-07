@@ -1146,19 +1146,21 @@ fn project_offline_regions(
                 .polygon
                 .iter()
                 .map(|point| {
-                    let screen = world_to_screen(center_world, scale, width_px, height_px, *point);
+                    let world = unwrap_world_x_near_center(lat_lon_to_world(*point), center_world);
+                    let screen =
+                        projected_world_to_screen(center_world, scale, width_px, height_px, world);
                     AirspaceScreenPoint {
                         x: screen.x,
                         y: screen.y,
                     }
                 })
                 .collect();
-            let label = world_to_screen(
+            let label = projected_world_to_screen(
                 center_world,
                 scale,
                 width_px,
                 height_px,
-                region.label_position,
+                unwrap_world_x_near_center(lat_lon_to_world(region.label_position), center_world),
             );
             OfflineRegionDisplay {
                 id: region.id.clone(),
@@ -1172,6 +1174,11 @@ fn project_offline_regions(
             }
         })
         .collect()
+}
+
+fn unwrap_world_x_near_center(mut world: WorldPoint, center_world: WorldPoint) -> WorldPoint {
+    world.x += ((center_world.x - world.x) / WORLD_SIZE).round() * WORLD_SIZE;
+    world
 }
 
 struct MetarOverlayProjection {
@@ -3525,6 +3532,16 @@ fn world_to_screen(
     position: LatLon,
 ) -> WorldPoint {
     let world = lat_lon_to_world(position);
+    projected_world_to_screen(center_world, scale, width_px, height_px, world)
+}
+
+fn projected_world_to_screen(
+    center_world: WorldPoint,
+    scale: f64,
+    width_px: f64,
+    height_px: f64,
+    world: WorldPoint,
+) -> WorldPoint {
     WorldPoint {
         x: (world.x - center_world.x) * scale + width_px / 2.0,
         y: (world.y - center_world.y) * scale + height_px / 2.0,

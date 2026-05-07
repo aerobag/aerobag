@@ -4621,18 +4621,62 @@ fn plate_offline_region_records(resource_index: &ResourceIndex) -> Vec<OfflineRe
 }
 
 fn convex_hull_lat_lon(mut points: Vec<OfflineRegionLatLon>) -> Vec<OfflineRegionLatLon> {
+    points = unwrap_antimeridian_points(points);
     points.sort_by(|left, right| {
         left.lon
             .total_cmp(&right.lon)
             .then_with(|| left.lat.total_cmp(&right.lat))
     });
     points.dedup_by(|left, right| left.lat == right.lat && left.lon == right.lon);
-    match points.len() {
+    let polygon = match points.len() {
         0 => Vec::new(),
         1 => buffered_point_polygon(points[0]),
         2 => buffered_segment_polygon(points[0], points[1]),
         _ => monotonic_chain_hull(&points),
+    };
+    polygon
+        .into_iter()
+        .map(normalize_offline_region_lon)
+        .collect()
+}
+
+fn unwrap_antimeridian_points(mut points: Vec<OfflineRegionLatLon>) -> Vec<OfflineRegionLatLon> {
+    if points.len() < 2 {
+        return points;
     }
+    let mut lons = points
+        .iter()
+        .map(|point| point.lon.rem_euclid(360.0))
+        .collect::<Vec<_>>();
+    lons.sort_by(f64::total_cmp);
+    let mut largest_gap = -1.0;
+    let mut cut = 0.0;
+    for index in 0..lons.len() {
+        let current = lons[index];
+        let next = if index + 1 < lons.len() {
+            lons[index + 1]
+        } else {
+            lons[0] + 360.0
+        };
+        let gap = next - current;
+        if gap > largest_gap {
+            largest_gap = gap;
+            cut = next.rem_euclid(360.0);
+        }
+    }
+    for point in &mut points {
+        let mut lon = point.lon.rem_euclid(360.0);
+        if lon < cut {
+            lon += 360.0;
+        }
+        point.lon = lon;
+    }
+    points
+}
+
+fn normalize_offline_region_lon(mut point: OfflineRegionLatLon) -> OfflineRegionLatLon {
+    point.lon = ((point.lon + 180.0).rem_euclid(360.0)) - 180.0;
+    point
 }
 
 fn monotonic_chain_hull(points: &[OfflineRegionLatLon]) -> Vec<OfflineRegionLatLon> {
@@ -15279,6 +15323,51 @@ mod tests {
             lat: 46.0,
             lon: -122.0
         }));
+    }
+
+    #[test]
+    fn offline_region_plate_hull_wraps_antimeridian() {
+        let hull = convex_hull_lat_lon(vec![
+            OfflineRegionLatLon {
+                lat: 52.0,
+                lon: 179.0,
+            },
+            OfflineRegionLatLon {
+                lat: 53.0,
+                lon: -179.0,
+            },
+            OfflineRegionLatLon {
+                lat: 54.0,
+                lon: -172.0,
+            },
+            OfflineRegionLatLon {
+                lat: 51.0,
+                lon: 176.0,
+            },
+        ]);
+        assert!(hull.iter().any(|point| point.lon > 170.0));
+        assert!(hull.iter().any(|point| point.lon < -170.0));
+        let mut unwrapped = hull
+            .iter()
+            .map(|point| point.lon.rem_euclid(360.0))
+            .collect::<Vec<_>>();
+        unwrapped.sort_by(f64::total_cmp);
+        let largest_gap = unwrapped
+            .iter()
+            .enumerate()
+            .map(|(index, lon)| {
+                let next = if index + 1 < unwrapped.len() {
+                    unwrapped[index + 1]
+                } else {
+                    unwrapped[0] + 360.0
+                };
+                next - lon
+            })
+            .fold(0.0, f64::max);
+        assert!(
+            360.0 - largest_gap < 20.0,
+            "hull should occupy the small antimeridian span, got {hull:?}"
+        );
     }
 
     fn test_plate_record(id: &str, airport_id: &str) -> PlateRecord {

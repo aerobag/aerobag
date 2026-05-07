@@ -3822,6 +3822,7 @@ function MapPage(props: {
             className="offlineRegionsOverlay"
             viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
             preserveAspectRatio="none"
+            style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
           >
             {mapOverlay.offline_regions.map((region) => {
               const color = aviationThemeColor(region.color_key);

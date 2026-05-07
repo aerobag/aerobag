@@ -1930,6 +1930,7 @@ private fun WireRegionId.toCode() = when (this) {
     WireRegionId.Ec -> "ec"
     WireRegionId.Ak -> "ak"
     WireRegionId.Pac -> "pac"
+    WireRegionId.World -> "world"
 }
 
 private fun WireDerivedChartPageState.toUi() = DerivedChartPageState(
@@ -3058,6 +3059,7 @@ private fun String.toWireRegion() = when (lowercase()) {
     "ec" -> WireRegionId.Ec
     "ak" -> WireRegionId.Ak
     "pac" -> WireRegionId.Pac
+    "world" -> WireRegionId.World
     else -> error("Unsupported region: $this")
 }
 
@@ -3071,6 +3073,7 @@ private fun WireRegionId.toUiRegion() = when (this) {
     WireRegionId.Ec -> "ec"
     WireRegionId.Ak -> "ak"
     WireRegionId.Pac -> "pac"
+    WireRegionId.World -> "world"
 }
 
 private fun regionDisplayName(regionId: String) = when (regionId.lowercase()) {

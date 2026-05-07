@@ -497,6 +497,9 @@ enum class WireRegionId {
 
     @SerialName("pac")
     Pac,
+
+    @SerialName("world")
+    World,
 }
 
 @Serializable

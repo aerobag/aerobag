@@ -59,6 +59,7 @@ if [[ -z "${EMULATOR_READ_ONLY:-}" ]]; then
 fi
 EMULATOR_BIN="${EMULATOR_BIN:-/usr/lib/android-sdk/emulator/emulator}"
 AVDMANAGER_BIN="${AVDMANAGER_BIN:-avdmanager}"
+EMULATOR_DATA_PARTITION_SIZE="${EMULATOR_DATA_PARTITION_SIZE:-17179869184}"
 
 XVFB_PID_FILE="${STATE_DIR}/xvfb.pid"
 X11VNC_PID_FILE="${STATE_DIR}/x11vnc.pid"
@@ -105,6 +106,11 @@ ensure_avd_hardware_keyboard() {
     sed -i 's/^hw\.keyboard\.charmap[[:space:]]*=.*/hw.keyboard.charmap = qwerty2/' "$config_file"
   else
     printf 'hw.keyboard.charmap = qwerty2\n' >>"$config_file"
+  fi
+  if grep -q '^disk\.dataPartition\.size[[:space:]]*=' "$config_file"; then
+    sed -i "s/^disk\.dataPartition\.size[[:space:]]*=.*/disk.dataPartition.size = ${EMULATOR_DATA_PARTITION_SIZE}/" "$config_file"
+  else
+    printf 'disk.dataPartition.size = %s\n' "$EMULATOR_DATA_PARTITION_SIZE" >>"$config_file"
   fi
 }
 

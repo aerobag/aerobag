@@ -365,6 +365,7 @@ private fun WireRegionId.toCode() = when (this) {
     WireRegionId.Ec -> "ec"
     WireRegionId.Ak -> "ak"
     WireRegionId.Pac -> "pac"
+    WireRegionId.World -> "world"
 }
 
 private fun ChartPageFixture.toWire() = WireDerivedChartPage(

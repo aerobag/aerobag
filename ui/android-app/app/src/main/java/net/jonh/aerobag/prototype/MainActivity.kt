@@ -86,6 +86,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.produceState
@@ -2817,6 +2818,7 @@ private fun HomePage(
     var offlinePackagesControllerResult by remember { mutableStateOf<OfflinePackagesControllerResultWire?>(null) }
     var offlinePackageOperationJob by remember { mutableStateOf<Job?>(null) }
     var offlinePackageCancelRequested by remember { mutableStateOf(false) }
+    var navDbStatusRefreshToken by remember { mutableIntStateOf(0) }
     val activePackageConnections = remember { ActivePackageConnections() }
     fun launchOfflinePackageOperation(block: suspend () -> Unit) {
         if (offlinePackageOperationJob?.isActive == true) {
@@ -2893,6 +2895,7 @@ private fun HomePage(
                         nextEvent,
                     )
                 }
+                navDbStatusRefreshToken += 1
             }
             is OfflinePackagesControllerCommandWire.Sync -> {
                 val summary = try {
@@ -2934,6 +2937,7 @@ private fun HomePage(
                         OfflinePackagesControllerEventWire.SyncFinished(summary = summary),
                     )
                 }
+                navDbStatusRefreshToken += 1
                 onRuntimeMaybeAvailable?.invoke()
             }
             null -> Unit
@@ -3006,7 +3010,7 @@ private fun HomePage(
                 Scrim { offlinePackagesOpen = false }
             }
             val controllerUiState = offlinePackagesControllerResult?.uiState
-            val navDbStatus by produceState<net.jonh.aerobag.prototype.domain.NavDbStatus?>(initialValue = null, context, controllerUiState?.syncMessage, offlinePackagesOpen, forceOfflinePackagesOpen) {
+            val navDbStatus by produceState<net.jonh.aerobag.prototype.domain.NavDbStatus?>(initialValue = null, context, navDbStatusRefreshToken, offlinePackagesOpen, forceOfflinePackagesOpen) {
                 if (!offlinePackagesOpen && !forceOfflinePackagesOpen) {
                     value = null
                     return@produceState

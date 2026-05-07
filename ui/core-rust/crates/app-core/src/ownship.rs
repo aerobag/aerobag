@@ -572,6 +572,9 @@ fn is_candidate(source: &OwnshipSourceStatus, now_epoch_ms: i64, policy: &Ownshi
 }
 
 fn is_fresh(source: &OwnshipSourceStatus, now_epoch_ms: i64) -> bool {
+    if source.source_kind == OwnshipSourceKind::FlightPlanSimulator {
+        return true;
+    }
     source
         .last_received_time_epoch_ms
         .is_some_and(|received| now_epoch_ms - received <= source.stale_after_ms)

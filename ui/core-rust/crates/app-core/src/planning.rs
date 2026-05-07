@@ -1447,6 +1447,27 @@ pub fn unsuspend_sequencing(plan: &FlightPlan) -> AppResult<FlightPlan> {
         });
     }
 
+    if let Some(hold_start_detail) =
+        terminal_hold_start_detail_index_for_leg(&plan, guidance.active_leg_index)
+    {
+        if guidance
+            .active_detail_index
+            .is_some_and(|detail_index| detail_index >= hold_start_detail)
+        {
+            return Ok(FlightPlan {
+                guidance: Some(GuidanceState {
+                    active_leg_index: guidance.active_leg_index,
+                    active_detail_index: guidance.active_detail_index,
+                    display_split_leg_id: guidance.display_split_leg_id.clone(),
+                    sequencing_mode: SequencingMode::FollowPlan,
+                    direct_to: None,
+                    suspend_reason: None,
+                }),
+                ..plan
+            });
+        }
+    }
+
     if should_suspend_after_active_leg(&plan, guidance.active_leg_index) {
         return activate_next_leg(&plan);
     }
@@ -1616,9 +1637,15 @@ pub fn sequence_active_detail(plan: &FlightPlan) -> AppResult<FlightPlan> {
         })?;
     let next_detail_index = active_detail.detail_index + 1;
     let Some(next_detail) = guidance_detail_ref_by_index(&plan, next_detail_index) else {
+        if active_detail_is_terminal_hold_detail(&plan, &active_detail) {
+            return sequence_after_terminal_hold(&plan, &guidance);
+        }
         return sequence_active_leg(&plan);
     };
     if next_detail.leg_index != guidance.active_leg_index {
+        if active_detail_is_terminal_hold_detail(&plan, &active_detail) {
+            return sequence_after_terminal_hold(&plan, &guidance);
+        }
         return sequence_active_leg(&plan);
     }
     if terminal_hold_start_detail_index_for_leg(&plan, guidance.active_leg_index)
@@ -1627,7 +1654,7 @@ pub fn sequence_active_detail(plan: &FlightPlan) -> AppResult<FlightPlan> {
         return Ok(FlightPlan {
             guidance: Some(GuidanceState {
                 active_leg_index: guidance.active_leg_index,
-                active_detail_index: Some(active_detail.detail_index),
+                active_detail_index: Some(next_detail_index),
                 display_split_leg_id: guidance.display_split_leg_id.clone(),
                 sequencing_mode: SequencingMode::Suspended,
                 direct_to: None,
@@ -1648,6 +1675,35 @@ pub fn sequence_active_detail(plan: &FlightPlan) -> AppResult<FlightPlan> {
         }),
         ..plan
     })
+}
+
+fn active_detail_is_terminal_hold_detail(
+    plan: &FlightPlan,
+    active_detail: &GuidanceDetailRef,
+) -> bool {
+    terminal_hold_start_detail_index_for_leg(plan, active_detail.leg_index)
+        .is_some_and(|hold_start| active_detail.detail_index >= hold_start)
+}
+
+fn sequence_after_terminal_hold(
+    plan: &FlightPlan,
+    guidance: &GuidanceState,
+) -> AppResult<FlightPlan> {
+    match activate_next_leg(plan) {
+        Ok(next) => Ok(next),
+        Err(err) if err.kind == AppErrorKind::UnsupportedOperation => Ok(FlightPlan {
+            guidance: Some(GuidanceState {
+                active_leg_index: guidance.active_leg_index,
+                active_detail_index: guidance.active_detail_index,
+                display_split_leg_id: guidance.display_split_leg_id.clone(),
+                sequencing_mode: SequencingMode::Suspended,
+                direct_to: None,
+                suspend_reason: Some(SuspendReason::RouteEnd),
+            }),
+            ..plan.clone()
+        }),
+        Err(err) => Err(err),
+    }
 }
 
 pub fn active_guidance_leg(plan: &FlightPlan) -> Option<PlanLeg> {

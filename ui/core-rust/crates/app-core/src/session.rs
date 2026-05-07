@@ -24,11 +24,12 @@ use crate::{
     AirspaceFeaturePayload, AirspaceLabelTilePayload, AirspaceReferenceTilePayload,
     AirwayPresentationPlan, AppError, AppErrorKind, AppEvent, AppResult, AppState, AppUiState,
     FlightPlan, FlightPlanDisplayRowKind, FlightPlanRowActionExecution, FlightPlanRowActionId,
-    LatLon, MapOverlayConfig, MapOverlayQueryResult, MapSelectionSessionAction, MapViewport,
-    MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore, NavRef, PlanLeg,
-    PlaybackUiState, PointTilePayload, ProcedureDiscontinuity, ProcedureKind, ProcedureLoadCommand,
-    RasterMapCatalog, RasterTilePlan, ResolvedLeg, ResolvedLegSource, RouteComponentViewKind,
-    SequencingMode, SituationControlInput, SituationControlMenuItem, TafProductPayload,
+    GuidanceState, LatLon, MapOverlayConfig, MapOverlayQueryResult, MapSelectionSessionAction,
+    MapViewport, MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore,
+    NavRef, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity, ProcedureKind,
+    ProcedureLoadCommand, RasterMapCatalog, RasterTilePlan, ResolvedLeg, ResolvedLegSource,
+    RouteComponentViewKind, SequencingMode, SituationControlInput, SituationControlMenuItem,
+    TafProductPayload,
     TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
 };
 
@@ -418,7 +419,7 @@ pub fn set_guidance_leg_geometry_in_session(
         .into_iter()
         .map(|geometry| (geometry.leg_id.clone(), geometry))
         .collect();
-    if session.app_state.ownship.resolved.active_source_kind
+    if selected_ownship_source_kind(&session.app_state.ownship)
         == Some(crate::OwnshipSourceKind::FlightPlanSimulator)
         && session.plan_preview.pointer.is_none()
     {
@@ -706,11 +707,11 @@ pub fn activate_next_leg_in_session(handle: u32) -> AppResult<UiSessionSnapshot>
 }
 
 pub fn suspend_sequencing_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
-    mutate_session_flight_plan(handle, crate::suspend_sequencing)
+    mutate_session_guidance(handle, crate::suspend_sequencing)
 }
 
 pub fn unsuspend_sequencing_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
-    mutate_session_flight_plan(handle, crate::unsuspend_sequencing)
+    mutate_session_guidance(handle, crate::unsuspend_sequencing)
 }
 
 pub fn sequence_active_leg_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
@@ -726,6 +727,18 @@ fn mutate_session_flight_plan(
     let plan = session_plan(session)?;
     let next_plan = mutation(&plan)?;
     replace_session_flight_plan(session, next_plan)?;
+    Ok(snapshot_for_session(session))
+}
+
+fn mutate_session_guidance(
+    handle: u32,
+    mutation: impl FnOnce(&FlightPlan) -> AppResult<FlightPlan>,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let plan = session_plan(session)?;
+    let next_plan = mutation(&plan)?;
+    session.app_state = state::reduce(&session.app_state, AppEvent::ReplaceFlightPlan(next_plan))?;
     Ok(snapshot_for_session(session))
 }
 
@@ -2829,17 +2842,32 @@ fn tick_debug_ownship_driver(session: &mut UiSession, now_epoch_ms: f64) -> AppR
 fn active_guidance_detail_geometry(session: &UiSession) -> Option<(String, GuidanceLegGeometry)> {
     let plan = session.app_state.active_plan.as_ref()?;
     let guidance = plan.guidance.as_ref()?;
-    if guidance.sequencing_mode != SequencingMode::FollowPlan {
-        return None;
-    }
-    let active_detail_index = guidance
-        .active_detail_index
-        .or_else(|| first_guidance_detail_index_for_leg(plan, guidance.active_leg_index))?;
+    let active_detail_index = active_guidance_detail_index_for_motion(plan, guidance)?;
     active_guidance_detail_geometry_for_index(
         plan,
         active_detail_index,
         &session.guidance_leg_geometry,
     )
+}
+
+fn active_guidance_detail_index_for_motion(
+    plan: &FlightPlan,
+    guidance: &GuidanceState,
+) -> Option<usize> {
+    match guidance.sequencing_mode {
+        SequencingMode::FollowPlan => guidance
+            .active_detail_index
+            .or_else(|| first_guidance_detail_index_for_leg(plan, guidance.active_leg_index)),
+        SequencingMode::Suspended => {
+            let active_detail_index = guidance.active_detail_index?;
+            terminal_hold_detail_range(plan, guidance.active_leg_index)
+                .filter(|(hold_start, hold_end)| {
+                    active_detail_index >= *hold_start && active_detail_index <= *hold_end
+                })
+                .map(|_| active_detail_index)
+        }
+        SequencingMode::DirectTo => None,
+    }
 }
 
 fn active_guidance_detail_geometry_for_index(
@@ -3228,18 +3256,17 @@ fn sequence_guidance_by_ownship_position(session: &mut UiSession) -> AppResult<(
         let Some(guidance) = plan.guidance.as_ref() else {
             return Ok(());
         };
-        if guidance.sequencing_mode != SequencingMode::FollowPlan {
-            return Ok(());
-        }
-        let Some(active_detail_index) = guidance
-            .active_detail_index
-            .or_else(|| first_guidance_detail_index_for_leg(plan, guidance.active_leg_index))
+        let Some(active_detail_index) = active_guidance_detail_index_for_motion(plan, guidance)
         else {
             return Ok(());
         };
-        let Some(finish_plane) =
-            active_detail_finish_plane(plan, active_detail_index, &session.guidance_leg_geometry)
-        else {
+        let suspended_hold = guidance.sequencing_mode == SequencingMode::Suspended;
+        let Some(finish_plane) = active_detail_finish_plane(
+            plan,
+            active_detail_index,
+            &session.guidance_leg_geometry,
+            suspended_hold,
+        ) else {
             return Ok(());
         };
         if crate::great_circle_distance_nm(position, finish_plane.point) > 10.0
@@ -3247,8 +3274,13 @@ fn sequence_guidance_by_ownship_position(session: &mut UiSession) -> AppResult<(
         {
             return Ok(());
         }
-        let next_plan = crate::sequence_active_detail(plan)?;
-        replace_session_flight_plan(session, next_plan)?;
+        let next_plan = if suspended_hold {
+            sequence_suspended_terminal_hold_detail(plan)?
+        } else {
+            crate::sequence_active_detail(plan)?
+        };
+        session.app_state =
+            state::reduce(&session.app_state, AppEvent::ReplaceFlightPlan(next_plan))?;
     }
     Ok(())
 }
@@ -3257,17 +3289,86 @@ fn active_detail_finish_plane(
     plan: &FlightPlan,
     active_detail_index: usize,
     geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
+    wrap_terminal_hold: bool,
 ) -> Option<SequencingFinishPlane> {
     let current_id = guidance_detail_id_for_index(plan, active_detail_index)?;
     let current = geometry_by_leg_id.get(&current_id)?;
     let current_course = terminal_course_for_guidance_geometry(current)?;
-    let next_course = guidance_detail_id_for_index(plan, active_detail_index + 1)
+    let next_detail_index = if wrap_terminal_hold {
+        next_terminal_hold_detail_index(plan, active_detail_index)
+    } else {
+        active_detail_index.checked_add(1)
+    };
+    let next_course = next_detail_index
+        .and_then(|detail_index| guidance_detail_id_for_index(plan, detail_index))
         .and_then(|next_id| geometry_by_leg_id.get(&next_id))
         .and_then(initial_course_for_guidance_geometry)
         .unwrap_or(current_course);
     Some(SequencingFinishPlane {
         point: current.to,
         normal_course_deg: finish_line_normal_course_deg(current_course, next_course),
+    })
+}
+
+fn sequence_suspended_terminal_hold_detail(plan: &FlightPlan) -> AppResult<FlightPlan> {
+    let guidance = plan.guidance.clone().ok_or_else(|| AppError {
+        kind: AppErrorKind::UnsupportedOperation,
+        message: "cannot sequence suspended hold without guidance state".to_string(),
+    })?;
+    let active_detail_index = guidance.active_detail_index.ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: "suspended hold requires an active guidance detail".to_string(),
+    })?;
+    let (hold_start, hold_end) = terminal_hold_detail_range(plan, guidance.active_leg_index)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "suspended guidance detail is not in a terminal hold".to_string(),
+        })?;
+    if active_detail_index < hold_start || active_detail_index > hold_end {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "suspended guidance detail is outside the terminal hold".to_string(),
+        });
+    }
+    let next_detail_index = if active_detail_index >= hold_end {
+        hold_start
+    } else {
+        active_detail_index + 1
+    };
+
+    Ok(FlightPlan {
+        guidance: Some(GuidanceState {
+            active_leg_index: guidance.active_leg_index,
+            active_detail_index: Some(next_detail_index),
+            display_split_leg_id: guidance.display_split_leg_id.clone(),
+            sequencing_mode: SequencingMode::Suspended,
+            direct_to: None,
+            suspend_reason: guidance.suspend_reason,
+        }),
+        ..plan.clone()
+    })
+}
+
+fn terminal_hold_detail_range(plan: &FlightPlan, leg_index: usize) -> Option<(usize, usize)> {
+    let hold_start = crate::terminal_hold_start_detail_index_for_leg(plan, leg_index)?;
+    let leg = plan.resolved_legs.get(leg_index)?;
+    let first_detail = first_guidance_detail_index_for_leg(plan, leg_index)?;
+    let detail_count = crate::guidance_detail_count_for_leg(leg);
+    detail_count
+        .checked_sub(1)
+        .map(|last_offset| (hold_start, first_detail + last_offset))
+}
+
+fn next_terminal_hold_detail_index(plan: &FlightPlan, active_detail_index: usize) -> Option<usize> {
+    let active_detail = crate::planning::guidance_detail_ref_by_index(plan, active_detail_index)?;
+    let (hold_start, hold_end) = terminal_hold_detail_range(plan, active_detail.leg_index)?;
+    if active_detail_index < hold_start || active_detail_index > hold_end {
+        return active_detail_index.checked_add(1);
+    }
+    Some(if active_detail_index >= hold_end {
+        hold_start
+    } else {
+        active_detail_index + 1
     })
 }
 
@@ -4265,6 +4366,51 @@ mod tests {
     }
 
     #[test]
+    fn plan_preview_recovers_after_newer_bad_autopilot_samples() {
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            lat_lon_preview_plan(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+        select_plan_preview(init.handle);
+        select_ownship_source_in_session(
+            init.handle,
+            crate::OwnshipSelectionCommand::Source {
+                source_id: crate::OwnshipSourceId(DEBUG_OWNSHIP_DRIVER_SOURCE_ID.to_string()),
+            },
+        )
+        .expect("select bad autopilot");
+        tick_debug_ownship_driver_in_session(init.handle, 10_000.0).expect("tick bad autopilot");
+
+        let snapshot = select_ownship_source_in_session(
+            init.handle,
+            crate::OwnshipSelectionCommand::Source {
+                source_id: crate::OwnshipSourceId(DIRECT_SITUATION_SOURCE_ID.to_string()),
+            },
+        )
+        .expect("select plan preview after bad autopilot");
+        assert_eq!(
+            snapshot.app_ui_state.ownship.render.mode,
+            crate::OwnshipMode::Simulated
+        );
+        let position = ownship_position(&snapshot);
+        assert_near(position.lat, 40.0);
+        assert_near(position.lon, -119.0);
+
+        let after_skip = apply_situation_control_input_in_session(
+            init.handle,
+            SituationControlInput::SkipForward,
+            11_000.0,
+        )
+        .expect("skip plan preview after bad autopilot");
+        assert_near(ownship_position(&after_skip).lat, 41.0);
+        assert_near(ownship_position(&after_skip).lon, -119.0);
+    }
+
+    #[test]
     fn plan_preview_skip_forward_from_waypoint_moves_to_next_waypoint() {
         let mut plan = lat_lon_preview_plan();
         plan.guidance.as_mut().expect("guidance").active_leg_index = 0;
@@ -4731,6 +4877,204 @@ mod tests {
                 > b.lat,
             "driver must continue along the next leg even when it only has coarse geometry"
         );
+    }
+
+    #[test]
+    fn debug_ownship_driver_flies_terminal_hold_until_unsuspended() {
+        let a = LatLon {
+            lat: 40.0,
+            lon: -120.0,
+        };
+        let b = LatLon {
+            lat: 40.0,
+            lon: -119.98,
+        };
+        let c = LatLon {
+            lat: 40.01,
+            lon: -119.98,
+        };
+        let d = LatLon {
+            lat: 40.01,
+            lon: -120.0,
+        };
+        let e = LatLon {
+            lat: 39.99,
+            lon: -120.0,
+        };
+        let f = LatLon {
+            lat: 40.0,
+            lon: -119.80,
+        };
+        let hold_leg = ResolvedLeg {
+            id: "proc-terminal-hold".to_string(),
+            from: NavRef::LatLon(a),
+            to: NavRef::LatLon(b),
+            source: ResolvedLegSource::RouteComponent { component_index: 0 },
+            procedure_provenance: Some(ProcedureLegProvenance {
+                airport_id: "KAAA".to_string(),
+                procedure_id: "TEST".to_string(),
+                kind: ProcedureKind::Approach,
+                role: ProcedureSegmentRole::Common,
+                path_termination: PathTermination::TrackToFix,
+                leg_sequence: 10,
+                display_path: Some(LegDisplayPath {
+                    style: LegDisplayPathStyle::Solid,
+                    elements: vec![
+                        LegDisplayElement::Segment { start: a, end: b },
+                        LegDisplayElement::Segment { start: b, end: c },
+                        LegDisplayElement::Segment { start: c, end: d },
+                        LegDisplayElement::Segment { start: d, end: e },
+                        LegDisplayElement::Segment { start: e, end: b },
+                    ],
+                    effective_terminal_course_deg: None,
+                    debug_element_sources: Vec::new(),
+                    debug_element_roles: Vec::new(),
+                }),
+            }),
+        };
+        let exit_leg = ResolvedLeg {
+            id: "after-hold".to_string(),
+            from: NavRef::LatLon(b),
+            to: NavRef::LatLon(f),
+            source: ResolvedLegSource::RouteComponent { component_index: 1 },
+            procedure_provenance: None,
+        };
+        let plan = FlightPlan {
+            id: "bad-ap-terminal-hold".to_string(),
+            name: "bad ap terminal hold".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Procedure {
+                    procedure: crate::ProcedureSegment {
+                        airport_id: AirportId("KAAA".to_string()),
+                        procedure_id: "TEST".to_string(),
+                        kind: ProcedureKind::Approach,
+                        runway_transition: None,
+                        enroute_transition: None,
+                        terminal_discontinuity: Some(ProcedureDiscontinuity::Hold),
+                    },
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::LatLon(f),
+                },
+            ],
+            route_component_uids: vec!["row-proc".to_string(), "row-exit".to_string()],
+            route_component_uid_counter: 2,
+            resolved_legs: vec![hold_leg.clone(), exit_leg.clone()],
+            guidance: Some(GuidanceState {
+                active_leg_index: 0,
+                active_detail_index: Some(0),
+                display_split_leg_id: Some(hold_leg.id.clone()),
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+        let init = create_ui_session(minimal_vector_manifest_json(), plan, &[], None, None)
+            .expect("create session");
+        set_guidance_leg_geometry_in_session(
+            init.handle,
+            vec![
+                GuidanceLegGeometry {
+                    leg_id: guidance_detail_id_for_leg_element(&hold_leg, 0),
+                    from: a,
+                    to: b,
+                    path: vec![a, b],
+                },
+                GuidanceLegGeometry {
+                    leg_id: guidance_detail_id_for_leg_element(&hold_leg, 1),
+                    from: b,
+                    to: c,
+                    path: vec![b, c],
+                },
+                GuidanceLegGeometry {
+                    leg_id: guidance_detail_id_for_leg_element(&hold_leg, 2),
+                    from: c,
+                    to: d,
+                    path: vec![c, d],
+                },
+                GuidanceLegGeometry {
+                    leg_id: guidance_detail_id_for_leg_element(&hold_leg, 3),
+                    from: d,
+                    to: e,
+                    path: vec![d, e],
+                },
+                GuidanceLegGeometry {
+                    leg_id: guidance_detail_id_for_leg_element(&hold_leg, 4),
+                    from: e,
+                    to: b,
+                    path: vec![e, b],
+                },
+                GuidanceLegGeometry {
+                    leg_id: guidance_detail_id_for_leg_element(&exit_leg, 0),
+                    from: b,
+                    to: f,
+                    path: vec![b, f],
+                },
+            ],
+        )
+        .expect("install guidance geometry");
+        select_ownship_source_in_session(
+            init.handle,
+            crate::OwnshipSelectionCommand::Source {
+                source_id: crate::OwnshipSourceId(DEBUG_OWNSHIP_DRIVER_SOURCE_ID.to_string()),
+            },
+        )
+        .expect("select bad autopilot");
+
+        let mut snapshot =
+            tick_debug_ownship_driver_in_session(init.handle, 1_000.0).expect("tick driver");
+        for second in 2..=4 {
+            let now_epoch_ms = f64::from(second) * 1000.0;
+            snapshot = tick_debug_ownship_driver_in_session(init.handle, now_epoch_ms)
+                .expect("tick driver");
+        }
+        let guidance = snapshot
+            .app_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .expect("guidance");
+        assert_eq!(guidance.active_leg_index, 0);
+        assert_eq!(guidance.active_detail_index, Some(1));
+        assert_eq!(guidance.sequencing_mode, SequencingMode::Suspended);
+
+        for second in 5..=8 {
+            let now_epoch_ms = f64::from(second) * 1000.0;
+            snapshot = tick_debug_ownship_driver_in_session(init.handle, now_epoch_ms)
+                .expect("tick suspended hold");
+        }
+        let guidance = snapshot
+            .app_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .expect("guidance");
+        assert_eq!(guidance.active_leg_index, 0);
+        assert!(guidance.active_detail_index.unwrap_or(0) >= 2);
+        assert_eq!(guidance.sequencing_mode, SequencingMode::Suspended);
+
+        unsuspend_sequencing_in_session(init.handle).expect("unsuspend hold");
+        for second in 9..=30 {
+            let now_epoch_ms = f64::from(second) * 1000.0;
+            snapshot = tick_debug_ownship_driver_in_session(init.handle, now_epoch_ms)
+                .expect("tick unsuspended hold");
+        }
+        let guidance = snapshot
+            .app_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .expect("guidance");
+        assert_eq!(guidance.active_leg_index, 1);
+        assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
     }
 
     #[test]

@@ -2135,7 +2135,7 @@ fn project_display_rows(
                                 false,
                                 None,
                                 plan.route_components.len(),
-                                airport_id_from_nav_ref(nav_ref).as_ref(),
+                                None,
                                 None,
                             ),
                         );
@@ -2589,8 +2589,6 @@ fn waypoint_actions_for_row(
         vec![
             core_session_action(FlightPlanRowActionId::ActivateLeg, leg_index.is_some()),
             core_session_action(FlightPlanRowActionId::DirectTo, nav_ref.is_some()),
-            action(FlightPlanRowActionId::WaypointInfo, false),
-            action(FlightPlanRowActionId::Plates, chart_airport_id.is_some()),
         ]
     }
 }

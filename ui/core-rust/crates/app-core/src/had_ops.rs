@@ -2797,6 +2797,13 @@ mod tests {
                         }),
                         "procedure waypoint row {label} should expose enabled Activate Leg"
                     );
+                    assert!(
+                        row.actions.iter().all(|action| {
+                            action.id != crate::FlightPlanRowActionId::WaypointInfo
+                                && action.id != crate::FlightPlanRowActionId::Plates
+                        }),
+                        "procedure waypoint row {label} should not expose generic waypoint info or plates actions"
+                    );
                 }
                 let hold_row = ui_state
                     .display_rows

@@ -142,6 +142,17 @@ data class AirspaceDisplayLabel(
     val screenY: Double,
 )
 
+data class OfflineRegionDisplay(
+    val id: String,
+    val kind: String,
+    val regionId: String,
+    val label: String,
+    val colorKey: String,
+    val points: List<AirspaceScreenPoint>,
+    val labelX: Double,
+    val labelY: Double,
+)
+
 data class AirspaceLimitGlyph(
     val upper: String,
     val lower: String,
@@ -173,6 +184,7 @@ enum class MapLayerId {
     Metars,
     Nexrad,
     TerrainWarning,
+    OfflineRegions,
 }
 
 data class UiMapLayerToggleState(
@@ -185,6 +197,7 @@ data class UiMapLayerState(
     val metars: UiMapLayerToggleState,
     val nexrad: UiMapLayerToggleState,
     val terrainWarning: UiMapLayerToggleState,
+    val offlineRegions: UiMapLayerToggleState,
 )
 
 data class DerivedMapSelectorState(
@@ -216,6 +229,7 @@ data class MapOverlayQueryResult(
     val airspacePaths: List<AirspaceDisplayPath>,
     val tfrPaths: List<AirspaceDisplayPath>,
     val airspaceLabels: List<AirspaceDisplayLabel>,
+    val offlineRegions: List<OfflineRegionDisplay>,
     val warnings: List<MapOverlayWarning>,
 )
 
@@ -1724,6 +1738,7 @@ private data class WireUiMapLayerState(
     val metars: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
     val nexrad: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
     val terrain_warning: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
+    val offline_regions: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
 )
 
 @kotlinx.serialization.Serializable
@@ -1936,6 +1951,7 @@ private fun WireUiMapLayerState.toUi() = UiMapLayerState(
     metars = metars.toUi(),
     nexrad = nexrad.toUi(),
     terrainWarning = terrain_warning.toUi(),
+    offlineRegions = offline_regions.toUi(),
 )
 
 private fun WireUiDebugState.toUi() = UiDebugState(
@@ -2044,6 +2060,7 @@ private fun WireMapOverlayQueryResult.toUi() = MapOverlayQueryResult(
     airspacePaths = airspace_paths.map { it.toUi() },
     tfrPaths = tfr_paths.map { it.toUi() },
     airspaceLabels = airspace_labels.map { it.toUi() },
+    offlineRegions = offline_regions.map { it.toUi() },
     warnings = warnings.map { it.toUi() },
 )
 
@@ -2168,6 +2185,17 @@ private fun WireAirspaceDisplayLabel.toUi() = AirspaceDisplayLabel(
     glyph = glyph.toUi(),
     screenX = screen_x,
     screenY = screen_y,
+)
+
+private fun WireOfflineRegionDisplay.toUi() = OfflineRegionDisplay(
+    id = id,
+    kind = kind,
+    regionId = region_id,
+    label = label,
+    colorKey = color_key,
+    points = points.map { it.toUi() },
+    labelX = label_x,
+    labelY = label_y,
 )
 
 private fun WireAirspaceLimitGlyph.toUi() = AirspaceLimitGlyph(
@@ -2784,6 +2812,7 @@ private fun MapLayerId.toWire() = when (this) {
     MapLayerId.Metars -> "metars"
     MapLayerId.Nexrad -> "nexrad"
     MapLayerId.TerrainWarning -> "terrain_warning"
+    MapLayerId.OfflineRegions -> "offline_regions"
 }
 
 private fun WireFlightPlanRouteSegment.toUi() = FlightPlanRouteSegment(

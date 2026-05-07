@@ -280,7 +280,7 @@ fn record_anchor_name(record: &ProcedureLegMaterializationRecord) -> Option<&str
         }
         crate::NavRef::ArincNavaid { identifier, .. }
         | crate::NavRef::TerminalNavaid { identifier, .. } => Some(identifier.as_str()),
-        crate::NavRef::LatLon(_) => None,
+        crate::NavRef::LatLon(_) | crate::NavRef::Spot(_) => None,
     }
 }
 

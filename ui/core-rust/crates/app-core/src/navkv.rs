@@ -40,6 +40,7 @@ pub struct NavKvStore {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NavKvQuery {
     ChartCatalog,
+    OfflineRegionCatalog,
     PackageById {
         package_id: String,
     },
@@ -290,6 +291,7 @@ impl NavKvStore {
 pub fn nav_kv_key_for_query(query: &NavKvQuery) -> Option<String> {
     match query {
         NavKvQuery::ChartCatalog => Some("chart/catalog".to_string()),
+        NavKvQuery::OfflineRegionCatalog => Some("offline-region/catalog".to_string()),
         NavKvQuery::PackageById { package_id } => {
             Some(format!("package/by-id/{}", upper_component(package_id)))
         }

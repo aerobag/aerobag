@@ -1232,6 +1232,7 @@ private fun mapLayerIconResId(layerId: MapLayerId): Int = when (layerId) {
     MapLayerId.Metars -> R.drawable.layer_nexrad_icon
     MapLayerId.Nexrad -> R.drawable.layer_nexrad_icon
     MapLayerId.TerrainWarning -> R.drawable.layer_terrain_warning_icon
+    MapLayerId.OfflineRegions -> R.drawable.layer_vectors_icon
 }
 
 private fun moveAirportToFront(
@@ -4522,6 +4523,7 @@ private fun MapExplorerPage(
                 airspacePaths = emptyList(),
                 tfrPaths = emptyList(),
                 airspaceLabels = emptyList(),
+                offlineRegions = emptyList(),
                 warnings = emptyList(),
             ),
         )
@@ -4700,6 +4702,19 @@ private fun MapExplorerPage(
                 val startMs = SystemClock.elapsedRealtime()
                 val snapshot = uiSession.setMapLayerVisibility(MapLayerId.TerrainWarning, visible)
                 Log.i(MapLayerLogTag, "toggle layer=terrain_warning visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                onSessionSnapshotChange(snapshot)
+            },
+            MenuDockOption(
+                key = "offline_regions",
+                label = "Offline Regions",
+                enabled = mapLayerState.offlineRegions.enabled,
+                toggleState = mapLayerState.offlineRegions,
+                iconResId = mapLayerIconResId(MapLayerId.OfflineRegions),
+            ) {
+                val visible = !mapLayerState.offlineRegions.visible
+                val startMs = SystemClock.elapsedRealtime()
+                val snapshot = uiSession.setMapLayerVisibility(MapLayerId.OfflineRegions, visible)
+                Log.i(MapLayerLogTag, "toggle layer=offline_regions visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
                 onSessionSnapshotChange(snapshot)
             },
         )
@@ -5149,14 +5164,14 @@ private fun MapExplorerPage(
             onViewportChange(nextViewport)
         }
     }
-    LaunchedEffect(uiSession, viewport, surfaceSize, mapLayerState.vectors.visible, mapLayerState.metars.visible, devServerBaseUrl) {
+    LaunchedEffect(uiSession, viewport, surfaceSize, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.offlineRegions.visible, devServerBaseUrl) {
         if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
             mapOverlayError = null
             return@LaunchedEffect
         }
         val overlayWidthPx = surfaceSize.width.toFloat()
         val overlayHeightPx = surfaceSize.height.toFloat()
-        if (!mapLayerState.vectors.visible && !mapLayerState.metars.visible) {
+        if (!mapLayerState.vectors.visible && !mapLayerState.metars.visible && !mapLayerState.offlineRegions.visible) {
             committedMapOverlay = MapOverlayQueryResult(
                 neededPointTiles = emptyList(),
                 neededMetarTiles = emptyList(),
@@ -5171,6 +5186,7 @@ private fun MapExplorerPage(
                 airspacePaths = emptyList(),
                 tfrPaths = emptyList(),
                 airspaceLabels = emptyList(),
+                offlineRegions = emptyList(),
                 warnings = emptyList(),
             )
             committedOverlayViewport = viewport
@@ -5236,7 +5252,7 @@ private fun MapExplorerPage(
             val (centerLat, centerLon) = viewportCenterLatLon(viewport)
             Log.i(
                 MapLayerLogTag,
-                "overlay center=${"%.3f".format(centerLat)},${"%.3f".format(centerLon)} zoom=${"%.2f".format(viewport.zoom)} size=${surfaceSize.width}x${surfaceSize.height} vectorsVisible=${mapLayerState.vectors.visible} metarsVisible=${mapLayerState.metars.visible} neededMetars=${overlay.neededMetars} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} airspaceLabels=${overlay.airspaceLabels.size} metars=${overlay.visibleMetars.size} pireps=${overlay.visiblePireps.size} neededPoints=${overlay.neededPointTiles.size} neededAirspaceRefs=${overlay.neededAirspaceRefTiles.size} neededAirspaceFeatures=${overlay.neededAirspaceFeatures.size} neededAirspaceLabels=${overlay.neededAirspaceLabelTiles.size} warnings=${overlay.warnings.size} elapsedMs=${SystemClock.elapsedRealtime() - overlayStartMs}",
+                "overlay center=${"%.3f".format(centerLat)},${"%.3f".format(centerLon)} zoom=${"%.2f".format(viewport.zoom)} size=${surfaceSize.width}x${surfaceSize.height} vectorsVisible=${mapLayerState.vectors.visible} metarsVisible=${mapLayerState.metars.visible} offlineRegionsVisible=${mapLayerState.offlineRegions.visible} neededMetars=${overlay.neededMetars} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} airspaceLabels=${overlay.airspaceLabels.size} offlineRegions=${overlay.offlineRegions.size} metars=${overlay.visibleMetars.size} pireps=${overlay.visiblePireps.size} neededPoints=${overlay.neededPointTiles.size} neededAirspaceRefs=${overlay.neededAirspaceRefTiles.size} neededAirspaceFeatures=${overlay.neededAirspaceFeatures.size} neededAirspaceLabels=${overlay.neededAirspaceLabelTiles.size} warnings=${overlay.warnings.size} elapsedMs=${SystemClock.elapsedRealtime() - overlayStartMs}",
             )
             overlay
         } catch (error: CancellationException) {
@@ -5765,29 +5781,6 @@ private fun MapExplorerPage(
                 )
             }
         }
-        if (routeScreenSegments.isNotEmpty()) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val densityScale = density.density
-                routeScreenSegments.forEach { (path, segment) ->
-                    path.zipWithNext().forEach { (from, to) ->
-                        drawLine(
-                            color = Color(0x8C000000),
-                            start = from,
-                            end = to,
-                            strokeWidth = 7f * densityScale,
-                            cap = StrokeCap.Round,
-                        )
-                        drawLine(
-                            color = routeSegmentColor(segment.status),
-                            start = from,
-                            end = to,
-                            strokeWidth = 3.5f * densityScale,
-                            cap = StrokeCap.Round,
-                        )
-                    }
-                }
-            }
-        }
         if (displayedMapOverlay.airspacePaths.isNotEmpty() || displayedMapOverlay.tfrPaths.isNotEmpty() || displayedMapOverlay.airspaceLabels.isNotEmpty()) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 (displayedMapOverlay.airspacePaths + displayedMapOverlay.tfrPaths).forEach { feature ->
@@ -5962,6 +5955,74 @@ private fun MapExplorerPage(
             Canvas(modifier = Modifier.fillMaxSize()) {
                 displayedMapOverlay.visiblePireps.forEach { feature ->
                     drawPirepSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), density.density, uiTheme, symbolScale = 0.32f)
+                }
+            }
+        }
+        if (displayedMapOverlay.offlineRegions.isNotEmpty()) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val densityScale = density.density
+                val labelStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = android.graphics.Color.argb(190, 0, 0, 0)
+                    textAlign = Paint.Align.CENTER
+                    textSize = 13f * densityScale
+                    typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                    style = Paint.Style.STROKE
+                    strokeWidth = 4f * densityScale
+                }
+                val labelFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    textAlign = Paint.Align.CENTER
+                    textSize = 13f * densityScale
+                    typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                    style = Paint.Style.FILL
+                }
+                displayedMapOverlay.offlineRegions.forEach { region ->
+                    val path = Path().apply {
+                        val first = region.points.firstOrNull() ?: return@forEach
+                        moveTo(first.x.toFloat(), first.y.toFloat())
+                        region.points.drop(1).forEach { point -> lineTo(point.x.toFloat(), point.y.toFloat()) }
+                        close()
+                    }
+                    val color = aviationColor(uiTheme, region.colorKey)
+                    drawPath(
+                        path,
+                        Color.White.copy(alpha = 0.8f),
+                        style = Stroke(width = 5f * densityScale, join = StrokeJoin.Round),
+                    )
+                    drawPath(
+                        path,
+                        color,
+                        style = Stroke(width = 2.5f * densityScale, join = StrokeJoin.Round),
+                    )
+                    labelFill.color = color.toArgb()
+                    drawContext.canvas.nativeCanvas.apply {
+                        val x = region.labelX.toFloat()
+                        val y = region.labelY.toFloat() + labelFill.textSize * 0.33f
+                        drawText(region.label, x, y, labelStroke)
+                        drawText(region.label, x, y, labelFill)
+                    }
+                }
+            }
+        }
+        if (routeScreenSegments.isNotEmpty()) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val densityScale = density.density
+                routeScreenSegments.forEach { (path, segment) ->
+                    path.zipWithNext().forEach { (from, to) ->
+                        drawLine(
+                            color = Color(0x8C000000),
+                            start = from,
+                            end = to,
+                            strokeWidth = 7f * densityScale,
+                            cap = StrokeCap.Round,
+                        )
+                        drawLine(
+                            color = routeSegmentColor(segment.status),
+                            start = from,
+                            end = to,
+                            strokeWidth = 3.5f * densityScale,
+                            cap = StrokeCap.Round,
+                        )
+                    }
                 }
             }
         }

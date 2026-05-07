@@ -3040,6 +3040,7 @@ fn describe_nav_ref(nav_ref: &NavRef) -> String {
         NavRef::TerminalNavaid { identifier, .. } => identifier.clone(),
         NavRef::Fix(code) => code.clone(),
         NavRef::LatLon(position) => format!("latlon:{:.4},{:.4}", position.lat, position.lon),
+        NavRef::Spot(position) => format!("spot:{:.4},{:.4}", position.lat, position.lon),
     }
 }
 
@@ -5053,7 +5054,9 @@ fn nav_ref_to_geometry(nav_ref: NavRef) -> pgt::ProcedureNavRef {
             section_code,
             subsection_code,
         },
-        NavRef::LatLon(value) => pgt::ProcedureNavRef::LatLon(lat_lon_to_geometry(value)),
+        NavRef::LatLon(value) | NavRef::Spot(value) => {
+            pgt::ProcedureNavRef::LatLon(lat_lon_to_geometry(value))
+        }
     }
 }
 

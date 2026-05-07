@@ -51,6 +51,7 @@ pub struct UiMapLayerState {
     pub metars: UiMapLayerToggleState,
     pub nexrad: UiMapLayerToggleState,
     pub terrain_warning: UiMapLayerToggleState,
+    pub offline_regions: UiMapLayerToggleState,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -138,6 +139,7 @@ enum MapLayerId {
     Metars,
     Nexrad,
     TerrainWarning,
+    OfflineRegions,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1581,6 +1583,7 @@ fn ensure_vector_inputs_loaded(
             &session.map_overlay_config,
             true,
             false,
+            &[],
             ownship_overlay_context(session).as_ref(),
             &session.point_tile_cache,
             &session.metar_tile_cache,
@@ -1768,7 +1771,10 @@ pub fn get_map_overlay_in_session(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
-    if !session.map_layer_state.vectors.visible && !session.map_layer_state.metars.visible {
+    if !session.map_layer_state.vectors.visible
+        && !session.map_layer_state.metars.visible
+        && !session.map_layer_state.offline_regions.visible
+    {
         session.caution_state.obstacle_display_limited = false;
         return Ok(HadOperationOutcome::Complete {
             result: serde_json::to_value(empty_map_overlay_query()).map_err(internal_json_error)?,
@@ -1779,6 +1785,22 @@ pub fn get_map_overlay_in_session(
             return had_read_error_to_overlay_outcome(err);
         }
     }
+    let offline_region_records = if session.map_layer_state.offline_regions.visible {
+        let store = session.nav_kv_store.as_ref().ok_or_else(|| AppError {
+            kind: AppErrorKind::Internal,
+            message: "session missing nav kv store for offline regions overlay".to_string(),
+        })?;
+        match read_attached_json_optional::<crate::OfflineRegionCatalog>(
+            store,
+            NavKvQuery::OfflineRegionCatalog,
+        ) {
+            Ok(Some(catalog)) => catalog.regions,
+            Ok(None) => Vec::new(),
+            Err(err) => return had_read_error_to_overlay_outcome(err),
+        }
+    } else {
+        Vec::new()
+    };
     let overlay = query_map_overlay(
         &viewport,
         width_px,
@@ -1786,6 +1808,7 @@ pub fn get_map_overlay_in_session(
         &session.map_overlay_config,
         session.map_layer_state.vectors.visible,
         session.map_layer_state.metars.visible,
+        &offline_region_records,
         ownship_overlay_context(session).as_ref(),
         &session.point_tile_cache,
         &session.metar_tile_cache,
@@ -2150,6 +2173,10 @@ fn default_map_layer_state() -> UiMapLayerState {
             visible: true,
             enabled: true,
         },
+        offline_regions: UiMapLayerToggleState {
+            visible: false,
+            enabled: true,
+        },
     }
 }
 
@@ -2174,6 +2201,7 @@ fn parse_map_layer_id(layer_id: &str) -> AppResult<MapLayerId> {
         "metars" => Ok(MapLayerId::Metars),
         "nexrad" => Ok(MapLayerId::Nexrad),
         "terrain_warning" => Ok(MapLayerId::TerrainWarning),
+        "offline_regions" => Ok(MapLayerId::OfflineRegions),
         _ => Err(AppError {
             kind: AppErrorKind::Internal,
             message: format!("unknown map layer id: {layer_id}"),
@@ -2190,6 +2218,7 @@ fn map_layer_toggle_mut(
         MapLayerId::Metars => &mut map_layer_state.metars,
         MapLayerId::Nexrad => &mut map_layer_state.nexrad,
         MapLayerId::TerrainWarning => &mut map_layer_state.terrain_warning,
+        MapLayerId::OfflineRegions => &mut map_layer_state.offline_regions,
     }
 }
 
@@ -2208,6 +2237,7 @@ fn empty_map_overlay_query() -> MapOverlayQueryResult {
         airspace_paths: Vec::new(),
         tfr_paths: Vec::new(),
         airspace_labels: Vec::new(),
+        offline_regions: Vec::new(),
         warnings: Vec::new(),
     }
 }

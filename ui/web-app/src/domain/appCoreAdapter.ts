@@ -100,7 +100,7 @@ export type UiCautionState = {
   obstacle_display_limited: boolean;
 };
 
-export type MapLayerId = "vectors" | "metars" | "nexrad" | "terrain_warning";
+export type MapLayerId = "vectors" | "metars" | "nexrad" | "terrain_warning" | "offline_regions";
 
 export type UiMapLayerToggleState = {
   visible: boolean;
@@ -112,6 +112,7 @@ export type UiMapLayerState = {
   metars: UiMapLayerToggleState;
   nexrad: UiMapLayerToggleState;
   terrain_warning: UiMapLayerToggleState;
+  offline_regions: UiMapLayerToggleState;
 };
 
 export type UiChartPageState = {
@@ -361,6 +362,19 @@ export type MapOverlayQueryResult = {
   airspace_paths: AirspaceDisplayPath[];
   tfr_paths: AirspaceDisplayPath[];
   airspace_labels: AirspaceDisplayLabel[];
+  offline_regions: Array<{
+    id: string;
+    kind: string;
+    region_id: string;
+    label: string;
+    color_key: string;
+    points: Array<{
+      x: number;
+      y: number;
+    }>;
+    label_x: number;
+    label_y: number;
+  }>;
   warnings: Array<{
     code: string;
     message: string;

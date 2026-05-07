@@ -110,7 +110,7 @@ button {
 .situationOverlay {
   position: absolute;
   inset: 0;
-  z-index: 5;
+  z-index: 7;
   pointer-events: none;
 }
 
@@ -130,6 +130,24 @@ button {
   overflow: visible;
 }
 
+.offlineRegionsOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  overflow: visible;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.flightPlanOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  pointer-events: none;
+  overflow: visible;
+}
+
 .airspaceOverlay {
   position: absolute;
   inset: 0;
@@ -141,7 +159,7 @@ button {
 .mapSelectionHighlightOverlay {
   position: absolute;
   inset: 0;
-  z-index: 6;
+  z-index: 8;
   pointer-events: none;
   overflow: visible;
 }

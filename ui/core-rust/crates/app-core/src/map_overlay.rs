@@ -361,6 +361,35 @@ pub struct AirspaceScreenPoint {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OfflineRegionCatalog {
+    pub schema_version: u32,
+    pub regions: Vec<OfflineRegionRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OfflineRegionRecord {
+    pub id: String,
+    pub kind: String,
+    pub region_id: String,
+    pub label: String,
+    pub color_key: String,
+    pub polygon: Vec<LatLon>,
+    pub label_position: LatLon,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OfflineRegionDisplay {
+    pub id: String,
+    pub kind: String,
+    pub region_id: String,
+    pub label: String,
+    pub color_key: String,
+    pub points: Vec<AirspaceScreenPoint>,
+    pub label_x: f64,
+    pub label_y: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AirspaceDisplaySubpath {
     pub closed: bool,
     #[serde(skip)]
@@ -442,6 +471,7 @@ pub struct MapOverlayQueryResult {
     pub airspace_paths: Vec<AirspaceDisplayPath>,
     pub tfr_paths: Vec<AirspaceDisplayPath>,
     pub airspace_labels: Vec<AirspaceDisplayLabel>,
+    pub offline_regions: Vec<OfflineRegionDisplay>,
     pub warnings: Vec<MapOverlayWarning>,
 }
 
@@ -922,6 +952,7 @@ pub fn query_map_overlay(
     config: &MapOverlayConfig,
     display_vectors: bool,
     display_metars: bool,
+    offline_region_records: &[OfflineRegionRecord],
     obstacle_context: Option<&ObstacleOverlayContext>,
     point_tile_cache: &HashMap<String, PointTilePayload>,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
@@ -936,6 +967,13 @@ pub fn query_map_overlay(
     let mut limit_hit = false;
     let center_world = lat_lon_to_world(viewport.center);
     let scale = 2.0_f64.powf(viewport.zoom);
+    let offline_regions = project_offline_regions(
+        offline_region_records,
+        center_world,
+        scale,
+        width_px,
+        height_px,
+    );
 
     if display_vectors {
         let tile_window =
@@ -1088,8 +1126,52 @@ pub fn query_map_overlay(
         airspace_paths: airspace.paths,
         tfr_paths: tfrs.paths,
         airspace_labels,
+        offline_regions,
         warnings,
     }
+}
+
+fn project_offline_regions(
+    regions: &[OfflineRegionRecord],
+    center_world: WorldPoint,
+    scale: f64,
+    width_px: f64,
+    height_px: f64,
+) -> Vec<OfflineRegionDisplay> {
+    regions
+        .iter()
+        .filter(|region| region.polygon.len() >= 2)
+        .map(|region| {
+            let points = region
+                .polygon
+                .iter()
+                .map(|point| {
+                    let screen = world_to_screen(center_world, scale, width_px, height_px, *point);
+                    AirspaceScreenPoint {
+                        x: screen.x,
+                        y: screen.y,
+                    }
+                })
+                .collect();
+            let label = world_to_screen(
+                center_world,
+                scale,
+                width_px,
+                height_px,
+                region.label_position,
+            );
+            OfflineRegionDisplay {
+                id: region.id.clone(),
+                kind: region.kind.clone(),
+                region_id: region.region_id.clone(),
+                label: region.label.clone(),
+                color_key: region.color_key.clone(),
+                points,
+                label_x: label.x,
+                label_y: label.y,
+            }
+        })
+        .collect()
 }
 
 struct MetarOverlayProjection {
@@ -3514,6 +3596,7 @@ mod tests {
             &test_map_overlay_config(),
             true,
             false,
+            &[],
             None,
             point_tile_cache,
             &HashMap::new(),
@@ -3661,6 +3744,7 @@ mod tests {
             &config,
             false,
             true,
+            &[],
             None,
             &HashMap::new(),
             &HashMap::new(),
@@ -3682,6 +3766,7 @@ mod tests {
             &config,
             false,
             true,
+            &[],
             None,
             &HashMap::new(),
             &HashMap::new(),
@@ -3864,6 +3949,7 @@ mod tests {
             &test_map_overlay_config(),
             false,
             true,
+            &[],
             None,
             &HashMap::new(),
             &metar_tile_cache,

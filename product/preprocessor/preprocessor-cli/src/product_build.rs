@@ -430,6 +430,29 @@ struct ChartCoveragePolygonSetRecord {
     polygons: Vec<ChartCoveragePolygonRecord>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct OfflineRegionCatalogRecord {
+    schema_version: u32,
+    regions: Vec<OfflineRegionRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct OfflineRegionRecord {
+    id: String,
+    kind: String,
+    region_id: String,
+    label: String,
+    color_key: String,
+    polygon: Vec<OfflineRegionLatLon>,
+    label_position: OfflineRegionLatLon,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+struct OfflineRegionLatLon {
+    lat: f64,
+    lon: f64,
+}
+
 #[derive(Debug, Clone)]
 struct RawChartCutlinePolygon {
     points: Vec<[f64; 2]>,
@@ -4239,6 +4262,7 @@ fn build_nav_kv_artifact(
                 pairs.extend(build_nav_kv_chart_coverage_pairs(
                     &chart_coverage_polygon_sets,
                 )?);
+                pairs.extend(build_nav_kv_offline_region_pairs(&resource_index)?);
                 pairs.extend(build_nav_kv_resource_summary_pairs(&resource_index)?);
                 pairs.extend(build_nav_kv_plate_pairs(&resource_index)?);
                 pairs.extend(build_nav_kv_package_pairs(&package_artifacts)?);
@@ -4483,6 +4507,222 @@ fn build_nav_kv_chart_coverage_pairs(
             })
         })
         .collect()
+}
+
+fn build_nav_kv_offline_region_pairs(
+    resource_index: &ResourceIndex,
+) -> anyhow::Result<Vec<NavKvPair>> {
+    let catalog = build_offline_region_catalog(resource_index);
+    Ok(vec![NavKvPair {
+        key: "offline-region/catalog".to_string(),
+        value: serde_json::to_vec(&catalog).context("failed to encode offline region catalog")?,
+    }])
+}
+
+fn build_offline_region_catalog(resource_index: &ResourceIndex) -> OfflineRegionCatalogRecord {
+    let mut regions = Vec::new();
+    for region in Region::ALL {
+        regions.push(chart_offline_region_record(region));
+    }
+    regions.extend(plate_offline_region_records(resource_index));
+    OfflineRegionCatalogRecord {
+        schema_version: 1,
+        regions,
+    }
+}
+
+fn chart_offline_region_record(region: Region) -> OfflineRegionRecord {
+    let region_id = region.code().to_ascii_lowercase();
+    let bounds = region.bounds();
+    let polygon = vec![
+        OfflineRegionLatLon {
+            lat: bounds.lat_max,
+            lon: bounds.lon_min,
+        },
+        OfflineRegionLatLon {
+            lat: bounds.lat_max,
+            lon: bounds.lon_max,
+        },
+        OfflineRegionLatLon {
+            lat: bounds.lat_min,
+            lon: bounds.lon_max,
+        },
+        OfflineRegionLatLon {
+            lat: bounds.lat_min,
+            lon: bounds.lon_min,
+        },
+    ];
+    OfflineRegionRecord {
+        id: format!("chart:{region_id}"),
+        kind: "chart".to_string(),
+        region_id: region_id.clone(),
+        label: format!("{} charts", region.code()),
+        color_key: "class_b_d_blue".to_string(),
+        polygon,
+        label_position: OfflineRegionLatLon {
+            lat: (bounds.lat_min + bounds.lat_max) / 2.0,
+            lon: (bounds.lon_min + bounds.lon_max) / 2.0,
+        },
+    }
+}
+
+fn plate_offline_region_records(resource_index: &ResourceIndex) -> Vec<OfflineRegionRecord> {
+    let airports_by_id = resource_index
+        .airports
+        .iter()
+        .map(|airport| (airport.id.as_str(), airport))
+        .collect::<BTreeMap<_, _>>();
+    let mut points_by_region: BTreeMap<String, Vec<OfflineRegionLatLon>> = BTreeMap::new();
+
+    for plate in &resource_index.plates {
+        if let Some(airport) = airports_by_id.get(plate.airport_id.as_str()) {
+            points_by_region
+                .entry(plate.region_id.clone())
+                .or_default()
+                .push(OfflineRegionLatLon {
+                    lat: airport.lat,
+                    lon: airport.lon,
+                });
+        }
+    }
+    for csup in &resource_index.csups {
+        if let Some(airport) = airports_by_id.get(csup.airport_id.as_str()) {
+            points_by_region
+                .entry(csup.region_id.clone())
+                .or_default()
+                .push(OfflineRegionLatLon {
+                    lat: airport.lat,
+                    lon: airport.lon,
+                });
+        }
+    }
+
+    Region::ALL
+        .into_iter()
+        .filter_map(|region| {
+            let region_id = region.code().to_ascii_lowercase();
+            let points = points_by_region.remove(&region_id)?;
+            let polygon = convex_hull_lat_lon(points);
+            if polygon.is_empty() {
+                return None;
+            }
+            let label_position = polygon_label_position(&polygon);
+            Some(OfflineRegionRecord {
+                id: format!("plate:{region_id}"),
+                kind: "plate".to_string(),
+                region_id,
+                label: format!("{} TPP/CSUP", region.code()),
+                color_key: "class_c_magenta".to_string(),
+                polygon,
+                label_position,
+            })
+        })
+        .collect()
+}
+
+fn convex_hull_lat_lon(mut points: Vec<OfflineRegionLatLon>) -> Vec<OfflineRegionLatLon> {
+    points.sort_by(|left, right| {
+        left.lon
+            .total_cmp(&right.lon)
+            .then_with(|| left.lat.total_cmp(&right.lat))
+    });
+    points.dedup_by(|left, right| left.lat == right.lat && left.lon == right.lon);
+    match points.len() {
+        0 => Vec::new(),
+        1 => buffered_point_polygon(points[0]),
+        2 => buffered_segment_polygon(points[0], points[1]),
+        _ => monotonic_chain_hull(&points),
+    }
+}
+
+fn monotonic_chain_hull(points: &[OfflineRegionLatLon]) -> Vec<OfflineRegionLatLon> {
+    let mut lower: Vec<OfflineRegionLatLon> = Vec::new();
+    for point in points {
+        while lower.len() >= 2
+            && hull_cross(lower[lower.len() - 2], lower[lower.len() - 1], *point) <= 0.0
+        {
+            lower.pop();
+        }
+        lower.push(*point);
+    }
+    let mut upper: Vec<OfflineRegionLatLon> = Vec::new();
+    for point in points.iter().rev() {
+        while upper.len() >= 2
+            && hull_cross(upper[upper.len() - 2], upper[upper.len() - 1], *point) <= 0.0
+        {
+            upper.pop();
+        }
+        upper.push(*point);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
+}
+
+fn hull_cross(origin: OfflineRegionLatLon, a: OfflineRegionLatLon, b: OfflineRegionLatLon) -> f64 {
+    (a.lon - origin.lon) * (b.lat - origin.lat) - (a.lat - origin.lat) * (b.lon - origin.lon)
+}
+
+fn buffered_point_polygon(point: OfflineRegionLatLon) -> Vec<OfflineRegionLatLon> {
+    const BUFFER_DEG: f64 = 0.25;
+    vec![
+        OfflineRegionLatLon {
+            lat: point.lat + BUFFER_DEG,
+            lon: point.lon - BUFFER_DEG,
+        },
+        OfflineRegionLatLon {
+            lat: point.lat + BUFFER_DEG,
+            lon: point.lon + BUFFER_DEG,
+        },
+        OfflineRegionLatLon {
+            lat: point.lat - BUFFER_DEG,
+            lon: point.lon + BUFFER_DEG,
+        },
+        OfflineRegionLatLon {
+            lat: point.lat - BUFFER_DEG,
+            lon: point.lon - BUFFER_DEG,
+        },
+    ]
+}
+
+fn buffered_segment_polygon(
+    a: OfflineRegionLatLon,
+    b: OfflineRegionLatLon,
+) -> Vec<OfflineRegionLatLon> {
+    let lat_min = a.lat.min(b.lat) - 0.25;
+    let lat_max = a.lat.max(b.lat) + 0.25;
+    let lon_min = a.lon.min(b.lon) - 0.25;
+    let lon_max = a.lon.max(b.lon) + 0.25;
+    vec![
+        OfflineRegionLatLon {
+            lat: lat_max,
+            lon: lon_min,
+        },
+        OfflineRegionLatLon {
+            lat: lat_max,
+            lon: lon_max,
+        },
+        OfflineRegionLatLon {
+            lat: lat_min,
+            lon: lon_max,
+        },
+        OfflineRegionLatLon {
+            lat: lat_min,
+            lon: lon_min,
+        },
+    ]
+}
+
+fn polygon_label_position(polygon: &[OfflineRegionLatLon]) -> OfflineRegionLatLon {
+    let (lat_sum, lon_sum) = polygon.iter().fold((0.0, 0.0), |(lat, lon), point| {
+        (lat + point.lat, lon + point.lon)
+    });
+    let count = polygon.len().max(1) as f64;
+    OfflineRegionLatLon {
+        lat: lat_sum / count,
+        lon: lon_sum / count,
+    }
 }
 
 fn build_nav_kv_shaded_relief_catalog_entries(
@@ -14948,6 +15188,127 @@ mod tests {
             max_heavy_jobs: 1,
             fetch_cache_root: root.join("fetch-cache"),
             fetch_cache_mode: "cache-first".to_string(),
+        }
+    }
+
+    #[test]
+    fn offline_region_catalog_emits_chart_bounds_and_plate_convex_hulls() {
+        let mut index = minimal_resource_index();
+        index.airports = vec![
+            AirportRecord {
+                id: "KAAA".to_string(),
+                facility_name: "A".to_string(),
+                lat: 47.0,
+                lon: -124.0,
+                airport_type: "AIRPORT".to_string(),
+            },
+            AirportRecord {
+                id: "KBBB".to_string(),
+                facility_name: "B".to_string(),
+                lat: 45.0,
+                lon: -123.0,
+                airport_type: "AIRPORT".to_string(),
+            },
+            AirportRecord {
+                id: "KCCC".to_string(),
+                facility_name: "C".to_string(),
+                lat: 45.0,
+                lon: -121.0,
+                airport_type: "AIRPORT".to_string(),
+            },
+            AirportRecord {
+                id: "KDDD".to_string(),
+                facility_name: "D".to_string(),
+                lat: 47.0,
+                lon: -121.0,
+                airport_type: "AIRPORT".to_string(),
+            },
+            AirportRecord {
+                id: "KINR".to_string(),
+                facility_name: "Interior".to_string(),
+                lat: 46.0,
+                lon: -122.0,
+                airport_type: "AIRPORT".to_string(),
+            },
+        ];
+        index.plates = vec![
+            test_plate_record("plate:a", "KAAA"),
+            test_plate_record("plate:b", "KBBB"),
+            test_plate_record("plate:inside", "KINR"),
+        ];
+        index.csups = vec![
+            test_csup_record("csup:c", "KCCC"),
+            test_csup_record("csup:d", "KDDD"),
+        ];
+
+        let catalog = build_offline_region_catalog(&index);
+        let chart = catalog
+            .regions
+            .iter()
+            .find(|region| region.id == "chart:nw")
+            .expect("chart region");
+        assert_eq!(chart.kind, "chart");
+        assert_eq!(
+            chart.polygon[0],
+            OfflineRegionLatLon {
+                lat: 50.0,
+                lon: -125.0
+            }
+        );
+        assert_eq!(
+            chart.polygon[2],
+            OfflineRegionLatLon {
+                lat: 40.0,
+                lon: -103.0
+            }
+        );
+
+        let plate = catalog
+            .regions
+            .iter()
+            .find(|region| region.id == "plate:nw")
+            .expect("plate region");
+        assert_eq!(plate.kind, "plate");
+        assert_eq!(plate.color_key, "class_c_magenta");
+        assert_eq!(plate.polygon.len(), 4);
+        assert!(plate.polygon.contains(&OfflineRegionLatLon {
+            lat: 47.0,
+            lon: -124.0
+        }));
+        assert!(!plate.polygon.contains(&OfflineRegionLatLon {
+            lat: 46.0,
+            lon: -122.0
+        }));
+    }
+
+    fn test_plate_record(id: &str, airport_id: &str) -> PlateRecord {
+        PlateRecord {
+            id: id.to_string(),
+            airport_id: airport_id.to_string(),
+            icao_airport_id: None,
+            region_id: "nw".to_string(),
+            package_id: "NW_TPP".to_string(),
+            asset_path: format!("plates/{airport_id}/A.png"),
+            thumbnail_path: format!("thumbnails/plates/{airport_id}/A.png"),
+            label: "A".to_string(),
+            asset_kind: "plate".to_string(),
+            document_type: "approach".to_string(),
+            procedure_uid: None,
+            georef: None,
+        }
+    }
+
+    fn test_csup_record(id: &str, airport_id: &str) -> CsupRecord {
+        CsupRecord {
+            id: id.to_string(),
+            airport_id: airport_id.to_string(),
+            region_id: "nw".to_string(),
+            package_id: "NW_CSUP".to_string(),
+            asset_path: format!("afd/{airport_id}/CSUP-NW_0.png"),
+            thumbnail_path: format!("thumbnails/afd/{airport_id}/CSUP-NW_0.png"),
+            label: "Chart Supplement".to_string(),
+            asset_kind: "csup".to_string(),
+            document_type: "csup".to_string(),
         }
     }
 

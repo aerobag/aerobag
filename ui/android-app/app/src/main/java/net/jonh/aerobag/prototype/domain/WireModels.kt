@@ -605,6 +605,7 @@ data class WireMapOverlayQueryResult(
     val airspace_paths: List<WireAirspaceDisplayPath> = emptyList(),
     val tfr_paths: List<WireAirspaceDisplayPath> = emptyList(),
     val airspace_labels: List<WireAirspaceDisplayLabel> = emptyList(),
+    val offline_regions: List<WireOfflineRegionDisplay> = emptyList(),
     val warnings: List<WireMapOverlayWarning>,
 )
 
@@ -686,6 +687,18 @@ data class WireAirspaceLimitGlyph(
     val lower: String,
     val style_key: String,
     val color_key: String,
+)
+
+@Serializable
+data class WireOfflineRegionDisplay(
+    val id: String,
+    val kind: String,
+    val region_id: String,
+    val label: String,
+    val color_key: String,
+    val points: List<WireAirspaceScreenPoint> = emptyList(),
+    val label_x: Double,
+    val label_y: Double,
 )
 
 @Serializable

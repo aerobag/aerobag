@@ -227,6 +227,10 @@ function AirspaceDisplayPathGroup(props: { feature: AirspaceDisplayPath }) {
   );
 }
 
+function offlineRegionPoints(points: Array<{ x: number; y: number }>): string {
+  return points.map((point) => `${point.x},${point.y}`).join(" ");
+}
+
 type AppPage = "map" | "plan" | "charts" | "home";
 
 type WebPageTilePaintTiming = {
@@ -339,6 +343,8 @@ function layerIconSrc(layerId: MapLayerId): string {
       return LAYER_NEXRAD_ICON_SRC;
     case "terrain_warning":
       return LAYER_TERRAIN_WARNING_ICON_SRC;
+    case "offline_regions":
+      return LAYER_VECTORS_ICON_SRC;
   }
 }
 
@@ -1025,6 +1031,7 @@ function defaultUiMapLayerState(): UiMapLayerState {
     metars: { visible: true, enabled: true },
     nexrad: { visible: false, enabled: true },
     terrain_warning: { visible: true, enabled: true },
+    offline_regions: { visible: false, enabled: true },
   };
 }
 
@@ -2193,6 +2200,7 @@ function MapPage(props: {
     airspace_paths: [],
     tfr_paths: [],
     airspace_labels: [],
+    offline_regions: [],
     warnings: [],
   });
   const [mapOverlayInputGeneration, setMapOverlayInputGeneration] = useState(0);
@@ -2827,7 +2835,7 @@ function MapPage(props: {
     if (!mapIsVisible) {
       return;
     }
-    if (!mapLayerState.vectors.visible && !mapLayerState.metars.visible) {
+    if (!mapLayerState.vectors.visible && !mapLayerState.metars.visible && !mapLayerState.offline_regions.visible) {
       setMapOverlay({
         needed_point_tiles: [],
         needed_metar_tiles: [],
@@ -2842,6 +2850,7 @@ function MapPage(props: {
         airspace_paths: [],
         tfr_paths: [],
         airspace_labels: [],
+        offline_regions: [],
         warnings: [],
       });
       setMapOverlayViewport(null);
@@ -2862,6 +2871,7 @@ function MapPage(props: {
         airspace_paths: [],
         tfr_paths: [],
         airspace_labels: [],
+        offline_regions: [],
         warnings: [],
       });
       return;
@@ -3147,6 +3157,7 @@ function MapPage(props: {
     };
   }, [
     mapLayerState.metars.visible,
+    mapLayerState.offline_regions.visible,
     mapLayerState.vectors.visible,
     mapIsVisible,
     mapOverlayInputGeneration,
@@ -3607,6 +3618,14 @@ function MapPage(props: {
       disabled: !mapLayerState.terrain_warning.enabled,
       onSelect: () => void setMapLayerVisible("terrain_warning", !mapLayerState.terrain_warning.visible),
     },
+    {
+      id: "offline_regions",
+      label: "Offline Regions",
+      iconSrc: layerIconSrc("offline_regions"),
+      toggleState: mapLayerState.offline_regions,
+      disabled: !mapLayerState.offline_regions.enabled,
+      onSelect: () => void setMapLayerVisible("offline_regions", !mapLayerState.offline_regions.visible),
+    },
   ];
   const ownshipSourceOptions: TrayOption[] = ownshipControls.sources.map((source) => ({
     id: sourceIdString(source.source_id),
@@ -3798,8 +3817,60 @@ function MapPage(props: {
             })}
           </svg>
         ) : null}
+        {mapIsVisible && mapOverlay.offline_regions.length > 0 ? (
+          <svg
+            className="offlineRegionsOverlay"
+            viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
+            preserveAspectRatio="none"
+          >
+            {mapOverlay.offline_regions.map((region) => {
+              const color = aviationThemeColor(region.color_key);
+              return (
+                <g key={region.id}>
+                  <polygon
+                    points={offlineRegionPoints(region.points)}
+                    fill="none"
+                    stroke="rgba(255,255,255,0.8)"
+                    strokeWidth="5"
+                    strokeLinejoin="round"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                  <polygon
+                    points={offlineRegionPoints(region.points)}
+                    fill="none"
+                    stroke={color}
+                    strokeWidth="2.5"
+                    strokeLinejoin="round"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                  <text
+                    x={region.label_x}
+                    y={region.label_y}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fill="white"
+                    stroke="rgba(0,0,0,0.7)"
+                    strokeWidth="4"
+                    paintOrder="stroke"
+                  >
+                    {region.label}
+                  </text>
+                  <text
+                    x={region.label_x}
+                    y={region.label_y}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fill={color}
+                  >
+                    {region.label}
+                  </text>
+                </g>
+              );
+            })}
+          </svg>
+        ) : null}
         {mapIsVisible && routeScreenSegments.length > 0 ? (
-          <svg className="vectorOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
+          <svg className="flightPlanOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
             {routeScreenSegments.map((segment) => (
               <Fragment key={segment.id}>
                 <polyline

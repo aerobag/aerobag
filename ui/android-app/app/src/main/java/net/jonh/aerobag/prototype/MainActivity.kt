@@ -4672,16 +4672,16 @@ private fun MapExplorerPage(
     val layerTrayOptions = remember(mapLayerState) {
         listOf(
             MenuDockOption(
-                key = "world_basemap",
-                label = "World Map",
-                enabled = mapLayerState.worldBasemap.enabled,
-                toggleState = mapLayerState.worldBasemap,
-                iconResId = mapLayerIconResId(MapLayerId.WorldBasemap),
+                key = "metars",
+                label = "Observations",
+                enabled = mapLayerState.metars.enabled,
+                toggleState = mapLayerState.metars,
+                iconResId = mapLayerIconResId(MapLayerId.Metars),
             ) {
-                val visible = !mapLayerState.worldBasemap.visible
+                val visible = !mapLayerState.metars.visible
                 val startMs = SystemClock.elapsedRealtime()
-                val snapshot = uiSession.setMapLayerVisibility(MapLayerId.WorldBasemap, visible)
-                Log.i(MapLayerLogTag, "toggle layer=world_basemap visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                val snapshot = uiSession.setMapLayerVisibility(MapLayerId.Metars, visible)
+                Log.i(MapLayerLogTag, "toggle layer=metars visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
                 onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(
@@ -4695,19 +4695,6 @@ private fun MapExplorerPage(
                 val startMs = SystemClock.elapsedRealtime()
                 val snapshot = uiSession.setMapLayerVisibility(MapLayerId.Vectors, visible)
                 Log.i(MapLayerLogTag, "toggle layer=vectors visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
-                onSessionSnapshotChange(snapshot)
-            },
-            MenuDockOption(
-                key = "metars",
-                label = "Observations",
-                enabled = mapLayerState.metars.enabled,
-                toggleState = mapLayerState.metars,
-                iconResId = mapLayerIconResId(MapLayerId.Metars),
-            ) {
-                val visible = !mapLayerState.metars.visible
-                val startMs = SystemClock.elapsedRealtime()
-                val snapshot = uiSession.setMapLayerVisibility(MapLayerId.Metars, visible)
-                Log.i(MapLayerLogTag, "toggle layer=metars visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
                 onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(
@@ -4734,6 +4721,19 @@ private fun MapExplorerPage(
                 val startMs = SystemClock.elapsedRealtime()
                 val snapshot = uiSession.setMapLayerVisibility(MapLayerId.TerrainWarning, visible)
                 Log.i(MapLayerLogTag, "toggle layer=terrain_warning visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                onSessionSnapshotChange(snapshot)
+            },
+            MenuDockOption(
+                key = "world_basemap",
+                label = "World Map",
+                enabled = mapLayerState.worldBasemap.enabled,
+                toggleState = mapLayerState.worldBasemap,
+                iconResId = mapLayerIconResId(MapLayerId.WorldBasemap),
+            ) {
+                val visible = !mapLayerState.worldBasemap.visible
+                val startMs = SystemClock.elapsedRealtime()
+                val snapshot = uiSession.setMapLayerVisibility(MapLayerId.WorldBasemap, visible)
+                Log.i(MapLayerLogTag, "toggle layer=world_basemap visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
                 onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(

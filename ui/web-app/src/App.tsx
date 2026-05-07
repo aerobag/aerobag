@@ -3462,12 +3462,12 @@ function MapPage(props: {
     : [];
   const layerTrayOptions: TrayOption[] = [
     {
-      id: "world_basemap",
-      label: "World Map",
-      iconSrc: layerIconSrc("world_basemap"),
-      toggleState: mapLayerState.world_basemap,
-      disabled: !mapLayerState.world_basemap.enabled,
-      onSelect: () => void setMapLayerVisible("world_basemap", !mapLayerState.world_basemap.visible),
+      id: "metars",
+      label: "Observations",
+      iconSrc: layerIconSrc("metars"),
+      toggleState: mapLayerState.metars,
+      disabled: !mapLayerState.metars.enabled,
+      onSelect: () => void setMapLayerVisible("metars", !mapLayerState.metars.visible),
     },
     {
       id: "vectors",
@@ -3476,14 +3476,6 @@ function MapPage(props: {
       toggleState: mapLayerState.vectors,
       disabled: !mapLayerState.vectors.enabled,
       onSelect: () => void setMapLayerVisible("vectors", !mapLayerState.vectors.visible),
-    },
-    {
-      id: "metars",
-      label: "Observations",
-      iconSrc: layerIconSrc("metars"),
-      toggleState: mapLayerState.metars,
-      disabled: !mapLayerState.metars.enabled,
-      onSelect: () => void setMapLayerVisible("metars", !mapLayerState.metars.visible),
     },
     {
       id: "nexrad",
@@ -3500,6 +3492,14 @@ function MapPage(props: {
       toggleState: mapLayerState.terrain_warning,
       disabled: !mapLayerState.terrain_warning.enabled,
       onSelect: () => void setMapLayerVisible("terrain_warning", !mapLayerState.terrain_warning.visible),
+    },
+    {
+      id: "world_basemap",
+      label: "World Map",
+      iconSrc: layerIconSrc("world_basemap"),
+      toggleState: mapLayerState.world_basemap,
+      disabled: !mapLayerState.world_basemap.enabled,
+      onSelect: () => void setMapLayerVisible("world_basemap", !mapLayerState.world_basemap.visible),
     },
     {
       id: "offline_regions",

@@ -5070,7 +5070,7 @@ fn build_nav_kv_static_raster_catalog_entries(
                 } else {
                     (
                         entry.label.clone(),
-                        serde_json::Value::Null,
+                        serde_json::Value::String("world".to_string()),
                         entry.initial_viewport.clone(),
                         entry.tile_url_root.clone(),
                     )
@@ -16341,6 +16341,7 @@ mod tests {
             .iter()
             .find(|entry| entry["id"] == "world-basemap")
             .expect("world basemap entry");
+        assert_eq!(world["region_id"], "world");
         assert_eq!(world["map_view"]["chart_family"], "world-basemap");
         assert_eq!(world["map_view"]["max_source_zoom"], 4);
         assert_eq!(world["map_view"]["max_display_zoom"], 7.0);

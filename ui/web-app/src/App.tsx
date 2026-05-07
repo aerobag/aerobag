@@ -1070,6 +1070,13 @@ function defaultUiMapLayerState(): UiMapLayerState {
   };
 }
 
+function normalizeUiMapLayerState(state: Partial<UiMapLayerState> | null | undefined): UiMapLayerState {
+  return {
+    ...defaultUiMapLayerState(),
+    ...state,
+  };
+}
+
 function defaultUiDebugState(): UiDebugState {
   const debugTiles = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debugTiles");
   return {
@@ -1216,6 +1223,10 @@ export default function App() {
   }, []);
   const appState = sessionSnapshot.app_state;
   const appUiState = sessionSnapshot.app_ui_state;
+  const mapLayerState = useMemo(
+    () => normalizeUiMapLayerState(sessionSnapshot.map_layer_state),
+    [sessionSnapshot.map_layer_state],
+  );
   const debugOwnshipDriverActive = appUiState.ownship.controls.sources.some(
     (source) => source.source_kind === "debug_ownship_driver" && source.active,
   );
@@ -1882,7 +1893,7 @@ export default function App() {
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
           debugState={sessionSnapshot.debug_state}
-          mapLayerState={sessionSnapshot.map_layer_state}
+          mapLayerState={mapLayerState}
           selectedMap={selectedMap}
           selectedFamily={selectedFamily}
           familyOptions={rasterMapState.family_options}

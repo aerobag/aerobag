@@ -4557,7 +4557,7 @@ fn chart_offline_region_record(region: Region) -> OfflineRegionRecord {
         id: format!("chart:{region_id}"),
         kind: "chart".to_string(),
         region_id: region_id.clone(),
-        label: format!("{} charts", region.code()),
+        label: format!("{} Charts", region.code()),
         color_key: "class_b_d_blue".to_string(),
         polygon,
         label_position: OfflineRegionLatLon {
@@ -4612,7 +4612,7 @@ fn plate_offline_region_records(resource_index: &ResourceIndex) -> Vec<OfflineRe
                 id: format!("plate:{region_id}"),
                 kind: "plate".to_string(),
                 region_id,
-                label: format!("{} TPP/CSUP", region.code()),
+                label: format!("{} Plates", region.code()),
                 color_key: "class_c_magenta".to_string(),
                 polygon,
                 label_position,
@@ -15529,7 +15529,7 @@ mod tests {
 
         assert!(
             label.lon.abs() > 150.0,
-            "PAC TPP/CSUP label should use the short Pacific dateline span: {label:?}"
+            "PAC Plates label should use the short Pacific dateline span: {label:?}"
         );
     }
 
@@ -15540,7 +15540,7 @@ mod tests {
                 id: "chart:test".to_string(),
                 kind: "chart".to_string(),
                 region_id: "test".to_string(),
-                label: "TEST charts".to_string(),
+                label: "TEST Charts".to_string(),
                 color_key: "class_b_d_blue".to_string(),
                 polygon: Vec::new(),
                 label_position: OfflineRegionLatLon {
@@ -15552,7 +15552,7 @@ mod tests {
                 id: "plate:test".to_string(),
                 kind: "plate".to_string(),
                 region_id: "test".to_string(),
-                label: "TEST TPP/CSUP".to_string(),
+                label: "TEST Plates".to_string(),
                 color_key: "class_c_magenta".to_string(),
                 polygon: Vec::new(),
                 label_position: OfflineRegionLatLon {

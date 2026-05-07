@@ -524,6 +524,7 @@ export interface UiSession {
   selectChart(chartId: string): Promise<UiSessionSnapshot>;
   ingestPointTiles(tiles: PointTilePayload[]): Promise<void>;
   ingestMetarTiles(tiles: MetarTilePayload[]): Promise<void>;
+  ingestFastProductManifest(productId: string, manifestJson: string): Promise<void>;
   ingestAirspaceRefTiles(tiles: AirspaceReferenceTilePayload[]): Promise<void>;
   ingestAirspaceFeatures(features: AirspaceFeaturePayload[]): Promise<void>;
   ingestAirspaceLabelTiles(tiles: AirspaceLabelTilePayload[]): Promise<void>;
@@ -597,90 +598,6 @@ function sourceIdString(sourceId: { 0: string } | string): string {
   return typeof sourceId === "string" ? sourceId : sourceId[0];
 }
 
-async function fetchVectorManifestJson(): Promise<string> {
-  const baseManifest: Record<string, unknown> = {
-    airspace: {
-      reference_tile_min_zoom: 0,
-      reference_tile_max_zoom: 12,
-      label_tile_min_zoom: 0,
-      label_tile_max_zoom: 12,
-    },
-    point_layers: {},
-  };
-  try {
-    const obstacleResponse = await fetch("/fast-products/obstacles/obstacles", { cache: "no-cache" });
-    if (obstacleResponse.ok) {
-      const obstacleManifest = JSON.parse(await obstacleResponse.text()) as {
-        point_layers?: Record<string, unknown>;
-        files?: Record<string, unknown>;
-      };
-      if (obstacleManifest.point_layers?.obstacle) {
-        baseManifest.point_layers = {
-          ...(typeof baseManifest.point_layers === "object" && baseManifest.point_layers !== null
-            ? baseManifest.point_layers as Record<string, unknown>
-            : {}),
-          obstacle: obstacleManifest.point_layers.obstacle,
-        };
-      }
-      if (obstacleManifest.files?.point_tiles_obstacle || obstacleManifest.files?.stats) {
-        baseManifest.files = {
-          ...(typeof baseManifest.files === "object" && baseManifest.files !== null
-            ? baseManifest.files as Record<string, unknown>
-            : {}),
-          ...(obstacleManifest.files ?? {}),
-        };
-      }
-    }
-  } catch {
-    // Obstacle overlay is optional; keep the base vector manifest usable if the fast product is absent.
-  }
-  try {
-    const metarResponse = await fetch("/fast-products/metars/manifest.json", { cache: "no-cache" });
-    if (metarResponse.ok) {
-      const metarManifest = JSON.parse(await metarResponse.text()) as {
-        map_view?: {
-          min_zoom?: number;
-          max_zoom?: number;
-          levels?: Array<{ zoom?: number }>;
-          tile_path_template?: string;
-        };
-      };
-      const mapView = metarManifest.map_view;
-      const availableZooms = Array.from(new Set(
-        mapView?.levels
-          ?.map((level) => level.zoom)
-          .filter((zoom): zoom is number => typeof zoom === "number" && Number.isInteger(zoom))
-          ?? [],
-      )).sort((a, b) => a - b);
-      if (mapView && availableZooms && availableZooms.length > 0) {
-        baseManifest.point_layers = {
-          ...(typeof baseManifest.point_layers === "object" && baseManifest.point_layers !== null
-            ? baseManifest.point_layers as Record<string, unknown>
-            : {}),
-          metars: {
-            min_zoom: typeof mapView.min_zoom === "number" ? mapView.min_zoom : availableZooms[0],
-            max_zoom: typeof mapView.max_zoom === "number" ? mapView.max_zoom : availableZooms[availableZooms.length - 1],
-            available_zooms: availableZooms,
-            tile_path_template: mapView.tile_path_template ?? "points/metars/{z}/{x}/{y}.json",
-          },
-        };
-      }
-      if (mapView?.tile_path_template) {
-        baseManifest.files = {
-          ...(typeof baseManifest.files === "object" && baseManifest.files !== null
-            ? baseManifest.files as Record<string, unknown>
-            : {}),
-          point_tiles_metars: mapView.tile_path_template,
-          metars: "metars.json",
-        };
-      }
-    }
-  } catch {
-    // METAR overlay is optional; keep the base vector manifest usable if the fast product is absent.
-  }
-  return JSON.stringify(baseManifest);
-}
-
 type WasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
   situation_ring_candidates_json(): Promise<string> | string;
@@ -733,6 +650,7 @@ type WasmModule = {
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
   ingest_point_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   ingest_metar_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
+  ingest_fast_product_manifest_in_session(handle: number, productId: string, manifestJson: string): Promise<void> | void;
   ingest_airspace_ref_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   ingest_airspace_features_in_session(handle: number, featuresJson: string): Promise<void> | void;
   ingest_airspace_label_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
@@ -755,14 +673,7 @@ type WasmModule = {
 };
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
-  private vectorManifestJsonPromise: Promise<string> | null = null;
-
   constructor(private readonly module: WasmModule) {}
-
-  private async vectorManifestJson(): Promise<string> {
-    this.vectorManifestJsonPromise ??= fetchVectorManifestJson();
-    return this.vectorManifestJsonPromise;
-  }
 
   async prewarm(): Promise<void> {}
 
@@ -805,7 +716,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     selectedAirportId?: string,
     selectedChartId?: string,
   ): Promise<UiSession> {
-    const vectorManifestJson = await debugTiming("startup.vector_manifest.fetch", () => this.vectorManifestJson());
     const module = this.module;
     const createSession = async (
       nextPlan: FlightPlan,
@@ -819,7 +729,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       const selectedChartIdJson = JSON.stringify(nextSelectedChartId ?? null);
       const createUiSession = module.create_ui_session_profiled ?? module.create_ui_session;
       const createdJson = await debugTiming("startup.session.wasm_call", () => createUiSession(
-        vectorManifestJson,
+        "",
         planJson,
         recentAirportIdsJson,
         selectedAirportIdJson,
@@ -1206,6 +1116,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           await this.module.ingest_metar_tiles_in_session(handle, JSON.stringify(tiles));
         });
       },
+      ingestFastProductManifest: async (productId, manifestJson) => {
+        await withSessionRetry(async () => {
+          await this.module.ingest_fast_product_manifest_in_session(handle, productId, manifestJson);
+        });
+      },
       ingestAirspaceRefTiles: async (tiles) => {
         await withSessionRetry(async () => {
           await this.module.ingest_airspace_ref_tiles_in_session(handle, JSON.stringify(tiles));
@@ -1499,6 +1414,7 @@ async function loadBestAvailableAdapterUncached(
     typeof mod.select_chart_in_session !== "function" ||
     typeof mod.ingest_point_tiles_in_session !== "function" ||
     typeof mod.ingest_metar_tiles_in_session !== "function" ||
+    typeof mod.ingest_fast_product_manifest_in_session !== "function" ||
     typeof mod.ingest_airspace_ref_tiles_in_session !== "function" ||
     typeof mod.ingest_airspace_features_in_session !== "function" ||
     typeof mod.ingest_airspace_label_tiles_in_session !== "function" ||

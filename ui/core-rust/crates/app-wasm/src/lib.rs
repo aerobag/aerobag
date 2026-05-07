@@ -582,6 +582,16 @@ pub fn ingest_metar_tiles_in_session(handle: u32, tiles_json: &str) -> Result<()
 }
 
 #[wasm_bindgen]
+pub fn ingest_fast_product_manifest_in_session(
+    handle: u32,
+    product_id: &str,
+    manifest_json: &str,
+) -> Result<(), JsValue> {
+    ingest_fast_product_manifest_in_session_json(handle, product_id, manifest_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn ingest_airspace_ref_tiles_in_session(handle: u32, tiles_json: &str) -> Result<(), JsValue> {
     ingest_airspace_ref_tiles_in_session_json(handle, tiles_json)
         .map_err(|err| JsValue::from_str(&err))
@@ -1106,6 +1116,15 @@ fn ingest_metar_tiles_in_session_json(handle: u32, tiles_json: &str) -> Result<(
     let tiles: Vec<app_core::MetarTilePayload> =
         serde_json::from_str(tiles_json).map_err(|err| err.to_string())?;
     app_core::ingest_metar_tiles_in_session(handle, &tiles).map_err(|err| err.to_string())
+}
+
+fn ingest_fast_product_manifest_in_session_json(
+    handle: u32,
+    product_id: &str,
+    manifest_json: &str,
+) -> Result<(), String> {
+    app_core::ingest_fast_product_manifest_in_session(handle, product_id, manifest_json)
+        .map_err(|err| err.to_string())
 }
 
 fn ingest_airspace_ref_tiles_in_session_json(handle: u32, tiles_json: &str) -> Result<(), String> {

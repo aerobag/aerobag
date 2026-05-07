@@ -148,8 +148,8 @@ Proposed action:
 ### Replace synthesized startup vector manifest with HAD-owned vector manifest
 
 Evidence:
-- `ui/web-app/src/domain/appCoreAdapter.ts` still builds a `baseManifest` in `fetchVectorManifestJson`.
-- It fetches optional `/fast-products/obstacles/obstacles` and `/fast-products/metars/manifest.json`.
+- `ui/web-app/src/domain/appCoreAdapter.ts` built a `baseManifest` in `fetchVectorManifestJson`.
+- It fetched optional `/fast-products/obstacles/obstacles` and `/fast-products/metars/manifest.json`.
 - Core sessions later also have `ensure_vector_manifest_loaded` that reads `NavKvQuery::VectorManifest` from attached HAD.
 
 Why this smells:
@@ -159,6 +159,11 @@ Why this smells:
 Proposed action:
 - Make session creation use a minimal bootstrap manifest or no manifest, then require `ensure_vector_manifest_loaded` to load the real HAD manifest before overlay queries.
 - If METAR/obstacle fast products are intentionally outside nav-db, define that as a core input contract rather than ad hoc web-only manifest synthesis.
+
+Status:
+- Removed web startup vector manifest synthesis on 2026-05-07.
+- Core sessions now start with an empty overlay config and load vector metadata from nav-db/HAD.
+- Fast-product overlay metadata is now an explicit core input via fast-product manifest ingestion; web ingests the METAR manifest before observations overlay queries instead of grafting it into the vector manifest.
 
 ### Trim persistent debug logging once current perf bugs settle
 

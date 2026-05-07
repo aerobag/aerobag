@@ -105,6 +105,7 @@ import {
   type ImageViewportState,
 } from "./domain/imageViewport";
 import {
+  loadMetarFastProductManifestJson,
   loadMetarTilePathTemplate,
   metarTileUrl,
 } from "./domain/vectorTiles";
@@ -2231,6 +2232,7 @@ function MapPage(props: {
     warnings: [],
   });
   const [mapOverlayInputGeneration, setMapOverlayInputGeneration] = useState(0);
+  const metarFastProductManifestSessionRef = useRef<UiSession | null>(null);
   const [nexradFrames, setNexradFrames] = useState<NexradOverlayFrame[]>([]);
   const [nexradFrameIndex, setNexradFrameIndex] = useState(0);
   const [nexradStatus, setNexradStatus] = useState<NexradLayerStatus>({ state: "loading" });
@@ -3136,6 +3138,27 @@ function MapPage(props: {
         }
         setMapOverlay(nextOverlay);
         setMapOverlayViewport(viewport);
+      }
+      if (mapLayerState.metars.visible && metarFastProductManifestSessionRef.current !== session) {
+        const manifestStartedAt = performance.now();
+        try {
+          const manifestJson = await loadMetarFastProductManifestJson(controller.signal);
+          await session.ingestFastProductManifest("metars", manifestJson);
+          metarFastProductManifestSessionRef.current = session;
+          debugLog("map.overlay.fast_product_manifest.ingest.done", {
+            product_id: "metars",
+            elapsed_ms: Math.round(performance.now() - manifestStartedAt),
+          });
+        } catch (error) {
+          if (isAbortError(error)) {
+            throw error;
+          }
+          debugLog("map.overlay.fast_product_manifest.ingest.error", {
+            product_id: "metars",
+            elapsed_ms: Math.round(performance.now() - manifestStartedAt),
+            error: errorMessage(error),
+          });
+        }
       }
       try {
         debugLog("map.overlay.query.start", {

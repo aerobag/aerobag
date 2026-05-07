@@ -566,6 +566,12 @@ pub struct MapOverlayConfig {
     pub metar_layer: Option<PointTileLayerConfig>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FastProductOverlayConfig {
+    pub obstacle_layer: Option<ObstacleLayerConfig>,
+    pub metar_layer: Option<PointTileLayerConfig>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PointTileLayerConfig {
     min_zoom: u32,
@@ -581,6 +587,12 @@ struct VectorOverlayManifest {
 }
 
 #[derive(Debug, Deserialize)]
+struct FastProductPointManifest {
+    #[serde(default)]
+    point_layers: HashMap<String, VectorPointLayerManifest>,
+}
+
+#[derive(Debug, Deserialize)]
 struct VectorPointLayerManifest {
     #[serde(default)]
     min_zoom: Option<u32>,
@@ -593,11 +605,52 @@ struct VectorPointLayerManifest {
 }
 
 #[derive(Debug, Deserialize)]
+struct MetarFastProductManifest {
+    map_view: Option<MetarFastProductMapView>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetarFastProductMapView {
+    #[serde(default)]
+    min_zoom: Option<u32>,
+    #[serde(default)]
+    max_zoom: Option<u32>,
+    #[serde(default)]
+    levels: Vec<MetarFastProductMapViewLevel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetarFastProductMapViewLevel {
+    zoom: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
 struct VectorAirspaceManifest {
     reference_tile_min_zoom: u32,
     reference_tile_max_zoom: u32,
     label_tile_min_zoom: u32,
     label_tile_max_zoom: u32,
+}
+
+pub fn empty_map_overlay_config() -> MapOverlayConfig {
+    MapOverlayConfig {
+        airspace_reference_tile_min_zoom: 0,
+        airspace_reference_tile_max_zoom: 0,
+        airspace_label_tile_min_zoom: 0,
+        airspace_label_tile_max_zoom: 0,
+        obstacle_layer: None,
+        metar_layer: None,
+    }
+}
+
+pub fn map_overlay_config_with_fast_products(
+    vector_config: &MapOverlayConfig,
+    fast_config: &FastProductOverlayConfig,
+) -> MapOverlayConfig {
+    let mut config = vector_config.clone();
+    config.obstacle_layer = fast_config.obstacle_layer.clone();
+    config.metar_layer = fast_config.metar_layer.clone();
+    config
 }
 
 pub fn map_overlay_config_from_vector_manifest_json(
@@ -640,6 +693,81 @@ pub fn map_overlay_config_from_vector_manifest_json(
         obstacle_layer,
         metar_layer,
     })
+}
+
+pub fn apply_fast_product_manifest_to_overlay_config(
+    config: &mut FastProductOverlayConfig,
+    product_id: &str,
+    manifest_json: &str,
+) -> AppResult<()> {
+    match product_id {
+        "metars" => {
+            config.metar_layer = Some(metar_layer_config_from_fast_product_manifest_json(
+                manifest_json,
+            )?);
+            Ok(())
+        }
+        "obstacles" => {
+            config.obstacle_layer = Some(obstacle_layer_config_from_fast_product_manifest_json(
+                manifest_json,
+            )?);
+            Ok(())
+        }
+        _ => Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("unsupported fast product overlay manifest: {product_id}"),
+        }),
+    }
+}
+
+fn metar_layer_config_from_fast_product_manifest_json(
+    manifest_json: &str,
+) -> AppResult<PointTileLayerConfig> {
+    let manifest: MetarFastProductManifest =
+        serde_json::from_str(manifest_json).map_err(|err| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("failed to parse METAR fast product manifest: {err}"),
+        })?;
+    let Some(map_view) = manifest.map_view else {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: "METAR fast product manifest missing map_view".to_string(),
+        });
+    };
+    let mut available_zooms: Vec<u32> = map_view
+        .levels
+        .iter()
+        .filter_map(|level| level.zoom)
+        .collect();
+    available_zooms.sort_unstable();
+    available_zooms.dedup();
+    point_tile_layer_config_from_manifest(
+        "metars",
+        &VectorPointLayerManifest {
+            min_zoom: map_view.min_zoom,
+            max_zoom: map_view.max_zoom,
+            available_zooms,
+            zoom_levels: Vec::new(),
+        },
+    )
+}
+
+fn obstacle_layer_config_from_fast_product_manifest_json(
+    manifest_json: &str,
+) -> AppResult<ObstacleLayerConfig> {
+    let manifest: FastProductPointManifest =
+        serde_json::from_str(manifest_json).map_err(|err| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("failed to parse obstacle fast product manifest: {err}"),
+        })?;
+    let obstacle = manifest
+        .point_layers
+        .get("obstacle")
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: "obstacle fast product manifest missing point_layers.obstacle".to_string(),
+        })?;
+    obstacle_layer_config_from_manifest(obstacle)
 }
 
 fn point_tile_layer_config_from_manifest(

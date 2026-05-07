@@ -53,6 +53,7 @@ declare module "@generated/app_wasm.js" {
   export const select_chart_in_session: (...args: unknown[]) => string;
   export const ingest_point_tiles_in_session: (...args: unknown[]) => void;
   export const ingest_metar_tiles_in_session: (...args: unknown[]) => void;
+  export const ingest_fast_product_manifest_in_session: (...args: unknown[]) => void;
   export const ingest_airspace_ref_tiles_in_session: (...args: unknown[]) => void;
   export const ingest_airspace_features_in_session: (...args: unknown[]) => void;
   export const ingest_airspace_label_tiles_in_session: (...args: unknown[]) => void;

@@ -9,27 +9,30 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    apply_fast_product_manifest_to_overlay_config,
     chart_page::airport_ids_from_plan,
-    first_guidance_detail_index_for_leg, guidance_detail_id_for_index,
+    empty_map_overlay_config, first_guidance_detail_index_for_leg, guidance_detail_id_for_index,
     guidance_detail_id_for_leg_element,
     had_ops::{
         insert_waypoint_best_position, materialize_airway_presentation_selection,
         materialize_procedure, suggest_waypoint_identifiers, HadOperationOutcome, HadReadError,
     },
     map_follow::{MapFollowSessionState, MapFollowUiState},
-    map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
+    map_overlay_config_from_vector_manifest_json, map_overlay_config_with_fast_products,
+    nav_kv_key_for_query,
     planning::NavElementUiView,
     playback::PlaybackSessionState,
     query_map_overlay, query_map_selection, state, AirportPlateAvailability,
     AirspaceFeaturePayload, AirspaceLabelTilePayload, AirspaceReferenceTilePayload,
     AirwayPresentationPlan, AppError, AppErrorKind, AppEvent, AppResult, AppState, AppUiState,
-    FlightPlan, FlightPlanDisplayRowKind, FlightPlanRowActionExecution, FlightPlanRowActionId,
-    GuidanceState, LatLon, MapOverlayConfig, MapOverlayQueryResult, MapSelectionSessionAction,
-    MapViewport, MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore,
-    NavRef, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity, ProcedureKind,
-    ProcedureLoadCommand, RasterMapCatalog, RasterTilePlan, ResolvedLeg, ResolvedLegSource,
-    RouteComponentViewKind, SequencingMode, SituationControlInput, SituationControlMenuItem,
-    TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
+    FastProductOverlayConfig, FlightPlan, FlightPlanDisplayRowKind, FlightPlanRowActionExecution,
+    FlightPlanRowActionId, GuidanceState, LatLon, MapOverlayConfig, MapOverlayQueryResult,
+    MapSelectionSessionAction, MapViewport, MetarProductPayload, MetarTilePayload, NavKvLookup,
+    NavKvQuery, NavKvStore, NavRef, PlanLeg, PlaybackUiState, PointTilePayload,
+    ProcedureDiscontinuity, ProcedureKind, ProcedureLoadCommand, RasterMapCatalog, RasterTilePlan,
+    ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode, SituationControlInput,
+    SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload,
+    UiSnapshotAppState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -102,6 +105,7 @@ struct UiSession {
     map_follow: MapFollowSessionState,
     guidance_leg_geometry: HashMap<String, GuidanceLegGeometry>,
     map_overlay_config: MapOverlayConfig,
+    fast_product_overlay_config: FastProductOverlayConfig,
     vector_manifest_loaded: bool,
     chart_page_state: UiChartPageState,
     nav_kv_store_id: Option<u32>,
@@ -197,16 +201,16 @@ pub fn create_ui_session_profiled(
 }
 
 fn create_ui_session_inner(
-    vector_manifest_json: &str,
+    _vector_manifest_json: &str,
     plan: FlightPlan,
     recent_airport_ids: &[String],
     selected_airport_id: Option<&str>,
     selected_chart_id: Option<&str>,
     mut mark: Option<&mut dyn FnMut(&'static str)>,
 ) -> AppResult<UiSessionInitResult> {
-    let map_overlay_config = map_overlay_config_from_vector_manifest_json(vector_manifest_json)?;
+    let map_overlay_config = empty_map_overlay_config();
     if let Some(mark) = mark.as_deref_mut() {
-        mark("core_parse_vector_manifest");
+        mark("core_init_overlay_config");
     }
     let app_state = state::reduce(
         &AppState::default(),
@@ -269,6 +273,7 @@ fn create_ui_session_inner(
             map_follow,
             guidance_leg_geometry: HashMap::new(),
             map_overlay_config,
+            fast_product_overlay_config: FastProductOverlayConfig::default(),
             vector_manifest_loaded: false,
             chart_page_state,
             nav_kv_store_id: None,
@@ -1459,6 +1464,20 @@ pub fn ingest_metar_tiles_in_session(handle: u32, tiles: &[MetarTilePayload]) ->
     Ok(())
 }
 
+pub fn ingest_fast_product_manifest_in_session(
+    handle: u32,
+    product_id: &str,
+    manifest_json: &str,
+) -> AppResult<()> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    apply_fast_product_manifest_to_overlay_config(
+        &mut session.fast_product_overlay_config,
+        product_id,
+        manifest_json,
+    )
+}
+
 pub fn ingest_airspace_ref_tiles_in_session(
     handle: u32,
     tiles: &[AirspaceReferenceTilePayload],
@@ -1588,14 +1607,18 @@ fn ensure_vector_manifest_loaded(session: &mut UiSession) -> Result<(), HadReadE
     };
     let manifest_json = serde_json::to_string(&manifest_json)
         .map_err(|err| HadReadError::Fatal(err.to_string()))?;
-    let previous_config = session.map_overlay_config.clone();
-    let mut next_config = map_overlay_config_from_vector_manifest_json(&manifest_json)
+    let next_config = map_overlay_config_from_vector_manifest_json(&manifest_json)
         .map_err(|err| HadReadError::Fatal(err.to_string()))?;
-    next_config.metar_layer = previous_config.metar_layer;
-    next_config.obstacle_layer = previous_config.obstacle_layer;
     session.map_overlay_config = next_config;
     session.vector_manifest_loaded = true;
     Ok(())
+}
+
+fn effective_map_overlay_config(session: &UiSession) -> MapOverlayConfig {
+    map_overlay_config_with_fast_products(
+        &session.map_overlay_config,
+        &session.fast_product_overlay_config,
+    )
 }
 
 fn ensure_vector_inputs_loaded(
@@ -1606,11 +1629,12 @@ fn ensure_vector_inputs_loaded(
 ) -> Result<(), HadReadError> {
     ensure_vector_manifest_loaded(session)?;
     for _ in 0..8 {
+        let map_overlay_config = effective_map_overlay_config(session);
         let overlay = query_map_overlay(
             viewport,
             width_px,
             height_px,
-            &session.map_overlay_config,
+            &map_overlay_config,
             true,
             false,
             &[],
@@ -1831,11 +1855,12 @@ pub fn get_map_overlay_in_session(
     } else {
         Vec::new()
     };
+    let map_overlay_config = effective_map_overlay_config(session);
     let overlay = query_map_overlay(
         &viewport,
         width_px,
         height_px,
-        &session.map_overlay_config,
+        &map_overlay_config,
         session.map_layer_state.vectors.visible,
         session.map_layer_state.metars.visible,
         &offline_region_records,
@@ -1881,11 +1906,12 @@ pub fn get_map_selection_in_session(
         }
         Err(HadReadError::Fatal(_)) => AirportPlateAvailability::default(),
     };
+    let map_overlay_config = effective_map_overlay_config(session);
     let selection = query_map_selection(
         &viewport,
         width_px,
         height_px,
-        &session.map_overlay_config,
+        &map_overlay_config,
         plan,
         click,
         hit_radius_px,

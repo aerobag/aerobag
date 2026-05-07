@@ -97,11 +97,16 @@ export function visiblePointRecords(
   return visible;
 }
 
-let metarTilePathTemplatePromise: Promise<string> | null = null;
+type MetarFastProductManifestInfo = {
+  manifestJson: string;
+  tilePathTemplate: string;
+};
 
-export async function loadMetarTilePathTemplate(signal?: AbortSignal): Promise<string> {
-  if (!metarTilePathTemplatePromise) {
-    metarTilePathTemplatePromise = fetch("/fast-products/metars/manifest.json", {
+let metarFastProductManifestPromise: Promise<MetarFastProductManifestInfo> | null = null;
+
+async function loadMetarFastProductManifest(signal?: AbortSignal): Promise<MetarFastProductManifestInfo> {
+  if (!metarFastProductManifestPromise) {
+    metarFastProductManifestPromise = fetch("/fast-products/metars/manifest.json", {
       cache: "no-cache",
       signal,
     })
@@ -109,7 +114,8 @@ export async function loadMetarTilePathTemplate(signal?: AbortSignal): Promise<s
         if (!response.ok) {
           throw new Error(`failed to load METAR manifest: ${response.status}`);
         }
-        const manifest = await response.json() as {
+        const manifestJson = await response.text();
+        const manifest = JSON.parse(manifestJson) as {
           map_view?: {
             tile_path_template?: unknown;
           };
@@ -118,14 +124,22 @@ export async function loadMetarTilePathTemplate(signal?: AbortSignal): Promise<s
         if (typeof template !== "string" || template.length === 0) {
           throw new Error("METAR manifest missing map_view.tile_path_template");
         }
-        return template;
+        return { manifestJson, tilePathTemplate: template };
       })
       .catch((error) => {
-        metarTilePathTemplatePromise = null;
+        metarFastProductManifestPromise = null;
         throw error;
       });
   }
-  return metarTilePathTemplatePromise;
+  return metarFastProductManifestPromise;
+}
+
+export async function loadMetarFastProductManifestJson(signal?: AbortSignal): Promise<string> {
+  return (await loadMetarFastProductManifest(signal)).manifestJson;
+}
+
+export async function loadMetarTilePathTemplate(signal?: AbortSignal): Promise<string> {
+  return (await loadMetarFastProductManifest(signal)).tilePathTemplate;
 }
 
 export function metarTileUrl(tilePathTemplate: string, zoom: number, x: number, y: number) {

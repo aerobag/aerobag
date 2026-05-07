@@ -21,6 +21,7 @@ use preprocessor_fetch::{
 use preprocessor_tools::{sanitize_label, ToolInvocation, ToolOutcome};
 
 pub const FULL_COVERAGE_ZOOM: u32 = 7;
+pub const WIDE_ANGLE_REGION_ID: &str = "wide";
 
 #[derive(Debug, Clone)]
 pub struct ChartRunRequest {
@@ -412,9 +413,25 @@ pub fn package_family_region_versioned(
         manifest_version,
         artifact_version,
     )?
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("no package record generated for {}", region.code()))
+    .into_iter()
+    .next()
+    .ok_or_else(|| anyhow::anyhow!("no package record generated for {}", region.code()))
+}
+
+pub fn package_family_wide_angle_versioned(
+    family: ChartFamily,
+    work_dir: impl AsRef<Path>,
+    manifest_version: &str,
+    artifact_version: &str,
+) -> anyhow::Result<PackageOutputRecord> {
+    let spec = ChartSpec::for_family(family);
+    package_wide_angle_record_from_spec(
+        work_dir.as_ref(),
+        spec,
+        true,
+        manifest_version,
+        artifact_version,
+    )
 }
 
 pub fn build_family_vrts(
@@ -878,14 +895,21 @@ fn package_regions_from_spec(
     let start = Instant::now();
     let regions = Region::ALL;
     let manifest_cycle = calculate_manifest_cycle();
-    let package_records = package_region_records_from_spec(
+    let mut package_records = package_region_records_from_spec(
         work_dir,
         spec,
         &regions,
-        provenance_dir.is_some(),
+        true,
         &manifest_cycle,
         &manifest_cycle,
     )?;
+    package_records.push(package_wide_angle_record_from_spec(
+        work_dir,
+        spec,
+        true,
+        &manifest_cycle,
+        &manifest_cycle,
+    )?);
 
     if let Some(provenance_dir) = provenance_dir {
         write_package_outputs_jsonl(provenance_dir, &package_records)?;
@@ -893,7 +917,7 @@ fn package_regions_from_spec(
 
     Ok(PackageBuildResult {
         family: spec.family,
-        package_count: regions.len(),
+        package_count: package_records.len(),
         elapsed_ms: start.elapsed().as_millis(),
     })
 }
@@ -910,9 +934,18 @@ fn package_region_records_from_spec(
     let mut package_records = Vec::with_capacity(regions.len());
 
     for region in regions {
-        let manifest_name =
-            format!("{}_{}_{}.manifest", region.code(), spec.chart_name, artifact_version);
-        let zip_name = format!("{}_{}_{}.zip", region.code(), spec.chart_name, artifact_version);
+        let manifest_name = format!(
+            "{}_{}_{}.manifest",
+            region.code(),
+            spec.chart_name,
+            artifact_version
+        );
+        let zip_name = format!(
+            "{}_{}_{}.zip",
+            region.code(),
+            spec.chart_name,
+            artifact_version
+        );
         let manifest_path = work_dir.join(&manifest_name);
         let zip_path = work_dir.join(&zip_name);
 
@@ -948,7 +981,12 @@ fn package_region_records_from_spec(
 
         let invocation = ToolInvocation {
             program: "zip".to_string(),
-            args: vec!["-0".to_string(), "-q".to_string(), zip_name.clone(), "-@".to_string()],
+            args: vec![
+                "-0".to_string(),
+                "-q".to_string(),
+                zip_name.clone(),
+                "-@".to_string(),
+            ],
             cwd: work_dir.to_path_buf(),
             label: format!("{}-package-{}", spec.family.capture_label(), region.code()),
             env: Vec::new(),
@@ -968,15 +1006,87 @@ fn package_region_records_from_spec(
                 manifest_sha256: hash_file(&manifest_path)?,
                 zip: zip_name,
                 zip_sha256: hash_file(&zip_path)?,
-                metadata: BTreeMap::from([(
-                    "full_coverage_zoom".to_string(),
-                    serde_json::Value::from(FULL_COVERAGE_ZOOM),
-                )]),
+                metadata: wide_angle_package_metadata(false),
             });
         }
     }
 
     Ok(package_records)
+}
+
+fn package_wide_angle_record_from_spec(
+    work_dir: &Path,
+    spec: ChartSpec,
+    produce_record: bool,
+    manifest_version: &str,
+    artifact_version: &str,
+) -> anyhow::Result<PackageOutputRecord> {
+    let tile_paths = collect_tile_paths_glob(work_dir, spec.tile_index)?;
+    let manifest_name = format!("WIDE_{}_{}.manifest", spec.chart_name, artifact_version);
+    let zip_name = format!("WIDE_{}_{}.zip", spec.chart_name, artifact_version);
+    let manifest_path = work_dir.join(&manifest_name);
+    let zip_path = work_dir.join(&zip_name);
+
+    if zip_path.exists() {
+        fs::remove_file(&zip_path)
+            .with_context(|| format!("failed to remove {}", zip_path.display()))?;
+    }
+
+    let selected = tile_paths
+        .into_iter()
+        .filter(|tile_path| tile_belongs_to_wide_angle(tile_path))
+        .collect::<Vec<_>>();
+
+    let mut manifest_text = String::new();
+    manifest_text.push_str(manifest_version);
+    manifest_text.push('\n');
+    for path in &selected {
+        manifest_text.push_str(path);
+        manifest_text.push('\n');
+    }
+    fs::write(&manifest_path, manifest_text)
+        .with_context(|| format!("failed to write {}", manifest_path.display()))?;
+
+    let mut stdin_text = String::new();
+    for path in &selected {
+        stdin_text.push_str(path);
+        stdin_text.push('\n');
+    }
+    stdin_text.push_str(&manifest_name);
+    stdin_text.push('\n');
+
+    let invocation = ToolInvocation {
+        program: "zip".to_string(),
+        args: vec![
+            "-0".to_string(),
+            "-q".to_string(),
+            zip_name.clone(),
+            "-@".to_string(),
+        ],
+        cwd: work_dir.to_path_buf(),
+        label: format!("{}-package-wide", spec.family.capture_label()),
+        env: Vec::new(),
+        stdin_text: Some(stdin_text),
+    };
+    let outcome = invocation.run_logged(work_dir.join(".rust-logs"))?;
+    if !outcome.success {
+        bail!("zip failed for wide-angle {}", spec.family.capture_label());
+    }
+
+    if produce_record {
+        Ok(PackageOutputRecord {
+            label: spec.family.capture_label().to_string(),
+            chart: Some(spec.chart_name.to_string()),
+            region: WIDE_ANGLE_REGION_ID.to_string(),
+            manifest: manifest_name,
+            manifest_sha256: hash_file(&manifest_path)?,
+            zip: zip_name,
+            zip_sha256: hash_file(&zip_path)?,
+            metadata: wide_angle_package_metadata(true),
+        })
+    } else {
+        bail!("wide-angle package record requested without record production")
+    }
 }
 
 fn collect_tile_paths_glob(work_dir: &Path, tile_index: &str) -> anyhow::Result<Vec<String>> {
@@ -1011,27 +1121,12 @@ for path in glob.glob(str(root / f"tiles/{tile_index}/**/*.webp"), recursive=Tru
 }
 
 fn tile_belongs_to_region(tile_path: &str, region: &Region) -> bool {
-    let tokens: Vec<&str> = tile_path.split('/').collect();
-    let (z_index, x_index, y_index) = match tokens.len() {
-        4 => (1, 2, 3),
-        5 if tokens[0] == "tiles" => (2, 3, 4),
-        _ => return false,
-    };
-    let z = match tokens[z_index].parse::<u32>() {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
-    let x = match tokens[x_index].parse::<u32>() {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
-    let y = match tokens[y_index].trim_end_matches(".webp").parse::<u32>() {
-        Ok(value) => value,
-        Err(_) => return false,
+    let Some((z, x, y)) = tile_path_xyz(tile_path) else {
+        return false;
     };
 
     if z <= FULL_COVERAGE_ZOOM {
-        return true;
+        return false;
     }
 
     let RegionBounds {
@@ -1044,6 +1139,63 @@ fn tile_belongs_to_region(tile_path: &str, region: &Region) -> bool {
     let lon_overlap = tile_lon_max >= region_lon_min && tile_lon_min <= region_lon_max;
     let lat_overlap = tile_lat_max >= region_lat_min && tile_lat_min <= region_lat_max;
     lon_overlap && lat_overlap
+}
+
+fn tile_belongs_to_wide_angle(tile_path: &str) -> bool {
+    tile_path_xyz(tile_path)
+        .map(|(z, _x, _y)| z <= FULL_COVERAGE_ZOOM)
+        .unwrap_or(false)
+}
+
+fn tile_path_xyz(tile_path: &str) -> Option<(u32, u32, u32)> {
+    let tokens: Vec<&str> = tile_path.split('/').collect();
+    let (z_index, x_index, y_index) = match tokens.len() {
+        4 => (1, 2, 3),
+        5 if tokens[0] == "tiles" => (2, 3, 4),
+        _ => return None,
+    };
+    let z = match tokens[z_index].parse::<u32>() {
+        Ok(value) => value,
+        Err(_) => return None,
+    };
+    let x = match tokens[x_index].parse::<u32>() {
+        Ok(value) => value,
+        Err(_) => return None,
+    };
+    let y = match tokens[y_index].trim_end_matches(".webp").parse::<u32>() {
+        Ok(value) => value,
+        Err(_) => return None,
+    };
+    Some((z, x, y))
+}
+
+fn wide_angle_package_metadata(is_wide_angle: bool) -> BTreeMap<String, serde_json::Value> {
+    BTreeMap::from([
+        (
+            "wide_angle_region_id".to_string(),
+            serde_json::Value::from(WIDE_ANGLE_REGION_ID),
+        ),
+        (
+            "wide_angle_max_zoom".to_string(),
+            serde_json::Value::from(FULL_COVERAGE_ZOOM),
+        ),
+        (
+            "wide_angle".to_string(),
+            serde_json::Value::from(is_wide_angle),
+        ),
+        (
+            if is_wide_angle {
+                "max_source_zoom".to_string()
+            } else {
+                "min_source_zoom".to_string()
+            },
+            serde_json::Value::from(if is_wide_angle {
+                FULL_COVERAGE_ZOOM
+            } else {
+                FULL_COVERAGE_ZOOM + 1
+            }),
+        ),
+    ])
 }
 
 fn calculate_manifest_cycle() -> String {

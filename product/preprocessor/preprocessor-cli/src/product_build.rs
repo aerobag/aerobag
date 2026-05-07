@@ -15,8 +15,8 @@ use anyhow::{bail, Context};
 use chrono::{DateTime, Datelike, NaiveDate, SecondsFormat, Timelike, Utc};
 use crossbeam_channel::{self, RecvTimeoutError};
 use preprocessor_charts::{
-    build_family_tiles, build_family_vrts, package_family_region_versioned, stage_work_dir,
-    FULL_COVERAGE_ZOOM,
+    build_family_tiles, build_family_vrts, package_family_region_versioned,
+    package_family_wide_angle_versioned, stage_work_dir, FULL_COVERAGE_ZOOM, WIDE_ANGLE_REGION_ID,
 };
 use preprocessor_core::nav_kv::{build_nav_kv_sorted, NavKvPair, NavKvRoot};
 use preprocessor_core::{ChartFamily, Region};
@@ -550,6 +550,7 @@ fn static_product_task_ids(config: &ProductBuildConfig) -> Vec<String> {
                 region.code().to_ascii_lowercase()
             )
         }));
+        task_ids.push(format!("publish-shaded-relief-{WIDE_ANGLE_REGION_ID}"));
     }
     task_ids
 }
@@ -644,6 +645,46 @@ fn stable_product_package_metadata(id: &str) -> BTreeMap<String, serde_json::Val
                 ),
             ),
         ]);
+    }
+    if let Some(region_id) = id.strip_prefix("shaded-relief-") {
+        let is_wide_angle = region_id == WIDE_ANGLE_REGION_ID;
+        let mut metadata = BTreeMap::from([
+            ("tile_format".to_string(), serde_json::json!("webp")),
+            (
+                "tile_path_template".to_string(),
+                serde_json::json!("tiles/0/{z}/{x}/{y}.webp"),
+            ),
+            (
+                "tile_size".to_string(),
+                serde_json::json!(TERRAIN_TILE_SIZE),
+            ),
+            (
+                "wide_angle_region_id".to_string(),
+                serde_json::json!(WIDE_ANGLE_REGION_ID),
+            ),
+            (
+                "wide_angle_max_zoom".to_string(),
+                serde_json::json!(FULL_COVERAGE_ZOOM),
+            ),
+            ("wide_angle".to_string(), serde_json::json!(is_wide_angle)),
+        ]);
+        if is_wide_angle {
+            metadata.insert("min_zoom".to_string(), serde_json::json!(TERRAIN_MIN_ZOOM));
+            metadata.insert(
+                "max_source_zoom".to_string(),
+                serde_json::json!(FULL_COVERAGE_ZOOM),
+            );
+        } else {
+            metadata.insert(
+                "min_source_zoom".to_string(),
+                serde_json::json!(FULL_COVERAGE_ZOOM + 1),
+            );
+            metadata.insert(
+                "max_source_zoom".to_string(),
+                serde_json::json!(TERRAIN_ZOOM),
+            );
+        }
+        return metadata;
     }
     BTreeMap::new()
 }
@@ -1026,7 +1067,7 @@ const TPP_RENDER_JOBS_PER_RUN: usize = 8;
 const TPP_RENDER_WEIGHT: usize = 2;
 const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
 const TERRAIN_PIPELINE_VERSION: &str = "v4";
-const SHADED_RELIEF_PIPELINE_VERSION: &str = "v6-chart-index-path";
+const SHADED_RELIEF_PIPELINE_VERSION: &str = "v7-wide-angle-split";
 const WATER_MASK_PIPELINE_VERSION: &str = "v2";
 const TERRAIN_TILE_WORKERS: u32 = 16;
 const SHADED_RELIEF_TILE_WORKERS: u32 = 16;
@@ -1146,7 +1187,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         TerrainPublish { region: Region },
         WaterMaskBuild { region: Region },
         ShadedReliefBuild { region: Region },
+        ShadedReliefWideBuild,
         ShadedReliefPublish { region: Region },
+        ShadedReliefWidePublish,
         CurrentArtifacts,
         ProductUnpack,
         ValidatePackagedContract,
@@ -1410,6 +1453,24 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     kind: ProductScheduledTaskKind::ShadedReliefPublish { region: *region },
                 });
             }
+            let shaded_relief_wide_deps = config
+                .profile
+                .terrain_regions()
+                .iter()
+                .map(|region| format!("build-shaded-relief-{}", region.code().to_ascii_lowercase()))
+                .collect::<Vec<_>>();
+            pending_tasks.push(ProductScheduledTask {
+                id: format!("build-shaded-relief-{WIDE_ANGLE_REGION_ID}"),
+                deps: shaded_relief_wide_deps,
+                weight: 1,
+                kind: ProductScheduledTaskKind::ShadedReliefWideBuild,
+            });
+            pending_tasks.push(ProductScheduledTask {
+                id: format!("publish-shaded-relief-{WIDE_ANGLE_REGION_ID}"),
+                deps: vec![format!("build-shaded-relief-{WIDE_ANGLE_REGION_ID}")],
+                weight: 1,
+                kind: ProductScheduledTaskKind::ShadedReliefWidePublish,
+            });
         }
         let mut current_artifacts_deps = cycles
             .iter()
@@ -2289,6 +2350,63 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 completion_detail: format!("cache_hit={cache_hit}"),
                             })
                         }
+                        ProductScheduledTaskKind::ShadedReliefWideBuild => {
+                            let mut regional_products = Vec::new();
+                            for region in config.profile.terrain_regions() {
+                                let region_id = region.code().to_ascii_lowercase();
+                                let task_id = format!("build-shaded-relief-{region_id}");
+                                match task_values_snapshot.get(&task_id) {
+                                    Some(ProductTaskValue::BuiltStaticTileProduct {
+                                        zip_path,
+                                        source_version,
+                                        source_fetched_at_utc,
+                                        ..
+                                    }) => {
+                                        let output_dir = zip_path
+                                            .parent()
+                                            .with_context(|| {
+                                                format!(
+                                                    "shaded relief zip has no parent for {}",
+                                                    zip_path.display()
+                                                )
+                                            })?
+                                            .to_path_buf();
+                                        regional_products.push((
+                                            region_id,
+                                            output_dir,
+                                            source_version.clone(),
+                                            source_fetched_at_utc.clone(),
+                                        ));
+                                    }
+                                    _ => bail!(
+                                        "missing shaded relief build output for {}",
+                                        region.code()
+                                    ),
+                                }
+                            }
+                            let (
+                                zip_path,
+                                source_version,
+                                source_fetched_at_utc,
+                                tile_levels,
+                                record,
+                            ) = build_shaded_relief_wide_product(&config, &regional_products)?;
+                            let cache_hit = record.cache_hit;
+                            let (zip_sha256, zip_size_bytes) =
+                                node_output_file_detail(&record, "zip");
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![record],
+                                value: ProductTaskValue::BuiltStaticTileProduct {
+                                    zip_path,
+                                    zip_sha256,
+                                    zip_size_bytes,
+                                    source_version,
+                                    source_fetched_at_utc,
+                                    tile_levels,
+                                },
+                                completion_detail: format!("cache_hit={cache_hit}"),
+                            })
+                        }
                         ProductScheduledTaskKind::GeoPublish => {
                             let built = match task_values_snapshot.get("build-geo") {
                                 Some(ProductTaskValue::BuiltStandaloneProduct {
@@ -2436,6 +2554,48 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 ),
                             };
                             let product_id = format!("shaded-relief-{region_id}");
+                            let (published_zip, sha256, size_bytes) =
+                                publish_content_addressed_zip(
+                                    &config.build_root,
+                                    &built.0,
+                                    &product_id,
+                                    built.1.as_deref(),
+                                    built.2,
+                                )?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::PublishedStandaloneProduct {
+                                    id: product_id,
+                                    source_zip_path: built.0,
+                                    published_zip,
+                                    sha256,
+                                    size_bytes,
+                                    source_version: built.3,
+                                    source_fetched_at_utc: built.4,
+                                },
+                                completion_detail: "published".to_string(),
+                            })
+                        }
+                        ProductScheduledTaskKind::ShadedReliefWidePublish => {
+                            let task_id = format!("build-shaded-relief-{WIDE_ANGLE_REGION_ID}");
+                            let built = match task_values_snapshot.get(&task_id) {
+                                Some(ProductTaskValue::BuiltStaticTileProduct {
+                                    zip_path,
+                                    zip_sha256,
+                                    zip_size_bytes,
+                                    source_version,
+                                    source_fetched_at_utc,
+                                    ..
+                                }) => (
+                                    zip_path.clone(),
+                                    zip_sha256.clone(),
+                                    *zip_size_bytes,
+                                    source_version.clone(),
+                                    source_fetched_at_utc.clone(),
+                                ),
+                                _ => bail!("missing shaded relief wide-angle build output"),
+                            };
+                            let product_id = format!("shaded-relief-{WIDE_ANGLE_REGION_ID}");
                             let (published_zip, sha256, size_bytes) =
                                 publish_content_addressed_zip(
                                     &config.build_root,
@@ -4224,6 +4384,30 @@ fn collect_static_raster_tile_levels(
         levels: world_levels,
     });
     if include_static_terrain_products() {
+        let wide_task_id = format!("build-shaded-relief-{WIDE_ANGLE_REGION_ID}");
+        let wide_tile_levels = match task_values.get(&wide_task_id) {
+            Some(ProductTaskValue::BuiltStaticTileProduct { tile_levels, .. }) => {
+                tile_levels.clone()
+            }
+            _ => bail!("missing shaded relief wide-angle build output"),
+        };
+        entries.push(StaticRasterCatalogEntry {
+            product_id: format!("shaded-relief-{WIDE_ANGLE_REGION_ID}"),
+            label: "Wide Shaded Relief".to_string(),
+            chart_family: "shaded-relief".to_string(),
+            tile_url_root: String::new(),
+            tile_path_template: "0/{z}/{x}/{y}.webp".to_string(),
+            tile_size: TERRAIN_TILE_SIZE,
+            min_zoom: TERRAIN_MIN_ZOOM,
+            max_source_zoom: FULL_COVERAGE_ZOOM,
+            max_display_zoom: RASTER_BASEMAP_MAX_DISPLAY_ZOOM,
+            initial_viewport: DefaultView {
+                lat: 0.0,
+                lon: 0.0,
+                zoom: 0.0,
+            },
+            levels: wide_tile_levels,
+        });
         for region in config.profile.terrain_regions() {
             let region_id = region.code().to_ascii_lowercase();
             let task_id = format!("build-shaded-relief-{region_id}");
@@ -4593,6 +4777,12 @@ fn build_nav_kv_chart_catalog(
     static_raster_tile_levels: &[StaticRasterCatalogEntry],
     chart_coverage_polygon_sets: &BTreeMap<String, ChartCoveragePolygonSetRecord>,
 ) -> serde_json::Value {
+    let wide_angle_collections = resource_index
+        .chart_collections
+        .iter()
+        .filter(|collection| collection.region_id == WIDE_ANGLE_REGION_ID)
+        .map(|collection| (collection.family_id.clone(), collection))
+        .collect::<BTreeMap<_, _>>();
     let mut collections = resource_index
         .chart_collections
         .iter()
@@ -4600,7 +4790,7 @@ fn build_nav_kv_chart_catalog(
             matches!(
                 collection.family_id.as_str(),
                 "sec" | "tac" | "enr-l" | "enr-h"
-            )
+            ) && collection.region_id != WIDE_ANGLE_REGION_ID
         })
         .map(|collection| {
             let levels = collection
@@ -4627,6 +4817,32 @@ fn build_nav_kv_chart_catalog(
                     })
                 })
                 .unwrap_or(serde_json::Value::Null);
+            let wide_angle = wide_angle_collections
+                .get(&collection.family_id)
+                .map(|wide_collection| {
+                    let wide_levels = wide_collection
+                        .levels
+                        .iter()
+                        .map(|level| {
+                            serde_json::json!({
+                                "zoom": level.zoom,
+                                "x_min": level.x_min,
+                                "x_max": level.x_max,
+                                "y_tms_min": level.y_tms_min,
+                                "y_tms_max": level.y_tms_max,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    serde_json::json!({
+                        "region_id": WIDE_ANGLE_REGION_ID,
+                        "max_zoom": FULL_COVERAGE_ZOOM,
+                        "package_name": wide_collection.package_id,
+                        "tile_url_root": format!("/sectional-packages/{}/tiles", wide_collection.package_id),
+                        "tile_path_template": wide_collection.tile_path_template.strip_prefix("tiles/").unwrap_or(&wide_collection.tile_path_template),
+                        "levels": wide_levels,
+                    })
+                })
+                .unwrap_or(serde_json::Value::Null);
             serde_json::json!({
                 "id": collection.id,
                 "label": format!(
@@ -4650,6 +4866,7 @@ fn build_nav_kv_chart_catalog(
                     "tile_size": 512,
                     "min_zoom": min_zoom_for_levels(collection),
                     "max_zoom": max_zoom_for_levels(collection),
+                    "wide_angle": wide_angle,
                     "storage_kind": "sectional_package",
                     "package_name": collection.package_id,
                     "initial_viewport": {
@@ -5100,8 +5317,12 @@ fn build_nav_kv_static_raster_catalog_entries(
     resource_index: &ResourceIndex,
     static_raster_tile_levels: &[StaticRasterCatalogEntry],
 ) -> Vec<serde_json::Value> {
+    let shaded_relief_wide = static_raster_tile_levels
+        .iter()
+        .find(|entry| entry.product_id == format!("shaded-relief-{WIDE_ANGLE_REGION_ID}"));
     static_raster_tile_levels
         .iter()
+        .filter(|entry| entry.product_id != format!("shaded-relief-{WIDE_ANGLE_REGION_ID}"))
         .map(|entry| {
             let (label, region_id, initial_viewport, tile_url_root) =
                 if let Some(region_id) = entry.product_id.strip_prefix("shaded-relief-") {
@@ -5138,6 +5359,35 @@ fn build_nav_kv_static_raster_catalog_entries(
                     })
                 })
                 .collect::<Vec<_>>();
+            let wide_angle = if entry.product_id.starts_with("shaded-relief-") {
+                shaded_relief_wide
+                    .map(|wide_entry| {
+                        let wide_levels = wide_entry
+                            .levels
+                            .iter()
+                            .map(|level| {
+                                serde_json::json!({
+                                    "zoom": level.zoom,
+                                    "x_min": level.x_min,
+                                    "x_max": level.x_max,
+                                    "y_tms_min": level.y_tms_min,
+                                    "y_tms_max": level.y_tms_max,
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        serde_json::json!({
+                            "region_id": WIDE_ANGLE_REGION_ID,
+                            "max_zoom": FULL_COVERAGE_ZOOM,
+                            "package_name": wide_entry.product_id,
+                            "tile_url_root": format!("/shaded-relief-products/{}/tiles", wide_entry.product_id),
+                            "tile_path_template": wide_entry.tile_path_template.clone(),
+                            "levels": wide_levels,
+                        })
+                    })
+                    .unwrap_or(serde_json::Value::Null)
+            } else {
+                serde_json::Value::Null
+            };
             serde_json::json!({
                 "id": entry.product_id.clone(),
                 "label": label.clone(),
@@ -5154,6 +5404,7 @@ fn build_nav_kv_static_raster_catalog_entries(
                     "max_source_zoom": entry.max_source_zoom,
                     "max_display_zoom": entry.max_display_zoom,
                     "max_zoom": entry.max_display_zoom,
+                    "wide_angle": wide_angle,
                     "storage_kind": "static_product",
                     "package_name": entry.product_id.clone(),
                     "initial_viewport": {
@@ -5180,7 +5431,9 @@ fn build_chart_coverage_polygon_sets(
         let family_collections = resource_index
             .chart_collections
             .iter()
-            .filter(|collection| collection.family_id == family_id)
+            .filter(|collection| {
+                collection.family_id == family_id && collection.region_id != WIDE_ANGLE_REGION_ID
+            })
             .collect::<Vec<_>>();
         if family_collections.is_empty() {
             continue;
@@ -9562,10 +9815,12 @@ fn build_shaded_relief_product(
             &inputs,
         )?;
         let output_dir = prepared.dir.join("output");
+        let package_dir = output_dir.join("package");
         let zip_path = output_dir.join(format!("shaded_relief_{region_id}_{version_label}.zip"));
-        let manifest_path = output_dir.join("manifest.json");
+        let manifest_path = package_dir.join("manifest.json");
         if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), manifest_path])? {
-            let tile_levels = read_static_tile_manifest_levels(&output_dir.join("manifest.json"))?;
+            let tile_levels =
+                read_static_tile_manifest_levels(&output_dir.join("package/manifest.json"))?;
             return Ok((
                 zip_path,
                 version_label,
@@ -9607,11 +9862,13 @@ fn build_shaded_relief_product(
         &inputs,
     )?;
     let output_dir = prepared.dir.join("output");
+    let package_dir = output_dir.join("package");
     let zip_path = output_dir.join(format!("shaded_relief_{region_id}_{version_label}.zip"));
-    let manifest_path = output_dir.join("manifest.json");
+    let manifest_path = package_dir.join("manifest.json");
     let _build_lock = match claim_or_wait_for_node(&prepared, &[zip_path.clone(), manifest_path])? {
         NodeCacheState::CacheHit(record) => {
-            let tile_levels = read_static_tile_manifest_levels(&output_dir.join("manifest.json"))?;
+            let tile_levels =
+                read_static_tile_manifest_levels(&output_dir.join("package/manifest.json"))?;
             return Ok((
                 zip_path,
                 version_label,
@@ -9641,12 +9898,18 @@ fn build_shaded_relief_product(
         water_mask_tiles_dir,
     )?;
     move_static_tile_tree_under_chart_index(&output_dir, 0)?;
-    let tile_levels = read_static_tile_manifest_levels(&output_dir.join("manifest.json"))?;
-    zip_directory_deterministic(&zip_path, &output_dir, &["manifest.json", "tiles"])?;
+    stage_static_tile_zoom_subset(
+        &output_dir,
+        &package_dir,
+        Some(FULL_COVERAGE_ZOOM + 1),
+        None,
+    )?;
+    let tile_levels = read_static_tile_manifest_levels(&package_dir.join("manifest.json"))?;
+    zip_directory_deterministic(&zip_path, &package_dir, &["manifest.json", "tiles"])?;
     let outputs = BTreeMap::from([
         (
             "manifest".to_string(),
-            relative_artifact_path(&output_dir.join("manifest.json"), &config.build_root),
+            relative_artifact_path(&package_dir.join("manifest.json"), &config.build_root),
         ),
         (
             "zip".to_string(),
@@ -9669,6 +9932,198 @@ fn build_shaded_relief_product(
         tile_levels,
         record,
     ))
+}
+
+fn build_shaded_relief_wide_product(
+    config: &ProductBuildConfig,
+    regional_products: &[(String, PathBuf, String, Option<String>)],
+) -> anyhow::Result<(
+    PathBuf,
+    String,
+    Option<String>,
+    Vec<TileLevelRecord>,
+    NodeRecord,
+)> {
+    let source_fingerprint = shaded_relief_wide_source_fingerprint(regional_products);
+    let version_label = fast_product_version_label(&source_fingerprint);
+    let source_fetched_at_utc = regional_products
+        .iter()
+        .filter_map(|(_region_id, _output_dir, _source_version, fetched_at)| fetched_at.clone())
+        .max();
+    let inputs = shaded_relief_wide_product_inputs(regional_products, &source_fingerprint);
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(
+            config,
+            &format!("static-shaded-relief-{WIDE_ANGLE_REGION_ID}"),
+        )?,
+        &format!("static-shaded-relief-{WIDE_ANGLE_REGION_ID}"),
+        &inputs,
+    )?;
+    let output_dir = prepared.dir.join("output");
+    let manifest_path = output_dir.join("manifest.json");
+    let zip_path = output_dir.join(format!(
+        "shaded_relief_{WIDE_ANGLE_REGION_ID}_{version_label}.zip"
+    ));
+    if let Some(record) =
+        try_load_node_record(&prepared, &[zip_path.clone(), manifest_path.clone()])?
+    {
+        let tile_levels = read_static_tile_manifest_levels(&manifest_path)?;
+        return Ok((
+            zip_path,
+            version_label,
+            source_fetched_at_utc,
+            tile_levels,
+            record,
+        ));
+    }
+    let _build_lock =
+        match claim_or_wait_for_node(&prepared, &[zip_path.clone(), manifest_path.clone()])? {
+            NodeCacheState::CacheHit(record) => {
+                let tile_levels = read_static_tile_manifest_levels(&manifest_path)?;
+                return Ok((
+                    zip_path,
+                    version_label,
+                    source_fetched_at_utc,
+                    tile_levels,
+                    record,
+                ));
+            }
+            NodeCacheState::Build(lock) => lock,
+        };
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    if output_dir.exists() {
+        fs::remove_dir_all(&output_dir)
+            .with_context(|| format!("failed to clear {}", output_dir.display()))?;
+    }
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
+    composite_shaded_relief_wide_tiles(
+        regional_products,
+        &output_dir,
+        &version_label,
+        &source_fingerprint,
+    )?;
+    let tile_levels = read_static_tile_manifest_levels(&manifest_path)?;
+    zip_directory_deterministic(&zip_path, &output_dir, &["manifest.json", "tiles"])?;
+    let outputs = BTreeMap::from([
+        (
+            "manifest".to_string(),
+            relative_artifact_path(&manifest_path, &config.build_root),
+        ),
+        (
+            "zip".to_string(),
+            relative_artifact_path(&zip_path, &config.build_root),
+        ),
+    ]);
+    let record = write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok((
+        zip_path,
+        version_label,
+        source_fetched_at_utc,
+        tile_levels,
+        record,
+    ))
+}
+
+fn shaded_relief_wide_source_fingerprint(
+    regional_products: &[(String, PathBuf, String, Option<String>)],
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"shaded-relief-wide-v1");
+    hasher.update(FULL_COVERAGE_ZOOM.to_string().as_bytes());
+    for (region_id, _output_dir, source_version, _fetched_at) in regional_products {
+        hasher.update(region_id.as_bytes());
+        hasher.update([0]);
+        hasher.update(source_version.as_bytes());
+        hasher.update([0xff]);
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn shaded_relief_wide_product_inputs(
+    regional_products: &[(String, PathBuf, String, Option<String>)],
+    source_fingerprint: &str,
+) -> BTreeMap<String, String> {
+    let region_versions = regional_products
+        .iter()
+        .map(|(region_id, _output_dir, source_version, _fetched_at)| {
+            format!("{region_id}:{source_version}")
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    BTreeMap::from([
+        (
+            "product_id".to_string(),
+            format!("shaded-relief-{WIDE_ANGLE_REGION_ID}"),
+        ),
+        (
+            "wide_angle_max_zoom".to_string(),
+            FULL_COVERAGE_ZOOM.to_string(),
+        ),
+        ("tile_size".to_string(), TERRAIN_TILE_SIZE.to_string()),
+        (
+            "source_fingerprint".to_string(),
+            source_fingerprint.to_string(),
+        ),
+        ("region_versions".to_string(), region_versions),
+        (
+            "shaded_relief_pipeline".to_string(),
+            SHADED_RELIEF_PIPELINE_VERSION.to_string(),
+        ),
+        (
+            "wide_angle_script".to_string(),
+            hash_text(SHADED_RELIEF_WIDE_TILE_SCRIPT),
+        ),
+    ])
+}
+
+fn composite_shaded_relief_wide_tiles(
+    regional_products: &[(String, PathBuf, String, Option<String>)],
+    output_dir: &Path,
+    version_label: &str,
+    source_fingerprint: &str,
+) -> anyhow::Result<()> {
+    let script_path = output_dir.join("build_shaded_relief_wide_tiles.py");
+    fs::write(&script_path, SHADED_RELIEF_WIDE_TILE_SCRIPT)
+        .with_context(|| format!("failed to write {}", script_path.display()))?;
+    let mut command = Command::new("python3");
+    command
+        .arg(&script_path)
+        .arg("--output-dir")
+        .arg(output_dir)
+        .arg("--version-label")
+        .arg(version_label)
+        .arg("--source-fingerprint")
+        .arg(source_fingerprint)
+        .arg("--max-zoom")
+        .arg(FULL_COVERAGE_ZOOM.to_string())
+        .arg("--tile-size")
+        .arg(TERRAIN_TILE_SIZE.to_string());
+    for (_region_id, output_dir, _source_version, _fetched_at) in regional_products {
+        command.arg("--source-dir").arg(output_dir);
+    }
+    let output = command
+        .output()
+        .with_context(|| format!("failed to run {}", script_path.display()))?;
+    if !output.status.success() {
+        bail!(
+            "shaded relief wide tile builder failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fs::remove_file(&script_path)
+        .with_context(|| format!("failed to remove {}", script_path.display()))?;
+    Ok(())
 }
 
 fn shaded_relief_product_inputs(
@@ -9785,6 +10240,121 @@ fn move_static_tile_tree_under_chart_index(
             chart_index_dir.display()
         )
     })?;
+    Ok(())
+}
+
+fn stage_static_tile_zoom_subset(
+    source_output_dir: &Path,
+    package_dir: &Path,
+    min_zoom: Option<u32>,
+    max_zoom: Option<u32>,
+) -> anyhow::Result<()> {
+    if package_dir.exists() {
+        fs::remove_dir_all(package_dir)
+            .with_context(|| format!("failed to remove {}", package_dir.display()))?;
+    }
+    fs::create_dir_all(package_dir)
+        .with_context(|| format!("failed to create {}", package_dir.display()))?;
+    let manifest_path = source_output_dir.join("manifest.json");
+    let mut manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(&manifest_path)
+            .with_context(|| format!("failed to read {}", manifest_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+    let levels = manifest
+        .get("levels")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|level| {
+            let Some(zoom) = level.get("zoom").and_then(|value| value.as_u64()) else {
+                return false;
+            };
+            let zoom = zoom as u32;
+            min_zoom.map(|min_zoom| zoom >= min_zoom).unwrap_or(true)
+                && max_zoom.map(|max_zoom| zoom <= max_zoom).unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    if levels.is_empty() {
+        bail!(
+            "no static tile levels selected from {} for min_zoom={:?} max_zoom={:?}",
+            source_output_dir.display(),
+            min_zoom,
+            max_zoom
+        );
+    }
+    manifest["levels"] = serde_json::Value::Array(levels);
+    if let Some(min_zoom) = min_zoom {
+        manifest["min_zoom"] = serde_json::Value::from(min_zoom);
+    }
+    if let Some(max_zoom) = max_zoom {
+        manifest["max_zoom"] = serde_json::Value::from(max_zoom);
+    }
+    fs::write(
+        package_dir.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest).context("failed to encode static tile manifest")?,
+    )
+    .with_context(|| {
+        format!(
+            "failed to write {}",
+            package_dir.join("manifest.json").display()
+        )
+    })?;
+    let source_tiles_dir = source_output_dir.join("tiles");
+    let package_tiles_dir = package_dir.join("tiles");
+    hardlink_static_tile_zoom_subset(&source_tiles_dir, &package_tiles_dir, min_zoom, max_zoom)?;
+    Ok(())
+}
+
+fn hardlink_static_tile_zoom_subset(
+    source_dir: &Path,
+    output_dir: &Path,
+    min_zoom: Option<u32>,
+    max_zoom: Option<u32>,
+) -> anyhow::Result<()> {
+    for entry in fs::read_dir(source_dir)
+        .with_context(|| format!("failed to read {}", source_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        let output = output_dir.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to stat {}", path.display()))?;
+        if file_type.is_dir() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let zoom_filter_applies = path
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str())
+                .map(|name| name == "0")
+                .unwrap_or(false);
+            if zoom_filter_applies {
+                if let Ok(zoom) = name.parse::<u32>() {
+                    if min_zoom.map(|min_zoom| zoom < min_zoom).unwrap_or(false)
+                        || max_zoom.map(|max_zoom| zoom > max_zoom).unwrap_or(false)
+                    {
+                        continue;
+                    }
+                }
+            }
+            hardlink_static_tile_zoom_subset(&path, &output, min_zoom, max_zoom)?;
+        } else if file_type.is_file() {
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create {}", parent.display()))?;
+            }
+            fs::hard_link(&path, &output).with_context(|| {
+                format!(
+                    "failed to hardlink {} to {}",
+                    path.display(),
+                    output.display()
+                )
+            })?;
+        }
+    }
     Ok(())
 }
 
@@ -11105,6 +11675,119 @@ def main():
         'tile_format': 'png',
         'tile_path_template': 'tiles/0/{z}/{x}/{y}.png',
         'levels': levels,
+    }
+    (output_dir / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+
+if __name__ == '__main__':
+    main()
+"#;
+
+const SHADED_RELIEF_WIDE_TILE_SCRIPT: &str = r#"
+import argparse
+import json
+from collections import defaultdict
+from pathlib import Path
+
+from PIL import Image
+
+RASTER_TILE_SUFFIXES = {'.webp'}
+
+def scan_sources(source_dirs, max_zoom):
+    groups = defaultdict(list)
+    for source_dir in source_dirs:
+        tiles_root = Path(source_dir) / 'tiles' / '0'
+        if not tiles_root.exists():
+            continue
+        for z_dir in tiles_root.iterdir():
+            if not z_dir.is_dir():
+                continue
+            try:
+                z = int(z_dir.name)
+            except ValueError:
+                continue
+            if z > max_zoom:
+                continue
+            for x_dir in z_dir.iterdir():
+                if not x_dir.is_dir():
+                    continue
+                for tile_path in x_dir.iterdir():
+                    if tile_path.suffix.lower() in RASTER_TILE_SUFFIXES:
+                        rel = tile_path.relative_to(Path(source_dir)).as_posix()
+                        groups[rel].append(tile_path)
+    return groups
+
+def composite_group(paths, output_path):
+    base = Image.new('RGBA', Image.open(paths[0]).size, (0, 0, 0, 0))
+    for path in paths:
+        tile = Image.open(path).convert('RGBA')
+        base.alpha_composite(tile)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    base.save(output_path, format='WEBP', quality=75, method=4, exact=True, alpha_quality=100)
+
+def scan_levels(output_dir):
+    levels = []
+    tiles_root = Path(output_dir) / 'tiles' / '0'
+    for z_dir in sorted((path for path in tiles_root.iterdir() if path.is_dir()), key=lambda path: int(path.name)):
+        zoom = int(z_dir.name)
+        coords = []
+        for x_dir in z_dir.iterdir():
+            if not x_dir.is_dir():
+                continue
+            x = int(x_dir.name)
+            for tile_path in x_dir.iterdir():
+                if tile_path.suffix.lower() != '.webp':
+                    continue
+                coords.append((x, int(tile_path.stem)))
+        if not coords:
+            continue
+        xs = [x for x, _ in coords]
+        ys = [y for _, y in coords]
+        levels.append({
+            'zoom': zoom,
+            'tile_count': len(coords),
+            'x_min': min(xs),
+            'x_max': max(xs),
+            'y_tms_min': min(ys),
+            'y_tms_max': max(ys),
+        })
+    return levels
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--source-dir', action='append', required=True)
+    parser.add_argument('--output-dir', required=True)
+    parser.add_argument('--version-label', required=True)
+    parser.add_argument('--source-fingerprint', required=True)
+    parser.add_argument('--max-zoom', required=True, type=int)
+    parser.add_argument('--tile-size', required=True, type=int)
+    args = parser.parse_args()
+
+    output_dir = Path(args.output_dir)
+    groups = scan_sources(args.source_dir, args.max_zoom)
+    for rel, paths in sorted(groups.items()):
+        composite_group(paths, output_dir / rel)
+    levels = scan_levels(output_dir)
+    if not levels:
+        raise SystemExit('no shaded relief wide-angle tiles were produced')
+    manifest = {
+        'schema_version': 1,
+        'product': 'shaded-relief',
+        'region': 'wide',
+        'version_label': args.version_label,
+        'source_fingerprint': args.source_fingerprint,
+        'min_zoom': min(level['zoom'] for level in levels),
+        'max_zoom': args.max_zoom,
+        'base_zoom': args.max_zoom,
+        'tile_size': args.tile_size,
+        'tile_format': 'webp_rgba',
+        'tile_content_encoding': 'identity',
+        'zip_member_compression': 'stored_webp',
+        'wide_angle': True,
+        'wide_angle_max_zoom': args.max_zoom,
+        'source_policy': 'alpha-composite matching low-zoom tiles from regional shaded-relief products',
+        'source_region_count': len(args.source_dir),
+        'levels': levels,
+        'files': {'tiles': 'tiles'},
     }
     (output_dir / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
 
@@ -13795,7 +14478,7 @@ fn build_chart_package_nodes(
         .join("provenance")
         .join(format!("charts-{family_id}"));
     let aggregate_path = provenance_dir.join("package_outputs.jsonl");
-    let node_records = build_regional_package_nodes(
+    let mut node_records = build_regional_package_nodes(
         config,
         &aggregate_path,
         "chart",
@@ -13858,16 +14541,134 @@ fn build_chart_package_nodes(
                     version_label
                 ),
                 zip_sha256: hash_file(zip_path)?,
-                metadata: BTreeMap::from([(
-                    "full_coverage_zoom".to_string(),
-                    serde_json::Value::from(FULL_COVERAGE_ZOOM),
-                )]),
+                metadata: chart_wide_angle_package_metadata(false),
             })
         },
         |region| {
             package_family_region_versioned(family, &work_dir, region, version_label, version_label)
         },
     )?;
+    let wide_node_name = format!("charts-{family_id}-package-{WIDE_ANGLE_REGION_ID}");
+    let chart_package_lib_hash = hash_file(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("preprocessor-cli should live under workspace root")
+            .join("preprocessor-charts/src/lib.rs"),
+    )?;
+    let wide_inputs = BTreeMap::from([
+        (
+            "render_fingerprint".to_string(),
+            render_record.fingerprint.clone(),
+        ),
+        ("region".to_string(), WIDE_ANGLE_REGION_ID.to_string()),
+        ("version_label".to_string(), version_label.to_string()),
+        ("chart_package_lib".to_string(), chart_package_lib_hash),
+    ]);
+    let wide_manifest_path = work_dir.join(format!(
+        "WIDE_{}_{}.manifest",
+        manifest_chart_name(family),
+        version_label
+    ));
+    let wide_zip_path = work_dir.join(format!(
+        "WIDE_{}_{}.zip",
+        manifest_chart_name(family),
+        version_label
+    ));
+    let wide_prepared = prepare_node_at(
+        &build_shared_node_dir(config, &wide_node_name)?,
+        &wide_node_name,
+        &wide_inputs,
+    )?;
+    let expected_outputs = [wide_zip_path.clone(), wide_manifest_path.clone()];
+    let existing_package_records = read_package_outputs_by_region(&aggregate_path)?;
+    let wide_record_output = if let Some(record) =
+        try_load_node_record(&wide_prepared, &expected_outputs)?
+    {
+        node_records.push(record);
+        existing_package_records
+            .get(WIDE_ANGLE_REGION_ID)
+            .cloned()
+            .unwrap_or_else(|| PackageOutputRecord {
+                label: family.capture_label().to_string(),
+                chart: Some(manifest_chart_name(family).to_string()),
+                region: WIDE_ANGLE_REGION_ID.to_string(),
+                manifest: format!(
+                    "WIDE_{}_{}.manifest",
+                    manifest_chart_name(family),
+                    version_label
+                ),
+                manifest_sha256: hash_file(&wide_manifest_path).unwrap_or_default(),
+                zip: format!("WIDE_{}_{}.zip", manifest_chart_name(family), version_label),
+                zip_sha256: hash_file(&wide_zip_path).unwrap_or_default(),
+                metadata: chart_wide_angle_package_metadata(true),
+            })
+    } else {
+        let _build_lock = match claim_or_wait_for_node(&wide_prepared, &expected_outputs)? {
+            NodeCacheState::CacheHit(record) => {
+                node_records.push(record);
+                existing_package_records
+                    .get(WIDE_ANGLE_REGION_ID)
+                    .cloned()
+                    .unwrap_or_else(|| PackageOutputRecord {
+                        label: family.capture_label().to_string(),
+                        chart: Some(manifest_chart_name(family).to_string()),
+                        region: WIDE_ANGLE_REGION_ID.to_string(),
+                        manifest: format!(
+                            "WIDE_{}_{}.manifest",
+                            manifest_chart_name(family),
+                            version_label
+                        ),
+                        manifest_sha256: hash_file(&wide_manifest_path).unwrap_or_default(),
+                        zip: format!("WIDE_{}_{}.zip", manifest_chart_name(family), version_label),
+                        zip_sha256: hash_file(&wide_zip_path).unwrap_or_default(),
+                        metadata: chart_wide_angle_package_metadata(true),
+                    })
+            }
+            NodeCacheState::Build(lock) => {
+                let started_at_utc = utc_now_string();
+                let started = Instant::now();
+                let package_record = package_family_wide_angle_versioned(
+                    family,
+                    &work_dir,
+                    version_label,
+                    version_label,
+                )?;
+                let outputs = BTreeMap::from([
+                    (
+                        "zip".to_string(),
+                        relative_artifact_path(&wide_zip_path, &config.build_root),
+                    ),
+                    (
+                        "manifest".to_string(),
+                        relative_artifact_path(&wide_manifest_path, &config.build_root),
+                    ),
+                ]);
+                let record = write_node_record(
+                    wide_prepared,
+                    wide_inputs,
+                    outputs,
+                    false,
+                    started_at_utc,
+                    utc_now_string(),
+                    started.elapsed().as_millis() as u64,
+                )?;
+                drop(lock);
+                node_records.push(record);
+                package_record
+            }
+        };
+        _build_lock
+    };
+    let mut package_records = read_package_outputs_by_region(&aggregate_path)?
+        .into_values()
+        .filter(|record| record.region != WIDE_ANGLE_REGION_ID)
+        .collect::<Vec<_>>();
+    package_records.push(wide_record_output);
+    let parent = aggregate_path
+        .parent()
+        .with_context(|| format!("chart aggregate path missing parent"))?;
+    fs::create_dir_all(parent)?;
+    write_package_outputs_jsonl(parent, &package_records)?;
     Ok((
         node_records,
         ChartSource {
@@ -13877,6 +14678,35 @@ fn build_chart_package_nodes(
             source_urls_path: Some(source_urls_path),
         },
     ))
+}
+
+fn chart_wide_angle_package_metadata(is_wide_angle: bool) -> BTreeMap<String, serde_json::Value> {
+    BTreeMap::from([
+        (
+            "wide_angle_region_id".to_string(),
+            serde_json::Value::from(WIDE_ANGLE_REGION_ID),
+        ),
+        (
+            "wide_angle_max_zoom".to_string(),
+            serde_json::Value::from(FULL_COVERAGE_ZOOM),
+        ),
+        (
+            "wide_angle".to_string(),
+            serde_json::Value::from(is_wide_angle),
+        ),
+        (
+            if is_wide_angle {
+                "max_source_zoom".to_string()
+            } else {
+                "min_source_zoom".to_string()
+            },
+            serde_json::Value::from(if is_wide_angle {
+                FULL_COVERAGE_ZOOM
+            } else {
+                FULL_COVERAGE_ZOOM + 1
+            }),
+        ),
+    ])
 }
 
 struct RegionalPackageSpec {
@@ -15963,10 +16793,7 @@ mod tests {
                 version_label: None,
                 effective_date: None,
                 expiration_date: None,
-                metadata: BTreeMap::from([(
-                    "full_coverage_zoom".to_string(),
-                    serde_json::Value::from(7_u32),
-                )]),
+                metadata: chart_wide_angle_package_metadata(false),
             }],
             chart_collections: vec![ChartCollectionRecord {
                 id: "sec:nw".to_string(),
@@ -16532,10 +17359,7 @@ mod tests {
                 source_fetched_at_utc: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
-                metadata: BTreeMap::from([(
-                    "full_coverage_zoom".to_string(),
-                    serde_json::Value::from(7_u32),
-                )]),
+                metadata: chart_wide_angle_package_metadata(false),
             },
             BundlePackageArtifact {
                 id: "NAV_DB_2604_01".to_string(),
@@ -16569,11 +17393,13 @@ mod tests {
         let index = pair_value("package/index");
         assert_eq!(index.as_array().unwrap().len(), 2);
         assert_eq!(index[0]["id"], "NW_SEC_2604_01");
-        assert_eq!(index[0]["metadata"]["full_coverage_zoom"], 7);
+        assert_eq!(index[0]["metadata"]["wide_angle_max_zoom"], 7);
+        assert_eq!(index[0]["metadata"]["wide_angle_region_id"], "wide");
+        assert_eq!(index[0]["metadata"]["min_source_zoom"], 8);
         assert_eq!(index[1]["id"], "NAV_DB_2604_01");
 
         let sectional = pair_value("package/by-id/NW_SEC_2604_01");
-        assert_eq!(sectional["metadata"]["full_coverage_zoom"], 7);
+        assert_eq!(sectional["metadata"]["wide_angle_max_zoom"], 7);
 
         let nav_db = pair_value("package/by-id/NAV_DB_2604_01");
         assert_eq!(nav_db["family_id"], "nav-db");
@@ -16584,7 +17410,7 @@ mod tests {
         assert_eq!(nav_db["cycle"], "2604");
         assert_eq!(nav_db["cycle_version"], "01");
         let sec = pair_value("package/by-id/NW_SEC_2604_01");
-        assert_eq!(sec["metadata"]["full_coverage_zoom"], 7);
+        assert_eq!(sec["metadata"]["wide_angle_region_id"], "wide");
     }
 
     #[test]
@@ -16614,10 +17440,7 @@ mod tests {
         resource_index.packages[0].checksum_sha256 = "deadbeef".to_string();
         resource_index.packages[0].cycle_code = Some("2604".to_string());
         resource_index.packages[0].version_label = Some("01".to_string());
-        resource_index.packages[0].metadata = BTreeMap::from([(
-            "full_coverage_zoom".to_string(),
-            serde_json::Value::from(7_u32),
-        )]);
+        resource_index.packages[0].metadata = chart_wide_angle_package_metadata(false);
 
         let artifacts = bundle_package_artifacts_from_resource_index(&resource_index)
             .expect("resource index packages should convert");
@@ -16629,7 +17452,8 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&pair.value).unwrap();
 
         assert_eq!(artifacts.len(), 1);
-        assert_eq!(value["metadata"]["full_coverage_zoom"], 7);
+        assert_eq!(value["metadata"]["wide_angle_max_zoom"], 7);
+        assert_eq!(value["metadata"]["min_source_zoom"], 8);
         assert_eq!(value["relative_path"], "sec_nw_2604_01_deadbeef.zip");
         assert_eq!(value["size_bytes"], 123);
     }

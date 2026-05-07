@@ -5175,16 +5175,23 @@ function FlightPlanPage(props: {
       return;
     }
     const pageRect = page.getBoundingClientRect();
-    const top = thumbPixels(0.5);
+    const topPadding = thumbPixels(0.5);
     const bottomPadding = thumbPixels(0.1);
     const blockers = [planControlsRef.current, planFooterRef.current]
       .flatMap((element) => (element ? [element.getBoundingClientRect().top - pageRect.top] : []));
     const bottomLimit = blockers.length > 0 ? Math.min(...blockers) : page.clientHeight;
-    const maxHeight = Math.max(thumbPixels(1), bottomLimit - top - bottomPadding);
+    const maxHeight = Math.max(thumbPixels(1), bottomLimit - topPadding - bottomPadding);
+    const modalHeight = Math.min(modal.scrollHeight || modal.getBoundingClientRect().height, maxHeight);
+    const anchorCenter = selectedWaypointAnchor
+      ? selectedWaypointAnchor.top + selectedWaypointAnchor.height / 2
+      : topPadding + modalHeight / 2;
+    const centeredTop = anchorCenter - modalHeight / 2;
+    const maxTop = Math.max(topPadding, bottomLimit - bottomPadding - modalHeight);
+    const top = Math.min(Math.max(centeredTop, topPadding), maxTop);
 
     setWaypointModalTop(top);
     setWaypointModalMaxHeight(maxHeight);
-  }, [airwayPicker, selectedRow, rowActions.length]);
+  }, [airwayPicker, selectedRow, selectedWaypointAnchor, rowActions.length]);
 
   useEffect(() => {
     if (!airwayPicker || airwayPicker.loading) {

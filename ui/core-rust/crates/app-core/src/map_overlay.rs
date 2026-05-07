@@ -1336,6 +1336,12 @@ struct MetarOverlayProjection {
     warnings: Vec<MapOverlayWarning>,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum WorldXProjection {
+    NearestWrappedCopy,
+    DisplayCopyOffset(f64),
+}
+
 fn query_metar_overlay(
     viewport: &MapViewport,
     width_px: f64,
@@ -1389,13 +1395,13 @@ fn query_metar_overlay(
                 let Some(record) = metars.metars_by_station.get(&record_ref.id) else {
                     continue;
                 };
-                let feature = visible_metar_feature_with_x_offset(
+                let feature = visible_metar_feature(
                     record,
                     center_world,
                     scale,
                     width_px,
                     height_px,
-                    tile.world_x_offset,
+                    WorldXProjection::DisplayCopyOffset(tile.world_x_offset),
                 );
                 if weather_feature_is_on_screen(
                     feature.screen_x,
@@ -1413,13 +1419,13 @@ fn query_metar_overlay(
                 else {
                     continue;
                 };
-                let feature = visible_pirep_feature_with_x_offset(
+                let feature = visible_pirep_feature(
                     record,
                     center_world,
                     scale,
                     width_px,
                     height_px,
-                    tile.world_x_offset,
+                    WorldXProjection::DisplayCopyOffset(tile.world_x_offset),
                 );
                 if weather_feature_is_on_screen(
                     feature.screen_x,
@@ -1503,8 +1509,9 @@ fn visible_metar_feature(
     scale: f64,
     width_px: f64,
     height_px: f64,
+    projection: WorldXProjection,
 ) -> VisibleMetarFeature {
-    let point = world_to_screen(
+    let point = world_to_screen_projected(
         center_world,
         scale,
         width_px,
@@ -1513,34 +1520,7 @@ fn visible_metar_feature(
             lat: record.latitude,
             lon: record.longitude,
         },
-    );
-    VisibleMetarFeature {
-        station_id: record.station_id.clone(),
-        screen_x: point.x,
-        screen_y: point.y,
-        flight_category: normalized_metar_flight_category(record),
-        ceiling_amount: normalized_metar_ceiling_amount(record),
-    }
-}
-
-fn visible_metar_feature_with_x_offset(
-    record: &MetarRecord,
-    center_world: WorldPoint,
-    scale: f64,
-    width_px: f64,
-    height_px: f64,
-    world_x_offset: f64,
-) -> VisibleMetarFeature {
-    let point = world_to_screen_with_x_offset(
-        center_world,
-        scale,
-        width_px,
-        height_px,
-        LatLon {
-            lat: record.latitude,
-            lon: record.longitude,
-        },
-        world_x_offset,
+        projection,
     );
     VisibleMetarFeature {
         station_id: record.station_id.clone(),
@@ -1557,8 +1537,9 @@ fn visible_pirep_feature(
     scale: f64,
     width_px: f64,
     height_px: f64,
+    projection: WorldXProjection,
 ) -> VisiblePirepFeature {
-    let point = world_to_screen(
+    let point = world_to_screen_projected(
         center_world,
         scale,
         width_px,
@@ -1567,35 +1548,7 @@ fn visible_pirep_feature(
             lat: record.latitude,
             lon: record.longitude,
         },
-    );
-    VisiblePirepFeature {
-        id: record.id.clone(),
-        screen_x: point.x,
-        screen_y: point.y,
-        symbol: normalized_pirep_symbol(&record.symbol),
-        icing: normalized_pirep_hazard(&record.icing),
-        turbulence: normalized_pirep_hazard(&record.turbulence),
-    }
-}
-
-fn visible_pirep_feature_with_x_offset(
-    record: &PirepRecord,
-    center_world: WorldPoint,
-    scale: f64,
-    width_px: f64,
-    height_px: f64,
-    world_x_offset: f64,
-) -> VisiblePirepFeature {
-    let point = world_to_screen_with_x_offset(
-        center_world,
-        scale,
-        width_px,
-        height_px,
-        LatLon {
-            lat: record.latitude,
-            lon: record.longitude,
-        },
-        world_x_offset,
+        projection,
     );
     VisiblePirepFeature {
         id: record.id.clone(),
@@ -1826,7 +1779,14 @@ fn query_metar_selection_matches(
             let Some(record) = metar_payload.metars_by_station.get(&record_ref.id) else {
                 continue;
             };
-            let feature = visible_metar_feature(record, center_world, scale, width_px, height_px);
+            let feature = visible_metar_feature(
+                record,
+                center_world,
+                scale,
+                width_px,
+                height_px,
+                WorldXProjection::NearestWrappedCopy,
+            );
             let distance_px = ((feature.screen_x - click_screen.x).powi(2)
                 + (feature.screen_y - click_screen.y).powi(2))
             .sqrt();
@@ -1881,7 +1841,14 @@ fn query_pirep_selection_matches(
             else {
                 continue;
             };
-            let feature = visible_pirep_feature(record, center_world, scale, width_px, height_px);
+            let feature = visible_pirep_feature(
+                record,
+                center_world,
+                scale,
+                width_px,
+                height_px,
+                WorldXProjection::NearestWrappedCopy,
+            );
             let distance_px = ((feature.screen_x - click_screen.x).powi(2)
                 + (feature.screen_y - click_screen.y).powi(2))
             .sqrt();
@@ -3757,8 +3724,14 @@ fn world_to_screen(
     height_px: f64,
     position: LatLon,
 ) -> WorldPoint {
-    let world = unwrap_world_x_near_center(lat_lon_to_world(position), center_world);
-    projected_world_to_screen(center_world, scale, width_px, height_px, world)
+    world_to_screen_projected(
+        center_world,
+        scale,
+        width_px,
+        height_px,
+        position,
+        WorldXProjection::NearestWrappedCopy,
+    )
 }
 
 fn world_to_screen_with_x_offset(
@@ -3769,8 +3742,33 @@ fn world_to_screen_with_x_offset(
     position: LatLon,
     world_x_offset: f64,
 ) -> WorldPoint {
+    world_to_screen_projected(
+        center_world,
+        scale,
+        width_px,
+        height_px,
+        position,
+        WorldXProjection::DisplayCopyOffset(world_x_offset),
+    )
+}
+
+fn world_to_screen_projected(
+    center_world: WorldPoint,
+    scale: f64,
+    width_px: f64,
+    height_px: f64,
+    position: LatLon,
+    projection: WorldXProjection,
+) -> WorldPoint {
     let mut world = lat_lon_to_world(position);
-    world.x += world_x_offset;
+    match projection {
+        WorldXProjection::NearestWrappedCopy => {
+            world = unwrap_world_x_near_center(world, center_world);
+        }
+        WorldXProjection::DisplayCopyOffset(world_x_offset) => {
+            world.x += world_x_offset;
+        }
+    }
     projected_world_to_screen(center_world, scale, width_px, height_px, world)
 }
 
@@ -3950,6 +3948,7 @@ mod tests {
             2.0_f64.powf(viewport.zoom),
             800.0,
             600.0,
+            WorldXProjection::NearestWrappedCopy,
         );
 
         assert!((feature.screen_x - 400.0).abs() < 2.0);

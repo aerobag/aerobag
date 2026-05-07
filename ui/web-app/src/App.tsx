@@ -1186,6 +1186,9 @@ export default function App() {
   }, []);
   const appState = sessionSnapshot.app_state;
   const appUiState = sessionSnapshot.app_ui_state;
+  const debugOwnshipDriverActive = appUiState.ownship.controls.sources.some(
+    (source) => source.source_kind === "debug_ownship_driver" && source.active,
+  );
   const playbackUiState = sessionSnapshot.playback_ui_state;
   const mapFollowUiState = sessionSnapshot.map_follow_ui_state;
   const chartPageData: ChartPageData = useMemo(
@@ -1237,6 +1240,33 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, [playbackUiState.status, uiSession]);
+
+  useEffect(() => {
+    if (!uiSession || !debugOwnshipDriverActive) {
+      return;
+    }
+    let cancelled = false;
+    let inFlight = false;
+    const tick = () => {
+      if (inFlight) {
+        return;
+      }
+      inFlight = true;
+      void uiSession.tickDebugOwnshipDriver(Date.now()).then((nextSnapshot) => {
+        if (!cancelled) {
+          setSessionSnapshot(nextSnapshot);
+        }
+      }).catch(() => {}).finally(() => {
+        inFlight = false;
+      });
+    };
+    tick();
+    const timer = window.setInterval(tick, 250);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [debugOwnshipDriverActive, uiSession]);
 
   useEffect(() => {
     if (!uiSession) {

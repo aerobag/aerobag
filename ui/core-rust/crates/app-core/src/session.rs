@@ -99,6 +99,7 @@ struct UiSession {
     app_state: AppState,
     playback: PlaybackSessionState,
     plan_preview: PlanPreviewState,
+    debug_ownship_driver: DebugOwnshipDriverState,
     map_follow: MapFollowSessionState,
     guidance_leg_geometry: HashMap<String, GuidanceLegGeometry>,
     map_overlay_config: MapOverlayConfig,
@@ -121,6 +122,16 @@ struct UiSession {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
+struct DebugOwnshipDriverState {
+    running: bool,
+    active_detail_id: Option<String>,
+    offset_nm: f64,
+    wander_phase_rad: f64,
+    last_tick_epoch_ms: Option<f64>,
+    last_position: Option<LatLon>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
 struct PlanPreviewState {
     pointer: Option<PlanPreviewPointer>,
 }
@@ -133,8 +144,13 @@ struct PlanPreviewPointer {
 
 const DIRECT_SITUATION_SOURCE_ID: &str = "__direct_situation__";
 const PLAYBACK_SOURCE_ID: &str = "__playback_trace__";
+const DEBUG_OWNSHIP_DRIVER_SOURCE_ID: &str = "__debug_ownship_driver__";
 const CDI_NM_PER_DOT: f64 = 1.0;
 const CDI_OFFSCALE_DOTS: f64 = 2.1;
+const DEBUG_OWNSHIP_DRIVER_NM_PER_SECOND: f64 = 0.36;
+const DEBUG_OWNSHIP_DRIVER_MAX_DT_SECONDS: f64 = 1.0;
+const DEBUG_OWNSHIP_DRIVER_WANDER_NM: f64 = 0.25;
+const DEBUG_OWNSHIP_DRIVER_OVERRUN_NM: f64 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MapLayerId {
@@ -213,6 +229,7 @@ fn create_ui_session_inner(
         AppEvent::ReplaceFlightPlan(plan.clone()),
     )?;
     let app_state = register_default_situation_sources(app_state)?;
+    let app_state = register_debug_ownship_driver_source(app_state)?;
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_reduce_replace_flight_plan");
     }
@@ -266,6 +283,7 @@ fn create_ui_session_inner(
             app_state,
             playback,
             plan_preview: PlanPreviewState::default(),
+            debug_ownship_driver: DebugOwnshipDriverState::default(),
             map_follow,
             guidance_leg_geometry: HashMap::new(),
             map_overlay_config,
@@ -504,8 +522,15 @@ pub fn select_ownship_source_in_session(
     };
     session.app_state =
         state::reduce(&session.app_state, AppEvent::SelectOwnshipSource(selection))?;
-    if selected_source_kind == Some(crate::OwnshipSourceKind::FlightPlanSimulator) {
-        sync_plan_preview_to_active_leg(session)?;
+    match selected_source_kind {
+        Some(crate::OwnshipSourceKind::FlightPlanSimulator) => {
+            sync_plan_preview_to_active_leg(session)?;
+        }
+        Some(crate::OwnshipSourceKind::DebugOwnshipDriver) => {
+            session.debug_ownship_driver = DebugOwnshipDriverState::default();
+            tick_debug_ownship_driver(session, 0.0)?;
+        }
+        _ => {}
     }
     Ok(snapshot_for_session(session))
 }
@@ -653,6 +678,16 @@ pub fn set_situation_in_session(
         situation,
         0,
     )?;
+    Ok(snapshot_for_session(session))
+}
+
+pub fn tick_debug_ownship_driver_in_session(
+    handle: u32,
+    now_epoch_ms: f64,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    tick_debug_ownship_driver(session, now_epoch_ms)?;
     Ok(snapshot_for_session(session))
 }
 
@@ -2170,6 +2205,28 @@ fn register_default_situation_sources(app_state: AppState) -> AppResult<AppState
     )
 }
 
+fn register_debug_ownship_driver_source(app_state: AppState) -> AppResult<AppState> {
+    let app_state = state::reduce(
+        &app_state,
+        AppEvent::RegisterOwnshipSource(crate::OwnshipSourceRegistration {
+            source_id: crate::OwnshipSourceId(DEBUG_OWNSHIP_DRIVER_SOURCE_ID.to_string()),
+            source_kind: crate::OwnshipSourceKind::DebugOwnshipDriver,
+            display_name: "Bad Autopilot".to_string(),
+            selectable: true,
+            auto_eligible: true,
+        }),
+    )?;
+    state::reduce(
+        &app_state,
+        AppEvent::UpdateOwnshipSourceStatus(crate::OwnshipSourceStatusUpdate {
+            source_id: crate::OwnshipSourceId(DEBUG_OWNSHIP_DRIVER_SOURCE_ID.to_string()),
+            connection_state: crate::SourceConnectionState::Connected,
+            enabled: true,
+            status_label: "Ready".to_string(),
+        }),
+    )
+}
+
 fn default_map_layer_state() -> UiMapLayerState {
     UiMapLayerState {
         vectors: UiMapLayerToggleState {
@@ -2699,6 +2756,115 @@ fn apply_plan_preview_pointer(
     )
 }
 
+fn tick_debug_ownship_driver(session: &mut UiSession, now_epoch_ms: f64) -> AppResult<()> {
+    if selected_ownship_source_kind(&session.app_state.ownship)
+        != Some(crate::OwnshipSourceKind::DebugOwnshipDriver)
+    {
+        return Ok(());
+    }
+    session.debug_ownship_driver.running = true;
+
+    let Some((detail_id, geometry)) = active_guidance_detail_geometry(session) else {
+        session.debug_ownship_driver.last_tick_epoch_ms = Some(now_epoch_ms);
+        return Ok(());
+    };
+    let distance_nm = geometry_distance_nm(&geometry);
+    if distance_nm <= f64::EPSILON {
+        session.debug_ownship_driver.last_tick_epoch_ms = Some(now_epoch_ms);
+        return Ok(());
+    }
+
+    let dt_seconds = session
+        .debug_ownship_driver
+        .last_tick_epoch_ms
+        .map(|last_tick| {
+            ((now_epoch_ms - last_tick) / 1000.0).clamp(0.0, DEBUG_OWNSHIP_DRIVER_MAX_DT_SECONDS)
+        })
+        .unwrap_or(0.0);
+    session.debug_ownship_driver.last_tick_epoch_ms = Some(now_epoch_ms);
+
+    if session.debug_ownship_driver.active_detail_id.as_deref() != Some(detail_id.as_str()) {
+        session.debug_ownship_driver.active_detail_id = Some(detail_id);
+        session.debug_ownship_driver.offset_nm = 0.0;
+    }
+
+    session.debug_ownship_driver.offset_nm = (session.debug_ownship_driver.offset_nm
+        + dt_seconds * DEBUG_OWNSHIP_DRIVER_NM_PER_SECOND)
+        .min(distance_nm + DEBUG_OWNSHIP_DRIVER_OVERRUN_NM);
+    session.debug_ownship_driver.wander_phase_rad += dt_seconds * 0.7;
+
+    let offset_nm = session.debug_ownship_driver.offset_nm;
+    let heading = heading_along_geometry(&geometry, offset_nm)
+        .unwrap_or_else(|| bearing_degrees(geometry.from, geometry.to));
+    let base_position = position_along_geometry_with_overrun(&geometry, offset_nm);
+    let wander_nm =
+        DEBUG_OWNSHIP_DRIVER_WANDER_NM * session.debug_ownship_driver.wander_phase_rad.sin();
+    let position = project_nm_from(base_position, heading + 90.0, wander_nm);
+    let motion_heading = session
+        .debug_ownship_driver
+        .last_position
+        .filter(|last_position| crate::great_circle_distance_nm(*last_position, position) > 1e-4)
+        .map(|last_position| bearing_degrees(last_position, position))
+        .unwrap_or(heading);
+    session.debug_ownship_driver.last_position = Some(position);
+
+    apply_situation_to_ownship(
+        session,
+        DEBUG_OWNSHIP_DRIVER_SOURCE_ID,
+        crate::OwnshipSourceKind::DebugOwnshipDriver,
+        "Bad Autopilot",
+        crate::Situation {
+            position: crate::SituationPosition::LatLon {
+                lat: position.lat,
+                lon: position.lon,
+            },
+            orientation_deg: Some(motion_heading),
+            speed_kt: Some(DEBUG_OWNSHIP_DRIVER_NM_PER_SECOND * 3600.0),
+            altitude_msl_ft: None,
+        },
+        now_epoch_ms as i64,
+    )
+}
+
+fn active_guidance_detail_geometry(session: &UiSession) -> Option<(String, GuidanceLegGeometry)> {
+    let plan = session.app_state.active_plan.as_ref()?;
+    let guidance = plan.guidance.as_ref()?;
+    if guidance.sequencing_mode != SequencingMode::FollowPlan {
+        return None;
+    }
+    let active_detail_index = guidance
+        .active_detail_index
+        .or_else(|| first_guidance_detail_index_for_leg(plan, guidance.active_leg_index))?;
+    active_guidance_detail_geometry_for_index(
+        plan,
+        active_detail_index,
+        &session.guidance_leg_geometry,
+    )
+}
+
+fn active_guidance_detail_geometry_for_index(
+    plan: &FlightPlan,
+    active_detail_index: usize,
+    geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
+) -> Option<(String, GuidanceLegGeometry)> {
+    let mut current_index = 0usize;
+    for leg in &plan.resolved_legs {
+        let detail_count = crate::guidance_detail_count_for_leg(leg);
+        if active_detail_index < current_index + detail_count {
+            let element_index = active_detail_index - current_index;
+            let detail_id = guidance_detail_id_for_leg_element(leg, element_index);
+            let geometry = geometry_by_leg_id
+                .get(&detail_id)
+                .cloned()
+                .or_else(|| geometry_by_leg_id.get(&leg.id).cloned())
+                .or_else(|| geometry_for_resolved_leg(leg, geometry_by_leg_id))?;
+            return Some((detail_id, geometry));
+        }
+        current_index += detail_count;
+    }
+    None
+}
+
 fn plan_preview_legs(
     plan: &FlightPlan,
     geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
@@ -2840,6 +3006,17 @@ fn position_along_geometry(geometry: &GuidanceLegGeometry, offset_nm: f64) -> La
     points.last().copied().unwrap_or(geometry.to)
 }
 
+fn position_along_geometry_with_overrun(geometry: &GuidanceLegGeometry, offset_nm: f64) -> LatLon {
+    let distance_nm = geometry_distance_nm(geometry);
+    if offset_nm <= distance_nm {
+        return position_along_geometry(geometry, offset_nm);
+    }
+    let endpoint = position_along_geometry(geometry, distance_nm);
+    let heading = heading_along_geometry(geometry, distance_nm)
+        .unwrap_or_else(|| bearing_degrees(geometry.from, geometry.to));
+    project_nm_from(endpoint, heading, offset_nm - distance_nm)
+}
+
 fn heading_along_geometry(geometry: &GuidanceLegGeometry, offset_nm: f64) -> Option<f64> {
     let points = geometry_points(geometry);
     let mut remaining_nm = offset_nm.max(0.0);
@@ -2947,6 +3124,23 @@ fn cdi_offscale_readout(cdi_indicator_dots: f32) -> Option<String> {
 
 fn bearing_degrees(from: LatLon, to: LatLon) -> f64 {
     crate::initial_course_deg(from, to)
+}
+
+fn project_nm_from(origin: LatLon, bearing_deg: f64, distance_nm: f64) -> LatLon {
+    let angular_distance = distance_nm / 3440.065;
+    let bearing_rad = bearing_deg.to_radians();
+    let lat1 = origin.lat.to_radians();
+    let lon1 = origin.lon.to_radians();
+    let lat2 = (lat1.sin() * angular_distance.cos()
+        + lat1.cos() * angular_distance.sin() * bearing_rad.cos())
+    .asin();
+    let lon2 = lon1
+        + (bearing_rad.sin() * angular_distance.sin() * lat1.cos())
+            .atan2(angular_distance.cos() - lat1.sin() * lat2.sin());
+    LatLon {
+        lat: lat2.to_degrees(),
+        lon: lon2.to_degrees(),
+    }
 }
 
 fn nav_ref_label(nav_ref: &NavRef) -> String {
@@ -4442,6 +4636,200 @@ mod tests {
         let position = ownship_position(&snapshot);
         assert_near(position.lat, d.lat);
         assert_near(position.lon, d.lon);
+    }
+
+    #[test]
+    fn debug_ownship_driver_advances_guidance_detail_in_core() {
+        let mut plan = short_lat_lon_preview_plan();
+        let a = LatLon {
+            lat: 40.0,
+            lon: -120.0,
+        };
+        let b = LatLon {
+            lat: 40.0,
+            lon: -119.999,
+        };
+        let c = LatLon {
+            lat: 40.001,
+            lon: -119.999,
+        };
+        plan.resolved_legs = vec![
+            ResolvedLeg {
+                id: "driver-leg-a-b".to_string(),
+                from: NavRef::LatLon(a),
+                to: NavRef::LatLon(b),
+                source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                procedure_provenance: None,
+            },
+            ResolvedLeg {
+                id: "driver-leg-b-c".to_string(),
+                from: NavRef::LatLon(b),
+                to: NavRef::LatLon(c),
+                source: ResolvedLegSource::RouteComponent { component_index: 1 },
+                procedure_provenance: None,
+            },
+        ];
+        plan.guidance = Some(GuidanceState {
+            active_leg_index: 0,
+            active_detail_index: Some(0),
+            display_split_leg_id: None,
+            sequencing_mode: SequencingMode::FollowPlan,
+            direct_to: None,
+            suspend_reason: None,
+        });
+
+        let init = create_ui_session(minimal_vector_manifest_json(), plan, &[], None, None)
+            .expect("create session");
+        set_guidance_leg_geometry_in_session(
+            init.handle,
+            vec![
+                GuidanceLegGeometry {
+                    leg_id: "driver-leg-a-b#0".to_string(),
+                    from: a,
+                    to: b,
+                    path: vec![a, b],
+                },
+                GuidanceLegGeometry {
+                    leg_id: "driver-leg-b-c".to_string(),
+                    from: b,
+                    to: c,
+                    path: vec![b, c],
+                },
+            ],
+        )
+        .expect("install guidance geometry");
+        let mut snapshot = select_ownship_source_in_session(
+            init.handle,
+            crate::OwnshipSelectionCommand::Source {
+                source_id: crate::OwnshipSourceId(DEBUG_OWNSHIP_DRIVER_SOURCE_ID.to_string()),
+            },
+        )
+        .expect("select bad autopilot");
+        for now_epoch_ms in [
+            1_000.0, 2_000.0, 3_000.0, 4_000.0, 5_000.0, 6_000.0, 7_000.0, 8_000.0, 9_000.0,
+            10_000.0,
+        ] {
+            snapshot = tick_debug_ownship_driver_in_session(init.handle, now_epoch_ms)
+                .expect("tick driver");
+        }
+        let guidance = snapshot
+            .app_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .expect("guidance");
+        assert_eq!(guidance.active_detail_index, Some(1));
+        assert_eq!(guidance.active_leg_index, 1);
+        assert!(
+            snapshot
+                .app_ui_state
+                .ownship
+                .render
+                .position
+                .expect("driver position")
+                .lat
+                > b.lat,
+            "driver must continue along the next leg even when it only has coarse geometry"
+        );
+    }
+
+    #[test]
+    fn debug_ownship_driver_falls_back_to_guidance_leg_geometry() {
+        let a = LatLon {
+            lat: 40.0,
+            lon: -120.0,
+        };
+        let b = LatLon {
+            lat: 40.0,
+            lon: -119.999,
+        };
+        let c = LatLon {
+            lat: 40.001,
+            lon: -119.999,
+        };
+        let leg = ResolvedLeg {
+            id: "driver-multi-leg".to_string(),
+            from: NavRef::LatLon(a),
+            to: NavRef::LatLon(c),
+            source: ResolvedLegSource::RouteComponent { component_index: 0 },
+            procedure_provenance: Some(ProcedureLegProvenance {
+                airport_id: "KAAA".to_string(),
+                procedure_id: "TEST".to_string(),
+                kind: ProcedureKind::Approach,
+                role: ProcedureSegmentRole::Common,
+                path_termination: PathTermination::TrackToFix,
+                leg_sequence: 10,
+                display_path: Some(LegDisplayPath {
+                    style: LegDisplayPathStyle::Solid,
+                    elements: vec![
+                        LegDisplayElement::Segment { start: a, end: b },
+                        LegDisplayElement::Segment { start: b, end: c },
+                    ],
+                    effective_terminal_course_deg: None,
+                    debug_element_sources: Vec::new(),
+                    debug_element_roles: Vec::new(),
+                }),
+            }),
+        };
+        let plan = FlightPlan {
+            id: "bad-ap-aggregate-geometry".to_string(),
+            name: "bad ap aggregate geometry".to_string(),
+            legs: Vec::new(),
+            route_components: vec![RouteComponent::Procedure {
+                procedure: crate::ProcedureSegment {
+                    airport_id: AirportId("KAAA".to_string()),
+                    procedure_id: "TEST".to_string(),
+                    kind: ProcedureKind::Approach,
+                    runway_transition: None,
+                    enroute_transition: None,
+                    terminal_discontinuity: None,
+                },
+            }],
+            route_component_uids: vec!["row-proc".to_string()],
+            route_component_uid_counter: 1,
+            resolved_legs: vec![leg.clone()],
+            guidance: Some(GuidanceState {
+                active_leg_index: 0,
+                active_detail_index: Some(1),
+                display_split_leg_id: None,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+        let init = create_ui_session(minimal_vector_manifest_json(), plan, &[], None, None)
+            .expect("create session");
+        set_guidance_leg_geometry_in_session(
+            init.handle,
+            vec![GuidanceLegGeometry {
+                leg_id: "driver-multi-leg".to_string(),
+                from: a,
+                to: c,
+                path: vec![a, b, c],
+            }],
+        )
+        .expect("install aggregate guidance geometry");
+        select_ownship_source_in_session(
+            init.handle,
+            crate::OwnshipSelectionCommand::Source {
+                source_id: crate::OwnshipSourceId(DEBUG_OWNSHIP_DRIVER_SOURCE_ID.to_string()),
+            },
+        )
+        .expect("select bad autopilot");
+
+        let snapshot =
+            tick_debug_ownship_driver_in_session(init.handle, 1_000.0).expect("tick driver");
+        assert!(
+            snapshot.app_ui_state.ownship.render.position.is_some(),
+            "bad autopilot must keep moving when active detail geometry falls back to leg geometry"
+        );
     }
 
     #[test]

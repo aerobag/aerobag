@@ -661,7 +661,8 @@ export type OwnshipSourceKind =
   | "gpx_playback"
   | "adsb_track_playback"
   | "live_network_track"
-  | "flight_plan_simulator";
+  | "flight_plan_simulator"
+  | "debug_ownship_driver";
 
 export type SourceConnectionState = "unavailable" | "searching" | "connected" | "stale" | "failed";
 

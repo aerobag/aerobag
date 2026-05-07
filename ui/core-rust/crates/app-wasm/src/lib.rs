@@ -423,6 +423,15 @@ pub fn set_situation_in_session(handle: u32, situation_json: &str) -> Result<Str
 }
 
 #[wasm_bindgen]
+pub fn tick_debug_ownship_driver_in_session(
+    handle: u32,
+    now_epoch_ms: f64,
+) -> Result<String, JsValue> {
+    tick_debug_ownship_driver_in_session_json(handle, now_epoch_ms)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn engage_map_follow_in_session(handle: u32, viewport_json: &str) -> Result<String, JsValue> {
     engage_map_follow_in_session_json(handle, viewport_json).map_err(|err| JsValue::from_str(&err))
 }
@@ -942,6 +951,15 @@ fn set_situation_in_session_json(handle: u32, situation_json: &str) -> Result<St
         serde_json::from_str(situation_json).map_err(|err| err.to_string())?;
     let snapshot =
         app_core::set_situation_in_session(handle, situation).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn tick_debug_ownship_driver_in_session_json(
+    handle: u32,
+    now_epoch_ms: f64,
+) -> Result<String, String> {
+    let snapshot = app_core::tick_debug_ownship_driver_in_session(handle, now_epoch_ms)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 

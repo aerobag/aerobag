@@ -500,6 +500,7 @@ export interface UiSession {
   unsuspendSequencing(): Promise<UiSessionSnapshot>;
   sequenceActiveLeg(): Promise<UiSessionSnapshot>;
   setSituation(situation: Situation): Promise<UiSessionSnapshot>;
+  tickDebugOwnshipDriver(nowEpochMs: number): Promise<UiSessionSnapshot>;
   loadPlaybackTrace(sourcePath: string, traceJson: string): Promise<UiSessionSnapshot>;
   playPlayback(nowEpochMs: number): Promise<UiSessionSnapshot>;
   pausePlayback(nowEpochMs: number): Promise<UiSessionSnapshot>;
@@ -688,6 +689,7 @@ type WasmModule = {
   create_ui_session(vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   create_ui_session_profiled?: (vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
   set_situation_in_session(handle: number, situationJson: string): Promise<string> | string;
+  tick_debug_ownship_driver_in_session(handle: number, nowEpochMs: number): Promise<string> | string;
   engage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
   disengage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
   set_map_follow_offset_in_session(handle: number, viewportJson: string, offsetXPx: number, offsetYPx: number): Promise<string> | string;
@@ -1032,6 +1034,13 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.set_situation_in_session(handle, JSON.stringify(situation))),
         );
+        return snapshot;
+      },
+      tickDebugOwnshipDriver: async (nowEpochMs) => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(this.module.tick_debug_ownship_driver_in_session(handle, nowEpochMs)),
+        );
+        await syncGuidanceGeometry(snapshot.app_state.active_plan);
         return snapshot;
       },
       registerOwnshipSource: async (registration) => {
@@ -1449,8 +1458,24 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 }
 
+const defaultWasmImporter = () => import("@generated/app_wasm.js");
+let defaultAdapterLoadPromise: Promise<LoadedAdapter> | null = null;
+
 export async function loadBestAvailableAdapter(
-  importer: () => Promise<unknown> = () => import("@generated/app_wasm.js"),
+  importer: () => Promise<unknown> = defaultWasmImporter,
+): Promise<LoadedAdapter> {
+  if (importer === defaultWasmImporter) {
+    defaultAdapterLoadPromise ??= loadBestAvailableAdapterUncached(importer).catch((error) => {
+      defaultAdapterLoadPromise = null;
+      throw error;
+    });
+    return defaultAdapterLoadPromise;
+  }
+  return loadBestAvailableAdapterUncached(importer);
+}
+
+async function loadBestAvailableAdapterUncached(
+  importer: () => Promise<unknown>,
 ): Promise<LoadedAdapter> {
   const mod = (await debugTiming("wasm.import", importer)) as Partial<WasmModule>;
   if (typeof mod.default === "function") {
@@ -1462,6 +1487,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.create_ui_session !== "function" ||
     typeof mod.perform_flight_plan_row_action_in_session !== "function" ||
     typeof mod.set_situation_in_session !== "function" ||
+    typeof mod.tick_debug_ownship_driver_in_session !== "function" ||
     typeof mod.engage_map_follow_in_session !== "function" ||
     typeof mod.disengage_map_follow_in_session !== "function" ||
     typeof mod.set_map_follow_offset_in_session !== "function" ||

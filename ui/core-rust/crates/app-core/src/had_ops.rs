@@ -422,8 +422,10 @@ struct MapViewRecord {
     tile_size: i64,
     min_zoom: f64,
     max_zoom: f64,
-    max_source_zoom: i64,
-    max_display_zoom: f64,
+    #[serde(default)]
+    max_source_zoom: Option<i64>,
+    #[serde(default)]
+    max_display_zoom: Option<f64>,
     storage_kind: String,
     package_name: Option<String>,
     full_coverage_zoom: Option<f64>,
@@ -643,7 +645,8 @@ fn map_selector_state(
     selected_map_id: Option<&str>,
     selected_family_id: Option<&str>,
 ) -> Result<MapSelectorState, HadReadError> {
-    let map_views = chart_catalog(store)?;
+    let mut map_views = chart_catalog(store)?;
+    normalize_map_views(&mut map_views);
     let seed_map = map_views
         .iter()
         .find(|view| Some(view.id.as_str()) == selected_map_id);
@@ -696,6 +699,18 @@ fn map_selector_state(
         geometry,
         family_options,
     })
+}
+
+fn normalize_map_views(map_views: &mut [MapViewOptionRecord]) {
+    for view in map_views {
+        if view.map_view.max_source_zoom.is_none() {
+            view.map_view.max_source_zoom =
+                view.map_view.levels.iter().map(|level| level.zoom).max();
+        }
+        if view.map_view.max_display_zoom.is_none() {
+            view.map_view.max_display_zoom = Some(view.map_view.max_zoom);
+        }
+    }
 }
 
 pub(crate) fn raster_map_catalog_from_nav_kv(

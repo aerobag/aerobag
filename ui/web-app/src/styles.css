@@ -2258,8 +2258,10 @@ button {
 .waypointModal {
   position: absolute;
   top: calc(var(--thumb) * 1.25);
-  left: calc(var(--thumb-gap) + var(--thumb) * 3.15);
-  width: min(calc(var(--thumb) * 4 + var(--thumb-gap) * 3), calc(100% - var(--thumb-gap) * 2 - var(--thumb) * 3.15));
+  --waypoint-action-button-width: calc(var(--thumb) * 2);
+  --waypoint-action-tray-left: calc(var(--thumb-gap) + var(--thumb) * 3.15);
+  left: var(--waypoint-action-tray-left);
+  width: min(calc(var(--waypoint-action-button-width) * 2 + var(--thumb-gap) * 3), calc(100% - var(--thumb-gap) - var(--waypoint-action-tray-left)));
   max-height: calc(var(--app-height) - var(--safe-top) - var(--safe-bottom) - (var(--thumb) * 2.25));
   overflow-y: auto;
   overflow-x: hidden;
@@ -2297,8 +2299,21 @@ button {
 
 .waypointActionGridRow {
   display: grid;
-  grid-template-columns: repeat(2, calc(var(--thumb) * 2));
+  grid-template-columns: repeat(2, var(--waypoint-action-button-width));
   gap: var(--thumb-gap);
+}
+
+.waypointActionGrid .airwayChoiceButton {
+  width: var(--waypoint-action-button-width);
+  min-width: var(--waypoint-action-button-width);
+  max-width: var(--waypoint-action-button-width);
+}
+
+@media (max-width: 720px) and (orientation: portrait) {
+  .waypointModal {
+    --waypoint-action-button-width: calc(var(--thumb) * 1.5);
+    --waypoint-action-tray-left: calc(var(--thumb-gap) + var(--thumb) * 2.5);
+  }
 }
 
 .airportInsertTray {

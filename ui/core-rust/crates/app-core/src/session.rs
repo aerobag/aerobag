@@ -1991,8 +1991,7 @@ pub fn render_terrain_overlay_tiles_in_session(
             kind: AppErrorKind::InvalidManifest,
             message: err,
         })?;
-    let tile_refs = unpacked_tiles.iter().map(Vec::as_slice).collect::<Vec<_>>();
-    crate::render_terrain_warning_raw_rgba_from_tiles(&tile_refs, altitude_ft).map_err(|err| {
+    crate::render_terrain_warning_raw_rgba_from_tiles(&unpacked_tiles, altitude_ft).map_err(|err| {
         AppError {
             kind: AppErrorKind::InvalidManifest,
             message: err,
@@ -2000,7 +1999,7 @@ pub fn render_terrain_overlay_tiles_in_session(
     })
 }
 
-fn unpack_packed_terrain_tiles(packed_tile_bytes: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+fn unpack_packed_terrain_tiles(packed_tile_bytes: &[u8]) -> Result<Vec<&[u8]>, String> {
     fn read_u32(bytes: &[u8], cursor: &mut usize) -> Result<u32, String> {
         let end = *cursor + 4;
         let chunk = bytes
@@ -2019,7 +2018,7 @@ fn unpack_packed_terrain_tiles(packed_tile_bytes: &[u8]) -> Result<Vec<Vec<u8>>,
         let tile_bytes = packed_tile_bytes
             .get(cursor..end)
             .ok_or_else(|| "truncated packed terrain tile body".to_string())?;
-        tiles.push(tile_bytes.to_vec());
+        tiles.push(tile_bytes);
         cursor = end;
     }
     if cursor != packed_tile_bytes.len() {

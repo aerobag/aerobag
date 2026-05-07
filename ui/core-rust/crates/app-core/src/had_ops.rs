@@ -429,7 +429,19 @@ struct MapViewRecord {
     storage_kind: String,
     package_name: Option<String>,
     full_coverage_zoom: Option<f64>,
+    #[serde(default)]
+    wide_angle: Option<WideAngleMapViewRecord>,
     initial_viewport: MapInitialViewportRecord,
+    levels: Vec<MapViewLevelRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct WideAngleMapViewRecord {
+    region_id: String,
+    max_zoom: f64,
+    package_name: String,
+    tile_url_root: String,
+    tile_path_template: String,
     levels: Vec<MapViewLevelRecord>,
 }
 

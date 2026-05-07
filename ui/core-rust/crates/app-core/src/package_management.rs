@@ -41,6 +41,12 @@ pub struct BundlePackageArtifact {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundlePackageMetadata {
     pub full_coverage_zoom: Option<u32>,
+    pub wide_angle_region_id: Option<String>,
+    pub wide_angle_max_zoom: Option<u32>,
+    pub wide_angle: Option<bool>,
+    pub min_source_zoom: Option<u32>,
+    pub max_source_zoom: Option<u32>,
+    pub tile_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -343,6 +349,7 @@ struct AvailablePackageArtifact {
     filename: String,
     product_id: String,
     region_id: Option<String>,
+    wide_angle: bool,
     effective_at_epoch_ms: Option<i64>,
     expires_at_epoch_ms: Option<i64>,
 }
@@ -1710,6 +1717,11 @@ fn bundle_package_to_artifact(pkg: &BundlePackageArtifact) -> Option<AvailablePa
             filename: pkg.filename.clone(),
             product_id: pkg.family_id.clone(),
             region_id: pkg.region_id.clone(),
+            wide_angle: pkg
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.wide_angle)
+                .unwrap_or(false),
             effective_at_epoch_ms: pkg.effective_date.as_deref().and_then(ymd_date_to_epoch_ms),
             expires_at_epoch_ms: pkg
                 .expiration_date
@@ -1814,6 +1826,9 @@ fn selected_state(
     input: &PackageManagementInput,
     artifact: &AvailablePackageArtifact,
 ) -> OfflinePackageSelection {
+    if artifact.wide_angle {
+        return wide_angle_selected_state(input, artifact);
+    }
     if artifact.region_id.is_none() {
         return input
             .preferences
@@ -1849,6 +1864,45 @@ fn selected_state(
     }
 }
 
+fn wide_angle_selected_state(
+    input: &PackageManagementInput,
+    artifact: &AvailablePackageArtifact,
+) -> OfflinePackageSelection {
+    let product = input
+        .preferences
+        .products
+        .get(&artifact.product_id)
+        .copied()
+        .unwrap_or(OfflinePackageSelection::Unselected);
+    if product == OfflinePackageSelection::Unselected {
+        return OfflinePackageSelection::Unselected;
+    }
+
+    let mut saw_region = false;
+    let mut saw_play = false;
+    let mut saw_pause = false;
+    for (region_id, selection) in &input.preferences.regions {
+        if artifact.region_id.as_deref() == Some(region_id.as_str()) {
+            continue;
+        }
+        saw_region = true;
+        match selection {
+            OfflinePackageSelection::Play => saw_play = true,
+            OfflinePackageSelection::Pause => saw_pause = true,
+            OfflinePackageSelection::Unselected => {}
+        }
+    }
+    if !saw_region {
+        return OfflinePackageSelection::Unselected;
+    }
+    match product {
+        OfflinePackageSelection::Pause => OfflinePackageSelection::Pause,
+        OfflinePackageSelection::Play if saw_play => OfflinePackageSelection::Play,
+        OfflinePackageSelection::Play if saw_pause => OfflinePackageSelection::Pause,
+        _ => OfflinePackageSelection::Unselected,
+    }
+}
+
 fn is_expired(now_epoch_ms: i64, artifact: &AvailablePackageArtifact) -> bool {
     artifact
         .expires_at_epoch_ms
@@ -1880,6 +1934,25 @@ mod tests {
             expiration_date: expires.map(str::to_string),
             metadata: None,
         }
+    }
+
+    fn wide_pkg(
+        id: &str,
+        product: &str,
+        region: &str,
+        expires: Option<&str>,
+    ) -> BundlePackageArtifact {
+        let mut pkg = pkg(id, product, Some(region), None, expires);
+        pkg.metadata = Some(BundlePackageMetadata {
+            full_coverage_zoom: None,
+            wide_angle_region_id: Some(region.to_string()),
+            wide_angle_max_zoom: Some(7),
+            wide_angle: Some(true),
+            min_source_zoom: None,
+            max_source_zoom: Some(7),
+            tile_count: Some(100),
+        });
+        pkg
     }
 
     fn installed(id: &str) -> InstalledArtifact {
@@ -2034,6 +2107,42 @@ mod tests {
             plan.fetch,
             vec!["NAV_DB_2604", "GEO_STATIC", "NW_SEC_2603", "NW_TAC_2603",]
         );
+    }
+
+    #[test]
+    fn selected_region_fetches_family_wide_angle_package() {
+        let input = PackageManagementInput {
+            now_epoch_ms: 200,
+            preferences: default_offline_package_preferences(["pac"], ["tac"]),
+            bundle: BundleManifest {
+                packages: vec![wide_pkg("TAC_WIDE_2604", "tac", "wide", Some("2099-01-01"))],
+            },
+            installed: vec![],
+            forced_gc_installed_filenames: vec![],
+            suppressed_fetch_filenames: vec![],
+        };
+
+        let plan = plan_offline_packages(&input);
+
+        assert_eq!(plan.fetch, vec!["TAC_WIDE_2604"]);
+    }
+
+    #[test]
+    fn family_wide_angle_package_is_not_selected_without_a_region() {
+        let input = PackageManagementInput {
+            now_epoch_ms: 200,
+            preferences: default_offline_package_preferences(Vec::<String>::new(), ["tac"]),
+            bundle: BundleManifest {
+                packages: vec![wide_pkg("TAC_WIDE_2604", "tac", "wide", Some("2099-01-01"))],
+            },
+            installed: vec![],
+            forced_gc_installed_filenames: vec![],
+            suppressed_fetch_filenames: vec![],
+        };
+
+        let plan = plan_offline_packages(&input);
+
+        assert!(plan.fetch.is_empty());
     }
 
     #[test]

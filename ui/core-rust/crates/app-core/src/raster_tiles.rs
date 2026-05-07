@@ -97,7 +97,19 @@ pub struct RasterMapView {
     pub storage_kind: String,
     pub package_name: Option<String>,
     pub full_coverage_zoom: Option<f64>,
+    #[serde(default)]
+    pub wide_angle: Option<RasterWideAngleMapView>,
     pub initial_viewport: RasterInitialViewport,
+    pub levels: Vec<RasterTileLevel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RasterWideAngleMapView {
+    pub region_id: String,
+    pub max_zoom: f64,
+    pub package_name: String,
+    pub tile_url_root: String,
+    pub tile_path_template: String,
     pub levels: Vec<RasterTileLevel>,
 }
 
@@ -240,7 +252,7 @@ pub fn raster_map_ui_state(catalog: &RasterMapCatalog) -> Option<RasterMapUiStat
         selected_family_launcher_label: selected_family
             .map(|option| option.launcher_label.clone())
             .unwrap_or_else(|| selected_map.map_view.chart_family.clone()),
-        min_zoom: selected_map.map_view.min_zoom,
+        min_zoom: effective_min_zoom(&selected_map.map_view),
         max_zoom: selected_map.map_view.max_zoom,
         initial_viewport: selected_map.map_view.initial_viewport.clone(),
         family_options: catalog.family_options.clone(),
@@ -344,6 +356,17 @@ fn render_tiles_for_family(
     selected_region_id: Option<&str>,
     options: RasterTilePlanOptions,
 ) -> Vec<PlannedTile> {
+    if let Some(tiles) = render_wide_angle_tiles_for_family(
+        family_views,
+        viewport,
+        width_px,
+        height_px,
+        selected_region_id,
+        options,
+    ) {
+        return tiles;
+    }
+
     let family_full_coverage_zoom = family_views
         .iter()
         .filter_map(|(_, view)| view.map_view.full_coverage_zoom)
@@ -436,6 +459,157 @@ fn render_tiles_for_family(
                         candidate_map_views: candidates,
                     });
                 }
+            }
+        }
+    }
+    tiles
+}
+
+fn render_wide_angle_tiles_for_family(
+    family_views: &[(String, RasterMapViewOption)],
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    selected_region_id: Option<&str>,
+    options: RasterTilePlanOptions,
+) -> Option<Vec<PlannedTile>> {
+    let (map_view_id, option, wide_angle) = family_views
+        .iter()
+        .filter_map(|(map_view_id, option)| {
+            option
+                .map_view
+                .wide_angle
+                .as_ref()
+                .map(|wide_angle| (map_view_id, option, wide_angle))
+        })
+        .filter(|(_, option, wide_angle)| {
+            viewport.zoom <= wide_angle_max_display_zoom(&option.map_view, wide_angle, options)
+        })
+        .max_by_key(|(_, option, _)| {
+            if Some(option.region_id.as_str()) == selected_region_id {
+                1_i64
+            } else {
+                0
+            }
+        })?;
+    let mut map_view = option.map_view.clone();
+    map_view.tile_url_root = wide_angle.tile_url_root.clone();
+    map_view.tile_path_template = wide_angle.tile_path_template.clone();
+    map_view.min_zoom = wide_angle_min_zoom(&map_view, wide_angle);
+    map_view.max_source_zoom = wide_angle.max_zoom.floor() as i64;
+    map_view.max_display_zoom = wide_angle_max_display_zoom(&map_view, wide_angle, options);
+    map_view.package_name = Some(wide_angle.package_name.clone());
+    map_view.levels = wide_angle.levels.clone();
+    map_view.full_coverage_zoom = None;
+    map_view.wide_angle = None;
+
+    let synthetic_option = RasterMapViewOption {
+        id: format!("{}:{}", map_view.chart_family, wide_angle.region_id),
+        label: option.label.clone(),
+        region_id: wide_angle.region_id.clone(),
+        coverage: None,
+        map_view,
+    };
+    Some(render_tiles_for_single_map_view(
+        map_view_id,
+        &synthetic_option,
+        viewport,
+        width_px,
+        height_px,
+        options,
+    ))
+}
+
+fn effective_min_zoom(map_view: &RasterMapView) -> f64 {
+    map_view
+        .wide_angle
+        .as_ref()
+        .map(|wide_angle| wide_angle_min_zoom(map_view, wide_angle))
+        .unwrap_or(map_view.min_zoom)
+}
+
+fn wide_angle_min_zoom(map_view: &RasterMapView, wide_angle: &RasterWideAngleMapView) -> f64 {
+    wide_angle
+        .levels
+        .iter()
+        .map(|level| level.zoom)
+        .min()
+        .map(|zoom| (zoom as f64).min(map_view.min_zoom))
+        .unwrap_or(map_view.min_zoom)
+}
+
+fn wide_angle_max_display_zoom(
+    map_view: &RasterMapView,
+    wide_angle: &RasterWideAngleMapView,
+    options: RasterTilePlanOptions,
+) -> f64 {
+    let multiplier = tile_display_multiplier(options);
+    let max_display_size = map_tile_display_size(map_view) * multiplier;
+    wide_angle.max_zoom + (max_display_size / WORLD_SIZE).log2()
+}
+
+fn render_tiles_for_single_map_view(
+    map_view_id: &str,
+    option: &RasterMapViewOption,
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    options: RasterTilePlanOptions,
+) -> Vec<PlannedTile> {
+    let map_view = &option.map_view;
+    let scale = scale_for_zoom(viewport.zoom);
+    let center_world = lat_lon_to_world(viewport.center);
+    let min_world_x = center_world.0 - width_px / 2.0 / scale;
+    let max_world_x = center_world.0 + width_px / 2.0 / scale;
+    let min_world_y = center_world.1 - height_px / 2.0 / scale;
+    let max_world_y = center_world.1 + height_px / 2.0 / scale;
+    let mut tiles = Vec::new();
+
+    for level in levels_for_map_view(map_view, viewport.zoom, options) {
+        let tile_world_size = WORLD_SIZE / 2_f64.powi(level.zoom as i32);
+        let tile_screen_size = tile_world_size * scale;
+        let x_start = (min_world_x / tile_world_size).floor() as i64;
+        let x_end = (max_world_x / tile_world_size).ceil() as i64 - 1;
+        let y_start = (min_world_y / tile_world_size).floor() as i64;
+        let y_end = (max_world_y / tile_world_size).ceil() as i64 - 1;
+        let level_scale = 2_i64.pow(level.zoom as u32);
+
+        for y_xyz in y_start..=y_end {
+            for display_x in x_start..=x_end {
+                let x = positive_mod_i64(display_x, level_scale);
+                let y_tms = (level_scale - 1) - y_xyz;
+                if x < level.x_min
+                    || x > level.x_max
+                    || y_tms < level.y_tms_min
+                    || y_tms > level.y_tms_max
+                {
+                    continue;
+                }
+                let left_px =
+                    (display_x as f64 * tile_world_size - center_world.0) * scale + width_px / 2.0;
+                let top_px =
+                    (y_xyz as f64 * tile_world_size - center_world.1) * scale + height_px / 2.0;
+                if !screen_rect_intersects_viewport(
+                    left_px,
+                    top_px,
+                    tile_screen_size,
+                    width_px,
+                    height_px,
+                ) {
+                    continue;
+                }
+                tiles.push(PlannedTile {
+                    display_x,
+                    x,
+                    y_tms,
+                    left_px,
+                    top_px,
+                    size_px: tile_screen_size,
+                    zoom: level.zoom,
+                    map_view_id: map_view_id.to_string(),
+                    map_view: map_view.clone(),
+                    candidate_map_views: vec![(map_view_id.to_string(), map_view.clone())],
+                });
             }
         }
     }
@@ -659,15 +833,11 @@ fn pick_level(
     options: RasterTilePlanOptions,
 ) -> Option<&RasterTileLevel> {
     let multiplier = if options.max_tile_display_multiplier.is_finite() {
-        options.max_tile_display_multiplier.max(1.0)
+        tile_display_multiplier(options)
     } else {
         1.0
     };
-    let max_display_size = if map_view.tile_size > 0 {
-        map_view.tile_size as f64
-    } else {
-        WORLD_SIZE
-    } * multiplier;
+    let max_display_size = map_tile_display_size(map_view) * multiplier;
     let max_reasonable_source_zoom = zoom.ceil() as i64;
     let eligible_levels = map_view.levels.iter().filter(|level| {
         level.zoom <= map_view.max_source_zoom && level.zoom <= max_reasonable_source_zoom
@@ -680,6 +850,22 @@ fn pick_level(
         })
         .min_by_key(|level| level.zoom)
         .or_else(|| eligible_levels.max_by_key(|level| level.zoom))
+}
+
+fn tile_display_multiplier(options: RasterTilePlanOptions) -> f64 {
+    if options.max_tile_display_multiplier.is_finite() {
+        options.max_tile_display_multiplier.max(1.0)
+    } else {
+        1.0
+    }
+}
+
+fn map_tile_display_size(map_view: &RasterMapView) -> f64 {
+    if map_view.tile_size > 0 {
+        map_view.tile_size as f64
+    } else {
+        WORLD_SIZE
+    }
 }
 
 fn positive_mod_i64(value: i64, modulus: i64) -> i64 {
@@ -903,6 +1089,7 @@ mod tests {
                 storage_kind: "sectional_package".to_string(),
                 package_name: Some(package.to_string()),
                 full_coverage_zoom: Some(7.0),
+                wide_angle: None,
                 initial_viewport: RasterInitialViewport {
                     lat: 38.1,
                     lon: -122.0,
@@ -1068,6 +1255,159 @@ mod tests {
         );
 
         assert!(wide_view.tiles.is_empty());
+    }
+
+    #[test]
+    fn wide_angle_source_replaces_regional_source_at_low_zoom() {
+        let mut regional = option(
+            "sec:nw",
+            "sec",
+            "NW_SEC_2604",
+            vec![level(8, 40, 43, 155, 158), level(9, 80, 86, 310, 316)],
+        );
+        regional.map_view.min_zoom = 5.2;
+        regional.map_view.max_source_zoom = 12;
+        regional.map_view.max_display_zoom = 12.5;
+        regional.map_view.wide_angle = Some(RasterWideAngleMapView {
+            region_id: "wide".to_string(),
+            max_zoom: 7.0,
+            package_name: "SEC_WIDE_2604".to_string(),
+            tile_url_root: "/sectional-packages/SEC_WIDE_2604/tiles".to_string(),
+            tile_path_template: "{z}/{x}/{y}.webp".to_string(),
+            levels: vec![
+                level(0, 0, 0, 0, 0),
+                level(1, 0, 1, 0, 1),
+                level(7, 0, 127, 0, 127),
+            ],
+        });
+        let catalog = RasterMapCatalog {
+            selected_map_id: "sec:nw".to_string(),
+            selected_map: Some(regional.clone()),
+            displayed_maps: vec![regional],
+            geometry: RasterDisplayGeometry::default(),
+            family_options: Vec::new(),
+        };
+
+        let low_zoom = raster_tile_plan(
+            &catalog,
+            &MapViewport {
+                center: LatLon {
+                    lat: 38.13483035117734,
+                    lon: -121.95686691849119,
+                },
+                zoom: 6.8,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            786.0,
+            708.0,
+        );
+        assert!(!low_zoom.tiles.is_empty());
+        assert!(low_zoom
+            .tiles
+            .iter()
+            .all(|tile| tile.primary.package_name.as_deref() == Some("SEC_WIDE_2604")));
+        assert!(low_zoom.tiles.iter().all(|tile| tile.source_zoom <= 7));
+
+        let far_zoomed_out = raster_tile_plan(
+            &catalog,
+            &MapViewport {
+                center: LatLon {
+                    lat: 38.13483035117734,
+                    lon: -121.95686691849119,
+                },
+                zoom: 3.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            786.0,
+            708.0,
+        );
+        assert!(!far_zoomed_out.tiles.is_empty());
+        assert!(far_zoomed_out
+            .tiles
+            .iter()
+            .all(|tile| tile.primary.package_name.as_deref() == Some("SEC_WIDE_2604")));
+        assert!(far_zoomed_out
+            .tiles
+            .iter()
+            .all(|tile| tile.source_zoom <= 3));
+
+        let fractional_overview_zoom = raster_tile_plan(
+            &catalog,
+            &MapViewport {
+                center: LatLon {
+                    lat: 38.13483035117734,
+                    lon: -121.95686691849119,
+                },
+                zoom: 7.3,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            786.0,
+            708.0,
+        );
+        assert!(!fractional_overview_zoom.tiles.is_empty());
+        assert!(fractional_overview_zoom.tiles.iter().all(|tile| tile
+            .primary
+            .package_name
+            .as_deref()
+            == Some("SEC_WIDE_2604")));
+        assert!(fractional_overview_zoom
+            .tiles
+            .iter()
+            .all(|tile| tile.source_zoom == 7));
+
+        let high_zoom = raster_tile_plan(
+            &catalog,
+            &MapViewport {
+                center: LatLon {
+                    lat: 38.13483035117734,
+                    lon: -121.95686691849119,
+                },
+                zoom: 8.2,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            786.0,
+            708.0,
+        );
+        assert!(!high_zoom.tiles.is_empty());
+        assert!(high_zoom
+            .tiles
+            .iter()
+            .all(|tile| tile.primary.package_name.as_deref() == Some("NW_SEC_2604")));
+        assert!(high_zoom.tiles.iter().all(|tile| tile.source_zoom >= 8));
+    }
+
+    #[test]
+    fn raster_map_ui_state_min_zoom_includes_wide_angle_source() {
+        let mut regional = option(
+            "sec:nw",
+            "sec",
+            "NW_SEC_2604",
+            vec![level(8, 40, 43, 155, 158), level(9, 80, 86, 310, 316)],
+        );
+        regional.map_view.min_zoom = 5.2;
+        regional.map_view.wide_angle = Some(RasterWideAngleMapView {
+            region_id: "wide".to_string(),
+            max_zoom: 7.0,
+            package_name: "SEC_WIDE_2604".to_string(),
+            tile_url_root: "/sectional-packages/SEC_WIDE_2604/tiles".to_string(),
+            tile_path_template: "{z}/{x}/{y}.webp".to_string(),
+            levels: vec![level(0, 0, 0, 0, 0), level(7, 0, 127, 0, 127)],
+        });
+        let catalog = RasterMapCatalog {
+            selected_map_id: "sec:nw".to_string(),
+            selected_map: Some(regional.clone()),
+            displayed_maps: vec![regional],
+            geometry: RasterDisplayGeometry::default(),
+            family_options: Vec::new(),
+        };
+
+        let ui_state = raster_map_ui_state(&catalog).expect("raster map ui state");
+
+        assert_eq!(ui_state.min_zoom, 0.0);
     }
 
     #[test]

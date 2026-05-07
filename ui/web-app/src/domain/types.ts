@@ -779,6 +779,20 @@ export type MapViewJson = {
   storage_kind: TileStorageKind;
   package_name: string | null;
   full_coverage_zoom?: number | null;
+  wide_angle?: {
+    region_id: string;
+    max_zoom: number;
+    package_name: string;
+    tile_url_root: string;
+    tile_path_template: string;
+    levels: Array<{
+      zoom: number;
+      x_min: number;
+      x_max: number;
+      y_tms_min: number;
+      y_tms_max: number;
+    }>;
+  } | null;
   initial_viewport: {
     lat: number;
     lon: number;

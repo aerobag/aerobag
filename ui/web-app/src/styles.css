@@ -532,7 +532,7 @@ button {
   position: absolute;
   top: var(--thumb-gap);
   right: var(--thumb-gap);
-  z-index: 4;
+  z-index: 7;
 }
 
 .situationStatusLauncher.chartButtonWide {
@@ -576,7 +576,7 @@ button {
 .trayScrim {
   position: absolute;
   inset: 0;
-  z-index: 6;
+  z-index: 8;
   border: 0;
   padding: 0;
   background: rgba(10, 16, 20, 0.24);
@@ -626,7 +626,7 @@ button {
   position: absolute;
   top: var(--thumb-gap);
   left: var(--thumb-gap);
-  z-index: 4;
+  z-index: 7;
   display: flex;
   align-items: flex-start;
   gap: var(--thumb-gap);
@@ -1364,7 +1364,7 @@ button {
   position: absolute;
   left: var(--thumb-gap);
   bottom: calc(var(--thumb-gap) + var(--safe-bottom));
-  z-index: 4;
+  z-index: 7;
   width: var(--thumb);
   height: var(--thumb);
   pointer-events: none;
@@ -1374,7 +1374,7 @@ button {
   position: absolute;
   right: var(--thumb-gap);
   bottom: calc(var(--thumb-gap) + var(--safe-bottom));
-  z-index: 4;
+  z-index: 7;
   display: flex;
   align-items: flex-end;
   gap: calc(var(--thumb) * 0.1);
@@ -1480,7 +1480,7 @@ button {
   position: absolute;
   left: 50%;
   bottom: calc(var(--thumb-gap) + var(--safe-bottom));
-  z-index: 4;
+  z-index: 7;
   width: calc(var(--thumb) * 3);
   height: calc(var(--thumb) * 0.67);
   margin-left: calc(var(--thumb) * -1.5);
@@ -1562,7 +1562,7 @@ button {
   position: absolute;
   right: var(--thumb-gap);
   bottom: calc(var(--thumb-gap) + var(--safe-bottom));
-  z-index: 4;
+  z-index: 7;
   min-width: calc(var(--thumb) * 2.8);
   padding: calc(var(--thumb) * 0.12);
   border: 1px solid var(--theme-panel-border);
@@ -1782,7 +1782,7 @@ button {
   position: absolute;
   left: var(--thumb-gap);
   bottom: calc(var(--thumb-gap) + var(--safe-bottom));
-  z-index: 4;
+  z-index: 7;
   display: flex;
   align-items: center;
   gap: calc(var(--thumb-gap) * 0.55);

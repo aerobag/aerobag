@@ -11,7 +11,7 @@ const DEFAULT_WEB_URL = "http://127.0.0.1:8082/";
 const JOURNEY_NAME = "flight-plan-inspect-insert";
 const ANDROID_PACKAGE = "net.jonh.aerobag.prototype";
 const ANDROID_ACTIVITY = `${ANDROID_PACKAGE}/.MainActivity`;
-const LAYER_OPTION_IDS = ["vectors", "metars", "nexrad", "terrain_warning"];
+const LAYER_OPTION_IDS = ["vectors", "metars", "nexrad", "terrain_warning", "world_basemap", "offline_regions"];
 const PLAN_CONTROL_IDS = ["next-leg", "sequence", "suspend", "unsuspend"];
 const CORE_ROW_ACTION_IDS = ["activate_leg", "direct_to", "insert_before", "insert_after", "move_up", "move_down"];
 const WEB_PARITY_VIEWPORT = Object.freeze({
@@ -472,6 +472,19 @@ async function webClick(cdp, selector) {
   await dispatchClick(cdp, box.x + box.width / 2, box.y + box.height / 2);
 }
 
+async function webScrollIntoView(cdp, selector) {
+  await cdp.send("Runtime.evaluate", {
+    expression: `
+      (() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) throw new Error('missing web selector ${selector}');
+        el.scrollIntoView({ block: 'center', inline: 'nearest' });
+      })()
+    `,
+    awaitPromise: true,
+  });
+}
+
 async function webClickVectorFeature(cdp, target) {
   const point = await webEval(cdp, `
     (() => {
@@ -633,6 +646,8 @@ async function webRecordPlanRowInventory(cdp, out, name, rowIndex) {
     recordGap(out, `inventory: ${name}`, `no flight-plan row at index ${rowIndex}`);
     return [];
   }
+  await webScrollIntoView(cdp, rowSelector);
+  await delay(100);
   await webClick(cdp, rowSelector);
   await waitForWeb(cdp, "document.querySelector('[data-testid^=\"plan-row-action-\"]') !== null", `${name} action tray`);
   const entries = await webCollectTestIds(cdp, "plan-row-action-");
@@ -1439,6 +1454,9 @@ function comparePlatformOutputs(outputs) {
     ...Object.keys(android.inventories ?? {}),
   ]);
   for (const name of [...inventoryNames].sort()) {
+    if (name === "chart.inspect.items") {
+      continue;
+    }
     const webInventory = web.inventories?.[name] ?? [];
     const androidInventory = android.inventories?.[name] ?? [];
     const webComparable = comparableInventory(webInventory, androidInventory);

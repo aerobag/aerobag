@@ -101,7 +101,7 @@ Status:
 ### Debug ownship driver is product-plumbing unless intentionally retained
 
 Evidence:
-- `ui/core-rust/crates/app-core/src/session.rs` registers `__debug_ownship_driver__` in every session.
+- `ui/core-rust/crates/app-core/src/session.rs` registered a debug ownship driver in every session.
 - Web mirrors it in `OwnshipSourceKind`.
 - Debug flags control visibility, but the source exists in core even outside explicit debug use.
 
@@ -111,6 +111,11 @@ Why this smells:
 Proposed action:
 - Keep if we still use it for deterministic demos/tests.
 - Otherwise move it behind a debug build/config input so production sessions do not register it.
+
+Status:
+- Removed on 2026-05-07.
+- Deleted the core debug ownship source registration/state/tick API, WASM export, web tick plumbing, and debug-driver-only tests.
+- Kept the real plan preview and replay ownship paths.
 
 ## ui-web
 

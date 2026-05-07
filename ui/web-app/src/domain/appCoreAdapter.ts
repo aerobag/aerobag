@@ -500,7 +500,6 @@ export interface UiSession {
   unsuspendSequencing(): Promise<UiSessionSnapshot>;
   sequenceActiveLeg(): Promise<UiSessionSnapshot>;
   setSituation(situation: Situation): Promise<UiSessionSnapshot>;
-  tickDebugOwnshipDriver(nowEpochMs: number): Promise<UiSessionSnapshot>;
   loadPlaybackTrace(sourcePath: string, traceJson: string): Promise<UiSessionSnapshot>;
   playPlayback(nowEpochMs: number): Promise<UiSessionSnapshot>;
   pausePlayback(nowEpochMs: number): Promise<UiSessionSnapshot>;
@@ -688,7 +687,6 @@ type WasmModule = {
   create_ui_session(vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   create_ui_session_profiled?: (vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
   set_situation_in_session(handle: number, situationJson: string): Promise<string> | string;
-  tick_debug_ownship_driver_in_session(handle: number, nowEpochMs: number): Promise<string> | string;
   engage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
   disengage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
   set_map_follow_offset_in_session(handle: number, viewportJson: string, offsetXPx: number, offsetYPx: number): Promise<string> | string;
@@ -1032,13 +1030,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.set_situation_in_session(handle, JSON.stringify(situation))),
         );
-        return snapshot;
-      },
-      tickDebugOwnshipDriver: async (nowEpochMs) => {
-        snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.tick_debug_ownship_driver_in_session(handle, nowEpochMs)),
-        );
-        await syncGuidanceGeometry(snapshot.app_state.active_plan);
         return snapshot;
       },
       registerOwnshipSource: async (registration) => {
@@ -1481,7 +1472,6 @@ async function loadBestAvailableAdapterUncached(
     typeof mod.create_ui_session !== "function" ||
     typeof mod.perform_flight_plan_row_action_in_session !== "function" ||
     typeof mod.set_situation_in_session !== "function" ||
-    typeof mod.tick_debug_ownship_driver_in_session !== "function" ||
     typeof mod.engage_map_follow_in_session !== "function" ||
     typeof mod.disengage_map_follow_in_session !== "function" ||
     typeof mod.set_map_follow_offset_in_session !== "function" ||

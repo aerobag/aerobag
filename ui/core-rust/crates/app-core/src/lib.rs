@@ -143,7 +143,7 @@ pub use session::{
     set_map_layer_enabled_in_session, set_map_layer_visibility_in_session,
     set_playback_rate_in_session, set_raster_map_catalog_in_session, set_situation_in_session,
     suggest_waypoint_identifiers_at_flight_plan_row_in_session, suspend_sequencing_in_session,
-    sync_map_follow_in_session, tick_debug_ownship_driver_in_session, tick_playback_in_session,
+    sync_map_follow_in_session, tick_playback_in_session,
     unsuspend_sequencing_in_session, update_ownship_source_status_in_session, GuidanceLegGeometry,
     UiCautionState, UiChartPageState, UiDebugState, UiMapLayerState, UiMapLayerToggleState,
     UiSessionInitResult, UiSessionSnapshot,

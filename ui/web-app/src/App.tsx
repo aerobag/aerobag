@@ -2542,7 +2542,7 @@ function MapPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [pageTilePaintTiming, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
+  }, [pageTilePaintTiming, selectedMap.selected_map_id, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
   useEffect(() => {
     if (page !== "map" || !pageTilePaintTiming || tiles.length === 0) {
       return;

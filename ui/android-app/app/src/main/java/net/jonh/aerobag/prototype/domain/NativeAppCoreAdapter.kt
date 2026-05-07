@@ -1070,7 +1070,14 @@ class NativeUiSession internal constructor(
     }
 
     fun selectMapFamily(familyId: MapChartFamily): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.selectMapFamilyInSessionJson(handle, json.encodeToString(familyId.toWireName())))
+        val store = navKvStore ?: return snapshot
+        snapshot = enrichSnapshot(
+            json.decodeFromJsonElement<WireUiSessionSnapshot>(
+                store.runPagedSessionOperationElement {
+                    bridge.selectMapFamilyInSessionJson(handle, json.encodeToString(familyId.toWireName()))
+                },
+            ).toUi(),
+        )
         return snapshot
     }
 

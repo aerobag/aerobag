@@ -371,17 +371,31 @@ pub fn load_raster_map_catalog_in_session(handle: u32) -> AppResult<HadOperation
         })
 }
 
-pub fn select_map_family_in_session(handle: u32, family_id: &str) -> AppResult<UiSessionSnapshot> {
+pub fn select_map_family_in_session(
+    handle: u32,
+    family_id: &str,
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
-    let Some(catalog) = session.raster_map_catalog.as_mut() else {
-        return Err(AppError {
-            kind: AppErrorKind::Internal,
-            message: "session missing raster map catalog".to_string(),
-        });
+    let selected_map_id = session
+        .raster_map_catalog
+        .as_ref()
+        .map(|catalog| catalog.selected_map_id.as_str());
+    let catalog = match crate::had_ops::raster_map_catalog_from_nav_kv(
+        session_nav_kv_store(session)?,
+        selected_map_id,
+        Some(family_id),
+    ) {
+        Ok(catalog) => catalog,
+        Err(err) => return had_read_error_to_overlay_outcome(err),
     };
-    crate::select_map_family_in_catalog(catalog, family_id);
-    Ok(snapshot_for_session(session))
+    session.raster_map_catalog = Some(catalog);
+    serde_json::to_value(snapshot_for_session(session))
+        .map(|result| HadOperationOutcome::Complete { result })
+        .map_err(|err| AppError {
+            kind: AppErrorKind::Internal,
+            message: err.to_string(),
+        })
 }
 
 pub fn select_raster_map_in_session(

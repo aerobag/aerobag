@@ -662,9 +662,9 @@ pub fn select_map_family_in_session_json(
     family_id_json: &str,
 ) -> Result<String, String> {
     let family_id: String = serde_json::from_str(family_id_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::select_map_family_in_session(handle as u32, &family_id)
+    let outcome = app_core::select_map_family_in_session(handle as u32, &family_id)
         .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
 pub fn get_session_snapshot_json(handle: u64) -> Result<String, String> {

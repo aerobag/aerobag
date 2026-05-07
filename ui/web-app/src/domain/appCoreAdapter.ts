@@ -1118,7 +1118,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       selectMapFamily: async (familyId) => {
         snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.select_map_family_in_session(handle, JSON.stringify(familyId))),
+          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+            this.module.select_map_family_in_session(handle, JSON.stringify(familyId)),
+          ).then((nextSnapshot) => this.enrichUiSessionSnapshot(nextSnapshot)),
         );
         return snapshot;
       },

@@ -1131,9 +1131,9 @@ fn load_raster_map_catalog_in_session_json(handle: u32) -> Result<String, String
 
 fn select_map_family_in_session_json(handle: u32, family_id_json: &str) -> Result<String, String> {
     let family_id: String = serde_json::from_str(family_id_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::select_map_family_in_session(handle, &family_id)
+    let outcome = app_core::select_map_family_in_session(handle, &family_id)
         .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
 fn select_raster_map_in_session_json(

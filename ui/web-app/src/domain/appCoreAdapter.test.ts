@@ -100,7 +100,6 @@ describe("loadBestAvailableAdapter", () => {
       get_map_selection_in_session: async () => "{\"state\":\"complete\",\"result\":{\"click_lat\":0,\"click_lon\":0,\"categories\":[]}}",
       get_terrain_overlay_in_session: async () => "{\"needed_terrain_tiles\":[],\"status\":\"hidden\"}",
       get_raster_tile_plan_in_session: async () => "{\"background_color\":\"#000000\",\"layers\":[]}",
-      render_terrain_overlay_tile_in_session: async () => new Uint8Array(),
       render_terrain_overlay_tiles_in_session: async () => new Uint8Array(),
       get_session_snapshot: async () => snapshotJson,
       restore_chart_page_state_in_session: async () => snapshotJson,

@@ -1203,9 +1203,6 @@ class NativeUiSession internal constructor(
         return bridge.getRasterTilePlanInSessionJson(handle, viewportJson, widthPx, heightPx)
     }
 
-    fun renderTerrainOverlayTile(tileBytes: ByteArray, aircraftAltitudeFt: Double): ByteArray =
-        bridge.renderTerrainOverlayTileInSession(handle, tileBytes, aircraftAltitudeFt)
-
     fun renderTerrainOverlayTiles(packedTileBytes: ByteArray, aircraftAltitudeFt: Double): ByteArray =
         bridge.renderTerrainOverlayTilesInSession(handle, packedTileBytes, aircraftAltitudeFt)
 

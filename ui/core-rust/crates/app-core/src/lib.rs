@@ -134,15 +134,14 @@ pub use session::{
     load_plate_procedure_in_session, load_playback_trace_in_session, pause_playback_in_session,
     perform_flight_plan_row_action_in_session, perform_map_selection_action_in_session,
     play_playback_in_session, push_situation_sample_in_session, register_ownship_source_in_session,
-    render_terrain_overlay_tile_in_session, render_terrain_overlay_tiles_in_session,
-    replace_flight_plan_in_session, restore_chart_page_state_in_session,
-    restore_direct_to_in_session, seek_playback_in_session, select_airport_in_session,
-    select_chart_in_session, select_map_family_in_session, select_ownship_source_in_session,
-    select_procedure_at_flight_plan_row_in_session, sequence_active_leg_in_session,
-    set_debug_flag_in_session, set_guidance_leg_geometry_in_session,
-    set_map_follow_offset_in_session, set_map_layer_enabled_in_session,
-    set_map_layer_visibility_in_session, set_playback_rate_in_session,
-    set_raster_map_catalog_in_session, set_situation_in_session,
+    render_terrain_overlay_tiles_in_session, replace_flight_plan_in_session,
+    restore_chart_page_state_in_session, restore_direct_to_in_session, seek_playback_in_session,
+    select_airport_in_session, select_chart_in_session, select_map_family_in_session,
+    select_ownship_source_in_session, select_procedure_at_flight_plan_row_in_session,
+    sequence_active_leg_in_session, set_debug_flag_in_session,
+    set_guidance_leg_geometry_in_session, set_map_follow_offset_in_session,
+    set_map_layer_enabled_in_session, set_map_layer_visibility_in_session,
+    set_playback_rate_in_session, set_raster_map_catalog_in_session, set_situation_in_session,
     suggest_waypoint_identifiers_at_flight_plan_row_in_session, suspend_sequencing_in_session,
     sync_map_follow_in_session, tick_debug_ownship_driver_in_session, tick_playback_in_session,
     unsuspend_sequencing_in_session, update_ownship_source_status_in_session, GuidanceLegGeometry,
@@ -155,10 +154,9 @@ pub use state::{
     UiSnapshotAppState,
 };
 pub use terrain::{
-    parse_abt1_tile, query_terrain_overlay, render_terrain_warning_png,
-    render_terrain_warning_png_from_tiles, render_terrain_warning_raw_rgba_from_tiles,
-    render_terrain_warning_rgba, TerrainOverlayQueryResult, TerrainOverlaySourceTile,
-    TerrainOverlayStatus, TerrainOverlayTileRequest, TerrainTileInfo,
+    parse_abt1_tile, query_terrain_overlay, render_terrain_warning_raw_rgba_from_tiles,
+    TerrainOverlayQueryResult, TerrainOverlaySourceTile, TerrainOverlayStatus,
+    TerrainOverlayTileRequest, TerrainTileInfo,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

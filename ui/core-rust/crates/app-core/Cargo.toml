@@ -9,7 +9,6 @@ procedure-geometry-types = { path = "../../../../crates/procedure-geometry-types
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-png.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rusqlite.workspace = true

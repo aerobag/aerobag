@@ -78,7 +78,7 @@ Status:
 - Quarantined on 2026-05-07 by skipping serialization/deserialization in `app-core::LegDisplayPath` and removing the web type mirror.
 - The fields are still used as preprocessor scratch state while building procedure-geometry diagnostics. The final `procedure-geometry-types::ProcedureGeometryPath` product payload does not carry them.
 
-### Consolidate terrain rendering exports
+### Consolidated terrain rendering exports
 
 Evidence:
 - `ui/core-rust/crates/app-core/src/terrain.rs` exports PNG, RGBA, packed-tile, and raw-RGBA render entry points.
@@ -92,6 +92,11 @@ Why this smells:
 Proposed action:
 - Keep one platform contract: likely `render_terrain_warning_raw_rgba_from_tiles`.
 - Move PNG encoding helpers to tests or remove them if no production caller remains.
+
+Status:
+- Consolidated on 2026-05-07.
+- Removed PNG terrain rendering, single-tile terrain overlay render APIs, and single-tile WASM raw-RGBA render API.
+- Web and Android now always use the packed-tile raw-RGBA path, even for one source tile.
 
 ### Debug ownship driver is product-plumbing unless intentionally retained
 

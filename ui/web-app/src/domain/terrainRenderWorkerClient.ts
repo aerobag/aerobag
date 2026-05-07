@@ -1,8 +1,7 @@
 type TerrainRenderRequest = {
   id: number;
   altitudeFt: number;
-  tileBytes?: Uint8Array;
-  packedTileBytes?: Uint8Array;
+  packedTileBytes: Uint8Array;
 };
 
 type TerrainRenderResponse =
@@ -43,10 +42,6 @@ export class TerrainRenderWorkerClient {
       }
       this.pending.clear();
     };
-  }
-
-  renderTile(tileBytes: Uint8Array, altitudeFt: number): Promise<Uint8Array> {
-    return this.post({ altitudeFt, tileBytes }, [tileBytes.buffer]);
   }
 
   renderPackedTiles(packedTileBytes: Uint8Array, altitudeFt: number): Promise<Uint8Array> {

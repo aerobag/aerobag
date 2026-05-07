@@ -1,13 +1,11 @@
 import initWasm, {
-  render_terrain_warning_raw_rgba,
   render_terrain_warning_raw_rgba_from_packed_tiles,
 } from "@generated/app_wasm.js";
 
 type TerrainRenderRequest = {
   id: number;
   altitudeFt: number;
-  tileBytes?: Uint8Array;
-  packedTileBytes?: Uint8Array;
+  packedTileBytes: Uint8Array;
 };
 
 type TerrainRenderResponse =
@@ -34,9 +32,7 @@ workerSelf.onmessage = (event: MessageEvent<TerrainRenderRequest>) => {
   void (async () => {
     try {
       await ensureWasmReady();
-      const rawBytes = request.packedTileBytes
-        ? render_terrain_warning_raw_rgba_from_packed_tiles(request.packedTileBytes, request.altitudeFt)
-        : render_terrain_warning_raw_rgba(request.tileBytes, request.altitudeFt);
+      const rawBytes = render_terrain_warning_raw_rgba_from_packed_tiles(request.packedTileBytes, request.altitudeFt);
       const response: TerrainRenderResponse = {
         id: request.id,
         ok: true,

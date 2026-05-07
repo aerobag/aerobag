@@ -2351,17 +2351,10 @@ function MapPage(props: {
             }
             const renderStartedAt = performance.now();
             const worker = terrainRenderWorkerRef.current;
+            const packedTileBytes = packTerrainTileBytes(tileBytesList);
             const rawBytes = worker
-              ? (
-                  tileBytesList.length === 1
-                    ? await worker.renderTile(tileBytesList[0].slice(), task.altitudeBucket ?? Number.NaN)
-                    : await worker.renderPackedTiles(packTerrainTileBytes(tileBytesList), task.altitudeBucket ?? Number.NaN)
-                )
-              : (
-                  tileBytesList.length === 1
-                    ? await session.renderTerrainOverlayTile(tileBytesList[0], task.altitudeBucket ?? Number.NaN)
-                    : await session.renderTerrainOverlayTiles(packTerrainTileBytes(tileBytesList), task.altitudeBucket ?? Number.NaN)
-                );
+              ? await worker.renderPackedTiles(packedTileBytes, task.altitudeBucket ?? Number.NaN)
+              : await session.renderTerrainOverlayTiles(packedTileBytes, task.altitudeBucket ?? Number.NaN);
             const renderElapsedMs = performance.now() - renderStartedAt;
             const parsed = parseTerrainRawRgba(rawBytes);
             terrainTileCacheRef.current.set(cacheKey, parsed);

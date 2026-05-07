@@ -5388,12 +5388,7 @@ private fun MapExplorerPage(
                             return@map null
                         }
                         val renderStartMs = SystemClock.elapsedRealtime()
-                        val rawBytes =
-                            if (sourceBytes.size == 1) {
-                                uiSession.renderTerrainOverlayTile(sourceBytes.first(), Double.NaN)
-                            } else {
-                                uiSession.renderTerrainOverlayTiles(packTerrainTileBytes(sourceBytes), Double.NaN)
-                            }
+                        val rawBytes = uiSession.renderTerrainOverlayTiles(packTerrainTileBytes(sourceBytes), Double.NaN)
                         renderMs += SystemClock.elapsedRealtime() - renderStartMs
                         rawBytesTotal += rawBytes.size
                         val parseStartMs = SystemClock.elapsedRealtime()

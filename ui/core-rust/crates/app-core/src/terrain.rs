@@ -161,24 +161,7 @@ pub fn query_terrain_overlay(
     }
 }
 
-pub fn render_terrain_warning_png(
-    tile_bytes: &[u8],
-    aircraft_altitude_ft: f64,
-) -> Result<Vec<u8>, String> {
-    let (info, rgba) = render_terrain_warning_rgba(tile_bytes, aircraft_altitude_ft)?;
-    encode_terrain_warning_png(&info, &rgba)
-}
-
-pub fn render_terrain_warning_png_from_tiles(
-    tile_bytes_list: &[&[u8]],
-    aircraft_altitude_ft: f64,
-) -> Result<Vec<u8>, String> {
-    let (info, rgba) =
-        render_terrain_warning_rgba_from_tiles(tile_bytes_list, aircraft_altitude_ft)?;
-    encode_terrain_warning_png(&info, &rgba)
-}
-
-pub fn render_terrain_warning_rgba_from_tiles(
+fn render_terrain_warning_rgba_from_tiles(
     tile_bytes_list: &[&[u8]],
     aircraft_altitude_ft: f64,
 ) -> Result<(TerrainTileInfo, Vec<u8>), String> {
@@ -201,33 +184,6 @@ pub fn render_terrain_warning_raw_rgba_from_tiles(
     let (info, rgba) =
         render_terrain_warning_rgba_from_tiles(tile_bytes_list, aircraft_altitude_ft)?;
     Ok(pack_raw_rgba(downsample_terrain_warning_rgba(&info, &rgba)))
-}
-
-fn encode_terrain_warning_png(info: &TerrainTileInfo, rgba: &[u8]) -> Result<Vec<u8>, String> {
-    let mut png_bytes = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut png_bytes, info.width as u32, info.height as u32);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder.set_compression(png::Compression::NoCompression);
-        encoder.set_filter(png::Filter::NoFilter);
-        let mut writer = encoder.write_header().map_err(|err| err.to_string())?;
-        writer
-            .write_image_data(&rgba)
-            .map_err(|err| err.to_string())?;
-    }
-    Ok(png_bytes)
-}
-
-pub fn render_terrain_warning_rgba(
-    tile_bytes: &[u8],
-    aircraft_altitude_ft: f64,
-) -> Result<(TerrainTileInfo, Vec<u8>), String> {
-    let (info, samples) = parse_abt1_tile(tile_bytes)?;
-    Ok((
-        info.clone(),
-        render_terrain_warning_samples(&info, &samples, aircraft_altitude_ft),
-    ))
 }
 
 fn render_terrain_warning_samples(
@@ -534,27 +490,12 @@ mod tests {
             bytes.extend_from_slice(&sample.to_le_bytes());
         }
 
-        let (_, rgba) = render_terrain_warning_rgba(&bytes, 2000.0).expect("render terrain");
+        let (_, rgba) =
+            render_terrain_warning_rgba_from_tiles(&[&bytes], 2000.0).expect("render terrain");
         assert_eq!(&rgba[0..4], &[255, 220, 0, 125]);
         assert_eq!(&rgba[4..8], &[255, 220, 0, 125]);
         assert_eq!(&rgba[8..12], &[185, 0, 45, 190]);
         assert_eq!(&rgba[12..16], &[0, 82, 150, 70]);
-    }
-
-    #[test]
-    fn writes_warning_png() {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"ABT1");
-        bytes.extend_from_slice(&1_u16.to_le_bytes());
-        bytes.extend_from_slice(&1_u16.to_le_bytes());
-        bytes.extend_from_slice(&(-32768_i16).to_le_bytes());
-        bytes.extend_from_slice(&0_i16.to_le_bytes());
-        bytes.extend_from_slice(&1.0_f32.to_le_bytes());
-        bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-        bytes.extend_from_slice(&2500_i16.to_le_bytes());
-
-        let png = render_terrain_warning_png(&bytes, 2000.0).expect("render png");
-        assert_eq!(&png[0..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
     }
 
     #[test]

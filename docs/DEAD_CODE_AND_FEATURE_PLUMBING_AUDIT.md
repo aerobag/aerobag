@@ -37,7 +37,7 @@ Proposed action:
 Status:
 - Removed on 2026-05-07.
 
-### Remove or quarantine `ResolvedLegSource::LegacyPlanLeg`
+### Removed `ResolvedLegSource::LegacyPlanLeg`
 
 Evidence:
 - `ui/core-rust/crates/app-core/src/planning.rs` still defines `ResolvedLegSource::LegacyPlanLeg`.
@@ -53,6 +53,9 @@ Proposed action:
 - Confirm there is no current producer in normal route projection.
 - If only old serialized snapshots need it, either delete it or deserialize it into a current structured source at the boundary.
 - Then remove the web/Android mirrors.
+
+Status:
+- Removed on 2026-05-07.
 
 ### Reassess `debug_element_sources` / `debug_element_roles` in guidance display paths
 

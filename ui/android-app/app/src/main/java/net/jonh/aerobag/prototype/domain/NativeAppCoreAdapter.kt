@@ -2606,7 +2606,6 @@ private fun WirePlanLeg.toUiPlanLeg() = PlanLeg(
 )
 
 private fun ResolvedLegSource.toWire(): WireResolvedLegSource = when (this) {
-    is ResolvedLegSource.LegacyPlanLeg -> WireResolvedLegSource.LegacyPlanLeg(leg_index = legIndex)
     is ResolvedLegSource.RouteComponent -> WireResolvedLegSource.RouteComponent(component_index = componentIndex)
     is ResolvedLegSource.SyntheticBridge -> WireResolvedLegSource.SyntheticBridge(
         from_component_index = fromComponentIndex,
@@ -2615,7 +2614,6 @@ private fun ResolvedLegSource.toWire(): WireResolvedLegSource = when (this) {
 }
 
 private fun WireResolvedLegSource.toUi(): ResolvedLegSource = when (this) {
-    is WireResolvedLegSource.LegacyPlanLeg -> ResolvedLegSource.LegacyPlanLeg(legIndex = leg_index)
     is WireResolvedLegSource.RouteComponent -> ResolvedLegSource.RouteComponent(componentIndex = component_index)
     is WireResolvedLegSource.SyntheticBridge -> ResolvedLegSource.SyntheticBridge(
         fromComponentIndex = from_component_index,

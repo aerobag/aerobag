@@ -2906,7 +2906,6 @@ fn plan_preview_legs(
             } => {
                 *component_leg_counts.entry(component_index).or_insert(0) += 1;
             }
-            ResolvedLegSource::LegacyPlanLeg { .. } => {}
         }
     }
     plan.resolved_legs
@@ -2946,7 +2945,6 @@ fn pointer_key_for_preview_leg(
                 plan.route_component_uids.get(component_index).cloned()
             }
         }
-        ResolvedLegSource::LegacyPlanLeg { leg_index } => Some(format!("legacy:{leg_index}:from")),
     }
 }
 

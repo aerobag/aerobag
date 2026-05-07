@@ -229,7 +229,6 @@ data class ProcedureLegMaterializationRecord(
 )
 
 sealed interface ResolvedLegSource {
-    data class LegacyPlanLeg(val legIndex: Int) : ResolvedLegSource
     data class RouteComponent(val componentIndex: Int) : ResolvedLegSource
     data class SyntheticBridge(val fromComponentIndex: Int, val toComponentIndex: Int) : ResolvedLegSource
 }

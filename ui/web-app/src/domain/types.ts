@@ -251,7 +251,6 @@ export type ResolvedLeg =
     procedure_airport_id?: string | null;
     procedure_provenance?: ProcedureLegProvenance | null;
   } & (
-  | { source: { kind: "legacy_plan_leg"; leg_index: number } }
     | { source: { kind: "route_component"; component_index: number } }
     | { source: { kind: "synthetic_bridge"; from_component_index: number; to_component_index: number } }
   );

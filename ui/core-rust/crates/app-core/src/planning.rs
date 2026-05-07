@@ -186,9 +186,6 @@ impl<'de> Deserialize<'de> for ResolvedLeg {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResolvedLegSource {
-    LegacyPlanLeg {
-        leg_index: usize,
-    },
     RouteComponent {
         component_index: usize,
     },
@@ -1827,8 +1824,7 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
             leg_id: leg.id.clone(),
             component_index: match leg.source {
                 ResolvedLegSource::RouteComponent { component_index } => Some(component_index),
-                ResolvedLegSource::LegacyPlanLeg { .. }
-                | ResolvedLegSource::SyntheticBridge { .. } => None,
+                ResolvedLegSource::SyntheticBridge { .. } => None,
             },
             from: leg.from.clone(),
             to: leg.to.clone(),
@@ -4002,15 +3998,13 @@ fn active_component_index_for_guidance(
             .and_then(
                 |leg_index| match plan.resolved_legs.get(leg_index)?.source {
                     ResolvedLegSource::RouteComponent { component_index } => Some(component_index),
-                    ResolvedLegSource::LegacyPlanLeg { .. }
-                    | ResolvedLegSource::SyntheticBridge { .. } => None,
+                    ResolvedLegSource::SyntheticBridge { .. } => None,
                 },
             ),
         SequencingMode::FollowPlan | SequencingMode::Suspended => {
             match plan.resolved_legs.get(guidance.active_leg_index)?.source {
                 ResolvedLegSource::RouteComponent { component_index } => Some(component_index),
-                ResolvedLegSource::LegacyPlanLeg { .. }
-                | ResolvedLegSource::SyntheticBridge { .. } => None,
+                ResolvedLegSource::SyntheticBridge { .. } => None,
             }
         }
     }

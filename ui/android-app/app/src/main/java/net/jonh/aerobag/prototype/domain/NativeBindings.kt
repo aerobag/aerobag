@@ -345,11 +345,6 @@ interface NativeBridge {
 
     fun destroySession(handle: Long)
 
-    fun removeFlightPlanLegJson(
-        planJson: String,
-        index: Int,
-    ): String
-
     fun replaceFlightPlanStateJson(
         stateJson: String,
         planJson: String,
@@ -715,11 +710,6 @@ object NativeBindings : NativeBridge {
     ): String
 
     external override fun destroySession(handle: Long)
-
-    external override fun removeFlightPlanLegJson(
-        planJson: String,
-        index: Int,
-    ): String
 
     external override fun replaceFlightPlanStateJson(
         stateJson: String,

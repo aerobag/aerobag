@@ -383,12 +383,6 @@ class NativeAppCoreAdapter(
         return json.decodeFromJsonElement<WireDerivedChartPageState>(result).toUi()
     }
 
-    fun removeFlightPlanLeg(plan: FlightPlan, index: Int): FlightPlan {
-        val planJson = json.encodeToString(plan.toWire())
-        val nextJson = bridge.removeFlightPlanLegJson(planJson, index)
-        return json.decodeFromString<WireFlightPlan>(nextJson).toUiFlightPlan()
-    }
-
     override fun replaceFlightPlan(state: AppState, plan: FlightPlan): AppState {
         val stateJson = json.encodeToString(state.toWire())
         val planJson = json.encodeToString(plan.toWire())

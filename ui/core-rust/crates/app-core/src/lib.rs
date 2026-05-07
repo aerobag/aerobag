@@ -1028,32 +1028,6 @@ fn nav_ref_identifier(nav_ref: &NavRef) -> Option<&str> {
     }
 }
 
-pub fn remove_flight_plan_leg(plan: &FlightPlan, index: usize) -> AppResult<FlightPlan> {
-    let _ = plan;
-    let _ = index;
-    Err(AppError {
-        kind: AppErrorKind::UnsupportedOperation,
-        message: "legacy leg removal is no longer supported; use structured component mutations"
-            .to_string(),
-    })
-}
-
-pub fn move_flight_plan_waypoint(
-    plan: &FlightPlan,
-    waypoint_index: usize,
-    delta: isize,
-) -> AppResult<FlightPlan> {
-    let _ = plan;
-    let _ = waypoint_index;
-    let _ = delta;
-    Err(AppError {
-        kind: AppErrorKind::UnsupportedOperation,
-        message:
-            "legacy waypoint reordering is no longer supported; use structured component reordering"
-                .to_string(),
-    })
-}
-
 pub fn flight_leg_distance_nm(first: LatLon, second: LatLon) -> f64 {
     great_circle_distance_nm(first, second)
 }

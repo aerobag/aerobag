@@ -15,13 +15,6 @@ pub fn build_flight_plan_json(plan_json: &str) -> Result<String, String> {
     serde_json::to_string(&plan).map_err(|err| err.to_string())
 }
 
-pub fn remove_flight_plan_leg_json(plan_json: &str, index: usize) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let plan = app_core::remove_flight_plan_leg(&plan, index).map_err(|err| err.to_string())?;
-    serde_json::to_string(&plan).map_err(|err| err.to_string())
-}
-
 pub fn activate_leg_ui_json(plan_json: &str, leg_index: usize) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
@@ -1414,20 +1407,6 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_rep
         let state = get_java_string(&mut env, state_json)?;
         let plan = get_java_string(&mut env, plan_json)?;
         replace_flight_plan_ui_state_json(&state, &plan)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_removeFlightPlanLegJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    plan_json: JString,
-    index: i32,
-) -> jstring {
-    let result = (|| {
-        let plan = get_java_string(&mut env, plan_json)?;
-        remove_flight_plan_leg_json(&plan, index as usize)
     })();
     return_string(&mut env, result)
 }

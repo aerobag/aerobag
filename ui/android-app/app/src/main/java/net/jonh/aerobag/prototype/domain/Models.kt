@@ -459,6 +459,7 @@ enum class MapChartFamily {
     EnrL,
     EnrH,
     ShadedRelief,
+    WorldBasemap,
 }
 
 enum class TileStorageKind {
@@ -490,6 +491,8 @@ data class MapView(
     val tileSize: Int,
     val minZoom: Double,
     val maxZoom: Double,
+    val maxSourceZoom: Int,
+    val maxDisplayZoom: Double,
     val storageKind: TileStorageKind,
     val packageName: String?,
     val fullCoverageZoom: Double?,

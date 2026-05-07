@@ -318,6 +318,25 @@ def stage_shaded_relief_products() -> None:
         ensure_symlink(product_root, target / package_id)
 
 
+def stage_world_basemap_products() -> None:
+    target = WEB_STATIC_ROOT / "world-basemap-products"
+    reset_dir(target)
+    for package in PRODUCT_BUILD.get("packages", []):
+        if not isinstance(package, dict):
+            continue
+        package_id = package.get("id")
+        if package_id != "world-basemap":
+            continue
+        package_filename = package.get("filename")
+        if not isinstance(package_filename, str) or not package_filename:
+            continue
+        product_root = unpacked_dir_from_relative_zip(package_filename)
+        if not product_root.is_dir():
+            print(f"warning: world basemap product unavailable {package_id}: {product_root}")
+            continue
+        ensure_symlink(product_root, target / package_id)
+
+
 def stage_icons() -> None:
     """Mirror ui/icons/ into the staging dir, preserving subdir structure.
 
@@ -365,7 +384,7 @@ def current_stage_stamp() -> dict:
             for package in PRODUCT_BUILD.get("packages", [])
             if isinstance(package, dict)
         ],
-        "version": 10,
+        "version": 11,
     }
 
 
@@ -388,6 +407,7 @@ def staged_outputs_exist() -> bool:
         WEB_STATIC_ROOT / "vectors" / "airspace",
         WEB_STATIC_ROOT / "vectors" / "had",
         WEB_STATIC_ROOT / "nav-kv" / "root",
+        WEB_STATIC_ROOT / "world-basemap-products",
     ]
     return all(path.exists() for path in required_paths)
 
@@ -409,6 +429,7 @@ def main() -> None:
     stage_fast_products()
     stage_nav_kv()
     stage_shaded_relief_products()
+    stage_world_basemap_products()
     write_stage_stamp()
 
 

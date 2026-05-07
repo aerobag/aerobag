@@ -23,6 +23,7 @@ const csupRoot = path.join(staticRoot, "afd");
 const thumbnailRoot = path.join(staticRoot, "thumbnails");
 const navDbRoot = path.join(staticRoot, "nav-db");
 const fastProductRoot = path.join(staticRoot, "fast-products");
+const worldBasemapProductRoot = path.join(staticRoot, "world-basemap-products");
 const navKvRoot = path.join(staticRoot, "nav-kv");
 const iconsRoot = path.join(staticRoot, "icons");
 const adsbTraceRoot = path.resolve(repoRoot, "..", "adsb-traces");
@@ -283,6 +284,30 @@ function mountShadedReliefProducts() {
   };
 }
 
+function mountWorldBasemapProducts() {
+  return (req: { headers?: Record<string, string | string[] | undefined>; url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
+    const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
+    const parts = requestPath.replace(/^\/+/, "").split("/");
+    const productId = parts.shift();
+    if (productId !== "world-basemap" || parts.length === 0) {
+      res.statusCode = 404;
+      res.end("world basemap product unavailable");
+      return;
+    }
+    const stagedRoot = path.join(worldBasemapProductRoot, productId);
+    if (fs.existsSync(stagedRoot) && fs.statSync(stagedRoot).isDirectory()) {
+      return mountStaticTree(stagedRoot, { missingStatus: 404 })({ headers: req.headers, url: `/${parts.join("/")}` }, res, next);
+    }
+    const productRoot = resolveCurrentStaticProductRoot(productId);
+    if (!productRoot) {
+      res.statusCode = 404;
+      res.end("world basemap product unavailable");
+      return;
+    }
+    return mountStaticTree(productRoot, { missingStatus: 404 })({ headers: req.headers, url: `/${parts.join("/")}` }, res, next);
+  };
+}
+
 function ensureLinkedFile(sourcePath: string, targetPath: string) {
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
   fs.rmSync(targetPath, { force: true, recursive: true });
@@ -370,6 +395,7 @@ function aerobagStaticPlugin(): Plugin {
     server.middlewares.use("/fast-products", mountFastProducts());
     server.middlewares.use("/terrain-products", mountTerrainProducts());
     server.middlewares.use("/shaded-relief-products", mountShadedReliefProducts());
+    server.middlewares.use("/world-basemap-products", mountWorldBasemapProducts());
     server.middlewares.use("/icons", mountStaticTree(iconsRoot));
     server.middlewares.use("/adsb-traces", mountStaticTree(adsbTraceRoot));
     server.middlewares.use("/files", mountStaticTree(artifactReadRoot, { missingStatus: 404 }));

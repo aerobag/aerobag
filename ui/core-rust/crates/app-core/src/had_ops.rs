@@ -422,6 +422,8 @@ struct MapViewRecord {
     tile_size: i64,
     min_zoom: f64,
     max_zoom: f64,
+    max_source_zoom: i64,
+    max_display_zoom: f64,
     storage_kind: String,
     package_name: Option<String>,
     full_coverage_zoom: Option<f64>,
@@ -656,11 +658,21 @@ fn map_selector_state(
         .as_ref()
         .map(|view| view.map_view.chart_family.as_str())
         .unwrap_or("sec");
-    let displayed_maps: Vec<MapViewOptionRecord> =
+    let mut displayed_maps: Vec<MapViewOptionRecord> =
         displayed_family_maps(&map_views, selected_family_id)
             .into_iter()
             .cloned()
             .collect();
+    let mut displayed_map_ids = displayed_maps
+        .iter()
+        .map(|view| view.id.clone())
+        .collect::<HashSet<_>>();
+    displayed_maps.extend(
+        background_maps(&map_views)
+            .into_iter()
+            .filter(|view| displayed_map_ids.insert(view.id.clone()))
+            .cloned(),
+    );
     let geometry = displayed_geometry(store, &displayed_maps)?;
     let family_options = supported_chart_families()
         .into_iter()
@@ -785,6 +797,13 @@ fn displayed_family_maps<'a>(
     map_views
         .iter()
         .filter(|view| view.map_view.chart_family == family_id)
+        .collect()
+}
+
+fn background_maps(map_views: &[MapViewOptionRecord]) -> Vec<&MapViewOptionRecord> {
+    map_views
+        .iter()
+        .filter(|view| view.map_view.chart_family == "world-basemap")
         .collect()
 }
 

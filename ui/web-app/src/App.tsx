@@ -328,6 +328,8 @@ function chartFamilyIconSrc(familyId: ChartFamilyId | null | undefined): string 
       return "/icons/icons/ifr-h-icon.png?v=20260424b";
     case "shaded-relief":
       return "/icons/icons/shaded-relief-icon.png?v=20260424b";
+    case "world-basemap":
+      return "/icons/icons/shaded-relief-icon.png?v=20260424b";
     default:
       return undefined;
   }
@@ -335,6 +337,8 @@ function chartFamilyIconSrc(familyId: ChartFamilyId | null | undefined): string 
 
 function layerIconSrc(layerId: MapLayerId): string {
   switch (layerId) {
+    case "world_basemap":
+      return "/icons/icons/shaded-relief-icon.png?v=20260424b";
     case "vectors":
       return LAYER_VECTORS_ICON_SRC;
     case "metars":
@@ -1033,6 +1037,7 @@ function emptyMapFollowUiState(): MapFollowUiState {
 
 function defaultUiMapLayerState(): UiMapLayerState {
   return {
+    world_basemap: { visible: true, enabled: true },
     vectors: { visible: true, enabled: true },
     metars: { visible: true, enabled: true },
     nexrad: { visible: false, enabled: true },
@@ -3648,6 +3653,14 @@ function MapPage(props: {
       .map((image) => terrainImageForViewport(image, viewport, surfaceSize.width, surfaceSize.height))
     : [];
   const layerTrayOptions: TrayOption[] = [
+    {
+      id: "world_basemap",
+      label: "World Map",
+      iconSrc: layerIconSrc("world_basemap"),
+      toggleState: mapLayerState.world_basemap,
+      disabled: !mapLayerState.world_basemap.enabled,
+      onSelect: () => void setMapLayerVisible("world_basemap", !mapLayerState.world_basemap.visible),
+    },
     {
       id: "vectors",
       label: "Vectors",

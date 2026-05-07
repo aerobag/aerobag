@@ -240,6 +240,8 @@ private fun WireMapView.toUi() = MapView(
     tileSize = tile_size,
     minZoom = min_zoom,
     maxZoom = max_zoom,
+    maxSourceZoom = max_source_zoom,
+    maxDisplayZoom = max_display_zoom,
     storageKind = storage_kind.toUi(),
     packageName = package_name,
     fullCoverageZoom = full_coverage_zoom,
@@ -265,6 +267,7 @@ private fun WireChartFamilyId.toUi() = when (this) {
     WireChartFamilyId.EnrL -> MapChartFamily.EnrL
     WireChartFamilyId.EnrH -> MapChartFamily.EnrH
     WireChartFamilyId.ShadedRelief -> MapChartFamily.ShadedRelief
+    WireChartFamilyId.WorldBasemap -> MapChartFamily.WorldBasemap
 }
 
 private fun WireTileStorageKind.toUi() = when (this) {

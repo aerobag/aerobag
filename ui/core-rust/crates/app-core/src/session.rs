@@ -48,6 +48,7 @@ pub struct UiMapLayerToggleState {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiMapLayerState {
+    pub world_basemap: UiMapLayerToggleState,
     pub vectors: UiMapLayerToggleState,
     pub metars: UiMapLayerToggleState,
     pub nexrad: UiMapLayerToggleState,
@@ -154,11 +155,32 @@ const DEBUG_OWNSHIP_DRIVER_OVERRUN_NM: f64 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MapLayerId {
+    WorldBasemap,
     Vectors,
     Metars,
     Nexrad,
     TerrainWarning,
     OfflineRegions,
+}
+
+fn raster_catalog_for_layer_state(
+    catalog: &RasterMapCatalog,
+    layer_state: &UiMapLayerState,
+) -> RasterMapCatalog {
+    let mut catalog = catalog.clone();
+    if !layer_state.world_basemap.visible {
+        catalog
+            .displayed_maps
+            .retain(|view| view.map_view.chart_family != "world-basemap");
+        if catalog
+            .selected_map
+            .as_ref()
+            .is_some_and(|view| view.map_view.chart_family == "world-basemap")
+        {
+            catalog.selected_map = None;
+        }
+    }
+    catalog
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -367,8 +389,9 @@ pub fn get_raster_tile_plan_in_session(
             1.0
         },
     };
+    let catalog = raster_catalog_for_layer_state(catalog, &session.map_layer_state);
     Ok(crate::raster_tile_plan_with_options(
-        catalog, &viewport, width_px, height_px, options,
+        &catalog, &viewport, width_px, height_px, options,
     ))
 }
 
@@ -387,8 +410,9 @@ pub fn get_raster_tile_plan_in_session_with_options(
             message: "session missing raster map catalog".to_string(),
         });
     };
+    let catalog = raster_catalog_for_layer_state(catalog, &session.map_layer_state);
     Ok(crate::raster_tile_plan_with_options(
-        catalog, &viewport, width_px, height_px, options,
+        &catalog, &viewport, width_px, height_px, options,
     ))
 }
 
@@ -2241,6 +2265,10 @@ fn register_debug_ownship_driver_source(app_state: AppState) -> AppResult<AppSta
 
 fn default_map_layer_state() -> UiMapLayerState {
     UiMapLayerState {
+        world_basemap: UiMapLayerToggleState {
+            visible: true,
+            enabled: true,
+        },
         vectors: UiMapLayerToggleState {
             visible: true,
             enabled: true,
@@ -2283,6 +2311,7 @@ fn default_debug_state() -> UiDebugState {
 fn parse_map_layer_id(layer_id: &str) -> AppResult<MapLayerId> {
     match layer_id {
         "vectors" => Ok(MapLayerId::Vectors),
+        "world_basemap" => Ok(MapLayerId::WorldBasemap),
         "metars" => Ok(MapLayerId::Metars),
         "nexrad" => Ok(MapLayerId::Nexrad),
         "terrain_warning" => Ok(MapLayerId::TerrainWarning),
@@ -2299,6 +2328,7 @@ fn map_layer_toggle_mut(
     layer_id: MapLayerId,
 ) -> &mut UiMapLayerToggleState {
     match layer_id {
+        MapLayerId::WorldBasemap => &mut map_layer_state.world_basemap,
         MapLayerId::Vectors => &mut map_layer_state.vectors,
         MapLayerId::Metars => &mut map_layer_state.metars,
         MapLayerId::Nexrad => &mut map_layer_state.nexrad,

@@ -36,6 +36,8 @@ export const mapViews: MapViewOptionJson[] = [
       tile_size: 512,
       min_zoom: 5.2,
       max_zoom: 12.5,
+      max_source_zoom: 12,
+      max_display_zoom: 12.5,
       storage_kind: "sectional_package",
       package_name: "SEC_NW_2604_01",
       full_coverage_zoom: 7,

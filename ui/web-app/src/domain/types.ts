@@ -8,6 +8,7 @@ export type ChartFamilyId =
   | "flyway"
   | "heli"
   | "shaded-relief"
+  | "world-basemap"
   | "misc";
 
 export type RegionId = "ne" | "nc" | "nw" | "se" | "sc" | "sw" | "ec" | "ak" | "pac";
@@ -773,6 +774,8 @@ export type MapViewJson = {
   tile_size: number;
   min_zoom: number;
   max_zoom: number;
+  max_source_zoom: number;
+  max_display_zoom: number;
   storage_kind: TileStorageKind;
   package_name: string | null;
   full_coverage_zoom?: number | null;

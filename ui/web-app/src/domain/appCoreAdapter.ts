@@ -101,7 +101,13 @@ export type UiCautionState = {
   obstacle_display_limited: boolean;
 };
 
-export type MapLayerId = "vectors" | "metars" | "nexrad" | "terrain_warning" | "offline_regions";
+export type MapLayerId =
+  | "world_basemap"
+  | "vectors"
+  | "metars"
+  | "nexrad"
+  | "terrain_warning"
+  | "offline_regions";
 
 export type UiMapLayerToggleState = {
   visible: boolean;
@@ -109,6 +115,7 @@ export type UiMapLayerToggleState = {
 };
 
 export type UiMapLayerState = {
+  world_basemap: UiMapLayerToggleState;
   vectors: UiMapLayerToggleState;
   metars: UiMapLayerToggleState;
   nexrad: UiMapLayerToggleState;

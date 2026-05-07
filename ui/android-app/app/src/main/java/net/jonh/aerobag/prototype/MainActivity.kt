@@ -1216,6 +1216,7 @@ private fun chartFamilyIconResId(chartFamily: MapChartFamily): Int = when (chart
     MapChartFamily.EnrL -> R.drawable.ifr_l_icon
     MapChartFamily.EnrH -> R.drawable.ifr_h_icon
     MapChartFamily.ShadedRelief -> R.drawable.shaded_relief_icon
+    MapChartFamily.WorldBasemap -> R.drawable.shaded_relief_icon
 }
 
 private fun chartFamilyId(chartFamily: MapChartFamily): String = when (chartFamily) {
@@ -1224,10 +1225,12 @@ private fun chartFamilyId(chartFamily: MapChartFamily): String = when (chartFami
     MapChartFamily.EnrL -> "enr-l"
     MapChartFamily.EnrH -> "enr-h"
     MapChartFamily.ShadedRelief -> "shaded-relief"
+    MapChartFamily.WorldBasemap -> "world-basemap"
 }
 
 @DrawableRes
 private fun mapLayerIconResId(layerId: MapLayerId): Int = when (layerId) {
+    MapLayerId.WorldBasemap -> R.drawable.shaded_relief_icon
     MapLayerId.Vectors -> R.drawable.layer_vectors_icon
     MapLayerId.Metars -> R.drawable.layer_nexrad_icon
     MapLayerId.Nexrad -> R.drawable.layer_nexrad_icon
@@ -4652,6 +4655,19 @@ private fun MapExplorerPage(
     }
     val layerTrayOptions = remember(mapLayerState) {
         listOf(
+            MenuDockOption(
+                key = "world_basemap",
+                label = "World Map",
+                enabled = mapLayerState.worldBasemap.enabled,
+                toggleState = mapLayerState.worldBasemap,
+                iconResId = mapLayerIconResId(MapLayerId.WorldBasemap),
+            ) {
+                val visible = !mapLayerState.worldBasemap.visible
+                val startMs = SystemClock.elapsedRealtime()
+                val snapshot = uiSession.setMapLayerVisibility(MapLayerId.WorldBasemap, visible)
+                Log.i(MapLayerLogTag, "toggle layer=world_basemap visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                onSessionSnapshotChange(snapshot)
+            },
             MenuDockOption(
                 key = "vectors",
                 label = "Vectors",

@@ -452,6 +452,9 @@ enum class WireChartFamilyId {
 
     @SerialName("shaded-relief")
     ShadedRelief,
+
+    @SerialName("world-basemap")
+    WorldBasemap,
 }
 
 @Serializable
@@ -1667,6 +1670,8 @@ data class WireMapView(
     val tile_size: Int,
     val min_zoom: Double,
     val max_zoom: Double,
+    val max_source_zoom: Int,
+    val max_display_zoom: Double,
     val storage_kind: WireTileStorageKind,
     val package_name: String? = null,
     val full_coverage_zoom: Double? = null,

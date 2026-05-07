@@ -78,6 +78,8 @@ pub struct RasterMapView {
     pub tile_size: i64,
     pub min_zoom: f64,
     pub max_zoom: f64,
+    pub max_source_zoom: i64,
+    pub max_display_zoom: f64,
     pub storage_kind: String,
     pub package_name: Option<String>,
     pub full_coverage_zoom: Option<f64>,
@@ -597,6 +599,9 @@ fn levels_for_map_view(
     zoom: f64,
     options: RasterTilePlanOptions,
 ) -> Vec<RasterTileLevel> {
+    if zoom < map_view.min_zoom || zoom > map_view.max_display_zoom {
+        return Vec::new();
+    }
     let Some(desired_level) = pick_level(map_view, zoom, options) else {
         return Vec::new();
     };
@@ -618,15 +623,18 @@ fn pick_level(
     } else {
         WORLD_SIZE
     } * multiplier;
-    map_view
+    let eligible_levels = map_view
         .levels
         .iter()
+        .filter(|level| level.zoom <= map_view.max_source_zoom);
+    eligible_levels
+        .clone()
         .filter(|level| {
             let tile_world_size = WORLD_SIZE / 2_f64.powi(level.zoom as i32);
             tile_world_size * scale_for_zoom(zoom) <= max_display_size
         })
         .min_by_key(|level| level.zoom)
-        .or_else(|| map_view.levels.iter().max_by_key(|level| level.zoom))
+        .or_else(|| eligible_levels.max_by_key(|level| level.zoom))
 }
 
 fn positive_mod_i64(value: i64, modulus: i64) -> i64 {
@@ -649,6 +657,7 @@ fn raster_tile_z_order(zoom: i64, family: &str) -> i64 {
 
 fn chart_family_render_priority(family: &str) -> i64 {
     match family {
+        "world-basemap" => -1000,
         "shaded-relief" => -10,
         "tac" => 1,
         _ => 0,
@@ -844,6 +853,8 @@ mod tests {
                 tile_size: 512,
                 min_zoom: 0.0,
                 max_zoom: 12.5,
+                max_source_zoom: 12,
+                max_display_zoom: 12.5,
                 storage_kind: "sectional_package".to_string(),
                 package_name: Some(package.to_string()),
                 full_coverage_zoom: Some(7.0),
@@ -976,6 +987,67 @@ mod tests {
         );
         assert!(!plan.tiles.is_empty());
         assert!(plan.tiles.iter().all(|tile| tile.source_zoom == 7));
+    }
+
+    #[test]
+    fn static_product_can_overzoom_source_until_display_limit() {
+        let mut basemap = option(
+            "world-basemap",
+            "world-basemap",
+            "world-basemap",
+            vec![
+                level(0, 0, 0, 0, 0),
+                level(1, 0, 1, 0, 1),
+                level(2, 0, 3, 0, 3),
+                level(3, 0, 7, 0, 7),
+                level(4, 0, 15, 0, 15),
+            ],
+        );
+        basemap.map_view.max_source_zoom = 4;
+        basemap.map_view.max_display_zoom = 7.0;
+        let catalog = RasterMapCatalog {
+            selected_map_id: "sec:nw".to_string(),
+            selected_map: None,
+            displayed_maps: vec![basemap],
+            geometry: RasterDisplayGeometry::default(),
+            family_options: Vec::new(),
+        };
+
+        let overzoomed = raster_tile_plan(
+            &catalog,
+            &MapViewport {
+                center: LatLon { lat: 0.0, lon: 0.0 },
+                zoom: 6.5,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            512.0,
+            512.0,
+        );
+        assert!(!overzoomed.tiles.is_empty());
+        assert!(overzoomed
+            .tiles
+            .iter()
+            .all(|tile| tile.source_zoom == 4 && tile.family == "world-basemap"));
+
+        let past_display_limit = raster_tile_plan(
+            &catalog,
+            &MapViewport {
+                center: LatLon { lat: 0.0, lon: 0.0 },
+                zoom: 7.1,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            512.0,
+            512.0,
+        );
+        assert!(past_display_limit.tiles.is_empty());
+    }
+
+    #[test]
+    fn world_basemap_sorts_below_other_raster_layers() {
+        assert!(raster_tile_z_order(4, "world-basemap") < raster_tile_z_order(0, "shaded-relief"));
+        assert!(raster_tile_z_order(4, "world-basemap") < raster_tile_z_order(0, "sec"));
     }
 
     #[test]

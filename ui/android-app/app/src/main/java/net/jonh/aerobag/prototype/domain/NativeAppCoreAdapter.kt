@@ -180,6 +180,7 @@ data class MapOverlayWarning(
 )
 
 enum class MapLayerId {
+    WorldBasemap,
     Vectors,
     Metars,
     Nexrad,
@@ -193,6 +194,7 @@ data class UiMapLayerToggleState(
 )
 
 data class UiMapLayerState(
+    val worldBasemap: UiMapLayerToggleState,
     val vectors: UiMapLayerToggleState,
     val metars: UiMapLayerToggleState,
     val nexrad: UiMapLayerToggleState,
@@ -1734,6 +1736,7 @@ private data class WireUiMapLayerToggleState(
 
 @kotlinx.serialization.Serializable
 private data class WireUiMapLayerState(
+    val world_basemap: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
     val vectors: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
     val metars: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
     val nexrad: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
@@ -1874,6 +1877,8 @@ private fun WireMapView.toUi() = MapView(
     tileSize = tile_size,
     minZoom = min_zoom,
     maxZoom = max_zoom,
+    maxSourceZoom = max_source_zoom,
+    maxDisplayZoom = max_display_zoom,
     storageKind = storage_kind.toUi(),
     packageName = package_name,
     fullCoverageZoom = full_coverage_zoom,
@@ -1905,6 +1910,7 @@ private fun WireChartFamilyId.toUi() = when (this) {
     WireChartFamilyId.EnrL -> MapChartFamily.EnrL
     WireChartFamilyId.EnrH -> MapChartFamily.EnrH
     WireChartFamilyId.ShadedRelief -> MapChartFamily.ShadedRelief
+    WireChartFamilyId.WorldBasemap -> MapChartFamily.WorldBasemap
 }
 
 private fun MapChartFamily.toWireName(): String = when (this) {
@@ -1913,6 +1919,7 @@ private fun MapChartFamily.toWireName(): String = when (this) {
     MapChartFamily.EnrL -> "enr-l"
     MapChartFamily.EnrH -> "enr-h"
     MapChartFamily.ShadedRelief -> "shaded-relief"
+    MapChartFamily.WorldBasemap -> "world-basemap"
 }
 
 private fun WireRegionId.toCode() = when (this) {
@@ -1947,6 +1954,7 @@ private fun WireUiMapLayerToggleState.toUi() = UiMapLayerToggleState(
 )
 
 private fun WireUiMapLayerState.toUi() = UiMapLayerState(
+    worldBasemap = world_basemap.toUi(),
     vectors = vectors.toUi(),
     metars = metars.toUi(),
     nexrad = nexrad.toUi(),
@@ -2808,6 +2816,7 @@ private fun SuspendReason.toWire() = when (this) {
 }
 
 private fun MapLayerId.toWire() = when (this) {
+    MapLayerId.WorldBasemap -> "world_basemap"
     MapLayerId.Vectors -> "vectors"
     MapLayerId.Metars -> "metars"
     MapLayerId.Nexrad -> "nexrad"
@@ -3017,6 +3026,7 @@ private fun PackageId.toWire() = WirePackageId(
         "enr-l" -> WireChartFamilyId.EnrL
         "enr-h" -> WireChartFamilyId.EnrH
         "shaded-relief" -> WireChartFamilyId.ShadedRelief
+        "world-basemap" -> WireChartFamilyId.WorldBasemap
         else -> error("Unsupported family: $family")
     },
     cycle = cycle,
@@ -3030,6 +3040,7 @@ private fun WirePackageId.toUi() = PackageId(
         WireChartFamilyId.EnrL -> "enr-l"
         WireChartFamilyId.EnrH -> "enr-h"
         WireChartFamilyId.ShadedRelief -> "shaded-relief"
+        WireChartFamilyId.WorldBasemap -> "world-basemap"
     },
     cycle = cycle,
 )

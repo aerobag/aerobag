@@ -1,9 +1,9 @@
 use anyhow::{bail, Context};
 use chrono::{Datelike, Duration, NaiveDate, Utc};
-use preprocessor_data::INTERMEDIATE_SQLITE_BASENAME;
 use preprocessor_core::{
     PackageAssetManifest, PackageAssetRecord, PlateGeoref, Region, PACKAGE_ASSET_MANIFEST_NAME,
 };
+use preprocessor_data::INTERMEDIATE_SQLITE_BASENAME;
 use preprocessor_fetch::PackageOutputRecord;
 use rayon::prelude::*;
 use rusqlite::Connection;
@@ -333,11 +333,10 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
     let temporal_summary = build_temporal_summary(&packages, &nav_temporal);
     let chart_collections = collect_chart_collections(&request.chart_sources)?;
     log_progress(request, "collected chart collections")?;
-    let sqlite_path =
-        extract_sqlite_entry(&request.nav_db_zip, INTERMEDIATE_SQLITE_BASENAME)?;
+    let sqlite_path = extract_sqlite_entry(&request.nav_db_zip, INTERMEDIATE_SQLITE_BASENAME)?;
     log_progress(request, "extracted nav sqlite")?;
-    let connection =
-        Connection::open(sqlite_path.path()).context("failed to open extracted intermediate sqlite")?;
+    let connection = Connection::open(sqlite_path.path())
+        .context("failed to open extracted intermediate sqlite")?;
     log_progress(request, "opened nav sqlite")?;
     let airports = load_airports_from_nav_db(&connection)?;
     log_progress(request, "loaded airports")?;
@@ -373,7 +372,10 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         generated_at_utc: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         temporal_summary,
         nav_db: NavDbRef {
-            artifact_path: Some(relativize_to_artifact_root(&request.nav_db_zip, &artifact_root)),
+            artifact_path: Some(relativize_to_artifact_root(
+                &request.nav_db_zip,
+                &artifact_root,
+            )),
             sqlite_entry: INTERMEDIATE_SQLITE_BASENAME.to_string(),
             cycle_code: nav_cycle_code,
             version_label: nav_db_version_label(&request.nav_db_zip, &nav_temporal),
@@ -421,7 +423,8 @@ pub fn write_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         .clone()
         .unwrap_or_else(|| parent.join("catalog.json"));
     let catalog = build_catalog(&index);
-    let catalog_json = serde_json::to_vec_pretty(&catalog).context("failed to serialize catalog")?;
+    let catalog_json =
+        serde_json::to_vec_pretty(&catalog).context("failed to serialize catalog")?;
     fs::write(&catalog_output_path, catalog_json)
         .with_context(|| format!("failed to write {}", catalog_output_path.display()))?;
     log_progress(request, "wrote catalog.json")?;
@@ -568,7 +571,10 @@ pub fn build_catalog(index: &ResourceIndex) -> Catalog {
                 asset_base_path: format!(
                     "{}/{}",
                     package_record.id,
-                    plate.asset_path.strip_suffix(".png").unwrap_or(&plate.asset_path)
+                    plate
+                        .asset_path
+                        .strip_suffix(".png")
+                        .unwrap_or(&plate.asset_path)
                 ),
                 procedure_uid: plate.procedure_uid.clone(),
                 georef: plate.georef.clone(),
@@ -589,7 +595,9 @@ pub fn build_catalog(index: &ResourceIndex) -> Catalog {
                 asset_base_path: format!(
                     "{}/{}",
                     package_record.id,
-                    csup.asset_path.strip_suffix(".png").unwrap_or(&csup.asset_path)
+                    csup.asset_path
+                        .strip_suffix(".png")
+                        .unwrap_or(&csup.asset_path)
                 ),
             })
         })
@@ -652,20 +660,16 @@ fn validate_packaged_assets(
     let package_map = packages
         .iter()
         .map(|package| {
-            let artifact_path = package
-                .artifact_path
-                .as_ref()
-                .with_context(|| format!("package {} missing internal artifact_path", package.id))?;
+            let artifact_path = package.artifact_path.as_ref().with_context(|| {
+                format!("package {} missing internal artifact_path", package.id)
+            })?;
             Ok::<_, anyhow::Error>((package.id.clone(), artifact_root.join(artifact_path)))
         })
         .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
     let package_members = package_map
         .iter()
         .map(|(package_id, package_path)| {
-            Ok::<_, anyhow::Error>((
-                package_id.clone(),
-                read_package_members(package_path)?,
-            ))
+            Ok::<_, anyhow::Error>((package_id.clone(), read_package_members(package_path)?))
         })
         .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
     for plate in &index.plates {
@@ -826,19 +830,43 @@ fn collect_packages(
 ) -> anyhow::Result<Vec<ResourcePackage>> {
     let chart_packages = chart_sources
         .par_iter()
-        .map(|source| collect_packages_for_source(&source.family_id, &source.package_root, source.source_urls_path.as_deref(), &source.package_outputs_path, artifact_root))
+        .map(|source| {
+            collect_packages_for_source(
+                &source.family_id,
+                &source.package_root,
+                source.source_urls_path.as_deref(),
+                &source.package_outputs_path,
+                artifact_root,
+            )
+        })
         .collect::<Vec<_>>()
         .into_iter()
         .collect::<anyhow::Result<Vec<_>>>()?;
     let tpp_packages = tpp_sources
         .par_iter()
-        .map(|source| collect_packages_for_source("tpp", &source.package_root, source.source_urls_path.as_deref(), &source.package_outputs_path, artifact_root))
+        .map(|source| {
+            collect_packages_for_source(
+                "tpp",
+                &source.package_root,
+                source.source_urls_path.as_deref(),
+                &source.package_outputs_path,
+                artifact_root,
+            )
+        })
         .collect::<Vec<_>>()
         .into_iter()
         .collect::<anyhow::Result<Vec<_>>>()?;
     let csup_packages = csup_sources
         .par_iter()
-        .map(|source| collect_packages_for_source("csup", &source.package_root, source.source_urls_path.as_deref(), &source.package_outputs_path, artifact_root))
+        .map(|source| {
+            collect_packages_for_source(
+                "csup",
+                &source.package_root,
+                source.source_urls_path.as_deref(),
+                &source.package_outputs_path,
+                artifact_root,
+            )
+        })
         .collect::<Vec<_>>()
         .into_iter()
         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -885,9 +913,24 @@ fn collect_chart_collections(
         .map(|source| {
             read_package_outputs(&source.package_outputs_path)?
                 .into_par_iter()
-                .map(|record| {
+                .filter_map(|record| {
                     let artifact_path = source.package_root.join(&record.zip);
-                    let metadata = read_chart_zip_metadata(&artifact_path)?;
+                    match package_record_has_tiles(&record, &source.package_root) {
+                        Ok(true) => Some(Ok((record, artifact_path))),
+                        Ok(false) => None,
+                        Err(error) => Some(Err(error)),
+                    }
+                })
+                .map(|entry| {
+                    let (record, artifact_path) = entry?;
+                    let metadata = read_chart_zip_metadata(&artifact_path).with_context(|| {
+                        format!(
+                            "failed to read chart tile metadata for {} region {} from {}",
+                            source.family_id,
+                            record.region,
+                            artifact_path.display()
+                        )
+                    })?;
                     Ok::<_, anyhow::Error>(ChartCollectionRecord {
                         id: format!(
                             "{}:{}",
@@ -931,7 +974,15 @@ fn collect_packages_for_source(
     let temporal = infer_temporal_from_source_urls(source_urls_path)?;
     read_package_outputs(package_outputs_path)?
         .into_iter()
+        .filter_map(
+            |record| match package_record_has_tiles(&record, package_root) {
+                Ok(true) => Some(Ok(record)),
+                Ok(false) => None,
+                Err(error) => Some(Err(error)),
+            },
+        )
         .map(|record| {
+            let record = record?;
             package_from_record(
                 family_id,
                 package_root,
@@ -941,6 +992,41 @@ fn collect_packages_for_source(
             )
         })
         .collect()
+}
+
+fn package_record_has_tiles(
+    record: &PackageOutputRecord,
+    package_root: &Path,
+) -> anyhow::Result<bool> {
+    let Some(tile_count) = record
+        .metadata
+        .get("tile_count")
+        .and_then(|value| value.as_u64())
+    else {
+        return Ok(true);
+    };
+    if tile_count == 0 {
+        return Ok(false);
+    }
+    Ok(count_chart_zip_tile_entries(&package_root.join(&record.zip))? > 0)
+}
+
+fn count_chart_zip_tile_entries(path: &Path) -> anyhow::Result<u64> {
+    let file = fs::File::open(path)
+        .with_context(|| format!("failed to open chart zip {}", path.display()))?;
+    let archive = ZipArchive::new(file)
+        .with_context(|| format!("failed to open chart zip {}", path.display()))?;
+    let count = archive
+        .file_names()
+        .filter(|name| {
+            if !name.ends_with(".webp") {
+                return false;
+            }
+            let parts = name.split('/').collect::<Vec<_>>();
+            parts.len() == 5 && parts[0] == "tiles"
+        })
+        .count();
+    Ok(count as u64)
 }
 
 fn collect_families(
@@ -999,13 +1085,17 @@ fn artifact_root(output_path: &Path) -> anyhow::Result<PathBuf> {
         .find_map(|path| {
             let name = path.file_name().and_then(|v| v.to_str())?;
             match name {
-                "published-packaged" | "product-builds" | "private-work" | "cache" | "published-unpacked" => {
-                    path.parent().map(Path::to_path_buf)
-                }
+                "published-packaged" | "product-builds" | "private-work" | "cache"
+                | "published-unpacked" => path.parent().map(Path::to_path_buf),
                 _ => None,
             }
         })
-        .ok_or_else(|| anyhow::anyhow!("failed to locate artifact root from {}", output_path.display()))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "failed to locate artifact root from {}",
+                output_path.display()
+            )
+        })
 }
 
 fn relativize_to_artifact_root(path: &Path, artifact_root: &Path) -> String {
@@ -1038,7 +1128,9 @@ fn load_airports_from_nav_db(connection: &Connection) -> anyhow::Result<Vec<Airp
     Ok(airports)
 }
 
-fn load_airport_aliases_from_nav_db(connection: &Connection) -> anyhow::Result<BTreeMap<String, String>> {
+fn load_airport_aliases_from_nav_db(
+    connection: &Connection,
+) -> anyhow::Result<BTreeMap<String, String>> {
     let mut statement = connection.prepare(
         "select alias_id, airport_id
          from airport_aliases
@@ -1047,7 +1139,9 @@ fn load_airport_aliases_from_nav_db(connection: &Connection) -> anyhow::Result<B
          order by alias_id",
     )?;
     let aliases = statement
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
         .collect::<Result<BTreeMap<_, _>, _>>()
         .context("failed to read airport_aliases rows")?;
     Ok(aliases)
@@ -1067,8 +1161,12 @@ fn pretty_tpp_label(raw_label: &str, document_type: &str) -> String {
     };
     match (prefix, document_type) {
         ("APD", _) => "Airport Diagram".to_string(),
-        ("MIN", "alternate_minimums") => pretty_minimums(remainder, "ALTERNATE MINIMUMS", "Alt Minimums"),
-        ("MIN", "takeoff_minimums") => pretty_minimums(remainder, "TAKEOFF MINIMUMS", "Takeoff Minimums"),
+        ("MIN", "alternate_minimums") => {
+            pretty_minimums(remainder, "ALTERNATE MINIMUMS", "Alt Minimums")
+        }
+        ("MIN", "takeoff_minimums") => {
+            pretty_minimums(remainder, "TAKEOFF MINIMUMS", "Takeoff Minimums")
+        }
         ("MIN", _) => pretty_minimums(remainder, "MINIMUMS", "Minimums"),
         ("IAP", _) => pretty_approach_label(remainder),
         ("HOT", "hotspot") => pretty_hotspot_label(remainder),
@@ -1156,20 +1254,21 @@ fn collect_csup_records(
     airport_aliases: &BTreeMap<String, String>,
     thumbnail_root: &Path,
 ) -> anyhow::Result<Vec<CsupRecord>> {
-    let mut records = collect_asset_records_parallel(sources, "csup", thumbnail_root, |packaged| {
-        let airport_id = canonicalize_airport_id(&packaged.asset.airport_id, airport_aliases);
-        CsupRecord {
-            id: packaged.asset.id.clone(),
-            airport_id,
-            region_id: packaged.region_id.clone(),
-            package_id: packaged.package_id.clone(),
-            label: "Chart Supplement".to_string(),
-            thumbnail_path: packaged.asset.thumbnail_path.clone(),
-            asset_kind: packaged.asset.asset_kind.clone(),
-            document_type: packaged.asset.document_type.clone(),
-            asset_path: packaged.asset.asset_path.clone(),
-        }
-    })?;
+    let mut records =
+        collect_asset_records_parallel(sources, "csup", thumbnail_root, |packaged| {
+            let airport_id = canonicalize_airport_id(&packaged.asset.airport_id, airport_aliases);
+            CsupRecord {
+                id: packaged.asset.id.clone(),
+                airport_id,
+                region_id: packaged.region_id.clone(),
+                package_id: packaged.package_id.clone(),
+                label: "Chart Supplement".to_string(),
+                thumbnail_path: packaged.asset.thumbnail_path.clone(),
+                asset_kind: packaged.asset.asset_kind.clone(),
+                document_type: packaged.asset.document_type.clone(),
+                asset_path: packaged.asset.asset_path.clone(),
+            }
+        })?;
     records.sort();
     Ok(records)
 }
@@ -1260,9 +1359,20 @@ fn read_package_asset_manifest(package_zip_path: &Path) -> anyhow::Result<Packag
         .with_context(|| format!("failed to open zip {}", package_zip_path.display()))?;
     let mut entry = archive
         .by_name(PACKAGE_ASSET_MANIFEST_NAME)
-        .with_context(|| format!("missing {} in {}", PACKAGE_ASSET_MANIFEST_NAME, package_zip_path.display()))?;
-    serde_json::from_reader(&mut entry)
-        .with_context(|| format!("failed to parse {} in {}", PACKAGE_ASSET_MANIFEST_NAME, package_zip_path.display()))
+        .with_context(|| {
+            format!(
+                "missing {} in {}",
+                PACKAGE_ASSET_MANIFEST_NAME,
+                package_zip_path.display()
+            )
+        })?;
+    serde_json::from_reader(&mut entry).with_context(|| {
+        format!(
+            "failed to parse {} in {}",
+            PACKAGE_ASSET_MANIFEST_NAME,
+            package_zip_path.display()
+        )
+    })
 }
 
 fn mirror_thumbnail_from_package(
@@ -1285,13 +1395,21 @@ fn mirror_thumbnail_from_package(
         .with_context(|| format!("failed to open {}", package_zip_path.display()))?;
     let mut archive = ZipArchive::new(file)
         .with_context(|| format!("failed to open zip {}", package_zip_path.display()))?;
-    let mut entry = archive
-        .by_name(thumbnail_member_path)
-        .with_context(|| format!("missing {thumbnail_member_path} in {}", package_zip_path.display()))?;
+    let mut entry = archive.by_name(thumbnail_member_path).with_context(|| {
+        format!(
+            "missing {thumbnail_member_path} in {}",
+            package_zip_path.display()
+        )
+    })?;
     let mut output = fs::File::create(&target_path)
         .with_context(|| format!("failed to create {}", target_path.display()))?;
-    std::io::copy(&mut entry, &mut output)
-        .with_context(|| format!("failed to extract {} from {}", thumbnail_member_path, package_zip_path.display()))?;
+    std::io::copy(&mut entry, &mut output).with_context(|| {
+        format!(
+            "failed to extract {} from {}",
+            thumbnail_member_path,
+            package_zip_path.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -1434,7 +1552,12 @@ fn nav_db_version_label(nav_db_zip: &Path, temporal: &FaaTemporalMetadata) -> Op
         .and_then(|value| value.to_str())
         .filter(|value| value.starts_with("data_"))
         .map(ToOwned::to_owned)
-        .or_else(|| temporal.expiration_date.as_deref().map(version_label_from_date))
+        .or_else(|| {
+            temporal
+                .expiration_date
+                .as_deref()
+                .map(version_label_from_date)
+        })
 }
 
 fn read_files_recursive(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
@@ -1544,7 +1667,8 @@ fn package_version_label(temporal: Option<&FaaTemporalMetadata>) -> Option<Strin
 }
 
 fn temporal_cadence_days(temporal: &FaaTemporalMetadata) -> Option<i64> {
-    let effective = NaiveDate::parse_from_str(temporal.effective_date.as_deref()?, "%Y-%m-%d").ok()?;
+    let effective =
+        NaiveDate::parse_from_str(temporal.effective_date.as_deref()?, "%Y-%m-%d").ok()?;
     let expiration =
         NaiveDate::parse_from_str(temporal.expiration_date.as_deref()?, "%Y-%m-%d").ok()?;
     Some((expiration - effective).num_days())
@@ -1649,7 +1773,10 @@ fn temporal_from_url(url: &str) -> anyhow::Result<Option<FaaTemporalMetadata>> {
     }
     if let Some(compact) = extract_suffix_between(url, "CIFP_", ".zip") {
         if compact.len() == 6 && compact.chars().all(|ch| ch.is_ascii_digit()) {
-            let effective = parse_date(&format!("20{}-{}-{}", &compact[0..2], &compact[2..4], &compact[4..6]), "%Y-%m-%d")?;
+            let effective = parse_date(
+                &format!("20{}-{}-{}", &compact[0..2], &compact[2..4], &compact[4..6]),
+                "%Y-%m-%d",
+            )?;
             return Ok(Some(temporal_from_effective_date(
                 effective,
                 28,
@@ -1698,7 +1825,11 @@ fn temporal_from_effective_date(
     FaaTemporalMetadata {
         cycle_code,
         effective_date: Some(effective.format("%Y-%m-%d").to_string()),
-        expiration_date: Some((effective + Duration::days(cadence_days)).format("%Y-%m-%d").to_string()),
+        expiration_date: Some(
+            (effective + Duration::days(cadence_days))
+                .format("%Y-%m-%d")
+                .to_string(),
+        ),
     }
 }
 
@@ -1735,8 +1866,13 @@ fn effective_date_from_cycle_code(cycle_code: &str) -> anyhow::Result<NaiveDate>
     if cycle_code.len() != 4 || !cycle_code.chars().all(|ch| ch.is_ascii_digit()) {
         bail!("invalid FAA cycle code {cycle_code}");
     }
-    let year = 2000 + cycle_code[0..2].parse::<i32>().context("invalid FAA cycle year")?;
-    let cycle = cycle_code[2..4].parse::<u32>().context("invalid FAA cycle number")?;
+    let year = 2000
+        + cycle_code[0..2]
+            .parse::<i32>()
+            .context("invalid FAA cycle year")?;
+    let cycle = cycle_code[2..4]
+        .parse::<u32>()
+        .context("invalid FAA cycle number")?;
     let first_date =
         first_cycle_day(year).ok_or_else(|| anyhow::anyhow!("unsupported cycle year {year}"))?;
     let first = NaiveDate::from_ymd_opt(year, 1, first_date)
@@ -2017,8 +2153,8 @@ mod tests {
                     asset_kind: "plate".to_string(),
                     document_type: "approach".to_string(),
                     asset_path: "plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png".to_string(),
-                    thumbnail_path:
-                        "thumbnails/plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png".to_string(),
+                    thumbnail_path: "thumbnails/plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png"
+                        .to_string(),
                     procedure_uid: None,
                     georef: None,
                 }],
@@ -2153,7 +2289,10 @@ mod tests {
 
         let index = write_resource_index(&request).expect("build index");
         assert_eq!(index.cycle.as_deref(), Some("2604"));
-        assert_eq!(index.temporal_summary.uniform_cycle_code.as_deref(), Some("2604"));
+        assert_eq!(
+            index.temporal_summary.uniform_cycle_code.as_deref(),
+            Some("2604")
+        );
         assert_eq!(
             index.temporal_summary.effective_dates,
             vec!["2026-03-19".to_string(), "2026-04-16".to_string()]
@@ -2233,7 +2372,10 @@ mod tests {
             index.chart_collections[0].coverage_bounds.lat_min
                 < index.chart_collections[0].coverage_bounds.lat_max
         );
-        assert_eq!(index.plates[0].id, "plate:KBOS:IAP-MA-ILS OR LOC RWY 04R.png");
+        assert_eq!(
+            index.plates[0].id,
+            "plate:KBOS:IAP-MA-ILS OR LOC RWY 04R.png"
+        );
         assert_eq!(index.plates[0].airport_id, "KBOS");
         assert_eq!(index.plates[0].package_id, "NE_TPP");
         assert_eq!(index.plates[0].label, "ILS or LOC 04R");
@@ -2255,9 +2397,18 @@ mod tests {
         );
         assert_eq!(index.airport_resources.len(), 1);
         assert_eq!(index.airport_resources[0].airport_id, "KBOS");
-        assert_eq!(index.airport_resources[0].plate_ids, vec!["plate:KBOS:IAP-MA-ILS OR LOC RWY 04R.png"]);
-        assert_eq!(index.airport_resources[0].csup_ids, vec!["csup:KBOS:CSUP-NE_0-0.png"]);
-        assert_eq!(index.airport_resources[0].package_ids, vec!["NE_CSUP", "NE_TPP"]);
+        assert_eq!(
+            index.airport_resources[0].plate_ids,
+            vec!["plate:KBOS:IAP-MA-ILS OR LOC RWY 04R.png"]
+        );
+        assert_eq!(
+            index.airport_resources[0].csup_ids,
+            vec!["csup:KBOS:CSUP-NE_0-0.png"]
+        );
+        assert_eq!(
+            index.airport_resources[0].package_ids,
+            vec!["NE_CSUP", "NE_TPP"]
+        );
         assert!(request.output_path.exists());
         let thumbnail_root = request
             .output_path

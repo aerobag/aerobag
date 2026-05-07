@@ -998,6 +998,7 @@ fn package_region_records_from_spec(
         }
 
         if produce_records {
+            let metadata = chart_package_metadata(false, selected.len() as u64);
             package_records.push(PackageOutputRecord {
                 label: spec.family.capture_label().to_string(),
                 chart: Some(spec.chart_name.to_string()),
@@ -1006,7 +1007,7 @@ fn package_region_records_from_spec(
                 manifest_sha256: hash_file(&manifest_path)?,
                 zip: zip_name,
                 zip_sha256: hash_file(&zip_path)?,
-                metadata: wide_angle_package_metadata(false),
+                metadata,
             });
         }
     }
@@ -1074,6 +1075,7 @@ fn package_wide_angle_record_from_spec(
     }
 
     if produce_record {
+        let metadata = chart_package_metadata(true, selected.len() as u64);
         Ok(PackageOutputRecord {
             label: spec.family.capture_label().to_string(),
             chart: Some(spec.chart_name.to_string()),
@@ -1082,7 +1084,7 @@ fn package_wide_angle_record_from_spec(
             manifest_sha256: hash_file(&manifest_path)?,
             zip: zip_name,
             zip_sha256: hash_file(&zip_path)?,
-            metadata: wide_angle_package_metadata(true),
+            metadata,
         })
     } else {
         bail!("wide-angle package record requested without record production")
@@ -1169,8 +1171,11 @@ fn tile_path_xyz(tile_path: &str) -> Option<(u32, u32, u32)> {
     Some((z, x, y))
 }
 
-fn wide_angle_package_metadata(is_wide_angle: bool) -> BTreeMap<String, serde_json::Value> {
-    BTreeMap::from([
+fn chart_package_metadata(
+    is_wide_angle: bool,
+    tile_count: u64,
+) -> BTreeMap<String, serde_json::Value> {
+    let mut metadata = BTreeMap::from([
         (
             "wide_angle_region_id".to_string(),
             serde_json::Value::from(WIDE_ANGLE_REGION_ID),
@@ -1195,7 +1200,12 @@ fn wide_angle_package_metadata(is_wide_angle: bool) -> BTreeMap<String, serde_js
                 FULL_COVERAGE_ZOOM + 1
             }),
         ),
-    ])
+    ]);
+    metadata.insert(
+        "tile_count".to_string(),
+        serde_json::Value::from(tile_count),
+    );
+    metadata
 }
 
 fn calculate_manifest_cycle() -> String {

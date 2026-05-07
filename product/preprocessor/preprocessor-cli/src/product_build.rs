@@ -1068,6 +1068,11 @@ const TPP_RENDER_WEIGHT: usize = 2;
 const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
 const TERRAIN_PIPELINE_VERSION: &str = "v4";
 const SHADED_RELIEF_PIPELINE_VERSION: &str = "v7-wide-angle-split";
+const SHADED_RELIEF_OVERLAY_STYLE_VERSION: &str = "v1-gray-borders-bluegray-primary-roads";
+const SHADED_RELIEF_STATE_BORDERS_URL: &str =
+    "https://naturalearth.s3.amazonaws.com/50m_cultural/ne_50m_admin_1_states_provinces_lines.zip";
+const SHADED_RELIEF_PRIMARY_ROADS_URL: &str =
+    "https://www2.census.gov/geo/tiger/TIGER2025/PRIMARYROADS/tl_2025_us_primaryroads.zip";
 const WATER_MASK_PIPELINE_VERSION: &str = "v2";
 const TERRAIN_TILE_WORKERS: u32 = 16;
 const SHADED_RELIEF_TILE_WORKERS: u32 = 16;
@@ -2351,6 +2356,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             })
                         }
                         ProductScheduledTaskKind::ShadedReliefWideBuild => {
+                            let overlays = prepare_shaded_relief_overlay_sources(&config)?;
                             let mut regional_products = Vec::new();
                             for region in config.profile.terrain_regions() {
                                 let region_id = region.code().to_ascii_lowercase();
@@ -2358,6 +2364,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 match task_values_snapshot.get(&task_id) {
                                     Some(ProductTaskValue::BuiltStaticTileProduct {
                                         zip_path,
+                                        zip_sha256,
                                         source_version,
                                         source_fetched_at_utc,
                                         ..
@@ -2375,6 +2382,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                             region_id,
                                             output_dir,
                                             source_version.clone(),
+                                            zip_sha256.clone().unwrap_or_default(),
                                             source_fetched_at_utc.clone(),
                                         ));
                                     }
@@ -2390,7 +2398,11 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 source_fetched_at_utc,
                                 tile_levels,
                                 record,
-                            ) = build_shaded_relief_wide_product(&config, &regional_products)?;
+                            ) = build_shaded_relief_wide_product(
+                                &config,
+                                &regional_products,
+                                &overlays,
+                            )?;
                             let cache_hit = record.cache_hit;
                             let (zip_sha256, zip_size_bytes) =
                                 node_output_file_detail(&record, "zip");
@@ -9779,6 +9791,7 @@ fn build_shaded_relief_product(
     NodeRecord,
 )> {
     let region_id = region.code().to_ascii_lowercase();
+    let overlays = prepare_shaded_relief_overlay_sources(config)?;
     let input_dir = artifact_root_from_build_root(&config.build_root)
         .join("private-work")
         .join("shaded-relief")
@@ -9808,7 +9821,12 @@ fn build_shaded_relief_product(
             &cached_selection.selection.missing_cells,
         );
         let version_label = fast_product_version_label(&source_fingerprint);
-        let inputs = shaded_relief_product_inputs(region, &source_fingerprint, water_mask_version)?;
+        let inputs = shaded_relief_product_inputs(
+            region,
+            &source_fingerprint,
+            water_mask_version,
+            &overlays.source_fingerprint,
+        )?;
         let prepared = prepare_node_at(
             &build_shared_node_dir(config, &format!("static-shaded-relief-{region_id}"))?,
             &format!("static-shaded-relief-{region_id}"),
@@ -9855,7 +9873,12 @@ fn build_shaded_relief_product(
         )?
     };
     let version_label = fast_product_version_label(&source_fingerprint);
-    let inputs = shaded_relief_product_inputs(region, &source_fingerprint, water_mask_version)?;
+    let inputs = shaded_relief_product_inputs(
+        region,
+        &source_fingerprint,
+        water_mask_version,
+        &overlays.source_fingerprint,
+    )?;
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, &format!("static-shaded-relief-{region_id}"))?,
         &format!("static-shaded-relief-{region_id}"),
@@ -9896,6 +9919,9 @@ fn build_shaded_relief_product(
         &version_label,
         &dem_selection,
         water_mask_tiles_dir,
+        &overlays.state_borders_shp,
+        &overlays.primary_roads_shp,
+        false,
     )?;
     move_static_tile_tree_under_chart_index(&output_dir, 0)?;
     stage_static_tile_zoom_subset(
@@ -9934,9 +9960,73 @@ fn build_shaded_relief_product(
     ))
 }
 
+struct ShadedReliefOverlaySources {
+    state_borders_shp: PathBuf,
+    primary_roads_shp: PathBuf,
+    source_fingerprint: String,
+}
+
+fn prepare_shaded_relief_overlay_sources(
+    config: &ProductBuildConfig,
+) -> anyhow::Result<ShadedReliefOverlaySources> {
+    let input_dir = artifact_root_from_build_root(&config.build_root)
+        .join("private-work")
+        .join("shaded-relief")
+        .join("overlays")
+        .join("input");
+    fs::create_dir_all(&input_dir)
+        .with_context(|| format!("failed to create {}", input_dir.display()))?;
+    let provenance_dir = config
+        .build_root
+        .join("meta")
+        .join("provenance")
+        .join("shaded-relief-overlays");
+    let fetch_cache = static_source_fetch_cache_config(config)?;
+    let requests = [
+        PrefetchRequest::new(SHADED_RELIEF_STATE_BORDERS_URL)
+            .with_logical_file_name("ne_50m_admin_1_states_provinces_lines.zip"),
+        PrefetchRequest::new(SHADED_RELIEF_PRIMARY_ROADS_URL)
+            .with_logical_file_name("tl_2025_us_primaryroads.zip"),
+    ];
+    prefetch_requests_with_provenance(
+        &requests,
+        &input_dir,
+        config.fetch_jobs,
+        Some(&fetch_cache),
+        &provenance_dir,
+        "shaded-relief-overlays",
+    )?;
+    let state_borders_shp = input_dir.join("ne_50m_admin_1_states_provinces_lines.shp");
+    let primary_roads_shp = input_dir.join("tl_2025_us_primaryroads.shp");
+    if !state_borders_shp.is_file() {
+        bail!(
+            "shaded relief overlay fetch missing {}",
+            state_borders_shp.display()
+        );
+    }
+    if !primary_roads_shp.is_file() {
+        bail!(
+            "shaded relief overlay fetch missing {}",
+            primary_roads_shp.display()
+        );
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"shaded-relief-overlays-v1");
+    hasher.update(SHADED_RELIEF_STATE_BORDERS_URL.as_bytes());
+    hasher.update(hash_shapefile_family(&state_borders_shp)?.as_bytes());
+    hasher.update(SHADED_RELIEF_PRIMARY_ROADS_URL.as_bytes());
+    hasher.update(hash_shapefile_family(&primary_roads_shp)?.as_bytes());
+    Ok(ShadedReliefOverlaySources {
+        state_borders_shp,
+        primary_roads_shp,
+        source_fingerprint: format!("{:x}", hasher.finalize()),
+    })
+}
+
 fn build_shaded_relief_wide_product(
     config: &ProductBuildConfig,
-    regional_products: &[(String, PathBuf, String, Option<String>)],
+    regional_products: &[(String, PathBuf, String, String, Option<String>)],
+    overlays: &ShadedReliefOverlaySources,
 ) -> anyhow::Result<(
     PathBuf,
     String,
@@ -9944,13 +10034,22 @@ fn build_shaded_relief_wide_product(
     Vec<TileLevelRecord>,
     NodeRecord,
 )> {
-    let source_fingerprint = shaded_relief_wide_source_fingerprint(regional_products);
+    let source_fingerprint =
+        shaded_relief_wide_source_fingerprint(regional_products, &overlays.source_fingerprint);
     let version_label = fast_product_version_label(&source_fingerprint);
     let source_fetched_at_utc = regional_products
         .iter()
-        .filter_map(|(_region_id, _output_dir, _source_version, fetched_at)| fetched_at.clone())
+        .filter_map(
+            |(_region_id, _output_dir, _source_version, _zip_sha256, fetched_at)| {
+                fetched_at.clone()
+            },
+        )
         .max();
-    let inputs = shaded_relief_wide_product_inputs(regional_products, &source_fingerprint);
+    let inputs = shaded_relief_wide_product_inputs(
+        regional_products,
+        &source_fingerprint,
+        &overlays.source_fingerprint,
+    );
     let prepared = prepare_node_at(
         &build_shared_node_dir(
             config,
@@ -10003,6 +10102,8 @@ fn build_shaded_relief_wide_product(
         &output_dir,
         &version_label,
         &source_fingerprint,
+        &overlays.state_borders_shp,
+        &overlays.primary_roads_shp,
     )?;
     let tile_levels = read_static_tile_manifest_levels(&manifest_path)?;
     zip_directory_deterministic(&zip_path, &output_dir, &["manifest.json", "tiles"])?;
@@ -10035,29 +10136,37 @@ fn build_shaded_relief_wide_product(
 }
 
 fn shaded_relief_wide_source_fingerprint(
-    regional_products: &[(String, PathBuf, String, Option<String>)],
+    regional_products: &[(String, PathBuf, String, String, Option<String>)],
+    overlay_source_fingerprint: &str,
 ) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"shaded-relief-wide-v1");
     hasher.update(FULL_COVERAGE_ZOOM.to_string().as_bytes());
-    for (region_id, _output_dir, source_version, _fetched_at) in regional_products {
+    hasher.update(overlay_source_fingerprint.as_bytes());
+    hasher.update(SHADED_RELIEF_OVERLAY_STYLE_VERSION.as_bytes());
+    for (region_id, _output_dir, source_version, zip_sha256, _fetched_at) in regional_products {
         hasher.update(region_id.as_bytes());
         hasher.update([0]);
         hasher.update(source_version.as_bytes());
+        hasher.update([0]);
+        hasher.update(zip_sha256.as_bytes());
         hasher.update([0xff]);
     }
     format!("{:x}", hasher.finalize())
 }
 
 fn shaded_relief_wide_product_inputs(
-    regional_products: &[(String, PathBuf, String, Option<String>)],
+    regional_products: &[(String, PathBuf, String, String, Option<String>)],
     source_fingerprint: &str,
+    overlay_source_fingerprint: &str,
 ) -> BTreeMap<String, String> {
     let region_versions = regional_products
         .iter()
-        .map(|(region_id, _output_dir, source_version, _fetched_at)| {
-            format!("{region_id}:{source_version}")
-        })
+        .map(
+            |(region_id, _output_dir, source_version, zip_sha256, _fetched_at)| {
+                format!("{region_id}:{source_version}:{zip_sha256}")
+            },
+        )
         .collect::<Vec<_>>()
         .join(",");
     BTreeMap::from([
@@ -10074,6 +10183,14 @@ fn shaded_relief_wide_product_inputs(
             "source_fingerprint".to_string(),
             source_fingerprint.to_string(),
         ),
+        (
+            "overlay_source_fingerprint".to_string(),
+            overlay_source_fingerprint.to_string(),
+        ),
+        (
+            "overlay_style".to_string(),
+            SHADED_RELIEF_OVERLAY_STYLE_VERSION.to_string(),
+        ),
         ("region_versions".to_string(), region_versions),
         (
             "shaded_relief_pipeline".to_string(),
@@ -10087,10 +10204,12 @@ fn shaded_relief_wide_product_inputs(
 }
 
 fn composite_shaded_relief_wide_tiles(
-    regional_products: &[(String, PathBuf, String, Option<String>)],
+    regional_products: &[(String, PathBuf, String, String, Option<String>)],
     output_dir: &Path,
     version_label: &str,
     source_fingerprint: &str,
+    state_borders_shp: &Path,
+    primary_roads_shp: &Path,
 ) -> anyhow::Result<()> {
     let script_path = output_dir.join("build_shaded_relief_wide_tiles.py");
     fs::write(&script_path, SHADED_RELIEF_WIDE_TILE_SCRIPT)
@@ -10104,11 +10223,17 @@ fn composite_shaded_relief_wide_tiles(
         .arg(version_label)
         .arg("--source-fingerprint")
         .arg(source_fingerprint)
+        .arg("--state-borders-shp")
+        .arg(state_borders_shp)
+        .arg("--primary-roads-shp")
+        .arg(primary_roads_shp)
+        .arg("--overlay-style-version")
+        .arg(SHADED_RELIEF_OVERLAY_STYLE_VERSION)
         .arg("--max-zoom")
         .arg(FULL_COVERAGE_ZOOM.to_string())
         .arg("--tile-size")
         .arg(TERRAIN_TILE_SIZE.to_string());
-    for (_region_id, output_dir, _source_version, _fetched_at) in regional_products {
+    for (_region_id, output_dir, _source_version, _zip_sha256, _fetched_at) in regional_products {
         command.arg("--source-dir").arg(output_dir);
     }
     let output = command
@@ -10130,6 +10255,7 @@ fn shaded_relief_product_inputs(
     region: Region,
     source_fingerprint: &str,
     water_mask_version: &str,
+    overlay_source_fingerprint: &str,
 ) -> anyhow::Result<BTreeMap<String, String>> {
     let region_id = region.code().to_ascii_lowercase();
     Ok(BTreeMap::from([
@@ -10148,6 +10274,14 @@ fn shaded_relief_product_inputs(
         (
             "water_mask_version".to_string(),
             water_mask_version.to_string(),
+        ),
+        (
+            "overlay_source_fingerprint".to_string(),
+            overlay_source_fingerprint.to_string(),
+        ),
+        (
+            "overlay_style".to_string(),
+            SHADED_RELIEF_OVERLAY_STYLE_VERSION.to_string(),
         ),
         (
             "shaded_relief_pipeline".to_string(),
@@ -11052,7 +11186,8 @@ fn build_terrain_region_tiles(
     fs::write(&script_path, TERRAIN_TILE_SCRIPT)
         .with_context(|| format!("failed to write {}", script_path.display()))?;
     let bounds = region.bounds();
-    let output = Command::new("python3")
+    let mut command = Command::new("python3");
+    let output = command
         .arg(&script_path)
         .arg("--vrt")
         .arg(vrt_path)
@@ -11389,7 +11524,8 @@ fn build_water_mask_region_tiles(
 ) -> anyhow::Result<()> {
     let script_path = water_mask_tile_script_path();
     let bounds = region.bounds();
-    let output = Command::new("python3")
+    let mut command = Command::new("python3");
+    let output = command
         .arg(&script_path)
         .arg("--output-dir")
         .arg(output_dir)
@@ -11428,10 +11564,14 @@ fn build_shaded_relief_region_tiles(
     version_label: &str,
     dem_selection: &TerrainDemSelection,
     water_mask_tiles_dir: &Path,
+    state_borders_shp: &Path,
+    primary_roads_shp: &Path,
+    draw_low_zoom_overlays: bool,
 ) -> anyhow::Result<()> {
     let script_path = shaded_relief_tile_script_path();
     let bounds = region.bounds();
-    let output = Command::new("python3")
+    let mut command = Command::new("python3");
+    command
         .arg(&script_path)
         .arg("--vrt")
         .arg(vrt_path)
@@ -11455,8 +11595,18 @@ fn build_shaded_relief_region_tiles(
         .arg(dem_selection.missing_cells.join(","))
         .arg("--water-mask-dir")
         .arg(water_mask_tiles_dir)
+        .arg("--state-borders-shp")
+        .arg(state_borders_shp)
+        .arg("--primary-roads-shp")
+        .arg(primary_roads_shp)
+        .arg("--overlay-style-version")
+        .arg(SHADED_RELIEF_OVERLAY_STYLE_VERSION)
         .arg("--workers")
-        .arg(SHADED_RELIEF_TILE_WORKERS.to_string())
+        .arg(SHADED_RELIEF_TILE_WORKERS.to_string());
+    if draw_low_zoom_overlays {
+        command.arg("--draw-low-zoom-overlays");
+    }
+    let output = command
         .output()
         .with_context(|| format!("failed to run {}", script_path.display()))?;
     if !output.status.success() {
@@ -11685,12 +11835,37 @@ if __name__ == '__main__':
 const SHADED_RELIEF_WIDE_TILE_SCRIPT: &str = r#"
 import argparse
 import json
+import math
 from collections import defaultdict
 from pathlib import Path
 
-from PIL import Image
+from osgeo import ogr
+from PIL import Image, ImageDraw
 
 RASTER_TILE_SUFFIXES = {'.webp'}
+RADIUS = 6378137.0
+ORIGIN_SHIFT = math.pi * RADIUS
+STATE_BORDER_RGBA = (128, 128, 128, 204)
+PRIMARY_ROAD_RGBA = (91, 111, 122, 153)
+
+def mercator(lon, lat):
+    lat = max(min(lat, 85.05112878), -85.05112878)
+    mx = lon * ORIGIN_SHIFT / 180.0
+    my = math.log(math.tan((90.0 + lat) * math.pi / 360.0)) * RADIUS
+    return mx, my
+
+def tile_bounds(x, y, z, tile_size):
+    resolution = ((2.0 * math.pi * RADIUS) / tile_size) / (2 ** z)
+    minx = x * tile_size * resolution - ORIGIN_SHIFT
+    maxx = (x + 1) * tile_size * resolution - ORIGIN_SHIFT
+    miny = y * tile_size * resolution - ORIGIN_SHIFT
+    maxy = (y + 1) * tile_size * resolution - ORIGIN_SHIFT
+    return minx, miny, maxx, maxy
+
+def pixel_for_lonlat(lon, lat, bounds, tile_size):
+    mx, my = mercator(lon, lat)
+    minx, miny, maxx, maxy = bounds
+    return ((mx - minx) / (maxx - minx) * tile_size, (maxy - my) / (maxy - miny) * tile_size)
 
 def scan_sources(source_dirs, max_zoom):
     groups = defaultdict(list)
@@ -11752,12 +11927,162 @@ def scan_levels(output_dir):
         })
     return levels
 
+def load_line_geometries(path):
+    dataset = ogr.Open(str(path))
+    if dataset is None:
+        raise RuntimeError(f'failed to open {path}')
+    layer = dataset.GetLayer(0)
+    lines = []
+    for feature in layer:
+        geom = feature.GetGeometryRef()
+        if geom is not None:
+            for line in iter_lines(geom):
+                points = [(line.GetX(i), line.GetY(i)) for i in range(line.GetPointCount())]
+                for segment in split_discontinuous_line(points):
+                    if len(segment) >= 2:
+                        lines.append(segment)
+    return lines
+
+def iter_lines(geom):
+    name = geom.GetGeometryName().upper()
+    if name == 'LINESTRING':
+        yield geom
+    elif name in ('MULTILINESTRING', 'GEOMETRYCOLLECTION'):
+        for index in range(geom.GetGeometryCount()):
+            yield from iter_lines(geom.GetGeometryRef(index))
+
+def split_discontinuous_line(points, max_jump_degrees=10.0):
+    current = []
+    previous = None
+    for point in points:
+        if previous is not None and (
+            abs(point[0] - previous[0]) > max_jump_degrees
+            or abs(point[1] - previous[1]) > max_jump_degrees
+        ):
+            if len(current) >= 2:
+                yield current
+            current = []
+        current.append(point)
+        previous = point
+    if len(current) >= 2:
+        yield current
+
+def draw_dashed_line(draw, points, fill, width, dash=8, gap=6):
+    for start, end in zip(points, points[1:]):
+        x0, y0 = start
+        x1, y1 = end
+        dx = x1 - x0
+        dy = y1 - y0
+        length = math.hypot(dx, dy)
+        if length <= 0:
+            continue
+        distance = 0.0
+        while distance < length:
+            dash_end = min(distance + dash, length)
+            draw.line([
+                (x0 + dx * (distance / length), y0 + dy * (distance / length)),
+                (x0 + dx * (dash_end / length), y0 + dy * (dash_end / length)),
+            ], fill=fill, width=width)
+            distance += dash + gap
+
+def offset_polyline(points, offset):
+    shifted = []
+    for index, (x, y) in enumerate(points):
+        normals = []
+        if index > 0:
+            px, py = points[index - 1]
+            dx = x - px
+            dy = y - py
+            length = math.hypot(dx, dy)
+            if length > 0:
+                normals.append((-dy / length, dx / length))
+        if index + 1 < len(points):
+            nx, ny = points[index + 1]
+            dx = nx - x
+            dy = ny - y
+            length = math.hypot(dx, dy)
+            if length > 0:
+                normals.append((-dy / length, dx / length))
+        if normals:
+            ox = sum(normal[0] for normal in normals) / len(normals)
+            oy = sum(normal[1] for normal in normals) / len(normals)
+            length = math.hypot(ox, oy)
+            if length > 0:
+                shifted.append((x + ox / length * offset, y + oy / length * offset))
+                continue
+        shifted.append((x, y))
+    return shifted
+
+def draw_paired_line(draw, points, fill, width, separation):
+    offset = separation / 2.0
+    draw.line(offset_polyline(points, -offset), fill=fill, width=width)
+    draw.line(offset_polyline(points, offset), fill=fill, width=width)
+
+def line_tile_range(points, z, tile_size):
+    lons = [lon for lon, _lat in points]
+    lats = [lat for _lon, lat in points]
+    resolution = ((2.0 * math.pi * RADIUS) / tile_size) / (2 ** z)
+    west_m, south_m = mercator(min(lons), min(lats))
+    east_m, north_m = mercator(max(lons), max(lats))
+    x0 = math.floor((west_m + ORIGIN_SHIFT) / resolution / tile_size)
+    x1 = math.floor((east_m + ORIGIN_SHIFT) / resolution / tile_size)
+    y0 = math.floor((south_m + ORIGIN_SHIFT) / resolution / tile_size)
+    y1 = math.floor((north_m + ORIGIN_SHIFT) / resolution / tile_size)
+    limit = (2 ** z) - 1
+    x0 = max(0, min(x0, limit))
+    x1 = max(0, min(x1, limit))
+    y0 = max(0, min(y0, limit))
+    y1 = max(0, min(y1, limit))
+    return range(x0, x1 + 1), range(y0, y1 + 1)
+
+def build_overlay_index(lines, min_zoom, max_zoom, tile_size):
+    index = {}
+    for points in lines:
+        for z in range(min_zoom, max_zoom + 1):
+            x_range, y_range = line_tile_range(points, z, tile_size)
+            for x in x_range:
+                for y in y_range:
+                    index.setdefault((z, x, y), []).append(points)
+    return index
+
+def draw_geometries(draw, lines, bounds, tile_size, z, style):
+    margin = 24
+    for lonlat_points in lines:
+        points = [pixel_for_lonlat(lon, lat, bounds, tile_size) for lon, lat in lonlat_points]
+        if len(points) < 2:
+            continue
+        if not any(-margin <= x <= tile_size + margin and -margin <= y <= tile_size + margin for x, y in points):
+            continue
+        if style == 'state-border':
+            draw_dashed_line(draw, points, STATE_BORDER_RGBA, 1)
+        else:
+            draw_paired_line(draw, points, PRIMARY_ROAD_RGBA, 1, 2)
+
+def draw_overlays(output_dir, max_zoom, tile_size, state_borders_shp, primary_roads_shp):
+    state_index = build_overlay_index(load_line_geometries(state_borders_shp), 0, max_zoom, tile_size)
+    road_index = build_overlay_index(load_line_geometries(primary_roads_shp), 0, max_zoom, tile_size)
+    tiles_root = Path(output_dir) / 'tiles' / '0'
+    for z, x, y in sorted(set(state_index) | set(road_index)):
+        tile_path = tiles_root / str(z) / str(x) / f'{y}.webp'
+        if not tile_path.exists():
+            continue
+        image = Image.open(tile_path).convert('RGBA')
+        draw = ImageDraw.Draw(image, 'RGBA')
+        bounds = tile_bounds(x, y, z, tile_size)
+        key = (z, x, y)
+        draw_geometries(draw, road_index.get(key, []), bounds, tile_size, z, 'primary-road')
+        draw_geometries(draw, state_index.get(key, []), bounds, tile_size, z, 'state-border')
+        image.save(tile_path, format='WEBP', quality=75, method=4, exact=True, alpha_quality=100)
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--source-dir', action='append', required=True)
     parser.add_argument('--output-dir', required=True)
     parser.add_argument('--version-label', required=True)
     parser.add_argument('--source-fingerprint', required=True)
+    parser.add_argument('--state-borders-shp', required=True)
+    parser.add_argument('--primary-roads-shp', required=True)
+    parser.add_argument('--overlay-style-version', required=True)
     parser.add_argument('--max-zoom', required=True, type=int)
     parser.add_argument('--tile-size', required=True, type=int)
     args = parser.parse_args()
@@ -11766,6 +12091,7 @@ def main():
     groups = scan_sources(args.source_dir, args.max_zoom)
     for rel, paths in sorted(groups.items()):
         composite_group(paths, output_dir / rel)
+    draw_overlays(output_dir, args.max_zoom, args.tile_size, args.state_borders_shp, args.primary_roads_shp)
     levels = scan_levels(output_dir)
     if not levels:
         raise SystemExit('no shaded relief wide-angle tiles were produced')
@@ -11785,6 +12111,11 @@ def main():
         'wide_angle': True,
         'wide_angle_max_zoom': args.max_zoom,
         'source_policy': 'alpha-composite matching low-zoom tiles from regional shaded-relief products',
+        'overlays': {
+            'style_version': args.overlay_style_version,
+            'state_borders': 'Natural Earth 50m admin-1 boundary lines, dashed 80% gray',
+            'primary_roads': 'U.S. Census TIGER/Line 2025 national primary roads, 60% blue-gray paired strokes',
+        },
         'source_region_count': len(args.source_dir),
         'levels': levels,
         'files': {'tiles': 'tiles'},
@@ -14523,6 +14854,7 @@ fn build_chart_package_nodes(
             })
         },
         |region, manifest_path, zip_path| {
+            let tile_count = count_chart_zip_tile_entries(zip_path)?;
             Ok(PackageOutputRecord {
                 label: family.capture_label().to_string(),
                 chart: Some(manifest_chart_name(family).to_string()),
@@ -14541,7 +14873,7 @@ fn build_chart_package_nodes(
                     version_label
                 ),
                 zip_sha256: hash_file(zip_path)?,
-                metadata: chart_wide_angle_package_metadata(false),
+                metadata: chart_wide_angle_package_metadata(false, Some(tile_count)),
             })
         },
         |region| {
@@ -14600,7 +14932,7 @@ fn build_chart_package_nodes(
                 manifest_sha256: hash_file(&wide_manifest_path).unwrap_or_default(),
                 zip: format!("WIDE_{}_{}.zip", manifest_chart_name(family), version_label),
                 zip_sha256: hash_file(&wide_zip_path).unwrap_or_default(),
-                metadata: chart_wide_angle_package_metadata(true),
+                metadata: chart_wide_angle_package_metadata(true, None),
             })
     } else {
         let _build_lock = match claim_or_wait_for_node(&wide_prepared, &expected_outputs)? {
@@ -14621,7 +14953,7 @@ fn build_chart_package_nodes(
                         manifest_sha256: hash_file(&wide_manifest_path).unwrap_or_default(),
                         zip: format!("WIDE_{}_{}.zip", manifest_chart_name(family), version_label),
                         zip_sha256: hash_file(&wide_zip_path).unwrap_or_default(),
-                        metadata: chart_wide_angle_package_metadata(true),
+                        metadata: chart_wide_angle_package_metadata(true, None),
                     })
             }
             NodeCacheState::Build(lock) => {
@@ -14661,7 +14993,10 @@ fn build_chart_package_nodes(
     };
     let mut package_records = read_package_outputs_by_region(&aggregate_path)?
         .into_values()
-        .filter(|record| record.region != WIDE_ANGLE_REGION_ID)
+        .filter(|record| {
+            record.region != WIDE_ANGLE_REGION_ID
+                && chart_package_record_has_tiles(record, &work_dir).unwrap_or(true)
+        })
         .collect::<Vec<_>>();
     package_records.push(wide_record_output);
     let parent = aggregate_path
@@ -14680,8 +15015,46 @@ fn build_chart_package_nodes(
     ))
 }
 
-fn chart_wide_angle_package_metadata(is_wide_angle: bool) -> BTreeMap<String, serde_json::Value> {
-    BTreeMap::from([
+fn chart_package_record_has_tiles(
+    record: &PackageOutputRecord,
+    package_root: &Path,
+) -> anyhow::Result<bool> {
+    if let Some(count) = record
+        .metadata
+        .get("tile_count")
+        .and_then(|value| value.as_u64())
+    {
+        if count == 0 {
+            return Ok(false);
+        }
+        return Ok(count_chart_zip_tile_entries(&package_root.join(&record.zip))? > 0);
+    }
+    Ok(true)
+}
+
+fn count_chart_zip_tile_entries(path: &Path) -> anyhow::Result<u64> {
+    let file = fs::File::open(path)
+        .with_context(|| format!("failed to open chart zip {}", path.display()))?;
+    let archive = zip::ZipArchive::new(file)
+        .with_context(|| format!("failed to open chart zip {}", path.display()))?;
+    let count = archive
+        .file_names()
+        .filter(|name| {
+            if !name.ends_with(".webp") {
+                return false;
+            }
+            let parts = name.split('/').collect::<Vec<_>>();
+            parts.len() == 5 && parts[0] == "tiles"
+        })
+        .count();
+    Ok(count as u64)
+}
+
+fn chart_wide_angle_package_metadata(
+    is_wide_angle: bool,
+    tile_count: Option<u64>,
+) -> BTreeMap<String, serde_json::Value> {
+    let mut metadata = BTreeMap::from([
         (
             "wide_angle_region_id".to_string(),
             serde_json::Value::from(WIDE_ANGLE_REGION_ID),
@@ -14706,7 +15079,14 @@ fn chart_wide_angle_package_metadata(is_wide_angle: bool) -> BTreeMap<String, se
                 FULL_COVERAGE_ZOOM + 1
             }),
         ),
-    ])
+    ]);
+    if let Some(tile_count) = tile_count {
+        metadata.insert(
+            "tile_count".to_string(),
+            serde_json::Value::from(tile_count),
+        );
+    }
+    metadata
 }
 
 struct RegionalPackageSpec {
@@ -16793,7 +17173,7 @@ mod tests {
                 version_label: None,
                 effective_date: None,
                 expiration_date: None,
-                metadata: chart_wide_angle_package_metadata(false),
+                metadata: chart_wide_angle_package_metadata(false, Some(1)),
             }],
             chart_collections: vec![ChartCollectionRecord {
                 id: "sec:nw".to_string(),
@@ -17359,7 +17739,7 @@ mod tests {
                 source_fetched_at_utc: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
-                metadata: chart_wide_angle_package_metadata(false),
+                metadata: chart_wide_angle_package_metadata(false, Some(1)),
             },
             BundlePackageArtifact {
                 id: "NAV_DB_2604_01".to_string(),
@@ -17440,7 +17820,7 @@ mod tests {
         resource_index.packages[0].checksum_sha256 = "deadbeef".to_string();
         resource_index.packages[0].cycle_code = Some("2604".to_string());
         resource_index.packages[0].version_label = Some("01".to_string());
-        resource_index.packages[0].metadata = chart_wide_angle_package_metadata(false);
+        resource_index.packages[0].metadata = chart_wide_angle_package_metadata(false, Some(1));
 
         let artifacts = bundle_package_artifacts_from_resource_index(&resource_index)
             .expect("resource index packages should convert");

@@ -6,8 +6,8 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
-from osgeo import gdal
-from PIL import Image
+from osgeo import gdal, ogr
+from PIL import Image, ImageDraw
 
 RADIUS = 6378137.0
 ORIGIN_SHIFT = math.pi * RADIUS
@@ -35,6 +35,8 @@ WORKER_ZOOM = None
 WORKER_TILE_SIZE = None
 WORKER_RESOLUTION = None
 RASTER_TILE_SUFFIXES = {".png", ".webp"}
+STATE_BORDER_RGBA = (128, 128, 128, 204)
+PRIMARY_ROAD_RGBA = (91, 111, 122, 153)
 
 
 def mercator(lon, lat):
@@ -52,6 +54,15 @@ def tile_bounds(x, y, z, tile_size):
     miny = y * tile_size * resolution - ORIGIN_SHIFT
     maxy = (y + 1) * tile_size * resolution - ORIGIN_SHIFT
     return minx, miny, maxx, maxy
+
+
+def pixel_for_lonlat(lon, lat, bounds, tile_size):
+    mx, my = mercator(lon, lat)
+    minx, miny, maxx, maxy = bounds
+    return (
+        (mx - minx) / (maxx - minx) * tile_size,
+        (maxy - my) / (maxy - miny) * tile_size,
+    )
 
 
 def tile_range(west, south, east, north, z, tile_size):
@@ -188,6 +199,217 @@ def scan_tile_levels(tiles_root):
     return levels
 
 
+def load_line_geometries(path, bounds_lonlat=None):
+    if not path:
+        return []
+    dataset = ogr.Open(str(path))
+    if dataset is None:
+        raise RuntimeError(f"failed to open {path}")
+    layer = dataset.GetLayer(0)
+    lines = []
+    min_lon = min_lat = max_lon = max_lat = None
+    if bounds_lonlat:
+        min_lon, min_lat, max_lon, max_lat = bounds_lonlat
+    for feature in layer:
+        geom = feature.GetGeometryRef()
+        if geom is None:
+            continue
+        for line in iter_lines(geom):
+            points = [
+                (line.GetX(index), line.GetY(index))
+                for index in range(line.GetPointCount())
+            ]
+            for segment in split_discontinuous_line(points):
+                if len(segment) < 2:
+                    continue
+                lons = [lon for lon, _lat in segment]
+                lats = [lat for _lon, lat in segment]
+                if bounds_lonlat and (
+                    max(lons) < min_lon
+                    or min(lons) > max_lon
+                    or max(lats) < min_lat
+                    or min(lats) > max_lat
+                ):
+                    continue
+                lines.append(segment)
+    return lines
+
+
+def iter_lines(geom):
+    name = geom.GetGeometryName().upper()
+    if name == "LINESTRING":
+        yield geom
+    elif name in ("MULTILINESTRING", "GEOMETRYCOLLECTION"):
+        for index in range(geom.GetGeometryCount()):
+            yield from iter_lines(geom.GetGeometryRef(index))
+
+
+def split_discontinuous_line(points, max_jump_degrees=10.0):
+    current = []
+    previous = None
+    for point in points:
+        if previous is not None and (
+            abs(point[0] - previous[0]) > max_jump_degrees
+            or abs(point[1] - previous[1]) > max_jump_degrees
+        ):
+            if len(current) >= 2:
+                yield current
+            current = []
+        current.append(point)
+        previous = point
+    if len(current) >= 2:
+        yield current
+
+
+def draw_dashed_line(draw, points, fill, width, dash=8, gap=6):
+    for start, end in zip(points, points[1:]):
+        x0, y0 = start
+        x1, y1 = end
+        dx = x1 - x0
+        dy = y1 - y0
+        length = math.hypot(dx, dy)
+        if length <= 0:
+            continue
+        distance = 0.0
+        while distance < length:
+            dash_end = min(distance + dash, length)
+            sx = x0 + dx * (distance / length)
+            sy = y0 + dy * (distance / length)
+            ex = x0 + dx * (dash_end / length)
+            ey = y0 + dy * (dash_end / length)
+            draw.line([(sx, sy), (ex, ey)], fill=fill, width=width)
+            distance += dash + gap
+
+
+def offset_polyline(points, offset):
+    shifted = []
+    for index, (x, y) in enumerate(points):
+        normals = []
+        if index > 0:
+            px, py = points[index - 1]
+            dx = x - px
+            dy = y - py
+            length = math.hypot(dx, dy)
+            if length > 0:
+                normals.append((-dy / length, dx / length))
+        if index + 1 < len(points):
+            nx, ny = points[index + 1]
+            dx = nx - x
+            dy = ny - y
+            length = math.hypot(dx, dy)
+            if length > 0:
+                normals.append((-dy / length, dx / length))
+        if normals:
+            ox = sum(normal[0] for normal in normals) / len(normals)
+            oy = sum(normal[1] for normal in normals) / len(normals)
+            length = math.hypot(ox, oy)
+            if length > 0:
+                shifted.append((x + ox / length * offset, y + oy / length * offset))
+                continue
+        shifted.append((x, y))
+    return shifted
+
+
+def draw_paired_line(draw, points, fill, width, separation):
+    offset = separation / 2.0
+    draw.line(offset_polyline(points, -offset), fill=fill, width=width)
+    draw.line(offset_polyline(points, offset), fill=fill, width=width)
+
+
+def line_tile_range(points, z, tile_size):
+    lons = [lon for lon, _lat in points]
+    lats = [lat for _lon, lat in points]
+    x_range, y_range = tile_range(
+        min(lons),
+        min(lats),
+        max(lons),
+        max(lats),
+        z,
+        tile_size,
+    )
+    limit = (2**z) - 1
+    x_range = range(max(0, min(x_range.start, limit)), max(0, min(x_range.stop - 1, limit)) + 1)
+    y_range = range(max(0, min(y_range.start, limit)), max(0, min(y_range.stop - 1, limit)) + 1)
+    return x_range, y_range
+
+
+def build_overlay_index(lines, min_zoom, max_zoom, tile_size):
+    index = {}
+    for points in lines:
+        for z in range(min_zoom, max_zoom + 1):
+            x_range, y_range = line_tile_range(points, z, tile_size)
+            for x in x_range:
+                for y in y_range:
+                    index.setdefault((z, x, y), []).append(points)
+    return index
+
+
+def draw_line_geometries(draw, lines, bounds, tile_size, style, z):
+    margin = 24
+    for lonlat_points in lines:
+        points = [
+            pixel_for_lonlat(lon, lat, bounds, tile_size)
+            for lon, lat in lonlat_points
+        ]
+        if len(points) < 2:
+            continue
+        if not any(
+            -margin <= x <= tile_size + margin and -margin <= y <= tile_size + margin
+            for x, y in points
+        ):
+            continue
+        if style == "state-border":
+            width = 1 if z < 8 else 2
+            draw_dashed_line(draw, points, STATE_BORDER_RGBA, width)
+        elif style == "primary-road":
+            draw_paired_line(
+                draw,
+                points,
+                PRIMARY_ROAD_RGBA,
+                1,
+                2 if z < 8 else 3,
+            )
+
+
+def draw_overlays_on_tile(tile_path, z, x, y, tile_size, state_index, road_index):
+    image = Image.open(tile_path).convert("RGBA")
+    draw = ImageDraw.Draw(image, "RGBA")
+    bounds = tile_bounds(x, y, z, tile_size)
+    key = (z, x, y)
+    draw_line_geometries(draw, road_index.get(key, []), bounds, tile_size, "primary-road", z)
+    draw_line_geometries(draw, state_index.get(key, []), bounds, tile_size, "state-border", z)
+    save_webp(tile_path, image)
+
+
+def draw_overlays(tiles_root, max_zoom, tile_size, state_borders_shp, primary_roads_shp, include_low_zoom, bounds_lonlat):
+    min_zoom = 0 if include_low_zoom else 8
+    state_index = build_overlay_index(
+        load_line_geometries(state_borders_shp, bounds_lonlat),
+        min_zoom,
+        max_zoom,
+        tile_size,
+    )
+    road_index = build_overlay_index(
+        load_line_geometries(primary_roads_shp, bounds_lonlat),
+        min_zoom,
+        max_zoom,
+        tile_size,
+    )
+    for z, x, y in sorted(set(state_index) | set(road_index)):
+        tile_path = tiles_root / str(z) / str(x) / f"{y}.webp"
+        if not tile_path.exists():
+            continue
+        draw_overlays_on_tile(
+            tile_path,
+            z,
+            x,
+            y,
+            tile_size,
+            state_index,
+            road_index,
+        )
+
+
 def init_worker(vrt_path, tiles_root, water_mask_root, zoom, tile_size, resolution):
     global WORKER_DS, WORKER_TILES_ROOT, WORKER_WATER_MASK_ROOT, WORKER_ZOOM, WORKER_TILE_SIZE, WORKER_RESOLUTION
     WORKER_DS = gdal.Open(vrt_path)
@@ -251,6 +473,10 @@ def main():
     ap.add_argument("--source-count", required=True, type=int)
     ap.add_argument("--missing-cells", default="")
     ap.add_argument("--water-mask-dir")
+    ap.add_argument("--state-borders-shp")
+    ap.add_argument("--primary-roads-shp")
+    ap.add_argument("--overlay-style-version")
+    ap.add_argument("--draw-low-zoom-overlays", action="store_true")
     ap.add_argument("--workers", required=True, type=int)
     args = ap.parse_args()
     west, south, east, north = [float(x) for x in args.bbox.split(",")]
@@ -288,6 +514,16 @@ def main():
         ) as pool:
             count = sum(pool.map(render_tile, tasks, chunksize=8))
     level_counts = build_parent_pyramid(tiles_root, args.zoom, args.tile_size)
+    if args.state_borders_shp or args.primary_roads_shp:
+        draw_overlays(
+            tiles_root,
+            args.zoom,
+            args.tile_size,
+            args.state_borders_shp,
+            args.primary_roads_shp,
+            args.draw_low_zoom_overlays,
+            (west, south, east, north),
+        )
     levels = scan_tile_levels(tiles_root)
 
     manifest = {
@@ -327,6 +563,20 @@ def main():
             "ice_mass": "USGS NHD Ice Mass mask when available",
             "ice_rgb": GLACIER_RGB,
             "mask_tiles": bool(args.water_mask_dir),
+        },
+        "overlays": {
+            "style_version": args.overlay_style_version,
+            "state_borders": {
+                "source": "Natural Earth 50m admin-1 boundary lines",
+                "stroke": "dashed 80% gray",
+                "path": args.state_borders_shp,
+            },
+            "primary_roads": {
+                "source": "U.S. Census TIGER/Line 2025 national primary roads",
+                "stroke": "60% blue-gray paired strokes",
+                "path": args.primary_roads_shp,
+            },
+            "low_zoom_overlays": args.draw_low_zoom_overlays,
         },
         "source_dem_count": args.source_count,
         "missing_dem_cells": [cell for cell in args.missing_cells.split(",") if cell],

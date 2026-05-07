@@ -26,7 +26,15 @@ use crate::{
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum HadOperationOutcome {
     Complete { result: Value },
-    NeedPages { pages: Vec<u32> },
+    NeedResources { resources: Vec<CoreResourceRequest> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoreResourceRequest {
+    pub id: String,
+    pub address: String,
+    #[serde(default)]
+    pub optional: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -158,12 +166,34 @@ impl From<AppError> for HadReadError {
 pub fn run_had_operation(store: &NavKvStore, op: HadOperation) -> AppResult<HadOperationOutcome> {
     match run_had_operation_value(store, op) {
         Ok(result) => Ok(HadOperationOutcome::Complete { result }),
-        Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedPages { pages }),
+        Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
+            resources: nav_kv_page_resources(pages),
+        }),
         Err(HadReadError::Fatal(message)) => Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message,
         }),
     }
+}
+
+pub(crate) fn nav_kv_page_resources(mut pages: Vec<u32>) -> Vec<CoreResourceRequest> {
+    pages.sort_unstable();
+    pages.dedup();
+    pages.into_iter().map(nav_kv_page_resource).collect()
+}
+
+pub(crate) fn nav_kv_page_resource(page: u32) -> CoreResourceRequest {
+    CoreResourceRequest {
+        id: format!("nav_kv/page/{page:04}"),
+        address: format!("/nav-kv/values/{page:04}"),
+        optional: false,
+    }
+}
+
+pub fn nav_kv_page_index_from_resource_id(resource_id: &str) -> Option<u32> {
+    resource_id
+        .strip_prefix("nav_kv/page/")
+        .and_then(|value| value.parse::<u32>().ok())
 }
 
 fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value, HadReadError> {
@@ -2428,17 +2458,27 @@ mod tests {
         path::{Path, PathBuf},
     };
 
+    fn resource_page_indexes(resources: &[CoreResourceRequest]) -> Vec<u32> {
+        resources
+            .iter()
+            .map(|resource| {
+                nav_kv_page_index_from_resource_id(&resource.id)
+                    .unwrap_or_else(|| panic!("unexpected resource id: {}", resource.id))
+            })
+            .collect()
+    }
+
     #[test]
     fn operation_reports_page_faults_instead_of_exposing_query_keys() {
         let (root, _pages) = fixture(&[("chart/catalog", br#"{"charts":[]}"#.as_slice())], 4);
         let store = NavKvStore::new(root);
 
-        assert_eq!(
-            run_had_operation(&store, HadOperation::ChartCatalog).unwrap(),
-            HadOperationOutcome::NeedPages {
-                pages: vec![0, 1, 2, 3]
+        match run_had_operation(&store, HadOperation::ChartCatalog).unwrap() {
+            HadOperationOutcome::NeedResources { resources } => {
+                assert_eq!(resource_page_indexes(&resources), vec![0, 1, 2, 3]);
             }
-        );
+            other => panic!("expected resource fault, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2471,7 +2511,9 @@ mod tests {
             HadOperationOutcome::Complete { result } => {
                 assert_eq!(result["airspace"]["reference_tile_max_zoom"], 12);
             }
-            HadOperationOutcome::NeedPages { pages } => panic!("unexpected pages: {pages:?}"),
+            HadOperationOutcome::NeedResources { resources } => {
+                panic!("unexpected resources: {resources:?}")
+            }
         }
     }
 
@@ -2691,8 +2733,8 @@ mod tests {
                 serde_json::from_value::<MaterializedProcedure>(result)
                     .expect("decode materialized procedure")
             }
-            HadOperationOutcome::NeedPages { pages } => {
-                panic!("expected complete outcome, got missing pages: {pages:?}");
+            HadOperationOutcome::NeedResources { resources } => {
+                panic!("expected complete outcome, got missing resources: {resources:?}");
             }
         };
         let mutation = crate::insert_procedure_materialized_ui(&plan, 1, 2, built)
@@ -2912,8 +2954,8 @@ mod tests {
                     "ZELIG -> XUKRE should highlight only its single path element"
                 );
             }
-            HadOperationOutcome::NeedPages { pages } => {
-                panic!("expected complete outcome, got missing pages: {pages:?}");
+            HadOperationOutcome::NeedResources { resources } => {
+                panic!("expected complete outcome, got missing resources: {resources:?}");
             }
         }
     }
@@ -2988,8 +3030,8 @@ mod tests {
                 assert_eq!(nav_element.cdi_indicator_dots, Some(2.5));
                 assert_eq!(nav_element.cdi_offscale_readout.as_deref(), Some("R"));
             }
-            HadOperationOutcome::NeedPages { pages } => {
-                panic!("expected complete outcome, got missing pages: {pages:?}");
+            HadOperationOutcome::NeedResources { resources } => {
+                panic!("expected complete outcome, got missing resources: {resources:?}");
             }
         }
     }
@@ -3009,8 +3051,10 @@ mod tests {
                 serde_json::from_value::<crate::DerivedChartAirport>(result)
                     .expect("decode generated KPAE plate airport")
             }
-            HadOperationOutcome::NeedPages { pages } => {
-                panic!("expected complete KPAE plate airport, got missing pages: {pages:?}");
+            HadOperationOutcome::NeedResources { resources } => {
+                panic!(
+                    "expected complete KPAE plate airport, got missing resources: {resources:?}"
+                );
             }
         };
         let vor_a = kpae
@@ -3093,8 +3137,8 @@ mod tests {
                 serde_json::from_value::<Vec<MapViewOptionRecord>>(result)
                     .expect("decode generated chart catalog")
             }
-            HadOperationOutcome::NeedPages { pages } => {
-                panic!("expected complete generated chart catalog, got missing pages: {pages:?}");
+            HadOperationOutcome::NeedResources { resources } => {
+                panic!("expected complete generated chart catalog, got missing resources: {resources:?}");
             }
         };
 
@@ -3132,9 +3176,9 @@ mod tests {
                 serde_json::from_value::<MapSelectorState>(result)
                     .expect("decode generated map selector state")
             }
-            HadOperationOutcome::NeedPages { pages } => {
+            HadOperationOutcome::NeedResources { resources } => {
                 panic!(
-                    "expected complete generated map selector state, got missing pages: {pages:?}"
+                    "expected complete generated map selector state, got missing resources: {resources:?}"
                 );
             }
         };
@@ -3206,9 +3250,9 @@ mod tests {
                 serde_json::from_value::<MapSelectorState>(result)
                     .expect("decode generated map selector state")
             }
-            HadOperationOutcome::NeedPages { pages } => {
+            HadOperationOutcome::NeedResources { resources } => {
                 panic!(
-                    "expected complete generated map selector state, got missing pages: {pages:?}"
+                    "expected complete generated map selector state, got missing resources: {resources:?}"
                 );
             }
         };
@@ -3291,8 +3335,8 @@ mod tests {
                 );
                 assert!(!materialized.resolved_legs.is_empty());
             }
-            HadOperationOutcome::NeedPages { pages } => {
-                panic!("expected complete outcome, got missing pages: {pages:?}");
+            HadOperationOutcome::NeedResources { resources } => {
+                panic!("expected complete outcome, got missing resources: {resources:?}");
             }
         }
     }
@@ -3313,8 +3357,8 @@ mod tests {
                     serde_json::from_value::<Option<NavRef>>(result).expect("decode nav ref");
                 assert_eq!(nav_ref, Some(NavRef::Navaid("OLM".to_string())));
             }
-            HadOperationOutcome::NeedPages { pages } => {
-                panic!("expected complete outcome, got missing pages: {pages:?}");
+            HadOperationOutcome::NeedResources { resources } => {
+                panic!("expected complete outcome, got missing resources: {resources:?}");
             }
         }
     }
@@ -3348,8 +3392,8 @@ mod tests {
                     pair[0].distance_from_anchor_nm <= pair[1].distance_from_anchor_nm
                 }));
             }
-            HadOperationOutcome::NeedPages { pages } => {
-                panic!("expected complete outcome, got missing pages: {pages:?}");
+            HadOperationOutcome::NeedResources { resources } => {
+                panic!("expected complete outcome, got missing resources: {resources:?}");
             }
         }
     }
@@ -3378,8 +3422,8 @@ mod tests {
                         && !suggestion.airway_name.trim().is_empty()
                 }));
             }
-            HadOperationOutcome::NeedPages { pages } => {
-                panic!("expected complete outcome, got missing pages: {pages:?}");
+            HadOperationOutcome::NeedResources { resources } => {
+                panic!("expected complete outcome, got missing resources: {resources:?}");
             }
         }
     }
@@ -3401,8 +3445,8 @@ mod tests {
                 serde_json::from_value::<AirwayPresentationPlan>(result)
                     .expect("decode airway presentation")
             }
-            HadOperationOutcome::NeedPages { pages } => {
-                panic!("expected complete outcome, got missing pages: {pages:?}");
+            HadOperationOutcome::NeedResources { resources } => {
+                panic!("expected complete outcome, got missing resources: {resources:?}");
             }
         };
 
@@ -3434,8 +3478,8 @@ mod tests {
                 serde_json::from_value::<MaterializedAirwayResponse>(result)
                     .expect("decode materialized airway response")
             }
-            HadOperationOutcome::NeedPages { pages } => {
-                panic!("expected complete outcome, got missing pages: {pages:?}");
+            HadOperationOutcome::NeedResources { resources } => {
+                panic!("expected complete outcome, got missing resources: {resources:?}");
             }
         };
 
@@ -3502,8 +3546,8 @@ mod tests {
             HadOperationOutcome::Complete { result } => {
                 serde_json::from_value::<FlightPlanEntryPreview>(result).expect("decode preview")
             }
-            HadOperationOutcome::NeedPages { pages } => {
-                panic!("expected complete preview, got missing pages: {pages:?}");
+            HadOperationOutcome::NeedResources { resources } => {
+                panic!("expected complete preview, got missing resources: {resources:?}");
             }
         };
 
@@ -3563,8 +3607,8 @@ mod tests {
                 serde_json::from_value::<FlightPlanUiMutation>(result)
                     .expect("decode append mutation")
             }
-            HadOperationOutcome::NeedPages { pages } => {
-                panic!("expected complete append, got missing pages: {pages:?}");
+            HadOperationOutcome::NeedResources { resources } => {
+                panic!("expected complete append, got missing resources: {resources:?}");
             }
         };
 
@@ -3621,8 +3665,8 @@ mod tests {
                 serde_json::from_value::<FlightPlanUiMutation>(result)
                     .expect("decode append mutation")
             }
-            HadOperationOutcome::NeedPages { pages } => {
-                panic!("expected complete append, got missing pages: {pages:?}");
+            HadOperationOutcome::NeedResources { resources } => {
+                panic!("expected complete append, got missing resources: {resources:?}");
             }
         };
 

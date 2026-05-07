@@ -90,8 +90,7 @@ pub fn nav_kv_open(root_bytes: &[u8]) -> Result<u32, JsValue> {
     Ok(handle)
 }
 
-#[wasm_bindgen]
-pub fn nav_kv_insert_page(handle: u32, page_index: u32, page_bytes: &[u8]) -> Result<(), JsValue> {
+fn nav_kv_insert_page(handle: u32, page_index: u32, page_bytes: &[u8]) -> Result<(), JsValue> {
     let mut stores = nav_kv_stores().lock().expect("nav kv store poisoned");
     let store = stores
         .get_mut(&handle)
@@ -99,6 +98,19 @@ pub fn nav_kv_insert_page(handle: u32, page_index: u32, page_bytes: &[u8]) -> Re
     store.insert_page(page_index, page_bytes.to_vec());
     app_core::insert_nav_kv_page_for_attached_sessions(handle, page_index, page_bytes);
     Ok(())
+}
+
+#[wasm_bindgen]
+pub fn nav_kv_insert_resource(
+    handle: u32,
+    resource_id: &str,
+    resource_bytes: &[u8],
+) -> Result<(), JsValue> {
+    let page_index =
+        app_core::nav_kv_page_index_from_resource_id(resource_id).ok_or_else(|| {
+            JsValue::from_str(&format!("unsupported nav kv resource id: {resource_id}"))
+        })?;
+    nav_kv_insert_page(handle, page_index, resource_bytes)
 }
 
 #[wasm_bindgen]
@@ -591,11 +603,6 @@ pub fn ingest_point_tiles_in_session(handle: u32, tiles_json: &str) -> Result<()
 }
 
 #[wasm_bindgen]
-pub fn ingest_metar_tiles_in_session(handle: u32, tiles_json: &str) -> Result<(), JsValue> {
-    ingest_metar_tiles_in_session_json(handle, tiles_json).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
 pub fn ingest_airspace_ref_tiles_in_session(handle: u32, tiles_json: &str) -> Result<(), JsValue> {
     ingest_airspace_ref_tiles_in_session_json(handle, tiles_json)
         .map_err(|err| JsValue::from_str(&err))
@@ -620,18 +627,13 @@ pub fn ingest_airspace_label_tiles_in_session(
 }
 
 #[wasm_bindgen]
-pub fn ingest_tfrs_in_session(handle: u32, payload_json: &str) -> Result<(), JsValue> {
-    ingest_tfrs_in_session_json(handle, payload_json).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn ingest_metars_in_session(handle: u32, payload_json: &str) -> Result<(), JsValue> {
-    ingest_metars_in_session_json(handle, payload_json).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn ingest_tafs_in_session(handle: u32, payload_json: &str) -> Result<(), JsValue> {
-    ingest_tafs_in_session_json(handle, payload_json).map_err(|err| JsValue::from_str(&err))
+pub fn ingest_resource_in_session(
+    handle: u32,
+    resource_id: &str,
+    resource_bytes: &[u8],
+) -> Result<(), JsValue> {
+    app_core::ingest_resource_in_session(handle, resource_id, resource_bytes)
+        .map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[wasm_bindgen]
@@ -1158,12 +1160,6 @@ fn ingest_point_tiles_in_session_json(handle: u32, tiles_json: &str) -> Result<(
     app_core::ingest_point_tiles_in_session(handle, &tiles).map_err(|err| err.to_string())
 }
 
-fn ingest_metar_tiles_in_session_json(handle: u32, tiles_json: &str) -> Result<(), String> {
-    let tiles: Vec<app_core::MetarTilePayload> =
-        serde_json::from_str(tiles_json).map_err(|err| err.to_string())?;
-    app_core::ingest_metar_tiles_in_session(handle, &tiles).map_err(|err| err.to_string())
-}
-
 fn ingest_airspace_ref_tiles_in_session_json(handle: u32, tiles_json: &str) -> Result<(), String> {
     let tiles: Vec<app_core::AirspaceReferenceTilePayload> =
         serde_json::from_str(tiles_json).map_err(|err| err.to_string())?;
@@ -1186,24 +1182,6 @@ fn ingest_airspace_label_tiles_in_session_json(
     let tiles: Vec<app_core::AirspaceLabelTilePayload> =
         serde_json::from_str(tiles_json).map_err(|err| err.to_string())?;
     app_core::ingest_airspace_label_tiles_in_session(handle, &tiles).map_err(|err| err.to_string())
-}
-
-fn ingest_tfrs_in_session_json(handle: u32, payload_json: &str) -> Result<(), String> {
-    let payload: app_core::TfrProductPayload =
-        serde_json::from_str(payload_json).map_err(|err| err.to_string())?;
-    app_core::ingest_tfrs_in_session(handle, &payload).map_err(|err| err.to_string())
-}
-
-fn ingest_metars_in_session_json(handle: u32, payload_json: &str) -> Result<(), String> {
-    let payload: app_core::MetarProductPayload =
-        serde_json::from_str(payload_json).map_err(|err| err.to_string())?;
-    app_core::ingest_metars_in_session(handle, &payload).map_err(|err| err.to_string())
-}
-
-fn ingest_tafs_in_session_json(handle: u32, payload_json: &str) -> Result<(), String> {
-    let payload: app_core::TafProductPayload =
-        serde_json::from_str(payload_json).map_err(|err| err.to_string())?;
-    app_core::ingest_tafs_in_session(handle, &payload).map_err(|err| err.to_string())
 }
 
 fn get_map_overlay_in_session_json(

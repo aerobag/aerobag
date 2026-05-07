@@ -709,14 +709,6 @@ pub fn ingest_point_tiles_in_session_json(handle: u64, tiles_json: &str) -> Resu
     Ok("null".to_string())
 }
 
-pub fn ingest_metar_tiles_in_session_json(handle: u64, tiles_json: &str) -> Result<String, String> {
-    let tiles: Vec<app_core::MetarTilePayload> =
-        serde_json::from_str(tiles_json).map_err(|err| err.to_string())?;
-    app_core::ingest_metar_tiles_in_session(handle as u32, &tiles)
-        .map_err(|err| err.to_string())?;
-    Ok("null".to_string())
-}
-
 pub fn ingest_airspace_ref_tiles_in_session_json(
     handle: u64,
     tiles_json: &str,
@@ -750,24 +742,13 @@ pub fn ingest_airspace_label_tiles_in_session_json(
     Ok("null".to_string())
 }
 
-pub fn ingest_metars_in_session_json(handle: u64, payload_json: &str) -> Result<String, String> {
-    let payload: app_core::MetarProductPayload =
-        serde_json::from_str(payload_json).map_err(|err| err.to_string())?;
-    app_core::ingest_metars_in_session(handle as u32, &payload).map_err(|err| err.to_string())?;
-    Ok("null".to_string())
-}
-
-pub fn ingest_tafs_in_session_json(handle: u64, payload_json: &str) -> Result<String, String> {
-    let payload: app_core::TafProductPayload =
-        serde_json::from_str(payload_json).map_err(|err| err.to_string())?;
-    app_core::ingest_tafs_in_session(handle as u32, &payload).map_err(|err| err.to_string())?;
-    Ok("null".to_string())
-}
-
-pub fn ingest_tfrs_in_session_json(handle: u64, payload_json: &str) -> Result<String, String> {
-    let payload: app_core::TfrProductPayload =
-        serde_json::from_str(payload_json).map_err(|err| err.to_string())?;
-    app_core::ingest_tfrs_in_session(handle as u32, &payload).map_err(|err| err.to_string())?;
+pub fn ingest_resource_in_session_bytes(
+    handle: u64,
+    resource_id: &str,
+    resource_bytes: &[u8],
+) -> Result<String, String> {
+    app_core::ingest_resource_in_session(handle as u32, resource_id, resource_bytes)
+        .map_err(|err| err.to_string())?;
     Ok("null".to_string())
 }
 
@@ -962,11 +943,7 @@ pub fn nav_kv_open_bytes(root_bytes: &[u8]) -> Result<u64, String> {
     Ok(handle as u64)
 }
 
-pub fn nav_kv_insert_page_bytes(
-    handle: u64,
-    page_index: u32,
-    page_bytes: &[u8],
-) -> Result<(), String> {
+fn nav_kv_insert_page_bytes(handle: u64, page_index: u32, page_bytes: &[u8]) -> Result<(), String> {
     let mut stores = nav_kv_stores()
         .lock()
         .map_err(|_| "nav kv store poisoned".to_string())?;
@@ -976,6 +953,16 @@ pub fn nav_kv_insert_page_bytes(
     store.insert_page(page_index, page_bytes.to_vec());
     app_core::insert_nav_kv_page_for_attached_sessions(handle as u32, page_index, page_bytes);
     Ok(())
+}
+
+pub fn nav_kv_insert_resource_bytes(
+    handle: u64,
+    resource_id: &str,
+    resource_bytes: &[u8],
+) -> Result<(), String> {
+    let page_index = app_core::nav_kv_page_index_from_resource_id(resource_id)
+        .ok_or_else(|| format!("unsupported nav kv resource id: {resource_id}"))?;
+    nav_kv_insert_page_bytes(handle, page_index, resource_bytes)
 }
 
 pub fn attach_nav_kv_store_to_session_json(
@@ -2233,20 +2220,6 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ing
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ingestMetarTilesInSessionJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: i64,
-    tiles_json: JString,
-) -> jstring {
-    let result = (|| {
-        let tiles = get_java_string(&mut env, tiles_json)?;
-        ingest_metar_tiles_in_session_json(handle as u64, &tiles)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
 pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ingestAirspaceRefTilesInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -2289,43 +2262,17 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ing
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ingestTfrsInSessionJson(
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ingestResourceInSession(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
-    payload_json: JString,
+    resource_id: JString,
+    resource_bytes: JByteArray,
 ) -> jstring {
     let result = (|| {
-        let payload = get_java_string(&mut env, payload_json)?;
-        ingest_tfrs_in_session_json(handle as u64, &payload)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ingestMetarsInSessionJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: i64,
-    payload_json: JString,
-) -> jstring {
-    let result = (|| {
-        let payload = get_java_string(&mut env, payload_json)?;
-        ingest_metars_in_session_json(handle as u64, &payload)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ingestTafsInSessionJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: i64,
-    payload_json: JString,
-) -> jstring {
-    let result = (|| {
-        let payload = get_java_string(&mut env, payload_json)?;
-        ingest_tafs_in_session_json(handle as u64, &payload)
+        let resource_id = get_java_string(&mut env, resource_id)?;
+        let bytes = get_java_byte_array(&mut env, resource_bytes)?;
+        ingest_resource_in_session_bytes(handle as u64, &resource_id, &bytes)
     })();
     return_string(&mut env, result)
 }
@@ -2514,15 +2461,18 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_nav
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navKvInsertPage(
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navKvInsertResource(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
-    page_index: i32,
-    page_bytes: JByteArray,
+    resource_id: JString,
+    resource_bytes: JByteArray,
 ) {
-    let result = get_java_byte_array(&mut env, page_bytes)
-        .and_then(|bytes| nav_kv_insert_page_bytes(handle as u64, page_index as u32, &bytes));
+    let result = (|| {
+        let resource_id = get_java_string(&mut env, resource_id)?;
+        let bytes = get_java_byte_array(&mut env, resource_bytes)?;
+        nav_kv_insert_resource_bytes(handle as u64, &resource_id, &bytes)
+    })();
     if let Err(message) = result {
         let _ = env.throw_new("java/lang/RuntimeException", message);
     }

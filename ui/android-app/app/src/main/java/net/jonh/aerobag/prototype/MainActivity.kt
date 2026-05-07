@@ -280,8 +280,6 @@ import net.jonh.aerobag.prototype.domain.worldToLatLon
 import net.jonh.aerobag.prototype.domain.zoomAroundPoint
 import net.jonh.aerobag.prototype.domain.zoomImageAroundPoint
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.jonh.aerobag.prototype.generated.airportCircleMarkerPath
 import net.jonh.aerobag.prototype.generated.airportFuelMarkerPath
@@ -5227,64 +5225,12 @@ private fun MapExplorerPage(
         val overlay = try {
             currentCoroutineContext().ensureActive()
             val overlayStartMs = SystemClock.elapsedRealtime()
-            var overlay = uiSession.queryMapOverlay(viewport, overlayWidthPx.toDouble(), overlayHeightPx.toDouble())
-            repeat(8) {
-                var ingested = false
-                if (overlay.neededMetars) {
-                    val (payloadJson, tafsJson) = withContext(Dispatchers.IO) {
-                        val metarsJson = fetchJsonOrEmpty(
-                            resolvePlaybackTraceUrl("/fast-products/metars/metars.json", devServerBaseUrl),
-                            """{"schema_version":1,"version_label":"unavailable","metars_by_station":{}}""",
-                        )
-                        val pirepsJson = fetchJsonOrNull(
-                            resolvePlaybackTraceUrl("/fast-products/metars/pireps.json", devServerBaseUrl),
-                        )
-                        val tafsJson = fetchJsonOrNull(
-                            resolvePlaybackTraceUrl("/fast-products/metars/tafs.json", devServerBaseUrl),
-                        )
-                        mergePirepsIntoMetarProductJson(json, metarsJson, pirepsJson) to tafsJson
-                    }
-                    currentCoroutineContext().ensureActive()
-                    uiSession.ingestMetarsJson(payloadJson)
-                    tafsJson?.let {
-                        uiSession.ingestTafsJson(tafsJson)
-                    }
-                    ingested = true
+            val overlay = withContext(Dispatchers.IO) {
+                uiSession.queryMapOverlay(viewport, overlayWidthPx.toDouble(), overlayHeightPx.toDouble()) { resource ->
+                    fetchResourceBytes(resolvePlaybackTraceUrl(resource.address, devServerBaseUrl))
                 }
-                if (overlay.neededMetarTiles.isNotEmpty()) {
-                    val tilesJson = withContext(Dispatchers.IO) {
-                        val manifestJson = fetchJsonOrNull(
-                            resolvePlaybackTraceUrl("/fast-products/metars/manifest.json", devServerBaseUrl),
-                        ) ?: error("weather manifest unavailable")
-                        overlay.neededMetarTiles.map { tile ->
-                            val relativePath = weatherTileRelativePath(manifestJson, tile.z, tile.x, tile.y)
-                            fetchJsonOrEmpty(
-                                resolvePlaybackTraceUrl("/fast-products/metars/$relativePath", devServerBaseUrl),
-                                """{"schema_version":1,"layer":"metars","z":${tile.z},"x":${tile.x},"y":${tile.y},"records":[]}""",
-                            )
-                        }.joinToString(prefix = "[", postfix = "]")
-                    }
-                    currentCoroutineContext().ensureActive()
-                    uiSession.ingestMetarTilesJson(tilesJson)
-                    ingested = true
-                }
-                if (overlay.neededTfrs) {
-                    val payloadJson = withContext(Dispatchers.IO) {
-                        fetchJsonOrEmpty(
-                            resolvePlaybackTraceUrl("/fast-products/tfrs/tfrs.json", devServerBaseUrl),
-                            """{"schema_version":1,"version_label":"unavailable","notam_count":0,"area_group_count":0,"areas":[]}""",
-                        )
-                    }
-                    currentCoroutineContext().ensureActive()
-                    uiSession.ingestTfrsJson(payloadJson)
-                    ingested = true
-                }
-                if (!ingested) {
-                    return@repeat
-                }
-                currentCoroutineContext().ensureActive()
-                overlay = uiSession.queryMapOverlay(viewport, overlayWidthPx.toDouble(), overlayHeightPx.toDouble())
             }
+            currentCoroutineContext().ensureActive()
             val (centerLat, centerLon) = viewportCenterLatLon(viewport)
             Log.i(
                 MapLayerLogTag,
@@ -9438,29 +9384,11 @@ private fun fetchJsonOrNull(url: String): String? =
         connection.inputStream.bufferedReader().use { it.readText() }
     }.getOrNull()
 
-private fun fetchJsonOrEmpty(url: String, emptyJson: String): String =
-    fetchJsonOrNull(url) ?: emptyJson
-
-private fun mergePirepsIntoMetarProductJson(json: Json, metarsJson: String, pirepsJson: String?): String {
-    val metars = json.parseToJsonElement(metarsJson) as? JsonObject ?: return metarsJson
-    val pireps = pirepsJson
-        ?.let { json.parseToJsonElement(it) as? JsonObject }
-        ?.get("pireps")
-        ?: JsonArray(emptyList())
-    return JsonObject(metars + ("pireps" to pireps)).toString()
-}
-
-private fun weatherTileRelativePath(manifestJson: String, z: Int, x: Int, y: Int): String {
-    val manifest = PackageManagementJson.parseToJsonElement(manifestJson) as? JsonObject
-        ?: error("weather manifest is not a JSON object")
-    val mapView = manifest["map_view"] as? JsonObject
-        ?: error("weather manifest missing map_view")
-    val template = mapView["tile_path_template"]?.jsonPrimitive?.content
-        ?: error("weather manifest missing map_view.tile_path_template")
-    return template
-        .replace("{z}", z.toString())
-        .replace("{x}", x.toString())
-        .replace("{y}", y.toString())
+private fun fetchResourceBytes(url: String): ByteArray {
+    val connection = URL(url).openConnection() as HttpURLConnection
+    connection.connectTimeout = 1500
+    connection.readTimeout = 2500
+    return connection.inputStream.buffered().use { it.readBytes() }
 }
 
 @Composable

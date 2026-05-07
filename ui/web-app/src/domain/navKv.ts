@@ -11,8 +11,9 @@ type NavKvWasmModule = {
   attach_nav_kv_store_to_session(handle: number, sessionHandle: number): void;
   core_had_operation(handle: number, operationJson: string): string;
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
+  ingest_resource_in_session(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
   nav_kv_destroy(handle: number): void;
-  nav_kv_insert_page(handle: number, pageIndex: number, pageBytes: Uint8Array): void;
+  nav_kv_insert_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
   nav_kv_open(rootBytes: Uint8Array): number;
 };
 
@@ -62,43 +63,89 @@ export class NavKvStore {
     return this.runPagedOperation<T>(() => this.wasm.core_had_operation(this.handle, JSON.stringify(operation)));
   }
 
-  async runCoreSessionOperation<T>(operation: (navKvHandle: number) => Promise<string> | string): Promise<T> {
-    return this.runPagedOperation<T>(() => operation(this.handle));
+  async runCoreSessionOperation<T>(
+    operation: (navKvHandle: number) => Promise<string> | string,
+    ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
+  ): Promise<T> {
+    return this.runPagedOperation<T>(() => operation(this.handle), ingestSessionResource);
   }
 
   attachToSession(sessionHandle: number): void {
     this.wasm.attach_nav_kv_store_to_session(this.handle, sessionHandle);
   }
 
-  private async runPagedOperation<T>(operation: () => Promise<string> | string): Promise<T> {
+  private async runPagedOperation<T>(
+    operation: () => Promise<string> | string,
+    ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
+  ): Promise<T> {
     for (;;) {
       const response = JSON.parse(await operation()) as
         | { state: "complete"; result: T }
-        | { state: "need_pages"; pages: number[] };
+        | { state: "need_resources"; resources: CoreResourceRequest[] };
       if (response.state === "complete") {
         return response.result;
       }
-      await Promise.all(response.pages.map((pageIndex) => this.ensurePage(pageIndex)));
+      await Promise.all(response.resources.map((resource) => this.ensureResource(resource, ingestSessionResource)));
     }
   }
 
-  private ensurePage(pageIndex: number): Promise<void> {
+  private async ensureResource(
+    resource: CoreResourceRequest,
+    ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
+  ): Promise<void> {
+    if (resource.id.startsWith("nav_kv/page/")) {
+      return this.ensureNavKvResource(resource);
+    }
+    if (!ingestSessionResource) {
+      throw new Error(`core requested unsupported resource outside a session operation: ${resource.id}`);
+    }
+    const response = await debugTiming("core.resource.fetch", () => fetch(withNavKvCacheKey(resource.address)), {
+      id: resource.id,
+      address: resource.address,
+    });
+    if (!response.ok) {
+      throw new Error(`failed to fetch core resource ${resource.id} at ${resource.address}: ${response.status}`);
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    await ingestSessionResource(resource.id, bytes);
+  }
+
+  private ensureNavKvResource(resource: CoreResourceRequest): Promise<void> {
+    const pageIndex = Number(resource.id.slice("nav_kv/page/".length));
+    if (!Number.isInteger(pageIndex)) {
+      throw new Error(`invalid nav kv page resource id: ${resource.id}`);
+    }
     const cached = this.inFlightPageFetches.get(pageIndex);
     if (cached) {
       return cached;
     }
-    const fetched = debugTiming("nav_kv.page.fetch", () => fetch(`/nav-kv/values/${pageIndex.toString().padStart(4, "0")}?v=${navKvCacheKey}`), {
+    const fetched = debugTiming("nav_kv.page.fetch", () => fetch(withNavKvCacheKey(resource.address)), {
       page: pageIndex,
     }).then(async (response) => {
       if (!response.ok) {
         throw new Error(`failed to fetch nav_kv page ${pageIndex}: ${response.status}`);
       }
       const bytes = new Uint8Array(await debugTiming("nav_kv.page.array_buffer", () => response.arrayBuffer(), { page: pageIndex }));
-      this.wasm.nav_kv_insert_page(this.handle, pageIndex, bytes);
+      await this.wasm.nav_kv_insert_resource(this.handle, resource.id, bytes);
     });
     this.inFlightPageFetches.set(pageIndex, fetched);
     return fetched;
   }
+
+}
+
+type CoreResourceRequest = {
+  id: string;
+  address: string;
+  optional?: boolean;
+};
+
+function withNavKvCacheKey(address: string): string {
+  if (!address.startsWith("/nav-kv/")) {
+    return address;
+  }
+  const separator = address.includes("?") ? "&" : "?";
+  return `${address}${separator}v=${navKvCacheKey}`;
 }
 
 export async function getNavKvStore(): Promise<NavKvStore | null> {
@@ -116,12 +163,15 @@ export async function runCoreHadOperation<T>(operation: unknown): Promise<T> {
   return store.runCoreOperation<T>(operation);
 }
 
-export async function runCoreHadSessionOperation<T>(operation: (navKvHandle: number) => Promise<string> | string): Promise<T> {
+export async function runCoreHadSessionOperation<T>(
+  operation: (navKvHandle: number) => Promise<string> | string,
+  ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
+): Promise<T> {
   const store = await getNavKvStore();
   if (!store) {
     throw new Error("nav_kv root is unavailable");
   }
-  return store.runCoreSessionOperation<T>(operation);
+  return store.runCoreSessionOperation<T>(operation, ingestSessionResource);
 }
 
 export async function attachNavKvStoreToSession(sessionHandle: number): Promise<void> {

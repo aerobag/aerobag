@@ -15,7 +15,7 @@ interface NativeBridge {
 
     fun navKvOpen(rootBytes: ByteArray): Long
 
-    fun navKvInsertPage(handle: Long, pageIndex: Int, pageBytes: ByteArray)
+    fun navKvInsertResource(handle: Long, resourceId: String, resourceBytes: ByteArray)
 
     fun navKvDestroy(handle: Long)
 
@@ -266,11 +266,6 @@ interface NativeBridge {
         tilesJson: String,
     ): String
 
-    fun ingestMetarTilesInSessionJson(
-        handle: Long,
-        tilesJson: String,
-    ): String
-
     fun ingestAirspaceRefTilesInSessionJson(
         handle: Long,
         tilesJson: String,
@@ -286,19 +281,10 @@ interface NativeBridge {
         tilesJson: String,
     ): String
 
-    fun ingestTfrsInSessionJson(
+    fun ingestResourceInSession(
         handle: Long,
-        payloadJson: String,
-    ): String
-
-    fun ingestMetarsInSessionJson(
-        handle: Long,
-        payloadJson: String,
-    ): String
-
-    fun ingestTafsInSessionJson(
-        handle: Long,
-        payloadJson: String,
+        resourceId: String,
+        resourceBytes: ByteArray,
     ): String
 
     fun getMapOverlayInSessionJson(
@@ -393,7 +379,7 @@ object NativeBindings : NativeBridge {
 
     external override fun navKvOpen(rootBytes: ByteArray): Long
 
-    external override fun navKvInsertPage(handle: Long, pageIndex: Int, pageBytes: ByteArray)
+    external override fun navKvInsertResource(handle: Long, resourceId: String, resourceBytes: ByteArray)
 
     external override fun navKvDestroy(handle: Long)
 
@@ -644,11 +630,6 @@ object NativeBindings : NativeBridge {
         tilesJson: String,
     ): String
 
-    external override fun ingestMetarTilesInSessionJson(
-        handle: Long,
-        tilesJson: String,
-    ): String
-
     external override fun ingestAirspaceRefTilesInSessionJson(
         handle: Long,
         tilesJson: String,
@@ -664,19 +645,10 @@ object NativeBindings : NativeBridge {
         tilesJson: String,
     ): String
 
-    external override fun ingestTfrsInSessionJson(
+    external override fun ingestResourceInSession(
         handle: Long,
-        payloadJson: String,
-    ): String
-
-    external override fun ingestMetarsInSessionJson(
-        handle: Long,
-        payloadJson: String,
-    ): String
-
-    external override fun ingestTafsInSessionJson(
-        handle: Long,
-        payloadJson: String,
+        resourceId: String,
+        resourceBytes: ByteArray,
     ): String
 
     external override fun getMapOverlayInSessionJson(

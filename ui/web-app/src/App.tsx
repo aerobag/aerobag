@@ -100,19 +100,11 @@ import {
   zoomImageAroundPoint,
   type ImageViewportState,
 } from "./domain/imageViewport";
-import {
-  loadMetarTilePathTemplate,
-  metarTileUrl,
-} from "./domain/vectorTiles";
 import type {
   AirspaceDisplayPath,
   MapOverlayQueryResult,
-  MetarTilePayload,
-  MetarProductPayload,
-  TafProductPayload,
   TerrainOverlayQueryResult,
   TerrainOverlayTileRequest,
-  TfrProductPayload,
   VisibleMapFeature,
   VisibleMetarFeature,
   VisiblePirepFeature,
@@ -2264,7 +2256,6 @@ function MapPage(props: {
     offline_regions: [],
     warnings: [],
   });
-  const [mapOverlayInputGeneration, setMapOverlayInputGeneration] = useState(0);
   const [nexradFrames, setNexradFrames] = useState<NexradOverlayFrame[]>([]);
   const [nexradFrameIndex, setNexradFrameIndex] = useState(0);
   const [nexradStatus, setNexradStatus] = useState<NexradLayerStatus>({ state: "loading" });
@@ -2962,160 +2953,6 @@ function MapPage(props: {
       });
     }
 
-    function overlayNeedsInputs(overlay: MapOverlayQueryResult): boolean {
-      return (
-        overlay.needed_metar_tiles.length > 0 ||
-        overlay.needed_metars ||
-        overlay.needed_tfrs
-      );
-    }
-
-    function markOverlayInputIngested() {
-      setMapOverlayInputGeneration((generation) => generation + 1);
-    }
-
-    function isAbortError(error: unknown) {
-      return (error as { name?: string } | null)?.name === "AbortError";
-    }
-
-    async function fetchMissingOverlayInputs(overlay: MapOverlayQueryResult): Promise<boolean> {
-      let ingested = false;
-      if (overlay.needed_metars) {
-        const startedAt = performance.now();
-        try {
-          const response = await fetch("/fast-products/metars/metars.json", {
-            signal: controller.signal,
-          });
-          if (!response.ok) {
-            throw new Error(`failed to load METAR product: ${response.status}`);
-          }
-          const payload = (await response.json()) as MetarProductPayload;
-          let tafPayload: TafProductPayload | null = null;
-          try {
-            const pirepResponse = await fetch("/fast-products/metars/pireps.json", {
-              signal: controller.signal,
-            });
-            if (pirepResponse.ok) {
-              const pirepPayload = (await pirepResponse.json()) as { pireps?: unknown[] };
-              payload.pireps = Array.isArray(pirepPayload.pireps) ? pirepPayload.pireps : [];
-            } else if (pirepResponse.status !== 404) {
-              throw new Error(`failed to load PIREP product: ${pirepResponse.status}`);
-            }
-          } catch (error) {
-            if (isAbortError(error)) {
-              throw error;
-            }
-            debugLog("map.overlay.pireps.ingest.error", {
-              zoom: viewport.zoom,
-              error: errorMessage(error),
-            });
-          }
-          try {
-            const tafResponse = await fetch("/fast-products/metars/tafs.json", {
-              signal: controller.signal,
-            });
-            if (tafResponse.ok) {
-              tafPayload = (await tafResponse.json()) as TafProductPayload;
-            } else if (tafResponse.status !== 404) {
-              throw new Error(`failed to load TAF product: ${tafResponse.status}`);
-            }
-          } catch (error) {
-            if (isAbortError(error)) {
-              throw error;
-            }
-            debugLog("map.overlay.tafs.ingest.error", {
-              zoom: viewport.zoom,
-              error: errorMessage(error),
-            });
-          }
-          await session.ingestMetars(payload);
-          if (tafPayload) {
-            await session.ingestTafs(tafPayload);
-          }
-          debugLog("map.overlay.metars.ingest.done", {
-            zoom: viewport.zoom,
-            records: payload.metar_count ?? Object.keys(payload.metars_by_station).length,
-            elapsed_ms: Math.round(performance.now() - startedAt),
-          });
-          ingested = true;
-          markOverlayInputIngested();
-        } catch (error) {
-          if (isAbortError(error)) {
-            throw error;
-          }
-          debugLog("map.overlay.metars.ingest.error", {
-            zoom: viewport.zoom,
-            elapsed_ms: Math.round(performance.now() - startedAt),
-            error: errorMessage(error),
-          });
-        }
-      }
-      if (overlay.needed_metar_tiles.length > 0) {
-        const startedAt = performance.now();
-        try {
-          const metarTilePathTemplate = await loadMetarTilePathTemplate(controller.signal);
-          const tiles = await Promise.all(
-            overlay.needed_metar_tiles.map(async (tile) => {
-              const response = await fetch(metarTileUrl(metarTilePathTemplate, tile.z, tile.x, tile.y), {
-                signal: controller.signal,
-              });
-              if (response.status === 404) {
-                return {
-                  schema_version: 1,
-                  layer: "metars",
-                  z: tile.z,
-                  x: tile.x,
-                  y: tile.y,
-                  records: [],
-                } satisfies MetarTilePayload;
-              }
-              if (!response.ok) {
-                throw new Error(`failed to load METAR tile ${tile.z}/${tile.x}/${tile.y}: ${response.status}`);
-              }
-              return (await response.json()) as MetarTilePayload;
-            }),
-          );
-          await session.ingestMetarTiles(tiles);
-          debugLog("map.overlay.metar_tiles.done", {
-            zoom: viewport.zoom,
-            count: tiles.length,
-            elapsed_ms: Math.round(performance.now() - startedAt),
-          });
-          ingested = true;
-          markOverlayInputIngested();
-        } catch (error) {
-          if (isAbortError(error)) {
-            throw error;
-          }
-          debugLog("map.overlay.metar_tiles.error", {
-            zoom: viewport.zoom,
-            count: overlay.needed_metar_tiles.length,
-            elapsed_ms: Math.round(performance.now() - startedAt),
-            error: errorMessage(error),
-          });
-        }
-      }
-      if (overlay.needed_tfrs) {
-        const startedAt = performance.now();
-        const response = await fetch("/fast-products/tfrs/tfrs.json", {
-          signal: controller.signal,
-        });
-        if (!response.ok) {
-          throw new Error(`failed to load TFR product: ${response.status}`);
-        }
-        const payload = (await response.json()) as TfrProductPayload;
-        await session.ingestTfrs(payload);
-        debugLog("map.overlay.tfrs.ingest.done", {
-          zoom: viewport.zoom,
-          areas: payload.areas.length,
-          elapsed_ms: Math.round(performance.now() - startedAt),
-        });
-        ingested = true;
-        markOverlayInputIngested();
-      }
-      return ingested;
-    }
-
     async function syncMapOverlay() {
       let overlay: MapOverlayQueryResult;
       const startedAt = performance.now();
@@ -3168,45 +3005,6 @@ function MapPage(props: {
         });
         throw error;
       }
-      for (let pass = 0; pass < 8 && overlayNeedsInputs(overlay); pass += 1) {
-        const ingested = await fetchMissingOverlayInputs(overlay);
-        if (!ingested) {
-          break;
-        }
-        const refreshStartedAt = performance.now();
-        try {
-          overlay = await session.queryMapOverlay(viewport, surfaceSize.width, surfaceSize.height);
-        } catch (error) {
-          if (isInvalidUiSessionHandleError(error)) {
-            debugLog("map.overlay.query.refresh.stale_session", {
-              zoom: viewport.zoom,
-              elapsed_ms: Math.round(performance.now() - refreshStartedAt),
-              error: errorMessage(error),
-            });
-            return;
-          }
-          throw error;
-        }
-        debugLog("map.overlay.query.refresh.done", {
-          zoom: viewport.zoom,
-          elapsed_ms: Math.round(performance.now() - refreshStartedAt),
-          needed_point_tiles: overlay.needed_point_tiles.length,
-          needed_metar_tiles: overlay.needed_metar_tiles.length,
-          needed_metars: overlay.needed_metars,
-          needed_airspace_ref_tiles: overlay.needed_airspace_ref_tiles.length,
-          needed_airspace_features: overlay.needed_airspace_features.length,
-          needed_airspace_label_tiles: overlay.needed_airspace_label_tiles.length,
-          needed_tfrs: overlay.needed_tfrs,
-          visible_features: overlay.visible_features.length,
-          visible_metars: overlay.visible_metars.length,
-          visible_pireps: overlay.visible_pireps.length,
-          airspace_paths: overlay.airspace_paths.length,
-          airspace_labels: overlay.airspace_labels.length,
-          warnings: overlay.warnings.map((warning) => warning.code),
-        });
-        reportOverlayWarnings(overlay, "refresh");
-        publishOverlay(overlay);
-      }
     }
 
     syncMapOverlay().catch((error: unknown) => {
@@ -3229,7 +3027,6 @@ function MapPage(props: {
     mapLayerState.offline_regions.visible,
     mapLayerState.vectors.visible,
     mapIsVisible,
-    mapOverlayInputGeneration,
     mapOverlayOwnshipKey,
     onDebugWarning,
     surfaceSize.height,

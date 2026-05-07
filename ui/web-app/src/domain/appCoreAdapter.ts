@@ -161,18 +161,6 @@ export type PointTilePayload = {
   }>;
 };
 
-export type MetarTilePayload = {
-  schema_version: number;
-  layer: string;
-  z: number;
-  x: number;
-  y: number;
-  records: Array<{
-    kind: string;
-    id: string;
-  }>;
-};
-
 export type AirspaceReferenceTilePayload = {
   schema_version: number;
   layer: string;
@@ -312,49 +300,6 @@ export type AirspaceLimitGlyph = {
   lower: string;
   style_key: string;
   color_key: string;
-};
-
-export type TfrProductPayload = {
-  schema_version: number;
-  version_label: string;
-  notam_count: number;
-  area_group_count: number;
-  areas: Array<{
-    notam_id: string;
-    area_index: number;
-    schedule_fragments: Array<{
-      kind: string;
-      value_utc: string;
-    }>;
-    upper_limit: {
-      value_text: string;
-      unit: string;
-    };
-    lower_limit: {
-      value_text: string;
-      unit: string;
-    };
-    polygon: Array<{
-      lat: number;
-      lon: number;
-    }>;
-    avare_text: string;
-  }>;
-};
-
-export type MetarProductPayload = {
-  schema_version: number;
-  version_label: string;
-  metar_count?: number | null;
-  metars_by_station: Record<string, unknown>;
-  pireps?: unknown[];
-};
-
-export type TafProductPayload = {
-  schema_version: number;
-  version_label: string;
-  taf_count?: number | null;
-  tafs_by_station: Record<string, unknown>;
 };
 
 export type MapOverlayQueryResult = {
@@ -539,13 +484,9 @@ export interface UiSession {
   selectAirport(airportId: string): Promise<UiSessionSnapshot>;
   selectChart(chartId: string): Promise<UiSessionSnapshot>;
   ingestPointTiles(tiles: PointTilePayload[]): Promise<void>;
-  ingestMetarTiles(tiles: MetarTilePayload[]): Promise<void>;
   ingestAirspaceRefTiles(tiles: AirspaceReferenceTilePayload[]): Promise<void>;
   ingestAirspaceFeatures(features: AirspaceFeaturePayload[]): Promise<void>;
   ingestAirspaceLabelTiles(tiles: AirspaceLabelTilePayload[]): Promise<void>;
-  ingestTfrs(payload: TfrProductPayload): Promise<void>;
-  ingestMetars(payload: MetarProductPayload): Promise<void>;
-  ingestTafs(payload: TafProductPayload): Promise<void>;
   queryMapOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<MapOverlayQueryResult>;
   queryMapSelection(viewport: MapViewportState, widthPx: number, heightPx: number, click: LatLon, hitRadiusPx: number): Promise<MapSelectionQueryResult>;
   queryTerrainOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<TerrainOverlayQueryResult>;
@@ -749,13 +690,10 @@ type WasmModule = {
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
   ingest_point_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
-  ingest_metar_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   ingest_airspace_ref_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   ingest_airspace_features_in_session(handle: number, featuresJson: string): Promise<void> | void;
   ingest_airspace_label_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
-  ingest_tfrs_in_session(handle: number, payloadJson: string): Promise<void> | void;
-  ingest_metars_in_session(handle: number, payloadJson: string): Promise<void> | void;
-  ingest_tafs_in_session(handle: number, payloadJson: string): Promise<void> | void;
+  ingest_resource_in_session(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
   get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
   get_map_selection_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, clickJson: string, hitRadiusPx: number): Promise<string> | string;
   get_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
@@ -766,7 +704,7 @@ type WasmModule = {
   restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   destroy_session(handle: number): void;
   nav_kv_open(rootBytes: Uint8Array): Promise<number> | number;
-  nav_kv_insert_page(handle: number, pageIndex: number, pageBytes: Uint8Array): Promise<void> | void;
+  nav_kv_insert_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
   nav_kv_destroy(handle: number): Promise<void> | void;
   attach_nav_kv_store_to_session(navKvHandle: number, sessionHandle: number): Promise<void> | void;
   core_had_operation(handle: number, operationJson: string): Promise<string> | string;
@@ -1231,11 +1169,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           await this.module.ingest_point_tiles_in_session(handle, JSON.stringify(tiles));
         });
       },
-      ingestMetarTiles: async (tiles) => {
-        await withSessionRetry(async () => {
-          await this.module.ingest_metar_tiles_in_session(handle, JSON.stringify(tiles));
-        });
-      },
       ingestAirspaceRefTiles: async (tiles) => {
         await withSessionRetry(async () => {
           await this.module.ingest_airspace_ref_tiles_in_session(handle, JSON.stringify(tiles));
@@ -1251,30 +1184,17 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           await this.module.ingest_airspace_label_tiles_in_session(handle, JSON.stringify(tiles));
         });
       },
-      ingestTfrs: async (payload) => {
-        await withSessionRetry(async () => {
-          await this.module.ingest_tfrs_in_session(handle, JSON.stringify(payload));
-        });
-      },
-      ingestMetars: async (payload) => {
-        await withSessionRetry(async () => {
-          await this.module.ingest_metars_in_session(handle, JSON.stringify(payload));
-        });
-      },
-      ingestTafs: async (payload) => {
-        await withSessionRetry(async () => {
-          await this.module.ingest_tafs_in_session(handle, JSON.stringify(payload));
-        });
-      },
       queryMapOverlay: async (viewport, widthPx, heightPx) =>
         withSessionRetry(async () =>
-          runCoreHadSessionOperation<MapOverlayQueryResult>(() =>
-            this.module.get_map_overlay_in_session(
-              handle,
-              JSON.stringify(coreViewportForMap(viewport)),
-              widthPx,
-              heightPx,
-            ),
+          runCoreHadSessionOperation<MapOverlayQueryResult>(
+            () =>
+              this.module.get_map_overlay_in_session(
+                handle,
+                JSON.stringify(coreViewportForMap(viewport)),
+                widthPx,
+                heightPx,
+              ),
+            (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
           ),
         ),
       queryMapSelection: async (viewport, widthPx, heightPx, click, hitRadiusPx) =>
@@ -1504,13 +1424,9 @@ async function loadBestAvailableAdapterUncached(
     typeof mod.select_airport_in_session !== "function" ||
     typeof mod.select_chart_in_session !== "function" ||
     typeof mod.ingest_point_tiles_in_session !== "function" ||
-    typeof mod.ingest_metar_tiles_in_session !== "function" ||
     typeof mod.ingest_airspace_ref_tiles_in_session !== "function" ||
     typeof mod.ingest_airspace_features_in_session !== "function" ||
     typeof mod.ingest_airspace_label_tiles_in_session !== "function" ||
-    typeof mod.ingest_tfrs_in_session !== "function" ||
-    typeof mod.ingest_metars_in_session !== "function" ||
-    typeof mod.ingest_tafs_in_session !== "function" ||
     typeof mod.get_map_overlay_in_session !== "function" ||
     typeof mod.get_map_selection_in_session !== "function" ||
     typeof mod.get_terrain_overlay_in_session !== "function" ||
@@ -1529,8 +1445,9 @@ async function loadBestAvailableAdapterUncached(
     typeof mod.suspend_sequencing_in_session !== "function" ||
     typeof mod.unsuspend_sequencing_in_session !== "function" ||
     typeof mod.sequence_active_leg_in_session !== "function" ||
+    typeof mod.ingest_resource_in_session !== "function" ||
     typeof mod.nav_kv_open !== "function" ||
-    typeof mod.nav_kv_insert_page !== "function" ||
+    typeof mod.nav_kv_insert_resource !== "function" ||
     typeof mod.nav_kv_destroy !== "function" ||
     typeof mod.attach_nav_kv_store_to_session !== "function" ||
     typeof mod.core_had_operation !== "function"

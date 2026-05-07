@@ -13,6 +13,12 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.util.Locale
 
+data class CoreResourceRequest(
+    val id: String,
+    val address: String,
+    val optional: Boolean,
+)
+
 class NavKvStore private constructor(
     private val bridge: NativeBridge,
     private val json: Json,
@@ -60,9 +66,9 @@ class NavKvStore private constructor(
             val outcome = json.parseToJsonElement(bridge.coreHadOperation(handle, operation.toString())).jsonObject
             return when (val state = outcome.getValue("state").jsonPrimitive.content) {
                 "complete" -> outcome["result"] ?: JsonNull
-                "need_pages" -> {
-                    for (page in outcome.getValue("pages").jsonArray) {
-                        ensurePage(page.jsonPrimitive.content.toInt())
+                "need_resources" -> {
+                    for (resource in parseCoreResourceRequests(outcome)) {
+                        ensureNavKvResource(resource)
                     }
                     continue
                 }
@@ -71,14 +77,35 @@ class NavKvStore private constructor(
         }
     }
 
-    fun runPagedSessionOperationElement(operation: () -> String): JsonElement {
+    fun runPagedSessionOperationElement(
+        fetchSessionResource: ((CoreResourceRequest) -> ByteArray)? = null,
+        ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)? = null,
+        operation: () -> String,
+    ): JsonElement {
         while (true) {
             val outcome = json.parseToJsonElement(operation()).jsonObject
             return when (val state = outcome.getValue("state").jsonPrimitive.content) {
                 "complete" -> outcome["result"] ?: JsonNull
-                "need_pages" -> {
-                    for (page in outcome.getValue("pages").jsonArray) {
-                        ensurePage(page.jsonPrimitive.content.toInt())
+                "need_resources" -> {
+                    for (resource in parseCoreResourceRequests(outcome)) {
+                        if (resource.id.startsWith("nav_kv/page/")) {
+                            ensureNavKvResource(resource)
+                        } else {
+                            val fetch = fetchSessionResource
+                                ?: error("session resource requested without fetcher: ${resource.id}")
+                            val ingest = ingestSessionResource
+                                ?: error("session resource requested without ingester: ${resource.id}")
+                            val bytes = try {
+                                fetch(resource)
+                            } catch (error: Throwable) {
+                                if (resource.optional) {
+                                    Log.i(TAG, "optional resource ${resource.id} unavailable: ${error.message}")
+                                    continue
+                                }
+                                throw error
+                            }
+                            ingest(resource, bytes)
+                        }
                     }
                     continue
                 }
@@ -94,19 +121,31 @@ class NavKvStore private constructor(
         bridge.attachNavKvStoreToSession(handle, sessionHandle)
     }
 
-    fun ensurePages(pageIndexes: Iterable<Int>) {
-        pageIndexes.forEach { ensurePage(it) }
+    private fun parseCoreResourceRequests(outcome: JsonObject): List<CoreResourceRequest> =
+        outcome.getValue("resources").jsonArray.map { element ->
+            val resource = element.jsonObject
+            CoreResourceRequest(
+                id = resource.getValue("id").jsonPrimitive.content,
+                address = resource.getValue("address").jsonPrimitive.content,
+                optional = resource["optional"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: false,
+            )
+        }
+
+    private fun ensureNavKvResource(resource: CoreResourceRequest) {
+        val pageIndex = resource.id.removePrefix("nav_kv/page/").toIntOrNull()
+            ?: error("unsupported nav_kv resource id: ${resource.id}")
+        ensurePage(pageIndex, resource.id)
     }
 
     @Synchronized
-    private fun ensurePage(pageIndex: Int) {
+    private fun ensurePage(pageIndex: Int, resourceId: String) {
         if (!loadedPages.add(pageIndex)) {
             return
         }
         val startMs = SystemClock.elapsedRealtime()
         val pageName = String.format(Locale.US, "%04d", pageIndex)
         val pageBytes = InstalledPackages.readZipEntryBytes(navDbZip, "$valueEntryPrefix$pageName")
-        bridge.navKvInsertPage(handle, pageIndex, pageBytes)
+        bridge.navKvInsertResource(handle, resourceId, pageBytes)
         val elapsedMs = SystemClock.elapsedRealtime() - startMs
         if (elapsedMs >= 10) {
             Log.i(TAG, "ensurePage($pageIndex) took ${elapsedMs}ms")

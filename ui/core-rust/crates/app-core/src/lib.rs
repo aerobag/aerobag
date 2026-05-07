@@ -35,7 +35,10 @@ pub use geodesy::{
     great_circle_intermediate, initial_course_deg,
 };
 pub use geometry::{GeoBounds, GeometryBundle, LatLon, MapViewport, PolygonRecord};
-pub use had_ops::{run_had_operation, HadOperation, HadOperationOutcome};
+pub use had_ops::{
+    nav_kv_page_index_from_resource_id, run_had_operation, CoreResourceRequest, HadOperation,
+    HadOperationOutcome,
+};
 pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
 pub use map_follow::MapFollowUiState;
 pub use map_overlay::{
@@ -130,10 +133,10 @@ pub use session::{
     get_terrain_overlay_in_session, ingest_airspace_features_in_session,
     ingest_airspace_label_tiles_in_session, ingest_airspace_ref_tiles_in_session,
     ingest_metar_tiles_in_session, ingest_metars_in_session, ingest_point_tiles_in_session,
-    ingest_tafs_in_session, ingest_tfrs_in_session, insert_airway_at_flight_plan_row_in_session,
-    insert_nav_kv_page_for_attached_sessions, insert_waypoint_at_flight_plan_row_in_session,
-    load_plate_procedure_in_session, load_playback_trace_in_session,
-    load_raster_map_catalog_in_session, pause_playback_in_session,
+    ingest_resource_in_session, ingest_tafs_in_session, ingest_tfrs_in_session,
+    insert_airway_at_flight_plan_row_in_session, insert_nav_kv_page_for_attached_sessions,
+    insert_waypoint_at_flight_plan_row_in_session, load_plate_procedure_in_session,
+    load_playback_trace_in_session, load_raster_map_catalog_in_session, pause_playback_in_session,
     perform_flight_plan_row_action_in_session, perform_map_selection_action_in_session,
     play_playback_in_session, push_situation_sample_in_session, register_ownship_source_in_session,
     render_terrain_overlay_tile_in_session, render_terrain_overlay_tiles_in_session,

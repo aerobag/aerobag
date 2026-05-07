@@ -52,13 +52,10 @@ declare module "@generated/app_wasm.js" {
   export const select_airport_in_session: (...args: unknown[]) => string;
   export const select_chart_in_session: (...args: unknown[]) => string;
   export const ingest_point_tiles_in_session: (...args: unknown[]) => void;
-  export const ingest_metar_tiles_in_session: (...args: unknown[]) => void;
   export const ingest_airspace_ref_tiles_in_session: (...args: unknown[]) => void;
   export const ingest_airspace_features_in_session: (...args: unknown[]) => void;
   export const ingest_airspace_label_tiles_in_session: (...args: unknown[]) => void;
-  export const ingest_tfrs_in_session: (...args: unknown[]) => void;
-  export const ingest_metars_in_session: (...args: unknown[]) => void;
-  export const ingest_tafs_in_session: (...args: unknown[]) => void;
+  export const ingest_resource_in_session: (...args: unknown[]) => void;
   export const get_map_overlay_in_session: (...args: unknown[]) => string;
   export const get_map_selection_in_session: (...args: unknown[]) => string;
   export const get_terrain_overlay_in_session: (...args: unknown[]) => string;
@@ -70,7 +67,7 @@ declare module "@generated/app_wasm.js" {
   export const restore_chart_page_state_in_session: (...args: unknown[]) => string;
   export const destroy_session: (...args: unknown[]) => void;
   export const nav_kv_open: (...args: unknown[]) => number;
-  export const nav_kv_insert_page: (...args: unknown[]) => void;
+  export const nav_kv_insert_resource: (...args: unknown[]) => void;
   export const nav_kv_destroy: (...args: unknown[]) => void;
   export const attach_nav_kv_store_to_session: (...args: unknown[]) => void;
   export const core_had_operation: (...args: unknown[]) => string;

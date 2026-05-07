@@ -821,22 +821,12 @@ class NativeUiSession internal constructor(
 
     fun performMapSelectionAction(action: String): UiSessionSnapshot {
         val store = navKvStore ?: error("nav_kv store is required to perform map selection action")
-        while (true) {
-            val outcome = json.parseToJsonElement(
-                bridge.performMapSelectionActionInSessionJson(handle, action),
-            ).jsonObject
-            when (outcome.getValue("state").jsonPrimitive.content) {
-                "complete" -> {
-                    val result = outcome["result"] ?: error("map selection action missing result: $outcome")
-                    snapshot = enrichSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi())
-                    return syncGuidanceGeometryFromPlan()
-                }
-                "need_pages" -> {
-                    store.ensurePages(outcome.getValue("pages").jsonArray.map { it.jsonPrimitive.content.toInt() })
-                }
-                else -> error("unknown map selection action outcome: $outcome")
+        val result =
+            store.runPagedSessionOperationElement {
+                bridge.performMapSelectionActionInSessionJson(handle, action)
             }
-        }
+        snapshot = enrichSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi())
+        return syncGuidanceGeometryFromPlan()
     }
 
     fun describePlateProcedureLoads(plan: FlightPlan, plateId: String): List<ProcedureLoadOption> {
@@ -853,22 +843,12 @@ class NativeUiSession internal constructor(
 
     fun loadPlateProcedure(loadId: String): UiSessionSnapshot {
         val store = navKvStore ?: error("nav_kv store is required to load a plate procedure")
-        while (true) {
-            val outcome = json.parseToJsonElement(
-                bridge.loadPlateProcedureInSessionJson(handle, loadId),
-            ).jsonObject
-            when (outcome.getValue("state").jsonPrimitive.content) {
-                "complete" -> {
-                    val result = outcome["result"] ?: error("plate procedure load missing result: $outcome")
-                    snapshot = enrichSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi())
-                    return syncGuidanceGeometryFromPlan()
-                }
-                "need_pages" -> {
-                    store.ensurePages(outcome.getValue("pages").jsonArray.map { it.jsonPrimitive.content.toInt() })
-                }
-                else -> error("unknown plate procedure load outcome: $outcome")
+        val result =
+            store.runPagedSessionOperationElement {
+                bridge.loadPlateProcedureInSessionJson(handle, loadId)
             }
-        }
+        snapshot = enrichSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi())
+        return syncGuidanceGeometryFromPlan()
     }
 
     fun insertWaypointAtFlightPlanRow(rowUid: String, before: Boolean, waypoint: NavRef): UiSessionSnapshot {
@@ -891,28 +871,17 @@ class NativeUiSession internal constructor(
         limit: Int = 8,
     ): List<WaypointIdentifierSuggestion> {
         val store = navKvStore ?: error("nav_kv store is required to suggest waypoints")
-        while (true) {
-            val outcome =
-                json.parseToJsonElement(
-                    bridge.suggestWaypointIdentifiersAtFlightPlanRowInSessionJson(
-                        handle,
-                        rowUid,
-                        before,
-                        prefix,
-                        limit,
-                    ),
-                ).jsonObject
-            when (outcome.getValue("state").jsonPrimitive.content) {
-                "complete" -> {
-                    val result = outcome["result"] ?: error("waypoint suggestions missing result: $outcome")
-                    return json.decodeFromJsonElement<List<WireWaypointIdentifierSuggestion>>(result).map { it.toUi() }
-                }
-                "need_pages" -> {
-                    store.ensurePages(outcome.getValue("pages").jsonArray.map { it.jsonPrimitive.content.toInt() })
-                }
-                else -> error("unknown waypoint suggestion outcome: $outcome")
+        val result =
+            store.runPagedSessionOperationElement {
+                bridge.suggestWaypointIdentifiersAtFlightPlanRowInSessionJson(
+                    handle,
+                    rowUid,
+                    before,
+                    prefix,
+                    limit,
+                )
             }
-        }
+        return json.decodeFromJsonElement<List<WireWaypointIdentifierSuggestion>>(result).map { it.toUi() }
     }
 
     fun insertAirwayAtFlightPlanRow(
@@ -922,29 +891,18 @@ class NativeUiSession internal constructor(
         exitIndex: Int,
     ): UiSessionSnapshot {
         val store = navKvStore ?: error("nav_kv store is required to insert airway")
-        while (true) {
-            val outcome =
-                json.parseToJsonElement(
-                    bridge.insertAirwayAtFlightPlanRowInSessionJson(
-                        handle,
-                        rowUid,
-                        json.encodeToString(presentation.toWire()),
-                        entryIndex,
-                        exitIndex,
-                    ),
-                ).jsonObject
-            when (outcome.getValue("state").jsonPrimitive.content) {
-                "complete" -> {
-                    val result = outcome["result"] ?: error("airway insert missing result: $outcome")
-                    snapshot = enrichSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi())
-                    return syncGuidanceGeometryFromPlan()
-                }
-                "need_pages" -> {
-                    store.ensurePages(outcome.getValue("pages").jsonArray.map { it.jsonPrimitive.content.toInt() })
-                }
-                else -> error("unknown airway insert outcome: $outcome")
+        val result =
+            store.runPagedSessionOperationElement {
+                bridge.insertAirwayAtFlightPlanRowInSessionJson(
+                    handle,
+                    rowUid,
+                    json.encodeToString(presentation.toWire()),
+                    entryIndex,
+                    exitIndex,
+                )
             }
-        }
+        snapshot = enrichSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi())
+        return syncGuidanceGeometryFromPlan()
     }
 
     fun selectProcedureAtFlightPlanRow(
@@ -956,31 +914,20 @@ class NativeUiSession internal constructor(
         enrouteTransition: String?,
     ): UiSessionSnapshot {
         val store = navKvStore ?: error("nav_kv store is required to select procedure")
-        while (true) {
-            val outcome =
-                json.parseToJsonElement(
-                    bridge.selectProcedureAtFlightPlanRowInSessionJson(
-                        handle,
-                        rowUid,
-                        airportId,
-                        procedureId,
-                        json.encodeToString(kind.toWire()),
-                        json.encodeToString(runwayTransition),
-                        json.encodeToString(enrouteTransition),
-                    ),
-                ).jsonObject
-            when (outcome.getValue("state").jsonPrimitive.content) {
-                "complete" -> {
-                    val result = outcome["result"] ?: error("procedure selection missing result: $outcome")
-                    snapshot = enrichSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi())
-                    return syncGuidanceGeometryFromPlan()
-                }
-                "need_pages" -> {
-                    store.ensurePages(outcome.getValue("pages").jsonArray.map { it.jsonPrimitive.content.toInt() })
-                }
-                else -> error("unknown procedure selection outcome: $outcome")
+        val result =
+            store.runPagedSessionOperationElement {
+                bridge.selectProcedureAtFlightPlanRowInSessionJson(
+                    handle,
+                    rowUid,
+                    airportId,
+                    procedureId,
+                    json.encodeToString(kind.toWire()),
+                    json.encodeToString(runwayTransition),
+                    json.encodeToString(enrouteTransition),
+                )
             }
-        }
+        snapshot = enrichSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi())
+        return syncGuidanceGeometryFromPlan()
     }
 
     fun registerOwnshipSource(registration: OwnshipSourceRegistration): UiSessionSnapshot {
@@ -1191,18 +1138,6 @@ class NativeUiSession internal constructor(
         bridge.ingestPointTilesInSessionJson(handle, json.encodeToString(tiles.map { it.toWire() }))
     }
 
-    fun ingestMetarsJson(payloadJson: String) {
-        bridge.ingestMetarsInSessionJson(handle, payloadJson)
-    }
-
-    fun ingestTafsJson(payloadJson: String) {
-        bridge.ingestTafsInSessionJson(handle, payloadJson)
-    }
-
-    fun ingestMetarTilesJson(tilesJson: String) {
-        bridge.ingestMetarTilesInSessionJson(handle, tilesJson)
-    }
-
     fun ingestAirspaceRefTilesJson(tilesJson: String) {
         bridge.ingestAirspaceRefTilesInSessionJson(handle, tilesJson)
     }
@@ -1215,17 +1150,24 @@ class NativeUiSession internal constructor(
         bridge.ingestAirspaceLabelTilesInSessionJson(handle, tilesJson)
     }
 
-    fun ingestTfrsJson(payloadJson: String) {
-        bridge.ingestTfrsInSessionJson(handle, payloadJson)
-    }
-
-    fun queryMapOverlay(viewport: MapViewportState, widthPx: Double, heightPx: Double): MapOverlayQueryResult {
+    fun queryMapOverlay(
+        viewport: MapViewportState,
+        widthPx: Double,
+        heightPx: Double,
+        fetchResource: (CoreResourceRequest) -> ByteArray,
+    ): MapOverlayQueryResult {
         val viewportJson = json.encodeToString(viewport.toWire())
         val store = navKvStore ?: error("session missing nav_db for map overlay")
         return json.decodeFromJsonElement<WireMapOverlayQueryResult>(
-            store.runPagedSessionOperationElement {
-                bridge.getMapOverlayInSessionJson(handle, viewportJson, widthPx, heightPx)
-            },
+            store.runPagedSessionOperationElement(
+                operation = {
+                    bridge.getMapOverlayInSessionJson(handle, viewportJson, widthPx, heightPx)
+                },
+                fetchSessionResource = fetchResource,
+                ingestSessionResource = { resource, bytes ->
+                    bridge.ingestResourceInSession(handle, resource.id, bytes)
+                },
+            ),
         ).toUi()
     }
 

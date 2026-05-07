@@ -14,7 +14,8 @@ use crate::{
     guidance_detail_id_for_leg_element,
     had_ops::{
         insert_waypoint_best_position, materialize_airway_presentation_selection,
-        materialize_procedure, suggest_waypoint_identifiers, HadOperationOutcome, HadReadError,
+        materialize_procedure, nav_kv_page_resources, suggest_waypoint_identifiers,
+        CoreResourceRequest, HadOperationOutcome, HadReadError,
     },
     map_follow::{MapFollowSessionState, MapFollowUiState},
     map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
@@ -22,14 +23,14 @@ use crate::{
     playback::PlaybackSessionState,
     query_map_overlay, query_map_selection, state, AirportPlateAvailability,
     AirspaceFeaturePayload, AirspaceLabelTilePayload, AirspaceReferenceTilePayload,
-    AirwayPresentationPlan, AppError, AppErrorKind, AppEvent, AppResult, AppState, AppUiState,
     FlightPlan, FlightPlanDisplayRowKind, FlightPlanRowActionExecution, FlightPlanRowActionId,
     GuidanceState, LatLon, MapOverlayConfig, MapOverlayQueryResult, MapSelectionSessionAction,
     MapViewport, MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore,
-    NavRef, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity, ProcedureKind,
-    ProcedureLoadCommand, RasterMapCatalog, RasterTilePlan, ResolvedLeg, ResolvedLegSource,
-    RouteComponentViewKind, SequencingMode, SituationControlInput, SituationControlMenuItem,
-    TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
+    NavRef, PirepRecord, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity,
+    ProcedureKind, ProcedureLoadCommand, RasterMapCatalog, RasterTilePlan, ResolvedLeg,
+    ResolvedLegSource, RouteComponentViewKind, SequencingMode, SituationControlInput,
+    SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload,
+    UiSnapshotAppState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -116,6 +117,7 @@ struct UiSession {
     point_tile_cache: HashMap<String, PointTilePayload>,
     metar_tile_cache: HashMap<String, MetarTilePayload>,
     metar_payload: Option<MetarProductPayload>,
+    pending_pireps: Option<Vec<PirepRecord>>,
     taf_payload: Option<TafProductPayload>,
     airspace_ref_tile_cache: HashMap<String, AirspaceReferenceTilePayload>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
@@ -322,6 +324,7 @@ fn create_ui_session_inner(
             point_tile_cache: HashMap::new(),
             metar_tile_cache: HashMap::new(),
             metar_payload: None,
+            pending_pireps: None,
             taf_payload: None,
             airspace_ref_tile_cache: HashMap::new(),
             airspace_feature_cache: HashMap::new(),
@@ -846,7 +849,11 @@ fn insert_waypoint_best_position_for_session(
     let store = session_nav_kv_store(session)?;
     let mutation = match insert_waypoint_best_position(store, &plan, waypoint) {
         Ok(mutation) => mutation,
-        Err(HadReadError::NeedPages(pages)) => return Ok(HadOperationOutcome::NeedPages { pages }),
+        Err(HadReadError::NeedPages(pages)) => {
+            return Ok(HadOperationOutcome::NeedResources {
+                resources: nav_kv_page_resources(pages),
+            })
+        }
         Err(HadReadError::Fatal(message)) => {
             return Err(AppError {
                 kind: AppErrorKind::InvalidFlightPlan,
@@ -935,7 +942,9 @@ pub fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
         match suggest_waypoint_identifiers(store, &plan, component_index, before, &prefix, limit) {
             Ok(suggestions) => suggestions,
             Err(HadReadError::NeedPages(pages)) => {
-                return Ok(HadOperationOutcome::NeedPages { pages })
+                return Ok(HadOperationOutcome::NeedResources {
+                    resources: nav_kv_page_resources(pages),
+                })
             }
             Err(HadReadError::Fatal(message)) => {
                 return Err(AppError {
@@ -1003,7 +1012,11 @@ pub fn insert_airway_at_flight_plan_row_in_session(
         row.destination_anchor.as_ref(),
     ) {
         Ok(materialized) => materialized,
-        Err(HadReadError::NeedPages(pages)) => return Ok(HadOperationOutcome::NeedPages { pages }),
+        Err(HadReadError::NeedPages(pages)) => {
+            return Ok(HadOperationOutcome::NeedResources {
+                resources: nav_kv_page_resources(pages),
+            })
+        }
         Err(HadReadError::Fatal(message)) => {
             return Err(AppError {
                 kind: AppErrorKind::InvalidFlightPlan,
@@ -1102,7 +1115,11 @@ pub fn select_procedure_at_flight_plan_row_in_session(
         airport_component_index,
     ) {
         Ok(built) => built,
-        Err(HadReadError::NeedPages(pages)) => return Ok(HadOperationOutcome::NeedPages { pages }),
+        Err(HadReadError::NeedPages(pages)) => {
+            return Ok(HadOperationOutcome::NeedResources {
+                resources: nav_kv_page_resources(pages),
+            })
+        }
         Err(HadReadError::Fatal(message)) => {
             return Err(AppError {
                 kind: AppErrorKind::InvalidFlightPlan,
@@ -1204,7 +1221,11 @@ pub fn load_plate_procedure_in_session(
         airport_component_index,
     ) {
         Ok(built) => built,
-        Err(HadReadError::NeedPages(pages)) => return Ok(HadOperationOutcome::NeedPages { pages }),
+        Err(HadReadError::NeedPages(pages)) => {
+            return Ok(HadOperationOutcome::NeedResources {
+                resources: nav_kv_page_resources(pages),
+            })
+        }
         Err(HadReadError::Fatal(message)) => {
             return Err(AppError {
                 kind: AppErrorKind::InvalidFlightPlan,
@@ -1615,7 +1636,22 @@ pub fn ingest_tfrs_in_session(handle: u32, payload: &TfrProductPayload) -> AppRe
 pub fn ingest_metars_in_session(handle: u32, payload: &MetarProductPayload) -> AppResult<()> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
-    session.metar_payload = Some(payload.clone());
+    let mut payload = payload.clone();
+    if let Some(pireps) = session.pending_pireps.clone() {
+        payload.pireps = pireps;
+    }
+    session.metar_payload = Some(payload);
+    Ok(())
+}
+
+pub fn ingest_pireps_in_session(handle: u32, pireps: &[PirepRecord]) -> AppResult<()> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let pireps = pireps.to_vec();
+    if let Some(metars) = session.metar_payload.as_mut() {
+        metars.pireps = pireps.clone();
+    }
+    session.pending_pireps = Some(pireps);
     Ok(())
 }
 
@@ -1624,6 +1660,66 @@ pub fn ingest_tafs_in_session(handle: u32, payload: &TafProductPayload) -> AppRe
     let session = session_mut(&mut sessions, handle)?;
     session.taf_payload = Some(payload.clone());
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct PirepProductPayload {
+    #[serde(default)]
+    pireps: Vec<PirepRecord>,
+}
+
+pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) -> AppResult<()> {
+    if resource_id == "weather/metars" {
+        let payload: MetarProductPayload =
+            serde_json::from_slice(bytes).map_err(|err| AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message: format!("failed to parse METAR resource: {err}"),
+            })?;
+        return ingest_metars_in_session(handle, &payload);
+    }
+    if resource_id == "weather/pireps" {
+        let payload: PirepProductPayload =
+            serde_json::from_slice(bytes).map_err(|err| AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message: format!("failed to parse PIREP resource: {err}"),
+            })?;
+        return ingest_pireps_in_session(handle, &payload.pireps);
+    }
+    if resource_id == "weather/tafs" {
+        let payload: TafProductPayload = serde_json::from_slice(bytes).map_err(|err| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("failed to parse TAF resource: {err}"),
+        })?;
+        return ingest_tafs_in_session(handle, &payload);
+    }
+    if resource_id == "weather/tfrs" {
+        let payload: TfrProductPayload = serde_json::from_slice(bytes).map_err(|err| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("failed to parse TFR resource: {err}"),
+        })?;
+        return ingest_tfrs_in_session(handle, &payload);
+    }
+    if let Some(rest) = resource_id.strip_prefix("weather/metar_tile/") {
+        let payload: MetarTilePayload = serde_json::from_slice(bytes).map_err(|err| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("failed to parse METAR tile resource {resource_id}: {err}"),
+        })?;
+        let expected_key = crate::tile_key("metars", payload.z, payload.x, payload.y);
+        if rest != format!("{}/{}/{}", payload.z, payload.x, payload.y) {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message: format!("METAR tile resource id {resource_id} does not match payload"),
+            });
+        }
+        let mut sessions = sessions().lock().expect("session store poisoned");
+        let session = session_mut(&mut sessions, handle)?;
+        session.metar_tile_cache.insert(expected_key, payload);
+        return Ok(());
+    }
+    Err(AppError {
+        kind: AppErrorKind::UnsupportedOperation,
+        message: format!("unsupported session resource id: {resource_id}"),
+    })
 }
 
 fn internal_json_error(err: serde_json::Error) -> AppError {
@@ -1635,11 +1731,9 @@ fn internal_json_error(err: serde_json::Error) -> AppError {
 
 fn had_read_error_to_overlay_outcome(err: HadReadError) -> AppResult<HadOperationOutcome> {
     match err {
-        HadReadError::NeedPages(mut pages) => {
-            pages.sort_unstable();
-            pages.dedup();
-            Ok(HadOperationOutcome::NeedPages { pages })
-        }
+        HadReadError::NeedPages(pages) => Ok(HadOperationOutcome::NeedResources {
+            resources: nav_kv_page_resources(pages),
+        }),
         HadReadError::Fatal(message) => Err(AppError {
             kind: AppErrorKind::Internal,
             message,
@@ -1950,6 +2044,10 @@ pub fn get_map_overlay_in_session(
         &session.airspace_label_tile_cache,
         session.tfr_payload.as_ref(),
     );
+    let resources = weather_overlay_resources(session, &overlay);
+    if !resources.is_empty() {
+        return Ok(HadOperationOutcome::NeedResources { resources });
+    }
     session.caution_state.obstacle_display_limited = overlay
         .warnings
         .iter()
@@ -1957,6 +2055,63 @@ pub fn get_map_overlay_in_session(
     Ok(HadOperationOutcome::Complete {
         result: serde_json::to_value(overlay).map_err(internal_json_error)?,
     })
+}
+
+fn weather_overlay_resources(
+    session: &UiSession,
+    overlay: &MapOverlayQueryResult,
+) -> Vec<CoreResourceRequest> {
+    let mut resources = Vec::new();
+    if overlay.needed_metars {
+        resources.push(CoreResourceRequest {
+            id: "weather/metars".to_string(),
+            address: "/fast-products/metars/metars.json".to_string(),
+            optional: false,
+        });
+        resources.push(CoreResourceRequest {
+            id: "weather/pireps".to_string(),
+            address: "/fast-products/metars/pireps.json".to_string(),
+            optional: false,
+        });
+        resources.push(CoreResourceRequest {
+            id: "weather/tafs".to_string(),
+            address: "/fast-products/metars/tafs.json".to_string(),
+            optional: false,
+        });
+    }
+    if overlay.needed_tfrs {
+        resources.push(CoreResourceRequest {
+            id: "weather/tfrs".to_string(),
+            address: "/fast-products/tfrs/tfrs.json".to_string(),
+            optional: false,
+        });
+    }
+    if !overlay.needed_metar_tiles.is_empty() {
+        let template = session
+            .map_overlay_config
+            .metar_layer
+            .as_ref()
+            .and_then(|layer| layer.tile_path_template.as_deref())
+            .unwrap_or("points/metars/{z}/{x}/{y}.json");
+        for tile in &overlay.needed_metar_tiles {
+            resources.push(CoreResourceRequest {
+                id: format!("weather/metar_tile/{}/{}/{}", tile.z, tile.x, tile.y),
+                address: format!(
+                    "/fast-products/metars/{}",
+                    apply_tile_path_template(template, tile.z, tile.x, tile.y)
+                ),
+                optional: false,
+            });
+        }
+    }
+    resources
+}
+
+fn apply_tile_path_template(template: &str, z: u32, x: u32, y: u32) -> String {
+    template
+        .replace("{z}", &z.to_string())
+        .replace("{x}", &x.to_string())
+        .replace("{y}", &y.to_string())
 }
 
 pub fn get_map_selection_in_session(
@@ -2013,10 +2168,8 @@ pub fn get_map_selection_in_session(
         &mut availability,
     );
     if !missing_pages.is_empty() {
-        missing_pages.sort_unstable();
-        missing_pages.dedup();
-        return Ok(HadOperationOutcome::NeedPages {
-            pages: missing_pages,
+        return Ok(HadOperationOutcome::NeedResources {
+            resources: nav_kv_page_resources(missing_pages),
         });
     }
     Ok(HadOperationOutcome::Complete {

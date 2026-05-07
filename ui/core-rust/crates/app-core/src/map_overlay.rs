@@ -585,9 +585,10 @@ pub struct MapOverlayConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PointTileLayerConfig {
-    min_zoom: u32,
-    max_zoom: u32,
-    available_zooms: Vec<u32>,
+    pub min_zoom: u32,
+    pub max_zoom: u32,
+    pub available_zooms: Vec<u32>,
+    pub tile_path_template: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -605,6 +606,8 @@ struct VectorPointLayerManifest {
     max_zoom: Option<u32>,
     #[serde(default)]
     available_zooms: Vec<u32>,
+    #[serde(default)]
+    tile_path_template: Option<String>,
     #[serde(default)]
     zoom_levels: Vec<ObstacleZoomLevelConfig>,
 }
@@ -700,6 +703,7 @@ fn point_tile_layer_config_from_manifest(
         min_zoom,
         max_zoom,
         available_zooms,
+        tile_path_template: manifest.tile_path_template.clone(),
     })
 }
 
@@ -3974,6 +3978,7 @@ mod tests {
                 min_zoom: 5,
                 max_zoom: 7,
                 available_zooms: vec![5, 6, 7],
+                tile_path_template: Some("points/metars/{z}/{x}/{y}.json".to_string()),
             }),
         }
     }

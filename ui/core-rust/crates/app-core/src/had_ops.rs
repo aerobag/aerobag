@@ -698,6 +698,16 @@ fn map_selector_state(
     })
 }
 
+pub(crate) fn raster_map_catalog_from_nav_kv(
+    store: &NavKvStore,
+    selected_map_id: Option<&str>,
+    selected_family_id: Option<&str>,
+) -> Result<crate::RasterMapCatalog, HadReadError> {
+    let state = map_selector_state(store, selected_map_id, selected_family_id)?;
+    serde_json::from_value(serde_json::to_value(state)?)
+        .map_err(|err| HadReadError::Fatal(format!("failed to decode raster map catalog: {err}")))
+}
+
 fn chart_catalog(store: &NavKvStore) -> Result<Vec<MapViewOptionRecord>, HadReadError> {
     let mut map_views = read_required::<Vec<MapViewOptionRecord>>(
         store,

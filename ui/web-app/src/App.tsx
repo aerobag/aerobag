@@ -31,7 +31,6 @@ import type {
   SituationRingCandidate,
   WaypointIdentifierSuggestion,
 } from "./domain/types";
-import { runCoreHadOperation } from "./domain/navKv";
 import uiTheme from "@shared-ui-theme";
 import planViewIcon from "./assets/plan-view-icon.svg";
 import {
@@ -229,6 +228,34 @@ function AirspaceDisplayPathGroup(props: { feature: AirspaceDisplayPath }) {
 
 function offlineRegionPoints(points: Array<{ x: number; y: number }>): string {
   return points.map((point) => `${point.x},${point.y}`).join(" ");
+}
+
+function offlineRegionSummaryLines(region: MapOverlayQueryResult["offline_regions"][number]): string[] {
+  if (!region.summary.length) {
+    return [];
+  }
+  const entries = region.summary.map((entry) => {
+    const suffix = entry.count > 1 ? ` (${entry.count})` : "";
+    return `${offlineRegionSummaryIcon(entry.action)} ${entry.cycle}${suffix}`;
+  });
+  const lines: string[] = [];
+  for (let index = 0; index < entries.length; index += 2) {
+    lines.push(entries.slice(index, index + 2).join("  "));
+  }
+  return lines;
+}
+
+function offlineRegionSummaryIcon(action: string): string {
+  switch (action) {
+    case "fetch":
+      return "▶";
+    case "pause":
+      return "‖";
+    case "delete":
+      return "×";
+    default:
+      return "●";
+  }
 }
 
 type AppPage = "map" | "plan" | "charts" | "home";
@@ -1148,6 +1175,7 @@ export default function App() {
       obstacle_display_limited: false,
     },
     debug_state: initialDebugState,
+    raster_map_catalog: null,
   });
   const [playbackSourcePath, setPlaybackSourcePath] = useState(defaultPlaybackTracePath);
   const [debugWarningActive, setDebugWarningActive] = useState(false);
@@ -1564,31 +1592,12 @@ export default function App() {
   }, [adapterBackend, appCoreAdapter, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, initialDebugState, initialRecentAirportIds]);
 
   useEffect(() => {
-    let cancelled = false;
-    if (!appCoreAdapter) {
+    if (!sessionSnapshot.raster_map_catalog) {
       return;
     }
-    debugTiming(
-      "map.selector_state.load",
-      () => appCoreAdapter.deriveMapSelectorState(undefined),
-    ).then((state) => {
-      if (cancelled) {
-        return;
-      }
-      setMapSelectorState(state);
-      void uiSession?.installRasterMapCatalog(state).catch((error) => {
-        console.error("failed to install raster map catalog in core session", error);
-      });
-      setMapSelectorLoadError(null);
-    }).catch((error) => {
-      if (!cancelled) {
-        setMapSelectorLoadError(`failed to derive map selector state: ${errorMessage(error)}`);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [appCoreAdapter, uiSession]);
+    setMapSelectorState(sessionSnapshot.raster_map_catalog);
+    setMapSelectorLoadError(null);
+  }, [sessionSnapshot.raster_map_catalog]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1665,10 +1674,9 @@ export default function App() {
   function restoreSnapshot(snapshot: AppViewSnapshot, history: AppViewSnapshot[]) {
     setPageHistory(history);
     setPage(snapshot.page);
-    if (snapshot.selectedMapId && appCoreAdapter) {
-      void appCoreAdapter.deriveMapSelectorState(snapshot.selectedMapId).then((state) => {
-        setMapSelectorState(state);
-        return uiSession?.installRasterMapCatalog(state);
+    if (snapshot.selectedMapId && uiSession) {
+      void uiSession.selectRasterMap(snapshot.selectedMapId).then((nextSnapshot) => {
+        setSessionSnapshot(nextSnapshot);
       }).catch((error) => {
         setMapSelectorLoadError(`failed to restore map selector state: ${errorMessage(error)}`);
       });
@@ -1899,15 +1907,10 @@ export default function App() {
           }}
           onViewportChange={setMapViewport}
           onSelectMapFamily={(familyId) => {
-            void appCoreAdapter.deriveMapSelectorStateForFamily(familyId).then((state) => {
-              setMapSelectorState(state);
-              return uiSession?.installRasterMapCatalog(state);
-            }).then(() => {
-              if (uiSession) {
-                return uiSession.selectMapFamily(familyId).then(setSessionSnapshot);
-              }
-              return undefined;
-            }).catch((error) => {
+            if (!uiSession) {
+              return;
+            }
+            void uiSession.selectMapFamily(familyId).then(setSessionSnapshot).catch((error) => {
               setMapSelectorLoadError(`failed to select map family: ${errorMessage(error)}`);
             });
           }}
@@ -3281,6 +3284,13 @@ function MapPage(props: {
       }
       return null;
     }
+    if (highlight.kind === "offline_region") {
+      const region = mapOverlay.offline_regions.find((feature) => feature.id === highlight.id);
+      if (region) {
+        return { kind: "offline_region" as const, feature: region };
+      }
+      return null;
+    }
     const pointFeature = mapOverlay.visible_features.find((feature) => feature.id === highlight.id);
     if (pointFeature) {
       return { kind: "point" as const, feature: pointFeature };
@@ -3294,7 +3304,7 @@ function MapPage(props: {
       return { kind: "path" as const, feature: tfrPath };
     }
     return null;
-  }, [mapOverlay.airspace_paths, mapOverlay.tfr_paths, mapOverlay.visible_features, mapOverlay.visible_metars, mapOverlay.visible_pireps, mapSelection?.selectedItem, surfaceSize.height, surfaceSize.width, viewport]);
+  }, [mapOverlay.airspace_paths, mapOverlay.offline_regions, mapOverlay.tfr_paths, mapOverlay.visible_features, mapOverlay.visible_metars, mapOverlay.visible_pireps, mapSelection?.selectedItem, surfaceSize.height, surfaceSize.width, viewport]);
   const rasterTileTransform = useMemo(() => {
     if (!rasterTileViewport) {
       return undefined;
@@ -3763,6 +3773,26 @@ function MapPage(props: {
                     setMapSelection(null);
                     return;
                   }
+                  if (action.id === "offline_region_mode") {
+                    setMapSelection((current) => current ? {
+                      ...current,
+                      detailModal: {
+                        title: action.label,
+                        text: item.detail_text ?? "Offline package region controls are not connected in this web build yet.",
+                      },
+                    } : current);
+                    return;
+                  }
+                  if (action.id === "offline_packages") {
+                    setMapSelection((current) => current ? {
+                      ...current,
+                      detailModal: {
+                        title: "Offline Packages",
+                        text: "Offline Packages settings are not available in this web build yet.",
+                      },
+                    } : current);
+                    return;
+                  }
                   if (action.flight_plan_row_action) {
                     try {
                       if (!uiSession) {
@@ -3901,6 +3931,7 @@ function MapPage(props: {
           >
             {mapOverlay.offline_regions.map((region) => {
               const color = aviationThemeColor(region.color_key);
+              const summaryLines = offlineRegionSummaryLines(region);
               return (
                 <g key={region.id}>
                   <polygon
@@ -3929,7 +3960,10 @@ function MapPage(props: {
                     strokeWidth="4"
                     paintOrder="stroke"
                   >
-                    {region.label}
+                    <tspan x={region.label_x} dy={summaryLines.length ? "-0.72em" : "0"}>{region.label}</tspan>
+                    {summaryLines.map((summary, index) => (
+                      <tspan key={`${region.id}:summary:${index}`} x={region.label_x} dy="1.35em">{summary}</tspan>
+                    ))}
                   </text>
                   <text
                     x={region.label_x}
@@ -3938,7 +3972,10 @@ function MapPage(props: {
                     dominantBaseline="middle"
                     fill={color}
                   >
-                    {region.label}
+                    <tspan x={region.label_x} dy={summaryLines.length ? "-0.72em" : "0"}>{region.label}</tspan>
+                    {summaryLines.map((summary, index) => (
+                      <tspan key={`${region.id}:summary:${index}`} x={region.label_x} dy="1.35em">{summary}</tspan>
+                    ))}
                   </text>
                 </g>
               );
@@ -4075,6 +4112,15 @@ function MapPage(props: {
                 ))}
                 <AirspaceDisplayPathGroup feature={selectedMapHighlight.feature} />
               </g>
+            ) : selectedMapHighlight.kind === "offline_region" ? (
+              <polygon
+                points={offlineRegionPoints(selectedMapHighlight.feature.points)}
+                fill="rgba(255,255,255,0.08)"
+                stroke="white"
+                strokeWidth="6"
+                strokeLinejoin="round"
+                vectorEffect="non-scaling-stroke"
+              />
             ) : (
               <g transform={`translate(${selectedMapHighlight.point.x} ${selectedMapHighlight.point.y})`}>
                 <MapSelectionSpotSymbol />

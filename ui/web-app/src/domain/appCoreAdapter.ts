@@ -64,12 +64,6 @@ export type DerivedMapSelectorState = {
   }>;
 };
 
-const EMPTY_GEOMETRY: GeometryJson = {
-  schema_version: 1,
-  polygons: [],
-  polygon_sets: [],
-};
-
 export type UiSessionSnapshot = {
   app_state: UiSnapshotAppState;
   app_ui_state: AppUiState;
@@ -85,6 +79,7 @@ export type UiSessionSnapshot = {
   map_layer_state: UiMapLayerState;
   caution_state: UiCautionState;
   debug_state: UiDebugState;
+  raster_map_catalog?: DerivedMapSelectorState | null;
 };
 
 export type DebugFlagId = "tile_labels" | "fast_tiles" | "offline_simulated_clock_buttons" | "sequencing_finish_lines";
@@ -376,6 +371,11 @@ export type MapOverlayQueryResult = {
     region_id: string;
     label: string;
     color_key: string;
+    summary: Array<{
+      action: string;
+      cycle: string;
+      count: number;
+    }>;
     points: Array<{
       x: number;
       y: number;
@@ -420,6 +420,7 @@ export type MapSelectionHighlight =
   | { kind: "feature_ref"; id: string }
   | { kind: "metar"; station_id: string }
   | { kind: "pirep"; id: string }
+  | { kind: "offline_region"; id: string }
   | { kind: "spot"; lat: number; lon: number };
 
 export type MapSelectionAction = {
@@ -526,8 +527,9 @@ export interface UiSession {
   setMapLayerVisibility(layerId: MapLayerId, visible: boolean): Promise<UiSessionSnapshot>;
   setMapLayerEnabled(layerId: MapLayerId, enabled: boolean): Promise<UiSessionSnapshot>;
   setDebugFlag(flagId: DebugFlagId, enabled: boolean): Promise<UiSessionSnapshot>;
-  installRasterMapCatalog(catalog: DerivedMapSelectorState): Promise<UiSessionSnapshot>;
+  loadRasterMapCatalog(): Promise<UiSessionSnapshot>;
   selectMapFamily(familyId: ChartFamilyId): Promise<UiSessionSnapshot>;
+  selectRasterMap(selectedMapId: string): Promise<UiSessionSnapshot>;
   selectAirport(airportId: string): Promise<UiSessionSnapshot>;
   selectChart(chartId: string): Promise<UiSessionSnapshot>;
   ingestPointTiles(tiles: PointTilePayload[]): Promise<void>;
@@ -563,8 +565,6 @@ export interface AppCoreAdapter {
     selectedAirportId?: string,
     selectedChartId?: string,
   ): Promise<DerivedChartPageState>;
-  deriveMapSelectorState(selectedMapId?: string): Promise<DerivedMapSelectorState>;
-  deriveMapSelectorStateForFamily(familyId: ChartFamilyId): Promise<DerivedMapSelectorState>;
   projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]>;
   previewFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanEntryPreview>;
   appendFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanUiMutation>;
@@ -715,8 +715,9 @@ type WasmModule = {
   set_map_layer_visibility_in_session(handle: number, layerIdJson: string, visible: boolean): Promise<string> | string;
   set_map_layer_enabled_in_session(handle: number, layerIdJson: string, enabled: boolean): Promise<string> | string;
   set_debug_flag_in_session(handle: number, flagIdJson: string, enabled: boolean): Promise<string> | string;
-  set_raster_map_catalog_in_session(handle: number, catalogJson: string): Promise<string> | string;
+  load_raster_map_catalog_in_session(handle: number): Promise<string> | string;
   select_map_family_in_session(handle: number, familyIdJson: string): Promise<string> | string;
+  select_raster_map_in_session(handle: number, selectedMapIdJson: string): Promise<string> | string;
   replace_flight_plan_in_session(handle: number, planJson: string): Promise<string> | string;
   perform_map_selection_action_in_session(sessionHandle: number, actionJson: string): Promise<string> | string;
   insert_waypoint_at_flight_plan_row_in_session(sessionHandle: number, rowUid: string, before: boolean, waypointJson: string): Promise<string> | string;
@@ -842,11 +843,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       }
       const created = createdEnvelope.result ?? createdEnvelope;
       await attachNavKvStoreToSession(created.handle);
-      const rasterMapCatalog = await debugTiming("startup.session.raster_catalog", () =>
-        this.deriveMapSelectorState(undefined),
-      );
-      const catalogedSnapshot = await debugTiming("startup.session.install_raster_catalog", async () =>
-        JSON.parse(await module.set_raster_map_catalog_in_session(created.handle, JSON.stringify(rasterMapCatalog))) as UiSessionSnapshot,
+      const catalogedSnapshot = await debugTiming("startup.session.load_raster_catalog", () =>
+        runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+          module.load_raster_map_catalog_in_session(created.handle),
+        ),
       );
       return {
         ...created,
@@ -1104,17 +1104,21 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         return snapshot;
       },
-      installRasterMapCatalog: async (catalog) => {
-        snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(
-            this.module.set_raster_map_catalog_in_session(handle, JSON.stringify(catalog)),
-          ),
+      loadRasterMapCatalog: async () => {
+        snapshot = await runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+          this.module.load_raster_map_catalog_in_session(handle),
         );
         return snapshot;
       },
       selectMapFamily: async (familyId) => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.select_map_family_in_session(handle, JSON.stringify(familyId))),
+        );
+        return snapshot;
+      },
+      selectRasterMap: async (selectedMapId) => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(this.module.select_raster_map_in_session(handle, JSON.stringify(selectedMapId))),
         );
         return snapshot;
       },
@@ -1342,36 +1346,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     });
   }
 
-  async deriveMapSelectorState(selectedMapId?: string): Promise<DerivedMapSelectorState> {
-    const state = await runCoreHadOperation<Partial<DerivedMapSelectorState>>({
-      kind: "map_selector_state",
-      selected_map_id: selectedMapId ?? null,
-      selected_family_id: null,
-    });
-    return {
-      selected_map_id: state.selected_map_id ?? "",
-      selected_map: state.selected_map ?? null,
-      displayed_maps: state.displayed_maps ?? [],
-      geometry: state.geometry ?? EMPTY_GEOMETRY,
-      family_options: state.family_options ?? [],
-    };
-  }
-
-  async deriveMapSelectorStateForFamily(familyId: ChartFamilyId): Promise<DerivedMapSelectorState> {
-    const state = await runCoreHadOperation<Partial<DerivedMapSelectorState>>({
-      kind: "map_selector_state",
-      selected_map_id: null,
-      selected_family_id: familyId,
-    });
-    return {
-      selected_map_id: state.selected_map_id ?? "",
-      selected_map: state.selected_map ?? null,
-      displayed_maps: state.displayed_maps ?? [],
-      geometry: state.geometry ?? EMPTY_GEOMETRY,
-      family_options: state.family_options ?? [],
-    };
-  }
-
   async projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]> {
     void planUiState;
     return runCoreHadOperation<FlightPlanRouteSegment[]>({ kind: "project_flight_plan_route", plan });
@@ -1513,8 +1487,9 @@ async function loadBestAvailableAdapterUncached(
     typeof mod.set_map_layer_visibility_in_session !== "function" ||
     typeof mod.set_map_layer_enabled_in_session !== "function" ||
     typeof mod.set_debug_flag_in_session !== "function" ||
-    typeof mod.set_raster_map_catalog_in_session !== "function" ||
+    typeof mod.load_raster_map_catalog_in_session !== "function" ||
     typeof mod.select_map_family_in_session !== "function" ||
+    typeof mod.select_raster_map_in_session !== "function" ||
     typeof mod.replace_flight_plan_in_session !== "function" ||
     typeof mod.perform_map_selection_action_in_session !== "function" ||
     typeof mod.set_guidance_leg_geometry_in_session !== "function" ||

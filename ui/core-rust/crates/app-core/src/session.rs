@@ -82,6 +82,7 @@ pub struct UiSessionSnapshot {
     pub map_layer_state: UiMapLayerState,
     pub caution_state: UiCautionState,
     pub debug_state: UiDebugState,
+    pub raster_map_catalog: Option<RasterMapCatalog>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -297,6 +298,7 @@ fn create_ui_session_inner(
         map_layer_state: map_layer_state.clone(),
         caution_state: caution_state.clone(),
         debug_state: snapshot_debug_state,
+        raster_map_catalog: None,
     };
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
     sessions().lock().expect("session store poisoned").insert(
@@ -355,6 +357,30 @@ pub fn set_raster_map_catalog_in_session(
     Ok(snapshot_for_session(session))
 }
 
+pub fn load_raster_map_catalog_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let selected_map_id = session
+        .raster_map_catalog
+        .as_ref()
+        .map(|catalog| catalog.selected_map_id.as_str());
+    let catalog = match crate::had_ops::raster_map_catalog_from_nav_kv(
+        session_nav_kv_store(session)?,
+        selected_map_id,
+        None,
+    ) {
+        Ok(catalog) => catalog,
+        Err(err) => return had_read_error_to_overlay_outcome(err),
+    };
+    session.raster_map_catalog = Some(catalog);
+    serde_json::to_value(snapshot_for_session(session))
+        .map(|result| HadOperationOutcome::Complete { result })
+        .map_err(|err| AppError {
+            kind: AppErrorKind::Internal,
+            message: err.to_string(),
+        })
+}
+
 pub fn select_map_family_in_session(handle: u32, family_id: &str) -> AppResult<UiSessionSnapshot> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
@@ -365,6 +391,22 @@ pub fn select_map_family_in_session(handle: u32, family_id: &str) -> AppResult<U
         });
     };
     crate::select_map_family_in_catalog(catalog, family_id);
+    Ok(snapshot_for_session(session))
+}
+
+pub fn select_raster_map_in_session(
+    handle: u32,
+    selected_map_id: &str,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let Some(catalog) = session.raster_map_catalog.as_mut() else {
+        return Err(AppError {
+            kind: AppErrorKind::Internal,
+            message: "session missing raster map catalog".to_string(),
+        });
+    };
+    crate::select_map_in_catalog(catalog, selected_map_id);
     Ok(snapshot_for_session(session))
 }
 
@@ -1937,6 +1979,18 @@ pub fn get_map_selection_in_session(
         }
         Err(HadReadError::Fatal(_)) => AirportPlateAvailability::default(),
     };
+    let offline_region_records = if session.map_layer_state.offline_regions.visible {
+        match read_attached_json_optional::<crate::OfflineRegionCatalog>(
+            store,
+            NavKvQuery::OfflineRegionCatalog,
+        ) {
+            Ok(Some(catalog)) => catalog.regions,
+            Ok(None) => Vec::new(),
+            Err(err) => return had_read_error_to_overlay_outcome(err),
+        }
+    } else {
+        Vec::new()
+    };
     let selection = query_map_selection(
         &viewport,
         width_px,
@@ -1949,6 +2003,7 @@ pub fn get_map_selection_in_session(
         &session.metar_tile_cache,
         session.metar_payload.as_ref(),
         session.taf_payload.as_ref(),
+        &offline_region_records,
         &session.airspace_feature_cache,
         session.tfr_payload.as_ref(),
         &mut availability,
@@ -2198,6 +2253,7 @@ fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
         map_layer_state: session.map_layer_state.clone(),
         caution_state: session.caution_state.clone(),
         debug_state,
+        raster_map_catalog: session.raster_map_catalog.clone(),
     }
 }
 

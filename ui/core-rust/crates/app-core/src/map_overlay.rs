@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -379,8 +379,17 @@ pub struct OfflineRegionRecord {
     pub region_id: String,
     pub label: String,
     pub color_key: String,
+    #[serde(default)]
+    pub summary: Vec<OfflineRegionSummaryEntry>,
     pub polygon: Vec<LatLon>,
     pub label_position: LatLon,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OfflineRegionSummaryEntry {
+    pub action: String,
+    pub cycle: String,
+    pub count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -390,6 +399,7 @@ pub struct OfflineRegionDisplay {
     pub region_id: String,
     pub label: String,
     pub color_key: String,
+    pub summary: Vec<OfflineRegionSummaryEntry>,
     pub points: Vec<AirspaceScreenPoint>,
     pub label_x: f64,
     pub label_y: f64,
@@ -524,6 +534,7 @@ pub enum MapSelectionHighlight {
     FeatureRef { id: String },
     Metar { station_id: String },
     Pirep { id: String },
+    OfflineRegion { id: String },
     Spot { lat: f64, lon: f64 },
 }
 
@@ -1268,6 +1279,7 @@ fn project_offline_regions(
                 region_id: region.region_id.clone(),
                 label: region.label.clone(),
                 color_key: region.color_key.clone(),
+                summary: region.summary.clone(),
                 points,
                 label_x: label.x,
                 label_y: label.y,
@@ -1594,6 +1606,7 @@ pub fn query_map_selection(
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
+    offline_region_records: &[OfflineRegionRecord],
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
@@ -1611,6 +1624,7 @@ pub fn query_map_selection(
     let mut airports = Vec::new();
     let mut navaids = Vec::new();
     let mut weather = Vec::new();
+    let mut offline_regions = BTreeMap::<String, Vec<&OfflineRegionRecord>>::new();
     let mut airspaces = Vec::new();
 
     for tile in visible_point_display_tile_window(config, viewport, width_px, height_px, None) {
@@ -1719,9 +1733,22 @@ pub fn query_map_selection(
         ));
     }
 
+    for region in offline_region_records {
+        if offline_region_contains(region, click) {
+            offline_regions
+                .entry(region.region_id.to_ascii_lowercase())
+                .or_default()
+                .push(region);
+        }
+    }
+
     airports.sort_by(compare_map_selection_point_matches);
     navaids.sort_by(compare_map_selection_point_matches);
     weather.sort_by(compare_map_selection_point_matches);
+    let offline_region_items = offline_regions
+        .values()
+        .map(|regions| selection_item_for_offline_region_group(regions))
+        .collect::<Vec<_>>();
     airspaces.sort_by(|left, right| {
         left.label
             .cmp(&right.label)
@@ -1755,6 +1782,11 @@ pub fn query_map_selection(
                 id: "weather".to_string(),
                 label: "Weather".to_string(),
                 items: weather.into_iter().map(|matched| matched.item).collect(),
+            },
+            MapSelectionCategory {
+                id: "offline".to_string(),
+                label: "Offline".to_string(),
+                items: offline_region_items,
             },
         ],
     }
@@ -2148,6 +2180,73 @@ fn compare_map_selection_point_matches(
         .total_cmp(&right.distance_px)
         .then_with(|| left.item.label.cmp(&right.item.label))
         .then_with(|| left.item.id.cmp(&right.item.id))
+}
+
+fn selection_item_for_offline_region_group(regions: &[&OfflineRegionRecord]) -> MapSelectionItem {
+    let first = regions
+        .first()
+        .expect("offline region selection group must be non-empty");
+    let mut labels = regions
+        .iter()
+        .map(|region| region.label.clone())
+        .collect::<Vec<_>>();
+    labels.sort();
+    labels.dedup();
+    let description = labels.join(", ");
+    MapSelectionItem {
+        id: format!("offline-region:{}", first.region_id.to_ascii_lowercase()),
+        label: first.region_id.to_ascii_uppercase(),
+        sublabel: description.clone(),
+        description: Some(description),
+        detail_text: Some(offline_region_group_detail_text(regions)),
+        highlight: MapSelectionHighlight::OfflineRegion {
+            id: first.id.clone(),
+        },
+        nav_ref: None,
+        symbol_feature: None,
+        metar_feature: None,
+        pirep_feature: None,
+        airspace_icon: None,
+        actions: vec![
+            enabled_action(
+                "offline_region_mode",
+                &offline_region_mode_action_label(first),
+            ),
+            enabled_action("offline_packages", "Offline\nPackages"),
+        ],
+    }
+}
+
+fn offline_region_detail_text(region: &OfflineRegionRecord) -> String {
+    if region.summary.is_empty() {
+        return region.label.clone();
+    }
+    let summary = region
+        .summary
+        .iter()
+        .map(|entry| {
+            let suffix = if entry.count > 1 {
+                format!(" ({})", entry.count)
+            } else {
+                String::new()
+            };
+            format!("{} {}{}", entry.action, entry.cycle, suffix)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{}\n{}", region.label, summary)
+}
+
+fn offline_region_group_detail_text(regions: &[&OfflineRegionRecord]) -> String {
+    regions
+        .iter()
+        .map(|region| offline_region_detail_text(region))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn offline_region_mode_action_label(region: &OfflineRegionRecord) -> String {
+    format!("{} Region", region.region_id.to_ascii_uppercase())
 }
 
 fn selectable_airspace_feature(feature: &AirspaceFeaturePayload) -> bool {
@@ -2602,6 +2701,20 @@ fn tfr_area_contains(area: &TfrAreaPayload, point: LatLon) -> bool {
         return false;
     }
     let polygon = area
+        .polygon
+        .iter()
+        .map(|point| [point.lon, point.lat])
+        .collect::<Vec<_>>();
+    wrapped_lon_candidates(point.lon)
+        .into_iter()
+        .any(|lon| lon_lat_polygon_contains(&polygon, lon, point.lat))
+}
+
+fn offline_region_contains(region: &OfflineRegionRecord, point: LatLon) -> bool {
+    if region.polygon.len() < 3 {
+        return false;
+    }
+    let polygon = region
         .polygon
         .iter()
         .map(|point| [point.lon, point.lat])
@@ -3998,6 +4111,7 @@ mod tests {
             region_id: "pac".to_string(),
             label: "PAC".to_string(),
             color_key: "pac".to_string(),
+            summary: Vec::new(),
             polygon: vec![
                 LatLon {
                     lat: 45.0,
@@ -4046,6 +4160,7 @@ mod tests {
             region_id: "pac".to_string(),
             label: "PAC".to_string(),
             color_key: "pac".to_string(),
+            summary: Vec::new(),
             polygon: vec![
                 LatLon {
                     lat: 45.0,
@@ -4505,6 +4620,7 @@ mod tests {
             &metar_tile_cache,
             Some(&metars),
             Some(&tafs),
+            &[],
             &HashMap::new(),
             None,
             &mut |_| AirportPlateAvailability::default(),
@@ -4615,6 +4731,7 @@ mod tests {
             &metar_tile_cache,
             Some(&metars),
             None,
+            &[],
             &HashMap::new(),
             None,
             &mut |_| AirportPlateAvailability::default(),
@@ -4629,6 +4746,102 @@ mod tests {
             weather.items.first().map(|item| item.label.as_str()),
             Some("KAAA")
         );
+    }
+
+    #[test]
+    fn map_selection_hits_offline_region_polygon() {
+        let region = OfflineRegionRecord {
+            id: "chart:nw".to_string(),
+            kind: "chart".to_string(),
+            region_id: "nw".to_string(),
+            label: "NW Charts".to_string(),
+            color_key: "ifr_low_blue".to_string(),
+            summary: vec![OfflineRegionSummaryEntry {
+                action: "available".to_string(),
+                cycle: "2604".to_string(),
+                count: 2,
+            }],
+            polygon: vec![
+                LatLon {
+                    lat: -1.0,
+                    lon: -1.0,
+                },
+                LatLon {
+                    lat: -1.0,
+                    lon: 1.0,
+                },
+                LatLon { lat: 1.0, lon: 1.0 },
+                LatLon {
+                    lat: 1.0,
+                    lon: -1.0,
+                },
+            ],
+            label_position: LatLon { lat: 0.0, lon: 0.0 },
+        };
+        let mut nw_plate_region = region.clone();
+        nw_plate_region.id = "plate:nw".to_string();
+        nw_plate_region.kind = "plate".to_string();
+        nw_plate_region.label = "NW Plates".to_string();
+        let mut sw_plate_region = nw_plate_region.clone();
+        sw_plate_region.id = "plate:sw".to_string();
+        sw_plate_region.region_id = "sw".to_string();
+        sw_plate_region.label = "SW Plates".to_string();
+        let regions = vec![region, nw_plate_region, sw_plate_region];
+        let result = query_map_selection(
+            &MapViewport {
+                center: LatLon { lat: 0.0, lon: 0.0 },
+                zoom: 4.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            1024.0,
+            768.0,
+            &test_map_overlay_config(),
+            None,
+            LatLon { lat: 0.0, lon: 0.0 },
+            32.0,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            None,
+            &regions,
+            &HashMap::new(),
+            None,
+            &mut |_| AirportPlateAvailability::default(),
+        );
+        let offline = result
+            .categories
+            .iter()
+            .find(|category| category.id == "offline")
+            .expect("offline category");
+        assert_eq!(
+            offline
+                .items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["NW", "SW"]
+        );
+        let item = offline.items.first().expect("offline item");
+
+        assert_eq!(item.label, "NW");
+        assert_eq!(item.sublabel, "NW Charts, NW Plates");
+        assert_eq!(
+            item.detail_text.as_deref(),
+            Some("NW Charts\navailable 2604 (2)\n\nNW Plates\navailable 2604 (2)")
+        );
+        assert!(matches!(
+            item.highlight,
+            MapSelectionHighlight::OfflineRegion { ref id } if id == "chart:nw"
+        ));
+        assert!(item
+            .actions
+            .iter()
+            .any(|action| action.id == "offline_region_mode"));
+        assert!(item
+            .actions
+            .iter()
+            .any(|action| action.id == "offline_packages"));
     }
 
     #[test]
@@ -4708,6 +4921,7 @@ mod tests {
             &HashMap::new(),
             None,
             None,
+            &[],
             &HashMap::from([(feature.id.clone(), feature)]),
             None,
             &mut |_| AirportPlateAvailability::default(),
@@ -5261,6 +5475,7 @@ mod tests {
             &HashMap::new(),
             None,
             None,
+            &[],
             &HashMap::new(),
             None,
             &mut |_| AirportPlateAvailability {
@@ -5872,6 +6087,7 @@ mod tests {
             &HashMap::new(),
             None,
             None,
+            &[],
             &HashMap::new(),
             None,
             &mut |_| AirportPlateAvailability::default(),

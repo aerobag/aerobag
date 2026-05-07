@@ -443,8 +443,16 @@ struct OfflineRegionRecord {
     region_id: String,
     label: String,
     color_key: String,
+    summary: Vec<OfflineRegionSummaryEntry>,
     polygon: Vec<OfflineRegionLatLon>,
     label_position: OfflineRegionLatLon,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct OfflineRegionSummaryEntry {
+    action: String,
+    cycle: String,
+    count: usize,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -4692,7 +4700,7 @@ fn build_nav_kv_offline_region_pairs(
 fn build_offline_region_catalog(resource_index: &ResourceIndex) -> OfflineRegionCatalogRecord {
     let mut regions = Vec::new();
     for region in Region::ALL {
-        regions.push(chart_offline_region_record(region));
+        regions.push(chart_offline_region_record(region, resource_index));
     }
     regions.extend(plate_offline_region_records(resource_index));
     deconflict_offline_region_labels(&mut regions);
@@ -4702,7 +4710,10 @@ fn build_offline_region_catalog(resource_index: &ResourceIndex) -> OfflineRegion
     }
 }
 
-fn chart_offline_region_record(region: Region) -> OfflineRegionRecord {
+fn chart_offline_region_record(
+    region: Region,
+    resource_index: &ResourceIndex,
+) -> OfflineRegionRecord {
     let region_id = region.code().to_ascii_lowercase();
     let bounds = region.bounds();
     let polygon = vec![
@@ -4729,6 +4740,11 @@ fn chart_offline_region_record(region: Region) -> OfflineRegionRecord {
         region_id: region_id.clone(),
         label: format!("{} Charts", region.code()),
         color_key: "class_b_d_blue".to_string(),
+        summary: offline_region_summary_entries(
+            resource_index,
+            &region_id,
+            &["sec", "tac", "enr-l", "enr-h"],
+        ),
         polygon,
         label_position: OfflineRegionLatLon {
             lat: (bounds.lat_min + bounds.lat_max) / 2.0,
@@ -4781,12 +4797,46 @@ fn plate_offline_region_records(resource_index: &ResourceIndex) -> Vec<OfflineRe
             Some(OfflineRegionRecord {
                 id: format!("plate:{region_id}"),
                 kind: "plate".to_string(),
-                region_id,
+                region_id: region_id.clone(),
                 label: format!("{} Plates", region.code()),
                 color_key: "class_c_magenta".to_string(),
+                summary: offline_region_summary_entries(
+                    resource_index,
+                    &region_id,
+                    &["tpp", "csup"],
+                ),
                 polygon,
                 label_position,
             })
+        })
+        .collect()
+}
+
+fn offline_region_summary_entries(
+    resource_index: &ResourceIndex,
+    region_id: &str,
+    family_ids: &[&str],
+) -> Vec<OfflineRegionSummaryEntry> {
+    let family_ids = family_ids.iter().copied().collect::<BTreeSet<_>>();
+    let mut counts_by_cycle: BTreeMap<String, usize> = BTreeMap::new();
+    for package in &resource_index.packages {
+        if package.region_id != region_id || !family_ids.contains(package.family_id.as_str()) {
+            continue;
+        }
+        let cycle = package
+            .cycle_code
+            .as_deref()
+            .or(package.version_label.as_deref())
+            .unwrap_or("----")
+            .to_string();
+        *counts_by_cycle.entry(cycle).or_default() += 1;
+    }
+    counts_by_cycle
+        .into_iter()
+        .map(|(cycle, count)| OfflineRegionSummaryEntry {
+            action: "available".to_string(),
+            cycle,
+            count,
         })
         .collect()
 }
@@ -16165,6 +16215,7 @@ mod tests {
                 region_id: "test".to_string(),
                 label: "TEST Charts".to_string(),
                 color_key: "class_b_d_blue".to_string(),
+                summary: Vec::new(),
                 polygon: Vec::new(),
                 label_position: OfflineRegionLatLon {
                     lat: 47.0,
@@ -16177,6 +16228,7 @@ mod tests {
                 region_id: "test".to_string(),
                 label: "TEST Plates".to_string(),
                 color_key: "class_c_magenta".to_string(),
+                summary: Vec::new(),
                 polygon: Vec::new(),
                 label_position: OfflineRegionLatLon {
                     lat: 47.0,

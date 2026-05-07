@@ -964,7 +964,7 @@ button {
   color: var(--theme-map-selection-display-fg);
 }
 
-.mapSelectionAction.isPlaceholder {
+.mapSelectionActionPlaceholder {
   visibility: hidden;
   pointer-events: none;
 }

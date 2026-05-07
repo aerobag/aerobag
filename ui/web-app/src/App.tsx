@@ -6247,22 +6247,21 @@ function MapSelectionTray(props: {
 }) {
   const { point, result, selectedItem, onSelectItem, onSelectDetail, onSelectAction } = props;
   const edgePad = thumbPixels(0.1);
-  type MapSelectionActionSlot = MapSelectionItem["actions"][number] & { placeholder?: boolean };
+  type MapSelectionActionSlot =
+    | { kind: "action"; action: MapSelectionItem["actions"][number] }
+    | { kind: "empty"; id: string };
   const actionSlots: MapSelectionActionSlot[] = selectedItem
-    ? [...selectedItem.actions, ...Array.from({ length: Math.max(0, 6 - selectedItem.actions.length) }, (_, index) => ({
-      id: `placeholder-${index}`,
-      label: "",
-      enabled: false,
-      display_only: true,
-      placeholder: true,
-    }))]
+    ? [
+      ...selectedItem.actions.map((action) => ({ kind: "action" as const, action })),
+      ...Array.from({ length: Math.max(0, 6 - selectedItem.actions.length) }, (_, index) => ({
+        kind: "empty" as const,
+        id: `empty-${index}`,
+      })),
+    ]
     : Array.from({ length: 6 }, (_, index) => ({
-      id: `placeholder-${index}`,
-      label: "",
-      enabled: false,
-      display_only: true,
-      placeholder: true,
-	    }));
+      kind: "empty" as const,
+      id: `empty-${index}`,
+    }));
   const visibleActionSlots = selectedItem?.detail_text
     ? actionSlots.slice(0, 3)
     : actionSlots.slice(0, 6);
@@ -6320,35 +6319,39 @@ function MapSelectionTray(props: {
           ) : "\u00a0"}
         </div>
         <div className="mapSelectionActionGrid">
-          {visibleActionSlots.map((action) => (
-            <button
-              key={action.id}
-              type="button"
-              className={`mapSelectionAction${action.display_only ? " isDisplayOnly" : ""}${action.placeholder ? " isPlaceholder" : ""}`}
-              data-testid={action.placeholder ? undefined : `map-selection-action-${action.id}`}
-              disabled={!action.enabled}
-              onPointerDown={stopPointer}
-              onPointerUp={stopPointer}
-              onDoubleClick={stopDoubleClick}
-              onClick={() => {
-                if (selectedItem && action.enabled && action.detail_text) {
-                  onSelectDetail(action.label, action.detail_text);
-                  return;
-                }
-                if (selectedItem && action.enabled && !action.display_only) {
-                  void onSelectAction(selectedItem, action);
-                }
-              }}
-              aria-hidden={action.placeholder ? "true" : undefined}
-              tabIndex={action.placeholder ? -1 : undefined}
-            >
-              {action.airspace_limit ? (
-                <svg className="mapSelectionAirspaceLimitGlyph" viewBox="-32 -32 64 64" aria-hidden="true">
-                  <AirspaceLimitGlyph glyph={action.airspace_limit} scale={1.45} />
-                </svg>
-              ) : action.label}
-            </button>
-          ))}
+          {visibleActionSlots.map((slot) => {
+            if (slot.kind === "empty") {
+              return <div key={slot.id} className="mapSelectionActionPlaceholder" aria-hidden="true" />;
+            }
+            const { action } = slot;
+            return (
+              <button
+                key={action.id}
+                type="button"
+                className={`mapSelectionAction${action.display_only ? " isDisplayOnly" : ""}`}
+                data-testid={`map-selection-action-${action.id}`}
+                disabled={!action.enabled}
+                onPointerDown={stopPointer}
+                onPointerUp={stopPointer}
+                onDoubleClick={stopDoubleClick}
+                onClick={() => {
+                  if (selectedItem && action.enabled && action.detail_text) {
+                    onSelectDetail(action.label, action.detail_text);
+                    return;
+                  }
+                  if (selectedItem && action.enabled && !action.display_only) {
+                    void onSelectAction(selectedItem, action);
+                  }
+                }}
+              >
+                {action.airspace_limit ? (
+                  <svg className="mapSelectionAirspaceLimitGlyph" viewBox="-32 -32 64 64" aria-hidden="true">
+                    <AirspaceLimitGlyph glyph={action.airspace_limit} scale={1.45} />
+                  </svg>
+                ) : action.label}
+              </button>
+            );
+          })}
           {selectedItem?.detail_text ? (
             <div className="mapSelectionDetailText mapSelectionInlineDetailText">{selectedItem.detail_text}</div>
           ) : null}

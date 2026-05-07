@@ -1044,7 +1044,7 @@ const WATER_MASK_NHD_LAYERS: &[(u32, &str, &str)] = &[
 const WORLD_BASEMAP_PIPELINE_VERSION: &str = "v1";
 const WORLD_BASEMAP_MIN_ZOOM: u32 = 0;
 const WORLD_BASEMAP_MAX_SOURCE_ZOOM: u32 = 4;
-const WORLD_BASEMAP_MAX_DISPLAY_ZOOM: f64 = 7.0;
+const WORLD_BASEMAP_MAX_DISPLAY_ZOOM: f64 = 8.0;
 const WORLD_BASEMAP_TILE_SIZE: u32 = 512;
 const WORLD_BASEMAP_LAND_URL: &str =
     "https://naturalearth.s3.amazonaws.com/110m_physical/ne_110m_land.zip";
@@ -16344,7 +16344,7 @@ mod tests {
         assert_eq!(world["region_id"], "world");
         assert_eq!(world["map_view"]["chart_family"], "world-basemap");
         assert_eq!(world["map_view"]["max_source_zoom"], 4);
-        assert_eq!(world["map_view"]["max_display_zoom"], 7.0);
+        assert_eq!(world["map_view"]["max_display_zoom"], 8.0);
         assert_eq!(world["map_view"]["tile_path_template"], "0/{z}/{x}/{y}.png");
 
         let shaded = entries

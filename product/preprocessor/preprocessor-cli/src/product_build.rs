@@ -42,8 +42,8 @@ use preprocessor_procedure_geometry::{
     build_procedure_geometry_records, procedure_kinds_from_lists,
 };
 use preprocessor_resource_index::{
-    write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource, ResourceIndex,
-    TileLevelRecord,
+    write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource, DefaultView,
+    ResourceIndex, TileLevelRecord,
 };
 use preprocessor_tpp::{package_native_tpp_versioned, render_native_tpp, NativeTppRunRequest};
 use preprocessor_vectors::{
@@ -524,7 +524,10 @@ fn build_fast_bundle_manifest(
 }
 
 fn static_product_task_ids(config: &ProductBuildConfig) -> Vec<String> {
-    let mut task_ids = vec!["publish-geo".to_string()];
+    let mut task_ids = vec![
+        "publish-geo".to_string(),
+        "publish-world-basemap".to_string(),
+    ];
     if include_static_terrain_products() {
         task_ids.extend(
             config
@@ -546,6 +549,9 @@ fn static_product_task_ids(config: &ProductBuildConfig) -> Vec<String> {
 fn stable_product_family_region(id: &str) -> anyhow::Result<(String, Option<String>)> {
     if id == "geo" {
         return Ok(("geo".to_string(), None));
+    }
+    if id == "world-basemap" {
+        return Ok(("world-basemap".to_string(), None));
     }
     if let Some(region_id) = id.strip_prefix("terrain-") {
         return Ok(("terrain".to_string(), Some(region_id.to_string())));
@@ -596,8 +602,42 @@ fn build_stable_bundle_package_artifact(
         source_fetched_at_utc,
         effective_date: Some(effective_date),
         expiration_date: None,
-        metadata: BTreeMap::new(),
+        metadata: stable_product_package_metadata(id),
     })
+}
+
+fn stable_product_package_metadata(id: &str) -> BTreeMap<String, serde_json::Value> {
+    if id == "world-basemap" {
+        return BTreeMap::from([
+            ("tile_format".to_string(), serde_json::json!("png")),
+            (
+                "tile_path_template".to_string(),
+                serde_json::json!("tiles/0/{z}/{x}/{y}.png"),
+            ),
+            ("tile_size".to_string(), serde_json::json!(WORLD_BASEMAP_TILE_SIZE)),
+            ("min_zoom".to_string(), serde_json::json!(WORLD_BASEMAP_MIN_ZOOM)),
+            (
+                "max_source_zoom".to_string(),
+                serde_json::json!(WORLD_BASEMAP_MAX_SOURCE_ZOOM),
+            ),
+            (
+                "max_display_zoom".to_string(),
+                serde_json::json!(WORLD_BASEMAP_MAX_DISPLAY_ZOOM),
+            ),
+            (
+                "source".to_string(),
+                serde_json::json!("Natural Earth 110m land and admin-0 boundary lines"),
+            ),
+            ("license".to_string(), serde_json::json!("public-domain")),
+            (
+                "attribution".to_string(),
+                serde_json::json!(
+                    "Made with Natural Earth. Free vector and raster map data @ naturalearthdata.com."
+                ),
+            ),
+        ]);
+    }
+    BTreeMap::new()
 }
 
 fn publish_fast_bundle_manifest(
@@ -1001,6 +1041,15 @@ const WATER_MASK_NHD_LAYERS: &[(u32, &str, &str)] = &[
         "AREASQKM >= 1 AND FTYPE IN (378,390,436,493)",
     ),
 ];
+const WORLD_BASEMAP_PIPELINE_VERSION: &str = "v1";
+const WORLD_BASEMAP_MIN_ZOOM: u32 = 0;
+const WORLD_BASEMAP_MAX_SOURCE_ZOOM: u32 = 4;
+const WORLD_BASEMAP_MAX_DISPLAY_ZOOM: f64 = 7.0;
+const WORLD_BASEMAP_TILE_SIZE: u32 = 512;
+const WORLD_BASEMAP_LAND_URL: &str =
+    "https://naturalearth.s3.amazonaws.com/110m_physical/ne_110m_land.zip";
+const WORLD_BASEMAP_BOUNDARIES_URL: &str =
+    "https://naturalearth.s3.amazonaws.com/110m_cultural/ne_110m_admin_0_boundary_lines_land.zip";
 const TERRAIN_MIN_ZOOM: u32 = 0;
 const TERRAIN_ZOOM: u32 = 10;
 const TERRAIN_TILE_SIZE: u32 = 512;
@@ -1082,6 +1131,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         BundleManifest { cycle: String },
         GeoBuild,
         GeoPublish,
+        WorldBasemapBuild,
+        WorldBasemapPublish,
         TerrainDiscovery,
         TerrainBuild { region: Region },
         TerrainPublish { region: Region },
@@ -1296,6 +1347,18 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             weight: 1,
             kind: ProductScheduledTaskKind::GeoPublish,
         });
+        pending_tasks.push(ProductScheduledTask {
+            id: "build-world-basemap".to_string(),
+            deps: vec![],
+            weight: 1,
+            kind: ProductScheduledTaskKind::WorldBasemapBuild,
+        });
+        pending_tasks.push(ProductScheduledTask {
+            id: "publish-world-basemap".to_string(),
+            deps: vec!["build-world-basemap".to_string()],
+            weight: 1,
+            kind: ProductScheduledTaskKind::WorldBasemapPublish,
+        });
         if include_static_terrain_products() {
             pending_tasks.push(ProductScheduledTask {
                 id: "terrain-discovery".to_string(),
@@ -1344,6 +1407,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             .iter()
             .map(|cycle| cycle_task_id(cycle, "bundle-manifest"))
             .chain(std::iter::once("publish-geo".to_string()))
+            .chain(std::iter::once("publish-world-basemap".to_string()))
             .collect::<Vec<_>>();
         if include_static_terrain_products() {
             current_artifacts_deps.extend(
@@ -1364,8 +1428,11 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             weight: 1,
             kind: ProductScheduledTaskKind::CurrentArtifacts,
         });
-        let mut product_unpack_deps =
-            vec!["current-artifacts".to_string(), "publish-geo".to_string()];
+        let mut product_unpack_deps = vec![
+            "current-artifacts".to_string(),
+            "publish-geo".to_string(),
+            "publish-world-basemap".to_string(),
+        ];
         if include_static_terrain_products() {
             product_unpack_deps.extend(
                 config.profile.terrain_regions().iter().map(|region| {
@@ -1933,11 +2000,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             };
                             let mut cycle_config = config.clone();
                             cycle_config.target_cycle = Some(cycle.clone());
-                            let shaded_relief_tile_levels = if include_static_terrain_products() {
-                                collect_shaded_relief_tile_levels(&task_values_snapshot, &cycle_config)?
-                            } else {
-                                Vec::new()
-                            };
+                            let static_raster_tile_levels =
+                                collect_static_raster_tile_levels(&task_values_snapshot, &cycle_config)?;
                             let stable_packages = static_product_task_ids(&cycle_config)
                                 .iter()
                                 .map(|task_id| match task_values_snapshot.get(task_id) {
@@ -1975,7 +2039,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 &cycle,
                                 &vector_had_pairs_path,
                                 &stable_packages,
-                                &shaded_relief_tile_levels,
+                                &static_raster_tile_levels,
                             )?;
                             Ok(ProductTaskCompletion {
                                 node_records: vec![normalize_node_record_paths(
@@ -2087,6 +2151,25 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     zip_size_bytes,
                                     source_version,
                                     source_fetched_at_utc: None,
+                                },
+                                completion_detail: format!("cache_hit={cache_hit}"),
+                            })
+                        }
+                        ProductScheduledTaskKind::WorldBasemapBuild => {
+                            let (zip_path, source_version, source_fetched_at_utc, tile_levels, record) =
+                                build_world_basemap_product(&config)?;
+                            let cache_hit = record.cache_hit;
+                            let (zip_sha256, zip_size_bytes) =
+                                node_output_file_detail(&record, "zip");
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![record],
+                                value: ProductTaskValue::BuiltStaticTileProduct {
+                                    zip_path,
+                                    zip_sha256,
+                                    zip_size_bytes,
+                                    source_version,
+                                    source_fetched_at_utc,
+                                    tile_levels,
                                 },
                                 completion_detail: format!("cache_hit={cache_hit}"),
                             })
@@ -2228,6 +2311,46 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 node_records: vec![],
                                 value: ProductTaskValue::PublishedStandaloneProduct {
                                     id: "geo".to_string(),
+                                    source_zip_path: built.0,
+                                    published_zip,
+                                    sha256,
+                                    size_bytes,
+                                    source_version: built.3,
+                                    source_fetched_at_utc: built.4,
+                                },
+                                completion_detail: "published".to_string(),
+                            })
+                        }
+                        ProductScheduledTaskKind::WorldBasemapPublish => {
+                            let built = match task_values_snapshot.get("build-world-basemap") {
+                                Some(ProductTaskValue::BuiltStaticTileProduct {
+                                    zip_path,
+                                    zip_sha256,
+                                    zip_size_bytes,
+                                    source_version,
+                                    source_fetched_at_utc,
+                                    ..
+                                }) => (
+                                    zip_path.clone(),
+                                    zip_sha256.clone(),
+                                    *zip_size_bytes,
+                                    source_version.clone(),
+                                    source_fetched_at_utc.clone(),
+                                ),
+                                _ => bail!("missing world basemap build output"),
+                            };
+                            let (published_zip, sha256, size_bytes) =
+                                publish_content_addressed_zip(
+                                    &config.build_root,
+                                    &built.0,
+                                    "world-basemap",
+                                    built.1.as_deref(),
+                                    built.2,
+                                )?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::PublishedStandaloneProduct {
+                                    id: "world-basemap".to_string(),
                                     source_zip_path: built.0,
                                     published_zip,
                                     sha256,
@@ -4051,15 +4174,49 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
     }
 }
 
-fn collect_shaded_relief_tile_levels(
+#[derive(Debug, Clone)]
+struct StaticRasterCatalogEntry {
+    product_id: String,
+    label: String,
+    chart_family: String,
+    tile_url_root: String,
+    tile_path_template: String,
+    tile_size: u32,
+    min_zoom: u32,
+    max_source_zoom: u32,
+    max_display_zoom: f64,
+    initial_viewport: DefaultView,
+    levels: Vec<TileLevelRecord>,
+}
+
+fn collect_static_raster_tile_levels(
     task_values: &BTreeMap<String, ProductTaskValue>,
     config: &ProductBuildConfig,
-) -> anyhow::Result<Vec<(Region, Vec<TileLevelRecord>)>> {
-    config
-        .profile
-        .terrain_regions()
-        .iter()
-        .map(|region| {
+) -> anyhow::Result<Vec<StaticRasterCatalogEntry>> {
+    let mut entries = Vec::new();
+    let world_levels = match task_values.get("build-world-basemap") {
+        Some(ProductTaskValue::BuiltStaticTileProduct { tile_levels, .. }) => tile_levels.clone(),
+        _ => bail!("missing world basemap build output"),
+    };
+    entries.push(StaticRasterCatalogEntry {
+        product_id: "world-basemap".to_string(),
+        label: "World Basemap".to_string(),
+        chart_family: "world-basemap".to_string(),
+        tile_url_root: "/world-basemap-products/world-basemap/tiles".to_string(),
+        tile_path_template: "0/{z}/{x}/{y}.png".to_string(),
+        tile_size: WORLD_BASEMAP_TILE_SIZE,
+        min_zoom: WORLD_BASEMAP_MIN_ZOOM,
+        max_source_zoom: WORLD_BASEMAP_MAX_SOURCE_ZOOM,
+        max_display_zoom: WORLD_BASEMAP_MAX_DISPLAY_ZOOM,
+        initial_viewport: DefaultView {
+            lat: 20.0,
+            lon: 0.0,
+            zoom: 1.5,
+        },
+        levels: world_levels,
+    });
+    if include_static_terrain_products() {
+        for region in config.profile.terrain_regions() {
             let region_id = region.code().to_ascii_lowercase();
             let task_id = format!("build-shaded-relief-{region_id}");
             let tile_levels = match task_values.get(&task_id) {
@@ -4068,9 +4225,26 @@ fn collect_shaded_relief_tile_levels(
                 }
                 _ => bail!("missing shaded relief build output for {}", region.code()),
             };
-            Ok((*region, tile_levels))
-        })
-        .collect()
+            entries.push(StaticRasterCatalogEntry {
+                product_id: format!("shaded-relief-{region_id}"),
+                label: String::new(),
+                chart_family: "shaded-relief".to_string(),
+                tile_url_root: String::new(),
+                tile_path_template: "0/{z}/{x}/{y}.webp".to_string(),
+                tile_size: TERRAIN_TILE_SIZE,
+                min_zoom: TERRAIN_MIN_ZOOM,
+                max_source_zoom: TERRAIN_ZOOM,
+                max_display_zoom: RASTER_BASEMAP_MAX_DISPLAY_ZOOM,
+                initial_viewport: DefaultView {
+                    lat: 0.0,
+                    lon: 0.0,
+                    zoom: 0.0,
+                },
+                levels: tile_levels,
+            });
+        }
+    }
+    Ok(entries)
 }
 
 fn build_bundle_manifest(
@@ -4179,7 +4353,7 @@ fn build_nav_kv_artifact(
     cycle: &str,
     vector_had_pairs_path: &Path,
     stable_packages: &[BundlePackageArtifact],
-    shaded_relief_tile_levels: &[(Region, Vec<TileLevelRecord>)],
+    static_raster_tile_levels: &[StaticRasterCatalogEntry],
 ) -> anyhow::Result<BuiltNavDbArtifacts> {
     let resource_index: ResourceIndex = serde_json::from_slice(
         &fs::read(resource_index_path)
@@ -4190,14 +4364,10 @@ fn build_nav_kv_artifact(
     package_artifacts.extend(stable_packages.iter().cloned());
     let package_index_json = serde_json::to_string(&package_artifacts)
         .context("failed to encode nav-db package inputs")?;
-    let shaded_relief_json = shaded_relief_tile_levels
+    let static_raster_json = static_raster_tile_levels
         .iter()
-        .map(|(region, levels)| {
-            format!(
-                "{}:{}",
-                region.code().to_ascii_lowercase(),
-                serde_json::to_string(levels).unwrap_or_default()
-            )
+        .map(|entry| {
+            serde_json::to_string(&(entry.product_id.as_str(), &entry.levels)).unwrap_or_default()
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -4220,8 +4390,8 @@ fn build_nav_kv_artifact(
             hash_text(&package_index_json),
         ),
         (
-            "shaded_relief_tile_levels".to_string(),
-            hash_text(&shaded_relief_json),
+            "static_raster_tile_levels".to_string(),
+            hash_text(&static_raster_json),
         ),
         ("nav_kv_page_bytes".to_string(), (64 * 1024).to_string()),
         (
@@ -4250,7 +4420,7 @@ fn build_nav_kv_artifact(
                     build_chart_coverage_polygon_sets(&config.chart_cutline_root, &resource_index)?;
                 let chart_catalog = build_nav_kv_chart_catalog(
                     &resource_index,
-                    shaded_relief_tile_levels,
+                    static_raster_tile_levels,
                     &chart_coverage_polygon_sets,
                 );
                 let chart_catalog_bytes = serde_json::to_vec(&chart_catalog)
@@ -4412,7 +4582,7 @@ fn bundle_package_artifact_from_resource_package(
 
 fn build_nav_kv_chart_catalog(
     resource_index: &ResourceIndex,
-    shaded_relief_tile_levels: &[(Region, Vec<TileLevelRecord>)],
+    static_raster_tile_levels: &[StaticRasterCatalogEntry],
     chart_coverage_polygon_sets: &BTreeMap<String, ChartCoveragePolygonSetRecord>,
 ) -> serde_json::Value {
     let mut collections = resource_index
@@ -4484,9 +4654,9 @@ fn build_nav_kv_chart_catalog(
             })
         })
         .collect::<Vec<_>>();
-    collections.extend(build_nav_kv_shaded_relief_catalog_entries(
+    collections.extend(build_nav_kv_static_raster_catalog_entries(
         resource_index,
-        shaded_relief_tile_levels,
+        static_raster_tile_levels,
     ));
     serde_json::Value::Array(collections)
 }
@@ -4876,18 +5046,37 @@ fn shortest_world_delta(delta: f64, world_size: f64) -> f64 {
     delta - (delta / world_size).round() * world_size
 }
 
-fn build_nav_kv_shaded_relief_catalog_entries(
+fn build_nav_kv_static_raster_catalog_entries(
     resource_index: &ResourceIndex,
-    shaded_relief_tile_levels: &[(Region, Vec<TileLevelRecord>)],
+    static_raster_tile_levels: &[StaticRasterCatalogEntry],
 ) -> Vec<serde_json::Value> {
-    shaded_relief_tile_levels
+    static_raster_tile_levels
         .iter()
-        .map(|(region, tile_levels)| {
-            let region_id = region.code().to_ascii_lowercase();
-            let product_id = format!("shaded-relief-{region_id}");
-            let region_display_name = region_display_name(resource_index, &region_id);
-            let initial_viewport = default_view_for_static_region(resource_index, *region);
-            let levels = tile_levels
+        .map(|entry| {
+            let (label, region_id, initial_viewport, tile_url_root) =
+                if let Some(region_id) = entry.product_id.strip_prefix("shaded-relief-") {
+                    let region_display_name = region_display_name(resource_index, region_id);
+                    let region = Region::ALL
+                        .iter()
+                        .copied()
+                        .find(|region| region.code().eq_ignore_ascii_case(region_id))
+                        .unwrap_or(Region::Nw);
+                    (
+                        format!("{region_display_name} Shaded Relief"),
+                        serde_json::Value::String(region_id.to_string()),
+                        default_view_for_static_region(resource_index, region),
+                        format!("/shaded-relief-products/{}/tiles", entry.product_id),
+                    )
+                } else {
+                    (
+                        entry.label.clone(),
+                        serde_json::Value::Null,
+                        entry.initial_viewport.clone(),
+                        entry.tile_url_root.clone(),
+                    )
+                };
+            let levels = entry
+                .levels
                 .iter()
                 .map(|level| {
                     serde_json::json!({
@@ -4900,21 +5089,23 @@ fn build_nav_kv_shaded_relief_catalog_entries(
                 })
                 .collect::<Vec<_>>();
             serde_json::json!({
-                "id": product_id,
-                "label": format!("{region_display_name} Shaded Relief"),
+                "id": entry.product_id.clone(),
+                "label": label.clone(),
                 "region_id": region_id,
                 "map_view": {
-                    "chart_family": "shaded-relief",
-                    "chart_name": format!("{region_display_name} Shaded Relief"),
+                    "chart_family": entry.chart_family.clone(),
+                    "chart_name": label,
                     "chart_index": 0,
                     "tile_root": "tiles",
-                    "tile_url_root": format!("/shaded-relief-products/{product_id}/tiles"),
-                    "tile_path_template": "0/{z}/{x}/{y}.webp",
-                    "tile_size": TERRAIN_TILE_SIZE,
-                    "min_zoom": TERRAIN_MIN_ZOOM,
-                    "max_zoom": RASTER_BASEMAP_MAX_DISPLAY_ZOOM,
+                    "tile_url_root": tile_url_root,
+                    "tile_path_template": entry.tile_path_template.clone(),
+                    "tile_size": entry.tile_size,
+                    "min_zoom": entry.min_zoom,
+                    "max_source_zoom": entry.max_source_zoom,
+                    "max_display_zoom": entry.max_display_zoom,
+                    "max_zoom": entry.max_display_zoom,
                     "storage_kind": "static_product",
-                    "package_name": product_id,
+                    "package_name": entry.product_id.clone(),
                     "initial_viewport": {
                         "lat": initial_viewport.lat,
                         "lon": initial_viewport.lon,
@@ -8995,6 +9186,281 @@ fn water_mask_product_inputs(region: Region) -> anyhow::Result<BTreeMap<String, 
     ]))
 }
 
+fn build_world_basemap_product(
+    config: &ProductBuildConfig,
+) -> anyhow::Result<(
+    PathBuf,
+    String,
+    Option<String>,
+    Vec<TileLevelRecord>,
+    NodeRecord,
+)> {
+    let input_dir = artifact_root_from_build_root(&config.build_root)
+        .join("private-work")
+        .join("world-basemap")
+        .join("input");
+    fs::create_dir_all(&input_dir)
+        .with_context(|| format!("failed to create {}", input_dir.display()))?;
+
+    let provenance_dir = config
+        .build_root
+        .join("meta")
+        .join("provenance")
+        .join("world-basemap");
+    let fetch_cache = static_source_fetch_cache_config(config)?;
+    let requests = [
+        PrefetchRequest::new(WORLD_BASEMAP_LAND_URL).with_logical_file_name("ne_110m_land.zip"),
+        PrefetchRequest::new(WORLD_BASEMAP_BOUNDARIES_URL)
+            .with_logical_file_name("ne_110m_admin_0_boundary_lines_land.zip"),
+    ];
+    prefetch_requests_with_provenance(
+        &requests,
+        &input_dir,
+        config.fetch_jobs,
+        Some(&fetch_cache),
+        &provenance_dir,
+        "world-basemap",
+    )?;
+
+    let land_shp = input_dir.join("ne_110m_land.shp");
+    let boundaries_shp = input_dir.join("ne_110m_admin_0_boundary_lines_land.shp");
+    if !land_shp.is_file() {
+        bail!("world basemap fetch missing {}", land_shp.display());
+    }
+    if !boundaries_shp.is_file() {
+        bail!("world basemap fetch missing {}", boundaries_shp.display());
+    }
+    let source_fingerprint = world_basemap_source_fingerprint(&land_shp, &boundaries_shp)?;
+    let source_fetched_at_utc = source_fetched_at_utc_for_urls(
+        &fetch_cache,
+        &[WORLD_BASEMAP_LAND_URL, WORLD_BASEMAP_BOUNDARIES_URL],
+    )?;
+    let version_label = fast_product_version_label(&source_fingerprint);
+    let inputs = world_basemap_product_inputs(&source_fingerprint)?;
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, "static-world-basemap")?,
+        "static-world-basemap",
+        &inputs,
+    )?;
+    let output_dir = prepared.dir.join("output");
+    let manifest_path = output_dir.join("manifest.json");
+    let zip_path = output_dir.join(format!("world_basemap_{version_label}.zip"));
+    if let Some(record) =
+        try_load_node_record(&prepared, &[zip_path.clone(), manifest_path.clone()])?
+    {
+        let tile_levels = read_static_tile_manifest_levels(&manifest_path)?;
+        return Ok((
+            zip_path,
+            version_label,
+            source_fetched_at_utc,
+            tile_levels,
+            record,
+        ));
+    }
+    let _build_lock =
+        match claim_or_wait_for_node(&prepared, &[zip_path.clone(), manifest_path.clone()])? {
+            NodeCacheState::CacheHit(record) => {
+                let tile_levels = read_static_tile_manifest_levels(&manifest_path)?;
+                return Ok((
+                    zip_path,
+                    version_label,
+                    source_fetched_at_utc,
+                    tile_levels,
+                    record,
+                ));
+            }
+            NodeCacheState::Build(lock) => lock,
+        };
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    if output_dir.exists() {
+        fs::remove_dir_all(&output_dir)
+            .with_context(|| format!("failed to clear {}", output_dir.display()))?;
+    }
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
+    build_world_basemap_tiles(
+        &land_shp,
+        &boundaries_shp,
+        &output_dir,
+        &version_label,
+        source_fetched_at_utc.as_deref(),
+    )?;
+    let tile_levels = read_static_tile_manifest_levels(&manifest_path)?;
+    zip_directory_deterministic(&zip_path, &output_dir, &["manifest.json", "tiles"])?;
+    let outputs = BTreeMap::from([
+        (
+            "manifest".to_string(),
+            relative_artifact_path(&manifest_path, &config.build_root),
+        ),
+        (
+            "zip".to_string(),
+            relative_artifact_path(&zip_path, &config.build_root),
+        ),
+    ]);
+    let record = write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok((
+        zip_path,
+        version_label,
+        source_fetched_at_utc,
+        tile_levels,
+        record,
+    ))
+}
+
+fn world_basemap_product_inputs(
+    source_fingerprint: &str,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    Ok(BTreeMap::from([
+        ("product_id".to_string(), "world-basemap".to_string()),
+        ("min_zoom".to_string(), WORLD_BASEMAP_MIN_ZOOM.to_string()),
+        (
+            "max_source_zoom".to_string(),
+            WORLD_BASEMAP_MAX_SOURCE_ZOOM.to_string(),
+        ),
+        (
+            "max_display_zoom".to_string(),
+            WORLD_BASEMAP_MAX_DISPLAY_ZOOM.to_string(),
+        ),
+        ("tile_size".to_string(), WORLD_BASEMAP_TILE_SIZE.to_string()),
+        (
+            "source_fingerprint".to_string(),
+            source_fingerprint.to_string(),
+        ),
+        (
+            "world_basemap_pipeline".to_string(),
+            WORLD_BASEMAP_PIPELINE_VERSION.to_string(),
+        ),
+        (
+            "world_basemap_script".to_string(),
+            hash_text(WORLD_BASEMAP_TILE_SCRIPT),
+        ),
+    ]))
+}
+
+fn world_basemap_source_fingerprint(
+    land_shp: &Path,
+    boundaries_shp: &Path,
+) -> anyhow::Result<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"world-basemap-v1");
+    hasher.update(WORLD_BASEMAP_LAND_URL.as_bytes());
+    hasher.update(hash_shapefile_family(land_shp)?.as_bytes());
+    hasher.update(WORLD_BASEMAP_BOUNDARIES_URL.as_bytes());
+    hasher.update(hash_shapefile_family(boundaries_shp)?.as_bytes());
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn hash_shapefile_family(shp_path: &Path) -> anyhow::Result<String> {
+    let mut hasher = Sha256::new();
+    let stem = shp_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .with_context(|| format!("invalid shapefile name {}", shp_path.display()))?;
+    let parent = shp_path
+        .parent()
+        .with_context(|| format!("shapefile path has no parent {}", shp_path.display()))?;
+    for extension in ["shp", "shx", "dbf", "prj"] {
+        let path = parent.join(format!("{stem}.{extension}"));
+        if !path.is_file() {
+            bail!("missing shapefile component {}", path.display());
+        }
+        hasher.update(extension.as_bytes());
+        hasher.update([0]);
+        hasher.update(hash_file(&path)?.as_bytes());
+        hasher.update([0xff]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn source_fetched_at_utc_for_urls(
+    fetch_cache: &FetchCacheConfig,
+    urls: &[&str],
+) -> anyhow::Result<Option<String>> {
+    let layout = CacheLayout::new(&fetch_cache.root);
+    let mut fetched_times = Vec::new();
+    for url in urls {
+        let metadata_path = layout.http_metadata_path(url);
+        if !metadata_path.is_file() {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_slice(
+            &fs::read(&metadata_path)
+                .with_context(|| format!("failed to read {}", metadata_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
+        if let Some(fetched_at) = value.get("fetched_at_utc").and_then(|value| value.as_str()) {
+            fetched_times.push(fetched_at.to_string());
+            continue;
+        }
+        if let Ok(modified) = fs::metadata(&metadata_path).and_then(|metadata| metadata.modified())
+        {
+            fetched_times.push(
+                DateTime::<Utc>::from(modified)
+                    .format("%Y-%m-%dT%H:%M:%SZ")
+                    .to_string(),
+            );
+        }
+    }
+    fetched_times.sort();
+    Ok(fetched_times.into_iter().max())
+}
+
+fn build_world_basemap_tiles(
+    land_shp: &Path,
+    boundaries_shp: &Path,
+    output_dir: &Path,
+    version_label: &str,
+    source_fetched_at_utc: Option<&str>,
+) -> anyhow::Result<()> {
+    let script_path = output_dir.join("build_world_basemap_tiles.py");
+    fs::write(&script_path, WORLD_BASEMAP_TILE_SCRIPT)
+        .with_context(|| format!("failed to write {}", script_path.display()))?;
+    let mut command = Command::new("python3");
+    command
+        .arg(&script_path)
+        .arg("--land-shp")
+        .arg(land_shp)
+        .arg("--boundaries-shp")
+        .arg(boundaries_shp)
+        .arg("--output-dir")
+        .arg(output_dir)
+        .arg("--version-label")
+        .arg(version_label)
+        .arg("--min-zoom")
+        .arg(WORLD_BASEMAP_MIN_ZOOM.to_string())
+        .arg("--max-source-zoom")
+        .arg(WORLD_BASEMAP_MAX_SOURCE_ZOOM.to_string())
+        .arg("--max-display-zoom")
+        .arg(WORLD_BASEMAP_MAX_DISPLAY_ZOOM.to_string())
+        .arg("--tile-size")
+        .arg(WORLD_BASEMAP_TILE_SIZE.to_string());
+    if let Some(value) = source_fetched_at_utc {
+        command.arg("--source-fetched-at-utc").arg(value);
+    }
+    let output = command
+        .output()
+        .with_context(|| format!("failed to run {}", script_path.display()))?;
+    if !output.status.success() {
+        bail!(
+            "world basemap tile builder failed: {}\n{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+    fs::remove_file(&script_path)
+        .with_context(|| format!("failed to remove {}", script_path.display()))?;
+    Ok(())
+}
+
 fn build_shaded_relief_product(
     config: &ProductBuildConfig,
     region: Region,
@@ -10438,6 +10904,163 @@ fn collect_zip_files(
     }
     Ok(())
 }
+
+const WORLD_BASEMAP_TILE_SCRIPT: &str = r#"
+import argparse
+import json
+import math
+from pathlib import Path
+
+from osgeo import ogr
+from PIL import Image, ImageDraw
+
+RADIUS = 6378137.0
+ORIGIN_SHIFT = math.pi * RADIUS
+WEB_MERCATOR_LIMIT = 85.05112878
+OCEAN = (187, 207, 218)
+LAND = (226, 226, 212)
+BOUNDARY = (148, 148, 128)
+
+def mercator(lon, lat):
+    lat = max(min(lat, WEB_MERCATOR_LIMIT), -WEB_MERCATOR_LIMIT)
+    mx = lon * ORIGIN_SHIFT / 180.0
+    my = math.log(math.tan((90.0 + lat) * math.pi / 360.0)) * RADIUS
+    return mx, my
+
+def tile_bounds(x, y_xyz, z, tile_size):
+    resolution = (2.0 * math.pi * RADIUS) / (tile_size * (2 ** z))
+    minx = x * tile_size * resolution - ORIGIN_SHIFT
+    maxx = (x + 1) * tile_size * resolution - ORIGIN_SHIFT
+    maxy = ORIGIN_SHIFT - y_xyz * tile_size * resolution
+    miny = ORIGIN_SHIFT - (y_xyz + 1) * tile_size * resolution
+    return minx, miny, maxx, maxy
+
+def pixel_for_lonlat(lon, lat, bounds, tile_size):
+    mx, my = mercator(lon, lat)
+    minx, miny, maxx, maxy = bounds
+    return (
+        (mx - minx) / (maxx - minx) * tile_size,
+        (maxy - my) / (maxy - miny) * tile_size,
+    )
+
+def load_geometries(path):
+    dataset = ogr.Open(str(path))
+    if dataset is None:
+        raise RuntimeError(f'failed to open {path}')
+    layer = dataset.GetLayer(0)
+    geometries = []
+    for feature in layer:
+        geom = feature.GetGeometryRef()
+        if geom is not None:
+            geometries.append(geom.Clone())
+    return geometries
+
+def ring_points(ring, bounds, tile_size):
+    points = []
+    for index in range(ring.GetPointCount()):
+        lon, lat, _z = ring.GetPoint(index)
+        points.append(pixel_for_lonlat(lon, lat, bounds, tile_size))
+    return points
+
+def draw_polygon(draw, geom, bounds, tile_size):
+    if geom.GetGeometryName().upper() == 'MULTIPOLYGON':
+        for index in range(geom.GetGeometryCount()):
+            draw_polygon(draw, geom.GetGeometryRef(index), bounds, tile_size)
+        return
+    if geom.GetGeometryName().upper() != 'POLYGON':
+        return
+    if geom.GetGeometryCount() == 0:
+        return
+    exterior = ring_points(geom.GetGeometryRef(0), bounds, tile_size)
+    if len(exterior) >= 3:
+        draw.polygon(exterior, fill=LAND)
+    for ring_index in range(1, geom.GetGeometryCount()):
+        hole = ring_points(geom.GetGeometryRef(ring_index), bounds, tile_size)
+        if len(hole) >= 3:
+            draw.polygon(hole, fill=OCEAN)
+
+def draw_line(draw, geom, bounds, tile_size, width):
+    name = geom.GetGeometryName().upper()
+    if name == 'MULTILINESTRING':
+        for index in range(geom.GetGeometryCount()):
+            draw_line(draw, geom.GetGeometryRef(index), bounds, tile_size, width)
+        return
+    if name != 'LINESTRING':
+        return
+    points = ring_points(geom, bounds, tile_size)
+    if len(points) >= 2:
+        draw.line(points, fill=BOUNDARY, width=width, joint='curve')
+
+def render_tile(land_geoms, boundary_geoms, output_path, x, y_xyz, z, tile_size):
+    bounds = tile_bounds(x, y_xyz, z, tile_size)
+    image = Image.new('RGB', (tile_size, tile_size), OCEAN)
+    draw = ImageDraw.Draw(image)
+    for geom in land_geoms:
+        draw_polygon(draw, geom, bounds, tile_size)
+    line_width = 1 if z < 3 else 2
+    for geom in boundary_geoms:
+        draw_line(draw, geom, bounds, tile_size, line_width)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(output_path, 'PNG', optimize=True)
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--land-shp', required=True)
+    parser.add_argument('--boundaries-shp', required=True)
+    parser.add_argument('--output-dir', required=True)
+    parser.add_argument('--version-label', required=True)
+    parser.add_argument('--min-zoom', type=int, required=True)
+    parser.add_argument('--max-source-zoom', type=int, required=True)
+    parser.add_argument('--max-display-zoom', type=float, required=True)
+    parser.add_argument('--tile-size', type=int, required=True)
+    parser.add_argument('--source-fetched-at-utc')
+    args = parser.parse_args()
+
+    output_dir = Path(args.output_dir)
+    land_geoms = load_geometries(Path(args.land_shp))
+    boundary_geoms = load_geometries(Path(args.boundaries_shp))
+    levels = []
+    for z in range(args.min_zoom, args.max_source_zoom + 1):
+        tiles_per_side = 1 << z
+        for x in range(tiles_per_side):
+            for y_xyz in range(tiles_per_side):
+                y_tms = tiles_per_side - 1 - y_xyz
+                output_path = output_dir / 'tiles' / '0' / str(z) / str(x) / f'{y_tms}.png'
+                render_tile(land_geoms, boundary_geoms, output_path, x, y_xyz, z, args.tile_size)
+        levels.append({
+            'zoom': z,
+            'tile_count': tiles_per_side * tiles_per_side,
+            'x_min': 0,
+            'x_max': tiles_per_side - 1,
+            'y_tms_min': 0,
+            'y_tms_max': tiles_per_side - 1,
+        })
+
+    manifest = {
+        'schema_version': 1,
+        'product': 'world-basemap',
+        'version_label': args.version_label,
+        'source': 'Natural Earth 110m land and admin-0 boundary lines',
+        'source_urls': [
+            'https://naturalearth.s3.amazonaws.com/110m_physical/ne_110m_land.zip',
+            'https://naturalearth.s3.amazonaws.com/110m_cultural/ne_110m_admin_0_boundary_lines_land.zip',
+        ],
+        'source_fetched_at_utc': args.source_fetched_at_utc,
+        'license': 'public-domain',
+        'attribution': 'Made with Natural Earth. Free vector and raster map data @ naturalearthdata.com.',
+        'min_zoom': args.min_zoom,
+        'max_source_zoom': args.max_source_zoom,
+        'max_display_zoom': args.max_display_zoom,
+        'tile_size': args.tile_size,
+        'tile_format': 'png',
+        'tile_path_template': 'tiles/0/{z}/{x}/{y}.png',
+        'levels': levels,
+    }
+    (output_dir / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+
+if __name__ == '__main__':
+    main()
+"#;
 
 const TERRAIN_TILE_SCRIPT: &str = r#"
 import argparse, gzip, json, math, struct
@@ -15658,24 +16281,71 @@ mod tests {
 
     #[test]
     fn nav_kv_chart_catalog_includes_shaded_relief_static_products() {
-        let shaded_relief_levels = vec![(
-            Region::Nw,
-            vec![TileLevelRecord {
-                zoom: 10,
-                x_min: 156,
-                x_max: 219,
-                y_tms_min: 636,
-                y_tms_max: 676,
-            }],
-        )];
+        let static_raster_entries = vec![
+            StaticRasterCatalogEntry {
+                product_id: "world-basemap".to_string(),
+                label: "World Basemap".to_string(),
+                chart_family: "world-basemap".to_string(),
+                tile_url_root: "/world-basemap-products/world-basemap/tiles".to_string(),
+                tile_path_template: "0/{z}/{x}/{y}.png".to_string(),
+                tile_size: WORLD_BASEMAP_TILE_SIZE,
+                min_zoom: WORLD_BASEMAP_MIN_ZOOM,
+                max_source_zoom: WORLD_BASEMAP_MAX_SOURCE_ZOOM,
+                max_display_zoom: WORLD_BASEMAP_MAX_DISPLAY_ZOOM,
+                initial_viewport: DefaultView {
+                    lat: 20.0,
+                    lon: 0.0,
+                    zoom: 1.5,
+                },
+                levels: vec![TileLevelRecord {
+                    zoom: 4,
+                    x_min: 0,
+                    x_max: 15,
+                    y_tms_min: 0,
+                    y_tms_max: 15,
+                }],
+            },
+            StaticRasterCatalogEntry {
+                product_id: "shaded-relief-nw".to_string(),
+                label: String::new(),
+                chart_family: "shaded-relief".to_string(),
+                tile_url_root: String::new(),
+                tile_path_template: "0/{z}/{x}/{y}.webp".to_string(),
+                tile_size: TERRAIN_TILE_SIZE,
+                min_zoom: TERRAIN_MIN_ZOOM,
+                max_source_zoom: TERRAIN_ZOOM,
+                max_display_zoom: RASTER_BASEMAP_MAX_DISPLAY_ZOOM,
+                initial_viewport: DefaultView {
+                    lat: 0.0,
+                    lon: 0.0,
+                    zoom: 0.0,
+                },
+                levels: vec![TileLevelRecord {
+                    zoom: 10,
+                    x_min: 156,
+                    x_max: 219,
+                    y_tms_min: 636,
+                    y_tms_max: 676,
+                }],
+            },
+        ];
         let catalog = build_nav_kv_chart_catalog(
             &minimal_resource_index(),
-            &shaded_relief_levels,
+            &static_raster_entries,
             &BTreeMap::new(),
         );
         let entries = catalog
             .as_array()
             .expect("chart catalog should be an array");
+        let world = entries
+            .iter()
+            .find(|entry| entry["id"] == "world-basemap")
+            .expect("world basemap entry");
+        assert_eq!(world["map_view"]["chart_family"], "world-basemap");
+        assert_eq!(world["map_view"]["max_source_zoom"], 4);
+        assert_eq!(world["map_view"]["max_display_zoom"], 7.0);
+        assert_eq!(world["map_view"]["tile_path_template"], "0/{z}/{x}/{y}.png");
+
         let shaded = entries
             .iter()
             .find(|entry| entry["id"] == "shaded-relief-nw")

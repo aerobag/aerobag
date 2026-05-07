@@ -252,9 +252,8 @@ pub struct OfflinePackagesSyncProgress {
     pub planned_fetch_artifact_ids: BTreeSet<String>,
     #[serde(default)]
     pub completed_fetch_artifact_ids: BTreeSet<String>,
-    pub current_fetch_artifact_id: Option<String>,
     #[serde(default)]
-    pub current_fetch_bytes: u64,
+    pub active_fetch_bytes_by_artifact_id: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1525,10 +1524,12 @@ fn sync_progress_loaded_bytes(
     if progress.completed_fetch_artifact_ids.contains(artifact_id) {
         return size;
     }
-    if progress.current_fetch_artifact_id.as_deref() == Some(artifact_id) {
-        return progress.current_fetch_bytes.min(size);
-    }
-    0
+    progress
+        .active_fetch_bytes_by_artifact_id
+        .get(artifact_id)
+        .copied()
+        .unwrap_or(0)
+        .min(size)
 }
 
 fn package_size_bytes(pkg: &BundlePackageArtifact, installed: Option<&InstalledArtifact>) -> u64 {
@@ -2275,8 +2276,10 @@ mod tests {
             Some(&OfflinePackagesSyncProgress {
                 planned_fetch_artifact_ids: BTreeSet::from(["NW_SEC_2605".to_string()]),
                 completed_fetch_artifact_ids: BTreeSet::new(),
-                current_fetch_artifact_id: Some("NW_SEC_2605".to_string()),
-                current_fetch_bytes: 1_000,
+                active_fetch_bytes_by_artifact_id: BTreeMap::from([(
+                    "NW_SEC_2605".to_string(),
+                    1_000,
+                )]),
             }),
         );
         let nw = offline_packages_ui_row(
@@ -2309,8 +2312,10 @@ mod tests {
             Some(&OfflinePackagesSyncProgress {
                 planned_fetch_artifact_ids: BTreeSet::from(["NW_SEC_2605".to_string()]),
                 completed_fetch_artifact_ids: BTreeSet::new(),
-                current_fetch_artifact_id: Some("NW_SEC_2605".to_string()),
-                current_fetch_bytes: 1_000,
+                active_fetch_bytes_by_artifact_id: BTreeMap::from([(
+                    "NW_SEC_2605".to_string(),
+                    1_000,
+                )]),
             }),
         );
         assert_eq!(

@@ -1896,6 +1896,7 @@ private fun WireChartFamilyId.toUi() = when (this) {
     WireChartFamilyId.EnrL -> MapChartFamily.EnrL
     WireChartFamilyId.EnrH -> MapChartFamily.EnrH
     WireChartFamilyId.ShadedRelief -> MapChartFamily.ShadedRelief
+    WireChartFamilyId.WorldBasemap -> MapChartFamily.WorldBasemap
 }
 
 private fun MapChartFamily.toWireName(): String = when (this) {
@@ -1904,6 +1905,7 @@ private fun MapChartFamily.toWireName(): String = when (this) {
     MapChartFamily.EnrL -> "enr-l"
     MapChartFamily.EnrH -> "enr-h"
     MapChartFamily.ShadedRelief -> "shaded-relief"
+    MapChartFamily.WorldBasemap -> "world-basemap"
 }
 
 private fun WireRegionId.toCode() = when (this) {
@@ -3007,6 +3009,7 @@ private fun PackageId.toWire() = WirePackageId(
         "enr-l" -> WireChartFamilyId.EnrL
         "enr-h" -> WireChartFamilyId.EnrH
         "shaded-relief" -> WireChartFamilyId.ShadedRelief
+        "world-basemap" -> WireChartFamilyId.WorldBasemap
         else -> error("Unsupported family: $family")
     },
     cycle = cycle,
@@ -3020,6 +3023,7 @@ private fun WirePackageId.toUi() = PackageId(
         WireChartFamilyId.EnrL -> "enr-l"
         WireChartFamilyId.EnrH -> "enr-h"
         WireChartFamilyId.ShadedRelief -> "shaded-relief"
+        WireChartFamilyId.WorldBasemap -> "world-basemap"
     },
     cycle = cycle,
 )

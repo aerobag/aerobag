@@ -784,10 +784,8 @@ private data class OfflinePackagesSyncSummary(
 private data class OfflinePackagesSyncProgressWire(
     @SerialName("completed_fetch_artifact_ids")
     val completedFetchArtifactIds: Set<String> = emptySet(),
-    @SerialName("current_fetch_artifact_id")
-    val currentFetchArtifactId: String? = null,
-    @SerialName("current_fetch_bytes")
-    val currentFetchBytes: Long = 0,
+    @SerialName("active_fetch_bytes_by_artifact_id")
+    val activeFetchBytesByArtifactId: Map<String, Long> = emptyMap(),
 )
 
 @Serializable
@@ -1216,6 +1214,7 @@ private fun chartFamilyIconResId(chartFamily: MapChartFamily): Int = when (chart
     MapChartFamily.EnrL -> R.drawable.ifr_l_icon
     MapChartFamily.EnrH -> R.drawable.ifr_h_icon
     MapChartFamily.ShadedRelief -> R.drawable.shaded_relief_icon
+    MapChartFamily.WorldBasemap -> R.drawable.sectional_icon
 }
 
 private fun chartFamilyId(chartFamily: MapChartFamily): String = when (chartFamily) {
@@ -1224,6 +1223,7 @@ private fun chartFamilyId(chartFamily: MapChartFamily): String = when (chartFami
     MapChartFamily.EnrL -> "enr-l"
     MapChartFamily.EnrH -> "enr-h"
     MapChartFamily.ShadedRelief -> "shaded-relief"
+    MapChartFamily.WorldBasemap -> "world-basemap"
 }
 
 @DrawableRes
@@ -3928,16 +3928,13 @@ private suspend fun syncOfflinePackages(
     fun activeFetchBytes(): Long = activeFetchBytesByArtifactId.values.sum()
     suspend fun reportProgress(
         message: String,
-        currentArtifactId: String? = null,
-        currentBytes: Long? = null,
     ) {
         progressMutex.withLock {
             onProgress(
                 message,
                 OfflinePackagesSyncProgressWire(
                     completedFetchArtifactIds = completedFetchArtifactIds.toSet(),
-                    currentFetchArtifactId = currentArtifactId,
-                    currentFetchBytes = currentBytes ?: currentArtifactId?.let { activeFetchBytesByArtifactId[it] } ?: 0L,
+                    activeFetchBytesByArtifactId = activeFetchBytesByArtifactId.toMap(),
                 ),
             )
         }
@@ -3971,7 +3968,7 @@ private suspend fun syncOfflinePackages(
                         }
                         runCatching {
                             val fetchStartMs = SystemClock.elapsedRealtime()
-                            reportProgress("Fetching package ${index + 1}/${plan.fetch.size}: ${pkg.filename}", artifactId)
+                            reportProgress("Fetching package ${index + 1}/${plan.fetch.size}: ${pkg.filename}")
                             check(packageSourceBaseUrl.isNotBlank()) { "package source URL is blank" }
                             val sourceUrl = resolvePackageSourceUrl(pkg.relativePath, packageSourceBaseUrl)
                             val kind = installedPackageKindForFamilyId(pkg.familyId)
@@ -4008,8 +4005,6 @@ private suspend fun syncOfflinePackages(
                                                 aggregateFetchBytes,
                                                 totalFetchBytes,
                                             ),
-                                            artifactId,
-                                            packageDownloadedBytes,
                                         )
                                     }
                                 },

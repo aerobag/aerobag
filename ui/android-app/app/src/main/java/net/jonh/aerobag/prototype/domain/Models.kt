@@ -458,6 +458,7 @@ enum class MapChartFamily {
     EnrL,
     EnrH,
     ShadedRelief,
+    WorldBasemap,
 }
 
 enum class TileStorageKind {

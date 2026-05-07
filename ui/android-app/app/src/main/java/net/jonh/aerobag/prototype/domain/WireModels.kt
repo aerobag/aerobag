@@ -452,6 +452,9 @@ enum class WireChartFamilyId {
 
     @SerialName("shaded-relief")
     ShadedRelief,
+
+    @SerialName("world-basemap")
+    WorldBasemap,
 }
 
 @Serializable

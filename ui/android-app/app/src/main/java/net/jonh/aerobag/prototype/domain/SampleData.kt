@@ -265,6 +265,7 @@ private fun WireChartFamilyId.toUi() = when (this) {
     WireChartFamilyId.EnrL -> MapChartFamily.EnrL
     WireChartFamilyId.EnrH -> MapChartFamily.EnrH
     WireChartFamilyId.ShadedRelief -> MapChartFamily.ShadedRelief
+    WireChartFamilyId.WorldBasemap -> MapChartFamily.WorldBasemap
 }
 
 private fun WireTileStorageKind.toUi() = when (this) {

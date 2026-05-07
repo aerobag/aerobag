@@ -323,6 +323,7 @@ fun renderTileKey(tile: RenderTile): RenderTileKey =
     )
 
 private fun chartFamilyRenderPriority(chartFamily: MapChartFamily): Int = when (chartFamily) {
+    MapChartFamily.WorldBasemap -> -20
     MapChartFamily.ShadedRelief -> -10
     MapChartFamily.Sec -> 0
     MapChartFamily.Tac -> 1

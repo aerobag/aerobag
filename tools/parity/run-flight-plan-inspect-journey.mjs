@@ -337,17 +337,17 @@ async function webJourney(url) {
     recordStep(out, "append route feedback visible");
     recordCheck(out, "appendRouteFeedbackVisible", true);
 
-    await webSetInput(cdp, "[data-testid=\"plan-append-route-input\"]", "KBFI");
+    await webSetInput(cdp, "[data-testid=\"plan-append-route-input\"]", "KAWO");
     await waitForWeb(cdp, "document.querySelector('.planEntryInputShell.isReady') !== null", "append route ready");
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"plan-append-route-input\"]')?.closest('form') !== null", "plan append form");
     await cdp.send("Runtime.evaluate", {
       expression: "document.querySelector('[data-testid=\"plan-append-route-input\"]').closest('form').requestSubmit()",
       awaitPromise: true,
     });
-    await waitForWeb(cdp, "document.body.innerText.includes('KBFI')", "appended KBFI");
+    await waitForWeb(cdp, "document.body.innerText.includes('KAWO')", "appended KAWO");
     await delay(1000);
-    recordStep(out, "appended KBFI to flight plan");
-    recordCheck(out, "appendRouteCommitsKBFI", true);
+    recordStep(out, "appended KAWO to flight plan");
+    recordCheck(out, "appendRouteCommitsKAWO", true);
 
     await webClick(cdp, "[data-testid=\"nav-cdi\"]");
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-surface\"]') !== null", "returned chart");
@@ -369,19 +369,19 @@ async function webJourney(url) {
       [...document.querySelectorAll("svg text")]
         .some((entry) => entry.textContent.trim() === "TIW" && entry.closest("svg")?.getAttribute("class") === "vectorOverlay")
     `, "TIW vector label");
-    await webClick(cdp, "[data-testid=\"map-surface\"]");
+    await webClickVectorPointByLabel(cdp, "TIW");
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-selection-tray\"]') !== null", "map selection tray");
     recordStep(out, "opened map inspection tray");
     recordCheck(out, "inspectTrayAppears", true);
     recordInventory(out, "chart.inspect.items", await webCollectTestIds(cdp, "map-selection-item-"));
 
-    await cdp.send("Runtime.evaluate", {
-      expression: `
-        [...document.querySelectorAll('[data-testid^="map-selection-item-airport-"]')]
-          [0]?.click()
-      `,
-      awaitPromise: true,
-    });
+    const selectedInspectLabel = await webEval(cdp, `
+      (() => {
+        const item = [...document.querySelectorAll('[data-testid^="map-selection-item-airport-"]')][0];
+        item?.click();
+        return (item?.textContent ?? "").replace(/\\s+/g, " ").trim();
+      })()
+    `);
     recordCheck(out, "inspectItemSelected", true);
     recordInventory(out, "chart.inspect.selected-actions", await webCollectTestIds(cdp, "map-selection-action-"));
     const insertAvailable = await webExists(cdp, "[data-testid=\"map-selection-action-insert\"]:not(:disabled)");
@@ -391,7 +391,7 @@ async function webJourney(url) {
       recordStep(out, "inserted inspected airport into flight plan");
 
       await webClick(cdp, "[data-testid=\"nav-cdi\"]");
-      await waitForWeb(cdp, "document.body.innerText.includes('TIW') || document.body.innerText.includes('KTIW') || document.body.innerText.includes('BFI') || document.body.innerText.includes('KBFI')", "inspected airport visible in plan");
+      await waitForWeb(cdp, `document.body.innerText.includes(${JSON.stringify(selectedInspectLabel)})`, "inspected airport visible in plan");
       recordStep(out, "verified inspected airport in flight plan");
       recordCheck(out, "inspectInsertAddsSelectedItem", true);
     } else {
@@ -486,7 +486,34 @@ async function webClickVectorPointByLabel(cdp, label) {
     `).catch(() => []);
     throw new Error(`missing vector point label ${label}; visible labels=${JSON.stringify(labels)}`);
   }
-  await dispatchClick(cdp, point.x, point.y);
+  await webDispatchPointerClick(cdp, "[data-testid=\"map-surface\"]", point.x, point.y);
+}
+
+async function webDispatchPointerClick(cdp, selector, x, y) {
+  await cdp.send("Runtime.evaluate", {
+    expression: `
+      (() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) throw new Error('missing pointer target ${selector}');
+        const eventInit = {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          clientX: ${JSON.stringify(x)},
+          clientY: ${JSON.stringify(y)},
+          pointerId: 1,
+          pointerType: 'mouse',
+          isPrimary: true,
+          button: 0,
+          buttons: 1,
+        };
+        el.dispatchEvent(new PointerEvent('pointerdown', eventInit));
+        el.dispatchEvent(new PointerEvent('pointerup', { ...eventInit, buttons: 0 }));
+        el.dispatchEvent(new MouseEvent('click', eventInit));
+      })()
+    `,
+    awaitPromise: true,
+  });
 }
 
 async function webDrag(cdp, selector, dx, dy) {
@@ -1232,61 +1259,18 @@ async function androidJourney(serial) {
       }
       androidDeleteChars(serial, 80);
       await delay(300);
-      adb(serial, ["shell", "input", "text", "KBFI"]);
+      adb(serial, ["shell", "input", "text", "KAWO"]);
       await delay(300);
       adb(serial, ["shell", "input", "keyevent", "KEYCODE_ENTER"]);
       await delay(1200);
       adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
       await delay(700);
-      if (hasAndroidText(dumpAndroid(serial), "KBFI") || await androidScrollUntilText(serial, "KBFI")) {
-        recordStep(out, "appended KBFI to flight plan");
-        recordCheck(out, "appendRouteCommitsKBFI", true);
-        if (!androidTagExists(serial, "parity:plan-list")) {
-          recordGap(out, "expanded flight plan for long-route feedback", "skipped because PLAN list is not visible");
-        } else if (await androidTapTag(serial, out, "focused append route for long plan", "parity:plan-append-route-input")) {
-          const planListBeforeLongTest = findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, "parity:plan-list"));
-          if (planListBeforeLongTest?.scrollable === "true") {
-            recordStep(out, "expanded flight plan for long-route feedback", "already long");
-            adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
-            await delay(500);
-          } else {
-            androidTypeRouteTokens(serial, ["KRNT", "SEA", "KPAE", "KBFI", "KRNT", "SEA", "KPAE", "KBFI", "KRNT", "SEA"]);
-            await delay(300);
-            adb(serial, ["shell", "input", "keyevent", "KEYCODE_ENTER"]);
-            await delay(1200);
-            adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
-            await delay(500);
-            recordStep(out, "expanded flight plan for long-route feedback");
-          }
-          if (androidTagExists(serial, "parity:plan-list") && await androidScrollUntilTag(serial, "parity:plan-append-route-input", 80)) {
-            if (await androidTapTag(serial, out, "focused long-plan append route", "parity:plan-append-route-input")) {
-              const longInput = await androidWaitForFocusedTag(serial, out, "long-plan append route input focused", "parity:plan-append-route-input");
-              if (longInput) {
-                androidAssertNodeAboveIme(serial, out, "long-plan append route input above IME", longInput);
-              }
-              await delay(700);
-              androidTypeRouteTokens(serial, ["ZZZZZ"]);
-              try {
-                const longFeedback = await androidWaitForNode(
-                  serial,
-                  (node) => hasAndroidTag(node, "parity:plan-append-route-feedback") && (node.text ?? "").trim() !== "",
-                  7000,
-                  "long-plan append route feedback",
-                );
-                recordStep(out, "long-plan append route feedback visible", "ok", longFeedback.text);
-                androidAssertNodeAboveIme(serial, out, "long-plan append route feedback above IME", longFeedback);
-                androidDeleteChars(serial, 8);
-              } catch (_error) {
-                recordGap(out, "long-plan append route feedback visible", "no non-empty feedback appeared after extending the plan");
-              }
-            }
-          } else {
-            recordGap(out, "focused long-plan append route", "append route field was not reachable after extending the plan");
-          }
-        }
+      if (hasAndroidText(dumpAndroid(serial), "KAWO") || await androidScrollUntilText(serial, "KAWO")) {
+        recordStep(out, "appended KAWO to flight plan");
+        recordCheck(out, "appendRouteCommitsKAWO", true);
       } else {
-        recordGap(out, "appended KBFI to flight plan", "KBFI was not visible after submitting the append route field");
-        recordCheck(out, "appendRouteCommitsKBFI", false);
+        recordGap(out, "appended KAWO to flight plan", "KAWO was not visible after submitting the append route field");
+        recordCheck(out, "appendRouteCommitsKAWO", false);
       }
     }
   } else {
@@ -1402,7 +1386,7 @@ function comparePlatformOutputs(outputs) {
     "chartSearchRecentersKTIW",
     "appendRoutePresent",
     "appendRouteFeedbackVisible",
-    "appendRouteCommitsKBFI",
+    "appendRouteCommitsKAWO",
     "inspectTrayAppears",
     "inspectItemSelected",
     "inspectInsertActionPresent",

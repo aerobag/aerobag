@@ -10,16 +10,15 @@ The journey itself completes on both platforms, but the structured inventory
 comparison reports these divergences. Resolved items stay here briefly so we can
 see what the current checkpoint fixed.
 
-- `chart.inspect.items`: the platforms still need a deterministic shared inspect
-  target. The current script uses the same KTIW search then taps the map center;
-  depending on current flight-plan/map state that can select KBFI on web and a
-  different nearby set on Android. This is a test-harness gap: the journey should
-  drive both platforms to the same core inspect point, not infer it from pixels.
-- `chart.inspect.insert`: after appending `KBFI`, the web center tap can select
-  KBFI, which is already in the flight plan. Core correctly omits `Insert in
-  flight plan` and exposes `Remove from flight plan` instead. The insert journey
-  should select an off-plan airport, or split the plate-airport append coverage
-  from the chart-inspector insert coverage.
+- `chart.inspect.items`: the journey now drives web to the rendered `TIW` label
+  and Android to the recentered KTIW map surface, so both platforms select the
+  `airport-KTIW` item and expose the same selected-airport action set. The full
+  tray inventory still diverges: web reports `weather-KTIW` and `navaid-SPOT`,
+  while Android reports nearby navaids from its center tap and does not surface
+  the weather/spot entries in the UIAutomator-visible inventory. Next step:
+  make the Android journey target the same logical point or add a core-backed
+  parity/debug inventory so the test compares core tray contents rather than
+  only initially visible Android semantics nodes.
 
 Resolved in this pass:
 
@@ -29,3 +28,6 @@ Resolved in this pass:
   state before submitting `KBFI`, so both platforms include the appended airport.
 - `plate.controls`: Android now reports `LOAD APPCH` disabled when there are no
   procedure load options, matching web.
+- `chart.inspect.insert`: the journey now appends `KAWO`, then selects `KTIW`
+  from chart inspection, so the selected airport is off-plan and both platforms
+  expose and execute `Insert in flight plan`.

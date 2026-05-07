@@ -3380,7 +3380,8 @@ function MapPage(props: {
       dragRef.current = null;
       pinchRef.current = null;
     }
-    const point = { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY };
+    const rect = event.currentTarget.getBoundingClientRect();
+    const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
     activePointersRef.current.set(event.pointerId, point);
     gestureActiveRef.current = activePointersRef.current.size > 0;
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -3406,7 +3407,8 @@ function MapPage(props: {
     if (trayGroup.scrimOpen || mapSelection || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return;
     }
-    const point = { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY };
+    const rect = event.currentTarget.getBoundingClientRect();
+    const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
     if (!activePointersRef.current.has(event.pointerId)) {
       return;
     }

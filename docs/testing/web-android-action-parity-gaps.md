@@ -7,20 +7,25 @@ node tools/parity/run-flight-plan-inspect-journey.mjs both --url http://127.0.0.
 ```
 
 The journey itself completes on both platforms, but the structured inventory
-comparison reports these divergences.
+comparison reports these divergences. Resolved items stay here briefly so we can
+see what the current checkpoint fixed.
 
-- `chart.inspect.items`: web reports `airport-KTIW`, `airspace-SEATTLE CLASS B`,
-  `airspace-TACOMA CLASS D`, `navaid-SPOT`, and `weather-KTIW`; Android reports
-  `airport-KTIW`, the same two airspaces, and nearby navaids `ARVAD`, `NEECE`,
-  `VPFOX`. The platforms are not inspecting the exact same chart point yet.
-- `chart.inspect.selected-actions`: web exposes disabled `runways` and disabled
-  `taf` placeholders for the selected airport; Android only exposes the enabled
-  action buttons. Android should render the disabled core-supplied placeholder
-  actions too.
-- `plate.airports`: after the journey appends `KBFI`, Android includes it in the
-  plate airport selector, while web only lists `KPAE` and `KRNT`. The platforms
-  need the same core-owned recent/flight-plan-airport policy.
-- `plate.controls`: web shows `LOAD APPCH` disabled for `KRNT RNAV 34`; Android
-  shows `LOAD` enabled. The plate load button state/label must come from the same
-  core procedure-load availability.
+- `chart.inspect.items`: the platforms still need a deterministic shared inspect
+  target. The current script uses the same KTIW search then taps the map center;
+  depending on current flight-plan/map state that can select KBFI on web and a
+  different nearby set on Android. This is a test-harness gap: the journey should
+  drive both platforms to the same core inspect point, not infer it from pixels.
+- `chart.inspect.insert`: after appending `KBFI`, the web center tap can select
+  KBFI, which is already in the flight plan. Core correctly omits `Insert in
+  flight plan` and exposes `Remove from flight plan` instead. The insert journey
+  should select an off-plan airport, or split the plate-airport append coverage
+  from the chart-inspector insert coverage.
 
+Resolved in this pass:
+
+- `chart.inspect.selected-actions`: Android now renders core-supplied disabled
+  placeholder actions, including `runways` and disabled `taf` when appropriate.
+- `plate.airports`: the web journey now waits for the core route-entry ready
+  state before submitting `KBFI`, so both platforms include the appended airport.
+- `plate.controls`: Android now reports `LOAD APPCH` disabled when there are no
+  procedure load options, matching web.

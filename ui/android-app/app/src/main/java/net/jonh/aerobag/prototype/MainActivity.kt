@@ -39,6 +39,7 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -90,6 +91,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -141,6 +143,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.testTagsAsResourceId
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -1267,6 +1270,12 @@ private fun resolveChartId(
     candidateChartId: String?,
 ): String {
     val airport = airports.firstOrNull { it.id == airportId }
+    if (candidateChartId == "Plate:$airportId:CSup") {
+        return airport?.charts?.firstOrNull { it.kind == "csup" || it.folderCategory == "csup" }?.id.orEmpty()
+    }
+    if (candidateChartId == "Plate:$airportId:Folder") {
+        return airport?.charts?.firstOrNull()?.id.orEmpty()
+    }
     if (candidateChartId != null && airport?.charts?.any { it.id == candidateChartId } == true) {
         return candidateChartId
     }
@@ -6329,7 +6338,10 @@ private fun MapSelectionTray(
     ) {
         Column(modifier = Modifier.padding(ThumbGap * 0.7f), verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.55f)) {
             state.result.categories.forEach { category ->
-                Row(horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f)) {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f),
+                ) {
                     if (category.items.isEmpty()) {
                         Text(
                             text = "no ${category.label.lowercase()}s",
@@ -6339,7 +6351,7 @@ private fun MapSelectionTray(
                             textAlign = TextAlign.Center,
                         )
                     } else {
-                        category.items.take(3).forEach { item ->
+                        category.items.forEach { item ->
                             MapSelectionItemButton(
                                 item = item,
                                 selected = item.id == selectedItem?.id,
@@ -6369,15 +6381,19 @@ private fun MapSelectionTray(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f)) {
-                        visibleActions.forEach { action ->
-                            MapSelectionActionButton(
-                                action = action,
-                                enabled = action.enabled && !action.displayOnly,
-                                onClick = {
-                                    if (selectedItem != null) onSelectAction(selectedItem, action)
-                                },
-                            )
+                    Column(verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f)) {
+                        visibleActions.chunked(3).forEach { rowActions ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f)) {
+                                rowActions.forEach { action ->
+                                    MapSelectionActionButton(
+                                        action = action,
+                                        enabled = action.enabled && !action.displayOnly,
+                                        onClick = {
+                                            if (selectedItem != null) onSelectAction(selectedItem, action)
+                                        },
+                                    )
+                                }
+                            }
                         }
                     }
                     selectedItem?.detailText?.let { detail ->
@@ -6544,6 +6560,11 @@ private fun MapSelectionActionButton(
             .height(ThumbSize)
             .testTag("parity:map-selection-action:${action.id}")
             .alpha(if (action.label.isBlank()) 0f else 1f)
+            .semantics {
+                if (!enabled) {
+                    disabled()
+                }
+            }
             .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
         shape = RoundedCornerShape(ThumbRadius),
         color = when {
@@ -8410,12 +8431,13 @@ private fun ChartViewerSelectors(
         )
 
         MenuDock(
-            launcherLabel = "LOAD",
+            launcherLabel = "LOAD\nAPPCH",
             launcherTestTag = "parity:plate-load-button",
             optionTestTagPrefix = "parity:tray-option",
             open = loadTrayOpen,
             onToggle = onToggleLoadTray,
             style = MenuDockStyle.Compact,
+            disabled = plateProcedureLoads.isEmpty(),
             options = plateProcedureLoads.map { load ->
                 MenuDockOption(load.loadId, load.label) { onSelectProcedureLoad(load.loadId) }
             },
@@ -8511,6 +8533,7 @@ private fun MenuDock(
     open: Boolean,
     onToggle: () -> Unit,
     style: MenuDockStyle,
+    disabled: Boolean = false,
     options: List<MenuDockOption>,
     body: (@Composable ColumnScope.() -> Unit)? = null,
     footer: (@Composable ColumnScope.() -> Unit)? = null,
@@ -8535,7 +8558,7 @@ private fun MenuDock(
             label = launcherLabel,
             iconResId = launcherIconResId,
             maxLines = style.launcherMaxLines,
-            enabled = true,
+            enabled = !disabled,
             accentColor = launcherAccentColor,
             wide = style != MenuDockStyle.Compact,
             testTag = launcherTestTag,
@@ -10249,6 +10272,11 @@ private fun CompactSquareButton(
     Surface(
         modifier = modifier
             .testTag(testTag ?: "parity:button:$label")
+            .semantics {
+                if (!enabled) {
+                    disabled()
+                }
+            }
             .then(
                 if (enabled) {
                     Modifier.pointerInput(onClick) {

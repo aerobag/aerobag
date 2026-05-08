@@ -7685,14 +7685,13 @@ private fun FlightPlanRouteEntryRow(
                     .background(Color.White.copy(alpha = 0.96f))
                     .border(1.5.dp, borderColor, fieldShape)
                     .onPreviewKeyEvent { event ->
-                        if (event.nativeKeyEvent.action == AndroidKeyEvent.ACTION_DOWN &&
-                            event.nativeKeyEvent.keyCode == AndroidKeyEvent.KEYCODE_ENTER
-                        ) {
-                            onSubmit()
-                            true
-                        } else {
-                            false
+                        if (event.nativeKeyEvent.keyCode != AndroidKeyEvent.KEYCODE_ENTER) {
+                            return@onPreviewKeyEvent false
                         }
+                        if (event.nativeKeyEvent.action == AndroidKeyEvent.ACTION_DOWN) {
+                            onSubmit()
+                        }
+                        true
                     }
                     .padding(horizontal = ThumbGap, vertical = ThumbSize * 0.22f),
             decorationBox = { innerTextField ->

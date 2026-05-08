@@ -2510,9 +2510,13 @@ function MapPage(props: {
     }
     const planStartedAt = performance.now();
     const devicePixelRatio = window.devicePixelRatio || 1;
+    // DPR inflation asks core for sharper source tiles, but display policy zooms
+    // are in CSS pixels. Without this clamp a DPR=3 phone at visual z11 can ask
+    // core for z12.58 and exceed a chart's max_display_zoom of 12.5.
+    const plannerZoom = Math.min(selectedMap.max_zoom, viewport.zoom + Math.log2(devicePixelRatio));
     const deviceViewport = {
       ...viewport,
-      zoom: viewport.zoom + Math.log2(devicePixelRatio),
+      zoom: plannerZoom,
     };
     uiSession.queryRasterTilePlan(
       deviceViewport,

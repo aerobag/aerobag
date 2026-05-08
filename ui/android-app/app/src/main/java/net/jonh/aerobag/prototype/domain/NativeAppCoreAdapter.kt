@@ -321,7 +321,7 @@ class NativeAppCoreAdapter(
         encodeDefaults = true
         ignoreUnknownKeys = true
     },
-) : AppCoreAdapter {
+) {
     fun situationRingCandidates(): List<SituationRingCandidate> =
         json.decodeFromString<List<WireSituationRingCandidate>>(bridge.situationRingCandidatesJson())
             .map { it.toUi() }
@@ -381,27 +381,6 @@ class NativeAppCoreAdapter(
             },
         )
         return json.decodeFromJsonElement<WireDerivedChartPageState>(result).toUi()
-    }
-
-    override fun replaceFlightPlan(state: AppState, plan: FlightPlan): AppState {
-        val stateJson = json.encodeToString(state.toWire())
-        val planJson = json.encodeToString(plan.toWire())
-        val nextJson = bridge.replaceFlightPlanStateJson(stateJson, planJson)
-        return json.decodeFromString<WireAppState>(nextJson).toUi()
-    }
-
-    override fun setContentPolicy(state: AppState, policy: ContentPolicy): AppState {
-        val stateJson = json.encodeToString(state.toWire())
-        val policyJson = json.encodeToString(policy.toWire())
-        val nextJson = bridge.setContentPolicyStateJson(stateJson, policyJson)
-        return json.decodeFromString<WireAppState>(nextJson).toUi()
-    }
-
-    override fun refreshContent(state: AppState, inventory: ContentInventory): AppState {
-        val stateJson = json.encodeToString(state.toWire())
-        val inventoryJson = json.encodeToString(inventory.toWire())
-        val nextJson = bridge.refreshContentStateJson(stateJson, inventoryJson)
-        return json.decodeFromString<WireAppState>(nextJson).toUi()
     }
 
     fun suggestAirwaysNear(anchor: NavRef, limit: Int = 5): List<AirwaySuggestion> {

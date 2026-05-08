@@ -43,81 +43,6 @@ pub fn activate_direct_to_leg_ui_json(
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
-pub fn replace_flight_plan_state_json(state_json: &str, plan_json: &str) -> Result<String, String> {
-    let state: app_core::AppState =
-        serde_json::from_str(state_json).map_err(|err| err.to_string())?;
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let next = app_core::state::reduce(&state, app_core::AppEvent::ReplaceFlightPlan(plan))
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&next).map_err(|err| err.to_string())
-}
-
-pub fn replace_flight_plan_ui_state_json(
-    state_json: &str,
-    plan_json: &str,
-) -> Result<String, String> {
-    let state: app_core::AppState =
-        serde_json::from_str(state_json).map_err(|err| err.to_string())?;
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let next = app_core::state::reduce(&state, app_core::AppEvent::ReplaceFlightPlan(plan))
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&app_core::project_app_ui_state(&next)).map_err(|err| err.to_string())
-}
-
-pub fn set_content_policy_state_json(
-    state_json: &str,
-    policy_json: &str,
-) -> Result<String, String> {
-    let state: app_core::AppState =
-        serde_json::from_str(state_json).map_err(|err| err.to_string())?;
-    let policy: app_core::ContentPolicy =
-        serde_json::from_str(policy_json).map_err(|err| err.to_string())?;
-    let next = app_core::state::reduce(&state, app_core::AppEvent::SetContentPolicy(policy))
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&next).map_err(|err| err.to_string())
-}
-
-pub fn set_content_policy_ui_state_json(
-    state_json: &str,
-    policy_json: &str,
-) -> Result<String, String> {
-    let state: app_core::AppState =
-        serde_json::from_str(state_json).map_err(|err| err.to_string())?;
-    let policy: app_core::ContentPolicy =
-        serde_json::from_str(policy_json).map_err(|err| err.to_string())?;
-    let next = app_core::state::reduce(&state, app_core::AppEvent::SetContentPolicy(policy))
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&app_core::project_app_ui_state(&next)).map_err(|err| err.to_string())
-}
-
-pub fn refresh_content_state_json(
-    state_json: &str,
-    inventory_json: &str,
-) -> Result<String, String> {
-    let state: app_core::AppState =
-        serde_json::from_str(state_json).map_err(|err| err.to_string())?;
-    let inventory: app_core::ContentInventory =
-        serde_json::from_str(inventory_json).map_err(|err| err.to_string())?;
-    let next = app_core::state::reduce(&state, app_core::AppEvent::RefreshContent { inventory })
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&next).map_err(|err| err.to_string())
-}
-
-pub fn refresh_content_ui_state_json(
-    state_json: &str,
-    inventory_json: &str,
-) -> Result<String, String> {
-    let state: app_core::AppState =
-        serde_json::from_str(state_json).map_err(|err| err.to_string())?;
-    let inventory: app_core::ContentInventory =
-        serde_json::from_str(inventory_json).map_err(|err| err.to_string())?;
-    let next = app_core::state::reduce(&state, app_core::AppEvent::RefreshContent { inventory })
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&app_core::project_app_ui_state(&next)).map_err(|err| err.to_string())
-}
-
 pub fn prepare_airway_presentation_json(
     airway_name: &str,
     branches_json: &str,
@@ -1369,96 +1294,6 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_des
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_replaceFlightPlanStateJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    state_json: JString,
-    plan_json: JString,
-) -> jstring {
-    let result = (|| {
-        let state = get_java_string(&mut env, state_json)?;
-        let plan = get_java_string(&mut env, plan_json)?;
-        replace_flight_plan_state_json(&state, &plan)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_replaceFlightPlanUiStateJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    state_json: JString,
-    plan_json: JString,
-) -> jstring {
-    let result = (|| {
-        let state = get_java_string(&mut env, state_json)?;
-        let plan = get_java_string(&mut env, plan_json)?;
-        replace_flight_plan_ui_state_json(&state, &plan)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setContentPolicyStateJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    state_json: JString,
-    policy_json: JString,
-) -> jstring {
-    let result = (|| {
-        let state = get_java_string(&mut env, state_json)?;
-        let policy = get_java_string(&mut env, policy_json)?;
-        set_content_policy_state_json(&state, &policy)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setContentPolicyUiStateJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    state_json: JString,
-    policy_json: JString,
-) -> jstring {
-    let result = (|| {
-        let state = get_java_string(&mut env, state_json)?;
-        let policy = get_java_string(&mut env, policy_json)?;
-        set_content_policy_ui_state_json(&state, &policy)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_refreshContentStateJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    state_json: JString,
-    inventory_json: JString,
-) -> jstring {
-    let result = (|| {
-        let state = get_java_string(&mut env, state_json)?;
-        let inventory = get_java_string(&mut env, inventory_json)?;
-        refresh_content_state_json(&state, &inventory)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_refreshContentUiStateJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    state_json: JString,
-    inventory_json: JString,
-) -> jstring {
-    let result = (|| {
-        let state = get_java_string(&mut env, state_json)?;
-        let inventory = get_java_string(&mut env, inventory_json)?;
-        refresh_content_ui_state_json(&state, &inventory)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
 pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_activateLegUiJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -2479,64 +2314,6 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_cor
 mod tests {
     use super::*;
 
-    fn empty_state_json() -> String {
-        serde_json::to_string(&app_core::AppState::default()).unwrap()
-    }
-
-    fn sample_plan_json() -> String {
-        serde_json::json!({
-            "id": "plan-1",
-            "name": "KBOS local",
-            "legs": [],
-            "route_components": [
-                {
-                    "kind": "waypoint",
-                    "waypoint": {"Airport": "KBOS"}
-                },
-                {
-                    "kind": "waypoint",
-                    "waypoint": {"Airport": "KBOS"}
-                }
-            ],
-            "resolved_legs": [
-                {
-                    "id": "component-0-1",
-                    "from": {"Airport": "KBOS"},
-                    "to": {"Airport": "KBOS"},
-                    "source": {"kind": "route_component", "component_index": 0},
-                    "procedure_provenance": null
-                }
-            ],
-            "guidance": null,
-            "departure": "KBOS",
-            "destination": "KBOS",
-            "alternate": null,
-            "cruise_altitude_ft": 3000,
-            "notes": null,
-            "updated_at_epoch_ms": 0,
-            "version": 1
-        })
-        .to_string()
-    }
-
-    #[test]
-    fn replace_flight_plan_state_json_sets_active_plan() {
-        let next_json =
-            replace_flight_plan_state_json(&empty_state_json(), &sample_plan_json()).unwrap();
-        let next: app_core::AppState = serde_json::from_str(&next_json).unwrap();
-
-        assert!(next.active_plan.is_some());
-    }
-
-    #[test]
-    fn replace_flight_plan_ui_state_json_returns_projected_app_view() {
-        let next_json =
-            replace_flight_plan_ui_state_json(&empty_state_json(), &sample_plan_json()).unwrap();
-        let next: app_core::AppUiState = serde_json::from_str(&next_json).unwrap();
-
-        assert!(next.active_plan.is_some());
-    }
-
     #[test]
     fn activate_leg_ui_json_returns_projected_mutation() {
         let plan_json = serde_json::json!({
@@ -2548,6 +2325,8 @@ mod tests {
                 {"kind":"waypoint","waypoint":{"Navaid":"SEA"}},
                 {"kind":"waypoint","waypoint":{"Airport":"KUAO"}}
             ],
+            "route_component_uids": ["row-0", "row-1", "row-2"],
+            "route_component_uid_counter": 3,
             "resolved_legs": [
                 {"id":"component-0-1","from":{"Airport":"KRNT"},"to":{"Navaid":"SEA"},"source":{"kind":"route_component","component_index":0}},
                 {"id":"component-1-2","from":{"Navaid":"SEA"},"to":{"Airport":"KUAO"},"source":{"kind":"route_component","component_index":1}}
@@ -2578,35 +2357,5 @@ mod tests {
                 .active_component_index,
             Some(1)
         );
-    }
-
-    #[test]
-    fn stream_allowed_policy_survives_json_boundary() {
-        let with_plan_json =
-            replace_flight_plan_state_json(&empty_state_json(), &sample_plan_json()).unwrap();
-
-        let web_state_json = set_content_policy_state_json(
-            &with_plan_json,
-            &serde_json::to_string(&app_core::ContentPolicy::StreamAllowed).unwrap(),
-        )
-        .unwrap();
-
-        let refreshed_json = refresh_content_state_json(
-            &web_state_json,
-            &serde_json::json!({
-                "installed_packages": [],
-                "cached_tilesets": [],
-                "cached_plates": []
-            })
-            .to_string(),
-        )
-        .unwrap();
-
-        let refreshed: app_core::AppState = serde_json::from_str(&refreshed_json).unwrap();
-        assert_eq!(
-            refreshed.content_policy,
-            app_core::ContentPolicy::StreamAllowed
-        );
-        assert!(refreshed.last_content_report.is_none());
     }
 }

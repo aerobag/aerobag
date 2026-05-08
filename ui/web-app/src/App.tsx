@@ -710,6 +710,10 @@ function thumbPixels(multiplier: number) {
   return parsed * multiplier;
 }
 
+function shouldLowerSituationDock(surfaceWidthPx: number) {
+  return surfaceWidthPx > 0 && surfaceWidthPx < thumbPixels(10);
+}
+
 const airportLabelY = -24;
 const vorLabelY = -24;
 const fixLabelY = -15;
@@ -3930,6 +3934,7 @@ function MapPage(props: {
         ) : null}
         <SituationStatusBadge
           controls={ownshipControls}
+          lowered={shouldLowerSituationDock(surfaceSize.width)}
           open={trayGroup.isOpen("ownship")}
           onToggle={() => trayGroup.toggle("ownship")}
           options={ownshipSourceOptions}
@@ -6723,6 +6728,7 @@ function ChartsPage(props: {
         <div className="mapBackdrop" />
         <SituationStatusBadge
           controls={ownshipControls}
+          lowered={shouldLowerSituationDock(surfaceSize.width)}
           open={trayGroup.isOpen("ownship")}
           onToggle={() => trayGroup.toggle("ownship")}
           options={ownshipSourceOptions}
@@ -7147,13 +7153,14 @@ function sameIds(left: string[], right: string[]) {
 
 function SituationStatusBadge(props: {
   controls: OwnshipControlModel;
+  lowered?: boolean;
   open: boolean;
   onToggle: () => void;
   options: TrayOption[];
   transportControls?: ReactNode;
 }) {
   return (
-    <div className="situationDock">
+    <div className={`situationDock${props.lowered ? " isLowered" : ""}`}>
       <TrayDock
         launcherLabel={props.controls.launcher_label}
         launcherClassName={`situationStatusLauncher situationStatus-${props.controls.launcher_tone}`}

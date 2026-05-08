@@ -339,6 +339,7 @@ private val LocalAerobagUiTheme = staticCompositionLocalOf<UiTheme> {
 
 private val ThumbSize = 56.dp
 private val ThumbGap = 5.6.dp
+private val SituationDockOverlapWidth = ThumbSize * 10f
 private val PlanGridGap = 2.dp
 private const val DefaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json"
 private const val DefaultAndroidDevServerBaseUrl = "http://10.0.2.2:8080"
@@ -4613,6 +4614,8 @@ private fun MapExplorerPage(
     val surfaceHeightPx = surfaceSize.height.toFloat()
     val surfaceWidthDp = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
     val surfaceHeightDp = remember(surfaceSize, density) { with(density) { surfaceSize.height.toDp().value } }
+    val situationDockTopPadding =
+        if (surfaceWidthDp.dp < SituationDockOverlapWidth) ThumbSize + (ThumbGap * 2f) else ThumbGap
     val tiles = remember(selectedMap.id, currentViewport, surfaceSize, fixture.mapViews, uiSession, debugState.fastTiles) {
         if (surfaceSize.width == 0 || surfaceSize.height == 0) {
             emptyList()
@@ -6156,7 +6159,7 @@ private fun MapExplorerPage(
             controls = ownshipControls,
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(top = ThumbGap, end = ThumbGap),
+                .padding(top = situationDockTopPadding, end = ThumbGap),
             onSelectSource = onSelectOwnshipSource,
             onSituationControlInput = onSituationControlInput,
         )
@@ -7754,6 +7757,9 @@ private fun ChartsPage(
     var chartTrayOpen by remember { mutableStateOf(false) }
     var loadTrayOpen by remember { mutableStateOf(false) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
+    val surfaceWidthDp = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
+    val situationDockTopPadding =
+        if (surfaceWidthDp.dp < SituationDockOverlapWidth) ThumbSize + (ThumbGap * 2f) else ThumbGap
     val sortedCharts = selectedAirport?.charts ?: emptyList()
     val overscrollPx = with(density) { ThumbSize.toPx() }
     val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, selectedChart?.id, selectedChart?.assetPath) {
@@ -7994,7 +8000,7 @@ private fun ChartsPage(
             controls = ownshipControls,
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(top = ThumbGap, end = ThumbGap),
+                .padding(top = situationDockTopPadding, end = ThumbGap),
             onSelectSource = { sourceId ->
                 onSessionSnapshotChange(uiSession.selectOwnshipSource(OwnshipSelection.Source(sourceId)))
             },

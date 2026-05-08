@@ -553,6 +553,10 @@ button {
   z-index: 7;
 }
 
+.situationDock.isLowered {
+  top: calc(var(--thumb) + (var(--thumb-gap) * 2));
+}
+
 .situationStatusLauncher.chartButtonWide {
   width: auto;
   min-width: calc(var(--thumb) * 1.55);

@@ -1709,6 +1709,7 @@ private data class WireUiDebugState(
     val tile_labels: Boolean = false,
     val fast_tiles: Boolean = false,
     val offline_simulated_clock_buttons: Boolean = false,
+    val verbose_logs: Boolean = false,
 )
 
 @kotlinx.serialization.Serializable
@@ -1795,6 +1796,7 @@ data class UiDebugState(
     val tileLabels: Boolean,
     val fastTiles: Boolean,
     val offlineSimulatedClockButtons: Boolean,
+    val verboseLogs: Boolean,
 )
 
 data class UiChartPageState(
@@ -1922,6 +1924,7 @@ private fun WireUiDebugState.toUi() = UiDebugState(
     tileLabels = tile_labels,
     fastTiles = fast_tiles,
     offlineSimulatedClockButtons = offline_simulated_clock_buttons,
+    verboseLogs = verbose_logs,
 )
 
 private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(

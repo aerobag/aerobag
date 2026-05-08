@@ -70,6 +70,8 @@ pub struct UiDebugState {
     pub offline_simulated_clock_buttons: bool,
     #[serde(default)]
     pub sequencing_finish_lines: bool,
+    #[serde(default)]
+    pub verbose_logs: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1424,6 +1426,7 @@ pub fn set_debug_flag_in_session(
             session.debug_state.offline_simulated_clock_buttons = enabled
         }
         "sequencing_finish_lines" => session.debug_state.sequencing_finish_lines = enabled,
+        "verbose_logs" => session.debug_state.verbose_logs = enabled,
         _ => {
             return Err(AppError {
                 kind: AppErrorKind::Internal,
@@ -2214,6 +2217,7 @@ fn default_debug_state() -> UiDebugState {
         fast_tiles: false,
         offline_simulated_clock_buttons: false,
         sequencing_finish_lines: false,
+        verbose_logs: false,
     }
 }
 

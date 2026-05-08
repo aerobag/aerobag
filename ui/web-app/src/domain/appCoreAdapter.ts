@@ -87,13 +87,14 @@ export type UiSessionSnapshot = {
   debug_state: UiDebugState;
 };
 
-export type DebugFlagId = "tile_labels" | "fast_tiles" | "offline_simulated_clock_buttons" | "sequencing_finish_lines";
+export type DebugFlagId = "tile_labels" | "fast_tiles" | "offline_simulated_clock_buttons" | "sequencing_finish_lines" | "verbose_logs";
 
 export type UiDebugState = {
   tile_labels: boolean;
   fast_tiles: boolean;
   offline_simulated_clock_buttons: boolean;
   sequencing_finish_lines: boolean;
+  verbose_logs: boolean;
 };
 
 export type UiCautionState = {

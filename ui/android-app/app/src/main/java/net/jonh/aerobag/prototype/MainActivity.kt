@@ -476,6 +476,7 @@ private fun defaultUiDebugState() = UiDebugState(
     tileLabels = false,
     fastTiles = false,
     offlineSimulatedClockButtons = false,
+    verboseLogs = false,
 )
 private val PackageManagementJson = Json {
     encodeDefaults = true
@@ -1541,6 +1542,7 @@ private fun screenToWorldOffset(
 private class RasterTileBitmapLoader(
     private val context: Context,
     scope: CoroutineScope,
+    private val verboseLogs: Boolean,
     workerCount: Int = MapTileLoadWorkerCount,
 ) {
     private val workerThreadIds = AtomicInteger()
@@ -1559,7 +1561,9 @@ private class RasterTileBitmapLoader(
     init {
         repeat(workerCount) { workerIndex ->
             workerScope.launch {
-                Log.i(TileBudgetLogTag, "worker-start worker=$workerIndex")
+                if (verboseLogs) {
+                    Log.i(TileBudgetLogTag, "worker-start worker=$workerIndex")
+                }
                 try {
                     while (true) {
                         if (queueSignal.receiveCatching().isClosed) {
@@ -1602,7 +1606,9 @@ private class RasterTileBitmapLoader(
                         }
                     }
                 } finally {
-                    Log.w(TileBudgetLogTag, "worker-stop worker=$workerIndex")
+                    if (verboseLogs) {
+                        Log.w(TileBudgetLogTag, "worker-stop worker=$workerIndex")
+                    }
                 }
             }
         }
@@ -1639,10 +1645,12 @@ private class RasterTileBitmapLoader(
                 result = CompletableDeferred(),
             )
         }
-        Log.i(
-            TileBudgetLogTag,
-            "load-start gen=$generationId map=$mapId missing=${missingTiles.size} workers=$MapTileLoadWorkerCount groups=[${formatTileBudgetSummary(missingTiles)}] first=${missingTiles.firstOrNull()?.let(::formatTileRef) ?: "none"}",
-        )
+        if (verboseLogs) {
+            Log.i(
+                TileBudgetLogTag,
+                "load-start gen=$generationId map=$mapId missing=${missingTiles.size} workers=$MapTileLoadWorkerCount groups=[${formatTileBudgetSummary(missingTiles)}] first=${missingTiles.firstOrNull()?.let(::formatTileRef) ?: "none"}",
+            )
+        }
         try {
             val droppedCount = queueMutex.withLock {
                 val dropped = pendingWork.size
@@ -1657,10 +1665,12 @@ private class RasterTileBitmapLoader(
                     return emptyList()
                 }
             }
-            Log.i(
-                TileBudgetLogTag,
-                "load-enqueued gen=$generationId map=$mapId count=${missingTiles.size} droppedQueued=$droppedCount enqueueMs=${SystemClock.elapsedRealtime() - batchStartMs}",
-            )
+            if (verboseLogs) {
+                Log.i(
+                    TileBudgetLogTag,
+                    "load-enqueued gen=$generationId map=$mapId count=${missingTiles.size} droppedQueued=$droppedCount enqueueMs=${SystemClock.elapsedRealtime() - batchStartMs}",
+                )
+            }
             val loadedTiles = mutableListOf<LoadedRenderTileBitmap>()
             deferredResults.forEach { work ->
                 currentCoroutineContext().ensureActive()
@@ -1673,10 +1683,12 @@ private class RasterTileBitmapLoader(
             deferredResults.forEach { work ->
                 work.result.cancel()
             }
-            Log.w(
-                TileBudgetLogTag,
-                "load-cancel gen=$generationId map=$mapId missing=${missingTiles.size} elapsedMs=${SystemClock.elapsedRealtime() - batchStartMs}",
-            )
+            if (verboseLogs) {
+                Log.w(
+                    TileBudgetLogTag,
+                    "load-cancel gen=$generationId map=$mapId missing=${missingTiles.size} elapsedMs=${SystemClock.elapsedRealtime() - batchStartMs}",
+                )
+            }
             throw error
         }
     }
@@ -2548,7 +2560,9 @@ private fun AerobagApp() {
                 fromPage = page,
                 startedMs = SystemClock.elapsedRealtime(),
             )
-            Log.i(TileBudgetLogTag, "page-to-map-start id=${pageTilePaintTiming?.id} from=$page")
+            if (sessionSnapshot.debugState.verboseLogs) {
+                Log.i(TileBudgetLogTag, "page-to-map-start id=${pageTilePaintTiming?.id} from=$page")
+            }
         }
         pageHistory = boundedHistory(pageHistory + currentSnapshot())
         page = nextPage
@@ -4580,10 +4594,12 @@ private fun MapExplorerPage(
     var viewportSyncPending by remember(selectedMap.id) { mutableStateOf(false) }
     LaunchedEffect(viewport, selectedMap.id) {
         val parentMatchesLocal = sameMapViewport(viewport, viewportState.value)
-        Log.i(
-            MapViewportLogTag,
-            "prop-sync map=${selectedMap.id} parentZoom=${"%.2f".format(viewport.zoom)} localZoom=${"%.2f".format(viewportState.value.zoom)} parentCenter=${"%.3f".format(viewport.centerWorldX)},${"%.3f".format(viewport.centerWorldY)} localCenter=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)} pending=$viewportSyncPending matches=$parentMatchesLocal",
-        )
+        if (debugState.verboseLogs) {
+            Log.i(
+                MapViewportLogTag,
+                "prop-sync map=${selectedMap.id} parentZoom=${"%.2f".format(viewport.zoom)} localZoom=${"%.2f".format(viewportState.value.zoom)} parentCenter=${"%.3f".format(viewport.centerWorldX)},${"%.3f".format(viewport.centerWorldY)} localCenter=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)} pending=$viewportSyncPending matches=$parentMatchesLocal",
+            )
+        }
         when {
             !viewportSyncPending -> {
                 viewportState.value = viewport
@@ -4592,10 +4608,12 @@ private fun MapExplorerPage(
                 viewportSyncPending = false
             }
             else -> {
-                Log.i(
-                    MapViewportLogTag,
-                    "prop-sync ignored stale parent map=${selectedMap.id} parentCenter=${"%.3f".format(viewport.centerWorldX)},${"%.3f".format(viewport.centerWorldY)} localCenter=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)}",
-                )
+                if (debugState.verboseLogs) {
+                    Log.i(
+                        MapViewportLogTag,
+                        "prop-sync ignored stale parent map=${selectedMap.id} parentCenter=${"%.3f".format(viewport.centerWorldX)},${"%.3f".format(viewport.centerWorldY)} localCenter=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)}",
+                    )
+                }
             }
         }
     }
@@ -4619,10 +4637,12 @@ private fun MapExplorerPage(
             )
             val planMs = SystemClock.elapsedRealtime() - planStartMs
             pageTilePaintTiming?.let { timing ->
-                Log.i(
-                    TileBudgetLogTag,
-                    "page-to-map-plan id=${timing.id} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} planMs=$planMs tiles=${plan.tiles.size} fastTiles=${debugState.fastTiles}",
-                )
+                if (debugState.verboseLogs) {
+                    Log.i(
+                        TileBudgetLogTag,
+                        "page-to-map-plan id=${timing.id} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} planMs=$planMs tiles=${plan.tiles.size} fastTiles=${debugState.fastTiles}",
+                    )
+                }
             }
             plan.tiles.mapNotNull { tile ->
                 val primaryOption = mapViewsById[tile.primary.map_view_id] ?: return@mapNotNull null
@@ -4678,7 +4698,7 @@ private fun MapExplorerPage(
             }
         }
     }
-    val layerTrayOptions = remember(mapLayerState) {
+    val layerTrayOptions = remember(mapLayerState, debugState.verboseLogs) {
         listOf(
             MenuDockOption(
                 key = "vectors",
@@ -4690,7 +4710,9 @@ private fun MapExplorerPage(
                 val visible = !mapLayerState.vectors.visible
                 val startMs = SystemClock.elapsedRealtime()
                 val snapshot = uiSession.setMapLayerVisibility(MapLayerId.Vectors, visible)
-                Log.i(MapLayerLogTag, "toggle layer=vectors visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                if (debugState.verboseLogs) {
+                    Log.i(MapLayerLogTag, "toggle layer=vectors visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                }
                 onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(
@@ -4703,7 +4725,9 @@ private fun MapExplorerPage(
                 val visible = !mapLayerState.metars.visible
                 val startMs = SystemClock.elapsedRealtime()
                 val snapshot = uiSession.setMapLayerVisibility(MapLayerId.Metars, visible)
-                Log.i(MapLayerLogTag, "toggle layer=metars visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                if (debugState.verboseLogs) {
+                    Log.i(MapLayerLogTag, "toggle layer=metars visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                }
                 onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(
@@ -4716,7 +4740,9 @@ private fun MapExplorerPage(
                 val visible = !mapLayerState.nexrad.visible
                 val startMs = SystemClock.elapsedRealtime()
                 val snapshot = uiSession.setMapLayerVisibility(MapLayerId.Nexrad, visible)
-                Log.i(MapLayerLogTag, "toggle layer=nexrad visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                if (debugState.verboseLogs) {
+                    Log.i(MapLayerLogTag, "toggle layer=nexrad visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                }
                 onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(
@@ -4729,7 +4755,9 @@ private fun MapExplorerPage(
                 val visible = !mapLayerState.terrainWarning.visible
                 val startMs = SystemClock.elapsedRealtime()
                 val snapshot = uiSession.setMapLayerVisibility(MapLayerId.TerrainWarning, visible)
-                Log.i(MapLayerLogTag, "toggle layer=terrain_warning visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                if (debugState.verboseLogs) {
+                    Log.i(MapLayerLogTag, "toggle layer=terrain_warning visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                }
                 onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(
@@ -4742,7 +4770,9 @@ private fun MapExplorerPage(
                 val visible = !mapLayerState.offlineRegions.visible
                 val startMs = SystemClock.elapsedRealtime()
                 val snapshot = uiSession.setMapLayerVisibility(MapLayerId.OfflineRegions, visible)
-                Log.i(MapLayerLogTag, "toggle layer=offline_regions visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                if (debugState.verboseLogs) {
+                    Log.i(MapLayerLogTag, "toggle layer=offline_regions visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                }
                 onSessionSnapshotChange(snapshot)
             },
         )
@@ -4825,10 +4855,12 @@ private fun MapExplorerPage(
     }
 
     fun updateViewport(nextViewport: MapViewportState, syncFollow: Boolean = true) {
-        Log.i(
-            MapViewportLogTag,
-            "update map=${selectedMap.id} from=${"%.2f".format(viewportState.value.zoom)} to=${"%.2f".format(nextViewport.zoom)} fromCenter=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)} toCenter=${"%.3f".format(nextViewport.centerWorldX)},${"%.3f".format(nextViewport.centerWorldY)} syncFollow=$syncFollow",
-        )
+        if (debugState.verboseLogs) {
+            Log.i(
+                MapViewportLogTag,
+                "update map=${selectedMap.id} from=${"%.2f".format(viewportState.value.zoom)} to=${"%.2f".format(nextViewport.zoom)} fromCenter=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)} toCenter=${"%.3f".format(nextViewport.centerWorldX)},${"%.3f".format(nextViewport.centerWorldY)} syncFollow=$syncFollow",
+            )
+        }
         viewportState.value = nextViewport
         viewportSyncPending = true
         onViewportChange(nextViewport)
@@ -4948,15 +4980,15 @@ private fun MapExplorerPage(
         mutableStateMapOf<net.jonh.aerobag.prototype.domain.RenderTileKey, androidx.compose.ui.graphics.ImageBitmap?>()
     }
     val rasterTileBitmapLoaderScope = rememberCoroutineScope()
-    val rasterTileBitmapLoader = remember(context.applicationContext, rasterTileBitmapLoaderScope) {
-        RasterTileBitmapLoader(context.applicationContext, rasterTileBitmapLoaderScope)
+    val rasterTileBitmapLoader = remember(context.applicationContext, rasterTileBitmapLoaderScope, debugState.verboseLogs) {
+        RasterTileBitmapLoader(context.applicationContext, rasterTileBitmapLoaderScope, debugState.verboseLogs)
     }
     DisposableEffect(rasterTileBitmapLoader) {
         onDispose {
             rasterTileBitmapLoader.close()
         }
     }
-    LaunchedEffect(tiles, selectedMap.id, installRevision, debugState.fastTiles) {
+    LaunchedEffect(tiles, selectedMap.id, installRevision, debugState.fastTiles, debugState.verboseLogs) {
         var decodedCacheHits = 0
         tiles.forEach { tile ->
             val renderKey = renderTileKey(tile)
@@ -4969,18 +5001,22 @@ private fun MapExplorerPage(
             }
         }
         val missingTiles = tiles.filter { tile -> !tileBitmapCache.containsKey(renderTileKey(tile)) }
-        val decodedCacheStats = decodedTileBitmapCache.stats()
-        Log.i(
-            TileBudgetLogTag,
-            "visible map=${selectedMap.id} total=${tiles.size} missing=${missingTiles.size} localCache=${tileBitmapCache.size} decodedLru=${decodedCacheStats.entries}/${decodedCacheStats.bytes}B lruHits=$decodedCacheHits fastTiles=${debugState.fastTiles} groups=[${formatTileBudgetSummary(tiles)}]",
-        )
+        if (debugState.verboseLogs) {
+            val decodedCacheStats = decodedTileBitmapCache.stats()
+            Log.i(
+                TileBudgetLogTag,
+                "visible map=${selectedMap.id} total=${tiles.size} missing=${missingTiles.size} localCache=${tileBitmapCache.size} decodedLru=${decodedCacheStats.entries}/${decodedCacheStats.bytes}B lruHits=$decodedCacheHits fastTiles=${debugState.fastTiles} groups=[${formatTileBudgetSummary(tiles)}]",
+            )
+        }
         if (missingTiles.isEmpty()) {
             pageTilePaintTiming?.takeIf { tiles.isNotEmpty() }?.let { timing ->
                 withFrameNanos { }
-                Log.i(
-                    TileBudgetLogTag,
-                    "page-to-map-frame id=${timing.id} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} cacheOnly=true",
-                )
+                if (debugState.verboseLogs) {
+                    Log.i(
+                        TileBudgetLogTag,
+                        "page-to-map-frame id=${timing.id} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} cacheOnly=true",
+                    )
+                }
                 onPageTilePaintTimingComplete(timing.id)
             }
             return@LaunchedEffect
@@ -4988,10 +5024,12 @@ private fun MapExplorerPage(
         val loadStartMs = SystemClock.elapsedRealtime()
         val generationId = TileLoadGenerationIds.incrementAndGet()
         val (viewportLat, viewportLon) = viewportCenterLatLon(currentViewport)
-        Log.i(
-            TileBudgetLogTag,
-            "generation-start gen=$generationId map=${selectedMap.id} zoom=${"%.2f".format(currentViewport.zoom)} center=${"%.3f".format(viewportLat)},${"%.3f".format(viewportLon)} total=${tiles.size} missing=${missingTiles.size} cache=${tileBitmapCache.size}",
-        )
+        if (debugState.verboseLogs) {
+            Log.i(
+                TileBudgetLogTag,
+                "generation-start gen=$generationId map=${selectedMap.id} zoom=${"%.2f".format(currentViewport.zoom)} center=${"%.3f".format(viewportLat)},${"%.3f".format(viewportLon)} total=${tiles.size} missing=${missingTiles.size} cache=${tileBitmapCache.size}",
+            )
+        }
         var loadedThisPassCount = 0
         val loadedTiles = try {
             rasterTileBitmapLoader.loadVisibleTileBitmaps(
@@ -5005,17 +5043,21 @@ private fun MapExplorerPage(
                     loadedThisPassCount += 1
                     decodedTileBitmapCache.put(decodedTileCacheKey(loaded.tile), bitmap, loaded.result.decodedBytes)
                 } else {
-                    Log.w(
-                        TileBudgetLogTag,
-                        "generation-empty gen=$generationId key=${loaded.result.key} ${formatTileRef(loaded.tile)}",
-                    )
+                    if (debugState.verboseLogs) {
+                        Log.w(
+                            TileBudgetLogTag,
+                            "generation-empty gen=$generationId key=${loaded.result.key} ${formatTileRef(loaded.tile)}",
+                        )
+                    }
                 }
             }
         } catch (error: CancellationException) {
-            Log.w(
-                TileBudgetLogTag,
-                "generation-cancel gen=$generationId map=${selectedMap.id} loaded=$loadedThisPassCount/${missingTiles.size} elapsedMs=${SystemClock.elapsedRealtime() - loadStartMs}",
-            )
+            if (debugState.verboseLogs) {
+                Log.w(
+                    TileBudgetLogTag,
+                    "generation-cancel gen=$generationId map=${selectedMap.id} loaded=$loadedThisPassCount/${missingTiles.size} elapsedMs=${SystemClock.elapsedRealtime() - loadStartMs}",
+                )
+            }
             throw error
         }
         val tileResults = loadedTiles.map { it.result }
@@ -5023,45 +5065,53 @@ private fun MapExplorerPage(
         val decodeElapsedMs = tileResults.sumOf { it.decodeMs }
         val loadedBytes = tileResults.sumOf { it.bytes.toLong() }
         val loadedDecodedBytes = tileResults.sumOf { it.decodedBytes }
-        Log.i(
-            TileBudgetLogTag,
-            "generation-finish gen=$generationId map=${selectedMap.id} loaded=$loadedThisPassCount/${missingTiles.size} bytes=$loadedBytes decodedBytes=$loadedDecodedBytes elapsedMs=${SystemClock.elapsedRealtime() - loadStartMs} readMs=$readElapsedMs decodeMs=$decodeElapsedMs",
-        )
-        Log.i(
-            TileBudgetLogTag,
-            "batch map=${selectedMap.id} loaded=$loadedThisPassCount/${missingTiles.size} bytes=$loadedBytes decodedBytes=$loadedDecodedBytes elapsedMs=${SystemClock.elapsedRealtime() - loadStartMs}",
-        )
+        if (debugState.verboseLogs) {
+            Log.i(
+                TileBudgetLogTag,
+                "generation-finish gen=$generationId map=${selectedMap.id} loaded=$loadedThisPassCount/${missingTiles.size} bytes=$loadedBytes decodedBytes=$loadedDecodedBytes elapsedMs=${SystemClock.elapsedRealtime() - loadStartMs} readMs=$readElapsedMs decodeMs=$decodeElapsedMs",
+            )
+            Log.i(
+                TileBudgetLogTag,
+                "batch map=${selectedMap.id} loaded=$loadedThisPassCount/${missingTiles.size} bytes=$loadedBytes decodedBytes=$loadedDecodedBytes elapsedMs=${SystemClock.elapsedRealtime() - loadStartMs}",
+            )
+        }
         pageTilePaintTiming?.let { timing ->
-            Log.i(
-                TileBudgetLogTag,
-                "page-to-map-cache id=${timing.id} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} loadMs=${SystemClock.elapsedRealtime() - loadStartMs} loaded=$loadedThisPassCount/${missingTiles.size}",
-            )
+            if (debugState.verboseLogs) {
+                Log.i(
+                    TileBudgetLogTag,
+                    "page-to-map-cache id=${timing.id} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} loadMs=${SystemClock.elapsedRealtime() - loadStartMs} loaded=$loadedThisPassCount/${missingTiles.size}",
+                )
+            }
             withFrameNanos { }
-            Log.i(
-                TileBudgetLogTag,
-                "page-to-map-frame id=${timing.id} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs}",
-            )
+            if (debugState.verboseLogs) {
+                Log.i(
+                    TileBudgetLogTag,
+                    "page-to-map-frame id=${timing.id} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs}",
+                )
+            }
             onPageTilePaintTimingComplete(timing.id)
         }
-        val loadElapsedMs = SystemClock.elapsedRealtime() - loadStartMs
-        val cacheLoadedCount = tileBitmapCache.values.count { it != null }
-        val cacheMissCount = tileBitmapCache.size - cacheLoadedCount
-        val finalDecodedCacheStats = decodedTileBitmapCache.stats()
-        val visibleTileByKey = tiles.associateBy { renderTileKey(it) }
-        val cacheCounts = linkedMapOf<String, Int>()
-        tileBitmapCache.forEach { (key, bitmap) ->
-            val tile = visibleTileByKey[key] ?: return@forEach
-            val packageLabel = tile.mapView.packageName ?: tile.mapViewId
-            val summaryKey = "$packageLabel@z${tile.zoom}:${if (bitmap != null) "loaded" else "empty"}"
-            cacheCounts[summaryKey] = (cacheCounts[summaryKey] ?: 0) + 1
+        if (debugState.verboseLogs) {
+            val loadElapsedMs = SystemClock.elapsedRealtime() - loadStartMs
+            val cacheLoadedCount = tileBitmapCache.values.count { it != null }
+            val cacheMissCount = tileBitmapCache.size - cacheLoadedCount
+            val finalDecodedCacheStats = decodedTileBitmapCache.stats()
+            val visibleTileByKey = tiles.associateBy { renderTileKey(it) }
+            val cacheCounts = linkedMapOf<String, Int>()
+            tileBitmapCache.forEach { (key, bitmap) ->
+                val tile = visibleTileByKey[key] ?: return@forEach
+                val packageLabel = tile.mapView.packageName ?: tile.mapViewId
+                val summaryKey = "$packageLabel@z${tile.zoom}:${if (bitmap != null) "loaded" else "empty"}"
+                cacheCounts[summaryKey] = (cacheCounts[summaryKey] ?: 0) + 1
+            }
+            val cacheSummary = cacheCounts.entries
+                .sortedBy { it.key }
+                .joinToString(", ") { entry -> "${entry.key}=${entry.value}" }
+            Log.i(
+                TileBudgetLogTag,
+                "cache map=${selectedMap.id} entries=${tileBitmapCache.size} loaded=$cacheLoadedCount empty=$cacheMissCount fetched=$loadedThisPassCount bytes=$loadedBytes decodedBytes=$loadedDecodedBytes loadMs=$loadElapsedMs readMs=$readElapsedMs decodeMs=$decodeElapsedMs decodedLru=${finalDecodedCacheStats.entries}/${finalDecodedCacheStats.bytes}B groups=[$cacheSummary]",
+            )
         }
-        val cacheSummary = cacheCounts.entries
-            .sortedBy { it.key }
-            .joinToString(", ") { entry -> "${entry.key}=${entry.value}" }
-        Log.i(
-            TileBudgetLogTag,
-            "cache map=${selectedMap.id} entries=${tileBitmapCache.size} loaded=$cacheLoadedCount empty=$cacheMissCount fetched=$loadedThisPassCount bytes=$loadedBytes decodedBytes=$loadedDecodedBytes loadMs=$loadElapsedMs readMs=$readElapsedMs decodeMs=$decodeElapsedMs decodedLru=${finalDecodedCacheStats.entries}/${finalDecodedCacheStats.bytes}B groups=[$cacheSummary]",
-        )
     }
     val tileLabelPaint = remember {
         Paint().apply {
@@ -5192,7 +5242,7 @@ private fun MapExplorerPage(
             onViewportChange(nextViewport)
         }
     }
-    LaunchedEffect(uiSession, viewport, surfaceSize, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.offlineRegions.visible, devServerBaseUrl) {
+    LaunchedEffect(uiSession, viewport, surfaceSize, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.offlineRegions.visible, devServerBaseUrl, debugState.verboseLogs) {
         if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
             mapOverlayError = null
             return@LaunchedEffect
@@ -5277,11 +5327,13 @@ private fun MapExplorerPage(
                 currentCoroutineContext().ensureActive()
                 overlay = uiSession.queryMapOverlay(viewport, overlayWidthPx.toDouble(), overlayHeightPx.toDouble())
             }
-            val (centerLat, centerLon) = viewportCenterLatLon(viewport)
-            Log.i(
-                MapLayerLogTag,
-                "overlay center=${"%.3f".format(centerLat)},${"%.3f".format(centerLon)} zoom=${"%.2f".format(viewport.zoom)} size=${surfaceSize.width}x${surfaceSize.height} vectorsVisible=${mapLayerState.vectors.visible} metarsVisible=${mapLayerState.metars.visible} offlineRegionsVisible=${mapLayerState.offlineRegions.visible} neededMetars=${overlay.neededMetars} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} airspaceLabels=${overlay.airspaceLabels.size} offlineRegions=${overlay.offlineRegions.size} metars=${overlay.visibleMetars.size} pireps=${overlay.visiblePireps.size} neededPoints=${overlay.neededPointTiles.size} neededAirspaceRefs=${overlay.neededAirspaceRefTiles.size} neededAirspaceFeatures=${overlay.neededAirspaceFeatures.size} neededAirspaceLabels=${overlay.neededAirspaceLabelTiles.size} warnings=${overlay.warnings.size} elapsedMs=${SystemClock.elapsedRealtime() - overlayStartMs}",
-            )
+            if (debugState.verboseLogs) {
+                val (centerLat, centerLon) = viewportCenterLatLon(viewport)
+                Log.i(
+                    MapLayerLogTag,
+                    "overlay center=${"%.3f".format(centerLat)},${"%.3f".format(centerLon)} zoom=${"%.2f".format(viewport.zoom)} size=${surfaceSize.width}x${surfaceSize.height} vectorsVisible=${mapLayerState.vectors.visible} metarsVisible=${mapLayerState.metars.visible} offlineRegionsVisible=${mapLayerState.offlineRegions.visible} neededMetars=${overlay.neededMetars} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} airspaceLabels=${overlay.airspaceLabels.size} offlineRegions=${overlay.offlineRegions.size} metars=${overlay.visibleMetars.size} pireps=${overlay.visiblePireps.size} neededPoints=${overlay.neededPointTiles.size} neededAirspaceRefs=${overlay.neededAirspaceRefTiles.size} neededAirspaceFeatures=${overlay.neededAirspaceFeatures.size} neededAirspaceLabels=${overlay.neededAirspaceLabelTiles.size} warnings=${overlay.warnings.size} elapsedMs=${SystemClock.elapsedRealtime() - overlayStartMs}",
+                )
+            }
             overlay
         } catch (error: CancellationException) {
             mapOverlayError = null
@@ -5296,15 +5348,19 @@ private fun MapExplorerPage(
         committedOverlaySurfaceUnits = OverlaySurfaceUnits(overlayWidthPx, overlayHeightPx)
         mapOverlayError = null
     }
-    LaunchedEffect(uiSession, mapLayerState.nexrad.visible, mapLayerState.nexrad.enabled, devServerBaseUrl) {
+    LaunchedEffect(uiSession, mapLayerState.nexrad.visible, mapLayerState.nexrad.enabled, devServerBaseUrl, debugState.verboseLogs) {
         val effectStartMs = SystemClock.elapsedRealtime()
         if (!mapLayerState.nexrad.visible || !mapLayerState.nexrad.enabled) {
             nexradFrameIndex = 0
-            Log.i(MapLayerLogTag, "nexrad hidden cachedFrames=${nexradFrames.size} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}")
+            if (debugState.verboseLogs) {
+                Log.i(MapLayerLogTag, "nexrad hidden cachedFrames=${nexradFrames.size} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}")
+            }
             return@LaunchedEffect
         }
         if (nexradFrameSourceUrl == devServerBaseUrl && nexradFrames.isNotEmpty()) {
-            Log.i(MapLayerLogTag, "nexrad cached frames=${nexradFrames.size} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}")
+            if (debugState.verboseLogs) {
+                Log.i(MapLayerLogTag, "nexrad cached frames=${nexradFrames.size} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}")
+            }
             return@LaunchedEffect
         }
         runCatching {
@@ -5335,10 +5391,12 @@ private fun MapExplorerPage(
                     NexradOverlayFrame(frame = frame, bitmap = bitmap.asImageBitmap())
                 }
             }
-            Log.i(
-                MapLayerLogTag,
-                "nexrad loaded frames=${frames.size} manifestBytes=$manifestBytes imageBytes=$imageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}",
-            )
+            if (debugState.verboseLogs) {
+                Log.i(
+                    MapLayerLogTag,
+                    "nexrad loaded frames=${frames.size} manifestBytes=$manifestBytes imageBytes=$imageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}",
+                )
+            }
             frames
         }.onSuccess { frames ->
             nexradFrames = frames
@@ -5361,18 +5419,22 @@ private fun MapExplorerPage(
             nexradFrameIndex = (nexradFrameIndex + 1) % nexradFrames.size
         }
     }
-    LaunchedEffect(uiSession, viewport, surfaceSize, mapLayerState.terrainWarning.visible, devServerBaseUrl) {
+    LaunchedEffect(uiSession, viewport, surfaceSize, mapLayerState.terrainWarning.visible, devServerBaseUrl, debugState.verboseLogs) {
         val effectStartMs = SystemClock.elapsedRealtime()
         if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
             terrainOverlay = emptyList()
             terrainOverlayError = null
-            Log.i(MapLayerLogTag, "terrain skipped reason=empty-surface elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}")
+            if (debugState.verboseLogs) {
+                Log.i(MapLayerLogTag, "terrain skipped reason=empty-surface elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}")
+            }
             return@LaunchedEffect
         }
         if (!mapLayerState.terrainWarning.visible) {
             terrainOverlay = emptyList()
             terrainOverlayError = null
-            Log.i(MapLayerLogTag, "terrain disabled elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}")
+            if (debugState.verboseLogs) {
+                Log.i(MapLayerLogTag, "terrain disabled elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}")
+            }
             return@LaunchedEffect
         }
         runCatching {
@@ -5386,10 +5448,12 @@ private fun MapExplorerPage(
             val query = uiSession.queryTerrainOverlay(viewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble())
                 .also { queryMs = SystemClock.elapsedRealtime() - effectStartMs }
             if (query.status !is net.jonh.aerobag.prototype.domain.TerrainOverlayStatus.Ready) {
-                Log.i(
-                    MapLayerLogTag,
-                    "terrain not-ready status=${query.status::class.java.simpleName} queryMs=$queryMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}",
-                )
+                if (debugState.verboseLogs) {
+                    Log.i(
+                        MapLayerLogTag,
+                        "terrain not-ready status=${query.status::class.java.simpleName} queryMs=$queryMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}",
+                    )
+                }
                 emptyList()
             } else {
                 requestCount = query.tileRequests.size
@@ -5434,10 +5498,12 @@ private fun MapExplorerPage(
                         )
                     }.filterNotNull()
                 }
-                Log.i(
-                    MapLayerLogTag,
-                    "terrain loaded requests=$requestCount images=${images.size} sourceBytes=$sourceBytesTotal rawBytes=$rawBytesTotal queryMs=$queryMs fetchMs=$fetchMs renderMs=$renderMs parseMs=$parseMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}",
-                )
+                if (debugState.verboseLogs) {
+                    Log.i(
+                        MapLayerLogTag,
+                        "terrain loaded requests=$requestCount images=${images.size} sourceBytes=$sourceBytesTotal rawBytes=$rawBytesTotal queryMs=$queryMs fetchMs=$fetchMs renderMs=$renderMs parseMs=$parseMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}",
+                    )
+                }
                 images
             }
         }.onSuccess { images ->
@@ -5465,7 +5531,8 @@ private fun MapExplorerPage(
             toSurface = OverlaySurfaceUnits(surfaceWidthPx, surfaceHeightPx),
         )
     }
-    LaunchedEffect(currentViewport, surfaceWidthPx, surfaceHeightPx, tiles, nexradFrames, nexradFrameIndex, terrainOverlay) {
+    LaunchedEffect(currentViewport, surfaceWidthPx, surfaceHeightPx, tiles, nexradFrames, nexradFrameIndex, terrainOverlay, debugState.verboseLogs) {
+        if (!debugState.verboseLogs) return@LaunchedEffect
         if (surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) return@LaunchedEffect
         val topLeftWorld = screenToWorldOffset(currentViewport, 0f, 0f, surfaceWidthPx, surfaceHeightPx)
         val bottomRightWorld = screenToWorldOffset(currentViewport, surfaceWidthPx, surfaceHeightPx, surfaceWidthPx, surfaceHeightPx)
@@ -5556,10 +5623,12 @@ private fun MapExplorerPage(
                     -> -0.35
                     else -> return@onPreviewKeyEvent false
                 }
-                Log.i(
-                    MapViewportLogTag,
-                    "key-zoom map=${selectedMap.id} delta=${"%.2f".format(delta)} base=${"%.2f".format(viewportState.value.zoom)}",
-                )
+                if (debugState.verboseLogs) {
+                    Log.i(
+                        MapViewportLogTag,
+                        "key-zoom map=${selectedMap.id} delta=${"%.2f".format(delta)} base=${"%.2f".format(viewportState.value.zoom)}",
+                    )
+                }
                 updateViewport(
                     zoomAroundPoint(
                         viewport = viewportState.value,
@@ -5596,10 +5665,12 @@ private fun MapExplorerPage(
                             }
                             mapGestureActive = true
                             if (!loggedGestureSeed) {
-                                Log.i(
-                                    MapViewportLogTag,
-                                    "gesture-start map=${selectedMap.id} seed=${"%.2f".format(viewportState.value.zoom)} local=${"%.2f".format(viewportState.value.zoom)} center=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)}",
-                                )
+                                if (debugState.verboseLogs) {
+                                    Log.i(
+                                        MapViewportLogTag,
+                                        "gesture-start map=${selectedMap.id} seed=${"%.2f".format(viewportState.value.zoom)} local=${"%.2f".format(viewportState.value.zoom)} center=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)}",
+                                    )
+                                }
                                 gestureViewport = viewportState.value
                                 loggedGestureSeed = true
                             }
@@ -6974,7 +7045,6 @@ private fun FlightPlanPage(
 
     LaunchedEffect(rows, pendingSelectedRowKey) {
         val selectionKey = pendingSelectedRowKey ?: return@LaunchedEffect
-        Log.d("AerobagReorder", "resolveSelection pendingKey=$selectionKey rows=${rows.joinToString(" | ") { "${it.selectionKey}:${it.rowKind}:${it.label}" }}")
         val nextIndex =
             rows.indexOfFirst { row ->
                 row.selectionKey == selectionKey
@@ -9902,6 +9972,7 @@ private fun CommonDebugPanel(
     Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
     DebugCheckbox("tile labels", debugState.tileLabels) { onDebugFlagChange("tile_labels", it) }
     DebugCheckbox("fast tiles", debugState.fastTiles) { onDebugFlagChange("fast_tiles", it) }
+    DebugCheckbox("verbose logs", debugState.verboseLogs) { onDebugFlagChange("verbose_logs", it) }
     DebugCheckbox("offline simulated clock buttons", debugState.offlineSimulatedClockButtons) {
         onDebugFlagChange("offline_simulated_clock_buttons", it)
     }

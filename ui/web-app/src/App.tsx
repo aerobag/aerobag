@@ -123,7 +123,7 @@ import type {
   VisiblePirepFeature,
 } from "./domain/appCoreAdapter";
 import { airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
-import { debugLog, debugTiming, installGlobalErrorLogging, verboseDebugLog } from "./domain/debugLog";
+import { debugLog, debugTiming, installGlobalErrorLogging, setVerboseDebugLoggingEnabled, verboseDebugLog } from "./domain/debugLog";
 import { TerrainRenderWorkerClient } from "./domain/terrainRenderWorkerClient";
 
 type SurfaceSize = {
@@ -1048,6 +1048,7 @@ function defaultUiDebugState(): UiDebugState {
     fast_tiles: false,
     offline_simulated_clock_buttons: false,
     sequencing_finish_lines: false,
+    verbose_logs: false,
   };
 }
 
@@ -1170,6 +1171,9 @@ export default function App() {
     }
     setSessionSnapshot(await uiSession.setDebugFlag(flagId, enabled));
   }, [uiSession]);
+  useEffect(() => {
+    setVerboseDebugLoggingEnabled(sessionSnapshot.debug_state.verbose_logs);
+  }, [sessionSnapshot.debug_state.verbose_logs]);
   const applySituationControlInput = useCallback(async (input: SituationControlInput) => {
     if (!uiSession) {
       return;
@@ -7112,6 +7116,7 @@ function CommonDebugPanel(props: {
   const flags: Array<{ id: DebugFlagId; label: string }> = [
     { id: "tile_labels", label: "tile labels" },
     { id: "fast_tiles", label: "fast tiles" },
+    { id: "verbose_logs", label: "verbose logs" },
     { id: "offline_simulated_clock_buttons", label: "offline simulated clock buttons" },
     { id: "sequencing_finish_lines", label: "sequencing finish lines" },
   ];

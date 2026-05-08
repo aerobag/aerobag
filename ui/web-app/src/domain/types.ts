@@ -332,6 +332,7 @@ export type RouteComponentUiView = {
   procedure_id: string | null;
   procedure_kind: ProcedureKind | null;
   chart_airport_id: string | null;
+  nav_ref: NavRef | null;
   items: ConcretizedNavItem[];
   active: boolean;
   can_add_airway_after: boolean;

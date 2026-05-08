@@ -7622,8 +7622,7 @@ function componentWaypointNavRef(component: FlightPlanUiState["components"][numb
   if (!component) {
     return null;
   }
-  const item = component.items[0];
-  return item && item.kind === "waypoint" ? item.nav_ref : null;
+  return component.nav_ref;
 }
 
 function navRefsEqual(left: NavRef | null, right: NavRef | null) {

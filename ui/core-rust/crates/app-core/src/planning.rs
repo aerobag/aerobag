@@ -1004,6 +1004,7 @@ pub struct RouteComponentUiView {
     pub procedure_id: Option<String>,
     pub procedure_kind: Option<ProcedureKind>,
     pub chart_airport_id: Option<String>,
+    pub nav_ref: Option<NavRef>,
     pub items: Vec<ConcretizedNavItem>,
     pub active: bool,
     pub can_add_airway_after: bool,
@@ -1774,6 +1775,10 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
         .iter()
         .enumerate()
         .map(|(component_index, component)| {
+            let component_nav_ref = match component {
+                RouteComponent::Waypoint { waypoint } => Some(waypoint.clone()),
+                RouteComponent::Airway { .. } | RouteComponent::Procedure { .. } => None,
+            };
             let preceding_waypoint =
                 adjacent_waypoint_component(&plan.route_components, component_index, -1);
             let following_waypoint =
@@ -1788,6 +1793,7 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
                 procedure_id: component_procedure_id(component),
                 procedure_kind: component_procedure_kind(component),
                 chart_airport_id: component_chart_airport_id(component),
+                nav_ref: component_nav_ref,
                 items: projected_items
                     .get(component_index)
                     .cloned()
@@ -1984,8 +1990,9 @@ fn project_display_rows(
     for component in components {
         let chart_airport_id = component.chart_airport_id.clone();
         if component.kind == RouteComponentViewKind::Waypoint {
-            let nav_ref = component_waypoint_nav_ref(component);
-            let origin_anchor = nav_ref.clone();
+            let nav_ref = component.nav_ref.clone();
+            let projected_nav_ref = projected_component_waypoint_nav_ref(component);
+            let origin_anchor = projected_nav_ref.clone();
             let destination_anchor = component.following_waypoint.clone();
             let end_component_index = if destination_anchor.is_some() {
                 Some(component.component_index + 1)
@@ -2000,7 +2007,7 @@ fn project_display_rows(
                     FlightPlanDisplayRowKind::Waypoint,
                     0,
                     leg_index,
-                    nav_ref.as_ref(),
+                    projected_nav_ref.as_ref(),
                     component.can_add_airway_after,
                     component.can_add_procedure_before,
                     component.can_remove,
@@ -2605,27 +2612,35 @@ fn waypoint_actions_for_row(
 }
 
 fn top_level_waypoint_row_leg_index(plan: &FlightPlan, component_index: usize) -> Option<usize> {
-    let leg_index = component_index.checked_sub(1).unwrap_or(0);
-    let leg = plan.resolved_legs.get(leg_index)?;
     let Some(RouteComponent::Waypoint { waypoint }) = plan.route_components.get(component_index)
     else {
         return None;
     };
     if component_index == 0 {
-        return Some(leg_index);
+        return Some(0).filter(|index| plan.resolved_legs.get(*index).is_some());
     }
-    if &leg.to == waypoint {
-        Some(leg_index)
-    } else if matches!(
-        component_index
-            .checked_sub(1)
-            .and_then(|index| plan.route_components.get(index)),
-        Some(RouteComponent::Procedure { .. })
-    ) {
-        last_guidance_leg_index_for_component(plan, component_index - 1)
-    } else {
-        None
-    }
+    plan.resolved_legs
+        .iter()
+        .enumerate()
+        .find(|(_, leg)| {
+            &leg.to == waypoint
+                && match leg.source {
+                    ResolvedLegSource::RouteComponent {
+                        component_index: source_component_index,
+                    } => {
+                        source_component_index + 1 == component_index
+                            && matches!(
+                                plan.route_components.get(source_component_index),
+                                Some(RouteComponent::Waypoint { .. })
+                            )
+                    }
+                    ResolvedLegSource::SyntheticBridge {
+                        to_component_index, ..
+                    } => to_component_index == component_index,
+                    ResolvedLegSource::LegacyPlanLeg { .. } => false,
+                }
+        })
+        .map(|(index, _)| index)
 }
 
 fn child_waypoint_row_leg_index(
@@ -2833,7 +2848,7 @@ fn action_label(id: &FlightPlanRowActionId) -> &'static str {
     }
 }
 
-fn component_waypoint_nav_ref(component: &RouteComponentUiView) -> Option<NavRef> {
+fn projected_component_waypoint_nav_ref(component: &RouteComponentUiView) -> Option<NavRef> {
     component.items.iter().find_map(|item| match item {
         ConcretizedNavItem::Waypoint { nav_ref } => Some(nav_ref.clone()),
         ConcretizedNavItem::Discontinuity { .. } => None,
@@ -4141,7 +4156,6 @@ fn dedupe_component_items_for_projection(
         if left_nav_ref != right_nav_ref {
             continue;
         }
-
         let hide_right = matches!(
             components.get(boundary_index),
             Some(RouteComponent::Waypoint { .. })
@@ -6983,7 +6997,10 @@ mod tests {
         assert_eq!(guidance.active_leg_index, Some(0));
         assert_eq!(active_to_row.nav_ref, Some(NavRef::Fix("IAF".to_string())));
         for row in rows.iter().filter(|row| {
-            row.row_kind == FlightPlanDisplayRowKind::Waypoint && row.component_index.is_some()
+            row.row_kind == FlightPlanDisplayRowKind::Waypoint
+                && row.component_index.is_some()
+                && row.leg_index.is_some()
+                && row.leg_index != guidance.active_leg_index
         }) {
             let activate_leg = row
                 .actions
@@ -7044,6 +7061,67 @@ mod tests {
         assert_eq!(rows[3].label, "IAF");
         assert_eq!(rows[3].leg_index, Some(2));
         assert_ne!(rows[1].uid, rows[3].uid);
+    }
+
+    #[test]
+    fn adjacent_duplicate_waypoint_rows_keep_nav_refs() {
+        let inserted = insert_waypoint(
+            &sample_waypoint_only_plan(),
+            2,
+            true,
+            NavRef::Airport("KHIO".to_string()),
+        )
+        .unwrap();
+        let ui = project_ui_state(&inserted);
+        let rows = ui
+            .display_rows
+            .iter()
+            .filter(|row| row.row_kind == FlightPlanDisplayRowKind::Waypoint && row.depth == 0)
+            .collect::<Vec<_>>();
+        let hio_rows = rows
+            .iter()
+            .filter(|row| row.label == "KHIO")
+            .collect::<Vec<_>>();
+
+        assert_eq!(hio_rows.len(), 2);
+        assert!(hio_rows
+            .iter()
+            .all(|row| row.nav_ref == Some(NavRef::Airport("KHIO".to_string()))));
+    }
+
+    #[test]
+    fn adjacent_duplicate_waypoint_only_resolved_target_is_activatable() {
+        let inserted = insert_waypoint(
+            &sample_waypoint_only_plan(),
+            2,
+            true,
+            NavRef::Airport("KHIO".to_string()),
+        )
+        .unwrap();
+        let ui = project_ui_state(&inserted);
+        let hio_rows = ui
+            .display_rows
+            .iter()
+            .filter(|row| {
+                row.row_kind == FlightPlanDisplayRowKind::Waypoint && row.label == "KHIO"
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(hio_rows.len(), 2);
+        assert_eq!(hio_rows[0].leg_index, None);
+        assert_eq!(hio_rows[1].leg_index, Some(1));
+        assert!(!hio_rows[0]
+            .actions
+            .iter()
+            .find(|action| action.id == FlightPlanRowActionId::ActivateLeg)
+            .expect("activate-leg action")
+            .enabled);
+        assert!(hio_rows[1]
+            .actions
+            .iter()
+            .find(|action| action.id == FlightPlanRowActionId::ActivateLeg)
+            .expect("activate-leg action")
+            .enabled);
     }
 
     #[test]

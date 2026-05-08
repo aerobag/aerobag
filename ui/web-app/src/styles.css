@@ -1097,6 +1097,8 @@ button {
 
 @media (max-width: 720px) and (orientation: portrait) {
   .plateDock {
+    --thumb: min(3.9rem, calc((100vw - 12px) / 6.25));
+    --thumb-gap: calc(var(--thumb) * 0.055);
     gap: calc(var(--thumb-gap) * 0.55);
     max-width: calc(100vw - (var(--thumb-gap) * 2));
   }

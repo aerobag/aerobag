@@ -3218,7 +3218,9 @@ private fun OfflinePackagesErrorPanel(
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     Surface(
-        modifier = modifier.fillMaxSize(),
+        modifier = modifier
+            .fillMaxSize()
+            .testTag("parity:offline-library-panel"),
         shape = RoundedCornerShape(ThumbRadius + 4.dp),
         color = uiTheme.controls.panelBg,
         contentColor = uiTheme.controls.panelFg,
@@ -3311,12 +3313,14 @@ private fun OfflinePackagesLibraryPanel(
                         .height(ThumbSize * 0.72f),
                     maxLines = if (refreshInFlight) 2 else 1,
                     enabled = !cancelRequested && if (refreshInFlight) refreshCancelEnabled else refreshEnabled,
+                    testTag = "parity:offline-refresh-button",
                     onClick = if (refreshInFlight) onCancelRefresh else onRefresh,
                 )
                 CompactSquareButton(
                     label = "X",
                     modifier = Modifier.size(ThumbSize * 0.72f),
                     enabled = closeEnabled,
+                    testTag = "parity:offline-close-button",
                     onClick = onClose,
                 )
             }
@@ -3389,7 +3393,9 @@ private fun OfflinePackagesPanel(
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     Surface(
-        modifier = modifier.fillMaxSize(),
+        modifier = modifier
+            .fillMaxSize()
+            .testTag("parity:offline-packages-panel"),
         shape = RoundedCornerShape(ThumbRadius + 4.dp),
         color = uiTheme.controls.panelBg,
         contentColor = uiTheme.controls.panelFg,
@@ -3426,6 +3432,7 @@ private fun OfflinePackagesPanel(
                         .height(ThumbSize * 0.72f),
                     maxLines = if (libraryRefreshInFlight) 2 else 1,
                     enabled = !cancelRequested && if (libraryRefreshInFlight) refreshCancelEnabled else refreshEnabled,
+                    testTag = "parity:offline-refresh-button",
                     onClick = if (libraryRefreshInFlight) onCancelRefresh else onRefreshLibrary,
                 )
                 CompactSquareButton(
@@ -3439,12 +3446,14 @@ private fun OfflinePackagesPanel(
                         .height(ThumbSize * 0.72f),
                     maxLines = if (syncInFlight) 2 else 1,
                     enabled = !cancelRequested && if (syncInFlight) syncCancelEnabled else syncEnabled,
+                    testTag = "parity:offline-sync-button",
                     onClick = if (syncInFlight) onCancelOperation else onSync,
                 )
                 CompactSquareButton(
                     label = "X",
                     modifier = Modifier.size(ThumbSize * 0.72f),
                     enabled = closeEnabled,
+                    testTag = "parity:offline-close-button",
                     onClick = onClose,
                 )
             }
@@ -3526,6 +3535,7 @@ private fun OfflinePackagesPanel(
                 item("regions") {
                     OfflinePackageSection(
                         title = "REGIONS",
+                        testTagPrefix = "parity:offline-region",
                         options = regionOptions,
                         rows = uiState.regions,
                         enabled = plannerInteractionsEnabled,
@@ -3537,6 +3547,7 @@ private fun OfflinePackagesPanel(
                 item("products") {
                     OfflinePackageSection(
                         title = "PRODUCTS",
+                        testTagPrefix = "parity:offline-product",
                         options = productOptions,
                         rows = uiState.products,
                         enabled = plannerInteractionsEnabled,
@@ -3570,6 +3581,7 @@ private fun OfflinePackageAllSection(
 @Composable
 private fun OfflinePackageSection(
     title: String,
+    testTagPrefix: String,
     options: List<OfflinePackageDimension>,
     rows: List<OfflinePackagesUiRowWire>,
     enabled: Boolean,
@@ -3593,6 +3605,7 @@ private fun OfflinePackageSection(
             OfflinePackageSelectionRow(
                 label = option.label,
                 row = row,
+                testTag = "$testTagPrefix:${option.id}",
                 enabled = enabled,
                 onClick = { onRowClick(option.id) },
             )
@@ -3634,6 +3647,7 @@ private fun OfflinePackageCoreSection(
 private fun OfflinePackageSelectionRow(
     label: String,
     row: OfflinePackagesUiRowWire,
+    testTag: String,
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
@@ -3642,6 +3656,7 @@ private fun OfflinePackageSelectionRow(
         row = row,
         enabled = enabled,
         onCycleClick = onClick,
+        testTag = testTag,
     )
 }
 
@@ -3653,6 +3668,7 @@ private fun OfflinePackagePlanRow(
     onCycleClick: (() -> Unit)?,
     showSelectionIcon: Boolean = true,
     backgroundOverride: Color? = null,
+    testTag: String? = null,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val background = backgroundOverride ?: when (row.selection) {
@@ -3665,6 +3681,7 @@ private fun OfflinePackagePlanRow(
         modifier = Modifier
             .fillMaxWidth()
             .height(ThumbSize)
+            .then(testTag?.let { Modifier.testTag(it) } ?: Modifier)
             .clip(RoundedCornerShape(ThumbRadius))
             .background(background)
             .drawBehind {
@@ -3684,6 +3701,7 @@ private fun OfflinePackagePlanRow(
                 modifier = Modifier
                     .size(ThumbSize * 0.46f)
                     .clip(CircleShape)
+                    .then(testTag?.let { Modifier.testTag("$it:toggle") } ?: Modifier)
                     .then(
                         if (enabled && onCycleClick != null) {
                             Modifier.clickable(
@@ -8355,72 +8373,80 @@ private fun ChartViewerSelectors(
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val trayOpen = airportTrayOpen || chartTrayOpen || loadTrayOpen
-    Row(
-        modifier = modifier.padding(ThumbGap),
-        horizontalArrangement = Arrangement.spacedBy(ThumbGap),
-        verticalAlignment = Alignment.Top,
-    ) {
-        CompactSquareButton(
-            label = "HOME",
-            modifier = Modifier.size(ThumbSize),
-            selected = currentPage == AppPage.Home,
-            onClick = { onSelectPage(AppPage.Home) },
-        )
+    BoxWithConstraints(modifier = modifier) {
+        val rowHorizontalPadding = ThumbGap * 2f
+        val rowGaps = ThumbGap * 5f
+        val fixedButtonsWidth = ThumbSize * 5f
+        val chartButtonWidth = (maxWidth - rowHorizontalPadding - rowGaps - fixedButtonsWidth)
+            .coerceIn(ThumbSize, MenuDockStyle.PlateWide.buttonWidth)
+        Row(
+            modifier = Modifier.padding(ThumbGap),
+            horizontalArrangement = Arrangement.spacedBy(ThumbGap),
+            verticalAlignment = Alignment.Top,
+        ) {
+            CompactSquareButton(
+                label = "HOME",
+                modifier = Modifier.size(ThumbSize),
+                selected = currentPage == AppPage.Home,
+                onClick = { onSelectPage(AppPage.Home) },
+            )
 
-        ChartPlateToggleButton(
-            currentPage = currentPage,
-            onSelectPage = onSelectPage,
-        )
+            ChartPlateToggleButton(
+                currentPage = currentPage,
+                onSelectPage = onSelectPage,
+            )
 
-        MenuDock(
-            launcherLabel = selectedAirport?.id ?: "---",
-            launcherTestTag = "parity:plate-airport-button",
-            optionTestTagPrefix = "parity:tray-option",
-            open = airportTrayOpen,
-            onToggle = onToggleAirportTray,
-            style = MenuDockStyle.PlateAirport,
-            options = airports.map { airport ->
-                MenuDockOption(airport.id, airport.id, active = airport.id == selectedAirport?.id) { onSelectAirport(airport.id) }
-            },
-        )
+            MenuDock(
+                launcherLabel = selectedAirport?.id ?: "---",
+                launcherTestTag = "parity:plate-airport-button",
+                optionTestTagPrefix = "parity:tray-option",
+                open = airportTrayOpen,
+                onToggle = onToggleAirportTray,
+                style = MenuDockStyle.PlateAirport,
+                options = airports.map { airport ->
+                    MenuDockOption(airport.id, airport.id, active = airport.id == selectedAirport?.id) { onSelectAirport(airport.id) }
+                },
+            )
 
-        MenuDock(
-            launcherLabel = selectedChart?.label ?: "---",
-            launcherTestTag = "parity:plate-chart-button",
-            optionTestTagPrefix = "parity:tray-option",
-            open = chartTrayOpen,
-            onToggle = onToggleChartTray,
-            style = MenuDockStyle.PlateWide,
-            options = (selectedAirport?.charts ?: emptyList()).map { chart ->
-                MenuDockOption(
-                    chart.id,
-                    chart.label,
-                    active = chart.id == selectedChart?.id,
-                    accentColor = plateFolderColor(uiTheme, chart.folderCategory),
-                ) { onSelectChart(chart.id) }
-            },
-        )
+            MenuDock(
+                launcherLabel = selectedChart?.label ?: "---",
+                launcherTestTag = "parity:plate-chart-button",
+                optionTestTagPrefix = "parity:tray-option",
+                open = chartTrayOpen,
+                onToggle = onToggleChartTray,
+                style = MenuDockStyle.PlateWide,
+                buttonWidthOverride = chartButtonWidth,
+                options = (selectedAirport?.charts ?: emptyList()).map { chart ->
+                    MenuDockOption(
+                        chart.id,
+                        chart.label,
+                        active = chart.id == selectedChart?.id,
+                        accentColor = plateFolderColor(uiTheme, chart.folderCategory),
+                    ) { onSelectChart(chart.id) }
+                },
+            )
 
-        MenuDock(
-            launcherLabel = "LOAD\nAPPCH",
-            launcherTestTag = "parity:plate-load-button",
-            optionTestTagPrefix = "parity:tray-option",
-            open = loadTrayOpen,
-            onToggle = onToggleLoadTray,
-            style = MenuDockStyle.Compact,
-            disabled = plateProcedureLoads.isEmpty(),
-            options = plateProcedureLoads.map { load ->
-                MenuDockOption(load.loadId, load.label) { onSelectProcedureLoad(load.loadId) }
-            },
-        )
+            MenuDock(
+                launcherLabel = "LOAD\nAPPCH",
+                launcherTestTag = "parity:plate-load-button",
+                optionTestTagPrefix = "parity:tray-option",
+                open = loadTrayOpen,
+                onToggle = onToggleLoadTray,
+                style = MenuDockStyle.Compact,
+                disabled = plateProcedureLoads.isEmpty(),
+                options = plateProcedureLoads.map { load ->
+                    MenuDockOption(load.loadId, load.label) { onSelectProcedureLoad(load.loadId) }
+                },
+            )
 
-        CompactSquareButton(
-            label = "FLDR",
-            modifier = Modifier.size(ThumbSize),
-            testTag = "parity:plate-folder-button",
-            enabled = !trayOpen && !folderOpen,
-            onClick = onToggleFolder,
-        )
+            CompactSquareButton(
+                label = "FLDR",
+                modifier = Modifier.size(ThumbSize),
+                testTag = "parity:plate-folder-button",
+                enabled = !trayOpen && !folderOpen,
+                onClick = onToggleFolder,
+            )
+        }
     }
 }
 
@@ -8504,6 +8530,7 @@ private fun MenuDock(
     open: Boolean,
     onToggle: () -> Unit,
     style: MenuDockStyle,
+    buttonWidthOverride: Dp? = null,
     disabled: Boolean = false,
     options: List<MenuDockOption>,
     body: (@Composable ColumnScope.() -> Unit)? = null,
@@ -8519,9 +8546,10 @@ private fun MenuDock(
         ((screenHeightPx - anchorTopPx - trayOffsetPx - trayBottomMarginPx).coerceAtLeast(ThumbSize.toPx())).toDp()
     }
     val launcherAccentColor = options.firstOrNull { it.active }?.accentColor
+    val buttonWidth = buttonWidthOverride ?: style.buttonWidth
     Box(
         modifier = modifier
-            .width(style.buttonWidth)
+            .width(buttonWidth)
             .height(ThumbSize)
             .wrapContentSize(unbounded = true, align = Alignment.TopStart),
     ) {
@@ -8534,7 +8562,7 @@ private fun MenuDock(
             wide = style != MenuDockStyle.Compact,
             testTag = launcherTestTag,
             modifier = Modifier
-                .width(style.buttonWidth)
+                .width(buttonWidth)
                 .height(ThumbSize)
                 .align(Alignment.TopStart)
                 .onGloballyPositioned { coordinates ->

@@ -12,8 +12,12 @@ const JOURNEY_NAME = "flight-plan-inspect-insert";
 const ANDROID_PACKAGE = "net.jonh.aerobag.prototype";
 const ANDROID_ACTIVITY = `${ANDROID_PACKAGE}/.MainActivity`;
 const LAYER_OPTION_IDS = ["vectors", "metars", "nexrad", "terrain_warning", "world_basemap", "offline_regions"];
+const ANDROID_OFFLINE_REGION_IDS = ["ak", "ec", "nc", "ne", "nw", "pac", "sc", "se", "sw"];
 const PLAN_CONTROL_IDS = ["next-leg", "sequence", "suspend", "unsuspend"];
 const CORE_ROW_ACTION_IDS = ["activate_leg", "direct_to", "insert_before", "insert_after", "move_up", "move_down"];
+const PLATE_CONTROL_IDS = ["airport-button", "chart-button", "load-button", "folder-button"];
+const PLATE_CONTROL_WEB_PREFIX = "plate-";
+const PLATE_CONTROL_ANDROID_PREFIX = "parity:plate-";
 const WEB_PARITY_VIEWPORT = Object.freeze({
   width: 360,
   height: 736,
@@ -625,6 +629,167 @@ async function webCollectTestIds(cdp, prefix) {
   `);
 }
 
+async function webCheckControlsUnobscured(cdp, testIds) {
+  return webEval(cdp, `
+    (() => {
+      const testIds = ${JSON.stringify(testIds)};
+      const controls = [];
+      const failures = [];
+      for (const testId of testIds) {
+        const el = document.querySelector(\`[data-testid="\${testId}"]\`);
+        if (!el) {
+          failures.push(\`\${testId}: missing\`);
+          continue;
+        }
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) {
+          failures.push(\`\${testId}: empty bounds \${rect.width}x\${rect.height}\`);
+          continue;
+        }
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+        if (centerX < 0 || centerY < 0 || centerX > window.innerWidth || centerY > window.innerHeight) {
+          failures.push(\`\${testId}: center outside viewport at \${centerX.toFixed(1)},\${centerY.toFixed(1)}\`);
+        }
+        const topElement = document.elementFromPoint(centerX, centerY);
+        if (topElement && topElement !== el && !el.contains(topElement)) {
+          const topId = topElement.closest("[data-testid]")?.getAttribute("data-testid") ?? topElement.tagName;
+          failures.push(\`\${testId}: center covered by \${topId}\`);
+        }
+        controls.push({
+          testId,
+          left: rect.left,
+          top: rect.top,
+          right: rect.right,
+          bottom: rect.bottom,
+          width: rect.width,
+          height: rect.height,
+        });
+      }
+      for (let i = 0; i < controls.length; i += 1) {
+        for (let j = i + 1; j < controls.length; j += 1) {
+          const a = controls[i];
+          const b = controls[j];
+          const width = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+          const height = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+          if (width * height > 4) {
+            failures.push(\`\${a.testId} overlaps \${b.testId} by \${width.toFixed(1)}x\${height.toFixed(1)}\`);
+          }
+        }
+      }
+      return {
+        ok: failures.length === 0,
+        detail: failures.length === 0 ? \`\${controls.length} controls unobscured\` : failures.join("; "),
+      };
+    })()
+  `);
+}
+
+async function webSelectTrayOptionById(cdp, launcherSelector, id, description) {
+  await webClick(cdp, launcherSelector);
+  const optionSelector = `[data-testid="tray-option-${id}"]`;
+  await waitForWeb(cdp, `document.querySelector(${JSON.stringify(optionSelector)}) !== null`, description);
+  await cdp.send("Runtime.evaluate", {
+    expression: `document.querySelector(${JSON.stringify(optionSelector)})?.click()`,
+    awaitPromise: true,
+  });
+}
+
+async function webSelectTrayOptionByLabel(cdp, launcherSelector, label, description) {
+  await webClick(cdp, launcherSelector);
+  await waitForWeb(cdp, "document.querySelector('[data-testid^=\"tray-option-\"]') !== null", description);
+  const selected = await webEval(cdp, `
+    (() => {
+      const label = ${JSON.stringify(label)};
+      const options = [...document.querySelectorAll('[data-testid^="tray-option-"]')];
+      const option = options.find((entry) => (entry.innerText ?? entry.textContent ?? "").includes(label));
+      option?.click();
+      return option ? {
+        id: option.getAttribute("data-testid")?.slice("tray-option-".length) ?? "",
+        label: (option.innerText ?? option.textContent ?? "").replace(/\\s+/g, " ").trim(),
+      } : null;
+    })()
+  `);
+  if (!selected) {
+    throw new Error(`${description}: option with label ${label} not found`);
+  }
+  return selected;
+}
+
+async function webReturnToChart(cdp) {
+  const visibleState = `
+    (() => {
+      const visible = (selector) => {
+        const el = document.querySelector(selector);
+        if (!el) return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== "hidden";
+      };
+      return {
+        chart: visible('[data-testid="chart-search-input"]') && !visible('[data-testid="plate-airport-button"]') && !visible('[data-testid="plan-append-route-input"]'),
+        plate: visible('[data-testid="plate-airport-button"]'),
+        plan: visible('[data-testid="plan-append-route-input"]'),
+      };
+    })()
+  `;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const state = await webEval(cdp, visibleState);
+    if (state.chart) return;
+    if (state.plan) {
+      await webClick(cdp, "[data-testid=\"nav-cdi\"]");
+      await delay(300);
+      continue;
+    }
+    if (state.plate) {
+      const point = await webEval(cdp, `
+        (() => {
+          const el = [...document.querySelectorAll('[data-testid="page-button-chart"]')].find((candidate) => {
+            const rect = candidate.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0 && getComputedStyle(candidate).visibility !== "hidden";
+          });
+          if (!el) return null;
+          const rect = el.getBoundingClientRect();
+          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+        })()
+      `);
+      if (point) {
+        await dispatchClick(cdp, point.x, point.y);
+      }
+      await delay(300);
+      continue;
+    }
+    return;
+  }
+  await waitForWeb(cdp, `(${visibleState}).chart`, "return chart page");
+}
+
+async function webExercisePlateProcedureLoad(cdp, out) {
+  try {
+    await webSelectTrayOptionById(cdp, "[data-testid=\"plate-airport-button\"]", "KPAE", "KPAE plate airport option");
+    await waitForWeb(cdp, "document.querySelector('[data-testid=\"plate-airport-button\"]')?.innerText.includes('KPAE')", "KPAE selected on plate page");
+    await waitForWeb(cdp, "document.querySelector('[data-testid=\"plate-load-button\"]:not(:disabled)') !== null", "enabled plate load procedure button");
+    const selectedChartLabel = await webEval(cdp, `
+      (document.querySelector('[data-testid="plate-chart-button"]')?.innerText ?? "").replace(/\\s+/g, " ").trim()
+    `);
+    recordStep(out, "plate LOAD APPCH enabled for KPAE approach", "ok", selectedChartLabel);
+    const loadOption = await webSelectTrayOptionByLabel(cdp, "[data-testid=\"plate-load-button\"]", "", "plate procedure load option");
+    recordStep(out, "selected plate procedure load option", "ok", loadOption.label || loadOption.id);
+    await delay(800);
+    await webClick(cdp, "[data-testid=\"nav-cdi\"]");
+    await waitForWeb(
+      cdp,
+      "document.body.innerText.includes('ECEPO') || /\\b(ILS|RNAV|VOR)\\b/.test(document.body.innerText)",
+      "loaded approach procedure in plan",
+    );
+    recordStep(out, "verified plate procedure load in flight plan");
+    recordActionClass(out, "plate.load-procedure-executes", true, loadOption.label || loadOption.id);
+  } catch (error) {
+    recordActionClass(out, "plate.load-procedure-executes", false, error.message);
+  } finally {
+    await webReturnToChart(cdp).catch(() => {});
+  }
+}
+
 async function webRecordTrayInventory(cdp, out, name, launcherSelector, optionPrefix = "tray-option-") {
   await webClick(cdp, launcherSelector);
   await delay(250);
@@ -688,11 +853,13 @@ async function webCheckPlateActionClasses(cdp, out) {
   recordActionClass(out, "plate.chart-selector", await webExists(cdp, "[data-testid=\"plate-chart-button\"]"));
   recordActionClass(out, "plate.load-procedure", await webExists(cdp, "[data-testid=\"plate-load-button\"]"));
   recordActionClass(out, "plate.folder", await webExists(cdp, "[data-testid=\"plate-folder-button\"]"));
+  const plateControlVisibility = await webCheckControlsUnobscured(cdp, PLATE_CONTROL_IDS.map((id) => `${PLATE_CONTROL_WEB_PREFIX}${id}`));
+  recordActionClass(out, "plate.controls-unobscured", plateControlVisibility.ok, plateControlVisibility.detail);
   await webRecordTrayInventory(cdp, out, "plate.airports", "[data-testid=\"plate-airport-button\"]");
   await webRecordTrayInventory(cdp, out, "plate.charts", "[data-testid=\"plate-chart-button\"]");
   await webRecordTrayInventory(cdp, out, "plate.loads", "[data-testid=\"plate-load-button\"]");
-  await webClick(cdp, "[data-testid=\"page-button-chart\"]");
-  await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-surface\"]') !== null", "return chart from plate");
+  await webExercisePlateProcedureLoad(cdp, out);
+  await webReturnToChart(cdp);
 }
 
 async function webCheckPlanActionClasses(cdp, out) {
@@ -845,6 +1012,16 @@ function rectOfBounds(bounds) {
   return { left, top, right, bottom, width: right - left, height: bottom - top };
 }
 
+function rectIntersection(left, right) {
+  const x1 = Math.max(left.left, right.left);
+  const y1 = Math.max(left.top, right.top);
+  const x2 = Math.min(left.right, right.right);
+  const y2 = Math.min(left.bottom, right.bottom);
+  const width = Math.max(0, x2 - x1);
+  const height = Math.max(0, y2 - y1);
+  return { width, height, area: width * height };
+}
+
 function findNodes(xml, predicate) {
   const nodes = [];
   const nodeRegex = /<node\b[^>]*>/g;
@@ -899,6 +1076,42 @@ function androidRecordInventory(serial, out, name, prefix) {
   const entries = androidCollectTags(dumpAndroid(serial), prefix);
   recordInventory(out, name, entries);
   return entries;
+}
+
+function androidCheckControlsUnobscured(xml, tags) {
+  const controls = [];
+  const failures = [];
+  for (const tag of tags) {
+    const node = findNode(xml, (candidate) => hasAndroidTag(candidate, tag));
+    if (!node) {
+      failures.push(`${tag}: missing`);
+      continue;
+    }
+    let rect;
+    try {
+      rect = rectOfBounds(node.bounds);
+    } catch (error) {
+      failures.push(`${tag}: ${error.message}`);
+      continue;
+    }
+    if (rect.width <= 0 || rect.height <= 0) {
+      failures.push(`${tag}: empty bounds ${rect.width}x${rect.height}`);
+      continue;
+    }
+    controls.push({ tag, ...rect });
+  }
+  for (let i = 0; i < controls.length; i += 1) {
+    for (let j = i + 1; j < controls.length; j += 1) {
+      const intersection = rectIntersection(controls[i], controls[j]);
+      if (intersection.area > 4) {
+        failures.push(`${controls[i].tag} overlaps ${controls[j].tag} by ${intersection.width}x${intersection.height}`);
+      }
+    }
+  }
+  return {
+    ok: failures.length === 0,
+    detail: failures.length === 0 ? `${controls.length} controls unobscured` : failures.join("; "),
+  };
 }
 
 function androidAssertFeedbackHasBottomControlClearance(serial, out, feedbackNode) {
@@ -1084,6 +1297,148 @@ async function androidTapTag(serial, out, label, tag, timeoutMs = 5000) {
   return true;
 }
 
+async function androidEnsureOfflinePackagesReady(serial, out) {
+  adbBestEffort(serial, ["reverse", "tcp:8092", "tcp:8092"]);
+
+  const runtimeReady = () => {
+    const xml = dumpAndroid(serial);
+    return findNode(xml, (node) => hasAndroidTag(node, "parity:nav-cdi") || hasAndroidTag(node, "parity:map-surface")) !== null &&
+      findNode(xml, (node) => hasAndroidTag(node, "parity:offline-library-panel") || hasAndroidTag(node, "parity:offline-packages-panel")) === null;
+  };
+
+  if (runtimeReady()) {
+    recordStep(out, "offline packages ready", "runtime already available");
+    return;
+  }
+
+  let xml = dumpAndroid(serial);
+  if (
+    findNode(xml, (node) => hasAndroidTag(node, "parity:offline-library-panel")) ||
+    findNode(xml, (node) => hasAndroidTag(node, "parity:offline-refresh-button"))
+  ) {
+    if (!findNode(xml, (node) => hasAndroidTag(node, "parity:offline-packages-panel"))) {
+      if (await androidTapTag(serial, out, "refreshed offline package library", "parity:offline-refresh-button", 10000)) {
+        await androidWaitForNode(
+          serial,
+          (node) => hasAndroidTag(node, "parity:offline-packages-panel") || hasAndroidTag(node, "parity:offline-sync-button"),
+          120000,
+          "offline package planner after refresh",
+        );
+        recordStep(out, "offline package planner visible after refresh");
+      }
+    }
+  }
+
+  xml = dumpAndroid(serial);
+  if (findNode(xml, (node) => hasAndroidTag(node, "parity:offline-packages-panel"))) {
+    for (const regionId of ANDROID_OFFLINE_REGION_IDS) {
+      if (regionId === "nw") continue;
+      const tag = `parity:offline-region:${regionId}:toggle`;
+      for (let click = 0; click < 2; click += 1) {
+        await androidScrollUntilTag(serial, tag, 6);
+        if (!await androidTapTag(serial, out, `deselected offline region ${regionId}`, tag, 7000)) {
+          break;
+        }
+        await delay(150);
+      }
+    }
+
+    if (await androidTapTag(serial, out, "synced NW offline packages", "parity:offline-sync-button", 10000)) {
+      await androidWaitForNode(
+        serial,
+        (node) => hasAndroidTag(node, "parity:nav-cdi") || hasAndroidTag(node, "parity:map-surface"),
+        600000,
+        "runtime available after offline package sync",
+      );
+      recordStep(out, "runtime available after offline package sync");
+    }
+  }
+
+  if (!runtimeReady()) {
+    const finalXml = dumpAndroid(serial);
+    if (findNode(finalXml, (node) => hasAndroidTag(node, "parity:offline-close-button"))) {
+      await androidTapTag(serial, out, "closed offline packages after sync", "parity:offline-close-button", 10000);
+      await delay(500);
+    }
+  }
+
+  if (!runtimeReady()) {
+    recordGap(out, "offline packages ready", "runtime was still unavailable after refresh/sync preflight");
+  } else {
+    recordStep(out, "offline packages ready", "NW package sync completed");
+  }
+}
+
+async function androidSelectTrayOptionByTag(serial, out, launcherTag, optionTag, label) {
+  if (!await androidTapTag(serial, out, `opened ${label} tray`, launcherTag, 5000)) {
+    return false;
+  }
+  await delay(300);
+  try {
+    const option = await androidWaitForNode(
+      serial,
+      (node) => hasAndroidTag(node, optionTag),
+      7000,
+      `${label} option ${optionTag}`,
+    );
+    androidTapResolvedNode(serial, out, `selected ${label} option`, option);
+    await delay(300);
+    return true;
+  } catch (error) {
+    recordGap(out, `selected ${label} option`, error.message);
+    adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
+    await delay(200);
+    return false;
+  }
+}
+
+async function androidSelectTrayOptionByLabel(serial, out, launcherTag, label, stepLabel) {
+  if (!await androidTapTag(serial, out, `opened ${stepLabel} tray`, launcherTag, 5000)) {
+    return null;
+  }
+  await delay(300);
+  const xml = dumpAndroid(serial);
+  const option = findNode(xml, (node) => {
+    const tag = androidTag(node);
+    return tag.startsWith("parity:tray-option:") && androidNodeLabel(xml, node).includes(label);
+  });
+  if (!option) {
+    recordGap(out, `selected ${stepLabel} option`, `option with label ${label} not found`);
+    adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
+    await delay(200);
+    return null;
+  }
+  const selected = {
+    id: androidTag(option).slice("parity:tray-option:".length),
+    label: androidNodeLabel(xml, option),
+  };
+  androidTapResolvedNode(serial, out, `selected ${stepLabel} option`, option);
+  await delay(300);
+  return selected;
+}
+
+async function androidSelectFirstTrayOption(serial, out, launcherTag, stepLabel) {
+  if (!await androidTapTag(serial, out, `opened ${stepLabel} tray`, launcherTag, 5000)) {
+    return null;
+  }
+  await delay(300);
+  const xml = dumpAndroid(serial);
+  const option = findNode(xml, (node) => androidTag(node).startsWith("parity:tray-option:"));
+  if (!option) {
+    recordGap(out, `selected ${stepLabel} option`, "no tray options found");
+    adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
+    await delay(200);
+    return null;
+  }
+  const selected = {
+    id: androidTag(option).slice("parity:tray-option:".length),
+    label: androidNodeLabel(xml, option),
+  };
+  androidTapResolvedNode(serial, out, `selected ${stepLabel} option`, option);
+  await delay(500);
+  return selected;
+}
+
 async function androidWaitForFocusedTag(serial, out, label, tag, timeoutMs = 5000) {
   try {
     const node = await androidWaitForNode(
@@ -1102,6 +1457,11 @@ async function androidWaitForFocusedTag(serial, out, label, tag, timeoutMs = 500
 
 function androidTagExists(serial, tag) {
   return findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, tag)) !== null;
+}
+
+function androidTaggedNodeLabel(xml, tag) {
+  const node = findNode(xml, (candidate) => hasAndroidTag(candidate, tag));
+  return node ? androidNodeLabel(xml, node) : "";
 }
 
 async function androidCheckChartActionClasses(serial, out) {
@@ -1154,6 +1514,11 @@ async function androidCheckPlateActionClasses(serial, out) {
   recordActionClass(out, "plate.chart-selector", androidTagExists(serial, "parity:plate-chart-button"));
   recordActionClass(out, "plate.load-procedure", androidTagExists(serial, "parity:plate-load-button"));
   recordActionClass(out, "plate.folder", androidTagExists(serial, "parity:plate-folder-button"));
+  const plateControlVisibility = androidCheckControlsUnobscured(
+    dumpAndroid(serial),
+    PLATE_CONTROL_IDS.map((id) => `${PLATE_CONTROL_ANDROID_PREFIX}${id}`),
+  );
+  recordActionClass(out, "plate.controls-unobscured", plateControlVisibility.ok, plateControlVisibility.detail);
   if (await androidTapTag(serial, out, "opened plate airport tray inventory", "parity:plate-airport-button", 5000)) {
     await delay(300);
     androidRecordInventory(serial, out, "plate.airports", "parity:tray-option:");
@@ -1177,12 +1542,73 @@ async function androidCheckPlateActionClasses(serial, out) {
     recordInventory(out, "plate.loads", []);
     recordStep(out, "skipped disabled plate load tray inventory");
   }
+  await androidExercisePlateProcedureLoad(serial, out);
   if (androidTagExists(serial, "parity:map-surface")) {
     recordStep(out, "returned chart page after plate action audit", "already on chart");
   } else {
     await androidTapTag(serial, out, "returned chart page after plate action audit", "parity:button:PLATE", 5000);
   }
   await delay(500);
+}
+
+async function androidExercisePlateProcedureLoad(serial, out) {
+  try {
+    if (!await androidSelectTrayOptionByTag(
+      serial,
+      out,
+      "parity:plate-airport-button",
+      "parity:tray-option:KPAE",
+      "KPAE plate airport",
+    )) {
+      recordActionClass(out, "plate.load-procedure-executes", false, "KPAE airport option unavailable");
+      return;
+    }
+    try {
+      await waitFor(
+        () => androidTaggedNodeLabel(dumpAndroid(serial), "parity:plate-airport-button").includes("KPAE"),
+        10000,
+        "KPAE selected on plate page",
+      );
+      recordStep(out, "KPAE selected on plate page");
+    } catch (error) {
+      recordActionClass(out, "plate.load-procedure-executes", false, error.message);
+      return;
+    }
+    let loadButton;
+    try {
+      loadButton = await androidWaitForNode(
+        serial,
+        (node) => hasAndroidTag(node, "parity:plate-load-button") && node.enabled === "true",
+        10000,
+        "enabled plate load procedure button",
+      );
+    } catch (error) {
+      recordActionClass(out, "plate.load-procedure-executes", false, error.message);
+      return;
+    }
+    const plateXml = dumpAndroid(serial);
+    const selectedChartLabel = androidTaggedNodeLabel(plateXml, "parity:plate-chart-button");
+    recordStep(out, "plate LOAD APPCH enabled for KPAE approach", "ok", selectedChartLabel);
+    const loadOption = await androidSelectFirstTrayOption(serial, out, "parity:plate-load-button", "plate procedure load");
+    if (!loadOption) {
+      recordActionClass(out, "plate.load-procedure-executes", false, "no plate procedure load option available");
+      return;
+    }
+    await delay(1000);
+    await androidTapTag(serial, out, "opened plan page after plate procedure load", "parity:nav-cdi", 7000);
+    await delay(500);
+    const planXml = dumpAndroid(serial);
+    if (hasAndroidText(planXml, "ILS") || hasAndroidText(planXml, "RNAV") || hasAndroidText(planXml, "VOR") || await androidScrollUntilText(serial, "ECEPO")) {
+      recordStep(out, "verified plate procedure load in flight plan", "ok", loadOption.label || loadOption.id);
+      recordActionClass(out, "plate.load-procedure-executes", true, loadOption.label || loadOption.id);
+    } else {
+      recordActionClass(out, "plate.load-procedure-executes", false, "loaded procedure content was not visible in PLAN");
+    }
+    await androidTapTag(serial, out, "returned chart page after plate procedure load", "parity:button:CHART", 5000);
+    await delay(500);
+  } catch (error) {
+    recordActionClass(out, "plate.load-procedure-executes", false, error.message);
+  }
 }
 
 async function androidCheckPlanActionClasses(serial, out) {
@@ -1243,8 +1669,10 @@ async function androidJourney(serial) {
     return out;
   }
   recordStep(out, "app visible");
+  await androidEnsureOfflinePackagesReady(serial, out);
 
-  if (hasAndroidText(xml, "Waypoint")) {
+  const postBootstrapXml = dumpAndroid(serial);
+  if (hasAndroidText(postBootstrapXml, "Waypoint")) {
     recordStep(out, "opened plan page", "already on plan page");
     recordCheck(out, "openedPlanFromCdi", true);
   } else {

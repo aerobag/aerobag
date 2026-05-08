@@ -9510,6 +9510,8 @@ private fun buildFlightPlanDisplayBlocks(rows: List<FlightPlanDisplayRow>): List
 private fun navRefLabel(ref: NavRef): String = when (ref) {
     is NavRef.Airport -> ref.code
     is NavRef.Navaid -> ref.code
+    is NavRef.ArincNavaid -> ref.identifier
+    is NavRef.TerminalNavaid -> ref.identifier
     is NavRef.Fix -> ref.code
     is NavRef.LatLon -> "${"%.3f".format(ref.lat)},${"%.3f".format(ref.lon)}"
     is NavRef.Spot -> "SPOT ${"%.3f".format(ref.lat)},${"%.3f".format(ref.lon)}"

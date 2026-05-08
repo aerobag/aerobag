@@ -1287,6 +1287,19 @@ private fun PlanLeg.toWire() = WirePlanLeg(
 private fun NavRef.toWire(): WireNavRef = when (this) {
     is NavRef.Airport -> WireNavRef.Airport(code)
     is NavRef.Navaid -> WireNavRef.Navaid(code)
+    is NavRef.ArincNavaid -> WireNavRef.ArincNavaid(
+        identifier = identifier,
+        icao_code = icaoCode,
+        section_code = sectionCode,
+        subsection_code = subsectionCode,
+    )
+    is NavRef.TerminalNavaid -> WireNavRef.TerminalNavaid(
+        airport_id = airportId,
+        identifier = identifier,
+        icao_code = icaoCode,
+        section_code = sectionCode,
+        subsection_code = subsectionCode,
+    )
     is NavRef.Fix -> WireNavRef.Fix(code)
     is NavRef.LatLon -> WireNavRef.LatLon(WireLatLon(lat, lon))
     is NavRef.Spot -> WireNavRef.Spot(WireLatLon(lat, lon))
@@ -3020,6 +3033,19 @@ private fun WirePlanLeg.toUi() = FlightPlanLeg(
 private fun WireNavRef.toUi(): NavRef = when (this) {
     is WireNavRef.Airport -> NavRef.Airport(code)
     is WireNavRef.Navaid -> NavRef.Navaid(code)
+    is WireNavRef.ArincNavaid -> NavRef.ArincNavaid(
+        identifier = identifier,
+        icaoCode = icao_code,
+        sectionCode = section_code,
+        subsectionCode = subsection_code,
+    )
+    is WireNavRef.TerminalNavaid -> NavRef.TerminalNavaid(
+        airportId = airport_id,
+        identifier = identifier,
+        icaoCode = icao_code,
+        sectionCode = section_code,
+        subsectionCode = subsection_code,
+    )
     is WireNavRef.Fix -> NavRef.Fix(code)
     is WireNavRef.LatLon -> NavRef.LatLon(value.lat, value.lon)
     is WireNavRef.Spot -> NavRef.Spot(value.lat, value.lon)

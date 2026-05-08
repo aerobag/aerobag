@@ -224,6 +224,23 @@ sealed interface WireNavRef {
 
     data class Navaid(val code: String) : WireNavRef
 
+    @Serializable
+    data class ArincNavaid(
+        val identifier: String,
+        val icao_code: String,
+        val section_code: String,
+        val subsection_code: String,
+    ) : WireNavRef
+
+    @Serializable
+    data class TerminalNavaid(
+        val airport_id: String,
+        val identifier: String,
+        val icao_code: String,
+        val section_code: String,
+        val subsection_code: String,
+    ) : WireNavRef
+
     data class Fix(val code: String) : WireNavRef
 
     data class LatLon(val value: WireLatLon) : WireNavRef
@@ -246,6 +263,16 @@ object WireNavRefSerializer : KSerializer<WireNavRef> {
         val element = when (value) {
             is WireNavRef.Airport -> JsonObject(mapOf("Airport" to JsonPrimitive(value.code)))
             is WireNavRef.Navaid -> JsonObject(mapOf("Navaid" to JsonPrimitive(value.code)))
+            is WireNavRef.ArincNavaid -> JsonObject(
+                mapOf(
+                    "ArincNavaid" to encoder.json.encodeToJsonElement(WireNavRef.ArincNavaid.serializer(), value),
+                ),
+            )
+            is WireNavRef.TerminalNavaid -> JsonObject(
+                mapOf(
+                    "TerminalNavaid" to encoder.json.encodeToJsonElement(WireNavRef.TerminalNavaid.serializer(), value),
+                ),
+            )
             is WireNavRef.Fix -> JsonObject(mapOf("Fix" to JsonPrimitive(value.code)))
             is WireNavRef.LatLon -> JsonObject(
                 mapOf(
@@ -272,6 +299,8 @@ object WireNavRefSerializer : KSerializer<WireNavRef> {
         return when (kind) {
             "Airport" -> WireNavRef.Airport(value.jsonPrimitive.content)
             "Navaid" -> WireNavRef.Navaid(value.jsonPrimitive.content)
+            "ArincNavaid" -> decoder.json.decodeFromJsonElement(WireNavRef.ArincNavaid.serializer(), value)
+            "TerminalNavaid" -> decoder.json.decodeFromJsonElement(WireNavRef.TerminalNavaid.serializer(), value)
             "Fix" -> WireNavRef.Fix(value.jsonPrimitive.content)
             "LatLon" -> WireNavRef.LatLon(decoder.json.decodeFromJsonElement(WireLatLon.serializer(), value))
             "Spot" -> WireNavRef.Spot(decoder.json.decodeFromJsonElement(WireLatLon.serializer(), value))

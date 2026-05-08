@@ -45,6 +45,19 @@ sealed interface RouteComponent {
 sealed interface NavRef {
     data class Airport(val code: String) : NavRef
     data class Navaid(val code: String) : NavRef
+    data class ArincNavaid(
+        val identifier: String,
+        val icaoCode: String,
+        val sectionCode: String,
+        val subsectionCode: String,
+    ) : NavRef
+    data class TerminalNavaid(
+        val airportId: String,
+        val identifier: String,
+        val icaoCode: String,
+        val sectionCode: String,
+        val subsectionCode: String,
+    ) : NavRef
     data class Fix(val code: String) : NavRef
     data class LatLon(val lat: Double, val lon: Double) : NavRef
     data class Spot(val lat: Double, val lon: Double) : NavRef

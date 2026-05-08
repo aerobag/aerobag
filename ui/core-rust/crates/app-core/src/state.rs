@@ -21,6 +21,8 @@ pub struct AppState {
 pub struct AppUiState {
     pub active_plan: Option<FlightPlanUiState>,
     pub ownship: OwnshipUiState,
+    #[serde(default)]
+    pub playback_panel_visible: bool,
     pub content_policy: ContentPolicy,
     pub last_content_report: Option<ContentReport>,
 }
@@ -105,6 +107,7 @@ pub fn project_app_ui_state(state: &AppState) -> AppUiState {
             render: state.ownship.render.clone(),
             controls: state.ownship.controls.clone(),
         },
+        playback_panel_visible: false,
         content_policy: state.content_policy,
         last_content_report: state.last_content_report.clone(),
     }

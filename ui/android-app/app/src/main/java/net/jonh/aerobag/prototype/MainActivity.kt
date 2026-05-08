@@ -474,7 +474,6 @@ private const val OverlayPlaneModalScrim = 80f
 private const val OverlayPlaneModal = 90f
 private fun defaultUiDebugState() = UiDebugState(
     tileLabels = false,
-    playbackVisible = false,
     fastTiles = false,
     offlineSimulatedClockButtons = false,
 )
@@ -2606,6 +2605,7 @@ private fun AerobagApp() {
                         uiTheme = uiTheme,
                         ownship = appUiState.ownship.render,
                         playbackUiState = sessionSnapshot.playbackUiState,
+                        playbackPanelVisible = appUiState.playbackPanelVisible,
                         playbackSourcePath = playbackSourcePath,
                         mapFollowUiState = sessionSnapshot.mapFollowUiState,
                         mapFollowTargetViewport = sessionSnapshot.mapFollowTargetViewport,
@@ -4459,6 +4459,7 @@ private fun MapExplorerPage(
     uiTheme: UiTheme,
     ownship: OwnshipRenderState,
     playbackUiState: PlaybackUiState,
+    playbackPanelVisible: Boolean,
     playbackSourcePath: String,
     mapFollowUiState: MapFollowUiState,
     mapFollowTargetViewport: CoreMapViewport?,
@@ -6174,7 +6175,7 @@ private fun MapExplorerPage(
             } else {
                 ThumbGap
             }
-        if (debugState.playbackVisible) {
+        if (playbackPanelVisible) {
             PlaybackWidget(
                 uiSession = uiSession,
                 playbackUiState = playbackUiState,

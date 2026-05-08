@@ -583,6 +583,7 @@ data class AppState(
 data class AppUiState(
     val activePlan: FlightPlanUiState? = null,
     val ownship: OwnshipUiState = OwnshipUiState(),
+    val playbackPanelVisible: Boolean = false,
     val contentPolicy: ContentPolicy = ContentPolicy.PreferLocal,
     val lastContentReport: ContentReport? = null,
 )

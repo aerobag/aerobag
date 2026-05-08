@@ -1045,7 +1045,6 @@ function defaultUiDebugState(): UiDebugState {
   const debugTiles = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debugTiles");
   return {
     tile_labels: debugTiles,
-    playback_visible: false,
     fast_tiles: false,
     offline_simulated_clock_buttons: false,
     sequencing_finish_lines: false,
@@ -1126,6 +1125,7 @@ export default function App() {
           situation_controls: [],
         },
       },
+      playback_panel_visible: false,
       content_policy: "PreferLocal",
       last_content_report: null,
     },
@@ -1885,6 +1885,7 @@ export default function App() {
           plan={currentPlan}
           planUiState={planUiState}
           playbackUiState={playbackUiState}
+          playbackPanelVisible={appUiState.playback_panel_visible}
           mapFollowUiState={mapFollowUiState}
           mapFollowTargetViewport={sessionSnapshot.map_follow_target_viewport}
           playbackSourcePath={playbackSourcePath}
@@ -2093,6 +2094,7 @@ export default function App() {
           ownship={appUiState.ownship.render}
           ownshipControls={appUiState.ownship.controls}
           playbackUiState={playbackUiState}
+          playbackPanelVisible={appUiState.playback_panel_visible}
           playbackSourcePath={playbackSourcePath}
           onPlaybackSourcePathChange={setPlaybackSourcePath}
           onPlaybackSnapshotChange={setSessionSnapshot}
@@ -2145,6 +2147,7 @@ function MapPage(props: {
   plan: FlightPlan;
   planUiState: FlightPlanUiState | null;
   playbackUiState: PlaybackUiState;
+  playbackPanelVisible: boolean;
   mapFollowUiState: MapFollowUiState;
   mapFollowTargetViewport: { center: LatLon; zoom: number; rotation_deg: number; pitch_deg: number } | null;
   playbackSourcePath: string;
@@ -4332,7 +4335,7 @@ function MapPage(props: {
           onClick={onOpenPlan}
         />
 
-        {debugState.playback_visible ? (
+        {props.playbackPanelVisible ? (
           <PlaybackWidget
             uiSession={uiSession}
             playbackUiState={props.playbackUiState}
@@ -6489,6 +6492,7 @@ function ChartsPage(props: {
   onSelectAirport: (airportId: string) => void;
   onSelectChart: (chartId: string) => void;
   playbackUiState: PlaybackUiState;
+  playbackPanelVisible: boolean;
   playbackSourcePath: string;
   onPlaybackSourcePathChange: Dispatch<SetStateAction<string>>;
   onPlaybackSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
@@ -7022,7 +7026,7 @@ function ChartsPage(props: {
           onClick={onOpenPlan}
         />
 
-        {props.debugState.playback_visible ? (
+        {props.playbackPanelVisible ? (
           <PlaybackWidget
             uiSession={props.uiSession}
             playbackUiState={props.playbackUiState}

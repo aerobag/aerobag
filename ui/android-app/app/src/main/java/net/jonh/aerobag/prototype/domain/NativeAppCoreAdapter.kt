@@ -1402,6 +1402,7 @@ private fun WireAppState.toUi() = AppState(
 private fun WireAppUiState.toUi() = AppUiState(
     activePlan = active_plan?.toUi(),
     ownship = ownship.toUi(),
+    playbackPanelVisible = playback_panel_visible,
     contentPolicy = content_policy.toUi(),
     lastContentReport = last_content_report?.let { report ->
         ContentReport(
@@ -1735,7 +1736,6 @@ private data class WireUiMapLayerState(
 @kotlinx.serialization.Serializable
 private data class WireUiDebugState(
     val tile_labels: Boolean = false,
-    val playback_visible: Boolean = false,
     val fast_tiles: Boolean = false,
     val offline_simulated_clock_buttons: Boolean = false,
 )
@@ -1822,7 +1822,6 @@ data class UiSessionSnapshot(
 
 data class UiDebugState(
     val tileLabels: Boolean,
-    val playbackVisible: Boolean,
     val fastTiles: Boolean,
     val offlineSimulatedClockButtons: Boolean,
 )
@@ -1950,7 +1949,6 @@ private fun WireUiMapLayerState.toUi() = UiMapLayerState(
 
 private fun WireUiDebugState.toUi() = UiDebugState(
     tileLabels = tile_labels,
-    playbackVisible = playback_visible,
     fastTiles = fast_tiles,
     offlineSimulatedClockButtons = offline_simulated_clock_buttons,
 )

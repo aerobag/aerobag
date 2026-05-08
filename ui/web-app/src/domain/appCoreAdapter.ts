@@ -91,7 +91,6 @@ export type DebugFlagId = "tile_labels" | "fast_tiles" | "offline_simulated_cloc
 
 export type UiDebugState = {
   tile_labels: boolean;
-  playback_visible: boolean;
   fast_tiles: boolean;
   offline_simulated_clock_buttons: boolean;
   sequencing_finish_lines: boolean;

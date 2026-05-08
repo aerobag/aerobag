@@ -31,6 +31,7 @@ data class WireAppState(
 data class WireAppUiState(
     val active_plan: WireFlightPlanUiState? = null,
     val ownship: WireOwnshipUiState = WireOwnshipUiState(),
+    val playback_panel_visible: Boolean = false,
     val content_policy: WireContentPolicy = WireContentPolicy.PreferLocal,
     val last_content_report: WireContentReport? = null,
 )

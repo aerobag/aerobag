@@ -639,6 +639,7 @@ export type Situation = {
 export type AppUiState = {
   active_plan: FlightPlanUiState | null;
   ownship: OwnshipUiState;
+  playback_panel_visible: boolean;
   content_policy: ContentPolicy;
   last_content_report: AppState["last_content_report"];
 };

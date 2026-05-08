@@ -66,7 +66,6 @@ pub struct UiCautionState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiDebugState {
     pub tile_labels: bool,
-    pub playback_visible: bool,
     pub fast_tiles: bool,
     pub offline_simulated_clock_buttons: bool,
     #[serde(default)]
@@ -239,7 +238,9 @@ fn create_ui_session_inner(
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_project_snapshot_app_state");
     }
-    let app_ui_state = state::project_app_ui_state(&app_state);
+    let mut app_ui_state = state::project_app_ui_state(&app_state);
+    app_ui_state.playback_panel_visible =
+        situation_source_handler_for_ownship(&app_state.ownship).is_replay();
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_project_app_ui_state");
     }
@@ -251,7 +252,6 @@ fn create_ui_session_inner(
     }
     let caution_state = default_caution_state();
     let debug_state = default_debug_state();
-    let snapshot_debug_state = debug_state_for_app_state(&debug_state, &app_state);
     let snapshot = UiSessionSnapshot {
         app_state: snapshot_app_state,
         app_ui_state,
@@ -261,7 +261,7 @@ fn create_ui_session_inner(
         chart_page_state: chart_page_state.clone(),
         map_layer_state: map_layer_state.clone(),
         caution_state: caution_state.clone(),
-        debug_state: snapshot_debug_state,
+        debug_state: debug_state.clone(),
     };
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
     sessions().lock().expect("session store poisoned").insert(
@@ -2130,7 +2130,6 @@ fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> App
 
 fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
     let app_ui_state = project_session_app_ui_state(session);
-    let debug_state = debug_state_for_app_state(&session.debug_state, &session.app_state);
     UiSessionSnapshot {
         app_state: state::project_ui_snapshot_app_state(&session.app_state),
         app_ui_state,
@@ -2144,14 +2143,8 @@ fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
         chart_page_state: session.chart_page_state.clone(),
         map_layer_state: session.map_layer_state.clone(),
         caution_state: session.caution_state.clone(),
-        debug_state,
+        debug_state: session.debug_state.clone(),
     }
-}
-
-fn debug_state_for_app_state(debug_state: &UiDebugState, app_state: &AppState) -> UiDebugState {
-    let mut next = debug_state.clone();
-    next.playback_visible = situation_source_handler_for_ownship(&app_state.ownship).is_replay();
-    next
 }
 
 fn selected_ownship_source_kind(ownship: &crate::OwnshipState) -> Option<crate::OwnshipSourceKind> {
@@ -2222,7 +2215,6 @@ fn default_caution_state() -> UiCautionState {
 fn default_debug_state() -> UiDebugState {
     UiDebugState {
         tile_labels: false,
-        playback_visible: false,
         fast_tiles: false,
         offline_simulated_clock_buttons: false,
         sequencing_finish_lines: false,
@@ -2278,6 +2270,8 @@ fn empty_map_overlay_query() -> MapOverlayQueryResult {
 
 fn project_session_app_ui_state(session: &UiSession) -> AppUiState {
     let mut app_ui_state = state::project_app_ui_state(&session.app_state);
+    app_ui_state.playback_panel_visible =
+        situation_source_handler_for_ownship(&session.app_state.ownship).is_replay();
     app_ui_state.ownship.controls.situation_controls = project_situation_controls(session);
     if let Some(active_plan) = app_ui_state.active_plan.as_mut() {
         if let Some(guidance) = active_plan.guidance.as_mut() {
@@ -3728,7 +3722,7 @@ mod tests {
             vec!["Plan\nPreview", "Replay"]
         );
         assert!(
-            !init.snapshot.debug_state.playback_visible,
+            !init.snapshot.app_ui_state.playback_panel_visible,
             "playback panel starts hidden until Replay is active",
         );
         assert_enabled_situation_controls(&init.snapshot, &[]);
@@ -3740,7 +3734,7 @@ mod tests {
             },
         )
         .expect("select Replay");
-        assert!(replay.debug_state.playback_visible);
+        assert!(replay.app_ui_state.playback_panel_visible);
         assert_enabled_situation_controls(&replay, &[]);
 
         let replay_with_trace = load_playback_trace_in_session(
@@ -3789,7 +3783,7 @@ mod tests {
         )
         .expect("push gps sample");
         assert!(
-            gps.debug_state.playback_visible,
+            gps.app_ui_state.playback_panel_visible,
             "pushing GPS must not change a manual Replay selection",
         );
         assert_enabled_situation_controls(
@@ -3808,7 +3802,7 @@ mod tests {
         )
         .expect("select GPS");
         assert!(
-            !gps.debug_state.playback_visible,
+            !gps.app_ui_state.playback_panel_visible,
             "playback panel hides as soon as Replay is not the active source",
         );
         assert_eq!(

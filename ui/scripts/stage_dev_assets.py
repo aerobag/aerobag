@@ -288,23 +288,14 @@ def stage_nav_kv() -> None:
 
 
 def stage_bundle_manifests() -> None:
-    (WEB_STATIC_ROOT / "current-artifacts.json").unlink(missing_ok=True)
-    ensure_hard_link(CURRENT_ARTIFACTS_FILE, WEB_STATIC_ROOT / "current_artifacts.json")
+    (WEB_STATIC_ROOT / "current_artifacts.json").unlink(missing_ok=True)
+    (WEB_STATIC_ROOT / ".well-known" / "aerobag-package-source.json").unlink(missing_ok=True)
+    try:
+        (WEB_STATIC_ROOT / ".well-known").rmdir()
+    except OSError:
+        pass
+    ensure_hard_link(CURRENT_ARTIFACTS_FILE, WEB_STATIC_ROOT / "current-artifacts.json")
     ensure_hard_link(PRODUCT_BUILD_FILE, WEB_STATIC_ROOT / "cycle-bundle.json")
-    discovery_root = WEB_STATIC_ROOT / ".well-known"
-    discovery_root.mkdir(parents=True, exist_ok=True)
-    (discovery_root / "aerobag-package-source.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "package_source_base_url": "https://aerobag.org",
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
     build_status = ARTIFACT_ROOT / PACKAGED_DIR / "build-status.html"
     if build_status.is_file():
         ensure_hard_link(build_status, WEB_STATIC_ROOT / "build-status.html")
@@ -380,7 +371,7 @@ def current_stage_stamp() -> dict:
             for package in PRODUCT_BUILD.get("packages", [])
             if isinstance(package, dict)
         ],
-        "version": 11,
+        "version": 12,
     }
 
 
@@ -396,8 +387,7 @@ def stage_is_current() -> bool:
 
 def staged_outputs_exist() -> bool:
     required_paths = [
-        WEB_STATIC_ROOT / "current_artifacts.json",
-        WEB_STATIC_ROOT / ".well-known" / "aerobag-package-source.json",
+        WEB_STATIC_ROOT / "current-artifacts.json",
         WEB_STATIC_ROOT / "cycle-bundle.json",
         WEB_STATIC_ROOT / "vectors" / "vectors",
         WEB_STATIC_ROOT / "vectors" / "points",

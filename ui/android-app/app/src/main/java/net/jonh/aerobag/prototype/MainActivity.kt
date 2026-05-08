@@ -338,8 +338,7 @@ private val PlanGridGap = 2.dp
 private const val DefaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json"
 private const val DefaultAndroidDevServerBaseUrl = "http://10.0.2.2:8080"
 private const val DefaultAndroidPackageSourceBaseUrl = "aerobag.org"
-private const val PackageSourceDiscoveryPath = ".well-known/aerobag-package-source.json"
-private const val CurrentArtifactsDiscoveryFilename = "current_artifacts.json"
+private const val CurrentArtifactsDiscoveryFilename = "current-artifacts.json"
 private const val WebMercatorWorldSize = 256.0
 private const val WebMercatorHalfWorldM = 20037508.342789244
 private const val NexradFrameIntervalMs = 900L
@@ -828,14 +827,6 @@ private data class CurrentArtifactsBundleRefWire(
     val filename: String,
     @SerialName("bundle_type")
     val bundleType: String,
-)
-
-@Serializable
-private data class PackageSourceDiscoveryWire(
-    @SerialName("schema_version")
-    val schemaVersion: Int,
-    @SerialName("package_source_base_url")
-    val packageSourceBaseUrl: String,
 )
 
 @Serializable
@@ -3958,7 +3949,7 @@ private suspend fun syncOfflinePackages(
     onProgress: suspend (String, OfflinePackagesSyncProgressWire?) -> Unit = { _, _ -> },
 ): OfflinePackagesSyncSummary {
     val syncStartMs = SystemClock.elapsedRealtime()
-    val resolvedPackageSourceBaseUrl = resolvePackageSourceBaseUrlForFetch(packageSourceBaseUrl, activeConnections)
+    val resolvedPackageSourceBaseUrl = resolvePackageSourceBaseUrlForFetch(packageSourceBaseUrl)
     val packagesById = bundle.packages.associateBy { it.id }
     val installedByFilename = scanInstalledPackageArtifacts(context).installed.associateBy { it.filename }
     val warnings = mutableListOf<OfflinePackagesWarning>()
@@ -4217,15 +4208,16 @@ private suspend fun refreshOfflinePackageLibrary(
     discoveryFilenames: List<String>,
     activeConnections: ActivePackageConnections,
 ): OfflinePackagesControllerEventWire.LibraryRefreshSucceeded {
-    val resolvedPackageSourceBaseUrl = resolvePackageSourceBaseUrlForFetch(packageSourceBaseUrl, activeConnections)
-    val discoveryNames = buildList {
-        add(CurrentArtifactsDiscoveryFilename)
-        addAll(discoveryFilenames)
+    val primaryDiscoveryUrl = resolveCurrentArtifactsUrl(packageSourceBaseUrl)
+    val resolvedPackageSourceBaseUrl = primaryDiscoveryUrl.substringBeforeLast("/")
+    val discoveryUrls = buildList {
+        add(primaryDiscoveryUrl)
+        addAll(discoveryFilenames.map { filename -> resolvePackageSourceUrl(filename, resolvedPackageSourceBaseUrl) })
     }.distinct()
-    val discoveryJsons = discoveryNames.map { filename ->
+    val discoveryJsons = discoveryUrls.map { discoveryUrl ->
         currentCoroutineContext().ensureActive()
         readPackageSourceText(
-            resolvePackageSourceUrl(filename, resolvedPackageSourceBaseUrl),
+            discoveryUrl,
             activeConnections,
         )
     }
@@ -4321,10 +4313,7 @@ private fun openCancellablePackageConnection(sourceUrl: String): HttpURLConnecti
         useCaches = false
     }
 
-private suspend fun resolvePackageSourceBaseUrlForFetch(
-    configuredPackageSourceBaseUrl: String,
-    activeConnections: ActivePackageConnections,
-): String {
+private fun resolvePackageSourceBaseUrlForFetch(configuredPackageSourceBaseUrl: String): String {
     val configured = configuredPackageSourceBaseUrl.trim().trimEnd('/')
     check(configured.isNotBlank()) { "package source URL is blank" }
     if (configured.startsWith("http://") || configured.startsWith("https://")) {
@@ -4333,17 +4322,16 @@ private suspend fun resolvePackageSourceBaseUrlForFetch(
     check(!configured.contains('/')) {
         "package source host must not contain a path: $configuredPackageSourceBaseUrl"
     }
-    val discoveryUrl = resolvePackageSourceUrl(PackageSourceDiscoveryPath, "https://$configured")
-    val discoveryJson = readPackageSourceText(discoveryUrl, activeConnections)
-    val discovery = PackageManagementJson.decodeFromString<PackageSourceDiscoveryWire>(discoveryJson)
-    check(discovery.schemaVersion == 1) {
-        "unsupported package source discovery schema ${discovery.schemaVersion}"
+    return "https://$configured"
+}
+
+private fun resolveCurrentArtifactsUrl(configuredPackageSourceBaseUrl: String): String {
+    val configured = configuredPackageSourceBaseUrl.trim().trimEnd('/')
+    check(configured.isNotBlank()) { "package source URL is blank" }
+    if (configured.endsWith("/$CurrentArtifactsDiscoveryFilename")) {
+        return configured
     }
-    val packageRoot = discovery.packageSourceBaseUrl.trim().trimEnd('/')
-    check(packageRoot.startsWith("http://") || packageRoot.startsWith("https://")) {
-        "package source discovery returned invalid package_source_base_url"
-    }
-    return packageRoot
+    return resolvePackageSourceUrl(CurrentArtifactsDiscoveryFilename, resolvePackageSourceBaseUrlForFetch(configured))
 }
 
 private suspend fun downloadPackageToTempFile(

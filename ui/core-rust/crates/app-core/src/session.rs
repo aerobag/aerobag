@@ -13,9 +13,9 @@ use crate::{
     first_guidance_detail_index_for_leg, guidance_detail_id_for_index,
     guidance_detail_id_for_leg_element,
     had_ops::{
-        insert_waypoint_best_position, materialize_airway_presentation_selection,
-        materialize_procedure, nav_kv_page_resources, suggest_waypoint_identifiers,
-        CoreResourceRequest, HadOperationOutcome, HadReadError,
+        flight_plan_ui_state, insert_waypoint_best_position,
+        materialize_airway_presentation_selection, materialize_procedure, nav_kv_page_resources,
+        suggest_waypoint_identifiers, CoreResourceRequest, HadOperationOutcome, HadReadError,
     },
     map_follow::{MapFollowSessionState, MapFollowUiState},
     map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
@@ -2581,6 +2581,14 @@ fn project_session_app_ui_state(session: &UiSession) -> AppUiState {
         if let Some(guidance) = active_plan.guidance.as_mut() {
             guidance.nav_element = project_active_leg_nav_element(session);
         }
+    }
+    if let (Some(store), Some(plan), Some(active_plan)) = (
+        session.nav_kv_store.as_ref(),
+        session.app_state.active_plan.clone(),
+        app_ui_state.active_plan.take(),
+    ) {
+        app_ui_state.active_plan =
+            Some(flight_plan_ui_state(store, plan, active_plan.clone()).unwrap_or(active_plan));
     }
     app_ui_state
 }

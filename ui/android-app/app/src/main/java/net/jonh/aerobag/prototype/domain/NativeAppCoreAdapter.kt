@@ -347,7 +347,7 @@ class NativeAppCoreAdapter(
             bridge = bridge,
             json = json,
             navKvStore = navKvStore,
-            initialSnapshot = enrichUiSessionSnapshot(result.snapshot.toUi()),
+            initialSnapshot = result.snapshot.toUi(),
         )
         navKvStore?.attachToSession(result.handle)
         session.loadRasterMapCatalog()
@@ -640,30 +640,9 @@ class NativeAppCoreAdapter(
         }
     }
 
-    private fun enrichFlightPlanUiState(uiState: FlightPlanUiState, plan: FlightPlan): FlightPlanUiState {
-        val result = runHadOperationElement(
-            buildJsonObject {
-                put("kind", "flight_plan_ui_state")
-                put("plan", json.encodeToJsonElement(plan.toWire()))
-                put("current_ui_state", json.encodeToJsonElement<WireFlightPlanUiState>(uiState.toWire()))
-            },
-        )
-        return json.decodeFromJsonElement<WireFlightPlanUiState>(result).toUi()
-    }
-
     private fun runHadOperationElement(operation: kotlinx.serialization.json.JsonObject): JsonElement =
         navKvStore?.runCoreOperationElement(operation)
             ?: error("nav_kv store is required for core data operation ${operation["kind"]}")
-
-    private fun enrichUiSessionSnapshot(snapshot: UiSessionSnapshot): UiSessionSnapshot {
-        val plan = snapshot.appState.activePlan ?: return snapshot
-        val currentUiState = snapshot.appUiState.activePlan ?: return snapshot
-        return snapshot.copy(
-            appUiState = snapshot.appUiState.copy(
-                activePlan = enrichFlightPlanUiState(currentUiState, plan),
-            ),
-        )
-    }
 
     fun activateLegUi(plan: FlightPlan, legIndex: Int): FlightPlanUiMutation {
         val nextJson = bridge.activateLegUiJson(json.encodeToString(plan.toWire()), legIndex)
@@ -825,7 +804,7 @@ class NativeUiSession internal constructor(
             store.runPagedSessionOperationElement {
                 bridge.performMapSelectionActionInSessionJson(handle, action)
             }
-        snapshot = enrichSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi())
+        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi()
         return syncGuidanceGeometryFromPlan()
     }
 
@@ -847,7 +826,7 @@ class NativeUiSession internal constructor(
             store.runPagedSessionOperationElement {
                 bridge.loadPlateProcedureInSessionJson(handle, loadId)
             }
-        snapshot = enrichSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi())
+        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi()
         return syncGuidanceGeometryFromPlan()
     }
 
@@ -901,7 +880,7 @@ class NativeUiSession internal constructor(
                     exitIndex,
                 )
             }
-        snapshot = enrichSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi())
+        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi()
         return syncGuidanceGeometryFromPlan()
     }
 
@@ -926,7 +905,7 @@ class NativeUiSession internal constructor(
                     json.encodeToString(enrouteTransition),
                 )
             }
-        snapshot = enrichSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi())
+        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi()
         return syncGuidanceGeometryFromPlan()
     }
 
@@ -1049,25 +1028,21 @@ class NativeUiSession internal constructor(
 
     fun loadRasterMapCatalog(): UiSessionSnapshot {
         val store = navKvStore ?: return snapshot
-        snapshot = enrichSnapshot(
-            json.decodeFromJsonElement<WireUiSessionSnapshot>(
-                store.runPagedSessionOperationElement {
-                    bridge.loadRasterMapCatalogInSessionJson(handle)
-                },
-            ).toUi(),
-        )
+        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(
+            store.runPagedSessionOperationElement {
+                bridge.loadRasterMapCatalogInSessionJson(handle)
+            },
+        ).toUi()
         return snapshot
     }
 
     fun selectMapFamily(familyId: MapChartFamily): UiSessionSnapshot {
         val store = navKvStore ?: return snapshot
-        snapshot = enrichSnapshot(
-            json.decodeFromJsonElement<WireUiSessionSnapshot>(
-                store.runPagedSessionOperationElement {
-                    bridge.selectMapFamilyInSessionJson(handle, json.encodeToString(familyId.toWireName()))
-                },
-            ).toUi(),
-        )
+        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(
+            store.runPagedSessionOperationElement {
+                bridge.selectMapFamilyInSessionJson(handle, json.encodeToString(familyId.toWireName()))
+            },
+        ).toUi()
         return snapshot
     }
 
@@ -1220,28 +1195,7 @@ class NativeUiSession internal constructor(
     }
 
     private fun decodeSnapshot(snapshotJson: String): UiSessionSnapshot =
-        enrichSnapshot(json.decodeFromString<WireUiSessionSnapshot>(snapshotJson).toUi())
-
-    private fun enrichSnapshot(snapshot: UiSessionSnapshot): UiSessionSnapshot {
-        val store = navKvStore ?: return snapshot
-        val plan = snapshot.appState.activePlan ?: return snapshot
-        val currentUiState = snapshot.appUiState.activePlan ?: return snapshot
-        val uiState =
-            json.decodeFromJsonElement<WireFlightPlanUiState>(
-                store.runCoreOperationElement(
-                    buildJsonObject {
-                        put("kind", "flight_plan_ui_state")
-                        put("plan", json.encodeToJsonElement(plan.toWire()))
-                        put("current_ui_state", json.encodeToJsonElement<WireFlightPlanUiState>(currentUiState.toWire()))
-                    },
-                ),
-            ).toUi()
-        return snapshot.copy(
-            appUiState = snapshot.appUiState.copy(
-                activePlan = uiState,
-            ),
-        )
-    }
+        json.decodeFromString<WireUiSessionSnapshot>(snapshotJson).toUi()
 }
 
 private fun MapViewportState.toWire(): WireMapViewport {

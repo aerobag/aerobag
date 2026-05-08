@@ -730,27 +730,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     return JSON.parse(candidatesJson) as SituationRingCandidate[];
   }
 
-  private async enrichFlightPlanUiState(plan: FlightPlan, uiState: FlightPlanUiState): Promise<FlightPlanUiState> {
-    return runCoreHadOperation<FlightPlanUiState>({
-      kind: "flight_plan_ui_state",
-      plan,
-      current_ui_state: uiState,
-    });
-  }
-
-  private async enrichUiSessionSnapshot(snapshot: UiSessionSnapshot): Promise<UiSessionSnapshot> {
-    const plan = snapshot.app_state.active_plan;
-    return {
-      ...snapshot,
-      app_ui_state: {
-        ...snapshot.app_ui_state,
-        active_plan: plan && snapshot.app_ui_state.active_plan
-          ? await this.enrichFlightPlanUiState(plan, snapshot.app_ui_state.active_plan)
-          : null,
-      },
-    };
-  }
-
   private async enrichFlightPlanUiMutation(mutation: FlightPlanUiMutation): Promise<FlightPlanUiMutation> {
     return runCoreHadOperation<FlightPlanUiMutation>({ kind: "flight_plan_ui_mutation", mutation });
   }
@@ -794,14 +773,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       );
       return {
         ...created,
-        snapshot: await debugTiming("startup.session.enrich_snapshot", () => this.enrichUiSessionSnapshot(catalogedSnapshot)),
+        snapshot: catalogedSnapshot,
       };
     };
     const init = await createSession(plan, recentAirportIds, selectedAirportId, selectedChartId);
     let handle = init.handle;
     let snapshot = init.snapshot;
     const parseSessionSnapshot = async (json: Promise<string> | string) =>
-      this.enrichUiSessionSnapshot(JSON.parse(await json) as UiSessionSnapshot);
+      JSON.parse(await json) as UiSessionSnapshot;
     const syncGuidanceGeometry = async (nextPlan: FlightPlan | null) => {
       try {
         const geometries =
@@ -1058,7 +1037,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         snapshot = await withSessionRetry(async () =>
           runCoreHadSessionOperation<UiSessionSnapshot>(() =>
             this.module.select_map_family_in_session(handle, JSON.stringify(familyId)),
-          ).then((nextSnapshot) => this.enrichUiSessionSnapshot(nextSnapshot)),
+          ),
         );
         return snapshot;
       },

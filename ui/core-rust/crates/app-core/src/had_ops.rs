@@ -562,7 +562,7 @@ fn nav_symbol_feature(
     )
 }
 
-fn flight_plan_ui_state(
+pub(crate) fn flight_plan_ui_state(
     store: &NavKvStore,
     plan: FlightPlan,
     current_ui_state: FlightPlanUiState,

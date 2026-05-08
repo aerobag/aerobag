@@ -30,6 +30,11 @@ data class InstalledPackageArtifact(
     val checksumSha256: String? = null,
 )
 
+data class InstalledPackageScan(
+    val artifacts: List<InstalledPackageArtifact>,
+    val orphanedFilenames: List<String>,
+)
+
 object InstalledPackages {
     private val json = Json {
         ignoreUnknownKeys = true
@@ -63,23 +68,13 @@ object InstalledPackages {
                 runCatching { json.decodeFromString<InstalledArtifactMetadata>(file.readText()) }.getOrNull()
             }
 
-    private fun fallbackArtifact(zipFile: File): InstalledPackageArtifact {
-        val legacyArtifactId = zipFile.name.removeSuffix(".zip")
-        return InstalledPackageArtifact(
-            artifactId = legacyArtifactId,
-            filename = zipFile.name,
-            file = zipFile,
-            sizeBytes = zipFile.length(),
-            checksumSha256 = null,
-        )
-    }
-
-    fun listInstalledArtifacts(context: Context, kind: InstalledPackageKind): List<InstalledPackageArtifact> {
+    fun scanInstalledArtifacts(context: Context, kind: InstalledPackageKind): InstalledPackageScan {
         val directories = listOfNotNull(
             context.getExternalFilesDir(null)?.let { File(it, kind.directoryName) },
             File(context.filesDir, kind.directoryName),
         )
         val artifactsByFilename = linkedMapOf<String, InstalledPackageArtifact>()
+        val orphanedFilenames = linkedSetOf<String>()
         directories
             .filter { it.isDirectory }
             .flatMap { dir -> dir.listFiles()?.asList().orEmpty() }
@@ -87,21 +82,27 @@ object InstalledPackages {
             .sortedBy { it.name }
             .forEach { zipFile ->
                 val metadata = readMetadata(zipFile)
-                val artifact = if (metadata != null) {
-                    InstalledPackageArtifact(
+                if (metadata == null || metadata.filename != zipFile.name) {
+                    orphanedFilenames += zipFile.name
+                } else {
+                    val artifact = InstalledPackageArtifact(
                         artifactId = metadata.artifactId,
                         filename = metadata.filename,
                         file = zipFile,
                         sizeBytes = metadata.sizeBytes ?: zipFile.length(),
                         checksumSha256 = metadata.checksumSha256,
                     )
-                } else {
-                    fallbackArtifact(zipFile)
+                    artifactsByFilename.putIfAbsent(artifact.filename, artifact)
                 }
-                artifactsByFilename.putIfAbsent(artifact.filename, artifact)
             }
-        return artifactsByFilename.values.sortedBy { it.filename }
+        return InstalledPackageScan(
+            artifacts = artifactsByFilename.values.sortedBy { it.filename },
+            orphanedFilenames = orphanedFilenames.sorted(),
+        )
     }
+
+    fun listInstalledArtifacts(context: Context, kind: InstalledPackageKind): List<InstalledPackageArtifact> =
+        scanInstalledArtifacts(context, kind).artifacts
 
     fun existingInstalledArtifacts(context: Context, kind: InstalledPackageKind, artifactId: String): List<InstalledPackageArtifact> =
         listInstalledArtifacts(context, kind)
@@ -191,6 +192,24 @@ object InstalledPackages {
                 PackageZipStore.invalidate(artifact.file)
                 artifact.file.delete()
                 metadataFile(artifact.file).delete()
+            }
+    }
+
+    fun deleteInstalledFilename(
+        context: Context,
+        kind: InstalledPackageKind,
+        filename: String,
+    ) {
+        val candidates = listOfNotNull(
+            externalFile(context, kind, filename),
+            internalFile(context, kind, filename),
+        )
+        candidates
+            .filter { it.isFile }
+            .forEach { file ->
+                PackageZipStore.invalidate(file)
+                file.delete()
+                metadataFile(file).delete()
             }
     }
 

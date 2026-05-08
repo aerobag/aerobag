@@ -85,6 +85,8 @@ pub struct PackageManagementInput {
     pub bundle: BundleManifest,
     pub installed: Vec<InstalledArtifact>,
     #[serde(default)]
+    pub orphaned_installed_filenames: Vec<String>,
+    #[serde(default)]
     pub forced_gc_installed_filenames: Vec<String>,
     #[serde(default)]
     pub suppressed_fetch_filenames: Vec<String>,
@@ -177,6 +179,8 @@ pub struct OfflinePackagesInitInput {
     pub bundle_manifests_by_filename: BTreeMap<String, BundleManifest>,
     pub installed: Vec<InstalledArtifact>,
     #[serde(default)]
+    pub orphaned_installed_filenames: Vec<String>,
+    #[serde(default)]
     pub forced_gc_installed_filenames: Vec<String>,
     #[serde(default)]
     pub suppressed_fetch_filenames: Vec<String>,
@@ -192,6 +196,8 @@ pub struct OfflinePackagesReduceInput {
     pub discovery_manifests: Vec<CurrentArtifactsManifest>,
     pub bundle_manifests_by_filename: BTreeMap<String, BundleManifest>,
     pub installed: Vec<InstalledArtifact>,
+    #[serde(default)]
+    pub orphaned_installed_filenames: Vec<String>,
     #[serde(default)]
     pub forced_gc_installed_filenames: Vec<String>,
     #[serde(default)]
@@ -326,6 +332,8 @@ pub struct OfflinePackagesControllerInput {
     pub product_ids: Vec<String>,
     pub now_epoch_ms: i64,
     pub installed: Vec<InstalledArtifact>,
+    #[serde(default)]
+    pub orphaned_installed_filenames: Vec<String>,
     pub event: OfflinePackagesControllerEvent,
 }
 
@@ -393,6 +401,7 @@ pub fn initialize_offline_packages(
         preferences: state.preferences.clone(),
         bundle: bundle.clone(),
         installed: input.installed.clone(),
+        orphaned_installed_filenames: input.orphaned_installed_filenames.clone(),
         forced_gc_installed_filenames: input.forced_gc_installed_filenames.clone(),
         suppressed_fetch_filenames: input.suppressed_fetch_filenames.clone(),
     });
@@ -457,6 +466,7 @@ pub fn reduce_offline_packages(input: &OfflinePackagesReduceInput) -> OfflinePac
         preferences: state.preferences.clone(),
         bundle: bundle.clone(),
         installed: input.installed.clone(),
+        orphaned_installed_filenames: input.orphaned_installed_filenames.clone(),
         forced_gc_installed_filenames: input.forced_gc_installed_filenames.clone(),
         suppressed_fetch_filenames: input.suppressed_fetch_filenames.clone(),
     });
@@ -562,9 +572,11 @@ pub fn reduce_offline_packages_controller(
                 discovery_manifests: library_cache.discovery_manifests.clone(),
                 bundle_manifests_by_filename: library_cache.bundle_manifests_by_filename.clone(),
                 installed: effective_installed_artifacts(&state, &input.installed),
+                orphaned_installed_filenames: input.orphaned_installed_filenames.clone(),
                 forced_gc_installed_filenames: forced_gc_installed_filenames(
                     &state,
                     &input.installed,
+                    &input.orphaned_installed_filenames,
                 ),
                 suppressed_fetch_filenames: state
                     .suppressed_fetch_filename_messages
@@ -605,9 +617,11 @@ pub fn reduce_offline_packages_controller(
                 discovery_manifests: library_cache.discovery_manifests.clone(),
                 bundle_manifests_by_filename: library_cache.bundle_manifests_by_filename.clone(),
                 installed: effective_installed_artifacts(&state, &input.installed),
+                orphaned_installed_filenames: input.orphaned_installed_filenames.clone(),
                 forced_gc_installed_filenames: forced_gc_installed_filenames(
                     &state,
                     &input.installed,
+                    &input.orphaned_installed_filenames,
                 ),
                 suppressed_fetch_filenames: state
                     .suppressed_fetch_filename_messages
@@ -668,7 +682,11 @@ pub fn reduce_offline_packages_controller(
         }
     }
 
-    let forced_gc_installed_filenames = forced_gc_installed_filenames(&state, &input.installed);
+    let forced_gc_installed_filenames = forced_gc_installed_filenames(
+        &state,
+        &input.installed,
+        &input.orphaned_installed_filenames,
+    );
     let planner_ui_state = replan_controller_ui_state(
         &mut state,
         &package_source_base_url,
@@ -676,6 +694,7 @@ pub fn reduce_offline_packages_controller(
         &input.product_ids,
         input.now_epoch_ms,
         &input.installed,
+        &input.orphaned_installed_filenames,
         &forced_gc_installed_filenames,
     );
     OfflinePackagesControllerResult {
@@ -724,16 +743,20 @@ fn effective_installed_artifacts(
 fn forced_gc_installed_filenames(
     state: &OfflinePackagesControllerState,
     installed: &[InstalledArtifact],
+    orphaned_installed_filenames: &[String],
 ) -> Vec<String> {
-    installed
-        .iter()
-        .filter(|artifact| {
-            state
-                .tombstoned_installed_filename_messages
-                .contains_key(&artifact.filename)
-        })
-        .map(|artifact| artifact.filename.clone())
-        .collect()
+    let mut filenames: BTreeSet<String> = orphaned_installed_filenames.iter().cloned().collect();
+    filenames.extend(
+        installed
+            .iter()
+            .filter(|artifact| {
+                state
+                    .tombstoned_installed_filename_messages
+                    .contains_key(&artifact.filename)
+            })
+            .map(|artifact| artifact.filename.clone()),
+    );
+    filenames.into_iter().collect()
 }
 
 fn replan_controller_ui_state(
@@ -743,6 +766,7 @@ fn replan_controller_ui_state(
     product_ids: &[String],
     now_epoch_ms: i64,
     installed: &[InstalledArtifact],
+    orphaned_installed_filenames: &[String],
     forced_gc_installed_filenames: &[String],
 ) -> Option<OfflinePackagesUiState> {
     let library_cache = state.library_cache.as_ref()?;
@@ -757,6 +781,7 @@ fn replan_controller_ui_state(
         discovery_manifests: library_cache.discovery_manifests.clone(),
         bundle_manifests_by_filename: library_cache.bundle_manifests_by_filename.clone(),
         installed: installed.to_vec(),
+        orphaned_installed_filenames: orphaned_installed_filenames.to_vec(),
         forced_gc_installed_filenames: forced_gc_installed_filenames.to_vec(),
         suppressed_fetch_filenames: state
             .suppressed_fetch_filename_messages
@@ -880,6 +905,7 @@ pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagemen
     let forced_gc_filenames: BTreeSet<String> = input
         .forced_gc_installed_filenames
         .iter()
+        .chain(input.orphaned_installed_filenames.iter())
         .cloned()
         .collect();
     let effective_installed_by_filename: BTreeMap<String, &InstalledArtifact> =
@@ -1039,6 +1065,7 @@ fn project_offline_packages_ui_state(
         preferences: state.preferences.clone(),
         bundle,
         installed: installed.to_vec(),
+        orphaned_installed_filenames: Vec::new(),
         forced_gc_installed_filenames: forced_gc_installed_filenames.to_vec(),
         suppressed_fetch_filenames: suppressed_fetch_filenames.to_vec(),
     });
@@ -1052,6 +1079,7 @@ fn project_offline_packages_ui_state(
                 now_epoch_ms,
             ),
             installed: installed.to_vec(),
+            orphaned_installed_filenames: Vec::new(),
             forced_gc_installed_filenames: forced_gc_installed_filenames.to_vec(),
             suppressed_fetch_filenames: suppressed_fetch_filenames.to_vec(),
         },
@@ -1944,6 +1972,7 @@ mod tests {
                 ],
             },
             installed: vec![installed("NW_SEC_2603")],
+            orphaned_installed_filenames: vec![],
             forced_gc_installed_filenames: vec![],
             suppressed_fetch_filenames: vec![],
         };
@@ -1977,6 +2006,7 @@ mod tests {
                 packages: vec![current],
             },
             installed: vec![installed_with_filename("NW_SEC_2603", stale_filename)],
+            orphaned_installed_filenames: vec![],
             forced_gc_installed_filenames: vec![],
             suppressed_fetch_filenames: vec![],
         };
@@ -2025,6 +2055,7 @@ mod tests {
                 ],
             },
             installed: vec![],
+            orphaned_installed_filenames: vec![],
             forced_gc_installed_filenames: vec![],
             suppressed_fetch_filenames: vec![],
         };
@@ -2058,6 +2089,7 @@ mod tests {
                 ],
             },
             installed: vec![],
+            orphaned_installed_filenames: vec![],
             forced_gc_installed_filenames: vec![],
             suppressed_fetch_filenames: vec![],
         };
@@ -2065,6 +2097,33 @@ mod tests {
         let plan = plan_offline_packages(&input);
 
         assert_eq!(plan.fetch, vec!["NAV_DB_2604"]);
+    }
+
+    #[test]
+    fn orphaned_installed_filenames_are_gc_without_satisfying_packages() {
+        let desired = pkg(
+            "NW_SEC_2604",
+            "sec",
+            Some("nw"),
+            Some("2026-04-16"),
+            Some("2026-05-14"),
+        );
+        let input = PackageManagementInput {
+            now_epoch_ms: 200,
+            preferences: default_offline_package_preferences(["nw"], ["sec"]),
+            bundle: BundleManifest {
+                packages: vec![desired],
+            },
+            installed: vec![],
+            orphaned_installed_filenames: vec!["sec_nw_2604_missing_metadata.zip".to_string()],
+            forced_gc_installed_filenames: vec![],
+            suppressed_fetch_filenames: vec![],
+        };
+
+        let plan = plan_offline_packages(&input);
+
+        assert_eq!(plan.fetch, vec!["NW_SEC_2604"]);
+        assert_eq!(plan.gc, vec!["sec_nw_2604_missing_metadata.zip"]);
     }
 
     #[test]
@@ -2091,6 +2150,7 @@ mod tests {
                 ],
             },
             installed: vec![installed("NW_SEC_2603"), installed("NW_SEC_2604")],
+            orphaned_installed_filenames: vec![],
             forced_gc_installed_filenames: vec![],
             suppressed_fetch_filenames: vec![],
         };
@@ -2129,6 +2189,7 @@ mod tests {
             preferences: preferences.clone(),
             bundle: manifest.clone(),
             installed: vec![],
+            orphaned_installed_filenames: vec![],
             forced_gc_installed_filenames: vec![],
             suppressed_fetch_filenames: vec![],
         });
@@ -2142,6 +2203,7 @@ mod tests {
             preferences,
             bundle: manifest,
             installed: vec![installed("NW_SEC_2603"), installed("NW_SEC_2604")],
+            orphaned_installed_filenames: vec![],
             forced_gc_installed_filenames: vec![],
             suppressed_fetch_filenames: vec![],
         });
@@ -2181,6 +2243,7 @@ mod tests {
                 ],
             },
             installed: vec![installed("NW_SEC_2603")],
+            orphaned_installed_filenames: vec![],
             forced_gc_installed_filenames: vec![],
             suppressed_fetch_filenames: vec![],
         };
@@ -2255,6 +2318,7 @@ mod tests {
                 installed_with_size("NW_SEC_2603", 3_100),
                 installed_with_size("NW_SEC_2604", 1_100),
             ],
+            orphaned_installed_filenames: vec![],
             forced_gc_installed_filenames: vec![],
             suppressed_fetch_filenames: vec![],
         };
@@ -2452,6 +2516,7 @@ mod tests {
             product_ids: vec!["nav-db".to_string()],
             now_epoch_ms: 1_774_401_600_000,
             installed: vec![installed("NAV_DB_2603_01"), installed("NAV_DB_2604_01")],
+            orphaned_installed_filenames: vec![],
             event: OfflinePackagesControllerEvent::InstalledArtifactHealthObserved {
                 unreadable_installed_filename_messages: BTreeMap::from([
                     ("NAV_DB_2603_01.zip".to_string(), "bad".to_string()),
@@ -2544,6 +2609,7 @@ mod tests {
                 size_bytes: None,
                 checksum_sha256: None,
             }],
+            orphaned_installed_filenames: vec![],
             event: OfflinePackagesControllerEvent::SyncFinished {
                 summary: OfflinePackagesSyncSummary {
                     fetched_count: 1,
@@ -2612,6 +2678,7 @@ mod tests {
             discovery_manifests: vec![discovery.clone()],
             bundle_manifests_by_filename: bundles.clone(),
             installed: vec![],
+            orphaned_installed_filenames: vec![],
             forced_gc_installed_filenames: vec![],
             suppressed_fetch_filenames: vec![],
         });
@@ -2631,6 +2698,7 @@ mod tests {
             discovery_manifests: vec![discovery],
             bundle_manifests_by_filename: bundles,
             installed: vec![],
+            orphaned_installed_filenames: vec![],
             forced_gc_installed_filenames: vec![],
             suppressed_fetch_filenames: vec![],
         });

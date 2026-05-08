@@ -914,6 +914,8 @@ struct BundlePackageManagementInputWire {
     preferences: app_core::OfflinePackagePreferences,
     bundle_json: String,
     installed: Vec<app_core::InstalledArtifact>,
+    #[serde(default)]
+    orphaned_installed_filenames: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -925,6 +927,8 @@ struct OfflinePackagesInitInputWire {
     discovery_jsons: Vec<String>,
     bundle_jsons_by_filename: BTreeMap<String, String>,
     installed: Vec<app_core::InstalledArtifact>,
+    #[serde(default)]
+    orphaned_installed_filenames: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -937,6 +941,8 @@ struct OfflinePackagesReduceInputWire {
     discovery_jsons: Vec<String>,
     bundle_jsons_by_filename: BTreeMap<String, String>,
     installed: Vec<app_core::InstalledArtifact>,
+    #[serde(default)]
+    orphaned_installed_filenames: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -981,6 +987,8 @@ struct OfflinePackagesControllerInputWire {
     product_ids: Vec<String>,
     now_epoch_ms: i64,
     installed: Vec<app_core::InstalledArtifact>,
+    #[serde(default)]
+    orphaned_installed_filenames: Vec<String>,
     event: OfflinePackagesControllerEventWire,
 }
 
@@ -1001,6 +1009,7 @@ pub fn plan_offline_packages_from_bundle_json(input_json: &str) -> Result<String
         preferences: input.preferences,
         bundle,
         installed: input.installed,
+        orphaned_installed_filenames: input.orphaned_installed_filenames,
         forced_gc_installed_filenames: Vec::new(),
         suppressed_fetch_filenames: Vec::new(),
     });
@@ -1033,6 +1042,7 @@ pub fn initialize_offline_packages_json(input_json: &str) -> Result<String, Stri
         discovery_manifests,
         bundle_manifests_by_filename,
         installed: input.installed,
+        orphaned_installed_filenames: input.orphaned_installed_filenames,
         forced_gc_installed_filenames: Vec::new(),
         suppressed_fetch_filenames: Vec::new(),
     });
@@ -1066,6 +1076,7 @@ pub fn reduce_offline_packages_json(input_json: &str) -> Result<String, String> 
         discovery_manifests,
         bundle_manifests_by_filename,
         installed: input.installed,
+        orphaned_installed_filenames: input.orphaned_installed_filenames,
         forced_gc_installed_filenames: Vec::new(),
         suppressed_fetch_filenames: Vec::new(),
     });
@@ -1145,6 +1156,7 @@ pub fn dispatch_offline_packages_controller_json(
             product_ids: input.product_ids,
             now_epoch_ms: input.now_epoch_ms,
             installed: input.installed,
+            orphaned_installed_filenames: input.orphaned_installed_filenames,
             event,
         });
     controllers.insert(handle as u32, result.state.clone());

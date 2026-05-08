@@ -661,6 +661,10 @@ private data class InstalledArtifactWire(
     val checksumSha256: String? = null,
 )
 
+private data class InstalledPackageScanWire(
+    val installed: List<InstalledArtifactWire>,
+    val orphanedFilenames: List<String>,
+)
 
 @Serializable
 private data class OfflinePackagesUiRowWire(
@@ -897,6 +901,8 @@ private data class OfflinePackagesInitInputWire(
     @SerialName("bundle_jsons_by_filename")
     val bundleJsonsByFilename: Map<String, String>,
     val installed: List<InstalledArtifactWire>,
+    @SerialName("orphaned_installed_filenames")
+    val orphanedInstalledFilenames: List<String> = emptyList(),
 )
 
 @Serializable
@@ -922,6 +928,8 @@ private data class OfflinePackagesReduceInputWire(
     @SerialName("bundle_jsons_by_filename")
     val bundleJsonsByFilename: Map<String, String>,
     val installed: List<InstalledArtifactWire>,
+    @SerialName("orphaned_installed_filenames")
+    val orphanedInstalledFilenames: List<String> = emptyList(),
 )
 
 @Serializable
@@ -994,6 +1002,8 @@ private data class OfflinePackagesControllerInputWire(
     @SerialName("now_epoch_ms")
     val nowEpochMs: Long,
     val installed: List<InstalledArtifactWire>,
+    @SerialName("orphaned_installed_filenames")
+    val orphanedInstalledFilenames: List<String> = emptyList(),
     val event: OfflinePackagesControllerEventWire,
 )
 
@@ -2824,8 +2834,8 @@ private fun HomePage(
             "OfflinePackages",
             "controller event=${event::class.simpleName} handle=$offlinePackagesControllerHandle scanning installed packages",
         )
-        val installed = withContext(Dispatchers.IO) {
-            listInstalledPackageArtifacts(context.applicationContext)
+        val installedScan = withContext(Dispatchers.IO) {
+            scanInstalledPackageArtifacts(context.applicationContext)
         }
         val installedScanElapsedMs = SystemClock.elapsedRealtime() - startMs
         val input = OfflinePackagesControllerInputWire(
@@ -2834,14 +2844,16 @@ private fun HomePage(
             regionIds = regionIds,
             productIds = productIds,
             nowEpochMs = bootstrap.packageManagementNowEpochMsOverride ?: System.currentTimeMillis(),
-            installed = installed,
+            installed = installedScan.installed,
+            orphanedInstalledFilenames = installedScan.orphanedFilenames,
             event = event,
         )
         val inputJson = PackageManagementJson.encodeToString(input)
         Log.i(
             "OfflinePackages",
             "controller event=${event::class.simpleName} handle=$offlinePackagesControllerHandle " +
-                "installed=${installed.size} installedScanMs=$installedScanElapsedMs inputBytes=${inputJson.length}",
+                "installed=${installedScan.installed.size} orphaned=${installedScan.orphanedFilenames.size} " +
+                "installedScanMs=$installedScanElapsedMs inputBytes=${inputJson.length}",
         )
         val result = PackageManagementJson.decodeFromString<OfflinePackagesControllerResultWire>(
             NativeBindings.dispatchOfflinePackagesControllerJson(offlinePackagesControllerHandle, inputJson),
@@ -3887,10 +3899,11 @@ private fun writeOfflinePackagesStateJson(
         .apply()
 }
 
-private fun listInstalledPackageArtifacts(context: Context): List<InstalledArtifactWire> {
-    return InstalledPackageKind.entries
+private fun scanInstalledPackageArtifacts(context: Context): InstalledPackageScanWire {
+    val scans = InstalledPackageKind.entries.map { kind -> InstalledPackages.scanInstalledArtifacts(context, kind) }
+    val installed = scans
         .asSequence()
-        .flatMap { kind -> InstalledPackages.listInstalledArtifacts(context, kind).asSequence() }
+        .flatMap { it.artifacts.asSequence() }
         .sortedWith(compareBy({ it.artifactId }, { it.filename }))
         .map {
             InstalledArtifactWire(
@@ -3901,6 +3914,16 @@ private fun listInstalledPackageArtifacts(context: Context): List<InstalledArtif
             )
         }
         .toList()
+    val orphanedFilenames = scans
+        .asSequence()
+        .flatMap { it.orphanedFilenames.asSequence() }
+        .distinct()
+        .sorted()
+        .toList()
+    return InstalledPackageScanWire(
+        installed = installed,
+        orphanedFilenames = orphanedFilenames,
+    )
 }
 
 private suspend fun syncOfflinePackages(
@@ -3914,7 +3937,7 @@ private suspend fun syncOfflinePackages(
 ): OfflinePackagesSyncSummary {
     val syncStartMs = SystemClock.elapsedRealtime()
     val packagesById = bundle.packages.associateBy { it.id }
-    val installedByFilename = listInstalledPackageArtifacts(context).associateBy { it.filename }
+    val installedByFilename = scanInstalledPackageArtifacts(context).installed.associateBy { it.filename }
     val warnings = mutableListOf<OfflinePackagesWarning>()
     val remotePoisonedFilenameMessages = linkedMapOf<String, String>()
     val totalFetchBytes = plan.fetch.sumOf { artifactId -> packagesById[artifactId]?.sizeBytes ?: 0L }
@@ -4088,14 +4111,17 @@ private suspend fun syncOfflinePackages(
             val gcStartMs = SystemClock.elapsedRealtime()
             reportProgress("Removing package ${index + 1}/${plan.gc.size}: $filename")
             val installedArtifact = installedByFilename[filename]
-                ?: error("missing installed metadata for gc filename $filename")
-            val keepFilename = packagesById[installedArtifact.artifactId]?.filename
-                ?.takeIf { plan.fetch.contains(installedArtifact.artifactId) }
-            deleteInstalledArtifact(context, installedArtifact.artifactId, filename, keepFilename)
+            if (installedArtifact != null) {
+                val keepFilename = packagesById[installedArtifact.artifactId]?.filename
+                    ?.takeIf { plan.fetch.contains(installedArtifact.artifactId) }
+                deleteInstalledArtifact(context, installedArtifact.artifactId, filename, keepFilename)
+            } else {
+                deleteInstalledFilename(context, filename)
+            }
             gcCount += 1
             Log.i(
                 "OfflinePackages",
-                "gc removed $filename in ${SystemClock.elapsedRealtime() - gcStartMs}ms keep=$keepFilename",
+                "gc removed $filename in ${SystemClock.elapsedRealtime() - gcStartMs}ms",
             )
         }.onFailure {
             Log.e("OfflinePackages", "gc failed for $filename", it)
@@ -4419,6 +4445,15 @@ private fun deleteInstalledArtifact(
 ) {
     InstalledPackageKind.entries.forEach { kind ->
         InstalledPackages.deleteInstalledArtifact(context, kind, artifactId, filename, keepFilename)
+    }
+}
+
+private fun deleteInstalledFilename(
+    context: Context,
+    filename: String,
+) {
+    InstalledPackageKind.entries.forEach { kind ->
+        InstalledPackages.deleteInstalledFilename(context, kind, filename)
     }
 }
 

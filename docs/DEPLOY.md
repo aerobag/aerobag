@@ -142,6 +142,23 @@ as:
 - `adsb-traces/`
 - `shaded-relief-products/`
 
+The static tree is also the public package source. Package clients use this
+contract:
+
+- `https://<host>/.well-known/aerobag-package-source.json` advertises the
+  package source root.
+- The discovery document is JSON:
+
+```json
+{
+  "schema_version": 1,
+  "package_source_base_url": "https://aerobag.org"
+}
+```
+
+- The package source root contains canonical `current_artifacts.json`.
+- Clients must not probe alternate spellings such as `current-artifacts.json`.
+
 ## Serve the web tree
 
 Point the static web server at:
@@ -198,6 +215,8 @@ After deploying nginx, verify:
 
 ```bash
 curl -I http://localhost/
+curl -I http://localhost/.well-known/aerobag-package-source.json
+curl -I http://localhost/current_artifacts.json
 curl -I http://localhost/nav-kv/root
 curl -I http://localhost/vectors/vectors
 ```

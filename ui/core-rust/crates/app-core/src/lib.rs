@@ -650,13 +650,6 @@ pub fn load_geometry(geometry_json: &str) -> AppResult<GeometryBundle> {
 }
 
 pub fn build_flight_plan(plan: FlightPlan) -> AppResult<FlightPlan> {
-    if plan.route_components.is_empty() && !plan.legs.is_empty() {
-        return Err(AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: "flight plan must contain structured route data".to_string(),
-        });
-    }
-
     let plan = plan.normalized();
 
     if plan.resolved_legs.is_empty() && plan.route_components.len() > 1 {

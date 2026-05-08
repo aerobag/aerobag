@@ -20,11 +20,6 @@ export type TileStorageKind = "asset_tree" | "sectional_package" | "static_produ
 export type FlightPlan = {
   id: string;
   name: string;
-  legs: Array<{
-    from: { Airport: string } | { Navaid: string } | { Fix: string };
-    to: { Airport: string } | { Navaid: string } | { Fix: string };
-    airway: string | null;
-  }>;
   route_components: RouteComponent[];
   route_component_uids: string[];
   route_component_uid_counter: number;

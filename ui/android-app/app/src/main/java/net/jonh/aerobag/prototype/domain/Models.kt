@@ -30,12 +30,6 @@ data class PackageId(
     }
 }
 
-data class FlightPlanLeg(
-    val from: NavRef,
-    val to: NavRef,
-    val airway: String? = null,
-)
-
 sealed interface RouteComponent {
     data class Waypoint(val waypoint: NavRef) : RouteComponent
     data class Airway(val airway: AirwaySegment) : RouteComponent
@@ -53,7 +47,6 @@ sealed interface NavRef {
 data class FlightPlan(
     val id: String,
     val name: String,
-    val legs: List<FlightPlanLeg>,
     val routeComponents: List<RouteComponent> = emptyList(),
     val routeComponentUids: List<String> = emptyList(),
     val routeComponentUidCounter: Long = 0,

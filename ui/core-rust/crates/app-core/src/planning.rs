@@ -12,8 +12,6 @@ pub struct FlightPlan {
     pub id: String,
     pub name: String,
     #[serde(default)]
-    pub legs: Vec<PlanLeg>,
-    #[serde(default)]
     pub route_components: Vec<RouteComponent>,
     pub route_component_uids: Vec<String>,
     pub route_component_uid_counter: u64,
@@ -2869,7 +2867,6 @@ fn rebuild_after_component_remap(
     let mut plan = old_plan;
     let (route_component_uids, next_counter) =
         route_component_uids_from_remap(&plan, old_index_by_new_index);
-    plan.legs.clear();
     plan.route_components = new_components;
     plan.route_component_uids = route_component_uids;
     plan.route_component_uid_counter = next_counter;
@@ -4251,7 +4248,6 @@ mod tests {
         FlightPlan {
             id: "plan-1".to_string(),
             name: "Airway".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KBOS".to_string()),
@@ -4350,7 +4346,6 @@ mod tests {
         FlightPlan {
             id: "plan-seeded".to_string(),
             name: "Seeded".to_string(),
-            legs: Vec::new(),
             route_components,
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -4415,7 +4410,6 @@ mod tests {
         FlightPlan {
             id: "plan-2".to_string(),
             name: "Waypoint only".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KRNT".to_string()),
@@ -4460,7 +4454,6 @@ mod tests {
         FlightPlan {
             id: "plan-3".to_string(),
             name: "Guided".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KRNT".to_string()),
@@ -4522,7 +4515,6 @@ mod tests {
         FlightPlan {
             id: "plan-dup".to_string(),
             name: "Duplicate waypoint".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KAAA".to_string()),
@@ -4811,7 +4803,6 @@ mod tests {
         FlightPlan {
             id: "plan-2pt".to_string(),
             name: "Two waypoint".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KRNT".to_string()),
@@ -4844,7 +4835,6 @@ mod tests {
         FlightPlan {
             id: "plan-4pt".to_string(),
             name: "Four waypoint".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KRNT".to_string()),
@@ -4899,7 +4889,6 @@ mod tests {
         FlightPlan {
             id: "plan-1pt".to_string(),
             name: "Single waypoint".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Airport("KRNT".to_string()),
             }],
@@ -5389,7 +5378,6 @@ mod tests {
         let plan = FlightPlan {
             id: "plan-star".to_string(),
             name: "STAR".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Fix("ARD".to_string()),
@@ -5646,7 +5634,6 @@ mod tests {
         let plan = FlightPlan {
             id: "plan-proc-seq".to_string(),
             name: "Procedure sequencing".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KAAA".to_string()),
@@ -6871,7 +6858,10 @@ mod tests {
         assert_eq!(guidance.active_leg_index, Some(0));
         assert_eq!(active_to_row.nav_ref, Some(NavRef::Fix("IAF".to_string())));
         for row in rows.iter().filter(|row| {
-            row.row_kind == FlightPlanDisplayRowKind::Waypoint && row.component_index.is_some()
+            row.row_kind == FlightPlanDisplayRowKind::Waypoint
+                && row.component_index.is_some()
+                && row.leg_index.is_some()
+                && row.leg_index != guidance.active_leg_index
         }) {
             let activate_leg = row
                 .actions

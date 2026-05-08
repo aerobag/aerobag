@@ -3346,7 +3346,6 @@ mod tests {
         FlightPlan {
             id: "plan-1".to_string(),
             name: "KPAO VPDUB KVCB".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KPAO".to_string()),
@@ -3398,7 +3397,6 @@ mod tests {
         FlightPlan {
             id: "plan-dup".to_string(),
             name: "KRNT SEA KPAE KRNT".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KRNT".to_string()),
@@ -3472,7 +3470,6 @@ mod tests {
         FlightPlan {
             id: "plan-preview".to_string(),
             name: "A B C".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::LatLon(a),
@@ -3540,7 +3537,6 @@ mod tests {
         FlightPlan {
             id: "short-plan-preview".to_string(),
             name: "A B C".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::LatLon(a),
@@ -4243,7 +4239,6 @@ mod tests {
         let plan = FlightPlan {
             id: "multi-leg-procedure-preview".to_string(),
             name: "multi-leg procedure preview".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::LatLon(LatLon {
@@ -4362,7 +4357,6 @@ mod tests {
         let plan = FlightPlan {
             id: "multi-element-procedure-preview".to_string(),
             name: "multi-element procedure preview".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Procedure {
                 procedure: crate::ProcedureSegment {
                     airport_id: AirportId("KAAA".to_string()),
@@ -4477,7 +4471,6 @@ mod tests {
         let plan = FlightPlan {
             id: "multi-element-procedure-preview-live".to_string(),
             name: "multi-element procedure preview live".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Procedure {
                 procedure: crate::ProcedureSegment {
                     airport_id: AirportId("KAAA".to_string()),

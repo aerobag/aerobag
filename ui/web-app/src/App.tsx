@@ -1420,7 +1420,7 @@ export default function App() {
     });
   }, [selectedAirportId, selectedChartId, selectedChart?.label, selectedChart?.asset_path]);
   const legSummary = useMemo(() => {
-    const firstLeg = currentPlan?.legs[0];
+    const firstLeg = currentPlan?.resolved_legs[0];
     if (!firstLeg) {
       return "NO LEG";
     }
@@ -7738,7 +7738,6 @@ async function buildSeededDevPlan(): Promise<{
     ...samplePlan,
     id: "dev-krnt-sea-kpae",
     name: "KRNT SEA KPAE",
-    legs: resolvedLegs.map((leg) => ({ from: leg.from, to: leg.to, airway: null })),
     route_components: routeComponents,
     route_component_uids: routeComponents.map((_, index) => `fpc:${index.toString(16).padStart(16, "0")}`),
     route_component_uid_counter: routeComponents.length,

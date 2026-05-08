@@ -197,7 +197,6 @@ data class WireOwnshipSourceStatus(
 data class WireFlightPlan(
     val id: String,
     val name: String,
-    val legs: List<WirePlanLeg>,
     val route_components: List<WireRouteComponent> = emptyList(),
     val route_component_uids: List<String> = emptyList(),
     val route_component_uid_counter: Long = 0,

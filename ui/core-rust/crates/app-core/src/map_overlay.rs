@@ -4774,7 +4774,6 @@ mod tests {
         let plan = FlightPlan {
             id: "plan".to_string(),
             name: "Plan".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -4919,7 +4918,6 @@ mod tests {
         let plan = FlightPlan {
             id: "plan".to_string(),
             name: "Plan".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Airport("KSEA".to_string()),
             }],
@@ -5081,7 +5079,6 @@ mod tests {
         let plan = FlightPlan {
             id: "plan".to_string(),
             name: "Plan".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,

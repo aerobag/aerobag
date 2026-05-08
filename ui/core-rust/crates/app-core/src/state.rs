@@ -130,7 +130,6 @@ mod tests {
         FlightPlan {
             id: "plan-1".to_string(),
             name: "KBOS to KJFK".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KBOS".to_string()),
@@ -232,8 +231,24 @@ mod tests {
             AppEvent::ReplaceFlightPlan(FlightPlan {
                 id: "bad".to_string(),
                 name: "bad".to_string(),
-                legs: Vec::new(),
-                route_components: Vec::new(),
+                route_components: vec![
+                    RouteComponent::Airway {
+                        airway: crate::AirwaySegment {
+                            name: "V1".to_string(),
+                            branch_key: None,
+                            entry: NavRef::Airport("KBOS".to_string()),
+                            exit: NavRef::Airport("KJFK".to_string()),
+                        },
+                    },
+                    RouteComponent::Airway {
+                        airway: crate::AirwaySegment {
+                            name: "V2".to_string(),
+                            branch_key: None,
+                            entry: NavRef::Airport("KJFK".to_string()),
+                            exit: NavRef::Airport("KLGA".to_string()),
+                        },
+                    },
+                ],
                 route_component_uids: Vec::new(),
                 route_component_uid_counter: 0,
                 resolved_legs: Vec::new(),

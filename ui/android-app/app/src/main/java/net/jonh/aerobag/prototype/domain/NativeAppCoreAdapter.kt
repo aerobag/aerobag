@@ -1233,7 +1233,6 @@ private fun MapViewportState.toWire(): WireMapViewport {
 private fun FlightPlan.toWire() = WireFlightPlan(
     id = id,
     name = name,
-    legs = legs.map { it.toWire() },
     route_components = routeComponents.map { it.toWire() },
     route_component_uids = routeComponentUids,
     route_component_uid_counter = routeComponentUidCounter,
@@ -1246,12 +1245,6 @@ private fun FlightPlan.toWire() = WireFlightPlan(
     notes = notes,
     updated_at_epoch_ms = updatedAtEpochMs,
     version = version,
-)
-
-private fun FlightPlanLeg.toWire() = WirePlanLeg(
-    from = from.toWire(),
-    to = to.toWire(),
-    airway = airway,
 )
 
 private fun PlanLeg.toWire() = WirePlanLeg(
@@ -1661,7 +1654,6 @@ private fun SourceConnectionState.toWireName(): String = when (this) {
 internal fun WireFlightPlan.toUiFlightPlan() = FlightPlan(
     id = id,
     name = name,
-    legs = legs.map { it.toUi() },
     routeComponents = route_components.map { it.toUi() },
     routeComponentUids = route_component_uids,
     routeComponentUidCounter = route_component_uid_counter,
@@ -2962,12 +2954,6 @@ private fun WireMaterializedProcedure.toUi() = MaterializedProcedure(
     procedure = procedure.toUi(),
     concretizedItems = concretized_items.map { it.toUi() },
     resolvedLegs = resolved_legs.map { it.toUi() },
-)
-
-private fun WirePlanLeg.toUi() = FlightPlanLeg(
-    from = from.toUi(),
-    to = to.toUi(),
-    airway = airway,
 )
 
 private fun WireNavRef.toUi(): NavRef = when (this) {

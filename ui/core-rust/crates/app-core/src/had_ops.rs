@@ -2374,20 +2374,18 @@ mod tests {
 
     #[test]
     fn operation_reports_page_faults_instead_of_exposing_query_keys() {
-        let (root, _pages) = fixture(&[("chart/catalog", br#"{"charts":[]}"#.as_slice())], 4);
+        let (root, _pages) = fixture(&[("chart/catalog", br#"[]"#.as_slice())], 4);
         let store = NavKvStore::new(root);
 
         assert_eq!(
             run_had_operation(&store, HadOperation::ChartCatalog).unwrap(),
-            HadOperationOutcome::NeedPages {
-                pages: vec![0, 1, 2, 3]
-            }
+            HadOperationOutcome::NeedPages { pages: vec![0] }
         );
     }
 
     #[test]
     fn operation_decodes_values_after_platform_supplies_pages() {
-        let (root, pages) = fixture(&[("chart/catalog", br#"{"charts":[]}"#.as_slice())], 4);
+        let (root, pages) = fixture(&[("chart/catalog", br#"[]"#.as_slice())], 4);
         let mut store = NavKvStore::new(root);
         for (index, page) in pages.into_iter().enumerate() {
             store.insert_page(index as u32, page);
@@ -2396,7 +2394,7 @@ mod tests {
         assert_eq!(
             run_had_operation(&store, HadOperation::ChartCatalog).unwrap(),
             HadOperationOutcome::Complete {
-                result: serde_json::json!({"charts":[]})
+                result: serde_json::json!([])
             }
         );
     }
@@ -2587,7 +2585,6 @@ mod tests {
         let plan = FlightPlan {
             id: "krnt-sea-pae".to_string(),
             name: "KRNT SEA PAE".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KRNT".to_string()),
@@ -2868,7 +2865,6 @@ mod tests {
         let plan = FlightPlan {
             id: "kpao-vpdub-vcb-wlw".to_string(),
             name: "KPAO VPDUB KVCB KWLW".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KPAO".to_string()),
@@ -2979,7 +2975,6 @@ mod tests {
         let plan = FlightPlan {
             id: "krnt-sea-pae".to_string(),
             name: "KRNT SEA KPAE".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KRNT".to_string()),
@@ -3417,7 +3412,6 @@ mod tests {
         let plan = FlightPlan {
             id: "krnt".to_string(),
             name: "KRNT".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Airport("KRNT".to_string()),
             }],
@@ -3477,7 +3471,6 @@ mod tests {
         let plan = FlightPlan {
             id: "krnt".to_string(),
             name: "KRNT".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Airport("KRNT".to_string()),
             }],
@@ -3537,7 +3530,6 @@ mod tests {
         let plan = FlightPlan {
             id: "empty".to_string(),
             name: "Empty".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -3659,7 +3651,6 @@ mod tests {
         let plan = FlightPlan {
             id: "west-coast".to_string(),
             name: "West Coast".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KPAE".to_string()),
@@ -3702,7 +3693,6 @@ mod tests {
         let plan = FlightPlan {
             id: "spot".to_string(),
             name: "Spot".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -3732,7 +3722,6 @@ mod tests {
         let plan = FlightPlan {
             id: "duplicate".to_string(),
             name: "Duplicate".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Navaid("SEA".to_string()),
             }],

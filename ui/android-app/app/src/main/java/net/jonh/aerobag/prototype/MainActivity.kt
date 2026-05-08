@@ -1314,7 +1314,6 @@ private fun buildSeededDevPlan(
             plan.copy(
                 id = "dev-kpao-vpdub-kvcb-kwlw",
                 name = "KPAO VPDUB KVCB KWLW",
-                legs = resolvedLegs.map { leg -> net.jonh.aerobag.prototype.domain.FlightPlanLeg(leg.from, leg.to, null) },
                 routeComponents = waypoints.map { waypoint -> RouteComponent.Waypoint(waypoint) },
                 resolvedLegs = resolvedLegs,
                 guidance = GuidanceState(

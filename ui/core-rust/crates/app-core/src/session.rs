@@ -367,12 +367,7 @@ pub fn load_raster_map_catalog_in_session(handle: u32) -> AppResult<HadOperation
         Err(err) => return had_read_error_to_overlay_outcome(err),
     };
     session.raster_map_catalog = Some(catalog);
-    serde_json::to_value(snapshot_for_session(session))
-        .map(|result| HadOperationOutcome::Complete { result })
-        .map_err(|err| AppError {
-            kind: AppErrorKind::Internal,
-            message: err.to_string(),
-        })
+    session_snapshot_outcome(session)
 }
 
 pub fn select_map_family_in_session(
@@ -394,12 +389,7 @@ pub fn select_map_family_in_session(
         Err(err) => return had_read_error_to_overlay_outcome(err),
     };
     session.raster_map_catalog = Some(catalog);
-    serde_json::to_value(snapshot_for_session(session))
-        .map(|result| HadOperationOutcome::Complete { result })
-        .map_err(|err| AppError {
-            kind: AppErrorKind::Internal,
-            message: err.to_string(),
-        })
+    session_snapshot_outcome(session)
 }
 
 pub fn select_raster_map_in_session(
@@ -863,13 +853,7 @@ fn insert_waypoint_best_position_for_session(
         }
     };
     replace_session_flight_plan(session, mutation.plan)?;
-    let snapshot = snapshot_for_session(session);
-    Ok(HadOperationOutcome::Complete {
-        result: serde_json::to_value(snapshot).map_err(|err| AppError {
-            kind: AppErrorKind::Internal,
-            message: err.to_string(),
-        })?,
-    })
+    session_snapshot_outcome(session)
 }
 
 pub fn insert_waypoint_at_flight_plan_row_in_session(
@@ -1034,13 +1018,7 @@ pub fn insert_airway_at_flight_plan_row_in_session(
         materialized.resolved_legs,
     )?;
     replace_session_flight_plan(session, mutation.mutation.plan)?;
-    let snapshot = snapshot_for_session(session);
-    Ok(HadOperationOutcome::Complete {
-        result: serde_json::to_value(snapshot).map_err(|err| AppError {
-            kind: AppErrorKind::Internal,
-            message: err.to_string(),
-        })?,
-    })
+    session_snapshot_outcome(session)
 }
 
 pub fn select_procedure_at_flight_plan_row_in_session(
@@ -1054,7 +1032,7 @@ pub fn select_procedure_at_flight_plan_row_in_session(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
-    let plan = session_plan(session)?;
+    let mut plan = session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
     let row = ui
         .display_rows
@@ -1099,6 +1077,13 @@ pub fn select_procedure_at_flight_plan_row_in_session(
                 _ => None,
             }
         });
+    let mut airport_component_index = airport_component_index;
+    if replace_component_index.is_none() {
+        let repaired =
+            crate::materialize_airway_exit_before_component(&plan, airport_component_index)?;
+        plan = repaired.0;
+        airport_component_index = repaired.1;
+    }
     let start_component_index = airport_component_index
         .checked_sub(1)
         .ok_or_else(|| AppError {
@@ -1139,13 +1124,7 @@ pub fn select_procedure_at_flight_plan_row_in_session(
         )?
     };
     replace_session_flight_plan(session, mutation.mutation.plan)?;
-    let snapshot = snapshot_for_session(session);
-    Ok(HadOperationOutcome::Complete {
-        result: serde_json::to_value(snapshot).map_err(|err| AppError {
-            kind: AppErrorKind::Internal,
-            message: err.to_string(),
-        })?,
-    })
+    session_snapshot_outcome(session)
 }
 
 pub fn load_plate_procedure_in_session(
@@ -1158,7 +1137,7 @@ pub fn load_plate_procedure_in_session(
     })?;
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
-    let plan = session_plan(session)?;
+    let mut plan = session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
     let row = ui
         .display_rows
@@ -1205,6 +1184,13 @@ pub fn load_plate_procedure_in_session(
                 _ => None,
             }
         });
+    let mut airport_component_index = airport_component_index;
+    if replace_component_index.is_none() {
+        let repaired =
+            crate::materialize_airway_exit_before_component(&plan, airport_component_index)?;
+        plan = repaired.0;
+        airport_component_index = repaired.1;
+    }
     let start_component_index = airport_component_index
         .checked_sub(1)
         .ok_or_else(|| AppError {
@@ -1245,13 +1231,7 @@ pub fn load_plate_procedure_in_session(
         )?
     };
     replace_session_flight_plan(session, mutation.mutation.plan)?;
-    let snapshot = snapshot_for_session(session);
-    Ok(HadOperationOutcome::Complete {
-        result: serde_json::to_value(snapshot).map_err(|err| AppError {
-            kind: AppErrorKind::Internal,
-            message: err.to_string(),
-        })?,
-    })
+    session_snapshot_outcome(session)
 }
 
 fn activate_direct_to_nav_ref_in_session(
@@ -2395,9 +2375,32 @@ fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> App
 }
 
 fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
-    let app_ui_state = project_session_app_ui_state(session);
+    try_snapshot_for_session(session)
+        .expect("session snapshot requires unavailable nav-kv resources")
+}
+
+fn session_snapshot_outcome(session: &UiSession) -> AppResult<HadOperationOutcome> {
+    match try_snapshot_for_session(session) {
+        Ok(snapshot) => serde_json::to_value(snapshot)
+            .map(|result| HadOperationOutcome::Complete { result })
+            .map_err(|err| AppError {
+                kind: AppErrorKind::Internal,
+                message: err.to_string(),
+            }),
+        Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
+            resources: nav_kv_page_resources(pages),
+        }),
+        Err(HadReadError::Fatal(message)) => Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message,
+        }),
+    }
+}
+
+fn try_snapshot_for_session(session: &UiSession) -> Result<UiSessionSnapshot, HadReadError> {
+    let app_ui_state = project_session_app_ui_state(session)?;
     let debug_state = debug_state_for_app_state(&session.debug_state, &session.app_state);
-    UiSessionSnapshot {
+    Ok(UiSessionSnapshot {
         app_state: state::project_ui_snapshot_app_state(&session.app_state),
         app_ui_state,
         playback_ui_state: session.playback.ui_state(),
@@ -2415,7 +2418,7 @@ fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
             .raster_map_catalog
             .as_ref()
             .and_then(crate::raster_map_ui_state),
-    }
+    })
 }
 
 fn debug_state_for_app_state(debug_state: &UiDebugState, app_state: &AppState) -> UiDebugState {
@@ -2574,7 +2577,7 @@ fn empty_map_overlay_query() -> MapOverlayQueryResult {
     }
 }
 
-fn project_session_app_ui_state(session: &UiSession) -> AppUiState {
+fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadReadError> {
     let mut app_ui_state = state::project_app_ui_state(&session.app_state);
     app_ui_state.ownship.controls.situation_controls = project_situation_controls(session);
     if let Some(active_plan) = app_ui_state.active_plan.as_mut() {
@@ -2587,10 +2590,9 @@ fn project_session_app_ui_state(session: &UiSession) -> AppUiState {
         session.app_state.active_plan.clone(),
         app_ui_state.active_plan.take(),
     ) {
-        app_ui_state.active_plan =
-            Some(flight_plan_ui_state(store, plan, active_plan.clone()).unwrap_or(active_plan));
+        app_ui_state.active_plan = Some(flight_plan_ui_state(store, plan, active_plan)?);
     }
-    app_ui_state
+    Ok(app_ui_state)
 }
 
 fn project_situation_controls(session: &UiSession) -> Vec<SituationControlMenuItem> {

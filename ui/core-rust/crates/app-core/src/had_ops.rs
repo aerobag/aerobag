@@ -2310,6 +2310,16 @@ fn append_waypoint_tail(plan: &FlightPlan, waypoint: NavRef) -> Result<FlightPla
         next_plan.resolved_legs.clear();
         return Ok(next_plan.normalized());
     }
+    if let Some(RouteComponent::Airway { airway }) = plan.route_components.last() {
+        let with_exit = insert_waypoint(
+            plan,
+            plan.route_components.len() - 1,
+            false,
+            airway.exit.clone(),
+        )
+        .map_err(HadReadError::from)?;
+        return append_waypoint_tail(&with_exit, waypoint);
+    }
     insert_waypoint(plan, plan.route_components.len() - 1, false, waypoint).map_err(Into::into)
 }
 
@@ -3689,7 +3699,7 @@ mod tests {
             }
         };
 
-        assert_eq!(mutation.plan.route_components.len(), 4);
+        assert_eq!(mutation.plan.route_components.len(), 5);
         assert!(matches!(
             mutation.plan.route_components[0],
             RouteComponent::Waypoint { .. }
@@ -3704,6 +3714,10 @@ mod tests {
         ));
         assert!(matches!(
             mutation.plan.route_components[3],
+            RouteComponent::Waypoint { waypoint: NavRef::Fix(ref id) } if id == "VAMPS"
+        ));
+        assert!(matches!(
+            mutation.plan.route_components[4],
             RouteComponent::Waypoint { waypoint: NavRef::Airport(ref id) } if id == "KUAO"
         ));
     }
@@ -3839,6 +3853,65 @@ mod tests {
         assert!(mutation.plan.route_components.iter().any(|component| {
             matches!(component, RouteComponent::Airway { airway } if airway.name == "V495")
         }));
+    }
+
+    #[test]
+    fn route_entry_materializes_airway_exit_before_final_airport() {
+        let store = load_generated_nav_kv_store();
+        let plan = FlightPlan {
+            id: "route".to_string(),
+            name: "Route".to_string(),
+            legs: Vec::new(),
+            route_components: Vec::new(),
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+        let input = "KPAE PAE V23 SEA V495 VAUGN KEUG";
+        let preview = preview_flight_plan_entry(&store, &plan, input).expect("preview");
+        assert!(preview.can_commit, "{preview:#?}");
+        let mutation = append_flight_plan_entry(&store, &plan, input).expect("append route");
+
+        let route = &mutation.plan.route_components;
+        assert!(route.windows(2).any(|window| {
+            matches!(
+                (&window[0], &window[1]),
+                (
+                    RouteComponent::Waypoint {
+                        waypoint: NavRef::Fix(exit)
+                    },
+                    RouteComponent::Waypoint {
+                        waypoint: NavRef::Airport(airport)
+                    },
+                ) if exit == "VAUGN" && airport == "KEUG"
+            )
+        }));
+
+        let keug_row = mutation
+            .ui_state
+            .display_rows
+            .iter()
+            .find(|row| row.depth == 0 && row.label == "KEUG")
+            .expect("KEUG row");
+        assert!(
+            keug_row.symbol_feature.is_some(),
+            "airport row should keep its symbol"
+        );
+        assert!(
+            keug_row
+                .actions
+                .iter()
+                .any(|action| action.id == FlightPlanRowActionId::SelectProcedure && action.enabled),
+            "final airport after airway exit should offer Select Procedure"
+        );
     }
 
     #[test]

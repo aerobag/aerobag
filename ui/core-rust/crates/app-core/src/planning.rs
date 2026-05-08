@@ -1809,11 +1809,9 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
                     RouteComponent::Waypoint {
                         waypoint: NavRef::Airport(_)
                     }
-                ) && (matches!(
-                    component_index
-                        .checked_sub(1)
-                        .and_then(|index| plan.route_components.get(index)),
-                    Some(RouteComponent::Waypoint { .. })
+                ) && (can_insert_procedure_before_component(
+                    &plan,
+                    component_index,
                 ) || replace_procedure_component_index.is_some()),
                 can_remove: can_remove_component(&plan, component_index),
                 can_reorder: can_reorder_component(&plan, component_index),
@@ -2522,6 +2520,15 @@ fn replaceable_procedure_component_before(
     } else {
         None
     }
+}
+
+fn can_insert_procedure_before_component(plan: &FlightPlan, component_index: usize) -> bool {
+    matches!(
+        component_index
+            .checked_sub(1)
+            .and_then(|index| plan.route_components.get(index)),
+        Some(RouteComponent::Waypoint { .. }) | Some(RouteComponent::Airway { .. })
+    )
 }
 
 fn group_row_actions(component: &RouteComponentUiView) -> Vec<FlightPlanRowActionUiView> {
@@ -3560,6 +3567,29 @@ pub fn insert_procedure_between_waypoints(
         guidance: revalidate_guidance_after_plan_edit(plan.guidance.clone(), &resolved_legs),
         ..plan
     })
+}
+
+pub fn materialize_airway_exit_before_component(
+    plan: &FlightPlan,
+    component_index: usize,
+) -> AppResult<(FlightPlan, usize)> {
+    let plan = plan.clone().normalized();
+    let previous_index = component_index.checked_sub(1).ok_or_else(|| AppError {
+        kind: AppErrorKind::UnsupportedOperation,
+        message: "target component has no predecessor".to_string(),
+    })?;
+    let Some(RouteComponent::Airway { airway }) = plan.route_components.get(previous_index) else {
+        return Ok((plan, component_index));
+    };
+    if matches!(
+        plan.route_components.get(component_index),
+        Some(RouteComponent::Waypoint { waypoint }) if waypoint == &airway.exit
+    ) {
+        return Ok((plan, component_index));
+    }
+
+    let repaired = insert_waypoint(&plan, previous_index, false, airway.exit.clone())?;
+    Ok((repaired, component_index + 1))
 }
 
 pub fn replace_airway_component(

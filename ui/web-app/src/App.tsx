@@ -4718,6 +4718,10 @@ function FlightPlanPage(props: {
   const [routeEntryLoading, setRouteEntryLoading] = useState(false);
   const [routeEntryError, setRouteEntryError] = useState<string | null>(null);
   const [routeEntrySubmitting, setRouteEntrySubmitting] = useState(false);
+  const previewFlightPlanEntryRef = useRef(props.onPreviewFlightPlanEntry);
+  useEffect(() => {
+    previewFlightPlanEntryRef.current = props.onPreviewFlightPlanEntry;
+  }, [props.onPreviewFlightPlanEntry]);
   const pageRef = useRef<HTMLElement | null>(null);
   const planScrollSurfaceRef = useRef<HTMLDivElement | null>(null);
   const waypointModalRef = useRef<HTMLElement | null>(null);
@@ -4798,7 +4802,7 @@ function FlightPlanPage(props: {
     }
     let cancelled = false;
     setRouteEntryLoading(true);
-    props.onPreviewFlightPlanEntry(routeEntryText)
+    previewFlightPlanEntryRef.current(routeEntryText)
       .then((preview) => {
         if (!cancelled) {
           setRouteEntryPreview(preview);
@@ -4815,7 +4819,7 @@ function FlightPlanPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [props.onPreviewFlightPlanEntry, routeEntryText, waypointSuggestionPlanKey]);
+  }, [routeEntryText, waypointSuggestionPlanKey]);
   const displayRows = useMemo(() => {
     return planUiState.display_rows.map((row, index) => ({
         showPlateTargetId:

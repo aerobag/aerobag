@@ -2139,6 +2139,7 @@ fn validate_flight_plan_entry(
 ) -> Result<Vec<FlightPlanEntryIssue>, HadReadError> {
     let mut issues = Vec::new();
     let mut current_anchor = trailing_component_anchor(plan);
+    let mut current_anchor_token_index = None;
     let mut pending_airway: Option<(usize, NavRef, String, Vec<AirwayBranch>)> = None;
 
     for (index, token) in tokens.iter().enumerate() {
@@ -2157,28 +2158,29 @@ fn validate_flight_plan_entry(
                 if let Some((airway_index, origin_anchor, airway_name, branches)) =
                     pending_airway.take()
                 {
-                    if exact_airway_materialization(
+                    if let Err(err) = exact_airway_materialization(
                         &airway_name,
                         &branches,
                         &origin_anchor,
                         nav_ref,
                         plan.route_components.len(),
-                    )
-                    .is_err()
-                    {
+                    ) {
+                        let message = match err {
+                            HadReadError::Fatal(message) => message,
+                            HadReadError::NeedPages(_) => {
+                                "airway lookup needs resources".to_string()
+                            }
+                        };
                         issues.push(FlightPlanEntryIssue {
                             start: tokens[airway_index].parsed.start,
                             end: token.parsed.end,
-                            message: format!(
-                                "{} not on {}",
-                                nav_ref_display_label(nav_ref),
-                                airway_name
-                            ),
+                            message,
                         });
                         break;
                     }
                 }
                 current_anchor = Some(nav_ref.clone());
+                current_anchor_token_index = Some(index);
             }
             RecognizedInputToken::Airway {
                 airway_name,
@@ -2192,6 +2194,22 @@ fn validate_flight_plan_entry(
                     });
                     break;
                 };
+                if !airway_contains_nav_ref(airway_name, branches, &origin_anchor) {
+                    let start = current_anchor_token_index
+                        .and_then(|anchor_index| tokens.get(anchor_index))
+                        .map(|anchor_token| anchor_token.parsed.start)
+                        .unwrap_or(token.parsed.start);
+                    issues.push(FlightPlanEntryIssue {
+                        start,
+                        end: token.parsed.end,
+                        message: format!(
+                            "{} not on {}",
+                            nav_ref_display_label(&origin_anchor),
+                            airway_name
+                        ),
+                    });
+                    break;
+                }
                 if pending_airway.is_some() {
                     issues.push(FlightPlanEntryIssue {
                         start: token.parsed.start,
@@ -2299,13 +2317,27 @@ fn append_airway_tail(
     plan: &FlightPlan,
     materialized: ExactAirwayMaterialization,
 ) -> Result<FlightPlan, HadReadError> {
-    let start_component_index = plan
+    let mut plan = plan.clone();
+    let mut start_component_index = plan
         .route_components
         .len()
         .checked_sub(1)
         .ok_or_else(|| HadReadError::Fatal("cannot append airway to empty plan".to_string()))?;
+    if let Some(RouteComponent::Airway { airway }) =
+        plan.route_components.get(start_component_index)
+    {
+        if airway.exit != materialized.airway.entry {
+            return Err(HadReadError::Fatal(format!(
+                "{} cannot start after {}",
+                materialized.airway.name,
+                nav_ref_display_label(&airway.exit)
+            )));
+        }
+        plan = append_waypoint_tail(&plan, airway.exit.clone())?;
+        start_component_index = plan.route_components.len() - 1;
+    }
     insert_airway_after_waypoint(
-        plan,
+        &plan,
         start_component_index,
         materialized.airway,
         materialized.resolved_legs,
@@ -2371,11 +2403,49 @@ fn exact_airway_materialization(
             resolved_legs,
         });
     }
+    let matching_branches = branches
+        .iter()
+        .filter(|branch| branch.display_name.trim() == airway_name.trim())
+        .collect::<Vec<_>>();
+    let origin_on_airway = matching_branches.iter().any(|branch| {
+        branch
+            .points
+            .iter()
+            .any(|point| point.nav_ref == *origin_anchor)
+    });
+    let destination_on_airway = matching_branches.iter().any(|branch| {
+        branch
+            .points
+            .iter()
+            .any(|point| point.nav_ref == *destination_anchor)
+    });
+    if !origin_on_airway {
+        return Err(HadReadError::Fatal(format!(
+            "{} not on {}",
+            nav_ref_display_label(origin_anchor),
+            airway_name
+        )));
+    }
+    if !destination_on_airway {
+        return Err(HadReadError::Fatal(format!(
+            "{} not on {}",
+            nav_ref_display_label(destination_anchor),
+            airway_name
+        )));
+    }
     Err(HadReadError::Fatal(format!(
-        "{} not on {}",
+        "{} and {} are not on the same {} branch",
+        nav_ref_display_label(origin_anchor),
         nav_ref_display_label(destination_anchor),
         airway_name
     )))
+}
+
+fn airway_contains_nav_ref(airway_name: &str, branches: &[AirwayBranch], nav_ref: &NavRef) -> bool {
+    branches
+        .iter()
+        .filter(|branch| branch.display_name.trim() == airway_name.trim())
+        .any(|branch| branch.points.iter().any(|point| point.nav_ref == *nav_ref))
 }
 
 fn trailing_component_anchor(plan: &FlightPlan) -> Option<NavRef> {
@@ -3636,6 +3706,139 @@ mod tests {
             mutation.plan.route_components[3],
             RouteComponent::Waypoint { waypoint: NavRef::Airport(ref id) } if id == "KUAO"
         ));
+    }
+
+    #[test]
+    fn exact_airway_materialization_reports_missing_entry_waypoint() {
+        let branches = vec![AirwayBranch {
+            display_name: "V495".to_string(),
+            branch_key: String::new(),
+            points: vec![
+                crate::AirwayFixPoint {
+                    airway_name: "V495".to_string(),
+                    sequence: 10,
+                    position: LatLon { lat: 0.0, lon: 0.0 },
+                    nav_ref: NavRef::Navaid("SEA".to_string()),
+                },
+                crate::AirwayFixPoint {
+                    airway_name: "V495".to_string(),
+                    sequence: 20,
+                    position: LatLon { lat: 1.0, lon: 1.0 },
+                    nav_ref: NavRef::Fix("NEXT".to_string()),
+                },
+            ],
+        }];
+
+        let err = exact_airway_materialization(
+            "V495",
+            &branches,
+            &NavRef::Navaid("PAE".to_string()),
+            &NavRef::Navaid("SEA".to_string()),
+            0,
+        )
+        .expect_err("PAE is not on V495");
+
+        assert!(matches!(err, HadReadError::Fatal(message) if message == "PAE not on V495"));
+    }
+
+    #[test]
+    fn route_entry_validation_reports_missing_airway_entry_before_missing_exit() {
+        let tokens = vec![
+            EvaluatedInputToken {
+                parsed: ParsedInputToken {
+                    text: "PAE".to_string(),
+                    start: 5,
+                    end: 8,
+                    terminated: true,
+                },
+                token_state: FlightPlanEntryTokenState::Recognized,
+                recognized: Some(RecognizedInputToken::Waypoint(NavRef::Navaid(
+                    "PAE".to_string(),
+                ))),
+            },
+            EvaluatedInputToken {
+                parsed: ParsedInputToken {
+                    text: "V495".to_string(),
+                    start: 9,
+                    end: 13,
+                    terminated: true,
+                },
+                token_state: FlightPlanEntryTokenState::Recognized,
+                recognized: Some(RecognizedInputToken::Airway {
+                    airway_name: "V495".to_string(),
+                    branches: vec![AirwayBranch {
+                        display_name: "V495".to_string(),
+                        branch_key: String::new(),
+                        points: vec![crate::AirwayFixPoint {
+                            airway_name: "V495".to_string(),
+                            sequence: 10,
+                            position: LatLon { lat: 0.0, lon: 0.0 },
+                            nav_ref: NavRef::Navaid("SEA".to_string()),
+                        }],
+                    }],
+                }),
+            },
+        ];
+
+        let plan = FlightPlan {
+            id: "route".to_string(),
+            name: "Route".to_string(),
+            legs: Vec::new(),
+            route_components: Vec::new(),
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+        let issues = validate_flight_plan_entry(&plan, &tokens).expect("validate route");
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].start, 5);
+        assert_eq!(issues[0].end, 13);
+        assert_eq!(issues[0].message, "PAE not on V495");
+    }
+
+    #[test]
+    fn route_entry_appends_chained_airways_with_shared_waypoint() {
+        let store = load_generated_nav_kv_store();
+        let plan = FlightPlan {
+            id: "route".to_string(),
+            name: "Route".to_string(),
+            legs: Vec::new(),
+            route_components: Vec::new(),
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+        let input = "KPAE PAE V23 SEA V495 VAUGN EUG";
+        let preview = preview_flight_plan_entry(&store, &plan, input).expect("preview");
+        assert!(preview.can_commit, "{preview:#?}");
+        let mutation = append_flight_plan_entry(&store, &plan, input).expect("append route");
+
+        assert!(mutation.plan.route_components.iter().any(|component| {
+            matches!(component, RouteComponent::Waypoint { waypoint: NavRef::Navaid(id) } if id == "SEA")
+        }));
+        assert!(mutation.plan.route_components.iter().any(|component| {
+            matches!(component, RouteComponent::Airway { airway } if airway.name == "V23")
+        }));
+        assert!(mutation.plan.route_components.iter().any(|component| {
+            matches!(component, RouteComponent::Airway { airway } if airway.name == "V495")
+        }));
     }
 
     #[test]

@@ -7102,26 +7102,28 @@ mod tests {
         let hio_rows = ui
             .display_rows
             .iter()
-            .filter(|row| {
-                row.row_kind == FlightPlanDisplayRowKind::Waypoint && row.label == "KHIO"
-            })
+            .filter(|row| row.row_kind == FlightPlanDisplayRowKind::Waypoint && row.label == "KHIO")
             .collect::<Vec<_>>();
 
         assert_eq!(hio_rows.len(), 2);
         assert_eq!(hio_rows[0].leg_index, None);
         assert_eq!(hio_rows[1].leg_index, Some(1));
-        assert!(!hio_rows[0]
-            .actions
-            .iter()
-            .find(|action| action.id == FlightPlanRowActionId::ActivateLeg)
-            .expect("activate-leg action")
-            .enabled);
-        assert!(hio_rows[1]
-            .actions
-            .iter()
-            .find(|action| action.id == FlightPlanRowActionId::ActivateLeg)
-            .expect("activate-leg action")
-            .enabled);
+        assert!(
+            !hio_rows[0]
+                .actions
+                .iter()
+                .find(|action| action.id == FlightPlanRowActionId::ActivateLeg)
+                .expect("activate-leg action")
+                .enabled
+        );
+        assert!(
+            hio_rows[1]
+                .actions
+                .iter()
+                .find(|action| action.id == FlightPlanRowActionId::ActivateLeg)
+                .expect("activate-leg action")
+                .enabled
+        );
     }
 
     #[test]

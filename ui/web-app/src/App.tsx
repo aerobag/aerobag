@@ -371,7 +371,7 @@ type TerrainOverlayUiState = {
 
 type TerrainPendingFrame = {
   query: TerrainOverlayQueryResult;
-  altitudeBucket: number | null;
+  altitudeBucket: number;
 };
 
 type TerrainFrameStart = {
@@ -387,17 +387,17 @@ type TerrainTileCacheEntry = {
 
 type TerrainTileRenderTask = {
   request: TerrainOverlayTileRequest;
-  altitudeBucket: number | null;
+  altitudeBucket: number;
 };
 
 const TERRAIN_ALTITUDE_BUCKET_FT = 200;
 
-function terrainCacheKey(request: TerrainOverlayTileRequest, altitudeBucket: number | null) {
-  return `${request.key}@${altitudeBucket ?? "no-alt"}`;
+function terrainCacheKey(request: TerrainOverlayTileRequest, altitudeBucket: number) {
+  return `${request.key}@${altitudeBucket}`;
 }
 
-function terrainFrameKey(query: TerrainOverlayQueryResult, altitudeBucket: number | null) {
-  return `${altitudeBucket ?? "no-alt"}:${query.tile_requests.map((request) => request.key).join("|")}`;
+function terrainFrameKey(query: TerrainOverlayQueryResult, altitudeBucket: number) {
+  return `${altitudeBucket}:${query.tile_requests.map((request) => request.key).join("|")}`;
 }
 
 function pruneTerrainFrameStarts(starts: Map<string, TerrainFrameStart>) {
@@ -485,7 +485,7 @@ function terrainAltitudeBucketForOwnship(ownship: OwnshipRenderState) {
 function cachedTerrainImageForDisplay(
   cache: Map<string, TerrainTileCacheEntry>,
   request: TerrainOverlayTileRequest,
-  targetAltitudeBucket: number | null,
+  targetAltitudeBucket: number,
 ) {
   const exact = cache.get(terrainCacheKey(request, targetAltitudeBucket));
   return exact ? ({ ...request, ...exact } satisfies TerrainOverlayImage) : null;
@@ -527,7 +527,7 @@ function terrainRequestSortDistance(
 function terrainImagesForCompleteQuery(
   cache: Map<string, TerrainTileCacheEntry>,
   query: TerrainOverlayQueryResult,
-  altitudeBucket: number | null,
+  altitudeBucket: number,
 ) {
   if (query.status.state !== "ready") {
     return null;
@@ -2451,8 +2451,8 @@ function MapPage(props: {
             const worker = terrainRenderWorkerRef.current;
             const packedTileBytes = packTerrainTileBytes(tileBytesList);
             const rawBytes = worker
-              ? await worker.renderPackedTiles(packedTileBytes, task.altitudeBucket ?? Number.NaN)
-              : await session.renderTerrainOverlayTiles(packedTileBytes, task.altitudeBucket ?? Number.NaN);
+              ? await worker.renderPackedTiles(packedTileBytes, task.altitudeBucket)
+              : await session.renderTerrainOverlayTiles(packedTileBytes);
             const renderElapsedMs = performance.now() - renderStartedAt;
             const parsed = parseTerrainRawRgba(rawBytes);
             terrainTileCacheRef.current.set(cacheKey, parsed);
@@ -2836,6 +2836,16 @@ function MapPage(props: {
         terrainActiveFrameRef.current = null;
         terrainDesiredFrameRef.current = null;
         setTerrainOverlay({ query, images: [] });
+        return;
+      }
+      if (terrainAltitudeBucket == null) {
+        const noAltitudeQuery = {
+          status: { state: "no_altitude" as const },
+          tile_requests: [],
+        };
+        terrainActiveFrameRef.current = null;
+        terrainDesiredFrameRef.current = null;
+        setTerrainOverlay({ query: noAltitudeQuery, images: [] });
         return;
       }
       scheduleTerrainFrame({ query, altitudeBucket: terrainAltitudeBucket });

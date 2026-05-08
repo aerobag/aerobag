@@ -1969,17 +1969,13 @@ pub fn get_terrain_overlay_in_session(
 pub fn render_terrain_overlay_tiles_in_session(
     handle: u32,
     packed_tile_bytes: &[u8],
-    aircraft_altitude_ft: Option<f64>,
 ) -> AppResult<Vec<u8>> {
     let sessions = sessions().lock().expect("session store poisoned");
     let session = session_ref(&sessions, handle)?;
-    let altitude_ft = aircraft_altitude_ft
-        .filter(|altitude| altitude.is_finite())
-        .or_else(|| ownship_terrain_altitude_ft(session))
-        .ok_or_else(|| AppError {
-            kind: AppErrorKind::UnsupportedOperation,
-            message: "ownship altitude unavailable for terrain overlay".to_string(),
-        })?;
+    let altitude_ft = ownship_terrain_altitude_ft(session).ok_or_else(|| AppError {
+        kind: AppErrorKind::UnsupportedOperation,
+        message: "ownship altitude unavailable for terrain overlay".to_string(),
+    })?;
     let unpacked_tiles =
         unpack_packed_terrain_tiles(packed_tile_bytes).map_err(|err| AppError {
             kind: AppErrorKind::InvalidManifest,

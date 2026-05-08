@@ -708,16 +708,9 @@ pub fn destroy_session(handle: u32) {
 pub fn render_terrain_overlay_tiles_in_session(
     handle: u32,
     packed_terrain_tile_bytes: &[u8],
-    aircraft_altitude_ft: f64,
 ) -> Result<Vec<u8>, JsValue> {
-    app_core::render_terrain_overlay_tiles_in_session(
-        handle,
-        packed_terrain_tile_bytes,
-        aircraft_altitude_ft
-            .is_finite()
-            .then_some(aircraft_altitude_ft),
-    )
-    .map_err(|err| JsValue::from_str(&err.to_string()))
+    app_core::render_terrain_overlay_tiles_in_session(handle, packed_terrain_tile_bytes)
+        .map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[wasm_bindgen]

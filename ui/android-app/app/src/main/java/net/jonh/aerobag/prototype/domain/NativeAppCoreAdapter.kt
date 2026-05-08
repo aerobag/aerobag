@@ -1182,8 +1182,8 @@ class NativeUiSession internal constructor(
         return bridge.getRasterTilePlanInSessionJson(handle, viewportJson, widthPx, heightPx)
     }
 
-    fun renderTerrainOverlayTiles(packedTileBytes: ByteArray, aircraftAltitudeFt: Double): ByteArray =
-        bridge.renderTerrainOverlayTilesInSession(handle, packedTileBytes, aircraftAltitudeFt)
+    fun renderTerrainOverlayTiles(packedTileBytes: ByteArray): ByteArray =
+        bridge.renderTerrainOverlayTilesInSession(handle, packedTileBytes)
 
     fun syncMapFollow(viewport: MapViewportState, widthPx: Double, heightPx: Double): UiSessionSnapshot {
         val viewportJson = json.encodeToString(viewport.toWire())

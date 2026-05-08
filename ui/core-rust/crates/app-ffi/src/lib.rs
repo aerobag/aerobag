@@ -771,14 +771,9 @@ pub fn get_raster_tile_plan_in_session_with_options_json(
 pub fn render_terrain_overlay_tiles_in_session_bytes(
     handle: u64,
     packed_tile_bytes: &[u8],
-    aircraft_altitude_ft: Option<f64>,
 ) -> Result<Vec<u8>, String> {
-    app_core::render_terrain_overlay_tiles_in_session(
-        handle as u32,
-        packed_tile_bytes,
-        aircraft_altitude_ft,
-    )
-    .map_err(|err| err.to_string())
+    app_core::render_terrain_overlay_tiles_in_session(handle as u32, packed_tile_bytes)
+        .map_err(|err| err.to_string())
 }
 
 pub fn sync_map_follow_in_session_json(
@@ -2213,19 +2208,10 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ren
     _class: JClass,
     handle: i64,
     packed_tile_bytes: JByteArray,
-    aircraft_altitude_ft: f64,
 ) -> jbyteArray {
     let result = (|| {
         let packed_tile_bytes = get_java_byte_array(&mut env, packed_tile_bytes)?;
-        render_terrain_overlay_tiles_in_session_bytes(
-            handle as u64,
-            &packed_tile_bytes,
-            if aircraft_altitude_ft.is_finite() {
-                Some(aircraft_altitude_ft)
-            } else {
-                None
-            },
-        )
+        render_terrain_overlay_tiles_in_session_bytes(handle as u64, &packed_tile_bytes)
     })();
     return_byte_array(&mut env, result)
 }

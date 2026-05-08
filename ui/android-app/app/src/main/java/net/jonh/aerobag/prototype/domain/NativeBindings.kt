@@ -327,7 +327,6 @@ interface NativeBridge {
     fun renderTerrainOverlayTilesInSession(
         handle: Long,
         packedTileBytes: ByteArray,
-        aircraftAltitudeFt: Double,
     ): ByteArray
 
     fun syncMapFollowInSessionJson(
@@ -672,7 +671,6 @@ object NativeBindings : NativeBridge {
     external override fun renderTerrainOverlayTilesInSession(
         handle: Long,
         packedTileBytes: ByteArray,
-        aircraftAltitudeFt: Double,
     ): ByteArray
 
     external override fun syncMapFollowInSessionJson(

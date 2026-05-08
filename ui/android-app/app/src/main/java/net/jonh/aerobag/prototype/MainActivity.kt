@@ -1538,8 +1538,6 @@ private fun screenToWorldOffset(
     )
 }
 
-private fun terrainAltitudeBucketForOwnship(ownship: OwnshipRenderState): Double? = null
-
 private class RasterTileBitmapLoader(
     private val context: Context,
     scope: CoroutineScope,
@@ -5418,7 +5416,7 @@ private fun MapExplorerPage(
                             return@map null
                         }
                         val renderStartMs = SystemClock.elapsedRealtime()
-                        val rawBytes = uiSession.renderTerrainOverlayTiles(packTerrainTileBytes(sourceBytes), Double.NaN)
+                        val rawBytes = uiSession.renderTerrainOverlayTiles(packTerrainTileBytes(sourceBytes))
                         renderMs += SystemClock.elapsedRealtime() - renderStartMs
                         rawBytesTotal += rawBytes.size
                         val parseStartMs = SystemClock.elapsedRealtime()

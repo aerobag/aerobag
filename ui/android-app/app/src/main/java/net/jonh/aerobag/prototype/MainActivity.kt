@@ -87,6 +87,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.produceState
@@ -138,6 +139,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -6714,6 +6716,8 @@ private fun FlightPlanPage(
 ) {
     val planWaypointTrayStart = ThumbGap + PlanArrowLane + ThumbSize * 2.5f + PlanGridGap
     val density = LocalDensity.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     var selectedWaypointIndex by remember { mutableStateOf<Int?>(null) }
     var selectedWaypointTrayAnchor by remember { mutableStateOf<Dp?>(null) }
     var pendingSelectedRowKey by remember { mutableStateOf<String?>(null) }
@@ -6727,6 +6731,7 @@ private fun FlightPlanPage(
     var routeEntryError by remember { mutableStateOf<String?>(null) }
     var routeEntrySubmitting by remember { mutableStateOf(false) }
     var routeEntryFocused by remember { mutableStateOf(false) }
+    var routeEntrySuppressNavigationUntilMs by remember { mutableLongStateOf(0L) }
     var trayOpenedAtMs by remember { mutableStateOf(0L) }
     val projectedPlanUiState = requireNotNull(planUiState) { "FlightPlanPage requires core-projected FlightPlanUiState" }
     val guidance = projectedPlanUiState.guidance
@@ -6930,6 +6935,7 @@ private fun FlightPlanPage(
         if (input.isEmpty() || !routeEntryPreview.canCommit || routeEntrySubmitting) {
             return
         }
+        routeEntrySuppressNavigationUntilMs = SystemClock.elapsedRealtime() + 800L
         routeEntrySubmitting = true
         routeEntryError = null
         runCatching {
@@ -6939,11 +6945,16 @@ private fun FlightPlanPage(
             onApplySessionSnapshot(snapshot)
             routeEntryText = ""
             routeEntryPreview = emptyFlightPlanEntryPreview()
+            keyboardController?.hide()
+            focusManager.clearFocus(force = true)
         }.onFailure { error ->
             routeEntryError = error.message ?: error.toString()
         }
         routeEntrySubmitting = false
     }
+
+    fun routeEntryNavigationSuppressed(): Boolean =
+        routeEntryFocused || SystemClock.elapsedRealtime() < routeEntrySuppressNavigationUntilMs
 
     LaunchedEffect(plan, routeEntryText) {
         val input = routeEntryText.trim()
@@ -7019,7 +7030,11 @@ private fun FlightPlanPage(
                 .padding(ThumbGap)
                 .size(ThumbSize),
             selected = page == AppPage.Home,
-            onClick = { onSelectPage(AppPage.Home) },
+            onClick = {
+                if (!routeEntryNavigationSuppressed()) {
+                    onSelectPage(AppPage.Home)
+                }
+            },
         )
 
         Column(
@@ -7223,7 +7238,11 @@ private fun FlightPlanPage(
             }
             NavElementDock(
                 navElement = navElement,
-                onClick = onOpenPlan,
+                onClick = {
+                    if (!routeEntryNavigationSuppressed()) {
+                        onOpenPlan()
+                    }
+                },
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
         }

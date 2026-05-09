@@ -82,6 +82,7 @@ describe("loadBestAvailableAdapter", () => {
       set_map_layer_visibility_in_session: async () => snapshotJson,
       set_map_layer_enabled_in_session: async () => snapshotJson,
       set_debug_flag_in_session: async () => snapshotJson,
+      set_raster_resource_mode_in_session: async () => snapshotJson,
       load_raster_map_catalog_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       select_map_family_in_session: async () => snapshotJson,
       select_raster_map_in_session: async () => snapshotJson,

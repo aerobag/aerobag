@@ -1029,6 +1029,11 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
+    fun setRasterResourceMode(mode: String): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.setRasterResourceModeInSessionJson(handle, json.encodeToString(mode)))
+        return snapshot
+    }
+
     fun loadRasterMapCatalog(): UiSessionSnapshot {
         val store = navKvStore ?: return snapshot
         snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(

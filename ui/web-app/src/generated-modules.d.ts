@@ -43,6 +43,7 @@ declare module "@generated/app_wasm.js" {
   export const apply_situation_control_input_in_session: (...args: unknown[]) => string;
   export const set_map_layer_visibility_in_session: (...args: unknown[]) => string;
   export const set_map_layer_enabled_in_session: (...args: unknown[]) => string;
+  export const set_raster_resource_mode_in_session: (...args: unknown[]) => string;
   export const replace_flight_plan_in_session: (...args: unknown[]) => string;
   export const insert_waypoint_at_flight_plan_row_in_session: (...args: unknown[]) => string;
   export const suggest_waypoint_identifiers_at_flight_plan_row_in_session: (...args: unknown[]) => string;

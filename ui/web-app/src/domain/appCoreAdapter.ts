@@ -645,6 +645,7 @@ type WasmModule = {
   empty_flight_plan_json(): Promise<string> | string;
   create_ui_session(vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   create_ui_session_profiled?: (vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
+  set_raster_resource_mode_in_session(handle: number, modeJson: string): Promise<string> | string;
   set_situation_in_session(handle: number, situationJson: string): Promise<string> | string;
   tick_debug_ownship_driver_in_session(handle: number, nowEpochMs: number): Promise<string> | string;
   engage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
@@ -773,6 +774,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       }
       const created = createdEnvelope.result ?? createdEnvelope;
       await attachNavKvStoreToSession(created.handle);
+      await module.set_raster_resource_mode_in_session(created.handle, JSON.stringify("public_unpacked"));
       const catalogedSnapshot = await debugTiming("startup.session.load_raster_catalog", () =>
         runCoreHadSessionOperation<UiSessionSnapshot>(() =>
           module.load_raster_map_catalog_in_session(created.handle),
@@ -1381,6 +1383,7 @@ async function loadBestAvailableAdapterUncached(
     typeof mod.situation_ring_candidates_json !== "function" ||
     typeof mod.empty_flight_plan_json !== "function" ||
     typeof mod.create_ui_session !== "function" ||
+    typeof mod.set_raster_resource_mode_in_session !== "function" ||
     typeof mod.perform_flight_plan_row_action_in_session !== "function" ||
     typeof mod.set_situation_in_session !== "function" ||
     typeof mod.tick_debug_ownship_driver_in_session !== "function" ||

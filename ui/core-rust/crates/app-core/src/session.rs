@@ -28,8 +28,8 @@ use crate::{
     GuidanceState, LatLon, MapOverlayConfig, MapOverlayQueryResult, MapSelectionSessionAction,
     MapViewport, MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore,
     NavRef, PirepRecord, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity,
-    ProcedureKind, ProcedureLoadCommand, RasterMapCatalog, RasterTilePlan, ResolvedLeg,
-    ResolvedLegSource, RouteComponentViewKind, SequencingMode, SituationControlInput,
+    ProcedureKind, ProcedureLoadCommand, RasterMapCatalog, RasterResourceMode, RasterTilePlan,
+    ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode, SituationControlInput,
     SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload,
     UiSnapshotAppState,
 };
@@ -114,6 +114,7 @@ struct UiSession {
     map_layer_state: UiMapLayerState,
     caution_state: UiCautionState,
     debug_state: UiDebugState,
+    raster_resource_mode: RasterResourceMode,
     raster_map_catalog: Option<RasterMapCatalog>,
     point_tile_cache: HashMap<String, PointTilePayload>,
     metar_tile_cache: HashMap<String, MetarTilePayload>,
@@ -321,6 +322,7 @@ fn create_ui_session_inner(
             map_layer_state,
             caution_state,
             debug_state,
+            raster_resource_mode: RasterResourceMode::InstalledPackage,
             raster_map_catalog: None,
             point_tile_cache: HashMap::new(),
             metar_tile_cache: HashMap::new(),
@@ -368,6 +370,19 @@ pub fn load_raster_map_catalog_in_session(handle: u32) -> AppResult<HadOperation
     };
     session.raster_map_catalog = Some(catalog);
     session_snapshot_outcome(session)
+}
+
+pub fn set_raster_resource_mode_in_session(
+    handle: u32,
+    mode: RasterResourceMode,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    if session.raster_resource_mode != mode {
+        session.raster_resource_mode = mode;
+        session.raster_map_catalog = None;
+    }
+    Ok(snapshot_for_session(session))
 }
 
 pub fn select_map_family_in_session(
@@ -428,6 +443,7 @@ pub fn get_raster_tile_plan_in_session(
         } else {
             1.0
         },
+        resource_mode: session.raster_resource_mode,
     };
     let catalog = raster_catalog_for_layer_state(catalog, &session.map_layer_state);
     Ok(crate::raster_tile_plan_with_options(

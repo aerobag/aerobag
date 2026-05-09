@@ -388,6 +388,15 @@ pub fn create_ui_session_profiled(
 }
 
 #[wasm_bindgen]
+pub fn set_raster_resource_mode_in_session(
+    handle: u32,
+    mode_json: &str,
+) -> Result<String, JsValue> {
+    set_raster_resource_mode_in_session_json(handle, mode_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn select_airport_in_session(handle: u32, airport_id_json: &str) -> Result<String, JsValue> {
     select_airport_in_session_json(handle, airport_id_json).map_err(|err| JsValue::from_str(&err))
 }
@@ -896,6 +905,25 @@ fn create_ui_session_profiled_json(
         timings: profiler.timings,
     };
     serde_json::to_string(&envelope).map_err(|err| err.to_string())
+}
+
+fn set_raster_resource_mode_in_session_json(
+    handle: u32,
+    mode_json: &str,
+) -> Result<String, String> {
+    let mode: String = serde_json::from_str(mode_json).map_err(|err| err.to_string())?;
+    let mode = raster_resource_mode_from_wire(&mode)?;
+    let snapshot = app_core::set_raster_resource_mode_in_session(handle, mode)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn raster_resource_mode_from_wire(mode: &str) -> Result<app_core::RasterResourceMode, String> {
+    match mode {
+        "public_unpacked" => Ok(app_core::RasterResourceMode::PublicUnpacked),
+        "installed_package" => Ok(app_core::RasterResourceMode::InstalledPackage),
+        other => Err(format!("unknown raster resource mode: {other}")),
+    }
 }
 
 fn select_airport_in_session_json(handle: u32, airport_id_json: &str) -> Result<String, String> {

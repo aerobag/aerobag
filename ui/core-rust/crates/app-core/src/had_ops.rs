@@ -458,6 +458,8 @@ struct MapViewRecord {
     max_display_zoom: Option<f64>,
     storage_kind: String,
     package_name: Option<String>,
+    #[serde(default)]
+    package_relative_path: Option<String>,
     full_coverage_zoom: Option<f64>,
     #[serde(default)]
     wide_angle: Option<WideAngleMapViewRecord>,
@@ -470,6 +472,8 @@ struct WideAngleMapViewRecord {
     region_id: String,
     max_zoom: f64,
     package_name: String,
+    #[serde(default)]
+    package_relative_path: Option<String>,
     tile_url_root: String,
     tile_path_template: String,
     levels: Vec<MapViewLevelRecord>,
@@ -782,53 +786,72 @@ fn enrich_map_views_with_package_metadata(
     map_views: &mut [MapViewOptionRecord],
 ) -> Result<(), HadReadError> {
     for view in map_views {
-        let Some(package_id) = view.map_view.package_name.as_ref() else {
-            continue;
-        };
-        let package = read_optional::<PackageRecord>(
-            store,
-            NavKvQuery::PackageById {
-                package_id: package_id.clone(),
-            },
-        )?;
-        if let Some(package) = package {
-            if let Some(tile_url_root) = package_tiles_url_root(&package)? {
-                view.map_view.tile_url_root = tile_url_root;
-            }
-            view.map_view.full_coverage_zoom = package
-                .metadata
-                .and_then(|metadata| metadata.full_coverage_zoom);
-        }
+        enrich_map_view_with_package_metadata(store, &mut view.map_view, &view.id)?;
         if let Some(wide_angle) = view.map_view.wide_angle.as_mut() {
-            let package = read_optional::<PackageRecord>(
-                store,
-                NavKvQuery::PackageById {
-                    package_id: wide_angle.package_name.clone(),
-                },
-            )?;
-            if let Some(package) = package {
-                if let Some(tile_url_root) = package_tiles_url_root(&package)? {
-                    wide_angle.tile_url_root = tile_url_root;
-                }
-            }
+            enrich_wide_angle_map_view_with_package_metadata(store, wide_angle, &view.id)?;
         }
     }
     Ok(())
 }
 
-fn package_tiles_url_root(package: &PackageRecord) -> Result<Option<String>, HadReadError> {
-    let Some(relative_path) = package.relative_path.as_ref() else {
-        return Ok(None);
+fn enrich_map_view_with_package_metadata(
+    store: &NavKvStore,
+    map_view: &mut MapViewRecord,
+    map_view_id: &str,
+) -> Result<(), HadReadError> {
+    let Some(package_id) = map_view.package_name.as_ref() else {
+        return Ok(());
     };
-    let package_dir = relative_path.strip_suffix(".zip").ok_or_else(|| {
+    let package = package_record_for_raster_source(store, package_id, map_view_id)?;
+    map_view.package_relative_path = Some(package_zip_relative_path(&package)?.to_string());
+    map_view.full_coverage_zoom = package
+        .metadata
+        .and_then(|metadata| metadata.full_coverage_zoom);
+    Ok(())
+}
+
+fn enrich_wide_angle_map_view_with_package_metadata(
+    store: &NavKvStore,
+    wide_angle: &mut WideAngleMapViewRecord,
+    map_view_id: &str,
+) -> Result<(), HadReadError> {
+    let package = package_record_for_raster_source(store, &wide_angle.package_name, map_view_id)?;
+    wide_angle.package_relative_path = Some(package_zip_relative_path(&package)?.to_string());
+    Ok(())
+}
+
+fn package_record_for_raster_source(
+    store: &NavKvStore,
+    package_id: &str,
+    map_view_id: &str,
+) -> Result<PackageRecord, HadReadError> {
+    read_optional::<PackageRecord>(
+        store,
+        NavKvQuery::PackageById {
+            package_id: package_id.to_string(),
+        },
+    )?
+    .ok_or_else(|| {
         HadReadError::Fatal(format!(
-            "package {} relative_path is not a zip: {}",
-            package.id, relative_path
+            "raster map view {map_view_id} references package {package_id}, but package/by-id/{package_id} is missing"
+        ))
+    })
+}
+
+fn package_zip_relative_path(package: &PackageRecord) -> Result<&str, HadReadError> {
+    let relative_path = package.relative_path.as_ref().ok_or_else(|| {
+        HadReadError::Fatal(format!(
+            "package {} missing relative_path required for raster resources",
+            package.id
         ))
     })?;
-    Ok(Some(format!(
-        "/packages/published_unpacked/{package_dir}/tiles"
-    )))
+    if !relative_path.ends_with(".zip") {
+        return Err(HadReadError::Fatal(format!(
+            "package {} relative_path is not a zip: {}",
+            package.id, relative_path
+        )));
+    }
+    Ok(relative_path)
 }
 
 fn displayed_geometry(
@@ -2659,6 +2682,7 @@ mod tests {
           "id":"NW_SEC_2604",
           "family_id":"sec",
           "region_id":"nw",
+          "relative_path":"nw_sec_2604_hash.zip",
           "metadata":{"full_coverage_zoom":7}
         }"#;
         let (root, pages) = fixture(
@@ -2684,6 +2708,17 @@ mod tests {
         assert_eq!(
             state.displayed_maps[0].map_view.full_coverage_zoom,
             Some(7.0)
+        );
+        assert_eq!(
+            state.displayed_maps[0]
+                .map_view
+                .package_relative_path
+                .as_deref(),
+            Some("nw_sec_2604_hash.zip")
+        );
+        assert_eq!(
+            state.displayed_maps[0].map_view.tile_url_root,
+            "/sectional-packages/NW_SEC_2604/tiles"
         );
     }
 
@@ -3328,11 +3363,12 @@ mod tests {
             .iter()
             .find(|view| view.id == "sec:sc")
             .expect("missing sec:sc map");
+        assert!(!sec_sc.map_view.tile_url_root.starts_with("/packages/"));
         assert!(sec_sc
             .map_view
-            .tile_url_root
-            .starts_with("/packages/published_unpacked/sec_sc_2603_"));
-        assert!(sec_sc.map_view.tile_url_root.ends_with("/tiles"));
+            .package_relative_path
+            .as_deref()
+            .is_some_and(|path| path.starts_with("sec_sc_2603_") && path.ends_with(".zip")));
         assert!(matches!(
             sec_sc.coverage,
             Some(ChartCoverageRecord::PolygonSetRef(_))

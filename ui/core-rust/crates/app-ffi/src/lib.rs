@@ -305,6 +305,25 @@ pub fn create_ui_session_json(
     serde_json::to_string(&result).map_err(|err| err.to_string())
 }
 
+pub fn set_raster_resource_mode_in_session_json(
+    handle: u64,
+    mode_json: &str,
+) -> Result<String, String> {
+    let mode: String = serde_json::from_str(mode_json).map_err(|err| err.to_string())?;
+    let mode = raster_resource_mode_from_wire(&mode)?;
+    let snapshot = app_core::set_raster_resource_mode_in_session(handle as u32, mode)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn raster_resource_mode_from_wire(mode: &str) -> Result<app_core::RasterResourceMode, String> {
+    match mode {
+        "public_unpacked" => Ok(app_core::RasterResourceMode::PublicUnpacked),
+        "installed_package" => Ok(app_core::RasterResourceMode::InstalledPackage),
+        other => Err(format!("unknown raster resource mode: {other}")),
+    }
+}
+
 pub fn replace_flight_plan_in_session_json(handle: u64, plan_json: &str) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
@@ -838,6 +857,7 @@ pub fn get_raster_tile_plan_in_session_with_options_json(
         height_px,
         app_core::RasterTilePlanOptions {
             max_tile_display_multiplier,
+            ..app_core::RasterTilePlanOptions::default()
         },
     )
     .map_err(|err| err.to_string())?;
@@ -1667,6 +1687,20 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_cre
             &selected_airport_id,
             &selected_chart_id,
         )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setRasterResourceModeInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    mode_json: JString,
+) -> jstring {
+    let result = (|| {
+        let mode_json = get_java_string(&mut env, mode_json)?;
+        set_raster_resource_mode_in_session_json(handle as u64, &mode_json)
     })();
     return_string(&mut env, result)
 }

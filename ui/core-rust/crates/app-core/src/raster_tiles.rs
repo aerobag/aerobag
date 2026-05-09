@@ -96,6 +96,8 @@ pub struct RasterMapView {
     pub max_display_zoom: f64,
     pub storage_kind: String,
     pub package_name: Option<String>,
+    #[serde(default)]
+    pub package_relative_path: Option<String>,
     pub full_coverage_zoom: Option<f64>,
     #[serde(default)]
     pub wide_angle: Option<RasterWideAngleMapView>,
@@ -108,6 +110,8 @@ pub struct RasterWideAngleMapView {
     pub region_id: String,
     pub max_zoom: f64,
     pub package_name: String,
+    #[serde(default)]
+    pub package_relative_path: Option<String>,
     pub tile_url_root: String,
     pub tile_path_template: String,
     pub levels: Vec<RasterTileLevel>,
@@ -138,12 +142,20 @@ pub struct RasterTilePlan {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RasterTilePlanOptions {
     pub max_tile_display_multiplier: f64,
+    pub resource_mode: RasterResourceMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RasterResourceMode {
+    PublicUnpacked,
+    InstalledPackage,
 }
 
 impl Default for RasterTilePlanOptions {
     fn default() -> Self {
         Self {
             max_tile_display_multiplier: 1.0,
+            resource_mode: RasterResourceMode::InstalledPackage,
         }
     }
 }
@@ -170,6 +182,7 @@ pub struct RasterTileSource {
     pub storage_kind: String,
     pub relative_path: String,
     pub package_member_path: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -332,7 +345,7 @@ pub fn raster_tile_plan_with_options(
     }
     let mut tiles = dedupe_tiles(planned)
         .into_iter()
-        .map(planned_tile_to_draw)
+        .map(|tile| planned_tile_to_draw(tile, options))
         .collect::<Vec<_>>();
     tiles.sort_by(|left, right| {
         left.z_order
@@ -499,6 +512,7 @@ fn render_wide_angle_tiles_for_family(
     map_view.max_source_zoom = wide_angle.max_zoom.floor() as i64;
     map_view.max_display_zoom = wide_angle_max_display_zoom(&map_view, wide_angle, options);
     map_view.package_name = Some(wide_angle.package_name.clone());
+    map_view.package_relative_path = wide_angle.package_relative_path.clone();
     map_view.levels = wide_angle.levels.clone();
     map_view.full_coverage_zoom = None;
     map_view.wide_angle = None;
@@ -713,12 +727,19 @@ fn push_candidate(
     }
 }
 
-fn planned_tile_to_draw(tile: PlannedTile) -> RasterTileDraw {
+fn planned_tile_to_draw(tile: PlannedTile, options: RasterTilePlanOptions) -> RasterTileDraw {
     let mut sources = tile
         .candidate_map_views
         .iter()
         .map(|(map_view_id, map_view)| {
-            tile_source(map_view_id, map_view, tile.zoom, tile.x, tile.y_tms)
+            tile_source(
+                map_view_id,
+                map_view,
+                tile.zoom,
+                tile.x,
+                tile.y_tms,
+                options.resource_mode,
+            )
         })
         .collect::<Vec<_>>();
     if sources.is_empty() {
@@ -728,6 +749,7 @@ fn planned_tile_to_draw(tile: PlannedTile) -> RasterTileDraw {
             tile.zoom,
             tile.x,
             tile.y_tms,
+            options.resource_mode,
         ));
     }
     let primary = sources.remove(0);
@@ -755,15 +777,18 @@ fn tile_source(
     zoom: i64,
     x: i64,
     y_tms: i64,
+    resource_mode: RasterResourceMode,
 ) -> RasterTileSource {
     let relative_path = tile_relative_path(map_view, zoom, x, y_tms);
     let package_member_path = tile_package_member_path(map_view, &relative_path);
+    let url = tile_source_url(map_view, &relative_path, resource_mode);
     RasterTileSource {
         map_view_id: map_view_id.to_string(),
         package_name: map_view.package_name.clone(),
         storage_kind: map_view.storage_kind.clone(),
         relative_path,
         package_member_path,
+        url,
     }
 }
 
@@ -773,6 +798,40 @@ fn tile_package_member_path(map_view: &RasterMapView, relative_path: &str) -> St
         relative_path.to_string()
     } else {
         format!("{tile_root}/{}", relative_path.trim_start_matches('/'))
+    }
+}
+
+fn tile_source_url(
+    map_view: &RasterMapView,
+    relative_path: &str,
+    resource_mode: RasterResourceMode,
+) -> String {
+    match resource_mode {
+        RasterResourceMode::InstalledPackage => format!(
+            "{}/{}",
+            map_view.tile_url_root.trim_end_matches('/'),
+            relative_path
+        ),
+        RasterResourceMode::PublicUnpacked => {
+            let Some(package_name) = map_view.package_name.as_ref() else {
+                return format!(
+                    "{}/{}",
+                    map_view.tile_url_root.trim_end_matches('/'),
+                    relative_path
+                );
+            };
+            let package_relative_path = map_view.package_relative_path.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "raster package {package_name} missing package_relative_path required for public unpacked tile URL"
+                )
+            });
+            let package_dir = package_relative_path.strip_suffix(".zip").unwrap_or_else(|| {
+                panic!(
+                    "raster package {package_name} relative_path is not a zip: {package_relative_path}"
+                )
+            });
+            format!("/packages/published_unpacked/{package_dir}/{relative_path}")
+        }
     }
 }
 
@@ -1093,6 +1152,7 @@ mod tests {
                 max_display_zoom: 12.5,
                 storage_kind: "sectional_package".to_string(),
                 package_name: Some(package.to_string()),
+                package_relative_path: Some(format!("{package}.zip")),
                 full_coverage_zoom: Some(7.0),
                 wide_angle: None,
                 initial_viewport: RasterInitialViewport {
@@ -1103,6 +1163,84 @@ mod tests {
                 levels,
             },
         }
+    }
+
+    #[test]
+    fn public_unpacked_tile_sources_resolve_from_package_metadata() {
+        let catalog = RasterMapCatalog {
+            selected_map_id: "sec:nw".to_string(),
+            selected_map: None,
+            displayed_maps: vec![option(
+                "sec:nw",
+                "sec",
+                "NW_SEC_2604",
+                vec![level(4, 0, 15, 0, 15)],
+            )],
+            geometry: RasterDisplayGeometry::default(),
+            family_options: Vec::new(),
+        };
+
+        let plan = raster_tile_plan_with_options(
+            &catalog,
+            &MapViewport {
+                center: LatLon {
+                    lat: 45.0,
+                    lon: -122.0,
+                },
+                zoom: 4.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            256.0,
+            256.0,
+            RasterTilePlanOptions {
+                resource_mode: RasterResourceMode::PublicUnpacked,
+                ..RasterTilePlanOptions::default()
+            },
+        );
+
+        let source = &plan.tiles.first().expect("planned tile").primary;
+        assert!(source
+            .url
+            .starts_with("/packages/published_unpacked/NW_SEC_2604/"));
+        assert!(source.url.ends_with(&source.relative_path));
+    }
+
+    #[test]
+    fn installed_package_tile_sources_keep_package_relative_url() {
+        let catalog = RasterMapCatalog {
+            selected_map_id: "sec:nw".to_string(),
+            selected_map: None,
+            displayed_maps: vec![option(
+                "sec:nw",
+                "sec",
+                "NW_SEC_2604",
+                vec![level(4, 0, 15, 0, 15)],
+            )],
+            geometry: RasterDisplayGeometry::default(),
+            family_options: Vec::new(),
+        };
+
+        let plan = raster_tile_plan(
+            &catalog,
+            &MapViewport {
+                center: LatLon {
+                    lat: 45.0,
+                    lon: -122.0,
+                },
+                zoom: 4.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            256.0,
+            256.0,
+        );
+
+        let source = &plan.tiles.first().expect("planned tile").primary;
+        assert_eq!(
+            source.url,
+            format!("/NW_SEC_2604/tiles/{}", source.relative_path)
+        );
     }
 
     #[test]
@@ -1277,6 +1415,7 @@ mod tests {
             region_id: "wide".to_string(),
             max_zoom: 7.0,
             package_name: "SEC_WIDE_2604".to_string(),
+            package_relative_path: Some("sec_wide_2604_sample.zip".to_string()),
             tile_url_root: "/packages/published_unpacked/sec_wide_2604_sample/tiles".to_string(),
             tile_path_template: "{z}/{x}/{y}.webp".to_string(),
             levels: vec![
@@ -1398,6 +1537,7 @@ mod tests {
             region_id: "wide".to_string(),
             max_zoom: 7.0,
             package_name: "SEC_WIDE_2604".to_string(),
+            package_relative_path: Some("sec_wide_2604_sample.zip".to_string()),
             tile_url_root: "/packages/published_unpacked/sec_wide_2604_sample/tiles".to_string(),
             tile_path_template: "{z}/{x}/{y}.webp".to_string(),
             levels: vec![level(0, 0, 0, 0, 0), level(7, 0, 127, 0, 127)],
@@ -1713,6 +1853,7 @@ mod tests {
             708.0,
             RasterTilePlanOptions {
                 max_tile_display_multiplier: 2.0,
+                ..RasterTilePlanOptions::default()
             },
         );
         assert!(!fast.tiles.is_empty());

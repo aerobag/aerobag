@@ -69,7 +69,6 @@ export const mapTileView: MapTileViewJson = {
   probe_offset_y: 0,
 };
 
-export const samplePlan = bootstrap.flight_plan;
 export const chartPage: ChartPageData = {
   airports: [],
 };

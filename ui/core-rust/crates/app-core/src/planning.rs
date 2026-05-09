@@ -1103,6 +1103,10 @@ fn default_true() -> bool {
 }
 
 impl FlightPlan {
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
     pub fn normalized(mut self) -> Self {
         normalize_route_component_uids(&mut self);
         if self.resolved_legs.is_empty() && !self.route_components.is_empty() {
@@ -1110,6 +1114,28 @@ impl FlightPlan {
         }
 
         self
+    }
+}
+
+impl Default for FlightPlan {
+    fn default() -> Self {
+        Self {
+            id: "plan-empty".to_string(),
+            name: "Flight Plan".to_string(),
+            legs: Vec::new(),
+            route_components: Vec::new(),
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        }
     }
 }
 
@@ -4347,6 +4373,14 @@ fn resume_leg_id_after_leg(plan: &FlightPlan, leg_index: usize) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_flight_plan_is_valid_startup_state() {
+        let plan = crate::build_flight_plan(FlightPlan::empty()).expect("empty startup plan");
+        assert!(plan.route_components.is_empty());
+        assert!(plan.resolved_legs.is_empty());
+        assert!(project_ui_state(&plan).display_rows.is_empty());
+    }
 
     #[test]
     fn spot_flight_plan_label_uses_two_lines_and_coarse_coordinates() {

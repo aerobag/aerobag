@@ -121,7 +121,7 @@ pub fn project_ui_snapshot_app_state(state: &AppState) -> UiSnapshotAppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AirportId, AppErrorKind, NavRef, RouteComponent};
+    use crate::{AirportId, AppErrorKind, NavRef, PlanLeg, RouteComponent};
 
     fn sample_plan() -> FlightPlan {
         FlightPlan {
@@ -229,7 +229,11 @@ mod tests {
             AppEvent::ReplaceFlightPlan(FlightPlan {
                 id: "bad".to_string(),
                 name: "bad".to_string(),
-                legs: Vec::new(),
+                legs: vec![PlanLeg {
+                    from: NavRef::Airport("KRNT".to_string()),
+                    to: NavRef::Airport("KPAE".to_string()),
+                    airway: None,
+                }],
                 route_components: Vec::new(),
                 route_component_uids: Vec::new(),
                 route_component_uid_counter: 0,

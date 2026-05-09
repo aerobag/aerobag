@@ -328,6 +328,9 @@ class NativeAppCoreAdapter(
         json.decodeFromString<List<WireSituationRingCandidate>>(bridge.situationRingCandidatesJson())
             .map { it.toUi() }
 
+    fun emptyFlightPlan(): FlightPlan =
+        json.decodeFromString<WireFlightPlan>(bridge.emptyFlightPlanJson()).toUiFlightPlan()
+
     fun createUiSession(
         plan: FlightPlan,
         recentAirportIds: List<String>,

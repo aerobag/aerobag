@@ -501,6 +501,7 @@ export interface UiSession {
 export interface AppCoreAdapter {
   prewarm(): Promise<void>;
   situationRingCandidates(): SituationRingCandidate[];
+  emptyFlightPlan(): Promise<FlightPlan>;
   createUiSession(
     plan: FlightPlan,
     recentAirportIds: string[],
@@ -641,6 +642,7 @@ async function fetchVectorManifestJson(): Promise<string> {
 type WasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
   situation_ring_candidates_json(): Promise<string> | string;
+  empty_flight_plan_json(): Promise<string> | string;
   create_ui_session(vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   create_ui_session_profiled?: (vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
   set_situation_in_session(handle: number, situationJson: string): Promise<string> | string;
@@ -729,6 +731,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       throw new Error("situation_ring_candidates_json must be synchronous");
     }
     return JSON.parse(candidatesJson) as SituationRingCandidate[];
+  }
+
+  async emptyFlightPlan(): Promise<FlightPlan> {
+    return JSON.parse(await this.module.empty_flight_plan_json()) as FlightPlan;
   }
 
   private async enrichFlightPlanUiMutation(mutation: FlightPlanUiMutation): Promise<FlightPlanUiMutation> {
@@ -1373,6 +1379,7 @@ async function loadBestAvailableAdapterUncached(
   debugLog("wasm.exports.check.start");
   if (
     typeof mod.situation_ring_candidates_json !== "function" ||
+    typeof mod.empty_flight_plan_json !== "function" ||
     typeof mod.create_ui_session !== "function" ||
     typeof mod.perform_flight_plan_row_action_in_session !== "function" ||
     typeof mod.set_situation_in_session !== "function" ||

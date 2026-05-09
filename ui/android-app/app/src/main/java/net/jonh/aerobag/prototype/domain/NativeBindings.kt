@@ -25,6 +25,8 @@ interface NativeBridge {
 
     fun situationRingCandidatesJson(): String
 
+    fun emptyFlightPlanJson(): String
+
     fun activateLegUiJson(planJson: String, legIndex: Int): String
 
     fun prepareAirwayPresentationJson(
@@ -429,6 +431,8 @@ object NativeBindings : NativeBridge {
         componentIndex: Int,
         builtJson: String,
     ): String
+
+    external override fun emptyFlightPlanJson(): String
 
     external override fun createUiSessionJson(
         vectorManifestJson: String,

@@ -1,12 +1,10 @@
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type Dispatch, type MouseEvent, type PointerEvent, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
-import bootstrapJson from "@shared-bootstrap";
 import type {
   AirwayPresentationPlan,
   AirwaySuggestion,
   ChartPageData,
   ChartFamilyId,
-  DevBootstrapJson,
   FlightPlan,
   FlightPlanEntryPreview,
   FlightPlanRouteSegment,
@@ -323,8 +321,6 @@ type NexradFrame = {
   };
 };
 
-const bootstrap = bootstrapJson as DevBootstrapJson;
-const samplePlan = bootstrap.flight_plan;
 const emptyChartPage: ChartPageData = { airports: [] };
 const O88_POSITION = { lat: 38.19338888888888, lon: -121.70363888888889 };
 const PAGE_CHART_ICON_SRC = "/icons/icons/page-chart-icon.png?v=20260424b";
@@ -1534,34 +1530,15 @@ export default function App() {
     if (!appCoreAdapter) {
       return;
     }
-    debugTiming("startup.session.create", () => buildSeededDevPlan().then(async (initialPlan) => {
+    debugTiming("startup.session.create", async () => {
+      const initialPlan = await appCoreAdapter.emptyFlightPlan();
       const created = await debugTiming("startup.session.create.core", () => appCoreAdapter.createUiSession(
-        initialPlan.plan,
-        initialPlan.recentAirportIds ?? initialRecentAirportIds,
-        initialPlan.selectedAirportId ?? initialChartPageState.selected_airport_id,
-        initialPlan.selectedChartId ?? initialChartPageState.selected_chart_id,
+        initialPlan,
+        initialRecentAirportIds,
+        initialChartPageState.selected_airport_id,
+        initialChartPageState.selected_chart_id,
       ));
       let createdSnapshot = await created.snapshot();
-      if (initialPlan.seedProcedure) {
-        const targetRow = createdSnapshot.app_ui_state.active_plan?.display_rows.find((row) =>
-          row.chart_airport_id === initialPlan.seedProcedure?.airportId &&
-          row.component_kind === "waypoint"
-        );
-        if (targetRow) {
-          createdSnapshot = await debugTiming("startup.session.seed_procedure", () => created.selectProcedureAtFlightPlanRow(
-            targetRow.uid,
-            initialPlan.seedProcedure!.airportId,
-            initialPlan.seedProcedure!.procedureId,
-            initialPlan.seedProcedure!.kind,
-            initialPlan.seedProcedure!.runwayTransition,
-            initialPlan.seedProcedure!.enrouteTransition,
-          ));
-        } else {
-          debugLog("startup.session.seed_procedure.no_target_row", {
-            airport_id: initialPlan.seedProcedure.airportId,
-          });
-        }
-      }
       createdSnapshot = await debugTiming("startup.session.ownship_start", () => created.setSituation({
         position: { kind: "lat_lon", lat: NRVNA_POSITION.lat, lon: NRVNA_POSITION.lon },
         orientation_deg: 342,
@@ -1581,7 +1558,7 @@ export default function App() {
         setUiSession(created);
         setSessionSnapshot(createdSnapshot);
       }
-    })).catch((error) => {
+    }).catch((error) => {
       console.error("failed to initialize web ui session", error);
     });
     return () => {
@@ -7568,60 +7545,6 @@ async function applyFlightPlanMutation(
   }
   const nextSnapshot = await uiSession.replaceFlightPlan(mutation.plan);
   setSessionSnapshot(nextSnapshot);
-}
-
-async function buildSeededDevPlan(): Promise<{
-  plan: FlightPlan;
-  selectedAirportId?: string;
-  selectedChartId?: string;
-  recentAirportIds?: string[];
-  seedProcedure?: {
-    airportId: string;
-    procedureId: string;
-    kind: "approach";
-    runwayTransition: string | null;
-    enrouteTransition: string | null;
-  };
-}> {
-  const waypoints: Array<{ Airport: string } | { Navaid: string } | { Fix: string }> = [
-    { Airport: "KRNT" },
-    { Navaid: "SEA" },
-    { Airport: "KPAE" },
-  ];
-  const routeComponents = waypoints.map((waypoint) => ({ kind: "waypoint" as const, waypoint }));
-  const resolvedLegs = waypoints.slice(0, -1).map((from, index) => ({
-    id: `component-${index}-${index + 1}`,
-    from,
-    to: waypoints[index + 1],
-    source: { kind: "route_component" as const, component_index: index },
-  }));
-  const plan = {
-    ...samplePlan,
-    id: "dev-krnt-sea-kpae",
-    name: "KRNT SEA KPAE",
-    legs: resolvedLegs.map((leg) => ({ from: leg.from, to: leg.to, airway: null })),
-    route_components: routeComponents,
-    route_component_uids: routeComponents.map((_, index) => `fpc:${index.toString(16).padStart(16, "0")}`),
-    route_component_uid_counter: routeComponents.length,
-    resolved_legs: resolvedLegs,
-    guidance: { active_leg_index: 0, active_detail_index: 0, sequencing_mode: "follow_plan" as const, direct_to: null },
-    departure: "KRNT",
-    destination: "KPAE",
-    updated_at_epoch_ms: Date.now(),
-    version: samplePlan.version + 1,
-  };
-  return {
-    plan,
-    selectedAirportId: "KPAE",
-    recentAirportIds: ["KPAE", "KRNT"],
-    seedProcedure: {
-      airportId: "KPAE",
-      procedureId: "VOR-A",
-      kind: "approach",
-      runwayTransition: null,
-      enrouteTransition: "ECEPO",
-    },
-  };
 }
 
 function concretizedNavItemLabel(item: FlightPlanUiState["components"][number]["items"][number]) {

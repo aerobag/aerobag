@@ -15,6 +15,10 @@ pub fn build_flight_plan_json(plan_json: &str) -> Result<String, String> {
     serde_json::to_string(&plan).map_err(|err| err.to_string())
 }
 
+pub fn empty_flight_plan_json() -> Result<String, String> {
+    serde_json::to_string(&app_core::FlightPlan::empty()).map_err(|err| err.to_string())
+}
+
 pub fn remove_flight_plan_leg_json(plan_json: &str, index: usize) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
@@ -1385,6 +1389,14 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_des
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_emptyFlightPlanJson(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    return_string(&mut env, empty_flight_plan_json())
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_replaceFlightPlanStateJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -2538,6 +2550,8 @@ mod tests {
                     "waypoint": {"Airport": "KBOS"}
                 }
             ],
+            "route_component_uids": ["fpc:0000000000000000", "fpc:0000000000000001"],
+            "route_component_uid_counter": 2,
             "resolved_legs": [
                 {
                     "id": "component-0-1",
@@ -2557,6 +2571,15 @@ mod tests {
             "version": 1
         })
         .to_string()
+    }
+
+    #[test]
+    fn empty_flight_plan_json_returns_core_default_plan() {
+        let plan_json = empty_flight_plan_json().unwrap();
+        let plan: app_core::FlightPlan = serde_json::from_str(&plan_json).unwrap();
+
+        assert!(plan.route_components.is_empty());
+        assert!(plan.resolved_legs.is_empty());
     }
 
     #[test]
@@ -2588,6 +2611,8 @@ mod tests {
                 {"kind":"waypoint","waypoint":{"Navaid":"SEA"}},
                 {"kind":"waypoint","waypoint":{"Airport":"KUAO"}}
             ],
+            "route_component_uids": ["fpc:0000000000000000", "fpc:0000000000000001", "fpc:0000000000000002"],
+            "route_component_uid_counter": 3,
             "resolved_legs": [
                 {"id":"component-0-1","from":{"Airport":"KRNT"},"to":{"Navaid":"SEA"},"source":{"kind":"route_component","component_index":0}},
                 {"id":"component-1-2","from":{"Navaid":"SEA"},"to":{"Airport":"KUAO"},"source":{"kind":"route_component","component_index":1}}

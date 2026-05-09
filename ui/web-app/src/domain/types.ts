@@ -858,7 +858,6 @@ export type GeometryJson = {
 
 export type DevBootstrapJson = {
   content_policy: ContentPolicy;
-  flight_plan: FlightPlan;
   recent_airport_ids: string[];
   selected_airport_id: string | null;
   selected_chart_id: string | null;

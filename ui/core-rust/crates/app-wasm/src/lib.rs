@@ -319,6 +319,12 @@ pub fn build_flight_plan(plan_json: &str) -> Result<String, JsValue> {
 }
 
 #[wasm_bindgen]
+pub fn empty_flight_plan_json() -> Result<String, JsValue> {
+    serde_json::to_string(&app_core::FlightPlan::empty())
+        .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn classify_procedure_identifier(
     identifier: &str,
     exists_as_airport: bool,

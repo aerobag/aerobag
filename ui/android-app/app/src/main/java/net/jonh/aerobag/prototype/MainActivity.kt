@@ -1322,59 +1322,6 @@ internal fun latLonToScreenPoint(
 internal fun plateFolderColor(uiTheme: UiTheme, category: String): Color =
     uiTheme.plateFolder.labelColors[category] ?: uiTheme.plateFolder.labelColors["other"] ?: Color(0xFF52656D)
 
-internal fun buildSeededDevPlan(
-    adapter: NativeAppCoreAdapter,
-    plan: net.jonh.aerobag.prototype.domain.FlightPlan,
-): FlightPlanUiMutation {
-    return runCatching {
-        val waypoints = listOf(
-            NavRef.Airport("KRNT"),
-            NavRef.Navaid("SEA"),
-            NavRef.Airport("KPAE"),
-        )
-        val resolvedLegs =
-            waypoints.zipWithNext().mapIndexed { index, (from, to) ->
-                ResolvedLeg(
-                    id = "component-$index-${index + 1}",
-                    from = from,
-                    to = to,
-                    source = ResolvedLegSource.RouteComponent(componentIndex = index),
-                )
-            }
-        val seededPlan =
-            plan.copy(
-                id = "dev-krnt-sea-kpae",
-                name = "KRNT SEA KPAE",
-                legs = resolvedLegs.map { leg -> net.jonh.aerobag.prototype.domain.FlightPlanLeg(leg.from, leg.to, null) },
-                routeComponents = waypoints.map { waypoint -> RouteComponent.Waypoint(waypoint) },
-                routeComponentUids = waypoints.indices.map { index -> "fpc:${index.toString(16).padStart(16, '0')}" },
-                routeComponentUidCounter = waypoints.size.toLong(),
-                resolvedLegs = resolvedLegs,
-                guidance = GuidanceState(
-                    activeLegIndex = 0,
-                    sequencingMode = SequencingMode.FollowPlan,
-                    directTo = null,
-                ),
-                departure = "KRNT",
-                destination = "KPAE",
-                updatedAtEpochMs = System.currentTimeMillis(),
-                version = plan.version + 1,
-            )
-        adapter.activateLegUi(seededPlan, 0)
-    }.getOrElse {
-        Log.e("AerobagSeed", "buildSeededDevPlan fell back to sample plan", it)
-        FlightPlanUiMutation(
-            plan = plan,
-            uiState = FlightPlanUiState(
-                components = emptyList(),
-                resolvedLegs = emptyList(),
-                displayRows = emptyList(),
-                guidance = null,
-            ),
-        )
-    }
-}
-
 internal fun createInitialSituationViewport(mapView: MapView): MapViewportState {
     val center = latLonToWorld(VampsPosition.lat, VampsPosition.lon)
     return MapViewportState(
@@ -2394,9 +2341,7 @@ internal fun AerobagApp() {
         )
     }
     val situationRingCandidates = remember(appCore) { appCore.situationRingCandidates() }
-    val initialPlanMutation = remember(appCore, bootstrap.samplePlan) {
-        buildSeededDevPlan(appCore, bootstrap.samplePlan)
-    }
+    val initialPlan = remember(appCore) { appCore.emptyFlightPlan() }
     val sessionStartElapsedMs = remember { SystemClock.elapsedRealtime() }
     val uptimeLabel = rememberUptimeLabel(sessionStartElapsedMs)
     val storedRecentAirportIds = remember { readRecentAirportIds(context.applicationContext) }
@@ -2417,7 +2362,7 @@ internal fun AerobagApp() {
     var selectedMapId by remember(appCore) { mutableStateOf(initialMapSelectorState.selectedMapId) }
     val uiSession = remember(appCore) {
         appCore.createUiSession(
-            initialPlanMutation.plan,
+            initialPlan,
             storedRecentAirportIds,
             storedSelectedAirportId.ifBlank { null },
             storedSelectedChartId.ifBlank { null },
@@ -2441,7 +2386,7 @@ internal fun AerobagApp() {
     }
     val appState = sessionSnapshot.appState
     val appUiState = sessionSnapshot.appUiState
-    val currentPlan = appState.activePlan ?: initialPlanMutation.plan
+    val currentPlan = appState.activePlan ?: initialPlan
     var derivedChartPageState by remember(uiSession) {
         mutableStateOf(
             DerivedChartPageState(

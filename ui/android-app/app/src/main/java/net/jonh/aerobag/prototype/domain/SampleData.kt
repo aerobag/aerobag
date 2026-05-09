@@ -23,7 +23,6 @@ import kotlinx.serialization.json.jsonPrimitive
 
 data class BootstrapFixture(
     val packageManagementNowEpochMsOverride: Long?,
-    val samplePlan: FlightPlan,
 )
 
 data class ContentFixture(
@@ -34,7 +33,6 @@ data class ContentFixture(
     val mapViews: List<MapViewOption>,
     val chartPage: ChartPageFixture,
     val mapTileView: MapTileView,
-    val samplePlan: FlightPlan,
     val remoteOnlyInventory: ContentInventory,
     val installedInventory: ContentInventory,
     val navKvStore: NavKvStore,
@@ -54,7 +52,6 @@ data class NavDbStatus(
 @Serializable
 private data class WireDevBootstrap(
     val content_policy: String,
-    val flight_plan: WireFlightPlan,
     val recent_airport_ids: List<String> = emptyList(),
     val selected_airport_id: String? = null,
     val selected_chart_id: String? = null,
@@ -81,7 +78,6 @@ object SampleData {
             packageManagementNowEpochMsOverride = bootstrap.package_management_now_utc?.let {
                 Instant.parse(it).toEpochMilli()
             },
-            samplePlan = bootstrap.flight_plan.toUiFlightPlan(),
         )
     }
 
@@ -125,23 +121,9 @@ object SampleData {
         Log.i(TAG, "chartCatalog mapViews=${mapViews.size} fullCoverageZoom=$fullCoverageCount")
         val chartCatalogMs = SystemClock.elapsedRealtime() - chartCatalogStartMs
         val mapView = mapViews.first().mapView
-        val samplePlan = bootstrapFixture.samplePlan
-        val airportIds = buildSet {
-            samplePlan.departure?.let(::add)
-            samplePlan.destination?.let(::add)
-        }
         val plateAirportStartMs = SystemClock.elapsedRealtime()
         val chartPage = WireDerivedChartPage(
-            airports = airportIds.mapNotNull { airportId ->
-                json.decodeFromJsonElement<WireDerivedChartAirport?>(
-                    navKvStore.runCoreOperationElement(
-                        buildJsonObject {
-                            put("kind", "plate_airport")
-                            put("airport_id", airportId)
-                        },
-                    ),
-                )
-            },
+            airports = emptyList(),
         ).toUi()
         val plateAirportMs = SystemClock.elapsedRealtime() - plateAirportStartMs
         val defaultLevel = mapView.levels.maxBy { it.zoom }
@@ -165,7 +147,6 @@ object SampleData {
                 probeOffsetX = 0.0,
                 probeOffsetY = 0.0,
             ),
-            samplePlan = samplePlan,
             remoteOnlyInventory = ContentInventory(installedPackages = emptyList()),
             installedInventory = ContentInventory(installedPackages = emptyList()),
             navKvStore = navKvStore,

@@ -100,6 +100,7 @@ class NavKvStore private constructor(
                             } catch (error: Throwable) {
                                 if (resource.optional) {
                                     Log.i(TAG, "optional resource ${resource.id} unavailable: ${error.message}")
+                                    ingest(resource, ByteArray(0))
                                     continue
                                 }
                                 throw error

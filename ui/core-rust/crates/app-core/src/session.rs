@@ -1674,6 +1674,18 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
         return ingest_tafs_in_session(handle, &payload);
     }
     if resource_id == "weather/tfrs" {
+        if bytes.is_empty() {
+            return ingest_tfrs_in_session(
+                handle,
+                &TfrProductPayload {
+                    schema_version: 1,
+                    version_label: "unavailable".to_string(),
+                    notam_count: 0,
+                    area_group_count: 0,
+                    areas: Vec::new(),
+                },
+            );
+        }
         let payload: TfrProductPayload = serde_json::from_slice(bytes).map_err(|err| AppError {
             kind: AppErrorKind::InvalidManifest,
             message: format!("failed to parse TFR resource: {err}"),
@@ -2064,7 +2076,7 @@ fn weather_overlay_resources(
         resources.push(CoreResourceRequest {
             id: "weather/tfrs".to_string(),
             address: "/fast-products/tfrs/tfrs.json".to_string(),
-            optional: false,
+            optional: true,
         });
     }
     if !overlay.needed_metar_tiles.is_empty() {

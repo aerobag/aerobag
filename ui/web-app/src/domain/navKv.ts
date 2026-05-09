@@ -107,6 +107,10 @@ export class NavKvStore {
       address: resolvedAddress,
     });
     if (!response.ok) {
+      if (resource.optional) {
+        await ingestSessionResource(resource.id, new Uint8Array());
+        return;
+      }
       throw new Error(`failed to fetch core resource ${resource.id} at ${resource.address}: ${response.status}`);
     }
     const bytes = new Uint8Array(await response.arrayBuffer());

@@ -2962,6 +2962,13 @@ pub fn build_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<FastSubs
         )?,
         build_or_reuse_fast_product(
             config,
+            "winds-aloft",
+            &previous_fast_products_by_id,
+            &mut gc_records,
+            build_winds_aloft_product,
+        )?,
+        build_or_reuse_fast_product(
+            config,
             "metars",
             &previous_fast_products_by_id,
             &mut gc_records,
@@ -8769,6 +8776,206 @@ fn build_tfrs_product(
     )
 }
 
+const WINDS_ALOFT_FORECAST_HOURS: &[u32] = &[0, 3, 6, 9, 12];
+const WINDS_ALOFT_PRESSURE_LEVELS_MB: &[u32] = &[1000, 925, 850, 700, 600, 500, 400, 300];
+
+#[derive(Debug, Clone)]
+struct GfsWindsAloftCycle {
+    date: String,
+    cycle: String,
+    cycle_time_utc: DateTime<Utc>,
+}
+
+fn selected_gfs_winds_aloft_cycle(now: DateTime<Utc>) -> GfsWindsAloftCycle {
+    // GFS runs at 00/06/12/18 UTC. Use a conservative lag so the selected cycle
+    // and its early forecast hours have usually landed before the fast build asks
+    // NOMADS for filtered GRIB2 slices.
+    let candidate = now - chrono::Duration::hours(9);
+    let cycle_hour = (candidate.hour() / 6) * 6;
+    let cycle_time_utc = candidate
+        .date_naive()
+        .and_hms_opt(cycle_hour, 0, 0)
+        .expect("rounded GFS cycle time should be valid")
+        .and_utc();
+    GfsWindsAloftCycle {
+        date: cycle_time_utc.format("%Y%m%d").to_string(),
+        cycle: format!("{cycle_hour:02}"),
+        cycle_time_utc,
+    }
+}
+
+fn gfs_winds_aloft_filter_url(cycle: &GfsWindsAloftCycle, forecast_hour: u32) -> String {
+    let mut url = format!(
+        "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl?dir=%2Fgfs.{}%2F{}%2Fatmos&file=gfs.t{}z.pgrb2.0p25.f{forecast_hour:03}",
+        cycle.date, cycle.cycle, cycle.cycle
+    );
+    for variable in ["UGRD", "VGRD", "HGT"] {
+        url.push_str("&var_");
+        url.push_str(variable);
+        url.push_str("=on");
+    }
+    for level in WINDS_ALOFT_PRESSURE_LEVELS_MB {
+        url.push_str("&lev_");
+        url.push_str(&level.to_string());
+        url.push_str("_mb=on");
+    }
+    // First measuring pass: CONUS plus nearby coastal/Canadian/Mexican context.
+    // NOMADS GFS longitudes are 0..360, so 225..310 is 135W..50W.
+    url.push_str("&subregion=&toplat=55&leftlon=225&rightlon=310&bottomlat=15");
+    url
+}
+
+fn build_winds_aloft_product(
+    config: &ProductBuildConfig,
+) -> anyhow::Result<(PathBuf, String, NodeRecord)> {
+    let cycle = selected_gfs_winds_aloft_cycle(Utc::now());
+    let source_generated_at_utc = cycle
+        .cycle_time_utc
+        .to_rfc3339_opts(SecondsFormat::Secs, true);
+    let build_root = artifact_root_from_build_root(&config.build_root)
+        .join("private-work")
+        .join("winds-aloft")
+        .join(format!("gfs_{}_{}", cycle.date, cycle.cycle));
+    let input_dir = build_root.join("input");
+
+    if build_root.exists() {
+        fs::remove_dir_all(&build_root)
+            .with_context(|| format!("failed to clear {}", build_root.display()))?;
+    }
+    fs::create_dir_all(&input_dir)
+        .with_context(|| format!("failed to create {}", input_dir.display()))?;
+
+    let fetch_cache = FetchCacheConfig {
+        root: config.fetch_cache_root.clone(),
+        mode: FetchCacheMode::parse(&config.fetch_cache_mode)?,
+    };
+    let provenance_dir = build_root
+        .join("meta")
+        .join("provenance")
+        .join("winds-aloft");
+    fs::create_dir_all(&provenance_dir)
+        .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
+
+    let source_requests = WINDS_ALOFT_FORECAST_HOURS
+        .iter()
+        .map(|forecast_hour| {
+            PrefetchRequest::new(gfs_winds_aloft_filter_url(&cycle, *forecast_hour))
+                .with_logical_file_name(format!(
+                    "gfs_{}_{}_f{forecast_hour:03}.grib2",
+                    cycle.date, cycle.cycle
+                ))
+        })
+        .collect::<Vec<_>>();
+    let source_urls_jsonl = source_requests
+        .iter()
+        .map(|request| {
+            format!(
+                "{{\"event\":\"source_url\",\"label\":\"winds-aloft\",\"url\":\"{}\"}}\n",
+                request.url
+            )
+        })
+        .collect::<String>();
+    fs::write(provenance_dir.join("source_urls.jsonl"), source_urls_jsonl).with_context(|| {
+        format!(
+            "failed to write {}",
+            provenance_dir.join("source_urls.jsonl").display()
+        )
+    })?;
+    prefetch_requests_with_provenance(
+        &source_requests,
+        &input_dir,
+        config.fetch_jobs,
+        Some(&fetch_cache),
+        &provenance_dir,
+        "winds-aloft",
+    )?;
+
+    let source_fingerprint = hash_tree(&input_dir)?;
+    let version_label = fast_product_version_label(&source_fingerprint);
+    let inputs = fast_product_node_inputs("winds-aloft", &source_fingerprint)?;
+    let zip_version_label = version_label.clone();
+    run_fast_structured_product_node(
+        config,
+        "winds-aloft",
+        "fast-winds-aloft",
+        &version_label,
+        inputs,
+        move |output_dir| {
+            fs::create_dir_all(&output_dir)
+                .with_context(|| format!("failed to create {}", output_dir.display()))?;
+            let manifest_path = output_dir.join("manifest.json");
+            let zip_path = output_dir.join(format!("winds-aloft_{zip_version_label}.zip"));
+            let grib_output_dir = output_dir.join("grib2");
+            fs::create_dir_all(&grib_output_dir)
+                .with_context(|| format!("failed to create {}", grib_output_dir.display()))?;
+            let mut members = Vec::new();
+            let grib_files = WINDS_ALOFT_FORECAST_HOURS
+                .iter()
+                .map(|forecast_hour| {
+                    let file_name = format!(
+                        "gfs_{}_{}_f{forecast_hour:03}.grib2",
+                        cycle.date, cycle.cycle
+                    );
+                    let source_path = input_dir.join(&file_name);
+                    let size_bytes = fs::metadata(&source_path)
+                        .with_context(|| format!("failed to stat {}", source_path.display()))?
+                        .len();
+                    let staged_path = grib_output_dir.join(&file_name);
+                    fs::hard_link(&source_path, &staged_path).with_context(|| {
+                        format!(
+                            "failed to hardlink {} to {}",
+                            source_path.display(),
+                            staged_path.display()
+                        )
+                    })?;
+                    members.push(ZipSource::new(format!("grib2/{file_name}"), &staged_path));
+                    Ok(serde_json::json!({
+                        "forecast_hour": forecast_hour,
+                        "path": format!("grib2/{file_name}"),
+                        "size_bytes": size_bytes,
+                    }))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let manifest = serde_json::json!({
+                "schema_version": 1,
+                "product_id": "winds-aloft",
+                "source": "NOAA/NCEP GFS 0.25 degree via NOMADS filtered GRIB2",
+                "generated_at_utc": source_generated_at_utc,
+                "model": {
+                    "id": "gfs",
+                    "grid": "0.25-degree",
+                    "cycle_date": cycle.date,
+                    "cycle": cycle.cycle,
+                    "cycle_time_utc": source_generated_at_utc,
+                },
+                "domain": {
+                    "lat_min": 15.0,
+                    "lat_max": 55.0,
+                    "lon_min": -135.0,
+                    "lon_max": -50.0,
+                },
+                "forecast_hours": WINDS_ALOFT_FORECAST_HOURS,
+                "pressure_levels_mb": WINDS_ALOFT_PRESSURE_LEVELS_MB,
+                "variables": ["UGRD", "VGRD", "HGT"],
+                "files": grib_files,
+                "notes": [
+                    "Raw measuring package; not yet a client wire format.",
+                    "UGRD/VGRD are wind vector components. HGT is included to map pressure levels to geometric altitude."
+                ],
+            });
+            fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)
+                .with_context(|| format!("failed to write {}", manifest_path.display()))?;
+            members.push(ZipSource::new("manifest.json", &manifest_path));
+            write_deterministic_zip(&zip_path, &members)?;
+            Ok(FastStructuredProductOutputs {
+                manifest_path: manifest_path.clone(),
+                structured_json_path: manifest_path,
+                zip_path,
+            })
+        },
+    )
+}
+
 fn build_metars_product(
     config: &ProductBuildConfig,
 ) -> anyhow::Result<(PathBuf, String, NodeRecord)> {
@@ -12683,6 +12890,11 @@ fn fast_product_source_generated_at(
                 .map(ToOwned::to_owned)
                 .context("TFR product manifest had no generated_at_utc")
         }
+        "winds-aloft" => value
+            .get("generated_at_utc")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned)
+            .context("winds-aloft product manifest had no generated_at_utc"),
         other => bail!("unsupported fast product id {other}"),
     }
 }
@@ -17841,6 +18053,54 @@ mod tests {
 
         assert_eq!(product, None);
         assert!(gc_records.is_empty());
+    }
+
+    #[test]
+    fn winds_aloft_cycle_selection_uses_conservative_gfs_lag() {
+        let now = DateTime::parse_from_rfc3339("2026-05-09T15:10:00Z")
+            .expect("valid test timestamp")
+            .with_timezone(&Utc);
+
+        let cycle = selected_gfs_winds_aloft_cycle(now);
+
+        assert_eq!(cycle.date, "20260509");
+        assert_eq!(cycle.cycle, "06");
+        assert_eq!(
+            cycle
+                .cycle_time_utc
+                .to_rfc3339_opts(SecondsFormat::Secs, true),
+            "2026-05-09T06:00:00Z"
+        );
+    }
+
+    #[test]
+    fn winds_aloft_filter_url_selects_bounded_gfs_slice() {
+        let cycle = GfsWindsAloftCycle {
+            date: "20260509".to_string(),
+            cycle: "06".to_string(),
+            cycle_time_utc: DateTime::parse_from_rfc3339("2026-05-09T06:00:00Z")
+                .expect("valid test timestamp")
+                .with_timezone(&Utc),
+        };
+
+        let url = gfs_winds_aloft_filter_url(&cycle, 3);
+
+        assert!(url.contains("filter_gfs_0p25.pl"));
+        assert!(url.contains("dir=%2Fgfs.20260509%2F06%2Fatmos"));
+        assert!(url.contains("file=gfs.t06z.pgrb2.0p25.f003"));
+        for fragment in [
+            "var_UGRD=on",
+            "var_VGRD=on",
+            "var_HGT=on",
+            "lev_1000_mb=on",
+            "lev_300_mb=on",
+            "toplat=55",
+            "bottomlat=15",
+            "leftlon=225",
+            "rightlon=310",
+        ] {
+            assert!(url.contains(fragment), "{url} missing {fragment}");
+        }
     }
 
     #[test]

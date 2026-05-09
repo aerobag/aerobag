@@ -356,6 +356,10 @@ internal fun HomePage(
     val context = LocalContext.current
     val prefs = remember(context) { context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE) }
     val coroutineScope = rememberCoroutineScope()
+    val offlinePackagesControllerAlive = remember(offlinePackagesControllerHandle) { AtomicBoolean(true) }
+    DisposableEffect(offlinePackagesControllerHandle) {
+        onDispose { offlinePackagesControllerAlive.set(false) }
+    }
     var packageSourceBaseUrl by remember(context, prefs) {
         mutableStateOf(readPackageSourceBaseUrl(context.applicationContext, prefs))
     }
@@ -385,6 +389,13 @@ internal fun HomePage(
         offlinePackageOperationJob = job
     }
     suspend fun dispatchOfflinePackagesController(event: OfflinePackagesControllerEventWire) {
+        if (!offlinePackagesControllerAlive.get()) {
+            Log.i(
+                "OfflinePackages",
+                "dropping event=${event::class.simpleName} for disposed controller handle=$offlinePackagesControllerHandle",
+            )
+            return
+        }
         val startMs = SystemClock.elapsedRealtime()
         Log.i(
             "OfflinePackages",
@@ -409,9 +420,26 @@ internal fun HomePage(
             "controller event=${event::class.simpleName} handle=$offlinePackagesControllerHandle " +
                 "installed=${installed.size} installedScanMs=$installedScanElapsedMs inputBytes=${inputJson.length}",
         )
-        val result = PackageManagementJson.decodeFromString<OfflinePackagesControllerResultWire>(
-            NativeBindings.dispatchOfflinePackagesControllerJson(offlinePackagesControllerHandle, inputJson),
-        )
+        if (!offlinePackagesControllerAlive.get()) {
+            Log.i(
+                "OfflinePackages",
+                "dropping event=${event::class.simpleName} after package scan for disposed controller handle=$offlinePackagesControllerHandle",
+            )
+            return
+        }
+        val outputJson = try {
+            NativeBindings.dispatchOfflinePackagesControllerJson(offlinePackagesControllerHandle, inputJson)
+        } catch (error: RuntimeException) {
+            if (error.message?.contains("invalid offline packages controller handle") == true) {
+                Log.i(
+                    "OfflinePackages",
+                    "dropping event=${event::class.simpleName} for stale controller handle=$offlinePackagesControllerHandle",
+                )
+                return
+            }
+            throw error
+        }
+        val result = PackageManagementJson.decodeFromString<OfflinePackagesControllerResultWire>(outputJson)
         writeOfflinePackagesStateJson(prefs, result.packagesStateJson)
         offlinePackagesControllerResult = result
         when (val command = result.command) {

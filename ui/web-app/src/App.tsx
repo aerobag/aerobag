@@ -112,6 +112,7 @@ import type {
 } from "./domain/appCoreAdapter";
 import { airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
 import { debugLog, debugTiming, installGlobalErrorLogging } from "./domain/debugLog";
+import { packageResourceUrl } from "./domain/packageContract";
 import { TerrainRenderWorkerClient } from "./domain/terrainRenderWorkerClient";
 
 type SurfaceSize = {
@@ -2331,7 +2332,7 @@ function MapPage(props: {
               let sourceBytes = terrainSourceByteCacheRef.current.get(sourceCacheKey);
               if (!sourceBytes) {
                 const fetchStartedAt = performance.now();
-                const response = await fetch(`/terrain-products/${sourceTile.product_id}/${sourceTile.path}`);
+                const response = await fetch(await packageResourceUrl(sourceTile.product_id, sourceTile.path));
                 if (response.status === 404) {
                   debugLog("terrain.overlay.tile.missing", {
                     key: task.request.key,
@@ -2631,7 +2632,7 @@ function MapPage(props: {
     setNexradStatus({ state: "loading" });
 
     async function loadNexrad() {
-      const response = await fetch("/fast-products/nexrad/nexrad.json", { signal: controller.signal });
+      const response = await fetch(await packageResourceUrl("nexrad", "nexrad.json"), { signal: controller.signal });
       if (response.status === 404) {
         if (uiSession) {
           void uiSession.setMapLayerEnabled("nexrad", false).then(onPlaybackSnapshotChange).catch(() => {});
@@ -2654,12 +2655,12 @@ function MapPage(props: {
           frames: [],
         };
       }
-      const frames = [...manifest.frames]
+      const frames = await Promise.all([...manifest.frames]
         .reverse()
-        .map((frame) => ({
+        .map(async (frame) => ({
           ...frame,
-          url: `/fast-products/nexrad/${frame.filename}`,
-        }));
+          url: await packageResourceUrl("nexrad", frame.filename),
+        })));
       return {
         status: { state: "available", frame_count: frames.length } satisfies NexradLayerStatus,
         frames,

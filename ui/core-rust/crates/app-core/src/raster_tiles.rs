@@ -1272,7 +1272,7 @@ mod tests {
             region_id: "wide".to_string(),
             max_zoom: 7.0,
             package_name: "SEC_WIDE_2604".to_string(),
-            tile_url_root: "/sectional-packages/SEC_WIDE_2604/tiles".to_string(),
+            tile_url_root: "/packages/published_unpacked/sec_wide_2604_sample/tiles".to_string(),
             tile_path_template: "{z}/{x}/{y}.webp".to_string(),
             levels: vec![
                 level(0, 0, 0, 0, 0),
@@ -1393,7 +1393,7 @@ mod tests {
             region_id: "wide".to_string(),
             max_zoom: 7.0,
             package_name: "SEC_WIDE_2604".to_string(),
-            tile_url_root: "/sectional-packages/SEC_WIDE_2604/tiles".to_string(),
+            tile_url_root: "/packages/published_unpacked/sec_wide_2604_sample/tiles".to_string(),
             tile_path_template: "{z}/{x}/{y}.webp".to_string(),
             levels: vec![level(0, 0, 0, 0, 0), level(7, 0, 127, 0, 127)],
         });

@@ -481,6 +481,8 @@ struct PackageRecord {
     family_id: String,
     region_id: Option<String>,
     #[serde(default)]
+    relative_path: Option<String>,
+    #[serde(default)]
     metadata: Option<PackageMetadataRecord>,
 }
 
@@ -789,11 +791,45 @@ fn enrich_map_views_with_package_metadata(
                 package_id: package_id.clone(),
             },
         )?;
-        view.map_view.full_coverage_zoom = package
-            .and_then(|record| record.metadata)
-            .and_then(|metadata| metadata.full_coverage_zoom);
+        if let Some(package) = package {
+            if let Some(tile_url_root) = package_tiles_url_root(&package)? {
+                view.map_view.tile_url_root = tile_url_root;
+            }
+            view.map_view.full_coverage_zoom = package
+                .metadata
+                .and_then(|metadata| metadata.full_coverage_zoom);
+        }
+        if let Some(wide_angle) = view.map_view.wide_angle.as_mut() {
+            let package = read_optional::<PackageRecord>(
+                store,
+                NavKvQuery::PackageById {
+                    package_id: wide_angle.package_name.clone(),
+                },
+            )?;
+            if let Some(package) = package {
+                if let Some(tile_url_root) = package_tiles_url_root(&package)? {
+                    wide_angle.tile_url_root = tile_url_root;
+                }
+            }
+        }
     }
     Ok(())
+}
+
+fn package_tiles_url_root(package: &PackageRecord) -> Result<Option<String>, HadReadError> {
+    let Some(relative_path) = package.relative_path.as_ref() else {
+        return Ok(None);
+    };
+    let package_dir = relative_path.strip_suffix(".zip")
+        .ok_or_else(|| {
+            HadReadError::Fatal(format!(
+                "package {} relative_path is not a zip: {}",
+                package.id, relative_path
+            ))
+        })?;
+    Ok(Some(format!(
+        "/packages/published_unpacked/{package_dir}/tiles"
+    )))
 }
 
 fn displayed_geometry(
@@ -3293,10 +3329,11 @@ mod tests {
             .iter()
             .find(|view| view.id == "sec:sc")
             .expect("missing sec:sc map");
-        assert_eq!(
-            sec_sc.map_view.tile_url_root,
-            "/sectional-packages/SC_SEC_2603/tiles"
-        );
+        assert!(sec_sc
+            .map_view
+            .tile_url_root
+            .starts_with("/packages/published_unpacked/sec_sc_2603_"));
+        assert!(sec_sc.map_view.tile_url_root.ends_with("/tiles"));
         assert!(matches!(
             sec_sc.coverage,
             Some(ChartCoverageRecord::PolygonSetRef(_))

@@ -73,11 +73,7 @@ function logStartupResources() {
           url.includes("/node_modules/.vite/") ||
           url.includes("/node_modules/") ||
           url.includes(".wasm") ||
-          url.includes("/nav-db/") ||
-          url.includes("/nav-kv/") ||
-          url.includes("/plates/") ||
-          url.includes("/afd/") ||
-          url.includes("/thumbnails/")
+          url.includes("/packages/")
         );
       })
       .map((entry) => ({

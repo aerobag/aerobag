@@ -194,7 +194,7 @@ describe("mapViewport", () => {
       chart_family: "shaded-relief" as const,
       chart_name: "Northwest Shaded Relief",
       chart_index: 0,
-      tile_url_root: "/shaded-relief-products/shaded-relief-nw/tiles",
+      tile_url_root: "/packages/published_unpacked/shaded_relief_nw_sample/tiles",
       tile_path_template: "{z}/{x}/{y}.webp",
       storage_kind: "static_product" as const,
       package_name: "shaded-relief-nw",
@@ -207,7 +207,7 @@ describe("mapViewport", () => {
     const tiles = renderTiles([shadedRelief], sampleGeometry, viewport, 1200, 900);
 
     expect(tiles.length).toBeGreaterThan(0);
-    expect(tiles[0].src).toMatch(/^\/shaded-relief-products\/shaded-relief-nw\/tiles\/8\/\d+\/\d+\.webp$/);
+    expect(tiles[0].src).toMatch(/^\/packages\/published_unpacked\/shaded_relief_nw_sample\/tiles\/8\/\d+\/\d+\.webp$/);
     expect(tiles[0].src).not.toContain("/tiles/0/8/");
   });
 
@@ -217,7 +217,7 @@ describe("mapViewport", () => {
       id: "shaded-relief-nw",
       chart_family: "shaded-relief" as const,
       chart_name: "Northwest Shaded Relief",
-      tile_url_root: "/shaded-relief-products/shaded-relief-nw/tiles",
+      tile_url_root: "/packages/published_unpacked/shaded_relief_nw_sample/tiles",
       tile_path_template: "{z}/{x}/{y}.webp",
       storage_kind: "static_product" as const,
       package_name: "shaded-relief-nw",

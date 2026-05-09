@@ -34,20 +34,20 @@ pub fn fixture_published_unpacked_root() -> PathBuf {
         );
         return path;
     }
-    let root = fixture_snapshot_root().join("published-unpacked");
+    let root = fixture_snapshot_root().join("published_unpacked");
     assert!(
         root.is_dir(),
-        "fixture published-unpacked root missing: {}",
+        "fixture published_unpacked root missing: {}",
         root.display()
     );
     root
 }
 
 pub fn fixture_published_packaged_root() -> PathBuf {
-    let root = fixture_snapshot_root().join("published-packaged");
+    let root = fixture_snapshot_root().join("published_packaged");
     assert!(
         root.is_dir(),
-        "fixture published-packaged root missing: {}",
+        "fixture published_packaged root missing: {}",
         root.display()
     );
     root

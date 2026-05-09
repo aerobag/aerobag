@@ -1,4 +1,5 @@
 import { latLonToWorld, worldToScreen, type MapViewportState } from "./mapViewport";
+import { packageResourceUrl } from "./packageContract";
 
 export type PointVectorRecord = {
   id: string;
@@ -101,10 +102,10 @@ let metarTilePathTemplatePromise: Promise<string> | null = null;
 
 export async function loadMetarTilePathTemplate(signal?: AbortSignal): Promise<string> {
   if (!metarTilePathTemplatePromise) {
-    metarTilePathTemplatePromise = fetch("/fast-products/metars/manifest.json", {
+    metarTilePathTemplatePromise = packageResourceUrl("metars", "manifest.json").then((url) => fetch(url, {
       cache: "no-cache",
       signal,
-    })
+    }))
       .then(async (response) => {
         if (!response.ok) {
           throw new Error(`failed to load METAR manifest: ${response.status}`);
@@ -128,12 +129,12 @@ export async function loadMetarTilePathTemplate(signal?: AbortSignal): Promise<s
   return metarTilePathTemplatePromise;
 }
 
-export function metarTileUrl(tilePathTemplate: string, zoom: number, x: number, y: number) {
+export async function metarTileUrl(tilePathTemplate: string, zoom: number, x: number, y: number) {
   const relativePath = tilePathTemplate
     .replaceAll("{z}", String(zoom))
     .replaceAll("{x}", String(x))
     .replaceAll("{y}", String(y));
-  return `/fast-products/metars/${relativePath}`;
+  return packageResourceUrl("metars", relativePath);
 }
 
 export function tileKey(z: number, x: number, y: number) {

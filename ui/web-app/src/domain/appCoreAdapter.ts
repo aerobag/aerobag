@@ -38,6 +38,7 @@ import type {
   WaypointIdentifierSuggestion,
 } from "./types";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
+import { packageResourceUrl } from "./packageContract";
 import { attachNavKvStoreToSession, runCoreHadOperation, runCoreHadSessionOperation } from "./navKv";
 import { debugLog, debugTiming } from "./debugLog";
 
@@ -564,7 +565,7 @@ async function fetchVectorManifestJson(): Promise<string> {
     point_layers: {},
   };
   try {
-    const obstacleResponse = await fetch("/fast-products/obstacles/obstacles", { cache: "no-cache" });
+    const obstacleResponse = await fetch(await packageResourceUrl("obstacles", "obstacles"), { cache: "no-cache" });
     if (obstacleResponse.ok) {
       const obstacleManifest = JSON.parse(await obstacleResponse.text()) as {
         point_layers?: Record<string, unknown>;
@@ -591,7 +592,7 @@ async function fetchVectorManifestJson(): Promise<string> {
     // Obstacle overlay is optional; keep the base vector manifest usable if the fast product is absent.
   }
   try {
-    const metarResponse = await fetch("/fast-products/metars/manifest.json", { cache: "no-cache" });
+    const metarResponse = await fetch(await packageResourceUrl("metars", "manifest.json"), { cache: "no-cache" });
     if (metarResponse.ok) {
       const metarManifest = JSON.parse(await metarResponse.text()) as {
         map_view?: {

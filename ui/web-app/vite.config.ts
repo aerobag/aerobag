@@ -16,16 +16,7 @@ const webSourceRoot = path.join(repoRoot, "ui", "web-app");
 const webTargetRoot = path.join(uiTargetRoot, "web");
 const workspaceRoot = path.join(webTargetRoot, "workspace");
 const generatedRoot = path.join(webTargetRoot, "generated");
-const staticRoot = path.join(webTargetRoot, "generated-static");
-const sectionalRoot = path.join(staticRoot, "sectional-packages");
-const plateRoot = path.join(staticRoot, "plates");
-const csupRoot = path.join(staticRoot, "afd");
-const thumbnailRoot = path.join(staticRoot, "thumbnails");
-const navDbRoot = path.join(staticRoot, "nav-db");
-const fastProductRoot = path.join(staticRoot, "fast-products");
-const worldBasemapProductRoot = path.join(staticRoot, "world-basemap-products");
-const navKvRoot = path.join(staticRoot, "nav-kv");
-const iconsRoot = path.join(staticRoot, "icons");
+const iconsRoot = path.join(repoRoot, "ui", "icons");
 const adsbTraceRoot = path.resolve(repoRoot, "..", "adsb-traces");
 const sharedRoot = path.join(repoRoot, "ui", "shared");
 const sharedFixturesRoot = path.join(repoRoot, "ui", "shared-fixtures");
@@ -39,81 +30,24 @@ const configuredArtifactPath = path.isAbsolute(configuredArtifactRoot)
 const artifactReadRoot = process.env.AEROBAG_ARTIFACT_READ_PATH
   ? path.resolve(process.env.AEROBAG_ARTIFACT_READ_PATH)
   : configuredArtifactPath;
-const packagedDir = "published-packaged";
-const unpackedDir = "published-unpacked";
 function latestCurrentArtifacts(root: string): string | null {
-  const manifestDir = path.join(root, packagedDir);
-  if (!fs.existsSync(manifestDir) || !fs.statSync(manifestDir).isDirectory()) {
-    return null;
-  }
-  const manifests = fs.readdirSync(manifestDir)
-    .filter((name) => name.startsWith("current_artifacts_") && name.endsWith(".json"))
-    .sort();
-  return manifests.length > 0 ? path.join(manifestDir, manifests[manifests.length - 1]) : null;
+  const current = path.join(root, "current_artifacts.json");
+  return fs.existsSync(current) ? current : null;
 }
-const currentArtifactsPath = latestCurrentArtifacts(artifactReadRoot) ?? path.join(artifactReadRoot, packagedDir, "current_artifacts_missing.json");
+const currentArtifactsPath = latestCurrentArtifacts(artifactReadRoot) ?? path.join(artifactReadRoot, "current_artifacts_missing.json");
 const currentArtifacts = JSON.parse(fs.readFileSync(currentArtifactsPath, "utf8")) as {
-  bundles?: Array<{ filename?: string; bundle_type?: string }>;
+  artifact_roots?: { packaged?: string; unpacked?: string };
 };
-const activeCycleBundleFilename = currentArtifacts.bundles?.find((bundle) => bundle.bundle_type === "cycle")?.filename
-  ?? currentArtifacts.bundles?.[0]?.filename
-  ?? "bundle_missing.json";
-const activeFastBundleFilename = currentArtifacts.bundles?.find((bundle) => bundle.bundle_type === "fast")?.filename
-  ?? "bundle_fast_missing.json";
-const productBuildPath = path.join(
-  artifactReadRoot,
-  packagedDir,
-  activeCycleBundleFilename,
-);
-const fastBundlePath = path.join(
-  artifactReadRoot,
-  packagedDir,
-  activeFastBundleFilename,
-);
-const activeCycleBundle = JSON.parse(fs.readFileSync(productBuildPath, "utf8")) as {
-  packages?: Array<{ id?: string; family_id?: string; filename?: string }>;
+const expectedArtifactRoots = {
+  packaged: "published_packaged/",
+  unpacked: "published_unpacked/",
 };
-const activeFastBundle = fs.existsSync(fastBundlePath)
-  ? JSON.parse(fs.readFileSync(fastBundlePath, "utf8")) as {
-      packages?: Array<{ id?: string; filename?: string }>;
-    }
-  : { packages: [] };
-function resolvePublishedFilename(rawPath: string): string {
-  if (path.isAbsolute(rawPath)) {
-    throw new Error(`expected published filename, got absolute path ${rawPath}`);
-  }
-  if (rawPath.includes("/") || rawPath.includes("\\")) {
-    throw new Error(`expected flat published filename, got ${rawPath}`);
-  }
-  return path.join(artifactReadRoot, packagedDir, rawPath);
+if (
+  currentArtifacts.artifact_roots?.packaged !== expectedArtifactRoots.packaged
+  || currentArtifacts.artifact_roots?.unpacked !== expectedArtifactRoots.unpacked
+) {
+  throw new Error(`${currentArtifactsPath} has artifact_roots=${JSON.stringify(currentArtifacts.artifact_roots)}; expected ${JSON.stringify(expectedArtifactRoots)}`);
 }
-
-function resolveProductBuildOutput(nodeName: string, outputName: string): string {
-  const payload = JSON.parse(fs.readFileSync(productBuildPath, "utf8")) as Record<string, unknown> & { nodes?: Array<Record<string, unknown>> };
-  const topLevel = payload[nodeName];
-  if (topLevel && typeof topLevel === "object") {
-    const rawPath = (topLevel as Record<string, unknown>).relative_path;
-    if (typeof rawPath === "string" && rawPath.length > 0) {
-      return resolvePublishedFilename(rawPath);
-    }
-  }
-  for (const node of payload.nodes ?? []) {
-    if (node.name !== nodeName) {
-      continue;
-    }
-    const outputs = node.outputs;
-    if (!outputs || typeof outputs !== "object") {
-      break;
-    }
-    const rawPath = (outputs as Record<string, unknown>)[outputName];
-    if (typeof rawPath !== "string" || rawPath.length === 0) {
-      break;
-    }
-    return resolvePublishedFilename(rawPath);
-  }
-  throw new Error(`missing product build output ${nodeName}.${outputName}`);
-}
-
 function mountStaticTree(sourceRoot: string, options: { missingStatus?: number } = {}) {
   return (req: { headers?: Record<string, string | string[] | undefined>; url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
     const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
@@ -149,7 +83,7 @@ function mountStaticTree(sourceRoot: string, options: { missingStatus?: number }
             ? "text/html; charset=utf-8"
             : "application/octet-stream";
     const acceptEncoding = req.headers?.["accept-encoding"] ?? "";
-    const shouldCompress = extension === ".db" || extension === ".json" || sourceRoot === navKvRoot;
+    const shouldCompress = extension === ".db" || extension === ".json";
     const supportsBrotli = typeof acceptEncoding === "string" && /\bbr\b/.test(acceptEncoding);
     const supportsGzip = typeof acceptEncoding === "string" && /\bgzip\b/.test(acceptEncoding);
     res.setHeader("Content-Type", contentType);
@@ -172,178 +106,6 @@ function mountStaticTree(sourceRoot: string, options: { missingStatus?: number }
     }
     stream.pipe(res);
   };
-}
-
-function unpackedDirFromRelativeZip(filename: string): string {
-  if (!filename.endsWith(".zip")) {
-    throw new Error(`expected zip filename, got ${filename}`);
-  }
-  return path.join(artifactReadRoot, unpackedDir, filename.slice(0, -".zip".length));
-}
-
-function resolveCurrentStaticProductRoot(productId: string): string | null {
-  const product = activeCycleBundle.packages?.find((candidate) => candidate.id === productId);
-  if (!product?.filename) {
-    return null;
-  }
-  const productRoot = unpackedDirFromRelativeZip(product.filename);
-  if (!fs.existsSync(productRoot) || !fs.statSync(productRoot).isDirectory()) {
-    return null;
-  }
-  return productRoot;
-}
-
-function resolveCurrentFastProductRoot(productId: string): string | null {
-  const product = activeFastBundle.packages?.find((candidate) => candidate.id === productId);
-  if (!product?.filename) {
-    return null;
-  }
-  const productRoot = unpackedDirFromRelativeZip(product.filename);
-  if (!fs.existsSync(productRoot) || !fs.statSync(productRoot).isDirectory()) {
-    return null;
-  }
-  return productRoot;
-}
-
-function currentStaticProductIdsWithPrefix(prefix: string): string[] {
-  return (activeCycleBundle.packages ?? []).flatMap((product) =>
-    product.id?.startsWith(prefix) ? [product.id] : [],
-  );
-}
-
-function mountFastProducts() {
-  return (req: { url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
-    const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
-    const parts = requestPath.replace(/^\/+/, "").split("/");
-    const productId = parts.shift();
-    if (!productId || parts.length === 0) {
-      next();
-      return;
-    }
-    const productRoot = resolveCurrentFastProductRoot(productId);
-    if (!productRoot) {
-      res.statusCode = 404;
-      res.end("fast product unavailable");
-      return;
-    }
-    const filePath = path.resolve(productRoot, parts.join("/"));
-    if (!filePath.startsWith(productRoot)) {
-      res.statusCode = 403;
-      res.end("forbidden");
-      return;
-    }
-    return mountStaticTree(productRoot, { missingStatus: 404 })({ url: `/${parts.join("/")}` }, res, next);
-  };
-}
-
-function mountTerrainProducts() {
-  return (req: { headers?: Record<string, string | string[] | undefined>; url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
-    const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
-    const parts = requestPath.replace(/^\/+/, "").split("/");
-    const productId = parts.shift();
-    if (!productId || parts.length === 0) {
-      next();
-      return;
-    }
-    if (!productId.startsWith("terrain-")) {
-      res.statusCode = 404;
-      res.end("terrain product unavailable");
-      return;
-    }
-    const productRoot = resolveCurrentStaticProductRoot(productId);
-    if (!productRoot) {
-      res.statusCode = 404;
-      res.end("terrain product unavailable");
-      return;
-    }
-    return mountStaticTree(productRoot, { missingStatus: 404 })({ headers: req.headers, url: `/${parts.join("/")}` }, res, next);
-  };
-}
-
-function mountShadedReliefProducts() {
-  return (req: { headers?: Record<string, string | string[] | undefined>; url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
-    const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
-    const parts = requestPath.replace(/^\/+/, "").split("/");
-    const productId = parts.shift();
-    if (!productId || parts.length === 0) {
-      next();
-      return;
-    }
-    if (!productId.startsWith("shaded-relief-")) {
-      res.statusCode = 404;
-      res.end("shaded relief product unavailable");
-      return;
-    }
-    const productRoot = resolveCurrentStaticProductRoot(productId);
-    if (!productRoot) {
-      res.statusCode = 404;
-      res.end("shaded relief product unavailable");
-      return;
-    }
-    return mountStaticTree(productRoot, { missingStatus: 404 })({ headers: req.headers, url: `/${parts.join("/")}` }, res, next);
-  };
-}
-
-function mountWorldBasemapProducts() {
-  return (req: { headers?: Record<string, string | string[] | undefined>; url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
-    const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
-    const parts = requestPath.replace(/^\/+/, "").split("/");
-    const productId = parts.shift();
-    if (productId !== "world-basemap" || parts.length === 0) {
-      res.statusCode = 404;
-      res.end("world basemap product unavailable");
-      return;
-    }
-    const stagedRoot = path.join(worldBasemapProductRoot, productId);
-    if (fs.existsSync(stagedRoot) && fs.statSync(stagedRoot).isDirectory()) {
-      return mountStaticTree(stagedRoot, { missingStatus: 404 })({ headers: req.headers, url: `/${parts.join("/")}` }, res, next);
-    }
-    const productRoot = resolveCurrentStaticProductRoot(productId);
-    if (!productRoot) {
-      res.statusCode = 404;
-      res.end("world basemap product unavailable");
-      return;
-    }
-    return mountStaticTree(productRoot, { missingStatus: 404 })({ headers: req.headers, url: `/${parts.join("/")}` }, res, next);
-  };
-}
-
-function ensureLinkedFile(sourcePath: string, targetPath: string) {
-  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-  fs.rmSync(targetPath, { force: true, recursive: true });
-  try {
-    fs.linkSync(sourcePath, targetPath);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "EXDEV") {
-      fs.copyFileSync(sourcePath, targetPath);
-      return;
-    }
-    throw error;
-  }
-}
-
-function ensureLinkedTree(sourceRoot: string, targetRoot: string) {
-  fs.rmSync(targetRoot, { recursive: true, force: true });
-  fs.mkdirSync(targetRoot, { recursive: true });
-  for (const entry of fs.readdirSync(sourceRoot, { withFileTypes: true })) {
-    const sourcePath = path.join(sourceRoot, entry.name);
-    const targetPath = path.join(targetRoot, entry.name);
-    const stats = fs.lstatSync(sourcePath);
-    if (stats.isSymbolicLink()) {
-      const linkTarget = fs.readlinkSync(sourcePath);
-      fs.symlinkSync(linkTarget, targetPath);
-      continue;
-    }
-    if (stats.isDirectory()) {
-      ensureLinkedTree(sourcePath, targetPath);
-      continue;
-    }
-    if (stats.isFile()) {
-      ensureLinkedFile(sourcePath, targetPath);
-      continue;
-    }
-  }
 }
 
 function aerobagStaticPlugin(): Plugin {
@@ -386,19 +148,9 @@ function aerobagStaticPlugin(): Plugin {
       res.statusCode = 204;
       res.end();
     });
-    server.middlewares.use("/sectional-packages", mountStaticTree(sectionalRoot));
-    server.middlewares.use("/plates", mountStaticTree(plateRoot));
-    server.middlewares.use("/afd", mountStaticTree(csupRoot));
-    server.middlewares.use("/thumbnails", mountStaticTree(thumbnailRoot));
-    server.middlewares.use("/nav-db", mountStaticTree(navDbRoot));
-    server.middlewares.use("/nav-kv", mountStaticTree(navKvRoot, { missingStatus: 404 }));
-    server.middlewares.use("/fast-products", mountFastProducts());
-    server.middlewares.use("/terrain-products", mountTerrainProducts());
-    server.middlewares.use("/shaded-relief-products", mountShadedReliefProducts());
-    server.middlewares.use("/world-basemap-products", mountWorldBasemapProducts());
+    server.middlewares.use("/packages", mountStaticTree(artifactReadRoot, { missingStatus: 404 }));
     server.middlewares.use("/icons", mountStaticTree(iconsRoot));
     server.middlewares.use("/adsb-traces", mountStaticTree(adsbTraceRoot));
-    server.middlewares.use("/files", mountStaticTree(artifactReadRoot, { missingStatus: 404 }));
   }
 
   return {
@@ -409,14 +161,9 @@ function aerobagStaticPlugin(): Plugin {
     configurePreviewServer(server) {
       installMiddlewares(server);
     },
-    // Note: vite previously linked the artifact trees (sectional-packages,
-    // plates, afd, …, shaded-relief-products, build-status.html) into
-    // dist/ via a writeBundle hook. That was a dev-box convenience — vite
-    // "helped out" so a single dist/ tree could be served. In production,
-    // nginx is the static server and aliases /plates/, /afd/, … directly
-    // into web/generated-static/. The writeBundle hook would (a) be
-    // redundant and (b) race with concurrent stage_dev_assets.py
-    // invocations. So it's gone.
+    // Product artifacts are exposed only as the publication contract root:
+    // /packages -> artifact root. Vite should not synthesize legacy product
+    // routes or copy staged artifacts into dist.
   };
 }
 
@@ -442,10 +189,7 @@ export default defineConfig({
         sharedRoot,
         sharedFixturesRoot,
         generatedRoot,
-        staticRoot,
         artifactReadRoot,
-        path.join(artifactReadRoot, unpackedDir),
-        fastProductRoot,
         ...(fs.existsSync(adsbTraceRoot) ? [adsbTraceRoot] : []),
       ],
     },

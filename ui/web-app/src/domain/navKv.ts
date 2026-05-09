@@ -1,5 +1,6 @@
 import currentArtifactsJson from "@current-artifacts";
 import { debugLog, debugTiming } from "./debugLog";
+import { navKvResourceUrl, resolveCoreResourceUrl } from "./packageContract";
 
 const currentArtifacts = currentArtifactsJson as {
   bundles?: Array<{ checksum_sha256?: string; filename?: string }>;
@@ -41,7 +42,8 @@ export class NavKvStore {
 
   static async open(): Promise<NavKvStore | null> {
     const wasm = await debugTiming("nav_kv.wasm.init", () => ensureWasmReady());
-    const rootResponse = await debugTiming("nav_kv.root.fetch", () => fetch(`/nav-kv/root?v=${navKvCacheKey}`), {
+    const rootUrl = await navKvResourceUrl("root");
+    const rootResponse = await debugTiming("nav_kv.root.fetch", () => fetch(withNavKvCacheKey(rootUrl)), {
       cache_key: navKvCacheKey,
     });
     if (!rootResponse.ok) {
@@ -99,9 +101,10 @@ export class NavKvStore {
     if (!ingestSessionResource) {
       throw new Error(`core requested unsupported resource outside a session operation: ${resource.id}`);
     }
-    const response = await debugTiming("core.resource.fetch", () => fetch(withNavKvCacheKey(resource.address)), {
+    const resolvedAddress = await resolveCoreResourceUrl(resource.address);
+    const response = await debugTiming("core.resource.fetch", () => fetch(withNavKvCacheKey(resolvedAddress)), {
       id: resource.id,
-      address: resource.address,
+      address: resolvedAddress,
     });
     if (!response.ok) {
       throw new Error(`failed to fetch core resource ${resource.id} at ${resource.address}: ${response.status}`);
@@ -119,15 +122,17 @@ export class NavKvStore {
     if (cached) {
       return cached;
     }
-    const fetched = debugTiming("nav_kv.page.fetch", () => fetch(withNavKvCacheKey(resource.address)), {
-      page: pageIndex,
-    }).then(async (response) => {
-      if (!response.ok) {
-        throw new Error(`failed to fetch nav_kv page ${pageIndex}: ${response.status}`);
-      }
-      const bytes = new Uint8Array(await debugTiming("nav_kv.page.array_buffer", () => response.arrayBuffer(), { page: pageIndex }));
-      await this.wasm.nav_kv_insert_resource(this.handle, resource.id, bytes);
-    });
+    const fetched = navKvResourceUrl(`values/${pageIndex.toString().padStart(4, "0")}`)
+      .then((address) => debugTiming("nav_kv.page.fetch", () => fetch(withNavKvCacheKey(address)), {
+        page: pageIndex,
+      }))
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`failed to fetch nav_kv page ${pageIndex}: ${response.status}`);
+        }
+        const bytes = new Uint8Array(await debugTiming("nav_kv.page.array_buffer", () => response.arrayBuffer(), { page: pageIndex }));
+        await this.wasm.nav_kv_insert_resource(this.handle, resource.id, bytes);
+      });
     this.inFlightPageFetches.set(pageIndex, fetched);
     return fetched;
   }
@@ -141,7 +146,7 @@ type CoreResourceRequest = {
 };
 
 function withNavKvCacheKey(address: string): string {
-  if (!address.startsWith("/nav-kv/")) {
+  if (!address.includes("/nav_db_") && !address.startsWith("/nav-kv/")) {
     return address;
   }
   const separator = address.includes("?") ? "&" : "?";

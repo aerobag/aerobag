@@ -66,12 +66,9 @@ val webPort = System.getenv("WEB_PORT")
     ?: readInstanceConfigValue("WEB_PORT")
     ?: "8080"
 val androidDevServerBaseUrl = "http://10.0.2.2:$webPort"
-val packageSourcePort = System.getenv("PACKAGE_SOURCE_PORT")
-    ?: readInstanceConfigValue("PACKAGE_SOURCE_PORT")
-    ?: "8092"
 val androidPackageSourceBaseUrl = System.getenv("ANDROID_PACKAGE_SOURCE_BASE_URL")
     ?: readInstanceConfigValue("ANDROID_PACKAGE_SOURCE_BASE_URL")
-    ?: "http://10.0.2.2:$packageSourcePort"
+    ?: "$androidDevServerBaseUrl/packages/"
 val artifactReadPathConfigFile = repoRoot.resolve(".aerobag-artifact-read-path")
 val configuredArtifactRoot = artifactReadPathConfigFile.readText().trim()
 val defaultArtifactRoot =

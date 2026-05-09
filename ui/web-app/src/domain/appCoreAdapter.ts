@@ -422,7 +422,6 @@ export type RasterTileSource = {
   package_name?: string | null;
   storage_kind: string;
   relative_path: string;
-  package_member_path: string;
   url: string;
 };
 

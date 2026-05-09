@@ -344,7 +344,7 @@ private fun WireRasterTileSource.toRenderTileSource(): RenderTileSource? {
     }
     val path = when (storageKind) {
         TileStorageKind.SectionalPackage,
-        TileStorageKind.StaticProduct -> package_member_path ?: return null
+        TileStorageKind.StaticProduct -> installedPackageMemberPath(package_name ?: return null, url ?: return null) ?: return null
         TileStorageKind.AssetTree -> return null
     }
     return RenderTileSource(
@@ -353,6 +353,12 @@ private fun WireRasterTileSource.toRenderTileSource(): RenderTileSource? {
         storageKind = storageKind,
         path = path,
     )
+}
+
+private fun installedPackageMemberPath(packageName: String, url: String): String? {
+    val normalized = url.trimStart('/')
+    val prefix = "$packageName/"
+    return normalized.removePrefix(prefix).takeIf { it != normalized && it.isNotBlank() }
 }
 
 private fun String.toMapChartFamily(): MapChartFamily? = when (this) {

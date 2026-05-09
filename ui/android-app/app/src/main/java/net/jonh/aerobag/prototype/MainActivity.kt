@@ -389,7 +389,7 @@ internal data class WireRasterTileSource(
     val package_name: String? = null,
     val storage_kind: String? = null,
     val relative_path: String? = null,
-    val package_member_path: String? = null,
+    val url: String? = null,
 )
 
 internal data class LatLon(val lat: Double, val lon: Double)

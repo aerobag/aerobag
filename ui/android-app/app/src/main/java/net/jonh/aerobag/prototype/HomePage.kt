@@ -397,7 +397,7 @@ internal fun HomePage(
         val installedScanElapsedMs = SystemClock.elapsedRealtime() - startMs
         val input = OfflinePackagesControllerInputWire(
             packageSourceBaseUrl = packageSourceBaseUrl,
-            discoveryFilenames = bootstrap.packageManagementDiscoveryFilenames,
+            discoveryFilenames = emptyList(),
             regionIds = regionIds,
             productIds = productIds,
             nowEpochMs = bootstrap.packageManagementNowEpochMsOverride ?: System.currentTimeMillis(),
@@ -421,7 +421,6 @@ internal fun HomePage(
                     withContext(Dispatchers.IO) {
                         refreshOfflinePackageLibrary(
                             packageSourceBaseUrl = command.packageSourceBaseUrl,
-                            discoveryFilenames = command.discoveryFilenames,
                             activeConnections = activePackageConnections,
                         )
                     }
@@ -758,4 +757,3 @@ internal fun HomePage(
         }
     }
 }
-

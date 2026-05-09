@@ -23,7 +23,6 @@ import kotlinx.serialization.json.jsonPrimitive
 
 data class BootstrapFixture(
     val packageManagementNowEpochMsOverride: Long?,
-    val packageManagementDiscoveryFilenames: List<String>,
     val samplePlan: FlightPlan,
 )
 
@@ -60,7 +59,6 @@ private data class WireDevBootstrap(
     val selected_airport_id: String? = null,
     val selected_chart_id: String? = null,
     val package_management_now_utc: String? = null,
-    val package_management_discovery_filenames: List<String> = emptyList(),
 )
 
 object SampleData {
@@ -83,7 +81,6 @@ object SampleData {
             packageManagementNowEpochMsOverride = bootstrap.package_management_now_utc?.let {
                 Instant.parse(it).toEpochMilli()
             },
-            packageManagementDiscoveryFilenames = bootstrap.package_management_discovery_filenames,
             samplePlan = bootstrap.flight_plan.toUiFlightPlan(),
         )
     }

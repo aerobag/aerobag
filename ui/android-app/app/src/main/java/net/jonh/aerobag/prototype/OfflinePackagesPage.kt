@@ -1340,13 +1340,11 @@ internal class ActivePackageConnections {
 
 internal suspend fun refreshOfflinePackageLibrary(
     packageSourceBaseUrl: String,
-    discoveryFilenames: List<String>,
     activeConnections: ActivePackageConnections,
 ): OfflinePackagesControllerEventWire.LibraryRefreshSucceeded {
     val publicationRootUrl = resolvePublicationRootUrl(packageSourceBaseUrl)
     val discoveryUrls = buildList {
         add(resolvePackageSourceUrl(CurrentArtifactsDiscoveryFilename, publicationRootUrl))
-        addAll(discoveryFilenames.map { filename -> resolvePackageSourceUrl(filename, publicationRootUrl) })
     }.distinct()
     val discoveryJsons = discoveryUrls.map { discoveryUrl ->
         currentCoroutineContext().ensureActive()

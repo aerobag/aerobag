@@ -122,7 +122,7 @@ export class NavKvStore {
     if (cached) {
       return cached;
     }
-    const fetched = navKvResourceUrl(`values/${pageIndex.toString().padStart(4, "0")}`)
+    const fetched = navKvResourceUrl(`values_${pageIndex.toString().padStart(4, "0")}`)
       .then((address) => debugTiming("nav_kv.page.fetch", () => fetch(withNavKvCacheKey(address)), {
         page: pageIndex,
       }))

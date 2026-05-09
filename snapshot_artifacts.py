@@ -5,115 +5,184 @@ import os
 import pathlib
 import shutil
 import time
+from dataclasses import dataclass, field
 
 
 DEST = pathlib.Path("/root/aerobag-artifacts-snapshot")
 BACKUP_DEST = pathlib.Path("/root/aerobag-artifacts-snapshot.bak")
 SOURCE_ROOT = pathlib.Path("/root/aerobag-artifacts")
 
-
-def timed_copytree(src: pathlib.Path, dst: pathlib.Path) -> None:
-    start = time.monotonic()
-    shutil.copytree(src, dst, copy_function=os.link)
-    elapsed = time.monotonic() - start
-    print(f"copied {src} -> {dst} in {elapsed:.3f}s")
+PACKAGED_ROOT_NAME = "published_packaged"
+UNPACKED_ROOT_NAME = "published_unpacked"
 
 
-def load_current_artifacts(packaged_root: pathlib.Path) -> tuple[pathlib.Path, bytes, dict]:
-    current_artifacts = packaged_root / "current_artifacts.json"
-    if not current_artifacts.is_file():
-        raise FileNotFoundError(f"missing {current_artifacts}")
-    raw = current_artifacts.read_bytes()
-    return current_artifacts, raw, json.loads(raw)
+@dataclass
+class SnapshotPlan:
+    root_files: set[pathlib.Path] = field(default_factory=set)
+    packaged_files: set[pathlib.Path] = field(default_factory=set)
+    unpacked_files: set[pathlib.Path] = field(default_factory=set)
+    unpacked_dirs: set[pathlib.Path] = field(default_factory=set)
 
-def discovery_manifests(packaged_root: pathlib.Path) -> list[pathlib.Path]:
-    manifests = []
-    latest = packaged_root / "current_artifacts.json"
-    if latest.is_file():
-        manifests.append(latest)
-    manifests.extend(sorted(packaged_root.glob("current_artifacts_*T*.json")))
-    deduped = []
+
+def load_json(path: pathlib.Path) -> dict:
+    return json.loads(path.read_text())
+
+
+def discovery_manifest_candidates(source_root: pathlib.Path) -> list[pathlib.Path]:
+    candidates = [source_root / "current_artifacts.json"]
+    candidates.extend(sorted(source_root.glob("current_artifacts_*T*.json")))
     seen = set()
-    for manifest in manifests:
-        if manifest not in seen:
-            seen.add(manifest)
-            deduped.append(manifest)
+    deduped = []
+    for candidate in candidates:
+        if candidate in seen or not candidate.is_file():
+            continue
+        seen.add(candidate)
+        deduped.append(candidate)
     return deduped
 
 
-def collect_packed_artifacts(source_root: pathlib.Path) -> tuple[pathlib.Path, bytes, list[pathlib.Path], set[pathlib.Path]]:
-    packaged_root = source_root / "published-packaged"
-    current_artifacts_path, current_artifacts_raw, current = load_current_artifacts(packaged_root)
-    files_to_copy: set[pathlib.Path] = set()
-    discovery_paths = discovery_manifests(packaged_root)
+def zip_stem(filename: str) -> str:
+    if not filename.endswith(".zip"):
+        raise ValueError(f"expected zip filename: {filename}")
+    return filename[:-4]
 
-    def add_required_packed(filename: str, label: str) -> None:
-        artifact_path = packaged_root / filename
-        if not artifact_path.is_file():
-            raise FileNotFoundError(f"current artifacts references missing {label}: {artifact_path}")
-        files_to_copy.add(artifact_path)
 
-    def add_required_bundle_artifact(artifact: dict, label: str) -> None:
-        relative_path = artifact["relative_path"]
-        artifact_path = packaged_root / relative_path
-        if not artifact_path.is_file():
-            raise FileNotFoundError(f"bundle references missing {label}: {artifact_path}")
-        files_to_copy.add(artifact_path)
+def validate_roots(current: dict, discovery_path: pathlib.Path) -> None:
+    roots = current.get("artifact_roots")
+    expected = {
+        "packaged": f"{PACKAGED_ROOT_NAME}/",
+        "unpacked": f"{UNPACKED_ROOT_NAME}/",
+    }
+    if roots != expected:
+        raise ValueError(
+            f"{discovery_path} has artifact_roots={roots!r}; expected {expected!r}"
+        )
 
-    for discovery_path in discovery_paths:
-        current = json.loads(discovery_path.read_bytes())
-        for bundle_entry in current["bundles"]:
-            bundle_path = packaged_root / bundle_entry["filename"]
-            if not bundle_path.is_file():
-                raise FileNotFoundError(f"current artifacts references missing bundle: {bundle_path}")
-            files_to_copy.add(bundle_path)
 
-            bundle = json.loads(bundle_path.read_text())
-            for artifact in bundle.get("ancillary", []):
-                add_required_bundle_artifact(artifact, f"ancillary artifact {artifact.get('filename', '(unknown)')}")
-            for package in bundle.get("packages", []):
-                add_required_bundle_artifact(package, f"package {package.get('id', '(unknown)')}")
+def add_packaged_file(plan: SnapshotPlan, source_root: pathlib.Path, relative_path: str) -> None:
+    path = source_root / PACKAGED_ROOT_NAME / relative_path
+    if not path.is_file():
+        raise FileNotFoundError(f"missing packaged artifact {path}")
+    plan.packaged_files.add(path)
 
+    unpacked_root = source_root / UNPACKED_ROOT_NAME
+    if relative_path.endswith(".zip"):
+        unpacked_path = unpacked_root / zip_stem(relative_path)
+        if not unpacked_path.is_dir():
+            raise FileNotFoundError(f"missing unpacked package dir {unpacked_path}")
+        plan.unpacked_dirs.add(unpacked_path)
+    else:
+        unpacked_path = unpacked_root / relative_path
+        if not unpacked_path.is_file():
+            raise FileNotFoundError(f"missing unpacked artifact {unpacked_path}")
+        plan.unpacked_files.add(unpacked_path)
+
+
+def add_bundle_contents(
+    plan: SnapshotPlan,
+    source_root: pathlib.Path,
+    bundle_filename: str,
+) -> None:
+    add_packaged_file(plan, source_root, bundle_filename)
+    bundle = load_json(source_root / PACKAGED_ROOT_NAME / bundle_filename)
+
+    for artifact in bundle.get("packages", []):
+        add_packaged_file(plan, source_root, artifact["relative_path"])
+    for artifact in bundle.get("ancillary", []):
+        add_packaged_file(plan, source_root, artifact["relative_path"])
+
+
+def try_add_discovery(
+    plan: SnapshotPlan,
+    source_root: pathlib.Path,
+    discovery_path: pathlib.Path,
+    *,
+    required: bool,
+) -> bool:
+    try:
+        current = load_json(discovery_path)
+        validate_roots(current, discovery_path)
+        for bundle in current.get("bundles", []):
+            add_bundle_contents(plan, source_root, bundle["filename"])
         diagnostics = current.get("diagnostics")
         if isinstance(diagnostics, dict):
             filename = diagnostics.get("filename")
             if isinstance(filename, str) and filename:
-                add_required_packed(filename, "diagnostics artifact")
+                add_packaged_file(plan, source_root, filename)
+    except Exception as error:
+        if required:
+            raise
+        print(
+            f"WARNING skipping stale historical discovery {discovery_path.name}: {error}"
+        )
+        return False
 
-    return current_artifacts_path, current_artifacts_raw, discovery_paths, files_to_copy
+    plan.root_files.add(discovery_path)
+    return True
 
 
-def link_packed_artifacts(source_root: pathlib.Path, dest_root: pathlib.Path) -> None:
-    current_artifacts_path, current_artifacts_raw, discovery_paths, source_paths = collect_packed_artifacts(source_root)
-    current_dest_path = dest_root / current_artifacts_path.relative_to(source_root)
-    current_dest_path.parent.mkdir(parents=True, exist_ok=True)
-    current_dest_path.write_bytes(current_artifacts_raw)
-    for discovery_path in discovery_paths:
-        dest_path = dest_root / discovery_path.relative_to(source_root)
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        if discovery_path == current_artifacts_path:
-            continue
-        dest_path.write_bytes(discovery_path.read_bytes())
+def build_snapshot_plan(source_root: pathlib.Path) -> SnapshotPlan:
+    plan = SnapshotPlan()
+    discoveries = discovery_manifest_candidates(source_root)
+    if not discoveries:
+        raise FileNotFoundError(f"missing {source_root / 'current_artifacts.json'}")
 
-    for source_path in sorted(source_paths):
-        relative = source_path.relative_to(source_root)
-        dest_path = dest_root / relative
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        if dest_path.exists():
-            continue
-        os.link(source_path, dest_path)
+    for discovery_path in discoveries:
+        try_add_discovery(
+            plan,
+            source_root,
+            discovery_path,
+            required=discovery_path.name == "current_artifacts.json",
+        )
+    return plan
+
+
+def hardlink_file(src: pathlib.Path, dst: pathlib.Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    os.link(src, dst)
+
+
+def hardlink_tree(src: pathlib.Path, dst: pathlib.Path) -> None:
+    for root, dirs, files in os.walk(src):
+        root_path = pathlib.Path(root)
+        relative_root = root_path.relative_to(src)
+        dest_root = dst / relative_root
+        dest_root.mkdir(parents=True, exist_ok=True)
+        dirs.sort()
+        for filename in sorted(files):
+            hardlink_file(root_path / filename, dest_root / filename)
+
+
+def materialize_snapshot(source_root: pathlib.Path, dest_root: pathlib.Path, plan: SnapshotPlan) -> None:
+    start = time.monotonic()
+    for root_file in sorted(plan.root_files):
+        hardlink_file(root_file, dest_root / root_file.relative_to(source_root))
+    for packaged_file in sorted(plan.packaged_files):
+        hardlink_file(packaged_file, dest_root / packaged_file.relative_to(source_root))
+    for unpacked_file in sorted(plan.unpacked_files):
+        hardlink_file(unpacked_file, dest_root / unpacked_file.relative_to(source_root))
+    for unpacked_dir in sorted(plan.unpacked_dirs):
+        hardlink_tree(unpacked_dir, dest_root / unpacked_dir.relative_to(source_root))
+    elapsed = time.monotonic() - start
+    print(
+        "linked "
+        f"{len(plan.root_files)} root manifests, "
+        f"{len(plan.packaged_files)} packaged files, "
+        f"{len(plan.unpacked_files)} unpacked files, "
+        f"{len(plan.unpacked_dirs)} unpacked package dirs "
+        f"in {elapsed:.3f}s"
+    )
 
 
 def main() -> int:
+    plan = build_snapshot_plan(SOURCE_ROOT)
     if BACKUP_DEST.exists():
         shutil.rmtree(BACKUP_DEST)
     if DEST.exists():
         print(f"Backing up {DEST} -> {BACKUP_DEST}")
         shutil.move(DEST, BACKUP_DEST)
-    print(f"Snapshotting {SOURCE_ROOT} -> {DEST}")
-    (DEST / "published-packaged").mkdir(parents=True, exist_ok=True)
-    link_packed_artifacts(SOURCE_ROOT, DEST)
-    timed_copytree(SOURCE_ROOT / "published-unpacked", DEST / "published-unpacked")
+    print(f"Snapshotting contract from {SOURCE_ROOT} -> {DEST}")
+    materialize_snapshot(SOURCE_ROOT, DEST, plan)
     return 0
 
 

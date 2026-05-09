@@ -202,10 +202,15 @@ data class UiMapLayerState(
     val offlineRegions: UiMapLayerToggleState,
 )
 
-data class DerivedMapSelectorState(
+data class RasterMapUiState(
     val selectedMapId: String,
-    val selectedMap: MapViewOption?,
-    val displayedMaps: List<MapViewOption>,
+    val selectedMapLabel: String,
+    val selectedFamilyId: MapChartFamily,
+    val selectedFamilyLabel: String,
+    val selectedFamilyLauncherLabel: String,
+    val minZoom: Double,
+    val maxZoom: Double,
+    val initialViewport: MapViewportSeed,
     val familyOptions: List<MapFamilyOption>,
 )
 
@@ -479,28 +484,6 @@ class NativeAppCoreAdapter(
             },
         )
         return json.decodeFromJsonElement<List<WireWaypointIdentifierSuggestion>>(result).map { it.toUi() }
-    }
-
-    fun deriveMapSelectorState(selectedMapId: String?): DerivedMapSelectorState {
-        val result = runHadOperationElement(
-            buildJsonObject {
-                put("kind", "map_selector_state")
-                put("selected_map_id", selectedMapId?.let { json.encodeToJsonElement(it) } ?: JsonNull)
-                put("selected_family_id", JsonNull)
-            },
-        )
-        return json.decodeFromJsonElement<WireMapSelectorState>(result).toUi()
-    }
-
-    fun deriveMapSelectorStateForFamily(familyId: MapChartFamily): DerivedMapSelectorState {
-        val result = runHadOperationElement(
-            buildJsonObject {
-                put("kind", "map_selector_state")
-                put("selected_map_id", JsonNull)
-                put("selected_family_id", json.encodeToJsonElement(familyId.toWireName()))
-            },
-        )
-        return json.decodeFromJsonElement<WireMapSelectorState>(result).toUi()
     }
 
     fun projectFlightPlanRoute(plan: FlightPlan): List<FlightPlanRouteSegment> {
@@ -1051,6 +1034,13 @@ class NativeUiSession internal constructor(
                 bridge.selectMapFamilyInSessionJson(handle, json.encodeToString(familyId.toWireName()))
             },
         ).toUi()
+        return snapshot
+    }
+
+    fun selectRasterMap(selectedMapId: String): UiSessionSnapshot {
+        snapshot = decodeSnapshot(
+            bridge.selectRasterMapInSessionJson(handle, json.encodeToString(selectedMapId)),
+        )
         return snapshot
     }
 
@@ -1732,13 +1722,19 @@ private data class WireUiSessionSnapshot(
     val chart_page_state: WireUiChartPageState,
     val map_layer_state: WireUiMapLayerState = WireUiMapLayerState(),
     val debug_state: WireUiDebugState = WireUiDebugState(),
+    val raster_map: WireRasterMapUiState? = null,
 )
 
 @kotlinx.serialization.Serializable
-private data class WireMapSelectorState(
+private data class WireRasterMapUiState(
     val selected_map_id: String = "",
-    val selected_map: WireMapViewOption? = null,
-    val displayed_maps: List<WireMapViewOption> = emptyList(),
+    val selected_map_label: String = "",
+    val selected_family_id: WireChartFamilyId,
+    val selected_family_label: String = "",
+    val selected_family_launcher_label: String = "",
+    val min_zoom: Double = 0.0,
+    val max_zoom: Double = 0.0,
+    val initial_viewport: WireMapViewportSeed,
     val family_options: List<WireMapFamilyOption> = emptyList(),
 )
 
@@ -1806,6 +1802,7 @@ data class UiSessionSnapshot(
     val chartPageState: UiChartPageState,
     val mapLayerState: UiMapLayerState,
     val debugState: UiDebugState,
+    val rasterMap: RasterMapUiState?,
 )
 
 data class UiDebugState(
@@ -1822,10 +1819,19 @@ data class UiChartPageState(
     val selectedChartId: String,
 )
 
-private fun WireMapSelectorState.toUi() = DerivedMapSelectorState(
+private fun WireRasterMapUiState.toUi() = RasterMapUiState(
     selectedMapId = selected_map_id,
-    selectedMap = selected_map?.toUi(),
-    displayedMaps = displayed_maps.map { it.toUi() },
+    selectedMapLabel = selected_map_label,
+    selectedFamilyId = selected_family_id.toUi(),
+    selectedFamilyLabel = selected_family_label,
+    selectedFamilyLauncherLabel = selected_family_launcher_label,
+    minZoom = min_zoom,
+    maxZoom = max_zoom,
+    initialViewport = MapViewportSeed(
+        lat = initial_viewport.lat,
+        lon = initial_viewport.lon,
+        zoom = initial_viewport.zoom,
+    ),
     familyOptions = family_options.map { it.toUi() },
 )
 
@@ -1836,49 +1842,6 @@ private fun WireMapFamilyOption.toUi() = MapFamilyOption(
     enabled = enabled,
     active = active,
 )
-
-private fun WireMapViewOption.toUi() = MapViewOption(
-    id = id,
-    label = label,
-    regionId = region_id.toCode(),
-    mapView = map_view.toUi(),
-)
-
-private fun WireMapView.toUi() = MapView(
-    chartFamily = chart_family.toUi(),
-    chartName = chart_name,
-    chartIndex = chart_index,
-    tileRoot = tile_root,
-    tileUrlRoot = tile_url_root,
-    tileSize = tile_size,
-    minZoom = min_zoom,
-    maxZoom = max_zoom,
-    maxSourceZoom = max_source_zoom,
-    maxDisplayZoom = max_display_zoom,
-    storageKind = storage_kind.toUi(),
-    packageName = package_name,
-    fullCoverageZoom = full_coverage_zoom,
-    initialViewport = MapViewportSeed(
-        lat = initial_viewport.lat,
-        lon = initial_viewport.lon,
-        zoom = initial_viewport.zoom,
-    ),
-    levels = levels.map { it.toUi() },
-)
-
-private fun WireTileLevelAvailability.toUi() = TileLevelAvailability(
-    zoom = zoom,
-    xMin = x_min,
-    xMax = x_max,
-    yTmsMin = y_tms_min,
-    yTmsMax = y_tms_max,
-)
-
-private fun WireTileStorageKind.toUi() = when (this) {
-    WireTileStorageKind.AssetTree -> TileStorageKind.AssetTree
-    WireTileStorageKind.SectionalPackage -> TileStorageKind.SectionalPackage
-    WireTileStorageKind.StaticProduct -> TileStorageKind.StaticProduct
-}
 
 private fun WireChartFamilyId.toUi() = when (this) {
     WireChartFamilyId.Sec -> MapChartFamily.Sec
@@ -1896,19 +1859,6 @@ private fun MapChartFamily.toWireName(): String = when (this) {
     MapChartFamily.EnrH -> "enr-h"
     MapChartFamily.ShadedRelief -> "shaded-relief"
     MapChartFamily.WorldBasemap -> "world-basemap"
-}
-
-private fun WireRegionId.toCode() = when (this) {
-    WireRegionId.Nw -> "nw"
-    WireRegionId.Sw -> "sw"
-    WireRegionId.Nc -> "nc"
-    WireRegionId.Sc -> "sc"
-    WireRegionId.Ne -> "ne"
-    WireRegionId.Se -> "se"
-    WireRegionId.Ec -> "ec"
-    WireRegionId.Ak -> "ak"
-    WireRegionId.Pac -> "pac"
-    WireRegionId.World -> "world"
 }
 
 private fun WireDerivedChartPageState.toUi() = DerivedChartPageState(
@@ -1955,6 +1905,7 @@ private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     chartPageState = chart_page_state.toUi(),
     mapLayerState = map_layer_state.toUi(),
     debugState = debug_state.toUi(),
+    rasterMap = raster_map?.toUi(),
 )
 
 internal fun WireDerivedChartAirport.toUi() = ChartAirport(

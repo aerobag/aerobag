@@ -492,39 +492,6 @@ data class MapViewportSeed(
     val zoom: Double,
 )
 
-data class TileLevelAvailability(
-    val zoom: Int,
-    val xMin: Int,
-    val xMax: Int,
-    val yTmsMin: Int,
-    val yTmsMax: Int,
-)
-
-data class MapView(
-    val chartFamily: MapChartFamily,
-    val chartName: String,
-    val chartIndex: Int,
-    val tileRoot: String,
-    val tileUrlRoot: String,
-    val tileSize: Int,
-    val minZoom: Double,
-    val maxZoom: Double,
-    val maxSourceZoom: Int?,
-    val maxDisplayZoom: Double?,
-    val storageKind: TileStorageKind,
-    val packageName: String?,
-    val fullCoverageZoom: Double?,
-    val initialViewport: MapViewportSeed,
-    val levels: List<TileLevelAvailability>,
-)
-
-data class MapViewOption(
-    val id: String,
-    val label: String,
-    val regionId: String,
-    val mapView: MapView,
-)
-
 data class ChartAsset(
     val id: String,
     val airportId: String,

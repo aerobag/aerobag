@@ -41,11 +41,6 @@ pub struct CoreResourceRequest {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HadOperation {
     VectorManifest,
-    ChartCatalog,
-    MapSelectorState {
-        selected_map_id: Option<String>,
-        selected_family_id: Option<String>,
-    },
     ChartPageState {
         plan: FlightPlan,
         recent_airport_ids: Vec<String>,
@@ -201,15 +196,6 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
         HadOperation::VectorManifest => {
             read_required::<Value>(store, NavKvQuery::VectorManifest, "vector manifest")?
         }
-        HadOperation::ChartCatalog => serde_json::to_value(chart_catalog(store)?)?,
-        HadOperation::MapSelectorState {
-            selected_map_id,
-            selected_family_id,
-        } => serde_json::to_value(map_selector_state(
-            store,
-            selected_map_id.as_deref(),
-            selected_family_id.as_deref(),
-        )?)?,
         HadOperation::ChartPageState {
             plan,
             recent_airport_ids,
@@ -2605,10 +2591,10 @@ mod tests {
 
     #[test]
     fn operation_reports_page_faults_instead_of_exposing_query_keys() {
-        let (root, _pages) = fixture(&[("chart/catalog", br#"{"charts":[]}"#.as_slice())], 4);
+        let (root, _pages) = fixture(&[("vector/manifest", br#"{"layers":[]}"#.as_slice())], 4);
         let store = NavKvStore::new(root);
 
-        match run_had_operation(&store, HadOperation::ChartCatalog).unwrap() {
+        match run_had_operation(&store, HadOperation::VectorManifest).unwrap() {
             HadOperationOutcome::NeedResources { resources } => {
                 assert_eq!(resource_page_indexes(&resources), vec![0, 1, 2, 3]);
             }
@@ -2618,16 +2604,16 @@ mod tests {
 
     #[test]
     fn operation_decodes_values_after_platform_supplies_pages() {
-        let (root, pages) = fixture(&[("chart/catalog", br#"{"charts":[]}"#.as_slice())], 4);
+        let (root, pages) = fixture(&[("vector/manifest", br#"{"layers":[]}"#.as_slice())], 4);
         let mut store = NavKvStore::new(root);
         for (index, page) in pages.into_iter().enumerate() {
             store.insert_page(index as u32, page);
         }
 
         assert_eq!(
-            run_had_operation(&store, HadOperation::ChartCatalog).unwrap(),
+            run_had_operation(&store, HadOperation::VectorManifest).unwrap(),
             HadOperationOutcome::Complete {
-                result: serde_json::json!({"charts":[]})
+                result: serde_json::json!({"layers":[]})
             }
         );
     }
@@ -3362,17 +3348,7 @@ mod tests {
     #[test]
     fn generated_nav_kv_chart_catalog_lists_multiple_regions() {
         let store = load_current_nav_kv_store();
-        let catalog = match run_had_operation(&store, HadOperation::ChartCatalog)
-            .expect("load generated chart catalog")
-        {
-            HadOperationOutcome::Complete { result } => {
-                serde_json::from_value::<Vec<MapViewOptionRecord>>(result)
-                    .expect("decode generated chart catalog")
-            }
-            HadOperationOutcome::NeedResources { resources } => {
-                panic!("expected complete generated chart catalog, got missing resources: {resources:?}");
-            }
-        };
+        let catalog = chart_catalog(&store).expect("load generated chart catalog");
 
         let regions = catalog
             .iter()
@@ -3395,25 +3371,7 @@ mod tests {
     #[test]
     fn generated_nav_kv_default_map_selector_state_displays_all_tac_and_sec_regions() {
         let store = load_current_nav_kv_store();
-        let state = match run_had_operation(
-            &store,
-            HadOperation::MapSelectorState {
-                selected_map_id: None,
-                selected_family_id: None,
-            },
-        )
-        .expect("load generated map selector state")
-        {
-            HadOperationOutcome::Complete { result } => {
-                serde_json::from_value::<MapSelectorState>(result)
-                    .expect("decode generated map selector state")
-            }
-            HadOperationOutcome::NeedResources { resources } => {
-                panic!(
-                    "expected complete generated map selector state, got missing resources: {resources:?}"
-                );
-            }
-        };
+        let state = map_selector_state(&store, None, None).expect("load generated map selector state");
 
         let displayed_ids = state
             .displayed_maps
@@ -3471,25 +3429,7 @@ mod tests {
     #[test]
     fn generated_nav_kv_south_central_maps_cover_kmsy_tile() {
         let store = load_current_nav_kv_store();
-        let state = match run_had_operation(
-            &store,
-            HadOperation::MapSelectorState {
-                selected_map_id: None,
-                selected_family_id: None,
-            },
-        )
-        .expect("load generated map selector state")
-        {
-            HadOperationOutcome::Complete { result } => {
-                serde_json::from_value::<MapSelectorState>(result)
-                    .expect("decode generated map selector state")
-            }
-            HadOperationOutcome::NeedResources { resources } => {
-                panic!(
-                    "expected complete generated map selector state, got missing resources: {resources:?}"
-                );
-            }
-        };
+        let state = map_selector_state(&store, None, None).expect("load generated map selector state");
 
         fn lat_lon_to_tile_tms(lat: f64, lon: f64, zoom: f64) -> (i64, i64) {
             let world_size = 256.0f64;

@@ -224,8 +224,6 @@ import net.jonh.aerobag.prototype.domain.MapSelectionHighlight
 import net.jonh.aerobag.prototype.domain.MapSelectionItem
 import net.jonh.aerobag.prototype.domain.MapSelectionQueryResult
 import net.jonh.aerobag.prototype.domain.MapFamilyOption
-import net.jonh.aerobag.prototype.domain.MapView
-import net.jonh.aerobag.prototype.domain.MapViewOption
 import net.jonh.aerobag.prototype.domain.MapViewportState
 import net.jonh.aerobag.prototype.domain.NativeAppCoreAdapter
 import net.jonh.aerobag.prototype.domain.NativeBindings

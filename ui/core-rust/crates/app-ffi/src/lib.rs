@@ -697,6 +697,17 @@ pub fn select_map_family_in_session_json(
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
+pub fn select_raster_map_in_session_json(
+    handle: u64,
+    selected_map_id_json: &str,
+) -> Result<String, String> {
+    let selected_map_id: String =
+        serde_json::from_str(selected_map_id_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::select_raster_map_in_session(handle as u32, &selected_map_id)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn get_session_snapshot_json(handle: u64) -> Result<String, String> {
     let snapshot = app_core::get_session_snapshot(handle as u32).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
@@ -2215,6 +2226,20 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sel
     let result = (|| {
         let family_id = get_java_string(&mut env, family_id_json)?;
         select_map_family_in_session_json(handle as u64, &family_id)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_selectRasterMapInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    selected_map_id_json: JString,
+) -> jstring {
+    let result = (|| {
+        let selected_map_id = get_java_string(&mut env, selected_map_id_json)?;
+        select_raster_map_in_session_json(handle as u64, &selected_map_id)
     })();
     return_string(&mut env, result)
 }

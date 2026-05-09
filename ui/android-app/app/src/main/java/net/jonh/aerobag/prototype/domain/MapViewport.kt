@@ -66,23 +66,19 @@ data class PinchSnapshot(
     val second: ScreenPoint,
 )
 
-fun createInitialViewport(mapView: MapView): MapViewportState {
-    val center = latLonToWorld(mapView.initialViewport.lat, mapView.initialViewport.lon)
+fun createInitialViewport(seed: MapViewportSeed, minZoom: Double, maxZoom: Double): MapViewportState {
+    val center = latLonToWorld(seed.lat, seed.lon)
     return MapViewportState(
         centerWorldX = center.x,
         centerWorldY = center.y,
-        zoom = clampZoom(mapView.initialViewport.zoom, mapView),
+        zoom = clampZoom(seed.zoom, minZoom, maxZoom),
     )
 }
 
-fun preserveViewportForMap(viewport: MapViewportState, mapView: MapView): MapViewportState =
-    MapViewportState(
-        centerWorldX = viewport.centerWorldX,
-        centerWorldY = viewport.centerWorldY,
-        zoom = viewport.zoom,
-    )
+fun preserveViewportForMap(viewport: MapViewportState, minZoom: Double, maxZoom: Double): MapViewportState =
+    viewport.copy(zoom = clampZoom(viewport.zoom, minZoom, maxZoom))
 
-fun clampZoom(zoom: Double, mapView: MapView): Double = min(mapView.maxZoom, max(mapView.minZoom, zoom))
+fun clampZoom(zoom: Double, minZoom: Double, maxZoom: Double): Double = min(maxZoom, max(minZoom, zoom))
 
 fun latLonToWorld(lat: Double, lon: Double): WorldPoint {
     val clampedLat = min(MAX_LATITUDE, max(-MAX_LATITUDE, lat))
@@ -123,13 +119,14 @@ fun screenToWorld(
 
 fun zoomAroundPoint(
     viewport: MapViewportState,
-    mapView: MapView,
+    minZoom: Double,
+    maxZoom: Double,
     anchor: ScreenPoint,
     widthPx: Float,
     heightPx: Float,
     nextZoom: Double,
 ): MapViewportState {
-    val clampedZoom = clampZoom(nextZoom, mapView)
+    val clampedZoom = clampZoom(nextZoom, minZoom, maxZoom)
     val anchorWorld = screenToWorld(viewport, anchor, widthPx, heightPx)
     val nextScale = scaleForZoom(clampedZoom)
     return MapViewportState(
@@ -157,7 +154,8 @@ fun applyPinchGesture(
     snapshot: PinchSnapshot,
     currentFirst: ScreenPoint,
     currentSecond: ScreenPoint,
-    mapView: MapView,
+    minZoom: Double,
+    maxZoom: Double,
     widthPx: Float,
     heightPx: Float,
 ): MapViewportState {
@@ -170,7 +168,7 @@ fun applyPinchGesture(
         (currentSecond.y - currentFirst.y).toDouble(),
     )
     val zoomDelta = if (startDistance > 0.0) ln(currentDistance / startDistance) / ln(2.0) else 0.0
-    val nextZoom = clampZoom(snapshot.viewport.zoom + zoomDelta, mapView)
+    val nextZoom = clampZoom(snapshot.viewport.zoom + zoomDelta, minZoom, maxZoom)
     val nextScale = scaleForZoom(nextZoom)
     val centerOne = WorldPoint(
         x = snapshot.firstAnchorWorld.x - (currentFirst.x - widthPx / 2f) / nextScale,

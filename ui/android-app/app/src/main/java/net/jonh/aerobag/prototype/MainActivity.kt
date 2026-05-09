@@ -224,8 +224,6 @@ import net.jonh.aerobag.prototype.domain.MapSelectionHighlight
 import net.jonh.aerobag.prototype.domain.MapSelectionItem
 import net.jonh.aerobag.prototype.domain.MapSelectionQueryResult
 import net.jonh.aerobag.prototype.domain.MapFamilyOption
-import net.jonh.aerobag.prototype.domain.MapView
-import net.jonh.aerobag.prototype.domain.MapViewOption
 import net.jonh.aerobag.prototype.domain.MapViewportState
 import net.jonh.aerobag.prototype.domain.NativeAppCoreAdapter
 import net.jonh.aerobag.prototype.domain.NativeBindings
@@ -238,6 +236,7 @@ import net.jonh.aerobag.prototype.domain.OwnshipMode
 import net.jonh.aerobag.prototype.domain.OwnshipRenderState
 import net.jonh.aerobag.prototype.domain.OwnshipSelection
 import net.jonh.aerobag.prototype.domain.PackageZipStore
+import net.jonh.aerobag.prototype.domain.RasterMapUiState
 import net.jonh.aerobag.prototype.domain.PlaybackStatus
 import net.jonh.aerobag.prototype.domain.PlaybackUiState
 import net.jonh.aerobag.prototype.domain.ProcedureKind
@@ -363,6 +362,7 @@ internal data class PageTilePaintTiming(
     val id: Long,
     val fromPage: AppPage,
     val startedMs: Long,
+    val trigger: String,
 )
 
 @kotlinx.serialization.Serializable
@@ -1320,7 +1320,7 @@ internal fun latLonToScreenPoint(
 internal fun plateFolderColor(uiTheme: UiTheme, category: String): Color =
     uiTheme.plateFolder.labelColors[category] ?: uiTheme.plateFolder.labelColors["other"] ?: Color(0xFF52656D)
 
-internal fun createInitialSituationViewport(mapView: MapView): MapViewportState {
+internal fun createInitialSituationViewport(): MapViewportState {
     val center = latLonToWorld(VampsPosition.lat, VampsPosition.lon)
     return MapViewportState(
         centerWorldX = center.x,
@@ -2296,9 +2296,6 @@ internal fun AerobagApp() {
         )
     }
     var pageHistory by remember { mutableStateOf<List<AppViewSnapshot>>(emptyList()) }
-    val initialMapSelectorState = remember(appCore) { appCore.deriveMapSelectorState(null) }
-    var mapSelectorState by remember(appCore) { mutableStateOf(initialMapSelectorState) }
-    var selectedMapId by remember(appCore) { mutableStateOf(initialMapSelectorState.selectedMapId) }
     val uiSession = remember(appCore) {
         appCore.createUiSession(
             initialPlan,
@@ -2307,6 +2304,13 @@ internal fun AerobagApp() {
             storedSelectedChartId.ifBlank { null },
         )
     }
+    val initialRasterMapState = remember(uiSession) {
+        requireNotNull(uiSession.snapshot.rasterMap) {
+            "core session did not provide raster map state"
+        }
+    }
+    var rasterMapState by remember(uiSession) { mutableStateOf(initialRasterMapState) }
+    var selectedMapId by remember(uiSession) { mutableStateOf(initialRasterMapState.selectedMapId) }
     DisposableEffect(uiSession) {
         onDispose { uiSession.destroy() }
     }
@@ -2336,10 +2340,8 @@ internal fun AerobagApp() {
             ),
         )
     }
-    val selectedMap = remember(mapSelectorState) {
-        mapSelectorState.selectedMap ?: error("core map selector returned no selected map")
-    }
-    var mapViewport by remember { mutableStateOf(createInitialSituationViewport(selectedMap.mapView)) }
+    val selectedMap = rasterMapState
+    var mapViewport by remember { mutableStateOf(createInitialSituationViewport()) }
     var chartViewport by remember { mutableStateOf<net.jonh.aerobag.prototype.domain.ImageViewportState?>(null) }
     var chartFolderOpen by remember { mutableStateOf(false) }
     var pageTilePaintTiming by remember { mutableStateOf<PageTilePaintTiming?>(null) }
@@ -2407,15 +2409,15 @@ internal fun AerobagApp() {
     }
     val navElement = sessionPlanUiState.guidance?.navElement
 
-    LaunchedEffect(selectedMap.id) {
-        mapViewport = preserveViewportForMap(mapViewport, selectedMap.mapView)
+    LaunchedEffect(selectedMap.selectedMapId) {
+        mapViewport = preserveViewportForMap(mapViewport, selectedMap.minZoom, selectedMap.maxZoom)
     }
 
     fun currentSnapshot(): AppViewSnapshot = AppViewSnapshot(
         page = page,
         selectedMapId = selectedMapId,
         selectedMapLauncherLabel =
-            mapSelectorState.familyOptions.firstOrNull { it.active }?.launcherLabel.orEmpty(),
+            rasterMapState.selectedFamilyLauncherLabel,
         mapViewport = mapViewport,
         selectedAirportId = selectedAirportId,
         selectedChartId = selectedChartId,
@@ -2437,9 +2439,18 @@ internal fun AerobagApp() {
         pageHistory = history
         page = snapshot.page
         runCatching {
-            val nextMapSelectorState = appCore.deriveMapSelectorState(snapshot.selectedMapId.ifBlank { null })
-            mapSelectorState = nextMapSelectorState
-            selectedMapId = nextMapSelectorState.selectedMapId
+            val nextSnapshot =
+                if (snapshot.selectedMapId.isBlank()) {
+                    uiSession.refreshSnapshot()
+                } else {
+                    uiSession.selectRasterMap(snapshot.selectedMapId)
+                }
+            sessionSnapshot = nextSnapshot
+            val nextRasterMapState = requireNotNull(nextSnapshot.rasterMap) {
+                "core session returned no raster map state"
+            }
+            rasterMapState = nextRasterMapState
+            selectedMapId = nextRasterMapState.selectedMapId
         }
         mapViewport = snapshot.mapViewport
         chartViewport = snapshot.chartViewport
@@ -2457,8 +2468,9 @@ internal fun AerobagApp() {
                 id = nextPageTilePaintTimingId++,
                 fromPage = page,
                 startedMs = SystemClock.elapsedRealtime(),
+                trigger = "page-to-map",
             )
-            Log.i(TileBudgetLogTag, "page-to-map-start id=${pageTilePaintTiming?.id} from=$page")
+            Log.i(TileBudgetLogTag, "tile-paint-start id=${pageTilePaintTiming?.id} trigger=${pageTilePaintTiming?.trigger} from=$page")
         }
         pageHistory = boundedHistory(pageHistory + currentSnapshot())
         page = nextPage
@@ -2516,7 +2528,6 @@ internal fun AerobagApp() {
                         page = page,
                         pageHistory = pageHistory,
                         uptimeLabel = uptimeLabel,
-                        fixture = fixture,
                         uiSession = uiSession,
                         sessionSnapshot = sessionSnapshot,
                         uiTheme = uiTheme,
@@ -2527,7 +2538,7 @@ internal fun AerobagApp() {
                         mapFollowTargetViewport = sessionSnapshot.mapFollowTargetViewport,
                         situationRingCandidates = situationRingCandidates,
                         selectedMap = selectedMap,
-                        mapFamilyOptions = mapSelectorState.familyOptions,
+                        mapFamilyOptions = rasterMapState.familyOptions,
                         viewport = mapViewport,
                         decodedTileBitmapCache = decodedTileBitmapCache,
                         debugState = sessionSnapshot.debugState,
@@ -2548,17 +2559,33 @@ internal fun AerobagApp() {
                         },
                         onPlaybackSourcePathChange = { playbackSourcePath = it },
                         onSelectMapFamily = {
-                            val nextMapSelectorState = appCore.deriveMapSelectorStateForFamily(it)
-                            restoreSnapshot(
-                                currentSnapshot().copy(
-                                    page = AppPage.Map,
-                                    selectedMapId = nextMapSelectorState.selectedMapId,
-                                    selectedMapLauncherLabel =
-                                        nextMapSelectorState.familyOptions.firstOrNull { option -> option.active }?.launcherLabel.orEmpty(),
-                                ),
-                                boundedHistory(pageHistory + currentSnapshot()),
+                            val timingId = nextPageTilePaintTimingId++
+                            val clickStartMs = SystemClock.elapsedRealtime()
+                            pageTilePaintTiming = PageTilePaintTiming(
+                                id = timingId,
+                                fromPage = page,
+                                startedMs = SystemClock.elapsedRealtime(),
+                                trigger = "map-family:${chartFamilyId(it)}",
                             )
-                            sessionSnapshot = uiSession.selectMapFamily(it)
+                            Log.i(TileBudgetLogTag, "map-family-click id=$timingId family=${chartFamilyId(it)}")
+                            pageHistory = boundedHistory(pageHistory + currentSnapshot())
+                            page = AppPage.Map
+                            val selectStartMs = SystemClock.elapsedRealtime()
+                            val nextSnapshot = uiSession.selectMapFamily(it)
+                            Log.i(
+                                TileBudgetLogTag,
+                                "map-family-select-core id=$timingId family=${chartFamilyId(it)} elapsedMs=${SystemClock.elapsedRealtime() - selectStartMs}",
+                            )
+                            val nextRasterMapState = requireNotNull(nextSnapshot.rasterMap) {
+                                "core selectMapFamily returned no raster map state"
+                            }
+                            rasterMapState = nextRasterMapState
+                            selectedMapId = nextRasterMapState.selectedMapId
+                            sessionSnapshot = nextSnapshot
+                            Log.i(
+                                TileBudgetLogTag,
+                                "map-family-click-done id=$timingId family=${chartFamilyId(it)} elapsedMs=${SystemClock.elapsedRealtime() - clickStartMs}",
+                            )
                         },
                         onSelectPage = ::navigateToPage,
                         onOpenPlan = { navigateToPage(AppPage.Plan) },

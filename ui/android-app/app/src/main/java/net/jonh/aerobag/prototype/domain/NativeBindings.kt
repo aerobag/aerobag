@@ -230,6 +230,11 @@ interface NativeBridge {
         familyIdJson: String,
     ): String
 
+    fun selectRasterMapInSessionJson(
+        handle: Long,
+        selectedMapIdJson: String,
+    ): String
+
     fun getSessionSnapshotJson(handle: Long): String
 
     fun replaceFlightPlanInSessionJson(
@@ -599,6 +604,11 @@ object NativeBindings : NativeBridge {
     external override fun selectMapFamilyInSessionJson(
         handle: Long,
         familyIdJson: String,
+    ): String
+
+    external override fun selectRasterMapInSessionJson(
+        handle: Long,
+        selectedMapIdJson: String,
     ): String
 
     external override fun getSessionSnapshotJson(handle: Long): String

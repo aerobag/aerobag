@@ -1687,42 +1687,6 @@ data class WireMapViewportSeed(
 )
 
 @Serializable
-data class WireTileLevelAvailability(
-    val zoom: Int,
-    val x_min: Int,
-    val x_max: Int,
-    val y_tms_min: Int,
-    val y_tms_max: Int,
-)
-
-@Serializable
-data class WireMapView(
-    val chart_family: WireChartFamilyId,
-    val chart_name: String,
-    val chart_index: Int,
-    val tile_root: String,
-    val tile_url_root: String,
-    val tile_size: Int,
-    val min_zoom: Double,
-    val max_zoom: Double,
-    val max_source_zoom: Int?,
-    val max_display_zoom: Double?,
-    val storage_kind: WireTileStorageKind,
-    val package_name: String? = null,
-    val full_coverage_zoom: Double? = null,
-    val initial_viewport: WireMapViewportSeed,
-    val levels: List<WireTileLevelAvailability>,
-)
-
-@Serializable
-data class WireMapViewOption(
-    val id: String,
-    val label: String,
-    val region_id: WireRegionId,
-    val map_view: WireMapView,
-)
-
-@Serializable
 data class WireChartAsset(
     val id: String,
     val airport_id: String,

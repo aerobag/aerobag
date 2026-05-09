@@ -26,12 +26,6 @@ data class BootstrapFixture(
 data class ContentFixture(
     val bootstrap: BootstrapFixture,
     val vectorManifestJson: String,
-    val vectorPackageId: String?,
-    val mapView: MapView,
-    val mapViews: List<MapViewOption>,
-    val chartPage: ChartPageFixture,
-    val remoteOnlyInventory: ContentInventory,
-    val installedInventory: ContentInventory,
     val navKvStore: NavKvStore,
 )
 
@@ -58,9 +52,6 @@ private data class WireDevBootstrap(
 object SampleData {
     private const val BOOTSTRAP_ASSET_PATH = "fixtures/dev-bootstrap.json"
     private const val TAG = "SampleData"
-    private const val FALLBACK_VECTOR_MANIFEST_JSON =
-        """{"airspace":{"reference_tile_min_zoom":0,"reference_tile_max_zoom":12,"label_tile_min_zoom":0,"label_tile_max_zoom":12}}"""
-
     private val json = Json {
         encodeDefaults = true
         ignoreUnknownKeys = true
@@ -103,39 +94,15 @@ object SampleData {
             },
         ).toString().let { augmentVectorManifestWithDynamicPointLayers(context, it) }
         val vectorManifestMs = SystemClock.elapsedRealtime() - vectorManifestStartMs
-        val chartCatalogStartMs = SystemClock.elapsedRealtime()
-        val mapViews =
-            json.decodeFromJsonElement<List<WireMapViewOption>>(
-                navKvStore.runCoreOperationElement(
-                    buildJsonObject {
-                        put("kind", "chart_catalog")
-                    },
-                ),
-            ).map { it.toUi() }
-        val fullCoverageCount = mapViews.count { it.mapView.fullCoverageZoom != null }
-        Log.i(TAG, "chartCatalog mapViews=${mapViews.size} fullCoverageZoom=$fullCoverageCount")
-        val chartCatalogMs = SystemClock.elapsedRealtime() - chartCatalogStartMs
-        val mapView = mapViews.first().mapView
-        val plateAirportStartMs = SystemClock.elapsedRealtime()
-        val chartPage = WireDerivedChartPage(
-            airports = emptyList(),
-        ).toUi()
-        val plateAirportMs = SystemClock.elapsedRealtime() - plateAirportStartMs
         return ContentFixture(
             bootstrap = bootstrapFixture,
             vectorManifestJson = vectorManifestJson,
-            vectorPackageId = null,
-            mapView = mapView,
-            mapViews = mapViews,
-            chartPage = chartPage,
-            remoteOnlyInventory = ContentInventory(installedPackages = emptyList()),
-            installedInventory = ContentInventory(installedPackages = emptyList()),
             navKvStore = navKvStore,
         ).also {
             Log.i(
                 TAG,
                 "loadRuntime completed in ${SystemClock.elapsedRealtime() - startMs}ms " +
-                    "(navKvOpen=${navKvOpenMs}ms vectorManifest=${vectorManifestMs}ms chartCatalog=${chartCatalogMs}ms plateAirport=${plateAirportMs}ms)",
+                    "(navKvOpen=${navKvOpenMs}ms vectorManifest=${vectorManifestMs}ms)",
             )
         }
     }
@@ -241,71 +208,6 @@ private fun latestInstalledDataPackageIdOrNull(context: Context, prefix: String)
     InstalledPackages.listInstalledPackageIds(context, InstalledPackageKind.Data)
         .filter { it.startsWith(prefix) }
         .maxOrNull()
-
-private fun WireMapViewOption.toUi() = MapViewOption(
-    id = id,
-    label = label,
-    regionId = region_id.toCode(),
-    mapView = map_view.toUi(),
-)
-
-private fun WireMapView.toUi() = MapView(
-    chartFamily = chart_family.toUi(),
-    chartName = chart_name,
-    chartIndex = chart_index,
-    tileRoot = tile_root,
-    tileUrlRoot = tile_url_root,
-    tileSize = tile_size,
-    minZoom = min_zoom,
-    maxZoom = max_zoom,
-    maxSourceZoom = max_source_zoom,
-    maxDisplayZoom = max_display_zoom,
-    storageKind = storage_kind.toUi(),
-    packageName = package_name,
-    fullCoverageZoom = full_coverage_zoom,
-    initialViewport = MapViewportSeed(
-        lat = initial_viewport.lat,
-        lon = initial_viewport.lon,
-        zoom = initial_viewport.zoom,
-    ),
-    levels = levels.map { level ->
-        TileLevelAvailability(
-            zoom = level.zoom,
-            xMin = level.x_min,
-            xMax = level.x_max,
-            yTmsMin = level.y_tms_min,
-            yTmsMax = level.y_tms_max,
-        )
-    },
-)
-
-private fun WireChartFamilyId.toUi() = when (this) {
-    WireChartFamilyId.Sec -> MapChartFamily.Sec
-    WireChartFamilyId.Tac -> MapChartFamily.Tac
-    WireChartFamilyId.EnrL -> MapChartFamily.EnrL
-    WireChartFamilyId.EnrH -> MapChartFamily.EnrH
-    WireChartFamilyId.ShadedRelief -> MapChartFamily.ShadedRelief
-    WireChartFamilyId.WorldBasemap -> MapChartFamily.WorldBasemap
-}
-
-private fun WireTileStorageKind.toUi() = when (this) {
-    WireTileStorageKind.AssetTree -> TileStorageKind.AssetTree
-    WireTileStorageKind.SectionalPackage -> TileStorageKind.SectionalPackage
-    WireTileStorageKind.StaticProduct -> TileStorageKind.StaticProduct
-}
-
-private fun WireRegionId.toCode() = when (this) {
-    WireRegionId.Ne -> "ne"
-    WireRegionId.Nc -> "nc"
-    WireRegionId.Nw -> "nw"
-    WireRegionId.Se -> "se"
-    WireRegionId.Sc -> "sc"
-    WireRegionId.Sw -> "sw"
-    WireRegionId.Ec -> "ec"
-    WireRegionId.Ak -> "ak"
-    WireRegionId.Pac -> "pac"
-    WireRegionId.World -> "world"
-}
 
 private fun ChartPageFixture.toWire() = WireDerivedChartPage(
     airports = airports.map { airport ->

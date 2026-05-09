@@ -687,7 +687,7 @@ async function renderTileFromCore(tile: RasterTileDraw, cssScale = 1): Promise<R
     size: tile.size_px * cssScale,
     zoom: tile.source_zoom,
     zIndex: tile.z_order,
-    src: await packageResourceUrl(packageName, tile.primary.package_member_path),
+    src: tile.primary.url,
     mapViewId: tile.primary.map_view_id,
     packageName,
     chartFamily: tile.family,

@@ -2591,10 +2591,7 @@ mod tests {
     use super::*;
     use crate::{planning::NavElementUiView, AirportId, NavKvRoot, ProcedureKind, SequencingMode};
     use app_fixtures::load_fixture_nav_kv_pages;
-    use std::{
-        fs,
-        path::{Path, PathBuf},
-    };
+    use std::{fs, path::PathBuf};
 
     fn resource_page_indexes(resources: &[CoreResourceRequest]) -> Vec<u32> {
         resources
@@ -2769,24 +2766,102 @@ mod tests {
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
 
-    fn generated_nav_kv_dir() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../../../ui-target/web/generated-static/nav-kv")
+    fn artifact_read_root() -> PathBuf {
+        if let Ok(path) = std::env::var("AEROBAG_ARTIFACT_READ_PATH") {
+            return PathBuf::from(path);
+        }
+        let repo_root = repo_root();
+        let configured = fs::read_to_string(repo_root.join(".aerobag-artifact-read-path"))
+            .expect("read .aerobag-artifact-read-path");
+        let configured = PathBuf::from(configured.trim());
+        if configured.is_absolute() {
+            configured
+        } else {
+            repo_root.join(configured)
+        }
     }
 
-    fn load_generated_nav_kv_store() -> NavKvStore {
-        let nav_kv_dir = generated_nav_kv_dir();
-        let root_bytes = fs::read(nav_kv_dir.join("root")).expect("read generated nav_kv root");
-        let root = NavKvRoot::parse(&root_bytes).expect("parse generated nav_kv root");
-        let mut page_paths = fs::read_dir(nav_kv_dir.join("values"))
-            .expect("read generated nav_kv values dir")
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .collect::<Vec<_>>();
+    fn repo_root() -> PathBuf {
+        let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        loop {
+            if dir.join(".aerobag-artifact-read-path").is_file() {
+                return dir;
+            }
+            if !dir.pop() {
+                panic!(
+                    "could not find repo root above {}",
+                    env!("CARGO_MANIFEST_DIR")
+                );
+            }
+        }
+    }
+
+    fn current_nav_db_dir() -> PathBuf {
+        let artifact_root = artifact_read_root();
+        let current: serde_json::Value = serde_json::from_slice(
+            &fs::read(artifact_root.join("current_artifacts.json"))
+                .expect("read current_artifacts.json"),
+        )
+        .expect("decode current_artifacts.json");
+        let unpacked_root = current["artifact_roots"]["unpacked"]
+            .as_str()
+            .expect("current_artifacts artifact_roots.unpacked");
+        let cycle_bundle = current["bundles"]
+            .as_array()
+            .expect("current_artifacts bundles")
+            .iter()
+            .find(|bundle| bundle["bundle_type"].as_str() == Some("cycle"))
+            .expect("cycle bundle in current_artifacts");
+        let bundle_relative_path = cycle_bundle["relative_path"]
+            .as_str()
+            .or_else(|| cycle_bundle["filename"].as_str())
+            .expect("cycle bundle relative_path");
+        let bundle: serde_json::Value = serde_json::from_slice(
+            &fs::read(artifact_root.join(unpacked_root).join(bundle_relative_path))
+                .expect("read cycle bundle manifest"),
+        )
+        .expect("decode cycle bundle manifest");
+        let nav_db = bundle["packages"]
+            .as_array()
+            .expect("cycle bundle packages")
+            .iter()
+            .find(|package| package["family_id"].as_str() == Some("nav-db"))
+            .expect("nav-db package in cycle bundle");
+        let relative_path = nav_db["relative_path"]
+            .as_str()
+            .expect("nav-db relative_path");
+        let unpacked_dir = relative_path
+            .strip_suffix(".zip")
+            .expect("nav-db relative_path is zip");
+        artifact_root.join(unpacked_root).join(unpacked_dir)
+    }
+
+    fn load_current_nav_kv_store() -> NavKvStore {
+        let nav_kv_dir = current_nav_db_dir();
+        let root_bytes = fs::read(nav_kv_dir.join("root")).expect("read current nav_db root");
+        let root = NavKvRoot::parse(&root_bytes).expect("parse current nav_db root");
+        let values_dir = nav_kv_dir.join("values");
+        let mut page_paths = if values_dir.is_dir() {
+            fs::read_dir(&values_dir)
+                .expect("read current nav_db values dir")
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .collect::<Vec<_>>()
+        } else {
+            fs::read_dir(&nav_kv_dir)
+                .expect("read current nav_db dir")
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with("values_"))
+                })
+                .collect::<Vec<_>>()
+        };
         page_paths.sort();
         assert!(
             !page_paths.is_empty(),
-            "generated nav_kv fixture is missing values pages under {}",
-            nav_kv_dir.join("values").display()
+            "current nav_db is missing values pages under {}",
+            nav_kv_dir.display()
         );
         let mut store = NavKvStore::new(root);
         for (page_index, page_path) in page_paths.into_iter().enumerate() {
@@ -2831,7 +2906,7 @@ mod tests {
 
     #[test]
     fn generated_nav_kv_projects_kpae_vor_a_inserted_plan_ui_state() {
-        let store = load_generated_nav_kv_store();
+        let store = load_current_nav_kv_store();
         let plan = FlightPlan {
             id: "krnt-sea-pae".to_string(),
             name: "KRNT SEA PAE".to_string(),
@@ -3119,7 +3194,7 @@ mod tests {
 
     #[test]
     fn flight_plan_ui_state_enrichment_preserves_live_guidance_nav_element() {
-        let store = load_generated_nav_kv_store();
+        let store = load_current_nav_kv_store();
         let plan = FlightPlan {
             id: "kpao-vpdub-vcb-wlw".to_string(),
             name: "KPAO VPDUB KVCB KWLW".to_string(),
@@ -3195,7 +3270,7 @@ mod tests {
 
     #[test]
     fn generated_nav_kv_session_select_chart_keeps_kpae_vor_a() {
-        let store = load_generated_nav_kv_store();
+        let store = load_current_nav_kv_store();
         let kpae = match run_had_operation(
             &store,
             HadOperation::PlateAirport {
@@ -3286,7 +3361,7 @@ mod tests {
 
     #[test]
     fn generated_nav_kv_chart_catalog_lists_multiple_regions() {
-        let store = load_generated_nav_kv_store();
+        let store = load_current_nav_kv_store();
         let catalog = match run_had_operation(&store, HadOperation::ChartCatalog)
             .expect("load generated chart catalog")
         {
@@ -3319,7 +3394,7 @@ mod tests {
 
     #[test]
     fn generated_nav_kv_default_map_selector_state_displays_all_tac_and_sec_regions() {
-        let store = load_generated_nav_kv_store();
+        let store = load_current_nav_kv_store();
         let state = match run_had_operation(
             &store,
             HadOperation::MapSelectorState {
@@ -3395,7 +3470,7 @@ mod tests {
 
     #[test]
     fn generated_nav_kv_south_central_maps_cover_kmsy_tile() {
-        let store = load_generated_nav_kv_store();
+        let store = load_current_nav_kv_store();
         let state = match run_had_operation(
             &store,
             HadOperation::MapSelectorState {
@@ -3468,7 +3543,7 @@ mod tests {
 
     #[test]
     fn generated_nav_kv_materialize_procedure_kpae_vor_a_from_ecepo_succeeds() {
-        let store = load_generated_nav_kv_store();
+        let store = load_current_nav_kv_store();
 
         let outcome = run_had_operation(
             &store,
@@ -3893,7 +3968,7 @@ mod tests {
 
     #[test]
     fn route_entry_appends_chained_airways_with_shared_waypoint() {
-        let store = load_generated_nav_kv_store();
+        let store = load_current_nav_kv_store();
         let plan = FlightPlan {
             id: "route".to_string(),
             name: "Route".to_string(),
@@ -3929,7 +4004,7 @@ mod tests {
 
     #[test]
     fn route_entry_materializes_airway_exit_before_final_airport() {
-        let store = load_generated_nav_kv_store();
+        let store = load_current_nav_kv_store();
         let plan = FlightPlan {
             id: "route".to_string(),
             name: "Route".to_string(),

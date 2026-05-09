@@ -293,7 +293,7 @@ pub fn nav_kv_key_for_query(query: &NavKvQuery) -> Option<String> {
         NavKvQuery::ChartCatalog => Some("chart/catalog".to_string()),
         NavKvQuery::OfflineRegionCatalog => Some("offline-region/catalog".to_string()),
         NavKvQuery::PackageById { package_id } => {
-            Some(format!("package/by-id/{}", upper_component(package_id)))
+            Some(format!("package/by-id/{}", component(package_id)))
         }
         NavKvQuery::PolygonSet { polygon_set_id } => Some(format!(
             "geometry/polygon-set/{}",
@@ -605,6 +605,18 @@ mod tests {
 
     #[test]
     fn builds_plate_and_procedure_keys_in_core() {
+        assert_eq!(
+            nav_kv_key_for_query(&NavKvQuery::PackageById {
+                package_id: " world-basemap ".to_string()
+            }),
+            Some("package/by-id/world-basemap".to_string())
+        );
+        assert_eq!(
+            nav_kv_key_for_query(&NavKvQuery::PackageById {
+                package_id: "NW_SEC_2604".to_string()
+            }),
+            Some("package/by-id/NW_SEC_2604".to_string())
+        );
         assert_eq!(
             nav_kv_key_for_query(&NavKvQuery::PlateAirport {
                 airport_id: " krdd ".to_string()

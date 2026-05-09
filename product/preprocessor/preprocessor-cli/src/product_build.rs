@@ -265,12 +265,27 @@ impl BundleManifestLike {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CurrentArtifactsManifest {
     schema_version: u32,
+    #[serde(default = "default_current_artifact_roots")]
+    artifact_roots: CurrentArtifactRoots,
     as_of_date: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     as_of_utc: String,
     bundles: Vec<CurrentBundleEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     diagnostics: Option<CurrentDiagnosticsEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CurrentArtifactRoots {
+    packaged: String,
+    unpacked: String,
+}
+
+fn default_current_artifact_roots() -> CurrentArtifactRoots {
+    CurrentArtifactRoots {
+        packaged: "published_packaged/".to_string(),
+        unpacked: "published_unpacked/".to_string(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1160,9 +1175,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         .join("private-work")
         .join("orchestrator-logs")
         .join(if config.profile == ProductBuildProfile::Production {
-            "published-packaged"
+            "published_packaged"
         } else {
-            "published-packaged-validation"
+            "published_packaged_validation"
         });
     fs::create_dir_all(&log_root)
         .with_context(|| format!("failed to create {}", log_root.display()))?;
@@ -2972,16 +2987,10 @@ pub fn build_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<FastSubs
     let as_of_utc = Utc::now();
     current.as_of_date = as_of_utc.date_naive().format("%Y-%m-%d").to_string();
     current.as_of_utc = as_of_utc.to_rfc3339_opts(SecondsFormat::Secs, true);
+    current.artifact_roots = default_current_artifact_roots();
     current.bundles = build_current_bundle_entries(&config.build_root, as_of_utc.date_naive())?;
 
-    let output_path = config
-        .build_root
-        .join(current_artifacts_latest_alias_filename());
-    let immutable_path = config
-        .build_root
-        .join(current_artifacts_immutable_filename(as_of_utc));
-    write_current_artifacts_json(&immutable_path, &current)?;
-    write_current_artifacts_json(&output_path, &current)?;
+    let output_path = write_current_artifacts_aliases(&config.build_root, as_of_utc, &current)?;
     cleanup_published_packaged_root(&config.build_root, &output_path)?;
 
     sync_fast_subset_unpacked(
@@ -3012,9 +3021,7 @@ pub fn publish_discovery_manifest(
     if bundle_filenames.is_empty() {
         bail!("publish-discovery-manifest requires at least one --bundle");
     }
-    let latest_alias_path = config
-        .build_root
-        .join(current_artifacts_latest_alias_filename());
+    let latest_alias_path = publication_current_artifacts_path(&config.build_root);
     if !latest_alias_path.is_file() {
         bail!(
             "missing current artifacts alias {}; build-product first",
@@ -3027,15 +3034,15 @@ pub fn publish_discovery_manifest(
         .collect::<anyhow::Result<Vec<_>>>()?;
     let manifest = CurrentArtifactsManifest {
         schema_version: 1,
+        artifact_roots: default_current_artifact_roots(),
         as_of_date: as_of_utc.date_naive().format("%Y-%m-%d").to_string(),
         as_of_utc: as_of_utc.to_rfc3339_opts(SecondsFormat::Secs, true),
         bundles,
         diagnostics: None,
     };
-    let immutable_path = config
-        .build_root
+    write_current_artifacts_aliases(&config.build_root, as_of_utc, &manifest)?;
+    let immutable_path = publication_root_for_packaged_root(&config.build_root)
         .join(current_artifacts_immutable_filename(as_of_utc));
-    write_current_artifacts_json(&immutable_path, &manifest)?;
     let unpacked_root = published_unpacked_root(config)?;
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
@@ -3218,17 +3225,16 @@ where
 }
 
 fn current_artifacts_path_for_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
-    let latest_alias = config
-        .build_root
-        .join(current_artifacts_latest_alias_filename());
+    let publication_root = publication_root_for_packaged_root(&config.build_root);
+    let latest_alias = publication_root.join(current_artifacts_latest_alias_filename());
     if latest_alias.is_file() {
         return Ok(latest_alias);
     }
 
-    let mut candidates = fs::read_dir(&config.build_root)
-        .with_context(|| format!("failed to read {}", config.build_root.display()))?
+    let mut candidates = fs::read_dir(&publication_root)
+        .with_context(|| format!("failed to read {}", publication_root.display()))?
         .collect::<Result<Vec<_>, _>>()
-        .with_context(|| format!("failed to iterate {}", config.build_root.display()))?
+        .with_context(|| format!("failed to iterate {}", publication_root.display()))?
         .into_iter()
         .map(|entry| entry.path())
         .filter(|path| {
@@ -3247,7 +3253,7 @@ fn current_artifacts_path_for_fast_subset(config: &ProductBuildConfig) -> anyhow
     candidates.pop().with_context(|| {
         format!(
             "no current_artifacts discovery manifest exists in {}; run build-product first",
-            config.build_root.display()
+            publication_root.display()
         )
     })
 }
@@ -3412,9 +3418,9 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         .join("private-work")
         .join("orchestrator-logs")
         .join(if config.profile == ProductBuildProfile::Production {
-            "published-packaged"
+            "published_packaged"
         } else {
-            "published-packaged-validation"
+            "published_packaged_validation"
         });
     fs::create_dir_all(&log_root)
         .with_context(|| format!("failed to create {}", log_root.display()))?;
@@ -8083,8 +8089,8 @@ fn internal_build_manifest_path(
 pub fn published_unpacked_root_from_build_root(build_root: &Path) -> anyhow::Result<PathBuf> {
     let artifact_root = artifact_root_from_build_root(build_root);
     let unpacked_dir_name = match build_root.file_name().and_then(|name| name.to_str()) {
-        Some("published-packaged") => "published-unpacked",
-        Some("published-packaged-validation") => "published-unpacked-validation",
+        Some("published_packaged") => "published_unpacked",
+        Some("published_packaged_validation") => "published_unpacked_validation",
         Some(other) => {
             return Err(anyhow::anyhow!(
                 "unsupported build root for unpacked publication: {}",
@@ -8114,7 +8120,7 @@ fn unpacked_marker_path(unpacked_root: &Path, published_filename: &str) -> anyho
         .ok_or_else(|| anyhow::anyhow!("unpacked root has no final path component"))?;
     let marker_dir = artifact_root
         .join("private-work")
-        .join("published-unpacked-state")
+        .join("published_unpacked_state")
         .join(unpacked_dir_name);
     fs::create_dir_all(&marker_dir)
         .with_context(|| format!("failed to create {}", marker_dir.display()))?;
@@ -8585,13 +8591,10 @@ fn sync_unpacked_file(source_path: &Path, unpacked_root: &Path) -> anyhow::Resul
 }
 
 fn sync_unpacked_discovery_manifests(
-    packaged_root: &Path,
-    current_artifacts_path: &Path,
-    unpacked_root: &Path,
+    _packaged_root: &Path,
+    _current_artifacts_path: &Path,
+    _unpacked_root: &Path,
 ) -> anyhow::Result<()> {
-    for discovery_path in discovery_manifest_paths(packaged_root, current_artifacts_path)? {
-        sync_unpacked_file(&discovery_path, unpacked_root)?;
-    }
     Ok(())
 }
 
@@ -8601,7 +8604,7 @@ fn sync_product_level_unpacked(
     zip_artifacts: &[PublishedZipArtifact],
 ) -> anyhow::Result<()> {
     let unpacked_root = published_unpacked_root_from_build_root(build_root)?;
-    let packaged_root = build_root.join("published-packaged");
+    let packaged_root = build_root.join("published_packaged");
     remove_legacy_unpacked_subtree(&unpacked_root)?;
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
@@ -9527,46 +9530,9 @@ fn build_world_basemap_product(
     Vec<TileLevelRecord>,
     NodeRecord,
 )> {
-    let input_dir = artifact_root_from_build_root(&config.build_root)
-        .join("private-work")
-        .join("world-basemap")
-        .join("input");
-    fs::create_dir_all(&input_dir)
-        .with_context(|| format!("failed to create {}", input_dir.display()))?;
-
-    let provenance_dir = config
-        .build_root
-        .join("meta")
-        .join("provenance")
-        .join("world-basemap");
-    let fetch_cache = static_source_fetch_cache_config(config)?;
-    let requests = [
-        PrefetchRequest::new(WORLD_BASEMAP_LAND_URL).with_logical_file_name("ne_110m_land.zip"),
-        PrefetchRequest::new(WORLD_BASEMAP_BOUNDARIES_URL)
-            .with_logical_file_name("ne_110m_admin_0_boundary_lines_land.zip"),
-    ];
-    prefetch_requests_with_provenance(
-        &requests,
-        &input_dir,
-        config.fetch_jobs,
-        Some(&fetch_cache),
-        &provenance_dir,
-        "world-basemap",
-    )?;
-
-    let land_shp = input_dir.join("ne_110m_land.shp");
-    let boundaries_shp = input_dir.join("ne_110m_admin_0_boundary_lines_land.shp");
-    if !land_shp.is_file() {
-        bail!("world basemap fetch missing {}", land_shp.display());
-    }
-    if !boundaries_shp.is_file() {
-        bail!("world basemap fetch missing {}", boundaries_shp.display());
-    }
-    let source_fingerprint = world_basemap_source_fingerprint(&land_shp, &boundaries_shp)?;
-    let source_fetched_at_utc = source_fetched_at_utc_for_urls(
-        &fetch_cache,
-        &[WORLD_BASEMAP_LAND_URL, WORLD_BASEMAP_BOUNDARIES_URL],
-    )?;
+    let sources = build_world_basemap_source_node(config)?;
+    let source_fingerprint = sources.source_fingerprint.clone();
+    let source_fetched_at_utc = sources.source_fetched_at_utc.clone();
     let version_label = fast_product_version_label(&source_fingerprint);
     let inputs = world_basemap_product_inputs(&source_fingerprint)?;
     let prepared = prepare_node_at(
@@ -9612,8 +9578,8 @@ fn build_world_basemap_product(
     fs::create_dir_all(&output_dir)
         .with_context(|| format!("failed to create {}", output_dir.display()))?;
     build_world_basemap_tiles(
-        &land_shp,
-        &boundaries_shp,
+        &sources.land_shp,
+        &sources.boundaries_shp,
         &output_dir,
         &version_label,
         source_fetched_at_utc.as_deref(),
@@ -9646,6 +9612,136 @@ fn build_world_basemap_product(
         tile_levels,
         record,
     ))
+}
+
+struct WorldBasemapSources {
+    land_shp: PathBuf,
+    boundaries_shp: PathBuf,
+    source_fingerprint: String,
+    source_fetched_at_utc: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CachedSourceManifest {
+    source_fingerprint: String,
+    source_fetched_at_utc: Option<String>,
+}
+
+fn build_world_basemap_source_node(
+    config: &ProductBuildConfig,
+) -> anyhow::Result<WorldBasemapSources> {
+    let inputs = BTreeMap::from([
+        ("land_url".to_string(), WORLD_BASEMAP_LAND_URL.to_string()),
+        (
+            "boundaries_url".to_string(),
+            WORLD_BASEMAP_BOUNDARIES_URL.to_string(),
+        ),
+        ("fetch_jobs".to_string(), config.fetch_jobs.to_string()),
+        (
+            "fetch_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-fetch/src/lib.rs"),
+            )?,
+        ),
+        (
+            "source_node_version".to_string(),
+            "world-basemap-sources-v1".to_string(),
+        ),
+    ]);
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, "static-world-basemap-sources")?,
+        "static-world-basemap-sources",
+        &inputs,
+    )?;
+    let input_dir = prepared.dir.join("input");
+    let manifest_path = prepared.dir.join("source-manifest.json");
+    let land_shp = input_dir.join("ne_110m_land.shp");
+    let boundaries_shp = input_dir.join("ne_110m_admin_0_boundary_lines_land.shp");
+    let expected_outputs = vec![manifest_path.clone(), land_shp.clone(), boundaries_shp.clone()];
+    let _build_lock = match claim_or_wait_for_node(&prepared, &expected_outputs)? {
+        NodeCacheState::CacheHit(_) => {
+            let manifest = read_cached_source_manifest(&manifest_path)?;
+            return Ok(WorldBasemapSources {
+                land_shp,
+                boundaries_shp,
+                source_fingerprint: manifest.source_fingerprint,
+                source_fetched_at_utc: manifest.source_fetched_at_utc,
+            });
+        }
+        NodeCacheState::Build(lock) => lock,
+    };
+
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    fs::create_dir_all(&input_dir)
+        .with_context(|| format!("failed to create {}", input_dir.display()))?;
+    let provenance_dir = prepared.dir.join("meta/provenance/world-basemap");
+    fs::create_dir_all(&provenance_dir)?;
+    let fetch_cache = static_source_fetch_cache_config(config)?;
+    let requests = [
+        PrefetchRequest::new(WORLD_BASEMAP_LAND_URL).with_logical_file_name("ne_110m_land.zip"),
+        PrefetchRequest::new(WORLD_BASEMAP_BOUNDARIES_URL)
+            .with_logical_file_name("ne_110m_admin_0_boundary_lines_land.zip"),
+    ];
+    prefetch_requests_with_provenance(
+        &requests,
+        &input_dir,
+        config.fetch_jobs,
+        Some(&fetch_cache),
+        &provenance_dir,
+        "world-basemap",
+    )?;
+    if !land_shp.is_file() {
+        bail!("world basemap fetch missing {}", land_shp.display());
+    }
+    if !boundaries_shp.is_file() {
+        bail!("world basemap fetch missing {}", boundaries_shp.display());
+    }
+    let manifest = CachedSourceManifest {
+        source_fingerprint: world_basemap_source_fingerprint(&land_shp, &boundaries_shp)?,
+        source_fetched_at_utc: source_fetched_at_utc_for_urls(
+            &fetch_cache,
+            &[WORLD_BASEMAP_LAND_URL, WORLD_BASEMAP_BOUNDARIES_URL],
+        )?,
+    };
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).context("failed to encode source manifest")?,
+    )
+    .with_context(|| format!("failed to write {}", manifest_path.display()))?;
+    let outputs = BTreeMap::from([
+        (
+            "source_manifest".to_string(),
+            relative_artifact_path(&manifest_path, &config.build_root),
+        ),
+        (
+            "input_dir".to_string(),
+            relative_artifact_path(&input_dir, &config.build_root),
+        ),
+    ]);
+    write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok(WorldBasemapSources {
+        land_shp,
+        boundaries_shp,
+        source_fingerprint: manifest.source_fingerprint,
+        source_fetched_at_utc: manifest.source_fetched_at_utc,
+    })
+}
+
+fn read_cached_source_manifest(path: &Path) -> anyhow::Result<CachedSourceManifest> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("failed to parse {}", path.display()))
 }
 
 fn world_basemap_product_inputs(
@@ -9986,18 +10082,64 @@ struct ShadedReliefOverlaySources {
 fn prepare_shaded_relief_overlay_sources(
     config: &ProductBuildConfig,
 ) -> anyhow::Result<ShadedReliefOverlaySources> {
-    let input_dir = artifact_root_from_build_root(&config.build_root)
-        .join("private-work")
-        .join("shaded-relief")
-        .join("overlays")
-        .join("input");
+    let inputs = BTreeMap::from([
+        (
+            "state_borders_url".to_string(),
+            SHADED_RELIEF_STATE_BORDERS_URL.to_string(),
+        ),
+        (
+            "primary_roads_url".to_string(),
+            SHADED_RELIEF_PRIMARY_ROADS_URL.to_string(),
+        ),
+        ("fetch_jobs".to_string(), config.fetch_jobs.to_string()),
+        (
+            "fetch_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-fetch/src/lib.rs"),
+            )?,
+        ),
+        (
+            "source_node_version".to_string(),
+            "shaded-relief-overlay-sources-v1".to_string(),
+        ),
+    ]);
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, "static-shaded-relief-overlay-sources")?,
+        "static-shaded-relief-overlay-sources",
+        &inputs,
+    )?;
+    let input_dir = prepared.dir.join("input");
+    let manifest_path = prepared.dir.join("source-manifest.json");
+    let state_borders_shp = input_dir.join("ne_50m_admin_1_states_provinces_lines.shp");
+    let primary_roads_shp = input_dir.join("tl_2025_us_primaryroads.shp");
+    let expected_outputs = vec![
+        manifest_path.clone(),
+        state_borders_shp.clone(),
+        primary_roads_shp.clone(),
+    ];
+    let _build_lock = match claim_or_wait_for_node(&prepared, &expected_outputs)? {
+        NodeCacheState::CacheHit(_) => {
+            let manifest = read_cached_source_manifest(&manifest_path)?;
+            return Ok(ShadedReliefOverlaySources {
+                state_borders_shp,
+                primary_roads_shp,
+                source_fingerprint: manifest.source_fingerprint,
+            });
+        }
+        NodeCacheState::Build(lock) => lock,
+    };
+
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
     fs::create_dir_all(&input_dir)
         .with_context(|| format!("failed to create {}", input_dir.display()))?;
-    let provenance_dir = config
-        .build_root
-        .join("meta")
-        .join("provenance")
-        .join("shaded-relief-overlays");
+    let provenance_dir = prepared
+        .dir
+        .join("meta/provenance/shaded-relief-overlays");
+    fs::create_dir_all(&provenance_dir)?;
     let fetch_cache = static_source_fetch_cache_config(config)?;
     let requests = [
         PrefetchRequest::new(SHADED_RELIEF_STATE_BORDERS_URL)
@@ -10013,8 +10155,6 @@ fn prepare_shaded_relief_overlay_sources(
         &provenance_dir,
         "shaded-relief-overlays",
     )?;
-    let state_borders_shp = input_dir.join("ne_50m_admin_1_states_provinces_lines.shp");
-    let primary_roads_shp = input_dir.join("tl_2025_us_primaryroads.shp");
     if !state_borders_shp.is_file() {
         bail!(
             "shaded relief overlay fetch missing {}",
@@ -10033,10 +10173,44 @@ fn prepare_shaded_relief_overlay_sources(
     hasher.update(hash_shapefile_family(&state_borders_shp)?.as_bytes());
     hasher.update(SHADED_RELIEF_PRIMARY_ROADS_URL.as_bytes());
     hasher.update(hash_shapefile_family(&primary_roads_shp)?.as_bytes());
+    let manifest = CachedSourceManifest {
+        source_fingerprint: format!("{:x}", hasher.finalize()),
+        source_fetched_at_utc: source_fetched_at_utc_for_urls(
+            &fetch_cache,
+            &[
+                SHADED_RELIEF_STATE_BORDERS_URL,
+                SHADED_RELIEF_PRIMARY_ROADS_URL,
+            ],
+        )?,
+    };
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).context("failed to encode source manifest")?,
+    )
+    .with_context(|| format!("failed to write {}", manifest_path.display()))?;
+    let outputs = BTreeMap::from([
+        (
+            "source_manifest".to_string(),
+            relative_artifact_path(&manifest_path, &config.build_root),
+        ),
+        (
+            "input_dir".to_string(),
+            relative_artifact_path(&input_dir, &config.build_root),
+        ),
+    ]);
+    write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
     Ok(ShadedReliefOverlaySources {
         state_borders_shp,
         primary_roads_shp,
-        source_fingerprint: format!("{:x}", hasher.finalize()),
+        source_fingerprint: manifest.source_fingerprint,
     })
 }
 
@@ -12883,6 +13057,40 @@ fn write_current_artifacts_json(
     write_public_json_atomic(path, &bytes)
 }
 
+fn publication_root_for_packaged_root(packaged_root: &Path) -> PathBuf {
+    match packaged_root.file_name().and_then(|name| name.to_str()) {
+        Some("published_packaged") => packaged_root
+            .parent()
+            .unwrap_or(packaged_root)
+            .to_path_buf(),
+        _ => packaged_root.to_path_buf(),
+    }
+}
+
+fn publication_current_artifacts_path(packaged_root: &Path) -> PathBuf {
+    publication_root_for_packaged_root(packaged_root)
+        .join(current_artifacts_latest_alias_filename())
+}
+
+fn write_current_artifacts_aliases(
+    packaged_root: &Path,
+    as_of_utc: DateTime<Utc>,
+    manifest: &CurrentArtifactsManifest,
+) -> anyhow::Result<PathBuf> {
+    let publication_root = publication_root_for_packaged_root(packaged_root);
+    fs::create_dir_all(&publication_root)
+        .with_context(|| format!("failed to create {}", publication_root.display()))?;
+
+    let immutable_filename = current_artifacts_immutable_filename(as_of_utc);
+    let latest_filename = current_artifacts_latest_alias_filename();
+    let publication_immutable_path = publication_root.join(&immutable_filename);
+    let publication_latest_path = publication_root.join(latest_filename);
+    write_current_artifacts_json(&publication_immutable_path, manifest)?;
+    write_current_artifacts_json(&publication_latest_path, manifest)?;
+
+    Ok(publication_latest_path)
+}
+
 fn write_current_artifacts_manifest(
     build_root: &Path,
     as_of_utc: DateTime<Utc>,
@@ -12892,16 +13100,13 @@ fn write_current_artifacts_manifest(
     let bundles = build_current_bundle_entries(build_root, as_of_date)?;
     let manifest = CurrentArtifactsManifest {
         schema_version: 1,
+        artifact_roots: default_current_artifact_roots(),
         as_of_date: as_of_date.format("%Y-%m-%d").to_string(),
         as_of_utc: as_of_utc.to_rfc3339_opts(SecondsFormat::Secs, true),
         bundles,
         diagnostics,
     };
-    let immutable_path = build_root.join(current_artifacts_immutable_filename(as_of_utc));
-    let latest_alias_path = build_root.join(current_artifacts_latest_alias_filename());
-    write_current_artifacts_json(&immutable_path, &manifest)?;
-    write_current_artifacts_json(&latest_alias_path, &manifest)?;
-    Ok(latest_alias_path)
+    write_current_artifacts_aliases(build_root, as_of_utc, &manifest)
 }
 
 fn write_build_status_html(
@@ -13319,7 +13524,10 @@ fn collect_reachable_packaged_entries_for_discovery(
     discovery_path: &Path,
 ) -> anyhow::Result<BTreeSet<String>> {
     let current = load_current_artifacts_manifest(discovery_path)?;
-    let mut keep = BTreeSet::from([filename_string(discovery_path)?]);
+    let mut keep = BTreeSet::new();
+    if discovery_path.parent() == Some(packaged_root) {
+        keep.insert(filename_string(discovery_path)?);
+    }
     if let Some(diagnostics) = &current.diagnostics {
         ensure_public_file_exists(&packaged_root.join(&diagnostics.filename))?;
         keep.insert(diagnostics.filename.clone());
@@ -13368,7 +13576,10 @@ fn collect_reachable_unpacked_entries_for_discovery(
     discovery_path: &Path,
 ) -> anyhow::Result<BTreeSet<String>> {
     let current = load_current_artifacts_manifest(discovery_path)?;
-    let mut keep = BTreeSet::from([filename_string(discovery_path)?]);
+    let mut keep = BTreeSet::new();
+    if discovery_path.parent() == Some(unpacked_root) {
+        keep.insert(filename_string(discovery_path)?);
+    }
     if let Some(diagnostics) = &current.diagnostics {
         ensure_public_file_exists(&unpacked_root.join(&diagnostics.filename))?;
         keep.insert(diagnostics.filename.clone());
@@ -13404,6 +13615,9 @@ fn discovery_manifest_paths(
 ) -> anyhow::Result<Vec<PathBuf>> {
     let mut paths = vec![current_artifacts_path.to_path_buf()];
     let mut seen = BTreeSet::from([current_artifacts_path.to_path_buf()]);
+    if current_artifacts_path.parent() != Some(root) {
+        return Ok(paths);
+    }
     for entry in fs::read_dir(root)
         .with_context(|| format!("failed to read {}", root.display()))?
         .collect::<Result<Vec<_>, _>>()
@@ -13495,6 +13709,7 @@ fn validate_packaged_contract(
     for discovery_path in discovery_manifest_paths(packaged_root, current_artifacts_path)? {
         validate_no_internal_paths_in_json(&discovery_path)?;
         let current = load_current_artifacts_manifest(&discovery_path)?;
+        validate_current_artifacts_manifest(&current, &discovery_path)?;
 
         for bundle in &current.bundles {
             validate_public_filename(&bundle.filename, "current_artifacts.bundles[].filename")?;
@@ -13527,6 +13742,27 @@ fn validate_packaged_contract(
         }
     }
 
+    Ok(())
+}
+
+fn validate_current_artifacts_manifest(
+    current: &CurrentArtifactsManifest,
+    path: &Path,
+) -> anyhow::Result<()> {
+    if current.artifact_roots.packaged != "published_packaged/" {
+        bail!(
+            "{} has unexpected artifact_roots.packaged {:?}",
+            path.display(),
+            current.artifact_roots.packaged
+        );
+    }
+    if current.artifact_roots.unpacked != "published_unpacked/" {
+        bail!(
+            "{} has unexpected artifact_roots.unpacked {:?}",
+            path.display(),
+            current.artifact_roots.unpacked
+        );
+    }
     Ok(())
 }
 
@@ -13686,14 +13922,9 @@ fn validate_unpacked_contract_for_discovery(
     unpacked_root: &Path,
     discovery_path: &Path,
 ) -> anyhow::Result<()> {
-    let current_filename = discovery_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .context("current artifacts path has no filename")?;
-    let unpacked_current_path = unpacked_root.join(current_filename);
-    ensure_public_file_exists(&unpacked_current_path)?;
-    validate_no_internal_paths_in_json(&unpacked_current_path)?;
-
+    // Discovery manifests are hoisted to the publication root. The unpacked tree is
+    // only the unpacked artifact root referenced by `artifact_roots.unpacked`.
+    validate_no_internal_paths_in_json(discovery_path)?;
     let current = load_current_artifacts_manifest(discovery_path)?;
 
     for bundle in &current.bundles {
@@ -13911,7 +14142,7 @@ fn validate_no_internal_paths_in_value(
                 "cache/",
                 "private-work/",
                 "work/",
-                "published-packaged/production",
+                "published_packaged/production",
             ] {
                 if text.contains(forbidden) {
                     bail!(
@@ -14532,8 +14763,8 @@ impl ProductBuildConfig {
         let mut profile = ProductBuildProfile::Production;
         let mut chart_cutline_root = repo_root.join("avare-assets").join("chart-cutlines");
         let mut build_root = match profile {
-            ProductBuildProfile::Production => artifact_root.join("published-packaged"),
-            ProductBuildProfile::Validation => artifact_root.join("published-packaged-validation"),
+            ProductBuildProfile::Production => artifact_root.join("published_packaged"),
+            ProductBuildProfile::Validation => artifact_root.join("published_packaged_validation"),
         };
         let mut target_cycle = None;
         let mut fetch_jobs = env_usize("FETCH_JOBS").unwrap_or(4);
@@ -14551,9 +14782,9 @@ impl ProductBuildConfig {
                     profile = ProductBuildProfile::parse(value)
                         .ok_or_else(|| anyhow::anyhow!("unsupported profile: {value}"))?;
                     build_root = match profile {
-                        ProductBuildProfile::Production => artifact_root.join("published-packaged"),
+                        ProductBuildProfile::Production => artifact_root.join("published_packaged"),
                         ProductBuildProfile::Validation => {
-                            artifact_root.join("published-packaged-validation")
+                            artifact_root.join("published_packaged_validation")
                         }
                     };
                     index += 2;
@@ -16659,7 +16890,7 @@ fn artifact_root_from_build_root(build_root: &Path) -> &Path {
     if build_root
         .file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name == "published-packaged" || name == "published-packaged-validation")
+        .is_some_and(|name| name == "published_packaged" || name == "published_packaged_validation")
     {
         return build_root.parent().unwrap_or(build_root);
     }
@@ -16667,7 +16898,7 @@ fn artifact_root_from_build_root(build_root: &Path) -> &Path {
         .parent()
         .and_then(|value| value.file_name())
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name == "published-packaged" || name == "published-packaged-validation")
+        .is_some_and(|name| name == "published_packaged" || name == "published_packaged_validation")
     {
         return build_root
             .parent()
@@ -17179,6 +17410,7 @@ fn first_cycle_day(year: i32) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use preprocessor_resource_index::{
         AirportRecord, AirportResourcesRecord, ChartCollectionRecord, CoverageBounds, CsupRecord,
         DefaultView, NavDbRef, PlateRecord, ResourceFamily, ResourcePackage, ResourceRegion,
@@ -18275,6 +18507,7 @@ mod tests {
         .unwrap();
         let current = CurrentArtifactsManifest {
             schema_version: 1,
+            artifact_roots: default_current_artifact_roots(),
             as_of_date: "2026-05-03".to_string(),
             as_of_utc: "2026-05-03T18:01:00Z".to_string(),
             bundles: vec![
@@ -18377,6 +18610,7 @@ mod tests {
         fs::write(root.join("bundle_fast_stale_empty.json"), []).unwrap();
         let current = CurrentArtifactsManifest {
             schema_version: 1,
+            artifact_roots: default_current_artifact_roots(),
             as_of_date: "2026-05-03".to_string(),
             as_of_utc: "2026-05-03T18:01:00Z".to_string(),
             bundles: vec![CurrentBundleEntry {
@@ -18437,6 +18671,43 @@ mod tests {
     }
 
     #[test]
+    fn current_artifacts_manifest_is_hoisted_above_packaged_and_names_roots() {
+        let temp = tempdir().unwrap();
+        let packaged_root = temp.path().join("published_packaged");
+        fs::create_dir_all(&packaged_root).unwrap();
+        let fast_bundle = FastBundleManifest {
+            schema_version: 1,
+            bundle_id: "fast_current".to_string(),
+            bundle_type: "fast".to_string(),
+            published_at_utc: "2026-05-04T00:00:00Z".to_string(),
+            packages: vec![],
+        };
+        write_hashed_fast_bundle_manifest(&packaged_root, &fast_bundle).unwrap();
+
+        let current_path = write_current_artifacts_manifest(
+            &packaged_root,
+            Utc.with_ymd_and_hms(2026, 5, 4, 1, 2, 3).unwrap(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(current_path, temp.path().join("current_artifacts.json"));
+        assert!(temp
+            .path()
+            .join("current_artifacts_20260504T010203Z.json")
+            .is_file());
+        assert!(!packaged_root.join("current_artifacts.json").exists());
+        fs::write(packaged_root.join("current_artifacts.json"), "{}").unwrap();
+        cleanup_published_packaged_root(&packaged_root, &current_path).unwrap();
+        assert!(!packaged_root.join("current_artifacts.json").exists());
+
+        let current = load_current_artifacts_manifest(&current_path).unwrap();
+        assert_eq!(current.artifact_roots.packaged, "published_packaged/");
+        assert_eq!(current.artifact_roots.unpacked, "published_unpacked/");
+        assert_eq!(current.bundles.len(), 1);
+    }
+
+    #[test]
     fn packaged_cleanup_prunes_historical_discovery_with_missing_package() {
         let temp = tempdir().unwrap();
         let root = temp.path();
@@ -18451,6 +18722,7 @@ mod tests {
             write_hashed_fast_bundle_manifest(root, &current_fast_bundle).unwrap();
         let current = CurrentArtifactsManifest {
             schema_version: 1,
+            artifact_roots: default_current_artifact_roots(),
             as_of_date: "2026-05-04".to_string(),
             as_of_utc: "2026-05-04T00:00:00Z".to_string(),
             bundles: vec![current_bundle_entry_from_path(&current_fast_bundle_path).unwrap()],
@@ -18494,6 +18766,7 @@ mod tests {
             write_hashed_bundle_manifest(root, &stale_cycle_bundle).unwrap();
         let stale = CurrentArtifactsManifest {
             schema_version: 1,
+            artifact_roots: default_current_artifact_roots(),
             as_of_date: "2026-05-03".to_string(),
             as_of_utc: "2026-05-03T00:00:00Z".to_string(),
             bundles: vec![current_bundle_entry_from_path(&stale_cycle_bundle_path).unwrap()],
@@ -18513,8 +18786,8 @@ mod tests {
     #[test]
     fn unpacked_cleanup_uses_unpacked_root_for_package_dirs() {
         let temp = tempdir().unwrap();
-        let packaged_root = temp.path().join("published-packaged");
-        let unpacked_root = temp.path().join("published-unpacked");
+        let packaged_root = temp.path().join("published_packaged");
+        let unpacked_root = temp.path().join("published_unpacked");
         fs::create_dir_all(&packaged_root).unwrap();
         fs::create_dir_all(&unpacked_root).unwrap();
         let package_filename =
@@ -18558,6 +18831,7 @@ mod tests {
         sync_unpacked_file(&bundle_path, &unpacked_root).unwrap();
         let current = CurrentArtifactsManifest {
             schema_version: 1,
+            artifact_roots: default_current_artifact_roots(),
             as_of_date: "2026-05-04".to_string(),
             as_of_utc: "2026-05-04T00:00:00Z".to_string(),
             bundles: vec![current_bundle_entry_from_path(&bundle_path).unwrap()],

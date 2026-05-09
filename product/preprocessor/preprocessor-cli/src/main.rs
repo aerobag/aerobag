@@ -1902,9 +1902,9 @@ fn build_cache_gc_config_from_args(args: &[String]) -> anyhow::Result<BuildCache
                             .to_path_buf(),
                     );
                     base.build_root = match base.profile {
-                        ProductBuildProfile::Production => artifact_root.join("published-packaged"),
+                        ProductBuildProfile::Production => artifact_root.join("published_packaged"),
                         ProductBuildProfile::Validation => {
-                            artifact_root.join("published-packaged-validation")
+                            artifact_root.join("published_packaged_validation")
                         }
                     };
                 }

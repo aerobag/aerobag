@@ -582,6 +582,7 @@ fn prefetch_one(
             recorder.record_extract(file_name, &members)?;
         }
         let status = Command::new("unzip")
+            .arg("-q")
             .arg("-o")
             .arg(file_name)
             .current_dir(dest_dir)

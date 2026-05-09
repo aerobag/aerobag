@@ -391,19 +391,20 @@ pub fn select_map_family_in_session(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
-    let selected_map_id = session
-        .raster_map_catalog
-        .as_ref()
-        .map(|catalog| catalog.selected_map_id.as_str());
-    let catalog = match crate::had_ops::raster_map_catalog_from_nav_kv(
-        session_nav_kv_store(session)?,
-        selected_map_id,
-        Some(family_id),
-    ) {
-        Ok(catalog) => catalog,
-        Err(err) => return had_read_error_to_overlay_outcome(err),
+    let Some(catalog) = session.raster_map_catalog.as_mut() else {
+        let catalog =
+            match crate::had_ops::raster_map_catalog_from_nav_kv(
+                session_nav_kv_store(session)?,
+                None,
+                Some(family_id),
+            ) {
+                Ok(catalog) => catalog,
+                Err(err) => return had_read_error_to_overlay_outcome(err),
+            };
+        session.raster_map_catalog = Some(catalog);
+        return session_snapshot_outcome(session);
     };
-    session.raster_map_catalog = Some(catalog);
+    crate::select_map_family_in_catalog(catalog, family_id);
     session_snapshot_outcome(session)
 }
 

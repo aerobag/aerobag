@@ -57,9 +57,16 @@ pub struct BundleManifest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurrentArtifactsManifest {
     pub schema_version: Option<u32>,
+    pub artifact_roots: CurrentArtifactsArtifactRoots,
     pub as_of_date: Option<String>,
     pub as_of_utc: Option<String>,
     pub bundles: Vec<CurrentArtifactsBundleRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurrentArtifactsArtifactRoots {
+    pub packaged: String,
+    pub unpacked: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -300,6 +307,7 @@ pub enum OfflinePackagesControllerCommand {
     },
     Sync {
         package_source_base_url: String,
+        packaged_artifact_root: String,
         plan: PackageManagementPlan,
         bundle: BundleManifest,
         max_parallel_fetches: usize,
@@ -605,6 +613,24 @@ pub fn reduce_offline_packages_controller(
                     command,
                 };
             };
+            let packaged_artifact_root =
+                match packaged_artifact_root(&library_cache.discovery_manifests) {
+                    Some(root) => root,
+                    None => {
+                        state.library_error_message = Some(
+                            "offline packages library has no packaged artifact root".to_string(),
+                        );
+                        return OfflinePackagesControllerResult {
+                            ui_state: project_offline_packages_controller_ui_state(
+                                &state,
+                                &package_source_base_url,
+                                None,
+                            ),
+                            state,
+                            command,
+                        };
+                    }
+                };
             let current = initialize_offline_packages(&OfflinePackagesInitInput {
                 state: state.packages_state.clone(),
                 region_ids: input.region_ids.clone(),
@@ -631,6 +657,7 @@ pub fn reduce_offline_packages_controller(
             });
             command = Some(OfflinePackagesControllerCommand::Sync {
                 package_source_base_url: package_source_base_url.clone(),
+                packaged_artifact_root,
                 plan: current.plan,
                 bundle: current.bundle,
                 max_parallel_fetches: OFFLINE_PACKAGES_MAX_PARALLEL_FETCHES,
@@ -695,6 +722,13 @@ pub fn reduce_offline_packages_controller(
         state,
         command,
     }
+}
+
+fn packaged_artifact_root(discovery_manifests: &[CurrentArtifactsManifest]) -> Option<String> {
+    discovery_manifests
+        .first()
+        .map(|manifest| manifest.artifact_roots.packaged.trim().to_string())
+        .filter(|root| !root.is_empty())
 }
 
 fn library_refresh_needed(
@@ -2472,10 +2506,18 @@ mod tests {
         );
     }
 
+    fn test_artifact_roots() -> CurrentArtifactsArtifactRoots {
+        CurrentArtifactsArtifactRoots {
+            packaged: "published_packaged/".to_string(),
+            unpacked: "published_unpacked/".to_string(),
+        }
+    }
+
     #[test]
     fn forced_gc_bad_navdbs_show_fetch_and_gc_in_core_row() {
         let discovery = CurrentArtifactsManifest {
             schema_version: Some(1),
+            artifact_roots: test_artifact_roots(),
             as_of_date: Some("2026-03-25".to_string()),
             as_of_utc: Some("2026-03-25T12:00:00Z".to_string()),
             bundles: vec![CurrentArtifactsBundleRef {
@@ -2580,6 +2622,7 @@ mod tests {
     fn remote_poisoned_filename_is_suppressed_from_refetch() {
         let discovery = CurrentArtifactsManifest {
             schema_version: Some(1),
+            artifact_roots: test_artifact_roots(),
             as_of_date: Some("2026-04-25".to_string()),
             as_of_utc: Some("2026-04-25T12:00:00Z".to_string()),
             bundles: vec![CurrentArtifactsBundleRef {
@@ -2681,6 +2724,7 @@ mod tests {
     fn reducer_cycles_region_in_core() {
         let discovery = CurrentArtifactsManifest {
             schema_version: Some(1),
+            artifact_roots: test_artifact_roots(),
             as_of_date: Some("2026-04-15".to_string()),
             as_of_utc: Some("2026-04-15T12:00:00Z".to_string()),
             bundles: vec![CurrentArtifactsBundleRef {
@@ -2749,6 +2793,7 @@ mod tests {
     fn discovery_selects_latest_manifest_not_after_now_and_merges_cycle_bundles() {
         let early = CurrentArtifactsManifest {
             schema_version: Some(1),
+            artifact_roots: test_artifact_roots(),
             as_of_date: Some("2026-03-25".to_string()),
             as_of_utc: Some("2026-03-25T12:00:00Z".to_string()),
             bundles: vec![CurrentArtifactsBundleRef {
@@ -2766,6 +2811,7 @@ mod tests {
         };
         let overlap = CurrentArtifactsManifest {
             schema_version: Some(1),
+            artifact_roots: test_artifact_roots(),
             as_of_date: Some("2026-04-15".to_string()),
             as_of_utc: Some("2026-04-15T12:00:00Z".to_string()),
             bundles: vec![

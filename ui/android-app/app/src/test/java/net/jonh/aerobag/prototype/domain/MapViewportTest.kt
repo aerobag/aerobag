@@ -14,6 +14,8 @@ class MapViewportTest {
         tileSize = 256,
         minZoom = 8.6,
         maxZoom = 10.8,
+        maxSourceZoom = null,
+        maxDisplayZoom = null,
         storageKind = TileStorageKind.AssetTree,
         packageName = null,
         fullCoverageZoom = null,

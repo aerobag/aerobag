@@ -820,13 +820,12 @@ fn package_tiles_url_root(package: &PackageRecord) -> Result<Option<String>, Had
     let Some(relative_path) = package.relative_path.as_ref() else {
         return Ok(None);
     };
-    let package_dir = relative_path.strip_suffix(".zip")
-        .ok_or_else(|| {
-            HadReadError::Fatal(format!(
-                "package {} relative_path is not a zip: {}",
-                package.id, relative_path
-            ))
-        })?;
+    let package_dir = relative_path.strip_suffix(".zip").ok_or_else(|| {
+        HadReadError::Fatal(format!(
+            "package {} relative_path is not a zip: {}",
+            package.id, relative_path
+        ))
+    })?;
     Ok(Some(format!(
         "/packages/published_unpacked/{package_dir}/tiles"
     )))

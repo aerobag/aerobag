@@ -952,30 +952,30 @@ Warnings include:
 - {ADSB, NEXRAD, METAR} data is old
 data age cautions for NEXRAD, METARs, ADSB, NOTAMs, TFRs.
 
-I think we're ready to productionize this thing. Here's what we're going to do:
-1. Move procedure decoding into preproc. Where are you finding the "preprocessed" rows
-right now? They're in the internal sqlitedb, not the nav-db, right?
-2. You're going to emit nav-db records with a key scheme like:
-procedure-geometry/KRGK/VOR-A/DARTE -> json{}
-The key fields should be standard keys; if we don't have one already, stop and discuss.
-Right now, I can select KRGK/VOR A/DARTE from the flight plan page; we should be using
-the unique keys that match those.
-3. We want four things in the output:
-- the sequence of geometry elements (segments & arcs) we're going to draw (and
-  sequence through as ownship moves)
-- the named waypoints from the input rows along that geometry. In the UI, we might
-  have an "active leg" that's actually a sequence of geometric steps but is conceptually
-  one "leg" from the FP point of view. The user wants to see step-down fixes sequencing
-  in the CDI.
-- the sequencing rule at the end of each of these leg bundles. Do we sequence to the next
-  one, or suspend (because we're in a hold)? I think the raw rows are supposed to tell us
-  this, right?
-- An annotation indicating data quality. The default is None. But for every place we have
-  an explicit validator apology, we're going to generate Some(str) where the string
-  describes what's suspicious. For example,
-  "Procedure encoding says remain within 1.0NM, assumed error; read plate for controlling value."
-  (We're going to surface this in the UI with a caution icon that can be expanded to show
-  this message.)
+x I think we're ready to productionize this thing. Here's what we're going to do:
+x 1. Move procedure decoding into preproc. Where are you finding the "preprocessed" rows
+x right now? They're in the internal sqlitedb, not the nav-db, right?
+x 2. You're going to emit nav-db records with a key scheme like:
+x procedure-geometry/KRGK/VOR-A/DARTE -> json{}
+x The key fields should be standard keys; if we don't have one already, stop and discuss.
+x Right now, I can select KRGK/VOR A/DARTE from the flight plan page; we should be using
+x the unique keys that match those.
+x 3. We want four things in the output:
+x - the sequence of geometry elements (segments & arcs) we're going to draw (and
+x   sequence through as ownship moves)
+x - the named waypoints from the input rows along that geometry. In the UI, we might
+x   have an "active leg" that's actually a sequence of geometric steps but is conceptually
+x   one "leg" from the FP point of view. The user wants to see step-down fixes sequencing
+x   in the CDI.
+x - the sequencing rule at the end of each of these leg bundles. Do we sequence to the next
+x   one, or suspend (because we're in a hold)? I think the raw rows are supposed to tell us
+x   this, right?
+x - An annotation indicating data quality. The default is None. But for every place we have
+x   an explicit validator apology, we're going to generate Some(str) where the string
+x   describes what's suspicious. For example,
+x   "Procedure encoding says remain within 1.0NM, assumed error; read plate for controlling value."
+x   (We're going to surface this in the UI with a caution icon that can be expanded to show
+x   this message.)
 
 SIDs and STARs
 
@@ -1037,16 +1037,116 @@ symbol in a cell on the tray. It goes in the same row as SPOT, and sorted after 
 ------------------------------------------------------------------------------
 Refactoring & Cleanups
 
-"The FAA PDF names already encode the output region prefix,"
-Whoah, that sounds brittle! What if the FAA draws the boundaries somewhere
-other than where we drew lat/lon boundaries for tiled charts?
-Let's do an experiment where we render TPP sites (using our join table to get
-runway/airport lat lons) on a map, and also render our nine region polygons
-on the same map, and see how well they agree.
+x "The FAA PDF names already encode the output region prefix,"
+x Whoah, that sounds brittle! What if the FAA draws the boundaries somewhere
+x other than where we drew lat/lon boundaries for tiled charts?
+x Let's do an experiment where we render TPP sites (using our join table to get
+x runway/airport lat lons) on a map, and also render our nine region polygons
+x on the same map, and see how well they agree.
 
-Go looking through the source tree for dead code or plumbing for features we
-don't have. Surface it all and let's discuss eliminating it.
-Divide this task into: ui-core, ui-web, ui-android, and preprocessor.
+x Some TPP labels are competing with the Chart labels. Let's compute their bounding
+x boxes at about z4, grow them by 150%, and if they overlap, bump them apart until
+x they don't.
+
+x There are some longitude troubles in how we render vector & tile features.
+x 
+x 1. If I zoom out to z2 and drag the map left so the conus is disappearing
+x off the left edge, the AK and PAC polygons "unwrap" -- they get super long in the
+x longitude dimension.
+x 
+x 2. There's a giant pile of pireps over ... greenland? The north pacific? Are those
+x actually where they go? Maybe they're real.
+x 
+x 3. If I keep scrolling so the Pacific comes back into view, I see a bunch
+x of what appear to be SW alaska and HI pireps. But those weren't on the AK and HI
+x that was left of the original view.
+x 
+x 4. If I keep scrolling, I see another copy of the US chart boundary polygons. But
+x no charts! No ownship. No flight plan.
+x 
+x If we're going to allow the world to "wrap", then it should really wrap properly (modular tile
+x math, careful polygon unwrapping for antimeridian).
+
+a4: when the autopilot is flying a hold, the CDI is empty. But it has legs it is following!
+so clearly we could be presenting guidance. The guidance label could say "HOLD". Or maybe
+we should ask preproc to produce a better label, like "HOLD at ECEPO".
+
+x Let's rename "NW TPP/CSUP" -> "NW Plates" and "NW charts" -> "NW Charts"
+
+x When we render them, let's have core send the data needed to draw the offline summary:
+x "NW Charts
+x (white present icon) 2604 (magenta play icon) 2604 (2)
+x (orange pause icon) 2604 (2)
+x "
+x 
+x These would be arranged in the two rows below the title, and visually exactly
+x as they appear on the offline charts page.
+x Let's wire up the chart/plate polygons to be useful! When the layer is active, it should
+x participate in inspection-click-hitting, producing a new row under the weather
+x row in the inspect box.
+x Clicking near KBMC would bring a "NW" and "SW" button, because
+x it overlaps NW plates, SW plates, and NW Charts. Clicking the NW button brings
+x up in the detail pane::
+x 
+x * a "NW Region" button containing a
+x play/pause/delete icon matching the region row of the current offline packages
+x config. Clicking the button would cycle that mode, just like on the offline
+x packages page. The changes would reflect both in the button on the tray and in
+x the labels for the polygons.
+x 
+x * an "Offline Packages" button that jumps to the Settings page with the Offline Packages
+x modal brought up. (This is a discoverable way to adjust the products, to complement
+x the other button that selects regions cartographically.)
+
+x There are different policies for how we handle low zoom numbers for avare-ancestry
+x chart products vs shaded relief, and I think both are kinda dumb.
+x 
+x In SEC, TAC, and IFR charts, every region carries every tile at z7 and lower (I think).
+x So we're duplicating the zoomed-out views. I think the idea is that, if you only load
+x NW and SW offline, at least you can still kinda squint at the rest of the country when
+x you're zoomed out.
+x 
+x Shaded Relief only carries exactly the tiles for its region, so if you only load NW,
+x and zoom out, the world look stupid with big holes in the data.
+x 
+x How much space are we wasting with duplicated low-zoom tiles in the avare-style products?
+x How much is that relative to the overall product size?
+x 
+x I propose a different strategy. Let's have a new "wide-angle" region: it admits every
+x tile the product supplies, but only down to the threshold zoom (z7?). Ideally, this is
+x pretty small. If you select ANY region in the IFR-L product, the planner will also select
+x the wide-angle region as well (without being asked) -- but only one copy! The metadata
+x will communicate to the tile planner how to find tiles for that product when z crosses
+x the threshhold.
+x 
+x And then let's implement this strategy for all the products, avare-style and also the
+x shaded relief, so that the user experience is consistent:
+x - if you asked for no regions of a product, you'll see nothing when you turn it on.
+x - if you asked for *any* region of a product, it'll be sharp in the regions you requested,
+x and visible (at the threshhold zoom) everywhere it's published.
+
+UI cleanups
+- insert before/after should be much leaner looking.
+
+Easy replace-all method when entering a fresh FP.
+UNDO for flight plan actions! That'd be cool!
+Save FPs.
+
+We need to straighten out the static path serving story. We've got a bunch of janky staging
+thingies in vite. Then a big stack of janky redirects in nginx. But I should think, if we
+organize the unpacking step correctly in preproc, we should emit a single directory that has
+everything we want, each in its rightful place. Then we can strip out all the janky patchery
+and have things work very simply both in dev and prod and eventually when we serve from an
+S3 or CDN sort of static environment.
+
+LOH a3
+x Go looking through the source tree for dead code or plumbing for features we
+x don't have. Surface it all and let's discuss eliminating it.
+x Divide this task into: ui-core, ui-web, ui-android, and preprocessor.
+
+Look through both web- and android- paths for early-development staging/seeding
+cruft. We did a lot of early hacks, but now the real channels are all there, and
+those hacks should be scrubbed out.
 
 Look through the source tree to find leftover development fixtures and cruft.
 What can we clean out?
@@ -1078,21 +1178,21 @@ x image interpretation is tricky, but either is fine.
 x 
 x Sound feasible?
 
-Need to do the symbol commoning treatment for:
-seaports
-heliports
-private airports
-SPOT symbol
-wx + pirep symbols
+x Need to do the symbol commoning treatment for:
+x seaports
+x heliports
+x private airports
+x SPOT symbol
+x wx + pirep symbols
 
-airspace normalization for button appearance on android doesn't match web, which fills the icon
-and centers.
+x airspace normalization for button appearance on android doesn't match web, which fills the icon
+x and centers.
 
 
-  On shared symbol assets: yes, we should do that. The clean version is a single
-  shared symbol spec directory, probably SVG/path-oriented, plus a build step that
-  emits web constants and Android Path builders from the same source. I did not do
-  that generator in this pass; I fixed the current mismatches directly first.
+x  On shared symbol assets: yes, we should do that. The clean version is a single
+x  shared symbol spec directory, probably SVG/path-oriented, plus a build step that
+x  emits web constants and Android Path builders from the same source. I did not do
+x  that generator in this pass; I fixed the current mismatches directly first.
 
 
 Clean up stale avare refs
@@ -1101,7 +1201,41 @@ rename java namespace to org.aerobag
 ------------------------------------------------------------------------------
 Major missing features
 
-Ownship from real GPS!
+x Ownship from real GPS!
+x 
+x Let's turn the ownship-location pill into a menu-tray-opening button. When it's closed,
+x it says one of these things that comes from the Situation source:
+x  [ GPS, Replay, Plan Preview, ... AHARS ]
+x GPS means from the local device -- android or browser GPS API. Its status can be ready ("GPS" in green) or unavailable ("No GPS" in red).
+x Replay means replaying an ADSB (or later other format) trace. "Replay" in black. Selecting it opens the replay controller.
+x "Plan Preview" (in black) is an internally generate source that puts ownship somewhere on the flight plan.
+x We may add more later like AHARS if we have a way to collect an external data feed.
+x 
+x When the user clicks the pill, they get a tray with a button for each mode, one of which is the
+x theme 'selected' color (matching the pill label). Clicking a button changes the source and
+x dismisses the tray.
+
+x Let's make the flight plan preview useful. We're going to accept four keystrokes, which of course
+x go directly into core for processing. When the situation-selector tray is open, it'll also have
+x a row of four 1x1 thumb buttons that produce these same inputs. The actions are:
+x skip-backward ⏮ '<'
+x fast-rewind ⏪ '('
+x fast-forward ⏩ ')'
+x skip-forward ⏭'>'
+x 
+x When we enter Plan Preview, if there's an active leg, we should put the ownship at the beginning
+x waypoint of that leg.
+x In plan preview mode, the skip operations move the ownship to the preceding or next waypoint in the plan. (if the ownship is not on the plan, put it at the first waypoint)
+x The fast- operations move the ownship 10 or 20 miles along whatever leg it's on, stopping at fp waypoints.
+x The data model (inside core, obvs) driving the plan preview position should be a pointer into the FP row (by rowuid so it's stable if the FP gets moved around) and an offset along that leg in nm. Write tests that sane things happen as we try to advance across waypoints, past the end/beginning of the FP, or rearrange the FP while the preview pointer is pointing at a leg.
+x 
+x In GPS mode these events are ignored.
+x 
+x In Replay mode, the fast buttons move the jog dial 30s at a time. The skip
+x buttons move it 10min at a time. Both motions should not enter "dead" regions
+x of the timeline; if we have 2 minutes til the next dead region, skip should
+x continue 8min farther on the other side.
+
 
   Altitude optimizer!
 
@@ -1231,6 +1365,8 @@ Version migration story:
 	- make rust parsing robust to unused fields to enable schema evolution
 	without breaking old clients.
 
+Share screen! That would be cool.
+
 ------------------------------------------------------------------------------
 Fit & Finish
 
@@ -1255,11 +1391,11 @@ each feature type.
 
 Tweak the button layout to optimize flow.
 
-Checkboxes to control overlays:
-	NEXRAD,
-	Metars,
-	Terrain,
-	DB Vector data?
+x Checkboxes to control overlays:
+x 	NEXRAD,
+x 	Metars,
+x 	Terrain,
+x 	DB Vector data?
 
 Status boxes:
 	"NEXRAD age: 7 minutes" (computed relative to original data!)
@@ -1268,8 +1404,10 @@ Status boxes:
 Track-up view? (Usable in shaded-relief + vectors mode)
 
 Add mouseovers to explain things.
+Add (?) help pages.
 
-Add a way to pop up the chart legends!
+Add a way to pop up the chart legends! -- make it a feature of the chart
+boundary inspection tray.
 
 Make vector features clickable; pop up to add to flight plan.
 

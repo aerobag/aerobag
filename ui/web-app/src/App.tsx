@@ -2486,6 +2486,7 @@ function MapPage(props: {
   }, [center, chartSearch.open, chartSearch.query, props.appCoreAdapter]);
   const [tiles, setTiles] = useState<RasterRenderTile[]>([]);
   const [rasterTileViewport, setRasterTileViewport] = useState<MapViewportState | null>(null);
+  const [failedRasterTileKeys, setFailedRasterTileKeys] = useState<Set<string>>(() => new Set());
   const loadedRasterTileKeysRef = useRef<Set<string>>(new Set());
   const completedPageTilePaintTimingIdsRef = useRef<Set<number>>(new Set());
   const rasterTileKey = useCallback((tile: RasterRenderTile) =>
@@ -2533,6 +2534,7 @@ function MapPage(props: {
             device_pixel_ratio: devicePixelRatio,
           });
           loadedRasterTileKeysRef.current = new Set();
+          setFailedRasterTileKeys(new Set());
           setTiles(plan.tiles.map((tile) => renderTileFromCore(tile, 1 / devicePixelRatio)));
           setRasterTileViewport(cssViewport);
         }
@@ -3444,6 +3446,16 @@ function MapPage(props: {
   }
 
   function reportRasterTileError(tile: RasterRenderTile) {
+    const key = rasterTileKey(tile);
+    setFailedRasterTileKeys((current) => {
+      if (current.has(key)) {
+        return current;
+      }
+      const next = new Set(current);
+      next.add(key);
+      return next;
+    });
+    loadedRasterTileKeysRef.current.add(key);
     debugLog("map.raster.tile.error", {
       selected_map_id: selectedMap.selected_map_id,
       selected_family_id: selectedFamily?.id ?? null,
@@ -3657,14 +3669,16 @@ function MapPage(props: {
                 zIndex: tile.zIndex,
               }}
             >
-              <img
-                className="mapTileImage"
-                src={tile.src}
-                alt=""
-                draggable={false}
-                onLoad={() => reportRasterTileLoaded(tile)}
-                onError={() => reportRasterTileError(tile)}
-              />
+              {failedRasterTileKeys.has(rasterTileKey(tile)) ? null : (
+                <img
+                  className="mapTileImage"
+                  src={tile.src}
+                  alt=""
+                  draggable={false}
+                  onLoad={() => reportRasterTileLoaded(tile)}
+                  onError={() => reportRasterTileError(tile)}
+                />
+              )}
               {debugState.tile_labels ? (
                 <div className="tileLabel">
                   z{tile.zoom} x{tile.x} y{tile.yTms}

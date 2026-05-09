@@ -48,19 +48,29 @@ if (
 ) {
   throw new Error(`${currentArtifactsPath} has artifact_roots=${JSON.stringify(currentArtifacts.artifact_roots)}; expected ${JSON.stringify(expectedArtifactRoots)}`);
 }
-function mountStaticTree(sourceRoot: string, options: { missingStatus?: number } = {}) {
+function appendRequestLog(entry: Record<string, unknown>) {
+  fs.appendFileSync(requestLogPath, `${JSON.stringify({ ts: Date.now(), ...entry })}\n`);
+}
+
+function mountStaticTree(sourceRoot: string, options: { missingStatus?: number; logPrefix?: string } = {}) {
   return (req: { headers?: Record<string, string | string[] | undefined>; url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
     const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
     const relativePath = requestPath.replace(/^\/+/, "");
     const filePath = path.resolve(sourceRoot, relativePath);
     if (!filePath.startsWith(sourceRoot)) {
       res.statusCode = 403;
+      if (options.logPrefix) {
+        appendRequestLog({ kind: `${options.logPrefix}.forbidden`, url: req.url ?? "", file_path: filePath });
+      }
       res.end("forbidden");
       return;
     }
     if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
       if (options.missingStatus) {
         res.statusCode = options.missingStatus ?? 404;
+        if (options.logPrefix) {
+          appendRequestLog({ kind: `${options.logPrefix}.missing`, url: req.url ?? "", file_path: filePath, status: res.statusCode });
+        }
         res.end("not found");
         return;
       }
@@ -125,7 +135,7 @@ function aerobagStaticPlugin(): Plugin {
           const lines = payload.map((entry) => JSON.stringify(entry)).join("\n");
           if (lines.length > 0) {
             fs.appendFileSync(debugLogPath, `${lines}\n`);
-            fs.appendFileSync(requestLogPath, `${JSON.stringify({ ts: Date.now(), kind: "client_debug_post", count: payload.length })}\n`);
+            appendRequestLog({ kind: "client_debug_post", count: payload.length });
           }
           res.statusCode = 204;
           res.end();
@@ -141,16 +151,32 @@ function aerobagStaticPlugin(): Plugin {
         next();
         return;
       }
-      fs.appendFileSync(
-        requestLogPath,
-        `${JSON.stringify({ ts: Date.now(), kind: "ping", url: req.url ?? "" })}\n`,
-      );
+      appendRequestLog({ kind: "ping", url: req.url ?? "" });
       res.statusCode = 204;
       res.end();
     });
-    server.middlewares.use("/packages", mountStaticTree(artifactReadRoot, { missingStatus: 404 }));
-    server.middlewares.use("/icons", mountStaticTree(iconsRoot));
-    server.middlewares.use("/adsb-traces", mountStaticTree(adsbTraceRoot));
+    server.middlewares.use("/packages", mountStaticTree(artifactReadRoot, { missingStatus: 404, logPrefix: "packages" }));
+    server.middlewares.use("/icons", mountStaticTree(iconsRoot, { missingStatus: 404, logPrefix: "icons" }));
+    server.middlewares.use("/adsb-traces", mountStaticTree(adsbTraceRoot, { missingStatus: 404, logPrefix: "adsb_traces" }));
+    for (const legacyPrefix of [
+      "/afd",
+      "/fast-products",
+      "/files",
+      "/nav-db",
+      "/nav-kv",
+      "/plates",
+      "/sectional-packages",
+      "/shaded-relief-products",
+      "/terrain-products",
+      "/thumbnails",
+      "/world-basemap-products",
+    ]) {
+      server.middlewares.use(legacyPrefix, (req: { url?: string }, res: { statusCode: number; end: (body?: string) => void }) => {
+        res.statusCode = 404;
+        appendRequestLog({ kind: "legacy_artifact_route", prefix: legacyPrefix, url: req.url ?? "", status: 404 });
+        res.end("artifact route moved under /packages");
+      });
+    }
   }
 
   return {

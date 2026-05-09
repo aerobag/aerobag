@@ -4405,7 +4405,7 @@ fn collect_static_raster_tile_levels(
         product_id: "world-basemap".to_string(),
         label: "World Basemap".to_string(),
         chart_family: "world-basemap".to_string(),
-        tile_url_root: "/world-basemap-products/world-basemap/tiles".to_string(),
+        tile_url_root: "tiles".to_string(),
         tile_path_template: "0/{z}/{x}/{y}.png".to_string(),
         tile_size: WORLD_BASEMAP_TILE_SIZE,
         min_zoom: WORLD_BASEMAP_MIN_ZOOM,
@@ -4872,7 +4872,7 @@ fn build_nav_kv_chart_catalog(
                         "region_id": WIDE_ANGLE_REGION_ID,
                         "max_zoom": FULL_COVERAGE_ZOOM,
                         "package_name": wide_collection.package_id,
-                        "tile_url_root": format!("/sectional-packages/{}/tiles", wide_collection.package_id),
+                        "tile_url_root": "tiles",
                         "tile_path_template": wide_collection.tile_path_template.strip_prefix("tiles/").unwrap_or(&wide_collection.tile_path_template),
                         "levels": wide_levels,
                     })
@@ -4896,7 +4896,7 @@ fn build_nav_kv_chart_catalog(
                     ),
                     "chart_index": collection.chart_index,
                     "tile_root": "tiles",
-                    "tile_url_root": format!("/sectional-packages/{}/tiles", collection.package_id),
+                    "tile_url_root": "tiles",
                     "tile_path_template": collection.tile_path_template.strip_prefix("tiles/").unwrap_or(&collection.tile_path_template),
                     "tile_size": 512,
                     "min_zoom": min_zoom_for_levels(collection),
@@ -5371,7 +5371,7 @@ fn build_nav_kv_static_raster_catalog_entries(
                         format!("{region_display_name} Shaded Relief"),
                         serde_json::Value::String(region_id.to_string()),
                         default_view_for_static_region(resource_index, region),
-                        format!("/shaded-relief-products/{}/tiles", entry.product_id),
+                        "tiles".to_string(),
                     )
                 } else {
                     (
@@ -5414,7 +5414,7 @@ fn build_nav_kv_static_raster_catalog_entries(
                             "region_id": WIDE_ANGLE_REGION_ID,
                             "max_zoom": FULL_COVERAGE_ZOOM,
                             "package_name": wide_entry.product_id,
-                            "tile_url_root": format!("/shaded-relief-products/{}/tiles", wide_entry.product_id),
+                            "tile_url_root": "tiles",
                             "tile_path_template": wide_entry.tile_path_template.clone(),
                             "levels": wide_levels,
                         })
@@ -9660,7 +9660,11 @@ fn build_world_basemap_source_node(
     let manifest_path = prepared.dir.join("source-manifest.json");
     let land_shp = input_dir.join("ne_110m_land.shp");
     let boundaries_shp = input_dir.join("ne_110m_admin_0_boundary_lines_land.shp");
-    let expected_outputs = vec![manifest_path.clone(), land_shp.clone(), boundaries_shp.clone()];
+    let expected_outputs = vec![
+        manifest_path.clone(),
+        land_shp.clone(),
+        boundaries_shp.clone(),
+    ];
     let _build_lock = match claim_or_wait_for_node(&prepared, &expected_outputs)? {
         NodeCacheState::CacheHit(_) => {
             let manifest = read_cached_source_manifest(&manifest_path)?;
@@ -10136,9 +10140,7 @@ fn prepare_shaded_relief_overlay_sources(
     let started = Instant::now();
     fs::create_dir_all(&input_dir)
         .with_context(|| format!("failed to create {}", input_dir.display()))?;
-    let provenance_dir = prepared
-        .dir
-        .join("meta/provenance/shaded-relief-overlays");
+    let provenance_dir = prepared.dir.join("meta/provenance/shaded-relief-overlays");
     fs::create_dir_all(&provenance_dir)?;
     let fetch_cache = static_source_fetch_cache_config(config)?;
     let requests = [
@@ -17848,7 +17850,7 @@ mod tests {
                 product_id: "world-basemap".to_string(),
                 label: "World Basemap".to_string(),
                 chart_family: "world-basemap".to_string(),
-                tile_url_root: "/world-basemap-products/world-basemap/tiles".to_string(),
+                tile_url_root: "tiles".to_string(),
                 tile_path_template: "0/{z}/{x}/{y}.png".to_string(),
                 tile_size: WORLD_BASEMAP_TILE_SIZE,
                 min_zoom: WORLD_BASEMAP_MIN_ZOOM,
@@ -17916,10 +17918,7 @@ mod tests {
 
         assert_eq!(shaded["label"], "Northwest Shaded Relief");
         assert_eq!(shaded["map_view"]["chart_family"], "shaded-relief");
-        assert_eq!(
-            shaded["map_view"]["tile_url_root"],
-            "/shaded-relief-products/shaded-relief-nw/tiles"
-        );
+        assert_eq!(shaded["map_view"]["tile_url_root"], "tiles");
         assert_eq!(
             shaded["map_view"]["tile_path_template"],
             "0/{z}/{x}/{y}.webp"
@@ -17955,6 +17954,7 @@ mod tests {
             .find(|entry| entry["id"] == "sec:nw")
             .expect("sectional entry");
 
+        assert_eq!(sectional["map_view"]["tile_url_root"], "tiles");
         assert_eq!(
             sectional["map_view"]["tile_path_template"],
             "0/{z}/{x}/{y}.webp"

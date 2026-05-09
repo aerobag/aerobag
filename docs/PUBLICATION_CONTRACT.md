@@ -124,6 +124,19 @@ Servers must not synthesize transparent placeholder tiles for these holes.
 Clients should treat missing raster tiles as no-draw, not as a fatal product or
 publication-contract error.
 
+## Package-Relative HAD Paths
+
+HAD records describe logical package contents. Paths inside HAD records are
+relative to the package that owns the record; they must not contain public server
+routes such as `/packages/...`, `/sectional-packages/...`, `/nav-kv/...`, or
+`/fast-products/...`.
+
+For raster map records, `package_name` identifies the package and
+`tile_url_root` is the package-relative tile root, normally `tiles`. Clients
+combine the package id with discovered bundle package metadata to find the
+installed package or the public unpacked package root, then append
+`tile_url_root` and `tile_path_template`.
+
 The web app may stage or alias these unpacked package paths into friendlier
 runtime routes such as `/nav-kv/`, `/sectional-packages/`, or `/fast-products/`,
 but those aliases are client/server presentation details. The publication

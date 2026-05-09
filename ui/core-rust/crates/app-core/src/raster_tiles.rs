@@ -11,6 +11,7 @@ const MAX_LATITUDE: f64 = 85.05112878;
 pub struct RasterMapCatalog {
     pub selected_map_id: String,
     pub selected_map: Option<RasterMapViewOption>,
+    pub available_maps: Vec<RasterMapViewOption>,
     pub displayed_maps: Vec<RasterMapViewOption>,
     pub geometry: RasterDisplayGeometry,
     #[serde(default)]
@@ -221,17 +222,15 @@ struct TileBounds {
 type PolygonSetLookup = HashMap<String, Vec<Vec<[f64; 2]>>>;
 
 pub fn select_map_in_catalog(catalog: &mut RasterMapCatalog, selected_map_id: &str) {
-    if catalog
-        .displayed_maps
+    if let Some(selected_map) = catalog
+        .available_maps
         .iter()
-        .any(|view| view.id == selected_map_id)
+        .find(|view| view.id == selected_map_id)
+        .cloned()
     {
         catalog.selected_map_id = selected_map_id.to_string();
-        catalog.selected_map = catalog
-            .displayed_maps
-            .iter()
-            .find(|view| view.id == selected_map_id)
-            .cloned();
+        catalog.selected_map = Some(selected_map);
+        update_displayed_maps_for_family(catalog);
     }
 }
 
@@ -241,7 +240,7 @@ pub fn select_map_family_in_catalog(catalog: &mut RasterMapCatalog, family_id: &
         .as_ref()
         .map(|view| view.region_id.as_str());
     let Some(selected_map) =
-        preferred_family_map(&catalog.displayed_maps, family_id, selected_region_id).cloned()
+        preferred_family_map(&catalog.available_maps, family_id, selected_region_id).cloned()
     else {
         return;
     };
@@ -250,6 +249,56 @@ pub fn select_map_family_in_catalog(catalog: &mut RasterMapCatalog, family_id: &
     for option in &mut catalog.family_options {
         option.active = option.id == family_id;
     }
+    update_displayed_maps_for_family(catalog);
+}
+
+fn update_displayed_maps_for_family(catalog: &mut RasterMapCatalog) {
+    let selected_family_id = catalog
+        .selected_map
+        .as_ref()
+        .map(|view| view.map_view.chart_family.as_str())
+        .unwrap_or("sec");
+    let mut displayed_maps = displayed_family_maps(&catalog.available_maps, selected_family_id)
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut displayed_map_ids = displayed_maps
+        .iter()
+        .map(|view| view.id.clone())
+        .collect::<HashSet<_>>();
+    displayed_maps.extend(
+        background_maps(&catalog.available_maps)
+            .into_iter()
+            .filter(|view| displayed_map_ids.insert(view.id.clone()))
+            .cloned(),
+    );
+    catalog.displayed_maps = displayed_maps;
+}
+
+fn displayed_family_maps<'a>(
+    map_views: &'a [RasterMapViewOption],
+    family_id: &str,
+) -> Vec<&'a RasterMapViewOption> {
+    if family_id == "tac" {
+        return map_views
+            .iter()
+            .filter(|view| {
+                let chart_family = view.map_view.chart_family.as_str();
+                chart_family == "sec" || chart_family == "tac"
+            })
+            .collect();
+    }
+    map_views
+        .iter()
+        .filter(|view| view.map_view.chart_family == family_id)
+        .collect()
+}
+
+fn background_maps(map_views: &[RasterMapViewOption]) -> Vec<&RasterMapViewOption> {
+    map_views
+        .iter()
+        .filter(|view| view.map_view.chart_family == "world-basemap")
+        .collect()
 }
 
 pub fn raster_map_ui_state(catalog: &RasterMapCatalog) -> Option<RasterMapUiState> {
@@ -1195,6 +1244,7 @@ mod tests {
         let catalog = RasterMapCatalog {
             selected_map_id: "sec:nw".to_string(),
             selected_map: None,
+            available_maps: Vec::new(),
             displayed_maps: vec![option(
                 "sec:nw",
                 "sec",
@@ -1237,6 +1287,7 @@ mod tests {
         let catalog = RasterMapCatalog {
             selected_map_id: "sec:nw".to_string(),
             selected_map: None,
+            available_maps: Vec::new(),
             displayed_maps: vec![option(
                 "sec:nw",
                 "sec",
@@ -1279,6 +1330,7 @@ mod tests {
         let catalog = RasterMapCatalog {
             selected_map_id: "tac:nw".to_string(),
             selected_map: None,
+            available_maps: Vec::new(),
             displayed_maps: vec![
                 option(
                     "sec:ak",
@@ -1363,6 +1415,7 @@ mod tests {
         let catalog = RasterMapCatalog {
             selected_map_id: "sec:nw".to_string(),
             selected_map: None,
+            available_maps: Vec::new(),
             displayed_maps: vec![option(
                 "sec:nw",
                 "sec",
@@ -1400,6 +1453,7 @@ mod tests {
         let catalog = RasterMapCatalog {
             selected_map_id: "sec:nw".to_string(),
             selected_map: None,
+            available_maps: Vec::new(),
             displayed_maps: vec![option(
                 "sec:nw",
                 "sec",
@@ -1458,6 +1512,7 @@ mod tests {
         let catalog = RasterMapCatalog {
             selected_map_id: "sec:nw".to_string(),
             selected_map: Some(regional.clone()),
+            available_maps: Vec::new(),
             displayed_maps: vec![regional],
             geometry: RasterDisplayGeometry::default(),
             family_options: Vec::new(),
@@ -1576,6 +1631,7 @@ mod tests {
         let catalog = RasterMapCatalog {
             selected_map_id: "sec:nw".to_string(),
             selected_map: Some(regional.clone()),
+            available_maps: Vec::new(),
             displayed_maps: vec![regional],
             geometry: RasterDisplayGeometry::default(),
             family_options: Vec::new(),
@@ -1605,6 +1661,7 @@ mod tests {
         let catalog = RasterMapCatalog {
             selected_map_id: "sec:nw".to_string(),
             selected_map: None,
+            available_maps: Vec::new(),
             displayed_maps: vec![basemap],
             geometry: RasterDisplayGeometry::default(),
             family_options: Vec::new(),
@@ -1652,6 +1709,7 @@ mod tests {
         let catalog = RasterMapCatalog {
             selected_map_id: "sec:nw".to_string(),
             selected_map: None,
+            available_maps: Vec::new(),
             displayed_maps: vec![option(
                 "sec:nw",
                 "sec",
@@ -1691,6 +1749,7 @@ mod tests {
         let catalog = RasterMapCatalog {
             selected_map_id: "sec:world".to_string(),
             selected_map: None,
+            available_maps: Vec::new(),
             displayed_maps: vec![option(
                 "sec:world",
                 "sec",
@@ -1734,6 +1793,7 @@ mod tests {
         let catalog = RasterMapCatalog {
             selected_map_id: "sec:world".to_string(),
             selected_map: None,
+            available_maps: Vec::new(),
             displayed_maps: vec![option(
                 "sec:world",
                 "sec",
@@ -1780,6 +1840,7 @@ mod tests {
         let catalog = RasterMapCatalog {
             selected_map_id: "sec:nw".to_string(),
             selected_map: None,
+            available_maps: Vec::new(),
             displayed_maps: vec![option(
                 "sec:nw",
                 "sec",
@@ -1839,6 +1900,7 @@ mod tests {
         let catalog = RasterMapCatalog {
             selected_map_id: "sec:nw".to_string(),
             selected_map: None,
+            available_maps: Vec::new(),
             displayed_maps: vec![option(
                 "sec:nw",
                 "sec",

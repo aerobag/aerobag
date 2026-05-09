@@ -373,6 +373,7 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
 struct MapSelectorState {
     selected_map_id: String,
     selected_map: Option<MapViewOptionRecord>,
+    available_maps: Vec<MapViewOptionRecord>,
     displayed_maps: Vec<MapViewOptionRecord>,
     geometry: DisplayGeometryRecord,
     family_options: Vec<MapFamilyOption>,
@@ -710,7 +711,7 @@ fn map_selector_state(
             .filter(|view| displayed_map_ids.insert(view.id.clone()))
             .cloned(),
     );
-    let geometry = displayed_geometry(store, &displayed_maps)?;
+    let geometry = displayed_geometry(store, &map_views)?;
     let family_options = supported_chart_families()
         .into_iter()
         .map(|(id, label, launcher_label)| MapFamilyOption {
@@ -729,6 +730,7 @@ fn map_selector_state(
             .map(|view| view.id.clone())
             .unwrap_or_default(),
         selected_map,
+        available_maps: map_views,
         displayed_maps,
         geometry,
         family_options,

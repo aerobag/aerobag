@@ -1576,437 +1576,57 @@ internal fun MapExplorerPage(
                 }
             },
     ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            tiles.forEach { tile ->
-                val tileRect = tileRects.getValue(renderTileKey(tile))
-                val bitmap = tileBitmapCache[renderTileKey(tile)]
-                if (bitmap != null) {
-                    drawImage(
-                        image = bitmap,
-                        dstOffset = IntOffset(tileRect.leftPx, tileRect.topPx),
-                        dstSize = IntSize(tileRect.widthPx, tileRect.heightPx),
-                    )
-                } else {
-                    // Missing tiles are no-draw. Core decides which exact tiles are acceptable.
-                }
-                if (debugState.tileLabels) {
-                    val label = "z${tile.zoom} x${tile.x} y${tile.yTms}"
-                    val rectLeft = tileRect.leftPx + 6f
-                    val rectTop = tileRect.topPx + 6f
-                    val textWidth = tileLabelPaint.measureText(label)
-                    drawContext.canvas.nativeCanvas.apply {
-                        drawRoundRect(
-                            rectLeft,
-                            rectTop,
-                            rectLeft + textWidth + 16f,
-                            rectTop + 30f,
-                            8f,
-                            8f,
-                            tileLabelBackgroundPaint,
-                        )
-                        drawText(label, rectLeft + 8f, tileRect.topPx + 30f, tileLabelPaint)
-                    }
-                }
-            }
-            val currentNexradFrame =
-                if (mapLayerState.nexrad.visible) nexradFrames.getOrNull(nexradFrameIndex) else null
-            if (currentNexradFrame != null && surfaceWidthPx > 0f && surfaceHeightPx > 0f) {
-                val northwestWorld = mercatorMetersToWorld(currentNexradFrame.frame.bounds.west, currentNexradFrame.frame.bounds.north)
-                val southeastWorld = mercatorMetersToWorld(currentNexradFrame.frame.bounds.east, currentNexradFrame.frame.bounds.south)
-                val northwest = worldToScreen(currentViewport, northwestWorld, surfaceWidthPx, surfaceHeightPx)
-                val southeast = worldToScreen(currentViewport, southeastWorld, surfaceWidthPx, surfaceHeightPx)
-                val widthPx = (southeast.x - northwest.x).roundToInt().coerceAtLeast(1)
-                val heightPx = (southeast.y - northwest.y).roundToInt().coerceAtLeast(1)
-                drawImage(
-                    image = currentNexradFrame.bitmap,
-                    dstOffset = IntOffset(northwest.x.roundToInt(), northwest.y.roundToInt()),
-                    dstSize = IntSize(widthPx, heightPx),
-                    alpha = 0.82f,
-                )
-            }
-            terrainOverlay.forEach { image ->
-                val tilesAtZoom = 2.0.pow(image.z.toDouble())
-                val tileWorldSize = WebMercatorWorldSize / tilesAtZoom
-                val yXyz = (tilesAtZoom - 1.0) - image.yTms.toDouble()
-                val scale = scaleForZoom(currentViewport.zoom)
-                val leftPx = ((image.x * tileWorldSize - currentViewport.centerWorldX) * scale + surfaceWidthPx / 2f).roundToInt()
-                val topPx = ((yXyz * tileWorldSize - currentViewport.centerWorldY) * scale + surfaceHeightPx / 2f).roundToInt()
-                val sizePx = (tileWorldSize * scale).roundToInt().coerceAtLeast(1)
-                drawImage(
-                    image = image.bitmap,
-                    dstOffset = IntOffset(leftPx, topPx),
-                    dstSize = IntSize(sizePx, sizePx),
-                    alpha = 0.68f,
-                )
-            }
-        }
-        if (displayedMapOverlay.airspacePaths.isNotEmpty() || displayedMapOverlay.tfrPaths.isNotEmpty() || displayedMapOverlay.airspaceLabels.isNotEmpty()) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                (displayedMapOverlay.airspacePaths + displayedMapOverlay.tfrPaths).forEach { feature ->
-                    drawAirspaceDisplayPath(uiTheme, feature)
-                }
-                displayedMapOverlay.airspaceLabels.forEach { label ->
-                    drawAirspaceLimitGlyph(
-                        uiTheme = uiTheme,
-                        glyph = label.glyph,
-                        center = Offset(label.screenX.toFloat(), label.screenY.toFloat()),
-                        scale = 1f,
-                    )
-                }
-            }
-        }
-        if (displayedMapOverlay.visibleFeatures.isNotEmpty()) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val densityScale = density.density
-                fixLabelStrokePaint.textSize = 14f * densityScale
-                fixLabelStrokePaint.strokeWidth = 3f * densityScale
-                airportLabelStrokePaint.textSize = 14f * densityScale
-                airportLabelStrokePaint.strokeWidth = 3f * densityScale
-                fixLabelFillPaint.textSize = 14f * densityScale
-                airportToweredLabelFillPaint.textSize = 14f * densityScale
-                airportUntoweredLabelFillPaint.textSize = 14f * densityScale
-                vorLabelFillPaint.textSize = 14f * densityScale
-                displayedMapOverlay.visibleFeatures.forEach { feature ->
-                    val center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat())
-                    val isAirport = feature.styleClass == "airport" || feature.kind.equals("airport", ignoreCase = true)
-                    val isVor = feature.styleClass == "nav" || feature.kind.lowercase().contains("vor")
-                    val isObstacle =
-                        feature.styleClass.startsWith("obstacle") ||
-                            feature.kind.equals("obs", ignoreCase = true) ||
-                            feature.kind.equals("obstacle", ignoreCase = true)
-                    if (isAirport) {
-                        val airportFillColor = if (feature.towered) airportToweredFillColor else airportUntoweredFillColor
-                        val airportLabelPaint = if (feature.towered) airportToweredLabelFillPaint else airportUntoweredLabelFillPaint
-                        val usesOpenAirportCircle =
-                            feature.heliport == true ||
-                                feature.hasWaterRunway == true ||
-                                feature.hasPavedRunway == false
-                        if (usesOpenAirportCircle) {
-                            airportOpenMarkerSymbol(center, densityScale).forEach { layer ->
-                                drawNavSymbolLayer(layer, densityScale, uiTheme)
-                            }
-                        } else if (feature.fuelAvailable) {
-                            val markerPath = airportFuelMarkerPath(center, densityScale)
-                            drawPath(markerPath, airportFillColor)
-                            drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * densityScale))
-                        } else {
-                            val markerPath = airportCircleMarkerPath(center, densityScale)
-                            drawPath(markerPath, airportFillColor)
-                            drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * densityScale))
-                        }
-                        if (feature.heliport == true) {
-                            val heliportPath = heliportHPath(center, densityScale)
-                            drawPath(
-                                heliportPath,
-                                airportUntoweredFillColor,
-                                style = Stroke(width = 2.4f * densityScale, cap = StrokeCap.Round),
-                            )
-                        } else if (feature.hasWaterRunway == true) {
-                            rotate(15f, center) {
-                                val anchorPath = seaplaneAnchorPath(center, densityScale)
-                                drawPath(
-                                    anchorPath,
-                                    airportUntoweredFillColor,
-                                    style = Stroke(width = 2.2f * densityScale, cap = StrokeCap.Round),
-                                )
-                            }
-                        }
-                        if (!usesOpenAirportCircle) feature.longestRunwayHeadingTrueDeg?.let { headingDeg ->
-                            val headingRad = Math.toRadians(headingDeg)
-                            val runwayHalfLength = (8f * feature.runwayLengthRatio.toFloat().coerceIn(0f, 1f)).coerceAtLeast(1.6f) * densityScale
-                            val dx = kotlin.math.sin(headingRad).toFloat() * runwayHalfLength
-                            val dy = (-kotlin.math.cos(headingRad)).toFloat() * runwayHalfLength
-                            drawLine(
-                                color = airportMarkerStrokeColor,
-                                start = Offset(center.x - dx, center.y - dy),
-                                end = Offset(center.x + dx, center.y + dy),
-                                strokeWidth = 5f * densityScale,
-                                cap = StrokeCap.Round,
-                            )
-                            drawLine(
-                                color = Color.White,
-                                start = Offset(center.x - dx, center.y - dy),
-                                end = Offset(center.x + dx, center.y + dy),
-                                strokeWidth = 3f * densityScale,
-                                cap = StrokeCap.Round,
-                            )
-                        }
-                        drawContext.canvas.nativeCanvas.apply {
-                            val textX = center.x
-                            val textY = center.y - 24f * densityScale
-                            drawText(feature.label, textX, textY, airportLabelStrokePaint)
-                            drawText(feature.label, textX, textY, airportLabelPaint)
-                        }
-                    } else if (isVor) {
-                        val radius = 8f * densityScale
-                        val outerHex = vorOuterHexPath(center, radius)
-                        val band = vorBandPath(center, radius)
-                        drawPath(band, vorMarkerColor)
-                        drawPath(band, vorMarkerStrokeColor, style = Stroke(width = 1.6f * densityScale))
-                        drawPath(outerHex, vorMarkerStrokeColor, style = Stroke(width = 1.6f * densityScale))
-                        drawContext.canvas.nativeCanvas.apply {
-                            val textY = center.y - 24f * densityScale
-                            drawText(feature.label, center.x, textY, fixLabelStrokePaint)
-                            drawText(feature.label, center.x, textY, vorLabelFillPaint)
-                        }
-                    } else if (isObstacle) {
-                        val isTallObstacle = feature.obstacleVariant == "tall"
-                        val obstaclePath = if (isTallObstacle) {
-                            obstacleTallPath(center, densityScale)
-                        } else {
-                            obstacleShortPath(center, densityScale)
-                        }
-                        val dotY = if (isTallObstacle) obstacleTallDotY else obstacleShortDotY
-                        val obstacleColor = when (feature.styleClass) {
-                            "obstacle-danger" -> Color(0xFFD83A2E)
-                            "obstacle-muted" -> Color(0xB8FFD34D)
-                            else -> Color(0xFFFFD34D)
-                        }
-                        val obstacleUnderColor = Color(0xD1081218)
-                        drawPath(
-                            obstaclePath,
-                            obstacleUnderColor,
-                            style = Stroke(width = 2.4f * densityScale, join = StrokeJoin.Miter),
-                        )
-                        drawPath(
-                            obstaclePath,
-                            obstacleColor,
-                            style = Stroke(width = 1.2f * densityScale, join = StrokeJoin.Miter),
-                        )
-                        drawCircle(
-                            color = obstacleUnderColor,
-                            radius = obstacleDotRadius * densityScale,
-                            center = Offset(center.x, center.y + dotY * densityScale),
-                        )
-                        drawCircle(
-                            color = obstacleColor,
-                            radius = obstacleDotRadius * densityScale,
-                            center = Offset(center.x, center.y + dotY * densityScale),
-                        )
-                        if (feature.label.isNotEmpty()) {
-                            drawContext.canvas.nativeCanvas.apply {
-                                val textY = center.y - 14f * densityScale
-                                drawText(feature.label, center.x, textY, fixLabelStrokePaint)
-                                drawText(feature.label, center.x, textY, fixLabelFillPaint)
-                            }
-                        }
-                    } else {
-                        val triangle = fixTrianglePath(center, 8f * densityScale)
-                        drawPath(triangle, fixMarkerFillColor)
-                        drawPath(triangle, fixMarkerStrokeColor, style = Stroke(width = 2.5f * densityScale))
-                        drawContext.canvas.nativeCanvas.apply {
-                            val textY = center.y - 15f * densityScale
-                            drawText(feature.label, center.x, textY, fixLabelStrokePaint)
-                            drawText(feature.label, center.x, textY, fixLabelFillPaint)
-                        }
-                    }
-                }
-            }
-            displayedMapOverlay.visibleFeatures.forEach { feature ->
-                val tagLabel = feature.label.trim().takeIf { it.isNotEmpty() } ?: return@forEach
-                Box(
-                    modifier = Modifier
-                        .offset {
-                            val targetSizePx = (ThumbSize * 0.5f).roundToPx()
-                            IntOffset(
-                                x = feature.screenX.toFloat().roundToInt() - targetSizePx / 2,
-                                y = feature.screenY.toFloat().roundToInt() - targetSizePx / 2,
-                            )
-                        }
-                        .size(ThumbSize * 0.5f)
-                        .testTag("parity:map-feature:${feature.kind}:$tagLabel:${feature.id}"),
-                )
-            }
-        }
-        if (displayedMapOverlay.visibleMetars.isNotEmpty()) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                displayedMapOverlay.visibleMetars.forEach { feature ->
-                    drawMetarSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), density.density, uiTheme)
-                }
-            }
-        }
-        if (displayedMapOverlay.visiblePireps.isNotEmpty()) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                displayedMapOverlay.visiblePireps.forEach { feature ->
-                    drawPirepSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), density.density, uiTheme, symbolScale = 0.32f)
-                }
-            }
-        }
-        if (displayedMapOverlay.offlineRegions.isNotEmpty()) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val densityScale = density.density
-                val labelStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = android.graphics.Color.argb(190, 0, 0, 0)
-                    textAlign = Paint.Align.CENTER
-                    textSize = 13f * densityScale
-                    typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                    style = Paint.Style.STROKE
-                    strokeWidth = 4f * densityScale
-                }
-                val labelFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    textAlign = Paint.Align.CENTER
-                    textSize = 13f * densityScale
-                    typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                    style = Paint.Style.FILL
-                }
-                displayedMapOverlay.offlineRegions.forEach { region ->
-                    val path = Path().apply {
-                        val first = region.points.firstOrNull() ?: return@forEach
-                        moveTo(first.x.toFloat(), first.y.toFloat())
-                        region.points.drop(1).forEach { point -> lineTo(point.x.toFloat(), point.y.toFloat()) }
-                        close()
-                    }
-                    val color = aviationColor(uiTheme, region.colorKey)
-                    drawPath(
-                        path,
-                        Color.White.copy(alpha = 0.8f),
-                        style = Stroke(width = 5f * densityScale, join = StrokeJoin.Round),
-                    )
-                    drawPath(
-                        path,
-                        color,
-                        style = Stroke(width = 2.5f * densityScale, join = StrokeJoin.Round),
-                    )
-                    labelFill.color = color.toArgb()
-                    drawContext.canvas.nativeCanvas.apply {
-                        val x = region.labelX.toFloat()
-                        val y = region.labelY.toFloat() + labelFill.textSize * 0.33f
-                        drawText(region.label, x, y, labelStroke)
-                        drawText(region.label, x, y, labelFill)
-                    }
-                }
-            }
-        }
-        if (routeScreenSegments.isNotEmpty()) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val densityScale = density.density
-                routeScreenSegments.forEach { (path, segment) ->
-                    path.zipWithNext().forEach { (from, to) ->
-                        drawLine(
-                            color = Color(0x8C000000),
-                            start = from,
-                            end = to,
-                            strokeWidth = 7f * densityScale,
-                            cap = StrokeCap.Round,
-                        )
-                        drawLine(
-                            color = routeSegmentColor(segment.status),
-                            start = from,
-                            end = to,
-                            strokeWidth = 3.5f * densityScale,
-                            cap = StrokeCap.Round,
-                        )
-                    }
-                }
-            }
-        }
-        mapSelection?.selectedItem?.let { item ->
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                when (val highlight = item.highlight) {
-                    is MapSelectionHighlight.FeatureRef -> {
-                        val feature = displayedMapOverlay.visibleFeatures.firstOrNull { it.id == highlight.id }
-                        if (feature != null) {
-                            drawCircle(Color.White, radius = 20f * density.density, center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), style = Stroke(width = 4f * density.density))
-                        }
-                        (displayedMapOverlay.airspacePaths + displayedMapOverlay.tfrPaths).firstOrNull { it.id == highlight.id }?.let { path ->
-                            drawAirspaceDisplayPath(uiTheme, path)
-                        }
-                    }
-                    is MapSelectionHighlight.Metar -> {
-                        val feature = displayedMapOverlay.visibleMetars.firstOrNull { it.stationId == highlight.stationId } ?: item.metarFeature
-                        if (feature != null) {
-                            drawCircle(Color.White, radius = 16f * density.density, center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), style = Stroke(width = 4f * density.density))
-                            drawMetarSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), density.density, uiTheme)
-                        }
-                    }
-                    is MapSelectionHighlight.Pirep -> {
-                        val feature = displayedMapOverlay.visiblePireps.firstOrNull { it.id == highlight.id } ?: item.pirepFeature
-                        if (feature != null) {
-                            val center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat())
-                            drawCircle(Color.White, radius = 25f * density.density, center = center, style = Stroke(width = 4f * density.density))
-                            drawPirepSymbol(feature, center, density.density, uiTheme, symbolScale = 0.32f)
-                        }
-                    }
-                    is MapSelectionHighlight.Spot -> {
-                        val point = latLonToScreen(highlight.lat, highlight.lon, currentViewport, surfaceWidthPx, surfaceHeightPx)
-                        drawMapSelectionSpotSymbol(point, density.density, uiTheme)
-                    }
-                }
-            }
-        }
-        if (situationOverlay != null) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val densityScale = density.density
-                val center = situationOverlay.pointUnits
-                val ringRadius = situationOverlay.ring.radiusUnits
-                drawCircle(
-                    color = Color(0x66000000),
-                    radius = ringRadius,
-                    center = center,
-                    style = Stroke(width = 16f),
-                )
-                drawCircle(
-                    color = Color.White,
-                    radius = ringRadius,
-                    center = center,
-                    style = Stroke(width = 6f),
-                )
-                situationOverlay.ring.tickMarks.forEach { tick ->
-                    val inner = tick.innerUnits
-                    val outer = tick.outerUnits
-                    drawLine(Color(0x66000000), inner, outer, strokeWidth = 8f)
-                    drawLine(Color.White, inner, outer, strokeWidth = 6f)
-                }
-                drawContext.canvas.nativeCanvas.apply {
-                    labelStrokePaint.textSize = 16f * densityScale
-                    labelFillPaint.textSize = 16f * densityScale
-                    situationOverlay.ring.cardinalLabels.forEach { label ->
-                        val point = label.pointUnits
-                        save()
-                        rotate(label.rotationDeg, point.x, point.y)
-                        drawText(label.text, point.x, point.y + labelFillPaint.textSize * 0.33f, labelStrokePaint)
-                        drawText(label.text, point.x, point.y + labelFillPaint.textSize * 0.33f, labelFillPaint)
-                        restore()
-                    }
-                }
-                drawCircle(
-                    color = Color.White,
-                    radius = ringRadius,
-                    center = center,
-                    style = Stroke(width = 6f),
-                )
-                if (situationOverlay.predictorUnits != null) {
-                    val predictor = situationOverlay.predictorUnits
-                    val shaftEnd = arrowShaftEndPoint(center, predictor)
-                    drawLine(Color(0x66000000), center, shaftEnd, strokeWidth = 8f)
-                    drawLine(Color.White, center, shaftEnd, strokeWidth = 6f)
-                    val arrow = arrowHeadPath(center, predictor)
-                    drawPath(arrow, Color.White)
-                    drawPath(arrow, Color(0x66000000), style = Stroke(width = 1.5f))
-                }
-                drawContext.canvas.nativeCanvas.apply {
-                    val labelPoint = situationOverlay.ring.labelPointUnits
-                    save()
-                    rotate(situationOverlay.ring.labelRotationDeg, labelPoint.x, labelPoint.y)
-                    labelStrokePaint.textSize = 16f * densityScale
-                    labelFillPaint.textSize = 16f * densityScale
-                    drawText(situationOverlay.ring.labelText, labelPoint.x, labelPoint.y + labelFillPaint.textSize * 0.33f, labelStrokePaint)
-                    drawText(situationOverlay.ring.labelText, labelPoint.x, labelPoint.y + labelFillPaint.textSize * 0.33f, labelFillPaint)
-                    restore()
-                    val iconSizePx = ThumbSize.toPx() * 0.72f
-                    val left = (center.x - iconSizePx / 2f).roundToInt()
-                    val top = (center.y - iconSizePx / 2f).roundToInt()
-                    val drawable = aircraftDrawable
-                    if (drawable != null) {
-                        save()
-                        rotate(situationOverlay.headingDeg, center.x, center.y)
-                        drawable.setBounds(left, top, (left + iconSizePx).roundToInt(), (top + iconSizePx).roundToInt())
-                        drawable.draw(this)
-                        restore()
-                    }
-                }
-            }
-        }
+        RasterImageLayers(
+            tiles = tiles,
+            tileRects = tileRects,
+            tileBitmapCache = tileBitmapCache,
+            tileLabels = debugState.tileLabels,
+            tileLabelPaint = tileLabelPaint,
+            tileLabelBackgroundPaint = tileLabelBackgroundPaint,
+            currentNexradFrame = if (mapLayerState.nexrad.visible) nexradFrames.getOrNull(nexradFrameIndex) else null,
+            terrainOverlay = terrainOverlay,
+            viewport = currentViewport,
+            surfaceWidthPx = surfaceWidthPx,
+            surfaceHeightPx = surfaceHeightPx,
+        )
+        AirspaceOverlayLayer(displayedMapOverlay, uiTheme)
+        MapFeatureOverlayLayer(
+            displayedMapOverlay = displayedMapOverlay,
+            uiTheme = uiTheme,
+            densityScale = density.density,
+            fixMarkerStrokeColor = fixMarkerStrokeColor,
+            fixMarkerFillColor = fixMarkerFillColor,
+            airportMarkerStrokeColor = airportMarkerStrokeColor,
+            airportToweredFillColor = airportToweredFillColor,
+            airportUntoweredFillColor = airportUntoweredFillColor,
+            vorMarkerColor = vorMarkerColor,
+            vorMarkerStrokeColor = vorMarkerStrokeColor,
+            fixLabelStrokePaint = fixLabelStrokePaint,
+            airportLabelStrokePaint = airportLabelStrokePaint,
+            vorLabelFillPaint = vorLabelFillPaint,
+            fixLabelFillPaint = fixLabelFillPaint,
+            airportToweredLabelFillPaint = airportToweredLabelFillPaint,
+            airportUntoweredLabelFillPaint = airportUntoweredLabelFillPaint,
+        )
+        ObservationOverlayLayer(displayedMapOverlay, density.density, uiTheme)
+        OfflineRegionsOverlayLayer(displayedMapOverlay, density.density, uiTheme)
+        RouteOverlayLayer(routeScreenSegments, density.density)
+        MapSelectionHighlightLayer(
+            selectedItem = mapSelection?.selectedItem,
+            displayedMapOverlay = displayedMapOverlay,
+            viewport = currentViewport,
+            surfaceWidthPx = surfaceWidthPx,
+            surfaceHeightPx = surfaceHeightPx,
+            densityScale = density.density,
+            uiTheme = uiTheme,
+        )
+        SituationOverlayLayer(
+            situationOverlay = situationOverlay,
+            densityScale = density.density,
+            labelStrokePaint = labelStrokePaint,
+            labelFillPaint = labelFillPaint,
+            aircraftDrawable = aircraftDrawable,
+        )
         SituationStatusBadge(
             controls = ownshipControls,
             modifier = Modifier
@@ -2152,6 +1772,550 @@ internal fun MapExplorerPage(
                 .padding(bottom = ThumbGap),
         )
 
+    }
+}
+
+@Composable
+private fun RasterImageLayers(
+    tiles: List<RenderTile>,
+    tileRects: Map<net.jonh.aerobag.prototype.domain.RenderTileKey, TileRect>,
+    tileBitmapCache: Map<net.jonh.aerobag.prototype.domain.RenderTileKey, androidx.compose.ui.graphics.ImageBitmap?>,
+    tileLabels: Boolean,
+    tileLabelPaint: Paint,
+    tileLabelBackgroundPaint: Paint,
+    currentNexradFrame: NexradOverlayFrame?,
+    terrainOverlay: List<TerrainOverlayImage>,
+    viewport: MapViewportState,
+    surfaceWidthPx: Float,
+    surfaceHeightPx: Float,
+) {
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        tiles.forEach { tile ->
+            val tileRect = tileRects.getValue(renderTileKey(tile))
+            val bitmap = tileBitmapCache[renderTileKey(tile)]
+            if (bitmap != null) {
+                drawImage(
+                    image = bitmap,
+                    dstOffset = IntOffset(tileRect.leftPx, tileRect.topPx),
+                    dstSize = IntSize(tileRect.widthPx, tileRect.heightPx),
+                )
+            }
+            if (tileLabels) {
+                val label = "z${tile.zoom} x${tile.x} y${tile.yTms}"
+                val rectLeft = tileRect.leftPx + 6f
+                val rectTop = tileRect.topPx + 6f
+                val textWidth = tileLabelPaint.measureText(label)
+                drawContext.canvas.nativeCanvas.apply {
+                    drawRoundRect(
+                        rectLeft,
+                        rectTop,
+                        rectLeft + textWidth + 16f,
+                        rectTop + 30f,
+                        8f,
+                        8f,
+                        tileLabelBackgroundPaint,
+                    )
+                    drawText(label, rectLeft + 8f, tileRect.topPx + 30f, tileLabelPaint)
+                }
+            }
+        }
+        if (currentNexradFrame != null && surfaceWidthPx > 0f && surfaceHeightPx > 0f) {
+            val northwestWorld = mercatorMetersToWorld(currentNexradFrame.frame.bounds.west, currentNexradFrame.frame.bounds.north)
+            val southeastWorld = mercatorMetersToWorld(currentNexradFrame.frame.bounds.east, currentNexradFrame.frame.bounds.south)
+            val northwest = worldToScreen(viewport, northwestWorld, surfaceWidthPx, surfaceHeightPx)
+            val southeast = worldToScreen(viewport, southeastWorld, surfaceWidthPx, surfaceHeightPx)
+            val widthPx = (southeast.x - northwest.x).roundToInt().coerceAtLeast(1)
+            val heightPx = (southeast.y - northwest.y).roundToInt().coerceAtLeast(1)
+            drawImage(
+                image = currentNexradFrame.bitmap,
+                dstOffset = IntOffset(northwest.x.roundToInt(), northwest.y.roundToInt()),
+                dstSize = IntSize(widthPx, heightPx),
+                alpha = 0.82f,
+            )
+        }
+        terrainOverlay.forEach { image ->
+            val tilesAtZoom = 2.0.pow(image.z.toDouble())
+            val tileWorldSize = WebMercatorWorldSize / tilesAtZoom
+            val yXyz = (tilesAtZoom - 1.0) - image.yTms.toDouble()
+            val scale = scaleForZoom(viewport.zoom)
+            val leftPx = ((image.x * tileWorldSize - viewport.centerWorldX) * scale + surfaceWidthPx / 2f).roundToInt()
+            val topPx = ((yXyz * tileWorldSize - viewport.centerWorldY) * scale + surfaceHeightPx / 2f).roundToInt()
+            val sizePx = (tileWorldSize * scale).roundToInt().coerceAtLeast(1)
+            drawImage(
+                image = image.bitmap,
+                dstOffset = IntOffset(leftPx, topPx),
+                dstSize = IntSize(sizePx, sizePx),
+                alpha = 0.68f,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AirspaceOverlayLayer(
+    displayedMapOverlay: MapOverlayQueryResult,
+    uiTheme: UiTheme,
+) {
+    if (displayedMapOverlay.airspacePaths.isEmpty() && displayedMapOverlay.tfrPaths.isEmpty() && displayedMapOverlay.airspaceLabels.isEmpty()) {
+        return
+    }
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        (displayedMapOverlay.airspacePaths + displayedMapOverlay.tfrPaths).forEach { feature ->
+            drawAirspaceDisplayPath(uiTheme, feature)
+        }
+        displayedMapOverlay.airspaceLabels.forEach { label ->
+            drawAirspaceLimitGlyph(
+                uiTheme = uiTheme,
+                glyph = label.glyph,
+                center = Offset(label.screenX.toFloat(), label.screenY.toFloat()),
+                scale = 1f,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MapFeatureOverlayLayer(
+    displayedMapOverlay: MapOverlayQueryResult,
+    uiTheme: UiTheme,
+    densityScale: Float,
+    fixMarkerStrokeColor: Color,
+    fixMarkerFillColor: Color,
+    airportMarkerStrokeColor: Color,
+    airportToweredFillColor: Color,
+    airportUntoweredFillColor: Color,
+    vorMarkerColor: Color,
+    vorMarkerStrokeColor: Color,
+    fixLabelStrokePaint: Paint,
+    airportLabelStrokePaint: Paint,
+    vorLabelFillPaint: Paint,
+    fixLabelFillPaint: Paint,
+    airportToweredLabelFillPaint: Paint,
+    airportUntoweredLabelFillPaint: Paint,
+) {
+    if (displayedMapOverlay.visibleFeatures.isEmpty()) return
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        fixLabelStrokePaint.textSize = 14f * densityScale
+        fixLabelStrokePaint.strokeWidth = 3f * densityScale
+        airportLabelStrokePaint.textSize = 14f * densityScale
+        airportLabelStrokePaint.strokeWidth = 3f * densityScale
+        fixLabelFillPaint.textSize = 14f * densityScale
+        airportToweredLabelFillPaint.textSize = 14f * densityScale
+        airportUntoweredLabelFillPaint.textSize = 14f * densityScale
+        vorLabelFillPaint.textSize = 14f * densityScale
+        displayedMapOverlay.visibleFeatures.forEach { feature ->
+            drawVisibleMapFeature(
+                feature = feature,
+                densityScale = densityScale,
+                uiTheme = uiTheme,
+                fixMarkerStrokeColor = fixMarkerStrokeColor,
+                fixMarkerFillColor = fixMarkerFillColor,
+                airportMarkerStrokeColor = airportMarkerStrokeColor,
+                airportToweredFillColor = airportToweredFillColor,
+                airportUntoweredFillColor = airportUntoweredFillColor,
+                vorMarkerColor = vorMarkerColor,
+                vorMarkerStrokeColor = vorMarkerStrokeColor,
+                fixLabelStrokePaint = fixLabelStrokePaint,
+                airportLabelStrokePaint = airportLabelStrokePaint,
+                vorLabelFillPaint = vorLabelFillPaint,
+                fixLabelFillPaint = fixLabelFillPaint,
+                airportToweredLabelFillPaint = airportToweredLabelFillPaint,
+                airportUntoweredLabelFillPaint = airportUntoweredLabelFillPaint,
+            )
+        }
+    }
+    displayedMapOverlay.visibleFeatures.forEach { feature ->
+        val tagLabel = feature.label.trim().takeIf { it.isNotEmpty() } ?: return@forEach
+        Box(
+            modifier = Modifier
+                .offset {
+                    val targetSizePx = (ThumbSize * 0.5f).roundToPx()
+                    IntOffset(
+                        x = feature.screenX.toFloat().roundToInt() - targetSizePx / 2,
+                        y = feature.screenY.toFloat().roundToInt() - targetSizePx / 2,
+                    )
+                }
+                .size(ThumbSize * 0.5f)
+                .testTag("parity:map-feature:${feature.kind}:$tagLabel:${feature.id}"),
+        )
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVisibleMapFeature(
+    feature: VisibleMapFeature,
+    densityScale: Float,
+    uiTheme: UiTheme,
+    fixMarkerStrokeColor: Color,
+    fixMarkerFillColor: Color,
+    airportMarkerStrokeColor: Color,
+    airportToweredFillColor: Color,
+    airportUntoweredFillColor: Color,
+    vorMarkerColor: Color,
+    vorMarkerStrokeColor: Color,
+    fixLabelStrokePaint: Paint,
+    airportLabelStrokePaint: Paint,
+    vorLabelFillPaint: Paint,
+    fixLabelFillPaint: Paint,
+    airportToweredLabelFillPaint: Paint,
+    airportUntoweredLabelFillPaint: Paint,
+) {
+    val center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat())
+    val isAirport = feature.styleClass == "airport" || feature.kind.equals("airport", ignoreCase = true)
+    val isVor = feature.styleClass == "nav" || feature.kind.lowercase().contains("vor")
+    val isObstacle =
+        feature.styleClass.startsWith("obstacle") ||
+            feature.kind.equals("obs", ignoreCase = true) ||
+            feature.kind.equals("obstacle", ignoreCase = true)
+    if (isAirport) {
+        val airportFillColor = if (feature.towered) airportToweredFillColor else airportUntoweredFillColor
+        val airportLabelPaint = if (feature.towered) airportToweredLabelFillPaint else airportUntoweredLabelFillPaint
+        val usesOpenAirportCircle =
+            feature.heliport == true ||
+                feature.hasWaterRunway == true ||
+                feature.hasPavedRunway == false
+        if (usesOpenAirportCircle) {
+            airportOpenMarkerSymbol(center, densityScale).forEach { layer ->
+                drawNavSymbolLayer(layer, densityScale, uiTheme)
+            }
+        } else if (feature.fuelAvailable) {
+            val markerPath = airportFuelMarkerPath(center, densityScale)
+            drawPath(markerPath, airportFillColor)
+            drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * densityScale))
+        } else {
+            val markerPath = airportCircleMarkerPath(center, densityScale)
+            drawPath(markerPath, airportFillColor)
+            drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * densityScale))
+        }
+        if (feature.heliport == true) {
+            val heliportPath = heliportHPath(center, densityScale)
+            drawPath(
+                heliportPath,
+                airportUntoweredFillColor,
+                style = Stroke(width = 2.4f * densityScale, cap = StrokeCap.Round),
+            )
+        } else if (feature.hasWaterRunway == true) {
+            rotate(15f, center) {
+                val anchorPath = seaplaneAnchorPath(center, densityScale)
+                drawPath(
+                    anchorPath,
+                    airportUntoweredFillColor,
+                    style = Stroke(width = 2.2f * densityScale, cap = StrokeCap.Round),
+                )
+            }
+        }
+        if (!usesOpenAirportCircle) feature.longestRunwayHeadingTrueDeg?.let { headingDeg ->
+            val headingRad = Math.toRadians(headingDeg)
+            val runwayHalfLength = (8f * feature.runwayLengthRatio.toFloat().coerceIn(0f, 1f)).coerceAtLeast(1.6f) * densityScale
+            val dx = kotlin.math.sin(headingRad).toFloat() * runwayHalfLength
+            val dy = (-kotlin.math.cos(headingRad)).toFloat() * runwayHalfLength
+            drawLine(
+                color = airportMarkerStrokeColor,
+                start = Offset(center.x - dx, center.y - dy),
+                end = Offset(center.x + dx, center.y + dy),
+                strokeWidth = 5f * densityScale,
+                cap = StrokeCap.Round,
+            )
+            drawLine(
+                color = Color.White,
+                start = Offset(center.x - dx, center.y - dy),
+                end = Offset(center.x + dx, center.y + dy),
+                strokeWidth = 3f * densityScale,
+                cap = StrokeCap.Round,
+            )
+        }
+        drawContext.canvas.nativeCanvas.apply {
+            val textY = center.y - 24f * densityScale
+            drawText(feature.label, center.x, textY, airportLabelStrokePaint)
+            drawText(feature.label, center.x, textY, airportLabelPaint)
+        }
+    } else if (isVor) {
+        val radius = 8f * densityScale
+        val outerHex = vorOuterHexPath(center, radius)
+        val band = vorBandPath(center, radius)
+        drawPath(band, vorMarkerColor)
+        drawPath(band, vorMarkerStrokeColor, style = Stroke(width = 1.6f * densityScale))
+        drawPath(outerHex, vorMarkerStrokeColor, style = Stroke(width = 1.6f * densityScale))
+        drawContext.canvas.nativeCanvas.apply {
+            val textY = center.y - 24f * densityScale
+            drawText(feature.label, center.x, textY, fixLabelStrokePaint)
+            drawText(feature.label, center.x, textY, vorLabelFillPaint)
+        }
+    } else if (isObstacle) {
+        val isTallObstacle = feature.obstacleVariant == "tall"
+        val obstaclePath = if (isTallObstacle) {
+            obstacleTallPath(center, densityScale)
+        } else {
+            obstacleShortPath(center, densityScale)
+        }
+        val dotY = if (isTallObstacle) obstacleTallDotY else obstacleShortDotY
+        val obstacleColor = when (feature.styleClass) {
+            "obstacle-danger" -> Color(0xFFD83A2E)
+            "obstacle-muted" -> Color(0xB8FFD34D)
+            else -> Color(0xFFFFD34D)
+        }
+        val obstacleUnderColor = Color(0xD1081218)
+        drawPath(
+            obstaclePath,
+            obstacleUnderColor,
+            style = Stroke(width = 2.4f * densityScale, join = StrokeJoin.Miter),
+        )
+        drawPath(
+            obstaclePath,
+            obstacleColor,
+            style = Stroke(width = 1.2f * densityScale, join = StrokeJoin.Miter),
+        )
+        drawCircle(
+            color = obstacleUnderColor,
+            radius = obstacleDotRadius * densityScale,
+            center = Offset(center.x, center.y + dotY * densityScale),
+        )
+        drawCircle(
+            color = obstacleColor,
+            radius = obstacleDotRadius * densityScale,
+            center = Offset(center.x, center.y + dotY * densityScale),
+        )
+        if (feature.label.isNotEmpty()) {
+            drawContext.canvas.nativeCanvas.apply {
+                val textY = center.y - 14f * densityScale
+                drawText(feature.label, center.x, textY, fixLabelStrokePaint)
+                drawText(feature.label, center.x, textY, fixLabelFillPaint)
+            }
+        }
+    } else {
+        val triangle = fixTrianglePath(center, 8f * densityScale)
+        drawPath(triangle, fixMarkerFillColor)
+        drawPath(triangle, fixMarkerStrokeColor, style = Stroke(width = 2.5f * densityScale))
+        drawContext.canvas.nativeCanvas.apply {
+            val textY = center.y - 15f * densityScale
+            drawText(feature.label, center.x, textY, fixLabelStrokePaint)
+            drawText(feature.label, center.x, textY, fixLabelFillPaint)
+        }
+    }
+}
+
+@Composable
+private fun ObservationOverlayLayer(
+    displayedMapOverlay: MapOverlayQueryResult,
+    densityScale: Float,
+    uiTheme: UiTheme,
+) {
+    if (displayedMapOverlay.visibleMetars.isNotEmpty()) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            displayedMapOverlay.visibleMetars.forEach { feature ->
+                drawMetarSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), densityScale, uiTheme)
+            }
+        }
+    }
+    if (displayedMapOverlay.visiblePireps.isNotEmpty()) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            displayedMapOverlay.visiblePireps.forEach { feature ->
+                drawPirepSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), densityScale, uiTheme, symbolScale = 0.32f)
+            }
+        }
+    }
+}
+
+@Composable
+private fun OfflineRegionsOverlayLayer(
+    displayedMapOverlay: MapOverlayQueryResult,
+    densityScale: Float,
+    uiTheme: UiTheme,
+) {
+    if (displayedMapOverlay.offlineRegions.isEmpty()) return
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val labelStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.argb(190, 0, 0, 0)
+            textAlign = Paint.Align.CENTER
+            textSize = 13f * densityScale
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            style = Paint.Style.STROKE
+            strokeWidth = 4f * densityScale
+        }
+        val labelFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textAlign = Paint.Align.CENTER
+            textSize = 13f * densityScale
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            style = Paint.Style.FILL
+        }
+        displayedMapOverlay.offlineRegions.forEach { region ->
+            val path = Path().apply {
+                val first = region.points.firstOrNull() ?: return@forEach
+                moveTo(first.x.toFloat(), first.y.toFloat())
+                region.points.drop(1).forEach { point -> lineTo(point.x.toFloat(), point.y.toFloat()) }
+                close()
+            }
+            val color = aviationColor(uiTheme, region.colorKey)
+            drawPath(
+                path,
+                Color.White.copy(alpha = 0.8f),
+                style = Stroke(width = 5f * densityScale, join = StrokeJoin.Round),
+            )
+            drawPath(
+                path,
+                color,
+                style = Stroke(width = 2.5f * densityScale, join = StrokeJoin.Round),
+            )
+            labelFill.color = color.toArgb()
+            drawContext.canvas.nativeCanvas.apply {
+                val x = region.labelX.toFloat()
+                val y = region.labelY.toFloat() + labelFill.textSize * 0.33f
+                drawText(region.label, x, y, labelStroke)
+                drawText(region.label, x, y, labelFill)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RouteOverlayLayer(
+    routeScreenSegments: List<Pair<List<Offset>, FlightPlanRouteSegment>>,
+    densityScale: Float,
+) {
+    if (routeScreenSegments.isEmpty()) return
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        routeScreenSegments.forEach { (path, segment) ->
+            path.zipWithNext().forEach { (from, to) ->
+                drawLine(
+                    color = Color(0x8C000000),
+                    start = from,
+                    end = to,
+                    strokeWidth = 7f * densityScale,
+                    cap = StrokeCap.Round,
+                )
+                drawLine(
+                    color = routeSegmentColor(segment.status),
+                    start = from,
+                    end = to,
+                    strokeWidth = 3.5f * densityScale,
+                    cap = StrokeCap.Round,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MapSelectionHighlightLayer(
+    selectedItem: MapSelectionItem?,
+    displayedMapOverlay: MapOverlayQueryResult,
+    viewport: MapViewportState,
+    surfaceWidthPx: Float,
+    surfaceHeightPx: Float,
+    densityScale: Float,
+    uiTheme: UiTheme,
+) {
+    val item = selectedItem ?: return
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        when (val highlight = item.highlight) {
+            is MapSelectionHighlight.FeatureRef -> {
+                val feature = displayedMapOverlay.visibleFeatures.firstOrNull { it.id == highlight.id }
+                if (feature != null) {
+                    drawCircle(Color.White, radius = 20f * densityScale, center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), style = Stroke(width = 4f * densityScale))
+                }
+                (displayedMapOverlay.airspacePaths + displayedMapOverlay.tfrPaths).firstOrNull { it.id == highlight.id }?.let { path ->
+                    drawAirspaceDisplayPath(uiTheme, path)
+                }
+            }
+            is MapSelectionHighlight.Metar -> {
+                val feature = displayedMapOverlay.visibleMetars.firstOrNull { it.stationId == highlight.stationId } ?: item.metarFeature
+                if (feature != null) {
+                    drawCircle(Color.White, radius = 16f * densityScale, center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), style = Stroke(width = 4f * densityScale))
+                    drawMetarSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), densityScale, uiTheme)
+                }
+            }
+            is MapSelectionHighlight.Pirep -> {
+                val feature = displayedMapOverlay.visiblePireps.firstOrNull { it.id == highlight.id } ?: item.pirepFeature
+                if (feature != null) {
+                    val center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat())
+                    drawCircle(Color.White, radius = 25f * densityScale, center = center, style = Stroke(width = 4f * densityScale))
+                    drawPirepSymbol(feature, center, densityScale, uiTheme, symbolScale = 0.32f)
+                }
+            }
+            is MapSelectionHighlight.Spot -> {
+                val point = latLonToScreen(highlight.lat, highlight.lon, viewport, surfaceWidthPx, surfaceHeightPx)
+                drawMapSelectionSpotSymbol(point, densityScale, uiTheme)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SituationOverlayLayer(
+    situationOverlay: SituationOverlay?,
+    densityScale: Float,
+    labelStrokePaint: Paint,
+    labelFillPaint: Paint,
+    aircraftDrawable: android.graphics.drawable.Drawable?,
+) {
+    if (situationOverlay == null) return
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val center = situationOverlay.pointUnits
+        val ringRadius = situationOverlay.ring.radiusUnits
+        drawCircle(
+            color = Color(0x66000000),
+            radius = ringRadius,
+            center = center,
+            style = Stroke(width = 16f),
+        )
+        drawCircle(
+            color = Color.White,
+            radius = ringRadius,
+            center = center,
+            style = Stroke(width = 6f),
+        )
+        situationOverlay.ring.tickMarks.forEach { tick ->
+            val inner = tick.innerUnits
+            val outer = tick.outerUnits
+            drawLine(Color(0x66000000), inner, outer, strokeWidth = 8f)
+            drawLine(Color.White, inner, outer, strokeWidth = 6f)
+        }
+        drawContext.canvas.nativeCanvas.apply {
+            labelStrokePaint.textSize = 16f * densityScale
+            labelFillPaint.textSize = 16f * densityScale
+            situationOverlay.ring.cardinalLabels.forEach { label ->
+                val point = label.pointUnits
+                save()
+                rotate(label.rotationDeg, point.x, point.y)
+                drawText(label.text, point.x, point.y + labelFillPaint.textSize * 0.33f, labelStrokePaint)
+                drawText(label.text, point.x, point.y + labelFillPaint.textSize * 0.33f, labelFillPaint)
+                restore()
+            }
+        }
+        drawCircle(
+            color = Color.White,
+            radius = ringRadius,
+            center = center,
+            style = Stroke(width = 6f),
+        )
+        if (situationOverlay.predictorUnits != null) {
+            val predictor = situationOverlay.predictorUnits
+            val shaftEnd = arrowShaftEndPoint(center, predictor)
+            drawLine(Color(0x66000000), center, shaftEnd, strokeWidth = 8f)
+            drawLine(Color.White, center, shaftEnd, strokeWidth = 6f)
+            val arrow = arrowHeadPath(center, predictor)
+            drawPath(arrow, Color.White)
+            drawPath(arrow, Color(0x66000000), style = Stroke(width = 1.5f))
+        }
+        drawContext.canvas.nativeCanvas.apply {
+            val labelPoint = situationOverlay.ring.labelPointUnits
+            save()
+            rotate(situationOverlay.ring.labelRotationDeg, labelPoint.x, labelPoint.y)
+            labelStrokePaint.textSize = 16f * densityScale
+            labelFillPaint.textSize = 16f * densityScale
+            drawText(situationOverlay.ring.labelText, labelPoint.x, labelPoint.y + labelFillPaint.textSize * 0.33f, labelStrokePaint)
+            drawText(situationOverlay.ring.labelText, labelPoint.x, labelPoint.y + labelFillPaint.textSize * 0.33f, labelFillPaint)
+            restore()
+            val iconSizePx = ThumbSize.toPx() * 0.72f
+            val left = (center.x - iconSizePx / 2f).roundToInt()
+            val top = (center.y - iconSizePx / 2f).roundToInt()
+            if (aircraftDrawable != null) {
+                save()
+                rotate(situationOverlay.headingDeg, center.x, center.y)
+                aircraftDrawable.setBounds(left, top, (left + iconSizePx).roundToInt(), (top + iconSizePx).roundToInt())
+                aircraftDrawable.draw(this)
+                restore()
+            }
+        }
     }
 }
 

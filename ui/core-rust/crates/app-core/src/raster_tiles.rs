@@ -843,8 +843,9 @@ fn tile_source_resource(
                     "raster package {package_name} relative_path is not a zip: {package_relative_path}"
                 )
             });
+            let member_path = tile_package_member_path(map_view, relative_path);
             RasterTileResource::PublicUnpacked {
-                path: format!("/packages/published_unpacked/{package_dir}/{relative_path}"),
+                path: format!("/packages/published_unpacked/{package_dir}/{member_path}"),
             }
         }
     }
@@ -1228,7 +1229,7 @@ mod tests {
             panic!("expected public unpacked resource");
         };
         assert!(path.starts_with("/packages/published_unpacked/NW_SEC_2604/"));
-        assert!(path.ends_with(&source.relative_path));
+        assert!(path.ends_with(&format!("tiles/{}", source.relative_path)));
     }
 
     #[test]

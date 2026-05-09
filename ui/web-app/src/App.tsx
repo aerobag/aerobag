@@ -130,6 +130,79 @@ function isInvalidUiSessionHandleError(error: unknown): boolean {
   return error instanceof Error && error.message.includes("invalid ui session handle");
 }
 
+type StartupProgress = {
+  phase: string;
+  detail?: string;
+  updatedAtMs: number;
+};
+
+type StartupFatalError = {
+  source: string;
+  message: string;
+  phase: string;
+  detail?: string;
+  elapsedMs: number;
+  stack?: string;
+};
+
+const startupStalledWarningMs = 15_000;
+const startupFatalStalledMs = 45_000;
+
+function initialStartupProgress(): StartupProgress {
+  return {
+    phase: "app_shell",
+    detail: "Starting web UI",
+    updatedAtMs: Date.now(),
+  };
+}
+
+function startupErrorFromUnknown(
+  source: string,
+  error: unknown,
+  progress: StartupProgress,
+  startedAtMs: number,
+): StartupFatalError {
+  return {
+    source,
+    message: errorMessage(error),
+    phase: progress.phase,
+    detail: progress.detail,
+    elapsedMs: Math.max(0, Date.now() - startedAtMs),
+    stack: error instanceof Error ? error.stack : undefined,
+  };
+}
+
+function StartupFatalErrorModal({ error }: { error: StartupFatalError }) {
+  return (
+    <div className="startupErrorScrim" role="alertdialog" aria-modal="true" aria-labelledby="startup-error-title">
+      <section className="startupErrorModal">
+        <h1 id="startup-error-title">Startup failed</h1>
+        <p>{error.message}</p>
+        <dl>
+          <div>
+            <dt>Phase</dt>
+            <dd>{error.phase}</dd>
+          </div>
+          {error.detail ? (
+            <div>
+              <dt>Detail</dt>
+              <dd>{error.detail}</dd>
+            </div>
+          ) : null}
+          <div>
+            <dt>Source</dt>
+            <dd>{error.source}</dd>
+          </div>
+          <div>
+            <dt>Elapsed</dt>
+            <dd>{Math.round(error.elapsedMs / 1000)}s</dd>
+          </div>
+        </dl>
+      </section>
+    </div>
+  );
+}
+
 function airspaceSvgPathD(path: AirspaceDisplayPath["paths"][number]): string {
   if (path.points.length === 0) {
     return "";
@@ -1097,6 +1170,11 @@ export default function App() {
   const [adapterBackend, setAdapterBackend] = useState<AdapterBackendKind>("wasm");
   const [adapterDetail, setAdapterDetail] = useState<string>("loading");
   const [sessionInitError, setSessionInitError] = useState<string | null>(null);
+  const [startupProgress, setStartupProgress] = useState<StartupProgress>(initialStartupProgress);
+  const [startupFatalError, setStartupFatalError] = useState<StartupFatalError | null>(null);
+  const startupProgressRef = useRef<StartupProgress>(startupProgress);
+  const startupFatalErrorRef = useRef<StartupFatalError | null>(null);
+  const startupResolvedRef = useRef(false);
   const startupVisualReadyRef = useRef(false);
   const pageTilePaintTimingRef = useRef<WebPageTilePaintTiming | null>(null);
   const nextPageTilePaintTimingIdRef = useRef(1);
@@ -1189,6 +1267,22 @@ export default function App() {
     }
     logDebugWarning(tag, data);
   }, [logDebugWarning]);
+  const markStartupProgress = useCallback((phase: string, detail?: string) => {
+    const progress = { phase, detail, updatedAtMs: Date.now() };
+    startupProgressRef.current = progress;
+    debugLog("startup.progress", { phase, detail });
+    setStartupProgress(progress);
+  }, []);
+  const reportStartupFatalError = useCallback((source: string, error: unknown) => {
+    if (startupResolvedRef.current || startupFatalErrorRef.current) {
+      return;
+    }
+    const fatal = startupErrorFromUnknown(source, error, startupProgressRef.current, sessionStartMs);
+    startupFatalErrorRef.current = fatal;
+    debugLog("startup.fatal", fatal);
+    setSessionInitError(`${fatal.source}: ${fatal.message}`);
+    setStartupFatalError(fatal);
+  }, [sessionStartMs]);
   const setDebugFlag = useCallback(async (flagId: DebugFlagId, enabled: boolean) => {
     if (uiSession === null) {
       setSessionSnapshot((snapshot) => ({
@@ -1493,8 +1587,10 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+    markStartupProgress("adapter.load", "Loading app-core adapter");
     loadBestAvailableAdapter().then((loaded) => {
       if (!cancelled) {
+        markStartupProgress("adapter.ready", loaded.detail);
         setAppCoreAdapter(loaded.adapter);
         setAdapterBackend(loaded.backend);
         setAdapterDetail(loaded.detail);
@@ -1505,16 +1601,29 @@ export default function App() {
         const message = error instanceof Error ? error.message : String(error);
         setSessionInitError(`WASM adapter init failed: ${message}`);
         setAdapterDetail(`adapter init failed: ${message}`);
+        reportStartupFatalError("adapter.load", error);
       }
     });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [markStartupProgress, reportStartupFatalError]);
 
   useEffect(() => {
     installGlobalErrorLogging();
-  }, []);
+    const handleError = (event: ErrorEvent) => {
+      reportStartupFatalError("window.error", event.error ?? new Error(event.message));
+    };
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      reportStartupFatalError("window.unhandledrejection", event.reason);
+    };
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleUnhandledRejection);
+    return () => {
+      window.removeEventListener("error", handleError);
+      window.removeEventListener("unhandledrejection", handleUnhandledRejection);
+    };
+  }, [reportStartupFatalError]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1535,14 +1644,18 @@ export default function App() {
       return;
     }
     debugTiming("startup.session.create", async () => {
+      markStartupProgress("session.seed_plan", "Building initial flight plan");
       const initialPlan = await appCoreAdapter.emptyFlightPlan();
+      markStartupProgress("session.create", "Creating core UI session");
       const created = await debugTiming("startup.session.create.core", () => appCoreAdapter.createUiSession(
         initialPlan,
         initialRecentAirportIds,
         initialChartPageState.selected_airport_id,
         initialChartPageState.selected_chart_id,
       ));
+      markStartupProgress("session.snapshot", "Reading initial session snapshot");
       let createdSnapshot = await created.snapshot();
+      markStartupProgress("session.ownship_start", "Starting ownship source");
       createdSnapshot = await debugTiming("startup.session.ownship_start", () => created.setSituation({
         position: { kind: "lat_lon", lat: NRVNA_POSITION.lat, lon: NRVNA_POSITION.lon },
         orientation_deg: 342,
@@ -1559,17 +1672,21 @@ export default function App() {
       });
       nextSession = created;
       if (!cancelled) {
+        markStartupProgress("session.ready", "Initial session ready");
         setUiSession(created);
         setSessionSnapshot(createdSnapshot);
       }
     }).catch((error) => {
       console.error("failed to initialize web ui session", error);
+      if (!cancelled) {
+        reportStartupFatalError("session.create", error);
+      }
     });
     return () => {
       cancelled = true;
       void nextSession?.destroy();
     };
-  }, [adapterBackend, appCoreAdapter, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, initialDebugState, initialRecentAirportIds]);
+  }, [adapterBackend, appCoreAdapter, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, initialDebugState, initialRecentAirportIds, markStartupProgress, reportStartupFatalError]);
 
   useEffect(() => {
     if (!sessionSnapshot.raster_map) {
@@ -1627,6 +1744,38 @@ export default function App() {
     selectedMap !== null &&
     currentPlan !== null &&
     planUiState !== null;
+
+  useEffect(() => {
+    if (appReady) {
+      startupResolvedRef.current = true;
+      markStartupProgress("ready", "App ready");
+    }
+  }, [appReady, markStartupProgress]);
+
+  useEffect(() => {
+    if (appReady || startupFatalError) {
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      if (startupResolvedRef.current || startupFatalErrorRef.current) {
+        return;
+      }
+      const idleMs = Date.now() - startupProgressRef.current.updatedAtMs;
+      if (idleMs >= startupFatalStalledMs) {
+        reportStartupFatalError(
+          "startup.watchdog",
+          new Error(`startup made no progress for ${Math.round(idleMs / 1000)}s`),
+        );
+      } else if (idleMs >= startupStalledWarningMs) {
+        debugLog("startup.stalled", {
+          phase: startupProgressRef.current.phase,
+          detail: startupProgressRef.current.detail,
+          idle_ms: idleMs,
+        });
+      }
+    }, 1_000);
+    return () => window.clearInterval(intervalId);
+  }, [appReady, reportStartupFatalError, startupFatalError]);
 
   useEffect(() => {
     writePersistedWebUiState({
@@ -1838,6 +1987,7 @@ export default function App() {
       return;
     }
     const shouldHideStartupShell =
+      startupFatalError !== null ||
       sessionInitError !== null ||
       mapSelectorLoadError !== null ||
       chartPageStateLoadError !== null ||
@@ -1847,7 +1997,15 @@ export default function App() {
     if (shouldHideStartupShell) {
       window.__aerobag_hide_startup_shell?.();
     }
-  }, [appReady, chartPageStateLoadError, currentPlan, mapSelectorLoadError, planUiState, sessionInitError]);
+  }, [appReady, chartPageStateLoadError, currentPlan, mapSelectorLoadError, planUiState, sessionInitError, startupFatalError]);
+
+  if (startupFatalError) {
+    return (
+      <main className="appShell" style={themeVars}>
+        <StartupFatalErrorModal error={startupFatalError} />
+      </main>
+    );
+  }
 
   if (sessionInitError || mapSelectorLoadError || chartPageStateLoadError) {
     return (
@@ -1860,7 +2018,11 @@ export default function App() {
   }
 
   if (!appReady || !currentPlan || !planUiState || !selectedMap) {
-    return null;
+    return (
+      <main className="startupProgressHost" aria-live="polite">
+        <span>{startupProgress.detail ?? startupProgress.phase}</span>
+      </main>
+    );
   }
 
   return (

@@ -63,6 +63,69 @@ button {
   overflow: hidden;
 }
 
+.startupProgressHost {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: end center;
+  padding: 0 1rem calc(2rem + var(--safe-bottom));
+  color: var(--muted);
+  font-size: 0.9rem;
+  pointer-events: none;
+}
+
+.startupErrorScrim {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(19, 33, 41, 0.42);
+}
+
+.startupErrorModal {
+  width: min(34rem, 100%);
+  border: 1px solid rgba(19, 33, 41, 0.18);
+  border-radius: 8px;
+  background: #fffaf1;
+  color: var(--ink);
+  box-shadow: var(--shadow);
+  padding: 1.25rem;
+}
+
+.startupErrorModal h1 {
+  margin: 0 0 0.65rem;
+  font-size: 1.2rem;
+}
+
+.startupErrorModal p {
+  margin: 0 0 1rem;
+  color: #8d1f16;
+  overflow-wrap: anywhere;
+}
+
+.startupErrorModal dl {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0;
+}
+
+.startupErrorModal dl > div {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
+.startupErrorModal dt {
+  color: var(--muted);
+}
+
+.startupErrorModal dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .pageLayer {
   position: absolute;
   inset: 0;

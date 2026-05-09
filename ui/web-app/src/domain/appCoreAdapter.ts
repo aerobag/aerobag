@@ -422,7 +422,9 @@ export type RasterTileSource = {
   package_name?: string | null;
   storage_kind: string;
   relative_path: string;
-  url: string;
+  resource:
+    | { kind: "public_unpacked"; path: string }
+    | { kind: "installed_package"; package_name: string; member_path: string };
 };
 
 export type RasterTileDraw = {

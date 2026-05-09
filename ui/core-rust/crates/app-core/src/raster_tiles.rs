@@ -181,7 +181,19 @@ pub struct RasterTileSource {
     pub package_name: Option<String>,
     pub storage_kind: String,
     pub relative_path: String,
-    pub url: String,
+    pub resource: RasterTileResource,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RasterTileResource {
+    InstalledPackage {
+        package_name: String,
+        member_path: String,
+    },
+    PublicUnpacked {
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -779,34 +791,47 @@ fn tile_source(
     resource_mode: RasterResourceMode,
 ) -> RasterTileSource {
     let relative_path = tile_relative_path(map_view, zoom, x, y_tms);
-    let url = tile_source_url(map_view, &relative_path, resource_mode);
+    let resource = tile_source_resource(map_view, &relative_path, resource_mode);
     RasterTileSource {
         map_view_id: map_view_id.to_string(),
         package_name: map_view.package_name.clone(),
         storage_kind: map_view.storage_kind.clone(),
         relative_path,
-        url,
+        resource,
     }
 }
 
-fn tile_source_url(
+fn tile_source_resource(
     map_view: &RasterMapView,
     relative_path: &str,
     resource_mode: RasterResourceMode,
-) -> String {
+) -> RasterTileResource {
     match resource_mode {
-        RasterResourceMode::InstalledPackage => format!(
-            "{}/{}",
-            map_view.tile_url_root.trim_end_matches('/'),
-            relative_path
-        ),
+        RasterResourceMode::InstalledPackage => {
+            if let Some(package_name) = map_view.package_name.as_ref() {
+                RasterTileResource::InstalledPackage {
+                    package_name: package_name.clone(),
+                    member_path: tile_package_member_path(map_view, relative_path),
+                }
+            } else {
+                RasterTileResource::PublicUnpacked {
+                    path: format!(
+                        "{}/{}",
+                        map_view.tile_url_root.trim_end_matches('/'),
+                        relative_path
+                    ),
+                }
+            }
+        }
         RasterResourceMode::PublicUnpacked => {
             let Some(package_name) = map_view.package_name.as_ref() else {
-                return format!(
-                    "{}/{}",
-                    map_view.tile_url_root.trim_end_matches('/'),
-                    relative_path
-                );
+                return RasterTileResource::PublicUnpacked {
+                    path: format!(
+                        "{}/{}",
+                        map_view.tile_url_root.trim_end_matches('/'),
+                        relative_path
+                    ),
+                };
             };
             let package_relative_path = map_view.package_relative_path.as_ref().unwrap_or_else(|| {
                 panic!(
@@ -818,8 +843,19 @@ fn tile_source_url(
                     "raster package {package_name} relative_path is not a zip: {package_relative_path}"
                 )
             });
-            format!("/packages/published_unpacked/{package_dir}/{relative_path}")
+            RasterTileResource::PublicUnpacked {
+                path: format!("/packages/published_unpacked/{package_dir}/{relative_path}"),
+            }
         }
+    }
+}
+
+fn tile_package_member_path(map_view: &RasterMapView, relative_path: &str) -> String {
+    let tile_root = map_view.tile_root.trim_matches('/');
+    if tile_root.is_empty() {
+        relative_path.trim_start_matches('/').to_string()
+    } else {
+        format!("{tile_root}/{}", relative_path.trim_start_matches('/'))
     }
 }
 
@@ -1188,14 +1224,15 @@ mod tests {
         );
 
         let source = &plan.tiles.first().expect("planned tile").primary;
-        assert!(source
-            .url
-            .starts_with("/packages/published_unpacked/NW_SEC_2604/"));
-        assert!(source.url.ends_with(&source.relative_path));
+        let RasterTileResource::PublicUnpacked { path } = &source.resource else {
+            panic!("expected public unpacked resource");
+        };
+        assert!(path.starts_with("/packages/published_unpacked/NW_SEC_2604/"));
+        assert!(path.ends_with(&source.relative_path));
     }
 
     #[test]
-    fn installed_package_tile_sources_keep_package_relative_url() {
+    fn installed_package_tile_sources_name_zip_member_explicitly() {
         let catalog = RasterMapCatalog {
             selected_map_id: "sec:nw".to_string(),
             selected_map: None,
@@ -1225,10 +1262,15 @@ mod tests {
         );
 
         let source = &plan.tiles.first().expect("planned tile").primary;
-        assert_eq!(
-            source.url,
-            format!("/NW_SEC_2604/tiles/{}", source.relative_path)
-        );
+        let RasterTileResource::InstalledPackage {
+            package_name,
+            member_path,
+        } = &source.resource
+        else {
+            panic!("expected installed package resource");
+        };
+        assert_eq!(package_name, "NW_SEC_2604");
+        assert_eq!(member_path, &format!("tiles/{}", source.relative_path));
     }
 
     #[test]

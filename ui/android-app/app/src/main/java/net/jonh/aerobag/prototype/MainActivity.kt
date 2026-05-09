@@ -389,7 +389,15 @@ internal data class WireRasterTileSource(
     val package_name: String? = null,
     val storage_kind: String? = null,
     val relative_path: String? = null,
-    val url: String? = null,
+    val resource: WireRasterTileResource,
+)
+
+@kotlinx.serialization.Serializable
+internal data class WireRasterTileResource(
+    val kind: String,
+    val package_name: String? = null,
+    val member_path: String? = null,
+    val path: String? = null,
 )
 
 internal data class LatLon(val lat: Double, val lon: Double)

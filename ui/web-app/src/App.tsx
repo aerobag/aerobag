@@ -751,6 +751,9 @@ async function renderTileFromCore(tile: RasterTileDraw, cssScale = 1): Promise<R
   if (!packageName) {
     throw new Error(`raster tile ${tile.draw_key} missing package_name`);
   }
+  if (tile.primary.resource.kind !== "public_unpacked") {
+    throw new Error(`raster tile ${tile.draw_key} is not a public unpacked web resource`);
+  }
   return {
     drawKey: tile.draw_key,
     x: tile.x,
@@ -760,7 +763,7 @@ async function renderTileFromCore(tile: RasterTileDraw, cssScale = 1): Promise<R
     size: tile.size_px * cssScale,
     zoom: tile.source_zoom,
     zIndex: tile.z_order,
-    src: tile.primary.url,
+    src: tile.primary.resource.path,
     mapViewId: tile.primary.map_view_id,
     packageName,
     chartFamily: tile.family,

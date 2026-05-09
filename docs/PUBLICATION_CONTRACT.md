@@ -109,6 +109,21 @@ Examples:
 - fast package: `metars_...zip` becomes `metars_.../manifest.json`,
   `metars_.../metars.json`, and tile files
 
+## Sparse Tiles
+
+Raster tile packages may be sparse. This is expected for products such as TAC
+wide-angle packages, where large areas inside a coarse tile bounding rectangle
+have no product coverage.
+
+Tile level metadata such as `levels[]` with `{x_min, x_max, y_tms_min,
+y_tms_max}` is a coarse planning/culling bound, not a promise that every tile in
+that rectangle exists. A missing unpacked tile file or a `404` response for an
+otherwise contract-correct tile URL means "no tile here; draw nothing here."
+
+Servers must not synthesize transparent placeholder tiles for these holes.
+Clients should treat missing raster tiles as no-draw, not as a fatal product or
+publication-contract error.
+
 The web app may stage or alias these unpacked package paths into friendlier
 runtime routes such as `/nav-kv/`, `/sectional-packages/`, or `/fast-products/`,
 but those aliases are client/server presentation details. The publication

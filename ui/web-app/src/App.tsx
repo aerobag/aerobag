@@ -673,7 +673,11 @@ type RasterRenderTile = {
   fallbacks: RasterTileDraw["fallbacks"];
 };
 
-function renderTileFromCore(tile: RasterTileDraw, cssScale = 1): RasterRenderTile {
+async function renderTileFromCore(tile: RasterTileDraw, cssScale = 1): Promise<RasterRenderTile> {
+  const packageName = tile.primary.package_name;
+  if (!packageName) {
+    throw new Error(`raster tile ${tile.draw_key} missing package_name`);
+  }
   return {
     drawKey: tile.draw_key,
     x: tile.x,
@@ -683,9 +687,9 @@ function renderTileFromCore(tile: RasterTileDraw, cssScale = 1): RasterRenderTil
     size: tile.size_px * cssScale,
     zoom: tile.source_zoom,
     zIndex: tile.z_order,
-    src: tile.primary.url,
+    src: await packageResourceUrl(packageName, tile.primary.package_member_path),
     mapViewId: tile.primary.map_view_id,
-    packageName: tile.primary.package_name,
+    packageName,
     chartFamily: tile.family,
     fallbacks: tile.fallbacks,
   };
@@ -2512,8 +2516,20 @@ function MapPage(props: {
           });
           loadedRasterTileKeysRef.current = new Set();
           setFailedRasterTileKeys(new Set());
-          setTiles(plan.tiles.map((tile) => renderTileFromCore(tile, 1 / devicePixelRatio)));
-          setRasterTileViewport(cssViewport);
+          Promise.all(plan.tiles.map((tile) => renderTileFromCore(tile, 1 / devicePixelRatio)))
+            .then((nextTiles) => {
+              if (!cancelled) {
+                setTiles(nextTiles);
+                setRasterTileViewport(cssViewport);
+              }
+            })
+            .catch((error) => {
+              if (!cancelled) {
+                console.error("failed to resolve raster tile urls", error);
+                setTiles([]);
+                setRasterTileViewport(null);
+              }
+            });
         }
       })
       .catch((error) => {

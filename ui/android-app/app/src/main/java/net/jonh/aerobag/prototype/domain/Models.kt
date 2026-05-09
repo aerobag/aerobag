@@ -550,20 +550,6 @@ data class ChartPageFixture(
     val airports: List<ChartAirport>,
 )
 
-data class MapTileView(
-    val chartFamily: MapChartFamily,
-    val chartName: String,
-    val chartIndex: Int,
-    val tileRoot: String,
-    val zoom: Int,
-    val tileSize: Int,
-    val radius: Int,
-    val centerX: Int,
-    val centerYTms: Int,
-    val probeOffsetX: Double,
-    val probeOffsetY: Double,
-)
-
 data class InstalledPackage(
     val packageId: PackageId,
     val integrityOk: Boolean,

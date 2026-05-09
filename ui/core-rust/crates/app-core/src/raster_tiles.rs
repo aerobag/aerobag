@@ -169,7 +169,7 @@ pub struct RasterTileSource {
     pub package_name: Option<String>,
     pub storage_kind: String,
     pub relative_path: String,
-    pub url: String,
+    pub package_member_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -757,17 +757,22 @@ fn tile_source(
     y_tms: i64,
 ) -> RasterTileSource {
     let relative_path = tile_relative_path(map_view, zoom, x, y_tms);
-    let url = format!(
-        "{}/{}",
-        map_view.tile_url_root.trim_end_matches('/'),
-        relative_path
-    );
+    let package_member_path = tile_package_member_path(map_view, &relative_path);
     RasterTileSource {
         map_view_id: map_view_id.to_string(),
         package_name: map_view.package_name.clone(),
         storage_kind: map_view.storage_kind.clone(),
         relative_path,
-        url,
+        package_member_path,
+    }
+}
+
+fn tile_package_member_path(map_view: &RasterMapView, relative_path: &str) -> String {
+    let tile_root = map_view.tile_root.trim_matches('/');
+    if tile_root.is_empty() {
+        relative_path.to_string()
+    } else {
+        format!("{tile_root}/{}", relative_path.trim_start_matches('/'))
     }
 }
 

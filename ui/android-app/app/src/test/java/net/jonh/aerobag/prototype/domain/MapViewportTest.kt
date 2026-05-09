@@ -1,7 +1,6 @@
 package net.jonh.aerobag.prototype.domain
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MapViewportTest {
@@ -72,97 +71,6 @@ class MapViewportTest {
         assertEquals(snapshot.firstAnchorWorld.y, firstWorldAfter.y, 1e-8)
         assertEquals(snapshot.secondAnchorWorld.x, secondWorldAfter.x, 1e-8)
         assertEquals(snapshot.secondAnchorWorld.y, secondWorldAfter.y, 1e-8)
-    }
-
-    @Test
-    fun initialViewportRendersAvailableTilesAndCenterRoundTrips() {
-        val viewport = createInitialViewport(mapView)
-        val tiles = renderTiles(listOf("test" to mapView), viewport, 1200f, 900f)
-        val center = viewportCenterLatLon(viewport)
-
-        assertTrue(tiles.isNotEmpty())
-        assertTrue(tiles.any { it.zoom == 10 })
-        assertEquals(mapView.initialViewport.lat, center.first, 1e-3)
-        assertEquals(mapView.initialViewport.lon, center.second, 1e-3)
-    }
-
-    @Test
-    fun familyRenderingCanStitchNeighboringPackagesIntoOneViewport() {
-        val northwest = mapView.copy(
-            chartFamily = MapChartFamily.Sec,
-            packageName = "NW_SEC",
-            minZoom = 4.2,
-            maxZoom = 10.8,
-            initialViewport = MapViewportSeed(44.7, -113.9, 8.0),
-            levels = listOf(TileLevelAvailability(10, 156, 219, 636, 672)),
-        )
-        val southwest = mapView.copy(
-            chartFamily = MapChartFamily.Sec,
-            packageName = "SW_SEC",
-            minZoom = 4.2,
-            maxZoom = 10.8,
-            initialViewport = MapViewportSeed(32.4, -113.9, 8.0),
-            levels = listOf(TileLevelAvailability(10, 156, 219, 582, 636)),
-        )
-        val viewport = createInitialViewport(
-            northwest.copy(initialViewport = MapViewportSeed(40.1, -113.9, 7.0)),
-        )
-
-        val tiles = renderTiles(
-            listOf("sec:nw" to northwest, "sec:sw" to southwest),
-            viewport,
-            1200f,
-            900f,
-        )
-
-        assertTrue(tiles.any { it.mapView.packageName == "NW_SEC" })
-        assertTrue(tiles.any { it.mapView.packageName == "SW_SEC" })
-    }
-
-    @Test
-    fun lowFallbackZoomsCollapseToOneRegionalPackagePerFamily() {
-        val northwest = mapView.copy(
-            chartFamily = MapChartFamily.Sec,
-            packageName = "NW_SEC",
-            fullCoverageZoom = 7.0,
-            minZoom = 4.2,
-            maxZoom = 10.8,
-            initialViewport = MapViewportSeed(44.7, -113.9, 8.0),
-            levels = listOf(
-                TileLevelAvailability(6, 10, 15, 37, 41),
-                TileLevelAvailability(10, 156, 219, 600, 640),
-            ),
-        )
-        val southwest = mapView.copy(
-            chartFamily = MapChartFamily.Sec,
-            packageName = "SW_SEC",
-            fullCoverageZoom = 7.0,
-            minZoom = 4.2,
-            maxZoom = 10.8,
-            initialViewport = MapViewportSeed(32.4, -113.9, 8.0),
-            levels = listOf(
-                TileLevelAvailability(6, 10, 15, 37, 41),
-                TileLevelAvailability(10, 156, 219, 600, 640),
-            ),
-        )
-        val viewport = createInitialViewport(
-            northwest.copy(initialViewport = MapViewportSeed(40.1, -113.9, 8.2)),
-        )
-
-        val tiles = renderTiles(
-            listOf("sec:nw" to northwest, "sec:sw" to southwest),
-            viewport,
-            1200f,
-            900f,
-        )
-
-        assertTrue(tiles.any { it.mapView.packageName == "NW_SEC" && it.zoom <= 7 })
-        assertTrue(tiles.none { it.mapView.packageName == "SW_SEC" && it.zoom <= 7 })
-        assertTrue(tiles.any { it.mapView.packageName == "NW_SEC" && it.zoom > 7 })
-        assertTrue(tiles.any { it.mapView.packageName == "SW_SEC" && it.zoom > 7 })
-        val lowZoomTile = tiles.first { it.mapView.packageName == "NW_SEC" && it.zoom <= 7 }
-        assertTrue(lowZoomTile.candidateMapViews.any { it.packageName == "NW_SEC" })
-        assertTrue(lowZoomTile.candidateMapViews.any { it.packageName == "SW_SEC" })
     }
 
     @Test

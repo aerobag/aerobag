@@ -277,7 +277,6 @@ import net.jonh.aerobag.prototype.domain.preserveViewportForMap
 import net.jonh.aerobag.prototype.domain.renderTileKey
 import net.jonh.aerobag.prototype.domain.scaleForZoom
 import net.jonh.aerobag.prototype.domain.screenToWorld
-import net.jonh.aerobag.prototype.domain.tileRelativePath
 import net.jonh.aerobag.prototype.domain.viewportCenterLatLon
 import net.jonh.aerobag.prototype.domain.worldToLatLon
 import net.jonh.aerobag.prototype.domain.zoomAroundPoint
@@ -373,6 +372,7 @@ internal data class WireRasterTilePlan(
 
 @kotlinx.serialization.Serializable
 internal data class WireRasterTileDraw(
+    val family: String,
     val source_zoom: Int,
     val x: Int,
     val y_tms: Int,
@@ -386,6 +386,10 @@ internal data class WireRasterTileDraw(
 @kotlinx.serialization.Serializable
 internal data class WireRasterTileSource(
     val map_view_id: String,
+    val package_name: String? = null,
+    val storage_kind: String? = null,
+    val relative_path: String? = null,
+    val package_member_path: String? = null,
 )
 
 internal data class LatLon(val lat: Double, val lon: Double)
@@ -1146,20 +1150,6 @@ internal data class TileLoadWork(
     val result: CompletableDeferred<LoadedRenderTileBitmap?>,
 )
 
-internal data class TileBitmapFallback(
-    val bitmap: androidx.compose.ui.graphics.ImageBitmap,
-    val sourceLevelDelta: Int,
-    val sourceColumn: Int,
-    val sourceRow: Int,
-)
-
-internal data class ChildTileBitmapFallback(
-    val bitmap: androidx.compose.ui.graphics.ImageBitmap,
-    val targetLevelDelta: Int,
-    val targetColumn: Int,
-    val targetRow: Int,
-)
-
 internal data class DecodedTileCacheEntry(
     val bitmap: androidx.compose.ui.graphics.ImageBitmap,
     val decodedBytes: Long,
@@ -1723,7 +1713,7 @@ internal fun formatTileBudgetSummary(
 ): String {
     val counts = linkedMapOf<String, Int>()
     tiles.forEach { tile ->
-        val packageLabel = tile.mapView.packageName ?: tile.mapViewId
+        val packageLabel = tile.sources.firstOrNull()?.packageName ?: tile.mapViewId
         val key = "$packageLabel@z${tile.zoom}"
         counts[key] = (counts[key] ?: 0) + 1
     }
@@ -1733,74 +1723,15 @@ internal fun formatTileBudgetSummary(
 }
 
 internal fun formatTileRef(tile: net.jonh.aerobag.prototype.domain.RenderTile): String =
-    "package=${tile.mapView.packageName ?: tile.mapViewId} storage=${tile.mapView.storageKind} z=${tile.zoom} x=${tile.x} y=${tile.yTms} candidates=${tile.candidateMapViews.size}"
+    "package=${tile.sources.firstOrNull()?.packageName ?: tile.mapViewId} storage=${tile.sources.firstOrNull()?.storageKind} z=${tile.zoom} x=${tile.x} y=${tile.yTms} candidates=${tile.sources.size}"
 
 internal fun decodedTileCacheKey(tile: net.jonh.aerobag.prototype.domain.RenderTile): String {
-    val candidates = tile.candidateMapViews
-        .distinctBy { "${it.packageName}:${it.tileRoot}:${it.chartIndex}" }
-        .joinToString("|") { mapView ->
-            "${mapView.packageName}:${mapView.storageKind}:${tileRelativePath(tile, mapView)}"
+    val candidates = tile.sources
+        .distinctBy { "${it.packageName}:${it.storageKind}:${it.path}" }
+        .joinToString("|") { source ->
+            "${source.packageName}:${source.storageKind}:${source.path}"
         }
     return "${tile.zoom}:${tile.x}:${tile.yTms}:$candidates"
-}
-
-internal fun findParentTileFallback(
-    tile: net.jonh.aerobag.prototype.domain.RenderTile,
-    decodedTileBitmapCache: DecodedTileBitmapCache,
-    maxLevelDelta: Int = 4,
-): TileBitmapFallback? {
-    for (levelDelta in 1..maxLevelDelta) {
-        val factor = 1 shl levelDelta
-        val parentZoom = tile.zoom - levelDelta
-        if (parentZoom < 0) {
-            break
-        }
-        val parentTile = tile.copy(
-            x = tile.x / factor,
-            yTms = tile.yTms / factor,
-            zoom = parentZoom,
-        )
-        val bitmap = decodedTileBitmapCache.get(decodedTileCacheKey(parentTile)) ?: continue
-        return TileBitmapFallback(
-            bitmap = bitmap,
-            sourceLevelDelta = levelDelta,
-            sourceColumn = tile.x % factor,
-            sourceRow = factor - 1 - (tile.yTms % factor),
-        )
-    }
-    return null
-}
-
-internal fun findChildTileFallbacks(
-    tile: net.jonh.aerobag.prototype.domain.RenderTile,
-    decodedTileBitmapCache: DecodedTileBitmapCache,
-    maxLevelDelta: Int = 3,
-): List<ChildTileBitmapFallback> {
-    for (levelDelta in 1..maxLevelDelta) {
-        val factor = 1 shl levelDelta
-        val childZoom = tile.zoom + levelDelta
-        val fallbacks = mutableListOf<ChildTileBitmapFallback>()
-        for (row in 0 until factor) {
-            for (column in 0 until factor) {
-                val childTile = tile.copy(
-                    x = tile.x * factor + column,
-                    yTms = tile.yTms * factor + row,
-                    zoom = childZoom,
-                )
-                val bitmap = decodedTileBitmapCache.get(decodedTileCacheKey(childTile)) ?: continue
-                fallbacks += ChildTileBitmapFallback(
-                    bitmap = bitmap,
-                    targetLevelDelta = levelDelta,
-                    targetColumn = column,
-                    targetRow = factor - 1 - row,
-                )
-            }
-        }
-        if (fallbacks.isNotEmpty()) {
-            return fallbacks
-        }
-    }
-    return emptyList()
 }
 
 internal fun projectAhead(lat: Double, lon: Double, bearingDeg: Double, distanceNm: Double): LatLon {

@@ -65,7 +65,9 @@ fun readInstanceConfigValue(key: String): String? {
 val webPort = System.getenv("WEB_PORT")
     ?: readInstanceConfigValue("WEB_PORT")
     ?: "8080"
-val androidDevServerBaseUrl = "http://10.0.2.2:$webPort"
+val androidDevServerBaseUrl = System.getenv("ANDROID_DEV_SERVER_BASE_URL")
+    ?: readInstanceConfigValue("ANDROID_DEV_SERVER_BASE_URL")
+    ?: "http://10.0.2.2:$webPort"
 val androidPackageSourceBaseUrl = System.getenv("ANDROID_PACKAGE_SOURCE_BASE_URL")
     ?: readInstanceConfigValue("ANDROID_PACKAGE_SOURCE_BASE_URL")
     ?: "$androidDevServerBaseUrl/packages/"

@@ -32,7 +32,6 @@ data class ContentFixture(
     val mapView: MapView,
     val mapViews: List<MapViewOption>,
     val chartPage: ChartPageFixture,
-    val mapTileView: MapTileView,
     val remoteOnlyInventory: ContentInventory,
     val installedInventory: ContentInventory,
     val navKvStore: NavKvStore,
@@ -126,7 +125,6 @@ object SampleData {
             airports = emptyList(),
         ).toUi()
         val plateAirportMs = SystemClock.elapsedRealtime() - plateAirportStartMs
-        val defaultLevel = mapView.levels.maxBy { it.zoom }
         return ContentFixture(
             bootstrap = bootstrapFixture,
             vectorManifestJson = vectorManifestJson,
@@ -134,19 +132,6 @@ object SampleData {
             mapView = mapView,
             mapViews = mapViews,
             chartPage = chartPage,
-            mapTileView = MapTileView(
-                chartFamily = mapView.chartFamily,
-                chartName = mapView.chartName,
-                chartIndex = mapView.chartIndex,
-                tileRoot = mapView.tileRoot,
-                zoom = defaultLevel.zoom,
-                tileSize = mapView.tileSize,
-                radius = 0,
-                centerX = (defaultLevel.xMin + defaultLevel.xMax) / 2,
-                centerYTms = (defaultLevel.yTmsMin + defaultLevel.yTmsMax) / 2,
-                probeOffsetX = 0.0,
-                probeOffsetY = 0.0,
-            ),
             remoteOnlyInventory = ContentInventory(installedPackages = emptyList()),
             installedInventory = ContentInventory(installedPackages = emptyList()),
             navKvStore = navKvStore,

@@ -13,47 +13,40 @@ object SectionalPackages {
         context: Context,
         tile: RenderTile,
     ): ByteArray? {
-        return when (tile.mapView.storageKind) {
-            TileStorageKind.AssetTree ->
-                error("asset-tree tile loading is no longer supported on Android")
+        tile.sources
+            .distinctBy { "${it.packageName}:${it.storageKind}:${it.path}" }
+            .forEach { candidate ->
+                when (candidate.storageKind) {
+                    TileStorageKind.AssetTree ->
+                        error("asset-tree tile loading is no longer supported on Android")
 
-            TileStorageKind.StaticProduct,
-            TileStorageKind.SectionalPackage -> {
-                val candidates = tile.candidateMapViews
-                    .distinctBy { "${it.packageName}:${it.tileRoot}:${it.chartIndex}" }
-                candidates.forEach { candidateMapView ->
-                    val candidateName = candidateMapView.packageName ?: return@forEach
-                    val installed = InstalledPackages.existingInstalledFile(
-                        context,
-                        InstalledPackageKind.Charts,
-                        candidateName,
-                    ) ?: return@forEach
-                    if (!installed.isFile) {
-                        return@forEach
-                    }
-                    val relativePath = tileRelativePath(tile, candidateMapView)
-                    val bytes = runCatching {
-                        PackageZipStore.readEntryBytes(installed, relativePath)
-                    }.onFailure { error ->
-                        logError(TAG, "zip read failed file=${installed.name} path=$relativePath", error)
-                    }.getOrNull()
-                    if (bytes != null) {
-                        if (candidateMapView != tile.mapView) {
-                            logWarn(
-                                TAG,
-                                "fallback hit requested=${tile.mapView.packageName} served=$candidateName path=$relativePath",
-                            )
+                    TileStorageKind.StaticProduct,
+                    TileStorageKind.SectionalPackage -> {
+                        val candidateName = candidate.packageName ?: return@forEach
+                        val installed = InstalledPackages.existingInstalledFile(
+                            context,
+                            InstalledPackageKind.Charts,
+                            candidateName,
+                        ) ?: return@forEach
+                        if (!installed.isFile) {
+                            return@forEach
                         }
-                        return bytes
+                        val bytes = runCatching {
+                            PackageZipStore.readEntryBytes(installed, candidate.path)
+                        }.onFailure { error ->
+                            logError(TAG, "zip read failed file=${installed.name} path=${candidate.path}", error)
+                        }.getOrNull()
+                        if (bytes != null) {
+                            return bytes
+                        }
                     }
                 }
-                logWarn(
-                    TAG,
-                    "tile unavailable across family package=${tile.mapView.packageName} zoom=${tile.zoom} x=${tile.x} y=${tile.yTms} candidates=${candidates.joinToString(",") { "${it.packageName}:${tileRelativePath(tile, it)}" }}",
-                )
-                null
             }
-        }
+        logWarn(
+            TAG,
+            "tile unavailable across core sources zoom=${tile.zoom} x=${tile.x} y=${tile.yTms} candidates=${tile.sources.joinToString(",") { "${it.packageName}:${it.path}" }}",
+        )
+        return null
     }
 }
 

@@ -40,8 +40,15 @@ data class RenderTile(
     val sizePx: Float,
     val zoom: Int,
     val mapViewId: String,
-    val mapView: MapView,
-    val candidateMapViews: List<MapView> = listOf(mapView),
+    val family: MapChartFamily,
+    val sources: List<RenderTileSource>,
+)
+
+data class RenderTileSource(
+    val mapViewId: String,
+    val packageName: String?,
+    val storageKind: TileStorageKind,
+    val path: String,
 )
 
 data class RenderTileKey(
@@ -183,137 +190,6 @@ fun applyPinchGesture(
 fun viewportCenterLatLon(viewport: MapViewportState): Pair<Double, Double> =
     worldToLatLon(viewport.centerWorldX, viewport.centerWorldY)
 
-fun renderTiles(
-    mapViews: List<Pair<String, MapView>>,
-    viewport: MapViewportState,
-    widthPx: Float,
-    heightPx: Float,
-): List<RenderTile> {
-    val tiles = mapViews
-        .groupBy { it.second.chartFamily }
-        .flatMap { (_, familyMapViews) ->
-            renderTilesForFamily(familyMapViews, viewport, widthPx, heightPx)
-        }
-    return dedupeTiles(tiles).sortedWith(
-        compareBy<RenderTile> { chartFamilyRenderPriority(it.mapView.chartFamily) }
-            .thenBy { it.zoom }
-            .thenBy { it.yTms }
-            .thenBy { it.x },
-    )
-}
-
-private fun renderTilesForFamily(
-    familyMapViews: List<Pair<String, MapView>>,
-    viewport: MapViewportState,
-    widthPx: Float,
-    heightPx: Float,
-): List<RenderTile> {
-    val familyFullCoverageZoom = familyMapViews.mapNotNull { it.second.fullCoverageZoom }.minOrNull()
-    val lowZoomRepresentativeId = familyMapViews.firstOrNull()?.first
-    val scale = scaleForZoom(viewport.zoom)
-    val minWorldX = viewport.centerWorldX - widthPx / 2f / scale
-    val maxWorldX = viewport.centerWorldX + widthPx / 2f / scale
-    val minWorldY = viewport.centerWorldY - heightPx / 2f / scale
-    val maxWorldY = viewport.centerWorldY + heightPx / 2f / scale
-    val tiles = mutableListOf<RenderTile>()
-
-    for ((mapViewId, mapView) in familyMapViews) {
-        val desiredLevel = pickLevel(mapView, viewport.zoom)
-        val levels =
-            if (mapView.chartFamily == MapChartFamily.Tac) {
-                // TAC now rides over SEC as its fallback layer, so stacking coarser TAC
-                // levels only paints a blurry halo behind the sharp tiles.
-                listOf(desiredLevel)
-            } else {
-                mapView.levels
-                    .filter { it.zoom <= desiredLevel.zoom }
-                    .sortedBy { it.zoom }
-            }
-
-        for (level in levels) {
-            val isFullCoverageLevel = familyFullCoverageZoom != null && level.zoom <= familyFullCoverageZoom
-            if (isFullCoverageLevel && mapViewId != lowZoomRepresentativeId) {
-                continue
-            }
-            val tileWorldSize = WORLD_SIZE / 2.0.pow(level.zoom)
-            val tileScreenSize = tileWorldSize * scale
-            val xStart = kotlin.math.floor(minWorldX / tileWorldSize).toInt()
-            val xEnd = kotlin.math.floor(maxWorldX / tileWorldSize).toInt()
-            val yStart = kotlin.math.floor(minWorldY / tileWorldSize).toInt()
-            val yEnd = kotlin.math.floor(maxWorldY / tileWorldSize).toInt()
-            val levelScale = 2.0.pow(level.zoom).toInt()
-
-            for (yXyz in yStart..yEnd) {
-                for (x in xStart..xEnd) {
-                    val yTms = (levelScale - 1) - yXyz
-                    if (x < level.xMin || x > level.xMax || yTms < level.yTmsMin || yTms > level.yTmsMax) {
-                        continue
-                    }
-                    val left = (((x * tileWorldSize - viewport.centerWorldX) * scale) + widthPx / 2f).toFloat()
-                    val top = (((yXyz * tileWorldSize - viewport.centerWorldY) * scale) + heightPx / 2f).toFloat()
-                    tiles += RenderTile(
-                        x = x,
-                        yTms = yTms,
-                        leftPx = left,
-                        topPx = top,
-                        sizePx = tileScreenSize.toFloat(),
-                        zoom = level.zoom,
-                        mapViewId = mapViewId,
-                        mapView = mapView,
-                        candidateMapViews = if (isFullCoverageLevel) {
-                            fullCoverageCandidates(familyMapViews, level.zoom, x, yTms, mapView)
-                        } else {
-                            listOf(mapView)
-                        },
-                    )
-                }
-            }
-        }
-    }
-
-    return tiles
-}
-
-private fun fullCoverageCandidates(
-    familyMapViews: List<Pair<String, MapView>>,
-    zoom: Int,
-    x: Int,
-    yTms: Int,
-    primary: MapView,
-): List<MapView> {
-    val candidates = familyMapViews
-        .map { it.second }
-        .filter { mapView ->
-            val fullCoverageZoom = mapView.fullCoverageZoom
-            fullCoverageZoom != null &&
-                zoom <= fullCoverageZoom &&
-                mapView.levels.any { level ->
-                    level.zoom == zoom &&
-                        x >= level.xMin &&
-                        x <= level.xMax &&
-                        yTms >= level.yTmsMin &&
-                        yTms <= level.yTmsMax
-                }
-        }
-    return (listOf(primary) + candidates).distinctBy { "${it.packageName}:${it.tileRoot}:${it.chartIndex}" }
-}
-
-private fun dedupeTiles(tiles: List<RenderTile>): List<RenderTile> {
-    val byScreenKey = linkedMapOf<RenderTileKey, RenderTile>()
-    for (tile in tiles) {
-        val key = renderTileKey(tile)
-        val existing = byScreenKey[key]
-        if (existing == null) {
-            byScreenKey[key] = tile
-            continue
-        }
-        val mergedCandidates = (existing.candidateMapViews + tile.candidateMapViews)
-            .distinctBy { "${it.packageName}:${it.tileRoot}:${it.chartIndex}" }
-        byScreenKey[key] = existing.copy(candidateMapViews = mergedCandidates)
-    }
-    return byScreenKey.values.toList()
-}
-
 fun renderTileKey(tile: RenderTile): RenderTileKey =
     RenderTileKey(
         mapViewId = tile.mapViewId,
@@ -321,23 +197,3 @@ fun renderTileKey(tile: RenderTile): RenderTileKey =
         x = tile.x,
         yTms = tile.yTms,
     )
-
-private fun chartFamilyRenderPriority(chartFamily: MapChartFamily): Int = when (chartFamily) {
-    MapChartFamily.ShadedRelief -> -10
-    MapChartFamily.WorldBasemap -> -20
-    MapChartFamily.Sec -> 0
-    MapChartFamily.Tac -> 1
-    else -> 0
-}
-
-fun tileRelativePath(tile: RenderTile): String =
-    "${tile.mapView.tileRoot}/${tile.mapView.chartIndex}/${tile.zoom}/${tile.x}/${tile.yTms}.webp"
-
-fun tileRelativePath(tile: RenderTile, mapView: MapView): String =
-    "${mapView.tileRoot}/${mapView.chartIndex}/${tile.zoom}/${tile.x}/${tile.yTms}.webp"
-
-fun tileAssetPath(tile: RenderTile): String =
-    "tiles/${tileRelativePath(tile)}"
-
-private fun pickLevel(mapView: MapView, zoom: Double): TileLevelAvailability =
-    mapView.levels.minBy { kotlin.math.abs(it.zoom - zoom) }

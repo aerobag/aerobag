@@ -247,6 +247,7 @@ import net.jonh.aerobag.prototype.domain.ProcedureSummary
 import net.jonh.aerobag.prototype.domain.ResolvedLeg
 import net.jonh.aerobag.prototype.domain.ResolvedLegSource
 import net.jonh.aerobag.prototype.domain.RenderTile
+import net.jonh.aerobag.prototype.domain.RenderTileSource
 import net.jonh.aerobag.prototype.domain.RouteSegmentStatus
 import net.jonh.aerobag.prototype.domain.RouteComponentViewKind
 import net.jonh.aerobag.prototype.domain.RouteComponent
@@ -277,7 +278,6 @@ import net.jonh.aerobag.prototype.domain.preserveViewportForMap
 import net.jonh.aerobag.prototype.domain.renderTileKey
 import net.jonh.aerobag.prototype.domain.scaleForZoom
 import net.jonh.aerobag.prototype.domain.screenToWorld
-import net.jonh.aerobag.prototype.domain.tileRelativePath
 import net.jonh.aerobag.prototype.domain.viewportCenterLatLon
 import net.jonh.aerobag.prototype.domain.worldToLatLon
 import net.jonh.aerobag.prototype.domain.zoomAroundPoint
@@ -335,6 +335,35 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
 
+private fun WireRasterTileSource.toRenderTileSource(): RenderTileSource? {
+    val storageKind = when (storage_kind) {
+        "sectional_package" -> TileStorageKind.SectionalPackage
+        "static_product" -> TileStorageKind.StaticProduct
+        "asset_tree" -> TileStorageKind.AssetTree
+        else -> return null
+    }
+    val path = when (storageKind) {
+        TileStorageKind.SectionalPackage,
+        TileStorageKind.StaticProduct -> package_member_path ?: return null
+        TileStorageKind.AssetTree -> return null
+    }
+    return RenderTileSource(
+        mapViewId = map_view_id,
+        packageName = package_name,
+        storageKind = storageKind,
+        path = path,
+    )
+}
+
+private fun String.toMapChartFamily(): MapChartFamily? = when (this) {
+    "sec" -> MapChartFamily.Sec
+    "tac" -> MapChartFamily.Tac
+    "enr-l" -> MapChartFamily.EnrL
+    "enr-h" -> MapChartFamily.EnrH
+    "shaded-relief" -> MapChartFamily.ShadedRelief
+    "world-basemap" -> MapChartFamily.WorldBasemap
+    else -> null
+}
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -463,12 +492,11 @@ internal fun MapExplorerPage(
     val surfaceHeightDp = remember(surfaceSize, density) { with(density) { surfaceSize.height.toDp().value } }
     val situationDockTopPadding =
         if (surfaceWidthDp.dp < SituationDockOverlapWidth) ThumbSize + (ThumbGap * 2f) else ThumbGap
-    val tiles = remember(selectedMap.id, currentViewport, surfaceSize, fixture.mapViews, uiSession, debugState.fastTiles) {
+    val tiles = remember(selectedMap.id, currentViewport, surfaceSize, uiSession, debugState.fastTiles) {
         if (surfaceSize.width == 0 || surfaceSize.height == 0) {
             emptyList()
         } else {
             val planStartMs = SystemClock.elapsedRealtime()
-            val mapViewsById = fixture.mapViews.associateBy { it.id }
             val plan = json.decodeFromString<WireRasterTilePlan>(
                 uiSession.queryRasterTilePlanJson(
                     currentViewport,
@@ -484,10 +512,11 @@ internal fun MapExplorerPage(
                 )
             }
             plan.tiles.mapNotNull { tile ->
-                val primaryOption = mapViewsById[tile.primary.map_view_id] ?: return@mapNotNull null
-                val candidateMapViews = (listOf(tile.primary) + tile.fallbacks)
-                    .mapNotNull { source -> mapViewsById[source.map_view_id]?.mapView }
-                    .ifEmpty { listOf(primaryOption.mapView) }
+                val sources = (listOf(tile.primary) + tile.fallbacks)
+                    .mapNotNull { source -> source.toRenderTileSource() }
+                if (sources.isEmpty()) {
+                    return@mapNotNull null
+                }
                 RenderTile(
                     x = tile.x,
                     yTms = tile.y_tms,
@@ -495,9 +524,9 @@ internal fun MapExplorerPage(
                     topPx = tile.top_px.toFloat(),
                     sizePx = tile.size_px.toFloat(),
                     zoom = tile.source_zoom,
-                    mapViewId = primaryOption.id,
-                    mapView = primaryOption.mapView,
-                    candidateMapViews = candidateMapViews,
+                    mapViewId = tile.primary.map_view_id,
+                    family = tile.family.toMapChartFamily() ?: selectedMap.mapView.chartFamily,
+                    sources = sources,
                 )
             }
         }
@@ -515,7 +544,7 @@ internal fun MapExplorerPage(
         familyPackageNames.count { SectionalPackages.isInstalled(context, it) }
     }
     val sourceZooms = tiles.map { it.zoom }.distinct().sorted()
-    val renderedPackages = tiles.mapNotNull { it.mapView.packageName }.distinct().sorted()
+    val renderedPackages = tiles.mapNotNull { it.sources.firstOrNull()?.packageName }.distinct().sorted()
     val familyStatus = remember(installingPackage, installedFamilyPackageCount, familyPackageNames, selectedMap.mapView.chartFamily) {
         when {
             installingPackage != null -> "Installing ${installingPackage}..."
@@ -923,7 +952,7 @@ internal fun MapExplorerPage(
         val cacheCounts = linkedMapOf<String, Int>()
         tileBitmapCache.forEach { (key, bitmap) ->
             val tile = visibleTileByKey[key] ?: return@forEach
-            val packageLabel = tile.mapView.packageName ?: tile.mapViewId
+            val packageLabel = tile.sources.firstOrNull()?.packageName ?: tile.mapViewId
             val summaryKey = "$packageLabel@z${tile.zoom}:${if (bitmap != null) "loaded" else "empty"}"
             cacheCounts[summaryKey] = (cacheCounts[summaryKey] ?: 0) + 1
         }
@@ -1554,35 +1583,7 @@ internal fun MapExplorerPage(
                         dstSize = IntSize(tileRect.widthPx, tileRect.heightPx),
                     )
                 } else {
-                    val fallback = findParentTileFallback(tile, decodedTileBitmapCache)
-                    if (fallback != null) {
-                        val factor = 1 shl fallback.sourceLevelDelta
-                        val sourceWidth = max(1, fallback.bitmap.width / factor)
-                        val sourceHeight = max(1, fallback.bitmap.height / factor)
-                        drawImage(
-                            image = fallback.bitmap,
-                            srcOffset = IntOffset(
-                                fallback.sourceColumn * sourceWidth,
-                                fallback.sourceRow * sourceHeight,
-                            ),
-                            srcSize = IntSize(sourceWidth, sourceHeight),
-                            dstOffset = IntOffset(tileRect.leftPx, tileRect.topPx),
-                            dstSize = IntSize(tileRect.widthPx, tileRect.heightPx),
-                        )
-                    } else {
-                        findChildTileFallbacks(tile, decodedTileBitmapCache).forEach { child ->
-                            val factor = 1 shl child.targetLevelDelta
-                            val childLeft = tileRect.leftPx + tileRect.widthPx * child.targetColumn / factor
-                            val childTop = tileRect.topPx + tileRect.heightPx * child.targetRow / factor
-                            val childRight = tileRect.leftPx + tileRect.widthPx * (child.targetColumn + 1) / factor
-                            val childBottom = tileRect.topPx + tileRect.heightPx * (child.targetRow + 1) / factor
-                            drawImage(
-                                image = child.bitmap,
-                                dstOffset = IntOffset(childLeft, childTop),
-                                dstSize = IntSize(max(1, childRight - childLeft), max(1, childBottom - childTop)),
-                            )
-                        }
-                    }
+                    // Missing tiles are no-draw. Core decides which exact tiles are acceptable.
                 }
                 if (debugState.tileLabels) {
                     val label = "z${tile.zoom} x${tile.x} y${tile.yTms}"

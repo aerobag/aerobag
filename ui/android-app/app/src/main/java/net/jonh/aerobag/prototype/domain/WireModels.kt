@@ -1740,21 +1740,6 @@ data class WireChartAirport(
 )
 
 @Serializable
-data class WireMapTileView(
-    val chart_family: WireChartFamilyId,
-    val chart_name: String,
-    val chart_index: Int,
-    val tile_root: String,
-    val zoom: Int,
-    val tile_size: Int,
-    val radius: Int,
-    val center_x: Int,
-    val center_y_tms: Int,
-    val probe_offset_x: Double,
-    val probe_offset_y: Double,
-)
-
-@Serializable
 data class WirePlateId(
     val airport_id: String,
     val procedure_code: String,

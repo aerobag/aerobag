@@ -277,7 +277,6 @@ import net.jonh.aerobag.prototype.domain.preserveViewportForMap
 import net.jonh.aerobag.prototype.domain.renderTileKey
 import net.jonh.aerobag.prototype.domain.scaleForZoom
 import net.jonh.aerobag.prototype.domain.screenToWorld
-import net.jonh.aerobag.prototype.domain.tileRelativePath
 import net.jonh.aerobag.prototype.domain.viewportCenterLatLon
 import net.jonh.aerobag.prototype.domain.worldToLatLon
 import net.jonh.aerobag.prototype.domain.zoomAroundPoint

@@ -335,6 +335,19 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
 
+private fun fetchCorePackageResource(
+    context: Context,
+    resource: net.jonh.aerobag.prototype.domain.CoreResourceRequest,
+): ByteArray {
+    val address = resource.address
+    require(address.startsWith("package://")) { "unsupported core resource address: $address" }
+    val packageAddress = address.removePrefix("package://")
+    val packageId = packageAddress.substringBefore('/', missingDelimiterValue = "")
+    val memberPath = packageAddress.substringAfter('/', missingDelimiterValue = "")
+    require(packageId.isNotBlank() && memberPath.isNotBlank()) { "invalid package resource address: $address" }
+    return InstalledPackages.readZipEntryBytes(context, InstalledPackageKind.Data, packageId, memberPath)
+}
+
 private fun WireRasterTileSource.toRenderTileSource(): RenderTileSource? {
     val storageKind = when (storage_kind) {
         "sectional_package" -> TileStorageKind.SectionalPackage
@@ -1132,7 +1145,7 @@ internal fun MapExplorerPage(
             val overlayStartMs = SystemClock.elapsedRealtime()
             val overlay = withContext(Dispatchers.IO) {
                 uiSession.queryMapOverlay(viewport, overlayWidthPx.toDouble(), overlayHeightPx.toDouble()) { resource ->
-                    fetchResourceBytes(resolvePlaybackTraceUrl(resource.address, devServerBaseUrl))
+                    fetchCorePackageResource(context, resource)
                 }
             }
             currentCoroutineContext().ensureActive()

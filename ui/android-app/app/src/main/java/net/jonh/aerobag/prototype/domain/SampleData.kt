@@ -3,8 +3,6 @@ package net.jonh.aerobag.prototype.domain
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
-import java.net.HttpURLConnection
-import java.net.URL
 import java.time.Instant
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -59,8 +57,6 @@ private data class WireDevBootstrap(
 
 object SampleData {
     private const val BOOTSTRAP_ASSET_PATH = "fixtures/dev-bootstrap.json"
-    private const val DEV_SERVER_BASE_URL_ASSET_PATH = "fixtures/android-dev-server-base-url.txt"
-    private const val DEFAULT_ANDROID_DEV_SERVER_BASE_URL = "http://10.0.2.2:8082"
     private const val TAG = "SampleData"
     private const val FALLBACK_VECTOR_MANIFEST_JSON =
         """{"airspace":{"reference_tile_min_zoom":0,"reference_tile_max_zoom":12,"label_tile_min_zoom":0,"label_tile_max_zoom":12}}"""
@@ -146,9 +142,12 @@ object SampleData {
 
     private fun augmentVectorManifestWithDynamicPointLayers(context: Context, vectorManifestJson: String): String =
         runCatching {
-            val devServerBaseUrl = loadAndroidDevServerBaseUrl(context)
-            val metarManifestJson = fetchJsonOrNull(resolveDevServerUrl("/fast-products/metars/manifest.json", devServerBaseUrl))
-                ?: return vectorManifestJson
+            val metarManifestJson = InstalledPackages.readZipEntryText(
+                context,
+                InstalledPackageKind.Data,
+                "metars",
+                "manifest.json",
+            )
             val metarManifest = json.parseToJsonElement(metarManifestJson).jsonObject
             val mapView = metarManifest["map_view"]?.jsonObject ?: return vectorManifestJson
             val availableZooms = mapView["levels"]
@@ -187,29 +186,6 @@ object SampleData {
             Log.w(TAG, "dynamic METAR layer metadata unavailable", error)
             vectorManifestJson
         }
-
-    private fun loadAndroidDevServerBaseUrl(context: Context): String =
-        runCatching {
-            context.assets.open(DEV_SERVER_BASE_URL_ASSET_PATH)
-                .bufferedReader()
-                .use { it.readText().trim() }
-                .takeIf { it.isNotBlank() }
-        }.getOrNull() ?: DEFAULT_ANDROID_DEV_SERVER_BASE_URL
-
-    private fun resolveDevServerUrl(sourcePath: String, devServerBaseUrl: String): String =
-        when {
-            sourcePath.startsWith("http://") || sourcePath.startsWith("https://") -> sourcePath
-            sourcePath.startsWith("/") -> "$devServerBaseUrl$sourcePath"
-            else -> "$devServerBaseUrl/$sourcePath"
-        }
-
-    private fun fetchJsonOrNull(url: String): String? =
-        runCatching {
-            val connection = URL(url).openConnection() as HttpURLConnection
-            connection.connectTimeout = 1500
-            connection.readTimeout = 2500
-            connection.inputStream.bufferedReader().use { it.readText() }
-        }.getOrNull()
 
     fun inspectNavDbStatus(
         context: Context,

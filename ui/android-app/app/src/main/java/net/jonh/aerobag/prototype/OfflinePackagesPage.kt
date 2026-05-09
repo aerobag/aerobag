@@ -1607,7 +1607,7 @@ internal fun formatNavDbStatusLine(status: net.jonh.aerobag.prototype.domain.Nav
 internal fun installedPackageKindForFamilyId(familyId: String): InstalledPackageKind = when (familyId) {
     "sec", "tac", "shaded-relief", "enr-l", "enr-h" -> InstalledPackageKind.Charts
     "tpp", "csup" -> InstalledPackageKind.Plates
-    "nav-db", "vectors", "geo", "terrain" -> InstalledPackageKind.Data
+    "nav-db", "vectors", "geo", "terrain", "metars", "tfrs", "nexrad", "obstacles" -> InstalledPackageKind.Data
     else -> error("unsupported package family for install: $familyId")
 }
 

@@ -2074,24 +2074,24 @@ fn weather_overlay_resources(
     if overlay.needed_metars {
         resources.push(CoreResourceRequest {
             id: "weather/metars".to_string(),
-            address: "/fast-products/metars/metars.json".to_string(),
+            address: package_resource_address("metars", "metars.json"),
             optional: false,
         });
         resources.push(CoreResourceRequest {
             id: "weather/pireps".to_string(),
-            address: "/fast-products/metars/pireps.json".to_string(),
+            address: package_resource_address("metars", "pireps.json"),
             optional: false,
         });
         resources.push(CoreResourceRequest {
             id: "weather/tafs".to_string(),
-            address: "/fast-products/metars/tafs.json".to_string(),
+            address: package_resource_address("metars", "tafs.json"),
             optional: false,
         });
     }
     if overlay.needed_tfrs {
         resources.push(CoreResourceRequest {
             id: "weather/tfrs".to_string(),
-            address: "/fast-products/tfrs/tfrs.json".to_string(),
+            address: package_resource_address("tfrs", "tfrs.json"),
             optional: true,
         });
     }
@@ -2105,15 +2105,23 @@ fn weather_overlay_resources(
         for tile in &overlay.needed_metar_tiles {
             resources.push(CoreResourceRequest {
                 id: format!("weather/metar_tile/{}/{}/{}", tile.z, tile.x, tile.y),
-                address: format!(
-                    "/fast-products/metars/{}",
-                    apply_tile_path_template(template, tile.z, tile.x, tile.y)
+                address: package_resource_address(
+                    "metars",
+                    &apply_tile_path_template(template, tile.z, tile.x, tile.y),
                 ),
                 optional: false,
             });
         }
     }
     resources
+}
+
+fn package_resource_address(package_id: &str, member_path: &str) -> String {
+    format!(
+        "package://{}/{}",
+        package_id.trim_matches('/'),
+        member_path.trim_start_matches('/')
+    )
 }
 
 fn apply_tile_path_template(template: &str, z: u32, x: u32, y: u32) -> String {
@@ -3803,6 +3811,18 @@ mod tests {
                 lon: -122.194,
             })),
             "SPOT"
+        );
+    }
+
+    #[test]
+    fn package_resource_address_names_package_and_member() {
+        assert_eq!(
+            package_resource_address("tfrs", "/tfrs.json"),
+            "package://tfrs/tfrs.json"
+        );
+        assert_eq!(
+            package_resource_address("/metars/", "points/wx/7/20/44.json"),
+            "package://metars/points/wx/7/20/44.json"
         );
     }
 

@@ -134,16 +134,11 @@ export async function resolveCoreResourceUrl(address: string): Promise<string> {
   if (address.startsWith("/nav-kv/")) {
     return navKvResourceUrl(address.slice("/nav-kv/".length));
   }
-  if (address.startsWith("/fast-products/")) {
-    const [packageId, ...rest] = address.slice("/fast-products/".length).split("/");
-    return packageResourceUrl(packageId, rest.join("/"));
-  }
-  if (address.startsWith("/terrain-products/")) {
-    const [packageId, ...rest] = address.slice("/terrain-products/".length).split("/");
-    return packageResourceUrl(packageId, rest.join("/"));
-  }
-  if (address.startsWith("/sectional-packages/")) {
-    const [packageId, ...rest] = address.slice("/sectional-packages/".length).split("/");
+  if (address.startsWith("package://")) {
+    const [packageId, ...rest] = address.slice("package://".length).split("/");
+    if (!packageId || rest.length === 0) {
+      throw new Error(`invalid package resource address: ${address}`);
+    }
     return packageResourceUrl(packageId, rest.join("/"));
   }
   return address;

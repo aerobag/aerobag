@@ -65,6 +65,7 @@ declare module "@generated/app_wasm.js" {
   export const destroy_session: (...args: unknown[]) => void;
   export const install_rust_debug_logger: (...args: unknown[]) => void;
   export const nav_kv_open: (...args: unknown[]) => number;
+  export const nav_kv_prefetch_pages: (...args: unknown[]) => string;
   export const nav_kv_insert_resource: (...args: unknown[]) => void;
   export const nav_kv_destroy: (...args: unknown[]) => void;
   export const attach_nav_kv_store_to_session: (...args: unknown[]) => void;

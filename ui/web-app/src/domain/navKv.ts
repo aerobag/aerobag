@@ -19,6 +19,7 @@ type NavKvWasmModule = PublicationResolverWasmModule & {
   nav_kv_destroy(handle: number): void;
   nav_kv_insert_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
   nav_kv_open(rootBytes: Uint8Array): number;
+  nav_kv_prefetch_pages(handle: number): string;
 };
 
 let wasmReady: Promise<NavKvWasmModule> | null = null;
@@ -65,7 +66,9 @@ export class NavKvStore {
       root_bytes: rootBytes.byteLength,
     });
     publicationResolver.destroy();
-    return new NavKvStore(wasm, handle, rootUrl);
+    const store = new NavKvStore(wasm, handle, rootUrl);
+    await store.prefetchRootPages();
+    return store;
   }
 
   private readonly navKvPackageRoot: string;
@@ -87,6 +90,17 @@ export class NavKvStore {
 
   attachToSession(sessionHandle: number): void {
     this.wasm.attach_nav_kv_store_to_session(this.handle, sessionHandle);
+  }
+
+  async prefetchRootPages(): Promise<void> {
+    const pages = JSON.parse(this.wasm.nav_kv_prefetch_pages(this.handle)) as number[];
+    if (pages.length === 0) {
+      return;
+    }
+    await debugTiming("nav_kv.prefetch_pages", () => Promise.all(pages.map((page) => this.ensureNavKvPage(page))), {
+      pages,
+      page_count: pages.length,
+    });
   }
 
   private async runPagedOperation<T>(
@@ -134,6 +148,10 @@ export class NavKvStore {
     if (!Number.isInteger(pageIndex)) {
       throw new Error(`invalid nav kv page resource id: ${resource.id}`);
     }
+    return this.ensureNavKvPage(pageIndex);
+  }
+
+  private ensureNavKvPage(pageIndex: number): Promise<void> {
     const cached = this.inFlightPageFetches.get(pageIndex);
     if (cached) {
       return cached;
@@ -147,7 +165,7 @@ export class NavKvStore {
           throw new Error(`failed to fetch nav_kv page ${pageIndex}: ${response.status}`);
         }
         const bytes = new Uint8Array(await debugTiming("nav_kv.page.array_buffer", () => response.arrayBuffer(), { page: pageIndex }));
-        await this.wasm.nav_kv_insert_resource(this.handle, resource.id, bytes);
+        await this.wasm.nav_kv_insert_resource(this.handle, `nav_kv/page/${pageIndex}`, bytes);
       });
     this.inFlightPageFetches.set(pageIndex, fetched);
     return fetched;

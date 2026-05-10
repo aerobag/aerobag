@@ -101,6 +101,16 @@ pub fn nav_kv_open(root_bytes: &[u8]) -> Result<u32, JsValue> {
 }
 
 #[wasm_bindgen]
+pub fn nav_kv_prefetch_pages(handle: u32) -> Result<String, JsValue> {
+    let stores = nav_kv_stores().lock().expect("nav kv store poisoned");
+    let store = stores
+        .get(&handle)
+        .ok_or_else(|| JsValue::from_str(&format!("invalid nav kv handle: {handle}")))?;
+    serde_json::to_string(store.root().prefetch_pages())
+        .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn publication_resolver_open(public_base_url: &str) -> u32 {
     let handle = NEXT_PUBLICATION_RESOLVER_HANDLE.fetch_add(1, Ordering::Relaxed);
     publication_resolvers()

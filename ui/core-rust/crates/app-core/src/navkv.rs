@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::{NavRef, ProcedureKind};
 
 const MAGIC: &[u8; 16] = b"AEROBAGNAVKV0001";
-const VERSION: u32 = 2;
+const VERSION_V2: u32 = 2;
+const VERSION_V3: u32 = 3;
 const HEADER_LEN: usize = 64;
 const ENTRY_LEN: usize = 8;
 
@@ -24,6 +25,7 @@ pub struct NavKvRoot {
     value_table_offset: u32,
     value_bytes_len: u32,
     logical_bytes_len: u32,
+    prefetch_pages: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,7 +130,7 @@ impl NavKvRoot {
             return Err("nav_kv root has invalid magic".to_string());
         }
         let actual_version = read_u32(root_bytes, 16)?;
-        if actual_version != VERSION {
+        if actual_version != VERSION_V2 && actual_version != VERSION_V3 {
             return Err(format!("unsupported nav_kv version {actual_version}"));
         }
         let entry_count = read_u32(root_bytes, 20)?;
@@ -143,8 +145,38 @@ impl NavKvRoot {
         if page_size == 0 {
             return Err("nav_kv page_size must be non-zero".to_string());
         }
-        if root_bytes.len() != HEADER_LEN {
-            return Err("nav_kv v2 root must be exactly the fixed header length".to_string());
+        let prefetch_pages = if actual_version == VERSION_V3 {
+            let prefetch_page_count = read_u32(root_bytes, 56)? as usize;
+            let reserved = read_u32(root_bytes, 60)?;
+            if reserved != 0 {
+                return Err("nav_kv v3 reserved root field must be zero".to_string());
+            }
+            let expected_root_len = HEADER_LEN
+                .checked_add(
+                    prefetch_page_count
+                        .checked_mul(4)
+                        .ok_or_else(|| "nav_kv prefetch page count overflow".to_string())?,
+                )
+                .ok_or_else(|| "nav_kv v3 root length overflow".to_string())?;
+            if root_bytes.len() != expected_root_len {
+                return Err("nav_kv v3 root length does not match prefetch page count".to_string());
+            }
+            let mut pages = Vec::with_capacity(prefetch_page_count);
+            for index in 0..prefetch_page_count {
+                pages.push(read_u32(root_bytes, HEADER_LEN + index * 4)?);
+            }
+            pages
+        } else {
+            if root_bytes.len() != HEADER_LEN {
+                return Err("nav_kv v2 root must be exactly the fixed header length".to_string());
+            }
+            Vec::new()
+        };
+        if prefetch_pages
+            .iter()
+            .any(|page| *page >= logical_bytes_len.div_ceil(page_size))
+        {
+            return Err("nav_kv prefetch page exceeds logical page count".to_string());
         }
         let sentinel_count = entry_count
             .checked_add(1)
@@ -175,6 +207,7 @@ impl NavKvRoot {
             value_table_offset,
             value_bytes_len,
             logical_bytes_len,
+            prefetch_pages,
         })
     }
 
@@ -192,6 +225,10 @@ impl NavKvRoot {
 
     pub fn page_count(&self) -> u32 {
         self.logical_bytes_len.div_ceil(self.page_size)
+    }
+
+    pub fn prefetch_pages(&self) -> &[u32] {
+        &self.prefetch_pages
     }
 
     pub fn len(&self) -> usize {
@@ -732,6 +769,18 @@ mod tests {
     }
 
     #[test]
+    fn parses_v3_prefetch_pages() {
+        let (mut root, _) = build_root(&[("a", b"1".as_slice()), ("b", b"2".as_slice())], 8);
+        write_u32(&mut root, 16, VERSION_V3);
+        write_u32(&mut root, 56, 2);
+        root.extend_from_slice(&0u32.to_le_bytes());
+        root.extend_from_slice(&1u32.to_le_bytes());
+
+        let root = NavKvRoot::parse(&root).unwrap();
+        assert_eq!(root.prefetch_pages(), &[0, 1]);
+    }
+
+    #[test]
     fn builds_plate_and_procedure_keys_in_core() {
         assert_eq!(
             nav_kv_key_for_query(&NavKvQuery::PackageById {
@@ -832,7 +881,7 @@ mod tests {
 
         let mut root = vec![0; HEADER_LEN];
         root[..MAGIC.len()].copy_from_slice(MAGIC);
-        write_u32(&mut root, 16, VERSION);
+        write_u32(&mut root, 16, VERSION_V2);
         write_u32(&mut root, 20, entries.len() as u32);
         write_u32(&mut root, 24, page_size);
         write_u32(&mut root, 28, 0);

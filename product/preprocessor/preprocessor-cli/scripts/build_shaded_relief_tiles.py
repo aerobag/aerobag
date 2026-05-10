@@ -191,10 +191,12 @@ def scan_tile_levels(tiles_root):
         levels.append({
             "zoom": zoom,
             "tile_count": len(coords),
-            "x_min": min(xs),
-            "x_max": max(xs),
-            "y_tms_min": min(ys),
-            "y_tms_max": max(ys),
+            "boxes": [{
+                "x_min": min(xs),
+                "x_max": max(xs),
+                "y_tms_min": min(ys),
+                "y_tms_max": max(ys),
+            }],
         })
     return levels
 

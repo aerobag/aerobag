@@ -1100,8 +1100,8 @@ const DEFAULT_PRODUCT_BUILD_MEMORY_MAX: &str = "80G";
 const TPP_RENDER_JOBS_PER_RUN: usize = 8;
 const TPP_RENDER_WEIGHT: usize = 2;
 const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
-const TERRAIN_PIPELINE_VERSION: &str = "v4";
-const SHADED_RELIEF_PIPELINE_VERSION: &str = "v7-wide-angle-split";
+const TERRAIN_PIPELINE_VERSION: &str = "v5-tile-boxes";
+const SHADED_RELIEF_PIPELINE_VERSION: &str = "v8-wide-angle-split-tile-boxes";
 const SHADED_RELIEF_OVERLAY_STYLE_VERSION: &str = "v1-gray-borders-bluegray-primary-roads";
 const SHADED_RELIEF_STATE_BORDERS_URL: &str =
     "https://naturalearth.s3.amazonaws.com/50m_cultural/ne_50m_admin_1_states_provinces_lines.zip";
@@ -1129,7 +1129,7 @@ const WATER_MASK_NHD_LAYERS: &[(u32, &str, &str)] = &[
         "AREASQKM >= 1 AND FTYPE IN (378,390,436,493)",
     ),
 ];
-const WORLD_BASEMAP_PIPELINE_VERSION: &str = "v1";
+const WORLD_BASEMAP_PIPELINE_VERSION: &str = "v2-tile-boxes";
 const WORLD_BASEMAP_MIN_ZOOM: u32 = 0;
 const WORLD_BASEMAP_MAX_SOURCE_ZOOM: u32 = 4;
 const WORLD_BASEMAP_MAX_DISPLAY_ZOOM: f64 = 8.0;
@@ -12791,6 +12791,35 @@ def build_parent_pyramid(tiles_root, max_zoom, tile_size):
         counts[z] = len(parents)
     return counts
 
+def scan_terrain_levels(tiles_root):
+    levels = []
+    for z_dir in sorted((path for path in tiles_root.iterdir() if path.is_dir()), key=lambda path: int(path.name)):
+        zoom = int(z_dir.name)
+        coords = []
+        for x_dir in z_dir.iterdir():
+            if not x_dir.is_dir():
+                continue
+            x = int(x_dir.name)
+            for tile_path in x_dir.iterdir():
+                if tile_path.suffix.lower() != '.terrain':
+                    continue
+                coords.append((x, int(tile_path.stem)))
+        if not coords:
+            continue
+        xs = [x for x, _ in coords]
+        ys = [y for _, y in coords]
+        levels.append({
+            'zoom': zoom,
+            'tile_count': len(coords),
+            'boxes': [{
+                'x_min': min(xs),
+                'x_max': max(xs),
+                'y_tms_min': min(ys),
+                'y_tms_max': max(ys),
+            }],
+        })
+    return levels
+
 def init_worker(vrt_path, geo_csv_path, tiles_root, zoom, tile_size):
     global WORKER_DS, WORKER_GEO, WORKER_TILES_ROOT, WORKER_ZOOM, WORKER_TILE_SIZE
     WORKER_DS = gdal.Open(vrt_path)
@@ -12855,6 +12884,7 @@ def main():
         ) as pool:
             count = sum(pool.map(render_tile, tasks, chunksize=8))
     level_counts = build_parent_pyramid(tiles_root, args.zoom, args.tile_size)
+    levels = scan_terrain_levels(tiles_root)
     manifest = {
         'schema_version': 1,
         'product': 'terrain',
@@ -12885,7 +12915,7 @@ def main():
         'nodata': -32768,
         'base_tile_count': count,
         'tile_count': sum(level_counts.values()),
-        'levels': [{'zoom': z, 'tile_count': level_counts[z]} for z in sorted(level_counts)],
+        'levels': levels,
         'files': {'tiles': 'tiles'}
     }
     with open(root / 'manifest.json', 'w') as f:

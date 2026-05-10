@@ -1,8 +1,3 @@
-declare module "@current-artifacts" {
-  const value: unknown;
-  export default value;
-}
-
 declare module "@shared-ui-theme" {
   const value: unknown;
   export default value;

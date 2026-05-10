@@ -68,9 +68,16 @@ fn now_ms() -> f64 {
 
 static NEXT_NAV_KV_HANDLE: AtomicU32 = AtomicU32::new(1);
 static NAV_KV_STORES: OnceLock<Mutex<HashMap<u32, app_core::NavKvStore>>> = OnceLock::new();
+static NEXT_PUBLICATION_RESOLVER_HANDLE: AtomicU32 = AtomicU32::new(1);
+static PUBLICATION_RESOLVERS: OnceLock<Mutex<HashMap<u32, app_core::PublicationResolver>>> =
+    OnceLock::new();
 
 fn nav_kv_stores() -> &'static Mutex<HashMap<u32, app_core::NavKvStore>> {
     NAV_KV_STORES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn publication_resolvers() -> &'static Mutex<HashMap<u32, app_core::PublicationResolver>> {
+    PUBLICATION_RESOLVERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -88,6 +95,102 @@ pub fn nav_kv_open(root_bytes: &[u8]) -> Result<u32, JsValue> {
         .expect("nav kv store poisoned")
         .insert(handle, app_core::NavKvStore::new(root));
     Ok(handle)
+}
+
+#[wasm_bindgen]
+pub fn publication_resolver_open(public_base_url: &str) -> u32 {
+    let handle = NEXT_PUBLICATION_RESOLVER_HANDLE.fetch_add(1, Ordering::Relaxed);
+    publication_resolvers()
+        .lock()
+        .expect("publication resolver store poisoned")
+        .insert(handle, app_core::PublicationResolver::new(public_base_url));
+    handle
+}
+
+#[wasm_bindgen]
+pub fn publication_resolver_ingest_resource(
+    handle: u32,
+    resource_id: &str,
+    resource_bytes: &[u8],
+) -> Result<(), JsValue> {
+    let mut resolvers = publication_resolvers()
+        .lock()
+        .expect("publication resolver store poisoned");
+    let resolver = resolvers.get_mut(&handle).ok_or_else(|| {
+        JsValue::from_str(&format!("invalid publication resolver handle: {handle}"))
+    })?;
+    resolver
+        .ingest_resource(resource_id, resource_bytes)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn publication_resolver_resolve_nav_kv_resource(
+    handle: u32,
+    member_path: &str,
+) -> Result<String, JsValue> {
+    publication_resolver_resolve_family_resource(handle, "nav-db", member_path)
+}
+
+#[wasm_bindgen]
+pub fn publication_resolver_resolve_obstacle_manifest(handle: u32) -> Result<String, JsValue> {
+    publication_resolver_resolve_package_resource(handle, "obstacles", "obstacles")
+}
+
+#[wasm_bindgen]
+pub fn publication_resolver_resolve_metar_manifest(handle: u32) -> Result<String, JsValue> {
+    publication_resolver_resolve_package_resource(handle, "metars", "manifest.json")
+}
+
+#[wasm_bindgen]
+pub fn publication_resolver_resolve_package_member(
+    handle: u32,
+    package_id: &str,
+    member_path: &str,
+) -> Result<String, JsValue> {
+    publication_resolver_resolve_package_resource(handle, package_id, member_path)
+}
+
+fn publication_resolver_resolve_family_resource(
+    handle: u32,
+    family_id: &str,
+    member_path: &str,
+) -> Result<String, JsValue> {
+    let resolvers = publication_resolvers()
+        .lock()
+        .expect("publication resolver store poisoned");
+    let resolver = resolvers.get(&handle).ok_or_else(|| {
+        JsValue::from_str(&format!("invalid publication resolver handle: {handle}"))
+    })?;
+    let outcome = resolver
+        .resolve_family_resource(family_id, member_path)
+        .map_err(|err| JsValue::from_str(&err))?;
+    app_core::serialize_publication_outcome(outcome).map_err(|err| JsValue::from_str(&err))
+}
+
+fn publication_resolver_resolve_package_resource(
+    handle: u32,
+    package_id: &str,
+    member_path: &str,
+) -> Result<String, JsValue> {
+    let resolvers = publication_resolvers()
+        .lock()
+        .expect("publication resolver store poisoned");
+    let resolver = resolvers.get(&handle).ok_or_else(|| {
+        JsValue::from_str(&format!("invalid publication resolver handle: {handle}"))
+    })?;
+    let outcome = resolver
+        .resolve_package_resource(package_id, member_path)
+        .map_err(|err| JsValue::from_str(&err))?;
+    app_core::serialize_publication_outcome(outcome).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn publication_resolver_destroy(handle: u32) {
+    let _ = publication_resolvers()
+        .lock()
+        .expect("publication resolver store poisoned")
+        .remove(&handle);
 }
 
 fn nav_kv_insert_page(handle: u32, page_index: u32, page_bytes: &[u8]) -> Result<(), JsValue> {

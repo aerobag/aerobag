@@ -15,6 +15,7 @@ pub mod ownship;
 pub mod package_management;
 pub mod planning;
 pub mod playback;
+pub mod publication;
 pub mod raster_tiles;
 pub mod session;
 pub mod situation;
@@ -117,6 +118,9 @@ pub use planning::{
     SequencingMode, StartRequirement, TerminalState,
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
+pub use publication::{
+    serialize_publication_outcome, PublicationResolvedResource, PublicationResolver,
+};
 pub use raster_tiles::{
     preferred_family_map, raster_map_ui_state, raster_tile_plan, raster_tile_plan_with_options,
     select_map_family_in_catalog, select_map_in_catalog, RasterChartCoverage,

@@ -29,9 +29,9 @@ use crate::{
     MapViewport, MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore,
     NavRef, PirepRecord, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity,
     ProcedureKind, ProcedureLoadCommand, RasterMapCatalog, RasterResourceMode, RasterTilePlan,
-    ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode, SituationControlInput,
-    SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload,
-    UiSnapshotAppState,
+    PublicationResolver, ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode,
+    SituationControlInput, SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult,
+    TfrProductPayload, UiSnapshotAppState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -115,6 +115,7 @@ struct UiSession {
     caution_state: UiCautionState,
     debug_state: UiDebugState,
     raster_resource_mode: RasterResourceMode,
+    publication_resolver: PublicationResolver,
     raster_map_catalog: Option<RasterMapCatalog>,
     point_tile_cache: HashMap<String, PointTilePayload>,
     metar_tile_cache: HashMap<String, MetarTilePayload>,
@@ -323,6 +324,7 @@ fn create_ui_session_inner(
             caution_state,
             debug_state,
             raster_resource_mode: RasterResourceMode::InstalledPackage,
+            publication_resolver: PublicationResolver::new("/packages"),
             raster_map_catalog: None,
             point_tile_cache: HashMap::new(),
             metar_tile_cache: HashMap::new(),
@@ -1666,6 +1668,18 @@ struct PirepProductPayload {
 }
 
 pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) -> AppResult<()> {
+    if resource_id.starts_with("publication/") {
+        let mut sessions = sessions().lock().expect("session store poisoned");
+        let session = session_mut(&mut sessions, handle)?;
+        session
+            .publication_resolver
+            .ingest_resource(resource_id, bytes)
+            .map_err(|message| AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message,
+            })?;
+        return Ok(());
+    }
     if resource_id == "weather/metars" {
         let payload: MetarProductPayload =
             serde_json::from_slice(bytes).map_err(|err| AppError {
@@ -2072,28 +2086,12 @@ fn weather_overlay_resources(
 ) -> Vec<CoreResourceRequest> {
     let mut resources = Vec::new();
     if overlay.needed_metars {
-        resources.push(CoreResourceRequest {
-            id: "weather/metars".to_string(),
-            address: package_resource_address("metars", "metars.json"),
-            optional: false,
-        });
-        resources.push(CoreResourceRequest {
-            id: "weather/pireps".to_string(),
-            address: package_resource_address("metars", "pireps.json"),
-            optional: false,
-        });
-        resources.push(CoreResourceRequest {
-            id: "weather/tafs".to_string(),
-            address: package_resource_address("metars", "tafs.json"),
-            optional: false,
-        });
+        extend_package_resource_requests(session, &mut resources, "weather/metars", "metars", "metars.json", false);
+        extend_package_resource_requests(session, &mut resources, "weather/pireps", "metars", "pireps.json", false);
+        extend_package_resource_requests(session, &mut resources, "weather/tafs", "metars", "tafs.json", false);
     }
     if overlay.needed_tfrs {
-        resources.push(CoreResourceRequest {
-            id: "weather/tfrs".to_string(),
-            address: package_resource_address("tfrs", "tfrs.json"),
-            optional: true,
-        });
+        extend_package_resource_requests(session, &mut resources, "weather/tfrs", "tfrs", "tfrs.json", true);
     }
     if !overlay.needed_metar_tiles.is_empty() {
         let template = session
@@ -2103,25 +2101,48 @@ fn weather_overlay_resources(
             .and_then(|layer| layer.tile_path_template.as_deref())
             .unwrap_or("points/metars/{z}/{x}/{y}.json");
         for tile in &overlay.needed_metar_tiles {
-            resources.push(CoreResourceRequest {
-                id: format!("weather/metar_tile/{}/{}/{}", tile.z, tile.x, tile.y),
-                address: package_resource_address(
-                    "metars",
-                    &apply_tile_path_template(template, tile.z, tile.x, tile.y),
-                ),
-                optional: false,
-            });
+            extend_package_resource_requests(
+                session,
+                &mut resources,
+                &format!("weather/metar_tile/{}/{}/{}", tile.z, tile.x, tile.y),
+                "metars",
+                &apply_tile_path_template(template, tile.z, tile.x, tile.y),
+                false,
+            );
         }
     }
-    resources
+    dedupe_resource_requests(resources)
 }
 
-fn package_resource_address(package_id: &str, member_path: &str) -> String {
-    format!(
-        "package://{}/{}",
-        package_id.trim_matches('/'),
-        member_path.trim_start_matches('/')
-    )
+fn extend_package_resource_requests(
+    session: &UiSession,
+    resources: &mut Vec<CoreResourceRequest>,
+    target_resource_id: &str,
+    package_id: &str,
+    member_path: &str,
+    optional: bool,
+) {
+    match session.publication_resolver.package_resource_requests(
+        target_resource_id,
+        package_id,
+        member_path,
+        optional,
+    ) {
+        Ok(mut requested) => resources.append(&mut requested),
+        Err(message) => resources.push(CoreResourceRequest {
+            id: target_resource_id.to_string(),
+            address: format!("publication-error:{message}"),
+            optional,
+        }),
+    }
+}
+
+fn dedupe_resource_requests(resources: Vec<CoreResourceRequest>) -> Vec<CoreResourceRequest> {
+    let mut by_id = HashMap::new();
+    for resource in resources {
+        by_id.entry(resource.id.clone()).or_insert(resource);
+    }
+    by_id.into_values().collect()
 }
 
 fn apply_tile_path_template(template: &str, z: u32, x: u32, y: u32) -> String {
@@ -3811,18 +3832,6 @@ mod tests {
                 lon: -122.194,
             })),
             "SPOT"
-        );
-    }
-
-    #[test]
-    fn package_resource_address_names_package_and_member() {
-        assert_eq!(
-            package_resource_address("tfrs", "/tfrs.json"),
-            "package://tfrs/tfrs.json"
-        );
-        assert_eq!(
-            package_resource_address("/metars/", "points/wx/7/20/44.json"),
-            "package://metars/points/wx/7/20/44.json"
         );
     }
 

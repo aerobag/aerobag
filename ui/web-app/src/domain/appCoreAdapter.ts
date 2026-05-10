@@ -38,8 +38,7 @@ import type {
   WaypointIdentifierSuggestion,
 } from "./types";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
-import { packageResourceUrl } from "./packageContract";
-import { attachNavKvStoreToSession, runCoreHadOperation, runCoreHadSessionOperation } from "./navKv";
+import { attachNavKvStoreToSession, PublicationResolver, runCoreHadOperation, runCoreHadSessionOperation } from "./navKv";
 import { debugLog, debugTiming } from "./debugLog";
 
 export type DerivedChartPageState = {
@@ -557,7 +556,8 @@ function sourceIdString(sourceId: { 0: string } | string): string {
   return typeof sourceId === "string" ? sourceId : sourceId[0];
 }
 
-async function fetchVectorManifestJson(): Promise<string> {
+async function fetchVectorManifestJson(module: WasmModule): Promise<string> {
+  const publicationResolver = new PublicationResolver(module, module.publication_resolver_open("/packages"));
   const baseManifest: Record<string, unknown> = {
     airspace: {
       reference_tile_min_zoom: 0,
@@ -568,7 +568,7 @@ async function fetchVectorManifestJson(): Promise<string> {
     point_layers: {},
   };
   try {
-    const obstacleResponse = await fetch(await packageResourceUrl("obstacles", "obstacles"), { cache: "no-cache" });
+    const obstacleResponse = await fetch(await publicationResolver.resolveObstacleManifest(), { cache: "no-cache" });
     if (obstacleResponse.ok) {
       const obstacleManifest = JSON.parse(await obstacleResponse.text()) as {
         point_layers?: Record<string, unknown>;
@@ -595,7 +595,7 @@ async function fetchVectorManifestJson(): Promise<string> {
     // Obstacle overlay is optional; keep the base vector manifest usable if the fast product is absent.
   }
   try {
-    const metarResponse = await fetch(await packageResourceUrl("metars", "manifest.json"), { cache: "no-cache" });
+    const metarResponse = await fetch(await publicationResolver.resolveMetarManifest(), { cache: "no-cache" });
     if (metarResponse.ok) {
       const metarManifest = JSON.parse(await metarResponse.text()) as {
         map_view?: {
@@ -638,11 +638,19 @@ async function fetchVectorManifestJson(): Promise<string> {
   } catch {
     // METAR overlay is optional; keep the base vector manifest usable if the fast product is absent.
   }
+  publicationResolver.destroy();
   return JSON.stringify(baseManifest);
 }
 
 type WasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
+  publication_resolver_destroy(handle: number): void;
+  publication_resolver_ingest_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
+  publication_resolver_open(publicBaseUrl: string): number;
+  publication_resolver_resolve_metar_manifest(handle: number): Promise<string> | string;
+  publication_resolver_resolve_nav_kv_resource(handle: number, memberPath: string): Promise<string> | string;
+  publication_resolver_resolve_obstacle_manifest(handle: number): Promise<string> | string;
+  publication_resolver_resolve_package_member(handle: number, packageId: string, memberPath: string): Promise<string> | string;
   situation_ring_candidates_json(): Promise<string> | string;
   empty_flight_plan_json(): Promise<string> | string;
   create_ui_session(vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
@@ -722,7 +730,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   constructor(private readonly module: WasmModule) {}
 
   private async vectorManifestJson(): Promise<string> {
-    this.vectorManifestJsonPromise ??= fetchVectorManifestJson();
+    this.vectorManifestJsonPromise ??= fetchVectorManifestJson(this.module);
     return this.vectorManifestJsonPromise;
   }
 

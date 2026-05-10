@@ -110,7 +110,7 @@ import type {
 } from "./domain/appCoreAdapter";
 import { airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
 import { debugLog, debugTiming, installGlobalErrorLogging } from "./domain/debugLog";
-import { packageResourceUrl } from "./domain/packageContract";
+import { resolvePackageMemberUrl } from "./domain/navKv";
 import { TerrainRenderWorkerClient } from "./domain/terrainRenderWorkerClient";
 
 type SurfaceSize = {
@@ -2478,7 +2478,7 @@ function MapPage(props: {
               let sourceBytes = terrainSourceByteCacheRef.current.get(sourceCacheKey);
               if (!sourceBytes) {
                 const fetchStartedAt = performance.now();
-                const response = await fetch(await packageResourceUrl(sourceTile.product_id, sourceTile.path));
+                const response = await fetch(await resolvePackageMemberUrl(sourceTile.product_id, sourceTile.path));
                 if (response.status === 404) {
                   debugLog("terrain.overlay.tile.missing", {
                     key: task.request.key,
@@ -2661,7 +2661,6 @@ function MapPage(props: {
       setRasterTileViewport(null);
       return;
     }
-    const planStartedAt = performance.now();
     const devicePixelRatio = window.devicePixelRatio || 1;
     const { deviceViewport, cssViewport } = rasterPlanViewportForDevice(viewport, devicePixelRatio, selectedMap.max_zoom);
     uiSession.queryRasterTilePlan(
@@ -2675,7 +2674,6 @@ function MapPage(props: {
             id: pageTilePaintTiming.id,
             from_page: pageTilePaintTiming.fromPage,
             elapsed_ms: Math.round(performance.now() - pageTilePaintTiming.startedAt),
-            plan_ms: Math.round(performance.now() - planStartedAt),
             tiles: plan.tiles.length,
             device_pixel_ratio: devicePixelRatio,
           });
@@ -2792,7 +2790,7 @@ function MapPage(props: {
     setNexradStatus({ state: "loading" });
 
     async function loadNexrad() {
-      const response = await fetch(await packageResourceUrl("nexrad", "nexrad.json"), { signal: controller.signal });
+      const response = await fetch(await resolvePackageMemberUrl("nexrad", "nexrad.json"), { signal: controller.signal });
       if (response.status === 404) {
         if (uiSession) {
           void uiSession.setMapLayerEnabled("nexrad", false).then(onPlaybackSnapshotChange).catch(() => {});
@@ -2819,7 +2817,7 @@ function MapPage(props: {
         .reverse()
         .map(async (frame) => ({
           ...frame,
-          url: await packageResourceUrl("nexrad", frame.filename),
+          url: await resolvePackageMemberUrl("nexrad", frame.filename),
         })));
       return {
         status: { state: "available", frame_count: frames.length } satisfies NexradLayerStatus,

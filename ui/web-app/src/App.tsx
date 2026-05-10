@@ -698,7 +698,7 @@ const loadedUiTheme = uiTheme as UiThemeJson;
 const controlTheme = loadedUiTheme.controls;
 const plateFolderTheme = loadedUiTheme.plate_folder;
 const VAMPS_POSITION = { lat: 47.3648944444444, lon: -121.980275 };
-const NRVNA_POSITION = { lat: 47.37208888888889, lon: -122.16950277777778 };
+const MATLK_POSITION = { lat: 27.826816666666662, lon: -80.95118611111111 };
 const defaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json";
 const startupHighLatencyWarningGraceMs = 10_000;
 const browserGeolocationSourceId = "browser-geolocation";
@@ -1660,7 +1660,7 @@ export default function App() {
       let createdSnapshot = await created.snapshot();
       markStartupProgress("session.ownship_start", "Starting ownship source");
       createdSnapshot = await debugTiming("startup.session.ownship_start", () => created.setSituation({
-        position: { kind: "lat_lon", lat: NRVNA_POSITION.lat, lon: NRVNA_POSITION.lon },
+        position: { kind: "lat_lon", lat: MATLK_POSITION.lat, lon: MATLK_POSITION.lon },
         orientation_deg: 342,
         speed_kt: 0,
       }));

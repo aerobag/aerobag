@@ -3008,10 +3008,6 @@ function MapPage(props: {
     let cancelled = false;
 
     async function resolveFlightPlanRoute() {
-      if ((plan.resolved_legs ?? []).length === 0 || (planUiState?.resolved_legs ?? []).length === 0) {
-        setFlightPlanRoute([]);
-        return;
-      }
       const startedAt = performance.now();
       const segments = await appCoreAdapter.projectFlightPlanRoute(plan, planUiState);
       const elapsedMs = Math.round(performance.now() - startedAt);

@@ -2622,6 +2622,30 @@ mod tests {
     }
 
     #[test]
+    fn empty_plan_direct_to_projects_active_route_segment() {
+        let (root, _pages) = fixture(&[], 4);
+        let store = NavKvStore::new(root);
+        let start = LatLon {
+            lat: 47.600,
+            lon: -122.300,
+        };
+        let target = LatLon {
+            lat: 47.700,
+            lon: -122.100,
+        };
+        let plan = crate::activate_direct_to(&FlightPlan::empty(), start, NavRef::LatLon(target))
+            .expect("activate direct-to");
+
+        let route = project_flight_plan_route(&store, &plan).expect("project direct-to route");
+
+        assert_eq!(route.len(), 1);
+        assert_eq!(route[0].id, "direct-to");
+        assert_eq!(route[0].status, crate::FlightPlanRouteSegmentStatus::Active);
+        assert_eq!(route[0].from, start);
+        assert_eq!(route[0].to, target);
+    }
+
+    #[test]
     fn map_selector_state_enriches_full_coverage_zoom_from_package_metadata() {
         let chart_catalog = br#"[{
           "id":"sec:nw",

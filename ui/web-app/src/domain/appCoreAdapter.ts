@@ -303,11 +303,9 @@ export type AirspaceLimitGlyph = {
 };
 
 export type MapOverlayQueryResult = {
-  needed_point_tiles: VectorTileRequest[];
+  needed_vector_tiles: VectorTileRequest[];
   needed_metar_tiles: VectorTileRequest[];
-  needed_airspace_ref_tiles: VectorTileRequest[];
   needed_airspace_features: AirspaceFeatureRequest[];
-  needed_airspace_label_tiles: VectorTileRequest[];
   needed_metars: boolean;
   needed_tfrs: boolean;
   visible_features: VisibleMapFeature[];

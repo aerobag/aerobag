@@ -9239,17 +9239,17 @@ fn load_towered_metar_station_ids_from_current_vectors(
         Some(page)
     };
     let keys = root
-        .prefix_keys("vector/point-tile/airport/", |page_index| {
+        .prefix_keys("vector/tile/", |page_index| {
             read_page(&mut archive, page_index)
         })
-        .context("missing nav_db pages while scanning airport vector keys")?;
+        .context("missing nav_db pages while scanning vector tile keys")?;
     for key in keys {
         let value = root
             .extract_value(&key, |page_index| read_page(&mut archive, page_index))
             .with_context(|| format!("missing nav_db value for {key}"))?;
         let tile: serde_json::Value = serde_json::from_slice(&value)
             .with_context(|| format!("failed to parse {key} in {}", nav_db_zip_path.display()))?;
-        let Some(records) = tile.get("records").and_then(|value| value.as_array()) else {
+        let Some(records) = tile.get("airports").and_then(|value| value.as_array()) else {
             continue;
         };
         for record in records {

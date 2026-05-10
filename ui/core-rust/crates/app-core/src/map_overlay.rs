@@ -116,6 +116,26 @@ pub struct PointTilePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VectorAggregateTilePayload {
+    pub schema_version: u32,
+    pub z: u32,
+    pub x: u32,
+    pub y: u32,
+    #[serde(default)]
+    pub airports: Vec<PointVectorRecord>,
+    #[serde(default)]
+    pub fixes: Vec<PointVectorRecord>,
+    #[serde(default)]
+    pub navaids: Vec<PointVectorRecord>,
+    #[serde(default)]
+    pub obstacles: Vec<PointVectorRecord>,
+    #[serde(default)]
+    pub airspace_refs: Vec<String>,
+    #[serde(default)]
+    pub airspace_labels: Vec<AirspaceLabelRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetarTileRecord {
     pub kind: String,
     pub id: String,
@@ -474,11 +494,9 @@ pub struct MapOverlayWarning {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MapOverlayQueryResult {
-    pub needed_point_tiles: Vec<VectorTileRequest>,
+    pub needed_vector_tiles: Vec<VectorTileRequest>,
     pub needed_metar_tiles: Vec<VectorTileRequest>,
-    pub needed_airspace_ref_tiles: Vec<VectorTileRequest>,
     pub needed_airspace_features: Vec<AirspaceFeatureRequest>,
-    pub needed_airspace_label_tiles: Vec<VectorTileRequest>,
     pub needed_metars: bool,
     pub needed_tfrs: bool,
     pub visible_features: Vec<VisibleMapFeature>,
@@ -1036,15 +1054,13 @@ pub fn query_map_overlay(
     display_metars: bool,
     offline_region_records: &[OfflineRegionRecord],
     obstacle_context: Option<&ObstacleOverlayContext>,
-    point_tile_cache: &HashMap<String, PointTilePayload>,
+    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
-    airspace_ref_tile_cache: &HashMap<String, AirspaceReferenceTilePayload>,
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
-    airspace_label_tile_cache: &HashMap<String, AirspaceLabelTilePayload>,
     tfr_payload: Option<&TfrProductPayload>,
 ) -> MapOverlayQueryResult {
-    let mut needed_point_tiles = Vec::new();
+    let mut needed_vector_tiles = Vec::new();
     let mut visible_features = Vec::new();
     let mut limit_hit = false;
     let center_world = lat_lon_to_world(viewport.center);
@@ -1067,19 +1083,19 @@ pub fn query_map_overlay(
         );
         let mut needed_seen = BTreeSet::new();
         for tile in tile_window {
-            let key = tile_key(
-                &tile.request.layer,
-                tile.request.z,
-                tile.request.x,
-                tile.request.y,
-            );
-            let Some(payload) = point_tile_cache.get(&key) else {
+            let key =
+                aggregate_vector_tile_cache_key(tile.request.z, tile.request.x, tile.request.y);
+            let Some(payload) = vector_tile_cache.get(&key) else {
                 if needed_seen.insert(key) {
-                    needed_point_tiles.push(tile.request);
+                    needed_vector_tiles.push(aggregate_vector_tile_request(
+                        tile.request.z,
+                        tile.request.x,
+                        tile.request.y,
+                    ));
                 }
                 continue;
             };
-            for record in &payload.records {
+            for record in vector_tile_point_records(payload, &tile.request.layer) {
                 if visible_features.len() >= VECTOR_DISPLAY_FEATURE_LIMIT {
                     limit_hit = true;
                     break;
@@ -1147,15 +1163,13 @@ pub fn query_map_overlay(
             config,
             center_world,
             scale,
-            airspace_ref_tile_cache,
+            vector_tile_cache,
             airspace_feature_cache,
-            airspace_label_tile_cache,
         )
     } else {
         AirspaceOverlayProjection {
-            needed_ref_tiles: Vec::new(),
+            needed_tiles: Vec::new(),
             needed_features: Vec::new(),
-            needed_label_tiles: Vec::new(),
             paths: Vec::new(),
             labels: Vec::new(),
             warnings: Vec::new(),
@@ -1209,11 +1223,12 @@ pub fn query_map_overlay(
     suppress_overlapping_vector_labels(&mut visible_features, &mut airspace_labels);
 
     MapOverlayQueryResult {
-        needed_point_tiles,
+        needed_vector_tiles: merge_aggregate_vector_tile_requests(
+            needed_vector_tiles,
+            airspace.needed_tiles,
+        ),
         needed_metar_tiles: metars.needed_tiles,
-        needed_airspace_ref_tiles: airspace.needed_ref_tiles,
         needed_airspace_features: airspace.needed_features,
-        needed_airspace_label_tiles: airspace.needed_label_tiles,
         needed_metars: metars.needed_metars,
         needed_tfrs: tfrs.needed_tfrs,
         visible_features,
@@ -1623,7 +1638,7 @@ pub fn query_map_selection(
     plan: Option<&FlightPlan>,
     click: LatLon,
     hit_radius_px: f64,
-    point_tile_cache: &HashMap<String, PointTilePayload>,
+    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
@@ -1649,15 +1664,14 @@ pub fn query_map_selection(
     let mut airspaces = Vec::new();
 
     for tile in visible_point_display_tile_window(config, viewport, width_px, height_px, None) {
-        let Some(payload) = point_tile_cache.get(&tile_key(
-            &tile.request.layer,
+        let Some(payload) = vector_tile_cache.get(&aggregate_vector_tile_cache_key(
             tile.request.z,
             tile.request.x,
             tile.request.y,
         )) else {
             continue;
         };
-        for record in &payload.records {
+        for record in vector_tile_point_records(payload, &tile.request.layer) {
             let is_airport = selection_record_is_airport(record);
             if !is_airport && !should_display_record(record) {
                 continue;
@@ -3132,9 +3146,8 @@ fn tfr_limit_label(limit: &TfrAltitudeLimit) -> String {
 }
 
 struct AirspaceOverlayProjection {
-    needed_ref_tiles: Vec<VectorTileRequest>,
+    needed_tiles: Vec<VectorTileRequest>,
     needed_features: Vec<AirspaceFeatureRequest>,
-    needed_label_tiles: Vec<VectorTileRequest>,
     paths: Vec<AirspaceDisplayPath>,
     labels: Vec<AirspaceDisplayLabel>,
     warnings: Vec<MapOverlayWarning>,
@@ -3180,15 +3193,13 @@ fn query_airspace_overlay(
     config: &MapOverlayConfig,
     center_world: WorldPoint,
     scale: f64,
-    ref_tile_cache: &HashMap<String, AirspaceReferenceTilePayload>,
+    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
     feature_cache: &HashMap<String, AirspaceFeaturePayload>,
-    label_tile_cache: &HashMap<String, AirspaceLabelTilePayload>,
 ) -> AirspaceOverlayProjection {
     if viewport.zoom < AIRSPACE_MIN_DISPLAY_ZOOM || width_px <= 0.0 || height_px <= 0.0 {
         return AirspaceOverlayProjection {
-            needed_ref_tiles: Vec::new(),
+            needed_tiles: Vec::new(),
             needed_features: Vec::new(),
-            needed_label_tiles: Vec::new(),
             paths: Vec::new(),
             labels: Vec::new(),
             warnings: Vec::new(),
@@ -3197,15 +3208,18 @@ fn query_airspace_overlay(
 
     let ref_zoom = airspace_reference_zoom(viewport.zoom, config);
     let ref_tiles = visible_layer_tile_window("airspace", ref_zoom, viewport, width_px, height_px);
-    let mut needed_ref_tiles = Vec::new();
+    let mut needed_tiles = Vec::new();
+    let mut needed_seen = BTreeSet::new();
     let mut feature_ids = BTreeSet::new();
     for tile in ref_tiles {
-        let key = tile_key(&tile.layer, tile.z, tile.x, tile.y);
-        let Some(payload) = ref_tile_cache.get(&key) else {
-            needed_ref_tiles.push(tile);
+        let key = aggregate_vector_tile_cache_key(tile.z, tile.x, tile.y);
+        let Some(payload) = vector_tile_cache.get(&key) else {
+            if needed_seen.insert(key) {
+                needed_tiles.push(aggregate_vector_tile_request(tile.z, tile.x, tile.y));
+            }
             continue;
         };
-        feature_ids.extend(payload.refs.iter().cloned());
+        feature_ids.extend(payload.airspace_refs.iter().cloned());
     }
 
     let mut needed_features = Vec::new();
@@ -3249,15 +3263,16 @@ fn query_airspace_overlay(
     let label_zoom = airspace_label_zoom(viewport.zoom, config);
     let label_tiles =
         visible_layer_tile_window("airspace-labels", label_zoom, viewport, width_px, height_px);
-    let mut needed_label_tiles = Vec::new();
     let mut label_by_feature = HashMap::<String, AirspaceLabelCandidate>::new();
     for tile in label_tiles {
-        let key = tile_key(&tile.layer, tile.z, tile.x, tile.y);
-        let Some(payload) = label_tile_cache.get(&key) else {
-            needed_label_tiles.push(tile);
+        let key = aggregate_vector_tile_cache_key(tile.z, tile.x, tile.y);
+        let Some(payload) = vector_tile_cache.get(&key) else {
+            if needed_seen.insert(key) {
+                needed_tiles.push(aggregate_vector_tile_request(tile.z, tile.x, tile.y));
+            }
             continue;
         };
-        for label in &payload.labels {
+        for label in &payload.airspace_labels {
             let point = world_to_screen(
                 center_world,
                 scale,
@@ -3337,9 +3352,8 @@ fn query_airspace_overlay(
     }
 
     AirspaceOverlayProjection {
-        needed_ref_tiles,
+        needed_tiles,
         needed_features,
-        needed_label_tiles,
         paths,
         labels,
         warnings,
@@ -3796,6 +3810,49 @@ pub fn tile_key(layer: &str, z: u32, x: u32, y: u32) -> String {
     format!("{layer}:{z}/{x}/{y}")
 }
 
+pub fn aggregate_vector_tile_cache_key(z: u32, x: u32, y: u32) -> String {
+    tile_key("vector", z, x, y)
+}
+
+pub fn aggregate_vector_tile_request(z: u32, x: u32, y: u32) -> VectorTileRequest {
+    VectorTileRequest {
+        layer: "vector".to_string(),
+        z,
+        x,
+        y,
+    }
+}
+
+fn vector_tile_point_records<'a>(
+    tile: &'a VectorAggregateTilePayload,
+    layer: &str,
+) -> &'a [PointVectorRecord] {
+    match layer {
+        "airport" => &tile.airports,
+        "fix" => &tile.fixes,
+        "nav" => &tile.navaids,
+        "obstacle" => &tile.obstacles,
+        _ => &[],
+    }
+}
+
+fn merge_aggregate_vector_tile_requests(
+    first: Vec<VectorTileRequest>,
+    second: Vec<VectorTileRequest>,
+) -> Vec<VectorTileRequest> {
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for request in first.into_iter().chain(second) {
+        let key = aggregate_vector_tile_cache_key(request.z, request.x, request.y);
+        if seen.insert(key) {
+            out.push(aggregate_vector_tile_request(
+                request.z, request.x, request.y,
+            ));
+        }
+    }
+    out
+}
+
 fn display_label(record: &PointVectorRecord) -> String {
     if record.style_class == "airport" || record.kind.eq_ignore_ascii_case("airport") {
         if let Some(ident) = record
@@ -4011,6 +4068,11 @@ mod tests {
         airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
         airspace_label_tile_cache: &HashMap<String, AirspaceLabelTilePayload>,
     ) -> MapOverlayQueryResult {
+        let vector_tile_cache = aggregate_test_vector_tiles(
+            point_tile_cache,
+            airspace_ref_tile_cache,
+            airspace_label_tile_cache,
+        );
         super::query_map_overlay(
             viewport,
             width_px,
@@ -4020,14 +4082,58 @@ mod tests {
             false,
             &[],
             None,
-            point_tile_cache,
+            &vector_tile_cache,
             &HashMap::new(),
             None,
-            airspace_ref_tile_cache,
             airspace_feature_cache,
-            airspace_label_tile_cache,
             None,
         )
+    }
+
+    fn aggregate_test_vector_tiles(
+        point_tile_cache: &HashMap<String, PointTilePayload>,
+        airspace_ref_tile_cache: &HashMap<String, AirspaceReferenceTilePayload>,
+        airspace_label_tile_cache: &HashMap<String, AirspaceLabelTilePayload>,
+    ) -> HashMap<String, VectorAggregateTilePayload> {
+        let mut out = HashMap::new();
+        for tile in point_tile_cache.values() {
+            let aggregate = out
+                .entry(aggregate_vector_tile_cache_key(tile.z, tile.x, tile.y))
+                .or_insert_with(|| empty_test_vector_tile(tile.z, tile.x, tile.y));
+            match tile.layer.as_str() {
+                "airport" => aggregate.airports = tile.records.clone(),
+                "fix" => aggregate.fixes = tile.records.clone(),
+                "nav" => aggregate.navaids = tile.records.clone(),
+                "obstacle" => aggregate.obstacles = tile.records.clone(),
+                _ => {}
+            }
+        }
+        for tile in airspace_ref_tile_cache.values() {
+            out.entry(aggregate_vector_tile_cache_key(tile.z, tile.x, tile.y))
+                .or_insert_with(|| empty_test_vector_tile(tile.z, tile.x, tile.y))
+                .airspace_refs = tile.refs.clone();
+        }
+        for tile in airspace_label_tile_cache.values() {
+            out.entry(aggregate_vector_tile_cache_key(tile.z, tile.x, tile.y))
+                .or_insert_with(|| empty_test_vector_tile(tile.z, tile.x, tile.y))
+                .airspace_labels = tile.labels.clone();
+        }
+        out
+    }
+
+    fn empty_test_vector_tile(z: u32, x: u32, y: u32) -> VectorAggregateTilePayload {
+        VectorAggregateTilePayload {
+            schema_version: 1,
+            z,
+            x,
+            y,
+            airports: Vec::new(),
+            fixes: Vec::new(),
+            navaids: Vec::new(),
+            obstacles: Vec::new(),
+            airspace_refs: Vec::new(),
+            airspace_labels: Vec::new(),
+        }
     }
 
     #[test]
@@ -4245,10 +4351,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         );
-        assert!(result
-            .needed_airspace_label_tiles
-            .iter()
-            .all(|tile| tile.z == 11));
+        assert!(result.needed_vector_tiles.iter().any(|tile| tile.z == 11));
 
         let overzoomed = MapViewport {
             zoom: 13.2,
@@ -4264,9 +4367,9 @@ mod tests {
             &HashMap::new(),
         );
         assert!(result
-            .needed_airspace_label_tiles
+            .needed_vector_tiles
             .iter()
-            .all(|tile| tile.z == test_map_overlay_config().airspace_label_tile_max_zoom));
+            .any(|tile| tile.z == test_map_overlay_config().airspace_label_tile_max_zoom));
     }
 
     #[test]
@@ -4290,10 +4393,7 @@ mod tests {
             &HashMap::new(),
         );
 
-        assert!(result
-            .needed_airspace_ref_tiles
-            .iter()
-            .all(|tile| tile.z == 9));
+        assert!(result.needed_vector_tiles.iter().any(|tile| tile.z == 9));
     }
 
     #[test]
@@ -4349,8 +4449,6 @@ mod tests {
             &HashMap::new(),
             None,
             &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
             None,
         );
         assert!(low_zoom.needed_metar_tiles.iter().all(|tile| tile.z == 5));
@@ -4370,8 +4468,6 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             None,
-            &HashMap::new(),
-            &HashMap::new(),
             &HashMap::new(),
             None,
         );
@@ -4396,7 +4492,7 @@ mod tests {
             &HashMap::new(),
         );
         let tile = empty
-            .needed_airspace_label_tiles
+            .needed_vector_tiles
             .first()
             .expect("expected a visible airspace label tile");
 
@@ -4553,8 +4649,6 @@ mod tests {
             &HashMap::new(),
             &metar_tile_cache,
             Some(&metars),
-            &HashMap::new(),
-            &HashMap::new(),
             &HashMap::new(),
             None,
         );
@@ -5487,6 +5581,7 @@ mod tests {
             version: 1,
         };
 
+        let vector_cache = aggregate_test_vector_tiles(&cache, &HashMap::new(), &HashMap::new());
         let result = query_map_selection(
             &viewport,
             1200.0,
@@ -5495,7 +5590,7 @@ mod tests {
             Some(&plan),
             viewport.center,
             32.0,
-            &cache,
+            &vector_cache,
             &HashMap::new(),
             None,
             None,
@@ -6099,6 +6194,7 @@ mod tests {
         assert_eq!(result.visible_features.len(), 1);
         assert_eq!(result.visible_features[0].id, "airports:KSEA");
 
+        let vector_cache = aggregate_test_vector_tiles(&cache, &HashMap::new(), &HashMap::new());
         let selection = query_map_selection(
             &viewport,
             1200.0,
@@ -6107,7 +6203,7 @@ mod tests {
             None,
             viewport.center,
             32.0,
-            &cache,
+            &vector_cache,
             &HashMap::new(),
             None,
             None,

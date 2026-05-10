@@ -2392,11 +2392,9 @@ function MapPage(props: {
     suggestions: [],
   });
   const [mapOverlay, setMapOverlay] = useState<MapOverlayQueryResult>({
-    needed_point_tiles: [],
+    needed_vector_tiles: [],
     needed_metar_tiles: [],
-    needed_airspace_ref_tiles: [],
     needed_airspace_features: [],
-    needed_airspace_label_tiles: [],
     needed_metars: false,
     needed_tfrs: false,
     visible_features: [],
@@ -3050,11 +3048,9 @@ function MapPage(props: {
     }
     if (!mapLayerState.vectors.visible && !mapLayerState.metars.visible && !mapLayerState.offline_regions.visible) {
       setMapOverlay({
-        needed_point_tiles: [],
+        needed_vector_tiles: [],
         needed_metar_tiles: [],
-        needed_airspace_ref_tiles: [],
         needed_airspace_features: [],
-        needed_airspace_label_tiles: [],
         needed_metars: false,
         needed_tfrs: false,
         visible_features: [],
@@ -3071,11 +3067,9 @@ function MapPage(props: {
     }
     if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       setMapOverlay({
-        needed_point_tiles: [],
+        needed_vector_tiles: [],
         needed_metar_tiles: [],
-        needed_airspace_ref_tiles: [],
         needed_airspace_features: [],
-        needed_airspace_label_tiles: [],
         needed_metars: false,
         needed_tfrs: false,
         visible_features: [],
@@ -3130,12 +3124,10 @@ function MapPage(props: {
         debugLog("map.overlay.query.done", {
           zoom: viewport.zoom,
           elapsed_ms: Math.round(performance.now() - startedAt),
-          needed_point_tiles: overlay.needed_point_tiles.length,
+          needed_vector_tiles: overlay.needed_vector_tiles.length,
           needed_metar_tiles: overlay.needed_metar_tiles.length,
           needed_metars: overlay.needed_metars,
-          needed_airspace_ref_tiles: overlay.needed_airspace_ref_tiles.length,
           needed_airspace_features: overlay.needed_airspace_features.length,
-          needed_airspace_label_tiles: overlay.needed_airspace_label_tiles.length,
           needed_tfrs: overlay.needed_tfrs,
           visible_features: overlay.visible_features.length,
           visible_metars: overlay.visible_metars.length,

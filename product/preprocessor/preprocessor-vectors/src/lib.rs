@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
+use anyhow::{bail, Context};
 use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use quick_xml::events::Event;
@@ -288,6 +288,26 @@ struct PointTileFile {
     records: Vec<PointRecord>,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+struct VectorAggregateTileFile {
+    schema_version: u32,
+    z: u8,
+    x: u32,
+    y: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    airports: Vec<PointRecord>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    fixes: Vec<PointRecord>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    navaids: Vec<PointRecord>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    obstacles: Vec<PointRecord>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    airspace_refs: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    airspace_labels: Vec<AirspaceTileLabel>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct PointTileRecord {
     z: u8,
@@ -405,26 +425,6 @@ struct AirspacePath {
     #[serde(skip_serializing_if = "Option::is_none")]
     interior_side: Option<String>,
     points: Vec<[f64; 2]>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct AirspaceReferenceTileFile {
-    schema_version: u32,
-    layer: String,
-    z: u8,
-    x: u32,
-    y: u32,
-    refs: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct AirspaceLabelTileFile {
-    schema_version: u32,
-    layer: String,
-    z: u8,
-    x: u32,
-    y: u32,
-    labels: Vec<AirspaceTileLabel>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -884,27 +884,29 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
     let mut had_point_layers = BTreeMap::new();
     let mut layer_stats = BTreeMap::new();
     let mut had_pairs = Vec::<VectorHadPairLine>::new();
+    let mut aggregate_tiles = BTreeMap::<(u8, u32, u32), VectorAggregateTileFile>::new();
 
     for (layer_name, layer_points) in points_by_layer(&points) {
         let zoom = layer_tile_zoom(&layer_name);
         let point_tiles = build_point_tiles(&layer_points, zoom);
         let tile_path_template = format!("points/{layer_name}/{zoom}/{{x}}/{{y}}.json");
         for tile in &point_tiles {
-            push_vector_had_json(
-                &mut had_pairs,
-                format!(
-                    "vector/point-tile/{layer_name}/{}/{}/{}",
-                    tile.z, tile.x, tile.y
-                ),
-                &PointTileFile {
+            let aggregate = aggregate_tiles
+                .entry((tile.z, tile.x, tile.y))
+                .or_insert_with(|| VectorAggregateTileFile {
                     schema_version: 1,
-                    layer: layer_name.clone(),
                     z: tile.z,
                     x: tile.x,
                     y: tile.y,
-                    records: tile.records.clone(),
-                },
-            )?;
+                    ..VectorAggregateTileFile::default()
+                });
+            match layer_name.as_str() {
+                "airport" => aggregate.airports.extend(tile.records.clone()),
+                "fix" => aggregate.fixes.extend(tile.records.clone()),
+                "nav" => aggregate.navaids.extend(tile.records.clone()),
+                "obstacle" => aggregate.obstacles.extend(tile.records.clone()),
+                other => bail!("unsupported vector point layer {other} for aggregate tile"),
+            }
         }
         files.insert(
             format!("point_tiles_{layer_name}"),
@@ -1034,40 +1036,37 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
             }
         }
         let mut max_refs_in_tile = 0usize;
+        let reference_tile_count = reference_tiles.len();
         for ((z, x, y), mut refs) in reference_tiles {
             refs.sort();
             refs.dedup();
             max_refs_in_tile = max_refs_in_tile.max(refs.len());
-            push_vector_had_json(
-                &mut had_pairs,
-                format!("vector/airspace/ref-tile/{z}/{x}/{y}"),
-                &AirspaceReferenceTileFile {
+            aggregate_tiles
+                .entry((z, x, y))
+                .or_insert_with(|| VectorAggregateTileFile {
                     schema_version: 1,
-                    layer: "airspace".to_string(),
                     z,
                     x,
                     y,
-                    refs,
-                },
-            )?;
+                    ..VectorAggregateTileFile::default()
+                })
+                .airspace_refs = refs;
         }
 
         let mut max_labels_in_tile = 0usize;
         let label_tile_count = label_tiles.len();
         for ((z, x, y), labels) in label_tiles {
             max_labels_in_tile = max_labels_in_tile.max(labels.len());
-            push_vector_had_json(
-                &mut had_pairs,
-                format!("vector/airspace/label-tile/{z}/{x}/{y}"),
-                &AirspaceLabelTileFile {
+            aggregate_tiles
+                .entry((z, x, y))
+                .or_insert_with(|| VectorAggregateTileFile {
                     schema_version: 1,
-                    layer: "airspace-labels".to_string(),
                     z,
                     x,
                     y,
-                    labels,
-                },
-            )?;
+                    ..VectorAggregateTileFile::default()
+                })
+                .airspace_labels = labels;
         }
 
         files.insert(
@@ -1104,10 +1103,7 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
             class_counts,
             saa_source_xml_count,
             saa_emitted_feature_count,
-            reference_tile_count: had_pairs
-                .iter()
-                .filter(|pair| pair.key.starts_with("vector/airspace/ref-tile/"))
-                .count(),
+            reference_tile_count,
             label_tile_count,
             max_refs_in_tile,
             max_labels_in_tile,
@@ -1160,6 +1156,9 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
         .iter()
         .filter(|pair| pair.key.starts_with("vector/airspace/feature/"))
         .count();
+    for ((z, x, y), tile) in &aggregate_tiles {
+        push_vector_had_json(&mut had_pairs, vector_aggregate_tile_key(*z, *x, *y), tile)?;
+    }
     push_vector_had_json(&mut had_pairs, "vector/stats".to_string(), &stats)?;
     push_vector_had_json(
         &mut had_pairs,
@@ -3492,6 +3491,10 @@ fn push_vector_had_json<T: Serialize>(
     .with_context(|| format!("vector HAD value {key} was not UTF-8 JSON"))?;
     pairs.push(VectorHadPairLine { key, value_json });
     Ok(())
+}
+
+fn vector_aggregate_tile_key(z: u8, x: u32, y: u32) -> String {
+    format!("vector/tile/z{z:02}/x{x:06}/y{y:06}")
 }
 
 fn write_vector_had_pairs(path: &Path, pairs: &[VectorHadPairLine]) -> anyhow::Result<()> {

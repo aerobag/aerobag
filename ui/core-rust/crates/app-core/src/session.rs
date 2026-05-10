@@ -31,7 +31,7 @@ use crate::{
     ProcedureKind, ProcedureLoadCommand, PublicationResolver, RasterMapCatalog, RasterResourceMode,
     RasterTilePlan, ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode,
     SituationControlInput, SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult,
-    TfrProductPayload, UiSnapshotAppState,
+    TfrProductPayload, UiSnapshotAppState, VectorAggregateTilePayload,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -117,14 +117,12 @@ struct UiSession {
     raster_resource_mode: RasterResourceMode,
     publication_resolver: PublicationResolver,
     raster_map_catalog: Option<RasterMapCatalog>,
-    point_tile_cache: HashMap<String, PointTilePayload>,
+    vector_tile_cache: HashMap<String, VectorAggregateTilePayload>,
     metar_tile_cache: HashMap<String, MetarTilePayload>,
     metar_payload: Option<MetarProductPayload>,
     pending_pireps: Option<Vec<PirepRecord>>,
     taf_payload: Option<TafProductPayload>,
-    airspace_ref_tile_cache: HashMap<String, AirspaceReferenceTilePayload>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
-    airspace_label_tile_cache: HashMap<String, AirspaceLabelTilePayload>,
     tfr_payload: Option<TfrProductPayload>,
 }
 
@@ -326,14 +324,12 @@ fn create_ui_session_inner(
             raster_resource_mode: RasterResourceMode::InstalledPackage,
             publication_resolver: PublicationResolver::new("/packages"),
             raster_map_catalog: None,
-            point_tile_cache: HashMap::new(),
+            vector_tile_cache: HashMap::new(),
             metar_tile_cache: HashMap::new(),
             metar_payload: None,
             pending_pireps: None,
             taf_payload: None,
-            airspace_ref_tile_cache: HashMap::new(),
             airspace_feature_cache: HashMap::new(),
-            airspace_label_tile_cache: HashMap::new(),
             tfr_payload: None,
         },
     );
@@ -1604,10 +1600,19 @@ pub fn ingest_point_tiles_in_session(handle: u32, tiles: &[PointTilePayload]) ->
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     for tile in tiles {
-        session.point_tile_cache.insert(
-            crate::tile_key(&tile.layer, tile.z, tile.x, tile.y),
-            tile.clone(),
-        );
+        let aggregate = session
+            .vector_tile_cache
+            .entry(crate::aggregate_vector_tile_cache_key(
+                tile.z, tile.x, tile.y,
+            ))
+            .or_insert_with(|| empty_vector_aggregate_tile(tile.z, tile.x, tile.y));
+        match tile.layer.as_str() {
+            "airport" => aggregate.airports = tile.records.clone(),
+            "fix" => aggregate.fixes = tile.records.clone(),
+            "nav" => aggregate.navaids = tile.records.clone(),
+            "obstacle" => aggregate.obstacles = tile.records.clone(),
+            _ => {}
+        }
     }
     Ok(())
 }
@@ -1631,10 +1636,13 @@ pub fn ingest_airspace_ref_tiles_in_session(
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     for tile in tiles {
-        session.airspace_ref_tile_cache.insert(
-            crate::airspace_ref_tile_key(tile.z, tile.x, tile.y),
-            tile.clone(),
-        );
+        session
+            .vector_tile_cache
+            .entry(crate::aggregate_vector_tile_cache_key(
+                tile.z, tile.x, tile.y,
+            ))
+            .or_insert_with(|| empty_vector_aggregate_tile(tile.z, tile.x, tile.y))
+            .airspace_refs = tile.refs.clone();
     }
     Ok(())
 }
@@ -1660,12 +1668,30 @@ pub fn ingest_airspace_label_tiles_in_session(
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     for tile in tiles {
-        session.airspace_label_tile_cache.insert(
-            crate::airspace_label_tile_key(tile.z, tile.x, tile.y),
-            tile.clone(),
-        );
+        session
+            .vector_tile_cache
+            .entry(crate::aggregate_vector_tile_cache_key(
+                tile.z, tile.x, tile.y,
+            ))
+            .or_insert_with(|| empty_vector_aggregate_tile(tile.z, tile.x, tile.y))
+            .airspace_labels = tile.labels.clone();
     }
     Ok(())
+}
+
+fn empty_vector_aggregate_tile(z: u32, x: u32, y: u32) -> VectorAggregateTilePayload {
+    VectorAggregateTilePayload {
+        schema_version: 1,
+        z,
+        x,
+        y,
+        airports: Vec::new(),
+        fixes: Vec::new(),
+        navaids: Vec::new(),
+        obstacles: Vec::new(),
+        airspace_refs: Vec::new(),
+        airspace_labels: Vec::new(),
+    }
 }
 
 pub fn ingest_tfrs_in_session(handle: u32, payload: &TfrProductPayload) -> AppResult<()> {
@@ -1877,18 +1903,14 @@ fn ensure_vector_inputs_loaded(
             false,
             &[],
             ownship_overlay_context(session).as_ref(),
-            &session.point_tile_cache,
+            &session.vector_tile_cache,
             &session.metar_tile_cache,
             session.metar_payload.as_ref(),
-            &session.airspace_ref_tile_cache,
             &session.airspace_feature_cache,
-            &session.airspace_label_tile_cache,
             session.tfr_payload.as_ref(),
         );
-        let needed_vector_inputs = overlay.needed_point_tiles.len()
-            + overlay.needed_airspace_ref_tiles.len()
-            + overlay.needed_airspace_features.len()
-            + overlay.needed_airspace_label_tiles.len();
+        let needed_vector_inputs =
+            overlay.needed_vector_tiles.len() + overlay.needed_airspace_features.len();
         if needed_vector_inputs == 0 {
             return Ok(());
         }
@@ -1904,47 +1926,29 @@ fn ensure_vector_inputs_loaded(
             return Err(HadReadError::NeedPages(needed_pages));
         }
 
-        let mut point_tiles = Vec::new();
-        for tile in overlay.needed_point_tiles {
-            let payload = read_attached_json_optional::<PointTilePayload>(
+        let mut vector_tiles = Vec::new();
+        for tile in overlay.needed_vector_tiles {
+            let payload = read_attached_json_optional::<VectorAggregateTilePayload>(
                 store,
-                NavKvQuery::VectorPointTile {
-                    layer: tile.layer.clone(),
+                NavKvQuery::VectorTile {
                     z: tile.z,
                     x: tile.x,
                     y: tile.y,
                 },
             )?
-            .unwrap_or(PointTilePayload {
+            .unwrap_or(VectorAggregateTilePayload {
                 schema_version: 1,
-                layer: tile.layer,
                 z: tile.z,
                 x: tile.x,
                 y: tile.y,
-                records: Vec::new(),
+                airports: Vec::new(),
+                fixes: Vec::new(),
+                navaids: Vec::new(),
+                obstacles: Vec::new(),
+                airspace_refs: Vec::new(),
+                airspace_labels: Vec::new(),
             });
-            point_tiles.push(payload);
-        }
-
-        let mut ref_tiles = Vec::new();
-        for tile in overlay.needed_airspace_ref_tiles {
-            let payload = read_attached_json_optional::<AirspaceReferenceTilePayload>(
-                store,
-                NavKvQuery::VectorAirspaceRefTile {
-                    z: tile.z,
-                    x: tile.x,
-                    y: tile.y,
-                },
-            )?
-            .unwrap_or(AirspaceReferenceTilePayload {
-                schema_version: 1,
-                layer: "airspace".to_string(),
-                z: tile.z,
-                x: tile.x,
-                y: tile.y,
-                refs: Vec::new(),
-            });
-            ref_tiles.push(payload);
+            vector_tiles.push(payload);
         }
 
         let mut features = Vec::new();
@@ -1957,49 +1961,17 @@ fn ensure_vector_inputs_loaded(
             features.push(payload);
         }
 
-        let mut label_tiles = Vec::new();
-        for tile in overlay.needed_airspace_label_tiles {
-            let payload = read_attached_json_optional::<AirspaceLabelTilePayload>(
-                store,
-                NavKvQuery::VectorAirspaceLabelTile {
-                    z: tile.z,
-                    x: tile.x,
-                    y: tile.y,
-                },
-            )?
-            .unwrap_or(AirspaceLabelTilePayload {
-                schema_version: 1,
-                layer: "airspace-labels".to_string(),
-                z: tile.z,
-                x: tile.x,
-                y: tile.y,
-                labels: Vec::new(),
-            });
-            label_tiles.push(payload);
-        }
-
-        for tile in point_tiles {
-            session
-                .point_tile_cache
-                .insert(crate::tile_key(&tile.layer, tile.z, tile.x, tile.y), tile);
-            loaded_any = true;
-        }
-        for tile in ref_tiles {
-            session
-                .airspace_ref_tile_cache
-                .insert(crate::airspace_ref_tile_key(tile.z, tile.x, tile.y), tile);
+        for tile in vector_tiles {
+            session.vector_tile_cache.insert(
+                crate::aggregate_vector_tile_cache_key(tile.z, tile.x, tile.y),
+                tile,
+            );
             loaded_any = true;
         }
         for feature in features {
             session
                 .airspace_feature_cache
                 .insert(feature.id.clone(), feature);
-            loaded_any = true;
-        }
-        for tile in label_tiles {
-            session
-                .airspace_label_tile_cache
-                .insert(crate::airspace_label_tile_key(tile.z, tile.x, tile.y), tile);
             loaded_any = true;
         }
         if !loaded_any {
@@ -2013,23 +1985,15 @@ fn ensure_vector_inputs_loaded(
 
 fn vector_input_keys(overlay: &MapOverlayQueryResult) -> Vec<String> {
     overlay
-        .needed_point_tiles
+        .needed_vector_tiles
         .iter()
         .filter_map(|tile| {
-            nav_kv_key_for_query(&NavKvQuery::VectorPointTile {
-                layer: tile.layer.clone(),
+            nav_kv_key_for_query(&NavKvQuery::VectorTile {
                 z: tile.z,
                 x: tile.x,
                 y: tile.y,
             })
         })
-        .chain(overlay.needed_airspace_ref_tiles.iter().filter_map(|tile| {
-            nav_kv_key_for_query(&NavKvQuery::VectorAirspaceRefTile {
-                z: tile.z,
-                x: tile.x,
-                y: tile.y,
-            })
-        }))
         .chain(
             overlay
                 .needed_airspace_features
@@ -2037,18 +2001,6 @@ fn vector_input_keys(overlay: &MapOverlayQueryResult) -> Vec<String> {
                 .filter_map(|feature| {
                     nav_kv_key_for_query(&NavKvQuery::VectorAirspaceFeature {
                         id: feature.id.clone(),
-                    })
-                }),
-        )
-        .chain(
-            overlay
-                .needed_airspace_label_tiles
-                .iter()
-                .filter_map(|tile| {
-                    nav_kv_key_for_query(&NavKvQuery::VectorAirspaceLabelTile {
-                        z: tile.z,
-                        x: tile.x,
-                        y: tile.y,
                     })
                 }),
         )
@@ -2102,12 +2054,10 @@ pub fn get_map_overlay_in_session(
         session.map_layer_state.metars.visible,
         &offline_region_records,
         ownship_overlay_context(session).as_ref(),
-        &session.point_tile_cache,
+        &session.vector_tile_cache,
         &session.metar_tile_cache,
         session.metar_payload.as_ref(),
-        &session.airspace_ref_tile_cache,
         &session.airspace_feature_cache,
-        &session.airspace_label_tile_cache,
         session.tfr_payload.as_ref(),
     );
     let resources = weather_overlay_resources(session, &overlay);
@@ -2267,7 +2217,7 @@ pub fn get_map_selection_in_session(
         plan,
         click,
         hit_radius_px,
-        &session.point_tile_cache,
+        &session.vector_tile_cache,
         &session.metar_tile_cache,
         session.metar_payload.as_ref(),
         session.taf_payload.as_ref(),
@@ -2687,11 +2637,9 @@ fn map_layer_toggle_mut(
 
 fn empty_map_overlay_query() -> MapOverlayQueryResult {
     MapOverlayQueryResult {
-        needed_point_tiles: Vec::new(),
+        needed_vector_tiles: Vec::new(),
         needed_metar_tiles: Vec::new(),
-        needed_airspace_ref_tiles: Vec::new(),
         needed_airspace_features: Vec::new(),
-        needed_airspace_label_tiles: Vec::new(),
         needed_metars: false,
         needed_tfrs: false,
         visible_features: Vec::new(),

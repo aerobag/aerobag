@@ -235,7 +235,10 @@ pub fn append_pngs_vertical(
     };
     let outcome = invocation.run_logged(logs_dir)?;
     if !outcome.success {
-        anyhow::bail!("convert failed while concatenating PNGs into {}", output.display());
+        anyhow::bail!(
+            "convert failed while concatenating PNGs into {}",
+            output.display()
+        );
     }
     Ok(())
 }
@@ -243,7 +246,8 @@ pub fn append_pngs_vertical(
 pub fn flatten_png_onto_white(path: &Path) -> anyhow::Result<()> {
     let image = image::open(path)
         .with_context(|| format!("failed to open PNG for white flatten {}", path.display()))?;
-    let mut canvas = RgbaImage::from_pixel(image.width(), image.height(), Rgba([255, 255, 255, 255]));
+    let mut canvas =
+        RgbaImage::from_pixel(image.width(), image.height(), Rgba([255, 255, 255, 255]));
     let rgba = image.to_rgba8();
     image::imageops::overlay(&mut canvas, &rgba, 0, 0);
     canvas

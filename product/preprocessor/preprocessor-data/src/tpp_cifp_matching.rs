@@ -146,12 +146,10 @@ struct RelationAnalysis {
 
 static IAP_PREFIX_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^IAP-[A-Z]{2}-(.+)$").expect("valid iap prefix regex"));
-static CAT_SUFFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r" \((?:SA )?CAT[^)]*\)$").expect("valid cat suffix regex")
-});
+static CAT_SUFFIX_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r" \((?:SA )?CAT[^)]*\)$").expect("valid cat suffix regex"));
 static RUNWAY_PAIR_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^([0-9]{1,2})([LRC]?)(?: AND )([LRC])$")
-        .expect("valid runway pair regex")
+    Regex::new(r"^([0-9]{1,2})([LRC]?)(?: AND )([LRC])$").expect("valid runway pair regex")
 });
 
 macro_rules! regex {
@@ -161,64 +159,121 @@ macro_rules! regex {
     };
 }
 
-regex!(RE_VOR_DME_OR_TACAN_RUNWAY, r"^VOR(?: AND DME|/DME) OR TACAN RWY ([0-9]{1,2}[LRC]?)$");
+regex!(
+    RE_VOR_DME_OR_TACAN_RUNWAY,
+    r"^VOR(?: AND DME|/DME) OR TACAN RWY ([0-9]{1,2}[LRC]?)$"
+);
 regex!(
     RE_VOR_DME_OR_TACAN_RUNWAY_PAIR,
     r"^VOR(?: AND DME|/DME) OR TACAN RWY ([0-9]{1,2}[LRC]? AND [LRC])$"
 );
-regex!(RE_ILS_OR_LOC_RUNWAY, r"^ILS OR LOC(?: OR DME|/DME)? RWY ([0-9]{1,2}[LRC]?)$");
+regex!(
+    RE_ILS_OR_LOC_RUNWAY,
+    r"^ILS OR LOC(?: OR DME|/DME)? RWY ([0-9]{1,2}[LRC]?)$"
+);
 regex!(
     RE_ILS_VARIANT_OR_LOC_RUNWAY,
     r"^ILS ([XYZ]) OR LOC(?: OR DME|/DME)?(?: [XYZ])? RWY ([0-9]{1,2}[LRC]?)$"
 );
 regex!(RE_ILS_PRM_RUNWAY, r"^ILS PRM RWY ([0-9]{1,2}[LRC]?)$");
-regex!(RE_ILS_PRM_VARIANT_RUNWAY, r"^ILS PRM ([UVWXYZ]) RWY ([0-9]{1,2}[LRC]?)$");
-regex!(RE_ILS_OR_LOC_AND_DME_RUNWAY, r"^ILS OR LOC AND DME RWY ([0-9]{1,2}[LRC]?)$");
+regex!(
+    RE_ILS_PRM_VARIANT_RUNWAY,
+    r"^ILS PRM ([UVWXYZ]) RWY ([0-9]{1,2}[LRC]?)$"
+);
+regex!(
+    RE_ILS_OR_LOC_AND_DME_RUNWAY,
+    r"^ILS OR LOC AND DME RWY ([0-9]{1,2}[LRC]?)$"
+);
 regex!(
     RE_ILS_VARIANT_OR_LOC_AND_DME_RUNWAY,
     r"^ILS ([XYZ]) OR LOC AND DME(?: [XYZ])? RWY ([0-9]{1,2}[LRC]?)$"
 );
-regex!(RE_VOR_OR_TACAN_RUNWAY, r"^VOR(?: OR DME|/DME)? OR TACAN RWY ([0-9]{1,2}[LRC]?)$");
+regex!(
+    RE_VOR_OR_TACAN_RUNWAY,
+    r"^VOR(?: OR DME|/DME)? OR TACAN RWY ([0-9]{1,2}[LRC]?)$"
+);
 regex!(
     RE_VOR_OR_TACAN_RUNWAY_PAIR,
     r"^VOR(?: OR DME|/DME)? OR TACAN RWY ([0-9]{1,2}[LRC]? AND [LRC])$"
 );
 regex!(RE_LOC_RUNWAY, r"^LOC(?:/DME)? RWY ([0-9]{1,2}[LRC]?)$");
-regex!(RE_LOC_AND_DME_RUNWAY, r"^LOC AND DME RWY ([0-9]{1,2}[LRC]?)$");
-regex!(RE_LOC_VARIANT_RUNWAY, r"^LOC(?:/DME)? ([XYZ]) RWY ([0-9]{1,2}[LRC]?)$");
-regex!(RE_LOC_AND_DME_VARIANT_RUNWAY, r"^LOC AND DME ([XYZ]) RWY ([0-9]{1,2}[LRC]?)$");
+regex!(
+    RE_LOC_AND_DME_RUNWAY,
+    r"^LOC AND DME RWY ([0-9]{1,2}[LRC]?)$"
+);
+regex!(
+    RE_LOC_VARIANT_RUNWAY,
+    r"^LOC(?:/DME)? ([XYZ]) RWY ([0-9]{1,2}[LRC]?)$"
+);
+regex!(
+    RE_LOC_AND_DME_VARIANT_RUNWAY,
+    r"^LOC AND DME ([XYZ]) RWY ([0-9]{1,2}[LRC]?)$"
+);
 regex!(RE_ILS_RUNWAY, r"^ILS RWY ([0-9]{1,2}[LRC]?)$");
-regex!(RE_ILS_VARIANT_RUNWAY, r"^ILS ([UVWXYZ]) RWY ([0-9]{1,2}[LRC]?)$");
+regex!(
+    RE_ILS_VARIANT_RUNWAY,
+    r"^ILS ([UVWXYZ]) RWY ([0-9]{1,2}[LRC]?)$"
+);
 regex!(RE_RNAV_GPS_RUNWAY, r"^RNAV \(GPS\) RWY ([0-9]{1,2}[LRC]?)$");
 regex!(RE_GPS_RUNWAY, r"^GPS RWY ([0-9]{1,2}[LRC]?)$");
-regex!(RE_RNAV_GPS_VARIANT_RUNWAY, r"^RNAV \(GPS\) ([UVWXYZ]) RWY ([0-9]{1,2}[LRC]?)$");
-regex!(RE_RNAV_RNP_VARIANT_RUNWAY, r"^RNAV \(RNP\) ([UVWXYZ]) RWY ([0-9]{1,2}[LRC]?)$");
+regex!(
+    RE_RNAV_GPS_VARIANT_RUNWAY,
+    r"^RNAV \(GPS\) ([UVWXYZ]) RWY ([0-9]{1,2}[LRC]?)$"
+);
+regex!(
+    RE_RNAV_RNP_VARIANT_RUNWAY,
+    r"^RNAV \(RNP\) ([UVWXYZ]) RWY ([0-9]{1,2}[LRC]?)$"
+);
 regex!(RE_RNAV_RNP_RUNWAY, r"^RNAV \(RNP\) RWY ([0-9]{1,2}[LRC]?)$");
-regex!(RE_RNAV_RNP_RUNWAY_PAIR, r"^RNAV \(RNP\) RWY ([0-9]{1,2}[LRC]? AND [LRC])$");
+regex!(
+    RE_RNAV_RNP_RUNWAY_PAIR,
+    r"^RNAV \(RNP\) RWY ([0-9]{1,2}[LRC]? AND [LRC])$"
+);
 regex!(RE_GLS_RUNWAY, r"^GLS RWY ([0-9]{1,2}[LRC]?)$");
 regex!(RE_SDF_RUNWAY, r"^SDF RWY ([0-9]{1,2}[LRC]?)$");
-regex!(RE_SDF_VARIANT_RUNWAY, r"^SDF ([UVWXYZ]) RWY ([0-9]{1,2}[LRC]?)$");
+regex!(
+    RE_SDF_VARIANT_RUNWAY,
+    r"^SDF ([UVWXYZ]) RWY ([0-9]{1,2}[LRC]?)$"
+);
 regex!(RE_NDB_RUNWAY, r"^NDB(?:/DME)? RWY ([0-9]{1,2}[LRC]?)$");
-regex!(RE_NDB_VARIANT_RUNWAY, r"^NDB(?:/DME)? ([UVWXYZ]) RWY ([0-9]{1,2}[LRC]?)$");
-regex!(RE_VOR_DME_RUNWAY, r"^VOR(?: AND DME|/DME) RWY ([0-9]{1,2}[LRC]?)$");
+regex!(
+    RE_NDB_VARIANT_RUNWAY,
+    r"^NDB(?:/DME)? ([UVWXYZ]) RWY ([0-9]{1,2}[LRC]?)$"
+);
+regex!(
+    RE_VOR_DME_RUNWAY,
+    r"^VOR(?: AND DME|/DME) RWY ([0-9]{1,2}[LRC]?)$"
+);
 regex!(
     RE_VOR_DME_RUNWAY_PAIR,
     r"^VOR(?: AND DME|/DME) RWY ([0-9]{1,2}[LRC]? AND [LRC])$"
 );
-regex!(RE_VOR_RUNWAY, r"^VOR(?: OR DME|/DME)? RWY ([0-9]{1,2}[LRC]?)$");
+regex!(
+    RE_VOR_RUNWAY,
+    r"^VOR(?: OR DME|/DME)? RWY ([0-9]{1,2}[LRC]?)$"
+);
 regex!(
     RE_VOR_RUNWAY_PAIR,
     r"^VOR(?: OR DME|/DME)? RWY ([0-9]{1,2}[LRC]? AND [LRC])$"
 );
-regex!(RE_VOR_VARIANT_RUNWAY, r"^VOR(?: OR DME|/DME)? ([UVWXYZ]) RWY ([0-9]{1,2}[LRC]?)$");
+regex!(
+    RE_VOR_VARIANT_RUNWAY,
+    r"^VOR(?: OR DME|/DME)? ([UVWXYZ]) RWY ([0-9]{1,2}[LRC]?)$"
+);
 regex!(
     RE_VOR_VARIANT_OR_TACAN_RUNWAY,
     r"^VOR(?: OR DME|/DME)? ([UVWXYZ]) OR TACAN(?: [UVWXYZ])? RWY ([0-9]{1,2}[LRC]?)$"
 );
 regex!(RE_TACAN_RUNWAY, r"^TACAN RWY ([0-9]{1,2}[LRC]?)$");
-regex!(RE_TACAN_VARIANT_RUNWAY, r"^TACAN ([XYZ]) RWY ([0-9]{1,2}[LRC]?)$");
+regex!(
+    RE_TACAN_VARIANT_RUNWAY,
+    r"^TACAN ([XYZ]) RWY ([0-9]{1,2}[LRC]?)$"
+);
 regex!(RE_HI_TACAN_RUNWAY, r"^HI-TACAN RWY ([0-9]{1,2}[LRC]?)$");
-regex!(RE_HI_TACAN_VARIANT_RUNWAY, r"^HI-TACAN ([XYZ]) RWY ([0-9]{1,2}[LRC]?)$");
+regex!(
+    RE_HI_TACAN_VARIANT_RUNWAY,
+    r"^HI-TACAN ([XYZ]) RWY ([0-9]{1,2}[LRC]?)$"
+);
 regex!(RE_VOR_CIRCLING, r"^VOR(?: OR DME|/DME)?-([A-Z])$");
 regex!(RE_VOR_OR_TACAN_CIRCLING, r"^VOR OR TACAN-([A-Z])$");
 regex!(RE_VOR_OR_GPS_CIRCLING, r"^VOR OR GPS-([A-Z])$");
@@ -228,7 +283,10 @@ regex!(RE_NDB_CIRCLING, r"^NDB(?:/DME)?-([A-Z])$");
 regex!(RE_RNAV_CIRCLING, r"^RNAV \((?:GPS|RNP)\)-([A-Z])$");
 regex!(RE_LOC_CIRCLING, r"^LOC(?: AND DME)?-([A-Z])$");
 regex!(RE_LDA_CIRCLING, r"^LDA-([A-Z])$");
-regex!(RE_LDA_VARIANT_RUNWAY, r"^LDA ([XYZ]) RWY ([0-9]{1,2}[LRC]?)$");
+regex!(
+    RE_LDA_VARIANT_RUNWAY,
+    r"^LDA ([XYZ]) RWY ([0-9]{1,2}[LRC]?)$"
+);
 regex!(RE_LDA_RUNWAY, r"^LDA RWY ([0-9]{1,2}[LRC]?)$");
 regex!(RE_LOC_BC_RUNWAY, r"^LOC BC RWY ([0-9]{1,2}[LRC]?)$");
 
@@ -267,9 +325,18 @@ fn expand_runway_pair(text: &str) -> Vec<String> {
     let Some(captures) = RUNWAY_PAIR_RE.captures(text) else {
         return vec![text.to_string()];
     };
-    let base = captures.get(1).map(|value| value.as_str()).unwrap_or_default();
-    let first_suffix = captures.get(2).map(|value| value.as_str()).unwrap_or_default();
-    let second_suffix = captures.get(3).map(|value| value.as_str()).unwrap_or_default();
+    let base = captures
+        .get(1)
+        .map(|value| value.as_str())
+        .unwrap_or_default();
+    let first_suffix = captures
+        .get(2)
+        .map(|value| value.as_str())
+        .unwrap_or_default();
+    let second_suffix = captures
+        .get(3)
+        .map(|value| value.as_str())
+        .unwrap_or_default();
     let first = format!("{base}{first_suffix}");
     let second = format!("{base}{second_suffix}");
     if first == second {
@@ -292,7 +359,9 @@ fn runway_pair_groups(
     let mut groups = Vec::new();
     for prefix in prefixes {
         for runway in runways {
-            groups.push(BTreeSet::from([runway_candidate(prefix, runway, variant, style)]));
+            groups.push(BTreeSet::from([runway_candidate(
+                prefix, runway, variant, style,
+            )]));
         }
     }
     groups
@@ -374,10 +443,20 @@ fn heuristic_candidate_groups(label: &str) -> Vec<BTreeSet<String>> {
         return runway_pair_groups(&["V", "T", "S"], &runways, None, "hyphen");
     }
     if let Some(captures) = RE_LOC_RUNWAY.captures(&body) {
-        return singleton_group(runway_candidate("L", captures.get(1).unwrap().as_str(), None, "hyphen"));
+        return singleton_group(runway_candidate(
+            "L",
+            captures.get(1).unwrap().as_str(),
+            None,
+            "hyphen",
+        ));
     }
     if let Some(captures) = RE_LOC_AND_DME_RUNWAY.captures(&body) {
-        return singleton_group(runway_candidate("L", captures.get(1).unwrap().as_str(), None, "hyphen"));
+        return singleton_group(runway_candidate(
+            "L",
+            captures.get(1).unwrap().as_str(),
+            None,
+            "hyphen",
+        ));
     }
     if let Some(captures) = RE_LOC_VARIANT_RUNWAY.captures(&body) {
         return singleton_group(runway_candidate(
@@ -396,7 +475,12 @@ fn heuristic_candidate_groups(label: &str) -> Vec<BTreeSet<String>> {
         ));
     }
     if let Some(captures) = RE_ILS_RUNWAY.captures(&body) {
-        return singleton_group(runway_candidate("I", captures.get(1).unwrap().as_str(), None, "hyphen"));
+        return singleton_group(runway_candidate(
+            "I",
+            captures.get(1).unwrap().as_str(),
+            None,
+            "hyphen",
+        ));
     }
     if let Some(captures) = RE_ILS_VARIANT_RUNWAY.captures(&body) {
         let variant = captures.get(1).map(|value| value.as_str());
@@ -407,10 +491,20 @@ fn heuristic_candidate_groups(label: &str) -> Vec<BTreeSet<String>> {
         ];
     }
     if let Some(captures) = RE_RNAV_GPS_RUNWAY.captures(&body) {
-        return singleton_group(runway_candidate("R", captures.get(1).unwrap().as_str(), None, "hyphen"));
+        return singleton_group(runway_candidate(
+            "R",
+            captures.get(1).unwrap().as_str(),
+            None,
+            "hyphen",
+        ));
     }
     if let Some(captures) = RE_GPS_RUNWAY.captures(&body) {
-        return singleton_group(runway_candidate("P", captures.get(1).unwrap().as_str(), None, "hyphen"));
+        return singleton_group(runway_candidate(
+            "P",
+            captures.get(1).unwrap().as_str(),
+            None,
+            "hyphen",
+        ));
     }
     if let Some(captures) = RE_RNAV_GPS_VARIANT_RUNWAY.captures(&body) {
         return singleton_group(runway_candidate(
@@ -429,17 +523,32 @@ fn heuristic_candidate_groups(label: &str) -> Vec<BTreeSet<String>> {
         ));
     }
     if let Some(captures) = RE_RNAV_RNP_RUNWAY.captures(&body) {
-        return singleton_group(runway_candidate("H", captures.get(1).unwrap().as_str(), None, "hyphen"));
+        return singleton_group(runway_candidate(
+            "H",
+            captures.get(1).unwrap().as_str(),
+            None,
+            "hyphen",
+        ));
     }
     if let Some(captures) = RE_RNAV_RNP_RUNWAY_PAIR.captures(&body) {
         let runways = expand_runway_pair(captures.get(1).unwrap().as_str());
         return runway_pair_groups(&["H"], &runways, None, "hyphen");
     }
     if let Some(captures) = RE_GLS_RUNWAY.captures(&body) {
-        return singleton_group(runway_candidate("G", captures.get(1).unwrap().as_str(), None, "hyphen"));
+        return singleton_group(runway_candidate(
+            "G",
+            captures.get(1).unwrap().as_str(),
+            None,
+            "hyphen",
+        ));
     }
     if let Some(captures) = RE_SDF_RUNWAY.captures(&body) {
-        return singleton_group(runway_candidate("S", captures.get(1).unwrap().as_str(), None, "hyphen"));
+        return singleton_group(runway_candidate(
+            "S",
+            captures.get(1).unwrap().as_str(),
+            None,
+            "hyphen",
+        ));
     }
     if let Some(captures) = RE_SDF_VARIANT_RUNWAY.captures(&body) {
         return singleton_group(runway_candidate(
@@ -520,7 +629,12 @@ fn heuristic_candidate_groups(label: &str) -> Vec<BTreeSet<String>> {
         ));
     }
     if let Some(captures) = RE_HI_TACAN_RUNWAY.captures(&body) {
-        return singleton_group(runway_candidate("H", captures.get(1).unwrap().as_str(), None, "hyphen"));
+        return singleton_group(runway_candidate(
+            "H",
+            captures.get(1).unwrap().as_str(),
+            None,
+            "hyphen",
+        ));
     }
     if let Some(captures) = RE_HI_TACAN_VARIANT_RUNWAY.captures(&body) {
         return singleton_group(runway_candidate(
@@ -572,10 +686,20 @@ fn heuristic_candidate_groups(label: &str) -> Vec<BTreeSet<String>> {
         ));
     }
     if let Some(captures) = RE_LDA_RUNWAY.captures(&body) {
-        return singleton_group(runway_candidate("X", captures.get(1).unwrap().as_str(), None, "hyphen"));
+        return singleton_group(runway_candidate(
+            "X",
+            captures.get(1).unwrap().as_str(),
+            None,
+            "hyphen",
+        ));
     }
     if let Some(captures) = RE_LOC_BC_RUNWAY.captures(&body) {
-        return singleton_group(runway_candidate("B", captures.get(1).unwrap().as_str(), None, "hyphen"));
+        return singleton_group(runway_candidate(
+            "B",
+            captures.get(1).unwrap().as_str(),
+            None,
+            "hyphen",
+        ));
     }
     Vec::new()
 }
@@ -636,9 +760,12 @@ pub fn choose_bundle(artifact_root: &Path, explicit_bundle: Option<&Path>) -> Re
         })
         .collect::<Vec<_>>();
     bundles.sort();
-    bundles
-        .pop()
-        .ok_or_else(|| anyhow::anyhow!("no bundle_*.json files found under {}", production_root.display()))
+    bundles.pop().ok_or_else(|| {
+        anyhow::anyhow!(
+            "no bundle_*.json files found under {}",
+            production_root.display()
+        )
+    })
 }
 
 pub fn load_bundle(bundle_path: &Path) -> Result<serde_json::Value> {
@@ -672,7 +799,10 @@ pub fn resolve_db_path(artifact_root: &Path, bundle: &serde_json::Value) -> Resu
             .unwrap_or(&unpacked_dir)
             .join(INTERMEDIATE_SQLITE_BASENAME),
         unpacked_dir.join("main.db"),
-        unpacked_dir.parent().unwrap_or(&unpacked_dir).join("main.db"),
+        unpacked_dir
+            .parent()
+            .unwrap_or(&unpacked_dir)
+            .join("main.db"),
     ] {
         if candidate.is_file() {
             return Ok(candidate);
@@ -717,7 +847,13 @@ pub fn load_tpp_approach_plates(package_zips: &[PathBuf]) -> Result<Vec<PlateRec
             .with_context(|| format!("failed to read {}", zip_path.display()))?;
         let mut entry = archive
             .by_name(PACKAGE_ASSET_MANIFEST_NAME)
-            .with_context(|| format!("missing {} in {}", PACKAGE_ASSET_MANIFEST_NAME, zip_path.display()))?;
+            .with_context(|| {
+                format!(
+                    "missing {} in {}",
+                    PACKAGE_ASSET_MANIFEST_NAME,
+                    zip_path.display()
+                )
+            })?;
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut entry, &mut bytes)?;
         let manifest: PackageAssetManifest =
@@ -757,7 +893,10 @@ pub fn load_cifp_approaches(db_path: &Path) -> Result<BTreeMap<String, BTreeSet<
         if airport_id.is_empty() || procedure_id.is_empty() {
             continue;
         }
-        by_airport.entry(airport_id).or_default().insert(procedure_id);
+        by_airport
+            .entry(airport_id)
+            .or_default()
+            .insert(procedure_id);
     }
     Ok(by_airport)
 }
@@ -819,7 +958,12 @@ fn analyze_matches(
         let candidate_groups = heuristic_candidate_groups(&plate.label);
         let matched_groups = candidate_groups
             .iter()
-            .map(|group| group.intersection(&procedure_ids).cloned().collect::<BTreeSet<_>>())
+            .map(|group| {
+                group
+                    .intersection(&procedure_ids)
+                    .cloned()
+                    .collect::<BTreeSet<_>>()
+            })
             .collect::<Vec<_>>();
         let matched = matched_groups
             .iter()
@@ -831,9 +975,18 @@ fn analyze_matches(
         } else if candidate_groups.is_empty() {
             summary.no_heuristic += 1;
         } else {
-            let ambiguous_groups = matched_groups.iter().filter(|group| group.len() > 1).count();
-            let missing_groups = matched_groups.iter().filter(|group| group.is_empty()).count();
-            let singleton_groups = matched_groups.iter().filter(|group| group.len() == 1).count();
+            let ambiguous_groups = matched_groups
+                .iter()
+                .filter(|group| group.len() > 1)
+                .count();
+            let missing_groups = matched_groups
+                .iter()
+                .filter(|group| group.is_empty())
+                .count();
+            let singleton_groups = matched_groups
+                .iter()
+                .filter(|group| group.len() == 1)
+                .count();
             if ambiguous_groups > 0 {
                 summary.matched_ambiguous += 1;
             } else if missing_groups > 0 && singleton_groups == 0 {
@@ -879,7 +1032,10 @@ fn classify_relation(
         if !cifp.contains_key(&airport_id) {
             continue;
         }
-        plates_by_airport.entry(airport_id).or_default().push(plate.clone());
+        plates_by_airport
+            .entry(airport_id)
+            .or_default()
+            .push(plate.clone());
     }
 
     let mut summary = RelationSummary::default();
@@ -896,10 +1052,16 @@ fn classify_relation(
         for plate in &airport_plates {
             if plate.label.to_ascii_uppercase().contains("COPTER") {
                 for group in heuristic_candidate_groups_for_copter_plate(&plate.label) {
-                    let matched = group.intersection(&procedure_ids).cloned().collect::<BTreeSet<_>>();
+                    let matched = group
+                        .intersection(&procedure_ids)
+                        .cloned()
+                        .collect::<BTreeSet<_>>();
                     if matched.len() == 1 {
                         let cid = matched.iter().next().cloned().unwrap();
-                        copter_claimers.entry(cid).or_default().push(plate.label.clone());
+                        copter_claimers
+                            .entry(cid)
+                            .or_default()
+                            .push(plate.label.clone());
                     }
                 }
             }
@@ -912,7 +1074,10 @@ fn classify_relation(
 
             let mut any_group_bound = false;
             for group in groups {
-                let matched = group.intersection(&procedure_ids).cloned().collect::<BTreeSet<_>>();
+                let matched = group
+                    .intersection(&procedure_ids)
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
                 if matched.len() == 1 {
                     let cid = matched.iter().next().cloned().unwrap();
                     cid_claimers.entry(cid).or_default().push(Claimer {
@@ -933,11 +1098,15 @@ fn classify_relation(
 
         let uniquely_bound = cid_claimers
             .iter()
-            .filter_map(|(cid, claimers)| (claimers.len() == 1).then(|| (cid.clone(), claimers[0].clone())))
+            .filter_map(|(cid, claimers)| {
+                (claimers.len() == 1).then(|| (cid.clone(), claimers[0].clone()))
+            })
             .collect::<BTreeMap<_, _>>();
         let multiply_bound = cid_claimers
             .iter()
-            .filter_map(|(cid, claimers)| (claimers.len() > 1).then(|| (cid.clone(), claimers.clone())))
+            .filter_map(|(cid, claimers)| {
+                (claimers.len() > 1).then(|| (cid.clone(), claimers.clone()))
+            })
             .collect::<BTreeMap<_, _>>();
         let unresolved_set = procedure_ids
             .iter()
@@ -1022,7 +1191,13 @@ fn classify_relation(
         }
     }
 
-    examples.sort_by_key(|row| (usize::MAX - row.unresolved_count, usize::MAX - row.multiply_bound, row.airport.clone()));
+    examples.sort_by_key(|row| {
+        (
+            usize::MAX - row.unresolved_count,
+            usize::MAX - row.multiply_bound,
+            row.airport.clone(),
+        )
+    });
     RelationAnalysis {
         summary,
         examples,
@@ -1050,11 +1225,17 @@ fn pretty_match_plate_label(label: &str) -> String {
     match prefix {
         "APD" => "Airport Diagram".to_string(),
         "MIN" if remainder.starts_with("ALTERNATE MINIMUMS-") => {
-            format!("Alt Minimums {}", remainder.trim_start_matches("ALTERNATE MINIMUMS-"))
+            format!(
+                "Alt Minimums {}",
+                remainder.trim_start_matches("ALTERNATE MINIMUMS-")
+            )
         }
         "MIN" if remainder == "ALTERNATE MINIMUMS" => "Alt Minimums".to_string(),
         "MIN" if remainder.starts_with("TAKEOFF MINIMUMS-") => {
-            format!("Takeoff Minimums {}", remainder.trim_start_matches("TAKEOFF MINIMUMS-"))
+            format!(
+                "Takeoff Minimums {}",
+                remainder.trim_start_matches("TAKEOFF MINIMUMS-")
+            )
         }
         "MIN" if remainder == "TAKEOFF MINIMUMS" => "Takeoff Minimums".to_string(),
         "DP" | "ODP" | "STAR" => remainder.to_string(),
@@ -1073,12 +1254,18 @@ fn split_non_iap_tpp_prefix(label: &str) -> Option<(&str, &str)> {
     Some((prefix, remainder))
 }
 
-pub fn audit_tpp_cifp_matching(main_db: &Path, tpp_package_zips: &[PathBuf]) -> Result<TppCifpAuditReport> {
+pub fn audit_tpp_cifp_matching(
+    main_db: &Path,
+    tpp_package_zips: &[PathBuf],
+) -> Result<TppCifpAuditReport> {
     let plates = load_tpp_approach_plates(tpp_package_zips)?;
     let cifp = load_cifp_approaches(main_db)?;
     let aliases = load_airport_aliases(main_db)?;
     let count_rows = compare_counts(&plates, &cifp, &aliases);
-    let exact_count_match = count_rows.iter().filter(|(_, plates, cifp)| plates == cifp).count();
+    let exact_count_match = count_rows
+        .iter()
+        .filter(|(_, plates, cifp)| plates == cifp)
+        .count();
     let count_mismatch = count_rows.len() - exact_count_match;
     let match_analysis = analyze_matches(&plates, &cifp, &aliases);
     let relation = classify_relation(&plates, &cifp, &aliases);
@@ -1096,7 +1283,10 @@ pub fn audit_tpp_cifp_matching(main_db: &Path, tpp_package_zips: &[PathBuf]) -> 
     })
 }
 
-pub fn publish_tpp_cifp_matches(main_db: &Path, tpp_package_zips: &[PathBuf]) -> Result<PublishedMatchSummary> {
+pub fn publish_tpp_cifp_matches(
+    main_db: &Path,
+    tpp_package_zips: &[PathBuf],
+) -> Result<PublishedMatchSummary> {
     let plates = load_tpp_approach_plates(tpp_package_zips)?;
     let cifp = load_cifp_approaches(main_db)?;
     let aliases = load_airport_aliases(main_db)?;
@@ -1183,8 +1373,8 @@ pub fn build_data_package_with_tpp_matches(
     let mut manifest_bytes = None;
     let zip_file = fs::File::open(&request.input_zip)
         .with_context(|| format!("failed to open {}", request.input_zip.display()))?;
-    let mut archive =
-        ZipArchive::new(zip_file).with_context(|| format!("failed to read {}", request.input_zip.display()))?;
+    let mut archive = ZipArchive::new(zip_file)
+        .with_context(|| format!("failed to read {}", request.input_zip.display()))?;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
         if entry.name() == INTERMEDIATE_SQLITE_BASENAME || entry.name() == "main.db" {
@@ -1195,8 +1385,9 @@ pub fn build_data_package_with_tpp_matches(
         manifest_bytes = Some(bytes);
         break;
     }
-    let manifest_bytes =
-        manifest_bytes.ok_or_else(|| anyhow::anyhow!("missing manifest entry in {}", request.input_zip.display()))?;
+    let manifest_bytes = manifest_bytes.ok_or_else(|| {
+        anyhow::anyhow!("missing manifest entry in {}", request.input_zip.display())
+    })?;
     let manifest_path = request
         .output_dir
         .join(format!("{}.manifest", request.artifact_stem));

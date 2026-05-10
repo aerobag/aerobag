@@ -347,7 +347,8 @@ fn build_package_asset_records_for_member(
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_string();
-    let normalized_hotspot_label = strip_rendered_hotspot_page_suffix(&label).unwrap_or_else(|| label.clone());
+    let normalized_hotspot_label =
+        strip_rendered_hotspot_page_suffix(&label).unwrap_or_else(|| label.clone());
     let display_label = pretty_packaged_plate_label(&normalized_hotspot_label);
     let thumbnail_path = Path::new("thumbnails")
         .join(asset_path)
@@ -358,16 +359,17 @@ fn build_package_asset_records_for_member(
     let hotspot_records = if normalized_hotspot_label.starts_with("HOT-") {
         let hotspot_prefix = format!("{normalized_hotspot_label}-");
         let mut deduped = BTreeMap::new();
-        for ((apt_id, asset_label), metadata) in tpp_metadata
-            .iter()
-        {
+        for ((apt_id, asset_label), metadata) in tpp_metadata.iter() {
             if metadata.chart_code != "HOT" {
                 continue;
             }
-            if asset_label != &normalized_hotspot_label && !asset_label.starts_with(&hotspot_prefix) {
+            if asset_label != &normalized_hotspot_label && !asset_label.starts_with(&hotspot_prefix)
+            {
                 continue;
             }
-            deduped.entry(apt_id.clone()).or_insert_with(|| metadata.clone());
+            deduped
+                .entry(apt_id.clone())
+                .or_insert_with(|| metadata.clone());
         }
         deduped.into_iter().collect::<Vec<_>>()
     } else {
@@ -663,12 +665,18 @@ mod tests {
             infer_plate_document_type(Some("HOT"), "HOT-WA-HOT SPOT-0"),
             "hotspot"
         );
-        assert_eq!(infer_plate_document_type(None, "HOT-WA-HOT SPOT-1"), "hotspot");
+        assert_eq!(
+            infer_plate_document_type(None, "HOT-WA-HOT SPOT-1"),
+            "hotspot"
+        );
     }
 
     #[test]
     fn pretty_packaged_hotspot_label_keeps_state_and_pluralizes() {
-        assert_eq!(pretty_packaged_plate_label("HOT-WA-HOT SPOT"), "WA Hot Spots");
+        assert_eq!(
+            pretty_packaged_plate_label("HOT-WA-HOT SPOT"),
+            "WA Hot Spots"
+        );
         assert_eq!(
             pretty_packaged_plate_label("HOT-WY-HOT SPOT-1"),
             "WY Hot Spots 1"

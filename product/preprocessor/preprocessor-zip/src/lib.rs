@@ -90,10 +90,8 @@ mod tests {
 
     #[test]
     fn deterministic_zip_sorts_members_and_uses_fixed_timestamps() -> anyhow::Result<()> {
-        let root = std::env::temp_dir().join(format!(
-            "preprocessor-zip-test-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("preprocessor-zip-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root)?;
         let a = root.join("a.txt");

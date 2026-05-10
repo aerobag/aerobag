@@ -342,7 +342,11 @@ fn render_airport_pages(work_dir: &Path, airport: &AirportRecord) -> anyhow::Res
     Ok(())
 }
 
-fn collapse_rendered_pdf_pages(work_dir: &Path, apt_dir: &Path, output_base: &str) -> anyhow::Result<()> {
+fn collapse_rendered_pdf_pages(
+    work_dir: &Path,
+    apt_dir: &Path,
+    output_base: &str,
+) -> anyhow::Result<()> {
     let final_png = apt_dir.join(format!("{output_base}.png"));
     let mut rendered_pages = collect_rendered_pdf_pages(apt_dir, output_base)?;
     if rendered_pages.is_empty() {
@@ -427,7 +431,10 @@ fn collect_rendered_pdf_pages(apt_dir: &Path, output_base: &str) -> anyhow::Resu
 }
 
 fn csup_page_sort_key(path: &Path, output_base: &str) -> (u32, String) {
-    let filename = path.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+    let filename = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
     if filename == format!("{output_base}.png") {
         return (0, filename.to_string());
     }

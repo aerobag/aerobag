@@ -106,8 +106,12 @@ enum PlateRotation {
 
 pub fn run_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<NativeTppRunResult> {
     let render = render_native_tpp(request)?;
-    let package =
-        package_native_tpp(&render.work_dir, &render.work_dir, &render.provenance_dir, request.region)?;
+    let package = package_native_tpp(
+        &render.work_dir,
+        &render.work_dir,
+        &render.provenance_dir,
+        request.region,
+    )?;
     Ok(NativeTppRunResult {
         work_dir: render.work_dir,
         prefetch_elapsed_ms: render.prefetch_elapsed_ms,
@@ -185,15 +189,14 @@ pub fn package_native_tpp_versioned(
     artifact_version: &str,
 ) -> anyhow::Result<NativeTppPackageResult> {
     let package_start = Instant::now();
-    let package_count =
-        package_region_versioned(
-            asset_root,
-            output_root,
-            provenance_dir,
-            region,
-            manifest_version,
-            artifact_version,
-        )?;
+    let package_count = package_region_versioned(
+        asset_root,
+        output_root,
+        provenance_dir,
+        region,
+        manifest_version,
+        artifact_version,
+    )?;
     Ok(NativeTppPackageResult {
         package_elapsed_ms: package_start.elapsed().as_millis(),
         package_count,
@@ -264,7 +267,9 @@ fn render_plate_tasks_parallel(
         handles.push(thread::spawn(move || -> anyhow::Result<()> {
             loop {
                 let task = {
-                    let mut guard = queue.lock().map_err(|_| anyhow::anyhow!("plate queue poisoned"))?;
+                    let mut guard = queue
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("plate queue poisoned"))?;
                     guard.pop_front()
                 };
                 let Some(task) = task else {
@@ -307,17 +312,18 @@ fn build_plate_tasks(plates: Vec<PlateRecord>) -> Vec<PlateTask> {
         if !grouped.contains_key(&key) {
             group_order.push(key.clone());
         }
-        grouped.entry(key).or_default().push((
-            original_index,
-            grouped_plate_index(&plate),
-            plate,
-        ));
+        grouped
+            .entry(key)
+            .or_default()
+            .push((original_index, grouped_plate_index(&plate), plate));
     }
 
     let mut tasks = Vec::new();
     for key in group_order {
         let mut members = grouped.remove(&key).unwrap_or_default();
-        let has_grouped_pages = members.iter().any(|(_, continuation, _)| continuation.is_some());
+        let has_grouped_pages = members
+            .iter()
+            .any(|(_, continuation, _)| continuation.is_some());
         let is_hotspot = members
             .first()
             .map(|(_, _, plate)| plate.chart_code == "HOT")
@@ -512,7 +518,8 @@ fn make_plate(
         remove_if_exists(&temp_seed_path)?;
         render_basic_png(work_dir, &pdf_path, &temp_seed_path, PlateRotation::None)?;
 
-        let mut rendered_pages = existing_pngs_for_prefix(&folder, &temp_prefix)?.collect::<Vec<_>>();
+        let mut rendered_pages =
+            existing_pngs_for_prefix(&folder, &temp_prefix)?.collect::<Vec<_>>();
         rendered_pages.sort();
         if rendered_pages.is_empty() {
             bail!("hotspot render produced no pngs for {}", pdf_path.display());
@@ -575,7 +582,12 @@ fn make_plate(
             // the geotagging instead of discarding it here.
             let tif_path = png_path.with_extension("tif");
             let fingerprint = basic_plate_fingerprint(&pdf_hash, &output_name)?;
-            invalidate_single_plate_if_stale(&png_path, Some(&tif_path), &marker_path, &fingerprint)?;
+            invalidate_single_plate_if_stale(
+                &png_path,
+                Some(&tif_path),
+                &marker_path,
+                &fingerprint,
+            )?;
             if png_path.is_file() {
                 return Ok(());
             }
@@ -631,13 +643,17 @@ fn make_continued_plate_group(
             eprintln!("warning: file not found {}", pdf_path.display());
             return Ok(());
         }
-        let output_name = plate_output_name(&member.chart_code, &member.state_id, &member.chart_name);
+        let output_name =
+            plate_output_name(&member.chart_code, &member.state_id, &member.chart_name);
         if output_name != group.output_name {
             legacy_continued_outputs.push(output_name.clone());
         }
         let render_kind = classify_plate_render_kind(&pdf_path, &output_name)?;
         if part_index == 0 {
-            if !matches!(render_kind, PlateRenderKind::Basic | PlateRenderKind::Geotagged) {
+            if !matches!(
+                render_kind,
+                PlateRenderKind::Basic | PlateRenderKind::Geotagged
+            ) {
                 should_fallback_to_separate = true;
             }
         } else if render_kind != PlateRenderKind::Basic {
@@ -936,7 +952,10 @@ fn rotate_png_if_needed(
     Ok(())
 }
 
-fn classify_plate_render_kind(pdf_path: &Path, output_name: &str) -> anyhow::Result<PlateRenderKind> {
+fn classify_plate_render_kind(
+    pdf_path: &Path,
+    output_name: &str,
+) -> anyhow::Result<PlateRenderKind> {
     if output_name.starts_with("MIN-") {
         return Ok(PlateRenderKind::Minimum);
     }
@@ -1063,10 +1082,10 @@ fn find_plate_pages_script() -> anyhow::Result<PathBuf> {
     // workspace homes for the same compatibility code.
     if let Ok(current_exe) = std::env::current_exe() {
         for ancestor in current_exe.ancestors() {
-            candidates.push(
-                ancestor
-                    .join("baseline/avare_equivalent/preprocessor-tpp/scripts/find_plate_pages.py"),
-            );
+            candidates
+                .push(ancestor.join(
+                    "baseline/avare_equivalent/preprocessor-tpp/scripts/find_plate_pages.py",
+                ));
             candidates.push(
                 ancestor.join("product/preprocessor/preprocessor-tpp/scripts/find_plate_pages.py"),
             );
@@ -1092,11 +1111,9 @@ fn detect_landscape_rotation_script() -> anyhow::Result<PathBuf> {
         .join("detect_landscape_rotation.py")];
     if let Ok(current_exe) = std::env::current_exe() {
         for ancestor in current_exe.ancestors() {
-            candidates.push(
-                ancestor.join(
-                    "product/preprocessor/preprocessor-tpp/scripts/detect_landscape_rotation.py",
-                ),
-            );
+            candidates.push(ancestor.join(
+                "product/preprocessor/preprocessor-tpp/scripts/detect_landscape_rotation.py",
+            ));
         }
     }
     for candidate in candidates {
@@ -1351,7 +1368,10 @@ fn continued_plate_fingerprint(
     legacy_continued_outputs: &[String],
 ) -> anyhow::Result<String> {
     let tools_hash = preprocessor_tools_source_hash()?;
-    let mut parts = vec![TPP_CONTINUED_PIPELINE_VERSION.to_string(), output_name.to_string()];
+    let mut parts = vec![
+        TPP_CONTINUED_PIPELINE_VERSION.to_string(),
+        output_name.to_string(),
+    ];
     parts.extend(pdf_hashes.iter().cloned());
     parts.extend(legacy_continued_outputs.iter().cloned());
     parts.push(tools_hash);
@@ -1463,7 +1483,6 @@ fn remove_plate_outputs(folder: &Path, output_names: &[String]) -> anyhow::Resul
     }
     Ok(())
 }
-
 
 fn calculate_cycle(future: i64, now: DateTime<Utc>) -> (u32, u32) {
     let mut start_utc = Utc.with_ymd_and_hms(2020, 1, 2, 9, 0, 0).unwrap();

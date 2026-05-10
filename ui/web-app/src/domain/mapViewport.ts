@@ -1,9 +1,7 @@
-import type { ChartCoverageJson, GeometryJson, MapViewJson } from "./types";
+import type { GeometryJson, MapViewJson } from "./types";
 
 type ViewportMap = Pick<MapViewJson, "min_zoom" | "max_zoom" | "initial_viewport">;
-type RasterMapView = MapViewJson & { id?: string; coverage?: ChartCoverageJson | null };
-type Polygon = number[][];
-type PolygonSetLookup = Map<string, Polygon[]>;
+type RasterMapView = MapViewJson & { id?: string };
 
 export type MapViewportState = {
   centerWorldX: number;
@@ -46,138 +44,6 @@ function tileSrcForMapView(mapView: RasterMapView, zoom: number, x: number, yTms
     .replaceAll("{y}", String(yTms))
     .replaceAll("{y_tms}", String(yTms));
   return `${mapView.tile_url_root}/${path}`;
-}
-
-function pointInRect(lon: number, lat: number, rect: TileBounds): boolean {
-  return lon >= rect.west && lon <= rect.east && lat >= rect.south && lat <= rect.north;
-}
-
-function pointInPolygon(lon: number, lat: number, polygon: Polygon): boolean {
-  let inside = false;
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
-    const [xi, yi] = polygon[i];
-    const [xj, yj] = polygon[j];
-    const intersects = ((yi > lat) !== (yj > lat))
-      && (lon < ((xj - xi) * (lat - yi)) / ((yj - yi) || Number.EPSILON) + xi);
-    if (intersects) {
-      inside = !inside;
-    }
-  }
-  return inside;
-}
-
-function orientation(ax: number, ay: number, bx: number, by: number, cx: number, cy: number): number {
-  return (by - ay) * (cx - bx) - (bx - ax) * (cy - by);
-}
-
-function onSegment(ax: number, ay: number, bx: number, by: number, cx: number, cy: number): boolean {
-  return Math.min(ax, cx) <= bx && bx <= Math.max(ax, cx) && Math.min(ay, cy) <= by && by <= Math.max(ay, cy);
-}
-
-function segmentsIntersect(a1: [number, number], a2: [number, number], b1: [number, number], b2: [number, number]): boolean {
-  const o1 = orientation(a1[0], a1[1], a2[0], a2[1], b1[0], b1[1]);
-  const o2 = orientation(a1[0], a1[1], a2[0], a2[1], b2[0], b2[1]);
-  const o3 = orientation(b1[0], b1[1], b2[0], b2[1], a1[0], a1[1]);
-  const o4 = orientation(b1[0], b1[1], b2[0], b2[1], a2[0], a2[1]);
-
-  if ((o1 > 0) !== (o2 > 0) && (o3 > 0) !== (o4 > 0)) {
-    return true;
-  }
-  if (o1 === 0 && onSegment(a1[0], a1[1], b1[0], b1[1], a2[0], a2[1])) return true;
-  if (o2 === 0 && onSegment(a1[0], a1[1], b2[0], b2[1], a2[0], a2[1])) return true;
-  if (o3 === 0 && onSegment(b1[0], b1[1], a1[0], a1[1], b2[0], b2[1])) return true;
-  if (o4 === 0 && onSegment(b1[0], b1[1], a2[0], a2[1], b2[0], b2[1])) return true;
-  return false;
-}
-
-type TileBounds = {
-  south: number;
-  north: number;
-  west: number;
-  east: number;
-};
-
-function tileBoundsFor(zoom: number, x: number, yTms: number): TileBounds {
-  const levelScale = 2 ** zoom;
-  const yXyz = (levelScale - 1) - yTms;
-  const tileWorldSize = WORLD_SIZE / levelScale;
-  const northwest = worldToLatLon(x * tileWorldSize, yXyz * tileWorldSize);
-  const southeast = worldToLatLon((x + 1) * tileWorldSize, (yXyz + 1) * tileWorldSize);
-  return {
-    south: Math.min(northwest.lat, southeast.lat),
-    north: Math.max(northwest.lat, southeast.lat),
-    west: Math.min(northwest.lon, southeast.lon),
-    east: Math.max(northwest.lon, southeast.lon),
-  };
-}
-
-function rectCorners(rect: TileBounds): Array<[number, number]> {
-  return [
-    [rect.west, rect.north],
-    [rect.east, rect.north],
-    [rect.east, rect.south],
-    [rect.west, rect.south],
-  ];
-}
-
-function polygonIntersectsRect(polygon: Polygon, rect: TileBounds): boolean {
-  if (polygon.some(([lon, lat]) => pointInRect(lon, lat, rect))) {
-    return true;
-  }
-  const corners = rectCorners(rect);
-  if (corners.some(([lon, lat]) => pointInPolygon(lon, lat, polygon))) {
-    return true;
-  }
-  const rectEdges: Array<[[number, number], [number, number]]> = [
-    [corners[0], corners[1]],
-    [corners[1], corners[2]],
-    [corners[2], corners[3]],
-    [corners[3], corners[0]],
-  ];
-  for (let i = 0; i < polygon.length - 1; i += 1) {
-    const edge: [[number, number], [number, number]] = [polygon[i] as [number, number], polygon[i + 1] as [number, number]];
-    if (rectEdges.some(([from, to]) => segmentsIntersect(edge[0], edge[1], from, to))) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function buildPolygonSetLookup(geometry?: GeometryJson | null): PolygonSetLookup {
-  if (!geometry) {
-    return new Map();
-  }
-  const polygonsById = new Map((geometry.polygons ?? []).map((polygon) => [polygon.id, polygon.points]));
-  const polygonSets = geometry.polygon_sets ?? [];
-  return new Map(polygonSets.map((polygonSet) => {
-    const polygons = polygonSet.polygon_ids.map((id) => {
-      const polygon = polygonsById.get(id);
-      if (!polygon) {
-        throw new Error(`missing polygon ${id} for polygon set ${polygonSet.id}`);
-      }
-      return polygon;
-    });
-    return [polygonSet.id, polygons];
-  }));
-}
-
-function tileIntersectsCoverage(
-  mapView: RasterMapView,
-  polygonSets: PolygonSetLookup,
-  zoom: number,
-  x: number,
-  yTms: number,
-): boolean {
-  const coverage = mapView.coverage;
-  if (!coverage) {
-    return true;
-  }
-  const polygons = polygonSets.get(coverage.value.polygon_set_id);
-  if (!polygons) {
-    throw new Error(`missing polygon set ${coverage.value.polygon_set_id}`);
-  }
-  const tileBounds = tileBoundsFor(zoom, x, yTms);
-  return polygons.some((polygon) => polygonIntersectsRect(polygon, tileBounds));
 }
 
 export function createInitialViewport(mapView: ViewportMap): MapViewportState {
@@ -361,7 +227,7 @@ export function renderTiles(
   width: number,
   height: number,
 ): RenderTile[] {
-  const polygonSets = buildPolygonSetLookup(geometry);
+  void geometry;
   const tiles: RenderTile[] = [];
   const mapViewsByFamily = new Map<RasterMapView["chart_family"], Array<RasterMapView & { id?: string }>>();
   for (const mapView of mapViews) {
@@ -373,7 +239,7 @@ export function renderTiles(
     }
   }
   for (const familyMapViews of mapViewsByFamily.values()) {
-    tiles.push(...renderTilesForFamily(familyMapViews, polygonSets, viewport, width, height));
+    tiles.push(...renderTilesForFamily(familyMapViews, viewport, width, height));
   }
   return dedupeTiles(tiles).sort((left, right) => {
     const zoomDelta = left.zoom - right.zoom;
@@ -386,7 +252,6 @@ export function renderTiles(
 
 function renderTilesForFamily(
   familyMapViews: Array<RasterMapView & { id?: string }>,
-  polygonSets: PolygonSetLookup,
   viewport: MapViewportState,
   width: number,
   height: number,
@@ -425,10 +290,7 @@ function renderTilesForFamily(
         for (let displayX = xStart; displayX <= xEnd; displayX += 1) {
           const x = positiveModulo(displayX, levelScale);
           const yTms = (levelScale - 1) - yXyz;
-          if (x < level.x_min || x > level.x_max || yTms < level.y_tms_min || yTms > level.y_tms_max) {
-            continue;
-          }
-          if (!tileIntersectsCoverage(mapView, polygonSets, level.zoom, x, yTms)) {
+          if (!levelContainsTile(level, x, yTms)) {
             continue;
           }
           const left = ((displayX * tileWorldSize - viewport.centerWorldX) * scale) + width / 2;
@@ -508,4 +370,10 @@ function pickLevel(mapView: RasterMapView, zoom: number): RasterMapView["levels"
     }
     return best;
   });
+}
+
+function levelContainsTile(level: RasterMapView["levels"][number], x: number, yTms: number): boolean {
+  return level.boxes.some((box) => (
+    x >= box.x_min && x <= box.x_max && yTms >= box.y_tms_min && yTms <= box.y_tms_max
+  ));
 }

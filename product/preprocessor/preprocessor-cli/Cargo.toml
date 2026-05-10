@@ -24,6 +24,7 @@ preprocessor-tools = { path = "../preprocessor-tools" }
 preprocessor-vectors = { path = "../preprocessor-vectors" }
 preprocessor-zip = { path = "../preprocessor-zip" }
 procedure-geometry-types = { path = "../../../crates/procedure-geometry-types" }
+geo.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

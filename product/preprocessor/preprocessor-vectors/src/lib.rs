@@ -553,26 +553,31 @@ fn controlled_airspace_outline_polygon_from_path(path: &AirspacePath) -> Option<
     if !path.closed || path.points.len() < 4 {
         return None;
     }
-    let snapped = path
-        .points
+    expanded_union_polygon_from_closed_ring(
+        &path.points,
+        CONTROLLED_AIRSPACE_OUTLINE_UNION_SNAP_GRID_DEGREES,
+        CONTROLLED_AIRSPACE_OUTLINE_UNION_EXPAND_DEGREES,
+    )
+}
+
+pub fn expanded_union_polygon_from_closed_ring(
+    points: &[[f64; 2]],
+    snap_grid_degrees: f64,
+    expand_degrees: f64,
+) -> Option<Polygon<f64>> {
+    if points.len() < 4 {
+        return None;
+    }
+    let snapped = points
         .iter()
         .map(|point| {
             [
-                snap_coord(
-                    point[0],
-                    CONTROLLED_AIRSPACE_OUTLINE_UNION_SNAP_GRID_DEGREES,
-                ),
-                snap_coord(
-                    point[1],
-                    CONTROLLED_AIRSPACE_OUTLINE_UNION_SNAP_GRID_DEGREES,
-                ),
+                snap_coord(point[0], snap_grid_degrees),
+                snap_coord(point[1], snap_grid_degrees),
             ]
         })
         .collect::<Vec<_>>();
-    let expanded = expand_ring_outward_by_vertex_bisectors(
-        &snapped,
-        CONTROLLED_AIRSPACE_OUTLINE_UNION_EXPAND_DEGREES,
-    );
+    let expanded = expand_ring_outward_by_vertex_bisectors(&snapped, expand_degrees);
     let mut coords = expanded
         .iter()
         .map(|point| Coord {
@@ -2903,7 +2908,7 @@ fn polygon_contains_polygon_by_sampling(
     (inside_count as f64 / samples.len() as f64) >= AIRSPACE_LABEL_CONTAINMENT_RATIO
 }
 
-fn simplify_closed_ring(points: &[[f64; 2]], tolerance: f64) -> Vec<[f64; 2]> {
+pub fn simplify_closed_ring(points: &[[f64; 2]], tolerance: f64) -> Vec<[f64; 2]> {
     if points.len() <= 4 {
         return points.to_vec();
     }

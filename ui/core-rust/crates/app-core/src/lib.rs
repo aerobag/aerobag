@@ -122,8 +122,8 @@ pub use raster_tiles::{
     select_map_family_in_catalog, select_map_in_catalog, RasterChartCoverage,
     RasterDisplayGeometry, RasterDisplayPolygonSet, RasterInitialViewport, RasterMapCatalog,
     RasterMapFamilyOption, RasterMapUiState, RasterMapView, RasterMapViewOption, RasterPolygon,
-    RasterPolygonSetRef, RasterResourceMode, RasterTileDraw, RasterTileLevel, RasterTilePlan,
-    RasterTilePlanOptions, RasterTileSource,
+    RasterPolygonSetRef, RasterResourceMode, RasterTileBounds, RasterTileDraw, RasterTileLevel,
+    RasterTilePlan, RasterTilePlanOptions, RasterTileSource,
 };
 pub use session::{
     activate_next_leg_in_session, apply_situation_control_input_in_session,

@@ -128,6 +128,11 @@ pub struct RasterInitialViewport {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RasterTileLevel {
     pub zoom: i64,
+    pub boxes: Vec<RasterTileBounds>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RasterTileBounds {
     pub x_min: i64,
     pub x_max: i64,
     pub y_tms_min: i64,
@@ -210,16 +215,6 @@ struct PlannedTile {
     map_view: RasterMapView,
     candidate_map_views: Vec<(String, RasterMapView)>,
 }
-
-#[derive(Debug, Clone, Copy)]
-struct TileBounds {
-    south: f64,
-    west: f64,
-    north: f64,
-    east: f64,
-}
-
-type PolygonSetLookup = HashMap<String, Vec<Vec<[f64; 2]>>>;
 
 pub fn select_map_in_catalog(catalog: &mut RasterMapCatalog, selected_map_id: &str) {
     if let Some(selected_map) = catalog
@@ -378,7 +373,6 @@ pub fn raster_tile_plan_with_options(
             tiles: Vec::new(),
         };
     }
-    let polygon_sets = build_polygon_set_lookup(&catalog.geometry);
     let mut by_family: HashMap<String, Vec<(String, RasterMapViewOption)>> = HashMap::new();
     for view in &catalog.displayed_maps {
         by_family
@@ -395,7 +389,6 @@ pub fn raster_tile_plan_with_options(
     for family_views in by_family.values() {
         planned.extend(render_tiles_for_family(
             family_views,
-            &polygon_sets,
             viewport,
             width_px,
             height_px,
@@ -422,7 +415,6 @@ pub fn raster_tile_plan_with_options(
 
 fn render_tiles_for_family(
     family_views: &[(String, RasterMapViewOption)],
-    polygon_sets: &PolygonSetLookup,
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
@@ -470,20 +462,12 @@ fn render_tiles_for_family(
                 for display_x in x_start..=x_end {
                     let x = positive_mod_i64(display_x, level_scale);
                     let y_tms = (level_scale - 1) - y_xyz;
-                    if x < level.x_min
-                        || x > level.x_max
-                        || y_tms < level.y_tms_min
-                        || y_tms > level.y_tms_max
-                    {
-                        continue;
-                    }
-                    if !tile_intersects_coverage(option, polygon_sets, level.zoom, x, y_tms) {
+                    if !level_contains_tile(&level, x, y_tms) {
                         continue;
                     }
                     let candidates = if is_full_coverage_level {
                         let Some(representative_id) = full_coverage_representative(
                             family_views,
-                            polygon_sets,
                             level.zoom,
                             x,
                             y_tms,
@@ -496,7 +480,6 @@ fn render_tiles_for_family(
                         }
                         full_coverage_candidates(
                             family_views,
-                            polygon_sets,
                             level.zoom,
                             x,
                             y_tms,
@@ -652,11 +635,7 @@ fn render_tiles_for_single_map_view(
             for display_x in x_start..=x_end {
                 let x = positive_mod_i64(display_x, level_scale);
                 let y_tms = (level_scale - 1) - y_xyz;
-                if x < level.x_min
-                    || x > level.x_max
-                    || y_tms < level.y_tms_min
-                    || y_tms > level.y_tms_max
-                {
+                if !level_contains_tile(&level, x, y_tms) {
                     continue;
                 }
                 let left_px =
@@ -702,7 +681,6 @@ fn screen_rect_intersects_viewport(
 
 fn full_coverage_representative(
     family_views: &[(String, RasterMapViewOption)],
-    polygon_sets: &PolygonSetLookup,
     zoom: i64,
     x: i64,
     y_tms: i64,
@@ -716,7 +694,6 @@ fn full_coverage_representative(
                 .full_coverage_zoom
                 .is_some_and(|full_zoom| (zoom as f64) <= full_zoom)
                 && level_contains(map_view, zoom, x, y_tms)
-                && tile_intersects_coverage(option, polygon_sets, zoom, x, y_tms)
         })
         .max_by_key(|(map_view_id, option)| {
             let selected_region_bonus = if Some(option.region_id.as_str()) == selected_region_id {
@@ -731,7 +708,6 @@ fn full_coverage_representative(
 
 fn full_coverage_candidates(
     family_views: &[(String, RasterMapViewOption)],
-    polygon_sets: &PolygonSetLookup,
     zoom: i64,
     x: i64,
     y_tms: i64,
@@ -755,9 +731,6 @@ fn full_coverage_candidates(
             continue;
         }
         if !level_contains(map_view, zoom, x, y_tms) {
-            continue;
-        }
-        if !tile_intersects_coverage(option, polygon_sets, zoom, x, y_tms) {
             continue;
         }
         push_candidate(
@@ -1011,12 +984,15 @@ fn positive_mod_i64(value: i64, modulus: i64) -> i64 {
 }
 
 fn level_contains(map_view: &RasterMapView, zoom: i64, x: i64, y_tms: i64) -> bool {
-    map_view.levels.iter().any(|level| {
-        level.zoom == zoom
-            && x >= level.x_min
-            && x <= level.x_max
-            && y_tms >= level.y_tms_min
-            && y_tms <= level.y_tms_max
+    map_view
+        .levels
+        .iter()
+        .any(|level| level.zoom == zoom && level_contains_tile(level, x, y_tms))
+}
+
+fn level_contains_tile(level: &RasterTileLevel, x: i64, y_tms: i64) -> bool {
+    level.boxes.iter().any(|bbox| {
+        x >= bbox.x_min && x <= bbox.x_max && y_tms >= bbox.y_tms_min && y_tms <= bbox.y_tms_max
     })
 }
 
@@ -1033,154 +1009,12 @@ fn chart_family_render_priority(family: &str) -> i64 {
     }
 }
 
-fn build_polygon_set_lookup(geometry: &RasterDisplayGeometry) -> PolygonSetLookup {
-    let polygons_by_id = geometry
-        .polygons
-        .iter()
-        .map(|polygon| (polygon.id.clone(), polygon.points.clone()))
-        .collect::<HashMap<_, _>>();
-    geometry
-        .polygon_sets
-        .iter()
-        .map(|polygon_set| {
-            let polygons = polygon_set
-                .polygon_ids
-                .iter()
-                .filter_map(|id| polygons_by_id.get(id).cloned())
-                .collect::<Vec<_>>();
-            (polygon_set.id.clone(), polygons)
-        })
-        .collect()
-}
-
-fn tile_intersects_coverage(
-    option: &RasterMapViewOption,
-    polygon_sets: &PolygonSetLookup,
-    zoom: i64,
-    x: i64,
-    y_tms: i64,
-) -> bool {
-    let Some(RasterChartCoverage::PolygonSetRef(coverage)) = &option.coverage else {
-        return true;
-    };
-    let Some(polygons) = polygon_sets.get(&coverage.polygon_set_id) else {
-        return false;
-    };
-    let tile_bounds = tile_bounds_for(zoom, x, y_tms);
-    polygons
-        .iter()
-        .any(|polygon| polygon_intersects_rect(polygon, tile_bounds))
-}
-
-fn tile_bounds_for(zoom: i64, x: i64, y_tms: i64) -> TileBounds {
-    let level_scale = 2_i64.pow(zoom as u32);
-    let y_xyz = (level_scale - 1) - y_tms;
-    let tile_world_size = WORLD_SIZE / level_scale as f64;
-    let northwest = world_to_lat_lon(x as f64 * tile_world_size, y_xyz as f64 * tile_world_size);
-    let southeast = world_to_lat_lon(
-        (x + 1) as f64 * tile_world_size,
-        (y_xyz + 1) as f64 * tile_world_size,
-    );
-    TileBounds {
-        south: northwest.lat.min(southeast.lat),
-        north: northwest.lat.max(southeast.lat),
-        west: northwest.lon.min(southeast.lon),
-        east: northwest.lon.max(southeast.lon),
-    }
-}
-
-fn polygon_intersects_rect(polygon: &[[f64; 2]], rect: TileBounds) -> bool {
-    polygon
-        .iter()
-        .any(|point| point_in_rect(point[0], point[1], rect))
-        || rect_corners(rect)
-            .iter()
-            .any(|point| point_in_polygon(point[0], point[1], polygon))
-        || polygon_edges_intersect_rect(polygon, rect)
-}
-
-fn rect_corners(rect: TileBounds) -> [[f64; 2]; 4] {
-    [
-        [rect.west, rect.north],
-        [rect.east, rect.north],
-        [rect.east, rect.south],
-        [rect.west, rect.south],
-    ]
-}
-
-fn polygon_edges_intersect_rect(polygon: &[[f64; 2]], rect: TileBounds) -> bool {
-    let corners = rect_corners(rect);
-    let rect_edges = [
-        (corners[0], corners[1]),
-        (corners[1], corners[2]),
-        (corners[2], corners[3]),
-        (corners[3], corners[0]),
-    ];
-    polygon.windows(2).any(|edge| {
-        rect_edges
-            .iter()
-            .any(|(from, to)| segments_intersect(edge[0], edge[1], *from, *to))
-    })
-}
-
-fn point_in_rect(lon: f64, lat: f64, rect: TileBounds) -> bool {
-    lon >= rect.west && lon <= rect.east && lat >= rect.south && lat <= rect.north
-}
-
-fn point_in_polygon(lon: f64, lat: f64, polygon: &[[f64; 2]]) -> bool {
-    let mut inside = false;
-    let mut j = polygon.len().saturating_sub(1);
-    for i in 0..polygon.len() {
-        let xi = polygon[i][0];
-        let yi = polygon[i][1];
-        let xj = polygon[j][0];
-        let yj = polygon[j][1];
-        if (yi > lat) != (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi {
-            inside = !inside;
-        }
-        j = i;
-    }
-    inside
-}
-
-fn segments_intersect(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
-    fn orientation(p: [f64; 2], q: [f64; 2], r: [f64; 2]) -> f64 {
-        (q[1] - p[1]) * (r[0] - q[0]) - (q[0] - p[0]) * (r[1] - q[1])
-    }
-    fn on_segment(p: [f64; 2], q: [f64; 2], r: [f64; 2]) -> bool {
-        q[0] <= p[0].max(r[0])
-            && q[0] >= p[0].min(r[0])
-            && q[1] <= p[1].max(r[1])
-            && q[1] >= p[1].min(r[1])
-    }
-
-    let o1 = orientation(a, b, c);
-    let o2 = orientation(a, b, d);
-    let o3 = orientation(c, d, a);
-    let o4 = orientation(c, d, b);
-    if (o1 > 0.0) != (o2 > 0.0) && (o3 > 0.0) != (o4 > 0.0) {
-        return true;
-    }
-    let eps = 1e-10;
-    (o1.abs() < eps && on_segment(a, c, b))
-        || (o2.abs() < eps && on_segment(a, d, b))
-        || (o3.abs() < eps && on_segment(c, a, d))
-        || (o4.abs() < eps && on_segment(c, b, d))
-}
-
 fn lat_lon_to_world(point: LatLon) -> (f64, f64) {
     let clamped_lat = point.lat.clamp(-MAX_LATITUDE, MAX_LATITUDE);
     let x = ((point.lon + 180.0) / 360.0) * WORLD_SIZE;
     let y =
         ((1.0 - clamped_lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0) * WORLD_SIZE;
     (x, y)
-}
-
-fn world_to_lat_lon(world_x: f64, world_y: f64) -> LatLon {
-    let lon = (world_x / WORLD_SIZE) * 360.0 - 180.0;
-    let n = std::f64::consts::PI - (2.0 * std::f64::consts::PI * world_y) / WORLD_SIZE;
-    let lat = n.sinh().atan().to_degrees();
-    LatLon { lat, lon }
 }
 
 fn scale_for_zoom(zoom: f64) -> f64 {
@@ -1194,10 +1028,12 @@ mod tests {
     fn level(zoom: i64, x_min: i64, x_max: i64, y_min: i64, y_max: i64) -> RasterTileLevel {
         RasterTileLevel {
             zoom,
-            x_min,
-            x_max,
-            y_tms_min: y_min,
-            y_tms_max: y_max,
+            boxes: vec![RasterTileBounds {
+                x_min,
+                x_max,
+                y_tms_min: y_min,
+                y_tms_max: y_max,
+            }],
         }
     }
 
@@ -1237,6 +1073,31 @@ mod tests {
                 levels,
             },
         }
+    }
+
+    #[test]
+    fn raster_tile_level_contains_tile_from_any_box() {
+        let level = RasterTileLevel {
+            zoom: 8,
+            boxes: vec![
+                RasterTileBounds {
+                    x_min: 7,
+                    x_max: 7,
+                    y_tms_min: 117,
+                    y_tms_max: 117,
+                },
+                RasterTileBounds {
+                    x_min: 231,
+                    x_max: 231,
+                    y_tms_min: 137,
+                    y_tms_max: 137,
+                },
+            ],
+        };
+
+        assert!(level_contains_tile(&level, 7, 117));
+        assert!(level_contains_tile(&level, 231, 137));
+        assert!(!level_contains_tile(&level, 119, 127));
     }
 
     #[test]

@@ -789,10 +789,12 @@ export type MapViewJson = {
     tile_path_template: string;
     levels: Array<{
       zoom: number;
-      x_min: number;
-      x_max: number;
-      y_tms_min: number;
-      y_tms_max: number;
+      boxes: Array<{
+        x_min: number;
+        x_max: number;
+        y_tms_min: number;
+        y_tms_max: number;
+      }>;
     }>;
   } | null;
   initial_viewport: {
@@ -802,10 +804,12 @@ export type MapViewJson = {
   };
   levels: Array<{
     zoom: number;
-    x_min: number;
-    x_max: number;
-    y_tms_min: number;
-    y_tms_max: number;
+    boxes: Array<{
+      x_min: number;
+      x_max: number;
+      y_tms_min: number;
+      y_tms_max: number;
+    }>;
   }>;
 };
 
@@ -915,10 +919,12 @@ export type ResourceIndexJson = {
     tile_path_template: string;
     levels: Array<{
       zoom: number;
-      x_min: number;
-      x_max: number;
-      y_tms_min: number;
-      y_tms_max: number;
+      boxes: Array<{
+        x_min: number;
+        x_max: number;
+        y_tms_min: number;
+        y_tms_max: number;
+      }>;
     }>;
     coverage_bounds: {
       lat_min: number;

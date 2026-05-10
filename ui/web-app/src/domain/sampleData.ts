@@ -47,8 +47,8 @@ export const mapViews: MapViewOptionJson[] = [
         zoom: 8.2,
       },
       levels: [
-        { zoom: 8, x_min: 0, x_max: 255, y_tms_min: 0, y_tms_max: 255 },
-        { zoom: 10, x_min: 0, x_max: 1023, y_tms_min: 0, y_tms_max: 1023 },
+        { zoom: 8, boxes: [{ x_min: 0, x_max: 255, y_tms_min: 0, y_tms_max: 255 }] },
+        { zoom: 10, boxes: [{ x_min: 0, x_max: 1023, y_tms_min: 0, y_tms_max: 1023 }] },
       ],
     },
   },
@@ -63,8 +63,8 @@ export const mapTileView: MapTileViewJson = {
   zoom: defaultLevel.zoom,
   tile_size: mapView.tile_size,
   radius: 0,
-  center_x: Math.floor((defaultLevel.x_min + defaultLevel.x_max) / 2),
-  center_y_tms: Math.floor((defaultLevel.y_tms_min + defaultLevel.y_tms_max) / 2),
+  center_x: Math.floor((defaultLevel.boxes[0].x_min + defaultLevel.boxes[0].x_max) / 2),
+  center_y_tms: Math.floor((defaultLevel.boxes[0].y_tms_min + defaultLevel.boxes[0].y_tms_max) / 2),
   probe_offset_x: 0,
   probe_offset_y: 0,
 };

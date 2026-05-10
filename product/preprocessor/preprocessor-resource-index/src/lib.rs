@@ -233,6 +233,11 @@ pub struct ChartCollectionRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TileLevelRecord {
     pub zoom: u32,
+    pub boxes: Vec<TileBoundsRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TileBoundsRecord {
     pub x_min: u32,
     pub x_max: u32,
     pub y_tms_min: u32,
@@ -908,7 +913,7 @@ fn collect_packages(
 fn collect_chart_collections(
     chart_sources: &[ChartSource],
 ) -> anyhow::Result<Vec<ChartCollectionRecord>> {
-    let mut collections = chart_sources
+    let mut collections_with_tiles = chart_sources
         .par_iter()
         .map(|source| {
             read_package_outputs(&source.package_outputs_path)?
@@ -931,7 +936,7 @@ fn collect_chart_collections(
                             artifact_path.display()
                         )
                     })?;
-                    Ok::<_, anyhow::Error>(ChartCollectionRecord {
+                    let collection = ChartCollectionRecord {
                         id: format!(
                             "{}:{}",
                             source.family_id,
@@ -948,6 +953,10 @@ fn collect_chart_collections(
                         levels: metadata.levels,
                         coverage_bounds: metadata.coverage_bounds,
                         default_view: metadata.default_view,
+                    };
+                    Ok::<_, anyhow::Error>(ChartCollectionWithTiles {
+                        collection,
+                        tiles: metadata.tiles,
                     })
                 })
                 .collect::<Vec<_>>()
@@ -960,8 +969,71 @@ fn collect_chart_collections(
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
+    validate_chart_tile_bbox_invariant(&collections_with_tiles)?;
+    let mut collections = collections_with_tiles
+        .drain(..)
+        .map(|entry| entry.collection)
+        .collect::<Vec<_>>();
     collections.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(collections)
+}
+
+#[derive(Debug)]
+struct ChartCollectionWithTiles {
+    collection: ChartCollectionRecord,
+    tiles: BTreeSet<(u32, u32, u32)>,
+}
+
+fn validate_chart_tile_bbox_invariant(
+    collections: &[ChartCollectionWithTiles],
+) -> anyhow::Result<()> {
+    let mut by_family: BTreeMap<&str, Vec<&ChartCollectionWithTiles>> = BTreeMap::new();
+    for collection in collections
+        .iter()
+        .filter(|entry| entry.collection.region_id != "wide")
+    {
+        by_family
+            .entry(collection.collection.family_id.as_str())
+            .or_default()
+            .push(collection);
+    }
+    for (family_id, entries) in by_family {
+        let mut all_tiles = BTreeSet::new();
+        for entry in &entries {
+            all_tiles.extend(entry.tiles.iter().copied());
+        }
+        for (zoom, x, y_tms) in all_tiles {
+            for entry in &entries {
+                if collection_contains_tile(&entry.collection, zoom, x, y_tms)
+                    && !entry.tiles.contains(&(zoom, x, y_tms))
+                {
+                    bail!(
+                        "chart tile bbox invariant failed: family {family_id} region {} bbox contains z{zoom}/{x}/{y_tms} but package {} does not contain that tile",
+                        entry.collection.region_id,
+                        entry.collection.package_id
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collection_contains_tile(
+    collection: &ChartCollectionRecord,
+    zoom: u32,
+    x: u32,
+    y_tms: u32,
+) -> bool {
+    collection.levels.iter().any(|level| {
+        level.zoom == zoom
+            && level.boxes.iter().any(|bbox| {
+                x >= bbox.x_min
+                    && x <= bbox.x_max
+                    && y_tms >= bbox.y_tms_min
+                    && y_tms <= bbox.y_tms_max
+            })
+    })
 }
 
 fn collect_packages_for_source(
@@ -1900,6 +1972,7 @@ fn first_cycle_day(year: i32) -> Option<u32> {
 struct ChartZipMetadata {
     chart_index: u32,
     levels: Vec<TileLevelRecord>,
+    tiles: BTreeSet<(u32, u32, u32)>,
     coverage_bounds: CoverageBounds,
     default_view: DefaultView,
 }
@@ -1908,7 +1981,8 @@ fn read_chart_zip_metadata(path: &Path) -> anyhow::Result<ChartZipMetadata> {
     let file =
         fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let archive = ZipArchive::new(file).context("failed to open chart zip")?;
-    let mut levels: BTreeMap<u32, (u32, u32, u32, u32)> = BTreeMap::new();
+    let mut tiles_by_zoom: BTreeMap<u32, BTreeSet<(u32, u32)>> = BTreeMap::new();
+    let mut tiles = BTreeSet::new();
     let mut chart_index = None;
     for name in archive.file_names() {
         if !name.ends_with(".webp") {
@@ -1927,24 +2001,16 @@ fn read_chart_zip_metadata(path: &Path) -> anyhow::Result<ChartZipMetadata> {
             .parse()
             .context("invalid tms y tile")?;
         chart_index.get_or_insert(parsed_chart_index);
-        let entry = levels.entry(zoom).or_insert((x, x, y_tms, y_tms));
-        entry.0 = entry.0.min(x);
-        entry.1 = entry.1.max(x);
-        entry.2 = entry.2.min(y_tms);
-        entry.3 = entry.3.max(y_tms);
+        tiles.insert((zoom, x, y_tms));
+        tiles_by_zoom.entry(zoom).or_default().insert((x, y_tms));
     }
     let chart_index = chart_index.context("no tile entries found in chart zip")?;
-    let level_records = levels
+    let level_records = tiles_by_zoom
         .into_iter()
-        .map(
-            |(zoom, (x_min, x_max, y_tms_min, y_tms_max))| TileLevelRecord {
-                zoom,
-                x_min,
-                x_max,
-                y_tms_min,
-                y_tms_max,
-            },
-        )
+        .map(|(zoom, tiles)| TileLevelRecord {
+            zoom,
+            boxes: tile_run_boxes(&tiles),
+        })
         .collect::<Vec<_>>();
     let coverage_bounds = coverage_bounds_from_levels(&level_records)
         .context("failed to derive coverage bounds from levels")?;
@@ -1953,6 +2019,7 @@ fn read_chart_zip_metadata(path: &Path) -> anyhow::Result<ChartZipMetadata> {
     Ok(ChartZipMetadata {
         chart_index,
         levels: level_records,
+        tiles,
         coverage_bounds,
         default_view,
     })
@@ -1960,11 +2027,12 @@ fn read_chart_zip_metadata(path: &Path) -> anyhow::Result<ChartZipMetadata> {
 
 fn coverage_bounds_from_levels(levels: &[TileLevelRecord]) -> Option<CoverageBounds> {
     let level = levels.iter().max_by_key(|level| level.zoom)?;
+    let bounds = level_bounds(level)?;
     let scale = 2_u32.pow(level.zoom) as f64;
-    let y_xyz_min = (scale as u32 - 1 - level.y_tms_max) as f64;
-    let y_xyz_max = (scale as u32 - 1 - level.y_tms_min) as f64;
-    let lon_min = tile_x_to_lon(level.x_min as f64, scale);
-    let lon_max = tile_x_to_lon((level.x_max + 1) as f64, scale);
+    let y_xyz_min = (scale as u32 - 1 - bounds.y_tms_max) as f64;
+    let y_xyz_max = (scale as u32 - 1 - bounds.y_tms_min) as f64;
+    let lon_min = tile_x_to_lon(bounds.x_min as f64, scale);
+    let lon_max = tile_x_to_lon((bounds.x_max + 1) as f64, scale);
     let lat_max = tile_y_to_lat(y_xyz_min, scale);
     let lat_min = tile_y_to_lat(y_xyz_max + 1.0, scale);
     Some(CoverageBounds {
@@ -1977,15 +2045,90 @@ fn coverage_bounds_from_levels(levels: &[TileLevelRecord]) -> Option<CoverageBou
 
 fn default_view_from_levels(levels: &[TileLevelRecord]) -> Option<DefaultView> {
     let level = levels.iter().max_by_key(|level| level.zoom)?;
+    let bounds = level_bounds(level)?;
     let scale = 2_u32.pow(level.zoom) as f64;
-    let center_x = ((level.x_min + level.x_max + 1) as f64) / 2.0;
-    let center_y_tms = ((level.y_tms_min + level.y_tms_max + 1) as f64) / 2.0;
+    let center_x = ((bounds.x_min + bounds.x_max + 1) as f64) / 2.0;
+    let center_y_tms = ((bounds.y_tms_min + bounds.y_tms_max + 1) as f64) / 2.0;
     let center_y_xyz = scale - center_y_tms;
     Some(DefaultView {
         lat: tile_y_to_lat(center_y_xyz, scale),
         lon: tile_x_to_lon(center_x, scale),
         zoom: f64::from(level.zoom) - 2.0,
     })
+}
+
+fn level_bounds(level: &TileLevelRecord) -> Option<TileBoundsRecord> {
+    let first = level.boxes.first()?;
+    let mut bounds = first.clone();
+    for bbox in &level.boxes[1..] {
+        bounds.x_min = bounds.x_min.min(bbox.x_min);
+        bounds.x_max = bounds.x_max.max(bbox.x_max);
+        bounds.y_tms_min = bounds.y_tms_min.min(bbox.y_tms_min);
+        bounds.y_tms_max = bounds.y_tms_max.max(bbox.y_tms_max);
+    }
+    Some(bounds)
+}
+
+fn tile_run_boxes(tiles: &BTreeSet<(u32, u32)>) -> Vec<TileBoundsRecord> {
+    let mut row_runs: BTreeMap<(u32, u32), Vec<TileBoundsRecord>> = BTreeMap::new();
+    let mut row_tiles: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    for (x, y_tms) in tiles {
+        row_tiles.entry(*y_tms).or_default().push(*x);
+    }
+
+    for (y_tms, mut xs) in row_tiles {
+        xs.sort_unstable();
+        xs.dedup();
+        let Some(mut x_min) = xs.first().copied() else {
+            continue;
+        };
+        let mut previous = x_min;
+        for x in xs.into_iter().skip(1) {
+            if x == previous + 1 {
+                previous = x;
+                continue;
+            }
+            row_runs
+                .entry((x_min, previous))
+                .or_default()
+                .push(TileBoundsRecord {
+                    x_min,
+                    x_max: previous,
+                    y_tms_min: y_tms,
+                    y_tms_max: y_tms,
+                });
+            x_min = x;
+            previous = x;
+        }
+        row_runs
+            .entry((x_min, previous))
+            .or_default()
+            .push(TileBoundsRecord {
+                x_min,
+                x_max: previous,
+                y_tms_min: y_tms,
+                y_tms_max: y_tms,
+            });
+    }
+
+    let mut boxes: Vec<TileBoundsRecord> = Vec::new();
+    for mut runs in row_runs.into_values() {
+        runs.sort_by_key(|run| run.y_tms_min);
+        for run in runs {
+            if let Some(last) = boxes.last_mut() {
+                if last.x_min == run.x_min
+                    && last.x_max == run.x_max
+                    && last.y_tms_max + 1 == run.y_tms_min
+                {
+                    last.y_tms_max = run.y_tms_max;
+                    continue;
+                }
+            }
+            boxes.push(run);
+        }
+    }
+    boxes.sort();
+    boxes
 }
 
 fn tile_x_to_lon(tile_x: f64, scale: f64) -> f64 {
@@ -2057,6 +2200,20 @@ mod tests {
             )
             .expect("encode test png");
         bytes
+    }
+
+    fn write_chart_zip(path: &Path, tiles: &[(u32, u32, u32)]) {
+        let file = fs::File::create(path).expect("create chart zip");
+        let mut zip = ZipWriter::new(file);
+        for (z, x, y_tms) in tiles {
+            zip.start_file(
+                format!("tiles/0/{z}/{x}/{y_tms}.webp"),
+                SimpleFileOptions::default(),
+            )
+            .expect("start tile");
+            zip.write_all(b"tile").expect("write tile");
+        }
+        zip.finish().expect("finish chart zip");
     }
 
     // TODO: if you touch this test, you need to refactor away the synthetic
@@ -2358,10 +2515,12 @@ mod tests {
             index.chart_collections[0].levels,
             vec![TileLevelRecord {
                 zoom: 7,
-                x_min: 20,
-                x_max: 21,
-                y_tms_min: 49,
-                y_tms_max: 50,
+                boxes: vec![TileBoundsRecord {
+                    x_min: 20,
+                    x_max: 21,
+                    y_tms_min: 49,
+                    y_tms_max: 50,
+                }],
             }]
         );
         assert!(
@@ -2422,6 +2581,187 @@ mod tests {
         let csup_thumb = image::open(thumbnail_root.join("afd/BOS/CSUP-NE_0-0.png"))
             .expect("open csup thumbnail");
         assert_eq!(csup_thumb.dimensions(), (100, 150));
+    }
+
+    #[test]
+    fn chart_zip_metadata_keeps_disconnected_pac_boxes() {
+        let temp = tempdir().expect("temp dir");
+        let zip_path = temp.path().join("pac.zip");
+        write_chart_zip(
+            &zip_path,
+            &[(8, 12, 141), (8, 13, 141), (8, 7, 117), (8, 231, 137)],
+        );
+
+        let metadata = read_chart_zip_metadata(&zip_path).expect("metadata");
+        let z8 = metadata
+            .levels
+            .iter()
+            .find(|level| level.zoom == 8)
+            .expect("z8");
+
+        assert_eq!(
+            z8.boxes,
+            vec![
+                TileBoundsRecord {
+                    x_min: 7,
+                    x_max: 7,
+                    y_tms_min: 117,
+                    y_tms_max: 117,
+                },
+                TileBoundsRecord {
+                    x_min: 12,
+                    x_max: 13,
+                    y_tms_min: 141,
+                    y_tms_max: 141,
+                },
+                TileBoundsRecord {
+                    x_min: 231,
+                    x_max: 231,
+                    y_tms_min: 137,
+                    y_tms_max: 137,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn chart_zip_metadata_keeps_antimeridian_split_boxes() {
+        let temp = tempdir().expect("temp dir");
+        let zip_path = temp.path().join("ak.zip");
+        write_chart_zip(
+            &zip_path,
+            &[(7, 0, 85), (7, 1, 85), (7, 126, 85), (7, 127, 85)],
+        );
+
+        let metadata = read_chart_zip_metadata(&zip_path).expect("metadata");
+        let z7 = metadata
+            .levels
+            .iter()
+            .find(|level| level.zoom == 7)
+            .expect("z7");
+
+        assert_eq!(
+            z7.boxes,
+            vec![
+                TileBoundsRecord {
+                    x_min: 0,
+                    x_max: 1,
+                    y_tms_min: 85,
+                    y_tms_max: 85,
+                },
+                TileBoundsRecord {
+                    x_min: 126,
+                    x_max: 127,
+                    y_tms_min: 85,
+                    y_tms_max: 85,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn chart_zip_metadata_does_not_fill_component_holes() {
+        let temp = tempdir().expect("temp dir");
+        let zip_path = temp.path().join("l_shape.zip");
+        write_chart_zip(
+            &zip_path,
+            &[(8, 10, 20), (8, 11, 20), (8, 12, 20), (8, 10, 21)],
+        );
+
+        let metadata = read_chart_zip_metadata(&zip_path).expect("metadata");
+        let z8 = metadata
+            .levels
+            .iter()
+            .find(|level| level.zoom == 8)
+            .expect("z8");
+
+        assert_eq!(
+            z8.boxes,
+            vec![
+                TileBoundsRecord {
+                    x_min: 10,
+                    x_max: 10,
+                    y_tms_min: 21,
+                    y_tms_max: 21,
+                },
+                TileBoundsRecord {
+                    x_min: 10,
+                    x_max: 12,
+                    y_tms_min: 20,
+                    y_tms_max: 20,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn chart_tile_bbox_invariant_catches_overlapping_region_drift() {
+        let left = ChartCollectionWithTiles {
+            collection: ChartCollectionRecord {
+                id: "sec:left".to_string(),
+                family_id: "sec".to_string(),
+                region_id: "left".to_string(),
+                package_id: "SEC_LEFT".to_string(),
+                chart_index: 0,
+                tile_path_template: "tiles/0/{z}/{x}/{y}.webp".to_string(),
+                levels: vec![TileLevelRecord {
+                    zoom: 8,
+                    boxes: vec![TileBoundsRecord {
+                        x_min: 10,
+                        x_max: 12,
+                        y_tms_min: 20,
+                        y_tms_max: 20,
+                    }],
+                }],
+                coverage_bounds: CoverageBounds {
+                    lat_min: 0.0,
+                    lat_max: 1.0,
+                    lon_min: 0.0,
+                    lon_max: 1.0,
+                },
+                default_view: DefaultView {
+                    lat: 0.0,
+                    lon: 0.0,
+                    zoom: 8.0,
+                },
+            },
+            tiles: BTreeSet::from([(8, 10, 20), (8, 12, 20)]),
+        };
+        let right = ChartCollectionWithTiles {
+            collection: ChartCollectionRecord {
+                id: "sec:right".to_string(),
+                family_id: "sec".to_string(),
+                region_id: "right".to_string(),
+                package_id: "SEC_RIGHT".to_string(),
+                chart_index: 0,
+                tile_path_template: "tiles/0/{z}/{x}/{y}.webp".to_string(),
+                levels: vec![TileLevelRecord {
+                    zoom: 8,
+                    boxes: vec![TileBoundsRecord {
+                        x_min: 11,
+                        x_max: 11,
+                        y_tms_min: 20,
+                        y_tms_max: 20,
+                    }],
+                }],
+                coverage_bounds: CoverageBounds {
+                    lat_min: 0.0,
+                    lat_max: 1.0,
+                    lon_min: 0.0,
+                    lon_max: 1.0,
+                },
+                default_view: DefaultView {
+                    lat: 0.0,
+                    lon: 0.0,
+                    zoom: 8.0,
+                },
+            },
+            tiles: BTreeSet::from([(8, 11, 20)]),
+        };
+
+        let err = validate_chart_tile_bbox_invariant(&[left, right])
+            .expect_err("invariant should catch left bbox containing right-only tile");
+        assert!(err.to_string().contains("chart tile bbox invariant failed"));
     }
 
     #[test]

@@ -14,6 +14,7 @@ use std::{
 use anyhow::{bail, Context};
 use chrono::{DateTime, Datelike, NaiveDate, SecondsFormat, Timelike, Utc};
 use crossbeam_channel::{self, RecvTimeoutError};
+use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use preprocessor_charts::{
     build_family_tiles, build_family_vrts, package_family_region_versioned,
     package_family_wide_angle_versioned, stage_work_dir, FULL_COVERAGE_ZOOM, WIDE_ANGLE_REGION_ID,
@@ -43,11 +44,12 @@ use preprocessor_procedure_geometry::{
 };
 use preprocessor_resource_index::{
     write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource, DefaultView,
-    ResourceIndex, TileLevelRecord,
+    ResourceIndex, TileBoundsRecord, TileLevelRecord,
 };
 use preprocessor_tpp::{package_native_tpp_versioned, render_native_tpp, NativeTppRunRequest};
 use preprocessor_vectors::{
-    build_obstacle_dataset, build_vectors_dataset, BuildObstacleDatasetRequest, BuildVectorsRequest,
+    build_obstacle_dataset, build_vectors_dataset, expanded_union_polygon_from_closed_ring,
+    simplify_closed_ring, BuildObstacleDatasetRequest, BuildVectorsRequest,
 };
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use procedure_geometry_types as pgt;
@@ -58,6 +60,12 @@ use zip::ZipArchive;
 use crate::emit_source_urls::{cycle_effective_date, discover_published_cycles, emit_source_urls};
 
 const PACKAGE_CYCLE_VERSION: &str = "01";
+// Offline chart region polygons are only visual guides in the package picker.
+// Grow chart cutlines coarsely before unioning to collapse tiny source-boundary
+// mismatches, then simplify hard. This does not affect runtime chart coverage.
+const OFFLINE_CHART_REGION_SIMPLIFY_TOLERANCE_DEGREES: f64 = 0.01;
+const OFFLINE_CHART_REGION_UNION_SNAP_GRID_DEGREES: f64 = 0.0001;
+const OFFLINE_CHART_REGION_UNION_EXPAND_DEGREES: f64 = 0.01;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProductBuildProfile {
@@ -4666,7 +4674,10 @@ fn build_nav_kv_artifact(
                 pairs.extend(build_nav_kv_chart_coverage_pairs(
                     &chart_coverage_polygon_sets,
                 )?);
-                pairs.extend(build_nav_kv_offline_region_pairs(&resource_index)?);
+                pairs.extend(build_nav_kv_offline_region_pairs(
+                    &resource_index,
+                    &chart_coverage_polygon_sets,
+                )?);
                 pairs.extend(build_nav_kv_resource_summary_pairs(&resource_index)?);
                 pairs.extend(build_nav_kv_plate_pairs(&resource_index)?);
                 pairs.extend(build_nav_kv_package_pairs(&package_artifacts)?);
@@ -4835,19 +4846,7 @@ fn build_nav_kv_chart_catalog(
             ) && collection.region_id != WIDE_ANGLE_REGION_ID
         })
         .map(|collection| {
-            let levels = collection
-                .levels
-                .iter()
-                .map(|level| {
-                    serde_json::json!({
-                        "zoom": level.zoom,
-                        "x_min": level.x_min,
-                        "x_max": level.x_max,
-                        "y_tms_min": level.y_tms_min,
-                        "y_tms_max": level.y_tms_max,
-                    })
-                })
-                .collect::<Vec<_>>();
+            let levels = tile_levels_json(&collection.levels);
             let coverage = chart_coverage_polygon_sets
                 .get(&collection.id)
                 .map(|polygon_set| {
@@ -4862,19 +4861,7 @@ fn build_nav_kv_chart_catalog(
             let wide_angle = wide_angle_collections
                 .get(&collection.family_id)
                 .map(|wide_collection| {
-                    let wide_levels = wide_collection
-                        .levels
-                        .iter()
-                        .map(|level| {
-                            serde_json::json!({
-                                "zoom": level.zoom,
-                                "x_min": level.x_min,
-                                "x_max": level.x_max,
-                                "y_tms_min": level.y_tms_min,
-                                "y_tms_max": level.y_tms_max,
-                            })
-                        })
-                        .collect::<Vec<_>>();
+                    let wide_levels = tile_levels_json(&wide_collection.levels);
                     serde_json::json!({
                         "region_id": WIDE_ANGLE_REGION_ID,
                         "max_zoom": FULL_COVERAGE_ZOOM,
@@ -4928,6 +4915,25 @@ fn build_nav_kv_chart_catalog(
     serde_json::Value::Array(collections)
 }
 
+fn tile_levels_json(levels: &[TileLevelRecord]) -> Vec<serde_json::Value> {
+    levels
+        .iter()
+        .map(|level| {
+            serde_json::json!({
+                "zoom": level.zoom,
+                "boxes": level.boxes.iter().map(|bbox| {
+                    serde_json::json!({
+                        "x_min": bbox.x_min,
+                        "x_max": bbox.x_max,
+                        "y_tms_min": bbox.y_tms_min,
+                        "y_tms_max": bbox.y_tms_max,
+                    })
+                }).collect::<Vec<_>>(),
+            })
+        })
+        .collect()
+}
+
 fn build_nav_kv_chart_coverage_pairs(
     chart_coverage_polygon_sets: &BTreeMap<String, ChartCoveragePolygonSetRecord>,
 ) -> anyhow::Result<Vec<NavKvPair>> {
@@ -4948,18 +4954,26 @@ fn build_nav_kv_chart_coverage_pairs(
 
 fn build_nav_kv_offline_region_pairs(
     resource_index: &ResourceIndex,
+    chart_coverage_polygon_sets: &BTreeMap<String, ChartCoveragePolygonSetRecord>,
 ) -> anyhow::Result<Vec<NavKvPair>> {
-    let catalog = build_offline_region_catalog(resource_index);
+    let catalog = build_offline_region_catalog(resource_index, chart_coverage_polygon_sets);
     Ok(vec![NavKvPair {
         key: "offline-region/catalog".to_string(),
         value: serde_json::to_vec(&catalog).context("failed to encode offline region catalog")?,
     }])
 }
 
-fn build_offline_region_catalog(resource_index: &ResourceIndex) -> OfflineRegionCatalogRecord {
+fn build_offline_region_catalog(
+    resource_index: &ResourceIndex,
+    chart_coverage_polygon_sets: &BTreeMap<String, ChartCoveragePolygonSetRecord>,
+) -> OfflineRegionCatalogRecord {
     let mut regions = Vec::new();
     for region in Region::ALL {
-        regions.push(chart_offline_region_record(region, resource_index));
+        regions.push(chart_offline_region_record(
+            region,
+            resource_index,
+            chart_coverage_polygon_sets,
+        ));
     }
     regions.extend(plate_offline_region_records(resource_index));
     deconflict_offline_region_labels(&mut regions);
@@ -4972,10 +4986,121 @@ fn build_offline_region_catalog(resource_index: &ResourceIndex) -> OfflineRegion
 fn chart_offline_region_record(
     region: Region,
     resource_index: &ResourceIndex,
+    chart_coverage_polygon_sets: &BTreeMap<String, ChartCoveragePolygonSetRecord>,
 ) -> OfflineRegionRecord {
     let region_id = region.code().to_ascii_lowercase();
     let bounds_list = region.bounds_list();
-    let polygons = bounds_list
+    let polygons =
+        pretty_chart_offline_region_polygons(&region_id, bounds_list, chart_coverage_polygon_sets)
+            .unwrap_or_else(|| chart_offline_region_bounds_polygons(bounds_list));
+    let label_position = offline_region_label_position(&polygons, bounds_list);
+    OfflineRegionRecord {
+        id: format!("chart:{region_id}"),
+        kind: "chart".to_string(),
+        region_id: region_id.clone(),
+        label: format!("{} Charts", region.code()),
+        color_key: "class_b_d_blue".to_string(),
+        summary: offline_region_summary_entries(
+            resource_index,
+            &region_id,
+            &["sec", "tac", "enr-l", "enr-h"],
+        ),
+        polygons,
+        label_position,
+    }
+}
+
+fn pretty_chart_offline_region_polygons(
+    region_id: &str,
+    bounds_list: &[RegionBounds],
+    chart_coverage_polygon_sets: &BTreeMap<String, ChartCoveragePolygonSetRecord>,
+) -> Option<Vec<Vec<OfflineRegionLatLon>>> {
+    let mut union = MultiPolygon(Vec::new());
+    for family_id in ["sec", "tac", "enr-l", "enr-h"] {
+        let collection_id = format!("{family_id}:{region_id}");
+        let Some(polygon_set) = chart_coverage_polygon_sets.get(&collection_id) else {
+            continue;
+        };
+        for polygon in &polygon_set.polygons {
+            let Some(expanded) = expanded_union_polygon_from_closed_ring(
+                &polygon.points,
+                OFFLINE_CHART_REGION_UNION_SNAP_GRID_DEGREES,
+                OFFLINE_CHART_REGION_UNION_EXPAND_DEGREES,
+            ) else {
+                continue;
+            };
+            union = if union.0.is_empty() {
+                MultiPolygon(vec![expanded])
+            } else {
+                union.union(&expanded)
+            };
+        }
+    }
+    union = union.intersection(&region_bounds_multi_polygon(bounds_list));
+    let polygons = union
+        .0
+        .iter()
+        .filter_map(|polygon| {
+            let exterior = polygon
+                .exterior()
+                .0
+                .iter()
+                .map(|coord| [coord.x, coord.y])
+                .collect::<Vec<_>>();
+            let simplified =
+                simplify_closed_ring(&exterior, OFFLINE_CHART_REGION_SIMPLIFY_TOLERANCE_DEGREES);
+            let points = simplified
+                .into_iter()
+                .map(|point| OfflineRegionLatLon {
+                    lat: point[1],
+                    lon: point[0],
+                })
+                .collect::<Vec<_>>();
+            (points.len() >= 4).then_some(points)
+        })
+        .collect::<Vec<_>>();
+    (!polygons.is_empty()).then_some(polygons)
+}
+
+fn region_bounds_multi_polygon(bounds_list: &[RegionBounds]) -> MultiPolygon {
+    MultiPolygon(
+        bounds_list
+            .iter()
+            .map(|bounds| {
+                Polygon::new(
+                    LineString::new(vec![
+                        Coord {
+                            x: bounds.lon_min,
+                            y: bounds.lat_max,
+                        },
+                        Coord {
+                            x: bounds.lon_max,
+                            y: bounds.lat_max,
+                        },
+                        Coord {
+                            x: bounds.lon_max,
+                            y: bounds.lat_min,
+                        },
+                        Coord {
+                            x: bounds.lon_min,
+                            y: bounds.lat_min,
+                        },
+                        Coord {
+                            x: bounds.lon_min,
+                            y: bounds.lat_max,
+                        },
+                    ]),
+                    Vec::new(),
+                )
+            })
+            .collect(),
+    )
+}
+
+fn chart_offline_region_bounds_polygons(
+    bounds_list: &[RegionBounds],
+) -> Vec<Vec<OfflineRegionLatLon>> {
+    bounds_list
         .iter()
         .map(|bounds| {
             vec![
@@ -4997,21 +5122,21 @@ fn chart_offline_region_record(
                 },
             ]
         })
+        .collect()
+}
+
+fn offline_region_label_position(
+    polygons: &[Vec<OfflineRegionLatLon>],
+    fallback_bounds_list: &[RegionBounds],
+) -> OfflineRegionLatLon {
+    let points = polygons
+        .iter()
+        .flat_map(|polygon| polygon.iter().copied())
         .collect::<Vec<_>>();
-    let label_position = offline_region_bounds_label_position(bounds_list);
-    OfflineRegionRecord {
-        id: format!("chart:{region_id}"),
-        kind: "chart".to_string(),
-        region_id: region_id.clone(),
-        label: format!("{} Charts", region.code()),
-        color_key: "class_b_d_blue".to_string(),
-        summary: offline_region_summary_entries(
-            resource_index,
-            &region_id,
-            &["sec", "tac", "enr-l", "enr-h"],
-        ),
-        polygons,
-        label_position,
+    if points.is_empty() {
+        offline_region_bounds_label_position(fallback_bounds_list)
+    } else {
+        polygon_label_position(&points)
     }
 }
 
@@ -5418,35 +5543,11 @@ fn build_nav_kv_static_raster_catalog_entries(
                         entry.tile_url_root.clone(),
                     )
                 };
-            let levels = entry
-                .levels
-                .iter()
-                .map(|level| {
-                    serde_json::json!({
-                        "zoom": level.zoom,
-                        "x_min": level.x_min,
-                        "x_max": level.x_max,
-                        "y_tms_min": level.y_tms_min,
-                        "y_tms_max": level.y_tms_max,
-                    })
-                })
-                .collect::<Vec<_>>();
+            let levels = tile_levels_json(&entry.levels);
             let wide_angle = if entry.product_id.starts_with("shaded-relief-") {
                 shaded_relief_wide
                     .map(|wide_entry| {
-                        let wide_levels = wide_entry
-                            .levels
-                            .iter()
-                            .map(|level| {
-                                serde_json::json!({
-                                    "zoom": level.zoom,
-                                    "x_min": level.x_min,
-                                    "x_max": level.x_max,
-                                    "y_tms_min": level.y_tms_min,
-                                    "y_tms_max": level.y_tms_max,
-                                })
-                            })
-                            .collect::<Vec<_>>();
+                        let wide_levels = tile_levels_json(&wide_entry.levels);
                         serde_json::json!({
                             "region_id": WIDE_ANGLE_REGION_ID,
                             "max_zoom": FULL_COVERAGE_ZOOM,
@@ -10743,10 +10844,7 @@ struct StaticTileManifest {
 #[derive(Debug, Deserialize)]
 struct StaticTileManifestLevel {
     zoom: u32,
-    x_min: u32,
-    x_max: u32,
-    y_tms_min: u32,
-    y_tms_max: u32,
+    boxes: Vec<TileBoundsRecord>,
 }
 
 fn read_static_tile_manifest_levels(manifest_path: &Path) -> anyhow::Result<Vec<TileLevelRecord>> {
@@ -10760,10 +10858,7 @@ fn read_static_tile_manifest_levels(manifest_path: &Path) -> anyhow::Result<Vec<
         .into_iter()
         .map(|level| TileLevelRecord {
             zoom: level.zoom,
-            x_min: level.x_min,
-            x_max: level.x_max,
-            y_tms_min: level.y_tms_min,
-            y_tms_max: level.y_tms_max,
+            boxes: level.boxes,
         })
         .collect::<Vec<_>>();
     if levels.is_empty() {
@@ -12241,10 +12336,12 @@ def main():
         levels.append({
             'zoom': z,
             'tile_count': tiles_per_side * tiles_per_side,
-            'x_min': 0,
-            'x_max': tiles_per_side - 1,
-            'y_tms_min': 0,
-            'y_tms_max': tiles_per_side - 1,
+            'boxes': [{
+                'x_min': 0,
+                'x_max': tiles_per_side - 1,
+                'y_tms_min': 0,
+                'y_tms_max': tiles_per_side - 1,
+            }],
         })
 
     manifest = {
@@ -12361,10 +12458,12 @@ def scan_levels(output_dir):
         levels.append({
             'zoom': zoom,
             'tile_count': len(coords),
-            'x_min': min(xs),
-            'x_max': max(xs),
-            'y_tms_min': min(ys),
-            'y_tms_max': max(ys),
+            'boxes': [{
+                'x_min': min(xs),
+                'x_max': max(xs),
+                'y_tms_min': min(ys),
+                'y_tms_max': max(ys),
+            }],
         })
     return levels
 
@@ -17742,10 +17841,12 @@ mod tests {
                 tile_path_template: "tiles/0/{z}/{x}/{y}.webp".to_string(),
                 levels: vec![TileLevelRecord {
                     zoom: 10,
-                    x_min: 1,
-                    x_max: 2,
-                    y_tms_min: 3,
-                    y_tms_max: 4,
+                    boxes: vec![TileBoundsRecord {
+                        x_min: 1,
+                        x_max: 2,
+                        y_tms_min: 3,
+                        y_tms_max: 4,
+                    }],
                 }],
                 coverage_bounds: CoverageBounds {
                     lat_min: 40.0,
@@ -17830,7 +17931,7 @@ mod tests {
             test_csup_record("csup:d", "KDDD"),
         ];
 
-        let catalog = build_offline_region_catalog(&index);
+        let catalog = build_offline_region_catalog(&index, &BTreeMap::new());
         let chart = catalog
             .regions
             .iter()
@@ -17872,9 +17973,9 @@ mod tests {
     }
 
     #[test]
-    fn pac_chart_offline_region_uses_multiple_polygons() {
+    fn pac_chart_offline_region_falls_back_to_multiple_bounds_polygons() {
         let index = minimal_resource_index();
-        let catalog = build_offline_region_catalog(&index);
+        let catalog = build_offline_region_catalog(&index, &BTreeMap::new());
         let pac = catalog
             .regions
             .iter()
@@ -17896,6 +17997,85 @@ mod tests {
                 lat: 10.0,
                 lon: 147.0
             })));
+    }
+
+    #[test]
+    fn chart_offline_region_uses_simplified_cutline_union_when_available() {
+        let index = minimal_resource_index();
+        let mut polygon_sets = BTreeMap::new();
+        polygon_sets.insert(
+            "sec:nw".to_string(),
+            ChartCoveragePolygonSetRecord {
+                schema_version: 1,
+                id: "chart-coverage:sec:nw".to_string(),
+                polygons: vec![
+                    ChartCoveragePolygonRecord {
+                        id: "chart-coverage:sec:nw:0".to_string(),
+                        points: vec![
+                            [-124.0, 49.0],
+                            [-120.0, 49.0],
+                            [-120.0, 45.0],
+                            [-124.0, 45.0],
+                            [-124.0, 49.0],
+                        ],
+                    },
+                    ChartCoveragePolygonRecord {
+                        id: "chart-coverage:sec:nw:1".to_string(),
+                        points: vec![
+                            [-120.001, 49.0],
+                            [-116.0, 49.0],
+                            [-116.0, 45.0],
+                            [-120.001, 45.0],
+                            [-120.001, 49.0],
+                        ],
+                    },
+                    ChartCoveragePolygonRecord {
+                        id: "chart-coverage:sec:nw:2".to_string(),
+                        points: vec![
+                            [-150.0, 60.0],
+                            [-140.0, 60.0],
+                            [-140.0, 55.0],
+                            [-150.0, 55.0],
+                            [-150.0, 60.0],
+                        ],
+                    },
+                ],
+            },
+        );
+
+        let catalog = build_offline_region_catalog(&index, &polygon_sets);
+        let chart = catalog
+            .regions
+            .iter()
+            .find(|region| region.id == "chart:nw")
+            .expect("chart region");
+
+        assert_eq!(chart.polygons.len(), 1);
+        assert!(
+            chart.polygons[0].len() < 10,
+            "offline chart polygon should be simplified: {:?}",
+            chart.polygons[0]
+        );
+        assert!(
+            chart.polygons[0]
+                .iter()
+                .any(|point| point.lon > -116.02 && point.lon < -115.98),
+            "cutline-derived polygon should reach the eastern cutline, not the NW bbox: {:?}",
+            chart.polygons[0]
+        );
+        assert!(
+            !chart.polygons[0].iter().any(|point| point.lon < -124.5),
+            "cutline-derived polygon should replace the coarse NW bbox: {:?}",
+            chart.polygons[0]
+        );
+        for polygon in &chart.polygons {
+            for point in polygon {
+                assert!(
+                    (-125.0..=-103.0).contains(&point.lon) && (40.0..=50.0).contains(&point.lat),
+                    "cutline union should be clipped to NW bounds, got {point:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -18192,10 +18372,12 @@ mod tests {
                 },
                 levels: vec![TileLevelRecord {
                     zoom: 4,
-                    x_min: 0,
-                    x_max: 15,
-                    y_tms_min: 0,
-                    y_tms_max: 15,
+                    boxes: vec![TileBoundsRecord {
+                        x_min: 0,
+                        x_max: 15,
+                        y_tms_min: 0,
+                        y_tms_max: 15,
+                    }],
                 }],
             },
             StaticRasterCatalogEntry {
@@ -18215,10 +18397,12 @@ mod tests {
                 },
                 levels: vec![TileLevelRecord {
                     zoom: 10,
-                    x_min: 156,
-                    x_max: 219,
-                    y_tms_min: 636,
-                    y_tms_max: 676,
+                    boxes: vec![TileBoundsRecord {
+                        x_min: 156,
+                        x_max: 219,
+                        y_tms_min: 636,
+                        y_tms_max: 676,
+                    }],
                 }],
             },
         ];
@@ -18266,10 +18450,10 @@ mod tests {
             .iter()
             .find(|level| level["zoom"] == 10)
             .expect("z10 level");
-        assert_eq!(z10["x_min"], 156);
-        assert_eq!(z10["x_max"], 219);
-        assert_eq!(z10["y_tms_min"], 636);
-        assert_eq!(z10["y_tms_max"], 676);
+        assert_eq!(z10["boxes"][0]["x_min"], 156);
+        assert_eq!(z10["boxes"][0]["x_max"], 219);
+        assert_eq!(z10["boxes"][0]["y_tms_min"], 636);
+        assert_eq!(z10["boxes"][0]["y_tms_max"], 676);
     }
 
     #[test]

@@ -409,13 +409,6 @@ struct PolygonSetRefRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct PolygonSetRecord {
-    schema_version: u32,
-    id: String,
-    polygons: Vec<PolygonRecord>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct DisplayGeometryRecord {
     schema_version: u32,
     polygons: Vec<PolygonRecord>,
@@ -492,6 +485,11 @@ struct MapInitialViewportRecord {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct MapViewLevelRecord {
     zoom: i64,
+    boxes: Vec<MapViewTileBoundsRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct MapViewTileBoundsRecord {
     x_min: i64,
     x_max: i64,
     y_tms_min: i64,
@@ -846,41 +844,11 @@ fn displayed_geometry(
     store: &NavKvStore,
     displayed_maps: &[MapViewOptionRecord],
 ) -> Result<DisplayGeometryRecord, HadReadError> {
-    let mut polygons = Vec::new();
-    let mut polygon_sets = Vec::new();
-    let mut seen_polygon_ids = HashSet::new();
-
-    for view in displayed_maps {
-        let Some(ChartCoverageRecord::PolygonSetRef(coverage)) = &view.coverage else {
-            continue;
-        };
-        let polygon_set = read_required::<PolygonSetRecord>(
-            store,
-            NavKvQuery::PolygonSet {
-                polygon_set_id: coverage.polygon_set_id.clone(),
-            },
-            "chart coverage polygon set",
-        )?;
-        let polygon_ids = polygon_set
-            .polygons
-            .iter()
-            .map(|polygon| polygon.id.clone())
-            .collect::<Vec<_>>();
-        for polygon in polygon_set.polygons {
-            if seen_polygon_ids.insert(polygon.id.clone()) {
-                polygons.push(polygon);
-            }
-        }
-        polygon_sets.push(DisplayPolygonSetRecord {
-            id: polygon_set.id,
-            polygon_ids,
-        });
-    }
-
+    let _ = (store, displayed_maps);
     Ok(DisplayGeometryRecord {
         schema_version: 1,
-        polygons,
-        polygon_sets,
+        polygons: Vec::new(),
+        polygon_sets: Vec::new(),
     })
 }
 
@@ -2673,7 +2641,7 @@ mod tests {
             "storage_kind":"sectional_package",
             "package_name":"NW_SEC_2604",
             "initial_viewport":{"lat":45.0,"lon":-122.0,"zoom":8.0},
-            "levels":[{"zoom":10,"x_min":1,"x_max":2,"y_tms_min":3,"y_tms_max":4}]
+            "levels":[{"zoom":10,"boxes":[{"x_min":1,"x_max":2,"y_tms_min":3,"y_tms_max":4}]}]
           }
         }]"#;
         let package_by_id = br#"{
@@ -3436,11 +3404,7 @@ mod tests {
             tac_sc.coverage,
             Some(ChartCoverageRecord::PolygonSetRef(_))
         ));
-        assert!(state
-            .geometry
-            .polygon_sets
-            .iter()
-            .any(|set| set.id == "chart-coverage:tac:sc"));
+        assert!(state.geometry.polygon_sets.is_empty());
         assert!(
             displayed_regions.len() > 1,
             "expected multi-region displayed maps, got {displayed_regions:?}"
@@ -3489,14 +3453,16 @@ mod tests {
                 });
             let (x, y_tms) = lat_lon_to_tile_tms(kmsy_lat, kmsy_lon, level.zoom as f64);
             println!(
-                "{map_id} zoom {} tile x={} y_tms={} bounds x={}..={} y={}..={}",
-                level.zoom, x, y_tms, level.x_min, level.x_max, level.y_tms_min, level.y_tms_max
+                "{map_id} zoom {} tile x={} y_tms={} boxes {:?}",
+                level.zoom, x, y_tms, level.boxes
             );
             assert!(
-                x >= level.x_min
-                    && x <= level.x_max
-                    && y_tms >= level.y_tms_min
-                    && y_tms <= level.y_tms_max,
+                level.boxes.iter().any(|bbox| {
+                    x >= bbox.x_min
+                        && x <= bbox.x_max
+                        && y_tms >= bbox.y_tms_min
+                        && y_tms <= bbox.y_tms_max
+                }),
                 "{map_id} does not cover KMSY at zoom {}",
                 level.zoom
             );

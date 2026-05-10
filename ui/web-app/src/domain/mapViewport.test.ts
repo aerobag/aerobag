@@ -12,6 +12,11 @@ import {
   zoomAroundPoint,
 } from "./mapViewport";
 
+const level = (zoom: number, x_min: number, x_max: number, y_tms_min: number, y_tms_max: number) => ({
+  zoom,
+  boxes: [{ x_min, x_max, y_tms_min, y_tms_max }],
+});
+
 describe("mapViewport", () => {
   it("zoomAroundPoint keeps the anchored chart point under the cursor", () => {
     const viewport = createInitialViewport(mapView);
@@ -67,7 +72,7 @@ describe("mapViewport", () => {
       min_zoom: 4.2,
       max_zoom: 12.5,
       initial_viewport: { lat: 44.7, lon: -113.9, zoom: 8 },
-      levels: [{ zoom: 10, x_min: 156, x_max: 219, y_tms_min: 636, y_tms_max: 672 }],
+      levels: [level(10, 156, 219, 636, 672)],
     };
     const southwest = {
       ...mapView,
@@ -77,7 +82,7 @@ describe("mapViewport", () => {
       min_zoom: 4.2,
       max_zoom: 12.5,
       initial_viewport: { lat: 32.4, lon: -113.9, zoom: 8 },
-      levels: [{ zoom: 10, x_min: 156, x_max: 219, y_tms_min: 582, y_tms_max: 636 }],
+      levels: [level(10, 156, 219, 582, 636)],
     };
     const viewport = createInitialViewport({
       ...northwest,
@@ -101,8 +106,8 @@ describe("mapViewport", () => {
       max_zoom: 12.5,
       initial_viewport: { lat: 44.7, lon: -113.9, zoom: 8 },
       levels: [
-        { zoom: 6, x_min: 10, x_max: 15, y_tms_min: 37, y_tms_max: 41 },
-        { zoom: 10, x_min: 156, x_max: 219, y_tms_min: 600, y_tms_max: 640 },
+        level(6, 10, 15, 37, 41),
+        level(10, 156, 219, 600, 640),
       ],
     };
     const southwest = {
@@ -115,8 +120,8 @@ describe("mapViewport", () => {
       max_zoom: 12.5,
       initial_viewport: { lat: 32.4, lon: -113.9, zoom: 8 },
       levels: [
-        { zoom: 6, x_min: 10, x_max: 15, y_tms_min: 37, y_tms_max: 41 },
-        { zoom: 10, x_min: 156, x_max: 219, y_tms_min: 600, y_tms_max: 640 },
+        level(6, 10, 15, 37, 41),
+        level(10, 156, 219, 600, 640),
       ],
     };
     const viewport = createInitialViewport({
@@ -142,13 +147,13 @@ describe("mapViewport", () => {
       max_zoom: 12.5,
       initial_viewport: { lat: 45, lon: -122, zoom: 6.17 },
       levels: [
-        { zoom: 0, x_min: 0, x_max: 0, y_tms_min: 0, y_tms_max: 0 },
-        { zoom: 1, x_min: 0, x_max: 1, y_tms_min: 0, y_tms_max: 1 },
-        { zoom: 2, x_min: 0, x_max: 3, y_tms_min: 0, y_tms_max: 3 },
-        { zoom: 3, x_min: 0, x_max: 7, y_tms_min: 0, y_tms_max: 7 },
-        { zoom: 4, x_min: 0, x_max: 15, y_tms_min: 0, y_tms_max: 15 },
-        { zoom: 5, x_min: 0, x_max: 31, y_tms_min: 0, y_tms_max: 31 },
-        { zoom: 6, x_min: 0, x_max: 63, y_tms_min: 0, y_tms_max: 63 },
+        level(0, 0, 0, 0, 0),
+        level(1, 0, 1, 0, 1),
+        level(2, 0, 3, 0, 3),
+        level(3, 0, 7, 0, 7),
+        level(4, 0, 15, 0, 15),
+        level(5, 0, 31, 0, 31),
+        level(6, 0, 63, 0, 63),
       ],
     };
     const viewport = createInitialViewport(tacView);
@@ -168,7 +173,7 @@ describe("mapViewport", () => {
       chart_family: "sec" as const,
       package_name: "NW_SEC",
       initial_viewport: { lat: 45, lon: -122, zoom: 6 },
-      levels: [{ zoom: 6, x_min: 0, x_max: 63, y_tms_min: 0, y_tms_max: 63 }],
+      levels: [level(6, 0, 63, 0, 63)],
     };
     const tacView = {
       ...secView,
@@ -201,7 +206,7 @@ describe("mapViewport", () => {
       min_zoom: 0,
       max_zoom: 12.5,
       initial_viewport: { lat: 45, lon: -122, zoom: 8 },
-      levels: [{ zoom: 8, x_min: 40, x_max: 42, y_tms_min: 160, y_tms_max: 168 }],
+      levels: [level(8, 40, 42, 160, 168)],
     };
     const viewport = createInitialViewport(shadedRelief);
     const tiles = renderTiles([shadedRelief], sampleGeometry, viewport, 1200, 900);
@@ -225,9 +230,9 @@ describe("mapViewport", () => {
       max_zoom: 12.5,
       initial_viewport: { lat: 45, lon: -122, zoom: 7.58 },
       levels: [
-        { zoom: 0, x_min: 0, x_max: 0, y_tms_min: 0, y_tms_max: 0 },
-        { zoom: 7, x_min: 20, x_max: 22, y_tms_min: 80, y_tms_max: 84 },
-        { zoom: 8, x_min: 40, x_max: 44, y_tms_min: 160, y_tms_max: 168 },
+        level(0, 0, 0, 0, 0),
+        level(7, 20, 22, 80, 84),
+        level(8, 40, 44, 160, 168),
       ],
     };
     const viewport = createInitialViewport(shadedRelief);
@@ -237,7 +242,7 @@ describe("mapViewport", () => {
     expect(new Set(tiles.map((tile) => tile.zoom))).toEqual(new Set([8]));
   });
 
-  it("clips chart-package tiles to published coverage polygons", () => {
+  it("renders chart-package tiles from the union of declared level boxes", () => {
     const tacView = {
       ...mapView,
       id: "tac:clip-test",
@@ -246,42 +251,22 @@ describe("mapViewport", () => {
       min_zoom: 4.2,
       max_zoom: 12.5,
       initial_viewport: { lat: 29.993389, lon: -90.258028, zoom: 8 },
-      levels: [{ zoom: 8, x_min: 52, x_max: 64, y_tms_min: 149, y_tms_max: 156 }],
-      coverage: {
-        kind: "polygon_set_ref" as const,
-        value: {
-          polygon_set_id: "chart-coverage:tac:clip-test",
-        },
-      },
-    };
-    const geometry = {
-      schema_version: 1,
-      polygons: [
+      levels: [
         {
-          id: "chart-coverage:tac:clip-test:0",
-          points: [
-            [-94.0, 30.5],
-            [-93.0, 30.5],
-            [-93.0, 29.5],
-            [-94.0, 29.5],
-            [-94.0, 30.5],
+          zoom: 8,
+          boxes: [
+            { x_min: 52, x_max: 54, y_tms_min: 149, y_tms_max: 156 },
+            { x_min: 62, x_max: 64, y_tms_min: 149, y_tms_max: 156 },
           ],
-        },
-      ],
-      polygon_sets: [
-        {
-          id: "chart-coverage:tac:clip-test",
-          polygon_ids: ["chart-coverage:tac:clip-test:0"],
         },
       ],
     };
     const viewport = createInitialViewport(tacView);
 
-    const tiles = renderTiles([tacView], geometry, viewport, 1200, 900);
+    const tiles = renderTiles([tacView], sampleGeometry, viewport, 1200, 900);
 
     expect(tiles.length).toBeGreaterThan(0);
-    expect(tiles.length).toBeLessThan(20);
-    expect(tiles.every((tile) => tile.x >= 60 && tile.x <= 62)).toBe(true);
+    expect(tiles.every((tile) => (tile.x >= 52 && tile.x <= 54) || (tile.x >= 62 && tile.x <= 64))).toBe(true);
     expect(tiles.every((tile) => tile.yTms >= 149 && tile.yTms <= 154)).toBe(true);
   });
 

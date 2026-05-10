@@ -1,4 +1,4 @@
-import { debugLog, debugTiming } from "./debugLog";
+import { debugLog, debugTiming, installRustDebugLogBridge } from "./debugLog";
 
 export type PublicationResolverWasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
@@ -15,6 +15,7 @@ type NavKvWasmModule = PublicationResolverWasmModule & {
   attach_nav_kv_store_to_session(handle: number, sessionHandle: number): void;
   core_had_operation(handle: number, operationJson: string): string;
   ingest_resource_in_session(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
+  install_rust_debug_logger(): void;
   nav_kv_destroy(handle: number): void;
   nav_kv_insert_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
   nav_kv_open(rootBytes: Uint8Array): number;
@@ -25,9 +26,11 @@ let sharedNavKvStorePromise: Promise<NavKvStore | null> | null = null;
 
 async function ensureWasmReady(): Promise<NavKvWasmModule> {
   if (!wasmReady) {
+    installRustDebugLogBridge();
     wasmReady = import("@generated/app_wasm.js").then(async (mod) => {
       const wasm = mod as unknown as NavKvWasmModule;
       await wasm.default?.();
+      wasm.install_rust_debug_logger();
       return wasm;
     });
   }

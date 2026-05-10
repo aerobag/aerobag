@@ -33,6 +33,15 @@ pub enum NavKvLookup {
     MissingPages(Vec<u32>),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NavKvLookupDiagnostic<'a> {
+    pub kind: &'a str,
+    pub result: &'a str,
+    pub size: usize,
+    pub pages: Vec<u32>,
+    pub key: &'a str,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NavKvStore {
     root: NavKvRoot,
@@ -431,6 +440,14 @@ enum RangeRead<T> {
 }
 
 fn log_nav_kv_lookup(kind: &str, key: &str, result: &str, pages: &[u32], size: usize) {
+    let diagnostic = NavKvLookupDiagnostic {
+        kind,
+        result,
+        size,
+        pages: pages.to_vec(),
+        key,
+    };
+    crate::core_debug_log("NAV_KV_LOOKUP", &diagnostic);
     eprintln!(
         "NAV_KV_LOOKUP kind={kind} result={result} size={size} pages={} key={key}",
         format_page_list(pages)

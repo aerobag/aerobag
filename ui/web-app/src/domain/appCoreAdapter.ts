@@ -39,7 +39,7 @@ import type {
 } from "./types";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 import { attachNavKvStoreToSession, PublicationResolver, runCoreHadOperation, runCoreHadSessionOperation } from "./navKv";
-import { debugLog, debugTiming } from "./debugLog";
+import { debugLog, debugTiming, installRustDebugLogBridge } from "./debugLog";
 
 export type DerivedChartPageState = {
   airports: ChartPageData["airports"];
@@ -717,6 +717,7 @@ type WasmModule = {
   get_session_snapshot(handle: number): Promise<string> | string;
   restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   destroy_session(handle: number): void;
+  install_rust_debug_logger(): Promise<void> | void;
   nav_kv_open(rootBytes: Uint8Array): Promise<number> | number;
   nav_kv_insert_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
   nav_kv_destroy(handle: number): Promise<void> | void;
@@ -1372,9 +1373,11 @@ async function loadBestAvailableAdapterUncached(
   importer: () => Promise<unknown>,
 ): Promise<LoadedAdapter> {
   const mod = (await debugTiming("wasm.import", importer)) as Partial<WasmModule>;
+  installRustDebugLogBridge();
   if (typeof mod.default === "function") {
     await debugTiming("wasm.init", () => mod.default?.());
   }
+  mod.install_rust_debug_logger?.();
   debugLog("wasm.exports.check.start");
   if (
     typeof mod.situation_ring_candidates_json !== "function" ||
@@ -1423,6 +1426,7 @@ async function loadBestAvailableAdapterUncached(
     typeof mod.get_session_snapshot !== "function" ||
     typeof mod.restore_chart_page_state_in_session !== "function" ||
     typeof mod.destroy_session !== "function" ||
+    typeof mod.install_rust_debug_logger !== "function" ||
     typeof mod.insert_waypoint_at_flight_plan_row_in_session !== "function" ||
     typeof mod.suggest_waypoint_identifiers_at_flight_plan_row_in_session !== "function" ||
     typeof mod.insert_airway_at_flight_plan_row_in_session !== "function" ||

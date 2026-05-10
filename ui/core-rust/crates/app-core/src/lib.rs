@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod chart_page;
 pub mod content;
+pub mod debug_log;
 pub mod errors;
 pub mod geodesy;
 pub mod geometry;
@@ -30,6 +31,7 @@ pub use content::{
     AvailabilityDetail, CachedPlate, CachedTileset, ContentAvailability, ContentInventory,
     ContentPolicy, ContentReport, ContentReportItem, ContentRequirement, InstalledPackage,
 };
+pub use debug_log::{core_debug_log, core_debug_log_value, set_core_debug_logger, CoreDebugLogger};
 pub use errors::{AppError, AppErrorKind, AppResult};
 pub use geodesy::{
     cross_track_left_nm, great_circle_display_path, great_circle_distance_nm,
@@ -66,7 +68,9 @@ pub use navdb_types::{
     MaterializedProcedure, ProcedureOptions, ProcedureSpecChoice, ProcedureSummary,
     WaypointIdentifierRecord, WaypointIdentifierSuggestion,
 };
-pub use navkv::{nav_kv_key_for_query, NavKvLookup, NavKvQuery, NavKvRoot, NavKvStore};
+pub use navkv::{
+    nav_kv_key_for_query, NavKvLookup, NavKvLookupDiagnostic, NavKvQuery, NavKvRoot, NavKvStore,
+};
 pub use ownship::{
     push_sample, register_source, set_policy, situation_ring_candidates, update_source_status,
     OwnshipBannerSeverity, OwnshipControlModel, OwnshipMode, OwnshipPolicy, OwnshipRenderState,

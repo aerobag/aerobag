@@ -63,6 +63,7 @@ declare module "@generated/app_wasm.js" {
   export const get_session_snapshot: (...args: unknown[]) => string;
   export const restore_chart_page_state_in_session: (...args: unknown[]) => string;
   export const destroy_session: (...args: unknown[]) => void;
+  export const install_rust_debug_logger: (...args: unknown[]) => void;
   export const nav_kv_open: (...args: unknown[]) => number;
   export const nav_kv_insert_resource: (...args: unknown[]) => void;
   export const nav_kv_destroy: (...args: unknown[]) => void;

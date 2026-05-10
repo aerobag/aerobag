@@ -53,6 +53,23 @@ export function debugLog(tag: string, data?: unknown) {
   scheduleFlush();
 }
 
+export function installRustDebugLogBridge() {
+  if (typeof globalThis === "undefined") {
+    return;
+  }
+  (globalThis as unknown as {
+    __aerobagRustDebugLog?: (tag: string, dataJson: string) => void;
+  }).__aerobagRustDebugLog = (tag, dataJson) => {
+    let data: unknown = dataJson;
+    try {
+      data = JSON.parse(dataJson);
+    } catch {
+      // Keep malformed Rust payloads visible instead of dropping the diagnostic.
+    }
+    debugLog(tag, data);
+  };
+}
+
 export function installGlobalErrorLogging() {
   if (typeof window === "undefined" || globalErrorLoggingInstalled) {
     return;

@@ -10,6 +10,9 @@ use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 #[cfg(target_arch = "wasm32")]
+use js_sys::{Function, Reflect};
+
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = Date, js_name = now)]
@@ -223,6 +226,37 @@ pub fn nav_kv_destroy(handle: u32) {
         .expect("nav kv store poisoned")
         .remove(&handle);
 }
+
+#[wasm_bindgen]
+pub fn install_rust_debug_logger() {
+    app_core::set_core_debug_logger(Some(log_core_debug_to_js));
+}
+
+fn log_core_debug_to_js(tag: &str, data: &serde_json::Value) {
+    if let Ok(data_json) = serde_json::to_string(data) {
+        emit_rust_debug_log(tag, &data_json);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn emit_rust_debug_log(tag: &str, data_json: &str) {
+    let global = js_sys::global();
+    let Ok(callback) = Reflect::get(&global, &JsValue::from_str("__aerobagRustDebugLog")) else {
+        return;
+    };
+    if !callback.is_function() {
+        return;
+    }
+    let function = Function::from(callback);
+    let _ = function.call2(
+        &JsValue::NULL,
+        &JsValue::from_str(tag),
+        &JsValue::from_str(data_json),
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn emit_rust_debug_log(_tag: &str, _data_json: &str) {}
 
 #[wasm_bindgen]
 pub fn core_had_operation(nav_kv_handle: u32, operation_json: &str) -> Result<String, JsValue> {

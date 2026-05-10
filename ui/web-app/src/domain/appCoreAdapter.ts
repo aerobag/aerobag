@@ -720,6 +720,7 @@ type WasmModule = {
   install_rust_debug_logger(): Promise<void> | void;
   nav_kv_open(rootBytes: Uint8Array): Promise<number> | number;
   nav_kv_insert_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
+  nav_kv_prefetch_pages(handle: number): Promise<string> | string;
   nav_kv_destroy(handle: number): Promise<void> | void;
   attach_nav_kv_store_to_session(navKvHandle: number, sessionHandle: number): Promise<void> | void;
   core_had_operation(handle: number, operationJson: string): Promise<string> | string;
@@ -1439,6 +1440,7 @@ async function loadBestAvailableAdapterUncached(
     typeof mod.ingest_resource_in_session !== "function" ||
     typeof mod.nav_kv_open !== "function" ||
     typeof mod.nav_kv_insert_resource !== "function" ||
+    typeof mod.nav_kv_prefetch_pages !== "function" ||
     typeof mod.nav_kv_destroy !== "function" ||
     typeof mod.attach_nav_kv_store_to_session !== "function" ||
     typeof mod.core_had_operation !== "function"

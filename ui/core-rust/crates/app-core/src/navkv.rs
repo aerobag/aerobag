@@ -199,6 +199,15 @@ impl NavKvRoot {
         if logical_bytes_len != value_table_offset + value_bytes_len {
             return Err("nav_kv logical length does not match table lengths".to_string());
         }
+        let mut previous_prefetch_page = None;
+        for page in &prefetch_pages {
+            if let Some(previous) = previous_prefetch_page {
+                if *page <= previous {
+                    return Err("nav_kv prefetch pages must be sorted and unique".to_string());
+                }
+            }
+            previous_prefetch_page = Some(*page);
+        }
         Ok(Self {
             entry_count,
             page_size,

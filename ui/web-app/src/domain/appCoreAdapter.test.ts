@@ -109,6 +109,7 @@ describe("loadBestAvailableAdapter", () => {
       destroy_session: () => {},
       nav_kv_open: async () => 1,
       nav_kv_insert_resource: async () => {},
+      nav_kv_prefetch_pages: async () => "[]",
       nav_kv_destroy: async () => {},
       attach_nav_kv_store_to_session: async () => {},
       core_had_operation: async () => JSON.stringify({ state: "complete", result: null }),

@@ -19,7 +19,7 @@ type NavKvWasmModule = PublicationResolverWasmModule & {
   nav_kv_destroy(handle: number): void;
   nav_kv_insert_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
   nav_kv_open(rootBytes: Uint8Array): number;
-  nav_kv_prefetch_pages(handle: number): string;
+  nav_kv_prefetch_pages(handle: number): Promise<string> | string;
 };
 
 let wasmReady: Promise<NavKvWasmModule> | null = null;
@@ -92,8 +92,8 @@ export class NavKvStore {
     this.wasm.attach_nav_kv_store_to_session(this.handle, sessionHandle);
   }
 
-  async prefetchRootPages(): Promise<void> {
-    const pages = JSON.parse(this.wasm.nav_kv_prefetch_pages(this.handle)) as number[];
+  private async prefetchRootPages(): Promise<void> {
+    const pages = JSON.parse(await this.wasm.nav_kv_prefetch_pages(this.handle)) as number[];
     if (pages.length === 0) {
       return;
     }
@@ -156,16 +156,19 @@ export class NavKvStore {
     if (cached) {
       return cached;
     }
+    const resourceId = `nav_kv/page/${pageIndex.toString().padStart(4, "0")}`;
     const address = `${this.navKvPackageRoot}/page_${pageIndex.toString().padStart(4, "0")}`;
     const fetched = debugTiming("nav_kv.page.fetch", () => fetch(withNavKvCacheKey(address)), {
-        page: pageIndex,
-      })
+      page: pageIndex,
+    })
       .then(async (response) => {
         if (!response.ok) {
           throw new Error(`failed to fetch nav_kv page ${pageIndex}: ${response.status}`);
         }
-        const bytes = new Uint8Array(await debugTiming("nav_kv.page.array_buffer", () => response.arrayBuffer(), { page: pageIndex }));
-        await this.wasm.nav_kv_insert_resource(this.handle, `nav_kv/page/${pageIndex}`, bytes);
+        const bytes = new Uint8Array(
+          await debugTiming("nav_kv.page.array_buffer", () => response.arrayBuffer(), { page: pageIndex }),
+        );
+        await this.wasm.nav_kv_insert_resource(this.handle, resourceId, bytes);
       });
     this.inFlightPageFetches.set(pageIndex, fetched);
     return fetched;

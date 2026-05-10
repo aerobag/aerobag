@@ -5,12 +5,13 @@ pub const PACKAGE_ASSET_MANIFEST_NAME: &str = "package-assets.json";
 
 pub mod nav_kv {
     use std::cmp::Ordering;
-    use std::collections::HashSet;
+    use std::collections::{BTreeSet, HashSet};
 
     pub const MAGIC: &[u8; 16] = b"AEROBAGNAVKV0001";
-    pub const VERSION: u32 = 2;
+    pub const VERSION: u32 = 3;
     pub const HEADER_LEN: usize = 64;
     pub const ENTRY_LEN: usize = 8;
+    const PREFETCH_COUNT_OFFSET: usize = 56;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct NavKvPair {
@@ -25,6 +26,7 @@ pub mod nav_kv {
         pub page_size: u32,
         pub logical_bytes_len: u32,
         pub value_bytes_len: u32,
+        pub prefetch_pages: Vec<u32>,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +46,7 @@ pub mod nav_kv {
         value_table_offset: u32,
         value_bytes_len: u32,
         logical_bytes_len: u32,
+        prefetch_pages: Vec<u32>,
     }
 
     pub fn build_nav_kv_sorted(
@@ -138,32 +141,38 @@ pub mod nav_kv {
         logical_bytes.extend_from_slice(&key_bytes);
         logical_bytes.extend_from_slice(&value_bytes);
 
-        let mut root_bytes = Vec::with_capacity(HEADER_LEN);
-        root_bytes.extend_from_slice(MAGIC);
-        push_u32(&mut root_bytes, VERSION);
-        push_u32(
-            &mut root_bytes,
-            u32::try_from(pairs.len()).map_err(|_| "nav_kv entry count exceeds u32".to_string())?,
-        );
-        push_u32(&mut root_bytes, page_size);
-        push_u32(&mut root_bytes, offset_table_offset);
-        push_u32(&mut root_bytes, offset_table_len);
-        push_u32(&mut root_bytes, key_table_offset);
-        push_u32(&mut root_bytes, key_table_len);
-        push_u32(&mut root_bytes, value_table_offset);
-        push_u32(&mut root_bytes, value_bytes_len);
-        push_u32(&mut root_bytes, logical_bytes_len);
-        push_u32(&mut root_bytes, 0);
-        while root_bytes.len() < HEADER_LEN {
-            push_u32(&mut root_bytes, 0);
-        }
-
         let page_size_usize = usize::try_from(page_size)
             .map_err(|_| "nav_kv page size does not fit usize".to_string())?;
         let pages = logical_bytes
             .chunks(page_size_usize)
             .map(|chunk| chunk.to_vec())
-            .collect();
+            .collect::<Vec<_>>();
+        let root_without_prefetch = build_root_bytes(
+            u32::try_from(pairs.len()).map_err(|_| "nav_kv entry count exceeds u32".to_string())?,
+            page_size,
+            offset_table_offset,
+            offset_table_len,
+            key_table_offset,
+            key_table_len,
+            value_table_offset,
+            value_bytes_len,
+            logical_bytes_len,
+            &[],
+        )?;
+        let root = NavKvRoot::parse(&root_without_prefetch)?;
+        let prefetch_pages = startup_prefetch_pages(&root, &pages)?;
+        let root_bytes = build_root_bytes(
+            u32::try_from(pairs.len()).map_err(|_| "nav_kv entry count exceeds u32".to_string())?,
+            page_size,
+            offset_table_offset,
+            offset_table_len,
+            key_table_offset,
+            key_table_len,
+            value_table_offset,
+            value_bytes_len,
+            logical_bytes_len,
+            &prefetch_pages,
+        )?;
 
         Ok(NavKvBuildOutput {
             root_bytes,
@@ -171,6 +180,7 @@ pub mod nav_kv {
             page_size,
             logical_bytes_len,
             value_bytes_len,
+            prefetch_pages,
         })
     }
 
@@ -183,7 +193,7 @@ pub mod nav_kv {
                 return Err("nav_kv root has invalid magic".to_string());
             }
             let version = read_u32(root_bytes, 16)?;
-            if version != VERSION {
+            if version != 2 && version != VERSION {
                 return Err(format!("unsupported nav_kv version {version}"));
             }
             let entry_count = read_u32(root_bytes, 20)?;
@@ -195,11 +205,28 @@ pub mod nav_kv {
             let value_table_offset = read_u32(root_bytes, 44)?;
             let value_bytes_len = read_u32(root_bytes, 48)?;
             let logical_bytes_len = read_u32(root_bytes, 52)?;
+            let prefetch_count = if version >= 3 {
+                read_u32(root_bytes, PREFETCH_COUNT_OFFSET)?
+            } else {
+                0
+            };
             if page_size == 0 {
                 return Err("nav_kv page_size must be non-zero".to_string());
             }
-            if root_bytes.len() != HEADER_LEN {
-                return Err("nav_kv v2 root must be exactly the fixed header length".to_string());
+            let expected_root_len = if version >= 3 {
+                HEADER_LEN
+                    .checked_add(
+                        usize::try_from(prefetch_count)
+                            .map_err(|_| "nav_kv prefetch count does not fit usize".to_string())?
+                            .checked_mul(4)
+                            .ok_or_else(|| "nav_kv prefetch root length overflows".to_string())?,
+                    )
+                    .ok_or_else(|| "nav_kv prefetch root length overflows".to_string())?
+            } else {
+                HEADER_LEN
+            };
+            if root_bytes.len() != expected_root_len {
+                return Err("nav_kv root length does not match version metadata".to_string());
             }
             let sentinel_count = entry_count
                 .checked_add(1)
@@ -222,6 +249,21 @@ pub mod nav_kv {
             if logical_bytes_len != value_table_offset + value_bytes_len {
                 return Err("nav_kv logical length does not match table lengths".to_string());
             }
+            let mut prefetch_pages = Vec::with_capacity(prefetch_count as usize);
+            let mut previous_prefetch_page = None;
+            for index in 0..prefetch_count as usize {
+                let page = read_u32(root_bytes, HEADER_LEN + index * 4)?;
+                if page >= logical_bytes_len.div_ceil(page_size) {
+                    return Err("nav_kv prefetch page exceeds page count".to_string());
+                }
+                if let Some(previous) = previous_prefetch_page {
+                    if page <= previous {
+                        return Err("nav_kv prefetch pages must be sorted and unique".to_string());
+                    }
+                }
+                previous_prefetch_page = Some(page);
+                prefetch_pages.push(page);
+            }
             Ok(Self {
                 entry_count,
                 page_size,
@@ -232,6 +274,7 @@ pub mod nav_kv {
                 value_table_offset,
                 value_bytes_len,
                 logical_bytes_len,
+                prefetch_pages,
             })
         }
 
@@ -257,6 +300,10 @@ pub mod nav_kv {
 
         pub fn value_bytes_len(&self) -> u32 {
             self.value_bytes_len
+        }
+
+        pub fn prefetch_pages(&self) -> &[u32] {
+            &self.prefetch_pages
         }
 
         pub fn get_value_range<P: FnMut(u32) -> Option<Vec<u8>>>(
@@ -451,6 +498,82 @@ pub mod nav_kv {
         Ok(())
     }
 
+    fn startup_prefetch_pages(root: &NavKvRoot, pages: &[Vec<u8>]) -> Result<Vec<u32>, String> {
+        let mut touched = BTreeSet::new();
+        if !trace_extract_value(root, pages, &mut touched, "chart/catalog")? {
+            return Ok(Vec::new());
+        }
+        let package_keys = trace_prefix_keys(root, pages, &mut touched, "package/by-id/")?;
+        for key in package_keys {
+            trace_extract_value(root, pages, &mut touched, &key)?;
+        }
+        trace_extract_value(root, pages, &mut touched, "vector/manifest")?;
+        Ok(touched.into_iter().collect())
+    }
+
+    fn trace_extract_value(
+        root: &NavKvRoot,
+        pages: &[Vec<u8>],
+        touched: &mut BTreeSet<u32>,
+        key: &str,
+    ) -> Result<bool, String> {
+        Ok(root
+            .extract_value(key, |page| trace_page(pages, touched, page))
+            .is_some())
+    }
+
+    fn trace_prefix_keys(
+        root: &NavKvRoot,
+        pages: &[Vec<u8>],
+        touched: &mut BTreeSet<u32>,
+        prefix: &str,
+    ) -> Result<Vec<String>, String> {
+        root.prefix_keys(prefix, |page| trace_page(pages, touched, page))
+            .ok_or_else(|| format!("nav_kv startup prefetch failed to scan prefix {prefix}"))
+    }
+
+    fn trace_page(pages: &[Vec<u8>], touched: &mut BTreeSet<u32>, page: u32) -> Option<Vec<u8>> {
+        touched.insert(page);
+        pages.get(page as usize).cloned()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_root_bytes(
+        entry_count: u32,
+        page_size: u32,
+        offset_table_offset: u32,
+        offset_table_len: u32,
+        key_table_offset: u32,
+        key_table_len: u32,
+        value_table_offset: u32,
+        value_bytes_len: u32,
+        logical_bytes_len: u32,
+        prefetch_pages: &[u32],
+    ) -> Result<Vec<u8>, String> {
+        let prefetch_count = u32::try_from(prefetch_pages.len())
+            .map_err(|_| "nav_kv prefetch page count exceeds u32".to_string())?;
+        let mut root_bytes = Vec::with_capacity(HEADER_LEN + prefetch_pages.len() * 4);
+        root_bytes.extend_from_slice(MAGIC);
+        push_u32(&mut root_bytes, VERSION);
+        push_u32(&mut root_bytes, entry_count);
+        push_u32(&mut root_bytes, page_size);
+        push_u32(&mut root_bytes, offset_table_offset);
+        push_u32(&mut root_bytes, offset_table_len);
+        push_u32(&mut root_bytes, key_table_offset);
+        push_u32(&mut root_bytes, key_table_len);
+        push_u32(&mut root_bytes, value_table_offset);
+        push_u32(&mut root_bytes, value_bytes_len);
+        push_u32(&mut root_bytes, logical_bytes_len);
+        push_u32(&mut root_bytes, prefetch_count);
+        while root_bytes.len() < HEADER_LEN {
+            push_u32(&mut root_bytes, 0);
+        }
+        for page in prefetch_pages {
+            push_u32(&mut root_bytes, *page);
+        }
+        Ok(root_bytes)
+    }
+
     fn push_u32(out: &mut Vec<u8>, value: u32) {
         out.extend_from_slice(&value.to_le_bytes());
     }
@@ -628,6 +751,54 @@ pub mod nav_kv {
                 b"abcde"
             );
             assert_eq!(misses, first_lookup_misses);
+        }
+
+        #[test]
+        fn root_prefetch_pages_cover_startup_keys_and_package_values() {
+            let built = build_nav_kv_sorted(
+                vec![
+                    pair("chart/catalog", "catalog-value"),
+                    pair("package/by-id/a", "package-a"),
+                    pair("package/by-id/b", "package-b"),
+                    pair("vector/manifest", "vector-manifest"),
+                    pair("waypoint/id/KRDD", "unrelated"),
+                ],
+                19,
+            )
+            .expect("build nav kv");
+            let root = NavKvRoot::parse(&built.root_bytes).expect("parse root");
+            assert_eq!(root.prefetch_pages(), built.prefetch_pages);
+            assert!(!root.prefetch_pages().is_empty());
+
+            let mut cache = HashMap::<u32, Vec<u8>>::new();
+            for page in root.prefetch_pages() {
+                cache.insert(*page, built.pages[*page as usize].clone());
+            }
+            assert_eq!(
+                root.extract_value("chart/catalog", |page| cache.get(&page).cloned())
+                    .as_deref(),
+                Some(b"catalog-value".as_slice())
+            );
+            assert_eq!(
+                root.prefix_keys("package/by-id/", |page| cache.get(&page).cloned())
+                    .expect("package keys"),
+                vec!["package/by-id/a".to_string(), "package/by-id/b".to_string()]
+            );
+            assert_eq!(
+                root.extract_value("package/by-id/a", |page| cache.get(&page).cloned())
+                    .as_deref(),
+                Some(b"package-a".as_slice())
+            );
+            assert_eq!(
+                root.extract_value("package/by-id/b", |page| cache.get(&page).cloned())
+                    .as_deref(),
+                Some(b"package-b".as_slice())
+            );
+            assert_eq!(
+                root.extract_value("vector/manifest", |page| cache.get(&page).cloned())
+                    .as_deref(),
+                Some(b"vector-manifest".as_slice())
+            );
         }
     }
 }

@@ -210,17 +210,31 @@ impl NavKvStore {
     }
 
     pub fn get_bytes(&self, key: &str) -> Result<NavKvLookup, String> {
-        let (start, end) = match self.value_range(key)? {
+        let lookup = match self.value_range(key)? {
             RangeRead::Hit(Some(range)) => range,
-            RangeRead::Hit(None) => return Ok(NavKvLookup::MissingKey),
-            RangeRead::MissingPages(pages) => return Ok(NavKvLookup::MissingPages(pages)),
+            RangeRead::Hit(None) => {
+                log_nav_kv_lookup("exact", key, "missing_key", &[], 0);
+                return Ok(NavKvLookup::MissingKey);
+            }
+            RangeRead::MissingPages(pages) => {
+                log_nav_kv_lookup("exact", key, "missing_pages", &pages, 0);
+                return Ok(NavKvLookup::MissingPages(pages));
+            }
         };
+        let (start, end) = lookup;
         if start == end {
+            log_nav_kv_lookup("exact", key, "hit", &[], 0);
             return Ok(NavKvLookup::Hit(Vec::new()));
         }
         match self.read_logical_range(self.root.value_table_offset + start, end - start)? {
-            RangeRead::Hit(bytes) => Ok(NavKvLookup::Hit(bytes)),
-            RangeRead::MissingPages(pages) => Ok(NavKvLookup::MissingPages(pages)),
+            RangeRead::Hit(bytes) => {
+                log_nav_kv_lookup("exact", key, "hit", &[], bytes.len());
+                Ok(NavKvLookup::Hit(bytes))
+            }
+            RangeRead::MissingPages(pages) => {
+                log_nav_kv_lookup("exact", key, "missing_pages", &pages, 0);
+                Ok(NavKvLookup::MissingPages(pages))
+            }
         }
     }
 
@@ -243,8 +257,14 @@ impl NavKvStore {
 
     pub fn keys_with_prefix_lookup(&self, prefix: &str) -> Result<NavKvLookup, String> {
         match self.keys_with_prefix_checked(prefix)? {
-            RangeRead::Hit(keys) => Ok(NavKvLookup::Hit(keys.join("\n").into_bytes())),
-            RangeRead::MissingPages(pages) => Ok(NavKvLookup::MissingPages(pages)),
+            RangeRead::Hit(keys) => {
+                log_nav_kv_lookup("prefix", prefix, "hit", &[], keys.len());
+                Ok(NavKvLookup::Hit(keys.join("\n").into_bytes()))
+            }
+            RangeRead::MissingPages(pages) => {
+                log_nav_kv_lookup("prefix", prefix, "missing_pages", &pages, 0);
+                Ok(NavKvLookup::MissingPages(pages))
+            }
         }
     }
 
@@ -411,6 +431,24 @@ impl NavKvStore {
 enum RangeRead<T> {
     Hit(T),
     MissingPages(Vec<u32>),
+}
+
+fn log_nav_kv_lookup(kind: &str, key: &str, result: &str, pages: &[u32], size: usize) {
+    eprintln!(
+        "NAV_KV_LOOKUP kind={kind} result={result} size={size} pages={} key={key}",
+        format_page_list(pages)
+    );
+}
+
+fn format_page_list(pages: &[u32]) -> String {
+    if pages.is_empty() {
+        return "-".to_string();
+    }
+    pages
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 pub fn nav_kv_key_for_query(query: &NavKvQuery) -> Option<String> {

@@ -904,7 +904,7 @@ fn preferred_family_map<'a>(
         .or_else(|| family_maps.first().copied())
 }
 
-fn project_flight_plan_route(
+pub(crate) fn project_flight_plan_route(
     store: &NavKvStore,
     plan: &FlightPlan,
 ) -> Result<Vec<FlightPlanRouteSegment>, HadReadError> {

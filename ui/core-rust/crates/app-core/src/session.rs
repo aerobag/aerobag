@@ -509,6 +509,49 @@ pub fn set_guidance_leg_geometry_in_session(
     Ok(snapshot_for_session(session))
 }
 
+pub fn sync_guidance_geometry_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let Some(plan) = session.app_state.active_plan.clone() else {
+        session.guidance_leg_geometry.clear();
+        return session_snapshot_outcome(session);
+    };
+    let route = match crate::had_ops::project_flight_plan_route(session_nav_kv_store(session)?, &plan)
+    {
+        Ok(route) => route,
+        Err(HadReadError::NeedPages(pages)) => {
+            return Ok(HadOperationOutcome::NeedResources {
+                resources: nav_kv_page_resources(pages),
+            });
+        }
+        Err(HadReadError::Fatal(message)) => {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message,
+            });
+        }
+    };
+    session.guidance_leg_geometry = route
+        .into_iter()
+        .map(|segment| {
+            let geometry = GuidanceLegGeometry {
+                leg_id: segment.id,
+                from: segment.from,
+                to: segment.to,
+                path: segment.path,
+            };
+            (geometry.leg_id.clone(), geometry)
+        })
+        .collect();
+    if selected_ownship_source_kind(&session.app_state.ownship)
+        == Some(crate::OwnshipSourceKind::FlightPlanSimulator)
+        && session.plan_preview.pointer.is_none()
+    {
+        sync_plan_preview_to_active_leg(session)?;
+    }
+    session_snapshot_outcome(session)
+}
+
 pub fn select_airport_in_session(handle: u32, airport_id: &str) -> AppResult<UiSessionSnapshot> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;

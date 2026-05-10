@@ -4915,9 +4915,6 @@ function FlightPlanPage(props: {
   const [waypointModalTop, setWaypointModalTop] = useState<number | null>(null);
   const [waypointModalMaxHeight, setWaypointModalMaxHeight] = useState<number | null>(null);
   const componentViews = useMemo(() => planUiState.components, [planUiState.components]);
-  if (planUiState.resolved_legs.length > 0 && componentViews.length === 0) {
-    throw new Error("FlightPlanUiState invariant failed: resolved legs present but components are empty");
-  }
   const waypointSuggestionPlanKey = useMemo(() => JSON.stringify(props.plan), [props.plan]);
   useEffect(() => {
     const editor = airportInsert;

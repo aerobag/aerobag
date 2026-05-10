@@ -607,6 +607,11 @@ pub fn set_guidance_leg_geometry_in_session(
 }
 
 #[wasm_bindgen]
+pub fn sync_guidance_geometry_in_session(handle: u32) -> Result<String, JsValue> {
+    sync_guidance_geometry_in_session_json(handle).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn load_playback_trace_in_session(
     handle: u32,
     source_path_json: &str,
@@ -1162,6 +1167,12 @@ fn set_guidance_leg_geometry_in_session_json(
     let snapshot = app_core::set_guidance_leg_geometry_in_session(handle, geometries)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn sync_guidance_geometry_in_session_json(handle: u32) -> Result<String, String> {
+    let outcome =
+        app_core::sync_guidance_geometry_in_session(handle).map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
 fn load_playback_trace_in_session_json(

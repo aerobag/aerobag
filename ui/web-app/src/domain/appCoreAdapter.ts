@@ -677,6 +677,7 @@ type WasmModule = {
   set_map_layer_enabled_in_session(handle: number, layerIdJson: string, enabled: boolean): Promise<string> | string;
   set_debug_flag_in_session(handle: number, flagIdJson: string, enabled: boolean): Promise<string> | string;
   load_raster_map_catalog_in_session(handle: number): Promise<string> | string;
+  sync_guidance_geometry_in_session(handle: number): Promise<string> | string;
   select_map_family_in_session(handle: number, familyIdJson: string): Promise<string> | string;
   select_raster_map_in_session(handle: number, selectedMapIdJson: string): Promise<string> | string;
   replace_flight_plan_in_session(handle: number, planJson: string): Promise<string> | string;
@@ -700,7 +701,6 @@ type WasmModule = {
   suspend_sequencing_in_session(sessionHandle: number): Promise<string> | string;
   unsuspend_sequencing_in_session(sessionHandle: number): Promise<string> | string;
   sequence_active_leg_in_session(sessionHandle: number): Promise<string> | string;
-  set_guidance_leg_geometry_in_session(handle: number, geometriesJson: string): Promise<string> | string;
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
   ingest_point_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
@@ -800,23 +800,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     let snapshot = init.snapshot;
     const parseSessionSnapshot = async (json: Promise<string> | string) =>
       JSON.parse(await json) as UiSessionSnapshot;
-    const syncGuidanceGeometry = async (nextPlan: FlightPlan | null) => {
-      try {
-        const geometries =
-          nextPlan
-            ? (await this.projectFlightPlanRoute(nextPlan, null)).map((segment) => ({
-                leg_id: segment.id,
-                from: segment.from,
-                to: segment.to,
-                path: segment.path,
-              }))
-            : [];
-        snapshot = await parseSessionSnapshot(
-          this.module.set_guidance_leg_geometry_in_session(handle, JSON.stringify(geometries)),
-        );
-      } catch (error) {
-        console.error("failed to sync session guidance geometry", error);
-      }
+    const syncGuidanceGeometry = async () => {
+      snapshot = await runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+        this.module.sync_guidance_geometry_in_session(handle),
+      );
       return snapshot;
     };
     const isInvalidSessionHandleError = (error: unknown) =>
@@ -834,7 +821,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       );
       handle = restored.handle;
       snapshot = restored.snapshot;
-      await syncGuidanceGeometry(snapshot.app_state.active_plan);
+      await syncGuidanceGeometry();
     };
     const withSessionRetry = async <T>(operation: () => Promise<T>) => {
       try {
@@ -847,7 +834,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return operation();
       }
     };
-    await syncGuidanceGeometry(snapshot.app_state.active_plan);
+    await syncGuidanceGeometry();
     return {
       snapshot: async () => {
         snapshot = await withSessionRetry(async () =>
@@ -859,7 +846,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.replace_flight_plan_in_session(handle, JSON.stringify(plan))),
         );
-        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        await syncGuidanceGeometry();
         return snapshot;
       },
       performMapSelectionAction: async (action) => {
@@ -868,7 +855,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             this.module.perform_map_selection_action_in_session(handle, action),
           ),
         );
-        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        await syncGuidanceGeometry();
         return snapshot;
       },
       insertWaypointAtFlightPlanRow: async (rowUid, before, waypoint) => {
@@ -880,7 +867,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             JSON.stringify(waypoint),
           )),
         );
-        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        await syncGuidanceGeometry();
         return snapshot;
       },
       suggestWaypointIdentifiersAtFlightPlanRow: async (rowUid, before, prefix, limit = 8) => {
@@ -908,7 +895,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             ),
           ),
         );
-        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        await syncGuidanceGeometry();
         return snapshot;
       },
       selectProcedureAtFlightPlanRow: async (rowUid, airportId, procedureId, kind, runwayTransition, enrouteTransition) => {
@@ -925,7 +912,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             ),
           ),
         );
-        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        await syncGuidanceGeometry();
         return snapshot;
       },
       loadPlateProcedure: async (loadId) => {
@@ -934,49 +921,49 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             this.module.load_plate_procedure_in_session(handle, loadId),
           ),
         );
-        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        await syncGuidanceGeometry();
         return snapshot;
       },
       restoreDirectTo: async () => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.restore_direct_to_in_session(handle)),
         );
-        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        await syncGuidanceGeometry();
         return snapshot;
       },
       performFlightPlanRowAction: async (rowUid, actionUid) => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.perform_flight_plan_row_action_in_session(handle, rowUid, actionUid)),
         );
-        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        await syncGuidanceGeometry();
         return snapshot;
       },
       activateNextLeg: async () => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.activate_next_leg_in_session(handle)),
         );
-        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        await syncGuidanceGeometry();
         return snapshot;
       },
       suspendSequencing: async () => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.suspend_sequencing_in_session(handle)),
         );
-        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        await syncGuidanceGeometry();
         return snapshot;
       },
       unsuspendSequencing: async () => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.unsuspend_sequencing_in_session(handle)),
         );
-        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        await syncGuidanceGeometry();
         return snapshot;
       },
       sequenceActiveLeg: async () => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.sequence_active_leg_in_session(handle)),
         );
-        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        await syncGuidanceGeometry();
         return snapshot;
       },
       setSituation: async (situation) => {
@@ -989,7 +976,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.tick_debug_ownship_driver_in_session(handle, nowEpochMs)),
         );
-        await syncGuidanceGeometry(snapshot.app_state.active_plan);
+        await syncGuidanceGeometry();
         return snapshot;
       },
       registerOwnshipSource: async (registration) => {
@@ -1416,11 +1403,11 @@ async function loadBestAvailableAdapterUncached(
     typeof mod.set_map_layer_enabled_in_session !== "function" ||
     typeof mod.set_debug_flag_in_session !== "function" ||
     typeof mod.load_raster_map_catalog_in_session !== "function" ||
+    typeof mod.sync_guidance_geometry_in_session !== "function" ||
     typeof mod.select_map_family_in_session !== "function" ||
     typeof mod.select_raster_map_in_session !== "function" ||
     typeof mod.replace_flight_plan_in_session !== "function" ||
     typeof mod.perform_map_selection_action_in_session !== "function" ||
-    typeof mod.set_guidance_leg_geometry_in_session !== "function" ||
     typeof mod.select_airport_in_session !== "function" ||
     typeof mod.select_chart_in_session !== "function" ||
     typeof mod.ingest_point_tiles_in_session !== "function" ||

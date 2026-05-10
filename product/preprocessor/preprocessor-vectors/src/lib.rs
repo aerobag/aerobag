@@ -12,8 +12,7 @@ use rusqlite::Connection;
 use serde::Serialize;
 use zip::ZipArchive;
 
-const POINT_LAYER_ZOOM_POLICY: &[(&str, u8)] =
-    &[("airport", 9), ("fix", 9), ("nav", 9), ("awos", 9)];
+const POINT_LAYER_ZOOM_POLICY: &[(&str, u8)] = &[("airport", 9), ("fix", 9), ("nav", 9)];
 const MIN_OBSTACLE_AGL_FT: i32 = 400;
 const TALL_OBSTACLE_MIN_AGL_FT: i32 = 1000;
 const OBSTACLE_LAYER_ZOOM: u8 = 12;
@@ -1447,11 +1446,6 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                  )
              )",
             "fix",
-        ),
-        (
-            "awos",
-            "SELECT LocationID, Latitude, Longitude, Type, Type, NULL, NULL, NULL, NULL FROM awos WHERE Latitude != '' AND Longitude != ''",
-            "awos",
         ),
     ];
 

@@ -46,19 +46,7 @@ pub struct RasterMapViewOption {
     pub id: String,
     pub label: String,
     pub region_id: String,
-    pub coverage: Option<RasterChartCoverage>,
     pub map_view: RasterMapView,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-pub enum RasterChartCoverage {
-    PolygonSetRef(RasterPolygonSetRef),
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RasterPolygonSetRef {
-    pub polygon_set_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -564,7 +552,6 @@ fn render_wide_angle_tiles_for_family(
         id: format!("{}:{}", map_view.chart_family, wide_angle.region_id),
         label: option.label.clone(),
         region_id: wide_angle.region_id.clone(),
-        coverage: None,
         map_view,
     };
     Some(render_tiles_for_single_map_view(
@@ -1047,7 +1034,6 @@ mod tests {
             id: id.to_string(),
             label: id.to_string(),
             region_id: id.split(':').nth(1).unwrap_or(id).to_string(),
-            coverage: None,
             map_view: RasterMapView {
                 chart_family: family.to_string(),
                 chart_name: id.to_string(),

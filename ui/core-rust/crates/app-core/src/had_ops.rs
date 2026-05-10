@@ -393,19 +393,7 @@ struct MapViewOptionRecord {
     id: String,
     label: String,
     region_id: String,
-    coverage: Option<ChartCoverageRecord>,
     map_view: MapViewRecord,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-enum ChartCoverageRecord {
-    PolygonSetRef(PolygonSetRefRecord),
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct PolygonSetRefRecord {
-    polygon_set_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -709,7 +697,7 @@ fn map_selector_state(
             .filter(|view| displayed_map_ids.insert(view.id.clone()))
             .cloned(),
     );
-    let geometry = displayed_geometry(store, &map_views)?;
+    let geometry = displayed_geometry();
     let family_options = supported_chart_families()
         .into_iter()
         .map(|(id, label, launcher_label)| MapFamilyOption {
@@ -840,16 +828,12 @@ fn package_zip_relative_path(package: &PackageRecord) -> Result<&str, HadReadErr
     Ok(relative_path)
 }
 
-fn displayed_geometry(
-    store: &NavKvStore,
-    displayed_maps: &[MapViewOptionRecord],
-) -> Result<DisplayGeometryRecord, HadReadError> {
-    let _ = (store, displayed_maps);
-    Ok(DisplayGeometryRecord {
+fn displayed_geometry() -> DisplayGeometryRecord {
+    DisplayGeometryRecord {
         schema_version: 1,
         polygons: Vec::new(),
         polygon_sets: Vec::new(),
-    })
+    }
 }
 
 fn supported_chart_families() -> [(&'static str, &'static str, &'static str); 5] {
@@ -2651,7 +2635,6 @@ mod tests {
           "id":"sec:nw",
           "label":"Northwest Sectional",
           "region_id":"nw",
-          "coverage":null,
           "map_view":{
             "chart_family":"sec",
             "chart_name":"Northwest Sectional",
@@ -3415,19 +3398,12 @@ mod tests {
             .package_relative_path
             .as_deref()
             .is_some_and(|path| path.starts_with("sec_sc_2603_") && path.ends_with(".zip")));
-        assert!(matches!(
-            sec_sc.coverage,
-            Some(ChartCoverageRecord::PolygonSetRef(_))
-        ));
         let tac_sc = state
             .displayed_maps
             .iter()
             .find(|view| view.id == "tac:sc")
             .expect("missing tac:sc map");
-        assert!(matches!(
-            tac_sc.coverage,
-            Some(ChartCoverageRecord::PolygonSetRef(_))
-        ));
+        assert!(!tac_sc.map_view.tile_url_root.starts_with("/packages/"));
         assert!(state.geometry.polygon_sets.is_empty());
         assert!(
             displayed_regions.len() > 1,

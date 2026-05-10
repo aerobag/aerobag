@@ -123,11 +123,11 @@ pub use publication::{
 };
 pub use raster_tiles::{
     preferred_family_map, raster_map_ui_state, raster_tile_plan, raster_tile_plan_with_options,
-    select_map_family_in_catalog, select_map_in_catalog, RasterChartCoverage,
-    RasterDisplayGeometry, RasterDisplayPolygonSet, RasterInitialViewport, RasterMapCatalog,
-    RasterMapFamilyOption, RasterMapUiState, RasterMapView, RasterMapViewOption, RasterPolygon,
-    RasterPolygonSetRef, RasterResourceMode, RasterTileBounds, RasterTileDraw, RasterTileLevel,
-    RasterTilePlan, RasterTilePlanOptions, RasterTileSource,
+    select_map_family_in_catalog, select_map_in_catalog, RasterDisplayGeometry,
+    RasterDisplayPolygonSet, RasterInitialViewport, RasterMapCatalog, RasterMapFamilyOption,
+    RasterMapUiState, RasterMapView, RasterMapViewOption, RasterPolygon, RasterResourceMode,
+    RasterTileBounds, RasterTileDraw, RasterTileLevel, RasterTilePlan, RasterTilePlanOptions,
+    RasterTileSource,
 };
 pub use session::{
     activate_next_leg_in_session, apply_situation_control_input_in_session,
@@ -149,12 +149,13 @@ pub use session::{
     restore_direct_to_in_session, seek_playback_in_session, select_airport_in_session,
     select_chart_in_session, select_map_family_in_session, select_ownship_source_in_session,
     select_procedure_at_flight_plan_row_in_session, select_raster_map_in_session,
-    sequence_active_leg_in_session, set_debug_flag_in_session, sync_guidance_geometry_in_session,
+    sequence_active_leg_in_session, set_debug_flag_in_session,
     set_guidance_leg_geometry_in_session, set_map_follow_offset_in_session,
     set_map_layer_enabled_in_session, set_map_layer_visibility_in_session,
     set_playback_rate_in_session, set_raster_resource_mode_in_session, set_situation_in_session,
     suggest_waypoint_identifiers_at_flight_plan_row_in_session, suspend_sequencing_in_session,
-    sync_map_follow_in_session, tick_debug_ownship_driver_in_session, tick_playback_in_session,
+    sync_guidance_geometry_in_session, sync_map_follow_in_session,
+    tick_debug_ownship_driver_in_session, tick_playback_in_session,
     unsuspend_sequencing_in_session, update_ownship_source_status_in_session, GuidanceLegGeometry,
     UiCautionState, UiChartPageState, UiDebugState, UiMapLayerState, UiMapLayerToggleState,
     UiSessionInitResult, UiSessionSnapshot,

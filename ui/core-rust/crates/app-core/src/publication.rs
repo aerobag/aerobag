@@ -30,7 +30,11 @@ impl PublicationResolver {
         }
     }
 
-    pub fn ingest_resource(&mut self, resource_id: &str, resource_bytes: &[u8]) -> Result<(), String> {
+    pub fn ingest_resource(
+        &mut self,
+        resource_id: &str,
+        resource_bytes: &[u8],
+    ) -> Result<(), String> {
         let payload = std::str::from_utf8(resource_bytes)
             .map_err(|err| format!("publication resource {resource_id} is not utf-8: {err}"))?;
         if resource_id == CURRENT_ARTIFACTS_RESOURCE_ID {
@@ -138,15 +142,12 @@ impl PublicationResolver {
             .flat_map(|bundle| bundle.packages.iter())
             .find(|package| matches_package(package))
             .ok_or_else(|| "package not found in active publication bundles".to_string())?;
-        let package_dir = package
-            .relative_path
-            .strip_suffix(".zip")
-            .ok_or_else(|| {
-                format!(
-                    "package {} relative_path is not a zip: {}",
-                    package.id, package.relative_path
-                )
-            })?;
+        let package_dir = package.relative_path.strip_suffix(".zip").ok_or_else(|| {
+            format!(
+                "package {} relative_path is not a zip: {}",
+                package.id, package.relative_path
+            )
+        })?;
         let current_artifacts = self
             .current_artifacts
             .as_ref()
@@ -293,7 +294,9 @@ mod tests {
         resolver
             .ingest_resource(
                 "publication/current_artifacts",
-                serde_json::to_string(&current_artifacts()).unwrap().as_bytes(),
+                serde_json::to_string(&current_artifacts())
+                    .unwrap()
+                    .as_bytes(),
             )
             .unwrap();
         let outcome = resolver
@@ -315,7 +318,9 @@ mod tests {
         resolver
             .ingest_resource(
                 "publication/current_artifacts",
-                serde_json::to_string(&current_artifacts()).unwrap().as_bytes(),
+                serde_json::to_string(&current_artifacts())
+                    .unwrap()
+                    .as_bytes(),
             )
             .unwrap();
         resolver
@@ -343,7 +348,9 @@ mod tests {
         resolver
             .ingest_resource(
                 "publication/current_artifacts",
-                serde_json::to_string(&current_artifacts()).unwrap().as_bytes(),
+                serde_json::to_string(&current_artifacts())
+                    .unwrap()
+                    .as_bytes(),
             )
             .unwrap();
         resolver

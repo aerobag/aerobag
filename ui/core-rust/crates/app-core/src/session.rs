@@ -28,8 +28,8 @@ use crate::{
     GuidanceState, LatLon, MapOverlayConfig, MapOverlayQueryResult, MapSelectionSessionAction,
     MapViewport, MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore,
     NavRef, PirepRecord, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity,
-    ProcedureKind, ProcedureLoadCommand, RasterMapCatalog, RasterResourceMode, RasterTilePlan,
-    PublicationResolver, ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode,
+    ProcedureKind, ProcedureLoadCommand, PublicationResolver, RasterMapCatalog, RasterResourceMode,
+    RasterTilePlan, ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode,
     SituationControlInput, SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult,
     TfrProductPayload, UiSnapshotAppState,
 };
@@ -516,21 +516,21 @@ pub fn sync_guidance_geometry_in_session(handle: u32) -> AppResult<HadOperationO
         session.guidance_leg_geometry.clear();
         return session_snapshot_outcome(session);
     };
-    let route = match crate::had_ops::project_flight_plan_route(session_nav_kv_store(session)?, &plan)
-    {
-        Ok(route) => route,
-        Err(HadReadError::NeedPages(pages)) => {
-            return Ok(HadOperationOutcome::NeedResources {
-                resources: nav_kv_page_resources(pages),
-            });
-        }
-        Err(HadReadError::Fatal(message)) => {
-            return Err(AppError {
-                kind: AppErrorKind::InvalidFlightPlan,
-                message,
-            });
-        }
-    };
+    let route =
+        match crate::had_ops::project_flight_plan_route(session_nav_kv_store(session)?, &plan) {
+            Ok(route) => route,
+            Err(HadReadError::NeedPages(pages)) => {
+                return Ok(HadOperationOutcome::NeedResources {
+                    resources: nav_kv_page_resources(pages),
+                });
+            }
+            Err(HadReadError::Fatal(message)) => {
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message,
+                });
+            }
+        };
     session.guidance_leg_geometry = route
         .into_iter()
         .map(|segment| {
@@ -2129,12 +2129,40 @@ fn weather_overlay_resources(
 ) -> Vec<CoreResourceRequest> {
     let mut resources = Vec::new();
     if overlay.needed_metars {
-        extend_package_resource_requests(session, &mut resources, "weather/metars", "metars", "metars.json", false);
-        extend_package_resource_requests(session, &mut resources, "weather/pireps", "metars", "pireps.json", false);
-        extend_package_resource_requests(session, &mut resources, "weather/tafs", "metars", "tafs.json", false);
+        extend_package_resource_requests(
+            session,
+            &mut resources,
+            "weather/metars",
+            "metars",
+            "metars.json",
+            false,
+        );
+        extend_package_resource_requests(
+            session,
+            &mut resources,
+            "weather/pireps",
+            "metars",
+            "pireps.json",
+            false,
+        );
+        extend_package_resource_requests(
+            session,
+            &mut resources,
+            "weather/tafs",
+            "metars",
+            "tafs.json",
+            false,
+        );
     }
     if overlay.needed_tfrs {
-        extend_package_resource_requests(session, &mut resources, "weather/tfrs", "tfrs", "tfrs.json", true);
+        extend_package_resource_requests(
+            session,
+            &mut resources,
+            "weather/tfrs",
+            "tfrs",
+            "tfrs.json",
+            true,
+        );
     }
     if !overlay.needed_metar_tiles.is_empty() {
         let template = session

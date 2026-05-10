@@ -441,16 +441,16 @@ struct VectorHadPairLine {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct ChartCoveragePolygonRecord {
+struct ChartCutlinePolygonRecord {
     id: String,
     points: Vec<[f64; 2]>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct ChartCoveragePolygonSetRecord {
+struct ChartCutlinePolygonSetRecord {
     schema_version: u32,
     id: String,
-    polygons: Vec<ChartCoveragePolygonRecord>,
+    polygons: Vec<ChartCutlinePolygonRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -4658,25 +4658,19 @@ fn build_nav_kv_artifact(
                     .with_context(|| format!("failed to create {}", source_dir.display()))?;
                 let started_at_utc = utc_now_string();
                 let started = Instant::now();
-                let chart_coverage_polygon_sets =
-                    build_chart_coverage_polygon_sets(&config.chart_cutline_root, &resource_index)?;
-                let chart_catalog = build_nav_kv_chart_catalog(
-                    &resource_index,
-                    static_raster_tile_levels,
-                    &chart_coverage_polygon_sets,
-                );
+                let chart_cutline_polygon_sets =
+                    build_chart_cutline_polygon_sets(&config.chart_cutline_root, &resource_index)?;
+                let chart_catalog =
+                    build_nav_kv_chart_catalog(&resource_index, static_raster_tile_levels);
                 let chart_catalog_bytes = serde_json::to_vec(&chart_catalog)
                     .context("failed to encode nav_kv chart/catalog value")?;
                 let mut pairs = vec![NavKvPair {
                     key: "chart/catalog".to_string(),
                     value: chart_catalog_bytes,
                 }];
-                pairs.extend(build_nav_kv_chart_coverage_pairs(
-                    &chart_coverage_polygon_sets,
-                )?);
                 pairs.extend(build_nav_kv_offline_region_pairs(
                     &resource_index,
-                    &chart_coverage_polygon_sets,
+                    &chart_cutline_polygon_sets,
                 )?);
                 pairs.extend(build_nav_kv_resource_summary_pairs(&resource_index)?);
                 pairs.extend(build_nav_kv_plate_pairs(&resource_index)?);
@@ -4828,7 +4822,6 @@ fn bundle_package_artifact_from_resource_package(
 fn build_nav_kv_chart_catalog(
     resource_index: &ResourceIndex,
     static_raster_tile_levels: &[StaticRasterCatalogEntry],
-    chart_coverage_polygon_sets: &BTreeMap<String, ChartCoveragePolygonSetRecord>,
 ) -> serde_json::Value {
     let wide_angle_collections = resource_index
         .chart_collections
@@ -4847,17 +4840,6 @@ fn build_nav_kv_chart_catalog(
         })
         .map(|collection| {
             let levels = tile_levels_json(&collection.levels);
-            let coverage = chart_coverage_polygon_sets
-                .get(&collection.id)
-                .map(|polygon_set| {
-                    serde_json::json!({
-                        "kind": "polygon_set_ref",
-                        "value": {
-                            "polygon_set_id": polygon_set.id,
-                        },
-                    })
-                })
-                .unwrap_or(serde_json::Value::Null);
             let wide_angle = wide_angle_collections
                 .get(&collection.family_id)
                 .map(|wide_collection| {
@@ -4880,7 +4862,6 @@ fn build_nav_kv_chart_catalog(
                     family_display_name(resource_index, &collection.family_id),
                 ),
                 "region_id": collection.region_id,
-                "coverage": coverage,
                 "map_view": {
                     "chart_family": collection.family_id,
                     "chart_name": format!(
@@ -4934,29 +4915,11 @@ fn tile_levels_json(levels: &[TileLevelRecord]) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn build_nav_kv_chart_coverage_pairs(
-    chart_coverage_polygon_sets: &BTreeMap<String, ChartCoveragePolygonSetRecord>,
-) -> anyhow::Result<Vec<NavKvPair>> {
-    chart_coverage_polygon_sets
-        .values()
-        .map(|polygon_set| {
-            Ok(NavKvPair {
-                key: format!(
-                    "geometry/polygon-set/{}",
-                    had_key_component(&polygon_set.id)
-                ),
-                value: serde_json::to_vec(polygon_set)
-                    .context("failed to encode chart coverage polygon set")?,
-            })
-        })
-        .collect()
-}
-
 fn build_nav_kv_offline_region_pairs(
     resource_index: &ResourceIndex,
-    chart_coverage_polygon_sets: &BTreeMap<String, ChartCoveragePolygonSetRecord>,
+    chart_cutline_polygon_sets: &BTreeMap<String, ChartCutlinePolygonSetRecord>,
 ) -> anyhow::Result<Vec<NavKvPair>> {
-    let catalog = build_offline_region_catalog(resource_index, chart_coverage_polygon_sets);
+    let catalog = build_offline_region_catalog(resource_index, chart_cutline_polygon_sets);
     Ok(vec![NavKvPair {
         key: "offline-region/catalog".to_string(),
         value: serde_json::to_vec(&catalog).context("failed to encode offline region catalog")?,
@@ -4965,14 +4928,14 @@ fn build_nav_kv_offline_region_pairs(
 
 fn build_offline_region_catalog(
     resource_index: &ResourceIndex,
-    chart_coverage_polygon_sets: &BTreeMap<String, ChartCoveragePolygonSetRecord>,
+    chart_cutline_polygon_sets: &BTreeMap<String, ChartCutlinePolygonSetRecord>,
 ) -> OfflineRegionCatalogRecord {
     let mut regions = Vec::new();
     for region in Region::ALL {
         regions.push(chart_offline_region_record(
             region,
             resource_index,
-            chart_coverage_polygon_sets,
+            chart_cutline_polygon_sets,
         ));
     }
     regions.extend(plate_offline_region_records(resource_index));
@@ -4986,12 +4949,12 @@ fn build_offline_region_catalog(
 fn chart_offline_region_record(
     region: Region,
     resource_index: &ResourceIndex,
-    chart_coverage_polygon_sets: &BTreeMap<String, ChartCoveragePolygonSetRecord>,
+    chart_cutline_polygon_sets: &BTreeMap<String, ChartCutlinePolygonSetRecord>,
 ) -> OfflineRegionRecord {
     let region_id = region.code().to_ascii_lowercase();
     let bounds_list = region.bounds_list();
     let polygons =
-        pretty_chart_offline_region_polygons(&region_id, bounds_list, chart_coverage_polygon_sets)
+        pretty_chart_offline_region_polygons(&region_id, bounds_list, chart_cutline_polygon_sets)
             .unwrap_or_else(|| chart_offline_region_bounds_polygons(bounds_list));
     let label_position = offline_region_label_position(&polygons, bounds_list);
     OfflineRegionRecord {
@@ -5013,12 +4976,12 @@ fn chart_offline_region_record(
 fn pretty_chart_offline_region_polygons(
     region_id: &str,
     bounds_list: &[RegionBounds],
-    chart_coverage_polygon_sets: &BTreeMap<String, ChartCoveragePolygonSetRecord>,
+    chart_cutline_polygon_sets: &BTreeMap<String, ChartCutlinePolygonSetRecord>,
 ) -> Option<Vec<Vec<OfflineRegionLatLon>>> {
     let mut union = MultiPolygon(Vec::new());
     for family_id in ["sec", "tac", "enr-l", "enr-h"] {
         let collection_id = format!("{family_id}:{region_id}");
-        let Some(polygon_set) = chart_coverage_polygon_sets.get(&collection_id) else {
+        let Some(polygon_set) = chart_cutline_polygon_sets.get(&collection_id) else {
             continue;
         };
         for polygon in &polygon_set.polygons {
@@ -5592,10 +5555,10 @@ fn build_nav_kv_static_raster_catalog_entries(
         .collect()
 }
 
-fn build_chart_coverage_polygon_sets(
+fn build_chart_cutline_polygon_sets(
     chart_cutline_root: &Path,
     resource_index: &ResourceIndex,
-) -> anyhow::Result<BTreeMap<String, ChartCoveragePolygonSetRecord>> {
+) -> anyhow::Result<BTreeMap<String, ChartCutlinePolygonSetRecord>> {
     let mut sets = BTreeMap::new();
     for family_id in ["sec", "tac", "enr-l", "enr-h"] {
         let Some(cutline_dir_name) = chart_cutline_dir_name(family_id) else {
@@ -5617,14 +5580,14 @@ fn build_chart_coverage_polygon_sets(
                 collections_for_cutline_polygon(&cutline.points, &family_collections)
             {
                 let polygon_set = sets.entry(target_collection.id.clone()).or_insert_with(|| {
-                    ChartCoveragePolygonSetRecord {
+                    ChartCutlinePolygonSetRecord {
                         schema_version: 1,
                         id: format!("chart-coverage:{}", target_collection.id),
                         polygons: Vec::new(),
                     }
                 });
                 let polygon_index = polygon_set.polygons.len();
-                polygon_set.polygons.push(ChartCoveragePolygonRecord {
+                polygon_set.polygons.push(ChartCutlinePolygonRecord {
                     id: format!("{}:{}", polygon_set.id, polygon_index),
                     points: cutline.points.clone(),
                 });
@@ -18035,11 +17998,11 @@ mod tests {
         let mut polygon_sets = BTreeMap::new();
         polygon_sets.insert(
             "sec:nw".to_string(),
-            ChartCoveragePolygonSetRecord {
+            ChartCutlinePolygonSetRecord {
                 schema_version: 1,
                 id: "chart-coverage:sec:nw".to_string(),
                 polygons: vec![
-                    ChartCoveragePolygonRecord {
+                    ChartCutlinePolygonRecord {
                         id: "chart-coverage:sec:nw:0".to_string(),
                         points: vec![
                             [-124.0, 49.0],
@@ -18049,7 +18012,7 @@ mod tests {
                             [-124.0, 49.0],
                         ],
                     },
-                    ChartCoveragePolygonRecord {
+                    ChartCutlinePolygonRecord {
                         id: "chart-coverage:sec:nw:1".to_string(),
                         points: vec![
                             [-120.001, 49.0],
@@ -18059,7 +18022,7 @@ mod tests {
                             [-120.001, 49.0],
                         ],
                     },
-                    ChartCoveragePolygonRecord {
+                    ChartCutlinePolygonRecord {
                         id: "chart-coverage:sec:nw:2".to_string(),
                         points: vec![
                             [-150.0, 60.0],
@@ -18436,11 +18399,7 @@ mod tests {
                 }],
             },
         ];
-        let catalog = build_nav_kv_chart_catalog(
-            &minimal_resource_index(),
-            &static_raster_entries,
-            &BTreeMap::new(),
-        );
+        let catalog = build_nav_kv_chart_catalog(&minimal_resource_index(), &static_raster_entries);
         let entries = catalog
             .as_array()
             .expect("chart catalog should be an array");
@@ -18488,7 +18447,7 @@ mod tests {
 
     #[test]
     fn nav_kv_chart_catalog_emits_tile_path_templates_for_chart_packages() {
-        let catalog = build_nav_kv_chart_catalog(&minimal_resource_index(), &[], &BTreeMap::new());
+        let catalog = build_nav_kv_chart_catalog(&minimal_resource_index(), &[]);
         let entries = catalog
             .as_array()
             .expect("chart catalog should be an array");
@@ -18505,7 +18464,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_kv_chart_catalog_emits_polygon_set_coverage_for_chart_packages() {
+    fn nav_kv_chart_catalog_does_not_emit_polygon_set_coverage_for_chart_packages() {
         let cutline_root = tempdir().expect("tempdir");
         let sec_dir = cutline_root.path().join("SEC");
         fs::create_dir_all(&sec_dir).expect("create cutline dir");
@@ -18532,9 +18491,9 @@ mod tests {
         )
         .expect("write cutline");
         let polygon_sets =
-            build_chart_coverage_polygon_sets(cutline_root.path(), &minimal_resource_index())
+            build_chart_cutline_polygon_sets(cutline_root.path(), &minimal_resource_index())
                 .expect("polygon sets");
-        let catalog = build_nav_kv_chart_catalog(&minimal_resource_index(), &[], &polygon_sets);
+        let catalog = build_nav_kv_chart_catalog(&minimal_resource_index(), &[]);
         let entries = catalog
             .as_array()
             .expect("chart catalog should be an array");
@@ -18543,24 +18502,10 @@ mod tests {
             .find(|entry| entry["id"] == "sec:nw")
             .expect("sectional entry");
 
-        assert_eq!(sectional["coverage"]["kind"], "polygon_set_ref");
-        assert_eq!(
-            sectional["coverage"]["value"]["polygon_set_id"],
-            "chart-coverage:sec:nw"
-        );
-        let pairs = build_nav_kv_chart_coverage_pairs(&polygon_sets).expect("coverage pairs");
-        let pair = pairs
-            .iter()
-            .find(|pair| {
-                pair.key
-                    == format!(
-                        "geometry/polygon-set/{}",
-                        had_key_component("chart-coverage:sec:nw")
-                    )
-            })
-            .expect("coverage pair");
-        let polygon_set: ChartCoveragePolygonSetRecord =
-            serde_json::from_slice(&pair.value).expect("decode polygon set");
+        assert!(sectional.get("coverage").is_none());
+        let polygon_set = polygon_sets
+            .get("sec:nw")
+            .expect("internal cutline polygon set remains available to offline regions");
         assert_eq!(polygon_set.id, "chart-coverage:sec:nw");
         assert_eq!(polygon_set.polygons.len(), 1);
         assert_eq!(polygon_set.polygons[0].points[0], [-124.0, 41.0]);

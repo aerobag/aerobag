@@ -90,6 +90,7 @@ describe("loadBestAvailableAdapter", () => {
       insert_waypoint_at_flight_plan_row_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       perform_flight_plan_row_action_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       set_guidance_leg_geometry_in_session: async () => snapshotJson,
+      sync_guidance_geometry_in_session: async () => snapshotJson,
       select_airport_in_session: async () => snapshotJson,
       select_chart_in_session: async () => snapshotJson,
       ingest_point_tiles_in_session: async () => {},

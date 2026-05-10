@@ -544,7 +544,6 @@ export type CatalogJson = {
     region_ids: RegionId[];
     max_zoom: number;
     tile_path_template: string;
-    coverage: unknown;
   }>;
   plates: Array<{
     id: {
@@ -813,19 +812,10 @@ export type MapViewJson = {
   }>;
 };
 
-export type ChartCoverageJson =
-  {
-      kind: "polygon_set_ref";
-      value: {
-        polygon_set_id: string;
-      };
-    };
-
 export type MapViewOptionJson = {
   id: string;
   label: string;
   region_id: RegionId;
-  coverage?: ChartCoverageJson | null;
   map_view: MapViewJson;
 };
 

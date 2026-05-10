@@ -37,7 +37,6 @@ export const sampleCatalogFixture: CatalogJson = {
       region_ids: ["nw"],
       max_zoom: 12.5,
       tile_path_template: "tiles/{z}/{x}/{y}.webp",
-      coverage: null,
     },
   ],
   plates: [],

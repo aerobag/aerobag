@@ -24,14 +24,14 @@ class NavKvStore private constructor(
     private val json: Json,
     private val handle: Long,
     private val navDbZip: java.io.File,
-    private val valueEntryPrefix: String,
+    private val pageEntryPrefix: String,
 ) : AutoCloseable {
     private val loadedPages = mutableSetOf<Int>()
 
     companion object {
         private const val TAG = "NavKvStore"
         private const val ROOT_ENTRY_NAME = "root"
-        private const val VALUE_ENTRY_PREFIX = "values_"
+        private const val PAGE_ENTRY_PREFIX = "page_"
 
         fun open(
             navDbZip: java.io.File,
@@ -43,7 +43,7 @@ class NavKvStore private constructor(
         ): NavKvStore {
             val rootBytes = InstalledPackages.readZipEntryBytes(navDbZip, ROOT_ENTRY_NAME)
             val handle = bridge.navKvOpen(rootBytes)
-            return NavKvStore(bridge, json, handle, navDbZip, VALUE_ENTRY_PREFIX)
+            return NavKvStore(bridge, json, handle, navDbZip, PAGE_ENTRY_PREFIX)
         }
 
         fun open(
@@ -145,7 +145,7 @@ class NavKvStore private constructor(
         }
         val startMs = SystemClock.elapsedRealtime()
         val pageName = String.format(Locale.US, "%04d", pageIndex)
-        val pageBytes = InstalledPackages.readZipEntryBytes(navDbZip, "$valueEntryPrefix$pageName")
+        val pageBytes = InstalledPackages.readZipEntryBytes(navDbZip, "$pageEntryPrefix$pageName")
         bridge.navKvInsertResource(handle, resourceId, pageBytes)
         val elapsedMs = SystemClock.elapsedRealtime() - startMs
         if (elapsedMs >= 10) {

@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::{NavRef, ProcedureKind};
 
 const MAGIC: &[u8; 16] = b"AEROBAGNAVKV0001";
-const VERSION: u32 = 1;
-const HEADER_LEN: usize = 48;
+const VERSION: u32 = 2;
+const HEADER_LEN: usize = 64;
 const ENTRY_LEN: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,10 +17,13 @@ struct Entry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NavKvRoot {
-    entries: Vec<Entry>,
-    key_bytes: Vec<u8>,
+    entry_count: u32,
     page_size: u32,
+    offset_table_offset: u32,
+    key_table_offset: u32,
+    value_table_offset: u32,
     value_bytes_len: u32,
+    logical_bytes_len: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,44 +125,50 @@ impl NavKvRoot {
         if actual_version != VERSION {
             return Err(format!("unsupported nav_kv version {actual_version}"));
         }
-        let real_entry_count = read_u32(root_bytes, 20)? as usize;
+        let entry_count = read_u32(root_bytes, 20)?;
         let page_size = read_u32(root_bytes, 24)?;
-        let entry_table_offset = read_u32(root_bytes, 28)? as usize;
-        let key_bytes_offset = read_u32(root_bytes, 32)? as usize;
-        let key_bytes_len = read_u32(root_bytes, 36)? as usize;
-        let value_bytes_len = read_u32(root_bytes, 40)?;
+        let offset_table_offset = read_u32(root_bytes, 28)?;
+        let offset_table_len = read_u32(root_bytes, 32)?;
+        let key_table_offset = read_u32(root_bytes, 36)?;
+        let key_table_len = read_u32(root_bytes, 40)?;
+        let value_table_offset = read_u32(root_bytes, 44)?;
+        let value_bytes_len = read_u32(root_bytes, 48)?;
+        let logical_bytes_len = read_u32(root_bytes, 52)?;
         if page_size == 0 {
             return Err("nav_kv page_size must be non-zero".to_string());
         }
-        let entry_count = real_entry_count + 1;
-        let entry_bytes_len = entry_count
-            .checked_mul(ENTRY_LEN)
+        if root_bytes.len() != HEADER_LEN {
+            return Err("nav_kv v2 root must be exactly the fixed header length".to_string());
+        }
+        let sentinel_count = entry_count
+            .checked_add(1)
+            .ok_or_else(|| "nav_kv entry count overflow".to_string())?;
+        let expected_offset_table_len = sentinel_count
+            .checked_mul(ENTRY_LEN as u32)
             .ok_or_else(|| "nav_kv entry table length overflow".to_string())?;
-        if entry_table_offset != HEADER_LEN {
-            return Err("nav_kv entry table offset must follow header in v1".to_string());
+        if offset_table_offset != 0 {
+            return Err("nav_kv offset table must start at logical offset 0".to_string());
         }
-        if key_bytes_offset != entry_table_offset + entry_bytes_len {
-            return Err("nav_kv key bytes offset does not follow entry table".to_string());
+        if offset_table_len != expected_offset_table_len {
+            return Err("nav_kv offset table length does not match entry count".to_string());
         }
-        if root_bytes.len() != key_bytes_offset + key_bytes_len {
-            return Err("nav_kv root length does not match key bytes length".to_string());
+        if key_table_offset != offset_table_offset + offset_table_len {
+            return Err("nav_kv key table offset does not follow offset table".to_string());
         }
-
-        let mut entries = Vec::with_capacity(entry_count);
-        for index in 0..entry_count {
-            let offset = entry_table_offset + index * ENTRY_LEN;
-            entries.push(Entry {
-                key_offset: read_u32(root_bytes, offset)?,
-                value_offset: read_u32(root_bytes, offset + 4)?,
-            });
+        if value_table_offset != key_table_offset + key_table_len {
+            return Err("nav_kv value table offset does not follow key table".to_string());
         }
-        let key_bytes = root_bytes[key_bytes_offset..].to_vec();
-        validate_parts(&entries, &key_bytes, value_bytes_len)?;
+        if logical_bytes_len != value_table_offset + value_bytes_len {
+            return Err("nav_kv logical length does not match table lengths".to_string());
+        }
         Ok(Self {
-            entries,
-            key_bytes,
+            entry_count,
             page_size,
+            offset_table_offset,
+            key_table_offset,
+            value_table_offset,
             value_bytes_len,
+            logical_bytes_len,
         })
     }
 
@@ -171,46 +180,16 @@ impl NavKvRoot {
         self.value_bytes_len
     }
 
+    pub fn logical_bytes_len(&self) -> u32 {
+        self.logical_bytes_len
+    }
+
+    pub fn page_count(&self) -> u32 {
+        self.logical_bytes_len.div_ceil(self.page_size)
+    }
+
     pub fn len(&self) -> usize {
-        self.entries.len() - 1
-    }
-
-    pub fn value_range(&self, key: &str) -> Option<(u32, u32)> {
-        let target = key.as_bytes();
-        let mut left = 0usize;
-        let mut right = self.len();
-        while left < right {
-            let mid = left + (right - left) / 2;
-            match self.key_at(mid).cmp(target) {
-                std::cmp::Ordering::Less => left = mid + 1,
-                std::cmp::Ordering::Greater => right = mid,
-                std::cmp::Ordering::Equal => return Some(self.value_range_at(mid)),
-            }
-        }
-        None
-    }
-
-    pub fn value_pages(&self, key: &str) -> Option<Vec<u32>> {
-        let (start, end) = self.value_range(key)?;
-        if start == end {
-            return Some(Vec::new());
-        }
-        let start_page = start / self.page_size;
-        let end_page = (end - 1) / self.page_size;
-        Some((start_page..=end_page).collect())
-    }
-
-    fn key_at(&self, index: usize) -> &[u8] {
-        let start = self.entries[index].key_offset as usize;
-        let end = self.entries[index + 1].key_offset as usize;
-        &self.key_bytes[start..end]
-    }
-
-    fn value_range_at(&self, index: usize) -> (u32, u32) {
-        (
-            self.entries[index].value_offset,
-            self.entries[index + 1].value_offset,
-        )
+        self.entry_count as usize
     }
 }
 
@@ -231,41 +210,18 @@ impl NavKvStore {
     }
 
     pub fn get_bytes(&self, key: &str) -> Result<NavKvLookup, String> {
-        let Some((start, end)) = self.root.value_range(key) else {
-            return Ok(NavKvLookup::MissingKey);
+        let (start, end) = match self.value_range(key)? {
+            RangeRead::Hit(Some(range)) => range,
+            RangeRead::Hit(None) => return Ok(NavKvLookup::MissingKey),
+            RangeRead::MissingPages(pages) => return Ok(NavKvLookup::MissingPages(pages)),
         };
         if start == end {
             return Ok(NavKvLookup::Hit(Vec::new()));
         }
-
-        let pages = self.root.value_pages(key).unwrap_or_default();
-        let missing = pages
-            .iter()
-            .copied()
-            .filter(|page| !self.pages.contains_key(page))
-            .collect::<Vec<_>>();
-        if !missing.is_empty() {
-            return Ok(NavKvLookup::MissingPages(missing));
+        match self.read_logical_range(self.root.value_table_offset + start, end - start)? {
+            RangeRead::Hit(bytes) => Ok(NavKvLookup::Hit(bytes)),
+            RangeRead::MissingPages(pages) => Ok(NavKvLookup::MissingPages(pages)),
         }
-
-        let mut out = Vec::with_capacity((end - start) as usize);
-        for page_index in pages {
-            let page = self
-                .pages
-                .get(&page_index)
-                .ok_or_else(|| format!("nav_kv page {page_index} missing"))?;
-            let page_start = page_index
-                .checked_mul(self.root.page_size)
-                .ok_or_else(|| "nav_kv page start overflow".to_string())?;
-            let slice_start = start.saturating_sub(page_start) as usize;
-            let slice_end = end.min(page_start + self.root.page_size) - page_start;
-            let slice_end = slice_end as usize;
-            if slice_start > slice_end || slice_end > page.len() {
-                return Err(format!("nav_kv value page {page_index} is too short"));
-            }
-            out.extend_from_slice(&page[slice_start..slice_end]);
-        }
-        Ok(NavKvLookup::Hit(out))
     }
 
     pub fn missing_pages_for_keys(&self, keys: &[String]) -> Result<Vec<u32>, String> {
@@ -279,13 +235,182 @@ impl NavKvStore {
     }
 
     pub fn keys_with_prefix(&self, prefix: &str) -> Vec<String> {
-        (0..self.root.len())
-            .filter_map(|index| {
-                let key = std::str::from_utf8(self.root.key_at(index)).ok()?;
-                key.starts_with(prefix).then(|| key.to_string())
-            })
-            .collect()
+        match self.keys_with_prefix_checked(prefix) {
+            Ok(RangeRead::Hit(keys)) => keys,
+            Ok(RangeRead::MissingPages(_)) | Err(_) => Vec::new(),
+        }
     }
+
+    pub fn keys_with_prefix_lookup(&self, prefix: &str) -> Result<NavKvLookup, String> {
+        match self.keys_with_prefix_checked(prefix)? {
+            RangeRead::Hit(keys) => Ok(NavKvLookup::Hit(keys.join("\n").into_bytes())),
+            RangeRead::MissingPages(pages) => Ok(NavKvLookup::MissingPages(pages)),
+        }
+    }
+
+    fn keys_with_prefix_checked(&self, prefix: &str) -> Result<RangeRead<Vec<String>>, String> {
+        let prefix = prefix.as_bytes();
+        let mut left = 0usize;
+        let mut right = self.root.len();
+        let mut missing_pages = BTreeSet::new();
+        while left < right {
+            let mid = left + (right - left) / 2;
+            let key = match self.key_at(mid)? {
+                RangeRead::Hit(key) => key,
+                RangeRead::MissingPages(pages) => {
+                    missing_pages.extend(pages);
+                    break;
+                }
+            };
+            if key.as_slice() < prefix {
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+        if !missing_pages.is_empty() {
+            return Ok(RangeRead::MissingPages(missing_pages.into_iter().collect()));
+        }
+        let mut out = Vec::new();
+        let mut index = left;
+        while index < self.root.len() {
+            let key = match self.key_at(index)? {
+                RangeRead::Hit(key) => key,
+                RangeRead::MissingPages(pages) => return Ok(RangeRead::MissingPages(pages)),
+            };
+            if !key.starts_with(prefix) {
+                break;
+            }
+            out.push(String::from_utf8_lossy(&key).into_owned());
+            index += 1;
+        }
+        Ok(RangeRead::Hit(out))
+    }
+
+    fn value_range(&self, key: &str) -> Result<RangeRead<Option<(u32, u32)>>, String> {
+        let target = key.as_bytes();
+        let mut left = 0usize;
+        let mut right = self.root.len();
+        let mut missing_pages = BTreeSet::new();
+        while left < right {
+            let mid = left + (right - left) / 2;
+            let key_at_mid = match self.key_at(mid)? {
+                RangeRead::Hit(key) => key,
+                RangeRead::MissingPages(pages) => {
+                    missing_pages.extend(pages);
+                    break;
+                }
+            };
+            match key_at_mid.as_slice().cmp(target) {
+                std::cmp::Ordering::Less => left = mid + 1,
+                std::cmp::Ordering::Greater => right = mid,
+                std::cmp::Ordering::Equal => {
+                    return match self.value_range_at(mid)? {
+                        RangeRead::Hit(range) => Ok(RangeRead::Hit(Some(range))),
+                        RangeRead::MissingPages(pages) => Ok(RangeRead::MissingPages(pages)),
+                    };
+                }
+            }
+        }
+        if missing_pages.is_empty() {
+            Ok(RangeRead::Hit(None))
+        } else {
+            Ok(RangeRead::MissingPages(missing_pages.into_iter().collect()))
+        }
+    }
+
+    fn key_at(&self, index: usize) -> Result<RangeRead<Vec<u8>>, String> {
+        let (start, end) = match self.key_range_at(index)? {
+            RangeRead::Hit(Some(range)) => range,
+            RangeRead::Hit(None) => return Ok(RangeRead::Hit(Vec::new())),
+            RangeRead::MissingPages(pages) => return Ok(RangeRead::MissingPages(pages)),
+        };
+        self.read_logical_range(self.root.key_table_offset + start, end - start)
+    }
+
+    fn key_range_at(&self, index: usize) -> Result<RangeRead<Option<(u32, u32)>>, String> {
+        match self.entry_pair_at(index)? {
+            RangeRead::Hit(Some((current, next))) => {
+                Ok(RangeRead::Hit(Some((current.key_offset, next.key_offset))))
+            }
+            RangeRead::Hit(None) => Ok(RangeRead::Hit(None)),
+            RangeRead::MissingPages(pages) => Ok(RangeRead::MissingPages(pages)),
+        }
+    }
+
+    fn value_range_at(&self, index: usize) -> Result<RangeRead<(u32, u32)>, String> {
+        match self.entry_pair_at(index)? {
+            RangeRead::Hit(Some((current, next))) => {
+                Ok(RangeRead::Hit((current.value_offset, next.value_offset)))
+            }
+            RangeRead::Hit(None) => Ok(RangeRead::Hit((0, 0))),
+            RangeRead::MissingPages(pages) => Ok(RangeRead::MissingPages(pages)),
+        }
+    }
+
+    fn entry_pair_at(&self, index: usize) -> Result<RangeRead<Option<(Entry, Entry)>>, String> {
+        if index >= self.root.len() {
+            return Ok(RangeRead::Hit(None));
+        }
+        let offset = self.root.offset_table_offset + (index as u32) * ENTRY_LEN as u32;
+        let bytes = match self.read_logical_range(offset, (ENTRY_LEN * 2) as u32)? {
+            RangeRead::Hit(bytes) => bytes,
+            RangeRead::MissingPages(pages) => return Ok(RangeRead::MissingPages(pages)),
+        };
+        Ok(RangeRead::Hit(Some((
+            Entry {
+                key_offset: read_u32(&bytes, 0)?,
+                value_offset: read_u32(&bytes, 4)?,
+            },
+            Entry {
+                key_offset: read_u32(&bytes, 8)?,
+                value_offset: read_u32(&bytes, 12)?,
+            },
+        ))))
+    }
+
+    fn read_logical_range(&self, start: u32, len: u32) -> Result<RangeRead<Vec<u8>>, String> {
+        if len == 0 {
+            return Ok(RangeRead::Hit(Vec::new()));
+        }
+        let end = start
+            .checked_add(len)
+            .ok_or_else(|| "nav_kv logical range overflow".to_string())?;
+        if end > self.root.logical_bytes_len {
+            return Err("nav_kv logical range exceeds logical bytes length".to_string());
+        }
+        let start_page = start / self.root.page_size;
+        let end_page = (end - 1) / self.root.page_size;
+        let missing = (start_page..=end_page)
+            .filter(|page| !self.pages.contains_key(page))
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Ok(RangeRead::MissingPages(missing));
+        }
+        let mut out = Vec::with_capacity(len as usize);
+        for page_index in start_page..=end_page {
+            let page = self
+                .pages
+                .get(&page_index)
+                .ok_or_else(|| format!("nav_kv page {page_index} missing"))?;
+            let page_start = page_index
+                .checked_mul(self.root.page_size)
+                .ok_or_else(|| "nav_kv page start overflow".to_string())?;
+            let slice_start = start.saturating_sub(page_start) as usize;
+            let slice_end = (end.min(page_start + self.root.page_size) - page_start) as usize;
+            if slice_start > slice_end || slice_end > page.len() {
+                return Err(format!("nav_kv page {page_index} is too short"));
+            }
+            out.extend_from_slice(&page[slice_start..slice_end]);
+        }
+        Ok(RangeRead::Hit(out))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RangeRead<T> {
+    Hit(T),
+    MissingPages(Vec<u32>),
 }
 
 pub fn nav_kv_key_for_query(query: &NavKvQuery) -> Option<String> {
@@ -511,50 +636,6 @@ fn hex_digit(value: u8) -> char {
     }
 }
 
-fn validate_parts(entries: &[Entry], key_bytes: &[u8], value_bytes_len: u32) -> Result<(), String> {
-    if entries.len() < 2 {
-        return Err("nav_kv needs at least one real entry plus sentinel".to_string());
-    }
-    let sentinel = entries[entries.len() - 1];
-    if sentinel.key_offset as usize != key_bytes.len() {
-        return Err("nav_kv sentinel key offset must equal key_bytes_len".to_string());
-    }
-    if sentinel.value_offset != value_bytes_len {
-        return Err("nav_kv sentinel value offset must equal value_bytes_len".to_string());
-    }
-    for index in 0..entries.len() - 1 {
-        let current = entries[index];
-        let next = entries[index + 1];
-        if current.key_offset >= next.key_offset {
-            return Err("nav_kv key offsets must be strictly increasing".to_string());
-        }
-        if current.value_offset >= next.value_offset {
-            return Err("nav_kv values must be non-empty and increasing".to_string());
-        }
-        if next.key_offset as usize > key_bytes.len() {
-            return Err("nav_kv key offset exceeds key byte length".to_string());
-        }
-        if next.value_offset > value_bytes_len {
-            return Err("nav_kv value offset exceeds value byte length".to_string());
-        }
-        if index > 0 && entries[index - 1].value_offset >= current.value_offset {
-            return Err("nav_kv value offsets must be increasing".to_string());
-        }
-        if index > 0 {
-            let previous_key = key_slice(entries, key_bytes, index - 1);
-            let current_key = key_slice(entries, key_bytes, index);
-            if previous_key >= current_key {
-                return Err("nav_kv keys must be strictly sorted".to_string());
-            }
-        }
-    }
-    Ok(())
-}
-
-fn key_slice<'a>(entries: &[Entry], key_bytes: &'a [u8], index: usize) -> &'a [u8] {
-    &key_bytes[entries[index].key_offset as usize..entries[index + 1].key_offset as usize]
-}
-
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, String> {
     let end = offset + 4;
     let slice = bytes
@@ -581,7 +662,7 @@ mod tests {
 
         assert_eq!(
             store.get_bytes("b").unwrap(),
-            NavKvLookup::MissingPages(vec![0, 1, 2])
+            NavKvLookup::MissingPages(vec![2, 3, 4, 5])
         );
         for (index, page) in pages.into_iter().enumerate() {
             store.insert_page(index as u32, page);
@@ -595,12 +676,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsorted_keys() {
-        let mut root = build_root(&[("b", b"1".as_slice()), ("a", b"2".as_slice())], 8);
+    fn rejects_unsupported_version() {
+        let (mut root, _) = build_root(&[("a", b"1".as_slice())], 8);
+        write_u32(&mut root, 16, 1);
         let err = NavKvRoot::parse(&root).unwrap_err();
-        assert!(err.contains("strictly sorted"), "{err}");
-
-        root[HEADER_LEN] = 0;
+        assert!(err.contains("unsupported nav_kv version"), "{err}");
     }
 
     #[test]
@@ -659,20 +739,17 @@ mod tests {
     }
 
     fn fixture(entries: &[(&str, &[u8])], page_size: u32) -> (NavKvRoot, Vec<Vec<u8>>) {
-        let root = build_root(entries, page_size);
-        let values = entries
-            .iter()
-            .flat_map(|(_, value)| value.iter().copied())
-            .collect::<Vec<_>>();
-        let pages = values
+        let (root, logical) = build_root(entries, page_size);
+        let pages = logical
             .chunks(page_size as usize)
             .map(|chunk| chunk.to_vec())
             .collect::<Vec<_>>();
         (NavKvRoot::parse(&root).unwrap(), pages)
     }
 
-    fn build_root(entries: &[(&str, &[u8])], page_size: u32) -> Vec<u8> {
+    fn build_root(entries: &[(&str, &[u8])], page_size: u32) -> (Vec<u8>, Vec<u8>) {
         let mut key_bytes = Vec::new();
+        let mut value_bytes = Vec::new();
         let mut value_offset = 0u32;
         let mut table = Vec::new();
         for (key, value) in entries {
@@ -681,6 +758,7 @@ mod tests {
                 value_offset,
             });
             key_bytes.extend_from_slice(key.as_bytes());
+            value_bytes.extend_from_slice(value);
             value_offset += value.len() as u32;
         }
         table.push(Entry {
@@ -688,21 +766,35 @@ mod tests {
             value_offset,
         });
 
+        let mut offset_table = Vec::new();
+        for entry in table {
+            offset_table.extend_from_slice(&entry.key_offset.to_le_bytes());
+            offset_table.extend_from_slice(&entry.value_offset.to_le_bytes());
+        }
+        let offset_table_len = offset_table.len() as u32;
+        let key_table_offset = offset_table_len;
+        let key_table_len = key_bytes.len() as u32;
+        let value_table_offset = key_table_offset + key_table_len;
+        let value_bytes_len = value_bytes.len() as u32;
+        let logical_bytes_len = value_table_offset + value_bytes_len;
+        let mut logical = Vec::new();
+        logical.extend_from_slice(&offset_table);
+        logical.extend_from_slice(&key_bytes);
+        logical.extend_from_slice(&value_bytes);
+
         let mut root = vec![0; HEADER_LEN];
         root[..MAGIC.len()].copy_from_slice(MAGIC);
         write_u32(&mut root, 16, VERSION);
         write_u32(&mut root, 20, entries.len() as u32);
         write_u32(&mut root, 24, page_size);
-        write_u32(&mut root, 28, HEADER_LEN as u32);
-        write_u32(&mut root, 32, (HEADER_LEN + table.len() * ENTRY_LEN) as u32);
-        write_u32(&mut root, 36, key_bytes.len() as u32);
-        write_u32(&mut root, 40, value_offset);
-        for entry in table {
-            root.extend_from_slice(&entry.key_offset.to_le_bytes());
-            root.extend_from_slice(&entry.value_offset.to_le_bytes());
-        }
-        root.extend_from_slice(&key_bytes);
-        root
+        write_u32(&mut root, 28, 0);
+        write_u32(&mut root, 32, offset_table_len);
+        write_u32(&mut root, 36, key_table_offset);
+        write_u32(&mut root, 40, key_table_len);
+        write_u32(&mut root, 44, value_table_offset);
+        write_u32(&mut root, 48, value_bytes_len);
+        write_u32(&mut root, 52, logical_bytes_len);
+        (root, logical)
     }
 
     fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {

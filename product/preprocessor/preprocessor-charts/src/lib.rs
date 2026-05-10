@@ -1131,13 +1131,31 @@ fn tile_belongs_to_region(tile_path: &str, region: &Region) -> bool {
         return false;
     }
 
+    let (tile_lon_min, tile_lat_min, tile_lon_max, tile_lat_max) = find_bounds(x, y, z);
+    region.bounds_list().iter().any(|bounds| {
+        tile_overlaps_region_bounds(
+            tile_lon_min,
+            tile_lat_min,
+            tile_lon_max,
+            tile_lat_max,
+            *bounds,
+        )
+    })
+}
+
+fn tile_overlaps_region_bounds(
+    tile_lon_min: f64,
+    tile_lat_min: f64,
+    tile_lon_max: f64,
+    tile_lat_max: f64,
+    bounds: RegionBounds,
+) -> bool {
     let RegionBounds {
         lon_min: region_lon_min,
         lat_max: region_lat_max,
         lon_max: region_lon_max,
         lat_min: region_lat_min,
-    } = region.bounds();
-    let (tile_lon_min, tile_lat_min, tile_lon_max, tile_lat_max) = find_bounds(x, y, z);
+    } = bounds;
     let lon_overlap = tile_lon_max >= region_lon_min && tile_lon_min <= region_lon_max;
     let lat_overlap = tile_lat_max >= region_lat_min && tile_lat_min <= region_lat_max;
     lon_overlap && lat_overlap
@@ -1394,7 +1412,8 @@ fn count_files_recursive(path: &Path, count: &mut u64) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_dir_recursive, resolve_chart_input_filename};
+    use super::{copy_dir_recursive, resolve_chart_input_filename, tile_belongs_to_region};
+    use preprocessor_core::Region;
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -1474,5 +1493,32 @@ mod tests {
         assert!(!dst.join("logs").exists());
         assert!(!dst.join("work").exists());
         assert!(!dst.join("rust-runs").exists());
+    }
+
+    #[test]
+    fn pac_region_admits_detailed_hawaii_samoa_and_guam_tiles() {
+        assert!(tile_belongs_to_region(
+            "tiles/0/8/13/141.webp",
+            &Region::Pac
+        ));
+        assert!(tile_belongs_to_region("tiles/0/8/7/117.webp", &Region::Pac));
+        assert!(tile_belongs_to_region(
+            "tiles/0/9/14/235.webp",
+            &Region::Pac
+        ));
+        assert!(tile_belongs_to_region(
+            "tiles/0/8/231/137.webp",
+            &Region::Pac
+        ));
+        assert!(!tile_belongs_to_region("tiles/0/7/3/58.webp", &Region::Pac));
+    }
+
+    #[test]
+    fn alaska_region_admits_detailed_tiles_on_both_sides_of_antimeridian() {
+        assert!(tile_belongs_to_region("tiles/0/8/0/171.webp", &Region::Ak));
+        assert!(tile_belongs_to_region(
+            "tiles/0/8/253/171.webp",
+            &Region::Ak
+        ));
     }
 }

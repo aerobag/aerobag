@@ -8,8 +8,8 @@ pub mod nav_kv {
     use std::collections::HashSet;
 
     pub const MAGIC: &[u8; 16] = b"AEROBAGNAVKV0001";
-    pub const VERSION: u32 = 1;
-    pub const HEADER_LEN: usize = 48;
+    pub const VERSION: u32 = 2;
+    pub const HEADER_LEN: usize = 64;
     pub const ENTRY_LEN: usize = 8;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,8 +21,9 @@ pub mod nav_kv {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct NavKvBuildOutput {
         pub root_bytes: Vec<u8>,
-        pub value_pages: Vec<Vec<u8>>,
+        pub pages: Vec<Vec<u8>>,
         pub page_size: u32,
+        pub logical_bytes_len: u32,
         pub value_bytes_len: u32,
     }
 
@@ -34,10 +35,15 @@ pub mod nav_kv {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct NavKvRoot {
-        entries: Vec<Entry>,
-        key_bytes: Vec<u8>,
+        entry_count: u32,
         page_size: u32,
+        offset_table_offset: u32,
+        offset_table_len: u32,
+        key_table_offset: u32,
+        key_table_len: u32,
+        value_table_offset: u32,
         value_bytes_len: u32,
+        logical_bytes_len: u32,
     }
 
     pub fn build_nav_kv_sorted(
@@ -110,18 +116,29 @@ pub mod nav_kv {
         });
         validate_nav_kv_parts(&entries, &key_bytes, page_size, value_bytes_len)?;
 
-        let entry_table_offset = HEADER_LEN as u32;
-        let key_bytes_offset = entry_table_offset
-            .checked_add(
-                u32::try_from(entries.len() * ENTRY_LEN)
-                    .map_err(|_| "nav_kv entry table exceeds u32".to_string())?,
-            )
-            .ok_or_else(|| "nav_kv root offsets overflow u32".to_string())?;
-        let root_len = usize::try_from(key_bytes_offset)
-            .map_err(|_| "nav_kv root offset does not fit usize".to_string())?
-            .checked_add(key_bytes.len())
-            .ok_or_else(|| "nav_kv root length overflows usize".to_string())?;
-        let mut root_bytes = Vec::with_capacity(root_len);
+        let mut offset_table = Vec::with_capacity(entries.len() * ENTRY_LEN);
+        for entry in &entries {
+            push_u32(&mut offset_table, entry.key_offset);
+            push_u32(&mut offset_table, entry.value_offset);
+        }
+        let offset_table_len = u32::try_from(offset_table.len())
+            .map_err(|_| "nav_kv offset table exceeds u32".to_string())?;
+        let offset_table_offset = 0u32;
+        let key_table_offset = offset_table_len;
+        let key_table_len = key_bytes_len;
+        let value_table_offset = key_table_offset
+            .checked_add(key_table_len)
+            .ok_or_else(|| "nav_kv key/value table offsets overflow u32".to_string())?;
+        let logical_bytes_len = value_table_offset
+            .checked_add(value_bytes_len)
+            .ok_or_else(|| "nav_kv logical bytes exceed u32".to_string())?;
+
+        let mut logical_bytes = Vec::with_capacity(logical_bytes_len as usize);
+        logical_bytes.extend_from_slice(&offset_table);
+        logical_bytes.extend_from_slice(&key_bytes);
+        logical_bytes.extend_from_slice(&value_bytes);
+
+        let mut root_bytes = Vec::with_capacity(HEADER_LEN);
         root_bytes.extend_from_slice(MAGIC);
         push_u32(&mut root_bytes, VERSION);
         push_u32(
@@ -129,28 +146,30 @@ pub mod nav_kv {
             u32::try_from(pairs.len()).map_err(|_| "nav_kv entry count exceeds u32".to_string())?,
         );
         push_u32(&mut root_bytes, page_size);
-        push_u32(&mut root_bytes, entry_table_offset);
-        push_u32(&mut root_bytes, key_bytes_offset);
-        push_u32(&mut root_bytes, key_bytes_len);
+        push_u32(&mut root_bytes, offset_table_offset);
+        push_u32(&mut root_bytes, offset_table_len);
+        push_u32(&mut root_bytes, key_table_offset);
+        push_u32(&mut root_bytes, key_table_len);
+        push_u32(&mut root_bytes, value_table_offset);
         push_u32(&mut root_bytes, value_bytes_len);
+        push_u32(&mut root_bytes, logical_bytes_len);
         push_u32(&mut root_bytes, 0);
-        for entry in &entries {
-            push_u32(&mut root_bytes, entry.key_offset);
-            push_u32(&mut root_bytes, entry.value_offset);
+        while root_bytes.len() < HEADER_LEN {
+            push_u32(&mut root_bytes, 0);
         }
-        root_bytes.extend_from_slice(&key_bytes);
 
         let page_size_usize = usize::try_from(page_size)
             .map_err(|_| "nav_kv page size does not fit usize".to_string())?;
-        let value_pages = value_bytes
+        let pages = logical_bytes
             .chunks(page_size_usize)
             .map(|chunk| chunk.to_vec())
             .collect();
 
         Ok(NavKvBuildOutput {
             root_bytes,
-            value_pages,
+            pages,
             page_size,
+            logical_bytes_len,
             value_bytes_len,
         })
     }
@@ -167,78 +186,111 @@ pub mod nav_kv {
             if version != VERSION {
                 return Err(format!("unsupported nav_kv version {version}"));
             }
-            let real_entry_count = read_u32(root_bytes, 20)? as usize;
+            let entry_count = read_u32(root_bytes, 20)?;
             let page_size = read_u32(root_bytes, 24)?;
-            let entry_table_offset = read_u32(root_bytes, 28)? as usize;
-            let key_bytes_offset = read_u32(root_bytes, 32)? as usize;
-            let key_bytes_len = read_u32(root_bytes, 36)? as usize;
-            let value_bytes_len = read_u32(root_bytes, 40)?;
+            let offset_table_offset = read_u32(root_bytes, 28)?;
+            let offset_table_len = read_u32(root_bytes, 32)?;
+            let key_table_offset = read_u32(root_bytes, 36)?;
+            let key_table_len = read_u32(root_bytes, 40)?;
+            let value_table_offset = read_u32(root_bytes, 44)?;
+            let value_bytes_len = read_u32(root_bytes, 48)?;
+            let logical_bytes_len = read_u32(root_bytes, 52)?;
             if page_size == 0 {
                 return Err("nav_kv page_size must be non-zero".to_string());
             }
-            let entry_count = real_entry_count
+            if root_bytes.len() != HEADER_LEN {
+                return Err("nav_kv v2 root must be exactly the fixed header length".to_string());
+            }
+            let sentinel_count = entry_count
                 .checked_add(1)
-                .ok_or_else(|| "nav_kv entry count overflows usize".to_string())?;
-            let entry_bytes_len = entry_count
-                .checked_mul(ENTRY_LEN)
-                .ok_or_else(|| "nav_kv entry table length overflows usize".to_string())?;
-            if entry_table_offset != HEADER_LEN {
-                return Err("nav_kv entry table offset must follow header in v1".to_string());
+                .ok_or_else(|| "nav_kv entry count overflows u32".to_string())?;
+            let expected_offset_table_len = sentinel_count
+                .checked_mul(ENTRY_LEN as u32)
+                .ok_or_else(|| "nav_kv offset table length overflows u32".to_string())?;
+            if offset_table_offset != 0 {
+                return Err("nav_kv offset table must start at logical offset 0".to_string());
             }
-            if key_bytes_offset != entry_table_offset + entry_bytes_len {
-                return Err("nav_kv key bytes offset does not follow entry table".to_string());
+            if offset_table_len != expected_offset_table_len {
+                return Err("nav_kv offset table length does not match entry count".to_string());
             }
-            if root_bytes.len() != key_bytes_offset + key_bytes_len {
-                return Err("nav_kv root length does not match key bytes length".to_string());
+            if key_table_offset != offset_table_offset + offset_table_len {
+                return Err("nav_kv key table offset does not follow offset table".to_string());
             }
-            let mut entries = Vec::with_capacity(entry_count);
-            for index in 0..entry_count {
-                let offset = entry_table_offset + index * ENTRY_LEN;
-                entries.push(Entry {
-                    key_offset: read_u32(root_bytes, offset)?,
-                    value_offset: read_u32(root_bytes, offset + 4)?,
-                });
+            if value_table_offset != key_table_offset + key_table_len {
+                return Err("nav_kv value table offset does not follow key table".to_string());
             }
-            let key_bytes = root_bytes[key_bytes_offset..].to_vec();
-            validate_nav_kv_parts(&entries, &key_bytes, page_size, value_bytes_len)?;
+            if logical_bytes_len != value_table_offset + value_bytes_len {
+                return Err("nav_kv logical length does not match table lengths".to_string());
+            }
             Ok(Self {
-                entries,
-                key_bytes,
+                entry_count,
                 page_size,
+                offset_table_offset,
+                offset_table_len,
+                key_table_offset,
+                key_table_len,
+                value_table_offset,
                 value_bytes_len,
+                logical_bytes_len,
             })
         }
 
         pub fn len(&self) -> usize {
-            self.entries.len() - 1
+            self.entry_count as usize
         }
 
         pub fn is_empty(&self) -> bool {
             self.len() == 0
         }
 
-        pub fn get_value_range(&self, key: &str) -> Option<(u32, u32)> {
+        pub fn page_count(&self) -> u32 {
+            self.logical_bytes_len.div_ceil(self.page_size)
+        }
+
+        pub fn page_size(&self) -> u32 {
+            self.page_size
+        }
+
+        pub fn logical_bytes_len(&self) -> u32 {
+            self.logical_bytes_len
+        }
+
+        pub fn value_bytes_len(&self) -> u32 {
+            self.value_bytes_len
+        }
+
+        pub fn get_value_range<P: FnMut(u32) -> Option<Vec<u8>>>(
+            &self,
+            key: &str,
+            mut page_provider: P,
+        ) -> Option<(u32, u32)> {
             let mut left = 0usize;
             let mut right = self.len();
             let target = key.as_bytes();
             while left < right {
                 let mid = left + (right - left) / 2;
-                match self.key_at(mid).cmp(target) {
+                let key_at_mid = self.key_at(mid, &mut page_provider)?;
+                match key_at_mid.as_slice().cmp(target) {
                     Ordering::Less => left = mid + 1,
-                    Ordering::Equal => return Some(self.value_range_at(mid)),
+                    Ordering::Equal => return self.value_range_at(mid, page_provider),
                     Ordering::Greater => right = mid,
                 }
             }
             None
         }
 
-        pub fn prefix_keys(&self, prefix: &str) -> Vec<String> {
+        pub fn prefix_keys<P: FnMut(u32) -> Option<Vec<u8>>>(
+            &self,
+            prefix: &str,
+            mut page_provider: P,
+        ) -> Option<Vec<String>> {
             let prefix = prefix.as_bytes();
             let mut left = 0usize;
             let mut right = self.len();
             while left < right {
                 let mid = left + (right - left) / 2;
-                if self.key_at(mid) < prefix {
+                let key = self.key_at(mid, &mut page_provider)?;
+                if key.as_slice() < prefix {
                     left = mid + 1;
                 } else {
                     right = mid;
@@ -247,14 +299,14 @@ pub mod nav_kv {
             let mut out = Vec::new();
             let mut index = left;
             while index < self.len() {
-                let key = self.key_at(index);
+                let key = self.key_at(index, &mut page_provider)?;
                 if !key.starts_with(prefix) {
                     break;
                 }
-                out.push(String::from_utf8_lossy(key).into_owned());
+                out.push(String::from_utf8_lossy(&key).into_owned());
                 index += 1;
             }
-            out
+            Some(out)
         }
 
         pub fn extract_value<P: FnMut(u32) -> Option<Vec<u8>>>(
@@ -262,38 +314,89 @@ pub mod nav_kv {
             key: &str,
             mut page_provider: P,
         ) -> Option<Vec<u8>> {
-            let (start, end) = self.get_value_range(key)?;
+            let (start, end) = self.get_value_range(key, &mut page_provider)?;
             if start == end {
                 return None;
             }
-            let page_size = self.page_size;
-            let start_page = start / page_size;
-            let end_page = (end - 1) / page_size;
-            let mut out = Vec::with_capacity((end - start) as usize);
+            self.read_logical_range(self.value_table_offset + start, end - start, page_provider)
+        }
+
+        fn key_at<P: FnMut(u32) -> Option<Vec<u8>>>(
+            &self,
+            index: usize,
+            mut page_provider: P,
+        ) -> Option<Vec<u8>> {
+            let (start, end) = self.key_range_at(index, &mut page_provider)?;
+            self.read_logical_range(self.key_table_offset + start, end - start, page_provider)
+        }
+
+        fn key_range_at<P: FnMut(u32) -> Option<Vec<u8>>>(
+            &self,
+            index: usize,
+            page_provider: P,
+        ) -> Option<(u32, u32)> {
+            let (current, next) = self.entry_pair_at(index, page_provider)?;
+            Some((current.key_offset, next.key_offset))
+        }
+
+        fn value_range_at<P: FnMut(u32) -> Option<Vec<u8>>>(
+            &self,
+            index: usize,
+            page_provider: P,
+        ) -> Option<(u32, u32)> {
+            let (current, next) = self.entry_pair_at(index, page_provider)?;
+            Some((current.value_offset, next.value_offset))
+        }
+
+        fn entry_pair_at<P: FnMut(u32) -> Option<Vec<u8>>>(
+            &self,
+            index: usize,
+            page_provider: P,
+        ) -> Option<(Entry, Entry)> {
+            if index >= self.len() {
+                return None;
+            }
+            let offset = self.offset_table_offset + (index as u32) * ENTRY_LEN as u32;
+            let bytes = self.read_logical_range(offset, (ENTRY_LEN * 2) as u32, page_provider)?;
+            Some((
+                Entry {
+                    key_offset: read_u32(&bytes, 0).ok()?,
+                    value_offset: read_u32(&bytes, 4).ok()?,
+                },
+                Entry {
+                    key_offset: read_u32(&bytes, 8).ok()?,
+                    value_offset: read_u32(&bytes, 12).ok()?,
+                },
+            ))
+        }
+
+        fn read_logical_range<P: FnMut(u32) -> Option<Vec<u8>>>(
+            &self,
+            start: u32,
+            len: u32,
+            mut page_provider: P,
+        ) -> Option<Vec<u8>> {
+            if len == 0 {
+                return Some(Vec::new());
+            }
+            let end = start.checked_add(len)?;
+            if end > self.logical_bytes_len {
+                return None;
+            }
+            let start_page = start / self.page_size;
+            let end_page = (end - 1) / self.page_size;
+            let mut out = Vec::with_capacity(len as usize);
             for page_index in start_page..=end_page {
                 let page = page_provider(page_index)?;
-                let page_start = page_index * page_size;
+                let page_start = page_index * self.page_size;
                 let slice_start = start.saturating_sub(page_start) as usize;
-                let slice_end = (end.min(page_start + page_size) - page_start) as usize;
+                let slice_end = (end.min(page_start + self.page_size) - page_start) as usize;
                 if slice_end > page.len() || slice_start > slice_end {
                     return None;
                 }
                 out.extend_from_slice(&page[slice_start..slice_end]);
             }
             Some(out)
-        }
-
-        fn key_at(&self, index: usize) -> &[u8] {
-            let start = self.entries[index].key_offset as usize;
-            let end = self.entries[index + 1].key_offset as usize;
-            &self.key_bytes[start..end]
-        }
-
-        fn value_range_at(&self, index: usize) -> (u32, u32) {
-            (
-                self.entries[index].value_offset,
-                self.entries[index + 1].value_offset,
-            )
         }
     }
 
@@ -384,7 +487,7 @@ pub mod nav_kv {
             let root = NavKvRoot::parse(&built.root_bytes).expect("parse root");
             let value = root
                 .extract_value("waypoint/id/KRDD", |page| {
-                    built.value_pages.get(page as usize).cloned()
+                    built.pages.get(page as usize).cloned()
                 })
                 .expect("value");
             assert_eq!(value, b"{\"id\":\"KRDD\"}");
@@ -395,12 +498,12 @@ pub mod nav_kv {
             let built =
                 build_nav_kv_sorted(vec![pair("chart/catalog", "{}")], 8).expect("build nav kv");
             let root = NavKvRoot::parse(&built.root_bytes).expect("parse root");
-            assert_eq!(root.get_value_range("missing"), None);
             assert_eq!(
-                root.extract_value("missing", |page| built
-                    .value_pages
-                    .get(page as usize)
-                    .cloned()),
+                root.get_value_range("missing", |page| built.pages.get(page as usize).cloned()),
+                None
+            );
+            assert_eq!(
+                root.extract_value("missing", |page| built.pages.get(page as usize).cloned()),
                 None
             );
         }
@@ -418,7 +521,11 @@ pub mod nav_kv {
             .expect("build nav kv");
             let root = NavKvRoot::parse(&built.root_bytes).expect("parse root");
             assert_eq!(
-                root.prefix_keys("waypoint/id/"),
+                root.prefix_keys("waypoint/id/", |page| built
+                    .pages
+                    .get(page as usize)
+                    .cloned())
+                    .expect("prefix keys"),
                 vec![
                     "waypoint/id/KRDD".to_string(),
                     "waypoint/id/KRNT".to_string()
@@ -430,12 +537,24 @@ pub mod nav_kv {
         fn value_can_cross_page_boundaries() {
             let built =
                 build_nav_kv_sorted(vec![pair("k", "abcdefghijklmnop")], 5).expect("build nav kv");
-            assert_eq!(built.value_pages.len(), 4);
+            assert_eq!(built.pages.len(), 7);
             let root = NavKvRoot::parse(&built.root_bytes).expect("parse root");
             let value = root
-                .extract_value("k", |page| built.value_pages.get(page as usize).cloned())
+                .extract_value("k", |page| built.pages.get(page as usize).cloned())
                 .expect("value");
             assert_eq!(value, b"abcdefghijklmnop");
+        }
+
+        #[test]
+        fn last_key_uses_sentinel_offsets_even_across_page_boundary() {
+            let built =
+                build_nav_kv_sorted(vec![pair("a", "1"), pair("b", "2"), pair("c", "last")], 23)
+                    .expect("build nav kv");
+            let root = NavKvRoot::parse(&built.root_bytes).expect("parse root");
+            assert_eq!(
+                root.extract_value("c", |page| built.pages.get(page as usize).cloned()),
+                Some(b"last".to_vec())
+            );
         }
 
         #[test]
@@ -475,54 +594,40 @@ pub mod nav_kv {
         }
 
         #[test]
-        fn parser_rejects_bad_sentinel_key_offset() {
-            let built = build_nav_kv_sorted(vec![pair("a", "1")], 8).expect("build nav kv");
-            let mut root = built.root_bytes;
-            let sentinel_offset = HEADER_LEN + ENTRY_LEN;
-            root[sentinel_offset..sentinel_offset + 4].copy_from_slice(&0u32.to_le_bytes());
-            let err = NavKvRoot::parse(&root).expect_err("bad sentinel should fail");
-            assert!(
-                err.contains("sentinel") || err.contains("key offsets"),
-                "unexpected error: {err}"
-            );
-        }
-
-        #[test]
-        fn parser_rejects_bad_sentinel_value_offset() {
-            let built = build_nav_kv_sorted(vec![pair("a", "1")], 8).expect("build nav kv");
-            let mut root = built.root_bytes;
-            let sentinel_value_offset = HEADER_LEN + ENTRY_LEN + 4;
-            root[sentinel_value_offset..sentinel_value_offset + 4]
-                .copy_from_slice(&0u32.to_le_bytes());
-            let err = NavKvRoot::parse(&root).expect_err("bad sentinel should fail");
-            assert!(
-                err.contains("sentinel") || err.contains("values must be non-empty"),
-                "unexpected error: {err}"
-            );
-        }
-
-        #[test]
         fn repeated_extraction_can_reuse_cached_pages() {
             let built = build_nav_kv_sorted(vec![pair("a", "abcde"), pair("b", "fghij")], 5)
                 .expect("build nav kv");
             let root = NavKvRoot::parse(&built.root_bytes).expect("parse root");
             let mut cache = HashMap::<u32, Vec<u8>>::new();
             let mut misses = 0;
-            for _ in 0..2 {
-                let value = root
-                    .extract_value("a", |page| {
-                        if let Some(cached) = cache.get(&page) {
-                            return Some(cached.clone());
-                        }
-                        misses += 1;
-                        let loaded = built.value_pages.get(page as usize)?.clone();
-                        cache.insert(page, loaded.clone());
-                        Some(loaded)
-                    })
-                    .expect("value");
-                assert_eq!(value, b"abcde");
+            fn extract_with_cache(
+                root: &NavKvRoot,
+                built: &NavKvBuildOutput,
+                cache: &mut HashMap<u32, Vec<u8>>,
+                misses: &mut u32,
+            ) -> Vec<u8> {
+                root.extract_value("a", |page| {
+                    if let Some(cached) = cache.get(&page) {
+                        return Some(cached.clone());
+                    }
+                    *misses += 1;
+                    let loaded = built.pages.get(page as usize)?.clone();
+                    cache.insert(page, loaded.clone());
+                    Some(loaded)
+                })
+                .expect("value")
             }
-            assert_eq!(misses, 1);
+            assert_eq!(
+                extract_with_cache(&root, &built, &mut cache, &mut misses),
+                b"abcde"
+            );
+            let first_lookup_misses = misses;
+            assert!(first_lookup_misses > 0);
+            assert_eq!(
+                extract_with_cache(&root, &built, &mut cache, &mut misses),
+                b"abcde"
+            );
+            assert_eq!(misses, first_lookup_misses);
         }
     }
 }
@@ -730,61 +835,98 @@ impl Region {
     }
 
     pub fn bounds(self) -> RegionBounds {
+        self.bounds_list()[0]
+    }
+
+    pub fn bounds_list(self) -> &'static [RegionBounds] {
         match self {
-            Self::Ak => RegionBounds {
-                lon_min: -180.0,
-                lat_max: 71.0,
-                lon_max: -126.0,
-                lat_min: 51.0,
-            },
-            Self::Pac => RegionBounds {
-                lon_min: -162.0,
-                lat_max: 24.0,
-                lon_max: -152.0,
-                lat_min: 18.0,
-            },
-            Self::Nw => RegionBounds {
+            Self::Ak => {
+                // The Alaska chart region crosses the antimeridian. Keep it as two
+                // ordinary lon ranges so tile and app code never has to reason about a
+                // single box that wraps around +/-180.
+                &[
+                    RegionBounds {
+                        lon_min: -180.0,
+                        lat_max: 71.0,
+                        lon_max: -126.0,
+                        lat_min: 51.0,
+                    },
+                    RegionBounds {
+                        lon_min: 170.0,
+                        lat_max: 56.0,
+                        lon_max: 180.0,
+                        lat_min: 51.0,
+                    },
+                ]
+            }
+            Self::Pac => {
+                // PAC is not just Hawaii. The FAA Pacific SEC source includes
+                // detailed island coverage for Hawaii, Samoa, and Guam/NMI; packaging
+                // must admit all of those rectangles or the high-zoom source tiles get
+                // thrown away before clients can probe them.
+                &[
+                    RegionBounds {
+                        lon_min: -162.0,
+                        lat_max: 24.0,
+                        lon_max: -152.0,
+                        lat_min: 18.0,
+                    },
+                    RegionBounds {
+                        lon_min: -174.0,
+                        lat_max: -11.0,
+                        lon_max: -168.0,
+                        lat_min: -16.0,
+                    },
+                    RegionBounds {
+                        lon_min: 140.0,
+                        lat_max: 22.0,
+                        lon_max: 147.0,
+                        lat_min: 10.0,
+                    },
+                ]
+            }
+            Self::Nw => &[RegionBounds {
                 lon_min: -125.0,
                 lat_max: 50.0,
                 lon_max: -103.0,
                 lat_min: 40.0,
-            },
-            Self::Sw => RegionBounds {
+            }],
+            Self::Sw => &[RegionBounds {
                 lon_min: -125.0,
                 lat_max: 40.0,
                 lon_max: -103.0,
                 lat_min: 15.0,
-            },
-            Self::Nc => RegionBounds {
+            }],
+            Self::Nc => &[RegionBounds {
                 lon_min: -105.0,
                 lat_max: 50.0,
                 lon_max: -90.0,
                 lat_min: 37.0,
-            },
-            Self::Ec => RegionBounds {
+            }],
+            Self::Ec => &[RegionBounds {
                 lon_min: -95.0,
                 lat_max: 50.0,
                 lon_max: -80.0,
                 lat_min: 37.0,
-            },
-            Self::Sc => RegionBounds {
+            }],
+            Self::Sc => &[RegionBounds {
                 lon_min: -110.0,
                 lat_max: 37.0,
                 lon_max: -90.0,
                 lat_min: 15.0,
-            },
-            Self::Ne => RegionBounds {
+            }],
+            Self::Ne => &[RegionBounds {
                 lon_min: -80.0,
                 lat_max: 50.0,
                 lon_max: -60.0,
                 lat_min: 37.0,
-            },
-            Self::Se => RegionBounds {
+            }],
+            Self::Se => &[RegionBounds {
                 lon_min: -90.0,
                 lat_max: 37.0,
                 lon_max: -60.0,
                 lat_min: 15.0,
-            },
+            }],
         }
     }
 }

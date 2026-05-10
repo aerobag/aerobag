@@ -19,7 +19,7 @@ use preprocessor_charts::{
     package_family_wide_angle_versioned, stage_work_dir, FULL_COVERAGE_ZOOM, WIDE_ANGLE_REGION_ID,
 };
 use preprocessor_core::nav_kv::{build_nav_kv_sorted, NavKvPair, NavKvRoot};
-use preprocessor_core::{ChartFamily, Region};
+use preprocessor_core::{ChartFamily, Region, RegionBounds};
 use preprocessor_csup::{
     package_csup_region_versioned, prepare_csup_inputs, render_csup_region,
     stage_work_dir_for_product,
@@ -459,7 +459,7 @@ struct OfflineRegionRecord {
     label: String,
     color_key: String,
     summary: Vec<OfflineRegionSummaryEntry>,
-    polygon: Vec<OfflineRegionLatLon>,
+    polygons: Vec<Vec<OfflineRegionLatLon>>,
     label_position: OfflineRegionLatLon,
 }
 
@@ -4679,8 +4679,8 @@ fn build_nav_kv_artifact(
                     .with_context(|| format!("failed to write {}", root_source_path.display()))?;
 
                 let mut page_filenames = Vec::new();
-                for (index, page) in built.value_pages.iter().enumerate() {
-                    let page_filename = format!("values_{index:04}");
+                for (index, page) in built.pages.iter().enumerate() {
+                    let page_filename = format!("page_{index:04}");
                     let page_source_path = source_dir.join(&page_filename);
                     fs::write(&page_source_path, page).with_context(|| {
                         format!("failed to write {}", page_source_path.display())
@@ -4964,7 +4964,7 @@ fn build_offline_region_catalog(resource_index: &ResourceIndex) -> OfflineRegion
     regions.extend(plate_offline_region_records(resource_index));
     deconflict_offline_region_labels(&mut regions);
     OfflineRegionCatalogRecord {
-        schema_version: 1,
+        schema_version: 2,
         regions,
     }
 }
@@ -4974,25 +4974,31 @@ fn chart_offline_region_record(
     resource_index: &ResourceIndex,
 ) -> OfflineRegionRecord {
     let region_id = region.code().to_ascii_lowercase();
-    let bounds = region.bounds();
-    let polygon = vec![
-        OfflineRegionLatLon {
-            lat: bounds.lat_max,
-            lon: bounds.lon_min,
-        },
-        OfflineRegionLatLon {
-            lat: bounds.lat_max,
-            lon: bounds.lon_max,
-        },
-        OfflineRegionLatLon {
-            lat: bounds.lat_min,
-            lon: bounds.lon_max,
-        },
-        OfflineRegionLatLon {
-            lat: bounds.lat_min,
-            lon: bounds.lon_min,
-        },
-    ];
+    let bounds_list = region.bounds_list();
+    let polygons = bounds_list
+        .iter()
+        .map(|bounds| {
+            vec![
+                OfflineRegionLatLon {
+                    lat: bounds.lat_max,
+                    lon: bounds.lon_min,
+                },
+                OfflineRegionLatLon {
+                    lat: bounds.lat_max,
+                    lon: bounds.lon_max,
+                },
+                OfflineRegionLatLon {
+                    lat: bounds.lat_min,
+                    lon: bounds.lon_max,
+                },
+                OfflineRegionLatLon {
+                    lat: bounds.lat_min,
+                    lon: bounds.lon_min,
+                },
+            ]
+        })
+        .collect::<Vec<_>>();
+    let label_position = offline_region_bounds_label_position(bounds_list);
     OfflineRegionRecord {
         id: format!("chart:{region_id}"),
         kind: "chart".to_string(),
@@ -5004,12 +5010,36 @@ fn chart_offline_region_record(
             &region_id,
             &["sec", "tac", "enr-l", "enr-h"],
         ),
-        polygon,
-        label_position: OfflineRegionLatLon {
-            lat: (bounds.lat_min + bounds.lat_max) / 2.0,
-            lon: (bounds.lon_min + bounds.lon_max) / 2.0,
-        },
+        polygons,
+        label_position,
     }
+}
+
+fn offline_region_bounds_label_position(bounds_list: &[RegionBounds]) -> OfflineRegionLatLon {
+    let points = bounds_list
+        .iter()
+        .flat_map(|bounds| {
+            [
+                OfflineRegionLatLon {
+                    lat: bounds.lat_max,
+                    lon: bounds.lon_min,
+                },
+                OfflineRegionLatLon {
+                    lat: bounds.lat_max,
+                    lon: bounds.lon_max,
+                },
+                OfflineRegionLatLon {
+                    lat: bounds.lat_min,
+                    lon: bounds.lon_max,
+                },
+                OfflineRegionLatLon {
+                    lat: bounds.lat_min,
+                    lon: bounds.lon_min,
+                },
+            ]
+        })
+        .collect::<Vec<_>>();
+    polygon_label_position(&points)
 }
 
 fn plate_offline_region_records(resource_index: &ResourceIndex) -> Vec<OfflineRegionRecord> {
@@ -5064,7 +5094,7 @@ fn plate_offline_region_records(resource_index: &ResourceIndex) -> Vec<OfflineRe
                     &region_id,
                     &["tpp", "csup"],
                 ),
-                polygon,
+                polygons: vec![polygon],
                 label_position,
             })
         })
@@ -9129,18 +9159,29 @@ fn load_towered_metar_station_ids_from_current_vectors(
     let root = NavKvRoot::parse(&root_bytes)
         .map_err(|error| anyhow::anyhow!("failed to parse nav_db root: {error}"))?;
     let mut station_ids = BTreeSet::new();
-    for key in root.prefix_keys("vector/point-tile/airport/") {
+    let mut page_cache = BTreeMap::<u32, Vec<u8>>::new();
+    let mut read_page = |archive: &mut ZipArchive<File>, page_index: u32| -> Option<Vec<u8>> {
+        if let Some(page) = page_cache.get(&page_index) {
+            return Some(page.clone());
+        }
+        let page_name = format!("page_{page_index:04}");
+        let mut page = Vec::new();
+        archive
+            .by_name(&page_name)
+            .ok()?
+            .read_to_end(&mut page)
+            .ok()?;
+        page_cache.insert(page_index, page.clone());
+        Some(page)
+    };
+    let keys = root
+        .prefix_keys("vector/point-tile/airport/", |page_index| {
+            read_page(&mut archive, page_index)
+        })
+        .context("missing nav_db pages while scanning airport vector keys")?;
+    for key in keys {
         let value = root
-            .extract_value(&key, |page_index| {
-                let page_name = format!("values_{page_index:04}");
-                let mut page = Vec::new();
-                archive
-                    .by_name(&page_name)
-                    .ok()?
-                    .read_to_end(&mut page)
-                    .ok()?;
-                Some(page)
-            })
+            .extract_value(&key, |page_index| read_page(&mut archive, page_index))
             .with_context(|| format!("missing nav_db value for {key}"))?;
         let tile: serde_json::Value = serde_json::from_slice(&value)
             .with_context(|| format!("failed to parse {key} in {}", nav_db_zip_path.display()))?;
@@ -17797,14 +17838,14 @@ mod tests {
             .expect("chart region");
         assert_eq!(chart.kind, "chart");
         assert_eq!(
-            chart.polygon[0],
+            chart.polygons[0][0],
             OfflineRegionLatLon {
                 lat: 50.0,
                 lon: -125.0
             }
         );
         assert_eq!(
-            chart.polygon[2],
+            chart.polygons[0][2],
             OfflineRegionLatLon {
                 lat: 40.0,
                 lon: -103.0
@@ -17818,15 +17859,43 @@ mod tests {
             .expect("plate region");
         assert_eq!(plate.kind, "plate");
         assert_eq!(plate.color_key, "class_c_magenta");
-        assert_eq!(plate.polygon.len(), 4);
-        assert!(plate.polygon.contains(&OfflineRegionLatLon {
+        assert_eq!(plate.polygons.len(), 1);
+        assert_eq!(plate.polygons[0].len(), 4);
+        assert!(plate.polygons[0].contains(&OfflineRegionLatLon {
             lat: 47.0,
             lon: -124.0
         }));
-        assert!(!plate.polygon.contains(&OfflineRegionLatLon {
+        assert!(!plate.polygons[0].contains(&OfflineRegionLatLon {
             lat: 46.0,
             lon: -122.0
         }));
+    }
+
+    #[test]
+    fn pac_chart_offline_region_uses_multiple_polygons() {
+        let index = minimal_resource_index();
+        let catalog = build_offline_region_catalog(&index);
+        let pac = catalog
+            .regions
+            .iter()
+            .find(|region| region.id == "chart:pac")
+            .expect("PAC chart region");
+
+        assert_eq!(pac.polygons.len(), 3);
+        assert!(pac
+            .polygons
+            .iter()
+            .any(|polygon| polygon.contains(&OfflineRegionLatLon {
+                lat: -16.0,
+                lon: -174.0
+            })));
+        assert!(pac
+            .polygons
+            .iter()
+            .any(|polygon| polygon.contains(&OfflineRegionLatLon {
+                lat: 10.0,
+                lon: 147.0
+            })));
     }
 
     #[test]
@@ -17940,7 +18009,7 @@ mod tests {
                 label: "TEST Charts".to_string(),
                 color_key: "class_b_d_blue".to_string(),
                 summary: Vec::new(),
-                polygon: Vec::new(),
+                polygons: Vec::new(),
                 label_position: OfflineRegionLatLon {
                     lat: 47.0,
                     lon: -122.0,
@@ -17953,7 +18022,7 @@ mod tests {
                 label: "TEST Plates".to_string(),
                 color_key: "class_c_magenta".to_string(),
                 summary: Vec::new(),
-                polygon: Vec::new(),
+                polygons: Vec::new(),
                 label_position: OfflineRegionLatLon {
                     lat: 47.0,
                     lon: -122.0,

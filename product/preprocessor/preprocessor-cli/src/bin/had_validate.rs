@@ -118,7 +118,7 @@ impl HadSource {
     fn query(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
         match self {
             Self::Dir { dir, root } => Ok(root.extract_value(key, |page_index| {
-                fs::read(dir.join(format!("values_{page_index:04}"))).ok()
+                fs::read(dir.join(format!("page_{page_index:04}"))).ok()
             })),
             Self::Zip { path, root } => {
                 let file = File::open(path)
@@ -126,7 +126,7 @@ impl HadSource {
                 let mut archive = ZipArchive::new(file)
                     .with_context(|| format!("failed to read zip {}", path.display()))?;
                 Ok(root.extract_value(key, |page_index| {
-                    read_zip_member(&mut archive, &format!("values_{page_index:04}")).ok()
+                    read_zip_member(&mut archive, &format!("page_{page_index:04}")).ok()
                 }))
             }
         }

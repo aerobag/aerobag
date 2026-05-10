@@ -381,7 +381,7 @@ pub struct OfflineRegionRecord {
     pub color_key: String,
     #[serde(default)]
     pub summary: Vec<OfflineRegionSummaryEntry>,
-    pub polygon: Vec<LatLon>,
+    pub polygons: Vec<Vec<LatLon>>,
     pub label_position: LatLon,
 }
 
@@ -1237,57 +1237,74 @@ fn project_offline_regions(
     let min_visible_world_x = center_world.x - width_px / 2.0 / scale;
     let max_visible_world_x = center_world.x + width_px / 2.0 / scale;
     let mut displays = Vec::new();
-    for region in regions.iter().filter(|region| region.polygon.len() >= 2) {
-        let unwrapped_polygon = unwrap_world_path_near_center(&region.polygon, center_world);
-        let min_polygon_x = unwrapped_polygon
+    for region in regions {
+        for (polygon_index, polygon) in region
+            .polygons
             .iter()
-            .map(|world| world.x)
-            .fold(f64::INFINITY, f64::min);
-        let max_polygon_x = unwrapped_polygon
-            .iter()
-            .map(|world| world.x)
-            .fold(f64::NEG_INFINITY, f64::max);
-        if !min_polygon_x.is_finite() || !max_polygon_x.is_finite() {
-            continue;
-        }
-        let polygon_average_x = unwrapped_polygon.iter().map(|world| world.x).sum::<f64>()
-            / unwrapped_polygon.len() as f64;
-        let copy_start = ((min_visible_world_x - max_polygon_x) / WORLD_SIZE).floor() as i32;
-        let copy_end = ((max_visible_world_x - min_polygon_x) / WORLD_SIZE).ceil() as i32;
-        for copy in copy_start..=copy_end {
-            let offset = copy as f64 * WORLD_SIZE;
-            let points = unwrapped_polygon
+            .enumerate()
+            .filter(|(_, polygon)| polygon.len() >= 2)
+        {
+            let unwrapped_polygon = unwrap_world_path_near_center(polygon, center_world);
+            let min_polygon_x = unwrapped_polygon
                 .iter()
-                .map(|world| WorldPoint {
-                    x: world.x + offset,
-                    y: world.y,
-                })
-                .map(|world| {
-                    let screen =
-                        projected_world_to_screen(center_world, scale, width_px, height_px, world);
-                    AirspaceScreenPoint {
-                        x: screen.x,
-                        y: screen.y,
-                    }
-                })
-                .collect();
-            let mut label_world = lat_lon_to_world(region.label_position);
-            label_world.x +=
-                ((polygon_average_x - label_world.x) / WORLD_SIZE).round() * WORLD_SIZE;
-            label_world.x += offset;
-            let label =
-                projected_world_to_screen(center_world, scale, width_px, height_px, label_world);
-            displays.push(OfflineRegionDisplay {
-                id: format!("{}:{copy}", region.id),
-                kind: region.kind.clone(),
-                region_id: region.region_id.clone(),
-                label: region.label.clone(),
-                color_key: region.color_key.clone(),
-                summary: region.summary.clone(),
-                points,
-                label_x: label.x,
-                label_y: label.y,
-            });
+                .map(|world| world.x)
+                .fold(f64::INFINITY, f64::min);
+            let max_polygon_x = unwrapped_polygon
+                .iter()
+                .map(|world| world.x)
+                .fold(f64::NEG_INFINITY, f64::max);
+            if !min_polygon_x.is_finite() || !max_polygon_x.is_finite() {
+                continue;
+            }
+            let polygon_average_x = unwrapped_polygon.iter().map(|world| world.x).sum::<f64>()
+                / unwrapped_polygon.len() as f64;
+            let copy_start = ((min_visible_world_x - max_polygon_x) / WORLD_SIZE).floor() as i32;
+            let copy_end = ((max_visible_world_x - min_polygon_x) / WORLD_SIZE).ceil() as i32;
+            for copy in copy_start..=copy_end {
+                let offset = copy as f64 * WORLD_SIZE;
+                let points = unwrapped_polygon
+                    .iter()
+                    .map(|world| WorldPoint {
+                        x: world.x + offset,
+                        y: world.y,
+                    })
+                    .map(|world| {
+                        let screen = projected_world_to_screen(
+                            center_world,
+                            scale,
+                            width_px,
+                            height_px,
+                            world,
+                        );
+                        AirspaceScreenPoint {
+                            x: screen.x,
+                            y: screen.y,
+                        }
+                    })
+                    .collect();
+                let mut label_world = lat_lon_to_world(region.label_position);
+                label_world.x +=
+                    ((polygon_average_x - label_world.x) / WORLD_SIZE).round() * WORLD_SIZE;
+                label_world.x += offset;
+                let label = projected_world_to_screen(
+                    center_world,
+                    scale,
+                    width_px,
+                    height_px,
+                    label_world,
+                );
+                displays.push(OfflineRegionDisplay {
+                    id: format!("{}:{polygon_index}:{copy}", region.id),
+                    kind: region.kind.clone(),
+                    region_id: region.region_id.clone(),
+                    label: region.label.clone(),
+                    color_key: region.color_key.clone(),
+                    summary: region.summary.clone(),
+                    points,
+                    label_x: label.x,
+                    label_y: label.y,
+                });
+            }
         }
     }
     displays
@@ -2715,17 +2732,19 @@ fn tfr_area_contains(area: &TfrAreaPayload, point: LatLon) -> bool {
 }
 
 fn offline_region_contains(region: &OfflineRegionRecord, point: LatLon) -> bool {
-    if region.polygon.len() < 3 {
-        return false;
-    }
-    let polygon = region
-        .polygon
+    region
+        .polygons
         .iter()
-        .map(|point| [point.lon, point.lat])
-        .collect::<Vec<_>>();
-    wrapped_lon_candidates(point.lon)
-        .into_iter()
-        .any(|lon| lon_lat_polygon_contains(&polygon, lon, point.lat))
+        .filter(|polygon| polygon.len() >= 3)
+        .any(|polygon| {
+            let polygon = polygon
+                .iter()
+                .map(|point| [point.lon, point.lat])
+                .collect::<Vec<_>>();
+            wrapped_lon_candidates(point.lon)
+                .into_iter()
+                .any(|lon| lon_lat_polygon_contains(&polygon, lon, point.lat))
+        })
 }
 
 fn wrapped_lon_candidates(lon: f64) -> [f64; 3] {
@@ -4117,7 +4136,7 @@ mod tests {
             label: "PAC".to_string(),
             color_key: "pac".to_string(),
             summary: Vec::new(),
-            polygon: vec![
+            polygons: vec![vec![
                 LatLon {
                     lat: 45.0,
                     lon: 170.0,
@@ -4134,7 +4153,7 @@ mod tests {
                     lat: 55.0,
                     lon: 170.0,
                 },
-            ],
+            ]],
             label_position: LatLon {
                 lat: 50.0,
                 lon: -180.0,
@@ -4166,7 +4185,7 @@ mod tests {
             label: "PAC".to_string(),
             color_key: "pac".to_string(),
             summary: Vec::new(),
-            polygon: vec![
+            polygons: vec![vec![
                 LatLon {
                     lat: 45.0,
                     lon: -170.0,
@@ -4183,7 +4202,7 @@ mod tests {
                     lat: 55.0,
                     lon: -170.0,
                 },
-            ],
+            ]],
             label_position: LatLon {
                 lat: 50.0,
                 lon: 180.0,
@@ -4766,7 +4785,7 @@ mod tests {
                 cycle: "2604".to_string(),
                 count: 2,
             }],
-            polygon: vec![
+            polygons: vec![vec![
                 LatLon {
                     lat: -1.0,
                     lon: -1.0,
@@ -4780,7 +4799,7 @@ mod tests {
                     lat: 1.0,
                     lon: -1.0,
                 },
-            ],
+            ]],
             label_position: LatLon { lat: 0.0, lon: 0.0 },
         };
         let mut nw_plate_region = region.clone();

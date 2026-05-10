@@ -126,10 +126,10 @@ pub fn load_fixture_nav_kv_pages() -> (Vec<u8>, Vec<Vec<u8>>) {
 
     let root = app_core::NavKvRoot::parse(&root_bytes)
         .unwrap_or_else(|err| panic!("parse {} in {}: {err}", root_name, zip_path.display()));
-    let page_count = ((root.value_bytes_len() + root.page_size() - 1) / root.page_size()) as usize;
+    let page_count = root.page_count() as usize;
     let mut pages = Vec::with_capacity(page_count);
     for page_index in 0..page_count {
-        let entry_name = format!("values_{page_index:04}");
+        let entry_name = format!("page_{page_index:04}");
         let mut page_bytes = Vec::new();
         archive
             .by_name(&entry_name)

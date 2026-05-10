@@ -180,7 +180,7 @@ pub(crate) fn nav_kv_page_resources(mut pages: Vec<u32>) -> Vec<CoreResourceRequ
 pub(crate) fn nav_kv_page_resource(page: u32) -> CoreResourceRequest {
     CoreResourceRequest {
         id: format!("nav_kv/page/{page:04}"),
-        address: format!("/nav-kv/values/{page:04}"),
+        address: format!("/nav-kv/page/{page:04}"),
         optional: false,
     }
 }
@@ -322,7 +322,7 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
             store,
             &airport_id,
             procedure_kind,
-        ))?,
+        )?)?,
         HadOperation::DescribeProcedureOptions {
             airport_id,
             procedure_id,
@@ -1552,12 +1552,7 @@ fn describe_procedure_options(
     procedure_id: &str,
     kind: ProcedureKind,
 ) -> Result<ProcedureOptions, HadReadError> {
-    Ok(describe_procedure_options_from_geometry_keys(
-        store,
-        airport_id,
-        procedure_id,
-        kind,
-    ))
+    describe_procedure_options_from_geometry_keys(store, airport_id, procedure_id, kind)
 }
 
 pub(crate) fn materialize_procedure(
@@ -1587,11 +1582,9 @@ fn list_procedures_from_geometry(
     store: &NavKvStore,
     airport_id: &str,
     kind: ProcedureKind,
-) -> Vec<ProcedureSummary> {
+) -> Result<Vec<ProcedureSummary>, HadReadError> {
     let prefix = crate::navkv::procedure_geometry_kind_prefix(airport_id, &kind);
-    let mut procedure_ids = store
-        .keys_with_prefix(&prefix)
-        .into_iter()
+    let mut procedure_ids = nav_kv_prefix_keys(store, &prefix)?
         .filter_map(|key| {
             let suffix = key.strip_prefix(&prefix)?;
             let procedure_id = suffix.split('/').next()?;
@@ -1600,14 +1593,14 @@ fn list_procedures_from_geometry(
         .collect::<Vec<_>>();
     procedure_ids.sort();
     procedure_ids.dedup();
-    procedure_ids
+    Ok(procedure_ids
         .into_iter()
         .map(|procedure_id| ProcedureSummary {
             airport_id: airport_id.trim().to_string(),
             procedure_id,
             kind: kind.clone(),
         })
-        .collect()
+        .collect())
 }
 
 fn describe_procedure_options_from_geometry_keys(
@@ -1615,11 +1608,9 @@ fn describe_procedure_options_from_geometry_keys(
     airport_id: &str,
     procedure_id: &str,
     kind: ProcedureKind,
-) -> ProcedureOptions {
+) -> Result<ProcedureOptions, HadReadError> {
     let prefix = crate::navkv::procedure_geometry_prefix(airport_id, &kind, procedure_id);
-    let mut valid_choices = store
-        .keys_with_prefix(&prefix)
-        .into_iter()
+    let mut valid_choices = nav_kv_prefix_keys(store, &prefix)?
         .filter_map(|key| {
             let suffix = key.strip_prefix(&prefix)?;
             let mut parts = suffix.split('/');
@@ -1655,7 +1646,7 @@ fn describe_procedure_options_from_geometry_keys(
     enroute_transitions.sort();
     enroute_transitions.dedup();
 
-    ProcedureOptions {
+    Ok(ProcedureOptions {
         airport_id: airport_id.trim().to_string(),
         procedure_id: procedure_id.trim().to_string(),
         kind,
@@ -1663,6 +1654,28 @@ fn describe_procedure_options_from_geometry_keys(
         enroute_transitions,
         has_common_segment: valid_choices.len() > 1,
         valid_choices,
+    })
+}
+
+fn nav_kv_prefix_keys(
+    store: &NavKvStore,
+    prefix: &str,
+) -> Result<std::vec::IntoIter<String>, HadReadError> {
+    match store
+        .keys_with_prefix_lookup(prefix)
+        .map_err(HadReadError::Fatal)?
+    {
+        NavKvLookup::Hit(bytes) => {
+            let text =
+                String::from_utf8(bytes).map_err(|err| HadReadError::Fatal(err.to_string()))?;
+            Ok(text
+                .lines()
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+                .into_iter())
+        }
+        NavKvLookup::MissingPages(pages) => Err(HadReadError::NeedPages(pages)),
+        NavKvLookup::MissingKey => Ok(Vec::new().into_iter()),
     }
 }
 
@@ -2554,7 +2567,7 @@ fn describe_plate_loads(
             &preferred.airport_id,
             &preferred.cifp_id,
             ProcedureKind::Approach,
-        );
+        )?;
         if options.valid_choices.is_empty() {
             continue;
         }
@@ -2708,46 +2721,59 @@ mod tests {
     }
 
     fn fixture(entries: &[(&str, &[u8])], page_size: u32) -> (NavKvRoot, Vec<Vec<u8>>) {
-        let root = build_root(entries, page_size);
-        let values = entries
-            .iter()
-            .flat_map(|(_, value)| value.iter().copied())
-            .collect::<Vec<_>>();
-        let pages = values
+        let (root, logical) = build_root(entries, page_size);
+        let pages = logical
             .chunks(page_size as usize)
             .map(|chunk| chunk.to_vec())
             .collect::<Vec<_>>();
         (NavKvRoot::parse(&root).unwrap(), pages)
     }
 
-    fn build_root(entries: &[(&str, &[u8])], page_size: u32) -> Vec<u8> {
+    fn build_root(entries: &[(&str, &[u8])], page_size: u32) -> (Vec<u8>, Vec<u8>) {
         let mut key_bytes = Vec::new();
+        let mut value_bytes = Vec::new();
         let mut value_offset = 0u32;
         let mut table = Vec::<(u32, u32)>::new();
         for (key, value) in entries {
             table.push((key_bytes.len() as u32, value_offset));
             key_bytes.extend_from_slice(key.as_bytes());
+            value_bytes.extend_from_slice(value);
             value_offset += value.len() as u32;
         }
         table.push((key_bytes.len() as u32, value_offset));
 
-        let header_len = 48usize;
+        let header_len = 64usize;
         let entry_len = 8usize;
+        let mut offset_table = Vec::new();
+        for (key_offset, value_offset) in table {
+            offset_table.extend_from_slice(&key_offset.to_le_bytes());
+            offset_table.extend_from_slice(&value_offset.to_le_bytes());
+        }
+        let offset_table_len = offset_table.len() as u32;
+        let key_table_offset = offset_table_len;
+        let key_table_len = key_bytes.len() as u32;
+        let value_table_offset = key_table_offset + key_table_len;
+        let value_bytes_len = value_bytes.len() as u32;
+        let logical_bytes_len = value_table_offset + value_bytes_len;
+        let mut logical = Vec::new();
+        logical.extend_from_slice(&offset_table);
+        logical.extend_from_slice(&key_bytes);
+        logical.extend_from_slice(&value_bytes);
+
         let mut root = vec![0; header_len];
         root[..16].copy_from_slice(b"AEROBAGNAVKV0001");
-        write_u32(&mut root, 16, 1);
+        write_u32(&mut root, 16, 2);
         write_u32(&mut root, 20, entries.len() as u32);
         write_u32(&mut root, 24, page_size);
-        write_u32(&mut root, 28, header_len as u32);
-        write_u32(&mut root, 32, (header_len + table.len() * entry_len) as u32);
-        write_u32(&mut root, 36, key_bytes.len() as u32);
-        write_u32(&mut root, 40, value_offset);
-        for (key_offset, value_offset) in table {
-            root.extend_from_slice(&key_offset.to_le_bytes());
-            root.extend_from_slice(&value_offset.to_le_bytes());
-        }
-        root.extend_from_slice(&key_bytes);
-        root
+        write_u32(&mut root, 28, 0);
+        write_u32(&mut root, 32, offset_table_len);
+        write_u32(&mut root, 36, key_table_offset);
+        write_u32(&mut root, 40, key_table_len);
+        write_u32(&mut root, 44, value_table_offset);
+        write_u32(&mut root, 48, value_bytes_len);
+        write_u32(&mut root, 52, logical_bytes_len);
+        assert_eq!(entry_len, 8);
+        (root, logical)
     }
 
     fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {
@@ -2828,27 +2854,19 @@ mod tests {
         let nav_kv_dir = current_nav_db_dir();
         let root_bytes = fs::read(nav_kv_dir.join("root")).expect("read current nav_db root");
         let root = NavKvRoot::parse(&root_bytes).expect("parse current nav_db root");
-        let values_dir = nav_kv_dir.join("values");
-        let mut page_paths = if values_dir.is_dir() {
-            fs::read_dir(&values_dir)
-                .expect("read current nav_db values dir")
-                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-                .collect::<Vec<_>>()
-        } else {
-            fs::read_dir(&nav_kv_dir)
-                .expect("read current nav_db dir")
-                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-                .filter(|path| {
-                    path.file_name()
-                        .and_then(|name| name.to_str())
-                        .is_some_and(|name| name.starts_with("values_"))
-                })
-                .collect::<Vec<_>>()
-        };
+        let mut page_paths = fs::read_dir(&nav_kv_dir)
+            .expect("read current nav_db dir")
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("page_"))
+            })
+            .collect::<Vec<_>>();
         page_paths.sort();
         assert!(
             !page_paths.is_empty(),
-            "current nav_db is missing values pages under {}",
+            "current nav_db is missing pages under {}",
             nav_kv_dir.display()
         );
         let mut store = NavKvStore::new(root);
@@ -3373,7 +3391,8 @@ mod tests {
     #[test]
     fn generated_nav_kv_default_map_selector_state_displays_all_tac_and_sec_regions() {
         let store = load_current_nav_kv_store();
-        let state = map_selector_state(&store, None, None).expect("load generated map selector state");
+        let state =
+            map_selector_state(&store, None, None).expect("load generated map selector state");
 
         let displayed_ids = state
             .displayed_maps
@@ -3431,7 +3450,8 @@ mod tests {
     #[test]
     fn generated_nav_kv_south_central_maps_cover_kmsy_tile() {
         let store = load_current_nav_kv_store();
-        let state = map_selector_state(&store, None, None).expect("load generated map selector state");
+        let state =
+            map_selector_state(&store, None, None).expect("load generated map selector state");
 
         fn lat_lon_to_tile_tms(lat: f64, lon: f64, zoom: f64) -> (i64, i64) {
             let world_size = 256.0f64;

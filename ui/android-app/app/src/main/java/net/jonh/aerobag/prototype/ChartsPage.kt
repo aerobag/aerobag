@@ -1258,6 +1258,7 @@ internal fun MenuPanelRow(
     toggleState: UiMapLayerToggleState? = null,
     @DrawableRes iconResId: Int? = null,
     testTag: String? = null,
+    modifier: Modifier = Modifier,
     width: Dp = Dp.Unspecified,
     onSelect: () -> Unit,
 ) {
@@ -1277,7 +1278,7 @@ internal fun MenuPanelRow(
         else -> uiTheme.controls.buttonFg
     }
     Box(
-        modifier = Modifier
+        modifier = modifier
             .then(if (width != Dp.Unspecified) Modifier.width(width) else Modifier.fillMaxWidth())
             .height(ThumbSize)
             .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)

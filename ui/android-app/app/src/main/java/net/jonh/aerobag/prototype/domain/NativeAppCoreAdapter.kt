@@ -2815,6 +2815,9 @@ private fun WireFlightPlanDisplayRowUiView.toUi() = FlightPlanDisplayRowUiView(
     precedingWaypoint = preceding_waypoint?.toUi(),
     followingWaypoint = following_waypoint?.toUi(),
     actions = actions.map { it.toUi() },
+    actionMatrix = action_matrix.map { row -> row.map { it.toUi() } }.ifEmpty {
+        listOf(actions.map { it.toUi() })
+    },
 )
 
 private fun FlightPlanDisplayRowUiView.toWire() = WireFlightPlanDisplayRowUiView(
@@ -2854,6 +2857,7 @@ private fun FlightPlanDisplayRowUiView.toWire() = WireFlightPlanDisplayRowUiView
     preceding_waypoint = precedingWaypoint?.toWire(),
     following_waypoint = followingWaypoint?.toWire(),
     actions = actions.map { it.toWire() },
+    action_matrix = actionMatrix.map { row -> row.map { it.toWire() } },
 )
 
 private fun WireFlightPlanDisplayRowKind.toUi() = when (this) {

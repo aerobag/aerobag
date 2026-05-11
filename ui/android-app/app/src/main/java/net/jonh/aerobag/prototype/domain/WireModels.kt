@@ -1464,6 +1464,7 @@ data class WireFlightPlanDisplayRowUiView(
     val preceding_waypoint: WireNavRef? = null,
     val following_waypoint: WireNavRef? = null,
     val actions: List<WireFlightPlanRowActionUiView>,
+    val action_matrix: List<List<WireFlightPlanRowActionUiView>> = emptyList(),
 )
 
 @Serializable

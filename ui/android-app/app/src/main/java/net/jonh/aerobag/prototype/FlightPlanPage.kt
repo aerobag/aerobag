@@ -396,6 +396,8 @@ internal fun FlightPlanPage(
     val selectedRow = selectedWaypointIndex?.let(rows::getOrNull)
     val selectedRowBounds = selectedRow?.let { structuredRowBounds[it.id] }
     val waypointTrayStart = planWaypointTrayStart
+    val selectedRowActionMatrix =
+        selectedRow?.actionMatrix?.takeIf { it.isNotEmpty() } ?: selectedRow?.actions?.let { listOf(it) }.orEmpty()
     fun estimateTrayHeightDp(rowCount: Int): Dp =
         ThumbGap * 2 + (ThumbSize + 3.dp) * rowCount
     val waypointTrayTop =
@@ -424,7 +426,7 @@ internal fun FlightPlanPage(
                                 else -> 1 + (picker.presentation?.points?.size ?: 0)
                             }
                         }
-                        else -> selectedRow?.actions?.size ?: 1
+                        else -> selectedRowActionMatrix.size
                     }.coerceAtLeast(1)
                 val estimatedHeight = estimateTrayHeightDp(estimatedRows)
                 val paneBottom = with(density) { (structuredSurfaceBounds?.height ?: 0f).toDp() } + defaultTop
@@ -458,7 +460,7 @@ internal fun FlightPlanPage(
                                 else -> 1 + (picker.presentation?.points?.size ?: 0)
                             }
                         }
-                        else -> selectedRow.actions.size
+                        else -> selectedRowActionMatrix.size
                     }.coerceAtLeast(1)
                 val estimatedHeight = estimateTrayHeightDp(estimatedRows)
                 val paneBottom = with(density) { (surfaceBounds.bottom - surfaceBounds.top).toDp() } + defaultTop
@@ -1126,103 +1128,111 @@ internal fun FlightPlanPage(
                         .zIndex(5f),
                     width = waypointTrayWidth,
                 ) {
-                    selectedRow.actions.forEach { action ->
-                        MenuPanelRow(
-                            label = action.label,
-                            active = false,
-                            enabled = action.enabled,
-                            testTag = "parity:plan-row-action:${action.id}",
-                            onSelect = {
-                                if (!action.enabled) {
-                                    return@MenuPanelRow
-                                }
-                                if (action.execution == "core_session") {
-                                    runCatching {
-                                        uiSession.performFlightPlanRowAction(selectedRow.id, action.uid)
-                                    }.onSuccess { snapshot ->
-                                        onApplySessionSnapshot(snapshot)
-                                    }.onFailure { error ->
-                                        Log.e(
-                                            "AerobagPlan",
-                                            "core row action failed row=${selectedRow.id} action=${action.uid}",
-                                            error,
-                                        )
-                                    }
-                                    if (action.dismissTrayOnSuccess) {
-                                        closePanels()
-                                    }
-                                    return@MenuPanelRow
-                                }
-                                when (action.id) {
-                                    "insert_before",
-                                    "insert_after",
-                                    -> {
-                                        airportInsert =
-                                            AndroidAirportInsertState(
-                                                rowUid = selectedRow.id,
-                                                before = action.id == "insert_before",
-                                                airportId = "",
-                                                error = null,
-                                                loading = false,
-                                                suggestions = emptyList(),
-                                            )
-                                    }
-                                    "add_airway" -> {
-                                        airwayPicker =
-                                            AndroidAirwayPickerState(
-                                                loading = true,
-                                                error = null,
-                                                rowUid = selectedRow.id,
-                                                originAnchor = selectedRow.originAnchor!!,
-                                                destinationAnchor = selectedRow.destinationAnchor,
-                                                suggestions = emptyList(),
-                                                selectedAirwayName = null,
-                                                presentation = null,
-                                                selectedEntryIndex = null,
-                                            )
-                                        runCatching {
-                                            appCore.suggestAirwaysNear(selectedRow.originAnchor!!)
-                                        }.onSuccess { suggestions ->
-                                            airwayPicker = airwayPicker?.copy(loading = false, suggestions = suggestions)
-                                        }.onFailure { error ->
-                                            airwayPicker = airwayPicker?.copy(loading = false, error = error.message ?: error.toString())
+                    selectedRowActionMatrix.forEach { actionRow ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            actionRow.forEach { action ->
+                                MenuPanelRow(
+                                    label = action.label,
+                                    active = false,
+                                    enabled = action.enabled,
+                                    testTag = "parity:plan-row-action:${action.id}",
+                                    modifier = Modifier.weight(1f),
+                                    onSelect = {
+                                        if (!action.enabled) {
+                                            return@MenuPanelRow
                                         }
-                                    }
-                                    "select_procedure" -> {
-                                        val airportId = selectedRow.chartAirportId ?: return@MenuPanelRow
-                                        procedurePicker =
-                                            AndroidProcedurePickerState(
-                                                loading = true,
-                                                error = null,
-                                                rowUid = selectedRow.id,
-                                                airportId = airportId,
-                                                procedures = emptyList(),
-                                                selectedProcedureId = null,
-                                                options = null,
-                                            )
-                                        runCatching {
-                                            appCore.listProcedures(airportId, ProcedureKind.Approach)
-                                        }.onSuccess { procedures ->
-                                            procedurePicker = procedurePicker?.copy(loading = false, procedures = procedures)
-                                        }.onFailure { error ->
-                                            Log.e("AerobagProcedure", "listProcedures failed airport=$airportId", error)
-                                            procedurePicker = procedurePicker?.copy(loading = false, error = error.message ?: error.toString())
+                                        if (action.execution == "core_session") {
+                                            runCatching {
+                                                uiSession.performFlightPlanRowAction(selectedRow.id, action.uid)
+                                            }.onSuccess { snapshot ->
+                                                onApplySessionSnapshot(snapshot)
+                                            }.onFailure { error ->
+                                                Log.e(
+                                                    "AerobagPlan",
+                                                    "core row action failed row=${selectedRow.id} action=${action.uid}",
+                                                    error,
+                                                )
+                                            }
+                                            if (action.dismissTrayOnSuccess) {
+                                                closePanels()
+                                            }
+                                            return@MenuPanelRow
                                         }
-                                    }
-                                    "plates" -> {
-                                        onOpenCharts(selectedRow.chartAirportId)
-                                        closePanels()
-                                    }
-                                    "waypoint_info" -> {}
-                                    else -> Unit
-                                }
+                                        when (action.id) {
+                                            "insert_before",
+                                            "insert_after",
+                                            -> {
+                                                airportInsert =
+                                                    AndroidAirportInsertState(
+                                                        rowUid = selectedRow.id,
+                                                        before = action.id == "insert_before",
+                                                        airportId = "",
+                                                        error = null,
+                                                        loading = false,
+                                                        suggestions = emptyList(),
+                                                    )
+                                            }
+                                            "add_airway" -> {
+                                                airwayPicker =
+                                                    AndroidAirwayPickerState(
+                                                        loading = true,
+                                                        error = null,
+                                                        rowUid = selectedRow.id,
+                                                        originAnchor = selectedRow.originAnchor!!,
+                                                        destinationAnchor = selectedRow.destinationAnchor,
+                                                        suggestions = emptyList(),
+                                                        selectedAirwayName = null,
+                                                        presentation = null,
+                                                        selectedEntryIndex = null,
+                                                    )
+                                                runCatching {
+                                                    appCore.suggestAirwaysNear(selectedRow.originAnchor!!)
+                                                }.onSuccess { suggestions ->
+                                                    airwayPicker = airwayPicker?.copy(loading = false, suggestions = suggestions)
+                                                }.onFailure { error ->
+                                                    airwayPicker = airwayPicker?.copy(loading = false, error = error.message ?: error.toString())
+                                                }
+                                            }
+                                            "select_procedure" -> {
+                                                val airportId = selectedRow.chartAirportId ?: return@MenuPanelRow
+                                                procedurePicker =
+                                                    AndroidProcedurePickerState(
+                                                        loading = true,
+                                                        error = null,
+                                                        rowUid = selectedRow.id,
+                                                        airportId = airportId,
+                                                        procedures = emptyList(),
+                                                        selectedProcedureId = null,
+                                                        options = null,
+                                                    )
+                                                runCatching {
+                                                    appCore.listProcedures(airportId, ProcedureKind.Approach)
+                                                }.onSuccess { procedures ->
+                                                    procedurePicker = procedurePicker?.copy(loading = false, procedures = procedures)
+                                                }.onFailure { error ->
+                                                    Log.e("AerobagProcedure", "listProcedures failed airport=$airportId", error)
+                                                    procedurePicker = procedurePicker?.copy(loading = false, error = error.message ?: error.toString())
+                                                }
+                                            }
+                                            "plates" -> {
+                                                onOpenCharts(selectedRow.chartAirportId)
+                                                closePanels()
+                                            }
+                                            "waypoint_info" -> {}
+                                            else -> Unit
+                                        }
+                                    },
+                                )
                             }
-                        )
+                        }
                     }
                 }
-            }
         }
     }
+}
 }
 
 internal fun emptyFlightPlanEntryPreview(): FlightPlanEntryPreview =

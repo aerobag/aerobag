@@ -647,7 +647,7 @@ button {
   position: absolute;
   top: var(--thumb-gap);
   right: var(--thumb-gap);
-  z-index: 7;
+  z-index: 20;
 }
 
 .situationDock.isLowered {
@@ -695,7 +695,7 @@ button {
 .trayScrim {
   position: absolute;
   inset: 0;
-  z-index: 8;
+  z-index: 20;
   border: 0;
   padding: 0;
   background: rgba(10, 16, 20, 0.24);
@@ -745,7 +745,7 @@ button {
   position: absolute;
   top: var(--thumb-gap);
   left: var(--thumb-gap);
-  z-index: 7;
+  z-index: 20;
   display: flex;
   align-items: flex-start;
   gap: var(--thumb-gap);
@@ -808,7 +808,7 @@ button {
   position: absolute;
   top: calc(100% + var(--thumb-gap));
   left: 0;
-  z-index: 8;
+  z-index: 21;
   display: flex;
   flex-direction: column;
   gap: var(--thumb-gap);
@@ -841,7 +841,7 @@ button {
 
 .mapSelectionTray {
   position: fixed;
-  z-index: 9;
+  z-index: 21;
   width: calc(var(--thumb) * 3.8);
   max-height: calc(var(--app-height) - var(--safe-top) - var(--safe-bottom) - (var(--thumb-gap) * 2));
   display: flex;
@@ -1039,7 +1039,7 @@ button {
 
 .mapSelectionDetailModal {
   position: fixed;
-  z-index: 9;
+  z-index: 22;
   left: 50%;
   top: 50%;
   width: min(calc(var(--thumb) * 8), calc(100vw - var(--safe-left) - var(--safe-right) - var(--thumb)));
@@ -1266,7 +1266,7 @@ button {
 
 .chartTrayPortal {
   position: fixed;
-  z-index: 8;
+  z-index: 21;
 }
 
 .chartTray.isOpen {
@@ -2407,7 +2407,7 @@ button {
 }
 
 .waypointModal {
-  z-index: 8;
+  z-index: 21;
   display: flex;
   flex-direction: column;
   gap: var(--thumb-gap);

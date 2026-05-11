@@ -969,13 +969,15 @@ fn suggest_waypoint_identifier_candidates(
     if prefix.is_empty() {
         return Ok(Vec::new());
     }
-    let candidates = read_required::<Vec<WaypointIdentifierRecord>>(
+    let Some(candidates) = read_optional::<Vec<WaypointIdentifierRecord>>(
         store,
         NavKvQuery::WaypointPrefix {
             prefix: prefix.clone(),
         },
-        "waypoint prefix",
-    )?;
+    )?
+    else {
+        return Ok(Vec::new());
+    };
     let mut suggestions = candidates
         .into_iter()
         .filter_map(|candidate| {
@@ -3552,6 +3554,15 @@ mod tests {
                 panic!("expected complete outcome, got missing resources: {resources:?}");
             }
         }
+    }
+
+    #[test]
+    fn missing_waypoint_prefix_suggestions_are_empty() {
+        let store = test_nav_kv_store(&[]);
+        let suggestions =
+            suggest_waypoint_identifier_candidates(&store, "K", 5, LatLon { lat: 0.0, lon: 0.0 })
+                .expect("missing prefix should not be fatal");
+        assert!(suggestions.is_empty());
     }
 
     #[test]

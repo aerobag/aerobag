@@ -62,6 +62,7 @@ use zip::ZipArchive;
 use crate::emit_source_urls::{cycle_effective_date, discover_published_cycles, emit_source_urls};
 
 const PACKAGE_CYCLE_VERSION: &str = "01";
+const WAYPOINT_PREFIX_MAX_RESULTS: usize = 100;
 // Offline chart region polygons are only visual guides in the package picker.
 // Grow chart cutlines coarsely before unioning to collapse tiny source-boundary
 // mismatches, then simplify hard. This does not affect runtime chart coverage.
@@ -6535,6 +6536,9 @@ fn build_nav_kv_waypoint_lookup_pairs(
         }
     }
     for (prefix, candidates) in by_prefix {
+        if candidates.len() > WAYPOINT_PREFIX_MAX_RESULTS {
+            continue;
+        }
         pairs.push(json_pair(
             format!("waypoint/prefix/{}", had_upper_key_component(&prefix)),
             &serde_json::Value::Array(candidates),
@@ -18659,6 +18663,62 @@ mod tests {
 
         let temporal = pair_value("resource/temporal-summary");
         assert_eq!(temporal["uniform_cycle_code"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn nav_kv_waypoint_prefix_pairs_omit_overlarge_suggestion_lists() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE airports (
+                    LocationID TEXT,
+                    City TEXT,
+                    State TEXT,
+                    FacilityName TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL
+                );
+                CREATE TABLE nav (
+                    LocationID TEXT,
+                    FacilityName TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL
+                );
+                CREATE TABLE fix (
+                    LocationID TEXT,
+                    FacilityName TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL
+                );
+                ",
+            )
+            .unwrap();
+        for index in 0..101 {
+            connection
+                .execute(
+                    "INSERT INTO airports VALUES (?1, 'CITY', 'ST', 'FIELD', 47.0, -122.0)",
+                    [format!("K{index:03}")],
+                )
+                .unwrap();
+        }
+        for ident in ["KRNT", "KRDD"] {
+            connection
+                .execute(
+                    "INSERT INTO airports VALUES (?1, 'CITY', 'ST', 'FIELD', 47.0, -122.0)",
+                    [ident],
+                )
+                .unwrap();
+        }
+
+        let pairs = build_nav_kv_waypoint_lookup_pairs(&connection).unwrap();
+        assert!(pairs.iter().all(|pair| pair.key != "waypoint/prefix/K"));
+        let kr = pairs
+            .iter()
+            .find(|pair| pair.key == "waypoint/prefix/KR")
+            .expect("KR prefix should remain below threshold");
+        let suggestions = serde_json::from_slice::<Vec<serde_json::Value>>(&kr.value).unwrap();
+        assert_eq!(suggestions.len(), 2);
     }
 
     #[test]

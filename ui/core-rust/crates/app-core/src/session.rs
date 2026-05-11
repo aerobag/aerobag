@@ -3050,9 +3050,9 @@ fn project_active_leg_nav_element(session: &UiSession) -> NavElementUiView {
 
     NavElementUiView {
         active_leg_summary: format!(
-            "{} CRS {:03.0}",
+            "{} CRS {}",
             active_leg_summary,
-            course_deg.round().rem_euclid(360.0),
+            format_course_degrees(course_deg),
         ),
         cdi_indicator_dots,
         cdi_offscale_readout,
@@ -3965,6 +3965,15 @@ fn normalize_course_degrees(course_deg: f64) -> f64 {
     course_deg.rem_euclid(360.0)
 }
 
+fn format_course_degrees(course_deg: f64) -> String {
+    let rounded = course_deg.round().rem_euclid(360.0) as u16;
+    if rounded == 0 {
+        "360".to_string()
+    } else {
+        format!("{rounded:03}")
+    }
+}
+
 fn signed_distance_beyond_finish_plane(
     position: LatLon,
     finish_plane: SequencingFinishPlane,
@@ -4535,6 +4544,15 @@ mod tests {
         );
         assert_eq!(cdi_offscale_readout(10.0), Some("10nm\u{2192}".to_string()));
         assert_eq!(cdi_offscale_readout(11.4), Some("11nm\u{2192}".to_string()));
+    }
+
+    #[test]
+    fn cdi_course_formatter_uses_aviation_north() {
+        assert_eq!(format_course_degrees(0.0), "360");
+        assert_eq!(format_course_degrees(359.6), "360");
+        assert_eq!(format_course_degrees(0.4), "360");
+        assert_eq!(format_course_degrees(1.0), "001");
+        assert_eq!(format_course_degrees(-1.0), "359");
     }
 
     #[test]

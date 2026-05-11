@@ -2138,6 +2138,10 @@ button {
   padding-right: calc(var(--thumb) * 0.1);
 }
 
+.planStructuredWaypointCell.isChildRow .planStructuredLabel {
+  max-width: calc(100% - var(--thumb) * 0.54);
+}
+
 .planStructuredLabel.hasDetails {
   display: flex;
   flex-direction: column;
@@ -2697,6 +2701,10 @@ button {
   .planStructuredLabel.isIndented {
     padding-left: calc(var(--thumb) * 0.1);
     padding-right: calc(var(--thumb) * 0.42);
+  }
+
+  .planStructuredWaypointCell.isChildRow .planStructuredLabel.isIndented {
+    padding-right: calc(var(--thumb) * 0.04);
   }
 
   .hud {

@@ -3787,7 +3787,7 @@ mod tests {
             &store,
             HadOperation::PreviewFlightPlanEntry {
                 plan,
-                input: "SEA V112 VAMPS".to_string(),
+                input: "BTG V112 VAMPS".to_string(),
             },
         )
         .expect("preview route entry")

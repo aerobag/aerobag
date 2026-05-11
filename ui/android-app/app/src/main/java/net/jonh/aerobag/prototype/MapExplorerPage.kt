@@ -207,7 +207,6 @@ import net.jonh.aerobag.prototype.domain.FlightPlanRowActionUiView
 import net.jonh.aerobag.prototype.domain.FlightPlanRouteSegment
 import net.jonh.aerobag.prototype.domain.FlightPlanUiState
 import net.jonh.aerobag.prototype.domain.GuidanceState
-import net.jonh.aerobag.prototype.domain.InstalledPackageKind
 import net.jonh.aerobag.prototype.domain.InstalledPackages
 import net.jonh.aerobag.prototype.domain.AirspaceDisplayDecoration
 import net.jonh.aerobag.prototype.domain.AirspaceDisplayLabel
@@ -344,7 +343,7 @@ private fun fetchCorePackageResource(
     val packageId = packageAddress.substringBefore('/', missingDelimiterValue = "")
     val memberPath = packageAddress.substringAfter('/', missingDelimiterValue = "")
     require(packageId.isNotBlank() && memberPath.isNotBlank()) { "invalid package resource address: $address" }
-    return InstalledPackages.readZipEntryBytes(context, InstalledPackageKind.Data, packageId, memberPath)
+    return InstalledPackages.readZipEntryBytes(context, packageId, memberPath)
 }
 
 private fun WireRasterTileSource.toRenderTileSource(): RenderTileSource? {

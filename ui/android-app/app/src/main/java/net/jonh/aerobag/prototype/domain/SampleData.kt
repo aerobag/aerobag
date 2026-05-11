@@ -111,7 +111,6 @@ object SampleData {
         runCatching {
             val metarManifestJson = InstalledPackages.readZipEntryText(
                 context,
-                InstalledPackageKind.Data,
                 "metars",
                 "manifest.json",
             )
@@ -159,7 +158,7 @@ object SampleData {
         bridge: NativeBridge = NativeBindings,
     ): NavDbStatus {
         val appContext = context.applicationContext
-        val installed = InstalledPackages.listInstalledArtifacts(appContext, InstalledPackageKind.Data)
+        val installed = InstalledPackages.listInstalledArtifacts(appContext)
             .filter { it.artifactId.startsWith("NAV_DB_") }
             .sortedWith(compareByDescending<InstalledPackageArtifact> { it.file.lastModified() }.thenByDescending { it.filename })
             .map { artifact ->
@@ -196,7 +195,7 @@ private data class WireBundlePackage(
 )
 
 private fun latestReadableInstalledNavDbArtifact(context: Context): InstalledPackageArtifact =
-    InstalledPackages.listInstalledArtifacts(context, InstalledPackageKind.Data)
+    InstalledPackages.listInstalledArtifacts(context)
         .filter { it.artifactId.startsWith("NAV_DB_") }
         .sortedWith(compareByDescending<InstalledPackageArtifact> { it.file.lastModified() }.thenByDescending { it.filename })
         .firstOrNull { artifact ->
@@ -205,7 +204,7 @@ private fun latestReadableInstalledNavDbArtifact(context: Context): InstalledPac
         ?: error("missing readable installed data package with prefix NAV_DB_")
 
 private fun latestInstalledDataPackageIdOrNull(context: Context, prefix: String): String? =
-    InstalledPackages.listInstalledPackageIds(context, InstalledPackageKind.Data)
+    InstalledPackages.listInstalledPackageIds(context)
         .filter { it.startsWith(prefix) }
         .maxOrNull()
 

@@ -49,6 +49,7 @@ mkdir -p "$GRADLE_USER_HOME" "$PROJECT_CACHE_DIR"
 
 echo "[0/5] clear installed package dirs"
 adb -s "$ANDROID_SERIAL" shell run-as "$APP_ID" rm -rf \
+  files/packages \
   files/chart-packages \
   files/plate-packages \
   files/data-packages >/dev/null 2>&1 || true

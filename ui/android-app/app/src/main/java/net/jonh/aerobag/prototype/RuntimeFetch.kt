@@ -206,7 +206,6 @@ import net.jonh.aerobag.prototype.domain.FlightPlanRowActionUiView
 import net.jonh.aerobag.prototype.domain.FlightPlanRouteSegment
 import net.jonh.aerobag.prototype.domain.FlightPlanUiState
 import net.jonh.aerobag.prototype.domain.GuidanceState
-import net.jonh.aerobag.prototype.domain.InstalledPackageKind
 import net.jonh.aerobag.prototype.domain.InstalledPackages
 import net.jonh.aerobag.prototype.domain.AirspaceDisplayDecoration
 import net.jonh.aerobag.prototype.domain.AirspaceDisplayLabel

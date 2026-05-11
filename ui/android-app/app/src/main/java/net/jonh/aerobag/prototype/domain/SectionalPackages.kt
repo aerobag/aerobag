@@ -7,7 +7,7 @@ object SectionalPackages {
     private const val TAG = "AerobagTiles"
 
     fun isInstalled(context: Context, packageName: String): Boolean =
-        InstalledPackages.existingInstalledFile(context, InstalledPackageKind.Charts, packageName) != null
+        InstalledPackages.existingInstalledFile(context, packageName) != null
 
     fun loadTileBytes(
         context: Context,
@@ -25,7 +25,6 @@ object SectionalPackages {
                         val candidateName = candidate.packageName ?: return@forEach
                         val installed = InstalledPackages.existingInstalledFile(
                             context,
-                            InstalledPackageKind.Charts,
                             candidateName,
                         ) ?: return@forEach
                         if (!installed.isFile) {

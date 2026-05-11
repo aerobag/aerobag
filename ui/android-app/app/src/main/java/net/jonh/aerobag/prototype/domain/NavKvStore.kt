@@ -56,7 +56,7 @@ class NavKvStore private constructor(
             },
         ): NavKvStore {
             val appContext = context.applicationContext
-            val navDbZip = InstalledPackages.installedFile(appContext, InstalledPackageKind.Data, navDbPackageId)
+            val navDbZip = InstalledPackages.installedFile(appContext, navDbPackageId)
             return open(navDbZip = navDbZip, bridge = bridge, json = json)
         }
     }

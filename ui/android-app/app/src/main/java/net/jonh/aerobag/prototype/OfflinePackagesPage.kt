@@ -206,7 +206,6 @@ import net.jonh.aerobag.prototype.domain.FlightPlanRowActionUiView
 import net.jonh.aerobag.prototype.domain.FlightPlanRouteSegment
 import net.jonh.aerobag.prototype.domain.FlightPlanUiState
 import net.jonh.aerobag.prototype.domain.GuidanceState
-import net.jonh.aerobag.prototype.domain.InstalledPackageKind
 import net.jonh.aerobag.prototype.domain.InstalledPackages
 import net.jonh.aerobag.prototype.domain.AirspaceDisplayDecoration
 import net.jonh.aerobag.prototype.domain.AirspaceDisplayLabel
@@ -1050,9 +1049,8 @@ internal fun writeOfflinePackagesStateJson(
 }
 
 internal fun listInstalledPackageArtifacts(context: Context): List<InstalledArtifactWire> {
-    return InstalledPackageKind.entries
+    return InstalledPackages.listInstalledArtifacts(context)
         .asSequence()
-        .flatMap { kind -> InstalledPackages.listInstalledArtifacts(context, kind).asSequence() }
         .sortedWith(compareBy({ it.artifactId }, { it.filename }))
         .map {
             InstalledArtifactWire(
@@ -1135,7 +1133,6 @@ internal suspend fun syncOfflinePackages(
                             reportProgress("Fetching package ${index + 1}/${plan.fetch.size}: ${pkg.filename}")
                             check(packageSourceBaseUrl.isNotBlank()) { "package source URL is blank" }
                             val sourceUrl = resolvePackageSourceUrl(pkg.relativePath, packagedArtifactRootUrl)
-                            val kind = installedPackageKindForFamilyId(pkg.familyId)
                             var packageDownloadedBytes = 0L
                             var lastReportedPackageBytes = 0L
                             progressMutex.withLock {
@@ -1143,7 +1140,6 @@ internal suspend fun syncOfflinePackages(
                             }
                             val tempFile = downloadPackageToTempFile(
                                 context = context,
-                                kind = kind,
                                 filename = pkg.filename,
                                 sourceUrl = sourceUrl,
                                 expectedSizeBytes = pkg.sizeBytes,
@@ -1175,7 +1171,6 @@ internal suspend fun syncOfflinePackages(
                             )
                             installDownloadedPackage(
                                 context = context,
-                                kind = kind,
                                 artifactId = pkg.id,
                                 filename = pkg.filename,
                                 tempFile = tempFile,
@@ -1184,7 +1179,6 @@ internal suspend fun syncOfflinePackages(
                             )
                             val validationError = validateInstalledPackageOrNull(
                                 context = context,
-                                kind = kind,
                                 pkg = pkg,
                             )
                             progressMutex.withLock {
@@ -1465,7 +1459,6 @@ internal fun packagedArtifactRootUrl(publicationRootUrl: String, manifest: Curre
 
 internal suspend fun downloadPackageToTempFile(
     context: Context,
-    kind: InstalledPackageKind,
     filename: String,
     sourceUrl: String,
     expectedSizeBytes: Long?,
@@ -1473,7 +1466,7 @@ internal suspend fun downloadPackageToTempFile(
     activeConnections: ActivePackageConnections,
     onBytesRead: suspend (Long) -> Unit = {},
 ): File {
-    val target = File(File(context.filesDir, kind.directoryName), filename)
+    val target = InstalledPackages.internalPackageFile(context, filename)
     target.parentFile?.mkdirs()
     val temp = File(target.parentFile, "${target.name}.download")
     if (temp.exists()) {
@@ -1535,7 +1528,6 @@ internal suspend fun downloadPackageToTempFile(
 
 internal fun installDownloadedPackage(
     context: Context,
-    kind: InstalledPackageKind,
     artifactId: String,
     filename: String,
     tempFile: File,
@@ -1545,7 +1537,6 @@ internal fun installDownloadedPackage(
     tempFile.inputStream().buffered().use { source ->
         InstalledPackages.replaceInstalledFileFromStream(
             context = context,
-            kind = kind,
             artifactId = artifactId,
             filename = filename,
             source = source,
@@ -1558,14 +1549,12 @@ internal fun installDownloadedPackage(
 
 internal fun validateInstalledPackageOrNull(
     context: Context,
-    kind: InstalledPackageKind,
     pkg: BundlePackageArtifactWire,
 ): String? {
     return when (pkg.familyId) {
         "nav-db" -> runCatching {
             val installedFile = InstalledPackages.existingInstalledArtifacts(
                 context,
-                kind,
                 pkg.id,
             ).firstOrNull { it.filename == pkg.filename }?.file
                 ?: error("installed file missing after fetch")
@@ -1595,22 +1584,13 @@ internal fun formatNavDbStatusLine(status: net.jonh.aerobag.prototype.domain.Nav
     return "NAVDB ${status.installed.size}: ${parts.joinToString(", ")}"
 }
 
-internal fun installedPackageKindForFamilyId(familyId: String): InstalledPackageKind = when (familyId) {
-    "sec", "tac", "shaded-relief", "enr-l", "enr-h" -> InstalledPackageKind.Charts
-    "tpp", "csup" -> InstalledPackageKind.Plates
-    "nav-db", "vectors", "geo", "terrain", "metars", "tfrs", "nexrad", "obstacles" -> InstalledPackageKind.Data
-    else -> error("unsupported package family for install: $familyId")
-}
-
 internal fun deleteInstalledArtifact(
     context: Context,
     artifactId: String,
     filename: String,
     keepFilename: String? = null,
 ) {
-    InstalledPackageKind.entries.forEach { kind ->
-        InstalledPackages.deleteInstalledArtifact(context, kind, artifactId, filename, keepFilename)
-    }
+    InstalledPackages.deleteInstalledArtifact(context, artifactId, filename, keepFilename)
 }
 
 internal fun sha256Hex(bytes: ByteArray): String =

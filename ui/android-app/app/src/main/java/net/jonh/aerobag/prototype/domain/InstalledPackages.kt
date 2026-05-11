@@ -8,11 +8,7 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
-enum class InstalledPackageKind(val directoryName: String) {
-    Charts("chart-packages"),
-    Plates("plate-packages"),
-    Data("data-packages"),
-}
+private const val InstalledPackagesDirectoryName = "packages"
 
 @Serializable
 private data class InstalledArtifactMetadata(
@@ -36,11 +32,11 @@ object InstalledPackages {
         encodeDefaults = true
     }
 
-    private fun internalFile(context: Context, kind: InstalledPackageKind, filename: String): File =
-        File(File(context.filesDir, kind.directoryName), filename)
+    fun internalPackageFile(context: Context, filename: String): File =
+        File(File(context.filesDir, InstalledPackagesDirectoryName), filename)
 
-    private fun externalFile(context: Context, kind: InstalledPackageKind, filename: String): File? =
-        context.getExternalFilesDir(null)?.let { File(File(it, kind.directoryName), filename) }
+    private fun externalFile(context: Context, filename: String): File? =
+        context.getExternalFilesDir(null)?.let { File(File(it, InstalledPackagesDirectoryName), filename) }
 
     private fun metadataFile(zipFile: File): File =
         File(zipFile.parentFile, "${zipFile.name}.metadata.json")
@@ -74,10 +70,10 @@ object InstalledPackages {
         )
     }
 
-    fun listInstalledArtifacts(context: Context, kind: InstalledPackageKind): List<InstalledPackageArtifact> {
+    fun listInstalledArtifacts(context: Context): List<InstalledPackageArtifact> {
         val directories = listOfNotNull(
-            context.getExternalFilesDir(null)?.let { File(it, kind.directoryName) },
-            File(context.filesDir, kind.directoryName),
+            context.getExternalFilesDir(null)?.let { File(it, InstalledPackagesDirectoryName) },
+            File(context.filesDir, InstalledPackagesDirectoryName),
         )
         val artifactsByFilename = linkedMapOf<String, InstalledPackageArtifact>()
         directories
@@ -103,30 +99,29 @@ object InstalledPackages {
         return artifactsByFilename.values.sortedBy { it.filename }
     }
 
-    fun existingInstalledArtifacts(context: Context, kind: InstalledPackageKind, artifactId: String): List<InstalledPackageArtifact> =
-        listInstalledArtifacts(context, kind)
+    fun existingInstalledArtifacts(context: Context, artifactId: String): List<InstalledPackageArtifact> =
+        listInstalledArtifacts(context)
             .filter { it.artifactId == artifactId }
             .sortedWith(compareByDescending<InstalledPackageArtifact> { it.file.lastModified() }.thenByDescending { it.filename })
 
-    fun existingInstalledFile(context: Context, kind: InstalledPackageKind, artifactId: String): File? =
-        existingInstalledArtifacts(context, kind, artifactId)
+    fun existingInstalledFile(context: Context, artifactId: String): File? =
+        existingInstalledArtifacts(context, artifactId)
             .firstOrNull()
             ?.file
 
-    fun installedFile(context: Context, kind: InstalledPackageKind, artifactId: String): File =
-        existingInstalledFile(context, kind, artifactId)
-            ?: error("missing installed ${kind.directoryName} package $artifactId")
+    fun installedFile(context: Context, artifactId: String): File =
+        existingInstalledFile(context, artifactId)
+            ?: error("missing installed package $artifactId")
 
     fun replaceInstalledFile(
         context: Context,
-        kind: InstalledPackageKind,
         artifactId: String,
         filename: String,
         bytes: ByteArray,
         sizeBytes: Long? = null,
         checksumSha256: String? = null,
     ) {
-        val target = internalFile(context, kind, filename)
+        val target = internalPackageFile(context, filename)
         target.parentFile?.mkdirs()
         PackageZipStore.invalidate(target)
         val temp = File(target.parentFile, "${target.name}.tmp")
@@ -148,14 +143,13 @@ object InstalledPackages {
 
     fun replaceInstalledFileFromStream(
         context: Context,
-        kind: InstalledPackageKind,
         artifactId: String,
         filename: String,
         source: InputStream,
         sizeBytes: Long? = null,
         checksumSha256: String? = null,
     ) {
-        val target = internalFile(context, kind, filename)
+        val target = internalPackageFile(context, filename)
         target.parentFile?.mkdirs()
         PackageZipStore.invalidate(target)
         val temp = File(target.parentFile, "${target.name}.tmp")
@@ -179,12 +173,11 @@ object InstalledPackages {
 
     fun deleteInstalledArtifact(
         context: Context,
-        kind: InstalledPackageKind,
         artifactId: String,
         filename: String,
         keepFilename: String? = null,
     ) {
-        existingInstalledArtifacts(context, kind, artifactId)
+        existingInstalledArtifacts(context, artifactId)
             .filter { it.filename == filename }
             .filterNot { it.filename == keepFilename }
             .forEach { artifact ->
@@ -194,20 +187,20 @@ object InstalledPackages {
             }
     }
 
-    fun listInstalledPackageIds(context: Context, kind: InstalledPackageKind): List<String> {
-        return listInstalledArtifacts(context, kind)
+    fun listInstalledPackageIds(context: Context): List<String> {
+        return listInstalledArtifacts(context)
             .map { it.artifactId }
             .distinct()
             .sorted()
             .toList()
     }
 
-    fun readZipEntryText(context: Context, kind: InstalledPackageKind, packageId: String, entryName: String): String =
-        readZipEntryBytes(context, kind, packageId, entryName).decodeToString()
+    fun readZipEntryText(context: Context, packageId: String, entryName: String): String =
+        readZipEntryBytes(context, packageId, entryName).decodeToString()
 
-    fun readZipEntryBytes(context: Context, kind: InstalledPackageKind, packageId: String, entryName: String): ByteArray {
-        val installed = existingInstalledFile(context, kind, packageId)
-            ?: error("missing installed ${kind.directoryName} package $packageId")
+    fun readZipEntryBytes(context: Context, packageId: String, entryName: String): ByteArray {
+        val installed = existingInstalledFile(context, packageId)
+            ?: error("missing installed package $packageId")
         return readZipEntryBytes(installed, entryName)
     }
 

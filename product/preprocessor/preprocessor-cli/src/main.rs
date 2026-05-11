@@ -13,29 +13,24 @@ use preprocessor_charts::{
     build_family_tiles, build_family_vrts, likely_current_bottleneck, package_family_regions,
     phase_plan, run_family, run_native_family, ChartRunRequest, NativeChartRunRequest,
 };
-use preprocessor_core::{
-    CaptureManifest, ChartFamily, ConcurrencyConfig, ExpectedTileCounts, Parallelism, Region,
-    WorkKind,
-};
+use preprocessor_core::{ChartFamily, ConcurrencyConfig, Parallelism, Region, WorkKind};
 use preprocessor_csup::{run_native_csup, NativeCsupRunRequest};
 use preprocessor_data::{
-    audit_tpp_cifp_matching, build_data_package, choose_matching_bundle, compare_databases,
-    load_matching_bundle, resolve_matching_db_path, tpp_zip_paths_from_bundle, DataBuildMode,
-    DataBuildRequest,
+    audit_tpp_cifp_matching, build_data_package, choose_matching_bundle, load_matching_bundle,
+    resolve_matching_db_path, tpp_zip_paths_from_bundle, DataBuildMode, DataBuildRequest,
 };
 use preprocessor_fast::{
     build_notam_dataset, terrain_ellipsoid_height_feet_from_navd88_meters, BuildNotamRequest,
     GeoidGrid,
 };
 use preprocessor_fetch::{
-    hash_text, manifest_path_for_run, manifest_summary, prefetch_archives_with_provenance,
-    read_download_records, read_extract_records, read_source_url_set, CacheLayout,
-    FetchCacheConfig, FetchCacheMode,
+    hash_text, prefetch_archives_with_provenance, read_download_records, read_extract_records,
+    read_source_url_set, CacheLayout, FetchCacheConfig, FetchCacheMode,
 };
 use preprocessor_resource_index::{
     write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource,
 };
-use preprocessor_tools::{comparison_targets, ToolInvocation};
+use preprocessor_tools::ToolInvocation;
 use preprocessor_tpp::{run_native_tpp, NativeTppRunRequest};
 use preprocessor_vectors::{
     analyze_obstacle_thresholds, audit_class_airspace_simplification, build_bravo_union_svg,
@@ -51,23 +46,6 @@ use product_build::{
 };
 use sha2::{Digest, Sha256};
 
-fn load_manifest(run_root: &PathBuf) -> anyhow::Result<CaptureManifest> {
-    let manifest_path = manifest_path_for_run(&run_root.display().to_string());
-    let bytes = fs::read(&manifest_path)
-        .with_context(|| format!("failed to read manifest at {manifest_path}"))?;
-    let manifest = serde_json::from_slice(&bytes)
-        .with_context(|| format!("failed to parse manifest at {manifest_path}"))?;
-    Ok(manifest)
-}
-
-fn print_partial_run_hint(run_root: &PathBuf) {
-    println!(
-        "run {} does not have meta/manifest.json yet",
-        run_root.display()
-    );
-    println!("the legacy capture is probably still in flight");
-}
-
 fn usage() -> &'static str {
     "usage:
   preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
@@ -81,18 +59,7 @@ Use --long-help to show internal/debug commands."
 
 fn long_usage() -> &'static str {
     "usage:
-  preprocessor-cli print-baseline
-  preprocessor-cli inspect-run --run-root <path>
-  preprocessor-cli compare-tile-counts --run-root <path>
-  preprocessor-cli compare-sec-packages --legacy-work-dir <path> --rust-work-dir <path>
-  preprocessor-cli compare-chart-packages --family <sec|tac|enr-l|enr-h> --legacy-work-dir <path> --rust-work-dir <path>
-  preprocessor-cli compare-chart-tile-paths --family <sec|tac|enr-l|enr-h> --legacy-work-dir <path> --rust-work-dir <path>
-  preprocessor-cli compare-csup-packages --legacy-work-dir <path> --rust-work-dir <path>
-  preprocessor-cli compare-tpp-packages --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --legacy-work-dir <path> --rust-work-dir <path>
-  preprocessor-cli compare-csup-images --legacy-work-dir <path> --rust-work-dir <path> [--sample-percent <0-100>] [--rmse-threshold <0-1>] [--limit <count>]
-  preprocessor-cli compare-tpp-images --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --legacy-work-dir <path> --rust-work-dir <path> [--sample-percent <0-100>] [--rmse-threshold <0-1>] [--limit <count>]
   preprocessor-cli compare-provenance --left-provenance-dir <path> --right-provenance-dir <path>
-  preprocessor-cli compare-data-db --left-db <path> --right-db <path>
   preprocessor-cli audit-cifp-tpp-matching [--artifact-root <path>] [--bundle <path>] [--limit <count>]
   preprocessor-cli audit-terrain-airports --nav-db <path> --dem-vrt <path> --geo-csv <path> --output-dir <path> [--bbox <west,south,east,north>] [--limit <count>]
   preprocessor-cli compare-sampled-images --left-root <path> --right-root <path> [--sample-percent <0-100>] [--rmse-threshold <0-1>] [--limit <count>]
@@ -121,19 +88,6 @@ fn long_usage() -> &'static str {
   preprocessor-cli gc-build-cache [--profile <validation|production>] [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>] [--bootstrap-from-build-manifests]
   preprocessor-cli explain-product-build [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli run-chart --family <sec|tac|enr-l|enr-h> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]"
-}
-
-fn count_lines(path: &PathBuf) -> anyhow::Result<u64> {
-    let text =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    Ok(text.lines().count() as u64)
-}
-
-fn hash_file(path: &Path) -> anyhow::Result<String> {
-    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn collect_workspace_hash_inputs(root: &Path) -> Vec<PathBuf> {
@@ -487,57 +441,6 @@ fn run_normalize_swim_notams_command(
         result.structured_json_path,
         result.zip_path,
     ))
-}
-
-fn read_zip_members(path: &Path) -> anyhow::Result<Vec<String>> {
-    let output = Command::new("unzip")
-        .arg("-Z1")
-        .arg(path)
-        .output()
-        .with_context(|| format!("failed to list zip members for {}", path.display()))?;
-    if !output.status.success() {
-        anyhow::bail!("unzip -Z1 failed for {}", path.display());
-    }
-    let text = String::from_utf8(output.stdout).context("zip member output was not utf-8")?;
-    let mut members = text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
-    members.sort();
-    Ok(members)
-}
-
-fn read_tile_paths(tiles_root: &Path) -> anyhow::Result<Vec<String>> {
-    fn visit(root: &Path, current: &Path, acc: &mut Vec<String>) -> anyhow::Result<()> {
-        let mut entries = fs::read_dir(current)
-            .with_context(|| format!("failed to read directory {}", current.display()))?
-            .collect::<Result<Vec<_>, _>>()
-            .with_context(|| format!("failed to iterate directory {}", current.display()))?;
-        entries.sort_by_key(|entry| entry.path());
-        for entry in entries {
-            let path = entry.path();
-            let file_type = entry
-                .file_type()
-                .with_context(|| format!("failed to read file type for {}", path.display()))?;
-            if file_type.is_dir() {
-                visit(root, &path, acc)?;
-            } else if file_type.is_file() {
-                let relative = path
-                    .strip_prefix(root)
-                    .with_context(|| format!("failed to relativize {}", path.display()))?;
-                acc.push(relative.to_string_lossy().replace('\\', "/"));
-            }
-        }
-        Ok(())
-    }
-
-    let mut paths = Vec::new();
-    if tiles_root.is_dir() {
-        visit(tiles_root, tiles_root, &mut paths)?;
-    }
-    Ok(paths)
 }
 
 fn visit_files(
@@ -906,78 +809,6 @@ fn compare_sampled_images(
     )
 }
 
-fn read_manifest_entries(path: &Path) -> anyhow::Result<Vec<String>> {
-    Ok(fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?
-        .lines()
-        .skip(1)
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(ToOwned::to_owned)
-        .collect())
-}
-
-fn compare_csup_images(
-    legacy_work_dir: &Path,
-    rust_work_dir: &Path,
-    sample_percent: u8,
-    rmse_threshold: f64,
-    limit: Option<usize>,
-) -> anyhow::Result<()> {
-    let mut legacy_paths = BTreeSet::new();
-    let mut rust_paths = BTreeSet::new();
-    for region in Region::ALL {
-        let manifest_name = format!("{}_CSUP", region.code());
-        for entry in read_manifest_entries(&legacy_work_dir.join(&manifest_name))? {
-            if is_image_path(Path::new(&entry)) {
-                legacy_paths.insert(entry);
-            }
-        }
-        for entry in read_manifest_entries(&rust_work_dir.join(&manifest_name))? {
-            if is_image_path(Path::new(&entry)) {
-                rust_paths.insert(entry);
-            }
-        }
-    }
-    compare_relative_image_paths(
-        legacy_work_dir,
-        rust_work_dir,
-        legacy_paths,
-        rust_paths,
-        sample_percent,
-        rmse_threshold,
-        limit,
-    )
-}
-
-fn compare_tpp_images(
-    region: &str,
-    legacy_work_dir: &Path,
-    rust_work_dir: &Path,
-    sample_percent: u8,
-    rmse_threshold: f64,
-    limit: Option<usize>,
-) -> anyhow::Result<()> {
-    let manifest_name = format!("{region}_TPP");
-    let legacy_paths = read_manifest_entries(&legacy_work_dir.join(&manifest_name))?
-        .into_iter()
-        .filter(|entry| is_image_path(Path::new(entry)))
-        .collect::<BTreeSet<_>>();
-    let rust_paths = read_manifest_entries(&rust_work_dir.join(&manifest_name))?
-        .into_iter()
-        .filter(|entry| is_image_path(Path::new(entry)))
-        .collect::<BTreeSet<_>>();
-    compare_relative_image_paths(
-        legacy_work_dir,
-        rust_work_dir,
-        legacy_paths,
-        rust_paths,
-        sample_percent,
-        rmse_threshold,
-        limit,
-    )
-}
-
 fn parse_image_compare_options(
     args: &[String],
     start_index: usize,
@@ -1017,203 +848,6 @@ fn parse_image_compare_options(
         }
     }
     Ok((sample_percent, rmse_threshold, limit))
-}
-
-fn compare_sec_packages(legacy_work_dir: &Path, rust_work_dir: &Path) -> anyhow::Result<()> {
-    compare_chart_packages("SEC", legacy_work_dir, rust_work_dir)
-}
-
-fn compare_csup_packages(legacy_work_dir: &Path, rust_work_dir: &Path) -> anyhow::Result<()> {
-    compare_named_packages("CSUP", legacy_work_dir, rust_work_dir)
-}
-
-fn compare_tpp_packages(
-    region: Region,
-    legacy_work_dir: &Path,
-    rust_work_dir: &Path,
-) -> anyhow::Result<()> {
-    compare_single_named_package(region, "TPP", legacy_work_dir, rust_work_dir)
-}
-
-fn compare_chart_packages(
-    chart_name: &str,
-    legacy_work_dir: &Path,
-    rust_work_dir: &Path,
-) -> anyhow::Result<()> {
-    compare_named_packages(chart_name, legacy_work_dir, rust_work_dir)
-}
-
-fn compare_named_packages(
-    suffix: &str,
-    legacy_work_dir: &Path,
-    rust_work_dir: &Path,
-) -> anyhow::Result<()> {
-    for region in Region::ALL {
-        let region = region.code();
-        let manifest_name = format!("{region}_{suffix}");
-        let zip_name = format!("{region}_{suffix}.zip");
-        let legacy_manifest = legacy_work_dir.join(&manifest_name);
-        let rust_manifest = rust_work_dir.join(&manifest_name);
-        let legacy_zip = legacy_work_dir.join(&zip_name);
-        let rust_zip = rust_work_dir.join(&zip_name);
-
-        let legacy_manifest_hash = hash_file(&legacy_manifest)?;
-        let rust_manifest_hash = hash_file(&rust_manifest)?;
-        let manifest_bytes_status = if legacy_manifest_hash == rust_manifest_hash {
-            "match"
-        } else {
-            "mismatch"
-        };
-        let legacy_manifest_lines = fs::read_to_string(&legacy_manifest)
-            .with_context(|| format!("failed to read {}", legacy_manifest.display()))?
-            .lines()
-            .map(ToOwned::to_owned)
-            .collect::<Vec<_>>();
-        let rust_manifest_lines = fs::read_to_string(&rust_manifest)
-            .with_context(|| format!("failed to read {}", rust_manifest.display()))?
-            .lines()
-            .map(ToOwned::to_owned)
-            .collect::<Vec<_>>();
-        let mut legacy_manifest_set = legacy_manifest_lines.clone();
-        let mut rust_manifest_set = rust_manifest_lines.clone();
-        legacy_manifest_set.sort();
-        rust_manifest_set.sort();
-        let manifest_entries_status = if legacy_manifest_set == rust_manifest_set {
-            "match"
-        } else {
-            "mismatch"
-        };
-
-        let legacy_members = read_zip_members(&legacy_zip)?;
-        let rust_members = read_zip_members(&rust_zip)?;
-        let member_status = if legacy_members == rust_members {
-            "match"
-        } else {
-            "mismatch"
-        };
-
-        println!(
-            "{region} manifest_bytes={} manifest_entries={} legacy_members={} rust_members={} members={}",
-            manifest_bytes_status,
-            manifest_entries_status,
-            legacy_members.len(),
-            rust_members.len(),
-            member_status
-        );
-    }
-
-    Ok(())
-}
-
-fn compare_single_named_package(
-    region: Region,
-    suffix: &str,
-    legacy_work_dir: &Path,
-    rust_work_dir: &Path,
-) -> anyhow::Result<()> {
-    let region = region.code();
-    let manifest_name = format!("{region}_{suffix}");
-    let zip_name = format!("{region}_{suffix}.zip");
-    let legacy_manifest = legacy_work_dir.join(&manifest_name);
-    let rust_manifest = rust_work_dir.join(&manifest_name);
-    let legacy_zip = legacy_work_dir.join(&zip_name);
-    let rust_zip = rust_work_dir.join(&zip_name);
-
-    let legacy_manifest_hash = hash_file(&legacy_manifest)?;
-    let rust_manifest_hash = hash_file(&rust_manifest)?;
-    let manifest_bytes_status = if legacy_manifest_hash == rust_manifest_hash {
-        "match"
-    } else {
-        "mismatch"
-    };
-    let legacy_manifest_lines = fs::read_to_string(&legacy_manifest)
-        .with_context(|| format!("failed to read {}", legacy_manifest.display()))?
-        .lines()
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
-    let rust_manifest_lines = fs::read_to_string(&rust_manifest)
-        .with_context(|| format!("failed to read {}", rust_manifest.display()))?
-        .lines()
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
-    let mut legacy_manifest_set = legacy_manifest_lines.clone();
-    let mut rust_manifest_set = rust_manifest_lines.clone();
-    legacy_manifest_set.sort();
-    rust_manifest_set.sort();
-    let manifest_entries_status = if legacy_manifest_set == rust_manifest_set {
-        "match"
-    } else {
-        "mismatch"
-    };
-
-    let legacy_members = read_zip_members(&legacy_zip)?;
-    let rust_members = read_zip_members(&rust_zip)?;
-    let member_status = if legacy_members == rust_members {
-        "match"
-    } else {
-        "mismatch"
-    };
-
-    println!(
-        "{region} manifest_bytes={} manifest_entries={} legacy_members={} rust_members={} members={}",
-        manifest_bytes_status,
-        manifest_entries_status,
-        legacy_members.len(),
-        rust_members.len(),
-        member_status
-    );
-
-    Ok(())
-}
-
-fn compare_chart_tile_paths(
-    family: ChartFamily,
-    legacy_work_dir: &Path,
-    rust_work_dir: &Path,
-) -> anyhow::Result<()> {
-    let spec = match family {
-        ChartFamily::Sec => ("SEC", "0"),
-        ChartFamily::Tac => ("TAC", "1"),
-        ChartFamily::EnrL => ("ENR_L", "3"),
-        ChartFamily::EnrH => ("ENR_H", "4"),
-    };
-
-    let legacy_tiles_root = legacy_work_dir.join("tiles").join(spec.1);
-    let rust_tiles_root = rust_work_dir.join("tiles").join(spec.1);
-    let legacy_paths = read_tile_paths(&legacy_tiles_root)?;
-    let rust_paths = read_tile_paths(&rust_tiles_root)?;
-
-    let status = if legacy_paths == rust_paths {
-        "match"
-    } else {
-        "mismatch"
-    };
-    println!(
-        "{} legacy_tile_paths={} rust_tile_paths={} status={}",
-        spec.0,
-        legacy_paths.len(),
-        rust_paths.len(),
-        status
-    );
-
-    if legacy_paths != rust_paths {
-        let legacy_set = legacy_paths
-            .iter()
-            .cloned()
-            .collect::<std::collections::BTreeSet<_>>();
-        let rust_set = rust_paths
-            .iter()
-            .cloned()
-            .collect::<std::collections::BTreeSet<_>>();
-        for missing in legacy_set.difference(&rust_set).take(10) {
-            println!("missing_in_rust {}", missing);
-        }
-        for extra in rust_set.difference(&legacy_set).take(10) {
-            println!("extra_in_rust {}", extra);
-        }
-    }
-
-    Ok(())
 }
 
 fn print_set_diff(
@@ -1987,239 +1621,6 @@ fn main() -> anyhow::Result<()> {
     }
 
     match args.get(1).map(String::as_str) {
-        Some("inspect-run") => {
-            if args.get(2).map(String::as_str) != Some("--run-root") {
-                anyhow::bail!("{}", usage());
-            }
-            let run_root = PathBuf::from(
-                args.get(3)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            let manifest = match load_manifest(&run_root) {
-                Ok(manifest) => manifest,
-                Err(err) if err.to_string().contains("failed to read manifest") => {
-                    print_partial_run_hint(&run_root);
-                    return Ok(());
-                }
-                Err(err) => return Err(err),
-            };
-            println!("{}", manifest_summary(&manifest));
-            for capture in &manifest.captures {
-                let targets = comparison_targets(capture).join(", ");
-                println!("{}: {}", capture.label, targets);
-            }
-        }
-        Some("print-baseline") => {
-            let baseline = ExpectedTileCounts::CURRENT_BASELINE;
-            println!("SEC {}", baseline.sec);
-            println!("TAC {}", baseline.tac);
-            println!("ENR_L {}", baseline.enr_l);
-            println!("ENR_H unknown");
-        }
-        Some("compare-tile-counts") => {
-            if args.get(2).map(String::as_str) != Some("--run-root") {
-                anyhow::bail!("{}", usage());
-            }
-            let run_root = PathBuf::from(
-                args.get(3)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            for family in [
-                ChartFamily::Sec,
-                ChartFamily::Tac,
-                ChartFamily::EnrL,
-                ChartFamily::EnrH,
-            ] {
-                let label = family.capture_label();
-                let path = run_root
-                    .join("meta")
-                    .join(format!("{label}.tile-paths.txt"));
-                let actual = count_lines(&path)?;
-                if let Some(expected) = family.baseline_tile_count() {
-                    let status = if actual == expected {
-                        "match"
-                    } else {
-                        "mismatch"
-                    };
-                    println!("{label} expected={expected} actual={actual} status={status}");
-                } else {
-                    println!("{label} expected=unknown actual={actual} status=unknown");
-                }
-            }
-        }
-        Some("compare-sec-packages") => {
-            if args.get(2).map(String::as_str) != Some("--legacy-work-dir")
-                || args.get(4).map(String::as_str) != Some("--rust-work-dir")
-            {
-                anyhow::bail!("{}", usage());
-            }
-            let legacy_work_dir = PathBuf::from(
-                args.get(3)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            let rust_work_dir = PathBuf::from(
-                args.get(5)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            compare_sec_packages(&legacy_work_dir, &rust_work_dir)?;
-        }
-        Some("compare-chart-packages") => {
-            if args.get(2).map(String::as_str) != Some("--family")
-                || args.get(4).map(String::as_str) != Some("--legacy-work-dir")
-                || args.get(6).map(String::as_str) != Some("--rust-work-dir")
-            {
-                anyhow::bail!("{}", usage());
-            }
-            let family = parse_family(
-                args.get(3)
-                    .map(String::as_str)
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            )?;
-            let chart_name = match family {
-                ChartFamily::Sec => "SEC",
-                ChartFamily::Tac => "TAC",
-                ChartFamily::EnrL => "ENR_L",
-                ChartFamily::EnrH => "ENR_H",
-            };
-            let legacy_work_dir = PathBuf::from(
-                args.get(5)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            let rust_work_dir = PathBuf::from(
-                args.get(7)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            compare_chart_packages(chart_name, &legacy_work_dir, &rust_work_dir)?;
-        }
-        Some("compare-chart-tile-paths") => {
-            if args.get(2).map(String::as_str) != Some("--family")
-                || args.get(4).map(String::as_str) != Some("--legacy-work-dir")
-                || args.get(6).map(String::as_str) != Some("--rust-work-dir")
-            {
-                anyhow::bail!("{}", usage());
-            }
-            let family = parse_family(
-                args.get(3)
-                    .map(String::as_str)
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            )?;
-            let legacy_work_dir = PathBuf::from(
-                args.get(5)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            let rust_work_dir = PathBuf::from(
-                args.get(7)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            compare_chart_tile_paths(family, &legacy_work_dir, &rust_work_dir)?;
-        }
-        Some("compare-csup-packages") => {
-            if args.get(2).map(String::as_str) != Some("--legacy-work-dir")
-                || args.get(4).map(String::as_str) != Some("--rust-work-dir")
-            {
-                anyhow::bail!("{}", usage());
-            }
-            let legacy_work_dir = PathBuf::from(
-                args.get(3)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            let rust_work_dir = PathBuf::from(
-                args.get(5)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            compare_csup_packages(&legacy_work_dir, &rust_work_dir)?;
-        }
-        Some("compare-tpp-packages") => {
-            if args.get(2).map(String::as_str) != Some("--region")
-                || args.get(4).map(String::as_str) != Some("--legacy-work-dir")
-                || args.get(6).map(String::as_str) != Some("--rust-work-dir")
-            {
-                anyhow::bail!("{}", usage());
-            }
-            let region = parse_region(
-                args.get(3)
-                    .map(String::as_str)
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            )?;
-            let legacy_work_dir = PathBuf::from(
-                args.get(5)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            let rust_work_dir = PathBuf::from(
-                args.get(7)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            compare_tpp_packages(region, &legacy_work_dir, &rust_work_dir)?;
-        }
-        Some("compare-csup-images") => {
-            if args.get(2).map(String::as_str) != Some("--legacy-work-dir")
-                || args.get(4).map(String::as_str) != Some("--rust-work-dir")
-            {
-                anyhow::bail!("{}", usage());
-            }
-            let legacy_work_dir = PathBuf::from(
-                args.get(3)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            let rust_work_dir = PathBuf::from(
-                args.get(5)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            let (sample_percent, rmse_threshold, limit) = parse_image_compare_options(&args, 6)?;
-            compare_csup_images(
-                &legacy_work_dir,
-                &rust_work_dir,
-                sample_percent,
-                rmse_threshold,
-                limit,
-            )?;
-        }
-        Some("compare-tpp-images") => {
-            if args.get(2).map(String::as_str) != Some("--region")
-                || args.get(4).map(String::as_str) != Some("--legacy-work-dir")
-                || args.get(6).map(String::as_str) != Some("--rust-work-dir")
-            {
-                anyhow::bail!("{}", usage());
-            }
-            let region = parse_region(
-                args.get(3)
-                    .map(String::as_str)
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            )?;
-            let legacy_work_dir = PathBuf::from(
-                args.get(5)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            let rust_work_dir = PathBuf::from(
-                args.get(7)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            let (sample_percent, rmse_threshold, limit) = parse_image_compare_options(&args, 8)?;
-            compare_tpp_images(
-                region.code(),
-                &legacy_work_dir,
-                &rust_work_dir,
-                sample_percent,
-                rmse_threshold,
-                limit,
-            )?;
-        }
         Some("print-cache-layout") => {
             if args.get(2).map(String::as_str) != Some("--cache-root")
                 || args.get(4).map(String::as_str) != Some("--url")
@@ -2266,24 +1667,6 @@ fn main() -> anyhow::Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
             );
             compare_provenance(&left_provenance_dir, &right_provenance_dir)?;
-        }
-        Some("compare-data-db") => {
-            if args.get(2).map(String::as_str) != Some("--left-db")
-                || args.get(4).map(String::as_str) != Some("--right-db")
-            {
-                anyhow::bail!("{}", usage());
-            }
-            let left_db = PathBuf::from(
-                args.get(3)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            let right_db = PathBuf::from(
-                args.get(5)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            compare_databases(&left_db, &right_db)?;
         }
         Some("audit-cifp-tpp-matching") => {
             let mut artifact_root = default_artifact_write_path(

@@ -20,6 +20,7 @@ use preprocessor_fetch::{
     PackageOutputRecord,
 };
 use preprocessor_tools::{sanitize_label, ToolInvocation, ToolOutcome};
+use preprocessor_zip::{write_deterministic_zip, ZipSource};
 
 pub const FULL_COVERAGE_ZOOM: u32 = 7;
 pub const WIDE_ANGLE_REGION_ID: &str = "wide";
@@ -405,9 +406,28 @@ pub fn package_family_region_versioned(
     manifest_version: &str,
     artifact_version: &str,
 ) -> anyhow::Result<PackageOutputRecord> {
+    package_family_region_versioned_to(
+        family,
+        work_dir.as_ref(),
+        work_dir.as_ref(),
+        region,
+        manifest_version,
+        artifact_version,
+    )
+}
+
+pub fn package_family_region_versioned_to(
+    family: ChartFamily,
+    work_dir: impl AsRef<Path>,
+    output_dir: impl AsRef<Path>,
+    region: Region,
+    manifest_version: &str,
+    artifact_version: &str,
+) -> anyhow::Result<PackageOutputRecord> {
     let spec = ChartSpec::for_family(family);
     package_region_records_from_spec(
         work_dir.as_ref(),
+        output_dir.as_ref(),
         spec,
         &[region],
         true,
@@ -425,9 +445,26 @@ pub fn package_family_wide_angle_versioned(
     manifest_version: &str,
     artifact_version: &str,
 ) -> anyhow::Result<PackageOutputRecord> {
+    package_family_wide_angle_versioned_to(
+        family,
+        work_dir.as_ref(),
+        work_dir.as_ref(),
+        manifest_version,
+        artifact_version,
+    )
+}
+
+pub fn package_family_wide_angle_versioned_to(
+    family: ChartFamily,
+    work_dir: impl AsRef<Path>,
+    output_dir: impl AsRef<Path>,
+    manifest_version: &str,
+    artifact_version: &str,
+) -> anyhow::Result<PackageOutputRecord> {
     let spec = ChartSpec::for_family(family);
     package_wide_angle_record_from_spec(
         work_dir.as_ref(),
+        output_dir.as_ref(),
         spec,
         true,
         manifest_version,
@@ -898,6 +935,7 @@ fn package_regions_from_spec(
     let manifest_cycle = calculate_manifest_cycle();
     let mut package_records = package_region_records_from_spec(
         work_dir,
+        work_dir,
         spec,
         &regions,
         true,
@@ -905,6 +943,7 @@ fn package_regions_from_spec(
         &manifest_cycle,
     )?;
     package_records.push(package_wide_angle_record_from_spec(
+        work_dir,
         work_dir,
         spec,
         true,
@@ -925,12 +964,15 @@ fn package_regions_from_spec(
 
 fn package_region_records_from_spec(
     work_dir: &Path,
+    output_dir: &Path,
     spec: ChartSpec,
     regions: &[Region],
     produce_records: bool,
     manifest_version: &str,
     artifact_version: &str,
 ) -> anyhow::Result<Vec<PackageOutputRecord>> {
+    fs::create_dir_all(output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
     let tile_paths = collect_tile_paths_glob(work_dir, spec.tile_index)?;
     let mut package_records = Vec::with_capacity(regions.len());
 
@@ -947,8 +989,8 @@ fn package_region_records_from_spec(
             spec.chart_name,
             artifact_version
         );
-        let manifest_path = work_dir.join(&manifest_name);
-        let zip_path = work_dir.join(&zip_name);
+        let manifest_path = output_dir.join(&manifest_name);
+        let zip_path = output_dir.join(&zip_name);
 
         if zip_path.exists() {
             fs::remove_file(&zip_path)
@@ -972,31 +1014,13 @@ fn package_region_records_from_spec(
         fs::write(&manifest_path, manifest_text)
             .with_context(|| format!("failed to write {}", manifest_path.display()))?;
 
-        let mut stdin_text = String::new();
-        for path in &selected {
-            stdin_text.push_str(path);
-            stdin_text.push('\n');
-        }
-        stdin_text.push_str(&manifest_name);
-        stdin_text.push('\n');
-
-        let invocation = ToolInvocation {
-            program: "zip".to_string(),
-            args: vec![
-                "-0".to_string(),
-                "-q".to_string(),
-                zip_name.clone(),
-                "-@".to_string(),
-            ],
-            cwd: work_dir.to_path_buf(),
-            label: format!("{}-package-{}", spec.family.capture_label(), region.code()),
-            env: Vec::new(),
-            stdin_text: Some(stdin_text),
-        };
-        let outcome = invocation.run_logged(work_dir.join(".rust-logs"))?;
-        if !outcome.success {
-            bail!("zip failed for region {}", region.code());
-        }
+        write_chart_package_zip(
+            &zip_path,
+            work_dir,
+            &selected,
+            &manifest_name,
+            &manifest_path,
+        )?;
 
         if produce_records {
             let metadata = chart_package_metadata(false, selected.len() as u64);
@@ -1018,16 +1042,19 @@ fn package_region_records_from_spec(
 
 fn package_wide_angle_record_from_spec(
     work_dir: &Path,
+    output_dir: &Path,
     spec: ChartSpec,
     produce_record: bool,
     manifest_version: &str,
     artifact_version: &str,
 ) -> anyhow::Result<PackageOutputRecord> {
+    fs::create_dir_all(output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
     let tile_paths = collect_tile_paths_glob(work_dir, spec.tile_index)?;
     let manifest_name = format!("WIDE_{}_{}.manifest", spec.chart_name, artifact_version);
     let zip_name = format!("WIDE_{}_{}.zip", spec.chart_name, artifact_version);
-    let manifest_path = work_dir.join(&manifest_name);
-    let zip_path = work_dir.join(&zip_name);
+    let manifest_path = output_dir.join(&manifest_name);
+    let zip_path = output_dir.join(&zip_name);
 
     if zip_path.exists() {
         fs::remove_file(&zip_path)
@@ -1049,31 +1076,13 @@ fn package_wide_angle_record_from_spec(
     fs::write(&manifest_path, manifest_text)
         .with_context(|| format!("failed to write {}", manifest_path.display()))?;
 
-    let mut stdin_text = String::new();
-    for path in &selected {
-        stdin_text.push_str(path);
-        stdin_text.push('\n');
-    }
-    stdin_text.push_str(&manifest_name);
-    stdin_text.push('\n');
-
-    let invocation = ToolInvocation {
-        program: "zip".to_string(),
-        args: vec![
-            "-0".to_string(),
-            "-q".to_string(),
-            zip_name.clone(),
-            "-@".to_string(),
-        ],
-        cwd: work_dir.to_path_buf(),
-        label: format!("{}-package-wide", spec.family.capture_label()),
-        env: Vec::new(),
-        stdin_text: Some(stdin_text),
-    };
-    let outcome = invocation.run_logged(work_dir.join(".rust-logs"))?;
-    if !outcome.success {
-        bail!("zip failed for wide-angle {}", spec.family.capture_label());
-    }
+    write_chart_package_zip(
+        &zip_path,
+        work_dir,
+        &selected,
+        &manifest_name,
+        &manifest_path,
+    )?;
 
     if produce_record {
         let metadata = chart_package_metadata(true, selected.len() as u64);
@@ -1090,6 +1099,21 @@ fn package_wide_angle_record_from_spec(
     } else {
         bail!("wide-angle package record requested without record production")
     }
+}
+
+fn write_chart_package_zip(
+    zip_path: &Path,
+    work_dir: &Path,
+    selected_tiles: &[String],
+    manifest_name: &str,
+    manifest_path: &Path,
+) -> anyhow::Result<()> {
+    let mut members = selected_tiles
+        .iter()
+        .map(|member| ZipSource::new(member, work_dir.join(member)).stored())
+        .collect::<Vec<_>>();
+    members.push(ZipSource::new(manifest_name, manifest_path).stored());
+    write_deterministic_zip(zip_path, &members)
 }
 
 fn collect_tile_paths_glob(work_dir: &Path, tile_index: &str) -> anyhow::Result<Vec<String>> {

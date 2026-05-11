@@ -16,15 +16,16 @@ use chrono::{DateTime, Datelike, NaiveDate, SecondsFormat, Timelike, Utc};
 use crossbeam_channel::{self, RecvTimeoutError};
 use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use preprocessor_charts::{
-    build_family_tiles, build_family_vrts, package_family_region_versioned,
-    package_family_wide_angle_versioned, stage_work_dir, FULL_COVERAGE_ZOOM, WIDE_ANGLE_REGION_ID,
+    build_family_tiles, build_family_vrts, package_family_region_versioned_to,
+    package_family_wide_angle_versioned_to, stage_work_dir, FULL_COVERAGE_ZOOM,
+    WIDE_ANGLE_REGION_ID,
 };
 use preprocessor_core::nav_kv::{
     build_nav_kv_sorted, NavKvPair, NavKvRoot, VERSION as NAV_KV_VERSION,
 };
 use preprocessor_core::{ChartFamily, Region, RegionBounds};
 use preprocessor_csup::{
-    package_csup_region_versioned, prepare_csup_inputs, render_csup_region,
+    package_csup_region_versioned_to, prepare_csup_inputs, render_csup_region,
     stage_work_dir_for_product,
 };
 use preprocessor_data::{
@@ -824,9 +825,7 @@ impl Drop for BuildLockGuard {
     fn drop(&mut self) {
         let _ = set_tree_readonly(&self.node_dir, false);
         let _ = fs::remove_file(&self.path);
-        if self.node_dir.join("build-record.json").is_file()
-            && !self.node_dir.join(".mutable-output-root").exists()
-        {
+        if self.node_dir.join("build-record.json").is_file() {
             let _ = set_tree_readonly(&self.node_dir, true);
         }
     }
@@ -15455,213 +15454,121 @@ fn build_chart_package_nodes(
     )?;
     let render_record = load_existing_node_record(&render_prepared.record_path, &render_node_name)?;
     let work_dir = resolve_artifact_path(config, output_path(&render_record, "work_dir")?);
-    let provenance_dir = render_prepared
-        .dir
-        .join("meta")
-        .join("provenance")
-        .join(format!("charts-{family_id}"));
-    let aggregate_path = provenance_dir.join("package_outputs.jsonl");
-    let mut node_records = build_regional_package_nodes(
-        config,
-        &aggregate_path,
-        "chart",
-        |region| {
-            let node_name = format!(
-                "charts-{family_id}-package-{}",
-                region.code().to_ascii_lowercase()
-            );
-            let inputs = BTreeMap::from([
-                (
-                    "render_fingerprint".to_string(),
-                    render_record.fingerprint.clone(),
-                ),
-                ("region".to_string(), region.code().to_string()),
-                ("version_label".to_string(), version_label.to_string()),
-                (
-                    "chart_package_lib".to_string(),
-                    hash_file(
-                        Path::new(env!("CARGO_MANIFEST_DIR"))
-                            .parent()
-                            .expect("preprocessor-cli should live under workspace root")
-                            .join("preprocessor-charts/src/lib.rs"),
-                    )?,
-                ),
-            ]);
-            Ok(RegionalPackageSpec {
-                region,
-                node_name,
-                inputs,
-                zip_path: work_dir.join(format!(
-                    "{}_{}_{}.zip",
-                    region.code(),
-                    manifest_chart_name(family),
-                    version_label
-                )),
-                manifest_path: work_dir.join(format!(
-                    "{}_{}_{}.manifest",
-                    region.code(),
-                    manifest_chart_name(family),
-                    version_label
-                )),
-            })
-        },
-        |region, manifest_path, zip_path| {
-            let tile_count = count_chart_zip_tile_entries(zip_path)?;
-            Ok(PackageOutputRecord {
-                label: family.capture_label().to_string(),
-                chart: Some(manifest_chart_name(family).to_string()),
-                region: region.code().to_string(),
-                manifest: format!(
-                    "{}_{}_{}.manifest",
-                    region.code(),
-                    manifest_chart_name(family),
-                    version_label
-                ),
-                manifest_sha256: hash_file(manifest_path)?,
-                zip: format!(
-                    "{}_{}_{}.zip",
-                    region.code(),
-                    manifest_chart_name(family),
-                    version_label
-                ),
-                zip_sha256: hash_file(zip_path)?,
-                metadata: chart_wide_angle_package_metadata(false, Some(tile_count)),
-            })
-        },
-        |region| {
-            package_family_region_versioned(family, &work_dir, region, version_label, version_label)
-        },
-    )?;
-    let wide_node_name = format!("charts-{family_id}-package-{WIDE_ANGLE_REGION_ID}");
-    let chart_package_lib_hash = hash_file(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("preprocessor-cli should live under workspace root")
-            .join("preprocessor-charts/src/lib.rs"),
-    )?;
-    let wide_inputs = BTreeMap::from([
+    let node_name = format!("charts-{family_id}-package");
+    let inputs = BTreeMap::from([
         (
             "render_fingerprint".to_string(),
             render_record.fingerprint.clone(),
         ),
-        ("region".to_string(), WIDE_ANGLE_REGION_ID.to_string()),
         ("version_label".to_string(), version_label.to_string()),
-        ("chart_package_lib".to_string(), chart_package_lib_hash),
+        (
+            "chart_package_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-charts/src/lib.rs"),
+            )?,
+        ),
     ]);
-    let wide_manifest_path = work_dir.join(format!(
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, &node_name)?,
+        &node_name,
+        &inputs,
+    )?;
+    let package_root = prepared.dir.join("output");
+    let aggregate_path = package_root.join("package_outputs.jsonl");
+    let wide_manifest_path = package_root.join(format!(
         "WIDE_{}_{}.manifest",
         manifest_chart_name(family),
         version_label
     ));
-    let wide_zip_path = work_dir.join(format!(
+    let wide_zip_path = package_root.join(format!(
         "WIDE_{}_{}.zip",
         manifest_chart_name(family),
         version_label
     ));
-    let wide_prepared = prepare_node_at(
-        &build_shared_node_dir(config, &wide_node_name)?,
-        &wide_node_name,
-        &wide_inputs,
-    )?;
-    let expected_outputs = [wide_zip_path.clone(), wide_manifest_path.clone()];
-    let existing_package_records = read_package_outputs_by_region(&aggregate_path)?;
-    let wide_record_output = if let Some(record) =
-        try_load_node_record(&wide_prepared, &expected_outputs)?
-    {
-        node_records.push(record);
-        existing_package_records
-            .get(WIDE_ANGLE_REGION_ID)
-            .cloned()
-            .unwrap_or_else(|| PackageOutputRecord {
-                label: family.capture_label().to_string(),
-                chart: Some(manifest_chart_name(family).to_string()),
-                region: WIDE_ANGLE_REGION_ID.to_string(),
-                manifest: format!(
-                    "WIDE_{}_{}.manifest",
-                    manifest_chart_name(family),
-                    version_label
-                ),
-                manifest_sha256: hash_file(&wide_manifest_path).unwrap_or_default(),
-                zip: format!("WIDE_{}_{}.zip", manifest_chart_name(family), version_label),
-                zip_sha256: hash_file(&wide_zip_path).unwrap_or_default(),
-                metadata: chart_wide_angle_package_metadata(true, None),
-            })
-    } else {
-        let _build_lock = match claim_or_wait_for_node(&wide_prepared, &expected_outputs)? {
-            NodeCacheState::CacheHit(record) => {
-                node_records.push(record);
-                existing_package_records
-                    .get(WIDE_ANGLE_REGION_ID)
-                    .cloned()
-                    .unwrap_or_else(|| PackageOutputRecord {
-                        label: family.capture_label().to_string(),
-                        chart: Some(manifest_chart_name(family).to_string()),
-                        region: WIDE_ANGLE_REGION_ID.to_string(),
-                        manifest: format!(
-                            "WIDE_{}_{}.manifest",
-                            manifest_chart_name(family),
-                            version_label
-                        ),
-                        manifest_sha256: hash_file(&wide_manifest_path).unwrap_or_default(),
-                        zip: format!("WIDE_{}_{}.zip", manifest_chart_name(family), version_label),
-                        zip_sha256: hash_file(&wide_zip_path).unwrap_or_default(),
-                        metadata: chart_wide_angle_package_metadata(true, None),
-                    })
+    let mut expected_outputs = Vec::from([
+        aggregate_path.clone(),
+        wide_zip_path.clone(),
+        wide_manifest_path.clone(),
+    ]);
+    for region in Region::ALL {
+        expected_outputs.push(package_root.join(format!(
+            "{}_{}_{}.zip",
+            region.code(),
+            manifest_chart_name(family),
+            version_label
+        )));
+        expected_outputs.push(package_root.join(format!(
+            "{}_{}_{}.manifest",
+            region.code(),
+            manifest_chart_name(family),
+            version_label
+        )));
+    }
+    let record = match claim_or_wait_for_node(&prepared, &expected_outputs)? {
+        NodeCacheState::CacheHit(record) => record,
+        NodeCacheState::Build(lock) => {
+            let started_at_utc = utc_now_string();
+            let started = Instant::now();
+            if package_root.exists() {
+                fs::remove_dir_all(&package_root)
+                    .with_context(|| format!("failed to remove {}", package_root.display()))?;
             }
-            NodeCacheState::Build(lock) => {
-                let started_at_utc = utc_now_string();
-                let started = Instant::now();
-                let package_record = package_family_wide_angle_versioned(
+            fs::create_dir_all(&package_root)
+                .with_context(|| format!("failed to create {}", package_root.display()))?;
+            let mut package_records = Vec::new();
+            for region in Region::ALL {
+                let record = package_family_region_versioned_to(
                     family,
                     &work_dir,
+                    &package_root,
+                    region,
                     version_label,
                     version_label,
                 )?;
-                let outputs = BTreeMap::from([
-                    (
-                        "zip".to_string(),
-                        relative_artifact_path(&wide_zip_path, &config.build_root),
-                    ),
-                    (
-                        "manifest".to_string(),
-                        relative_artifact_path(&wide_manifest_path, &config.build_root),
-                    ),
-                ]);
-                let record = write_node_record(
-                    wide_prepared,
-                    wide_inputs,
-                    outputs,
-                    false,
-                    started_at_utc,
-                    utc_now_string(),
-                    started.elapsed().as_millis() as u64,
-                )?;
-                drop(lock);
-                node_records.push(record);
-                package_record
+                if chart_package_record_has_tiles(&record, &package_root)? {
+                    package_records.push(record);
+                }
             }
-        };
-        _build_lock
+            package_records.push(package_family_wide_angle_versioned_to(
+                family,
+                &work_dir,
+                &package_root,
+                version_label,
+                version_label,
+            )?);
+            write_package_outputs_jsonl(&package_root, &package_records)?;
+            let outputs = BTreeMap::from([
+                (
+                    "package_root".to_string(),
+                    relative_artifact_path(&package_root, &config.build_root),
+                ),
+                (
+                    "package_outputs".to_string(),
+                    relative_artifact_path(&aggregate_path, &config.build_root),
+                ),
+            ]);
+            let record = write_node_record(
+                prepared,
+                inputs,
+                outputs,
+                false,
+                started_at_utc,
+                utc_now_string(),
+                started.elapsed().as_millis() as u64,
+            )?;
+            drop(lock);
+            record
+        }
     };
-    let mut package_records = read_package_outputs_by_region(&aggregate_path)?
-        .into_values()
-        .filter(|record| {
-            record.region != WIDE_ANGLE_REGION_ID
-                && chart_package_record_has_tiles(record, &work_dir).unwrap_or(true)
-        })
-        .collect::<Vec<_>>();
-    package_records.push(wide_record_output);
-    let parent = aggregate_path
-        .parent()
-        .with_context(|| format!("chart aggregate path missing parent"))?;
-    fs::create_dir_all(parent)?;
-    write_package_outputs_jsonl(parent, &package_records)?;
     Ok((
-        node_records,
+        vec![record],
         ChartSource {
             family_id,
             package_outputs_path: aggregate_path,
-            package_root: work_dir,
+            package_root,
             source_urls_path: Some(source_urls_path),
         },
     ))
@@ -15702,6 +15609,7 @@ fn count_chart_zip_tile_entries(path: &Path) -> anyhow::Result<u64> {
     Ok(count as u64)
 }
 
+#[cfg(test)]
 fn chart_wide_angle_package_metadata(
     is_wide_angle: bool,
     tile_count: Option<u64>,
@@ -15739,113 +15647,6 @@ fn chart_wide_angle_package_metadata(
         );
     }
     metadata
-}
-
-struct RegionalPackageSpec {
-    region: Region,
-    node_name: String,
-    inputs: BTreeMap<String, String>,
-    zip_path: PathBuf,
-    manifest_path: PathBuf,
-}
-
-fn build_regional_package_nodes<MakeSpec, FallbackRecord, BuildPackage>(
-    config: &ProductBuildConfig,
-    aggregate_path: &Path,
-    aggregate_label: &str,
-    mut make_spec: MakeSpec,
-    mut fallback_record: FallbackRecord,
-    mut build_package: BuildPackage,
-) -> anyhow::Result<Vec<NodeRecord>>
-where
-    MakeSpec: FnMut(Region) -> anyhow::Result<RegionalPackageSpec>,
-    FallbackRecord: FnMut(Region, &Path, &Path) -> anyhow::Result<PackageOutputRecord>,
-    BuildPackage: FnMut(Region) -> anyhow::Result<PackageOutputRecord>,
-{
-    let existing_package_records = read_package_outputs_by_region(aggregate_path)?;
-    let mut node_records = Vec::new();
-    let mut package_records = Vec::new();
-    for region in Region::ALL {
-        let spec = make_spec(region)?;
-        let prepared = prepare_node_at(
-            &build_shared_node_dir(config, &spec.node_name)?,
-            &spec.node_name,
-            &spec.inputs,
-        )?;
-        let expected_outputs = [spec.zip_path.clone(), spec.manifest_path.clone()];
-        if let Some(record) = try_load_node_record(&prepared, &expected_outputs)? {
-            node_records.push(record);
-            package_records.push(package_record_for_cached_region(
-                &existing_package_records,
-                &mut fallback_record,
-                spec.region,
-                &spec.manifest_path,
-                &spec.zip_path,
-            )?);
-            continue;
-        }
-        let _build_lock = match claim_or_wait_for_node(&prepared, &expected_outputs)? {
-            NodeCacheState::CacheHit(record) => {
-                node_records.push(record);
-                package_records.push(package_record_for_cached_region(
-                    &existing_package_records,
-                    &mut fallback_record,
-                    spec.region,
-                    &spec.manifest_path,
-                    &spec.zip_path,
-                )?);
-                continue;
-            }
-            NodeCacheState::Build(lock) => lock,
-        };
-        let started_at_utc = utc_now_string();
-        let started = Instant::now();
-        let package_record = build_package(spec.region)?;
-        let outputs = BTreeMap::from([
-            (
-                "zip".to_string(),
-                relative_artifact_path(&spec.zip_path, &config.build_root),
-            ),
-            (
-                "manifest".to_string(),
-                relative_artifact_path(&spec.manifest_path, &config.build_root),
-            ),
-        ]);
-        let record = write_node_record(
-            prepared,
-            spec.inputs,
-            outputs,
-            false,
-            started_at_utc,
-            utc_now_string(),
-            started.elapsed().as_millis() as u64,
-        )?;
-        node_records.push(record);
-        package_records.push(package_record);
-    }
-    let parent = aggregate_path
-        .parent()
-        .with_context(|| format!("{aggregate_label} aggregate path missing parent"))?;
-    fs::create_dir_all(parent)?;
-    write_package_outputs_jsonl(parent, &package_records)?;
-    Ok(node_records)
-}
-
-fn package_record_for_cached_region<FallbackRecord>(
-    existing_package_records: &BTreeMap<String, PackageOutputRecord>,
-    fallback_record: &mut FallbackRecord,
-    region: Region,
-    manifest_path: &Path,
-    zip_path: &Path,
-) -> anyhow::Result<PackageOutputRecord>
-where
-    FallbackRecord: FnMut(Region, &Path, &Path) -> anyhow::Result<PackageOutputRecord>,
-{
-    existing_package_records
-        .get(region.code())
-        .cloned()
-        .map(Ok)
-        .unwrap_or_else(|| fallback_record(region, manifest_path, zip_path))
 }
 
 fn build_csup_render_node(
@@ -15956,87 +15757,122 @@ fn build_csup_package_nodes(
     )?;
     let stage_record = load_existing_node_record(&stage_prepared.record_path, "csup-stage")?;
     let work_dir = resolve_artifact_path(config, output_path(&stage_record, "work_dir")?);
-    let provenance_dir =
-        resolve_artifact_path(config, output_path(&stage_record, "provenance_dir")?);
-    let aggregate_path = provenance_dir.join("package_outputs.jsonl");
-    let node_records = build_regional_package_nodes(
-        config,
-        &aggregate_path,
-        "csup",
-        |region| {
-            let render_node_name = format!("csup-render-{}", region.code().to_ascii_lowercase());
-            let render_inputs = csup_render_inputs(
-                &stage_record.fingerprint,
-                region,
-                config.cpu_jobs.max(1),
-                version_label,
-            )?;
-            let render_prepared = prepare_node_at(
-                &build_shared_node_dir(config, &render_node_name)?,
-                &render_node_name,
-                &render_inputs,
-            )?;
-            let render_record =
-                load_existing_node_record(&render_prepared.record_path, &render_node_name)?;
-            let node_name = format!("csup-package-{}", region.code().to_ascii_lowercase());
-            let inputs = BTreeMap::from([
+    let mut inputs = BTreeMap::from([
+        (
+            "stage_fingerprint".to_string(),
+            stage_record.fingerprint.clone(),
+        ),
+        ("version_label".to_string(), version_label.to_string()),
+        (
+            "csup_package".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-csup/src/package.rs"),
+            )?,
+        ),
+        (
+            "tools_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-tools/src/lib.rs"),
+            )?,
+        ),
+    ]);
+    for region in Region::ALL {
+        let render_node_name = format!("csup-render-{}", region.code().to_ascii_lowercase());
+        let render_inputs = csup_render_inputs(
+            &stage_record.fingerprint,
+            region,
+            config.cpu_jobs.max(1),
+            version_label,
+        )?;
+        let render_prepared = prepare_node_at(
+            &build_shared_node_dir(config, &render_node_name)?,
+            &render_node_name,
+            &render_inputs,
+        )?;
+        let render_record =
+            load_existing_node_record(&render_prepared.record_path, &render_node_name)?;
+        inputs.insert(
+            format!("render_{}_fingerprint", region.code().to_ascii_lowercase()),
+            render_record.fingerprint,
+        );
+    }
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, "csup-package")?,
+        "csup-package",
+        &inputs,
+    )?;
+    let package_root = prepared.dir.join("output");
+    let aggregate_path = package_root.join("package_outputs.jsonl");
+    let mut expected_outputs = vec![aggregate_path.clone()];
+    for region in Region::ALL {
+        expected_outputs.push(package_root.join(format!(
+            "{}_CSUP_{}.zip",
+            region.code(),
+            version_label
+        )));
+        expected_outputs.push(package_root.join(format!(
+            "{}_CSUP_{}.manifest",
+            region.code(),
+            version_label
+        )));
+    }
+    let record = match claim_or_wait_for_node(&prepared, &expected_outputs)? {
+        NodeCacheState::CacheHit(record) => record,
+        NodeCacheState::Build(lock) => {
+            let started_at_utc = utc_now_string();
+            let started = Instant::now();
+            if package_root.exists() {
+                fs::remove_dir_all(&package_root)
+                    .with_context(|| format!("failed to remove {}", package_root.display()))?;
+            }
+            fs::create_dir_all(&package_root)
+                .with_context(|| format!("failed to create {}", package_root.display()))?;
+            let mut package_records = Vec::new();
+            for region in Region::ALL {
+                package_records.push(package_csup_region_versioned_to(
+                    &work_dir,
+                    &package_root,
+                    region,
+                    version_label,
+                    version_label,
+                )?);
+            }
+            write_package_outputs_jsonl(&package_root, &package_records)?;
+            let outputs = BTreeMap::from([
                 (
-                    "render_fingerprint".to_string(),
-                    render_record.fingerprint.clone(),
+                    "package_root".to_string(),
+                    relative_artifact_path(&package_root, &config.build_root),
                 ),
-                ("region".to_string(), region.code().to_string()),
-                ("version_label".to_string(), version_label.to_string()),
                 (
-                    "csup_package".to_string(),
-                    hash_file(
-                        Path::new(env!("CARGO_MANIFEST_DIR"))
-                            .parent()
-                            .expect("preprocessor-cli should live under workspace root")
-                            .join("preprocessor-csup/src/package.rs"),
-                    )?,
-                ),
-                (
-                    "tools_lib".to_string(),
-                    hash_file(
-                        Path::new(env!("CARGO_MANIFEST_DIR"))
-                            .parent()
-                            .expect("preprocessor-cli should live under workspace root")
-                            .join("preprocessor-tools/src/lib.rs"),
-                    )?,
+                    "package_outputs".to_string(),
+                    relative_artifact_path(&aggregate_path, &config.build_root),
                 ),
             ]);
-            Ok(RegionalPackageSpec {
-                region,
-                node_name,
+            let record = write_node_record(
+                prepared,
                 inputs,
-                zip_path: work_dir.join(format!("{}_CSUP_{}.zip", region.code(), version_label)),
-                manifest_path: work_dir.join(format!(
-                    "{}_CSUP_{}.manifest",
-                    region.code(),
-                    version_label
-                )),
-            })
-        },
-        |region, manifest_path, zip_path| {
-            Ok(PackageOutputRecord {
-                label: "csup".to_string(),
-                chart: None,
-                region: region.code().to_string(),
-                manifest: format!("{}_CSUP_{}.manifest", region.code(), version_label),
-                manifest_sha256: hash_file(manifest_path)?,
-                zip: format!("{}_CSUP_{}.zip", region.code(), version_label),
-                zip_sha256: hash_file(zip_path)?,
-                metadata: BTreeMap::new(),
-            })
-        },
-        |region| package_csup_region_versioned(&work_dir, region, version_label, version_label),
-    )?;
+                outputs,
+                false,
+                started_at_utc,
+                utc_now_string(),
+                started.elapsed().as_millis() as u64,
+            )?;
+            drop(lock);
+            record
+        }
+    };
     Ok((
-        node_records,
+        vec![record],
         AssetSource {
             package_outputs_path: aggregate_path,
             asset_root: work_dir.clone(),
-            package_root: work_dir.clone(),
+            package_root,
             source_urls_path: Some(source_urls_path),
         },
     ))
@@ -17221,7 +17057,6 @@ fn write_node_record(
     finished_at_utc: String,
     elapsed_ms: u64,
 ) -> anyhow::Result<NodeRecord> {
-    let finalize_readonly = !legacy_mutable_output_node(&prepared.name);
     let output_details = node_output_details(&prepared.dir, &outputs)?;
     let record = NodeRecord {
         name: prepared.name,
@@ -17239,22 +17074,7 @@ fn write_node_record(
         serde_json::to_vec_pretty(&record).context("failed to encode node record")?,
     )
     .with_context(|| format!("failed to write {}", prepared.record_path.display()))?;
-    if !finalize_readonly {
-        fs::write(
-            prepared.dir.join(".mutable-output-root"),
-            b"legacy mutable output root\n",
-        )
-        .with_context(|| format!("failed to mark {} as mutable", prepared.dir.display()))?;
-    }
     Ok(record)
-}
-
-fn legacy_mutable_output_node(name: &str) -> bool {
-    // Chart packaging still writes region zips/manifests into chart render work dirs, and
-    // CSUP render/package still writes markers/thumbnails/manifests into the CSUP stage dir.
-    // Those are legacy glue boundaries; keep them writable until those package outputs move
-    // into their own node dirs.
-    (name.starts_with("charts-") && name.ends_with("-render")) || name == "csup-stage"
 }
 
 fn node_output_details(

@@ -6,7 +6,7 @@ use preprocessor_core::{
     PackageAssetManifest, PackageAssetRecord, Region, PACKAGE_ASSET_MANIFEST_NAME,
 };
 use preprocessor_fetch::{hash_file, write_package_outputs_jsonl, PackageOutputRecord};
-use preprocessor_tools::ToolInvocation;
+use preprocessor_zip::{write_deterministic_zip, ZipSource};
 
 use crate::{calculate_cycle, remove_if_exists};
 
@@ -21,8 +21,25 @@ pub fn package_csup_region_versioned(
     manifest_version: &str,
     artifact_version: &str,
 ) -> anyhow::Result<PackageOutputRecord> {
+    package_csup_region_versioned_to(
+        work_dir,
+        work_dir,
+        region,
+        manifest_version,
+        artifact_version,
+    )
+}
+
+pub fn package_csup_region_versioned_to(
+    work_dir: &Path,
+    output_dir: &Path,
+    region: Region,
+    manifest_version: &str,
+    artifact_version: &str,
+) -> anyhow::Result<PackageOutputRecord> {
     let mut records = package_csup_region_records(
         work_dir,
+        output_dir,
         &[region],
         true,
         manifest_version,
@@ -37,6 +54,7 @@ pub fn package_csup_regions(work_dir: &Path, provenance_dir: &Path) -> anyhow::R
     let manifest_cycle = current_cycle_manifest();
     let records = package_csup_region_records(
         work_dir,
+        work_dir,
         &Region::ALL,
         true,
         &manifest_cycle,
@@ -48,24 +66,27 @@ pub fn package_csup_regions(work_dir: &Path, provenance_dir: &Path) -> anyhow::R
 
 fn package_csup_region_records(
     work_dir: &Path,
+    output_dir: &Path,
     regions: &[Region],
     produce_records: bool,
     manifest_version: &str,
     artifact_version: &str,
 ) -> anyhow::Result<Vec<PackageOutputRecord>> {
+    fs::create_dir_all(output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
     let mut package_records = Vec::with_capacity(regions.len());
 
     for region in regions {
         let package_id = format!("{}_CSUP_{}", region.code(), artifact_version);
         let manifest_name = format!("{package_id}.manifest");
         let zip_name = format!("{}_CSUP_{}.zip", region.code(), artifact_version);
-        let manifest_path = work_dir.join(&manifest_name);
-        let zip_path = work_dir.join(&zip_name);
+        let manifest_path = output_dir.join(&manifest_name);
+        let zip_path = output_dir.join(&zip_name);
         remove_if_exists(&manifest_path)?;
         remove_if_exists(&zip_path)?;
 
         let selected = collect_region_pngs(work_dir, region.code())?;
-        let package_assets_path = work_dir.join(PACKAGE_ASSET_MANIFEST_NAME);
+        let package_assets_path = output_dir.join(PACKAGE_ASSET_MANIFEST_NAME);
         remove_if_exists(&package_assets_path)?;
         let selected = with_thumbnail_members(work_dir, &selected)?;
         write_package_asset_manifest(&package_assets_path, &package_id, &selected)?;
@@ -80,33 +101,14 @@ fn package_csup_region_records(
         fs::write(&manifest_path, manifest_text)
             .with_context(|| format!("failed to write {}", manifest_path.display()))?;
 
-        let mut stdin_text = String::new();
-        for path in &selected {
-            stdin_text.push_str(path);
-            stdin_text.push('\n');
-        }
-        stdin_text.push_str(PACKAGE_ASSET_MANIFEST_NAME);
-        stdin_text.push('\n');
-        stdin_text.push_str(&manifest_name);
-        stdin_text.push('\n');
-
-        let invocation = ToolInvocation {
-            program: "zip".to_string(),
-            args: vec![
-                "-q".to_string(),
-                "-0".to_string(),
-                zip_name.clone(),
-                "-@".to_string(),
-            ],
-            cwd: work_dir.to_path_buf(),
-            label: format!("csup-package-{}", region.code()),
-            env: Vec::new(),
-            stdin_text: Some(stdin_text),
-        };
-        let outcome = invocation.run_logged(work_dir.join(".rust-logs"))?;
-        if !outcome.success {
-            bail!("zip failed for region {}", region.code());
-        }
+        write_csup_package_zip(
+            &zip_path,
+            work_dir,
+            &selected,
+            &package_assets_path,
+            &manifest_name,
+            &manifest_path,
+        )?;
 
         if produce_records {
             package_records.push(PackageOutputRecord {
@@ -123,6 +125,23 @@ fn package_csup_region_records(
     }
 
     Ok(package_records)
+}
+
+fn write_csup_package_zip(
+    zip_path: &Path,
+    work_dir: &Path,
+    selected_assets: &[String],
+    package_assets_path: &Path,
+    manifest_name: &str,
+    manifest_path: &Path,
+) -> anyhow::Result<()> {
+    let mut members = selected_assets
+        .iter()
+        .map(|member| ZipSource::new(member, work_dir.join(member)).stored())
+        .collect::<Vec<_>>();
+    members.push(ZipSource::new(PACKAGE_ASSET_MANIFEST_NAME, package_assets_path).stored());
+    members.push(ZipSource::new(manifest_name, manifest_path).stored());
+    write_deterministic_zip(zip_path, &members)
 }
 
 fn collect_region_pngs(work_dir: &Path, region_code: &str) -> anyhow::Result<Vec<String>> {

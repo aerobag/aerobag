@@ -20,7 +20,10 @@ use preprocessor_tools::{
 
 mod package;
 
-pub use package::{package_csup_region, package_csup_region_versioned, package_csup_regions};
+pub use package::{
+    package_csup_region, package_csup_region_versioned, package_csup_region_versioned_to,
+    package_csup_regions,
+};
 
 #[derive(Debug, Clone)]
 pub struct NativeCsupRunRequest {

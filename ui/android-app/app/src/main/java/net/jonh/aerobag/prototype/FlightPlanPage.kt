@@ -349,7 +349,6 @@ internal fun FlightPlanPage(
     onOpenCharts: (String?) -> Unit,
     onApplySessionSnapshot: (UiSessionSnapshot) -> Unit,
 ) {
-    val planWaypointTrayStart = ThumbGap + PlanArrowLane + ThumbSize * 2.5f + PlanGridGap
     val density = LocalDensity.current
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -377,6 +376,21 @@ internal fun FlightPlanPage(
         buildFlightPlanDisplayBlocks(rows)
     }
     val configuration = LocalConfiguration.current
+    val narrowPortraitWaypointTray =
+        configuration.screenWidthDp <= 720 && configuration.screenHeightDp > configuration.screenWidthDp
+    val waypointActionButtonWidth =
+        if (narrowPortraitWaypointTray) {
+            ThumbSize * 1.5f
+        } else {
+            ThumbSize * 2f
+        }
+    val planWaypointTrayStart =
+        ThumbGap + PlanArrowLane +
+            if (narrowPortraitWaypointTray) {
+                ThumbSize * 2.5f
+            } else {
+                ThumbSize * 3.15f
+            } + PlanGridGap
     val imeBottomPadding = with(density) { WindowInsets.ime.getBottom(this).toDp() }
     val fallbackKeyboardPadding = (configuration.screenHeightDp * 0.38f).dp
     val keyboardAvoidancePadding =
@@ -467,7 +481,8 @@ internal fun FlightPlanPage(
                 desiredTop.coerceIn(paneTop, maxTop)
             }
         }
-    val waypointTrayWidth = ThumbSize * 2.35f
+    val waypointActionGap = 3.dp
+    val waypointTrayWidth = waypointActionButtonWidth * 2f + waypointActionGap + 6.dp
     val structuredArrow =
         remember(rows, guidance?.activeFromRowUid, guidance?.activeToRowUid, structuredSurfaceBounds, structuredRowBounds.toMap(), density) {
             val surfaceBounds = structuredSurfaceBounds ?: return@remember null
@@ -1130,7 +1145,7 @@ internal fun FlightPlanPage(
                     selectedRowActionMatrix.forEach { actionRow ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                            horizontalArrangement = Arrangement.spacedBy(waypointActionGap),
                         ) {
                             actionRow.forEach { action ->
                                 MenuPanelRow(
@@ -1138,7 +1153,7 @@ internal fun FlightPlanPage(
                                     active = false,
                                     enabled = action.enabled,
                                     testTag = "parity:plan-row-action:${action.id}",
-                                    modifier = Modifier.weight(1f),
+                                    width = waypointActionButtonWidth,
                                     onSelect = {
                                         if (!action.enabled) {
                                             return@MenuPanelRow

@@ -107,6 +107,7 @@ describe("loadBestAvailableAdapter", () => {
       get_session_snapshot: async () => snapshotJson,
       restore_chart_page_state_in_session: async () => snapshotJson,
       destroy_session: () => {},
+      install_rust_debug_logger: () => {},
       nav_kv_open: async () => 1,
       nav_kv_insert_resource: async () => {},
       nav_kv_prefetch_pages: async () => "[]",

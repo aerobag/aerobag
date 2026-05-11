@@ -1742,7 +1742,16 @@ pub fn query_map_selection(
         }
     }
 
-    for feature in airspace_feature_cache.values() {
+    for feature_id in selectable_airspace_feature_ids_for_viewport(
+        viewport,
+        width_px,
+        height_px,
+        config,
+        vector_tile_cache,
+    ) {
+        let Some(feature) = airspace_feature_cache.get(&feature_id) else {
+            continue;
+        };
         if selectable_airspace_feature(feature) && airspace_feature_contains(feature, click) {
             airspaces.push(selection_item_for_airspace(feature));
         }
@@ -2301,6 +2310,26 @@ fn offline_region_mode_action_label(region: &OfflineRegionRecord) -> String {
 
 fn selectable_airspace_feature(feature: &AirspaceFeaturePayload) -> bool {
     !feature.id.contains(":outline:")
+}
+
+fn selectable_airspace_feature_ids_for_viewport(
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    config: &MapOverlayConfig,
+    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
+) -> BTreeSet<String> {
+    if viewport.zoom < AIRSPACE_MIN_DISPLAY_ZOOM || width_px <= 0.0 || height_px <= 0.0 {
+        return BTreeSet::new();
+    }
+    let ref_zoom = airspace_reference_zoom(viewport.zoom, config);
+    visible_layer_tile_window("airspace", ref_zoom, viewport, width_px, height_px)
+        .into_iter()
+        .filter_map(|tile| {
+            vector_tile_cache.get(&aggregate_vector_tile_cache_key(tile.z, tile.x, tile.y))
+        })
+        .flat_map(|tile| tile.airspace_refs.iter().cloned())
+        .collect()
 }
 
 fn airspace_selection_icon(feature: &AirspaceFeaturePayload) -> Option<AirspaceDisplayPath> {
@@ -5129,6 +5158,12 @@ mod tests {
 
     #[test]
     fn airspace_selection_hits_repeated_world_copy() {
+        let viewport = MapViewport {
+            center: LatLon { lat: 0.0, lon: 0.0 },
+            zoom: 6.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
         let feature = AirspaceFeaturePayload {
             schema_version: 1,
             id: "airspace:test:wrapped".to_string(),
@@ -5145,13 +5180,24 @@ mod tests {
                 vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
             )],
         };
+        let mut vector_cache = HashMap::new();
+        for tile in visible_layer_tile_window(
+            "airspace",
+            airspace_reference_zoom(viewport.zoom, &test_map_overlay_config()),
+            &viewport,
+            1024.0,
+            256.0,
+        ) {
+            vector_cache.insert(
+                aggregate_vector_tile_cache_key(tile.z, tile.x, tile.y),
+                VectorAggregateTilePayload {
+                    airspace_refs: vec![feature.id.clone()],
+                    ..empty_test_vector_tile(tile.z, tile.x, tile.y)
+                },
+            );
+        }
         let result = query_map_selection(
-            &MapViewport {
-                center: LatLon { lat: 0.0, lon: 0.0 },
-                zoom: 1.0,
-                rotation_deg: 0.0,
-                pitch_deg: 0.0,
-            },
+            &viewport,
             1024.0,
             256.0,
             &test_map_overlay_config(),
@@ -5161,7 +5207,7 @@ mod tests {
                 lon: 360.0,
             },
             32.0,
-            &HashMap::new(),
+            &vector_cache,
             &HashMap::new(),
             None,
             None,
@@ -5179,6 +5225,81 @@ mod tests {
         assert_eq!(
             airspace.items.first().map(|item| item.label.as_str()),
             Some("WRAPPED AREA")
+        );
+    }
+
+    #[test]
+    fn airspace_selection_ignores_cached_detail_when_viewport_refs_outline() {
+        let viewport = MapViewport {
+            center: LatLon { lat: 0.0, lon: 0.0 },
+            zoom: 6.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let detail = AirspaceFeaturePayload {
+            schema_version: 1,
+            id: "airspace:test:orlando:bravo:shelf".to_string(),
+            kind: "airspace".to_string(),
+            name: "ORLANDO CLASS B SHELF".to_string(),
+            ident: "MCO".to_string(),
+            airspace_class: "B".to_string(),
+            style_hint: "class_b".to_string(),
+            vertical: test_airspace_vertical("100", "SFC"),
+            bbox: [-1.0, -1.0, 1.0, 1.0],
+            paths: vec![test_airspace_path(
+                true,
+                None,
+                vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
+            )],
+        };
+        let outline = AirspaceFeaturePayload {
+            id: "airspace:test:outline:b:mco:class_b".to_string(),
+            name: "ORLANDO CLASS B OUTLINE".to_string(),
+            ..detail.clone()
+        };
+        let mut vector_cache = HashMap::new();
+        for tile in visible_layer_tile_window(
+            "airspace",
+            airspace_reference_zoom(viewport.zoom, &test_map_overlay_config()),
+            &viewport,
+            1024.0,
+            256.0,
+        ) {
+            vector_cache.insert(
+                aggregate_vector_tile_cache_key(tile.z, tile.x, tile.y),
+                VectorAggregateTilePayload {
+                    airspace_refs: vec![outline.id.clone()],
+                    ..empty_test_vector_tile(tile.z, tile.x, tile.y)
+                },
+            );
+        }
+
+        let result = query_map_selection(
+            &viewport,
+            1024.0,
+            256.0,
+            &test_map_overlay_config(),
+            None,
+            LatLon { lat: 0.0, lon: 0.0 },
+            32.0,
+            &vector_cache,
+            &HashMap::new(),
+            None,
+            None,
+            &[],
+            &HashMap::from([(detail.id.clone(), detail), (outline.id.clone(), outline)]),
+            None,
+            &mut |_| AirportPlateAvailability::default(),
+        );
+
+        let airspace = result
+            .categories
+            .iter()
+            .find(|category| category.id == "airspace")
+            .expect("airspace category");
+        assert!(
+            airspace.items.is_empty(),
+            "low-zoom outline refs must not make stale cached shelf details selectable"
         );
     }
 

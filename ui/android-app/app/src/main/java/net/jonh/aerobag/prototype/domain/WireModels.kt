@@ -773,7 +773,7 @@ sealed interface WireMapSelectionHighlight {
 }
 
 object WireMapSelectionHighlightSerializer : JsonContentPolymorphicSerializer<WireMapSelectionHighlight>(WireMapSelectionHighlight::class) {
-    override fun selectDeserializer(element: kotlinx.serialization.json.JsonElement): kotlinx.serialization.DeserializationStrategy<out WireMapSelectionHighlight> {
+    override fun selectDeserializer(element: kotlinx.serialization.json.JsonElement): kotlinx.serialization.DeserializationStrategy<WireMapSelectionHighlight> {
         return when (element.jsonObject["kind"]?.jsonPrimitive?.content) {
             "feature_ref" -> WireMapSelectionHighlightFeatureRef.serializer()
             "metar" -> WireMapSelectionHighlightMetar.serializer()
@@ -885,7 +885,7 @@ data class WireTerrainOverlayQueryResult(
 )
 
 object WireTerrainOverlayStatusSerializer : JsonContentPolymorphicSerializer<WireTerrainOverlayStatus>(WireTerrainOverlayStatus::class) {
-    override fun selectDeserializer(element: kotlinx.serialization.json.JsonElement): kotlinx.serialization.DeserializationStrategy<out WireTerrainOverlayStatus> {
+    override fun selectDeserializer(element: kotlinx.serialization.json.JsonElement): kotlinx.serialization.DeserializationStrategy<WireTerrainOverlayStatus> {
         val state = element.jsonObject["state"]?.jsonPrimitive?.content
         return when (state) {
             "hidden" -> WireTerrainOverlayStatusHidden.serializer()

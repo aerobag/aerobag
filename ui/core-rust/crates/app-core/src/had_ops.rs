@@ -1000,19 +1000,26 @@ fn suggest_waypoint_identifier_candidates(
                 .to_ascii_uppercase()
                 .starts_with(&prefix)
         })
-        .map(|candidate| WaypointIdentifierSuggestion {
-            identifier: candidate.identifier,
-            nav_ref: candidate.nav_ref,
-            kind: candidate.kind.clone(),
-            display_name: waypoint_identifier_display_name(
-                &candidate.kind,
-                &candidate.city,
-                &candidate.state,
-                &candidate.facility_name,
-            ),
-            distance_from_anchor_nm: flight_leg_distance_nm(anchor_position, candidate.position),
+        .map(|candidate| {
+            let symbol_feature = nav_symbol_feature(store, &candidate.nav_ref)?;
+            let distance_from_anchor_nm =
+                flight_leg_distance_nm(anchor_position, candidate.position);
+            Ok(WaypointIdentifierSuggestion {
+                identifier: candidate.identifier,
+                nav_ref: candidate.nav_ref,
+                kind: candidate.kind.clone(),
+                display_name: waypoint_identifier_display_name(
+                    &candidate.kind,
+                    &candidate.city,
+                    &candidate.state,
+                    &candidate.facility_name,
+                ),
+                distance_text: format!("{:.0}nm", distance_from_anchor_nm),
+                distance_from_anchor_nm,
+                symbol_feature,
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, HadReadError>>()?;
     suggestions.sort_by(|left, right| {
         left.distance_from_anchor_nm
             .partial_cmp(&right.distance_from_anchor_nm)

@@ -104,6 +104,8 @@ export type WaypointIdentifierSuggestion = {
   kind: string;
   display_name: string;
   distance_from_anchor_nm: number;
+  distance_text: string;
+  symbol_feature?: NavSymbolFeature | null;
 };
 
 export type AirwayEntryCandidate = {

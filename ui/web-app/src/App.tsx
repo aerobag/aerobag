@@ -1106,6 +1106,42 @@ function PlanWaypointSymbol(props: { feature: NavSymbolFeature | null }) {
   );
 }
 
+function waypointSuggestionName(suggestion: WaypointIdentifierSuggestion): string | null {
+  const displayName = suggestion.display_name.replace(/\s+/g, " ").trim();
+  if (
+    !displayName ||
+    displayName.toUpperCase() === suggestion.kind.toUpperCase() ||
+    displayName.toUpperCase() === suggestion.identifier.toUpperCase()
+  ) {
+    return null;
+  }
+  return displayName;
+}
+
+function waypointSuggestionDistance(suggestion: WaypointIdentifierSuggestion): string {
+  return suggestion.distance_text;
+}
+
+function WaypointButtonContent(props: {
+  label: string;
+  symbolFeature: NavSymbolFeature | null | undefined;
+  details?: Array<string | null | undefined>;
+  indented?: boolean;
+}) {
+  const details = (props.details ?? []).filter((detail): detail is string => Boolean(detail?.trim()));
+  return (
+    <>
+      <span className={`planStructuredLabel${props.indented ? " isIndented" : ""}${details.length > 0 ? " hasDetails" : ""}`}>
+        <span className="waypointButtonTitle">{props.label}</span>
+        {details.map((detail, index) => (
+          <span key={`${index}:${detail}`} className="waypointButtonDetail">{detail}</span>
+        ))}
+      </span>
+      <PlanWaypointSymbol feature={props.symbolFeature ?? null} />
+    </>
+  );
+}
+
 function emptyPlaybackUiState(): PlaybackUiState {
   return {
     status: "empty",
@@ -5457,8 +5493,11 @@ function FlightPlanPage(props: {
                     setProcedurePicker(null);
                   }}
                 >
-	                  <span className={`planStructuredLabel${row.depth > 0 ? " isIndented" : ""}`}>{row.label}</span>
-                    <PlanWaypointSymbol feature={row.symbolFeature} />
+                    <WaypointButtonContent
+                      label={row.label}
+                      symbolFeature={row.symbolFeature}
+                      indented={row.depth > 0}
+                    />
                     </button>
 	                <div
 	                  className={[
@@ -5681,7 +5720,7 @@ function FlightPlanPage(props: {
                       <button
                         key={`${suggestion.kind}:${suggestion.identifier}`}
                         type="button"
-                        className="trayButton airwayChoiceButton airportInsertSuggestion"
+                        className="trayButton airwayChoiceButton planWaypointButton airportInsertSuggestion"
                         onPointerDown={stopPointer}
                         onPointerUp={stopPointer}
                         onClick={async () => {
@@ -5701,11 +5740,14 @@ function FlightPlanPage(props: {
                           }
                         }}
                       >
-                        <span className="airportInsertSuggestionMain">
-                          <span>{suggestion.identifier}</span>
-                          {suggestion.display_name ? <span className="airportInsertSuggestionName">{suggestion.display_name}</span> : null}
-                        </span>
-                        <span className="airportInsertSuggestionMeta">{suggestion.kind.toUpperCase()} {suggestion.distance_from_anchor_nm.toFixed(1)}nm</span>
+                        <WaypointButtonContent
+                          label={suggestion.identifier}
+                          symbolFeature={suggestion.symbol_feature}
+                          details={[
+                            waypointSuggestionName(suggestion),
+                            waypointSuggestionDistance(suggestion),
+                          ]}
+                        />
                       </button>
                     ))}
                   </div>
@@ -6242,18 +6284,21 @@ function ChartSearchBox(props: {
             <button
               key={`${suggestion.kind}:${suggestion.identifier}`}
               type="button"
-              className="trayButton airwayChoiceButton airportInsertSuggestion chartSearchSuggestion"
+              className="trayButton airwayChoiceButton planWaypointButton airportInsertSuggestion chartSearchSuggestion"
               data-testid={`chart-search-suggestion-${suggestion.identifier}`}
               onPointerDown={stopPointer}
               onPointerUp={stopPointer}
               onDoubleClick={stopDoubleClick}
               onClick={() => onSelect(suggestion)}
             >
-              <span className="airportInsertSuggestionMain">
-                <span>{suggestion.identifier}</span>
-                {suggestion.display_name ? <span className="airportInsertSuggestionName">{suggestion.display_name}</span> : null}
-              </span>
-              <span className="airportInsertSuggestionMeta">{suggestion.kind.toUpperCase()} {suggestion.distance_from_anchor_nm.toFixed(1)}nm</span>
+              <WaypointButtonContent
+                label={suggestion.identifier}
+                symbolFeature={suggestion.symbol_feature}
+                details={[
+                  waypointSuggestionName(suggestion),
+                  waypointSuggestionDistance(suggestion),
+                ]}
+              />
             </button>
           ))}
         </section>

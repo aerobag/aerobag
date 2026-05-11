@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::geometry::LatLon;
+use crate::map_overlay::NavSymbolFeature;
 use crate::planning::{ConcretizedNavItem, NavRef, ProcedureKind, ResolvedLeg};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -50,6 +51,8 @@ pub struct WaypointIdentifierSuggestion {
     pub kind: String,
     pub display_name: String,
     pub distance_from_anchor_nm: f64,
+    pub distance_text: String,
+    pub symbol_feature: Option<NavSymbolFeature>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

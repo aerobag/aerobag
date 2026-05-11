@@ -2130,6 +2130,7 @@ button {
   position: relative;
   z-index: 1;
   min-width: 0;
+  max-width: calc(100% - var(--thumb) * 0.9);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: pre-line;
@@ -2137,9 +2138,39 @@ button {
   padding-right: calc(var(--thumb) * 0.1);
 }
 
+.planStructuredLabel.hasDetails {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: calc(var(--thumb) * 0.035);
+  white-space: normal;
+}
+
 .planStructuredLabel.isIndented {
   padding-left: calc(var(--thumb) * 0.18);
   transition: padding-left 180ms ease, opacity 180ms ease, transform 180ms ease;
+}
+
+.waypointButtonTitle,
+.waypointButtonDetail {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.waypointButtonTitle {
+  font-size: calc(var(--thumb) * 0.24);
+  font-weight: 800;
+  line-height: 1;
+}
+
+.waypointButtonDetail {
+  color: color-mix(in srgb, var(--theme-button-fg) 70%, #52656d);
+  font-size: calc(var(--thumb) * 0.16);
+  font-weight: 700;
+  line-height: 1;
 }
 
 .planWaypointSymbol {
@@ -2351,7 +2382,7 @@ button {
 }
 
 .waypointModal.isAirportInsert {
-  width: min(calc(var(--thumb) * 2.2), calc(100% - var(--thumb-gap) - var(--waypoint-action-tray-left)));
+  width: min(calc(var(--thumb) * 4), calc(100% - var(--thumb-gap) - var(--waypoint-action-tray-left)));
 }
 
 .waypointActionTray {
@@ -2405,8 +2436,9 @@ button {
 .airportInsertSuggestions {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   gap: calc(var(--thumb-gap) * 0.6);
+  width: 100%;
 }
 
 .airportInsertSuggestion {
@@ -2414,8 +2446,19 @@ button {
   justify-content: space-between;
   gap: var(--thumb-gap);
   width: calc(var(--thumb) * 3);
-  min-height: calc(var(--thumb) * 0.9);
+  min-height: var(--thumb);
   text-align: left;
+}
+
+.airportInsertSuggestion .planStructuredLabel {
+  flex: 1 1 auto;
+  width: auto;
+  max-width: calc(100% - var(--thumb) * 0.9);
+  padding-right: 0;
+}
+
+.airportInsertSuggestion .waypointButtonDetail {
+  white-space: nowrap;
 }
 
 .airportInsertSuggestionMain {
@@ -2480,6 +2523,29 @@ button {
   min-width: calc(var(--thumb) * 2);
   max-width: calc(var(--thumb) * 2);
   min-height: var(--thumb);
+}
+
+.airportInsertSuggestion.planWaypointButton {
+  width: calc(var(--thumb) * 3);
+  min-width: calc(var(--thumb) * 3);
+  max-width: calc(var(--thumb) * 3);
+  height: auto;
+  min-height: calc(var(--thumb) * 1.15);
+  align-items: center;
+  padding-top: calc(var(--thumb) * 0.1);
+  padding-bottom: calc(var(--thumb) * 0.1);
+}
+
+.airportInsertTray .airportInsertSuggestion.planWaypointButton {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+.chartSearchSuggestion.planWaypointButton {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
 }
 
 .airwayChoiceButton.isSuggested {

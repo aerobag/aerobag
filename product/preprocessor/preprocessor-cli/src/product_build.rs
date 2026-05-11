@@ -19,7 +19,9 @@ use preprocessor_charts::{
     build_family_tiles, build_family_vrts, package_family_region_versioned,
     package_family_wide_angle_versioned, stage_work_dir, FULL_COVERAGE_ZOOM, WIDE_ANGLE_REGION_ID,
 };
-use preprocessor_core::nav_kv::{build_nav_kv_sorted, NavKvPair, NavKvRoot};
+use preprocessor_core::nav_kv::{
+    build_nav_kv_sorted, NavKvPair, NavKvRoot, VERSION as NAV_KV_VERSION,
+};
 use preprocessor_core::{ChartFamily, Region, RegionBounds};
 use preprocessor_csup::{
     package_csup_region_versioned, prepare_csup_inputs, render_csup_region,
@@ -4636,6 +4638,10 @@ fn build_nav_kv_artifact(
             hash_text(&static_raster_json),
         ),
         ("nav_kv_page_bytes".to_string(), (64 * 1024).to_string()),
+        (
+            "nav_kv_layout_version".to_string(),
+            NAV_KV_VERSION.to_string(),
+        ),
         (
             "nav_kv_builder".to_string(),
             hash_file(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/product_build.rs"))?,

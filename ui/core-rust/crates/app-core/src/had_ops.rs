@@ -2558,12 +2558,12 @@ mod tests {
 
     #[test]
     fn operation_reports_page_faults_instead_of_exposing_query_keys() {
-        let (root, _pages) = fixture(&[("vector/manifest", br#"{"layers":[]}"#.as_slice())], 4);
+        let (root, _pages) = fixture(&[("vector/manifest", br#"{"layers":[]}"#.as_slice())], 64);
         let store = NavKvStore::new(root);
 
         match run_had_operation(&store, HadOperation::VectorManifest).unwrap() {
             HadOperationOutcome::NeedResources { resources } => {
-                assert_eq!(resource_page_indexes(&resources), vec![0, 1, 2, 3]);
+                assert_eq!(resource_page_indexes(&resources), vec![0]);
             }
             other => panic!("expected resource fault, got {other:?}"),
         }
@@ -2571,7 +2571,7 @@ mod tests {
 
     #[test]
     fn operation_decodes_values_after_platform_supplies_pages() {
-        let (root, pages) = fixture(&[("vector/manifest", br#"{"layers":[]}"#.as_slice())], 4);
+        let (root, pages) = fixture(&[("vector/manifest", br#"{"layers":[]}"#.as_slice())], 64);
         let mut store = NavKvStore::new(root);
         for (index, page) in pages.into_iter().enumerate() {
             store.insert_page(index as u32, page);
@@ -2588,7 +2588,7 @@ mod tests {
     #[test]
     fn vector_manifest_operation_reads_core_owned_key() {
         let manifest = br#"{"point_layers":{},"airspace":{"reference_tile_min_zoom":0,"reference_tile_max_zoom":12,"label_tile_min_zoom":0,"label_tile_max_zoom":12}}"#;
-        let (root, pages) = fixture(&[("vector/manifest", manifest.as_slice())], 32);
+        let (root, pages) = fixture(&[("vector/manifest", manifest.as_slice())], 256);
         let mut store = NavKvStore::new(root);
         for (index, page) in pages.into_iter().enumerate() {
             store.insert_page(index as u32, page);
@@ -2607,7 +2607,7 @@ mod tests {
 
     #[test]
     fn empty_plan_direct_to_projects_active_route_segment() {
-        let (root, _pages) = fixture(&[], 4);
+        let (root, _pages) = fixture(&[("dummy", b"1".as_slice())], 64);
         let store = NavKvStore::new(root);
         let start = LatLon {
             lat: 47.600,
@@ -2663,7 +2663,7 @@ mod tests {
                 ("chart/catalog", chart_catalog.as_slice()),
                 ("package/by-id/NW_SEC_2604", package_by_id.as_slice()),
             ],
-            64,
+            8192,
         );
         let mut store = NavKvStore::new(root);
         for (index, page) in pages.into_iter().enumerate() {
@@ -2696,59 +2696,53 @@ mod tests {
     }
 
     fn fixture(entries: &[(&str, &[u8])], page_size: u32) -> (NavKvRoot, Vec<Vec<u8>>) {
-        let (root, logical) = build_root(entries, page_size);
-        let pages = logical
-            .chunks(page_size as usize)
-            .map(|chunk| chunk.to_vec())
-            .collect::<Vec<_>>();
+        let (root, pages) = build_root(entries, page_size);
         (NavKvRoot::parse(&root).unwrap(), pages)
     }
 
-    fn build_root(entries: &[(&str, &[u8])], page_size: u32) -> (Vec<u8>, Vec<u8>) {
-        let mut key_bytes = Vec::new();
+    fn build_root(entries: &[(&str, &[u8])], page_size: u32) -> (Vec<u8>, Vec<Vec<u8>>) {
         let mut value_bytes = Vec::new();
-        let mut value_offset = 0u32;
-        let mut table = Vec::<(u32, u32)>::new();
+        let mut leaf = Vec::new();
+        leaf.extend_from_slice(&1u32.to_le_bytes());
+        leaf.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        leaf.extend_from_slice(&u32::MAX.to_le_bytes());
         for (key, value) in entries {
-            table.push((key_bytes.len() as u32, value_offset));
-            key_bytes.extend_from_slice(key.as_bytes());
-            value_bytes.extend_from_slice(value);
-            value_offset += value.len() as u32;
+            leaf.extend_from_slice(&(key.len() as u32).to_le_bytes());
+            if value.len() > 4096 {
+                let offset = value_bytes.len() as u32;
+                leaf.extend_from_slice(&0u32.to_le_bytes());
+                leaf.extend_from_slice(&offset.to_le_bytes());
+                leaf.extend_from_slice(&(value.len() as u32).to_le_bytes());
+                value_bytes.extend_from_slice(value);
+            } else {
+                leaf.extend_from_slice(&1u32.to_le_bytes());
+                leaf.extend_from_slice(&(value.len() as u32).to_le_bytes());
+                leaf.extend_from_slice(&0u32.to_le_bytes());
+            }
+            leaf.extend_from_slice(key.as_bytes());
+            if value.len() <= 4096 {
+                leaf.extend_from_slice(value);
+            }
         }
-        table.push((key_bytes.len() as u32, value_offset));
-
-        let header_len = 64usize;
-        let entry_len = 8usize;
-        let mut offset_table = Vec::new();
-        for (key_offset, value_offset) in table {
-            offset_table.extend_from_slice(&key_offset.to_le_bytes());
-            offset_table.extend_from_slice(&value_offset.to_le_bytes());
-        }
-        let offset_table_len = offset_table.len() as u32;
-        let key_table_offset = offset_table_len;
-        let key_table_len = key_bytes.len() as u32;
-        let value_table_offset = key_table_offset + key_table_len;
-        let value_bytes_len = value_bytes.len() as u32;
-        let logical_bytes_len = value_table_offset + value_bytes_len;
-        let mut logical = Vec::new();
-        logical.extend_from_slice(&offset_table);
-        logical.extend_from_slice(&key_bytes);
-        logical.extend_from_slice(&value_bytes);
-
-        let mut root = vec![0; header_len];
+        assert!(leaf.len() <= page_size as usize);
+        let mut pages = vec![leaf];
+        let value_page_start = pages.len() as u32;
+        pages.extend(
+            value_bytes
+                .chunks(page_size as usize)
+                .map(|chunk| chunk.to_vec()),
+        );
+        let page_count = pages.len() as u32;
+        let mut root = vec![0; 64];
         root[..16].copy_from_slice(b"AEROBAGNAVKV0001");
-        write_u32(&mut root, 16, 2);
+        write_u32(&mut root, 16, 4);
         write_u32(&mut root, 20, entries.len() as u32);
         write_u32(&mut root, 24, page_size);
         write_u32(&mut root, 28, 0);
-        write_u32(&mut root, 32, offset_table_len);
-        write_u32(&mut root, 36, key_table_offset);
-        write_u32(&mut root, 40, key_table_len);
-        write_u32(&mut root, 44, value_table_offset);
-        write_u32(&mut root, 48, value_bytes_len);
-        write_u32(&mut root, 52, logical_bytes_len);
-        assert_eq!(entry_len, 8);
-        (root, logical)
+        write_u32(&mut root, 32, page_count);
+        write_u32(&mut root, 36, value_page_start);
+        write_u32(&mut root, 40, value_bytes.len() as u32);
+        (root, pages)
     }
 
     fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {
@@ -2877,7 +2871,7 @@ mod tests {
             .iter()
             .map(|(key, value)| (*key, value.as_slice()))
             .collect::<Vec<_>>();
-        let (root, pages) = fixture(&entry_refs, 4096);
+        let (root, pages) = fixture(&entry_refs, 65536);
         let mut store = NavKvStore::new(root);
         for (index, page) in pages.into_iter().enumerate() {
             store.insert_page(index as u32, page);

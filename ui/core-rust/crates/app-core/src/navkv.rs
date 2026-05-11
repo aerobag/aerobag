@@ -5,27 +5,54 @@ use serde::{Deserialize, Serialize};
 use crate::{NavRef, ProcedureKind};
 
 const MAGIC: &[u8; 16] = b"AEROBAGNAVKV0001";
-const VERSION_V2: u32 = 2;
-const VERSION_V3: u32 = 3;
+const VERSION: u32 = 4;
 const HEADER_LEN: usize = 64;
-const ENTRY_LEN: usize = 8;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Entry {
-    key_offset: u32,
-    value_offset: u32,
-}
+const NODE_KIND_LEAF: u32 = 1;
+const NODE_KIND_INTERNAL: u32 = 2;
+const LEAF_HEADER_LEN: usize = 12;
+const INTERNAL_HEADER_LEN: usize = 12;
+const NO_PAGE: u32 = u32::MAX;
+const VALUE_KIND_EXTERNAL: u32 = 0;
+const VALUE_KIND_INLINE: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NavKvRoot {
     entry_count: u32,
     page_size: u32,
-    offset_table_offset: u32,
-    key_table_offset: u32,
-    value_table_offset: u32,
+    root_page: u32,
+    page_count: u32,
+    value_page_start: u32,
     value_bytes_len: u32,
-    logical_bytes_len: u32,
     prefetch_pages: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LeafEntryValue {
+    Inline(Vec<u8>),
+    External { offset: u32, len: u32 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LeafLookup {
+    key: Vec<u8>,
+    value: LeafEntryValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LeafNode {
+    next_leaf: Option<u32>,
+    entries: Vec<LeafLookup>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InternalNode {
+    children: Vec<u32>,
+    pivots: Vec<Vec<u8>>,
+}
+
+enum Node {
+    Leaf(LeafNode),
+    Internal(InternalNode),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,92 +146,68 @@ impl NavKvRoot {
             return Err("nav_kv root has invalid magic".to_string());
         }
         let actual_version = read_u32(root_bytes, 16)?;
-        if actual_version != VERSION_V2 && actual_version != VERSION_V3 {
+        if actual_version != VERSION {
             return Err(format!("unsupported nav_kv version {actual_version}"));
         }
         let entry_count = read_u32(root_bytes, 20)?;
         let page_size = read_u32(root_bytes, 24)?;
-        let offset_table_offset = read_u32(root_bytes, 28)?;
-        let offset_table_len = read_u32(root_bytes, 32)?;
-        let key_table_offset = read_u32(root_bytes, 36)?;
-        let key_table_len = read_u32(root_bytes, 40)?;
-        let value_table_offset = read_u32(root_bytes, 44)?;
-        let value_bytes_len = read_u32(root_bytes, 48)?;
-        let logical_bytes_len = read_u32(root_bytes, 52)?;
+        let root_page = read_u32(root_bytes, 28)?;
+        let page_count = read_u32(root_bytes, 32)?;
+        let value_page_start = read_u32(root_bytes, 36)?;
+        let value_bytes_len = read_u32(root_bytes, 40)?;
         if page_size == 0 {
             return Err("nav_kv page_size must be non-zero".to_string());
         }
-        let prefetch_pages = if actual_version == VERSION_V3 {
-            let prefetch_page_count = read_u32(root_bytes, 56)? as usize;
-            let reserved = read_u32(root_bytes, 60)?;
-            if reserved != 0 {
-                return Err("nav_kv v3 reserved root field must be zero".to_string());
-            }
-            let expected_root_len = HEADER_LEN
-                .checked_add(
-                    prefetch_page_count
-                        .checked_mul(4)
-                        .ok_or_else(|| "nav_kv prefetch page count overflow".to_string())?,
-                )
-                .ok_or_else(|| "nav_kv v3 root length overflow".to_string())?;
-            if root_bytes.len() != expected_root_len {
-                return Err("nav_kv v3 root length does not match prefetch page count".to_string());
-            }
-            let mut pages = Vec::with_capacity(prefetch_page_count);
-            for index in 0..prefetch_page_count {
-                pages.push(read_u32(root_bytes, HEADER_LEN + index * 4)?);
-            }
-            pages
-        } else {
-            if root_bytes.len() != HEADER_LEN {
-                return Err("nav_kv v2 root must be exactly the fixed header length".to_string());
-            }
-            Vec::new()
-        };
-        if prefetch_pages
-            .iter()
-            .any(|page| *page >= logical_bytes_len.div_ceil(page_size))
-        {
-            return Err("nav_kv prefetch page exceeds logical page count".to_string());
+        if page_count == 0 {
+            return Err("nav_kv page_count must be non-zero".to_string());
         }
-        let sentinel_count = entry_count
-            .checked_add(1)
-            .ok_or_else(|| "nav_kv entry count overflow".to_string())?;
-        let expected_offset_table_len = sentinel_count
-            .checked_mul(ENTRY_LEN as u32)
-            .ok_or_else(|| "nav_kv entry table length overflow".to_string())?;
-        if offset_table_offset != 0 {
-            return Err("nav_kv offset table must start at logical offset 0".to_string());
+        if root_page >= page_count {
+            return Err("nav_kv root_page exceeds page count".to_string());
         }
-        if offset_table_len != expected_offset_table_len {
-            return Err("nav_kv offset table length does not match entry count".to_string());
+        if value_page_start > page_count {
+            return Err("nav_kv value_page_start exceeds page count".to_string());
         }
-        if key_table_offset != offset_table_offset + offset_table_len {
-            return Err("nav_kv key table offset does not follow offset table".to_string());
+        let value_page_count = value_bytes_len.div_ceil(page_size);
+        if value_page_start + value_page_count > page_count {
+            return Err("nav_kv value bytes exceed value pages".to_string());
         }
-        if value_table_offset != key_table_offset + key_table_len {
-            return Err("nav_kv value table offset does not follow key table".to_string());
+        let prefetch_page_count = read_u32(root_bytes, 56)? as usize;
+        let reserved = read_u32(root_bytes, 60)?;
+        if reserved != 0 {
+            return Err("nav_kv v4 reserved root field must be zero".to_string());
         }
-        if logical_bytes_len != value_table_offset + value_bytes_len {
-            return Err("nav_kv logical length does not match table lengths".to_string());
+        let expected_root_len = HEADER_LEN
+            .checked_add(
+                prefetch_page_count
+                    .checked_mul(4)
+                    .ok_or_else(|| "nav_kv prefetch page count overflow".to_string())?,
+            )
+            .ok_or_else(|| "nav_kv v4 root length overflow".to_string())?;
+        if root_bytes.len() != expected_root_len {
+            return Err("nav_kv v4 root length does not match prefetch page count".to_string());
         }
+        let mut prefetch_pages = Vec::with_capacity(prefetch_page_count);
         let mut previous_prefetch_page = None;
-        for page in &prefetch_pages {
+        for index in 0..prefetch_page_count {
+            let page = read_u32(root_bytes, HEADER_LEN + index * 4)?;
+            if page >= page_count {
+                return Err("nav_kv prefetch page exceeds page count".to_string());
+            }
             if let Some(previous) = previous_prefetch_page {
-                if *page <= previous {
+                if page <= previous {
                     return Err("nav_kv prefetch pages must be sorted and unique".to_string());
                 }
             }
-            previous_prefetch_page = Some(*page);
+            previous_prefetch_page = Some(page);
+            prefetch_pages.push(page);
         }
         Ok(Self {
             entry_count,
             page_size,
-            offset_table_offset,
-            key_table_offset,
-            value_table_offset,
+            root_page,
+            page_count,
+            value_page_start,
             value_bytes_len,
-            logical_bytes_len,
             prefetch_pages,
         })
     }
@@ -218,11 +221,11 @@ impl NavKvRoot {
     }
 
     pub fn logical_bytes_len(&self) -> u32 {
-        self.logical_bytes_len
+        self.page_count.saturating_mul(self.page_size)
     }
 
     pub fn page_count(&self) -> u32 {
-        self.logical_bytes_len.div_ceil(self.page_size)
+        self.page_count
     }
 
     pub fn prefetch_pages(&self) -> &[u32] {
@@ -251,8 +254,8 @@ impl NavKvStore {
     }
 
     pub fn get_bytes(&self, key: &str) -> Result<NavKvLookup, String> {
-        let lookup = match self.value_range(key)? {
-            RangeRead::Hit(Some(range)) => range,
+        let entry = match self.find_leaf_entry(key.as_bytes())? {
+            RangeRead::Hit(Some(entry)) => entry,
             RangeRead::Hit(None) => {
                 log_nav_kv_lookup("exact", key, "missing_key", &[], 0);
                 return Ok(NavKvLookup::MissingKey);
@@ -262,19 +265,22 @@ impl NavKvStore {
                 return Ok(NavKvLookup::MissingPages(pages));
             }
         };
-        let (start, end) = lookup;
-        if start == end {
-            log_nav_kv_lookup("exact", key, "hit", &[], 0);
-            return Ok(NavKvLookup::Hit(Vec::new()));
-        }
-        match self.read_logical_range(self.root.value_table_offset + start, end - start)? {
-            RangeRead::Hit(bytes) => {
+        match entry.value {
+            LeafEntryValue::Inline(bytes) => {
                 log_nav_kv_lookup("exact", key, "hit", &[], bytes.len());
                 Ok(NavKvLookup::Hit(bytes))
             }
-            RangeRead::MissingPages(pages) => {
-                log_nav_kv_lookup("exact", key, "missing_pages", &pages, 0);
-                Ok(NavKvLookup::MissingPages(pages))
+            LeafEntryValue::External { offset, len } => {
+                match self.read_external_value(offset, len)? {
+                    RangeRead::Hit(bytes) => {
+                        log_nav_kv_lookup("exact", key, "hit", &[], bytes.len());
+                        Ok(NavKvLookup::Hit(bytes))
+                    }
+                    RangeRead::MissingPages(pages) => {
+                        log_nav_kv_lookup("exact", key, "missing_pages", &pages, 0);
+                        Ok(NavKvLookup::MissingPages(pages))
+                    }
+                }
             }
         }
     }
@@ -310,153 +316,118 @@ impl NavKvStore {
     }
 
     fn keys_with_prefix_checked(&self, prefix: &str) -> Result<RangeRead<Vec<String>>, String> {
-        let prefix = prefix.as_bytes();
-        let mut left = 0usize;
-        let mut right = self.root.len();
-        let mut missing_pages = BTreeSet::new();
-        while left < right {
-            let mid = left + (right - left) / 2;
-            let key = match self.key_at(mid)? {
-                RangeRead::Hit(key) => key,
-                RangeRead::MissingPages(pages) => {
-                    missing_pages.extend(pages);
-                    break;
-                }
-            };
-            if key.as_slice() < prefix {
-                left = mid + 1;
-            } else {
-                right = mid;
-            }
-        }
-        if !missing_pages.is_empty() {
-            return Ok(RangeRead::MissingPages(missing_pages.into_iter().collect()));
-        }
+        let mut leaf_page = match self.find_leaf_page_for_key(prefix.as_bytes())? {
+            RangeRead::Hit(page) => page,
+            RangeRead::MissingPages(pages) => return Ok(RangeRead::MissingPages(pages)),
+        };
         let mut out = Vec::new();
-        let mut index = left;
-        while index < self.root.len() {
-            let key = match self.key_at(index)? {
-                RangeRead::Hit(key) => key,
+        loop {
+            let leaf = match self.read_leaf(leaf_page)? {
+                RangeRead::Hit(leaf) => leaf,
                 RangeRead::MissingPages(pages) => return Ok(RangeRead::MissingPages(pages)),
             };
-            if !key.starts_with(prefix) {
-                break;
-            }
-            out.push(String::from_utf8_lossy(&key).into_owned());
-            index += 1;
-        }
-        Ok(RangeRead::Hit(out))
-    }
-
-    fn value_range(&self, key: &str) -> Result<RangeRead<Option<(u32, u32)>>, String> {
-        let target = key.as_bytes();
-        let mut left = 0usize;
-        let mut right = self.root.len();
-        let mut missing_pages = BTreeSet::new();
-        while left < right {
-            let mid = left + (right - left) / 2;
-            let key_at_mid = match self.key_at(mid)? {
-                RangeRead::Hit(key) => key,
-                RangeRead::MissingPages(pages) => {
-                    missing_pages.extend(pages);
-                    break;
+            for entry in &leaf.entries {
+                if entry.key.as_slice() < prefix.as_bytes() {
+                    continue;
                 }
-            };
-            match key_at_mid.as_slice().cmp(target) {
-                std::cmp::Ordering::Less => left = mid + 1,
-                std::cmp::Ordering::Greater => right = mid,
-                std::cmp::Ordering::Equal => {
-                    return match self.value_range_at(mid)? {
-                        RangeRead::Hit(range) => Ok(RangeRead::Hit(Some(range))),
-                        RangeRead::MissingPages(pages) => Ok(RangeRead::MissingPages(pages)),
-                    };
+                if !entry.key.starts_with(prefix.as_bytes()) {
+                    return Ok(RangeRead::Hit(out));
                 }
+                out.push(String::from_utf8_lossy(&entry.key).into_owned());
             }
-        }
-        if missing_pages.is_empty() {
-            Ok(RangeRead::Hit(None))
-        } else {
-            Ok(RangeRead::MissingPages(missing_pages.into_iter().collect()))
+            match leaf.next_leaf {
+                Some(next) => leaf_page = next,
+                None => return Ok(RangeRead::Hit(out)),
+            }
         }
     }
 
-    fn key_at(&self, index: usize) -> Result<RangeRead<Vec<u8>>, String> {
-        let (start, end) = match self.key_range_at(index)? {
-            RangeRead::Hit(Some(range)) => range,
-            RangeRead::Hit(None) => return Ok(RangeRead::Hit(Vec::new())),
+    fn find_leaf_entry(&self, key: &[u8]) -> Result<RangeRead<Option<LeafLookup>>, String> {
+        let leaf_page = match self.find_leaf_page_for_key(key)? {
+            RangeRead::Hit(page) => page,
             RangeRead::MissingPages(pages) => return Ok(RangeRead::MissingPages(pages)),
         };
-        self.read_logical_range(self.root.key_table_offset + start, end - start)
+        let leaf = match self.read_leaf(leaf_page)? {
+            RangeRead::Hit(leaf) => leaf,
+            RangeRead::MissingPages(pages) => return Ok(RangeRead::MissingPages(pages)),
+        };
+        Ok(RangeRead::Hit(
+            leaf.entries
+                .binary_search_by(|entry| entry.key.as_slice().cmp(key))
+                .ok()
+                .and_then(|index| leaf.entries.get(index).cloned()),
+        ))
     }
 
-    fn key_range_at(&self, index: usize) -> Result<RangeRead<Option<(u32, u32)>>, String> {
-        match self.entry_pair_at(index)? {
-            RangeRead::Hit(Some((current, next))) => {
-                Ok(RangeRead::Hit(Some((current.key_offset, next.key_offset))))
+    fn find_leaf_page_for_key(&self, key: &[u8]) -> Result<RangeRead<u32>, String> {
+        let mut page_index = self.root.root_page;
+        loop {
+            match self.read_node(page_index)? {
+                RangeRead::Hit(Node::Leaf(_)) => return Ok(RangeRead::Hit(page_index)),
+                RangeRead::Hit(Node::Internal(node)) => {
+                    let child_index = node.pivots.partition_point(|pivot| pivot.as_slice() <= key);
+                    page_index = *node
+                        .children
+                        .get(child_index)
+                        .ok_or_else(|| "nav_kv internal child index out of range".to_string())?;
+                }
+                RangeRead::MissingPages(pages) => return Ok(RangeRead::MissingPages(pages)),
             }
-            RangeRead::Hit(None) => Ok(RangeRead::Hit(None)),
+        }
+    }
+
+    fn read_node(&self, page: u32) -> Result<RangeRead<Node>, String> {
+        if page >= self.root.value_page_start {
+            return Err("nav_kv attempted to read value page as node".to_string());
+        }
+        let bytes = match self.page_bytes(page) {
+            Some(bytes) => bytes,
+            None => return Ok(RangeRead::MissingPages(vec![page])),
+        };
+        match read_u32(bytes, 0)? {
+            NODE_KIND_LEAF => Ok(RangeRead::Hit(Node::Leaf(parse_leaf_node(bytes)?))),
+            NODE_KIND_INTERNAL => Ok(RangeRead::Hit(Node::Internal(parse_internal_node(bytes)?))),
+            _ => Err("nav_kv node has invalid kind".to_string()),
+        }
+    }
+
+    fn read_leaf(&self, page: u32) -> Result<RangeRead<LeafNode>, String> {
+        match self.read_node(page)? {
+            RangeRead::Hit(Node::Leaf(leaf)) => Ok(RangeRead::Hit(leaf)),
+            RangeRead::Hit(Node::Internal(_)) => Err("nav_kv expected leaf node".to_string()),
             RangeRead::MissingPages(pages) => Ok(RangeRead::MissingPages(pages)),
         }
     }
 
-    fn value_range_at(&self, index: usize) -> Result<RangeRead<(u32, u32)>, String> {
-        match self.entry_pair_at(index)? {
-            RangeRead::Hit(Some((current, next))) => {
-                Ok(RangeRead::Hit((current.value_offset, next.value_offset)))
-            }
-            RangeRead::Hit(None) => Ok(RangeRead::Hit((0, 0))),
-            RangeRead::MissingPages(pages) => Ok(RangeRead::MissingPages(pages)),
-        }
-    }
-
-    fn entry_pair_at(&self, index: usize) -> Result<RangeRead<Option<(Entry, Entry)>>, String> {
-        if index >= self.root.len() {
-            return Ok(RangeRead::Hit(None));
-        }
-        let offset = self.root.offset_table_offset + (index as u32) * ENTRY_LEN as u32;
-        let bytes = match self.read_logical_range(offset, (ENTRY_LEN * 2) as u32)? {
-            RangeRead::Hit(bytes) => bytes,
-            RangeRead::MissingPages(pages) => return Ok(RangeRead::MissingPages(pages)),
-        };
-        Ok(RangeRead::Hit(Some((
-            Entry {
-                key_offset: read_u32(&bytes, 0)?,
-                value_offset: read_u32(&bytes, 4)?,
-            },
-            Entry {
-                key_offset: read_u32(&bytes, 8)?,
-                value_offset: read_u32(&bytes, 12)?,
-            },
-        ))))
-    }
-
-    fn read_logical_range(&self, start: u32, len: u32) -> Result<RangeRead<Vec<u8>>, String> {
+    fn read_external_value(&self, start: u32, len: u32) -> Result<RangeRead<Vec<u8>>, String> {
         if len == 0 {
             return Ok(RangeRead::Hit(Vec::new()));
         }
         let end = start
             .checked_add(len)
-            .ok_or_else(|| "nav_kv logical range overflow".to_string())?;
-        if end > self.root.logical_bytes_len {
-            return Err("nav_kv logical range exceeds logical bytes length".to_string());
+            .ok_or_else(|| "nav_kv value range overflow".to_string())?;
+        if end > self.root.value_bytes_len {
+            return Err("nav_kv value range exceeds value bytes length".to_string());
         }
         let start_page = start / self.root.page_size;
         let end_page = (end - 1) / self.root.page_size;
         let missing = (start_page..=end_page)
+            .map(|value_page| self.root.value_page_start + value_page)
             .filter(|page| !self.pages.contains_key(page))
             .collect::<Vec<_>>();
         if !missing.is_empty() {
             return Ok(RangeRead::MissingPages(missing));
         }
         let mut out = Vec::with_capacity(len as usize);
-        for page_index in start_page..=end_page {
+        for value_page in start_page..=end_page {
+            let page_index = self.root.value_page_start + value_page;
             let page = self
                 .pages
                 .get(&page_index)
                 .ok_or_else(|| format!("nav_kv page {page_index} missing"))?;
-            let page_start = page_index
+            let page_start = value_page
                 .checked_mul(self.root.page_size)
-                .ok_or_else(|| "nav_kv page start overflow".to_string())?;
+                .ok_or_else(|| "nav_kv value page start overflow".to_string())?;
             let slice_start = start.saturating_sub(page_start) as usize;
             let slice_end = (end.min(page_start + self.root.page_size) - page_start) as usize;
             if slice_start > slice_end || slice_end > page.len() {
@@ -466,6 +437,79 @@ impl NavKvStore {
         }
         Ok(RangeRead::Hit(out))
     }
+
+    fn page_bytes(&self, page: u32) -> Option<&[u8]> {
+        self.pages.get(&page).map(Vec::as_slice)
+    }
+}
+
+fn parse_leaf_node(bytes: &[u8]) -> Result<LeafNode, String> {
+    let count = read_u32(bytes, 4)? as usize;
+    let next_raw = read_u32(bytes, 8)?;
+    let mut offset = LEAF_HEADER_LEN;
+    let mut entries = Vec::with_capacity(count);
+    for _ in 0..count {
+        let key_len = read_u32(bytes, offset)? as usize;
+        offset += 4;
+        let value_kind = read_u32(bytes, offset)?;
+        offset += 4;
+        let value_a = read_u32(bytes, offset)?;
+        offset += 4;
+        let value_b = read_u32(bytes, offset)?;
+        offset += 4;
+        let key = bytes
+            .get(offset..offset + key_len)
+            .ok_or_else(|| "nav_kv leaf key extends past page".to_string())?
+            .to_vec();
+        offset += key_len;
+        let value = match value_kind {
+            VALUE_KIND_INLINE => {
+                let value_len = value_a as usize;
+                let value = bytes
+                    .get(offset..offset + value_len)
+                    .ok_or_else(|| "nav_kv inline value extends past page".to_string())?
+                    .to_vec();
+                offset += value_len;
+                LeafEntryValue::Inline(value)
+            }
+            VALUE_KIND_EXTERNAL => LeafEntryValue::External {
+                offset: value_a,
+                len: value_b,
+            },
+            _ => return Err("nav_kv leaf entry has invalid value kind".to_string()),
+        };
+        entries.push(LeafLookup { key, value });
+    }
+    Ok(LeafNode {
+        next_leaf: (next_raw != NO_PAGE).then_some(next_raw),
+        entries,
+    })
+}
+
+fn parse_internal_node(bytes: &[u8]) -> Result<InternalNode, String> {
+    let pivot_count = read_u32(bytes, 4)? as usize;
+    let child_count = read_u32(bytes, 8)? as usize;
+    if child_count != pivot_count + 1 {
+        return Err("nav_kv internal child/pivot count mismatch".to_string());
+    }
+    let mut offset = INTERNAL_HEADER_LEN;
+    let mut children = Vec::with_capacity(child_count);
+    for _ in 0..child_count {
+        children.push(read_u32(bytes, offset)?);
+        offset += 4;
+    }
+    let mut pivots = Vec::with_capacity(pivot_count);
+    for _ in 0..pivot_count {
+        let key_len = read_u32(bytes, offset)? as usize;
+        offset += 4;
+        let key = bytes
+            .get(offset..offset + key_len)
+            .ok_or_else(|| "nav_kv internal pivot extends past page".to_string())?
+            .to_vec();
+        offset += key_len;
+        pivots.push(key);
+    }
+    Ok(InternalNode { children, pivots })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -730,15 +774,20 @@ mod tests {
                 ("b", b"defghij".as_slice()),
                 ("z", b"k".as_slice()),
             ],
-            4,
+            128,
         );
         let mut store = NavKvStore::new(root);
 
         assert_eq!(
             store.get_bytes("b").unwrap(),
-            NavKvLookup::MissingPages(vec![2, 3, 4, 5])
+            NavKvLookup::MissingPages(vec![0])
         );
-        for (index, page) in pages.into_iter().enumerate() {
+        store.insert_page(0, pages[0].clone());
+        assert_eq!(
+            store.get_bytes("b").unwrap(),
+            NavKvLookup::MissingPages(vec![1])
+        );
+        for (index, page) in pages.into_iter().enumerate().skip(1) {
             store.insert_page(index as u32, page);
         }
 
@@ -751,22 +800,20 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_version() {
-        let (mut root, _) = build_root(&[("a", b"1".as_slice())], 8);
+        let (mut root, _) = build_root(&[("a", b"1".as_slice())], 64);
         write_u32(&mut root, 16, 1);
         let err = NavKvRoot::parse(&root).unwrap_err();
         assert!(err.contains("unsupported nav_kv version"), "{err}");
     }
 
     #[test]
-    fn parses_v3_prefetch_pages() {
-        let (mut root, _) = build_root(&[("a", b"1".as_slice()), ("b", b"2".as_slice())], 8);
-        write_u32(&mut root, 16, VERSION_V3);
-        write_u32(&mut root, 56, 2);
+    fn parses_v4_prefetch_pages() {
+        let (mut root, _) = build_root(&[("a", b"1".as_slice()), ("b", b"2".as_slice())], 64);
+        write_u32(&mut root, 56, 1);
         root.extend_from_slice(&0u32.to_le_bytes());
-        root.extend_from_slice(&1u32.to_le_bytes());
 
         let root = NavKvRoot::parse(&root).unwrap();
-        assert_eq!(root.prefetch_pages(), &[0, 1]);
+        assert_eq!(root.prefetch_pages(), &[0]);
     }
 
     #[test]
@@ -825,62 +872,54 @@ mod tests {
     }
 
     fn fixture(entries: &[(&str, &[u8])], page_size: u32) -> (NavKvRoot, Vec<Vec<u8>>) {
-        let (root, logical) = build_root(entries, page_size);
-        let pages = logical
-            .chunks(page_size as usize)
-            .map(|chunk| chunk.to_vec())
-            .collect::<Vec<_>>();
+        let (root, pages) = build_root(entries, page_size);
         (NavKvRoot::parse(&root).unwrap(), pages)
     }
 
-    fn build_root(entries: &[(&str, &[u8])], page_size: u32) -> (Vec<u8>, Vec<u8>) {
-        let mut key_bytes = Vec::new();
+    fn build_root(entries: &[(&str, &[u8])], page_size: u32) -> (Vec<u8>, Vec<Vec<u8>>) {
         let mut value_bytes = Vec::new();
-        let mut value_offset = 0u32;
-        let mut table = Vec::new();
+        let mut leaf = Vec::new();
+        leaf.extend_from_slice(&NODE_KIND_LEAF.to_le_bytes());
+        leaf.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        leaf.extend_from_slice(&NO_PAGE.to_le_bytes());
         for (key, value) in entries {
-            table.push(Entry {
-                key_offset: key_bytes.len() as u32,
-                value_offset,
-            });
-            key_bytes.extend_from_slice(key.as_bytes());
-            value_bytes.extend_from_slice(value);
-            value_offset += value.len() as u32;
+            leaf.extend_from_slice(&(key.len() as u32).to_le_bytes());
+            if value.len() > 4 {
+                let offset = value_bytes.len() as u32;
+                leaf.extend_from_slice(&VALUE_KIND_EXTERNAL.to_le_bytes());
+                leaf.extend_from_slice(&offset.to_le_bytes());
+                leaf.extend_from_slice(&(value.len() as u32).to_le_bytes());
+                value_bytes.extend_from_slice(value);
+            } else {
+                leaf.extend_from_slice(&VALUE_KIND_INLINE.to_le_bytes());
+                leaf.extend_from_slice(&(value.len() as u32).to_le_bytes());
+                leaf.extend_from_slice(&0u32.to_le_bytes());
+            }
+            leaf.extend_from_slice(key.as_bytes());
+            if value.len() <= 4 {
+                leaf.extend_from_slice(value);
+            }
         }
-        table.push(Entry {
-            key_offset: key_bytes.len() as u32,
-            value_offset,
-        });
-
-        let mut offset_table = Vec::new();
-        for entry in table {
-            offset_table.extend_from_slice(&entry.key_offset.to_le_bytes());
-            offset_table.extend_from_slice(&entry.value_offset.to_le_bytes());
-        }
-        let offset_table_len = offset_table.len() as u32;
-        let key_table_offset = offset_table_len;
-        let key_table_len = key_bytes.len() as u32;
-        let value_table_offset = key_table_offset + key_table_len;
-        let value_bytes_len = value_bytes.len() as u32;
-        let logical_bytes_len = value_table_offset + value_bytes_len;
-        let mut logical = Vec::new();
-        logical.extend_from_slice(&offset_table);
-        logical.extend_from_slice(&key_bytes);
-        logical.extend_from_slice(&value_bytes);
+        assert!(leaf.len() <= page_size as usize);
+        let mut pages = vec![leaf];
+        let value_page_start = pages.len() as u32;
+        pages.extend(
+            value_bytes
+                .chunks(page_size as usize)
+                .map(|chunk| chunk.to_vec()),
+        );
+        let page_count = pages.len() as u32;
 
         let mut root = vec![0; HEADER_LEN];
         root[..MAGIC.len()].copy_from_slice(MAGIC);
-        write_u32(&mut root, 16, VERSION_V2);
+        write_u32(&mut root, 16, VERSION);
         write_u32(&mut root, 20, entries.len() as u32);
         write_u32(&mut root, 24, page_size);
         write_u32(&mut root, 28, 0);
-        write_u32(&mut root, 32, offset_table_len);
-        write_u32(&mut root, 36, key_table_offset);
-        write_u32(&mut root, 40, key_table_len);
-        write_u32(&mut root, 44, value_table_offset);
-        write_u32(&mut root, 48, value_bytes_len);
-        write_u32(&mut root, 52, logical_bytes_len);
-        (root, logical)
+        write_u32(&mut root, 32, page_count);
+        write_u32(&mut root, 36, value_page_start);
+        write_u32(&mut root, 40, value_bytes.len() as u32);
+        (root, pages)
     }
 
     fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {

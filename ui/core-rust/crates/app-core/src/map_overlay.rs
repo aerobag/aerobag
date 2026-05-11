@@ -255,6 +255,7 @@ pub struct AirspaceFeaturePayload {
     pub id: String,
     pub kind: String,
     pub name: String,
+    #[serde(default)]
     pub ident: String,
     pub airspace_class: String,
     pub style_hint: String,
@@ -4299,6 +4300,30 @@ mod tests {
                 display: lower.to_string(),
             },
         }
+    }
+
+    #[test]
+    fn airspace_feature_payload_accepts_anonymous_feature_without_ident() {
+        let payload: AirspaceFeaturePayload = serde_json::from_str(
+            r#"{
+                "schema_version": 1,
+                "id": "airspace:data_2604:d:anon:class_d:4830",
+                "kind": "airspace",
+                "name": "Anonymous Class D",
+                "airspace_class": "D",
+                "style_hint": "class_d",
+                "vertical": {
+                    "upper": { "display": "25" },
+                    "lower": { "display": "SFC" }
+                },
+                "bbox": [-123.0, 45.0, -122.0, 46.0],
+                "paths": []
+            }"#,
+        )
+        .expect("anonymous airspace features may omit ident");
+
+        assert_eq!(payload.ident, "");
+        assert_eq!(airspace_selection_label(&payload), "Anonymous Class D");
     }
 
     fn test_airspace_path(

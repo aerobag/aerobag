@@ -190,7 +190,7 @@ export type AirspaceFeaturePayload = {
   id: string;
   kind: string;
   name: string;
-  ident: string;
+  ident?: string;
   airspace_class: string;
   style_hint: string;
   vertical: {

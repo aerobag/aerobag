@@ -104,7 +104,6 @@ import type {
   MapOverlayQueryResult,
   TerrainOverlayQueryResult,
   TerrainOverlayTileRequest,
-  VisibleMapFeature,
   VisibleMetarFeature,
   VisiblePirepFeature,
 } from "./domain/appCoreAdapter";
@@ -701,7 +700,6 @@ const maxViewHistoryDepth = 64;
 const loadedUiTheme = uiTheme as UiThemeJson;
 const controlTheme = loadedUiTheme.controls;
 const plateFolderTheme = loadedUiTheme.plate_folder;
-const VAMPS_POSITION = { lat: 47.3648944444444, lon: -121.980275 };
 const MATLK_POSITION = { lat: 27.826816666666662, lon: -80.95118611111111 };
 const defaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json";
 const startupHighLatencyWarningGraceMs = 10_000;
@@ -1253,7 +1251,6 @@ export default function App() {
   const [pageHistory, setPageHistory] = useState<AppViewSnapshot[]>([]);
   const [appCoreAdapter, setAppCoreAdapter] = useState<AppCoreAdapter | null>(null);
   const [adapterBackend, setAdapterBackend] = useState<AdapterBackendKind>("wasm");
-  const [adapterDetail, setAdapterDetail] = useState<string>("loading");
   const [sessionInitError, setSessionInitError] = useState<string | null>(null);
   const [startupProgress, setStartupProgress] = useState<StartupProgress>(initialStartupProgress);
   const [startupFatalError, setStartupFatalError] = useState<StartupFatalError | null>(null);
@@ -1660,16 +1657,6 @@ export default function App() {
       selected_chart_asset_path: selectedChart?.asset_path ?? null,
     });
   }, [selectedAirportId, selectedChartId, selectedChart?.label, selectedChart?.asset_path]);
-  const legSummary = useMemo(() => {
-    const firstLeg = currentPlan?.legs[0];
-    if (!firstLeg) {
-      return "NO LEG";
-    }
-    const from = navRefLabel(firstLeg.from);
-    const to = navRefLabel(firstLeg.to);
-    return `${from} -> ${to} CRS 342`;
-  }, [currentPlan]);
-
   useEffect(() => {
     let cancelled = false;
     markStartupProgress("adapter.load", "Loading app-core adapter");
@@ -1678,14 +1665,12 @@ export default function App() {
         markStartupProgress("adapter.ready", loaded.detail);
         setAppCoreAdapter(loaded.adapter);
         setAdapterBackend(loaded.backend);
-        setAdapterDetail(loaded.detail);
         setSessionInitError(null);
       }
     }).catch((error) => {
       if (!cancelled) {
         const message = error instanceof Error ? error.message : String(error);
         setSessionInitError(`WASM adapter init failed: ${message}`);
-        setAdapterDetail(`adapter init failed: ${message}`);
         reportStartupFatalError("adapter.load", error);
       }
     });
@@ -2117,7 +2102,6 @@ export default function App() {
         <MapPage
           appCoreAdapter={appCoreAdapter}
           page={page}
-          pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
           debugState={sessionSnapshot.debug_state}
           mapLayerState={mapLayerState}
@@ -2143,7 +2127,6 @@ export default function App() {
           onSelectPage={navigateToPage}
           onOpenPlan={() => navigateToPage("plan")}
           onOpenPlateTarget={openPlateTarget}
-          legSummary={legSummary}
           ownship={appUiState.ownship.render}
           ownshipControls={appUiState.ownship.controls}
           plan={currentPlan}
@@ -2173,7 +2156,6 @@ export default function App() {
           page={page}
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
-          legSummary={legSummary}
           plan={currentPlan}
           planUiState={planUiState}
           mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
@@ -2294,8 +2276,6 @@ export default function App() {
         <ChartsPage
           appCoreAdapter={appCoreAdapter}
           page={page}
-          pageHistory={pageHistory}
-          uptimeLabel={uptimeLabel}
           plan={currentPlan}
           planUiState={planUiState}
           airports={chartPageData.airports}
@@ -2372,8 +2352,6 @@ export default function App() {
       <div className={`pageLayer${page === "home" ? " isActive" : ""}`} aria-hidden={page !== "home"}>
         <HomePage
           page={page}
-          pageHistory={pageHistory}
-          uptimeLabel={uptimeLabel}
           planUiState={planUiState}
           mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
           onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
@@ -2389,7 +2367,6 @@ export default function App() {
 function MapPage(props: {
   appCoreAdapter: AppCoreAdapter;
   page: AppPage;
-  pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
   debugState: UiDebugState;
   mapLayerState: UiMapLayerState;
@@ -2404,7 +2381,6 @@ function MapPage(props: {
   onSelectPage: (page: AppPage) => void;
   onOpenPlan: () => void;
   onOpenPlateTarget: (airportId: string, target: "Folder" | "CSup") => void;
-  legSummary: string;
   ownship: OwnshipRenderState;
   ownshipControls: OwnshipControlModel;
   plan: FlightPlan;
@@ -2430,7 +2406,6 @@ function MapPage(props: {
     debugState,
     mapLayerState,
     page,
-    pageHistory,
     uptimeLabel,
     selectedMap,
     selectedFamily,
@@ -2443,7 +2418,6 @@ function MapPage(props: {
     onSelectPage,
     onOpenPlan,
     onOpenPlateTarget,
-    legSummary,
     ownship,
     ownshipControls,
     plan,
@@ -2494,7 +2468,7 @@ function MapPage(props: {
   });
   const [nexradFrames, setNexradFrames] = useState<NexradOverlayFrame[]>([]);
   const [nexradFrameIndex, setNexradFrameIndex] = useState(0);
-  const [nexradStatus, setNexradStatus] = useState<NexradLayerStatus>({ state: "loading" });
+  const [, setNexradStatus] = useState<NexradLayerStatus>({ state: "loading" });
   const [terrainOverlay, setTerrainOverlay] = useState<TerrainOverlayUiState>({ query: null, images: [] });
   const terrainTileCacheRef = useRef<Map<string, TerrainTileCacheEntry>>(new Map());
   const terrainSourceByteCacheRef = useRef<Map<string, Uint8Array>>(new Map());
@@ -4693,12 +4667,10 @@ function PlaybackWidget(props: {
       ? committedCursorSeconds
       : Math.min(Math.max(scrubCursorSeconds, 0), durationSeconds || 0);
   const canControl = uiSession !== null;
-  const canSeek = durationSeconds > 0;
   const summary = playbackUiState.title_label;
   const overviewWidth = 320;
   const overviewHeight = 34;
   const knobRadius = 7;
-  const scrubSurfaceHeight = 50;
   const cursorRatio = durationSeconds > 0 ? cursorSeconds / durationSeconds : 0;
   const cursorX = knobRadius + cursorRatio * Math.max(overviewWidth - knobRadius * 2, 0);
   const speedPath = profilePathData(playbackUiState.speed_profile_norm, overviewWidth, overviewHeight, knobRadius, knobRadius);
@@ -4965,7 +4937,6 @@ function FlightPlanPage(props: {
   page: AppPage;
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
-  legSummary: string;
   plan: FlightPlan;
   planUiState: FlightPlanUiState | null;
   mostRecentChartOrPlatePage: AppPage;
@@ -5039,7 +5010,6 @@ function FlightPlanPage(props: {
   const waypointModalRef = useRef<HTMLElement | null>(null);
   const planControlsRef = useRef<HTMLDivElement | null>(null);
   const planFooterRef = useRef<HTMLDivElement | null>(null);
-  const trayOpen = false;
   const planUiState = props.planUiState;
   if (!planUiState) {
     throw new Error("FlightPlanPage requires core-projected FlightPlanUiState");
@@ -5054,7 +5024,6 @@ function FlightPlanPage(props: {
   const [structuredGroupBoxes, setStructuredGroupBoxes] = useState<Array<{ key: string; top: number; left: number; width: number; height: number }>>([]);
   const [waypointModalTop, setWaypointModalTop] = useState<number | null>(null);
   const [waypointModalMaxHeight, setWaypointModalMaxHeight] = useState<number | null>(null);
-  const componentViews = useMemo(() => planUiState.components, [planUiState.components]);
   const waypointSuggestionPlanKey = useMemo(() => JSON.stringify(props.plan), [props.plan]);
   useEffect(() => {
     const editor = airportInsert;
@@ -6666,8 +6635,6 @@ function MapSelectionItemIcon(props: { item: MapSelectionItem }) {
 function ChartsPage(props: {
   appCoreAdapter: AppCoreAdapter | null;
   page: AppPage;
-  pageHistory: AppViewSnapshot[];
-  uptimeLabel: string;
   plan: FlightPlan;
   planUiState: FlightPlanUiState | null;
   airports: ChartPageData["airports"];
@@ -6693,7 +6660,7 @@ function ChartsPage(props: {
   debugWarningActive: boolean;
   onFirstVisualReady: () => void;
 }) {
-  const { appCoreAdapter, page, pageHistory, uptimeLabel, plan, planUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, ownship, ownshipControls, onFirstVisualReady } = props;
+  const { appCoreAdapter, page, plan, planUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, ownship, ownshipControls, onFirstVisualReady } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -7335,8 +7302,6 @@ function ChartsPage(props: {
 
 function HomePage(props: {
   page: AppPage;
-  pageHistory: AppViewSnapshot[];
-  uptimeLabel: string;
   planUiState: FlightPlanUiState | null;
   mostRecentChartOrPlatePage: AppPage;
   onOpenRecentChartOrPlate: () => void;
@@ -7344,7 +7309,7 @@ function HomePage(props: {
   onOpenPlan: () => void;
   debugWarningActive: boolean;
 }) {
-  const { page, pageHistory, planUiState, onSelectPage, onOpenPlan } = props;
+  const { page, planUiState, onSelectPage, onOpenPlan } = props;
   const homeButtons: Array<{ id: string; label: string; page: AppPage; iconSrc?: string }> = [
     { id: "chart", label: "CHART", page: "map", iconSrc: PAGE_CHART_ICON_SRC },
     { id: "plate", label: "PLATE", page: "charts", iconSrc: PAGE_PLATE_ICON_SRC },
@@ -7601,11 +7566,6 @@ function resolveChartId(
 
 function airportIdFromNavRef(navRef: NavRef | null | undefined): string | null {
   return navRef && "Airport" in navRef ? navRef.Airport : null;
-}
-
-
-function sameIds(left: string[], right: string[]) {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function SituationStatusBadge(props: {
@@ -8010,43 +7970,6 @@ async function applyFlightPlanMutation(
   }
   const nextSnapshot = await uiSession.replaceFlightPlan(mutation.plan);
   setSessionSnapshot(nextSnapshot);
-}
-
-function concretizedNavItemLabel(item: FlightPlanUiState["components"][number]["items"][number]) {
-  if (item.kind === "waypoint") {
-    return navRefLabel(item.nav_ref);
-  }
-  return item.label;
-}
-
-function structuredComponentLabel(component: FlightPlanUiState["components"][number]) {
-  if (component.kind === "airway") {
-    return component.summary.split("(")[0].trim();
-  }
-  return component.summary;
-}
-
-function componentWaypointNavRef(component: FlightPlanUiState["components"][number] | undefined): NavRef | null {
-  if (!component) {
-    return null;
-  }
-  return component.nav_ref;
-}
-
-function navRefsEqual(left: NavRef | null, right: NavRef | null) {
-  if (!left || !right) {
-    return false;
-  }
-  if ("Airport" in left && "Airport" in right) return left.Airport === right.Airport;
-  if ("Navaid" in left && "Navaid" in right) return left.Navaid === right.Navaid;
-  if ("Fix" in left && "Fix" in right) return left.Fix === right.Fix;
-  if ("LatLon" in left && "LatLon" in right) {
-    return left.LatLon.lat === right.LatLon.lat && left.LatLon.lon === right.LatLon.lon;
-  }
-  if ("Spot" in left && "Spot" in right) {
-    return left.Spot.lat === right.Spot.lat && left.Spot.lon === right.Spot.lon;
-  }
-  return false;
 }
 
 function navRefKey(value: NavRef) {

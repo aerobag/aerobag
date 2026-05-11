@@ -2,7 +2,6 @@ import type {
   UiSnapshotAppState,
   AppUiState,
   AirwayBranch,
-  AirwayExitCandidate,
   AirwayPresentationPlan,
   AirwaySuggestion,
   CifpTppMatch,
@@ -13,8 +12,6 @@ import type {
   FlightPlanUiMutation,
   FlightPlanUiState,
   ChartFamilyId,
-  ContentAvailability,
-  GuidanceState,
   LatLon,
   MapFollowUiState,
   NavRef,
@@ -22,15 +19,11 @@ import type {
   OwnshipSelectionCommand,
   OwnshipSourceRegistration,
   OwnshipSourceStatusUpdate,
-  PlanLeg,
   PlaybackUiState,
   ProcedureLoadOption,
   ProcedureKind,
   ProcedureOptions,
   ProcedureSummary,
-  ResolvedLegUiView,
-  RouteComponentUiView,
-  SequencingMode,
   Situation,
   SituationControlInput,
   SituationRingCandidate,
@@ -748,10 +741,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
 
   async emptyFlightPlan(): Promise<FlightPlan> {
     return JSON.parse(await this.module.empty_flight_plan_json()) as FlightPlan;
-  }
-
-  private async enrichFlightPlanUiMutation(mutation: FlightPlanUiMutation): Promise<FlightPlanUiMutation> {
-    return runCoreHadOperation<FlightPlanUiMutation>({ kind: "flight_plan_ui_mutation", mutation });
   }
 
   async createUiSession(

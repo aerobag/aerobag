@@ -7,7 +7,6 @@ import {
   preserveViewportForMap,
   rasterPlanViewportForDevice,
   screenToWorld,
-  viewportCenterLatLon,
   zoomAroundPoint,
 } from "./mapViewport";
 

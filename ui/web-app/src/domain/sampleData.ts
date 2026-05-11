@@ -7,7 +7,6 @@ import type {
   ContentInventory,
   DevBootstrapJson,
   GeometryJson,
-  MapViewJson,
   MapViewOptionJson,
   MapTileViewJson,
 } from "./types";

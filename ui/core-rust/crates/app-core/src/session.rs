@@ -128,6 +128,7 @@ struct UiSession {
     taf_payload: Option<TafProductPayload>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<TfrProductPayload>,
+    terrain_source_tile_cache: HashMap<String, Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -342,6 +343,7 @@ fn create_ui_session_inner(
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
+            terrain_source_tile_cache: HashMap::new(),
         },
     );
     if let Some(mark) = mark.as_deref_mut() {
@@ -1835,6 +1837,14 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
         session.metar_tile_cache.insert(expected_key, payload);
         return Ok(());
     }
+    if let Some(rest) = resource_id.strip_prefix("terrain/source/") {
+        let mut sessions = sessions().lock().expect("session store poisoned");
+        let session = session_mut(&mut sessions, handle)?;
+        session
+            .terrain_source_tile_cache
+            .insert(rest.to_string(), bytes.to_vec());
+        return Ok(());
+    }
     Err(AppError {
         kind: AppErrorKind::UnsupportedOperation,
         message: format!("unsupported session resource id: {resource_id}"),
@@ -2390,13 +2400,16 @@ pub fn get_terrain_overlay_in_session(
     viewport: MapViewport,
     width_px: f64,
     height_px: f64,
-) -> AppResult<TerrainOverlayQueryResult> {
+) -> AppResult<HadOperationOutcome> {
     let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
     if !session.map_layer_state.terrain_warning.visible {
-        return Ok(TerrainOverlayQueryResult {
+        let result = TerrainOverlayQueryResult {
             status: crate::TerrainOverlayStatus::Hidden,
             tile_requests: Vec::new(),
+        };
+        return Ok(HadOperationOutcome::Complete {
+            result: serde_json::to_value(result).map_err(internal_json_error)?,
         });
     }
     let kinematics = session.app_state.ownship.resolved.kinematics.as_ref();
@@ -2404,13 +2417,56 @@ pub fn get_terrain_overlay_in_session(
         kinematics.position.lat.is_finite() && kinematics.position.lon.is_finite()
     });
     let has_altitude = ownship_terrain_altitude_ft(session).is_some();
-    Ok(crate::query_terrain_overlay(
-        &viewport,
-        width_px,
-        height_px,
-        has_position,
-        has_altitude,
-    ))
+    let query =
+        crate::query_terrain_overlay(&viewport, width_px, height_px, has_position, has_altitude);
+    let resources = terrain_overlay_resources(session, &query);
+    if !resources.is_empty() {
+        return Ok(HadOperationOutcome::NeedResources { resources });
+    }
+    Ok(HadOperationOutcome::Complete {
+        result: serde_json::to_value(query).map_err(internal_json_error)?,
+    })
+}
+
+fn terrain_overlay_resources(
+    session: &UiSession,
+    query: &TerrainOverlayQueryResult,
+) -> Vec<CoreResourceRequest> {
+    let mut resources = Vec::new();
+    for request in &query.tile_requests {
+        for source_tile in terrain_source_tiles(request) {
+            let key = terrain_source_tile_cache_key(&source_tile.product_id, &source_tile.path);
+            if session.terrain_source_tile_cache.contains_key(&key) {
+                continue;
+            }
+            resources.push(CoreResourceRequest {
+                id: format!("terrain/source/{key}"),
+                address: format!(
+                    "/terrain-products/{}/{}",
+                    source_tile.product_id, source_tile.path
+                ),
+                optional: false,
+            });
+        }
+    }
+    resources
+}
+
+fn terrain_source_tiles(
+    request: &crate::TerrainOverlayTileRequest,
+) -> Vec<crate::TerrainOverlaySourceTile> {
+    if request.source_tiles.is_empty() {
+        vec![crate::TerrainOverlaySourceTile {
+            product_id: request.product_id.clone(),
+            path: request.path.clone(),
+        }]
+    } else {
+        request.source_tiles.clone()
+    }
+}
+
+fn terrain_source_tile_cache_key(product_id: &str, path: &str) -> String {
+    format!("{product_id}/{path}")
 }
 
 pub fn render_terrain_overlay_tile_in_session(
@@ -2428,6 +2484,45 @@ pub fn render_terrain_overlay_tile_in_session(
             message: "ownship altitude unavailable for terrain overlay".to_string(),
         })?;
     crate::render_terrain_warning_raw_rgba_from_tiles(&[tile_bytes], altitude_ft).map_err(|err| {
+        AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: err,
+        }
+    })
+}
+
+pub fn render_terrain_overlay_tile_by_key_in_session(
+    handle: u32,
+    tile_key: &str,
+    aircraft_altitude_ft: Option<f64>,
+) -> AppResult<Vec<u8>> {
+    let sessions = sessions().lock().expect("session store poisoned");
+    let session = session_ref(&sessions, handle)?;
+    let altitude_ft = aircraft_altitude_ft
+        .filter(|altitude| altitude.is_finite())
+        .or_else(|| ownship_terrain_altitude_ft(session))
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: "ownship altitude unavailable for terrain overlay".to_string(),
+        })?;
+    let Some(path) = tile_key.strip_prefix("terrain/") else {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("invalid terrain tile key {tile_key}"),
+        });
+    };
+    let tile_bytes = session
+        .terrain_source_tile_cache
+        .iter()
+        .filter_map(|(source_key, bytes)| source_key.strip_suffix(path).map(|_| bytes.as_slice()))
+        .collect::<Vec<_>>();
+    if tile_bytes.is_empty() {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("terrain tile bytes missing for {tile_key}"),
+        });
+    }
+    crate::render_terrain_warning_raw_rgba_from_tiles(&tile_bytes, altitude_ft).map_err(|err| {
         AppError {
             kind: AppErrorKind::InvalidManifest,
             message: err,

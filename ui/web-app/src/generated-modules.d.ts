@@ -56,6 +56,7 @@ declare module "@generated/app_wasm.js" {
   export const get_map_overlay_in_session: (...args: unknown[]) => string;
   export const get_map_selection_in_session: (...args: unknown[]) => string;
   export const get_terrain_overlay_in_session: (...args: unknown[]) => string;
+  export const render_terrain_overlay_tile_by_key_in_session: (...args: unknown[]) => Uint8Array;
   export const render_terrain_overlay_tile_in_session: (...args: unknown[]) => Uint8Array;
   export const render_terrain_overlay_tiles_in_session: (...args: unknown[]) => Uint8Array;
   export const render_terrain_warning_raw_rgba: (...args: unknown[]) => Uint8Array;

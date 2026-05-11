@@ -224,13 +224,6 @@ data class MapFamilyOption(
 )
 
 data class MapOverlayQueryResult(
-    val neededPointTiles: List<VectorTileRequest>,
-    val neededMetarTiles: List<VectorTileRequest>,
-    val neededAirspaceRefTiles: List<VectorTileRequest>,
-    val neededAirspaceFeatures: List<AirspaceFeatureRequest>,
-    val neededAirspaceLabelTiles: List<VectorTileRequest>,
-    val neededMetars: Boolean,
-    val neededTfrs: Boolean,
     val visibleFeatures: List<VisibleMapFeature>,
     val flightPlanFeatures: List<VisibleMapFeature> = emptyList(),
     val visibleMetars: List<VisibleMetarFeature>,
@@ -291,11 +284,6 @@ data class MapSelectionFlightPlanRowAction(
     val actionUid: String,
 )
 
-data class TerrainOverlaySourceTile(
-    val productId: String,
-    val path: String,
-)
-
 sealed interface TerrainOverlayStatus {
     data object Hidden : TerrainOverlayStatus
     data object NoPosition : TerrainOverlayStatus
@@ -306,9 +294,6 @@ sealed interface TerrainOverlayStatus {
 
 data class TerrainOverlayTileRequest(
     val key: String,
-    val productId: String,
-    val path: String,
-    val sourceTiles: List<TerrainOverlaySourceTile>,
     val z: Int,
     val x: Int,
     val yTms: Int,
@@ -1170,10 +1155,25 @@ class NativeUiSession internal constructor(
         ).toUi()
     }
 
-    fun queryTerrainOverlay(viewport: MapViewportState, widthPx: Double, heightPx: Double): TerrainOverlayQueryResult {
+    fun queryTerrainOverlay(
+        viewport: MapViewportState,
+        widthPx: Double,
+        heightPx: Double,
+        fetchResource: (CoreResourceRequest) -> ByteArray,
+    ): TerrainOverlayQueryResult {
         val viewportJson = json.encodeToString(viewport.toWire())
-        val resultJson = bridge.getTerrainOverlayInSessionJson(handle, viewportJson, widthPx, heightPx)
-        return json.decodeFromString<WireTerrainOverlayQueryResult>(resultJson).toUi()
+        val store = navKvStore ?: error("session missing nav_db for terrain overlay")
+        return json.decodeFromJsonElement<WireTerrainOverlayQueryResult>(
+            store.runPagedSessionOperationElement(
+                operation = {
+                    bridge.getTerrainOverlayInSessionJson(handle, viewportJson, widthPx, heightPx)
+                },
+                fetchSessionResource = fetchResource,
+                ingestSessionResource = { resource, bytes ->
+                    bridge.ingestResourceInSession(handle, resource.id, bytes)
+                },
+            ),
+        ).toUi()
     }
 
     fun queryRasterTilePlanJson(
@@ -1185,11 +1185,8 @@ class NativeUiSession internal constructor(
         return bridge.getRasterTilePlanInSessionJson(handle, viewportJson, widthPx, heightPx)
     }
 
-    fun renderTerrainOverlayTile(tileBytes: ByteArray, aircraftAltitudeFt: Double): ByteArray =
-        bridge.renderTerrainOverlayTileInSession(handle, tileBytes, aircraftAltitudeFt)
-
-    fun renderTerrainOverlayTiles(packedTileBytes: ByteArray, aircraftAltitudeFt: Double): ByteArray =
-        bridge.renderTerrainOverlayTilesInSession(handle, packedTileBytes, aircraftAltitudeFt)
+    fun renderTerrainOverlayTileByKey(tileKey: String, aircraftAltitudeFt: Double): ByteArray =
+        bridge.renderTerrainOverlayTileByKeyInSession(handle, tileKey, aircraftAltitudeFt)
 
     fun syncMapFollow(viewport: MapViewportState, widthPx: Double, heightPx: Double): UiSessionSnapshot {
         val viewportJson = json.encodeToString(viewport.toWire())
@@ -1988,13 +1985,6 @@ private fun PointVectorRecord.toWire() = WirePointVectorRecord(
 )
 
 private fun WireMapOverlayQueryResult.toUi() = MapOverlayQueryResult(
-    neededPointTiles = needed_point_tiles.map { it.toUi() },
-    neededMetarTiles = needed_metar_tiles.map { it.toUi() },
-    neededAirspaceRefTiles = needed_airspace_ref_tiles.map { it.toUi() },
-    neededAirspaceFeatures = needed_airspace_features.map { it.toUi() },
-    neededAirspaceLabelTiles = needed_airspace_label_tiles.map { it.toUi() },
-    neededMetars = needed_metars,
-    neededTfrs = needed_tfrs,
     visibleFeatures = visible_features.map { it.toUi() },
     flightPlanFeatures = flight_plan_features.map { it.toUi() },
     visibleMetars = visible_metars.map { it.toUi() },
@@ -2026,20 +2016,12 @@ private fun WireTerrainOverlayStatus.toUi(): TerrainOverlayStatus = when (this) 
 
 private fun WireTerrainOverlayTileRequest.toUi() = TerrainOverlayTileRequest(
     key = key,
-    productId = product_id,
-    path = path,
-    sourceTiles = source_tiles.map { it.toUi() },
     z = z,
     x = x,
     yTms = y_tms,
     left = left,
     top = top,
     size = size,
-)
-
-private fun WireTerrainOverlaySourceTile.toUi() = TerrainOverlaySourceTile(
-    productId = product_id,
-    path = path,
 )
 
 private fun WireVectorTileRequest.toUi() = VectorTileRequest(

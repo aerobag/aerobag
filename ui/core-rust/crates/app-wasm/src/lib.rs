@@ -890,6 +890,22 @@ pub fn render_terrain_overlay_tile_in_session(
 }
 
 #[wasm_bindgen]
+pub fn render_terrain_overlay_tile_by_key_in_session(
+    handle: u32,
+    terrain_tile_key: &str,
+    aircraft_altitude_ft: f64,
+) -> Result<Vec<u8>, JsValue> {
+    app_core::render_terrain_overlay_tile_by_key_in_session(
+        handle,
+        terrain_tile_key,
+        aircraft_altitude_ft
+            .is_finite()
+            .then_some(aircraft_altitude_ft),
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn render_terrain_overlay_tiles_in_session(
     handle: u32,
     packed_terrain_tile_bytes: &[u8],

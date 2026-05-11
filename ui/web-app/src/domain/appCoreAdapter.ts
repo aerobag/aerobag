@@ -297,11 +297,6 @@ export type AirspaceLimitGlyph = {
 };
 
 export type MapOverlayQueryResult = {
-  needed_vector_tiles: VectorTileRequest[];
-  needed_metar_tiles: VectorTileRequest[];
-  needed_airspace_features: AirspaceFeatureRequest[];
-  needed_metars: boolean;
-  needed_tfrs: boolean;
   visible_features: VisibleMapFeature[];
   flight_plan_features?: VisibleMapFeature[];
   visible_metars: VisibleMetarFeature[];
@@ -390,12 +385,6 @@ export type TerrainOverlayStatus =
 
 export type TerrainOverlayTileRequest = {
   key: string;
-  product_id: string;
-  path: string;
-  source_tiles: Array<{
-    product_id: string;
-    path: string;
-  }>;
   z: number;
   x: number;
   y_tms: number;
@@ -486,8 +475,7 @@ export interface UiSession {
   queryMapSelection(viewport: MapViewportState, widthPx: number, heightPx: number, click: LatLon, hitRadiusPx: number): Promise<MapSelectionQueryResult>;
   queryTerrainOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<TerrainOverlayQueryResult>;
   queryRasterTilePlan(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<RasterTilePlan>;
-  renderTerrainOverlayTile(tileBytes: Uint8Array, aircraftAltitudeFt: number): Promise<Uint8Array>;
-  renderTerrainOverlayTiles(packedTileBytes: Uint8Array, aircraftAltitudeFt: number): Promise<Uint8Array>;
+  renderTerrainOverlayTileByKey(tileKey: string, aircraftAltitudeFt: number): Promise<Uint8Array>;
   restoreChartPageState(recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<UiSessionSnapshot>;
   destroy(): Promise<void>;
 }
@@ -705,8 +693,7 @@ type WasmModule = {
   get_map_selection_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, clickJson: string, hitRadiusPx: number): Promise<string> | string;
   get_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
   get_raster_tile_plan_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
-  render_terrain_overlay_tile_in_session(handle: number, terrainTileBytes: Uint8Array, aircraftAltitudeFt: number): Promise<Uint8Array> | Uint8Array;
-  render_terrain_overlay_tiles_in_session(handle: number, packedTerrainTileBytes: Uint8Array, aircraftAltitudeFt: number): Promise<Uint8Array> | Uint8Array;
+  render_terrain_overlay_tile_by_key_in_session(handle: number, terrainTileKey: string, aircraftAltitudeFt: number): Promise<Uint8Array> | Uint8Array;
   get_session_snapshot(handle: number): Promise<string> | string;
   restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   destroy_session(handle: number): void;
@@ -1192,14 +1179,16 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         ),
       queryTerrainOverlay: async (viewport, widthPx, heightPx) =>
         withSessionRetry(async () =>
-          JSON.parse(
-            await this.module.get_terrain_overlay_in_session(
-              handle,
-              JSON.stringify(coreViewportForMap(viewport)),
-              widthPx,
-              heightPx,
-            ),
-          ) as TerrainOverlayQueryResult,
+          runCoreHadSessionOperation<TerrainOverlayQueryResult>(
+            () =>
+              this.module.get_terrain_overlay_in_session(
+                handle,
+                JSON.stringify(coreViewportForMap(viewport)),
+                widthPx,
+                heightPx,
+              ),
+            (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
+          ),
         ),
       queryRasterTilePlan: async (viewport, widthPx, heightPx) =>
         withSessionRetry(async () =>
@@ -1212,13 +1201,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             ),
           ) as RasterTilePlan,
         ),
-      renderTerrainOverlayTile: async (tileBytes, aircraftAltitudeFt) =>
+      renderTerrainOverlayTileByKey: async (tileKey, aircraftAltitudeFt) =>
         withSessionRetry(async () =>
-          new Uint8Array(await this.module.render_terrain_overlay_tile_in_session(handle, tileBytes, aircraftAltitudeFt)),
-        ),
-      renderTerrainOverlayTiles: async (packedTileBytes, aircraftAltitudeFt) =>
-        withSessionRetry(async () =>
-          new Uint8Array(await this.module.render_terrain_overlay_tiles_in_session(handle, packedTileBytes, aircraftAltitudeFt)),
+          new Uint8Array(await this.module.render_terrain_overlay_tile_by_key_in_session(handle, tileKey, aircraftAltitudeFt)),
         ),
       restoreChartPageState: async (nextRecentAirportIds, nextSelectedAirportId, nextSelectedChartId) => {
         snapshot = await withSessionRetry(async () =>
@@ -1415,8 +1400,7 @@ async function loadBestAvailableAdapterUncached(
     "get_map_selection_in_session",
     "get_terrain_overlay_in_session",
     "get_raster_tile_plan_in_session",
-    "render_terrain_overlay_tile_in_session",
-    "render_terrain_overlay_tiles_in_session",
+    "render_terrain_overlay_tile_by_key_in_session",
     "get_session_snapshot",
     "restore_chart_page_state_in_session",
     "destroy_session",

@@ -111,8 +111,11 @@ pub enum TerrainOverlayStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TerrainOverlayTileRequest {
     pub key: String,
+    #[serde(skip)]
     pub product_id: String,
+    #[serde(skip)]
     pub path: String,
+    #[serde(skip)]
     pub source_tiles: Vec<TerrainOverlaySourceTile>,
     pub z: u32,
     pub x: u32,

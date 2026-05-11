@@ -45,6 +45,14 @@ describe("mapViewport", () => {
     expect(secondWorldAfter.y).toBeCloseTo(snapshot.anchorTwoWorld.y, 8);
   });
 
+  it("initial viewport round-trips its center lat/lon", () => {
+    const viewport = createInitialViewport(mapView);
+    const center = viewportCenterLatLon(viewport);
+
+    expect(center.lat).toBeCloseTo(mapView.initial_viewport.lat, 3);
+    expect(center.lon).toBeCloseTo(mapView.initial_viewport.lon, 3);
+  });
+
   it("double-click style zoom-in still preserves the clicked anchor", () => {
     const viewport = createInitialViewport(mapView);
     const width = 1280;

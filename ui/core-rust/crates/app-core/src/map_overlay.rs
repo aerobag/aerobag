@@ -526,10 +526,15 @@ pub struct MapOverlayWarning {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MapOverlayQueryResult {
+    #[serde(skip)]
     pub needed_vector_tiles: Vec<VectorTileRequest>,
+    #[serde(skip)]
     pub needed_metar_tiles: Vec<VectorTileRequest>,
+    #[serde(skip)]
     pub needed_airspace_features: Vec<AirspaceFeatureRequest>,
+    #[serde(skip)]
     pub needed_metars: bool,
+    #[serde(skip)]
     pub needed_tfrs: bool,
     pub visible_features: Vec<VisibleMapFeature>,
     #[serde(default)]

@@ -631,13 +631,6 @@ data class WireMapOverlayWarning(
 
 @Serializable
 data class WireMapOverlayQueryResult(
-    val needed_point_tiles: List<WireVectorTileRequest>,
-    val needed_metar_tiles: List<WireVectorTileRequest> = emptyList(),
-    val needed_airspace_ref_tiles: List<WireVectorTileRequest> = emptyList(),
-    val needed_airspace_features: List<WireAirspaceFeatureRequest> = emptyList(),
-    val needed_airspace_label_tiles: List<WireVectorTileRequest> = emptyList(),
-    val needed_metars: Boolean = false,
-    val needed_tfrs: Boolean = false,
     val visible_features: List<WireVisibleMapFeature>,
     val flight_plan_features: List<WireVisibleMapFeature> = emptyList(),
     val visible_metars: List<WireVisibleMetarFeature> = emptyList(),
@@ -875,17 +868,8 @@ data class WireTerrainOverlayStatusReady(
 ) : WireTerrainOverlayStatus
 
 @Serializable
-data class WireTerrainOverlaySourceTile(
-    val product_id: String,
-    val path: String,
-)
-
-@Serializable
 data class WireTerrainOverlayTileRequest(
     val key: String,
-    val product_id: String,
-    val path: String,
-    val source_tiles: List<WireTerrainOverlaySourceTile>,
     val z: Int,
     val x: Int,
     val y_tms: Int,

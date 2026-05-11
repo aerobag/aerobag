@@ -888,6 +888,19 @@ pub fn render_terrain_overlay_tile_in_session_bytes(
     .map_err(|err| err.to_string())
 }
 
+pub fn render_terrain_overlay_tile_by_key_in_session_bytes(
+    handle: u64,
+    tile_key: &str,
+    aircraft_altitude_ft: Option<f64>,
+) -> Result<Vec<u8>, String> {
+    app_core::render_terrain_overlay_tile_by_key_in_session(
+        handle as u32,
+        tile_key,
+        aircraft_altitude_ft,
+    )
+    .map_err(|err| err.to_string())
+}
+
 pub fn render_terrain_overlay_tiles_in_session_bytes(
     handle: u64,
     packed_tile_bytes: &[u8],
@@ -2457,6 +2470,29 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ren
         render_terrain_overlay_tile_in_session_bytes(
             handle as u64,
             &tile_bytes,
+            if aircraft_altitude_ft.is_finite() {
+                Some(aircraft_altitude_ft)
+            } else {
+                None
+            },
+        )
+    })();
+    return_byte_array(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_renderTerrainOverlayTileByKeyInSession(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    tile_key: JString,
+    aircraft_altitude_ft: f64,
+) -> jbyteArray {
+    let result = (|| {
+        let tile_key = get_java_string(&mut env, tile_key)?;
+        render_terrain_overlay_tile_by_key_in_session_bytes(
+            handle as u64,
+            &tile_key,
             if aircraft_altitude_ft.is_finite() {
                 Some(aircraft_altitude_ft)
             } else {

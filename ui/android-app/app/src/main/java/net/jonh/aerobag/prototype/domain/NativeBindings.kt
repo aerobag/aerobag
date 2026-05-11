@@ -335,6 +335,12 @@ interface NativeBridge {
         aircraftAltitudeFt: Double,
     ): ByteArray
 
+    fun renderTerrainOverlayTileByKeyInSession(
+        handle: Long,
+        tileKey: String,
+        aircraftAltitudeFt: Double,
+    ): ByteArray
+
     fun renderTerrainOverlayTilesInSession(
         handle: Long,
         packedTileBytes: ByteArray,
@@ -708,6 +714,12 @@ object NativeBindings : NativeBridge {
     external override fun renderTerrainOverlayTileInSession(
         handle: Long,
         tileBytes: ByteArray,
+        aircraftAltitudeFt: Double,
+    ): ByteArray
+
+    external override fun renderTerrainOverlayTileByKeyInSession(
+        handle: Long,
+        tileKey: String,
         aircraftAltitudeFt: Double,
     ): ByteArray
 

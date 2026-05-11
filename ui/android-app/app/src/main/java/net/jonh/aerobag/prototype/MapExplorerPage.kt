@@ -449,13 +449,6 @@ internal fun MapExplorerPage(
     var committedMapOverlay by remember(uiSession) {
         mutableStateOf(
             MapOverlayQueryResult(
-                neededPointTiles = emptyList(),
-                neededMetarTiles = emptyList(),
-                neededAirspaceRefTiles = emptyList(),
-                neededAirspaceFeatures = emptyList(),
-                neededAirspaceLabelTiles = emptyList(),
-                neededMetars = false,
-                neededTfrs = false,
                 visibleFeatures = emptyList(),
                 visibleMetars = emptyList(),
                 visiblePireps = emptyList(),
@@ -1137,13 +1130,6 @@ internal fun MapExplorerPage(
         val overlayHeightPx = surfaceSize.height.toFloat()
         if (!mapLayerState.vectors.visible && !mapLayerState.metars.visible && !mapLayerState.offlineRegions.visible) {
             committedMapOverlay = MapOverlayQueryResult(
-                neededPointTiles = emptyList(),
-                neededMetarTiles = emptyList(),
-                neededAirspaceRefTiles = emptyList(),
-                neededAirspaceFeatures = emptyList(),
-                neededAirspaceLabelTiles = emptyList(),
-                neededMetars = false,
-                neededTfrs = false,
                 visibleFeatures = emptyList(),
                 visibleMetars = emptyList(),
                 visiblePireps = emptyList(),
@@ -1170,7 +1156,7 @@ internal fun MapExplorerPage(
             val (centerLat, centerLon) = viewportCenterLatLon(viewport)
             Log.i(
                 MapLayerLogTag,
-                "overlay center=${"%.3f".format(centerLat)},${"%.3f".format(centerLon)} zoom=${"%.2f".format(viewport.zoom)} size=${surfaceSize.width}x${surfaceSize.height} vectorsVisible=${mapLayerState.vectors.visible} metarsVisible=${mapLayerState.metars.visible} offlineRegionsVisible=${mapLayerState.offlineRegions.visible} neededMetars=${overlay.neededMetars} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} airspaceLabels=${overlay.airspaceLabels.size} offlineRegions=${overlay.offlineRegions.size} metars=${overlay.visibleMetars.size} pireps=${overlay.visiblePireps.size} neededPoints=${overlay.neededPointTiles.size} neededAirspaceRefs=${overlay.neededAirspaceRefTiles.size} neededAirspaceFeatures=${overlay.neededAirspaceFeatures.size} neededAirspaceLabels=${overlay.neededAirspaceLabelTiles.size} warnings=${overlay.warnings.size} elapsedMs=${SystemClock.elapsedRealtime() - overlayStartMs}",
+                "overlay center=${"%.3f".format(centerLat)},${"%.3f".format(centerLon)} zoom=${"%.2f".format(viewport.zoom)} size=${surfaceSize.width}x${surfaceSize.height} vectorsVisible=${mapLayerState.vectors.visible} metarsVisible=${mapLayerState.metars.visible} offlineRegionsVisible=${mapLayerState.offlineRegions.visible} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} airspaceLabels=${overlay.airspaceLabels.size} offlineRegions=${overlay.offlineRegions.size} metars=${overlay.visibleMetars.size} pireps=${overlay.visiblePireps.size} warnings=${overlay.warnings.size} elapsedMs=${SystemClock.elapsedRealtime() - overlayStartMs}",
             )
             overlay
         } catch (error: CancellationException) {
@@ -1267,14 +1253,16 @@ internal fun MapExplorerPage(
         }
         runCatching {
             var queryMs = 0L
-            var fetchMs = 0L
             var renderMs = 0L
             var parseMs = 0L
-            var sourceBytesTotal = 0L
             var rawBytesTotal = 0L
             var requestCount = 0
-            val query = uiSession.queryTerrainOverlay(viewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble())
-                .also { queryMs = SystemClock.elapsedRealtime() - effectStartMs }
+            val query = uiSession.queryTerrainOverlay(viewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble()) { resource ->
+                URL(resolvePlaybackTraceUrl(resource.address, devServerBaseUrl))
+                    .openStream()
+                    .buffered()
+                    .use { it.readBytes() }
+            }.also { queryMs = SystemClock.elapsedRealtime() - effectStartMs }
             if (query.status !is net.jonh.aerobag.prototype.domain.TerrainOverlayStatus.Ready) {
                 Log.i(
                     MapLayerLogTag,
@@ -1285,33 +1273,8 @@ internal fun MapExplorerPage(
                 requestCount = query.tileRequests.size
                 val images = withContext(Dispatchers.IO) {
                     query.tileRequests.map { request ->
-                        val sourceTiles =
-                            if (request.sourceTiles.isNotEmpty()) request.sourceTiles
-                            else listOf(net.jonh.aerobag.prototype.domain.TerrainOverlaySourceTile(request.productId, request.path))
-                        val sourceBytes =
-                            sourceTiles.mapNotNull { sourceTile ->
-                                runCatching {
-                                    val fetchStartMs = SystemClock.elapsedRealtime()
-                                    URL(resolvePlaybackTraceUrl("/terrain-products/${sourceTile.productId}/${sourceTile.path}", devServerBaseUrl))
-                                        .openStream()
-                                        .buffered()
-                                        .use { it.readBytes() }
-                                        .also {
-                                            fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
-                                            sourceBytesTotal += it.size
-                                        }
-                                }.getOrNull()
-                            }
-                        if (sourceBytes.isEmpty()) {
-                            return@map null
-                        }
                         val renderStartMs = SystemClock.elapsedRealtime()
-                        val rawBytes =
-                            if (sourceBytes.size == 1) {
-                                uiSession.renderTerrainOverlayTile(sourceBytes.first(), Double.NaN)
-                            } else {
-                                uiSession.renderTerrainOverlayTiles(packTerrainTileBytes(sourceBytes), Double.NaN)
-                            }
+                        val rawBytes = uiSession.renderTerrainOverlayTileByKey(request.key, Double.NaN)
                         renderMs += SystemClock.elapsedRealtime() - renderStartMs
                         rawBytesTotal += rawBytes.size
                         val parseStartMs = SystemClock.elapsedRealtime()
@@ -1331,7 +1294,7 @@ internal fun MapExplorerPage(
                 }
                 Log.i(
                     MapLayerLogTag,
-                    "terrain loaded requests=$requestCount images=${images.size} sourceBytes=$sourceBytesTotal rawBytes=$rawBytesTotal queryMs=$queryMs fetchMs=$fetchMs renderMs=$renderMs parseMs=$parseMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}",
+                    "terrain loaded requests=$requestCount images=${images.size} rawBytes=$rawBytesTotal queryMs=$queryMs renderMs=$renderMs parseMs=$parseMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}",
                 )
                 images
             }

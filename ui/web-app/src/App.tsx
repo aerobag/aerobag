@@ -110,7 +110,6 @@ import type {
 import { airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
 import { debugLog, debugTiming, installGlobalErrorLogging } from "./domain/debugLog";
 import { resolvePackageMemberUrl } from "./domain/navKv";
-import { TerrainRenderWorkerClient } from "./domain/terrainRenderWorkerClient";
 
 type SurfaceSize = {
   width: number;
@@ -498,10 +497,6 @@ function pruneTerrainFrameStarts(starts: Map<string, number>) {
   }
 }
 
-function terrainSourceCacheKey(sourceTile: { product_id: string; path: string }) {
-  return `${sourceTile.product_id}/${sourceTile.path}`;
-}
-
 function wrappedFeatureRenderKey(id: string, screenX: number, screenY: number): string {
   return `${id}:${Math.round(screenX * 10)}:${Math.round(screenY * 10)}`;
 }
@@ -526,12 +521,8 @@ function parseTerrainRawRgba(bytes: Uint8Array): TerrainTileCacheEntry {
 
 function terrainRequestSummary(requests: TerrainOverlayTileRequest[]) {
   const zoomCounts = new Map<number, number>();
-  const productCounts = new Map<string, number>();
   for (const request of requests) {
     zoomCounts.set(request.z, (zoomCounts.get(request.z) ?? 0) + 1);
-    for (const sourceTile of terrainSourceTiles(request)) {
-      productCounts.set(sourceTile.product_id, (productCounts.get(sourceTile.product_id) ?? 0) + 1);
-    }
   }
   const summarize = <T extends string | number>(counts: Map<T, number>) =>
     Array.from(counts.entries())
@@ -540,31 +531,7 @@ function terrainRequestSummary(requests: TerrainOverlayTileRequest[]) {
       .join(",");
   return {
     zooms: summarize(zoomCounts),
-    products: summarize(productCounts),
   };
-}
-
-function terrainSourceTiles(request: TerrainOverlayTileRequest) {
-  return request.source_tiles.length > 0
-    ? request.source_tiles
-    : [{ product_id: request.product_id, path: request.path }];
-}
-
-function packTerrainTileBytes(tileBytesList: Uint8Array[]) {
-  const headerBytes = 4 + tileBytesList.length * 4;
-  const byteCount = headerBytes + tileBytesList.reduce((total, tileBytes) => total + tileBytes.byteLength, 0);
-  const packed = new Uint8Array(byteCount);
-  const view = new DataView(packed.buffer);
-  let cursor = 0;
-  view.setUint32(cursor, tileBytesList.length, true);
-  cursor += 4;
-  for (const tileBytes of tileBytesList) {
-    view.setUint32(cursor, tileBytes.byteLength, true);
-    cursor += 4;
-    packed.set(tileBytes, cursor);
-    cursor += tileBytes.byteLength;
-  }
-  return packed;
 }
 
 function terrainAltitudeBucketForOwnship(ownship: OwnshipRenderState) {
@@ -2452,11 +2419,6 @@ function MapPage(props: {
     suggestions: [],
   });
   const [mapOverlay, setMapOverlay] = useState<MapOverlayQueryResult>({
-    needed_vector_tiles: [],
-    needed_metar_tiles: [],
-    needed_airspace_features: [],
-    needed_metars: false,
-    needed_tfrs: false,
     visible_features: [],
     visible_metars: [],
     visible_pireps: [],
@@ -2471,12 +2433,10 @@ function MapPage(props: {
   const [, setNexradStatus] = useState<NexradLayerStatus>({ state: "loading" });
   const [terrainOverlay, setTerrainOverlay] = useState<TerrainOverlayUiState>({ query: null, images: [] });
   const terrainTileCacheRef = useRef<Map<string, TerrainTileCacheEntry>>(new Map());
-  const terrainSourceByteCacheRef = useRef<Map<string, Uint8Array>>(new Map());
   const terrainTileInFlightRef = useRef<Set<string>>(new Set());
   const terrainRenderQueueRef = useRef<Map<string, TerrainTileRenderTask>>(new Map());
   const terrainRenderPumpActiveRef = useRef(false);
   const terrainRenderSessionRef = useRef<UiSession | null>(null);
-  const terrainRenderWorkerRef = useRef<TerrainRenderWorkerClient | null>(null);
   const terrainCurrentBucketRef = useRef<number | null>(null);
   const terrainPendingFrameRef = useRef<TerrainPendingFrame | null>(null);
   const terrainFrameStartRef = useRef<Map<string, number>>(new Map());
@@ -2529,63 +2489,22 @@ function MapPage(props: {
           terrainTileInFlightRef.current.add(cacheKey);
           try {
             const tileStartedAt = performance.now();
-            let fetchElapsedMs = 0;
-            const tileBytesList: Uint8Array[] = [];
-            for (const sourceTile of terrainSourceTiles(task.request)) {
-              const sourceCacheKey = terrainSourceCacheKey(sourceTile);
-              let sourceBytes = terrainSourceByteCacheRef.current.get(sourceCacheKey);
-              if (!sourceBytes) {
-                const fetchStartedAt = performance.now();
-                const response = await fetch(await resolvePackageMemberUrl(sourceTile.product_id, sourceTile.path));
-                if (response.status === 404) {
-                  debugLog("terrain.overlay.tile.missing", {
-                    key: task.request.key,
-                    source: sourceCacheKey,
-                  });
-                  continue;
-                }
-                if (!response.ok) {
-                  throw new Error(`terrain product request failed ${sourceCacheKey}: ${response.status}`);
-                }
-                sourceBytes = new Uint8Array(await response.arrayBuffer());
-                fetchElapsedMs += performance.now() - fetchStartedAt;
-                terrainSourceByteCacheRef.current.set(sourceCacheKey, sourceBytes);
-              }
-              tileBytesList.push(sourceBytes);
-            }
-            if (tileBytesList.length === 0) {
-              throw new Error(`no terrain product sources available for ${task.request.key}`);
-            }
             if (task.altitudeBucket !== terrainCurrentBucketRef.current) {
               continue;
             }
             const renderStartedAt = performance.now();
-            const worker = terrainRenderWorkerRef.current;
-            const rawBytes = worker
-              ? (
-                  tileBytesList.length === 1
-                    ? await worker.renderTile(tileBytesList[0].slice(), task.altitudeBucket ?? Number.NaN)
-                    : await worker.renderPackedTiles(packTerrainTileBytes(tileBytesList), task.altitudeBucket ?? Number.NaN)
-                )
-              : (
-                  tileBytesList.length === 1
-                    ? await session.renderTerrainOverlayTile(tileBytesList[0], task.altitudeBucket ?? Number.NaN)
-                    : await session.renderTerrainOverlayTiles(packTerrainTileBytes(tileBytesList), task.altitudeBucket ?? Number.NaN)
-                );
+            const rawBytes = await session.renderTerrainOverlayTileByKey(task.request.key, task.altitudeBucket ?? Number.NaN);
             const renderElapsedMs = performance.now() - renderStartedAt;
             const parsed = parseTerrainRawRgba(rawBytes);
             terrainTileCacheRef.current.set(cacheKey, parsed);
             debugLog("terrain.overlay.tile.done", {
               key: task.request.key,
               altitude_bucket: task.altitudeBucket,
-              source_count: tileBytesList.length,
               raw_bytes: rawBytes.byteLength,
               image_width: parsed.imageWidth,
               image_height: parsed.imageHeight,
-              fetch_ms: Math.round(fetchElapsedMs),
               render_ms: Math.round(renderElapsedMs),
               elapsed_ms: Math.round(performance.now() - tileStartedAt),
-              render_thread: worker ? "worker" : "main",
             });
             setTerrainOverlay((current) => {
               const pendingFrame = terrainPendingFrameRef.current;
@@ -2922,13 +2841,8 @@ function MapPage(props: {
 
   useEffect(() => {
     const cache = terrainTileCacheRef.current;
-    const sourceCache = terrainSourceByteCacheRef.current;
-    terrainRenderWorkerRef.current = new TerrainRenderWorkerClient();
     return () => {
       cache.clear();
-      sourceCache.clear();
-      terrainRenderWorkerRef.current?.destroy();
-      terrainRenderWorkerRef.current = null;
       terrainPendingFrameRef.current = null;
       terrainFrameStartRef.current.clear();
       terrainTileInFlightRef.current.clear();
@@ -3023,9 +2937,7 @@ function MapPage(props: {
           missing_count: missingRequests.length,
           altitude_bucket: terrainAltitudeBucket,
           request_zooms: requestSummary.zooms,
-          request_products: requestSummary.products,
           missing_zooms: missingSummary.zooms,
-          missing_products: missingSummary.products,
         });
       }
       pumpTerrainRenderQueue();
@@ -3108,11 +3020,6 @@ function MapPage(props: {
     }
     if (!mapLayerState.vectors.visible && !mapLayerState.metars.visible && !mapLayerState.offline_regions.visible) {
       setMapOverlay({
-        needed_vector_tiles: [],
-        needed_metar_tiles: [],
-        needed_airspace_features: [],
-        needed_metars: false,
-        needed_tfrs: false,
         visible_features: [],
         visible_metars: [],
         visible_pireps: [],
@@ -3127,11 +3034,6 @@ function MapPage(props: {
     }
     if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       setMapOverlay({
-        needed_vector_tiles: [],
-        needed_metar_tiles: [],
-        needed_airspace_features: [],
-        needed_metars: false,
-        needed_tfrs: false,
         visible_features: [],
         visible_metars: [],
         visible_pireps: [],
@@ -3184,11 +3086,6 @@ function MapPage(props: {
         debugLog("map.overlay.query.done", {
           zoom: viewport.zoom,
           elapsed_ms: Math.round(performance.now() - startedAt),
-          needed_vector_tiles: overlay.needed_vector_tiles.length,
-          needed_metar_tiles: overlay.needed_metar_tiles.length,
-          needed_metars: overlay.needed_metars,
-          needed_airspace_features: overlay.needed_airspace_features.length,
-          needed_tfrs: overlay.needed_tfrs,
           visible_features: overlay.visible_features.length,
           visible_metars: overlay.visible_metars.length,
           visible_pireps: overlay.visible_pireps.length,

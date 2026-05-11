@@ -3064,9 +3064,8 @@ mod tests {
                     .find(|row| row.depth == 0 && row.label == "KPAE")
                     .expect("destination airport row");
                 assert_eq!(
-                    airport_row.leg_index,
-                    Some(5),
-                    "destination airport after a procedure should activate the procedure's last guidance leg"
+                    airport_row.leg_index, None,
+                    "destination airport after a terminal-hold procedure should not bridge to the procedure's last guidance leg"
                 );
 
                 let activated_route =
@@ -3531,7 +3530,36 @@ mod tests {
 
     #[test]
     fn fixture_nav_kv_suggests_waypoint_identifiers_near_view_center() {
-        let store = load_fixture_nav_kv_store();
+        let kr_bucket = vec![
+            WaypointIdentifierRecord {
+                identifier: "KRNT".to_string(),
+                nav_ref: NavRef::Airport("KRNT".to_string()),
+                kind: "airport".to_string(),
+                city: "Renton".to_string(),
+                state: "WA".to_string(),
+                facility_name: "Renton Municipal".to_string(),
+                position: LatLon {
+                    lat: 47.493,
+                    lon: -122.216,
+                },
+            },
+            WaypointIdentifierRecord {
+                identifier: "KRDD".to_string(),
+                nav_ref: NavRef::Airport("KRDD".to_string()),
+                kind: "airport".to_string(),
+                city: "Redding".to_string(),
+                state: "CA".to_string(),
+                facility_name: "Redding Regional".to_string(),
+                position: LatLon {
+                    lat: 40.509,
+                    lon: -122.293,
+                },
+            },
+        ];
+        let store = test_nav_kv_store(&[(
+            "waypoint/prefix/KR",
+            serde_json::to_value(kr_bucket).expect("encode waypoint prefix fixture"),
+        )]);
         let outcome = run_had_operation(
             &store,
             HadOperation::SuggestWaypointIdentifiersNear {

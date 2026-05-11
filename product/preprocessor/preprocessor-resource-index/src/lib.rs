@@ -987,6 +987,15 @@ struct ChartCollectionWithTiles {
 fn validate_chart_tile_bbox_invariant(
     collections: &[ChartCollectionWithTiles],
 ) -> anyhow::Result<()> {
+    // Runtime tile planning intentionally does not probe every region package for
+    // a chart family. It picks any regional package whose tile bbox contains the
+    // requested tile and treats a 404 from that package as "this tile is empty
+    // everywhere." That is only safe if overlapping regional bboxes have
+    // identical tile availability: for any family/z/x/y, every non-wide region
+    // whose bbox contains the address must either all contain the concrete tile
+    // file or all omit it. If this fires, do not weaken it casually; otherwise
+    // the client can choose a region with no tile and fail to draw a tile that
+    // exists in another region package.
     let mut by_family: BTreeMap<&str, Vec<&ChartCollectionWithTiles>> = BTreeMap::new();
     for collection in collections
         .iter()

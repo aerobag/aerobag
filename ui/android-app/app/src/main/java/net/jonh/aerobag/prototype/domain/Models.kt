@@ -439,7 +439,6 @@ data class FlightPlanDisplayRowUiView(
     val destinationAnchor: NavRef?,
     val precedingWaypoint: NavRef?,
     val followingWaypoint: NavRef?,
-    val actions: List<FlightPlanRowActionUiView>,
     val actionMatrix: List<List<FlightPlanRowActionUiView>> = emptyList(),
 )
 

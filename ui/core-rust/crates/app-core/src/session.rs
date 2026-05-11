@@ -1371,9 +1371,7 @@ pub fn perform_flight_plan_row_action_in_session(
             kind: AppErrorKind::InvalidFlightPlan,
             message: format!("flight-plan row action target is stale: {row_uid}"),
         })?;
-    let action = row
-        .actions
-        .iter()
+    let action = crate::planning::flight_plan_row_actions(row)
         .find(|action| action.uid == action_uid)
         .ok_or_else(|| AppError {
             kind: AppErrorKind::UnsupportedOperation,
@@ -4888,9 +4886,7 @@ mod tests {
             .iter()
             .find(|row| row.component_index == Some(3))
             .expect("second KRNT row");
-        let direct_to_action = clicked_row
-            .actions
-            .iter()
+        let direct_to_action = crate::planning::flight_plan_row_actions(clicked_row)
             .find(|action| action.id == FlightPlanRowActionId::DirectTo)
             .expect("direct-to action");
 
@@ -4964,11 +4960,10 @@ mod tests {
             .find(|row| row.nav_ref == Some(NavRef::Airport("KVCB".to_string())))
             .expect("destination row")
             .clone();
-        let activate_leg = target_row
-            .actions
-            .iter()
+        let activate_leg = crate::planning::flight_plan_row_actions(&target_row)
             .find(|action| action.id == FlightPlanRowActionId::ActivateLeg)
-            .expect("activate-leg action");
+            .expect("activate-leg action")
+            .clone();
         assert!(
             target_row.enabled,
             "on-plan direct-to must not disable underlying rows"

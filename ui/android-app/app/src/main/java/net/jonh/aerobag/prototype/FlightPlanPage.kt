@@ -396,8 +396,7 @@ internal fun FlightPlanPage(
     val selectedRow = selectedWaypointIndex?.let(rows::getOrNull)
     val selectedRowBounds = selectedRow?.let { structuredRowBounds[it.id] }
     val waypointTrayStart = planWaypointTrayStart
-    val selectedRowActionMatrix =
-        selectedRow?.actionMatrix?.takeIf { it.isNotEmpty() } ?: selectedRow?.actions?.let { listOf(it) }.orEmpty()
+    val selectedRowActionMatrix = selectedRow?.actionMatrix.orEmpty()
     fun estimateTrayHeightDp(rowCount: Int): Dp =
         ThumbGap * 2 + (ThumbSize + 3.dp) * rowCount
     val waypointTrayTop =

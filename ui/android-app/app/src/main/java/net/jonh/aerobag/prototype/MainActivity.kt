@@ -561,7 +561,6 @@ internal data class FlightPlanDisplayRow(
     val canReorderComponent: Boolean = false,
     val canReorderUp: Boolean = false,
     val canReorderDown: Boolean = false,
-    val actions: List<FlightPlanRowActionUiView> = emptyList(),
     val actionMatrix: List<List<FlightPlanRowActionUiView>> = emptyList(),
     val startComponentIndex: Int? = null,
     val endComponentIndex: Int? = null,

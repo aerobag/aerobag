@@ -568,9 +568,7 @@ pub(crate) fn flight_plan_ui_state(
                 }
             }
         }
-        if row
-            .actions
-            .iter()
+        if crate::planning::flight_plan_row_actions(row)
             .any(|action| action.id == FlightPlanRowActionId::ShowPlate)
         {
             let match_rows = match (&row.chart_airport_id, &row.procedure_id) {
@@ -585,7 +583,7 @@ pub(crate) fn flight_plan_ui_state(
             };
             let plate_match = match_rows.and_then(describe_show_plate_for_procedure);
             row.show_plate_target_id = plate_match.as_ref().map(|matched| matched.plate_id.clone());
-            for action in &mut row.actions {
+            for action in crate::planning::flight_plan_row_actions_mut(row) {
                 if action.id == FlightPlanRowActionId::ShowPlate {
                     action.enabled = plate_match.is_some();
                 }
@@ -3006,13 +3004,13 @@ mod tests {
                         "procedure waypoint row {label} should activate the guidance leg ending there"
                     );
                     assert!(
-                        row.actions.iter().any(|action| {
+                        crate::planning::flight_plan_row_actions(row).any(|action| {
                             action.id == crate::FlightPlanRowActionId::ActivateLeg && action.enabled
                         }),
                         "procedure waypoint row {label} should expose enabled Activate Leg"
                     );
                     assert!(
-                        row.actions.iter().all(|action| {
+                        crate::planning::flight_plan_row_actions(row).all(|action| {
                             action.id != crate::FlightPlanRowActionId::WaypointInfo
                                 && action.id != crate::FlightPlanRowActionId::Plates
                         }),
@@ -3030,7 +3028,7 @@ mod tests {
                     "hold row should activate the guidance leg carrying the hold geometry"
                 );
                 assert!(
-                    hold_row.actions.iter().any(|action| {
+                    crate::planning::flight_plan_row_actions(hold_row).any(|action| {
                         action.id == crate::FlightPlanRowActionId::ActivateLeg && action.enabled
                     }),
                     "hold row should expose enabled Activate Leg"
@@ -3046,7 +3044,7 @@ mod tests {
                     .find(|row| row.leg_index == Some(5))
                     .expect("active ECEPO row");
                 assert!(
-                    active_ecepo_row.actions.iter().any(|action| {
+                    crate::planning::flight_plan_row_actions(active_ecepo_row).any(|action| {
                         action.id == crate::FlightPlanRowActionId::ActivateLeg && !action.enabled
                     }),
                     "already-active guidance leg row should disable Activate Leg"
@@ -3057,7 +3055,7 @@ mod tests {
                     .find(|row| row.depth == 1 && row.label == "HOLD")
                     .expect("active plan hold row");
                 assert!(
-                    active_hold_row.actions.iter().any(|action| {
+                    crate::planning::flight_plan_row_actions(active_hold_row).any(|action| {
                         action.id == crate::FlightPlanRowActionId::ActivateLeg && action.enabled
                     }),
                     "hold row should still activate the hold detail when the inbound leg is active"
@@ -4072,9 +4070,7 @@ mod tests {
             "airport row should keep its symbol"
         );
         assert!(
-            keug_row
-                .actions
-                .iter()
+            crate::planning::flight_plan_row_actions(keug_row)
                 .any(|action| action.id == FlightPlanRowActionId::SelectProcedure && action.enabled),
             "final airport after airway exit should offer Select Procedure"
         );

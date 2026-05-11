@@ -5046,8 +5046,7 @@ function FlightPlanPage(props: {
         procedureKind: row.procedure_kind,
         precedingWaypoint: row.preceding_waypoint,
         followingWaypoint: row.following_waypoint,
-        actions: row.actions,
-        actionMatrix: row.action_matrix && row.action_matrix.length > 0 ? row.action_matrix : [row.actions],
+        actionMatrix: row.action_matrix ?? [],
       }));
   }, [planUiState.display_rows]);
   const selectedWaypointIndex = selectedWaypointUid === null

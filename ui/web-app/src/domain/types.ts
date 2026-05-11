@@ -444,7 +444,6 @@ export type FlightPlanDisplayRowUiView = {
   destination_anchor: NavRef | null;
   preceding_waypoint: NavRef | null;
   following_waypoint: NavRef | null;
-  actions: FlightPlanRowActionUiView[];
   action_matrix?: FlightPlanRowActionUiView[][];
 };
 

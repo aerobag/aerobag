@@ -982,7 +982,6 @@ pub struct FlightPlanDisplayRowUiView {
     pub destination_anchor: Option<NavRef>,
     pub preceding_waypoint: Option<NavRef>,
     pub following_waypoint: Option<NavRef>,
-    pub actions: Vec<FlightPlanRowActionUiView>,
     #[serde(default)]
     pub action_matrix: Vec<Vec<FlightPlanRowActionUiView>>,
 }
@@ -2096,13 +2095,13 @@ fn project_display_rows(
                 destination_anchor,
                 preceding_waypoint: component.preceding_waypoint.clone(),
                 following_waypoint: component.following_waypoint.clone(),
-                actions,
-                action_matrix: Vec::new(),
+                action_matrix: action_matrix_from_actions(&actions),
             });
         } else {
             let origin_anchor = component.preceding_waypoint.clone();
             let destination_anchor = component.following_waypoint.clone();
             let uid = format!("component:{}:{:?}:group", component.uid, component.kind);
+            let actions = assign_action_uids(&uid, group_row_actions(component));
             rows.push(FlightPlanDisplayRowUiView {
                 uid: uid.clone(),
                 label: structured_component_label(component),
@@ -2139,8 +2138,7 @@ fn project_display_rows(
                 destination_anchor: destination_anchor.clone(),
                 preceding_waypoint: component.preceding_waypoint.clone(),
                 following_waypoint: component.following_waypoint.clone(),
-                actions: assign_action_uids(&uid, group_row_actions(component)),
-                action_matrix: Vec::new(),
+                action_matrix: action_matrix_from_actions(&actions),
             });
             for item in &component.items {
                 match item {
@@ -2224,8 +2222,7 @@ fn project_display_rows(
                             destination_anchor: None,
                             preceding_waypoint: component.preceding_waypoint.clone(),
                             following_waypoint: component.following_waypoint.clone(),
-                            actions,
-                            action_matrix: Vec::new(),
+                            action_matrix: action_matrix_from_actions(&actions),
                         })
                     }
                     ConcretizedNavItem::Discontinuity {
@@ -2285,14 +2282,13 @@ fn project_display_rows(
                             destination_anchor: None,
                             preceding_waypoint: component.preceding_waypoint.clone(),
                             following_waypoint: component.following_waypoint.clone(),
-                            actions: assign_action_uids(
+                            action_matrix: action_matrix_from_actions(&assign_action_uids(
                                 &uid,
                                 vec![core_session_action(
                                     FlightPlanRowActionId::ActivateLeg,
                                     leg_index.is_some(),
                                 )],
-                            ),
-                            action_matrix: Vec::new(),
+                            )),
                         })
                     }
                 }
@@ -2339,11 +2335,10 @@ fn project_display_rows(
             destination_anchor: Some(direct_to.target.clone()),
             preceding_waypoint: None,
             following_waypoint: None,
-            actions: assign_action_uids(
+            action_matrix: action_matrix_from_actions(&assign_action_uids(
                 &uid,
                 vec![action(FlightPlanRowActionId::WaypointInfo, false)],
-            ),
-            action_matrix: Vec::new(),
+            )),
         });
     }
 
@@ -2351,7 +2346,7 @@ fn project_display_rows(
         for row in &mut rows {
             if !row.synthetic_direct_to {
                 row.enabled = false;
-                for action in &mut row.actions {
+                for action in flight_plan_row_actions_mut(row) {
                     action.enabled = false;
                 }
             }
@@ -2371,10 +2366,10 @@ fn project_display_rows(
             terminal_hold_start_detail_index_for_leg(plan, active_leg_index);
         for row in &mut rows {
             if row.leg_index == Some(active_leg_index) {
-                for action in &mut row.actions {
+                let hold_row = row.row_kind == FlightPlanDisplayRowKind::Discontinuity
+                    && row.label == ProcedureDiscontinuity::Hold.display_label();
+                for action in flight_plan_row_actions_mut(row) {
                     if action.id == FlightPlanRowActionId::ActivateLeg {
-                        let hold_row = row.row_kind == FlightPlanDisplayRowKind::Discontinuity
-                            && row.label == ProcedureDiscontinuity::Hold.display_label();
                         let hold_already_active = hold_row
                             && active_hold_detail_start.is_some_and(|hold_start| {
                                 active_detail.as_ref().is_some_and(|detail| {
@@ -2389,10 +2384,6 @@ fn project_display_rows(
                 }
             }
         }
-    }
-
-    for row in &mut rows {
-        row.action_matrix = action_matrix_from_actions(&row.actions);
     }
 
     rows
@@ -2844,6 +2835,18 @@ fn action_matrix_from_actions(
         }
     }
     matrix
+}
+
+pub(crate) fn flight_plan_row_actions(
+    row: &FlightPlanDisplayRowUiView,
+) -> impl Iterator<Item = &FlightPlanRowActionUiView> {
+    row.action_matrix.iter().flatten()
+}
+
+pub(crate) fn flight_plan_row_actions_mut(
+    row: &mut FlightPlanDisplayRowUiView,
+) -> impl Iterator<Item = &mut FlightPlanRowActionUiView> {
+    row.action_matrix.iter_mut().flatten()
 }
 
 fn nav_ref_key(nav_ref: &NavRef) -> String {
@@ -6121,7 +6124,7 @@ mod tests {
             ui.display_rows
                 .iter()
                 .find(|row| row.component_index == Some(component_index))
-                .and_then(|row| row.actions.iter().find(|action| action.id == id))
+                .and_then(|row| flight_plan_row_actions(row).find(|action| action.id == id))
                 .expect("row action")
         };
 
@@ -6232,9 +6235,7 @@ mod tests {
             .find(|row| row.component_index == Some(2) && row.depth == 0)
             .expect("final waypoint row");
 
-        assert!(row
-            .actions
-            .iter()
+        assert!(flight_plan_row_actions(row)
             .any(|action| action.id == FlightPlanRowActionId::AddAirway && action.enabled));
         assert_eq!(row.start_component_index, Some(2));
         assert_eq!(row.end_component_index, None);
@@ -6587,9 +6588,7 @@ mod tests {
     #[test]
     fn project_ui_state_enables_insert_before_and_after_for_top_level_waypoints() {
         let ui = project_ui_state(&sample_two_waypoint_plan());
-        let action_ids = ui.display_rows[0]
-            .actions
-            .iter()
+        let action_ids = flight_plan_row_actions(&ui.display_rows[0])
             .map(|action| (&action.id, action.enabled))
             .collect::<Vec<_>>();
 
@@ -6644,14 +6643,10 @@ mod tests {
     #[test]
     fn project_ui_state_exposes_remove_all_above_for_nonfirst_waypoints() {
         let ui = project_ui_state(&sample_four_waypoint_plan());
-        let first_actions = ui.display_rows[0]
-            .actions
-            .iter()
+        let first_actions = flight_plan_row_actions(&ui.display_rows[0])
             .map(|action| (&action.id, action.enabled))
             .collect::<Vec<_>>();
-        let third_actions = ui.display_rows[2]
-            .actions
-            .iter()
+        let third_actions = flight_plan_row_actions(&ui.display_rows[2])
             .map(|action| (&action.id, action.enabled))
             .collect::<Vec<_>>();
 
@@ -6873,7 +6868,7 @@ mod tests {
         assert!(rows[..rows.len() - 1].iter().all(|row| !row.enabled));
         assert!(rows[..rows.len() - 1]
             .iter()
-            .flat_map(|row| row.actions.iter())
+            .flat_map(flight_plan_row_actions)
             .all(|action| !action.enabled));
         let direct_row = rows.last().expect("synthetic direct-to row");
         assert_eq!(direct_row.label, "KPSC");
@@ -7076,9 +7071,7 @@ mod tests {
                 && row.leg_index.is_some()
                 && row.leg_index != guidance.active_leg_index
         }) {
-            let activate_leg = row
-                .actions
-                .iter()
+            let activate_leg = flight_plan_row_actions(row)
                 .find(|action| action.id == FlightPlanRowActionId::ActivateLeg)
                 .expect("activate-leg action");
             assert!(
@@ -7183,17 +7176,13 @@ mod tests {
         assert_eq!(hio_rows[0].leg_index, None);
         assert_eq!(hio_rows[1].leg_index, Some(1));
         assert!(
-            !hio_rows[0]
-                .actions
-                .iter()
+            !flight_plan_row_actions(hio_rows[0])
                 .find(|action| action.id == FlightPlanRowActionId::ActivateLeg)
                 .expect("activate-leg action")
                 .enabled
         );
         assert!(
-            hio_rows[1]
-                .actions
-                .iter()
+            flight_plan_row_actions(hio_rows[1])
                 .find(|action| action.id == FlightPlanRowActionId::ActivateLeg)
                 .expect("activate-leg action")
                 .enabled
@@ -7216,9 +7205,7 @@ mod tests {
             .iter()
             .find(|row| row.depth == 1 && row.row_kind == FlightPlanDisplayRowKind::Waypoint)
             .expect("nested airway waypoint row");
-        let direct_to = child_row
-            .actions
-            .iter()
+        let direct_to = flight_plan_row_actions(child_row)
             .find(|action| action.id == FlightPlanRowActionId::DirectTo)
             .expect("direct-to action");
 

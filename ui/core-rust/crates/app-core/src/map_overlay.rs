@@ -2837,9 +2837,7 @@ fn selection_flight_plan_row_action(
             && row.nav_ref.as_ref() == Some(nav_ref)
             && row.component_uid.is_some()
     })?;
-    let action = row
-        .actions
-        .iter()
+    let action = crate::planning::flight_plan_row_actions(row)
         .find(|action| action.id == action_id && action.enabled)?;
     Some(MapSelectionFlightPlanRowAction {
         row_uid: row.uid.clone(),

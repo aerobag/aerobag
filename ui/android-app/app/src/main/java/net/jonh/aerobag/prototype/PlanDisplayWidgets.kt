@@ -379,7 +379,6 @@ internal fun buildFlightPlanDisplayRows(planUiState: FlightPlanUiState): List<Fl
             canReorderComponent = row.canReorderComponent,
             canReorderUp = row.canReorderUp,
             canReorderDown = row.canReorderDown,
-            actions = row.actions,
             actionMatrix = row.actionMatrix,
             startComponentIndex = row.startComponentIndex,
             endComponentIndex = row.endComponentIndex,

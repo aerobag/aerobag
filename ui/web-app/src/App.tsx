@@ -3554,6 +3554,19 @@ function MapPage(props: {
     syncFollowStateForViewport(nextViewport);
   }
 
+  function selectMapSelectionItemForNavRef(result: MapSelectionQueryResult, navRef: NavRef) {
+    const key = navRefKey(navRef);
+    for (const category of result.categories) {
+      const item = category.items.find((candidate) =>
+        candidate.nav_ref ? navRefKey(candidate.nav_ref) === key : false,
+      );
+      if (item) {
+        return item;
+      }
+    }
+    return null;
+  }
+
   async function recenterOnNavRef(navRef: NavRef) {
     const position = await props.appCoreAdapter.resolveNavRefPosition(navRef);
     const centerWorld = latLonToWorld(position.lat, position.lon);
@@ -3564,6 +3577,34 @@ function MapPage(props: {
     };
     updateViewport(nextViewport);
     syncFollowStateForViewport(nextViewport);
+    return { position, viewport: nextViewport };
+  }
+
+  async function inspectNavRef(navRef: NavRef) {
+    const { position, viewport: nextViewport } = await recenterOnNavRef(navRef);
+    if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+      return;
+    }
+    const point = worldToScreen(
+      nextViewport,
+      latLonToWorld(position.lat, position.lon),
+      surfaceSize.width,
+      surfaceSize.height,
+    );
+    const result = await uiSession.queryMapSelection(
+      nextViewport,
+      surfaceSize.width,
+      surfaceSize.height,
+      position,
+      thumbPixels(0.5),
+    );
+    const selectedItem = selectMapSelectionItemForNavRef(result, navRef);
+    setMapSelection({
+      point,
+      result,
+      selectedItem,
+      detailModal: null,
+    });
   }
 
   function submitChartSearch() {
@@ -3584,7 +3625,7 @@ function MapPage(props: {
         }));
         return;
       }
-      await recenterOnNavRef(navRef);
+      await inspectNavRef(navRef);
       setChartSearch({ query: "", open: false, loading: false, error: null, suggestions: [] });
     })().catch((error) => {
       setChartSearch((current) => ({
@@ -4335,7 +4376,7 @@ function MapPage(props: {
             onSubmit={submitChartSearch}
             onSelect={(suggestion) => {
               setChartSearch((current) => ({ ...current, loading: true, error: null }));
-              void recenterOnNavRef(suggestion.nav_ref)
+              void inspectNavRef(suggestion.nav_ref)
                 .then(() => setChartSearch({ query: "", open: false, loading: false, error: null, suggestions: [] }))
                 .catch((error) => {
                   setChartSearch((current) => ({

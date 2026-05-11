@@ -1382,72 +1382,78 @@ async function loadBestAvailableAdapterUncached(
   }
   mod.install_rust_debug_logger?.();
   debugLog("wasm.exports.check.start");
-  if (
-    typeof mod.situation_ring_candidates_json !== "function" ||
-    typeof mod.empty_flight_plan_json !== "function" ||
-    typeof mod.create_ui_session !== "function" ||
-    typeof mod.set_raster_resource_mode_in_session !== "function" ||
-    typeof mod.perform_flight_plan_row_action_in_session !== "function" ||
-    typeof mod.set_situation_in_session !== "function" ||
-    typeof mod.tick_debug_ownship_driver_in_session !== "function" ||
-    typeof mod.engage_map_follow_in_session !== "function" ||
-    typeof mod.disengage_map_follow_in_session !== "function" ||
-    typeof mod.set_map_follow_offset_in_session !== "function" ||
-    typeof mod.sync_map_follow_in_session !== "function" ||
-    typeof mod.load_playback_trace_in_session !== "function" ||
-    typeof mod.play_playback_in_session !== "function" ||
-    typeof mod.pause_playback_in_session !== "function" ||
-    typeof mod.seek_playback_in_session !== "function" ||
-    typeof mod.set_playback_rate_in_session !== "function" ||
-    typeof mod.tick_playback_in_session !== "function" ||
-    typeof mod.register_ownship_source_in_session !== "function" ||
-    typeof mod.update_ownship_source_status_in_session !== "function" ||
-    typeof mod.push_situation_sample_in_session !== "function" ||
-    typeof mod.select_ownship_source_in_session !== "function" ||
-    typeof mod.apply_situation_control_input_in_session !== "function" ||
-    typeof mod.set_map_layer_visibility_in_session !== "function" ||
-    typeof mod.set_map_layer_enabled_in_session !== "function" ||
-    typeof mod.set_debug_flag_in_session !== "function" ||
-    typeof mod.load_raster_map_catalog_in_session !== "function" ||
-    typeof mod.sync_guidance_geometry_in_session !== "function" ||
-    typeof mod.select_map_family_in_session !== "function" ||
-    typeof mod.select_raster_map_in_session !== "function" ||
-    typeof mod.replace_flight_plan_in_session !== "function" ||
-    typeof mod.perform_map_selection_action_in_session !== "function" ||
-    typeof mod.select_airport_in_session !== "function" ||
-    typeof mod.select_chart_in_session !== "function" ||
-    typeof mod.ingest_point_tiles_in_session !== "function" ||
-    typeof mod.ingest_airspace_ref_tiles_in_session !== "function" ||
-    typeof mod.ingest_airspace_features_in_session !== "function" ||
-    typeof mod.ingest_airspace_label_tiles_in_session !== "function" ||
-    typeof mod.get_map_overlay_in_session !== "function" ||
-    typeof mod.get_map_selection_in_session !== "function" ||
-    typeof mod.get_terrain_overlay_in_session !== "function" ||
-    typeof mod.get_raster_tile_plan_in_session !== "function" ||
-    typeof mod.render_terrain_overlay_tile_in_session !== "function" ||
-    typeof mod.render_terrain_overlay_tiles_in_session !== "function" ||
-    typeof mod.get_session_snapshot !== "function" ||
-    typeof mod.restore_chart_page_state_in_session !== "function" ||
-    typeof mod.destroy_session !== "function" ||
-    typeof mod.install_rust_debug_logger !== "function" ||
-    typeof mod.insert_waypoint_at_flight_plan_row_in_session !== "function" ||
-    typeof mod.suggest_waypoint_identifiers_at_flight_plan_row_in_session !== "function" ||
-    typeof mod.insert_airway_at_flight_plan_row_in_session !== "function" ||
-    typeof mod.select_procedure_at_flight_plan_row_in_session !== "function" ||
-    typeof mod.load_plate_procedure_in_session !== "function" ||
-    typeof mod.activate_next_leg_in_session !== "function" ||
-    typeof mod.suspend_sequencing_in_session !== "function" ||
-    typeof mod.unsuspend_sequencing_in_session !== "function" ||
-    typeof mod.sequence_active_leg_in_session !== "function" ||
-    typeof mod.ingest_resource_in_session !== "function" ||
-    typeof mod.nav_kv_open !== "function" ||
-    typeof mod.nav_kv_insert_resource !== "function" ||
-    typeof mod.nav_kv_prefetch_pages !== "function" ||
-    typeof mod.nav_kv_destroy !== "function" ||
-    typeof mod.attach_nav_kv_store_to_session !== "function" ||
-    typeof mod.core_had_operation !== "function"
-  ) {
-    throw new Error("generated wasm module is missing required exports");
+  const requiredExports = [
+    "situation_ring_candidates_json",
+    "empty_flight_plan_json",
+    "create_ui_session",
+    "set_raster_resource_mode_in_session",
+    "perform_flight_plan_row_action_in_session",
+    "set_situation_in_session",
+    "tick_debug_ownship_driver_in_session",
+    "engage_map_follow_in_session",
+    "disengage_map_follow_in_session",
+    "set_map_follow_offset_in_session",
+    "sync_map_follow_in_session",
+    "load_playback_trace_in_session",
+    "play_playback_in_session",
+    "pause_playback_in_session",
+    "seek_playback_in_session",
+    "set_playback_rate_in_session",
+    "tick_playback_in_session",
+    "register_ownship_source_in_session",
+    "update_ownship_source_status_in_session",
+    "push_situation_sample_in_session",
+    "select_ownship_source_in_session",
+    "apply_situation_control_input_in_session",
+    "set_map_layer_visibility_in_session",
+    "set_map_layer_enabled_in_session",
+    "set_debug_flag_in_session",
+    "load_raster_map_catalog_in_session",
+    "sync_guidance_geometry_in_session",
+    "select_map_family_in_session",
+    "select_raster_map_in_session",
+    "replace_flight_plan_in_session",
+    "perform_map_selection_action_in_session",
+    "select_airport_in_session",
+    "select_chart_in_session",
+    "ingest_point_tiles_in_session",
+    "ingest_airspace_ref_tiles_in_session",
+    "ingest_airspace_features_in_session",
+    "ingest_airspace_label_tiles_in_session",
+    "get_map_overlay_in_session",
+    "get_map_selection_in_session",
+    "get_terrain_overlay_in_session",
+    "get_raster_tile_plan_in_session",
+    "render_terrain_overlay_tile_in_session",
+    "render_terrain_overlay_tiles_in_session",
+    "get_session_snapshot",
+    "restore_chart_page_state_in_session",
+    "destroy_session",
+    "install_rust_debug_logger",
+    "insert_waypoint_at_flight_plan_row_in_session",
+    "suggest_waypoint_identifiers_at_flight_plan_row_in_session",
+    "insert_airway_at_flight_plan_row_in_session",
+    "select_procedure_at_flight_plan_row_in_session",
+    "load_plate_procedure_in_session",
+    "activate_next_leg_in_session",
+    "suspend_sequencing_in_session",
+    "unsuspend_sequencing_in_session",
+    "sequence_active_leg_in_session",
+    "ingest_resource_in_session",
+    "nav_kv_open",
+    "nav_kv_insert_resource",
+    "nav_kv_prefetch_pages",
+    "nav_kv_destroy",
+    "attach_nav_kv_store_to_session",
+    "core_had_operation",
+  ] as const;
+  const missingExports = requiredExports.filter((name) => typeof mod[name] !== "function");
+  if (missingExports.length > 0) {
+    debugLog("wasm.exports.check.missing", {
+      missing: missingExports,
+      available: Object.keys(mod).sort(),
+    });
+    throw new Error(`generated wasm module is missing required exports: ${missingExports.join(", ")}`);
   }
   debugLog("wasm.exports.check.done");
 

@@ -4,50 +4,29 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class MapViewportTest {
-    private val mapView = MapView(
-        chartFamily = MapChartFamily.Tac,
-        chartName = "Boston TAC",
-        chartIndex = 1,
-        tileRoot = "charts-tac",
-        tileUrlRoot = "/prototype-tiles/charts-tac",
-        tileSize = 256,
-        minZoom = 8.6,
-        maxZoom = 10.8,
-        maxSourceZoom = null,
-        maxDisplayZoom = null,
-        storageKind = TileStorageKind.AssetTree,
-        packageName = null,
-        fullCoverageZoom = null,
-        initialViewport = MapViewportSeed(
-            lat = 42.24,
-            lon = -70.949202,
-            zoom = 9.6,
-        ),
-        levels = listOf(
-            TileLevelAvailability(
-                zoom = 9,
-                xMin = 149,
-                xMax = 157,
-                yTmsMin = 317,
-                yTmsMax = 323,
-            ),
-            TileLevelAvailability(
-                zoom = 10,
-                xMin = 300,
-                xMax = 314,
-                yTmsMin = 634,
-                yTmsMax = 647,
-            ),
-        ),
+    private val initialViewport = MapViewportSeed(
+        lat = 42.24,
+        lon = -70.949202,
+        zoom = 9.6,
     )
+    private val minZoom = 8.6
+    private val maxZoom = 10.8
 
     @Test
     fun zoomAroundPointKeepsAnchorStable() {
-        val viewport = createInitialViewport(mapView)
+        val viewport = createInitialViewport(initialViewport, minZoom, maxZoom)
         val anchor = ScreenPoint(320f, 280f)
         val anchoredWorld = screenToWorld(viewport, anchor, 1200f, 900f)
 
-        val zoomed = zoomAroundPoint(viewport, mapView, anchor, 1200f, 900f, viewport.zoom + 0.8)
+        val zoomed = zoomAroundPoint(
+            viewport,
+            minZoom,
+            maxZoom,
+            anchor,
+            1200f,
+            900f,
+            viewport.zoom + 0.8,
+        )
         val anchoredWorldAfter = screenToWorld(zoomed, anchor, 1200f, 900f)
 
         assertEquals(anchoredWorld.x, anchoredWorldAfter.x, 1e-8)
@@ -56,14 +35,22 @@ class MapViewportTest {
 
     @Test
     fun pinchGesturePreservesBothAnchorsForStraightLineMotion() {
-        val viewport = createInitialViewport(mapView)
+        val viewport = createInitialViewport(initialViewport, minZoom, maxZoom)
         val startFirst = ScreenPoint(320f, 450f)
         val startSecond = ScreenPoint(880f, 450f)
         val snapshot = createPinchSnapshot(viewport, startFirst, startSecond, 1200f, 900f)
         val movedFirst = ScreenPoint(260f, 450f)
         val movedSecond = ScreenPoint(940f, 450f)
 
-        val pinched = applyPinchGesture(snapshot, movedFirst, movedSecond, mapView, 1200f, 900f)
+        val pinched = applyPinchGesture(
+            snapshot,
+            movedFirst,
+            movedSecond,
+            minZoom,
+            maxZoom,
+            1200f,
+            900f,
+        )
         val firstWorldAfter = screenToWorld(pinched, movedFirst, 1200f, 900f)
         val secondWorldAfter = screenToWorld(pinched, movedSecond, 1200f, 900f)
 
@@ -74,18 +61,14 @@ class MapViewportTest {
     }
 
     @Test
-    fun switchingLayersPreservesCenterWhileClampingZoom() {
-        val viewport = createInitialViewport(mapView).copy(
+    fun switchingLayersPreservesCenterAndZoom() {
+        val viewport = createInitialViewport(initialViewport, minZoom, maxZoom).copy(
             centerWorldX = 140.25,
             centerWorldY = 92.75,
             zoom = 10.4,
         )
-        val otherMapView = mapView.copy(
-            minZoom = 4.2,
-            maxZoom = 9.8,
-        )
 
-        val preserved = preserveViewportForMap(viewport, otherMapView)
+        val preserved = preserveViewportForMap(viewport, 4.2, 9.8)
 
         assertEquals(viewport.centerWorldX, preserved.centerWorldX, 1e-8)
         assertEquals(viewport.centerWorldY, preserved.centerWorldY, 1e-8)

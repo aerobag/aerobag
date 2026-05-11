@@ -76,7 +76,7 @@ fun createInitialViewport(seed: MapViewportSeed, minZoom: Double, maxZoom: Doubl
 }
 
 fun preserveViewportForMap(viewport: MapViewportState, minZoom: Double, maxZoom: Double): MapViewportState =
-    viewport.copy(zoom = clampZoom(viewport.zoom, minZoom, maxZoom))
+    viewport
 
 fun clampZoom(zoom: Double, minZoom: Double, maxZoom: Double): Double = min(maxZoom, max(minZoom, zoom))
 

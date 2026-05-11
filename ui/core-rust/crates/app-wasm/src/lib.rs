@@ -404,13 +404,13 @@ pub fn perform_flight_plan_row_action_in_session(
     row_uid: &str,
     action_uid: &str,
 ) -> Result<String, JsValue> {
-    let snapshot = app_core::session::perform_flight_plan_row_action_in_session(
+    let outcome = app_core::session::perform_flight_plan_row_action_in_session(
         session_handle,
         row_uid.to_string(),
         action_uid.to_string(),
     )
     .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[wasm_bindgen]

@@ -933,7 +933,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       performFlightPlanRowAction: async (rowUid, actionUid) => {
         snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.perform_flight_plan_row_action_in_session(handle, rowUid, actionUid)),
+          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+            this.module.perform_flight_plan_row_action_in_session(handle, rowUid, actionUid),
+          ),
         );
         await syncGuidanceGeometry();
         return snapshot;

@@ -1055,7 +1055,12 @@ class NativeUiSession internal constructor(
     }
 
     fun performFlightPlanRowAction(rowUid: String, actionUid: String): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.performFlightPlanRowActionInSessionJson(handle, rowUid, actionUid))
+        val store = navKvStore ?: error("nav_kv store is required to perform flight plan row action")
+        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(
+            store.runPagedSessionOperationElement {
+                bridge.performFlightPlanRowActionInSessionJson(handle, rowUid, actionUid)
+            },
+        ).toUi()
         return syncGuidanceGeometryFromPlan()
     }
 

@@ -683,7 +683,7 @@ fn project_source_menu_item(
         label: source_menu_label(source),
         launcher_label,
         tone: source_control_tone(source),
-        enabled: source.selectable,
+        enabled: source.selectable && source.enabled,
         active: source.active || source_selected_by_policy(source, policy),
         status_label: source.status_label.clone(),
     }
@@ -799,6 +799,9 @@ fn source_launcher_label(source: &OwnshipSourceStatus) -> String {
 }
 
 fn source_control_tone(source: &OwnshipSourceStatus) -> OwnshipControlTone {
+    if !source.enabled {
+        return OwnshipControlTone::Unavailable;
+    }
     match source.source_kind {
         OwnshipSourceKind::DeviceGps | OwnshipSourceKind::ExternalGps => {
             if matches!(source.connection_state, SourceConnectionState::Connected) {

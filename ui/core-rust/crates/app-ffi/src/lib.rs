@@ -337,13 +337,13 @@ pub fn perform_flight_plan_row_action_in_session_json(
     row_uid: &str,
     action_uid: &str,
 ) -> Result<String, String> {
-    let snapshot = app_core::perform_flight_plan_row_action_in_session(
+    let outcome = app_core::perform_flight_plan_row_action_in_session(
         handle as u32,
         row_uid.to_string(),
         action_uid.to_string(),
     )
     .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
 pub fn load_plate_procedure_in_session_json(handle: u64, load_id: &str) -> Result<String, String> {

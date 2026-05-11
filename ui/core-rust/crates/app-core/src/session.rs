@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     sync::{
         atomic::{AtomicU32, Ordering},
-        Mutex, OnceLock,
+        Mutex, MutexGuard, OnceLock,
     },
 };
 
@@ -153,8 +153,9 @@ const DEBUG_OWNSHIP_DRIVER_SOURCE_ID: &str = "__debug_ownship_driver__";
 const CDI_NM_PER_DOT: f64 = 1.0;
 const CDI_OFFSCALE_DOTS: f64 = 2.1;
 const DEBUG_OWNSHIP_DRIVER_NM_PER_SECOND: f64 = 0.36;
+const DEBUG_OWNSHIP_DRIVER_REPORTED_SPEED_SCALE: f64 = 0.1;
 const DEBUG_OWNSHIP_DRIVER_MAX_DT_SECONDS: f64 = 1.0;
-const DEBUG_OWNSHIP_DRIVER_WANDER_NM: f64 = 0.25;
+const DEBUG_OWNSHIP_DRIVER_WANDER_NM: f64 = 0.125;
 const DEBUG_OWNSHIP_DRIVER_OVERRUN_NM: f64 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,6 +202,12 @@ static SESSIONS: OnceLock<Mutex<HashMap<u32, UiSession>>> = OnceLock::new();
 
 fn sessions() -> &'static Mutex<HashMap<u32, UiSession>> {
     SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn lock_sessions() -> MutexGuard<'static, HashMap<u32, UiSession>> {
+    sessions()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 pub fn create_ui_session(
@@ -304,7 +311,7 @@ fn create_ui_session_inner(
         raster_map: None,
     };
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
-    sessions().lock().expect("session store poisoned").insert(
+    lock_sessions().insert(
         handle,
         UiSession {
             app_state,
@@ -344,7 +351,7 @@ pub fn set_map_layer_visibility_in_session(
     layer_id: &str,
     visible: bool,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let layer = parse_map_layer_id(layer_id)?;
     map_layer_toggle_mut(&mut session.map_layer_state, layer).visible = visible;
@@ -352,7 +359,7 @@ pub fn set_map_layer_visibility_in_session(
 }
 
 pub fn load_raster_map_catalog_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let selected_map_id = session
         .raster_map_catalog
@@ -374,7 +381,7 @@ pub fn set_raster_resource_mode_in_session(
     handle: u32,
     mode: RasterResourceMode,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     if session.raster_resource_mode != mode {
         session.raster_resource_mode = mode;
@@ -387,7 +394,7 @@ pub fn select_map_family_in_session(
     handle: u32,
     family_id: &str,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let Some(catalog) = session.raster_map_catalog.as_mut() else {
         let catalog = match crate::had_ops::raster_map_catalog_from_nav_kv(
@@ -409,7 +416,7 @@ pub fn select_raster_map_in_session(
     handle: u32,
     selected_map_id: &str,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let Some(catalog) = session.raster_map_catalog.as_mut() else {
         return Err(AppError {
@@ -427,7 +434,7 @@ pub fn get_raster_tile_plan_in_session(
     width_px: f64,
     height_px: f64,
 ) -> AppResult<RasterTilePlan> {
-    let sessions = sessions().lock().expect("session store poisoned");
+    let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
     let Some(catalog) = session.raster_map_catalog.as_ref() else {
         return Err(AppError {
@@ -456,7 +463,7 @@ pub fn get_raster_tile_plan_in_session_with_options(
     height_px: f64,
     options: crate::RasterTilePlanOptions,
 ) -> AppResult<RasterTilePlan> {
-    let sessions = sessions().lock().expect("session store poisoned");
+    let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
     let Some(catalog) = session.raster_map_catalog.as_ref() else {
         return Err(AppError {
@@ -475,7 +482,7 @@ pub fn set_map_layer_enabled_in_session(
     layer_id: &str,
     enabled: bool,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let layer = parse_map_layer_id(layer_id)?;
     let toggle = map_layer_toggle_mut(&mut session.map_layer_state, layer);
@@ -490,7 +497,7 @@ pub fn set_guidance_leg_geometry_in_session(
     handle: u32,
     geometries: Vec<GuidanceLegGeometry>,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.guidance_leg_geometry = geometries
         .into_iter()
@@ -506,7 +513,7 @@ pub fn set_guidance_leg_geometry_in_session(
 }
 
 pub fn sync_guidance_geometry_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let Some(plan) = session.app_state.active_plan.clone() else {
         session.guidance_leg_geometry.clear();
@@ -549,7 +556,7 @@ pub fn sync_guidance_geometry_in_session(handle: u32) -> AppResult<HadOperationO
 }
 
 pub fn select_airport_in_session(handle: u32, airport_id: &str) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
     let mut recent_airport_ids = vec![airport_id.to_string()];
@@ -567,7 +574,7 @@ pub fn select_airport_in_session(handle: u32, airport_id: &str) -> AppResult<UiS
 }
 
 pub fn select_chart_in_session(handle: u32, chart_id: &str) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
     session.chart_page_state = derive_compact_chart_page_state(
@@ -583,7 +590,7 @@ pub fn register_ownship_source_in_session(
     handle: u32,
     registration: crate::OwnshipSourceRegistration,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.app_state = state::reduce(
         &session.app_state,
@@ -596,7 +603,7 @@ pub fn update_ownship_source_status_in_session(
     handle: u32,
     update: crate::OwnshipSourceStatusUpdate,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.app_state = state::reduce(
         &session.app_state,
@@ -609,7 +616,7 @@ pub fn push_situation_sample_in_session(
     handle: u32,
     sample: crate::SituationSample,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.app_state = state::reduce(&session.app_state, AppEvent::PushSituationSample(sample))?;
     Ok(snapshot_for_session(session))
@@ -619,7 +626,7 @@ pub fn set_ownship_policy_in_session(
     handle: u32,
     policy: crate::OwnshipPolicy,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.app_state = state::reduce(&session.app_state, AppEvent::SetOwnshipPolicy(policy))?;
     Ok(snapshot_for_session(session))
@@ -629,7 +636,7 @@ pub fn select_ownship_source_in_session(
     handle: u32,
     selection: crate::OwnshipSelectionCommand,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let selected_source_kind = match &selection {
         crate::OwnshipSelectionCommand::Source { source_id } => session
@@ -641,6 +648,11 @@ pub fn select_ownship_source_in_session(
             .map(|source| source.source_kind),
         crate::OwnshipSelectionCommand::Auto => None,
     };
+    if selected_source_kind == Some(crate::OwnshipSourceKind::DebugOwnshipDriver)
+        && !debug_ownship_driver_available(session)
+    {
+        return Ok(snapshot_for_session(session));
+    }
     session.app_state =
         state::reduce(&session.app_state, AppEvent::SelectOwnshipSource(selection))?;
     match selected_source_kind {
@@ -670,7 +682,7 @@ pub fn apply_situation_control_input_in_session(
     input: SituationControlInput,
     now_epoch_ms: f64,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     situation_source_handler_for_session(session).apply_input(session, input, now_epoch_ms)?;
     Ok(snapshot_for_session(session))
@@ -681,7 +693,7 @@ pub fn load_playback_trace_in_session(
     source_path: &str,
     trace_json: &str,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let situation = session
         .playback
@@ -698,7 +710,7 @@ pub fn load_playback_trace_in_session(
 }
 
 pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     if let Some(situation) = session.playback.play(now_epoch_ms) {
         apply_situation_to_ownship(
@@ -714,7 +726,7 @@ pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiS
 }
 
 pub fn pause_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     if let Some(situation) = session.playback.pause(now_epoch_ms) {
         apply_situation_to_ownship(
@@ -734,7 +746,7 @@ pub fn seek_playback_in_session(
     cursor_seconds: f64,
     now_epoch_ms: f64,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     if let Some(situation) = session.playback.seek(cursor_seconds, now_epoch_ms) {
         apply_situation_to_ownship(
@@ -754,7 +766,7 @@ pub fn set_playback_rate_in_session(
     rate: f64,
     now_epoch_ms: f64,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     if let Some(situation) = session.playback.set_rate(rate, now_epoch_ms) {
         apply_situation_to_ownship(
@@ -770,7 +782,7 @@ pub fn set_playback_rate_in_session(
 }
 
 pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     if let Some(situation) = session.playback.tick(now_epoch_ms) {
         apply_situation_to_ownship(
@@ -789,7 +801,7 @@ pub fn set_situation_in_session(
     handle: u32,
     situation: crate::Situation,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     apply_situation_to_ownship(
         session,
@@ -806,7 +818,7 @@ pub fn tick_debug_ownship_driver_in_session(
     handle: u32,
     now_epoch_ms: f64,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     tick_debug_ownship_driver(session, now_epoch_ms)?;
     Ok(snapshot_for_session(session))
@@ -816,7 +828,7 @@ pub fn replace_flight_plan_in_session(
     handle: u32,
     plan: FlightPlan,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     replace_session_flight_plan(session, plan)?;
     Ok(snapshot_for_session(session))
@@ -842,7 +854,7 @@ fn mutate_session_flight_plan(
     handle: u32,
     mutation: impl FnOnce(&FlightPlan) -> AppResult<FlightPlan>,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
     let next_plan = mutation(&plan)?;
@@ -854,7 +866,7 @@ fn mutate_session_guidance(
     handle: u32,
     mutation: impl FnOnce(&FlightPlan) -> AppResult<FlightPlan>,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
     let next_plan = mutation(&plan)?;
@@ -891,7 +903,7 @@ fn insert_waypoint_best_position_for_session(
     handle: u32,
     waypoint: NavRef,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
     let store = session_nav_kv_store(session)?;
@@ -919,7 +931,7 @@ pub fn insert_waypoint_at_flight_plan_row_in_session(
     before: bool,
     waypoint: NavRef,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
@@ -955,7 +967,7 @@ pub fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
     prefix: String,
     limit: usize,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
@@ -1010,7 +1022,7 @@ pub fn insert_airway_at_flight_plan_row_in_session(
     entry_index: usize,
     exit_index: usize,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
@@ -1087,7 +1099,7 @@ pub fn select_procedure_at_flight_plan_row_in_session(
     runway_transition: Option<String>,
     enroute_transition: Option<String>,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let mut plan = session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
@@ -1192,7 +1204,7 @@ pub fn load_plate_procedure_in_session(
         kind: AppErrorKind::InvalidFlightPlan,
         message: format!("invalid procedure load id: {err}"),
     })?;
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let mut plan = session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
@@ -1295,7 +1307,7 @@ fn activate_direct_to_nav_ref_in_session(
     handle: u32,
     target: NavRef,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
     let from_position = session
@@ -1316,7 +1328,7 @@ pub fn activate_direct_to_leg_in_session(
     handle: u32,
     target_leg_index: usize,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
     let target_leg_id = plan
@@ -1345,8 +1357,8 @@ pub fn perform_flight_plan_row_action_in_session(
     handle: u32,
     row_uid: String,
     action_uid: String,
-) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
@@ -1462,11 +1474,11 @@ pub fn perform_flight_plan_row_action_in_session(
         }
     };
     replace_session_flight_plan(session, next_plan)?;
-    Ok(snapshot_for_session(session))
+    session_snapshot_outcome(session)
 }
 
 pub fn restore_direct_to_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
     let next_plan = crate::restore_direct_to(&plan)?;
@@ -1479,7 +1491,7 @@ pub fn attach_nav_kv_store_to_session(
     store_id: u32,
     store: &NavKvStore,
 ) -> AppResult<()> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.nav_kv_store_id = Some(store_id);
     session.nav_kv_store = Some(store.clone());
@@ -1487,7 +1499,7 @@ pub fn attach_nav_kv_store_to_session(
 }
 
 pub fn insert_nav_kv_page_for_attached_sessions(store_id: u32, page_index: u32, page_bytes: &[u8]) {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     for session in sessions.values_mut() {
         if session.nav_kv_store_id == Some(store_id) {
             if let Some(store) = session.nav_kv_store.as_mut() {
@@ -1501,7 +1513,7 @@ pub fn engage_map_follow_in_session(
     handle: u32,
     viewport: MapViewport,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.map_follow.engage(viewport);
     Ok(snapshot_for_session(session))
@@ -1511,7 +1523,7 @@ pub fn disengage_map_follow_in_session(
     handle: u32,
     viewport: MapViewport,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.map_follow.disengage(viewport);
     Ok(snapshot_for_session(session))
@@ -1523,7 +1535,7 @@ pub fn set_map_follow_offset_in_session(
     offset_x_px: f64,
     offset_y_px: f64,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session
         .map_follow
@@ -1537,7 +1549,7 @@ pub fn sync_map_follow_in_session(
     width_px: f64,
     height_px: f64,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.map_follow.sync_for_viewport(
         &session.app_state.ownship.render,
@@ -1554,7 +1566,7 @@ pub fn restore_chart_page_state_in_session(
     selected_airport_id: Option<&str>,
     selected_chart_id: Option<&str>,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
     session.chart_page_state = derive_compact_chart_page_state(
@@ -1571,7 +1583,7 @@ pub fn set_debug_flag_in_session(
     flag_id: &str,
     enabled: bool,
 ) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     match flag_id {
         "tile_labels" => session.debug_state.tile_labels = enabled,
@@ -1591,13 +1603,13 @@ pub fn set_debug_flag_in_session(
 }
 
 pub fn get_session_snapshot(handle: u32) -> AppResult<UiSessionSnapshot> {
-    let sessions = sessions().lock().expect("session store poisoned");
+    let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
     Ok(snapshot_for_session(session))
 }
 
 pub fn ingest_point_tiles_in_session(handle: u32, tiles: &[PointTilePayload]) -> AppResult<()> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     for tile in tiles {
         let aggregate = session
@@ -1618,7 +1630,7 @@ pub fn ingest_point_tiles_in_session(handle: u32, tiles: &[PointTilePayload]) ->
 }
 
 pub fn ingest_metar_tiles_in_session(handle: u32, tiles: &[MetarTilePayload]) -> AppResult<()> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     for tile in tiles {
         session.metar_tile_cache.insert(
@@ -1633,7 +1645,7 @@ pub fn ingest_airspace_ref_tiles_in_session(
     handle: u32,
     tiles: &[AirspaceReferenceTilePayload],
 ) -> AppResult<()> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     for tile in tiles {
         session
@@ -1651,7 +1663,7 @@ pub fn ingest_airspace_features_in_session(
     handle: u32,
     features: &[AirspaceFeaturePayload],
 ) -> AppResult<()> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     for feature in features {
         session
@@ -1665,7 +1677,7 @@ pub fn ingest_airspace_label_tiles_in_session(
     handle: u32,
     tiles: &[AirspaceLabelTilePayload],
 ) -> AppResult<()> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     for tile in tiles {
         session
@@ -1695,14 +1707,14 @@ fn empty_vector_aggregate_tile(z: u32, x: u32, y: u32) -> VectorAggregateTilePay
 }
 
 pub fn ingest_tfrs_in_session(handle: u32, payload: &TfrProductPayload) -> AppResult<()> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.tfr_payload = Some(payload.clone());
     Ok(())
 }
 
 pub fn ingest_metars_in_session(handle: u32, payload: &MetarProductPayload) -> AppResult<()> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let mut payload = payload.clone();
     if let Some(pireps) = session.pending_pireps.clone() {
@@ -1713,7 +1725,7 @@ pub fn ingest_metars_in_session(handle: u32, payload: &MetarProductPayload) -> A
 }
 
 pub fn ingest_pireps_in_session(handle: u32, pireps: &[PirepRecord]) -> AppResult<()> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let pireps = pireps.to_vec();
     if let Some(metars) = session.metar_payload.as_mut() {
@@ -1724,7 +1736,7 @@ pub fn ingest_pireps_in_session(handle: u32, pireps: &[PirepRecord]) -> AppResul
 }
 
 pub fn ingest_tafs_in_session(handle: u32, payload: &TafProductPayload) -> AppResult<()> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.taf_payload = Some(payload.clone());
     Ok(())
@@ -1738,7 +1750,7 @@ struct PirepProductPayload {
 
 pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) -> AppResult<()> {
     if resource_id.starts_with("publication/") {
-        let mut sessions = sessions().lock().expect("session store poisoned");
+        let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, handle)?;
         session
             .publication_resolver
@@ -1803,7 +1815,7 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
                 message: format!("METAR tile resource id {resource_id} does not match payload"),
             });
         }
-        let mut sessions = sessions().lock().expect("session store poisoned");
+        let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, handle)?;
         session.metar_tile_cache.insert(expected_key, payload);
         return Ok(());
@@ -2013,7 +2025,7 @@ pub fn get_map_overlay_in_session(
     width_px: f64,
     height_px: f64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     if !session.map_layer_state.vectors.visible
         && !session.map_layer_state.metars.visible
@@ -2181,7 +2193,7 @@ pub fn get_map_selection_in_session(
     click: LatLon,
     hit_radius_px: f64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = sessions().lock().expect("session store poisoned");
+    let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     if let Err(err) = ensure_vector_inputs_loaded(session, &viewport, width_px, height_px) {
         return had_read_error_to_overlay_outcome(err);
@@ -2245,7 +2257,7 @@ pub fn get_terrain_overlay_in_session(
     width_px: f64,
     height_px: f64,
 ) -> AppResult<TerrainOverlayQueryResult> {
-    let sessions = sessions().lock().expect("session store poisoned");
+    let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
     if !session.map_layer_state.terrain_warning.visible {
         return Ok(TerrainOverlayQueryResult {
@@ -2272,7 +2284,7 @@ pub fn render_terrain_overlay_tile_in_session(
     tile_bytes: &[u8],
     aircraft_altitude_ft: Option<f64>,
 ) -> AppResult<Vec<u8>> {
-    let sessions = sessions().lock().expect("session store poisoned");
+    let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
     let altitude_ft = aircraft_altitude_ft
         .filter(|altitude| altitude.is_finite())
@@ -2294,7 +2306,7 @@ pub fn render_terrain_overlay_tiles_in_session(
     packed_tile_bytes: &[u8],
     aircraft_altitude_ft: Option<f64>,
 ) -> AppResult<Vec<u8>> {
-    let sessions = sessions().lock().expect("session store poisoned");
+    let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
     let altitude_ft = aircraft_altitude_ft
         .filter(|altitude| altitude.is_finite())
@@ -2346,10 +2358,7 @@ fn unpack_packed_terrain_tiles(packed_tile_bytes: &[u8]) -> Result<Vec<Vec<u8>>,
 }
 
 pub fn destroy_session(handle: u32) {
-    let _ = sessions()
-        .lock()
-        .expect("session store poisoned")
-        .remove(&handle);
+    let _ = lock_sessions().remove(&handle);
 }
 
 fn ownship_terrain_altitude_ft(session: &UiSession) -> Option<f64> {
@@ -2655,6 +2664,7 @@ fn empty_map_overlay_query() -> MapOverlayQueryResult {
 
 fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadReadError> {
     let mut app_ui_state = state::project_app_ui_state(&session.app_state);
+    project_debug_ownship_driver_availability(session, &mut app_ui_state);
     app_ui_state.ownship.controls.situation_controls = project_situation_controls(session);
     if let Some(active_plan) = app_ui_state.active_plan.as_mut() {
         if let Some(guidance) = active_plan.guidance.as_mut() {
@@ -2669,6 +2679,23 @@ fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadRe
         app_ui_state.active_plan = Some(flight_plan_ui_state(store, plan, active_plan)?);
     }
     Ok(app_ui_state)
+}
+
+fn project_debug_ownship_driver_availability(session: &UiSession, app_ui_state: &mut AppUiState) {
+    let available = debug_ownship_driver_available(session);
+    for source in &mut app_ui_state.ownship.controls.sources {
+        if source.source_kind == crate::OwnshipSourceKind::DebugOwnshipDriver {
+            source.enabled = available;
+            if !available {
+                source.tone = crate::ownship::OwnshipControlTone::Unavailable;
+                source.status_label = "No active leg".to_string();
+            }
+        }
+    }
+}
+
+fn debug_ownship_driver_available(session: &UiSession) -> bool {
+    active_guidance_detail_geometry(session).is_some()
 }
 
 fn project_situation_controls(session: &UiSession) -> Vec<SituationControlMenuItem> {
@@ -3164,7 +3191,11 @@ fn tick_debug_ownship_driver(session: &mut UiSession, now_epoch_ms: f64) -> AppR
                 lon: position.lon,
             },
             orientation_deg: Some(motion_heading),
-            speed_kt: Some(DEBUG_OWNSHIP_DRIVER_NM_PER_SECOND * 3600.0),
+            speed_kt: Some(
+                DEBUG_OWNSHIP_DRIVER_NM_PER_SECOND
+                    * 3600.0
+                    * DEBUG_OWNSHIP_DRIVER_REPORTED_SPEED_SCALE,
+            ),
             altitude_msl_ft: None,
         },
         now_epoch_ms as i64,
@@ -3174,6 +3205,11 @@ fn tick_debug_ownship_driver(session: &mut UiSession, now_epoch_ms: f64) -> AppR
 fn active_guidance_detail_geometry(session: &UiSession) -> Option<(String, GuidanceLegGeometry)> {
     let plan = session.app_state.active_plan.as_ref()?;
     let guidance = plan.guidance.as_ref()?;
+    if guidance.sequencing_mode == SequencingMode::DirectTo {
+        let active_leg = crate::active_guidance_leg(plan)?;
+        let geometry = active_leg_geometry(plan, &active_leg, &session.guidance_leg_geometry)?;
+        return Some((geometry.leg_id.clone(), geometry));
+    }
     let active_detail_index = active_guidance_detail_index_for_motion(plan, guidance)?;
     active_guidance_detail_geometry_for_index(
         plan,
@@ -3866,6 +3902,17 @@ mod tests {
         }"#
     }
 
+    fn complete_session_snapshot(outcome: HadOperationOutcome) -> UiSessionSnapshot {
+        match outcome {
+            HadOperationOutcome::Complete { result } => {
+                serde_json::from_value(result).expect("session snapshot outcome")
+            }
+            HadOperationOutcome::NeedResources { resources } => {
+                panic!("unexpected session snapshot resource request: {resources:?}")
+            }
+        }
+    }
+
     fn sample_guided_plan() -> FlightPlan {
         FlightPlan {
             id: "plan-1".to_string(),
@@ -4469,6 +4516,7 @@ mod tests {
             direct_to_action.uid.clone(),
         )
         .expect("direct-to row action");
+        let after_direct_to = complete_session_snapshot(after_direct_to);
         let guidance = after_direct_to
             .app_ui_state
             .active_plan
@@ -4552,6 +4600,7 @@ mod tests {
             activate_leg.uid.clone(),
         )
         .expect("activate leg after direct-to");
+        let after_activate_leg = complete_session_snapshot(after_activate_leg);
         let guidance = after_activate_leg
             .app_state
             .active_plan
@@ -4676,7 +4725,7 @@ mod tests {
         .expect("create session");
         select_plan_preview(init.handle);
         {
-            let mut sessions = sessions().lock().expect("session store poisoned");
+            let mut sessions = lock_sessions();
             session_mut(&mut sessions, init.handle)
                 .expect("session")
                 .plan_preview

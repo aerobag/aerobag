@@ -6530,7 +6530,7 @@ fn build_nav_kv_waypoint_lookup_pairs(
             continue;
         };
         let chars = identifier.chars().collect::<Vec<_>>();
-        for length in 1..=2.min(chars.len()) {
+        for length in 1..=chars.len() {
             let prefix = chars.iter().take(length).collect::<String>();
             by_prefix.entry(prefix).or_default().push(candidate.clone());
         }
@@ -18719,6 +18719,12 @@ mod tests {
             .expect("KR prefix should remain below threshold");
         let suggestions = serde_json::from_slice::<Vec<serde_json::Value>>(&kr.value).unwrap();
         assert_eq!(suggestions.len(), 2);
+        let krnt = pairs
+            .iter()
+            .find(|pair| pair.key == "waypoint/prefix/KRNT")
+            .expect("full typed prefix should be emitted when below threshold");
+        let suggestions = serde_json::from_slice::<Vec<serde_json::Value>>(&krnt.value).unwrap();
+        assert_eq!(suggestions.len(), 1);
     }
 
     #[test]

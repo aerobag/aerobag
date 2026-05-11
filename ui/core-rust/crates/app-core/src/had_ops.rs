@@ -3566,6 +3566,16 @@ mod tests {
     }
 
     #[test]
+    fn waypoint_prefix_query_uses_full_typed_prefix() {
+        assert_eq!(
+            crate::nav_kv_key_for_query(&NavKvQuery::WaypointPrefix {
+                prefix: "kpae".to_string(),
+            }),
+            Some("waypoint/prefix/KPAE".to_string())
+        );
+    }
+
+    #[test]
     fn fixture_nav_kv_suggests_airways_near_krnt() {
         let store = load_fixture_nav_kv_store();
         let outcome = run_had_operation(

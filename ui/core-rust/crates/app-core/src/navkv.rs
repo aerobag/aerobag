@@ -598,12 +598,7 @@ pub fn nav_kv_key_for_query(query: &NavKvQuery) -> Option<String> {
         )),
         NavKvQuery::WaypointPrefix { prefix } => {
             let normalized = prefix.trim().to_uppercase();
-            let shard = if normalized.len() <= 2 {
-                normalized
-            } else {
-                normalized.chars().take(2).collect()
-            };
-            Some(format!("waypoint/prefix/{}", component(&shard)))
+            Some(format!("waypoint/prefix/{}", component(&normalized)))
         }
         NavKvQuery::VectorManifest => Some("vector/manifest".to_string()),
         NavKvQuery::VectorTile { z, x, y } => Some(format!("vector/tile/z{z:02}/x{x:06}/y{y:06}")),

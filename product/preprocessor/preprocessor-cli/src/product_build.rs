@@ -8499,7 +8499,6 @@ fn sync_unpacked_metadata(
     task_values: Option<&BTreeMap<String, ProductTaskValue>>,
 ) -> anyhow::Result<()> {
     let unpacked_root = published_unpacked_root(config)?;
-    remove_legacy_unpacked_subtree(&unpacked_root)?;
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
     sync_unpacked_file(bundle_manifest_path, &unpacked_root)?;
@@ -8730,7 +8729,6 @@ fn sync_product_level_unpacked(
 ) -> anyhow::Result<()> {
     let unpacked_root = published_unpacked_root_from_build_root(build_root)?;
     let packaged_root = build_root.join("published_packaged");
-    remove_legacy_unpacked_subtree(&unpacked_root)?;
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
     sync_unpacked_discovery_manifests(build_root, current_artifacts_path, &unpacked_root)?;
@@ -14132,7 +14130,7 @@ fn validate_packaged_contract(
             let bundle_path = packaged_root.join(&bundle.filename);
             ensure_public_file_exists(&bundle_path)?;
             validate_embedded_sha256_filename(&bundle.filename, &bundle.checksum_sha256)?;
-            validate_bundle_manifest_compat(packaged_root, &bundle_path)?;
+            validate_bundle_manifest(packaged_root, &bundle_path)?;
         }
         if let Some(diagnostics) = &current.diagnostics {
             validate_public_filename(
@@ -14170,18 +14168,6 @@ fn validate_current_artifacts_manifest(
 }
 
 fn validate_bundle_manifest(packaged_root: &Path, bundle_path: &Path) -> anyhow::Result<()> {
-    validate_bundle_manifest_inner(packaged_root, bundle_path, true)
-}
-
-fn validate_bundle_manifest_compat(packaged_root: &Path, bundle_path: &Path) -> anyhow::Result<()> {
-    validate_bundle_manifest_inner(packaged_root, bundle_path, false)
-}
-
-fn validate_bundle_manifest_inner(
-    packaged_root: &Path,
-    bundle_path: &Path,
-    enforce_current_contract: bool,
-) -> anyhow::Result<()> {
     let filename = filename_string(bundle_path)?;
     if filename.starts_with("bundle_fast_") {
         return validate_fast_bundle_manifest(packaged_root, bundle_path);
@@ -14248,9 +14234,7 @@ fn validate_bundle_manifest_inner(
     for artifact in &bundle.ancillary {
         validate_bundle_artifact_ref(packaged_root, artifact)?;
     }
-    if enforce_current_contract {
-        validate_bundle_contract_split(&bundle, bundle_path)?;
-    }
+    validate_bundle_contract_split(&bundle, bundle_path)?;
     Ok(())
 }
 
@@ -14572,15 +14556,6 @@ fn validate_no_internal_paths_in_value(
         }
         _ => Ok(()),
     }
-}
-
-fn remove_legacy_unpacked_subtree(unpacked_root: &Path) -> anyhow::Result<()> {
-    let legacy = unpacked_root.join("production");
-    if legacy.exists() {
-        fs::remove_dir_all(&legacy)
-            .with_context(|| format!("failed to remove legacy {}", legacy.display()))?;
-    }
-    Ok(())
 }
 
 fn manifest_generated_at(node_records: &[NodeRecord]) -> String {

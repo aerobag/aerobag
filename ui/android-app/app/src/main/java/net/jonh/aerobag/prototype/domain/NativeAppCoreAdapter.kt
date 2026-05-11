@@ -1783,10 +1783,8 @@ internal data class WireDerivedChartAsset(
     val folder_category: String,
     val source_asset_path: String,
     val asset_path: String,
-    val asset_url: String,
     val thumbnail_source_path: String? = null,
     val thumbnail_path: String? = null,
-    val thumbnail_url: String? = null,
 )
 
 internal fun WireDerivedChartPage.toUi() = ChartPageFixture(
@@ -1930,10 +1928,8 @@ internal fun WireDerivedChartAsset.toUi() = ChartAsset(
     folderCategory = folder_category,
     sourceAssetPath = source_asset_path,
     assetPath = asset_path,
-    assetUrl = asset_url,
     thumbnailSourceAssetPath = thumbnail_source_path,
     thumbnailAssetPath = thumbnail_path,
-    thumbnailUrl = thumbnail_url,
 )
 
 @kotlinx.serialization.Serializable

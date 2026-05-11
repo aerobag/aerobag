@@ -501,10 +501,8 @@ data class ChartAsset(
     val folderCategory: String,
     val sourceAssetPath: String,
     val assetPath: String,
-    val assetUrl: String,
     val thumbnailSourceAssetPath: String?,
     val thumbnailAssetPath: String?,
-    val thumbnailUrl: String?,
 )
 
 data class ChartAirport(

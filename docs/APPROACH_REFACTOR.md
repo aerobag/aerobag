@@ -68,7 +68,7 @@ Deliverables:
 Current capture command:
 
 ```bash
-env AEROBAG_FIXTURE_NAV_DB_PACKAGE=/root/aerobag-artifacts-snapshot/published-packaged/nav_db_2604_01_19f2219ad5064fab7ea983c654a031ee31452a7e649ed677b5518a4283fc4059.zip \
+env AEROBAG_FIXTURE_NAV_DB_PACKAGE=/root/aerobag-artifacts-snapshot/published_packaged/nav_db_2604_01_19f2219ad5064fab7ea983c654a031ee31452a7e649ed677b5518a4283fc4059.zip \
   cargo test -p app-core capture_all_snapshot_approaches_with_progress_logging -- --ignored --nocapture
 ```
 

@@ -420,7 +420,7 @@ export type RasterTileSource = {
   storage_kind: string;
   relative_path: string;
   resource:
-    | { kind: "public_unpacked"; path: string }
+    | { kind: "public_unpacked"; package_name: string; member_path: string }
     | { kind: "installed_package"; package_name: string; member_path: string };
 };
 

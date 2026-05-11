@@ -745,7 +745,7 @@ pub fn choose_bundle(artifact_root: &Path, explicit_bundle: Option<&Path>) -> Re
     if let Some(bundle) = explicit_bundle {
         return Ok(bundle.to_path_buf());
     }
-    let production_root = artifact_root.join("published-packaged").join("production");
+    let production_root = artifact_root.join("published_packaged").join("production");
     let mut bundles = fs::read_dir(&production_root)
         .with_context(|| format!("failed to read {}", production_root.display()))?
         .collect::<std::result::Result<Vec<_>, _>>()
@@ -788,7 +788,7 @@ pub fn resolve_db_path(artifact_root: &Path, bundle: &serde_json::Value) -> Resu
         .ok_or_else(|| anyhow::anyhow!("bundle missing data.relative_path"))?;
     let relative_zip = PathBuf::from(relative_zip);
     let unpacked_dir = artifact_root
-        .join("published-unpacked")
+        .join("published_unpacked")
         .join("production")
         .join(cycle)
         .join(relative_zip.with_extension(""));

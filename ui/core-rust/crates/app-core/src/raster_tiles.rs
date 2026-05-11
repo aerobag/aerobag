@@ -186,7 +186,8 @@ pub enum RasterTileResource {
         member_path: String,
     },
     PublicUnpacked {
-        path: String,
+        package_name: String,
+        member_path: String,
     },
 }
 
@@ -815,48 +816,22 @@ fn tile_source_resource(
     relative_path: &str,
     resource_mode: RasterResourceMode,
 ) -> RasterTileResource {
+    let package_name = map_view.package_name.clone().unwrap_or_else(|| {
+        panic!(
+            "raster map view {} is missing package_name",
+            map_view.chart_name
+        )
+    });
+    let member_path = tile_package_member_path(map_view, relative_path);
     match resource_mode {
-        RasterResourceMode::InstalledPackage => {
-            if let Some(package_name) = map_view.package_name.as_ref() {
-                RasterTileResource::InstalledPackage {
-                    package_name: package_name.clone(),
-                    member_path: tile_package_member_path(map_view, relative_path),
-                }
-            } else {
-                RasterTileResource::PublicUnpacked {
-                    path: format!(
-                        "{}/{}",
-                        map_view.tile_url_root.trim_end_matches('/'),
-                        relative_path
-                    ),
-                }
-            }
-        }
-        RasterResourceMode::PublicUnpacked => {
-            let Some(package_name) = map_view.package_name.as_ref() else {
-                return RasterTileResource::PublicUnpacked {
-                    path: format!(
-                        "{}/{}",
-                        map_view.tile_url_root.trim_end_matches('/'),
-                        relative_path
-                    ),
-                };
-            };
-            let package_relative_path = map_view.package_relative_path.as_ref().unwrap_or_else(|| {
-                panic!(
-                    "raster package {package_name} missing package_relative_path required for public unpacked tile URL"
-                )
-            });
-            let package_dir = package_relative_path.strip_suffix(".zip").unwrap_or_else(|| {
-                panic!(
-                    "raster package {package_name} relative_path is not a zip: {package_relative_path}"
-                )
-            });
-            let member_path = tile_package_member_path(map_view, relative_path);
-            RasterTileResource::PublicUnpacked {
-                path: format!("/packages/published_unpacked/{package_dir}/{member_path}"),
-            }
-        }
+        RasterResourceMode::InstalledPackage => RasterTileResource::InstalledPackage {
+            package_name,
+            member_path,
+        },
+        RasterResourceMode::PublicUnpacked => RasterTileResource::PublicUnpacked {
+            package_name,
+            member_path,
+        },
     }
 }
 
@@ -1122,11 +1097,15 @@ mod tests {
         );
 
         let source = &plan.tiles.first().expect("planned tile").primary;
-        let RasterTileResource::PublicUnpacked { path } = &source.resource else {
+        let RasterTileResource::PublicUnpacked {
+            package_name,
+            member_path,
+        } = &source.resource
+        else {
             panic!("expected public unpacked resource");
         };
-        assert!(path.starts_with("/packages/published_unpacked/NW_SEC_2604/"));
-        assert!(path.ends_with(&format!("tiles/{}", source.relative_path)));
+        assert_eq!(package_name, "NW_SEC_2604");
+        assert_eq!(member_path, &format!("tiles/{}", source.relative_path));
     }
 
     #[test]
@@ -1348,7 +1327,7 @@ mod tests {
             max_zoom: 7.0,
             package_name: "SEC_WIDE_2604".to_string(),
             package_relative_path: Some("sec_wide_2604_sample.zip".to_string()),
-            tile_url_root: "/packages/published_unpacked/sec_wide_2604_sample/tiles".to_string(),
+            tile_url_root: "tiles".to_string(),
             tile_path_template: "{z}/{x}/{y}.webp".to_string(),
             levels: vec![
                 level(0, 0, 0, 0, 0),
@@ -1471,7 +1450,7 @@ mod tests {
             max_zoom: 7.0,
             package_name: "SEC_WIDE_2604".to_string(),
             package_relative_path: Some("sec_wide_2604_sample.zip".to_string()),
-            tile_url_root: "/packages/published_unpacked/sec_wide_2604_sample/tiles".to_string(),
+            tile_url_root: "tiles".to_string(),
             tile_path_template: "{z}/{x}/{y}.webp".to_string(),
             levels: vec![level(0, 0, 0, 0, 0), level(7, 0, 127, 0, 127)],
         });

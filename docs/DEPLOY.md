@@ -106,9 +106,9 @@ time "$CARGO_TARGET_DIR/release/preprocessor-cli" build-fast-subset --source-roo
 After these complete, `$ARTIFACT_ROOT` should contain the published artifact
 contract the web build consumes:
 
-- `published-packaged/current_artifacts.json`
-- `published-packaged/`
-- `published-unpacked/`
+- `current_artifacts.json`
+- `published_packaged/`
+- `published_unpacked/`
 
 ## Build the web static tree
 
@@ -122,25 +122,16 @@ npm run build:release
 
 That command:
 
-1. stages the current artifact set into `$AEROBAG_UI_TARGET_ROOT/web/generated-static`
+1. validates the current artifact set that will be served under `/packages`
 2. builds the Rust/WASM adapter in release mode
 3. runs TypeScript checking
 4. runs `vite build`
 5. writes the deployable static tree to `$AEROBAG_WEB_DIST`
 
-The static tree includes the app chunks, WASM, and content-backed routes such
-as:
-
-- `sectional-packages/`
-- `plates/`
-- `afd/`
-- `thumbnails/`
-- `nav-db/`
-- `nav-kv/`
-- `vectors/`
-- `fast-products/`
-- `adsb-traces/`
-- `shaded-relief-products/`
+The static tree includes the app chunks and WASM. Product content is served
+through the publication contract rooted at `/packages`; do not publish or rely
+on legacy content routes such as `/plates`, `/thumbnails`, `/nav-kv`, or
+`/sectional-packages`.
 
 ## Serve the web tree
 
@@ -198,8 +189,7 @@ After deploying nginx, verify:
 
 ```bash
 curl -I http://localhost/
-curl -I http://localhost/nav-kv/root
-curl -I http://localhost/vectors/vectors
+curl -I http://localhost/packages/current_artifacts.json
 ```
 
 Then verify at least one representative chart tile, plate image, fast-product

@@ -335,7 +335,7 @@ Example:
 
 Fast checks should run every build:
 
-- Every `relative_path` in bundle `packages[]` and `ancillary[]` exists in `published-packaged`.
+- Every `relative_path` in bundle `packages[]` and `ancillary[]` exists in `published_packaged`.
 - Every listed `size_bytes` matches the file.
 - Content-hash filenames agree with `checksum_sha256` when the filename embeds the hash.
 - Bundle filenames agree with their own `checksum_sha256` entries in `current_artifacts`.
@@ -370,16 +370,16 @@ Required fast assertions:
 - `packages[]` entries have `id`, `family_id`, `region_id`, `relative_path`, `size_bytes`, `checksum_sha256`, and validity fields appropriate to their package type.
 - Cycle package IDs and filenames include `YYCC_VV`.
 - Stable package rows have `effective_date` and no `expiration_date`.
-- Every `relative_path` exists in `published-packaged`.
+- Every `relative_path` exists in `published_packaged`.
 - Every package `size_bytes` matches the filesystem.
 - Embedded filename hashes match the recorded `checksum_sha256`.
 - JSON metadata contains no internal `cache/`, `work/`, `private-work/`, or node-cache paths.
 
 Required unpacked assertions:
 
-- `published-unpacked` mirrors the packaged contract.
-- Every zip package in `published-packaged` appears as a same-stem directory in `published-unpacked`.
-- Every JSON/root/page metadata file that is not a zip appears as the same single filename in `published-unpacked`.
+- `published_unpacked` mirrors the packaged contract.
+- Every zip package in `published_packaged` appears as a same-stem directory in `published_unpacked`.
+- Every JSON/root/page metadata file that is not a zip appears as the same single filename in `published_unpacked`.
 - There are no legacy-only compatibility directories or duplicate alternate layouts.
 
 Deep audit mode should add byte-level SHA-256 verification for every referenced artifact. The default end-of-build test should avoid rereading huge packages unless they were produced in the current run or lack a trusted recorded checksum.

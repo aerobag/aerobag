@@ -34,10 +34,8 @@ pub struct DerivedChartAsset {
     pub folder_category: String,
     pub source_asset_path: String,
     pub asset_path: String,
-    pub asset_url: String,
     pub thumbnail_source_path: Option<String>,
     pub thumbnail_path: Option<String>,
-    pub thumbnail_url: Option<String>,
     #[serde(default)]
     pub georef: Option<PlateGeoref>,
 }
@@ -228,10 +226,8 @@ mod tests {
             folder_category: folder_category.to_string(),
             source_asset_path: String::new(),
             asset_path: String::new(),
-            asset_url: String::new(),
             thumbnail_source_path: None,
             thumbnail_path: None,
-            thumbnail_url: None,
             georef: None,
         }
     }

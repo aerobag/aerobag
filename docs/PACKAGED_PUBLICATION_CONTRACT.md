@@ -19,8 +19,8 @@ The key rule is:
 
 Published roots live in:
 
-- `published-packaged/`
-- `published-unpacked/`
+- `published_packaged/`
+- `published_unpacked/`
 
 The packaged and unpacked surfaces are both flat at the top level.
 
@@ -116,7 +116,7 @@ Consumer rule:
 
 ## Unpacked Contract
 
-`published-unpacked/` mirrors `published-packaged/` with one transformation:
+`published_unpacked/` mirrors `published_packaged/` with one transformation:
 
 - every non-zip published file remains a sibling file with the same filename
 - every published `foo.zip` becomes a sibling directory `foo/`
@@ -124,12 +124,12 @@ Consumer rule:
 
 Examples:
 
-- `published-packaged/tpp_ne_2604_01_<sha256>.zip`
+- `published_packaged/tpp_ne_2604_01_<sha256>.zip`
   becomes
-  `published-unpacked/tpp_ne_2604_01_<sha256>/`
-- `published-packaged/obstacles_<sha256>.zip`
+  `published_unpacked/tpp_ne_2604_01_<sha256>/`
+- `published_packaged/obstacles_<sha256>.zip`
   becomes
-  `published-unpacked/obstacles_<sha256>/`
+  `published_unpacked/obstacles_<sha256>/`
 
 Examples of top-level unpacked files that remain files:
 
@@ -153,7 +153,7 @@ Bad:
 
 - `cache/nodes/data/.../output/data_2604.zip`
 - `private-work/tpp-ne-2604/...`
-- `published-packaged/work/resource-index/...`
+- `published_packaged/work/resource-index/...`
 
 If a manifest keeps a path field, it must still be flat:
 
@@ -161,7 +161,7 @@ If a manifest keeps a path field, it must still be flat:
 
 not:
 
-- `relative_path = "published-packaged/work/resource-index/abcd/resource-index.json"`
+- `relative_path = "published_packaged/work/resource-index/abcd/resource-index.json"`
 
 
 ## Intended Semantics
@@ -262,7 +262,7 @@ sample footprint; all-nodata footprints remain nodata. Terrain tile members are
 gzip-compressed `ABT1` payloads stored directly in the outer zip. The outer zip
 must not deflate `.terrain` members again.
 
-When serving `published-unpacked/terrain-*/tiles/**/*.terrain` over HTTP, the
+When serving `published_unpacked/terrain-*/tiles/**/*.terrain` over HTTP, the
 server should treat the file bytes as precompressed content:
 
 - `Content-Type: application/vnd.aerobag.terrain`
@@ -270,7 +270,7 @@ server should treat the file bytes as precompressed content:
 - no additional dynamic gzip/deflate recompression
 
 With those headers, browser fetch consumers receive decompressed `ABT1` bytes.
-Offline zip consumers that read directly from `published-packaged/*.zip` must
+Offline zip consumers that read directly from `published_packaged/*.zip` must
 gzip-decode the member payload after reading the zip entry.
 
 ### `shaded-relief-<region>_<sha256>.zip`
@@ -348,7 +348,7 @@ Per cycle:
      - `vectors_data_YYCC.zip`
      - all regional package zips
    - outputs:
-     - hardlinked flat published files in `published-packaged/`
+     - hardlinked flat published files in `published_packaged/`
      - `bundle_YYCC.json` written against those flat filenames
 
 3. add a top-level `publish-current-artifacts` node
@@ -362,7 +362,7 @@ Per cycle:
 4. add unpacked publish nodes
    - per published zip, materialize a sibling unpacked directory using hardlinks
      from the pre-zip source tree
-   - mirror non-zip published files as sibling files in `published-unpacked/`
+   - mirror non-zip published files as sibling files in `published_unpacked/`
 
 Obstacle publishing can remain its own content-addressed publish node, but the
 published obstacle zip should also have an unpacked sibling directory.
@@ -383,8 +383,8 @@ It should not:
 - expose `work/`
 - expose `private-work/`
 - expose node fingerprints in the published contract
-- emit internal cache markers into `published-unpacked/`
-- keep legacy directory trees like `published-unpacked/production/`
+- emit internal cache markers into `published_unpacked/`
+- keep legacy directory trees like `published_unpacked/production/`
 
 
 ## Validation Rules
@@ -394,14 +394,14 @@ We should add a post-build validation step that checks:
 - every filename referenced by `current_artifacts_*.json` exists
 - every filename referenced by `bundle_YYCC.json` exists
 - every referenced path is flat, with no `/`
-- every published `*.zip` in `published-packaged/` has a sibling directory in `published-unpacked/`
-- every top-level non-zip public file in `published-packaged/` has a sibling file in `published-unpacked/`
+- every published `*.zip` in `published_packaged/` has a sibling directory in `published_unpacked/`
+- every top-level non-zip public file in `published_packaged/` has a sibling file in `published_unpacked/`
 - no published manifest contains:
   - `cache/`
   - `private-work/`
   - `work/`
-  - `published-packaged/`
-- `published-unpacked/` contains no:
+  - `published_packaged/`
+- `published_unpacked/` contains no:
   - `.source-zip-sha256`
   - `production/`
 
@@ -415,7 +415,7 @@ Consumers should assume:
 - filenames are stable and flat
 - `bundle_YYCC.json` is the authoritative per-cycle manifest
 - `current_artifacts_YYYYMMDD.json` is the authoritative top-level discovery document
-- `published-unpacked/` is a direct unzip-shaped mirror of `published-packaged/`
+- `published_unpacked/` is a direct unzip-shaped mirror of `published_packaged/`
 
 Consumers should not:
 

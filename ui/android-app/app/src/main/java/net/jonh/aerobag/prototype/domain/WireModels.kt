@@ -1693,7 +1693,6 @@ data class WireChartAsset(
     val label: String,
     val kind: String,
     val asset_path: String,
-    val asset_url: String,
 )
 
 @Serializable

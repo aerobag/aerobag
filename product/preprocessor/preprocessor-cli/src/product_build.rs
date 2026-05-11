@@ -7918,10 +7918,8 @@ fn nav_kv_plate_asset(
         "folder_category": folder_category_for_document_type(&plate.document_type),
         "source_asset_path": plate.asset_path,
         "asset_path": plate.asset_path,
-        "asset_url": format!("/{}", plate.asset_path),
         "thumbnail_source_path": thumbnail_path,
         "thumbnail_path": thumbnail_path,
-        "thumbnail_url": thumbnail_path.map(|path| format!("/{path}")),
         "georef": plate.georef,
     })
 }
@@ -7945,10 +7943,8 @@ fn nav_kv_csup_asset(
         "folder_category": "csup",
         "source_asset_path": csup.asset_path,
         "asset_path": csup.asset_path,
-        "asset_url": format!("/{}", csup.asset_path),
         "thumbnail_source_path": thumbnail_path,
         "thumbnail_path": thumbnail_path,
-        "thumbnail_url": thumbnail_path.map(|path| format!("/{path}")),
         "georef": serde_json::Value::Null,
     })
 }

@@ -224,10 +224,8 @@ private fun ChartPageFixture.toWire() = WireDerivedChartPage(
                     folder_category = chart.folderCategory,
                     source_asset_path = chart.sourceAssetPath,
                     asset_path = chart.assetPath,
-                    asset_url = chart.assetUrl,
                     thumbnail_source_path = chart.thumbnailSourceAssetPath,
                     thumbnail_path = chart.thumbnailAssetPath,
-                    thumbnail_url = chart.thumbnailUrl,
                 )
             },
         )

@@ -137,10 +137,12 @@ combine the package id with discovered bundle package metadata to find the
 installed package or the public unpacked package root, then append
 `tile_url_root` and `tile_path_template`.
 
-The web app may stage or alias these unpacked package paths into friendlier
-runtime routes such as `/nav-kv/`, `/sectional-packages/`, or `/fast-products/`,
-but those aliases are client/server presentation details. The publication
-contract is the `/packages` discovery tree above.
+Clients and server-side staging code should use the same package-member
+resolution path: discover `/packages/current_artifacts.json`, choose the
+published package, and append the package-relative member path. Do not introduce
+alternate public content aliases such as `/nav-kv/`, `/sectional-packages/`, or
+`/fast-products/`; they create a second contract that can drift from the
+published package tree.
 
 ## Rule Of Thumb
 

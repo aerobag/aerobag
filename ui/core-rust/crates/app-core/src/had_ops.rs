@@ -180,7 +180,7 @@ pub(crate) fn nav_kv_page_resources(mut pages: Vec<u32>) -> Vec<CoreResourceRequ
 pub(crate) fn nav_kv_page_resource(page: u32) -> CoreResourceRequest {
     CoreResourceRequest {
         id: format!("nav_kv/page/{page:04}"),
-        address: format!("/nav-kv/page/{page:04}"),
+        address: format!("nav-kv://page/{page:04}"),
         optional: false,
     }
 }
@@ -2657,7 +2657,7 @@ mod tests {
             "chart_name":"Northwest Sectional",
             "chart_index":0,
             "tile_root":"tiles",
-            "tile_url_root":"/sectional-packages/NW_SEC_2604/tiles",
+            "tile_url_root":"tiles",
             "tile_path_template":"0/{z}/{x}/{y}.webp",
             "tile_size":512,
             "min_zoom":4.2,
@@ -2706,10 +2706,7 @@ mod tests {
                 .as_deref(),
             Some("nw_sec_2604_hash.zip")
         );
-        assert_eq!(
-            state.displayed_maps[0].map_view.tile_url_root,
-            "/sectional-packages/NW_SEC_2604/tiles"
-        );
+        assert_eq!(state.displayed_maps[0].map_view.tile_url_root, "tiles");
     }
 
     fn fixture(entries: &[(&str, &[u8])], page_size: u32) -> (NavKvRoot, Vec<Vec<u8>>) {

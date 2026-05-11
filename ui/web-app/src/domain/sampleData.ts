@@ -31,7 +31,7 @@ export const mapViews: MapViewOptionJson[] = [
       chart_name: "Northwest Sectional",
       chart_index: 0,
       tile_root: "tiles",
-      tile_url_root: "/packages/published_unpacked/sec_nw_2604_01_sample/tiles",
+      tile_url_root: "tiles",
       tile_path_template: "{z}/{x}/{y}.webp",
       tile_size: 512,
       min_zoom: 5.2,

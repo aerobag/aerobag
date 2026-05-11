@@ -758,6 +758,10 @@ async function renderTileFromCore(tile: RasterTileDraw, cssScale = 1): Promise<R
   if (tile.primary.resource.kind !== "public_unpacked") {
     throw new Error(`raster tile ${tile.draw_key} is not a public unpacked web resource`);
   }
+  const src = await resolvePackageMemberUrl(
+    tile.primary.resource.package_name,
+    tile.primary.resource.member_path,
+  );
   return {
     drawKey: tile.draw_key,
     x: tile.x,
@@ -767,7 +771,7 @@ async function renderTileFromCore(tile: RasterTileDraw, cssScale = 1): Promise<R
     size: tile.size_px * cssScale,
     zoom: tile.source_zoom,
     zIndex: tile.z_order,
-    src: tile.primary.resource.path,
+    src,
     mapViewId: tile.primary.map_view_id,
     packageName,
     chartFamily: tile.family,
@@ -6719,7 +6723,7 @@ function ChartsPage(props: {
         }));
       })
       .catch((error) => {
-        debugLog("charts.asset_url.resolve_failed", {
+        debugLog("charts.asset.resolve_failed", {
           chart_id: selectedChart.id,
           package_id: selectedChart.package_id,
           asset_path: selectedChart.asset_path,
@@ -6760,7 +6764,7 @@ function ChartsPage(props: {
             : null,
         };
       } catch (error) {
-        debugLog("charts.thumbnail_url.resolve_failed", {
+        debugLog("charts.thumbnail.resolve_failed", {
           chart_id: chart.id,
           package_id: chart.package_id,
           thumbnail_path: chart.thumbnail_path,

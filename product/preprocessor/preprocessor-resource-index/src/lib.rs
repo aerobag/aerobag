@@ -1166,8 +1166,8 @@ fn artifact_root(output_path: &Path) -> anyhow::Result<PathBuf> {
         .find_map(|path| {
             let name = path.file_name().and_then(|v| v.to_str())?;
             match name {
-                "published-packaged" | "product-builds" | "private-work" | "cache"
-                | "published-unpacked" => path.parent().map(Path::to_path_buf),
+                "published_packaged" | "product-builds" | "private-work" | "cache"
+                | "published_unpacked" => path.parent().map(Path::to_path_buf),
                 _ => None,
             }
         })

@@ -1802,12 +1802,29 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
         return ingest_tfrs_in_session(handle, &payload);
     }
     if let Some(rest) = resource_id.strip_prefix("weather/metar_tile/") {
+        let (z, x, y) = parse_metar_tile_resource_path(resource_id, rest)?;
+        if bytes.is_empty() {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, handle)?;
+            session.metar_tile_cache.insert(
+                crate::tile_key("metars", z, x, y),
+                MetarTilePayload {
+                    schema_version: 1,
+                    layer: "metars".to_string(),
+                    z,
+                    x,
+                    y,
+                    records: Vec::new(),
+                },
+            );
+            return Ok(());
+        }
         let payload: MetarTilePayload = serde_json::from_slice(bytes).map_err(|err| AppError {
             kind: AppErrorKind::InvalidManifest,
             message: format!("failed to parse METAR tile resource {resource_id}: {err}"),
         })?;
         let expected_key = crate::tile_key("metars", payload.z, payload.x, payload.y);
-        if rest != format!("{}/{}/{}", payload.z, payload.x, payload.y) {
+        if (z, x, y) != (payload.z, payload.x, payload.y) {
             return Err(AppError {
                 kind: AppErrorKind::InvalidManifest,
                 message: format!("METAR tile resource id {resource_id} does not match payload"),
@@ -1822,6 +1839,43 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
         kind: AppErrorKind::UnsupportedOperation,
         message: format!("unsupported session resource id: {resource_id}"),
     })
+}
+
+fn parse_metar_tile_resource_path(resource_id: &str, rest: &str) -> AppResult<(u32, u32, u32)> {
+    let mut parts = rest.split('/');
+    let Some(z) = parts.next() else {
+        return invalid_metar_tile_resource_id(resource_id);
+    };
+    let Some(x) = parts.next() else {
+        return invalid_metar_tile_resource_id(resource_id);
+    };
+    let Some(y) = parts.next() else {
+        return invalid_metar_tile_resource_id(resource_id);
+    };
+    if parts.next().is_some() {
+        return invalid_metar_tile_resource_id(resource_id);
+    }
+    let z = z
+        .parse::<u32>()
+        .map_err(|_| invalid_metar_tile_resource_id_error(resource_id))?;
+    let x = x
+        .parse::<u32>()
+        .map_err(|_| invalid_metar_tile_resource_id_error(resource_id))?;
+    let y = y
+        .parse::<u32>()
+        .map_err(|_| invalid_metar_tile_resource_id_error(resource_id))?;
+    Ok((z, x, y))
+}
+
+fn invalid_metar_tile_resource_id<T>(resource_id: &str) -> AppResult<T> {
+    Err(invalid_metar_tile_resource_id_error(resource_id))
+}
+
+fn invalid_metar_tile_resource_id_error(resource_id: &str) -> AppError {
+    AppError {
+        kind: AppErrorKind::InvalidManifest,
+        message: format!("invalid METAR tile resource id: {resource_id}"),
+    }
 }
 
 fn internal_json_error(err: serde_json::Error) -> AppError {
@@ -2220,7 +2274,7 @@ fn weather_overlay_resources(
                 &format!("weather/metar_tile/{}/{}/{}", tile.z, tile.x, tile.y),
                 "metars",
                 &apply_tile_path_template(template, tile.z, tile.x, tile.y),
-                false,
+                true,
             );
         }
     }
@@ -4040,6 +4094,81 @@ mod tests {
                 "label_tile_max_zoom": 0
             }
         }"#
+    }
+
+    #[test]
+    fn sparse_metar_tile_resources_are_optional_and_cache_as_empty() {
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            FlightPlan::default(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+        ingest_resource_in_session(
+            init.handle,
+            "publication/current_artifacts",
+            br#"{
+                "schema_version": 1,
+                "artifact_roots": {
+                    "packaged": "published_packaged",
+                    "unpacked": "published_unpacked"
+                },
+                "bundles": [
+                    {
+                        "id": "fast",
+                        "bundle_type": "fast",
+                        "filename": "bundle_fast.json",
+                        "relative_path": "bundles/bundle_fast.json"
+                    }
+                ]
+            }"#,
+        )
+        .expect("ingest current artifacts");
+        ingest_resource_in_session(
+            init.handle,
+            "publication/bundle/bundle_fast.json",
+            br#"{
+                "packages": [
+                    {
+                        "id": "metars",
+                        "family_id": "metars",
+                        "filename": "metars_hash.zip",
+                        "relative_path": "metars_hash.zip"
+                    }
+                ]
+            }"#,
+        )
+        .expect("ingest bundle");
+        let mut overlay = empty_map_overlay_query();
+        overlay.needed_metar_tiles.push(crate::VectorTileRequest {
+            layer: "metars".to_string(),
+            z: 6,
+            x: 8,
+            y: 22,
+        });
+
+        let requests = {
+            let sessions = lock_sessions();
+            let session = sessions.get(&init.handle).expect("session");
+            weather_overlay_resources(session, &overlay)
+        };
+        let metar_tile_request = requests
+            .iter()
+            .find(|request| request.id == "weather/metar_tile/6/8/22")
+            .expect("metar tile request");
+        assert!(metar_tile_request.optional);
+
+        ingest_resource_in_session(init.handle, "weather/metar_tile/6/8/22", &[])
+            .expect("ingest empty sparse tile");
+        let sessions = lock_sessions();
+        let session = sessions.get(&init.handle).expect("session");
+        let payload = session
+            .metar_tile_cache
+            .get(&crate::tile_key("metars", 6, 8, 22))
+            .expect("empty metar tile cached");
+        assert!(payload.records.is_empty());
     }
 
     fn complete_session_snapshot(outcome: HadOperationOutcome) -> UiSessionSnapshot {

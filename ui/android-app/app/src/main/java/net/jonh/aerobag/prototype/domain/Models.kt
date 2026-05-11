@@ -263,6 +263,7 @@ data class ResolvedLeg(
 enum class RouteSegmentStatus {
     Completed,
     Active,
+    ActiveLegRemaining,
     Remaining,
 }
 

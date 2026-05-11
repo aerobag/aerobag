@@ -48,7 +48,7 @@ fn exported_plain_snapshot_session_apis_are_allowlisted() {
         "set_raster_resource_mode_in_session",
         "select_raster_map_in_session",
         "set_map_layer_enabled_in_session",
-        "set_guidance_leg_geometry_in_session",
+        "project_flight_plan_route_in_session",
         "select_airport_in_session",
         "select_chart_in_session",
         "register_ownship_source_in_session",
@@ -108,7 +108,6 @@ fn paged_flight_plan_mutations_commit_only_after_snapshot_projection() {
     let source_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
     let source = strip_rust_tests(&source_text);
     let functions = [
-        "insert_waypoint_best_position_for_session",
         "insert_waypoint_at_flight_plan_row_in_session",
         "insert_airway_at_flight_plan_row_in_session",
         "select_procedure_at_flight_plan_row_in_session",
@@ -151,6 +150,7 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "load_plate_procedure_in_session",
         "perform_flight_plan_row_action_in_session",
         "sync_guidance_geometry_in_session",
+        "project_flight_plan_route_in_session",
     ];
     let mut violations = Vec::new();
     for export in paged_web_exports {
@@ -177,6 +177,8 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "selectProcedureAtFlightPlanRowInSessionJson",
         "loadPlateProcedureInSessionJson",
         "performFlightPlanRowActionInSessionJson",
+        "syncGuidanceGeometryInSessionJson",
+        "projectFlightPlanRouteInSessionJson",
     ];
     for export in paged_android_exports {
         let needle = format!("bridge.{export}");

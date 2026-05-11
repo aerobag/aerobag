@@ -638,17 +638,13 @@ pub fn sync_map_follow_in_session(
 }
 
 #[wasm_bindgen]
-pub fn set_guidance_leg_geometry_in_session(
-    handle: u32,
-    geometries_json: &str,
-) -> Result<String, JsValue> {
-    set_guidance_leg_geometry_in_session_json(handle, geometries_json)
-        .map_err(|err| JsValue::from_str(&err))
+pub fn sync_guidance_geometry_in_session(handle: u32) -> Result<String, JsValue> {
+    sync_guidance_geometry_in_session_json(handle).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
-pub fn sync_guidance_geometry_in_session(handle: u32) -> Result<String, JsValue> {
-    sync_guidance_geometry_in_session_json(handle).map_err(|err| JsValue::from_str(&err))
+pub fn project_flight_plan_route_in_session(handle: u32) -> Result<String, JsValue> {
+    project_flight_plan_route_in_session_json(handle).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -1214,20 +1210,15 @@ fn sync_map_follow_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn set_guidance_leg_geometry_in_session_json(
-    handle: u32,
-    geometries_json: &str,
-) -> Result<String, String> {
-    let geometries: Vec<app_core::GuidanceLegGeometry> =
-        serde_json::from_str(geometries_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::set_guidance_leg_geometry_in_session(handle, geometries)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
-}
-
 fn sync_guidance_geometry_in_session_json(handle: u32) -> Result<String, String> {
     let outcome =
         app_core::sync_guidance_geometry_in_session(handle).map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
+fn project_flight_plan_route_in_session_json(handle: u32) -> Result<String, String> {
+    let outcome =
+        app_core::project_flight_plan_route_in_session(handle).map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 

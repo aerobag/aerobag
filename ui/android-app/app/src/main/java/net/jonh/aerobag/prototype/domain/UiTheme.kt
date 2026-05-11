@@ -8,6 +8,7 @@ import kotlinx.serialization.json.Json
 data class UiTheme(
     val controls: ControlsTheme,
     val aviation: AviationTheme,
+    val flightPlanRoute: FlightPlanRouteTheme,
     val plateFolder: PlateFolderTheme,
 )
 
@@ -38,10 +39,18 @@ data class AviationTheme(
     val darkGray: Color,
 )
 
+data class FlightPlanRouteTheme(
+    val completed: Color,
+    val active: Color,
+    val activeLegRemaining: Color,
+    val remaining: Color,
+)
+
 @Serializable
 private data class WireUiTheme(
     val controls: WireControlsTheme,
     val aviation: WireAviationTheme,
+    val flight_plan_route: WireFlightPlanRouteTheme,
     val plate_folder: WirePlateFolderTheme,
 )
 
@@ -75,6 +84,14 @@ private data class WireAviationTheme(
     val dark_gray: String,
 )
 
+@Serializable
+private data class WireFlightPlanRouteTheme(
+    val completed: String,
+    val active: String,
+    val active_leg_remaining: String,
+    val remaining: String,
+)
+
 object UiThemeLoader {
     private const val ASSET_PATH = "fixtures/ui-theme.json"
 
@@ -105,6 +122,12 @@ object UiThemeLoader {
                 tfrRed = wire.aviation.tfr_red.toColor(),
                 intersectionCyan = wire.aviation.intersection_cyan.toColor(),
                 darkGray = wire.aviation.dark_gray.toColor(),
+            ),
+            flightPlanRoute = FlightPlanRouteTheme(
+                completed = wire.flight_plan_route.completed.toColor(),
+                active = wire.flight_plan_route.active.toColor(),
+                activeLegRemaining = wire.flight_plan_route.active_leg_remaining.toColor(),
+                remaining = wire.flight_plan_route.remaining.toColor(),
             ),
             plateFolder = PlateFolderTheme(
                 thumbnailBg = wire.plate_folder.thumbnail_bg.toColor(),

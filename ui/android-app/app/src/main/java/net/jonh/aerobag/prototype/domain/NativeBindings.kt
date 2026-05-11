@@ -261,10 +261,9 @@ interface NativeBridge {
 
     fun sequenceActiveLegInSessionJson(handle: Long): String
 
-    fun setGuidanceLegGeometryInSessionJson(
-        handle: Long,
-        geometriesJson: String,
-    ): String
+    fun syncGuidanceGeometryInSessionJson(handle: Long): String
+
+    fun projectFlightPlanRouteInSessionJson(handle: Long): String
 
     fun restoreChartPageStateInSessionJson(
         handle: Long,
@@ -643,10 +642,9 @@ object NativeBindings : NativeBridge {
 
     external override fun sequenceActiveLegInSessionJson(handle: Long): String
 
-    external override fun setGuidanceLegGeometryInSessionJson(
-        handle: Long,
-        geometriesJson: String,
-    ): String
+    external override fun syncGuidanceGeometryInSessionJson(handle: Long): String
+
+    external override fun projectFlightPlanRouteInSessionJson(handle: Long): String
 
     external override fun restoreChartPageStateInSessionJson(
         handle: Long,

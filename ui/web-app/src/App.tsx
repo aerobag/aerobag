@@ -364,6 +364,12 @@ type UiThemeJson = {
     intersection_cyan: string;
     dark_gray: string;
   };
+  flight_plan_route: {
+    completed: string;
+    active: string;
+    active_leg_remaining: string;
+    remaining: string;
+  };
   plate_folder: {
     thumbnail_bg: string;
     label_colors: Record<string, string>;
@@ -2975,11 +2981,16 @@ function MapPage(props: {
   }, [ownship.draw_cdi, ownship.mode, ownship.position, plan, planUiState]);
 
   useEffect(() => {
+    if (!uiSession) {
+      setFlightPlanRoute([]);
+      return;
+    }
+    const session = uiSession;
     let cancelled = false;
 
     async function resolveFlightPlanRoute() {
       const startedAt = performance.now();
-      const segments = await appCoreAdapter.projectFlightPlanRoute(plan, planUiState);
+      const segments = await session.projectFlightPlanRoute();
       const elapsedMs = Math.round(performance.now() - startedAt);
       debugLog("map.route.segments", {
         count: segments.length,
@@ -3012,7 +3023,7 @@ function MapPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [appCoreAdapter, onHighLatencyWarning, plan, planUiState]);
+  }, [onHighLatencyWarning, plan.id, plan.version, plan.guidance, plan.resolved_legs, uiSession]);
 
   useEffect(() => {
     if (!mapIsVisible) {
@@ -7896,15 +7907,15 @@ function navRefLabel(value: NavRef) {
 
 function routeSegmentColor(status: FlightPlanRouteSegment["status"]) {
   if (status === "completed") {
-    return "#8c9dad";
+    return loadedUiTheme.flight_plan_route.completed;
   }
   if (status === "active") {
-    return "#ff4fcf";
+    return loadedUiTheme.flight_plan_route.active;
   }
   if (status === "active_leg_remaining") {
-    return "#ff9fe6";
+    return loadedUiTheme.flight_plan_route.active_leg_remaining;
   }
-  return "#ffffff";
+  return loadedUiTheme.flight_plan_route.remaining;
 }
 
 function distanceBetween(first: ScreenPoint, second: ScreenPoint) {

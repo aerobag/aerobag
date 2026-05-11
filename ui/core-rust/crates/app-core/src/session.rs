@@ -499,7 +499,8 @@ pub fn set_map_layer_enabled_in_session(
     snapshot_for_session(session)
 }
 
-pub fn set_guidance_leg_geometry_in_session(
+#[allow(dead_code)]
+pub(crate) fn set_guidance_leg_geometry_in_session(
     handle: u32,
     geometries: Vec<GuidanceLegGeometry>,
 ) -> AppResult<UiSessionSnapshot> {
@@ -559,6 +560,36 @@ pub fn sync_guidance_geometry_in_session(handle: u32) -> AppResult<HadOperationO
         sync_plan_preview_to_active_leg(session)?;
     }
     session_snapshot_outcome(session)
+}
+
+pub fn project_flight_plan_route_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+    let sessions = lock_sessions();
+    let session = session_ref(&sessions, handle)?;
+    let Some(plan) = session.app_state.active_plan.clone() else {
+        return Ok(HadOperationOutcome::Complete {
+            result: serde_json::to_value(Vec::<crate::FlightPlanRouteSegment>::new()).map_err(
+                |err| AppError {
+                    kind: AppErrorKind::Internal,
+                    message: err.to_string(),
+                },
+            )?,
+        });
+    };
+    match crate::had_ops::project_flight_plan_route(session_nav_kv_store(session)?, &plan) {
+        Ok(route) => Ok(HadOperationOutcome::Complete {
+            result: serde_json::to_value(route).map_err(|err| AppError {
+                kind: AppErrorKind::Internal,
+                message: err.to_string(),
+            })?,
+        }),
+        Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
+            resources: nav_kv_page_resources(pages),
+        }),
+        Err(HadReadError::Fatal(message)) => Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message,
+        }),
+    }
 }
 
 pub fn select_airport_in_session(handle: u32, airport_id: &str) -> AppResult<UiSessionSnapshot> {
@@ -1836,7 +1867,7 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
         return Ok(());
     }
     if let Some(rest) = resource_id.strip_prefix("terrain/source/") {
-        let mut sessions = sessions().lock().expect("session store poisoned");
+        let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, handle)?;
         session
             .terrain_source_tile_cache
@@ -2494,7 +2525,7 @@ pub fn render_terrain_overlay_tile_by_key_in_session(
     tile_key: &str,
     aircraft_altitude_ft: Option<f64>,
 ) -> AppResult<Vec<u8>> {
-    let sessions = sessions().lock().expect("session store poisoned");
+    let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
     let altitude_ft = aircraft_altitude_ft
         .filter(|altitude| altitude.is_finite())

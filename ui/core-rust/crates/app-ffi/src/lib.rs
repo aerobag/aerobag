@@ -377,15 +377,16 @@ pub fn sequence_active_leg_in_session_json(handle: u64) -> Result<String, String
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-pub fn set_guidance_leg_geometry_in_session_json(
-    handle: u64,
-    geometries_json: &str,
-) -> Result<String, String> {
-    let geometries: Vec<app_core::GuidanceLegGeometry> =
-        serde_json::from_str(geometries_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::set_guidance_leg_geometry_in_session(handle as u32, geometries)
+pub fn sync_guidance_geometry_in_session_json(handle: u64) -> Result<String, String> {
+    let outcome = app_core::sync_guidance_geometry_in_session(handle as u32)
         .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
+pub fn project_flight_plan_route_in_session_json(handle: u64) -> Result<String, String> {
+    let outcome = app_core::project_flight_plan_route_in_session(handle as u32)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
 pub fn perform_map_selection_action_in_session_json(
@@ -1813,16 +1814,22 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_seq
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setGuidanceLegGeometryInSessionJson(
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_syncGuidanceGeometryInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
-    geometries_json: JString,
 ) -> jstring {
-    let result = (|| {
-        let geometries_json = get_java_string(&mut env, geometries_json)?;
-        set_guidance_leg_geometry_in_session_json(handle as u64, &geometries_json)
-    })();
+    let result = (|| sync_guidance_geometry_in_session_json(handle as u64))();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_projectFlightPlanRouteInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    let result = (|| project_flight_plan_route_in_session_json(handle as u64))();
     return_string(&mut env, result)
 }
 

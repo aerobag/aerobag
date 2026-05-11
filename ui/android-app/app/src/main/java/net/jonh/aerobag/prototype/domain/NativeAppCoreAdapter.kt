@@ -347,7 +347,7 @@ class NativeAppCoreAdapter(
         navKvStore?.attachToSession(result.handle)
         session.loadRasterMapCatalog()
         return session.apply {
-            syncGuidanceGeometryFromPlan()
+            syncGuidanceGeometry()
         }
     }
 
@@ -471,16 +471,6 @@ class NativeAppCoreAdapter(
             },
         )
         return json.decodeFromJsonElement<List<WireWaypointIdentifierSuggestion>>(result).map { it.toUi() }
-    }
-
-    fun projectFlightPlanRoute(plan: FlightPlan): List<FlightPlanRouteSegment> {
-        val result = runHadOperationElement(
-            buildJsonObject {
-                put("kind", "project_flight_plan_route")
-                put("plan", json.encodeToJsonElement(plan.toWire()))
-            },
-        )
-        return json.decodeFromJsonElement<List<WireFlightPlanRouteSegment>>(result).map { it.toUi() }
     }
 
     fun previewFlightPlanEntry(plan: FlightPlan, input: String): FlightPlanEntryPreview {
@@ -740,35 +730,23 @@ class NativeUiSession internal constructor(
     var snapshot: UiSessionSnapshot = initialSnapshot
         private set
 
-    fun syncGuidanceGeometryFromPlan(): UiSessionSnapshot {
-        val plan = snapshot.appState.activePlan ?: return syncGuidanceGeometry(emptyList())
-        if (plan.resolvedLegs.isEmpty()) {
-            return syncGuidanceGeometry(emptyList())
-        }
+    fun syncGuidanceGeometry(): UiSessionSnapshot {
         val store = navKvStore ?: return snapshot
-        return runCatching {
-            val segments =
-                store.runCoreOperation(
-                    buildJsonObject {
-                        put("kind", "project_flight_plan_route")
-                        put("plan", json.encodeToJsonElement(plan.toWire()))
-                    },
-                    ListSerializer(WireFlightPlanRouteSegment.serializer()),
-                ).map { it.toUi() }
-            syncGuidanceGeometry(
-                segments.map { segment ->
-                    SessionGuidanceGeometry(
-                        legId = segment.id,
-                        from = segment.from,
-                        to = segment.to,
-                        path = segment.path,
-                    )
-                },
-            )
-        }.getOrElse { error ->
-            Log.e("AerobagGuidance", "failed to sync session guidance geometry", error)
-            snapshot
-        }
+        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(
+            store.runPagedSessionOperationElement {
+                bridge.syncGuidanceGeometryInSessionJson(handle)
+            },
+        ).toUi()
+        return snapshot
+    }
+
+    fun projectFlightPlanRoute(): List<FlightPlanRouteSegment> {
+        val store = navKvStore ?: return emptyList()
+        return json.decodeFromJsonElement<List<WireFlightPlanRouteSegment>>(
+            store.runPagedSessionOperationElement {
+                bridge.projectFlightPlanRouteInSessionJson(handle)
+            },
+        ).map { it.toUi() }
     }
 
     fun performMapSelectionAction(action: String): UiSessionSnapshot {
@@ -778,7 +756,7 @@ class NativeUiSession internal constructor(
                 bridge.performMapSelectionActionInSessionJson(handle, action)
             }
         snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi()
-        return syncGuidanceGeometryFromPlan()
+        return syncGuidanceGeometry()
     }
 
     fun describePlateProcedureLoads(plan: FlightPlan, plateId: String): List<ProcedureLoadOption> {
@@ -800,7 +778,7 @@ class NativeUiSession internal constructor(
                 bridge.loadPlateProcedureInSessionJson(handle, loadId)
             }
         snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi()
-        return syncGuidanceGeometryFromPlan()
+        return syncGuidanceGeometry()
     }
 
     fun insertWaypointAtFlightPlanRow(rowUid: String, before: Boolean, waypoint: NavRef): UiSessionSnapshot {
@@ -815,7 +793,7 @@ class NativeUiSession internal constructor(
                 )
             },
         ).toUi()
-        return syncGuidanceGeometryFromPlan()
+        return syncGuidanceGeometry()
     }
 
     fun suggestWaypointIdentifiersAtFlightPlanRow(
@@ -856,7 +834,7 @@ class NativeUiSession internal constructor(
                 )
             }
         snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi()
-        return syncGuidanceGeometryFromPlan()
+        return syncGuidanceGeometry()
     }
 
     fun selectProcedureAtFlightPlanRow(
@@ -881,7 +859,7 @@ class NativeUiSession internal constructor(
                 )
             }
         snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi()
-        return syncGuidanceGeometryFromPlan()
+        return syncGuidanceGeometry()
     }
 
     fun registerOwnshipSource(registration: OwnshipSourceRegistration): UiSessionSnapshot {
@@ -1035,12 +1013,12 @@ class NativeUiSession internal constructor(
 
     fun refreshSnapshot(): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.getSessionSnapshotJson(handle))
-        return syncGuidanceGeometryFromPlan()
+        return syncGuidanceGeometry()
     }
 
     fun replaceFlightPlan(plan: FlightPlan): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.replaceFlightPlanInSessionJson(handle, json.encodeToString(plan.toWire())))
-        return syncGuidanceGeometryFromPlan()
+        return syncGuidanceGeometry()
     }
 
     fun performFlightPlanRowAction(rowUid: String, actionUid: String): UiSessionSnapshot {
@@ -1050,38 +1028,27 @@ class NativeUiSession internal constructor(
                 bridge.performFlightPlanRowActionInSessionJson(handle, rowUid, actionUid)
             },
         ).toUi()
-        return syncGuidanceGeometryFromPlan()
+        return syncGuidanceGeometry()
     }
 
     fun activateNextLeg(): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.activateNextLegInSessionJson(handle))
-        return syncGuidanceGeometryFromPlan()
+        return syncGuidanceGeometry()
     }
 
     fun suspendSequencing(): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.suspendSequencingInSessionJson(handle))
-        return syncGuidanceGeometryFromPlan()
+        return syncGuidanceGeometry()
     }
 
     fun unsuspendSequencing(): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.unsuspendSequencingInSessionJson(handle))
-        return syncGuidanceGeometryFromPlan()
+        return syncGuidanceGeometry()
     }
 
     fun sequenceActiveLeg(): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.sequenceActiveLegInSessionJson(handle))
-        return syncGuidanceGeometryFromPlan()
-    }
-
-    private fun syncGuidanceGeometry(geometries: List<SessionGuidanceGeometry>): UiSessionSnapshot {
-        snapshot =
-            decodeSnapshot(
-                bridge.setGuidanceLegGeometryInSessionJson(
-                    handle,
-                    json.encodeToString(geometries.map { it.toWire() }),
-                ),
-            )
-        return snapshot
+        return syncGuidanceGeometry()
     }
 
     fun restoreChartPageState(
@@ -2382,29 +2349,6 @@ private fun LatLonPoint.toWire() = WireLatLon(lat = lat, lon = lon)
 
 private fun WireLatLon.toUi() = LatLonPoint(lat = lat, lon = lon)
 
-private data class SessionGuidanceGeometry(
-    val legId: String,
-    val from: LatLonPoint,
-    val to: LatLonPoint,
-    val path: List<LatLonPoint>,
-)
-
-private fun SessionGuidanceGeometry.toWire() = SessionWireGuidanceLegGeometry(
-    legId = legId,
-    from = from.toWire(),
-    to = to.toWire(),
-    path = path.map { it.toWire() },
-)
-
-@kotlinx.serialization.Serializable
-private data class SessionWireGuidanceLegGeometry(
-    @kotlinx.serialization.SerialName("leg_id")
-    val legId: String,
-    val from: WireLatLon,
-    val to: WireLatLon,
-    val path: List<WireLatLon> = emptyList(),
-)
-
 private fun ProcedureKind.toWire() = when (this) {
     ProcedureKind.Sid -> WireProcedureKind.Sid
     ProcedureKind.Star -> WireProcedureKind.Star
@@ -2761,6 +2705,7 @@ private fun WireFlightPlanRouteSegment.toUi() = FlightPlanRouteSegment(
 private fun WireRouteSegmentStatus.toUi() = when (this) {
     WireRouteSegmentStatus.Completed -> RouteSegmentStatus.Completed
     WireRouteSegmentStatus.Active -> RouteSegmentStatus.Active
+    WireRouteSegmentStatus.ActiveLegRemaining -> RouteSegmentStatus.ActiveLegRemaining
     WireRouteSegmentStatus.Remaining -> RouteSegmentStatus.Remaining
 }
 

@@ -20,6 +20,12 @@
     "intersection_cyan": "#39d9ff",
     "dark_gray": "#202a31"
   },
+  "flight_plan_route": {
+    "completed": "#8c9dad",
+    "active": "#ff4fcf",
+    "active_leg_remaining": "#ff9fe6",
+    "remaining": "#ffffff"
+  },
   "plate_folder": {
     "thumbnail_bg": "#303030",
     "label_colors": {

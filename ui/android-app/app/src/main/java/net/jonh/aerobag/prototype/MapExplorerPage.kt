@@ -1083,13 +1083,13 @@ internal fun MapExplorerPage(
         layerTrayOpen = false
         mapSelection = null
     }
-    LaunchedEffect(appCore, uiSession, plan.id, plan.version, plan.guidance, plan.resolvedLegs) {
+    LaunchedEffect(uiSession, plan.id, plan.version, plan.guidance, plan.resolvedLegs) {
         if (plan.resolvedLegs.isEmpty()) {
             flightPlanRoute = emptyList()
             return@LaunchedEffect
         }
         runCatching {
-            appCore.projectFlightPlanRoute(plan)
+            uiSession.projectFlightPlanRoute()
         }.onSuccess {
             flightPlanRoute = it
         }.onFailure {
@@ -1607,7 +1607,7 @@ internal fun MapExplorerPage(
         )
         ObservationOverlayLayer(displayedMapOverlay, density.density, uiTheme)
         OfflineRegionsOverlayLayer(displayedMapOverlay, density.density, uiTheme)
-        RouteOverlayLayer(routeScreenSegments, density.density)
+        RouteOverlayLayer(routeScreenSegments, density.density, uiTheme)
         MapFeatureOverlayLayer(
             displayedMapOverlay = displayedMapOverlay,
             uiTheme = uiTheme,
@@ -2255,6 +2255,7 @@ private fun OfflineRegionsOverlayLayer(
 private fun RouteOverlayLayer(
     routeScreenSegments: List<Pair<List<Offset>, FlightPlanRouteSegment>>,
     densityScale: Float,
+    uiTheme: UiTheme,
 ) {
     if (routeScreenSegments.isEmpty()) return
     Canvas(modifier = Modifier.fillMaxSize()) {
@@ -2268,7 +2269,7 @@ private fun RouteOverlayLayer(
                     cap = StrokeCap.Round,
                 )
                 drawLine(
-                    color = routeSegmentColor(segment.status),
+                    color = routeSegmentColor(uiTheme, segment.status),
                     start = from,
                     end = to,
                     strokeWidth = 3.5f * densityScale,

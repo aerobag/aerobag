@@ -1300,11 +1300,12 @@ internal fun resolveChartId(
     return airport?.charts?.firstOrNull()?.id.orEmpty()
 }
 
-internal fun routeSegmentColor(status: RouteSegmentStatus): Color =
+internal fun routeSegmentColor(uiTheme: UiTheme, status: RouteSegmentStatus): Color =
     when (status) {
-        RouteSegmentStatus.Completed -> Color(0xFF8C9DAD)
-        RouteSegmentStatus.Active -> Color(0xFFFF4FCF)
-        RouteSegmentStatus.Remaining -> Color.White
+        RouteSegmentStatus.Completed -> uiTheme.flightPlanRoute.completed
+        RouteSegmentStatus.Active -> uiTheme.flightPlanRoute.active
+        RouteSegmentStatus.ActiveLegRemaining -> uiTheme.flightPlanRoute.activeLegRemaining
+        RouteSegmentStatus.Remaining -> uiTheme.flightPlanRoute.remaining
     }
 
 internal fun latLonToScreenPoint(

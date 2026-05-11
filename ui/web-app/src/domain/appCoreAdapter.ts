@@ -10,7 +10,6 @@ import type {
   FlightPlanEntryPreview,
   FlightPlanRouteSegment,
   FlightPlanUiMutation,
-  FlightPlanUiState,
   ChartFamilyId,
   LatLon,
   MapFollowUiState,
@@ -476,6 +475,7 @@ export interface UiSession {
   queryTerrainOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<TerrainOverlayQueryResult>;
   queryRasterTilePlan(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<RasterTilePlan>;
   renderTerrainOverlayTileByKey(tileKey: string, aircraftAltitudeFt: number): Promise<Uint8Array>;
+  projectFlightPlanRoute(): Promise<FlightPlanRouteSegment[]>;
   restoreChartPageState(recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<UiSessionSnapshot>;
   destroy(): Promise<void>;
 }
@@ -496,7 +496,6 @@ export interface AppCoreAdapter {
     selectedAirportId?: string,
     selectedChartId?: string,
   ): Promise<DerivedChartPageState>;
-  projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]>;
   previewFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanEntryPreview>;
   appendFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanUiMutation>;
   resolveWaypointIdentifier(identifier: string): Promise<NavRef | null>;
@@ -659,6 +658,7 @@ type WasmModule = {
   set_debug_flag_in_session(handle: number, flagIdJson: string, enabled: boolean): Promise<string> | string;
   load_raster_map_catalog_in_session(handle: number): Promise<string> | string;
   sync_guidance_geometry_in_session(handle: number): Promise<string> | string;
+  project_flight_plan_route_in_session(handle: number): Promise<string> | string;
   select_map_family_in_session(handle: number, familyIdJson: string): Promise<string> | string;
   select_raster_map_in_session(handle: number, selectedMapIdJson: string): Promise<string> | string;
   replace_flight_plan_in_session(handle: number, planJson: string): Promise<string> | string;
@@ -1205,6 +1205,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         withSessionRetry(async () =>
           new Uint8Array(await this.module.render_terrain_overlay_tile_by_key_in_session(handle, tileKey, aircraftAltitudeFt)),
         ),
+      projectFlightPlanRoute: async () =>
+        withSessionRetry(async () =>
+          runCoreHadSessionOperation<FlightPlanRouteSegment[]>(() =>
+            this.module.project_flight_plan_route_in_session(handle),
+          ),
+        ),
       restoreChartPageState: async (nextRecentAirportIds, nextSelectedAirportId, nextSelectedChartId) => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(
@@ -1237,11 +1243,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       selected_airport_id: selectedAirportId ?? null,
       selected_chart_id: selectedChartId ?? null,
     });
-  }
-
-  async projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]> {
-    void planUiState;
-    return runCoreHadOperation<FlightPlanRouteSegment[]>({ kind: "project_flight_plan_route", plan });
   }
 
   async previewFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanEntryPreview> {
@@ -1386,6 +1387,7 @@ async function loadBestAvailableAdapterUncached(
     "set_debug_flag_in_session",
     "load_raster_map_catalog_in_session",
     "sync_guidance_geometry_in_session",
+    "project_flight_plan_route_in_session",
     "select_map_family_in_session",
     "select_raster_map_in_session",
     "replace_flight_plan_in_session",

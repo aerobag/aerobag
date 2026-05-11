@@ -1153,6 +1153,9 @@ enum class WireRouteSegmentStatus {
     @SerialName("active")
     Active,
 
+    @SerialName("active_leg_remaining")
+    ActiveLegRemaining,
+
     @SerialName("remaining")
     Remaining,
 }

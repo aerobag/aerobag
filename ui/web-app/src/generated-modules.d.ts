@@ -19,7 +19,8 @@ declare module "@generated/app_wasm.js" {
   export const perform_map_selection_action_in_session: (...args: unknown[]) => string;
   export const empty_flight_plan_json: (...args: unknown[]) => string;
   export const create_ui_session: (...args: unknown[]) => string;
-  export const set_guidance_leg_geometry_in_session: (...args: unknown[]) => string;
+  export const sync_guidance_geometry_in_session: (...args: unknown[]) => string;
+  export const project_flight_plan_route_in_session: (...args: unknown[]) => string;
   export const set_situation_in_session: (...args: unknown[]) => string;
   export const engage_map_follow_in_session: (...args: unknown[]) => string;
   export const disengage_map_follow_in_session: (...args: unknown[]) => string;

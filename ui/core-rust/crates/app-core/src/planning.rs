@@ -225,9 +225,9 @@ pub struct LegDisplayPath {
     pub elements: Vec<LegDisplayElement>,
     #[serde(default)]
     pub effective_terminal_course_deg: Option<f64>,
-    #[serde(default)]
+    #[serde(skip)]
     pub debug_element_sources: Vec<String>,
-    #[serde(default)]
+    #[serde(skip)]
     pub debug_element_roles: Vec<String>,
 }
 
@@ -7293,5 +7293,21 @@ mod tests {
         let guidance = sequenced.guidance.as_ref().unwrap();
         assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
         assert_eq!(guidance.active_leg_index, 3);
+    }
+
+    #[test]
+    fn leg_display_path_omits_debug_provenance_from_runtime_payload() {
+        let path = LegDisplayPath {
+            style: LegDisplayPathStyle::Solid,
+            elements: Vec::new(),
+            effective_terminal_course_deg: None,
+            debug_element_sources: vec!["internal-source".to_string()],
+            debug_element_roles: vec!["internal-role".to_string()],
+        };
+
+        let value = serde_json::to_value(&path).unwrap();
+
+        assert!(value.get("debug_element_sources").is_none());
+        assert!(value.get("debug_element_roles").is_none());
     }
 }

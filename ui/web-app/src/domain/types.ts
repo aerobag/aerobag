@@ -273,8 +273,6 @@ export type LegDisplayPath = {
   style?: "solid" | "dashed";
   elements: LegDisplayElement[];
   effective_terminal_course_deg?: number | null;
-  debug_element_sources?: string[];
-  debug_element_roles?: string[];
 };
 
 export type LegDisplayElement =

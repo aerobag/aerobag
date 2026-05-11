@@ -1681,7 +1681,7 @@ export default function App() {
       return;
     }
     debugTiming("startup.session.create", async () => {
-      markStartupProgress("session.seed_plan", "Building initial flight plan");
+      markStartupProgress("session.empty_plan", "Creating empty flight plan");
       const initialPlan = await appCoreAdapter.emptyFlightPlan();
       markStartupProgress("session.create", "Creating core UI session");
       const created = await debugTiming("startup.session.create.core", () => appCoreAdapter.createUiSession(

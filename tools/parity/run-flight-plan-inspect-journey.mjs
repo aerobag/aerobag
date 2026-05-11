@@ -15,6 +15,9 @@ const LAYER_OPTION_IDS = ["vectors", "metars", "nexrad", "terrain_warning", "wor
 const ANDROID_OFFLINE_REGION_IDS = ["ak", "ec", "nc", "ne", "nw", "pac", "sc", "se", "sw"];
 const PLAN_CONTROL_IDS = ["next-leg", "sequence", "suspend", "unsuspend"];
 const CORE_ROW_ACTION_IDS = ["activate_leg", "direct_to", "insert_before", "insert_after", "move_up", "move_down"];
+const JOURNEY_ROUTE = "KRNT SEA KPAE";
+const JOURNEY_ROUTE_TOKENS = JOURNEY_ROUTE.split(" ");
+const JOURNEY_ROUTE_DEST = "KPAE";
 const PLATE_CONTROL_IDS = ["airport-button", "chart-button", "load-button", "folder-button"];
 const PLATE_CONTROL_WEB_PREFIX = "plate-";
 const PLATE_CONTROL_ANDROID_PREFIX = "parity:plate-";
@@ -359,6 +362,9 @@ async function webJourney(url) {
     recordStep(out, "chart CDI returned to plan");
     recordCheck(out, "chartCdiReturnsToPlan", true);
     recordCheck(out, "appendRoutePresent", true);
+    await webAssertStartupPlanEmpty(cdp, out);
+
+    await webAppendJourneyRoute(cdp, out);
     await webCheckPlanActionClasses(cdp, out);
 
     await webSetInput(cdp, "[data-testid=\"plan-append-route-input\"]", "KRNT V2 ZZZZZ ");
@@ -369,18 +375,6 @@ async function webJourney(url) {
     );
     recordStep(out, "append route feedback visible");
     recordCheck(out, "appendRouteFeedbackVisible", true);
-
-    await webSetInput(cdp, "[data-testid=\"plan-append-route-input\"]", "KAWO");
-    await waitForWeb(cdp, "document.querySelector('.planEntryInputShell.isReady') !== null", "append route ready");
-    await waitForWeb(cdp, "document.querySelector('[data-testid=\"plan-append-route-input\"]')?.closest('form') !== null", "plan append form");
-    await cdp.send("Runtime.evaluate", {
-      expression: "document.querySelector('[data-testid=\"plan-append-route-input\"]').closest('form').requestSubmit()",
-      awaitPromise: true,
-    });
-    await waitForWeb(cdp, "document.body.innerText.includes('KAWO')", "appended KAWO");
-    await delay(1000);
-    recordStep(out, "appended KAWO to flight plan");
-    recordCheck(out, "appendRouteCommitsKAWO", true);
 
     await webClick(cdp, "[data-testid=\"nav-cdi\"]");
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-surface\"]') !== null", "returned chart");
@@ -782,13 +776,13 @@ async function webReturnToChart(cdp) {
 
 async function webExercisePlateProcedureLoad(cdp, out) {
   try {
-    await webSelectTrayOptionById(cdp, "[data-testid=\"plate-airport-button\"]", "KPAE", "KPAE plate airport option");
-    await waitForWeb(cdp, "document.querySelector('[data-testid=\"plate-airport-button\"]')?.innerText.includes('KPAE')", "KPAE selected on plate page");
+    await webSelectTrayOptionById(cdp, "[data-testid=\"plate-airport-button\"]", JOURNEY_ROUTE_DEST, `${JOURNEY_ROUTE_DEST} plate airport option`);
+    await waitForWeb(cdp, `document.querySelector('[data-testid="plate-airport-button"]')?.innerText.includes('${JOURNEY_ROUTE_DEST}')`, `${JOURNEY_ROUTE_DEST} selected on plate page`);
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"plate-load-button\"]:not(:disabled)') !== null", "enabled plate load procedure button");
     const selectedChartLabel = await webEval(cdp, `
       (document.querySelector('[data-testid="plate-chart-button"]')?.innerText ?? "").replace(/\\s+/g, " ").trim()
     `);
-    recordStep(out, "plate LOAD APPCH enabled for KPAE approach", "ok", selectedChartLabel);
+    recordStep(out, `plate LOAD APPCH enabled for ${JOURNEY_ROUTE_DEST} approach`, "ok", selectedChartLabel);
     const loadOption = await webSelectTrayOptionByLabel(cdp, "[data-testid=\"plate-load-button\"]", "", "plate procedure load option");
     recordStep(out, "selected plate procedure load option", "ok", loadOption.label || loadOption.id);
     await delay(800);
@@ -805,6 +799,31 @@ async function webExercisePlateProcedureLoad(cdp, out) {
   } finally {
     await webReturnToChart(cdp).catch(() => {});
   }
+}
+
+async function webAssertStartupPlanEmpty(cdp, out) {
+  const rowCount = await webEval(cdp, `document.querySelectorAll('[data-testid^="plan-row-"]').length`);
+  if (rowCount === 0) {
+    recordStep(out, "startup flight plan empty");
+    recordCheck(out, "startupFlightPlanEmpty", true);
+  } else {
+    recordGap(out, "startup flight plan empty", `found ${rowCount} plan row(s) before the journey built a route`);
+    recordCheck(out, "startupFlightPlanEmpty", false);
+  }
+}
+
+async function webAppendJourneyRoute(cdp, out) {
+  await webSetInput(cdp, "[data-testid=\"plan-append-route-input\"]", JOURNEY_ROUTE);
+  await waitForWeb(cdp, "document.querySelector('.planEntryInputShell.isReady') !== null", "append route ready");
+  await waitForWeb(cdp, "document.querySelector('[data-testid=\"plan-append-route-input\"]')?.closest('form') !== null", "plan append form");
+  await cdp.send("Runtime.evaluate", {
+    expression: "document.querySelector('[data-testid=\"plan-append-route-input\"]').closest('form').requestSubmit()",
+    awaitPromise: true,
+  });
+  await waitForWeb(cdp, `document.body.innerText.includes('${JOURNEY_ROUTE_DEST}')`, `appended ${JOURNEY_ROUTE}`);
+  await delay(1000);
+  recordStep(out, `appended ${JOURNEY_ROUTE} to flight plan`);
+  recordCheck(out, "appendRouteCommitsJourneyRoute", true);
 }
 
 async function webRecordTrayInventory(cdp, out, name, launcherSelector, optionPrefix = "tray-option-") {
@@ -1196,11 +1215,12 @@ function androidAssertNodeAboveIme(serial, out, label, node, minimumClearancePx 
   recordStep(out, label, "ok", `${clearancePx}px`);
 }
 
+function androidInputText(serial, text) {
+  adb(serial, ["shell", "input", "text", text.replaceAll(" ", "%s")]);
+}
+
 function androidTypeRouteTokens(serial, tokens) {
-  for (const token of tokens) {
-    adb(serial, ["shell", "input", "text", token]);
-    adb(serial, ["shell", "input", "keyevent", "KEYCODE_SPACE"]);
-  }
+  androidInputText(serial, tokens.join(" "));
 }
 
 function androidDeleteChars(serial, count) {
@@ -1208,6 +1228,65 @@ function androidDeleteChars(serial, count) {
   for (let i = 0; i < count; i += 1) {
     adb(serial, ["shell", "input", "keyevent", "KEYCODE_DEL"]);
   }
+}
+
+function androidAssertStartupPlanEmpty(serial, out) {
+  const rowCount = findNodes(dumpAndroid(serial), (node) => androidTag(node).startsWith("parity:plan-row:")).length;
+  if (rowCount === 0) {
+    recordStep(out, "startup flight plan empty");
+    recordCheck(out, "startupFlightPlanEmpty", true);
+  } else {
+    recordGap(out, "startup flight plan empty", `found ${rowCount} plan row(s) before the journey built a route`);
+    recordCheck(out, "startupFlightPlanEmpty", false);
+  }
+}
+
+async function androidAppendJourneyRoute(serial, out) {
+  androidDeleteChars(serial, 120);
+  await delay(300);
+  androidTypeRouteTokens(serial, JOURNEY_ROUTE_TOKENS);
+  await delay(1800);
+  adb(serial, ["shell", "input", "keyevent", "KEYCODE_ENTER"]);
+  try {
+    await waitFor(
+      async () => hasAndroidText(dumpAndroid(serial), JOURNEY_ROUTE_DEST) || await androidScrollUntilText(serial, JOURNEY_ROUTE_DEST, 2),
+      45000,
+      `visible appended route destination ${JOURNEY_ROUTE_DEST}`,
+    );
+    adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
+    await delay(700);
+    recordStep(out, `appended ${JOURNEY_ROUTE} to flight plan`);
+    recordCheck(out, "appendRouteCommitsJourneyRoute", true);
+    return true;
+  } catch (_error) {
+    adbBestEffort(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
+    await delay(700);
+    recordGap(out, `appended ${JOURNEY_ROUTE} to flight plan`, `${JOURNEY_ROUTE_DEST} was not visible after submitting the append route field`);
+    recordCheck(out, "appendRouteCommitsJourneyRoute", false);
+    return false;
+  }
+}
+
+async function androidEnsurePlanPage(serial, out, label) {
+  if (androidTagExists(serial, "parity:plan-append-route-input")) {
+    recordStep(out, label, "already on plan page");
+    return true;
+  }
+  if (await androidTapTag(serial, out, label, "parity:nav-cdi", 7000)) {
+    try {
+      await androidWaitForNode(
+        serial,
+        (node) => hasAndroidTag(node, "parity:plan-append-route-input") || node.text === "Waypoint",
+        7000,
+        label,
+      );
+      return true;
+    } catch (_error) {
+      recordGap(out, label, "plan page was not visible after tapping CDI");
+      return false;
+    }
+  }
+  return false;
 }
 
 async function androidScrollUntilTag(serial, tag, maxSwipes = 8) {
@@ -1446,14 +1525,24 @@ async function androidSelectFirstTrayOption(serial, out, launcherTag, stepLabel)
     return null;
   }
   await delay(300);
-  const xml = dumpAndroid(serial);
-  const option = findNode(xml, (node) => androidTag(node).startsWith("parity:tray-option:"));
+  let option;
+  try {
+    option = await androidWaitForNode(
+      serial,
+      (node) => androidTag(node).startsWith("parity:tray-option:"),
+      20000,
+      `${stepLabel} tray option`,
+    );
+  } catch (_error) {
+    option = null;
+  }
   if (!option) {
     recordGap(out, `selected ${stepLabel} option`, "no tray options found");
     adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
     await delay(200);
     return null;
   }
+  const xml = dumpAndroid(serial);
   const selected = {
     id: androidTag(option).slice("parity:tray-option:".length),
     label: androidNodeLabel(xml, option),
@@ -1581,19 +1670,19 @@ async function androidExercisePlateProcedureLoad(serial, out) {
       serial,
       out,
       "parity:plate-airport-button",
-      "parity:tray-option:KPAE",
-      "KPAE plate airport",
+      `parity:tray-option:${JOURNEY_ROUTE_DEST}`,
+      `${JOURNEY_ROUTE_DEST} plate airport`,
     )) {
-      recordActionClass(out, "plate.load-procedure-executes", false, "KPAE airport option unavailable");
+      recordActionClass(out, "plate.load-procedure-executes", false, `${JOURNEY_ROUTE_DEST} airport option unavailable`);
       return;
     }
     try {
       await waitFor(
-        () => androidTaggedNodeLabel(dumpAndroid(serial), "parity:plate-airport-button").includes("KPAE"),
+        () => androidTaggedNodeLabel(dumpAndroid(serial), "parity:plate-airport-button").includes(JOURNEY_ROUTE_DEST),
         10000,
-        "KPAE selected on plate page",
+        `${JOURNEY_ROUTE_DEST} selected on plate page`,
       );
-      recordStep(out, "KPAE selected on plate page");
+      recordStep(out, `${JOURNEY_ROUTE_DEST} selected on plate page`);
     } catch (error) {
       recordActionClass(out, "plate.load-procedure-executes", false, error.message);
       return;
@@ -1612,7 +1701,7 @@ async function androidExercisePlateProcedureLoad(serial, out) {
     }
     const plateXml = dumpAndroid(serial);
     const selectedChartLabel = androidTaggedNodeLabel(plateXml, "parity:plate-chart-button");
-    recordStep(out, "plate LOAD APPCH enabled for KPAE approach", "ok", selectedChartLabel);
+    recordStep(out, `plate LOAD APPCH enabled for ${JOURNEY_ROUTE_DEST} approach`, "ok", selectedChartLabel);
     const loadOption = await androidSelectFirstTrayOption(serial, out, "parity:plate-load-button", "plate procedure load");
     if (!loadOption) {
       recordActionClass(out, "plate.load-procedure-executes", false, "no plate procedure load option available");
@@ -1730,7 +1819,7 @@ async function androidJourney(serial, packageSourceHostPort = "8092") {
         );
         recordStep(out, "plan visible after chart CDI");
         recordCheck(out, "chartCdiReturnsToPlan", true);
-        await androidCheckPlanActionClasses(serial, out);
+        androidAssertStartupPlanEmpty(serial, out);
       } catch (_error) {
         recordGap(out, "plan visible after chart CDI", "plan page was not visible after tapping CDI from CHART");
         recordCheck(out, "chartCdiReturnsToPlan", false);
@@ -1743,36 +1832,11 @@ async function androidJourney(serial, packageSourceHostPort = "8092") {
     recordStep(out, "free-form append route present");
     recordCheck(out, "appendRoutePresent", true);
     if (await androidTapTag(serial, out, "focused free-form append route", "parity:plan-append-route-input")) {
-      androidTypeRouteTokens(serial, ["KRNT", "V2", "ZZZZZ"]);
-      try {
-        const feedback = await androidWaitForNode(
-          serial,
-          (node) => hasAndroidTag(node, "parity:plan-append-route-feedback") && (node.text ?? "").trim() !== "",
-          7000,
-          "append route feedback visible",
-        );
-        recordStep(out, "append route feedback visible", "ok", feedback.text);
-        recordCheck(out, "appendRouteFeedbackVisible", true);
-        androidAssertFeedbackHasBottomControlClearance(serial, out, feedback);
-        androidAssertNodeAboveIme(serial, out, "append route feedback above IME", feedback);
-      } catch (_error) {
-        recordGap(out, "append route feedback visible", "no non-empty feedback appeared after typing KRNT V2 ZZZZZ");
-        recordCheck(out, "appendRouteFeedbackVisible", false);
-      }
-      androidDeleteChars(serial, 80);
-      await delay(300);
-      adb(serial, ["shell", "input", "text", "KAWO"]);
-      await delay(300);
-      adb(serial, ["shell", "input", "keyevent", "KEYCODE_ENTER"]);
-      await delay(1200);
-      adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
-      await delay(700);
-      if (hasAndroidText(dumpAndroid(serial), "KAWO") || await androidScrollUntilText(serial, "KAWO")) {
-        recordStep(out, "appended KAWO to flight plan");
-        recordCheck(out, "appendRouteCommitsKAWO", true);
-      } else {
-        recordGap(out, "appended KAWO to flight plan", "KAWO was not visible after submitting the append route field");
-        recordCheck(out, "appendRouteCommitsKAWO", false);
+      await androidWaitForFocusedTag(serial, out, "free-form append route focused", "parity:plan-append-route-input");
+      if (await androidAppendJourneyRoute(serial, out)) {
+        if (await androidEnsurePlanPage(serial, out, "returned to plan after append")) {
+          await androidCheckPlanActionClasses(serial, out);
+        }
       }
     }
   } else {
@@ -1861,6 +1925,27 @@ async function androidJourney(serial, packageSourceHostPort = "8092") {
   } else {
     recordGap(out, "inspect insert action present", "no insert action was visible in the current inspect tray");
     recordCheck(out, "inspectInsertActionPresent", false);
+  }
+
+  if (await androidEnsurePlanPage(serial, out, "returned to plan for append feedback audit") &&
+      await androidTapTag(serial, out, "focused free-form append route for feedback", "parity:plan-append-route-input")) {
+    await androidWaitForFocusedTag(serial, out, "free-form append route focused for feedback", "parity:plan-append-route-input");
+    androidInputText(serial, "KRNT V2 ZZZZZ ");
+    try {
+      const feedback = await androidWaitForNode(
+        serial,
+        (node) => hasAndroidTag(node, "parity:plan-append-route-feedback") && (node.text ?? "").trim() !== "",
+        7000,
+        "append route feedback visible",
+      );
+      recordStep(out, "append route feedback visible", "ok", feedback.text);
+      recordCheck(out, "appendRouteFeedbackVisible", true);
+      androidAssertFeedbackHasBottomControlClearance(serial, out, feedback);
+      androidAssertNodeAboveIme(serial, out, "append route feedback above IME", feedback);
+    } catch (_error) {
+      recordGap(out, "append route feedback visible", "no non-empty feedback appeared after typing KRNT V2 ZZZZZ");
+      recordCheck(out, "appendRouteFeedbackVisible", false);
+    }
   }
 
   out.finished_at = new Date().toISOString();

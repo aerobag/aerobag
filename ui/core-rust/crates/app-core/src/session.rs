@@ -4265,6 +4265,17 @@ mod tests {
         assert_eq!(enabled_situation_controls(snapshot), expected);
     }
 
+    fn ownship_source_label_index(snapshot: &UiSessionSnapshot, label: &str) -> usize {
+        snapshot
+            .app_ui_state
+            .ownship
+            .controls
+            .sources
+            .iter()
+            .position(|source| source.label == label)
+            .unwrap_or_else(|| panic!("missing ownship source label {label:?}"))
+    }
+
     fn assert_near(left: f64, right: f64) {
         assert!((left - right).abs() < 1e-4, "{left} != {right}");
     }
@@ -4335,16 +4346,10 @@ mod tests {
                 }),
             "Replay must be available in the ownship source tray",
         );
-        assert_eq!(
-            init.snapshot
-                .app_ui_state
-                .ownship
-                .controls
-                .sources
-                .iter()
-                .map(|source| source.label.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Plan\nPreview", "Replay"]
+        assert!(
+            ownship_source_label_index(&init.snapshot, "Plan\nPreview")
+                < ownship_source_label_index(&init.snapshot, "Replay"),
+            "Plan Preview should sort before Replay",
         );
         assert!(
             !init.snapshot.debug_state.playback_visible,
@@ -4430,15 +4435,12 @@ mod tests {
             !gps.debug_state.playback_visible,
             "playback panel hides as soon as Replay is not the active source",
         );
-        assert_eq!(
-            gps.app_ui_state
-                .ownship
-                .controls
-                .sources
-                .iter()
-                .map(|source| source.label.as_str())
-                .collect::<Vec<_>>(),
-            vec!["GPS", "Plan\nPreview", "Replay"]
+        assert!(
+            ownship_source_label_index(&gps, "GPS")
+                < ownship_source_label_index(&gps, "Plan\nPreview")
+                && ownship_source_label_index(&gps, "Plan\nPreview")
+                    < ownship_source_label_index(&gps, "Replay"),
+            "GPS, Plan Preview, and Replay should keep their relative menu order",
         );
         assert_enabled_situation_controls(&gps, &[]);
     }

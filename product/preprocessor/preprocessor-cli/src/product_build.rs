@@ -38,8 +38,9 @@ use preprocessor_fast::{
 };
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
-    prefetch_requests_with_provenance, read_source_urls_jsonl, write_package_outputs_jsonl,
-    CacheLayout, FetchCacheConfig, FetchCacheMode, PackageOutputRecord, PrefetchRequest,
+    prefetch_requests_with_provenance, read_source_prefetch_requests_jsonl, read_source_urls_jsonl,
+    write_package_outputs_jsonl, CacheLayout, FetchCacheConfig, FetchCacheMode,
+    PackageOutputRecord, PrefetchRequest,
 };
 use preprocessor_procedure_geometry::{
     build_procedure_geometry_records, procedure_kinds_from_lists,
@@ -3084,12 +3085,14 @@ fn build_obstacles_product(
     let snapshot_date = Utc::now().date_naive();
     let snapshot_label = obstacle_snapshot_label(&snapshot_date.format("%Y-%m-%d").to_string())?;
     let source_generated_at_utc = format!("{}T00:00:00Z", snapshot_date.format("%Y-%m-%d"));
-    let logical_url = format!(
-        "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_{snapshot_label}.zip"
-    );
+    let obstacle_url = "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP";
+    let logical_file_name = format!("obstacle_{snapshot_label}.zip");
+    let request = PrefetchRequest::new(obstacle_url)
+        .with_logical_file_name(&logical_file_name)
+        .with_cache_key(format!("{obstacle_url}#logical_name={logical_file_name}"));
     let inputs = BTreeMap::from([
         ("product_id".to_string(), "obstacles".to_string()),
-        ("source_url".to_string(), logical_url.clone()),
+        ("source_url".to_string(), request.cache_key.clone()),
         (
             "vectors_lib".to_string(),
             hash_file(
@@ -3133,8 +3136,8 @@ fn build_obstacles_product(
     fs::write(
         provenance_dir.join("source_urls.jsonl"),
         format!(
-            "{{\"event\":\"source_url\",\"label\":\"obstacles\",\"url\":\"{}\"}}\n",
-            logical_url
+            "{{\"event\":\"source_url\",\"label\":\"obstacles\",\"url\":\"{}\",\"logical_file_name\":\"{}\",\"cache_key\":\"{}\"}}\n",
+            request.url, logical_file_name, request.cache_key
         ),
     )
     .with_context(|| {
@@ -3148,7 +3151,7 @@ fn build_obstacles_product(
         mode: FetchCacheMode::parse(&config.fetch_cache_mode)?,
     };
     prefetch_archives_with_provenance(
-        std::slice::from_ref(&logical_url),
+        std::slice::from_ref(&request),
         &input_dir,
         config.fetch_jobs,
         Some(&fetch_cache),
@@ -9123,26 +9126,33 @@ fn build_metars_product(
     fs::create_dir_all(&provenance_dir)
         .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
 
-    let source_urls = [
+    let source_requests = [
         (
             "metars",
-            "https://aviationweather.gov/data/cache/metars.cache.xml.gz#logical_name=metars.cache.xml.gz",
+            PrefetchRequest::new("https://aviationweather.gov/data/cache/metars.cache.xml.gz")
+                .with_logical_file_name("metars.cache.xml.gz"),
         ),
         (
             "tafs",
-            "https://aviationweather.gov/data/cache/tafs.cache.xml.gz#logical_name=tafs.cache.xml.gz",
+            PrefetchRequest::new("https://aviationweather.gov/data/cache/tafs.cache.xml.gz")
+                .with_logical_file_name("tafs.cache.xml.gz"),
         ),
         (
             "aircraftreports",
-            "https://aviationweather.gov/data/cache/aircraftreports.cache.xml.gz#logical_name=aircraftreports.cache.xml.gz",
+            PrefetchRequest::new(
+                "https://aviationweather.gov/data/cache/aircraftreports.cache.xml.gz",
+            )
+            .with_logical_file_name("aircraftreports.cache.xml.gz"),
         ),
     ];
-    let provenance = source_urls
+    let provenance = source_requests
         .iter()
-        .map(|(label, url)| {
+        .map(|(label, request)| {
             format!(
-                "{{\"event\":\"source_url\",\"label\":\"{}\",\"url\":\"{}\"}}\n",
-                label, url
+                "{{\"event\":\"source_url\",\"label\":\"{}\",\"url\":\"{}\",\"logical_file_name\":\"{}\"}}\n",
+                label,
+                request.url,
+                request.logical_file_name.as_deref().unwrap_or_default()
             )
         })
         .collect::<String>();
@@ -9152,12 +9162,12 @@ fn build_metars_product(
             provenance_dir.join("source_urls.jsonl").display()
         )
     })?;
-    let urls = source_urls
+    let requests = source_requests
         .iter()
-        .map(|(_, url)| (*url).to_string())
+        .map(|(_, request)| request.clone())
         .collect::<Vec<_>>();
     prefetch_archives_with_provenance(
-        &urls,
+        &requests,
         &input_dir,
         config.fetch_jobs,
         Some(&fetch_cache),
@@ -9368,18 +9378,20 @@ fn build_nexrad_product(
         .into_iter()
         .map(|index| {
             let file_name = &listings[index];
-            format!(
-                "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/{}#logical_name={}",
-                file_name, file_name
-            )
+            PrefetchRequest::new(format!(
+                "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/{}",
+                file_name
+            ))
+            .with_logical_file_name(file_name)
         })
         .collect::<Vec<_>>();
     let mut source_urls_jsonl =
-        String::from("{\"event\":\"source_url\",\"label\":\"nexrad-index\",\"url\":\"https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/#logical_name=index.html\"}\n");
-    for url in &selected_urls {
+        String::from("{\"event\":\"source_url\",\"label\":\"nexrad-index\",\"url\":\"https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/\",\"logical_file_name\":\"index.html\"}\n");
+    for request in &selected_urls {
         source_urls_jsonl.push_str(&format!(
-            "{{\"event\":\"source_url\",\"label\":\"nexrad-frame\",\"url\":\"{}\"}}\n",
-            url
+            "{{\"event\":\"source_url\",\"label\":\"nexrad-frame\",\"url\":\"{}\",\"logical_file_name\":\"{}\"}}\n",
+            request.url,
+            request.logical_file_name.as_deref().unwrap_or_default()
         ));
     }
     fs::write(provenance_dir.join("source_urls.jsonl"), source_urls_jsonl).with_context(|| {
@@ -9618,9 +9630,9 @@ fn build_terrain_product(
         &provenance_dir,
         &format!("terrain-{region_id}-dem"),
     )?;
-    let dem_paths = terrain_dem_paths_from_urls(&dem_dir, &dem_selection.urls)?;
+    let dem_paths = terrain_dem_paths_from_requests(&dem_dir, &dem_selection.requests)?;
     let source_fingerprint = if let Some(sources) =
-        cached_terrain_dem_sources_for_urls(&fetch_cache, &dem_selection.urls)?
+        cached_terrain_dem_sources_for_requests(&fetch_cache, &dem_selection.requests)?
     {
         terrain_source_fingerprint_from_cached(
             &dem_selection.urls,
@@ -10307,9 +10319,9 @@ fn build_shaded_relief_product(
         &provenance_dir,
         &format!("shaded-relief-{region_id}-dem"),
     )?;
-    let dem_paths = terrain_dem_paths_from_urls(&dem_dir, &dem_selection.urls)?;
+    let dem_paths = terrain_dem_paths_from_requests(&dem_dir, &dem_selection.requests)?;
     let source_fingerprint = if let Some(sources) =
-        cached_terrain_dem_sources_for_urls(&fetch_cache, &dem_selection.urls)?
+        cached_terrain_dem_sources_for_requests(&fetch_cache, &dem_selection.requests)?
     {
         terrain_source_fingerprint_from_cached(
             &dem_selection.urls,
@@ -11026,16 +11038,22 @@ fn static_geo_source_path() -> PathBuf {
         .join("geo.csv")
 }
 
-fn terrain_tnmaccess_url(region: Region) -> String {
+fn terrain_tnmaccess_request(region: Region) -> PrefetchRequest {
     let bounds = region.bounds();
     let bbox = format!(
         "{},{},{},{}",
         bounds.lon_min, bounds.lat_min, bounds.lon_max, bounds.lat_max
     );
-    format!(
-        "https://tnmaccess.nationalmap.gov/api/v1/products?bbox={bbox}&datasets=National%20Elevation%20Dataset%20(NED)%201%20arc-second%20Current&prodFormats=GeoTIFF&max=3000#logical_name=terrain_{}_tnmaccess.json",
+    let url = format!(
+        "https://tnmaccess.nationalmap.gov/api/v1/products?bbox={bbox}&datasets=National%20Elevation%20Dataset%20(NED)%201%20arc-second%20Current&prodFormats=GeoTIFF&max=3000"
+    );
+    let logical_file_name = format!(
+        "terrain_{}_tnmaccess.json",
         region.code().to_ascii_lowercase()
-    )
+    );
+    PrefetchRequest::new(&url)
+        .with_logical_file_name(&logical_file_name)
+        .with_cache_key(format!("{url}#logical_name={logical_file_name}"))
 }
 
 fn build_terrain_discovery_index(
@@ -11054,14 +11072,14 @@ fn build_terrain_discovery_index(
         .join("provenance")
         .join("terrain-discovery");
     let fetch_cache = terrain_fetch_cache_config(config)?;
-    let discovery_urls = config
+    let discovery_requests = config
         .profile
         .terrain_regions()
         .iter()
-        .map(|region| terrain_tnmaccess_url(*region))
+        .map(|region| terrain_tnmaccess_request(*region))
         .collect::<Vec<_>>();
     prefetch_archives_with_provenance(
-        &discovery_urls,
+        &discovery_requests,
         &discovery_dir,
         config.fetch_jobs,
         Some(&fetch_cache),
@@ -11080,7 +11098,8 @@ fn build_terrain_discovery_index(
         }
     }
     normalize_terrain_candidates(&mut by_cell);
-    let source_fetched_at_utc = terrain_source_fetched_at_utc(&fetch_cache, &discovery_urls, &[])?;
+    let source_fetched_at_utc =
+        terrain_source_fetched_at_utc(&fetch_cache, &discovery_requests, &[])?;
     let source_fingerprint = terrain_discovery_fingerprint(&by_cell, &discovery_hashes);
     let inputs = BTreeMap::from([
         ("product_id".to_string(), "terrain-discovery".to_string()),
@@ -11177,7 +11196,7 @@ fn terrain_dem_candidates_from_tnmaccess(
             continue;
         };
         let candidate = TerrainDemCandidate {
-            url: format!("{url}#logical_name={filename}"),
+            url: url.to_string(),
             publication_date: item
                 .get("publicationDate")
                 .and_then(|value| value.as_str())
@@ -11252,15 +11271,15 @@ impl TerrainCellCandidates {
             .with_context(|| format!("terrain cell {} has no selected DEM candidate", self.cell))
     }
 
-    fn selected_url(&self) -> anyhow::Result<String> {
-        Ok(self.selected_candidate()?.url.clone())
+    fn selected_request(&self) -> anyhow::Result<PrefetchRequest> {
+        Ok(self.selected_candidate()?.prefetch_request())
     }
 
-    fn selected_url_if_available(&self) -> anyhow::Result<Option<String>> {
+    fn selected_request_if_available(&self) -> anyhow::Result<Option<PrefetchRequest>> {
         if self.missing {
             return Ok(None);
         }
-        Ok(Some(self.selected_url()?))
+        Ok(Some(self.selected_request()?))
     }
 
     fn advance_after_failed_url(&mut self, failed_url: &str) -> anyhow::Result<TerrainCellAction> {
@@ -11286,6 +11305,7 @@ enum TerrainCellAction {
 #[derive(Debug, Clone)]
 struct TerrainDemSelection {
     urls: Vec<String>,
+    requests: Vec<PrefetchRequest>,
     missing_cells: Vec<String>,
 }
 
@@ -11328,6 +11348,7 @@ fn cached_terrain_dem_selection(
     fetch_cache: &FetchCacheConfig,
 ) -> anyhow::Result<Option<CachedTerrainDemSelection>> {
     let mut urls = Vec::new();
+    let mut requests = Vec::new();
     let mut sources = Vec::new();
     let mut missing_cells = Vec::new();
     for cell in cells {
@@ -11340,6 +11361,7 @@ fn cached_terrain_dem_selection(
         match cached_candidates.as_slice() {
             [(0, candidate, source), ..] => {
                 urls.push(candidate.url.clone());
+                requests.push(candidate.prefetch_request());
                 sources.push(source.clone());
             }
             [] => missing_cells.push(cell.cell.clone()),
@@ -11354,6 +11376,7 @@ fn cached_terrain_dem_selection(
     Ok(Some(CachedTerrainDemSelection {
         selection: TerrainDemSelection {
             urls,
+            requests,
             missing_cells,
         },
         sources,
@@ -11365,7 +11388,7 @@ fn cached_terrain_dem_source(
     candidate: &TerrainDemCandidate,
 ) -> anyhow::Result<Option<CachedTerrainDemSource>> {
     let layout = CacheLayout::new(&fetch_cache.root);
-    let metadata_path = layout.http_metadata_path(&candidate.url);
+    let metadata_path = layout.http_metadata_path(&candidate.prefetch_request().cache_key);
     if !metadata_path.is_file() {
         return Ok(None);
     }
@@ -11386,14 +11409,14 @@ fn cached_terrain_dem_source(
     }))
 }
 
-fn cached_terrain_dem_sources_for_urls(
+fn cached_terrain_dem_sources_for_requests(
     fetch_cache: &FetchCacheConfig,
-    urls: &[String],
+    requests: &[PrefetchRequest],
 ) -> anyhow::Result<Option<Vec<CachedTerrainDemSource>>> {
     let layout = CacheLayout::new(&fetch_cache.root);
     let mut sources = Vec::new();
-    for url in urls {
-        let metadata_path = layout.http_metadata_path(url);
+    for request in requests {
+        let metadata_path = layout.http_metadata_path(&request.cache_key);
         if !metadata_path.is_file() {
             return Ok(None);
         }
@@ -11409,20 +11432,15 @@ fn cached_terrain_dem_sources_for_urls(
             return Ok(None);
         }
         sources.push(CachedTerrainDemSource {
-            filename: terrain_dem_filename_from_url(url)?,
+            filename: request
+                .logical_file_name
+                .clone()
+                .or_else(|| request.url.rsplit('/').next().map(ToOwned::to_owned))
+                .context("terrain DEM request has no filename")?,
             sha256: sha256.to_string(),
         });
     }
     Ok(Some(sources))
-}
-
-fn terrain_dem_filename_from_url(url: &str) -> anyhow::Result<String> {
-    url.split("#logical_name=")
-        .nth(1)
-        .or_else(|| url.rsplit('/').next())
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .context("terrain DEM URL has no filename")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11436,6 +11454,12 @@ struct TerrainDemCandidate {
 impl TerrainDemCandidate {
     fn sort_key(&self) -> (&str, &str, &str) {
         (&self.publication_date, &self.last_updated, &self.filename)
+    }
+
+    fn prefetch_request(&self) -> PrefetchRequest {
+        PrefetchRequest::new(&self.url)
+            .with_logical_file_name(&self.filename)
+            .with_cache_key(format!("{}#logical_name={}", self.url, self.filename))
     }
 }
 
@@ -11487,15 +11511,15 @@ fn prefetch_terrain_dems_with_fallback(
     label: &str,
 ) -> anyhow::Result<TerrainDemSelection> {
     loop {
-        let urls = cells
+        let requests = cells
             .iter()
-            .map(TerrainCellCandidates::selected_url_if_available)
+            .map(TerrainCellCandidates::selected_request_if_available)
             .collect::<anyhow::Result<Vec<_>>>()?
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
         match prefetch_archives_with_provenance(
-            &urls,
+            &requests,
             dem_dir,
             fetch_jobs,
             Some(fetch_cache),
@@ -11508,8 +11532,13 @@ fn prefetch_terrain_dems_with_fallback(
                     .filter(|cell| cell.missing)
                     .map(|cell| cell.cell.clone())
                     .collect::<Vec<_>>();
+                let urls = requests
+                    .iter()
+                    .map(|request| request.url.clone())
+                    .collect::<Vec<_>>();
                 return Ok(TerrainDemSelection {
                     urls,
+                    requests,
                     missing_cells,
                 });
             }
@@ -11518,21 +11547,21 @@ fn prefetch_terrain_dems_with_fallback(
                 let Some(failed_url) = terrain_failed_fetch_url(&message) else {
                     return Err(error);
                 };
-                let Some(failed_logical_url) = urls
+                let Some(failed_request) = requests
                     .iter()
-                    .find(|url| terrain_urls_match(url, &failed_url))
+                    .find(|request| request.url == failed_url)
                     .cloned()
                 else {
                     return Err(error);
                 };
                 let mut handled = false;
                 for cell in cells.iter_mut() {
-                    match cell.advance_after_failed_url(&failed_logical_url)? {
+                    match cell.advance_after_failed_url(&failed_request.url)? {
                         TerrainCellAction::Unaffected => {}
                         TerrainCellAction::Advanced => {
                             eprintln!(
                                 "terrain DEM fetch failed for {}; falling back to next candidate for cell {}",
-                                failed_logical_url, cell.cell
+                                failed_request.url, cell.cell
                             );
                             handled = true;
                             break;
@@ -11540,7 +11569,7 @@ fn prefetch_terrain_dems_with_fallback(
                         TerrainCellAction::MarkedMissing => {
                             eprintln!(
                                 "terrain DEM fetch failed for {}; marking cell {} as nodata",
-                                failed_logical_url, cell.cell
+                                failed_request.url, cell.cell
                             );
                             handled = true;
                             break;
@@ -11562,22 +11591,18 @@ fn terrain_failed_fetch_url(message: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-fn terrain_urls_match(logical_url: &str, failed_url: &str) -> bool {
-    logical_url == failed_url
-        || logical_url
-            .split_once("#logical_name=")
-            .map(|(network_url, _)| network_url == failed_url)
-            .unwrap_or(false)
-}
-
-fn terrain_dem_paths_from_urls(dem_dir: &Path, urls: &[String]) -> anyhow::Result<Vec<PathBuf>> {
-    urls.iter()
-        .map(|url| {
-            let parsed_name = url
-                .split("#logical_name=")
-                .nth(1)
-                .or_else(|| url.rsplit('/').next())
-                .context("terrain DEM URL has no filename")?;
+fn terrain_dem_paths_from_requests(
+    dem_dir: &Path,
+    requests: &[PrefetchRequest],
+) -> anyhow::Result<Vec<PathBuf>> {
+    requests
+        .iter()
+        .map(|request| {
+            let parsed_name = request
+                .logical_file_name
+                .as_deref()
+                .or_else(|| request.url.rsplit('/').next())
+                .context("terrain DEM request has no filename")?;
             let path = dem_dir.join(parsed_name);
             if !path.is_file() {
                 bail!("terrain DEM download missing {}", path.display());
@@ -11589,17 +11614,13 @@ fn terrain_dem_paths_from_urls(dem_dir: &Path, urls: &[String]) -> anyhow::Resul
 
 fn terrain_source_fetched_at_utc(
     fetch_cache: &FetchCacheConfig,
-    discovery_urls: &[String],
-    dem_urls: &[String],
+    discovery_requests: &[PrefetchRequest],
+    dem_requests: &[PrefetchRequest],
 ) -> anyhow::Result<Option<String>> {
     let layout = CacheLayout::new(&fetch_cache.root);
     let mut fetched_times = Vec::new();
-    for url in discovery_urls
-        .iter()
-        .map(String::as_str)
-        .chain(dem_urls.iter().map(String::as_str))
-    {
-        let metadata_path = layout.http_metadata_path(url);
+    for request in discovery_requests.iter().chain(dem_requests.iter()) {
+        let metadata_path = layout.http_metadata_path(&request.cache_key);
         if !metadata_path.is_file() {
             continue;
         }
@@ -11769,22 +11790,23 @@ fn percent_encode_query_value(value: &str) -> String {
     encoded
 }
 
-fn water_mask_ids_url(layer: u32, bbox: &str, where_clause: &str) -> String {
-    format!(
-        "{}#logical_name=layer_{layer}_ids.json",
-        water_mask_query_url(
-            layer,
-            &[
-                ("where", where_clause.to_string()),
-                ("geometry", bbox.to_string()),
-                ("geometryType", "esriGeometryEnvelope".to_string()),
-                ("inSR", "4326".to_string()),
-                ("spatialRel", "esriSpatialRelIntersects".to_string()),
-                ("returnIdsOnly", "true".to_string()),
-                ("f", "json".to_string()),
-            ],
-        )
-    )
+fn water_mask_ids_request(layer: u32, bbox: &str, where_clause: &str) -> PrefetchRequest {
+    let url = water_mask_query_url(
+        layer,
+        &[
+            ("where", where_clause.to_string()),
+            ("geometry", bbox.to_string()),
+            ("geometryType", "esriGeometryEnvelope".to_string()),
+            ("inSR", "4326".to_string()),
+            ("spatialRel", "esriSpatialRelIntersects".to_string()),
+            ("returnIdsOnly", "true".to_string()),
+            ("f", "json".to_string()),
+        ],
+    );
+    let logical_file_name = format!("layer_{layer}_ids.json");
+    PrefetchRequest::new(&url)
+        .with_logical_file_name(&logical_file_name)
+        .with_cache_key(format!("{url}#logical_name={logical_file_name}"))
 }
 
 #[derive(Debug, Clone)]
@@ -11799,34 +11821,35 @@ impl WaterMaskPageRequest {
         format!("layer_{}_chunk_{}.geojson", self.layer, self.label)
     }
 
-    fn url(&self) -> String {
-        water_mask_page_url(self.layer, &self.label, &self.object_ids)
+    fn request(&self) -> PrefetchRequest {
+        water_mask_page_request(self.layer, &self.label, &self.object_ids)
     }
 }
 
-fn water_mask_page_url(layer: u32, page_label: &str, object_ids: &[u64]) -> String {
-    format!(
-        "{}#logical_name=layer_{layer}_chunk_{page_label}.geojson",
-        water_mask_query_url(
-            layer,
-            &[
-                (
-                    "objectIds",
-                    object_ids
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(","),
-                ),
-                ("outFields", "FTYPE,FCODE,GNIS_NAME".to_string()),
-                ("outSR", "4326".to_string()),
-                ("returnGeometry", "true".to_string()),
-                ("geometryPrecision", "6".to_string()),
-                ("f", "geojson".to_string()),
-                ("orderByFields", "OBJECTID".to_string()),
-            ],
-        )
-    )
+fn water_mask_page_request(layer: u32, page_label: &str, object_ids: &[u64]) -> PrefetchRequest {
+    let url = water_mask_query_url(
+        layer,
+        &[
+            (
+                "objectIds",
+                object_ids
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+            ("outFields", "FTYPE,FCODE,GNIS_NAME".to_string()),
+            ("outSR", "4326".to_string()),
+            ("returnGeometry", "true".to_string()),
+            ("geometryPrecision", "6".to_string()),
+            ("f", "geojson".to_string()),
+            ("orderByFields", "OBJECTID".to_string()),
+        ],
+    );
+    let logical_file_name = format!("layer_{layer}_chunk_{page_label}.geojson");
+    PrefetchRequest::new(&url)
+        .with_logical_file_name(&logical_file_name)
+        .with_cache_key(format!("{url}#logical_name={logical_file_name}"))
 }
 
 fn water_mask_cached_source_dir(
@@ -11849,12 +11872,12 @@ fn water_mask_cached_source_dir(
         .join("provenance")
         .join(format!("water-mask-{region_id}"));
     let fetch_cache = static_source_fetch_cache_config(config)?;
-    let ids_urls = WATER_MASK_NHD_LAYERS
+    let ids_requests = WATER_MASK_NHD_LAYERS
         .iter()
-        .map(|(layer, _name, where_clause)| water_mask_ids_url(*layer, &bbox, where_clause))
+        .map(|(layer, _name, where_clause)| water_mask_ids_request(*layer, &bbox, where_clause))
         .collect::<Vec<_>>();
-    prefetch_water_mask_source_urls(
-        &ids_urls,
+    prefetch_water_mask_source_requests(
+        &ids_requests,
         &source_dir,
         &provenance_dir,
         &format!("water-mask-{region_id}-ids"),
@@ -11895,15 +11918,15 @@ fn water_mask_cached_source_dir(
     Ok(source_dir)
 }
 
-fn prefetch_water_mask_source_urls(
-    urls: &[String],
+fn prefetch_water_mask_source_requests(
+    requests: &[PrefetchRequest],
     source_dir: &Path,
     provenance_dir: &Path,
     label: &str,
     fetch_cache: &FetchCacheConfig,
 ) -> anyhow::Result<()> {
     prefetch_archives_with_provenance(
-        urls,
+        requests,
         source_dir,
         WATER_MASK_FETCH_WORKERS as usize,
         Some(fetch_cache),
@@ -11921,12 +11944,18 @@ fn prefetch_water_mask_source_pages(
 ) -> anyhow::Result<()> {
     let mut split_page_fetches = 0usize;
     let mut omitted_objects = Vec::new();
-    let urls = pages
+    let requests = pages
         .iter()
-        .map(WaterMaskPageRequest::url)
+        .map(WaterMaskPageRequest::request)
         .collect::<Vec<_>>();
-    if prefetch_water_mask_source_urls(&urls, source_dir, provenance_dir, label, fetch_cache)
-        .is_err()
+    if prefetch_water_mask_source_requests(
+        &requests,
+        source_dir,
+        provenance_dir,
+        label,
+        fetch_cache,
+    )
+    .is_err()
     {
         for page in pages {
             prefetch_water_mask_source_page_split(
@@ -11959,8 +11988,14 @@ fn prefetch_water_mask_source_page_split(
     split_page_fetches: &mut usize,
     omitted_objects: &mut Vec<u64>,
 ) -> anyhow::Result<()> {
-    let urls = [page.url()];
-    match prefetch_water_mask_source_urls(&urls, source_dir, provenance_dir, label, fetch_cache) {
+    let requests = [page.request()];
+    match prefetch_water_mask_source_requests(
+        &requests,
+        source_dir,
+        provenance_dir,
+        label,
+        fetch_cache,
+    ) {
         Ok(()) => return Ok(()),
         Err(error) => {
             if page.object_ids.len() > 1 {
@@ -15373,9 +15408,9 @@ fn build_chart_render_node(
             .join(format!("charts-{family_id}"));
         fs::create_dir_all(&provenance_dir)?;
         copy_source_urls_provenance(source_urls, &provenance_dir)?;
-        let urls = read_source_urls_jsonl(source_urls)?;
+        let requests = read_source_prefetch_requests_jsonl(source_urls)?;
         prefetch_archives_with_provenance(
-            &urls,
+            &requests,
             &work_dir,
             fetch_jobs,
             Some(&static_source_fetch_cache_config(config)?),
@@ -15877,9 +15912,9 @@ fn build_csup_stage_node(
             let provenance_dir = work_root.join("meta").join("provenance").join("csup");
             fs::create_dir_all(&provenance_dir)?;
             copy_source_urls_provenance(source_urls, &provenance_dir)?;
-            let urls = read_source_urls_jsonl(source_urls)?;
+            let requests = read_source_prefetch_requests_jsonl(source_urls)?;
             prefetch_archives_with_provenance(
-                &urls,
+                &requests,
                 &work_dir,
                 fetch_jobs,
                 Some(&static_source_fetch_cache_config(config)?),
@@ -16596,11 +16631,20 @@ fn build_data_input_node(
     config: &ProductBuildConfig,
     source_urls: &Path,
 ) -> anyhow::Result<(PathBuf, NodeRecord)> {
-    let urls = cycle_data_urls(read_source_urls_jsonl(source_urls)?);
+    let requests = cycle_data_requests(read_source_prefetch_requests_jsonl(source_urls)?);
     let inputs = BTreeMap::from([
         ("source_urls".to_string(), hash_file(source_urls)?),
         ("fetch_jobs".to_string(), config.fetch_jobs.to_string()),
-        ("cycle_urls".to_string(), hash_text(&urls.join("\n"))),
+        (
+            "cycle_urls".to_string(),
+            hash_text(
+                &requests
+                    .iter()
+                    .map(|request| request.cache_key.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+        ),
         (
             "fetch_lib".to_string(),
             hash_file(
@@ -16635,7 +16679,7 @@ fn build_data_input_node(
     fs::create_dir_all(&provenance_dir)?;
     copy_source_urls_provenance(source_urls, &provenance_dir)?;
     prefetch_archives_with_provenance(
-        &urls,
+        &requests,
         &staged_root,
         config.fetch_jobs,
         Some(&static_source_fetch_cache_config(config)?),
@@ -17658,14 +17702,10 @@ fn data_manifest_cycle(source_urls_dir: &Path) -> anyhow::Result<String> {
     cycle_code_from_effective_date(effective)
 }
 
-fn cycle_data_urls(urls: Vec<String>) -> Vec<String> {
-    urls.into_iter()
-        .filter(|url| {
-            !url.split('#')
-                .next()
-                .unwrap_or(url)
-                .ends_with("/DAILY_DOF_DAT.ZIP")
-        })
+fn cycle_data_requests(requests: Vec<PrefetchRequest>) -> Vec<PrefetchRequest> {
+    requests
+        .into_iter()
+        .filter(|request| !request.url.ends_with("/DAILY_DOF_DAT.ZIP"))
         .collect()
 }
 
@@ -19475,13 +19515,16 @@ mod tests {
 
     #[test]
     fn excludes_daily_obstacle_url_from_cycle_data_inputs() {
-        let urls = vec![
-            "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP".to_string(),
-            "https://aeronav.faa.gov/Upload_313-d/cifp/CIFP_260416.zip".to_string(),
+        let requests = vec![
+            PrefetchRequest::new("https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP"),
+            PrefetchRequest::new("https://aeronav.faa.gov/Upload_313-d/cifp/CIFP_260416.zip"),
         ];
-        let filtered = cycle_data_urls(urls);
+        let filtered = cycle_data_requests(requests);
         assert_eq!(
-            filtered,
+            filtered
+                .iter()
+                .map(|request| request.url.as_str())
+                .collect::<Vec<_>>(),
             vec!["https://aeronav.faa.gov/Upload_313-d/cifp/CIFP_260416.zip"]
         );
     }

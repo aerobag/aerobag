@@ -15,7 +15,7 @@ use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use preprocessor_core::{Region, RunPaths};
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
-    read_source_urls_jsonl, FetchCacheConfig,
+    read_source_prefetch_requests_jsonl, FetchCacheConfig, PrefetchRequest,
 };
 use preprocessor_tools::{
     append_pngs_vertical, flatten_png_onto_white, sanitize_label, ToolInvocation,
@@ -138,12 +138,15 @@ pub fn render_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<Native
     if let Some(source_urls_path) = &request.prefetch_source_urls {
         let start = Instant::now();
         copy_source_urls_provenance(source_urls_path, &provenance_dir)?;
-        let mut urls = read_source_urls_jsonl(source_urls_path)?;
-        if !urls.iter().any(|url| url == TPP_AIRPORT_DIAGRAMS_URL) {
-            urls.push(TPP_AIRPORT_DIAGRAMS_URL.to_string());
+        let mut requests = read_source_prefetch_requests_jsonl(source_urls_path)?;
+        if !requests
+            .iter()
+            .any(|request| request.url == TPP_AIRPORT_DIAGRAMS_URL)
+        {
+            requests.push(PrefetchRequest::new(TPP_AIRPORT_DIAGRAMS_URL));
         }
         prefetch_archives_with_provenance(
-            &urls,
+            &requests,
             &work_dir,
             request.fetch_jobs,
             request.fetch_cache.as_ref(),

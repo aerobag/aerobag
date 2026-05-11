@@ -11,8 +11,8 @@ use anyhow::{bail, Context};
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use preprocessor_core::{Region, RunPaths};
 use preprocessor_fetch::{
-    copy_source_urls_provenance, prefetch_archives_with_provenance, read_source_urls_jsonl,
-    FetchCacheConfig,
+    copy_source_urls_provenance, prefetch_archives_with_provenance,
+    read_source_prefetch_requests_jsonl, FetchCacheConfig,
 };
 use preprocessor_tools::{
     append_pngs_vertical, sanitize_label, write_thumbnail_from_png, ToolInvocation,
@@ -60,9 +60,9 @@ pub fn run_native_csup(request: &NativeCsupRunRequest) -> anyhow::Result<NativeC
     if let Some(source_urls_path) = &request.prefetch_source_urls {
         let start = Instant::now();
         copy_source_urls_provenance(source_urls_path, &provenance_dir)?;
-        let urls = read_source_urls_jsonl(source_urls_path)?;
+        let requests = read_source_prefetch_requests_jsonl(source_urls_path)?;
         prefetch_archives_with_provenance(
-            &urls,
+            &requests,
             &work_dir,
             request.fetch_jobs,
             request.fetch_cache.as_ref(),

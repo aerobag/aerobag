@@ -148,6 +148,55 @@ pub fn read_source_urls_jsonl(path: impl AsRef<Path>) -> anyhow::Result<Vec<Stri
     Ok(urls)
 }
 
+pub fn read_source_prefetch_requests_jsonl(
+    path: impl AsRef<Path>,
+) -> anyhow::Result<Vec<PrefetchRequest>> {
+    let text = fs::read_to_string(path.as_ref())
+        .with_context(|| format!("failed to read {}", path.as_ref().display()))?;
+    let mut requests = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(line).context("failed to parse source url jsonl line")?;
+        if value.get("event").and_then(|value| value.as_str()) == Some("source_url") {
+            requests.push(source_prefetch_request_from_json(&value)?);
+        }
+        if let Some(results) = value.get("results").and_then(|value| value.as_array()) {
+            for result in results {
+                requests.push(source_prefetch_request_from_json(result)?);
+            }
+        }
+    }
+    Ok(requests)
+}
+
+fn source_prefetch_request_from_json(value: &serde_json::Value) -> anyhow::Result<PrefetchRequest> {
+    let (url, logical_file_name, cache_key) = if let Some(url) = value.as_str() {
+        (url, None, None)
+    } else {
+        let url = value
+            .get("url")
+            .and_then(|value| value.as_str())
+            .context("source url record missing url")?;
+        let logical_file_name = value
+            .get("logical_file_name")
+            .or_else(|| value.get("file_name"))
+            .and_then(|value| value.as_str());
+        let cache_key = value.get("cache_key").and_then(|value| value.as_str());
+        (url, logical_file_name, cache_key)
+    };
+    let mut request = PrefetchRequest::new(url);
+    if let Some(logical_file_name) = logical_file_name {
+        request = request.with_logical_file_name(logical_file_name);
+    }
+    if let Some(cache_key) = cache_key {
+        request = request.with_cache_key(cache_key);
+    }
+    Ok(request)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DownloadRecord {
     pub url: String,
@@ -240,16 +289,12 @@ pub fn read_extract_records(path: impl AsRef<Path>) -> anyhow::Result<BTreeSet<E
 }
 
 pub fn prefetch_archives(
-    urls: &[String],
+    requests: &[PrefetchRequest],
     dest_dir: impl AsRef<Path>,
     fetch_jobs: usize,
     fetch_cache: Option<&FetchCacheConfig>,
 ) -> anyhow::Result<()> {
-    let requests = urls
-        .iter()
-        .map(|url| PrefetchRequest::from_legacy_url(url))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    prefetch_archives_inner(&requests, dest_dir.as_ref(), fetch_jobs, fetch_cache, None)
+    prefetch_archives_inner(requests, dest_dir.as_ref(), fetch_jobs, fetch_cache, None)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -278,6 +323,11 @@ impl PrefetchRequest {
         self
     }
 
+    pub fn with_cache_key(mut self, cache_key: impl Into<String>) -> Self {
+        self.cache_key = cache_key.into();
+        self
+    }
+
     pub fn with_http1(mut self) -> Self {
         self.force_http1 = true;
         self
@@ -286,17 +336,6 @@ impl PrefetchRequest {
     pub fn allow_html(mut self) -> Self {
         self.allow_html = true;
         self
-    }
-
-    fn from_legacy_url(url: &str) -> anyhow::Result<Self> {
-        let parsed = parse_logical_download(url)?;
-        Ok(Self {
-            cache_key: url.to_string(),
-            url: parsed.network_url,
-            logical_file_name: parsed.logical_file_name,
-            force_http1: false,
-            allow_html: false,
-        })
     }
 }
 
@@ -319,19 +358,15 @@ pub fn copy_source_urls_provenance(
 }
 
 pub fn prefetch_archives_with_provenance(
-    urls: &[String],
+    requests: &[PrefetchRequest],
     dest_dir: impl AsRef<Path>,
     fetch_jobs: usize,
     fetch_cache: Option<&FetchCacheConfig>,
     provenance_dir: impl AsRef<Path>,
     label: &str,
 ) -> anyhow::Result<()> {
-    let requests = urls
-        .iter()
-        .map(|url| PrefetchRequest::from_legacy_url(url))
-        .collect::<anyhow::Result<Vec<_>>>()?;
     prefetch_requests_with_provenance(
-        &requests,
+        requests,
         dest_dir,
         fetch_jobs,
         fetch_cache,
@@ -774,37 +809,6 @@ fn curl_download_with_status(
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct LogicalDownload {
-    network_url: String,
-    logical_file_name: Option<String>,
-}
-
-fn parse_logical_download(url: &str) -> anyhow::Result<LogicalDownload> {
-    let (network_url, fragment) = match url.split_once('#') {
-        Some((base, fragment)) => (base.to_string(), Some(fragment)),
-        None => (url.to_string(), None),
-    };
-    let mut logical_file_name = None;
-    if let Some(fragment) = fragment {
-        for part in fragment.split('&') {
-            if let Some(value) = part.strip_prefix("logical_name=") {
-                logical_file_name = Some(value.to_string());
-            }
-        }
-    }
-    let file_name_source = logical_file_name.as_deref().unwrap_or(&network_url);
-    file_name_source
-        .rsplit('/')
-        .next()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("failed to derive filename from {url}"))?;
-    Ok(LogicalDownload {
-        network_url,
-        logical_file_name,
-    })
-}
-
 fn fetch_network(
     url: &str,
     force_http1: bool,
@@ -1152,27 +1156,24 @@ mod tests {
     use std::os::unix::fs::MetadataExt;
 
     #[test]
-    fn logical_download_uses_snapshot_name_for_cache_identity() -> anyhow::Result<()> {
-        let parsed = parse_logical_download(
-            "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_2026.04.10.zip",
-        )
-        .unwrap();
+    fn structured_request_uses_snapshot_name_for_cache_identity() {
+        let request = PrefetchRequest::new("https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP")
+            .with_logical_file_name("obstacle_2026.04.10.zip")
+            .with_cache_key(
+                "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_2026.04.10.zip",
+            );
         assert_eq!(
-            parsed.network_url,
+            request.url,
             "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP"
         );
         assert_eq!(
-            parsed.logical_file_name.as_deref(),
+            request.logical_file_name.as_deref(),
             Some("obstacle_2026.04.10.zip")
         );
         assert_eq!(
-            PrefetchRequest::from_legacy_url(
-                "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_2026.04.10.zip",
-            )?
-            .cache_key,
+            request.cache_key,
             "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_2026.04.10.zip",
         );
-        Ok(())
     }
 
     #[test]
@@ -1199,6 +1200,36 @@ mod tests {
             "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_2026.04.11.zip",
         );
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn source_jsonl_emits_structured_prefetch_requests() -> anyhow::Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "preprocessor-fetch-source-jsonl-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root)?;
+        let path = root.join("source_urls.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                "{\"event\":\"source_url\",\"url\":\"https://example.invalid/source\",\"logical_file_name\":\"source.zip\",\"cache_key\":\"source-cache\"}\n",
+                "{\"event\":\"list_crawl\",\"results\":[\"https://example.invalid/listed.zip\"]}\n"
+            ),
+        )?;
+
+        let requests = read_source_prefetch_requests_jsonl(&path)?;
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].url, "https://example.invalid/source");
+        assert_eq!(requests[0].logical_file_name.as_deref(), Some("source.zip"));
+        assert_eq!(requests[0].cache_key, "source-cache");
+        assert_eq!(
+            requests[1],
+            PrefetchRequest::new("https://example.invalid/listed.zip")
+        );
+        fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     #[test]

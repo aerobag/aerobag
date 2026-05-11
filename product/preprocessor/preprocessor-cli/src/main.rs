@@ -25,7 +25,7 @@ use preprocessor_fast::{
 };
 use preprocessor_fetch::{
     hash_text, prefetch_archives_with_provenance, read_download_records, read_extract_records,
-    read_source_url_set, CacheLayout, FetchCacheConfig, FetchCacheMode,
+    read_source_url_set, CacheLayout, FetchCacheConfig, FetchCacheMode, PrefetchRequest,
 };
 use preprocessor_resource_index::{
     write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource,
@@ -281,14 +281,16 @@ fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, Path
         .join("obstacles");
     fs::create_dir_all(&provenance_dir)
         .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
-    let logical_url = format!(
-        "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_{snapshot_label}.zip"
-    );
+    let obstacle_url = "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP";
+    let logical_file_name = format!("obstacle_{snapshot_label}.zip");
+    let request = PrefetchRequest::new(obstacle_url)
+        .with_logical_file_name(&logical_file_name)
+        .with_cache_key(format!("{obstacle_url}#logical_name={logical_file_name}"));
     fs::write(
         provenance_dir.join("source_urls.jsonl"),
         format!(
-            "{{\"event\":\"source_url\",\"label\":\"obstacles\",\"url\":\"{}\"}}\n",
-            logical_url
+            "{{\"event\":\"source_url\",\"label\":\"obstacles\",\"url\":\"{}\",\"logical_file_name\":\"{}\",\"cache_key\":\"{}\"}}\n",
+            request.url, logical_file_name, request.cache_key
         ),
     )
     .with_context(|| {
@@ -298,7 +300,7 @@ fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, Path
         )
     })?;
     prefetch_archives_with_provenance(
-        &[logical_url],
+        std::slice::from_ref(&request),
         &work_dir,
         fetch_jobs,
         Some(&fetch_cache),

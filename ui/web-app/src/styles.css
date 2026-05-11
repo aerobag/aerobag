@@ -720,7 +720,7 @@ button {
 
 .homeGrid {
   position: absolute;
-  top: calc(var(--thumb-gap) + (var(--thumb) * 0.5));
+  top: calc((var(--thumb-gap) * 2) + var(--thumb));
   left: calc(var(--thumb-gap) + (var(--thumb) * 0.5));
   z-index: 3;
   display: grid;

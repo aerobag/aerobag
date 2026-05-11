@@ -1968,6 +1968,7 @@ export default function App() {
     }
     navigateToPage("map");
   }
+  const mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory);
 
   function openPlateTarget(airportId: string, target: "Folder" | "CSup") {
     const targetChartId = `Plate:${airportId}:${target}`;
@@ -2133,6 +2134,7 @@ export default function App() {
           legSummary={legSummary}
           plan={currentPlan}
           planUiState={planUiState}
+          mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
           onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
           onSelectPage={navigateToPage}
           onOpenCharts={(airportId, chartId) => {
@@ -2331,6 +2333,8 @@ export default function App() {
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
           planUiState={planUiState}
+          mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
+          onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
           onSelectPage={navigateToPage}
           onOpenPlan={() => navigateToPage("plan")}
           debugWarningActive={debugWarningActive}
@@ -4902,6 +4906,7 @@ function FlightPlanPage(props: {
   legSummary: string;
   plan: FlightPlan;
   planUiState: FlightPlanUiState | null;
+  mostRecentChartOrPlatePage: AppPage;
   onOpenRecentChartOrPlate: () => void;
   onSelectPage: (page: AppPage) => void;
   onOpenCharts: (airportId: string | null, chartId?: string | null) => void;
@@ -5464,6 +5469,10 @@ function FlightPlanPage(props: {
     <section className="appPage planPage" ref={pageRef}>
       <div className="chartDock">
         <HomeNavButton active={props.page === "home"} onClick={() => props.onSelectPage("home")} />
+        <ChartPlateReturnButton
+          targetPage={props.mostRecentChartOrPlatePage}
+          onClick={props.onOpenRecentChartOrPlate}
+        />
       </div>
 
       <div className="planScrollViewport" ref={planScrollViewportRef}>
@@ -6104,6 +6113,39 @@ function ChartPlateToggleButton(props: {
       <span className={`pageToggleTrack${chartSelected ? " isChart" : " isPlate"}`} aria-hidden="true">
         <span className="pageToggleKnob" />
       </span>
+      <span className="chartButtonLabel">{option?.launcherLabel ?? (chartSelected ? "CHART" : "PLATE")}</span>
+    </button>
+  );
+}
+
+function mostRecentChartOrPlatePageFromHistory(pageHistory: AppViewSnapshot[]): AppPage {
+  return pageHistory
+    .slice()
+    .reverse()
+    .find((snapshot) => snapshot.page === "map" || snapshot.page === "charts")
+    ?.page ?? "map";
+}
+
+function ChartPlateReturnButton(props: {
+  targetPage: AppPage;
+  onClick: () => void;
+}) {
+  const chartSelected = props.targetPage !== "charts";
+  const option = chartSelected
+    ? pageOptions.find((entry) => entry.id === "map")
+    : pageOptions.find((entry) => entry.id === "charts");
+  return (
+    <button
+      type="button"
+      className="chartButton"
+      data-testid={chartSelected ? "page-button-return-chart" : "page-button-return-plate"}
+      onPointerDown={stopPointer}
+      onPointerUp={stopPointer}
+      onDoubleClick={stopDoubleClick}
+      onClick={props.onClick}
+      aria-label={chartSelected ? "Return to chart page" : "Return to plate page"}
+    >
+      {option?.iconSrc ? <img className="chartButtonIcon" src={option.iconSrc} alt="" aria-hidden="true" /> : null}
       <span className="chartButtonLabel">{option?.launcherLabel ?? (chartSelected ? "CHART" : "PLATE")}</span>
     </button>
   );
@@ -7234,6 +7276,8 @@ function HomePage(props: {
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
   planUiState: FlightPlanUiState | null;
+  mostRecentChartOrPlatePage: AppPage;
+  onOpenRecentChartOrPlate: () => void;
   onSelectPage: (page: AppPage) => void;
   onOpenPlan: () => void;
   debugWarningActive: boolean;
@@ -7248,6 +7292,14 @@ function HomePage(props: {
 
   return (
     <section className="appPage planPage">
+      <div className="chartDock">
+        <HomeNavButton active={true} onClick={() => {}} />
+        <ChartPlateReturnButton
+          targetPage={props.mostRecentChartOrPlatePage}
+          onClick={props.onOpenRecentChartOrPlate}
+        />
+      </div>
+
       <div className="homeGrid" aria-label="Home navigation">
         {homeButtons.map((button) => (
           <button

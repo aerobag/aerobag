@@ -338,6 +338,7 @@ internal fun FlightPlanPage(
     uiSession: NativeUiSession,
     page: AppPage,
     pageHistory: List<AppViewSnapshot>,
+    mostRecentChartOrPlatePage: AppPage,
     uptimeLabel: String,
     navElement: NavElementUiView?,
     planUiState: FlightPlanUiState?,
@@ -345,7 +346,7 @@ internal fun FlightPlanPage(
     plan: FlightPlan,
     uiTheme: UiTheme,
     onSelectPage: (AppPage) -> Unit,
-    onOpenPlan: () -> Unit,
+    onOpenRecentChartOrPlate: () -> Unit,
     onOpenCharts: (String?) -> Unit,
     onApplySessionSnapshot: (UiSessionSnapshot) -> Unit,
 ) {
@@ -674,16 +675,18 @@ internal fun FlightPlanPage(
             .fillMaxSize()
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
-        CompactSquareButton(
-            label = "HOME",
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(ThumbGap)
-                .size(ThumbSize),
-            selected = page == AppPage.Home,
-            onClick = {
+        HomeReturnDock(
+            modifier = Modifier.align(Alignment.TopStart),
+            currentPage = page,
+            chartPlateTargetPage = mostRecentChartOrPlatePage,
+            onHomeClick = {
                 if (!routeEntryNavigationSuppressed()) {
                     onSelectPage(AppPage.Home)
+                }
+            },
+            onOpenChartOrPlate = {
+                if (!routeEntryNavigationSuppressed()) {
+                    onOpenRecentChartOrPlate()
                 }
             },
         )
@@ -891,7 +894,7 @@ internal fun FlightPlanPage(
                 navElement = navElement,
                 onClick = {
                     if (!routeEntryNavigationSuppressed()) {
-                        onOpenPlan()
+                        onOpenRecentChartOrPlate()
                     }
                 },
                 modifier = Modifier.align(Alignment.BottomCenter),

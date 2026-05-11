@@ -1096,6 +1096,13 @@ internal val PageOptions = listOf(
     PageTrayOption(AppPage.Home, "HOME", "HOME"),
 )
 
+internal fun mostRecentChartOrPlatePageFromHistory(pageHistory: List<AppViewSnapshot>): AppPage =
+    pageHistory
+        .asReversed()
+        .firstOrNull { it.page == AppPage.Map || it.page == AppPage.Charts }
+        ?.page
+        ?: AppPage.Map
+
 internal val OfflineProductOptions = listOf(
     OfflinePackageDimension("sec", "Sectional"),
     OfflinePackageDimension("tac", "TAC"),
@@ -2597,6 +2604,7 @@ internal fun AerobagApp() {
                         uiSession = uiSession,
                         page = page,
                         pageHistory = pageHistory,
+                        mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),
                         uptimeLabel = uptimeLabel,
                         navElement = navElement,
                         planUiState = sessionPlanUiState,
@@ -2604,7 +2612,7 @@ internal fun AerobagApp() {
                         plan = currentPlan,
                         uiTheme = uiTheme,
                         onSelectPage = ::navigateToPage,
-                        onOpenPlan = ::navigateToMostRecentChartOrPlate,
+                        onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         onOpenCharts = { airportId -> if (airportId != null) openChartsForAirport(airportId) },
                         onApplySessionSnapshot = { snapshot ->
                             sessionSnapshot = snapshot
@@ -2680,12 +2688,14 @@ internal fun AerobagApp() {
                     HomePage(
                         page = page,
                         pageHistory = pageHistory,
+                        mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),
                         uptimeLabel = uptimeLabel,
                         bootstrap = bootstrap,
                         debugState = sessionSnapshot.debugState,
                         navElement = navElement,
                         onSelectPage = ::navigateToPage,
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
+                        onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         initialOfflinePackagesOpen = keepOfflinePackagesVisible,
                         offlinePackagesControllerHandle = offlinePackagesControllerHandle,
                         onOfflinePackagesClosed = { keepOfflinePackagesVisible = false },

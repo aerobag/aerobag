@@ -720,6 +720,48 @@ internal fun ChartPlateToggleButton(
 }
 
 @Composable
+internal fun ChartPlateReturnButton(
+    targetPage: AppPage,
+    onClick: () -> Unit,
+) {
+    val chartPage = if (targetPage == AppPage.Charts) AppPage.Charts else AppPage.Map
+    val option = PageOptions.firstOrNull { it.page == chartPage }
+        ?: PageOptions.first { it.page == AppPage.Map }
+    CompactSquareButton(
+        label = option.launcherLabel,
+        modifier = Modifier.size(ThumbSize),
+        iconResId = option.iconResId,
+        onClick = onClick,
+    )
+}
+
+@Composable
+internal fun HomeReturnDock(
+    modifier: Modifier = Modifier,
+    currentPage: AppPage,
+    chartPlateTargetPage: AppPage,
+    onHomeClick: () -> Unit,
+    onOpenChartOrPlate: () -> Unit,
+) {
+    Row(
+        modifier = modifier.padding(ThumbGap),
+        horizontalArrangement = Arrangement.spacedBy(ThumbGap),
+        verticalAlignment = Alignment.Top,
+    ) {
+        CompactSquareButton(
+            label = "HOME",
+            modifier = Modifier.size(ThumbSize),
+            selected = currentPage == AppPage.Home,
+            onClick = onHomeClick,
+        )
+        ChartPlateReturnButton(
+            targetPage = chartPlateTargetPage,
+            onClick = onOpenChartOrPlate,
+        )
+    }
+}
+
+@Composable
 internal fun PageToggleIndicator(
     chartSelected: Boolean,
     modifier: Modifier = Modifier,

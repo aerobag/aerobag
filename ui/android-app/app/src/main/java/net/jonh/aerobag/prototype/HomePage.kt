@@ -336,12 +336,14 @@ import kotlin.math.sin
 internal fun HomePage(
     page: AppPage,
     pageHistory: List<AppViewSnapshot>,
+    mostRecentChartOrPlatePage: AppPage = AppPage.Map,
     uptimeLabel: String,
     bootstrap: net.jonh.aerobag.prototype.domain.BootstrapFixture,
     debugState: UiDebugState,
     navElement: NavElementUiView?,
     onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
+    onOpenRecentChartOrPlate: () -> Unit = {},
     initialOfflinePackagesOpen: Boolean = false,
     offlinePackagesControllerHandle: Long,
     forceOfflinePackagesOpen: Boolean = false,
@@ -534,13 +536,21 @@ internal fun HomePage(
             .fillMaxSize()
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
+        HomeReturnDock(
+            modifier = Modifier.align(Alignment.TopStart),
+            currentPage = page,
+            chartPlateTargetPage = mostRecentChartOrPlatePage,
+            onHomeClick = { onSelectPage(AppPage.Home) },
+            onOpenChartOrPlate = onOpenRecentChartOrPlate,
+        )
+
         LazyVerticalGrid(
             columns = GridCells.Fixed(3),
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .padding(
                     start = ThumbGap + (ThumbSize * 0.5f),
-                    top = ThumbGap + (ThumbSize * 0.5f),
+                    top = ThumbSize + ThumbGap * 2f,
                 )
                 .width((ThumbSize * 6f) + (ThumbGap * 2f)),
             horizontalArrangement = Arrangement.spacedBy(ThumbGap),

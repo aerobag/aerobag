@@ -329,6 +329,10 @@ type WebPageTilePaintTiming = {
 };
 
 type ChartAsset = NonNullable<ChartPageData["airports"][number]>["charts"][number];
+type ResolvedChartUrls = {
+  assetUrl?: string | null;
+  thumbnailUrl?: string | null;
+};
 type TrayOption = {
   id: string;
   label: string;
@@ -6600,9 +6604,11 @@ function ChartsPage(props: {
   const firstVisualReadyRef = useRef(false);
   const trayGroup = useModalTrayGroup(["airport", "chart", "load", "ownship"] as const);
   const [plateProcedureLoads, setPlateProcedureLoads] = useState<ProcedureLoadOption[]>([]);
+  const [resolvedChartUrls, setResolvedChartUrls] = useState<Record<string, ResolvedChartUrls>>({});
   const trayOpen = trayGroup.scrimOpen;
   const sortedCharts = selectedAirport?.charts ?? [];
   const selectedImageSize = imageSize && imageSize.chartId === (selectedChart?.id ?? "") ? imageSize : null;
+  const selectedChartAssetUrl = selectedChart ? resolvedChartUrls[selectedChart.id]?.assetUrl ?? null : null;
   const fallbackViewport = useMemo(() => {
     if (!selectedImageSize || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return null;
@@ -6653,6 +6659,94 @@ function ChartsPage(props: {
   }, [selectedChart?.id]);
 
   useEffect(() => {
+    if (!selectedChart) {
+      return;
+    }
+    let cancelled = false;
+    void resolvePackageMemberUrl(selectedChart.package_id, selectedChart.asset_path)
+      .then((assetUrl) => {
+        if (cancelled) {
+          return;
+        }
+        setResolvedChartUrls((current) => ({
+          ...current,
+          [selectedChart.id]: {
+            ...current[selectedChart.id],
+            assetUrl,
+          },
+        }));
+      })
+      .catch((error) => {
+        debugLog("charts.asset_url.resolve_failed", {
+          chart_id: selectedChart.id,
+          package_id: selectedChart.package_id,
+          asset_path: selectedChart.asset_path,
+          error: errorMessage(error),
+        });
+        if (!cancelled) {
+          setResolvedChartUrls((current) => ({
+            ...current,
+            [selectedChart.id]: {
+              ...current[selectedChart.id],
+              assetUrl: null,
+            },
+          }));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedChart?.id, selectedChart?.package_id, selectedChart?.asset_path]);
+
+  useEffect(() => {
+    if (!folderOpen) {
+      return;
+    }
+    let cancelled = false;
+    const chartsToResolve = sortedCharts.filter((chart) =>
+      chart.thumbnail_path && resolvedChartUrls[chart.id]?.thumbnailUrl === undefined,
+    );
+    if (chartsToResolve.length === 0) {
+      return;
+    }
+    void Promise.all(chartsToResolve.map(async (chart) => {
+      try {
+        return {
+          chart,
+          thumbnailUrl: chart.thumbnail_path
+            ? await resolvePackageMemberUrl(chart.package_id, chart.thumbnail_path)
+            : null,
+        };
+      } catch (error) {
+        debugLog("charts.thumbnail_url.resolve_failed", {
+          chart_id: chart.id,
+          package_id: chart.package_id,
+          thumbnail_path: chart.thumbnail_path,
+          error: errorMessage(error),
+        });
+        return { chart, thumbnailUrl: null };
+      }
+    })).then((resolved) => {
+      if (cancelled) {
+        return;
+      }
+      setResolvedChartUrls((current) => {
+        const next = { ...current };
+        for (const { chart, thumbnailUrl } of resolved) {
+          next[chart.id] = {
+            ...next[chart.id],
+            thumbnailUrl,
+          };
+        }
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [folderOpen, resolvedChartUrls, sortedCharts]);
+
+  useEffect(() => {
     const img = imageRef.current;
     if (!selectedChart || !img) {
       return;
@@ -6675,7 +6769,7 @@ function ChartsPage(props: {
         height: img.naturalHeight,
       };
     });
-  }, [selectedChart?.id, selectedChart?.asset_url]);
+  }, [selectedChart?.id, selectedChartAssetUrl]);
 
   useEffect(() => {
     if (viewport === null) {
@@ -6993,7 +7087,14 @@ function ChartsPage(props: {
                 }}
               >
                 <div className="plateThumbMedia" style={{ backgroundColor: plateFolderTheme.thumbnail_bg }}>
-                  {chart.thumbnail_url ? <img className="plateThumbImage" src={chart.thumbnail_url} alt="" draggable={false} /> : null}
+                  {resolvedChartUrls[chart.id]?.thumbnailUrl ? (
+                    <img
+                      className="plateThumbImage"
+                      src={resolvedChartUrls[chart.id]?.thumbnailUrl ?? undefined}
+                      alt=""
+                      draggable={false}
+                    />
+                  ) : null}
                   <div className="plateThumbLabel" style={{ backgroundColor: plateFolderColor(chart.folder_category) }}>
                     {chart.label}
                   </div>
@@ -7001,13 +7102,13 @@ function ChartsPage(props: {
               </button>
             ))}
           </div>
-        ) : selectedChart ? (
+        ) : selectedChart && selectedChartAssetUrl ? (
           <>
             <img
               key={selectedChart.id}
               ref={imageRef}
               className="chartImage"
-              src={selectedChart.asset_url}
+              src={selectedChartAssetUrl}
               alt={selectedChart.label}
               draggable={false}
               onLoad={(event) =>

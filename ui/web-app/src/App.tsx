@@ -5586,11 +5586,11 @@ function FlightPlanPage(props: {
                 </div>
               </form>
               {routeEntryError ? (
-                <div className="planEntryFeedback">{routeEntryError}</div>
+                <div className="planEntryFeedback" data-testid="plan-append-route-feedback">{routeEntryError}</div>
               ) : routeEntryPreview.issues[0] ? (
-                <div className="planEntryFeedback">{routeEntryPreview.issues[0].message}</div>
+                <div className="planEntryFeedback" data-testid="plan-append-route-feedback">{routeEntryPreview.issues[0].message}</div>
               ) : routeEntryLoading ? (
-                <div className="planEntryFeedback">Checking...</div>
+                <div className="planEntryFeedback" data-testid="plan-append-route-feedback">Checking...</div>
               ) : null}
             </div>
           </div>

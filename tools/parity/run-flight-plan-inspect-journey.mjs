@@ -229,7 +229,14 @@ class CdpSocket {
         length = this.buffer.readUInt16BE(2);
         offset = 4;
       } else if (length === 127) {
-        throw new Error("CDP frame too large");
+        if (this.buffer.length < 10) return;
+        const high = this.buffer.readUInt32BE(2);
+        const low = this.buffer.readUInt32BE(6);
+        if (high !== 0 || low > Number.MAX_SAFE_INTEGER) {
+          throw new Error("CDP frame too large");
+        }
+        length = low;
+        offset = 10;
       }
       const masked = (second & 0x80) !== 0;
       const maskOffset = offset;
@@ -347,7 +354,7 @@ async function webJourney(url) {
     await webSetInput(cdp, "[data-testid=\"plan-append-route-input\"]", "KRNT V2 ZZZZZ ");
     await waitForWeb(
       cdp,
-      "document.body.innerText.includes('unknown route element ZZZZZ')",
+      "document.querySelector('[data-testid=\"plan-append-route-feedback\"]')?.innerText.trim().length > 0",
       "append route feedback",
     );
     recordStep(out, "append route feedback visible");

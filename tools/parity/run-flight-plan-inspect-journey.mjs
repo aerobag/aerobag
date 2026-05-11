@@ -1319,8 +1319,18 @@ async function androidEnsureOfflinePackagesReady(serial, out, packageSourceHostP
 
   const runtimeReady = () => {
     const xml = dumpAndroid(serial);
-    return findNode(xml, (node) => hasAndroidTag(node, "parity:nav-cdi") || hasAndroidTag(node, "parity:map-surface")) !== null &&
-      findNode(xml, (node) => hasAndroidTag(node, "parity:offline-library-panel") || hasAndroidTag(node, "parity:offline-packages-panel")) === null;
+    const offlineVisible = findNode(xml, (node) =>
+      hasAndroidTag(node, "parity:offline-library-panel") ||
+      hasAndroidTag(node, "parity:offline-packages-panel") ||
+      hasAndroidTag(node, "parity:offline-refresh-button") ||
+      hasAndroidTag(node, "parity:offline-sync-button") ||
+      hasAndroidTag(node, "parity:offline-close-button")
+    ) !== null;
+    return !offlineVisible && findNode(xml, (node) =>
+      hasAndroidTag(node, "parity:map-surface") ||
+      hasAndroidTag(node, "parity:button:CHART") ||
+      hasAndroidTag(node, "parity:button:FLIGHT\nPLAN")
+    ) !== null;
   };
 
   if (runtimeReady()) {
@@ -1360,9 +1370,9 @@ async function androidEnsureOfflinePackagesReady(serial, out, packageSourceHostP
     if (await androidTapTag(serial, out, "synced NW offline packages", "parity:offline-sync-button", 10000)) {
       await androidWaitForNode(
         serial,
-        (node) => hasAndroidTag(node, "parity:nav-cdi") || hasAndroidTag(node, "parity:map-surface"),
+        (node) => hasAndroidTag(node, "parity:offline-close-button") && node.enabled === "true",
         600000,
-        "runtime available after offline package sync",
+        "offline package sync completion",
       );
       recordStep(out, "runtime available after offline package sync");
     }
@@ -1372,7 +1382,7 @@ async function androidEnsureOfflinePackagesReady(serial, out, packageSourceHostP
     const finalXml = dumpAndroid(serial);
     if (findNode(finalXml, (node) => hasAndroidTag(node, "parity:offline-close-button"))) {
       await androidTapTag(serial, out, "closed offline packages after sync", "parity:offline-close-button", 10000);
-      await delay(500);
+      await waitFor(runtimeReady, 10000, "runtime surface after closing offline packages");
     }
   }
 
@@ -1689,6 +1699,8 @@ async function androidJourney(serial, packageSourceHostPort = "8092") {
   if (hasAndroidText(postBootstrapXml, "Waypoint")) {
     recordStep(out, "opened plan page", "already on plan page");
     recordCheck(out, "openedPlanFromCdi", true);
+  } else if (findNode(postBootstrapXml, (node) => hasAndroidTag(node, "parity:button:FLIGHT\nPLAN"))) {
+    recordCheck(out, "openedPlanFromCdi", await androidTapTag(serial, out, "opened plan page", "parity:button:FLIGHT\nPLAN", 12000));
   } else {
     recordCheck(out, "openedPlanFromCdi", await androidTapTag(serial, out, "opened plan page", "parity:nav-cdi", 12000));
   }

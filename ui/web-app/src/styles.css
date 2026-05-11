@@ -394,6 +394,36 @@ button {
   stroke-linejoin: round;
 }
 
+.vectorIdentBox {
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
+}
+
+.vectorIdentText {
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  dominant-baseline: auto;
+}
+
+.vectorIdentFlightPlan .vectorIdentBox {
+  fill: white;
+  stroke: rgba(8, 18, 24, 0.92);
+}
+
+.vectorIdentFlightPlan .vectorIdentText {
+  fill: rgba(8, 18, 24, 0.96);
+}
+
+.vectorIdentActiveFlightPlan .vectorIdentBox {
+  fill: rgba(8, 18, 24, 0.96);
+  stroke: white;
+}
+
+.vectorIdentActiveFlightPlan .vectorIdentText {
+  fill: var(--theme-class-c-magenta);
+}
+
 .vorBand {
   fill: var(--theme-class-b-d-blue);
   stroke: rgba(8, 18, 24, 0.82);

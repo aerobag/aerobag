@@ -511,7 +511,7 @@ fn read_optional<T: DeserializeOwned>(
     }
 }
 
-fn nav_ref_position(
+pub(crate) fn nav_ref_position(
     store: &NavKvStore,
     nav_ref: &NavRef,
     procedure_airport_id: Option<&str>,
@@ -529,7 +529,7 @@ fn nav_ref_position(
     )
 }
 
-fn nav_symbol_feature(
+pub(crate) fn nav_symbol_feature(
     store: &NavKvStore,
     nav_ref: &NavRef,
 ) -> Result<Option<NavSymbolFeature>, HadReadError> {

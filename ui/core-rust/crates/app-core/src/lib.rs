@@ -46,8 +46,9 @@ pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
 pub use map_follow::MapFollowUiState;
 pub use map_overlay::{
     aggregate_vector_tile_cache_key, airspace_feature_path, airspace_label_tile_key,
-    airspace_ref_tile_key, map_overlay_config_from_vector_manifest_json,
-    point_vector_record_to_symbol_feature, query_map_overlay, query_map_selection, tile_key,
+    airspace_ref_tile_key, chart_ident_label_for_nav_ref_symbol,
+    map_overlay_config_from_vector_manifest_json, point_vector_record_to_symbol_feature,
+    project_nav_symbol_feature, query_map_overlay, query_map_selection, tile_key,
     visible_point_tile_window, AirportPlateAvailability, AirspaceDisplayLabel, AirspaceDisplayPath,
     AirspaceDisplayStroke, AirspaceDisplayStyle, AirspaceDisplaySubpath, AirspaceFeaturePath,
     AirspaceFeaturePayload, AirspaceFeatureRequest, AirspaceLabelRecord, AirspaceLabelTilePayload,
@@ -57,9 +58,9 @@ pub use map_overlay::{
     MetarRecord, MetarTilePayload, NavSymbolFeature, ObstacleOverlayContext, OfflineRegionCatalog,
     OfflineRegionDisplay, OfflineRegionRecord, PirepRecord, PointTilePayload, PointVectorRecord,
     TafProductPayload, TafRecord, TfrAltitudeLimit, TfrAreaPayload, TfrLatLonPoint,
-    TfrProductPayload, TfrScheduleFragment, VectorAggregateTilePayload, VectorTileRequest,
-    VisibleMapFeature, VisibleMetarFeature, VisiblePirepFeature, AIRSPACE_DISPLAY_FEATURE_LIMIT,
-    VECTOR_DISPLAY_FEATURE_LIMIT,
+    TfrProductPayload, TfrScheduleFragment, VectorAggregateTilePayload, VectorIdentLabelStyle,
+    VectorTileRequest, VisibleMapFeature, VisibleMetarFeature, VisiblePirepFeature,
+    AIRSPACE_DISPLAY_FEATURE_LIMIT, VECTOR_DISPLAY_FEATURE_LIMIT,
 };
 pub use navdb_types::{
     AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,

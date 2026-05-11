@@ -816,7 +816,48 @@ type VectorPointSymbolFeature = {
   has_water_runway?: boolean | null;
   runway_length_ratio: number;
   longest_runway_heading_true_deg: number | null;
+  label_style?: VectorIdentLabelStyle;
 };
+
+type VectorIdentLabelStyle = "default" | "flight_plan" | "active_flight_plan";
+
+function VectorIdentLabel(props: {
+  label: string;
+  y: number;
+  className: string;
+  labelStyle?: VectorIdentLabelStyle;
+}) {
+  const { label, y, className, labelStyle = "default" } = props;
+  if (!label) return null;
+  if (labelStyle === "default") {
+    return (
+      <text x="0" y={y} textAnchor="middle" className={className}>
+        {label}
+      </text>
+    );
+  }
+  const width = Math.max(26, label.length * 9.5 + 14);
+  const height = 15;
+  const styleClass = labelStyle === "active_flight_plan"
+    ? "vectorIdent vectorIdentActiveFlightPlan"
+    : "vectorIdent vectorIdentFlightPlan";
+  return (
+    <g className={styleClass}>
+      <rect
+        x={-width / 2}
+        y={y - height + 2}
+        width={width}
+        height={height}
+        rx="2"
+        ry="2"
+        className="vectorIdentBox"
+      />
+      <text x="0" y={y} textAnchor="middle" className="vectorIdentText">
+        {label}
+      </text>
+    </g>
+  );
+}
 
 function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel?: boolean }) {
   const { feature, showLabel = true } = props;
@@ -877,9 +918,12 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
           </>
         ) : null}
         {showLabel ? (
-          <text x="0" y={airportLabelY} textAnchor="middle" className={airportLabelClass}>
-            {feature.label}
-          </text>
+          <VectorIdentLabel
+            label={feature.label}
+            y={airportLabelY}
+            className={airportLabelClass}
+            labelStyle={feature.label_style}
+          />
         ) : null}
       </>
     );
@@ -890,9 +934,7 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
         <path d={vorBandPath} className="vorBand" fillRule="evenodd" />
         <path d={vorOuterHexPath} className="vorBorder" />
         {showLabel ? (
-          <text x="0" y={vorLabelY} textAnchor="middle" className="vorLabel">
-            {feature.label}
-          </text>
+          <VectorIdentLabel label={feature.label} y={vorLabelY} className="vorLabel" labelStyle={feature.label_style} />
         ) : null}
       </>
     );
@@ -918,9 +960,7 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
         <circle cx="0" cy={obstacleDotY} r={obstacleDotRadius} className="obstacleDotUnder" />
         <circle cx="0" cy={obstacleDotY} r={obstacleDotRadius} className={obstacleDotClass} />
         {showLabel && feature.label ? (
-          <text x="0" y={obstacleLabelY} textAnchor="middle" className="obstacleLabel">
-            {feature.label}
-          </text>
+          <VectorIdentLabel label={feature.label} y={obstacleLabelY} className="obstacleLabel" labelStyle={feature.label_style} />
         ) : null}
       </>
     );
@@ -929,9 +969,7 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
     <>
       <path d="M 0 -8 L 7 6 L -7 6 Z" className="fixMarker" />
       {showLabel ? (
-        <text x="0" y={fixLabelY} textAnchor="middle" className="fixLabel">
-          {feature.label}
-        </text>
+        <VectorIdentLabel label={feature.label} y={fixLabelY} className="fixLabel" labelStyle={feature.label_style} />
       ) : null}
     </>
   );
@@ -4118,6 +4156,26 @@ function MapPage(props: {
                 <PirepSymbol feature={feature} scale={0.32} />
               </g>
             ))}
+          </svg>
+        ) : null}
+        {mapIsVisible && (mapOverlay.flight_plan_features ?? []).length > 0 ? (
+          <svg
+            className="vectorOverlay flightPlanVectorOverlay"
+            viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
+            preserveAspectRatio="none"
+            style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+          >
+            {(mapOverlay.flight_plan_features ?? []).map((feature) => {
+              return (
+                <g
+                  key={feature.id}
+                  transform={`translate(${feature.screen_x} ${feature.screen_y})`}
+                  data-testid={feature.label ? `parity:map-fp-feature:${feature.kind}:${feature.label}:${feature.id}` : undefined}
+                >
+                  <VectorPointSymbol feature={feature} />
+                </g>
+              );
+            })}
           </svg>
         ) : null}
         {mapIsVisible && selectedMapHighlight ? (

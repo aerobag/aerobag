@@ -77,6 +77,7 @@ data class VisibleMapFeature(
     val hasWaterRunway: Boolean?,
     val runwayLengthRatio: Double,
     val longestRunwayHeadingTrueDeg: Double?,
+    val labelStyle: String = "default",
 )
 
 data class VisibleMetarFeature(
@@ -231,6 +232,7 @@ data class MapOverlayQueryResult(
     val neededMetars: Boolean,
     val neededTfrs: Boolean,
     val visibleFeatures: List<VisibleMapFeature>,
+    val flightPlanFeatures: List<VisibleMapFeature> = emptyList(),
     val visibleMetars: List<VisibleMetarFeature>,
     val visiblePireps: List<VisiblePirepFeature>,
     val airspacePaths: List<AirspaceDisplayPath>,
@@ -1994,6 +1996,7 @@ private fun WireMapOverlayQueryResult.toUi() = MapOverlayQueryResult(
     neededMetars = needed_metars,
     neededTfrs = needed_tfrs,
     visibleFeatures = visible_features.map { it.toUi() },
+    flightPlanFeatures = flight_plan_features.map { it.toUi() },
     visibleMetars = visible_metars.map { it.toUi() },
     visiblePireps = visible_pireps.map { it.toUi() },
     airspacePaths = airspace_paths.map { it.toUi() },
@@ -2061,6 +2064,7 @@ private fun WireVisibleMapFeature.toUi() = VisibleMapFeature(
     hasWaterRunway = has_water_runway,
     runwayLengthRatio = runway_length_ratio,
     longestRunwayHeadingTrueDeg = longest_runway_heading_true_deg,
+    labelStyle = label_style,
 )
 
 private fun WireVisibleMetarFeature.toUi() = VisibleMetarFeature(

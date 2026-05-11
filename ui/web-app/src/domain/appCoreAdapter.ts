@@ -227,6 +227,7 @@ export type VisibleMapFeature = {
   has_water_runway?: boolean | null;
   runway_length_ratio: number;
   longest_runway_heading_true_deg: number | null;
+  label_style?: "default" | "flight_plan" | "active_flight_plan";
 };
 
 export type VisibleMetarFeature = {
@@ -309,6 +310,7 @@ export type MapOverlayQueryResult = {
   needed_metars: boolean;
   needed_tfrs: boolean;
   visible_features: VisibleMapFeature[];
+  flight_plan_features?: VisibleMapFeature[];
   visible_metars: VisibleMetarFeature[];
   visible_pireps: VisiblePirepFeature[];
   airspace_paths: AirspaceDisplayPath[];

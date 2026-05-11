@@ -343,6 +343,20 @@ pub struct AirspaceFeatureRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VectorIdentLabelStyle {
+    Default,
+    FlightPlan,
+    ActiveFlightPlan,
+}
+
+impl Default for VectorIdentLabelStyle {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VisibleMapFeature {
     pub id: String,
     pub kind: String,
@@ -359,6 +373,8 @@ pub struct VisibleMapFeature {
     pub has_water_runway: Option<bool>,
     pub runway_length_ratio: f64,
     pub longest_runway_heading_true_deg: Option<f64>,
+    #[serde(default)]
+    pub label_style: VectorIdentLabelStyle,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -515,6 +531,8 @@ pub struct MapOverlayQueryResult {
     pub needed_metars: bool,
     pub needed_tfrs: bool,
     pub visible_features: Vec<VisibleMapFeature>,
+    #[serde(default)]
+    pub flight_plan_features: Vec<VisibleMapFeature>,
     pub visible_metars: Vec<VisibleMetarFeature>,
     pub visible_pireps: Vec<VisiblePirepFeature>,
     pub airspace_paths: Vec<AirspaceDisplayPath>,
@@ -1135,22 +1153,12 @@ pub fn query_map_overlay(
                 ) else {
                     continue;
                 };
-                visible_features.push(VisibleMapFeature {
-                    id: record.id.clone(),
-                    kind: symbol.kind,
-                    label: symbol.label,
-                    style_class: symbol.style_class,
-                    obstacle_variant: symbol.obstacle_variant,
-                    screen_x: point.x,
-                    screen_y: point.y,
-                    towered: symbol.towered,
-                    fuel_available: symbol.fuel_available,
-                    has_paved_runway: symbol.has_paved_runway,
-                    heliport: symbol.heliport,
-                    has_water_runway: symbol.has_water_runway,
-                    runway_length_ratio: symbol.runway_length_ratio,
-                    longest_runway_heading_true_deg: symbol.longest_runway_heading_true_deg,
-                });
+                visible_features.push(visible_map_feature_from_symbol(
+                    record.id.clone(),
+                    symbol,
+                    point,
+                    VectorIdentLabelStyle::Default,
+                ));
             }
             if limit_hit {
                 break;
@@ -1247,6 +1255,7 @@ pub fn query_map_overlay(
         needed_metars: metars.needed_metars,
         needed_tfrs: tfrs.needed_tfrs,
         visible_features,
+        flight_plan_features: Vec::new(),
         visible_metars: metars.visible_metars,
         visible_pireps: metars.visible_pireps,
         airspace_paths: airspace.paths,
@@ -1254,6 +1263,80 @@ pub fn query_map_overlay(
         airspace_labels,
         offline_regions,
         warnings,
+    }
+}
+
+pub fn project_nav_symbol_feature(
+    id: String,
+    symbol: NavSymbolFeature,
+    position: LatLon,
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    label_style: VectorIdentLabelStyle,
+) -> VisibleMapFeature {
+    let center_world = lat_lon_to_world(viewport.center);
+    let scale = 2.0_f64.powf(viewport.zoom);
+    let point = nearest_wrapped_screen_point(center_world, scale, width_px, height_px, position);
+    visible_map_feature_from_symbol(id, symbol, point, label_style)
+}
+
+fn nearest_wrapped_screen_point(
+    center_world: WorldPoint,
+    scale: f64,
+    width_px: f64,
+    height_px: f64,
+    position: LatLon,
+) -> WorldPoint {
+    [-WORLD_SIZE, 0.0, WORLD_SIZE]
+        .into_iter()
+        .map(|world_x_offset| {
+            world_to_screen_with_x_offset(
+                center_world,
+                scale,
+                width_px,
+                height_px,
+                position,
+                world_x_offset,
+            )
+        })
+        .min_by(|a, b| {
+            let adx = a.x - width_px / 2.0;
+            let ady = a.y - height_px / 2.0;
+            let bdx = b.x - width_px / 2.0;
+            let bdy = b.y - height_px / 2.0;
+            (adx * adx + ady * ady)
+                .partial_cmp(&(bdx * bdx + bdy * bdy))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap_or(WorldPoint {
+            x: width_px / 2.0,
+            y: height_px / 2.0,
+        })
+}
+
+fn visible_map_feature_from_symbol(
+    id: String,
+    symbol: NavSymbolFeature,
+    point: WorldPoint,
+    label_style: VectorIdentLabelStyle,
+) -> VisibleMapFeature {
+    VisibleMapFeature {
+        id,
+        kind: symbol.kind,
+        label: symbol.label,
+        style_class: symbol.style_class,
+        obstacle_variant: symbol.obstacle_variant,
+        screen_x: point.x,
+        screen_y: point.y,
+        towered: symbol.towered,
+        fuel_available: symbol.fuel_available,
+        has_paved_runway: symbol.has_paved_runway,
+        heliport: symbol.heliport,
+        has_water_runway: symbol.has_water_runway,
+        runway_length_ratio: symbol.runway_length_ratio,
+        longest_runway_heading_true_deg: symbol.longest_runway_heading_true_deg,
+        label_style,
     }
 }
 
@@ -3990,14 +4073,57 @@ fn merge_aggregate_vector_tile_requests(
     out
 }
 
+pub fn chart_ident_label_for_nav_ref_symbol(nav_ref: &NavRef, symbol: &NavSymbolFeature) -> String {
+    let airport_ident = match nav_ref {
+        NavRef::Airport(ident) => Some(ident.as_str()),
+        _ => None,
+    };
+    let nav_ident = match nav_ref {
+        NavRef::Navaid(ident)
+        | NavRef::ArincNavaid {
+            identifier: ident, ..
+        }
+        | NavRef::TerminalNavaid {
+            identifier: ident, ..
+        } => Some(ident.as_str()),
+        _ => None,
+    };
+    chart_ident_label(
+        &symbol.kind,
+        &symbol.style_class,
+        &symbol.label,
+        airport_ident,
+        nav_ident,
+    )
+}
+
 fn display_label(record: &PointVectorRecord) -> String {
-    if record.style_class == "airport" || record.kind.eq_ignore_ascii_case("airport") {
-        if let Some(ident) = record
+    chart_ident_label(
+        &record.kind,
+        &record.style_class,
+        &record.label,
+        record
             .id
             .strip_prefix("airports:")
             .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
+            .filter(|value| !value.is_empty()),
+        record
+            .id
+            .strip_prefix("nav:")
+            .map(|tail| tail.split(':').next().unwrap_or(tail).trim())
+            .filter(|value| !value.is_empty()),
+    )
+}
+
+fn chart_ident_label(
+    kind: &str,
+    style_class: &str,
+    label: &str,
+    airport_ident: Option<&str>,
+    nav_ident: Option<&str>,
+) -> String {
+    if style_class == "airport" || kind.eq_ignore_ascii_case("airport") {
+        if let Some(ident) = airport_ident {
             let trimmed = if ident.len() == 4 && ident.starts_with('K') {
                 &ident[1..]
             } else {
@@ -4006,17 +4132,12 @@ fn display_label(record: &PointVectorRecord) -> String {
             return trimmed.to_uppercase();
         }
     }
-    if record.style_class == "nav" && is_vor_family_kind(&record.kind) {
-        if let Some(ident) = record
-            .id
-            .strip_prefix("nav:")
-            .map(|tail| tail.split(':').next().unwrap_or(tail).trim())
-            .filter(|value| !value.is_empty())
-        {
+    if style_class == "nav" && is_vor_family_kind(kind) {
+        if let Some(ident) = nav_ident {
             return ident.to_uppercase();
         }
     }
-    record.label.trim().to_uppercase()
+    label.trim().to_uppercase()
 }
 
 fn is_vor_family_kind(kind: &str) -> bool {
@@ -6210,6 +6331,28 @@ mod tests {
     }
 
     #[test]
+    fn nav_ref_chart_ident_labels_use_vector_symbol_rules() {
+        let symbol = NavSymbolFeature {
+            kind: "VOR/DME".to_string(),
+            label: "SEA 116.80".to_string(),
+            style_class: "nav".to_string(),
+            obstacle_variant: None,
+            towered: false,
+            fuel_available: false,
+            has_paved_runway: None,
+            heliport: None,
+            has_water_runway: None,
+            runway_length_ratio: 0.0,
+            longest_runway_heading_true_deg: None,
+        };
+
+        assert_eq!(
+            chart_ident_label_for_nav_ref_symbol(&NavRef::Navaid("SEA".to_string()), &symbol),
+            "SEA"
+        );
+    }
+
+    #[test]
     fn vor_selection_uses_frequency_as_description() {
         let record = PointVectorRecord {
             id: "nav:SEA:VOR".to_string(),
@@ -6509,6 +6652,7 @@ mod tests {
             has_water_runway: None,
             runway_length_ratio: 0.0,
             longest_runway_heading_true_deg: None,
+            label_style: VectorIdentLabelStyle::Default,
         }
     }
 }

@@ -9,29 +9,32 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    chart_ident_label_for_nav_ref_symbol,
     chart_page::airport_ids_from_plan,
     first_guidance_detail_index_for_leg, guidance_detail_id_for_index,
     guidance_detail_id_for_leg_element,
     had_ops::{
         flight_plan_ui_state, insert_waypoint_best_position,
         materialize_airway_presentation_selection, materialize_procedure, nav_kv_page_resources,
-        suggest_waypoint_identifiers, CoreResourceRequest, HadOperationOutcome, HadReadError,
+        nav_ref_position, nav_symbol_feature, suggest_waypoint_identifiers, CoreResourceRequest,
+        HadOperationOutcome, HadReadError,
     },
     map_follow::{MapFollowSessionState, MapFollowUiState},
     map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
     planning::NavElementUiView,
     playback::PlaybackSessionState,
-    query_map_overlay, query_map_selection, state, AirportPlateAvailability,
-    AirspaceFeaturePayload, AirspaceLabelTilePayload, AirspaceReferenceTilePayload,
-    AirwayPresentationPlan, AppError, AppErrorKind, AppEvent, AppResult, AppState, AppUiState,
-    FlightPlan, FlightPlanDisplayRowKind, FlightPlanRowActionExecution, FlightPlanRowActionId,
-    GuidanceState, LatLon, MapOverlayConfig, MapOverlayQueryResult, MapSelectionSessionAction,
-    MapViewport, MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore,
-    NavRef, PirepRecord, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity,
-    ProcedureKind, ProcedureLoadCommand, PublicationResolver, RasterMapCatalog, RasterResourceMode,
-    RasterTilePlan, ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode,
-    SituationControlInput, SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult,
-    TfrProductPayload, UiSnapshotAppState, VectorAggregateTilePayload,
+    project_nav_symbol_feature, query_map_overlay, query_map_selection, state,
+    AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
+    AirspaceReferenceTilePayload, AirwayPresentationPlan, AppError, AppErrorKind, AppEvent,
+    AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
+    FlightPlanRowActionExecution, FlightPlanRowActionId, GuidanceState, LatLon, MapOverlayConfig,
+    MapOverlayQueryResult, MapSelectionSessionAction, MapViewport, MetarProductPayload,
+    MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore, NavRef, PirepRecord, PlanLeg,
+    PlaybackUiState, PointTilePayload, ProcedureDiscontinuity, ProcedureKind, ProcedureLoadCommand,
+    PublicationResolver, RasterMapCatalog, RasterResourceMode, RasterTilePlan, ResolvedLeg,
+    ResolvedLegSource, RouteComponentViewKind, SequencingMode, SituationControlInput,
+    SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload,
+    UiSnapshotAppState, VectorAggregateTilePayload, VectorIdentLabelStyle,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2052,7 +2055,7 @@ pub fn get_map_overlay_in_session(
     } else {
         Vec::new()
     };
-    let overlay = query_map_overlay(
+    let mut overlay = query_map_overlay(
         &viewport,
         width_px,
         height_px,
@@ -2067,6 +2070,13 @@ pub fn get_map_overlay_in_session(
         &session.airspace_feature_cache,
         session.tfr_payload.as_ref(),
     );
+    if session.map_layer_state.vectors.visible {
+        overlay.flight_plan_features =
+            match flight_plan_overlay_features(session, &viewport, width_px, height_px) {
+                Ok(features) => features,
+                Err(err) => return had_read_error_to_overlay_outcome(err),
+            };
+    }
     let resources = weather_overlay_resources(session, &overlay);
     if !resources.is_empty() {
         return Ok(HadOperationOutcome::NeedResources { resources });
@@ -2078,6 +2088,81 @@ pub fn get_map_overlay_in_session(
     Ok(HadOperationOutcome::Complete {
         result: serde_json::to_value(overlay).map_err(internal_json_error)?,
     })
+}
+
+fn flight_plan_overlay_features(
+    session: &UiSession,
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+) -> Result<Vec<crate::VisibleMapFeature>, HadReadError> {
+    let Some(plan) = session.app_state.active_plan.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let plan = crate::build_flight_plan(plan.clone()).map_err(|err| {
+        HadReadError::Fatal(format!("failed to build flight plan overlay plan: {err}"))
+    })?;
+    let Some(store) = session.nav_kv_store.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let active_target = crate::active_guidance_leg(&plan).map(|leg| leg.to);
+    let mut nav_refs = Vec::<(NavRef, Option<String>)>::new();
+    for leg in &plan.resolved_legs {
+        let procedure_airport_id = leg.procedure_provenance.as_ref().and_then(|provenance| {
+            (!provenance.airport_id.is_empty()).then_some(provenance.airport_id.clone())
+        });
+        push_unique_nav_ref(&mut nav_refs, &leg.from, procedure_airport_id.clone());
+        push_unique_nav_ref(&mut nav_refs, &leg.to, procedure_airport_id);
+    }
+    if let Some(direct_to) = plan
+        .guidance
+        .as_ref()
+        .and_then(|guidance| guidance.direct_to.as_ref())
+    {
+        push_unique_nav_ref(&mut nav_refs, &direct_to.start, None);
+        push_unique_nav_ref(&mut nav_refs, &direct_to.target, None);
+    }
+
+    let mut features = Vec::new();
+    for (nav_ref, procedure_airport_id) in nav_refs {
+        let Some(mut symbol) = nav_symbol_feature(store, &nav_ref)? else {
+            continue;
+        };
+        symbol.label = chart_ident_label_for_nav_ref_symbol(&nav_ref, &symbol);
+        let position = nav_ref_position(store, &nav_ref, procedure_airport_id.as_deref())?;
+        let label_style = if active_target.as_ref() == Some(&nav_ref) {
+            VectorIdentLabelStyle::ActiveFlightPlan
+        } else {
+            VectorIdentLabelStyle::FlightPlan
+        };
+        features.push(project_nav_symbol_feature(
+            format!("flight-plan:{}", nav_ref_overlay_key(&nav_ref)),
+            symbol,
+            position,
+            viewport,
+            width_px,
+            height_px,
+            label_style,
+        ));
+    }
+    Ok(features)
+}
+
+fn push_unique_nav_ref(
+    nav_refs: &mut Vec<(NavRef, Option<String>)>,
+    nav_ref: &NavRef,
+    procedure_airport_id: Option<String>,
+) {
+    if matches!(nav_ref, NavRef::LatLon(_) | NavRef::Spot(_)) {
+        return;
+    }
+    if !nav_refs.iter().any(|(existing, _)| existing == nav_ref) {
+        nav_refs.push((nav_ref.clone(), procedure_airport_id));
+    }
+}
+
+fn nav_ref_overlay_key(nav_ref: &NavRef) -> String {
+    serde_json::to_string(nav_ref).unwrap_or_else(|_| format!("{nav_ref:?}"))
 }
 
 fn weather_overlay_resources(
@@ -2684,6 +2769,7 @@ fn empty_map_overlay_query() -> MapOverlayQueryResult {
         needed_metars: false,
         needed_tfrs: false,
         visible_features: Vec::new(),
+        flight_plan_features: Vec::new(),
         visible_metars: Vec::new(),
         visible_pireps: Vec::new(),
         airspace_paths: Vec::new(),

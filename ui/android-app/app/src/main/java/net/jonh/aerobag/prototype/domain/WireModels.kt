@@ -605,6 +605,7 @@ data class WireVisibleMapFeature(
     val has_water_runway: Boolean? = null,
     val runway_length_ratio: Double,
     val longest_runway_heading_true_deg: Double? = null,
+    val label_style: String = "default",
 )
 
 @Serializable
@@ -638,6 +639,7 @@ data class WireMapOverlayQueryResult(
     val needed_metars: Boolean = false,
     val needed_tfrs: Boolean = false,
     val visible_features: List<WireVisibleMapFeature>,
+    val flight_plan_features: List<WireVisibleMapFeature> = emptyList(),
     val visible_metars: List<WireVisibleMetarFeature> = emptyList(),
     val visible_pireps: List<WireVisiblePirepFeature> = emptyList(),
     val airspace_paths: List<WireAirspaceDisplayPath> = emptyList(),

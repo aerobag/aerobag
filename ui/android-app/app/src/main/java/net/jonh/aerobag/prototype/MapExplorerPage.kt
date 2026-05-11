@@ -7,6 +7,7 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
@@ -1645,6 +1646,25 @@ internal fun MapExplorerPage(
         ObservationOverlayLayer(displayedMapOverlay, density.density, uiTheme)
         OfflineRegionsOverlayLayer(displayedMapOverlay, density.density, uiTheme)
         RouteOverlayLayer(routeScreenSegments, density.density)
+        MapFeatureOverlayLayer(
+            displayedMapOverlay = displayedMapOverlay,
+            uiTheme = uiTheme,
+            densityScale = density.density,
+            fixMarkerStrokeColor = fixMarkerStrokeColor,
+            fixMarkerFillColor = fixMarkerFillColor,
+            airportMarkerStrokeColor = airportMarkerStrokeColor,
+            airportToweredFillColor = airportToweredFillColor,
+            airportUntoweredFillColor = airportUntoweredFillColor,
+            vorMarkerColor = vorMarkerColor,
+            vorMarkerStrokeColor = vorMarkerStrokeColor,
+            fixLabelStrokePaint = fixLabelStrokePaint,
+            airportLabelStrokePaint = airportLabelStrokePaint,
+            vorLabelFillPaint = vorLabelFillPaint,
+            fixLabelFillPaint = fixLabelFillPaint,
+            airportToweredLabelFillPaint = airportToweredLabelFillPaint,
+            airportUntoweredLabelFillPaint = airportUntoweredLabelFillPaint,
+            flightPlanOnly = true,
+        )
         MapSelectionHighlightLayer(
             selectedItem = mapSelection?.selectedItem,
             displayedMapOverlay = displayedMapOverlay,
@@ -1926,8 +1946,10 @@ private fun MapFeatureOverlayLayer(
     fixLabelFillPaint: Paint,
     airportToweredLabelFillPaint: Paint,
     airportUntoweredLabelFillPaint: Paint,
+    flightPlanOnly: Boolean = false,
 ) {
-    if (displayedMapOverlay.visibleFeatures.isEmpty()) return
+    val features = if (flightPlanOnly) displayedMapOverlay.flightPlanFeatures else displayedMapOverlay.visibleFeatures
+    if (features.isEmpty()) return
     Canvas(modifier = Modifier.fillMaxSize()) {
         fixLabelStrokePaint.textSize = 14f * densityScale
         fixLabelStrokePaint.strokeWidth = 3f * densityScale
@@ -1937,7 +1959,7 @@ private fun MapFeatureOverlayLayer(
         airportToweredLabelFillPaint.textSize = 14f * densityScale
         airportUntoweredLabelFillPaint.textSize = 14f * densityScale
         vorLabelFillPaint.textSize = 14f * densityScale
-        displayedMapOverlay.visibleFeatures.forEach { feature ->
+        features.forEach { feature ->
             drawVisibleMapFeature(
                 feature = feature,
                 densityScale = densityScale,
@@ -1958,7 +1980,7 @@ private fun MapFeatureOverlayLayer(
             )
         }
     }
-    displayedMapOverlay.visibleFeatures.forEach { feature ->
+    features.forEach { feature ->
         val tagLabel = feature.label.trim().takeIf { it.isNotEmpty() } ?: return@forEach
         Box(
             modifier = Modifier
@@ -2057,11 +2079,16 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVisibleMapFeatu
                 cap = StrokeCap.Round,
             )
         }
-        drawContext.canvas.nativeCanvas.apply {
-            val textY = center.y - 24f * densityScale
-            drawText(feature.label, center.x, textY, airportLabelStrokePaint)
-            drawText(feature.label, center.x, textY, airportLabelPaint)
-        }
+        drawVectorIdentLabel(
+            label = feature.label,
+            centerX = center.x,
+            baselineY = center.y - 24f * densityScale,
+            strokePaint = airportLabelStrokePaint,
+            fillPaint = airportLabelPaint,
+            labelStyle = feature.labelStyle,
+            densityScale = densityScale,
+            uiTheme = uiTheme,
+        )
     } else if (isVor) {
         val radius = 8f * densityScale
         val outerHex = vorOuterHexPath(center, radius)
@@ -2069,11 +2096,16 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVisibleMapFeatu
         drawPath(band, vorMarkerColor)
         drawPath(band, vorMarkerStrokeColor, style = Stroke(width = 1.6f * densityScale))
         drawPath(outerHex, vorMarkerStrokeColor, style = Stroke(width = 1.6f * densityScale))
-        drawContext.canvas.nativeCanvas.apply {
-            val textY = center.y - 24f * densityScale
-            drawText(feature.label, center.x, textY, fixLabelStrokePaint)
-            drawText(feature.label, center.x, textY, vorLabelFillPaint)
-        }
+        drawVectorIdentLabel(
+            label = feature.label,
+            centerX = center.x,
+            baselineY = center.y - 24f * densityScale,
+            strokePaint = fixLabelStrokePaint,
+            fillPaint = vorLabelFillPaint,
+            labelStyle = feature.labelStyle,
+            densityScale = densityScale,
+            uiTheme = uiTheme,
+        )
     } else if (isObstacle) {
         val isTallObstacle = feature.obstacleVariant == "tall"
         val obstaclePath = if (isTallObstacle) {
@@ -2109,21 +2141,78 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVisibleMapFeatu
             center = Offset(center.x, center.y + dotY * densityScale),
         )
         if (feature.label.isNotEmpty()) {
-            drawContext.canvas.nativeCanvas.apply {
-                val textY = center.y - 14f * densityScale
-                drawText(feature.label, center.x, textY, fixLabelStrokePaint)
-                drawText(feature.label, center.x, textY, fixLabelFillPaint)
-            }
+            drawVectorIdentLabel(
+                label = feature.label,
+                centerX = center.x,
+                baselineY = center.y - 14f * densityScale,
+                strokePaint = fixLabelStrokePaint,
+                fillPaint = fixLabelFillPaint,
+                labelStyle = feature.labelStyle,
+                densityScale = densityScale,
+                uiTheme = uiTheme,
+            )
         }
     } else {
         val triangle = fixTrianglePath(center, 8f * densityScale)
         drawPath(triangle, fixMarkerFillColor)
         drawPath(triangle, fixMarkerStrokeColor, style = Stroke(width = 2.5f * densityScale))
-        drawContext.canvas.nativeCanvas.apply {
-            val textY = center.y - 15f * densityScale
-            drawText(feature.label, center.x, textY, fixLabelStrokePaint)
-            drawText(feature.label, center.x, textY, fixLabelFillPaint)
+        drawVectorIdentLabel(
+            label = feature.label,
+            centerX = center.x,
+            baselineY = center.y - 15f * densityScale,
+            strokePaint = fixLabelStrokePaint,
+            fillPaint = fixLabelFillPaint,
+            labelStyle = feature.labelStyle,
+            densityScale = densityScale,
+            uiTheme = uiTheme,
+        )
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVectorIdentLabel(
+    label: String,
+    centerX: Float,
+    baselineY: Float,
+    strokePaint: Paint,
+    fillPaint: Paint,
+    labelStyle: String,
+    densityScale: Float,
+    uiTheme: UiTheme,
+) {
+    if (label.isBlank()) return
+    drawContext.canvas.nativeCanvas.apply {
+        if (labelStyle == "default") {
+            drawText(label, centerX, baselineY, strokePaint)
+            drawText(label, centerX, baselineY, fillPaint)
+            return
         }
+        val active = labelStyle == "active_flight_plan"
+        val textPaint = Paint(fillPaint).apply {
+            color = if (active) uiTheme.aviation.classCMagenta.toArgb() else android.graphics.Color.rgb(8, 18, 24)
+            style = Paint.Style.FILL
+        }
+        val boxFillPaint = Paint().apply {
+            isAntiAlias = true
+            color = if (active) android.graphics.Color.rgb(8, 18, 24) else android.graphics.Color.WHITE
+            style = Paint.Style.FILL
+        }
+        val boxStrokePaint = Paint().apply {
+            isAntiAlias = true
+            color = if (active) android.graphics.Color.WHITE else android.graphics.Color.rgb(8, 18, 24)
+            style = Paint.Style.STROKE
+            strokeWidth = 2f * densityScale
+        }
+        val width = kotlin.math.max(26f * densityScale, textPaint.measureText(label) + 14f * densityScale)
+        val height = 15f * densityScale
+        val rect = RectF(
+            centerX - width / 2f,
+            baselineY - height + 2f * densityScale,
+            centerX + width / 2f,
+            baselineY + 2f * densityScale,
+        )
+        drawRoundRect(rect, 2f * densityScale, 2f * densityScale, boxFillPaint)
+        drawRoundRect(rect, 2f * densityScale, 2f * densityScale, boxStrokePaint)
+        drawText(label, centerX, baselineY, textPaint)
     }
 }
 

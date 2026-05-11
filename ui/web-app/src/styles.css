@@ -173,7 +173,7 @@ button {
 .situationOverlay {
   position: absolute;
   inset: 0;
-  z-index: 7;
+  z-index: 10;
   pointer-events: none;
 }
 
@@ -209,6 +209,10 @@ button {
   z-index: 7;
   pointer-events: none;
   overflow: visible;
+}
+
+.flightPlanVectorOverlay {
+  z-index: 9;
 }
 
 .airspaceOverlay {

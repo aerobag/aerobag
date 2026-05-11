@@ -50,6 +50,10 @@ const CONTROLLED_AIRSPACE_OUTLINE_MAX_ZOOM: u8 = 8;
 const CONTROLLED_AIRSPACE_OUTLINE_SIMPLIFY_TOLERANCE_DEGREES: f64 = 0.005;
 const CONTROLLED_AIRSPACE_OUTLINE_UNION_SNAP_GRID_DEGREES: f64 = 0.0001;
 const CONTROLLED_AIRSPACE_OUTLINE_UNION_EXPAND_DEGREES: f64 = 0.001;
+const CONTROLLED_AIRSPACE_OUTLINE_MIN_RING_AREA_DEGREES2: f64 = 1.0e-6;
+const ARC_FIT_CORNER_TURN_DEGREES: f64 = 10.0;
+const AIRSPACE_PATH_COMPRESS_TOLERANCE_DEGREES: f64 = 0.00005;
+const AIRSPACE_PATH_COMPRESS_MAX_DEVIATION_FT: f64 = 50.0;
 const AIRSPACE_LABEL_MIN_ZOOM: u8 = 0;
 const AIRSPACE_LABEL_MAX_ZOOM: u8 = 12;
 const AIRSPACE_LABEL_MIN_PIXEL_SPAN: f64 = 50.0;
@@ -87,6 +91,30 @@ pub struct BuildBravoUnionSvgResult {
     pub bravo_count: usize,
     pub source_shelf_count: usize,
     pub union_polygon_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct AuditClassAirspaceSimplificationRequest {
+    pub class_airspace_shp: PathBuf,
+    pub tolerances_degrees: Vec<f64>,
+    pub ident: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClassAirspaceSimplificationAuditRow {
+    pub airspace_class: String,
+    pub tolerance_degrees: f64,
+    pub feature_count: usize,
+    pub source_points: usize,
+    pub simplified_points: usize,
+    pub source_path_json_bytes: usize,
+    pub simplified_path_json_bytes: usize,
+    pub max_deviation_ft: f64,
+    pub arc_primitive_count: usize,
+    pub arc_line_count: usize,
+    pub arc_count: usize,
+    pub arc_estimated_json_bytes: usize,
+    pub arc_max_deviation_ft: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -151,6 +179,9 @@ struct VectorHadAirspaceManifest {
     reference_tile_max_zoom: u8,
     label_tile_min_zoom: u8,
     label_tile_max_zoom: u8,
+    path_encoding: &'static str,
+    path_compression_tolerance_degrees: f64,
+    path_max_deviation_ft: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -423,7 +454,24 @@ struct AirspacePath {
     closed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     interior_side: Option<String>,
+    start: [f64; 2],
+    segments: Vec<AirspacePathSegment>,
+    #[serde(skip_serializing)]
     points: Vec<[f64; 2]>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum AirspacePathSegment {
+    Line {
+        to: [f64; 2],
+    },
+    Arc {
+        center: [f64; 2],
+        radius_ft: f64,
+        clockwise: bool,
+        to: [f64; 2],
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -491,6 +539,89 @@ pub fn build_bravo_union_svg(
         source_shelf_count,
         union_polygon_count,
     })
+}
+
+pub fn audit_class_airspace_simplification(
+    request: &AuditClassAirspaceSimplificationRequest,
+) -> anyhow::Result<Vec<ClassAirspaceSimplificationAuditRow>> {
+    let dbf_path = request.class_airspace_shp.with_extension("dbf");
+    let dbf_records = read_dbf_records(&dbf_path)?;
+    let shapes = read_shapefile_polygons(&request.class_airspace_shp)?;
+    let mut rows = Vec::new();
+
+    for class in ["B", "C", "D"] {
+        let class_shapes = shapes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, shape)| {
+                let properties = dbf_records.get(index)?;
+                let class_matches = property(properties, "CLASS")
+                    .is_some_and(|value| value.eq_ignore_ascii_case(class));
+                let ident_matches = request.ident.as_ref().is_none_or(|ident| {
+                    property(properties, "IDENT")
+                        .is_some_and(|value| value.eq_ignore_ascii_case(ident))
+                });
+                (class_matches && ident_matches).then_some(shape)
+            })
+            .collect::<Vec<_>>();
+        let source_points = class_shapes
+            .iter()
+            .flat_map(|shape| shape.parts.iter())
+            .map(|part| part.len())
+            .sum::<usize>();
+        let source_paths = class_shapes
+            .iter()
+            .flat_map(|shape| shape.parts.iter())
+            .filter_map(|part| airspace_path_from_points(part, "boundary"))
+            .collect::<Vec<_>>();
+        let source_path_json_bytes = serde_json::to_vec(&source_paths)?.len();
+
+        for tolerance_degrees in &request.tolerances_degrees {
+            let tolerance_ft = tolerance_degrees * 60.0 * 6076.12;
+            let mut simplified_points = 0usize;
+            let mut simplified_paths = Vec::new();
+            let mut max_deviation_ft = 0.0f64;
+            let mut arc_primitive_count = 0usize;
+            let mut arc_line_count = 0usize;
+            let mut arc_count = 0usize;
+            let mut arc_estimated_json_bytes = 0usize;
+            let mut arc_max_deviation_ft = 0.0f64;
+            for shape in &class_shapes {
+                for part in &shape.parts {
+                    let simplified = simplify_closed_ring_for_audit(part, *tolerance_degrees);
+                    simplified_points += simplified.points.len();
+                    max_deviation_ft = max_deviation_ft.max(simplified.max_deviation_ft);
+                    if let Some(path) = airspace_path_from_points(&simplified.points, "boundary") {
+                        simplified_paths.push(path);
+                    }
+                    let arc_audit = arc_fit_closed_ring_for_audit(part, tolerance_ft);
+                    arc_primitive_count += arc_audit.primitive_count;
+                    arc_line_count += arc_audit.line_count;
+                    arc_count += arc_audit.arc_count;
+                    arc_estimated_json_bytes += arc_audit.estimated_json_bytes;
+                    arc_max_deviation_ft = arc_max_deviation_ft.max(arc_audit.max_deviation_ft);
+                }
+            }
+
+            rows.push(ClassAirspaceSimplificationAuditRow {
+                airspace_class: class.to_string(),
+                tolerance_degrees: *tolerance_degrees,
+                feature_count: class_shapes.len(),
+                source_points,
+                simplified_points,
+                source_path_json_bytes,
+                simplified_path_json_bytes: serde_json::to_vec(&simplified_paths)?.len(),
+                max_deviation_ft,
+                arc_primitive_count,
+                arc_line_count,
+                arc_count,
+                arc_estimated_json_bytes,
+                arc_max_deviation_ft,
+            });
+        }
+    }
+
+    Ok(rows)
 }
 
 struct BravoUnionSvgCell {
@@ -948,6 +1079,10 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
     if !airspace_features.is_empty() {
         let controlled_outline_features =
             build_controlled_airspace_outline_features(&airspace_features, &request.version_label);
+        let controlled_outline_keys = controlled_outline_features
+            .iter()
+            .filter_map(controlled_airspace_outline_group_key)
+            .collect::<BTreeSet<_>>();
         let feature_path_template = "had/{id}.json".to_string();
         let reference_tile_path_template = "airspace/refs/{z}/{x}/{y}.json".to_string();
         let label_tile_path_template = "airspace/labels/{z}/{x}/{y}.json".to_string();
@@ -966,7 +1101,8 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
             )?;
 
             for zoom in AIRSPACE_REF_MIN_ZOOM..=AIRSPACE_REF_MAX_ZOOM {
-                if controlled_airspace_uses_outline_at_zoom(feature, zoom) {
+                if controlled_airspace_uses_outline_at_zoom(feature, zoom, &controlled_outline_keys)
+                {
                     continue;
                 }
                 if !airspace_ref_is_available_at_zoom(feature, zoom) {
@@ -1173,6 +1309,9 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
                     reference_tile_max_zoom: AIRSPACE_REF_MAX_ZOOM,
                     label_tile_min_zoom: AIRSPACE_LABEL_MIN_ZOOM,
                     label_tile_max_zoom: AIRSPACE_LABEL_MAX_ZOOM,
+                    path_encoding: "start_line_arc_segments",
+                    path_compression_tolerance_degrees: AIRSPACE_PATH_COMPRESS_TOLERANCE_DEGREES,
+                    path_max_deviation_ft: AIRSPACE_PATH_COMPRESS_MAX_DEVIATION_FT,
                 }),
             stats: VectorHadStatsSummary {
                 total_points: points.len(),
@@ -1722,26 +1861,52 @@ fn build_controlled_airspace_outline_features(
 ) -> Vec<AirspaceFeature> {
     let mut groups = BTreeMap::<ControlledAirspaceOutlineKey, Vec<&AirspaceFeature>>::new();
     for feature in features {
-        if !is_controlled_airspace_detail(feature) {
+        let Some(key) = controlled_airspace_group_key(feature) else {
             continue;
-        }
-        groups
-            .entry(ControlledAirspaceOutlineKey {
-                class: feature.airspace_class.to_ascii_lowercase(),
-                ident: feature.ident.clone().unwrap_or_else(|| "anon".to_string()),
-                local_type: feature.local_type.to_ascii_lowercase(),
-            })
-            .or_default()
-            .push(feature);
+        };
+        groups.entry(key).or_default().push(feature);
     }
 
     let mut seen = BTreeSet::new();
     groups
         .into_iter()
         .filter_map(|(key, group)| {
+            if group.len() == 1 {
+                return None;
+            }
             controlled_airspace_outline_feature(key, group, version_label, &mut seen)
         })
         .collect()
+}
+
+fn controlled_airspace_group_key(
+    feature: &AirspaceFeature,
+) -> Option<ControlledAirspaceOutlineKey> {
+    if !is_controlled_airspace_detail(feature) {
+        return None;
+    }
+    Some(ControlledAirspaceOutlineKey {
+        class: feature.airspace_class.to_ascii_lowercase(),
+        ident: feature.ident.clone().unwrap_or_else(|| "anon".to_string()),
+        local_type: feature.local_type.to_ascii_lowercase(),
+    })
+}
+
+fn controlled_airspace_outline_group_key(
+    feature: &AirspaceFeature,
+) -> Option<ControlledAirspaceOutlineKey> {
+    if feature.source != "derived_controlled_airspace_outline" {
+        return None;
+    }
+    Some(ControlledAirspaceOutlineKey {
+        class: feature.airspace_class.to_ascii_lowercase(),
+        ident: feature.ident.clone().unwrap_or_else(|| "anon".to_string()),
+        local_type: feature
+            .local_type
+            .strip_suffix("_OUTLINE")
+            .unwrap_or(&feature.local_type)
+            .to_ascii_lowercase(),
+    })
 }
 
 fn controlled_airspace_outline_feature(
@@ -1827,8 +1992,14 @@ fn is_controlled_airspace_detail(feature: &AirspaceFeature) -> bool {
         )
 }
 
-fn controlled_airspace_uses_outline_at_zoom(feature: &AirspaceFeature, zoom: u8) -> bool {
-    is_controlled_airspace_detail(feature) && zoom <= CONTROLLED_AIRSPACE_OUTLINE_MAX_ZOOM
+fn controlled_airspace_uses_outline_at_zoom(
+    feature: &AirspaceFeature,
+    zoom: u8,
+    controlled_outline_keys: &BTreeSet<ControlledAirspaceOutlineKey>,
+) -> bool {
+    zoom <= CONTROLLED_AIRSPACE_OUTLINE_MAX_ZOOM
+        && controlled_airspace_group_key(feature)
+            .is_some_and(|key| controlled_outline_keys.contains(&key))
 }
 
 fn airspace_ref_min_pixel_span(feature: &AirspaceFeature) -> f64 {
@@ -1856,15 +2027,38 @@ fn outline_rings_for_features(features: &[&AirspaceFeature]) -> Vec<Vec<[f64; 2]
     // epsilon so adjacent shelves definitely overlap. The expansion is at most
     // about 0.06 NM and is applied only to this derived overview outline, never
     // to the published shelf-level geometry.
-    exterior_rings_from_geo_union(&geo_union_for_airspace_refs(features))
+    filter_controlled_airspace_outline_rings(
+        exterior_rings_from_geo_union(&geo_union_for_airspace_refs(features))
+            .into_iter()
+            .map(|ring| {
+                simplify_closed_ring(
+                    &ring,
+                    CONTROLLED_AIRSPACE_OUTLINE_SIMPLIFY_TOLERANCE_DEGREES,
+                )
+            })
+            .collect(),
+    )
+}
+
+fn filter_controlled_airspace_outline_rings(rings: Vec<Vec<[f64; 2]>>) -> Vec<Vec<[f64; 2]>> {
+    // The low-zoom outline union uses a tiny expansion to force adjacent FAA
+    // shelf boundaries to overlap. For some Class C/D groups, boolean union can
+    // still emit thousands of microscopic exterior sliver rings. Those rings
+    // are visually meaningless at z0..z8 and can dominate the nav-db payload.
+    let mut meaningful = rings
         .into_iter()
-        .map(|ring| {
-            simplify_closed_ring(
-                &ring,
-                CONTROLLED_AIRSPACE_OUTLINE_SIMPLIFY_TOLERANCE_DEGREES,
-            )
+        .filter(|ring| {
+            signed_ring_area(ring).is_some_and(|area| {
+                area.abs() >= CONTROLLED_AIRSPACE_OUTLINE_MIN_RING_AREA_DEGREES2
+            })
         })
-        .collect()
+        .collect::<Vec<_>>();
+    meaningful.sort_by(|left, right| {
+        ring_abs_area(right)
+            .partial_cmp(&ring_abs_area(left))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    meaningful
 }
 
 fn load_saa_airspace_features(
@@ -2494,6 +2688,10 @@ fn round_coord(value: f64) -> f64 {
     (value * 10_000_000.0).round() / 10_000_000.0
 }
 
+fn round_float(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
 fn build_point_tiles(points: &[PointRecord], zoom: u8) -> Vec<PointTileRecord> {
     let mut tiles = BTreeMap::<(u8, u32, u32), Vec<PointRecord>>::new();
     for point in points {
@@ -2930,6 +3128,772 @@ pub fn simplify_closed_ring(points: &[[f64; 2]], tolerance: f64) -> Vec<[f64; 2]
     simplified
 }
 
+#[derive(Debug, Clone)]
+struct SimplifiedRingAudit {
+    points: Vec<[f64; 2]>,
+    max_deviation_ft: f64,
+}
+
+fn simplify_closed_ring_for_audit(points: &[[f64; 2]], tolerance: f64) -> SimplifiedRingAudit {
+    if points.len() <= 4 {
+        return SimplifiedRingAudit {
+            points: points.to_vec(),
+            max_deviation_ft: 0.0,
+        };
+    }
+    let mut open = points.to_vec();
+    if open.first() == open.last() {
+        open.pop();
+    }
+    if open.len() <= 3 {
+        return SimplifiedRingAudit {
+            points: points.to_vec(),
+            max_deviation_ft: 0.0,
+        };
+    }
+
+    let mut keep = vec![false; open.len()];
+    keep[0] = true;
+    keep[open.len() - 1] = true;
+    rdp_mark_keep(&open, 0, open.len() - 1, tolerance, &mut keep);
+
+    let kept_indices = keep
+        .iter()
+        .enumerate()
+        .filter_map(|(index, keep)| keep.then_some(index))
+        .collect::<Vec<_>>();
+    let mut simplified = kept_indices
+        .iter()
+        .map(|index| open[*index])
+        .collect::<Vec<_>>();
+    if simplified.len() < 3 {
+        return SimplifiedRingAudit {
+            points: points.to_vec(),
+            max_deviation_ft: 0.0,
+        };
+    }
+    if let Some(first) = simplified.first().copied() {
+        simplified.push(first);
+    }
+
+    SimplifiedRingAudit {
+        max_deviation_ft: max_simplified_ring_deviation_ft(&open, &kept_indices),
+        points: simplified,
+    }
+}
+
+fn max_simplified_ring_deviation_ft(points: &[[f64; 2]], kept_indices: &[usize]) -> f64 {
+    if points.len() < 2 || kept_indices.len() < 2 {
+        return 0.0;
+    }
+    let mut max_deviation = 0.0f64;
+    for pair in kept_indices.windows(2) {
+        max_deviation =
+            max_deviation.max(max_subchain_chord_deviation_ft(points, pair[0], pair[1]));
+    }
+    if let (Some(last), Some(first)) = (kept_indices.last(), kept_indices.first()) {
+        max_deviation = max_deviation.max(max_wrapping_edge_deviation_ft(points, *last, *first));
+    }
+    max_deviation
+}
+
+fn max_subchain_chord_deviation_ft(points: &[[f64; 2]], start: usize, end: usize) -> f64 {
+    if end <= start || end >= points.len() {
+        return 0.0;
+    }
+    let chord_start = points[start];
+    let chord_end = points[end];
+    let mut max_deviation = 0.0f64;
+    for point in &points[start..=end] {
+        max_deviation =
+            max_deviation.max(point_segment_distance_feet(*point, chord_start, chord_end));
+    }
+    for index in start..end {
+        let midpoint = midpoint(points[index], points[index + 1]);
+        max_deviation = max_deviation.max(point_segment_distance_feet(
+            midpoint,
+            chord_start,
+            chord_end,
+        ));
+    }
+    for fraction in [0.25, 0.5, 0.75] {
+        max_deviation = max_deviation.max(point_polyline_distance_feet(
+            interpolate(chord_start, chord_end, fraction),
+            &points[start..=end],
+            false,
+        ));
+    }
+    max_deviation
+}
+
+fn max_wrapping_edge_deviation_ft(points: &[[f64; 2]], start: usize, end: usize) -> f64 {
+    if points.is_empty() || start >= points.len() || end >= points.len() {
+        return 0.0;
+    }
+    let chord_start = points[start];
+    let chord_end = points[end];
+    let edge_midpoint = midpoint(chord_start, chord_end);
+    point_segment_distance_feet(edge_midpoint, chord_start, chord_end).max(
+        point_polyline_distance_feet(edge_midpoint, &[chord_start, chord_end], false),
+    )
+}
+
+#[derive(Debug, Clone)]
+struct ArcFitRingAudit {
+    primitive_count: usize,
+    line_count: usize,
+    arc_count: usize,
+    estimated_json_bytes: usize,
+    max_deviation_ft: f64,
+}
+
+#[derive(Debug, Clone)]
+struct AirspacePathCompression {
+    start: [f64; 2],
+    segments: Vec<AirspacePathSegment>,
+    max_deviation_ft: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LocalProjection {
+    origin_lon: f64,
+    origin_lat: f64,
+    feet_per_degree_lon: f64,
+    feet_per_degree_lat: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ArcFitCircle {
+    center: [f64; 2],
+    radius_ft: f64,
+    clockwise: bool,
+}
+
+fn compress_airspace_path_segments(points: &[[f64; 2]]) -> AirspacePathCompression {
+    let fallback_start = points.first().copied().unwrap_or([0.0, 0.0]);
+    if points.len() < 2 {
+        return AirspacePathCompression {
+            start: fallback_start,
+            segments: Vec::new(),
+            max_deviation_ft: 0.0,
+        };
+    }
+    let closed = points.first() == points.last();
+    let mut open = points.to_vec();
+    if closed {
+        open.pop();
+    }
+    if open.len() < 2 {
+        return AirspacePathCompression {
+            start: fallback_start,
+            segments: Vec::new(),
+            max_deviation_ft: 0.0,
+        };
+    }
+    let tolerance_ft = AIRSPACE_PATH_COMPRESS_TOLERANCE_DEGREES * 60.0 * 6076.12;
+    if closed {
+        compress_closed_airspace_path(&open, tolerance_ft)
+    } else {
+        let mut compression = AirspacePathCompression {
+            start: open[0],
+            segments: Vec::new(),
+            max_deviation_ft: 0.0,
+        };
+        append_compressed_run_segments(&open, tolerance_ft, &mut compression);
+        compression
+    }
+}
+
+fn compress_closed_airspace_path(
+    points: &[[f64; 2]],
+    tolerance_ft: f64,
+) -> AirspacePathCompression {
+    let projection = local_projection_for_points(points);
+    let corners = arc_fit_corner_indices(points, projection);
+    let mut compression = AirspacePathCompression {
+        start: corners
+            .first()
+            .and_then(|index| points.get(*index))
+            .copied()
+            .unwrap_or(points[0]),
+        segments: Vec::new(),
+        max_deviation_ft: 0.0,
+    };
+    if corners.is_empty() {
+        if let Some(circle) = fit_whole_ring_circle_for_audit(points, projection) {
+            let error = max_whole_ring_circle_deviation_ft(points, projection, circle);
+            if error <= tolerance_ft {
+                let split = points.len() / 2;
+                compression.start = points[0];
+                push_arc_segment(&mut compression, projection, circle, points[split], error);
+                push_arc_segment(&mut compression, projection, circle, points[0], error);
+                return compression;
+            }
+        }
+        append_compressed_run_segments(points, tolerance_ft, &mut compression);
+        compression.segments.push(AirspacePathSegment::Line {
+            to: compression.start,
+        });
+        return compression;
+    }
+
+    if corners.len() == 1 {
+        append_compressed_run_segments(points, tolerance_ft, &mut compression);
+        compression.segments.push(AirspacePathSegment::Line {
+            to: compression.start,
+        });
+        return compression;
+    }
+
+    for index in 0..corners.len() {
+        let start = corners[index];
+        let end = corners[(index + 1) % corners.len()];
+        let run = circular_run_points(points, start, end);
+        append_compressed_run_segments(&run, tolerance_ft, &mut compression);
+    }
+    compression
+}
+
+fn append_compressed_run_segments(
+    points: &[[f64; 2]],
+    tolerance_ft: f64,
+    compression: &mut AirspacePathCompression,
+) {
+    if points.len() < 2 {
+        return;
+    }
+    let projection = local_projection_for_points(points);
+    append_compressed_subchain_segments(
+        points,
+        0,
+        points.len() - 1,
+        tolerance_ft,
+        projection,
+        compression,
+    );
+}
+
+fn append_compressed_subchain_segments(
+    points: &[[f64; 2]],
+    start: usize,
+    end: usize,
+    tolerance_ft: f64,
+    projection: LocalProjection,
+    compression: &mut AirspacePathCompression,
+) {
+    if end <= start {
+        return;
+    }
+    if end == start + 1 {
+        compression
+            .segments
+            .push(AirspacePathSegment::Line { to: points[end] });
+        return;
+    }
+
+    let line_error = max_subchain_chord_deviation_ft(points, start, end);
+    let line_like = polyline_signed_turn_degrees(&points[start..=end], projection).abs() < 1.0;
+    let arc = fit_arc_for_subchain(points, start, end, projection);
+    let arc_error = arc
+        .as_ref()
+        .map(|circle| max_subchain_arc_deviation_ft(points, start, end, projection, *circle));
+
+    if line_error <= tolerance_ft && (line_like || line_error <= arc_error.unwrap_or(f64::INFINITY))
+    {
+        compression
+            .segments
+            .push(AirspacePathSegment::Line { to: points[end] });
+        compression.max_deviation_ft = compression.max_deviation_ft.max(line_error);
+        return;
+    }
+    if let (Some(circle), Some(error)) = (arc, arc_error) {
+        if error <= tolerance_ft {
+            push_arc_segment(compression, projection, circle, points[end], error);
+            return;
+        }
+    }
+
+    let split = (start + end) / 2;
+    if split == start || split == end {
+        compression
+            .segments
+            .push(AirspacePathSegment::Line { to: points[end] });
+        compression.max_deviation_ft = compression.max_deviation_ft.max(line_error);
+        return;
+    }
+    append_compressed_subchain_segments(
+        points,
+        start,
+        split,
+        tolerance_ft,
+        projection,
+        compression,
+    );
+    append_compressed_subchain_segments(points, split, end, tolerance_ft, projection, compression);
+}
+
+fn push_arc_segment(
+    compression: &mut AirspacePathCompression,
+    projection: LocalProjection,
+    circle: ArcFitCircle,
+    to: [f64; 2],
+    error: f64,
+) {
+    compression.segments.push(AirspacePathSegment::Arc {
+        center: projection.unproject(circle.center),
+        radius_ft: round_float(circle.radius_ft),
+        clockwise: circle.clockwise,
+        to,
+    });
+    compression.max_deviation_ft = compression.max_deviation_ft.max(error);
+}
+
+fn arc_fit_closed_ring_for_audit(points: &[[f64; 2]], tolerance_ft: f64) -> ArcFitRingAudit {
+    if points.len() < 2 {
+        return ArcFitRingAudit {
+            primitive_count: 0,
+            line_count: 0,
+            arc_count: 0,
+            estimated_json_bytes: 0,
+            max_deviation_ft: 0.0,
+        };
+    }
+    let mut open = points.to_vec();
+    if open.first() == open.last() {
+        open.pop();
+    }
+    if open.len() < 2 {
+        return ArcFitRingAudit {
+            primitive_count: 0,
+            line_count: 0,
+            arc_count: 0,
+            estimated_json_bytes: 0,
+            max_deviation_ft: 0.0,
+        };
+    }
+    let projection = local_projection_for_points(&open);
+    let mut total = ArcFitRingAudit {
+        primitive_count: 0,
+        line_count: 0,
+        arc_count: 0,
+        estimated_json_bytes: 0,
+        max_deviation_ft: 0.0,
+    };
+    let corners = arc_fit_corner_indices(&open, projection);
+    if corners.is_empty() {
+        if let Some(circle) = fit_whole_ring_circle_for_audit(&open, projection) {
+            let error = max_whole_ring_circle_deviation_ft(&open, projection, circle);
+            if error <= tolerance_ft {
+                total.primitive_count = 1;
+                total.arc_count = 1;
+                total.estimated_json_bytes = estimated_arc_primitive_json_bytes();
+                total.max_deviation_ft = error;
+                return total;
+            }
+        }
+        arc_fit_subchain_for_audit(
+            &open,
+            0,
+            open.len() - 1,
+            tolerance_ft,
+            projection,
+            &mut total,
+        );
+        total.primitive_count += 1;
+        total.line_count += 1;
+        total.estimated_json_bytes += estimated_line_primitive_json_bytes();
+    } else if corners.len() == 1 {
+        arc_fit_subchain_for_audit(
+            &open,
+            0,
+            open.len() - 1,
+            tolerance_ft,
+            projection,
+            &mut total,
+        );
+        total.primitive_count += 1;
+        total.line_count += 1;
+        total.estimated_json_bytes += estimated_line_primitive_json_bytes();
+    } else {
+        for index in 0..corners.len() {
+            let start = corners[index];
+            let end = corners[(index + 1) % corners.len()];
+            let run = circular_run_points(&open, start, end);
+            arc_fit_run_for_audit(&run, tolerance_ft, &mut total);
+        }
+    }
+    total
+}
+
+fn arc_fit_corner_indices(points: &[[f64; 2]], projection: LocalProjection) -> Vec<usize> {
+    let projected = points
+        .iter()
+        .map(|point| projection.project(*point))
+        .collect::<Vec<_>>();
+    (0..projected.len())
+        .filter(|index| {
+            vertex_turn_degrees(&projected, *index).abs() >= ARC_FIT_CORNER_TURN_DEGREES
+        })
+        .collect()
+}
+
+fn circular_run_points(points: &[[f64; 2]], start: usize, end: usize) -> Vec<[f64; 2]> {
+    let mut run = Vec::new();
+    let mut index = start;
+    loop {
+        run.push(points[index]);
+        if index == end {
+            break;
+        }
+        index = (index + 1) % points.len();
+    }
+    run
+}
+
+fn arc_fit_run_for_audit(points: &[[f64; 2]], tolerance_ft: f64, total: &mut ArcFitRingAudit) {
+    if points.len() < 2 {
+        return;
+    }
+    let projection = local_projection_for_points(points);
+    let line_error = max_subchain_chord_deviation_ft(points, 0, points.len() - 1);
+    let line_like = polyline_signed_turn_degrees(points, projection).abs() < 1.0;
+    let arc = fit_arc_for_subchain(points, 0, points.len() - 1, projection);
+    let arc_error = arc.as_ref().map(|circle| {
+        max_subchain_arc_deviation_ft(points, 0, points.len() - 1, projection, *circle)
+    });
+
+    if line_error <= tolerance_ft && (line_like || line_error <= arc_error.unwrap_or(f64::INFINITY))
+    {
+        total.primitive_count += 1;
+        total.line_count += 1;
+        total.estimated_json_bytes += estimated_line_primitive_json_bytes();
+        total.max_deviation_ft = total.max_deviation_ft.max(line_error);
+        return;
+    }
+    if let (Some(_circle), Some(error)) = (arc, arc_error) {
+        if error <= tolerance_ft {
+            total.primitive_count += 1;
+            total.arc_count += 1;
+            total.estimated_json_bytes += estimated_arc_primitive_json_bytes();
+            total.max_deviation_ft = total.max_deviation_ft.max(error);
+            return;
+        }
+    }
+
+    arc_fit_subchain_for_audit(points, 0, points.len() - 1, tolerance_ft, projection, total);
+}
+
+fn arc_fit_subchain_for_audit(
+    points: &[[f64; 2]],
+    start: usize,
+    end: usize,
+    tolerance_ft: f64,
+    projection: LocalProjection,
+    total: &mut ArcFitRingAudit,
+) {
+    if end <= start + 1 {
+        total.primitive_count += 1;
+        total.line_count += 1;
+        total.estimated_json_bytes += estimated_line_primitive_json_bytes();
+        return;
+    }
+
+    let line_error = max_subchain_chord_deviation_ft(points, start, end);
+    let arc = fit_arc_for_subchain(points, start, end, projection);
+    let arc_error = arc
+        .as_ref()
+        .map(|circle| max_subchain_arc_deviation_ft(points, start, end, projection, *circle));
+
+    if line_error <= tolerance_ft && line_error <= arc_error.unwrap_or(f64::INFINITY) {
+        total.primitive_count += 1;
+        total.line_count += 1;
+        total.estimated_json_bytes += estimated_line_primitive_json_bytes();
+        total.max_deviation_ft = total.max_deviation_ft.max(line_error);
+        return;
+    }
+    if let (Some(_circle), Some(error)) = (arc, arc_error) {
+        if error <= tolerance_ft {
+            total.primitive_count += 1;
+            total.arc_count += 1;
+            total.estimated_json_bytes += estimated_arc_primitive_json_bytes();
+            total.max_deviation_ft = total.max_deviation_ft.max(error);
+            return;
+        }
+    }
+
+    let split = (start + end) / 2;
+    if split == start || split == end {
+        total.primitive_count += 1;
+        total.line_count += 1;
+        total.estimated_json_bytes += estimated_line_primitive_json_bytes();
+        total.max_deviation_ft = total.max_deviation_ft.max(line_error);
+        return;
+    }
+    arc_fit_subchain_for_audit(points, start, split, tolerance_ft, projection, total);
+    arc_fit_subchain_for_audit(points, split, end, tolerance_ft, projection, total);
+}
+
+fn fit_arc_for_subchain(
+    points: &[[f64; 2]],
+    start: usize,
+    end: usize,
+    projection: LocalProjection,
+) -> Option<ArcFitCircle> {
+    if end <= start + 2 {
+        return None;
+    }
+    let mid = (start + end) / 2;
+    let a = projection.project(points[start]);
+    let b = projection.project(points[mid]);
+    let c = projection.project(points[end]);
+    let circle = circle_through_points(a, b, c)?;
+    if circle.radius_ft < 100.0 || !circle.radius_ft.is_finite() {
+        return None;
+    }
+    let start_angle = angle_from(circle.center, a);
+    let mid_angle = angle_from(circle.center, b);
+    let end_angle = angle_from(circle.center, c);
+    let ccw_sweep = positive_angle_delta(start_angle, end_angle);
+    let ccw_mid = positive_angle_delta(start_angle, mid_angle);
+    let clockwise = if ccw_mid <= ccw_sweep {
+        false
+    } else {
+        let cw_sweep = positive_angle_delta(end_angle, start_angle);
+        let cw_mid = positive_angle_delta(mid_angle, start_angle);
+        if cw_mid <= cw_sweep {
+            true
+        } else {
+            return None;
+        }
+    };
+    Some(ArcFitCircle {
+        center: circle.center,
+        radius_ft: circle.radius_ft,
+        clockwise,
+    })
+}
+
+fn fit_whole_ring_circle_for_audit(
+    points: &[[f64; 2]],
+    projection: LocalProjection,
+) -> Option<ArcFitCircle> {
+    if points.len() < 6 {
+        return None;
+    }
+    let a = projection.project(points[0]);
+    let b = projection.project(points[points.len() / 3]);
+    let c = projection.project(points[(points.len() * 2) / 3]);
+    let circle = circle_through_points(a, b, c)?;
+    if circle.radius_ft < 100.0 || !circle.radius_ft.is_finite() {
+        return None;
+    }
+    let signed_turn = ring_signed_turn_degrees(points, projection);
+    Some(ArcFitCircle {
+        center: circle.center,
+        radius_ft: circle.radius_ft,
+        clockwise: signed_turn < 0.0,
+    })
+}
+
+fn max_whole_ring_circle_deviation_ft(
+    points: &[[f64; 2]],
+    projection: LocalProjection,
+    circle: ArcFitCircle,
+) -> f64 {
+    let mut max_deviation = 0.0f64;
+    for point in points {
+        let radius = distance_xy(projection.project(*point), circle.center);
+        max_deviation = max_deviation.max((radius - circle.radius_ft).abs());
+    }
+    for index in 0..points.len() {
+        let midpoint = midpoint(points[index], points[(index + 1) % points.len()]);
+        let radius = distance_xy(projection.project(midpoint), circle.center);
+        max_deviation = max_deviation.max((radius - circle.radius_ft).abs());
+    }
+    max_deviation
+}
+
+fn ring_signed_turn_degrees(points: &[[f64; 2]], projection: LocalProjection) -> f64 {
+    let projected = points
+        .iter()
+        .map(|point| projection.project(*point))
+        .collect::<Vec<_>>();
+    (0..projected.len())
+        .map(|index| vertex_turn_degrees(&projected, index))
+        .sum()
+}
+
+fn polyline_signed_turn_degrees(points: &[[f64; 2]], projection: LocalProjection) -> f64 {
+    if points.len() < 3 {
+        return 0.0;
+    }
+    let projected = points
+        .iter()
+        .map(|point| projection.project(*point))
+        .collect::<Vec<_>>();
+    let mut total = 0.0;
+    for index in 1..projected.len() - 1 {
+        let previous = projected[index - 1];
+        let current = projected[index];
+        let next = projected[index + 1];
+        let incoming = (current[1] - previous[1]).atan2(current[0] - previous[0]);
+        let outgoing = (next[1] - current[1]).atan2(next[0] - current[0]);
+        total += ((outgoing - incoming + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+            - std::f64::consts::PI)
+            .to_degrees();
+    }
+    total
+}
+
+fn max_subchain_arc_deviation_ft(
+    points: &[[f64; 2]],
+    start: usize,
+    end: usize,
+    projection: LocalProjection,
+    circle: ArcFitCircle,
+) -> f64 {
+    let mut max_deviation = 0.0f64;
+    let start_xy = projection.project(points[start]);
+    let end_xy = projection.project(points[end]);
+    for index in start..=end {
+        max_deviation = max_deviation.max(point_arc_distance_feet(
+            projection.project(points[index]),
+            start_xy,
+            end_xy,
+            circle,
+        ));
+    }
+    for index in start..end {
+        max_deviation = max_deviation.max(point_arc_distance_feet(
+            projection.project(midpoint(points[index], points[index + 1])),
+            start_xy,
+            end_xy,
+            circle,
+        ));
+    }
+    max_deviation
+}
+
+fn point_arc_distance_feet(
+    point: [f64; 2],
+    start: [f64; 2],
+    end: [f64; 2],
+    circle: ArcFitCircle,
+) -> f64 {
+    let point_angle = angle_from(circle.center, point);
+    let start_angle = angle_from(circle.center, start);
+    let end_angle = angle_from(circle.center, end);
+    let on_arc = if circle.clockwise {
+        positive_angle_delta(point_angle, start_angle)
+            <= positive_angle_delta(end_angle, start_angle)
+    } else {
+        positive_angle_delta(start_angle, point_angle)
+            <= positive_angle_delta(start_angle, end_angle)
+    };
+    if on_arc {
+        let radius = distance_xy(point, circle.center);
+        (radius - circle.radius_ft).abs()
+    } else {
+        distance_xy(point, start).min(distance_xy(point, end))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CircleFit {
+    center: [f64; 2],
+    radius_ft: f64,
+}
+
+fn circle_through_points(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> Option<CircleFit> {
+    let d = 2.0 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+    if d.abs() < 1.0e-6 {
+        return None;
+    }
+    let a2 = a[0] * a[0] + a[1] * a[1];
+    let b2 = b[0] * b[0] + b[1] * b[1];
+    let c2 = c[0] * c[0] + c[1] * c[1];
+    let center = [
+        (a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d,
+        (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d,
+    ];
+    Some(CircleFit {
+        center,
+        radius_ft: distance_xy(a, center),
+    })
+}
+
+fn local_projection_for_points(points: &[[f64; 2]]) -> LocalProjection {
+    let mut lon = 0.0;
+    let mut lat = 0.0;
+    let count = points.len().max(1) as f64;
+    for point in points {
+        lon += point[0];
+        lat += point[1];
+    }
+    let origin_lon = lon / count;
+    let origin_lat = lat / count;
+    let feet_per_degree_lat = 60.0 * 6076.12;
+    let feet_per_degree_lon = feet_per_degree_lat * origin_lat.to_radians().cos().abs().max(0.001);
+    LocalProjection {
+        origin_lon,
+        origin_lat,
+        feet_per_degree_lon,
+        feet_per_degree_lat,
+    }
+}
+
+impl LocalProjection {
+    fn project(&self, point: [f64; 2]) -> [f64; 2] {
+        [
+            (point[0] - self.origin_lon) * self.feet_per_degree_lon,
+            (point[1] - self.origin_lat) * self.feet_per_degree_lat,
+        ]
+    }
+
+    fn unproject(&self, point: [f64; 2]) -> [f64; 2] {
+        [
+            round_coord(self.origin_lon + point[0] / self.feet_per_degree_lon),
+            round_coord(self.origin_lat + point[1] / self.feet_per_degree_lat),
+        ]
+    }
+}
+
+fn angle_from(center: [f64; 2], point: [f64; 2]) -> f64 {
+    (point[1] - center[1]).atan2(point[0] - center[0])
+}
+
+fn positive_angle_delta(from: f64, to: f64) -> f64 {
+    (to - from).rem_euclid(std::f64::consts::TAU)
+}
+
+fn distance_xy(left: [f64; 2], right: [f64; 2]) -> f64 {
+    ((left[0] - right[0]).powi(2) + (left[1] - right[1]).powi(2)).sqrt()
+}
+
+fn vertex_turn_degrees(points: &[[f64; 2]], index: usize) -> f64 {
+    if points.len() < 3 {
+        return 0.0;
+    }
+    let previous = points[(index + points.len() - 1) % points.len()];
+    let current = points[index];
+    let next = points[(index + 1) % points.len()];
+    let incoming = (current[1] - previous[1]).atan2(current[0] - previous[0]);
+    let outgoing = (next[1] - current[1]).atan2(next[0] - current[0]);
+    ((outgoing - incoming + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+        - std::f64::consts::PI)
+        .to_degrees()
+}
+
+fn estimated_line_primitive_json_bytes() -> usize {
+    // Approximate compact JSON: {"kind":"line","to":[-123.123456,45.123456]}
+    54
+}
+
+fn estimated_arc_primitive_json_bytes() -> usize {
+    // Approximate compact JSON: {"kind":"arc","center":[...],"radius_ft":...,"cw":false,"to":[...]}
+    118
+}
+
 fn rdp_mark_keep(points: &[[f64; 2]], start: usize, end: usize, tolerance: f64, keep: &mut [bool]) {
     if end <= start + 1 {
         return;
@@ -2961,6 +3925,64 @@ fn point_segment_distance(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f6
         .clamp(0.0, 1.0);
     let projected = [start[0] + t * dx, start[1] + t * dy];
     squared_distance(point, projected).sqrt()
+}
+
+fn point_segment_distance_feet(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f64 {
+    let mean_lat = ((point[1] + start[1] + end[1]) / 3.0).to_radians();
+    let feet_per_degree_lat = 60.0 * 6076.12;
+    let feet_per_degree_lon = feet_per_degree_lat * mean_lat.cos().abs().max(0.001);
+    let point_xy = [0.0, 0.0];
+    let start_xy = [
+        (start[0] - point[0]) * feet_per_degree_lon,
+        (start[1] - point[1]) * feet_per_degree_lat,
+    ];
+    let end_xy = [
+        (end[0] - point[0]) * feet_per_degree_lon,
+        (end[1] - point[1]) * feet_per_degree_lat,
+    ];
+    point_segment_distance_xy(point_xy, start_xy, end_xy)
+}
+
+fn point_polyline_distance_feet(point: [f64; 2], line: &[[f64; 2]], closed: bool) -> f64 {
+    if line.len() < 2 {
+        return 0.0;
+    }
+    let mut best = f64::INFINITY;
+    for pair in line.windows(2) {
+        best = best.min(point_segment_distance_feet(point, pair[0], pair[1]));
+    }
+    if closed {
+        best = best.min(point_segment_distance_feet(
+            point,
+            *line.last().unwrap(),
+            line[0],
+        ));
+    }
+    best
+}
+
+fn point_segment_distance_xy(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f64 {
+    let dx = end[0] - start[0];
+    let dy = end[1] - start[1];
+    let length_squared = dx * dx + dy * dy;
+    if length_squared <= f64::EPSILON {
+        return ((point[0] - start[0]).powi(2) + (point[1] - start[1]).powi(2)).sqrt();
+    }
+    let t = (((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / length_squared)
+        .clamp(0.0, 1.0);
+    let projected = [start[0] + t * dx, start[1] + t * dy];
+    ((point[0] - projected[0]).powi(2) + (point[1] - projected[1]).powi(2)).sqrt()
+}
+
+fn midpoint(left: [f64; 2], right: [f64; 2]) -> [f64; 2] {
+    [(left[0] + right[0]) / 2.0, (left[1] + right[1]) / 2.0]
+}
+
+fn interpolate(left: [f64; 2], right: [f64; 2], fraction: f64) -> [f64; 2] {
+    [
+        left[0] + (right[0] - left[0]) * fraction,
+        left[1] + (right[1] - left[1]) * fraction,
+    ]
 }
 
 fn label_candidate_has_airspace_edge_clearance(
@@ -3256,20 +4278,36 @@ fn append_path_points(target: &mut Vec<[f64; 2]>, points: &[[f64; 2]]) {
 
 fn airspace_path_from_points(points: &[[f64; 2]], role: &str) -> Option<AirspacePath> {
     let _ = points.first()?;
+    let compression = compress_airspace_path_segments(points);
+    assert!(
+        compression.max_deviation_ft <= AIRSPACE_PATH_COMPRESS_MAX_DEVIATION_FT,
+        "airspace path compression exceeded max deviation: {:.1} ft",
+        compression.max_deviation_ft
+    );
     Some(AirspacePath {
         role: role.to_string(),
         closed: points.first() == points.last(),
         interior_side: None,
+        start: compression.start,
+        segments: compression.segments,
         points: points.to_vec(),
     })
 }
 
 fn saa_airspace_path(path: &SaaPath, role: &str) -> Option<AirspacePath> {
     let _ = path.points.first()?;
+    let compression = compress_airspace_path_segments(&path.points);
+    assert!(
+        compression.max_deviation_ft <= AIRSPACE_PATH_COMPRESS_MAX_DEVIATION_FT,
+        "SAA airspace path compression exceeded max deviation: {:.1} ft",
+        compression.max_deviation_ft
+    );
     Some(AirspacePath {
         role: role.to_string(),
         closed: path.points.first() == path.points.last(),
         interior_side: saa_path_interior_side(path),
+        start: compression.start,
+        segments: compression.segments,
         points: path.points.clone(),
     })
 }
@@ -3328,6 +4366,10 @@ fn signed_ring_area(points: &[[f64; 2]]) -> Option<f64> {
         return None;
     }
     Some(twice_area / 2.0)
+}
+
+fn ring_abs_area(points: &[[f64; 2]]) -> f64 {
+    signed_ring_area(points).map_or(0.0, f64::abs)
 }
 
 fn points_bbox(points: &[[f64; 2]]) -> [f64; 4] {
@@ -3554,6 +4596,41 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&pairs[0].value_json).unwrap()["id"],
             "airspace:data_2604:saa:aa:a381"
+        );
+    }
+
+    #[test]
+    fn airspace_paths_serialize_as_arc_segments_without_dense_points() {
+        let center = [-120.0, 46.0];
+        let feet_per_degree_lat = 60.0 * 6076.12;
+        let projection = LocalProjection {
+            origin_lon: center[0],
+            origin_lat: center[1],
+            feet_per_degree_lon: feet_per_degree_lat
+                * center[1].to_radians().cos().abs().max(0.001),
+            feet_per_degree_lat,
+        };
+        let radius_ft = 6_076.12;
+        let mut points = Vec::new();
+        for degrees in (0..=90).step_by(5) {
+            let radians = (degrees as f64).to_radians();
+            points
+                .push(projection.unproject([radius_ft * radians.cos(), radius_ft * radians.sin()]));
+        }
+
+        let path = airspace_path_from_points(&points, "boundary").unwrap();
+        assert!(
+            path.segments
+                .iter()
+                .any(|segment| matches!(segment, AirspacePathSegment::Arc { .. })),
+            "circle-like airspace boundary should recover arc segments"
+        );
+
+        let encoded = serde_json::to_value(&path).unwrap();
+        assert!(encoded.get("points").is_none());
+        assert_eq!(
+            encoded["segments"][0]["kind"],
+            serde_json::Value::String("arc".to_string())
         );
     }
 
@@ -4036,5 +5113,27 @@ mod tests {
             Some("left"),
             "SUBTR components invert the path winding interior"
         );
+    }
+
+    #[test]
+    fn controlled_airspace_outline_filter_drops_union_sliver_rings() {
+        let large = vec![
+            [-87.6, 36.5],
+            [-87.3, 36.5],
+            [-87.3, 36.8],
+            [-87.6, 36.8],
+            [-87.6, 36.5],
+        ];
+        let tiny = vec![
+            [-87.4000, 36.6000],
+            [-87.3999, 36.6000],
+            [-87.3999, 36.6001],
+            [-87.4000, 36.6001],
+            [-87.4000, 36.6000],
+        ];
+
+        let filtered = filter_controlled_airspace_outline_rings(vec![tiny, large.clone()]);
+
+        assert_eq!(filtered, vec![large]);
     }
 }

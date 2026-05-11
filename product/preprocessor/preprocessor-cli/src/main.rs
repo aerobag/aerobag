@@ -38,8 +38,9 @@ use preprocessor_resource_index::{
 use preprocessor_tools::{comparison_targets, ToolInvocation};
 use preprocessor_tpp::{run_native_tpp, NativeTppRunRequest};
 use preprocessor_vectors::{
-    analyze_obstacle_thresholds, build_bravo_union_svg, build_obstacle_dataset,
-    build_vectors_dataset, AnalyzeObstacleThresholdsRequest, BuildBravoUnionSvgRequest,
+    analyze_obstacle_thresholds, audit_class_airspace_simplification, build_bravo_union_svg,
+    build_obstacle_dataset, build_vectors_dataset, AnalyzeObstacleThresholdsRequest,
+    AuditClassAirspaceSimplificationRequest, BuildBravoUnionSvgRequest,
     BuildObstacleDatasetRequest, BuildVectorsRequest,
 };
 use product_build::{
@@ -108,6 +109,7 @@ fn long_usage() -> &'static str {
   preprocessor-cli audit-procedure-geometry --main-db <path> [--airport <id>] [--procedure <id>] [--transition <id>]
   preprocessor-cli build-vectors --main-db <path> --output-dir <path> --version-label <label> [--data-input-dir <path>] [--include-class-e-airspace]
   preprocessor-cli audit-bravo-unions --class-airspace-shp <path> --output-svg <path> [--version-label <label>]
+  preprocessor-cli audit-class-airspace-simplification --class-airspace-shp <path> [--tolerances-degrees <csv>] [--ident <id>]
   preprocessor-cli build-obstacles [--build-root <path>] [--fetch-jobs <count>] [--snapshot-date <YYYY-MM-DD>]
   preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
   preprocessor-cli normalize-swim-notams --input-jsonl <path> --output-dir <path> --version-label <label>
@@ -1972,6 +1974,7 @@ fn main() -> anyhow::Result<()> {
                 | "build-data"
                 | "build-vectors"
                 | "audit-bravo-unions"
+                | "audit-class-airspace-simplification"
                 | "build-obstacles"
                 | "build-cycle"
                 | "build-fast-subset"
@@ -2900,6 +2903,89 @@ fn main() -> anyhow::Result<()> {
             println!("bravos {}", result.bravo_count);
             println!("source_shelves {}", result.source_shelf_count);
             println!("union_polygons {}", result.union_polygon_count);
+        }
+        Some("audit-class-airspace-simplification") => {
+            let mut class_airspace_shp = None;
+            let mut ident = None;
+            let mut tolerances_degrees =
+                vec![0.0, 0.00005, 0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005];
+            let mut index = 2;
+            while index < args.len() {
+                match args.get(index).map(String::as_str) {
+                    Some("--class-airspace-shp") => {
+                        class_airspace_shp = Some(PathBuf::from(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        ));
+                        index += 2;
+                    }
+                    Some("--tolerances-degrees") => {
+                        tolerances_degrees = args
+                            .get(index + 1)
+                            .ok_or_else(|| anyhow::anyhow!("{}", usage()))?
+                            .split(',')
+                            .map(|value| value.parse::<f64>())
+                            .collect::<Result<Vec<_>, _>>()
+                            .context("failed to parse --tolerances-degrees")?;
+                        index += 2;
+                    }
+                    Some("--ident") => {
+                        ident = Some(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        );
+                        index += 2;
+                    }
+                    _ => anyhow::bail!("{}", usage()),
+                }
+            }
+            let rows =
+                audit_class_airspace_simplification(&AuditClassAirspaceSimplificationRequest {
+                    class_airspace_shp: class_airspace_shp
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                    tolerances_degrees,
+                    ident,
+                })?;
+            println!(
+                "class tolerance_deg features source_points simplified_points source_mib rdp_mib rdp_reduction rdp_max_dev_ft rdp_max_dev_nm arc_primitives arc_lines arc_arcs arc_est_mib arc_reduction arc_max_dev_ft arc_max_dev_nm"
+            );
+            for row in rows {
+                let source_mib = row.source_path_json_bytes as f64 / 1024.0 / 1024.0;
+                let simplified_mib = row.simplified_path_json_bytes as f64 / 1024.0 / 1024.0;
+                let rdp_reduction = if row.source_path_json_bytes == 0 {
+                    0.0
+                } else {
+                    1.0 - row.simplified_path_json_bytes as f64 / row.source_path_json_bytes as f64
+                };
+                let arc_mib = row.arc_estimated_json_bytes as f64 / 1024.0 / 1024.0;
+                let arc_reduction = if row.source_path_json_bytes == 0 {
+                    0.0
+                } else {
+                    1.0 - row.arc_estimated_json_bytes as f64 / row.source_path_json_bytes as f64
+                };
+                println!(
+                    "{} {:.6} {} {} {} {:.2} {:.2} {:.1}% {:.1} {:.4} {} {} {} {:.2} {:.1}% {:.1} {:.4}",
+                    row.airspace_class,
+                    row.tolerance_degrees,
+                    row.feature_count,
+                    row.source_points,
+                    row.simplified_points,
+                    source_mib,
+                    simplified_mib,
+                    rdp_reduction * 100.0,
+                    row.max_deviation_ft,
+                    row.max_deviation_ft / 6076.12,
+                    row.arc_primitive_count,
+                    row.arc_line_count,
+                    row.arc_count,
+                    arc_mib,
+                    arc_reduction * 100.0,
+                    row.arc_max_deviation_ft,
+                    row.arc_max_deviation_ft / 6076.12
+                );
+            }
         }
         Some("build-obstacles") => {
             let (manifest_path, stats_path, zip_path) = run_build_obstacles_command(&args[2..])?;

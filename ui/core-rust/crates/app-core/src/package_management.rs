@@ -265,9 +265,8 @@ pub struct OfflinePackagesSyncProgress {
     pub planned_fetch_artifact_ids: BTreeSet<String>,
     #[serde(default)]
     pub completed_fetch_artifact_ids: BTreeSet<String>,
-    pub current_fetch_artifact_id: Option<String>,
     #[serde(default)]
-    pub current_fetch_bytes: u64,
+    pub active_fetch_bytes_by_artifact_id: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1566,10 +1565,12 @@ fn sync_progress_loaded_bytes(
     if progress.completed_fetch_artifact_ids.contains(artifact_id) {
         return size;
     }
-    if progress.current_fetch_artifact_id.as_deref() == Some(artifact_id) {
-        return progress.current_fetch_bytes.min(size);
-    }
-    0
+    progress
+        .active_fetch_bytes_by_artifact_id
+        .get(artifact_id)
+        .copied()
+        .unwrap_or(0)
+        .min(size)
 }
 
 fn package_size_bytes(pkg: &BundlePackageArtifact, installed: Option<&InstalledArtifact>) -> u64 {
@@ -2449,8 +2450,10 @@ mod tests {
             Some(&OfflinePackagesSyncProgress {
                 planned_fetch_artifact_ids: BTreeSet::from(["NW_SEC_2605".to_string()]),
                 completed_fetch_artifact_ids: BTreeSet::new(),
-                current_fetch_artifact_id: Some("NW_SEC_2605".to_string()),
-                current_fetch_bytes: 1_000,
+                active_fetch_bytes_by_artifact_id: BTreeMap::from([(
+                    "NW_SEC_2605".to_string(),
+                    1_000,
+                )]),
             }),
         );
         let nw = offline_packages_ui_row(
@@ -2483,8 +2486,10 @@ mod tests {
             Some(&OfflinePackagesSyncProgress {
                 planned_fetch_artifact_ids: BTreeSet::from(["NW_SEC_2605".to_string()]),
                 completed_fetch_artifact_ids: BTreeSet::new(),
-                current_fetch_artifact_id: Some("NW_SEC_2605".to_string()),
-                current_fetch_bytes: 1_000,
+                active_fetch_bytes_by_artifact_id: BTreeMap::from([(
+                    "NW_SEC_2605".to_string(),
+                    1_000,
+                )]),
             }),
         );
         assert_eq!(
@@ -2534,6 +2539,75 @@ mod tests {
         assert!(
             !offline_packages_ui_row("nw".to_string(), OfflinePackageSelection::Play, None,)
                 .planned_size_change_visible
+        );
+    }
+
+    #[test]
+    fn sync_progress_sums_parallel_active_fetches_by_row() {
+        let nw_sec = with_cycle_and_size(
+            pkg(
+                "NW_SEC_2605",
+                "sec",
+                Some("nw"),
+                Some("2026-05-14"),
+                Some("2099-01-01"),
+            ),
+            "2605",
+            2_000,
+        );
+        let nw_tpp = with_cycle_and_size(
+            pkg(
+                "NW_TPP_2605",
+                "tpp",
+                Some("nw"),
+                Some("2026-05-14"),
+                Some("2099-01-01"),
+            ),
+            "2605",
+            8_000,
+        );
+        let input = PackageManagementInput {
+            now_epoch_ms: 200,
+            preferences: OfflinePackagePreferences {
+                regions: BTreeMap::from([("nw".to_string(), OfflinePackageSelection::Play)]),
+                products: BTreeMap::from([
+                    ("sec".to_string(), OfflinePackageSelection::Play),
+                    ("tpp".to_string(), OfflinePackageSelection::Play),
+                ]),
+            },
+            bundle: BundleManifest {
+                packages: vec![nw_sec, nw_tpp],
+            },
+            installed: vec![],
+            forced_gc_installed_filenames: vec![],
+            suppressed_fetch_filenames: vec![],
+        };
+        let plan = plan_offline_packages(&input);
+        let rows = plan_rows_by_dimension(
+            &input,
+            &plan,
+            &BTreeMap::new(),
+            Some(&OfflinePackagesSyncProgress {
+                planned_fetch_artifact_ids: BTreeSet::from([
+                    "NW_SEC_2605".to_string(),
+                    "NW_TPP_2605".to_string(),
+                ]),
+                completed_fetch_artifact_ids: BTreeSet::new(),
+                active_fetch_bytes_by_artifact_id: BTreeMap::from([
+                    ("NW_SEC_2605".to_string(), 1_000),
+                    ("NW_TPP_2605".to_string(), 4_000),
+                ]),
+            }),
+        );
+
+        assert_eq!(
+            offline_packages_ui_row(
+                "nw".to_string(),
+                OfflinePackageSelection::Play,
+                rows.regions.get("nw"),
+            )
+            .sync_progress_per_mille,
+            Some(500)
         );
     }
 

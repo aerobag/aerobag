@@ -806,10 +806,8 @@ internal data class OfflinePackagesSyncSummary(
 internal data class OfflinePackagesSyncProgressWire(
     @SerialName("completed_fetch_artifact_ids")
     val completedFetchArtifactIds: Set<String> = emptySet(),
-    @SerialName("current_fetch_artifact_id")
-    val currentFetchArtifactId: String? = null,
-    @SerialName("current_fetch_bytes")
-    val currentFetchBytes: Long = 0,
+    @SerialName("active_fetch_bytes_by_artifact_id")
+    val activeFetchBytesByArtifactId: Map<String, Long> = emptyMap(),
 )
 
 @Serializable

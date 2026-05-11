@@ -1092,18 +1092,13 @@ internal suspend fun syncOfflinePackages(
     var fetchedCount = 0
     var gcCount = 0
     fun activeFetchBytes(): Long = activeFetchBytesByArtifactId.values.sum()
-    suspend fun reportProgress(
-        message: String,
-        currentArtifactId: String? = null,
-        currentBytes: Long? = null,
-    ) {
+    suspend fun reportProgress(message: String) {
         progressMutex.withLock {
             onProgress(
                 message,
                 OfflinePackagesSyncProgressWire(
                     completedFetchArtifactIds = completedFetchArtifactIds.toSet(),
-                    currentFetchArtifactId = currentArtifactId,
-                    currentFetchBytes = currentBytes ?: currentArtifactId?.let { activeFetchBytesByArtifactId[it] } ?: 0L,
+                    activeFetchBytesByArtifactId = activeFetchBytesByArtifactId.toMap(),
                 ),
             )
         }
@@ -1137,7 +1132,7 @@ internal suspend fun syncOfflinePackages(
                         }
                         runCatching {
                             val fetchStartMs = SystemClock.elapsedRealtime()
-                            reportProgress("Fetching package ${index + 1}/${plan.fetch.size}: ${pkg.filename}", artifactId)
+                            reportProgress("Fetching package ${index + 1}/${plan.fetch.size}: ${pkg.filename}")
                             check(packageSourceBaseUrl.isNotBlank()) { "package source URL is blank" }
                             val sourceUrl = resolvePackageSourceUrl(pkg.relativePath, packagedArtifactRootUrl)
                             val kind = installedPackageKindForFamilyId(pkg.familyId)
@@ -1174,8 +1169,6 @@ internal suspend fun syncOfflinePackages(
                                                 aggregateFetchBytes,
                                                 totalFetchBytes,
                                             ),
-                                            artifactId,
-                                            packageDownloadedBytes,
                                         )
                                     }
                                 },

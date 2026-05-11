@@ -19,6 +19,16 @@ Defaults:
 
 `10.0.2.2` is Android emulator magic for the host machine. It is wrong for physical devices.
 
+The VNC emulator stack uses ADB reverse for the package source by default, so
+the guest can fetch Vite's publication-contract tree through:
+
+```text
+http://127.0.0.1:8083/packages/
+```
+
+Do not start a separate package file server for normal emulator testing; Vite
+owns `/packages`.
+
 ## Red Tablet
 
 Use the tablet wrapper when the device is the red physical tablet:
@@ -55,4 +65,3 @@ failed to connect to /10.0.2.2 (port 8083)
 ```
 
 then the installed APK was built with emulator URLs and must be rebuilt with the tablet wrapper.
-

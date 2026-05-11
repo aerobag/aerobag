@@ -2706,9 +2706,9 @@ fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadRe
     if let (Some(store), Some(plan), Some(active_plan)) = (
         session.nav_kv_store.as_ref(),
         session.app_state.active_plan.clone(),
-        app_ui_state.active_plan.take(),
+        app_ui_state.active_plan.as_ref(),
     ) {
-        app_ui_state.active_plan = Some(flight_plan_ui_state(store, plan, active_plan)?);
+        app_ui_state.active_plan = Some(flight_plan_ui_state(store, plan, active_plan.clone())?);
     }
     Ok(app_ui_state)
 }

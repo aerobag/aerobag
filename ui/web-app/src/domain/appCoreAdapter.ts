@@ -860,12 +860,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       insertWaypointAtFlightPlanRow: async (rowUid, before, waypoint) => {
         snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.insert_waypoint_at_flight_plan_row_in_session(
-            handle,
-            rowUid,
-            before,
-            JSON.stringify(waypoint),
-          )),
+          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+            this.module.insert_waypoint_at_flight_plan_row_in_session(
+              handle,
+              rowUid,
+              before,
+              JSON.stringify(waypoint),
+            ),
+          ),
         );
         await syncGuidanceGeometry();
         return snapshot;

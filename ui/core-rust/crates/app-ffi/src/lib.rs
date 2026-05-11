@@ -406,14 +406,14 @@ pub fn insert_waypoint_at_flight_plan_row_in_session_json(
 ) -> Result<String, String> {
     let waypoint: app_core::NavRef =
         serde_json::from_str(waypoint_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::insert_waypoint_at_flight_plan_row_in_session(
+    let outcome = app_core::insert_waypoint_at_flight_plan_row_in_session(
         handle as u32,
         row_uid.to_string(),
         before,
         waypoint,
     )
     .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
 pub fn suggest_waypoint_identifiers_at_flight_plan_row_in_session_json(

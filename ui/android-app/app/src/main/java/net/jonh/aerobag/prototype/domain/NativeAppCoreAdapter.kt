@@ -817,15 +817,17 @@ class NativeUiSession internal constructor(
     }
 
     fun insertWaypointAtFlightPlanRow(rowUid: String, before: Boolean, waypoint: NavRef): UiSessionSnapshot {
-        snapshot =
-            decodeSnapshot(
+        val store = navKvStore ?: error("nav_kv store is required to insert waypoint at flight plan row")
+        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(
+            store.runPagedSessionOperationElement {
                 bridge.insertWaypointAtFlightPlanRowInSessionJson(
                     handle,
                     rowUid,
                     before,
                     json.encodeToString(waypoint.toWire()),
-                ),
-            )
+                )
+            },
+        ).toUi()
         return syncGuidanceGeometryFromPlan()
     }
 

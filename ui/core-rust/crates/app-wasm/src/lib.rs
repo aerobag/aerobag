@@ -301,14 +301,14 @@ pub fn insert_waypoint_at_flight_plan_row_in_session(
 ) -> Result<String, JsValue> {
     let waypoint: app_core::NavRef =
         serde_json::from_str(waypoint_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let snapshot = app_core::session::insert_waypoint_at_flight_plan_row_in_session(
+    let outcome = app_core::session::insert_waypoint_at_flight_plan_row_in_session(
         session_handle,
         row_uid.to_string(),
         before,
         waypoint,
     )
     .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[wasm_bindgen]

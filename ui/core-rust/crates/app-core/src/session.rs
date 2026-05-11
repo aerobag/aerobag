@@ -99,6 +99,7 @@ pub struct UiSessionCreateTiming {
     pub elapsed_ms: f64,
 }
 
+#[derive(Clone)]
 struct UiSession {
     app_state: AppState,
     playback: PlaybackSessionState,
@@ -921,8 +922,7 @@ fn insert_waypoint_best_position_for_session(
             });
         }
     };
-    replace_session_flight_plan(session, mutation.plan)?;
-    session_snapshot_outcome(session)
+    commit_session_flight_plan_with_snapshot_outcome(session, mutation.plan)
 }
 
 pub fn insert_waypoint_at_flight_plan_row_in_session(
@@ -930,7 +930,7 @@ pub fn insert_waypoint_at_flight_plan_row_in_session(
     row_uid: String,
     before: bool,
     waypoint: NavRef,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
@@ -956,8 +956,7 @@ pub fn insert_waypoint_at_flight_plan_row_in_session(
             message: format!("flight-plan insert target component is stale: {component_uid}"),
         })?;
     let next_plan = crate::insert_waypoint(&plan, component_index, before, waypoint)?;
-    replace_session_flight_plan(session, next_plan)?;
-    Ok(snapshot_for_session(session))
+    commit_session_flight_plan_with_snapshot_outcome(session, next_plan)
 }
 
 pub fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
@@ -1086,8 +1085,7 @@ pub fn insert_airway_at_flight_plan_row_in_session(
         materialized.airway,
         materialized.resolved_legs,
     )?;
-    replace_session_flight_plan(session, mutation.mutation.plan)?;
-    session_snapshot_outcome(session)
+    commit_session_flight_plan_with_snapshot_outcome(session, mutation.mutation.plan)
 }
 
 pub fn select_procedure_at_flight_plan_row_in_session(
@@ -1192,8 +1190,7 @@ pub fn select_procedure_at_flight_plan_row_in_session(
             built,
         )?
     };
-    replace_session_flight_plan(session, mutation.mutation.plan)?;
-    session_snapshot_outcome(session)
+    commit_session_flight_plan_with_snapshot_outcome(session, mutation.mutation.plan)
 }
 
 pub fn load_plate_procedure_in_session(
@@ -1299,8 +1296,7 @@ pub fn load_plate_procedure_in_session(
             built,
         )?
     };
-    replace_session_flight_plan(session, mutation.mutation.plan)?;
-    session_snapshot_outcome(session)
+    commit_session_flight_plan_with_snapshot_outcome(session, mutation.mutation.plan)
 }
 
 fn activate_direct_to_nav_ref_in_session(
@@ -1473,8 +1469,7 @@ pub fn perform_flight_plan_row_action_in_session(
             });
         }
     };
-    replace_session_flight_plan(session, next_plan)?;
-    session_snapshot_outcome(session)
+    commit_session_flight_plan_with_snapshot_outcome(session, next_plan)
 }
 
 pub fn restore_direct_to_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
@@ -2459,6 +2454,32 @@ fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> App
         Some(&session.chart_page_state.selected_chart_id),
     );
     Ok(())
+}
+
+fn commit_session_flight_plan_with_snapshot_outcome(
+    session: &mut UiSession,
+    plan: FlightPlan,
+) -> AppResult<HadOperationOutcome> {
+    let mut candidate = session.clone();
+    replace_session_flight_plan(&mut candidate, plan)?;
+    match try_snapshot_for_session(&candidate) {
+        Ok(snapshot) => {
+            *session = candidate;
+            serde_json::to_value(snapshot)
+                .map(|result| HadOperationOutcome::Complete { result })
+                .map_err(|err| AppError {
+                    kind: AppErrorKind::Internal,
+                    message: err.to_string(),
+                })
+        }
+        Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
+            resources: nav_kv_page_resources(pages),
+        }),
+        Err(HadReadError::Fatal(message)) => Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message,
+        }),
+    }
 }
 
 fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {

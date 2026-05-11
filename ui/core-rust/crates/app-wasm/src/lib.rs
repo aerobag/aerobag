@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     sync::{
         atomic::{AtomicU32, Ordering},
-        Mutex, OnceLock,
+        Mutex, MutexGuard, OnceLock,
     },
 };
 
@@ -79,8 +79,21 @@ fn nav_kv_stores() -> &'static Mutex<HashMap<u32, app_core::NavKvStore>> {
     NAV_KV_STORES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn lock_nav_kv_stores() -> MutexGuard<'static, HashMap<u32, app_core::NavKvStore>> {
+    nav_kv_stores()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn publication_resolvers() -> &'static Mutex<HashMap<u32, app_core::PublicationResolver>> {
     PUBLICATION_RESOLVERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn lock_publication_resolvers() -> MutexGuard<'static, HashMap<u32, app_core::PublicationResolver>>
+{
+    publication_resolvers()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -93,16 +106,13 @@ pub fn install_panic_hook() {
 pub fn nav_kv_open(root_bytes: &[u8]) -> Result<u32, JsValue> {
     let root = app_core::NavKvRoot::parse(root_bytes).map_err(|err| JsValue::from_str(&err))?;
     let handle = NEXT_NAV_KV_HANDLE.fetch_add(1, Ordering::Relaxed);
-    nav_kv_stores()
-        .lock()
-        .expect("nav kv store poisoned")
-        .insert(handle, app_core::NavKvStore::new(root));
+    lock_nav_kv_stores().insert(handle, app_core::NavKvStore::new(root));
     Ok(handle)
 }
 
 #[wasm_bindgen]
 pub fn nav_kv_prefetch_pages(handle: u32) -> Result<String, JsValue> {
-    let stores = nav_kv_stores().lock().expect("nav kv store poisoned");
+    let stores = lock_nav_kv_stores();
     let store = stores
         .get(&handle)
         .ok_or_else(|| JsValue::from_str(&format!("invalid nav kv handle: {handle}")))?;
@@ -113,9 +123,7 @@ pub fn nav_kv_prefetch_pages(handle: u32) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn publication_resolver_open(public_base_url: &str) -> u32 {
     let handle = NEXT_PUBLICATION_RESOLVER_HANDLE.fetch_add(1, Ordering::Relaxed);
-    publication_resolvers()
-        .lock()
-        .expect("publication resolver store poisoned")
+    lock_publication_resolvers()
         .insert(handle, app_core::PublicationResolver::new(public_base_url));
     handle
 }
@@ -126,9 +134,7 @@ pub fn publication_resolver_ingest_resource(
     resource_id: &str,
     resource_bytes: &[u8],
 ) -> Result<(), JsValue> {
-    let mut resolvers = publication_resolvers()
-        .lock()
-        .expect("publication resolver store poisoned");
+    let mut resolvers = lock_publication_resolvers();
     let resolver = resolvers.get_mut(&handle).ok_or_else(|| {
         JsValue::from_str(&format!("invalid publication resolver handle: {handle}"))
     })?;
@@ -169,9 +175,7 @@ fn publication_resolver_resolve_family_resource(
     family_id: &str,
     member_path: &str,
 ) -> Result<String, JsValue> {
-    let resolvers = publication_resolvers()
-        .lock()
-        .expect("publication resolver store poisoned");
+    let resolvers = lock_publication_resolvers();
     let resolver = resolvers.get(&handle).ok_or_else(|| {
         JsValue::from_str(&format!("invalid publication resolver handle: {handle}"))
     })?;
@@ -186,9 +190,7 @@ fn publication_resolver_resolve_package_resource(
     package_id: &str,
     member_path: &str,
 ) -> Result<String, JsValue> {
-    let resolvers = publication_resolvers()
-        .lock()
-        .expect("publication resolver store poisoned");
+    let resolvers = lock_publication_resolvers();
     let resolver = resolvers.get(&handle).ok_or_else(|| {
         JsValue::from_str(&format!("invalid publication resolver handle: {handle}"))
     })?;
@@ -200,14 +202,11 @@ fn publication_resolver_resolve_package_resource(
 
 #[wasm_bindgen]
 pub fn publication_resolver_destroy(handle: u32) {
-    let _ = publication_resolvers()
-        .lock()
-        .expect("publication resolver store poisoned")
-        .remove(&handle);
+    let _ = lock_publication_resolvers().remove(&handle);
 }
 
 fn nav_kv_insert_page(handle: u32, page_index: u32, page_bytes: &[u8]) -> Result<(), JsValue> {
-    let mut stores = nav_kv_stores().lock().expect("nav kv store poisoned");
+    let mut stores = lock_nav_kv_stores();
     let store = stores
         .get_mut(&handle)
         .ok_or_else(|| JsValue::from_str(&format!("invalid nav kv handle: {handle}")))?;
@@ -231,10 +230,7 @@ pub fn nav_kv_insert_resource(
 
 #[wasm_bindgen]
 pub fn nav_kv_destroy(handle: u32) {
-    let _ = nav_kv_stores()
-        .lock()
-        .expect("nav kv store poisoned")
-        .remove(&handle);
+    let _ = lock_nav_kv_stores().remove(&handle);
 }
 
 #[wasm_bindgen]
@@ -272,7 +268,7 @@ fn emit_rust_debug_log(_tag: &str, _data_json: &str) {}
 pub fn core_had_operation(nav_kv_handle: u32, operation_json: &str) -> Result<String, JsValue> {
     let operation: app_core::HadOperation =
         serde_json::from_str(operation_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let stores = nav_kv_stores().lock().expect("nav kv store poisoned");
+    let stores = lock_nav_kv_stores();
     let store = stores
         .get(&nav_kv_handle)
         .ok_or_else(|| JsValue::from_str(&format!("invalid nav kv handle: {nav_kv_handle}")))?;
@@ -446,7 +442,7 @@ pub fn attach_nav_kv_store_to_session(
     nav_kv_handle: u32,
     session_handle: u32,
 ) -> Result<(), JsValue> {
-    let stores = nav_kv_stores().lock().expect("nav kv store poisoned");
+    let stores = lock_nav_kv_stores();
     let store = stores
         .get(&nav_kv_handle)
         .ok_or_else(|| JsValue::from_str(&format!("invalid nav kv handle: {nav_kv_handle}")))?;

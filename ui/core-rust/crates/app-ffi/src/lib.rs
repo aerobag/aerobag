@@ -1015,10 +1015,9 @@ pub fn attach_nav_kv_store_to_session_json(
 }
 
 pub fn nav_kv_destroy_handle(handle: u64) {
-    let _ = nav_kv_stores()
-        .lock()
-        .expect("nav kv store poisoned")
-        .remove(&(handle as u32));
+    if let Ok(mut stores) = nav_kv_stores().lock() {
+        let _ = stores.remove(&(handle as u32));
+    }
 }
 
 pub fn core_had_operation_json(handle: u64, operation_json: &str) -> Result<String, String> {

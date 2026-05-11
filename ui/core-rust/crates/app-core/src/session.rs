@@ -356,7 +356,7 @@ pub fn set_map_layer_visibility_in_session(
     let session = session_mut(&mut sessions, handle)?;
     let layer = parse_map_layer_id(layer_id)?;
     map_layer_toggle_mut(&mut session.map_layer_state, layer).visible = visible;
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn load_raster_map_catalog_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
@@ -388,7 +388,7 @@ pub fn set_raster_resource_mode_in_session(
         session.raster_resource_mode = mode;
         session.raster_map_catalog = None;
     }
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn select_map_family_in_session(
@@ -426,7 +426,7 @@ pub fn select_raster_map_in_session(
         });
     };
     crate::select_map_in_catalog(catalog, selected_map_id);
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn get_raster_tile_plan_in_session(
@@ -491,7 +491,7 @@ pub fn set_map_layer_enabled_in_session(
     if !enabled {
         toggle.visible = false;
     }
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn set_guidance_leg_geometry_in_session(
@@ -510,7 +510,7 @@ pub fn set_guidance_leg_geometry_in_session(
     {
         sync_plan_preview_to_active_leg(session)?;
     }
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn sync_guidance_geometry_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
@@ -571,7 +571,7 @@ pub fn select_airport_in_session(handle: u32, airport_id: &str) -> AppResult<UiS
     );
     session.chart_page_state =
         derive_compact_chart_page_state(&plan, &recent_airport_ids, Some(airport_id), None);
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn select_chart_in_session(handle: u32, chart_id: &str) -> AppResult<UiSessionSnapshot> {
@@ -584,7 +584,7 @@ pub fn select_chart_in_session(handle: u32, chart_id: &str) -> AppResult<UiSessi
         Some(&session.chart_page_state.selected_airport_id),
         Some(chart_id),
     );
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn register_ownship_source_in_session(
@@ -597,7 +597,7 @@ pub fn register_ownship_source_in_session(
         &session.app_state,
         AppEvent::RegisterOwnshipSource(registration),
     )?;
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn update_ownship_source_status_in_session(
@@ -610,7 +610,7 @@ pub fn update_ownship_source_status_in_session(
         &session.app_state,
         AppEvent::UpdateOwnshipSourceStatus(update),
     )?;
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn push_situation_sample_in_session(
@@ -620,7 +620,7 @@ pub fn push_situation_sample_in_session(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.app_state = state::reduce(&session.app_state, AppEvent::PushSituationSample(sample))?;
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn set_ownship_policy_in_session(
@@ -630,7 +630,7 @@ pub fn set_ownship_policy_in_session(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.app_state = state::reduce(&session.app_state, AppEvent::SetOwnshipPolicy(policy))?;
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn select_ownship_source_in_session(
@@ -652,7 +652,7 @@ pub fn select_ownship_source_in_session(
     if selected_source_kind == Some(crate::OwnshipSourceKind::DebugOwnshipDriver)
         && !debug_ownship_driver_available(session)
     {
-        return Ok(snapshot_for_session(session));
+        return snapshot_for_session(session);
     }
     session.app_state =
         state::reduce(&session.app_state, AppEvent::SelectOwnshipSource(selection))?;
@@ -666,7 +666,7 @@ pub fn select_ownship_source_in_session(
         }
         _ => {}
     }
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 fn is_replay_ownship_source(kind: crate::OwnshipSourceKind) -> bool {
@@ -686,7 +686,7 @@ pub fn apply_situation_control_input_in_session(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     situation_source_handler_for_session(session).apply_input(session, input, now_epoch_ms)?;
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn load_playback_trace_in_session(
@@ -707,7 +707,7 @@ pub fn load_playback_trace_in_session(
         situation,
         0,
     )?;
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
@@ -723,7 +723,7 @@ pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiS
             now_epoch_ms as i64,
         )?;
     }
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn pause_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
@@ -739,7 +739,7 @@ pub fn pause_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<Ui
             now_epoch_ms as i64,
         )?;
     }
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn seek_playback_in_session(
@@ -759,7 +759,7 @@ pub fn seek_playback_in_session(
             now_epoch_ms as i64,
         )?;
     }
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn set_playback_rate_in_session(
@@ -779,7 +779,7 @@ pub fn set_playback_rate_in_session(
             now_epoch_ms as i64,
         )?;
     }
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
@@ -795,7 +795,7 @@ pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiS
             now_epoch_ms as i64,
         )?;
     }
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn set_situation_in_session(
@@ -812,7 +812,7 @@ pub fn set_situation_in_session(
         situation,
         0,
     )?;
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn tick_debug_ownship_driver_in_session(
@@ -822,7 +822,7 @@ pub fn tick_debug_ownship_driver_in_session(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     tick_debug_ownship_driver(session, now_epoch_ms)?;
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn replace_flight_plan_in_session(
@@ -832,7 +832,7 @@ pub fn replace_flight_plan_in_session(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     replace_session_flight_plan(session, plan)?;
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn activate_next_leg_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
@@ -860,7 +860,7 @@ fn mutate_session_flight_plan(
     let plan = session_plan(session)?;
     let next_plan = mutation(&plan)?;
     replace_session_flight_plan(session, next_plan)?;
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 fn mutate_session_guidance(
@@ -872,7 +872,7 @@ fn mutate_session_guidance(
     let plan = session_plan(session)?;
     let next_plan = mutation(&plan)?;
     session.app_state = state::reduce(&session.app_state, AppEvent::ReplaceFlightPlan(next_plan))?;
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn perform_map_selection_action_in_session(
@@ -1317,7 +1317,7 @@ fn activate_direct_to_nav_ref_in_session(
         })?;
     let next_plan = crate::activate_direct_to(&plan, from_position, target)?;
     replace_session_flight_plan(session, next_plan)?;
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn activate_direct_to_leg_in_session(
@@ -1346,7 +1346,7 @@ pub fn activate_direct_to_leg_in_session(
         })?;
     let next_plan = crate::activate_direct_to_leg(&plan, from_position, &target_leg_id)?;
     replace_session_flight_plan(session, next_plan)?;
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn perform_flight_plan_row_action_in_session(
@@ -1478,7 +1478,7 @@ pub fn restore_direct_to_in_session(handle: u32) -> AppResult<UiSessionSnapshot>
     let plan = session_plan(session)?;
     let next_plan = crate::restore_direct_to(&plan)?;
     replace_session_flight_plan(session, next_plan)?;
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn attach_nav_kv_store_to_session(
@@ -1511,7 +1511,7 @@ pub fn engage_map_follow_in_session(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.map_follow.engage(viewport);
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn disengage_map_follow_in_session(
@@ -1521,7 +1521,7 @@ pub fn disengage_map_follow_in_session(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.map_follow.disengage(viewport);
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn set_map_follow_offset_in_session(
@@ -1535,7 +1535,7 @@ pub fn set_map_follow_offset_in_session(
     session
         .map_follow
         .set_anchor_offset(viewport, offset_x_px, offset_y_px);
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn sync_map_follow_in_session(
@@ -1552,7 +1552,7 @@ pub fn sync_map_follow_in_session(
         width_px,
         height_px,
     );
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn restore_chart_page_state_in_session(
@@ -1570,7 +1570,7 @@ pub fn restore_chart_page_state_in_session(
         selected_airport_id,
         selected_chart_id,
     );
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn set_debug_flag_in_session(
@@ -1594,13 +1594,13 @@ pub fn set_debug_flag_in_session(
             });
         }
     }
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn get_session_snapshot(handle: u32) -> AppResult<UiSessionSnapshot> {
     let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
-    Ok(snapshot_for_session(session))
+    snapshot_for_session(session)
 }
 
 pub fn ingest_point_tiles_in_session(handle: u32, tiles: &[PointTilePayload]) -> AppResult<()> {
@@ -2482,9 +2482,20 @@ fn commit_session_flight_plan_with_snapshot_outcome(
     }
 }
 
-fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
-    try_snapshot_for_session(session)
-        .expect("session snapshot requires unavailable nav-kv resources")
+fn snapshot_for_session(session: &UiSession) -> AppResult<UiSessionSnapshot> {
+    try_snapshot_for_session(session).map_err(|err| match err {
+        HadReadError::NeedPages(pages) => AppError {
+            kind: AppErrorKind::Internal,
+            message: format!(
+                "session snapshot requires nav-kv resources in non-paged API: {:?}",
+                nav_kv_page_resources(pages)
+            ),
+        },
+        HadReadError::Fatal(message) => AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message,
+        },
+    })
 }
 
 fn session_snapshot_outcome(session: &UiSession) -> AppResult<HadOperationOutcome> {

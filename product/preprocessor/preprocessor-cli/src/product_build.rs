@@ -6535,13 +6535,29 @@ fn build_nav_kv_waypoint_lookup_pairs(
             by_prefix.entry(prefix).or_default().push(candidate.clone());
         }
     }
-    for (prefix, candidates) in by_prefix {
+    for (prefix, candidates) in &by_prefix {
         if candidates.len() > WAYPOINT_PREFIX_MAX_RESULTS {
+            continue;
+        }
+        let parent_too_large = prefix
+            .chars()
+            .next_back()
+            .map(|last_char| {
+                let parent_len = prefix.len() - last_char.len_utf8();
+                if parent_len == 0 {
+                    return true;
+                }
+                by_prefix
+                    .get(&prefix[..parent_len])
+                    .is_none_or(|parent| parent.len() > WAYPOINT_PREFIX_MAX_RESULTS)
+            })
+            .unwrap_or(true);
+        if !parent_too_large {
             continue;
         }
         pairs.push(json_pair(
             format!("waypoint/prefix/{}", had_upper_key_component(&prefix)),
-            &serde_json::Value::Array(candidates),
+            &serde_json::Value::Array(candidates.clone()),
             "waypoint prefix",
         )?);
     }
@@ -18719,12 +18735,10 @@ mod tests {
             .expect("KR prefix should remain below threshold");
         let suggestions = serde_json::from_slice::<Vec<serde_json::Value>>(&kr.value).unwrap();
         assert_eq!(suggestions.len(), 2);
-        let krnt = pairs
-            .iter()
-            .find(|pair| pair.key == "waypoint/prefix/KRNT")
-            .expect("full typed prefix should be emitted when below threshold");
-        let suggestions = serde_json::from_slice::<Vec<serde_json::Value>>(&krnt.value).unwrap();
-        assert_eq!(suggestions.len(), 1);
+        assert!(
+            pairs.iter().all(|pair| pair.key != "waypoint/prefix/KRNT"),
+            "longer prefixes are redundant when a shorter emitted bucket can be filtered"
+        );
     }
 
     #[test]

@@ -969,13 +969,21 @@ fn suggest_waypoint_identifier_candidates(
     if prefix.is_empty() {
         return Ok(Vec::new());
     }
-    let Some(candidates) = read_optional::<Vec<WaypointIdentifierRecord>>(
-        store,
-        NavKvQuery::WaypointPrefix {
-            prefix: prefix.clone(),
-        },
-    )?
-    else {
+    let prefix_chars = prefix.chars().collect::<Vec<_>>();
+    let mut candidates = None;
+    for length in (1..=prefix_chars.len()).rev() {
+        let lookup_prefix = prefix_chars.iter().take(length).collect::<String>();
+        if let Some(records) = read_optional::<Vec<WaypointIdentifierRecord>>(
+            store,
+            NavKvQuery::WaypointPrefix {
+                prefix: lookup_prefix,
+            },
+        )? {
+            candidates = Some(records);
+            break;
+        }
+    }
+    let Some(candidates) = candidates else {
         return Ok(Vec::new());
     };
     let mut suggestions = candidates
@@ -3566,13 +3574,49 @@ mod tests {
     }
 
     #[test]
-    fn waypoint_prefix_query_uses_full_typed_prefix() {
-        assert_eq!(
-            crate::nav_kv_key_for_query(&NavKvQuery::WaypointPrefix {
-                prefix: "kpae".to_string(),
-            }),
-            Some("waypoint/prefix/KPAE".to_string())
-        );
+    fn waypoint_prefix_suggestions_fall_back_to_shortest_emitted_bucket() {
+        let kr_bucket = vec![
+            WaypointIdentifierRecord {
+                identifier: "KRNT".to_string(),
+                nav_ref: NavRef::Airport("KRNT".to_string()),
+                kind: "airport".to_string(),
+                city: "Renton".to_string(),
+                state: "WA".to_string(),
+                facility_name: "Renton Municipal".to_string(),
+                position: LatLon {
+                    lat: 47.493,
+                    lon: -122.216,
+                },
+            },
+            WaypointIdentifierRecord {
+                identifier: "KRDD".to_string(),
+                nav_ref: NavRef::Airport("KRDD".to_string()),
+                kind: "airport".to_string(),
+                city: "Redding".to_string(),
+                state: "CA".to_string(),
+                facility_name: "Redding Regional".to_string(),
+                position: LatLon {
+                    lat: 40.509,
+                    lon: -122.293,
+                },
+            },
+        ];
+        let store = test_nav_kv_store(&[(
+            "waypoint/prefix/KR",
+            serde_json::to_value(kr_bucket).expect("encode waypoint bucket"),
+        )]);
+        let suggestions = suggest_waypoint_identifier_candidates(
+            &store,
+            "KRNT",
+            5,
+            LatLon {
+                lat: 47.493,
+                lon: -122.216,
+            },
+        )
+        .expect("suggest from ancestor prefix bucket");
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].identifier, "KRNT");
     }
 
     #[test]

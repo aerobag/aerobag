@@ -1746,7 +1746,7 @@ fn cycle_selection(selections: &mut BTreeMap<String, OfflinePackageSelection>, i
 fn bundle_package_to_artifact(pkg: &BundlePackageArtifact) -> Option<AvailablePackageArtifact> {
     match pkg.family_id.as_str() {
         "sec" | "tac" | "shaded-relief" | "enr-l" | "enr-h" | "tpp" | "csup" | "nav-db" | "geo"
-        | "terrain" => Some(AvailablePackageArtifact {
+        | "terrain" | "world-basemap" => Some(AvailablePackageArtifact {
             artifact_id: pkg.id.clone(),
             filename: pkg.filename.clone(),
             product_id: pkg.family_id.clone(),
@@ -2141,6 +2141,37 @@ mod tests {
             plan.fetch,
             vec!["NAV_DB_2604", "GEO_STATIC", "NW_SEC_2603", "NW_TAC_2603",]
         );
+    }
+
+    #[test]
+    fn world_basemap_is_a_core_product() {
+        let input = PackageManagementInput {
+            now_epoch_ms: 200,
+            preferences: default_offline_package_preferences(["nw"], ["sec"]),
+            bundle: BundleManifest {
+                packages: vec![pkg(
+                    "WORLD_BASEMAP",
+                    "world-basemap",
+                    None,
+                    None,
+                    Some("2099-01-01"),
+                )],
+            },
+            installed: vec![],
+            forced_gc_installed_filenames: vec![],
+            suppressed_fetch_filenames: vec![],
+        };
+
+        let plan = plan_offline_packages(&input);
+
+        assert_eq!(plan.fetch, vec!["WORLD_BASEMAP"]);
+        let rows = plan_rows_by_dimension(&input, &plan, &BTreeMap::new(), None);
+        let row = offline_packages_ui_row(
+            "world-basemap".to_string(),
+            OfflinePackageSelection::Play,
+            rows.core_products.get("world-basemap"),
+        );
+        assert_eq!(row.fetch_count, 1);
     }
 
     #[test]

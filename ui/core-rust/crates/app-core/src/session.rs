@@ -2906,17 +2906,39 @@ fn project_active_leg_nav_element(session: &UiSession) -> NavElementUiView {
         .position
         .map(|position| cdi_dots_for_guidance_geometry(&geometry, position));
     let cdi_offscale_readout = cdi_indicator_dots.and_then(cdi_offscale_readout);
+    let active_leg_summary = active_guidance_leg_summary(plan, &active_leg);
 
     NavElementUiView {
         active_leg_summary: format!(
-            "{} -> {} CRS {:03.0}",
-            nav_ref_label(&active_leg.from),
-            nav_ref_label(&active_leg.to),
+            "{} CRS {:03.0}",
+            active_leg_summary,
             course_deg.round().rem_euclid(360.0),
         ),
         cdi_indicator_dots,
         cdi_offscale_readout,
     }
+}
+
+fn active_guidance_leg_summary(plan: &FlightPlan, active_leg: &PlanLeg) -> String {
+    if active_guidance_detail_is_terminal_hold(plan) {
+        "HOLD".to_string()
+    } else {
+        format!(
+            "{} -> {}",
+            nav_ref_label(&active_leg.from),
+            nav_ref_label(&active_leg.to)
+        )
+    }
+}
+
+fn active_guidance_detail_is_terminal_hold(plan: &FlightPlan) -> bool {
+    plan.guidance.as_ref().is_some_and(|guidance| {
+        guidance.active_detail_index.is_some_and(|detail_index| {
+            terminal_hold_detail_range(plan, guidance.active_leg_index).is_some_and(
+                |(hold_start, hold_end)| detail_index >= hold_start && detail_index <= hold_end,
+            )
+        })
+    })
 }
 
 fn active_leg_geometry(
@@ -5458,6 +5480,20 @@ mod tests {
         assert_eq!(guidance.active_leg_index, 0);
         assert_eq!(guidance.active_detail_index, Some(1));
         assert_eq!(guidance.sequencing_mode, SequencingMode::Suspended);
+        let nav_element = {
+            let sessions = lock_sessions();
+            let session = sessions.get(&init.handle).expect("session");
+            project_active_leg_nav_element(session)
+        };
+        assert!(
+            nav_element.active_leg_summary.starts_with("HOLD CRS "),
+            "hold CDI should identify hold guidance, got {:?}",
+            nav_element.active_leg_summary
+        );
+        assert!(
+            nav_element.cdi_indicator_dots.is_some(),
+            "hold CDI should present deviation from active hold detail"
+        );
 
         for second in 5..=8 {
             let now_epoch_ms = f64::from(second) * 1000.0;

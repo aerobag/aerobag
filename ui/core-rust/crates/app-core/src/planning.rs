@@ -1760,6 +1760,9 @@ pub fn active_guidance_leg(plan: &FlightPlan) -> Option<PlanLeg> {
         SequencingMode::Suspended => {
             let preserve_active_leg = match guidance.suspend_reason {
                 Some(SuspendReason::Manual) => true,
+                Some(SuspendReason::Boundary) if guidance_is_in_terminal_hold(&plan, &guidance) => {
+                    true
+                }
                 Some(
                     SuspendReason::Boundary
                     | SuspendReason::RouteEnd
@@ -1784,6 +1787,13 @@ pub fn active_guidance_leg(plan: &FlightPlan) -> Option<PlanLeg> {
             }
         }
     }
+}
+
+fn guidance_is_in_terminal_hold(plan: &FlightPlan, guidance: &GuidanceState) -> bool {
+    guidance.active_detail_index.is_some_and(|detail_index| {
+        terminal_hold_start_detail_index_for_leg(plan, guidance.active_leg_index)
+            .is_some_and(|hold_start| detail_index >= hold_start)
+    })
 }
 
 pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {

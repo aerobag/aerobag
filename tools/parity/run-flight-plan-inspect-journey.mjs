@@ -59,6 +59,16 @@ function parseArgs(argv) {
   return args;
 }
 
+function portFromUrl(url, fallback) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.port) return parsed.port;
+    return parsed.protocol === "https:" ? "443" : "80";
+  } catch (_error) {
+    return fallback;
+  }
+}
+
 function result(platform) {
   return {
     journey: JOURNEY_NAME,
@@ -1304,8 +1314,8 @@ async function androidTapTag(serial, out, label, tag, timeoutMs = 5000) {
   return true;
 }
 
-async function androidEnsureOfflinePackagesReady(serial, out) {
-  adbBestEffort(serial, ["reverse", "tcp:8092", "tcp:8092"]);
+async function androidEnsureOfflinePackagesReady(serial, out, packageSourceHostPort) {
+  adbBestEffort(serial, ["reverse", "tcp:8092", `tcp:${packageSourceHostPort}`]);
 
   const runtimeReady = () => {
     const xml = dumpAndroid(serial);
@@ -1341,11 +1351,8 @@ async function androidEnsureOfflinePackagesReady(serial, out) {
     for (const regionId of ANDROID_OFFLINE_REGION_IDS) {
       if (regionId === "nw") continue;
       const tag = `parity:offline-region:${regionId}:toggle`;
-      for (let click = 0; click < 2; click += 1) {
-        await androidScrollUntilTag(serial, tag, 6);
-        if (!await androidTapTag(serial, out, `deselected offline region ${regionId}`, tag, 7000)) {
-          break;
-        }
+      await androidScrollUntilTag(serial, tag, 6);
+      if (await androidTapTag(serial, out, `deselected offline region ${regionId}`, tag, 7000)) {
         await delay(150);
       }
     }
@@ -1657,7 +1664,7 @@ async function androidCheckPlanActionClasses(serial, out) {
   }
 }
 
-async function androidJourney(serial) {
+async function androidJourney(serial, packageSourceHostPort = "8092") {
   const out = result("android");
   adb(serial, ["wait-for-device"]);
   adb(serial, ["shell", "am", "force-stop", ANDROID_PACKAGE]);
@@ -1676,7 +1683,7 @@ async function androidJourney(serial) {
     return out;
   }
   recordStep(out, "app visible");
-  await androidEnsureOfflinePackagesReady(serial, out);
+  await androidEnsureOfflinePackagesReady(serial, out, packageSourceHostPort);
 
   const postBootstrapXml = dumpAndroid(serial);
   if (hasAndroidText(postBootstrapXml, "Waypoint")) {
@@ -1934,7 +1941,7 @@ async function main() {
     outputs.push(await webJourney(args.url));
   }
   if (args.platform === "android" || args.platform === "both") {
-    outputs.push(await androidJourney(args.serial));
+    outputs.push(await androidJourney(args.serial, portFromUrl(args.url, "8092")));
   }
   const comparison = args.platform === "both" ? comparePlatformOutputs(outputs) : null;
   const payload = outputs.length === 1 ? outputs[0] : { journeys: outputs, comparison };

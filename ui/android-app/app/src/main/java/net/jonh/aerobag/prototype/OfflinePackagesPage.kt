@@ -1343,7 +1343,6 @@ internal suspend fun refreshOfflinePackageLibrary(
         .flatMap { manifest ->
             val packagedRootUrl = packagedArtifactRootUrl(publicationRootUrl, manifest)
             manifest.bundles
-                .filter { it.bundleType == "cycle" }
                 .map { bundle -> bundle.filename to resolvePackageSourceUrl(bundle.relativePath ?: bundle.filename, packagedRootUrl) }
         }
         .distinctBy { it.first }

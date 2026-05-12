@@ -7,7 +7,7 @@ created_date: '2026-05-12 16:35'
 labels:
   - feature
   - cleanup
-  - cat:cleanup
+  - cat:ui-affordances
 dependencies: []
 priority: low
 ordinal: 54000
@@ -24,4 +24,3 @@ Replace more text-heavy buttons with icons, using crops or derived art from avia
 - [ ] #1 Identify candidate buttons where icons improve recognition.
 - [ ] #2 Add shared assets so web and Android remain visually aligned.
 <!-- AC:END -->
-

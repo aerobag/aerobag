@@ -1,6 +1,6 @@
 ---
 id: TASK-40
-title: Add distance pills to long flight plan legs
+title: Plot distances on chart
 status: Next
 assignee: []
 created_date: '2026-05-12 16:35'
@@ -16,12 +16,12 @@ ordinal: 40000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Show distance pills on flight plan legs that are visually long enough to support the annotation without clutter.
+Plot distances on chart
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 Core provides leg distance text and visibility eligibility.
-- [ ] #2 Web and Android render the same distance pill on sufficiently long legs.
+- [ ] #2 Web and Android render the same distance pill on sufficiently long flight plan legs.
+- [ ] #3 Chart rendering can show leg distances where there is enough visual room.
 <!-- AC:END -->
-

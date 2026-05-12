@@ -1,6 +1,6 @@
 ---
 id: TASK-56
-title: Add status boxes for data age and terrain accuracy
+title: Product age warnings
 status: Next
 assignee: []
 created_date: '2026-05-12 16:35'
@@ -18,7 +18,7 @@ ordinal: 56000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Add status boxes such as `NEXRAD age: 7 minutes` computed relative to original data time, and `Terrain: +/- 300ft`.
+Product age warnings
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -26,5 +26,5 @@ Add status boxes such as `NEXRAD age: 7 minutes` computed relative to original d
 - [ ] #1 Core exposes data age and accuracy status fields.
 - [ ] #2 UI renders compact status boxes consistently across platforms.
 - [ ] #3 Stale or degraded status can feed the caution system.
+- [ ] #4 Product age warnings cover fast products such as NEXRAD, METAR, NOTAM, TFR, and ADS-B where applicable.
 <!-- AC:END -->
-

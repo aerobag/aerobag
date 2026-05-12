@@ -8,7 +8,7 @@ labels:
   - performance
   - data
   - preprocessor
-  - cat:preprocessor
+  - cat:performance
 dependencies: []
 priority: medium
 ordinal: 20000

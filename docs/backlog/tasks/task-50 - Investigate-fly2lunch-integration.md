@@ -6,7 +6,7 @@ assignee: []
 created_date: '2026-05-12 16:35'
 labels:
   - feature
-  - cat:features
+  - cat:data
 dependencies: []
 priority: low
 ordinal: 50000

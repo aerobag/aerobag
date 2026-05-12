@@ -1,7 +1,7 @@
 ---
 id: TASK-19
 title: Replace nav-db binary search pages with B+ tree
-status: Next
+status: Done
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -11,7 +11,7 @@ labels:
   - data
   - cat:preprocessor
 dependencies: []
-priority: medium
+priority: done
 ordinal: 19000
 ---
 

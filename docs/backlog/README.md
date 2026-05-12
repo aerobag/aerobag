@@ -46,7 +46,7 @@ Current category labels:
 - `cat:weather`
 - `cat:data`
 - `cat:performance`
-- `cat:cleanup`
+- `cat:ui-affordances`
 - `cat:features`
 
 ## Board

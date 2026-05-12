@@ -1,7 +1,7 @@
 ---
 id: TASK-22
 title: Fix current app-core test failures
-status: Inbox
+status: Done
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -10,7 +10,7 @@ labels:
   - bug
   - cat:core
 dependencies: []
-priority: high
+priority: done
 ordinal: 22000
 ---
 

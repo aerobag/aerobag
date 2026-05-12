@@ -1,0 +1,21 @@
+---
+id: TASK-99
+title: Unify <z7 model
+status: Next
+assignee: []
+created_date: '2026-05-12 20:10'
+labels:
+  - core
+  - data
+  - cat:core
+dependencies: []
+priority: medium
+ordinal: 99000
+---
+
+## Description
+
+<!-- SECTION:DESCRIPTION:BEGIN -->
+Unify <z7 model
+<!-- SECTION:DESCRIPTION:END -->
+

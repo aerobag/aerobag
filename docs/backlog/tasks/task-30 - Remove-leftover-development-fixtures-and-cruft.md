@@ -7,7 +7,7 @@ created_date: '2026-05-12 16:20'
 labels:
   - cleanup
   - source
-  - cat:cleanup
+  - cat:productionization
 dependencies: []
 priority: low
 ordinal: 30000
@@ -25,4 +25,3 @@ Search the source tree for leftover fixtures, staging artifacts, and dead develo
 - [ ] #2 Delete unused artifacts.
 - [ ] #3 Keep test fixtures that still have a clear purpose and document that purpose if needed.
 <!-- AC:END -->
-

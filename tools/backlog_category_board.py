@@ -15,6 +15,7 @@ import html
 import json
 import os
 import re
+from datetime import datetime
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -31,7 +32,7 @@ CATEGORY_COLUMNS = [
     ("weather", "Weather"),
     ("data", "Data"),
     ("performance", "Performance"),
-    ("cleanup", "Cleanup"),
+    ("ui-affordances", "UI Affordances"),
     ("features", "Features"),
 ]
 
@@ -269,6 +270,42 @@ def update_task_text(backlog_dir: Path, task_id: str, title: str, description: s
     task.path.write_text(render_frontmatter(data) + body, encoding="utf-8")
 
 
+def slugify(value: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", value.strip()).strip("-")
+    return slug or "Untitled"
+
+
+def create_task(backlog_dir: Path, category: str) -> Task:
+    if category not in CATEGORY_KEYS:
+        raise ValueError(f"unknown category: {category}")
+    tasks_dir = backlog_dir / "tasks"
+    max_id = 0
+    max_ordinal = 0
+    for task in load_tasks(backlog_dir):
+        match = re.fullmatch(r"TASK-(\d+)", task.id)
+        if match:
+            max_id = max(max_id, int(match.group(1)))
+        max_ordinal = max(max_ordinal, task.ordinal)
+    task_num = max_id + 1
+    task_id = f"TASK-{task_num}"
+    title = "Untitled"
+    data: dict[str, object] = {
+        "id": task_id,
+        "title": title,
+        "status": "Next",
+        "assignee": [],
+        "created_date": datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+        "labels": [f"cat:{category}"],
+        "dependencies": [],
+        "priority": "medium",
+        "ordinal": max_ordinal + 1000,
+    }
+    body = replace_description("", "")
+    path = tasks_dir / f"task-{task_num} - {slugify(title)}.md"
+    path.write_text(render_frontmatter(data) + body, encoding="utf-8")
+    return get_task(backlog_dir, task_id)
+
+
 def render_page(tasks: list[Task]) -> bytes:
     columns = [(key, title) for key, title in CATEGORY_COLUMNS]
     columns.append(("needs-category", "Needs Category"))
@@ -346,13 +383,28 @@ def render_page(tasks: list[Task]) -> bytes:
       padding: 10px 12px;
       display: flex;
       justify-content: space-between;
-      align-items: baseline;
+      align-items: center;
+      gap: 8px;
       font-weight: 800;
+    }}
+    .columnTitle {{
+      display: flex;
+      align-items: baseline;
+      gap: 7px;
+      min-width: 0;
     }}
     .count {{
       font-weight: 700;
       color: var(--muted);
       font-size: 12px;
+    }}
+    .newButton {{
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      white-space: nowrap;
     }}
     .cards {{
       min-height: calc(100vh - 136px);
@@ -394,7 +446,12 @@ def render_page(tasks: list[Task]) -> bytes:
       padding: 10px;
       margin-bottom: 10px;
       box-shadow: 0 3px 9px rgba(8, 25, 35, 0.10);
-      cursor: grab;
+      cursor: pointer;
+    }}
+    .card.doneCard {{
+      background: #cccccc;
+      color: rgba(8, 25, 35, 0.76);
+      box-shadow: none;
     }}
     .card:active {{ cursor: grabbing; }}
     .taskId {{
@@ -458,11 +515,6 @@ def render_page(tasks: list[Task]) -> bytes:
       color: var(--red);
       font-size: 12px;
       font-weight: 850;
-    }}
-    .actions {{
-      display: flex;
-      gap: 8px;
-      margin-top: 10px;
     }}
     button {{
       border: 1px solid var(--line);
@@ -544,8 +596,7 @@ def render_page(tasks: list[Task]) -> bytes:
       <input id="editorTitle" class="editorTitle" type="text" aria-label="Task title">
       <textarea id="editorBody" class="editorBody" aria-label="Task body"></textarea>
       <div class="editorActions">
-        <button onclick="closeEditor(false)">Cancel</button>
-        <button onclick="closeEditor(true)">Close and Save</button>
+        <button onclick="closeEditor()">Close</button>
       </div>
     </div>
   </div>
@@ -557,8 +608,22 @@ def render_page(tasks: list[Task]) -> bytes:
       const card = event.target.closest('.card');
       if (!card) return;
       draggedTaskId = card.dataset.taskId;
+      card.dataset.dragging = 'true';
       event.dataTransfer.setData('text/plain', draggedTaskId);
       event.dataTransfer.effectAllowed = 'move';
+    }});
+    document.addEventListener('dragend', (event) => {{
+      const card = event.target.closest('.card');
+      if (!card) return;
+      setTimeout(() => {{
+        delete card.dataset.dragging;
+      }}, 0);
+    }});
+    document.addEventListener('click', (event) => {{
+      const card = event.target.closest('.card');
+      if (!card || card.dataset.dragging === 'true') return;
+      if (event.target.closest('.priorityButton')) return;
+      openEditor(card.dataset.taskId);
     }});
     document.addEventListener('dragover', (event) => {{
       const column = event.target.closest('.column');
@@ -585,6 +650,12 @@ def render_page(tasks: list[Task]) -> bytes:
         menu.classList.remove('open');
       }}
     }});
+    document.addEventListener('keydown', (event) => {{
+      if (event.key === 'Escape' && document.getElementById('editorScrim').classList.contains('open')) {{
+        event.preventDefault();
+        closeEditor();
+      }}
+    }});
     function openPriorityMenu(event, taskId) {{
       event.stopPropagation();
       priorityTaskId = taskId;
@@ -597,6 +668,19 @@ def render_page(tasks: list[Task]) -> bytes:
       if (!priorityTaskId) return;
       await post('/api/priority', {{taskId: priorityTaskId, priority}});
       location.reload();
+    }}
+    async function createTask(category) {{
+      const response = await fetch('/api/create', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{category}}),
+      }});
+      if (!response.ok) {{
+        alert(await response.text());
+        return;
+      }}
+      const task = await response.json();
+      await openEditor(task.id);
     }}
     async function openEditor(taskId) {{
       editorTaskId = taskId;
@@ -611,9 +695,8 @@ def render_page(tasks: list[Task]) -> bytes:
       document.getElementById('editorScrim').classList.add('open');
       document.getElementById('editorTitle').focus();
     }}
-    async function closeEditor(save) {{
-      const scrim = document.getElementById('editorScrim');
-      if (save && editorTaskId) {{
+    async function closeEditor() {{
+      if (editorTaskId) {{
         await post('/api/task', {{
           taskId: editorTaskId,
           title: document.getElementById('editorTitle').value,
@@ -622,8 +705,7 @@ def render_page(tasks: list[Task]) -> bytes:
         location.reload();
         return;
       }}
-      editorTaskId = null;
-      scrim.classList.remove('open');
+      document.getElementById('editorScrim').classList.remove('open');
     }}
     async function post(url, data) {{
       const response = await fetch(url, {{
@@ -644,8 +726,9 @@ def render_page(tasks: list[Task]) -> bytes:
 def render_column(key: str, title: str, tasks: list[Task]) -> str:
     tasks = sorted(tasks, key=lambda task: (PRIORITY_RANK.get(task.priority, 99), task.ordinal, task.id))
     cards = render_priority_grouped_cards(tasks)
+    new_button = "" if key == "needs-category" else f'<button class="newButton" onclick="createTask(\'{html.escape(key)}\')">New</button>'
     return f"""<section class="column" data-category="{html.escape(key)}">
-  <div class="columnHeader"><span>{html.escape(title)}</span><span class="count">{len(tasks)}</span></div>
+  <div class="columnHeader"><span class="columnTitle"><span>{html.escape(title)}</span><span class="count">{len(tasks)}</span></span>{new_button}</div>
   <div class="cards">{cards}</div>
 </section>"""
 
@@ -667,6 +750,7 @@ def render_priority_grouped_cards(tasks: list[Task]) -> str:
 
 def render_card(task: Task) -> str:
     priority_class = f"priority-{html.escape(task.priority)}" if task.priority else ""
+    card_class = "card doneCard" if task.priority == "done" else "card"
     priority = (
         f'<button class="priorityButton {priority_class}" '
         f'onclick="openPriorityMenu(event, \'{html.escape(task.id)}\')">{html.escape(task.priority)}</button>'
@@ -674,12 +758,11 @@ def render_card(task: Task) -> str:
     category_error = validate_category_labels(task)
     warning = f'<div class="warning">{html.escape(category_error)}</div>' if category_error else ""
     desc = f'<div class="desc">{html.escape(task.description)}</div>' if task.description else ""
-    return f"""<article class="card" draggable="true" data-task-id="{html.escape(task.id)}">
+    return f"""<article class="{card_class}" draggable="true" data-task-id="{html.escape(task.id)}">
   <div class="title"><span class="taskId">{html.escape(task.id)}</span>{html.escape(task.title)}</div>
   <div class="meta">{priority}</div>
   {warning}
   {desc}
-  <div class="actions"><button onclick="openEditor('{html.escape(task.id)}')">Edit</button></div>
 </article>"""
 
 
@@ -764,6 +847,11 @@ class CategoryBoardHandler(BaseHTTPRequestHandler):
                     str(payload["description"]),
                 )
                 self._send(200, "application/json", b'{"ok":true}')
+                return
+            if self.path == "/api/create":
+                task = create_task(self.backlog_dir, str(payload["category"]))
+                body = json.dumps({"id": task.id}).encode("utf-8")
+                self._send(200, "application/json", body)
                 return
             self._send(404, "text/plain; charset=utf-8", b"not found")
         except Exception as exc:  # noqa: BLE001 - UI should show the concrete failure.

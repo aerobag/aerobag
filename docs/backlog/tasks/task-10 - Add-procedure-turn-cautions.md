@@ -1,6 +1,6 @@
 ---
 id: TASK-10
-title: Add procedure turn cautions
+title: Approach decoding quality warning
 status: Next
 assignee: []
 created_date: '2026-05-12 16:20'
@@ -18,13 +18,13 @@ ordinal: 10000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Procedures containing procedure turns should surface a caution that the pilot must confirm the maneuver stays within published plate limits. This should be a core-generated warning, not a UI heuristic.
+Approach decoding quality warning
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 Core detects procedure-turn or hold-in-lieu segments that are not fully trusted.
-- [ ] #2 UI receives a structured warning for affected procedures.
-- [ ] #3 The warning appears in the general caution/status mechanism.
+- [ ] #2 Core detects other approach decoding quality concerns and emits structured warnings.
+- [ ] #3 UI receives a structured warning for affected procedures.
+- [ ] #4 The warning appears in the general caution/status mechanism.
 <!-- AC:END -->
-

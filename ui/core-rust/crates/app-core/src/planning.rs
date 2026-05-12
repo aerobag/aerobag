@@ -2557,6 +2557,9 @@ fn replaceable_procedure_component_before(
 }
 
 fn can_insert_procedure_before_component(plan: &FlightPlan, component_index: usize) -> bool {
+    if component_index == 0 {
+        return true;
+    }
     matches!(
         component_index
             .checked_sub(1)
@@ -3967,6 +3970,88 @@ pub fn insert_procedure_between_waypoints(
         .map(Some)
         .chain(std::iter::once(None))
         .chain((end_component_index..plan.route_components.len()).map(Some));
+    let (route_component_uids, route_component_uid_counter) =
+        route_component_uids_from_remap(&plan, old_index_by_new_index);
+
+    Ok(FlightPlan {
+        route_components: new_components,
+        route_component_uids,
+        route_component_uid_counter,
+        resolved_legs: resolved_legs.clone(),
+        guidance: revalidate_guidance_after_plan_edit(plan.guidance.clone(), &resolved_legs),
+        ..plan
+    })
+}
+
+pub fn insert_initial_procedure_before_airport(
+    plan: &FlightPlan,
+    airport_component_index: usize,
+    procedure: ProcedureSegment,
+    procedure_legs: Vec<ResolvedLeg>,
+) -> AppResult<FlightPlan> {
+    if airport_component_index != 0 {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!(
+                "initial procedure insertion requires the first component, got {airport_component_index}"
+            ),
+        });
+    }
+
+    let plan = plan.clone().normalized();
+    match plan.route_components.get(airport_component_index) {
+        Some(RouteComponent::Waypoint {
+            waypoint: NavRef::Airport(_),
+        }) => {}
+        Some(_) => {
+            return Err(AppError {
+                kind: AppErrorKind::UnsupportedOperation,
+                message: "initial procedure insertion target must be an airport waypoint"
+                    .to_string(),
+            })
+        }
+        None => {
+            return Err(AppError {
+                kind: AppErrorKind::UnsupportedOperation,
+                message: "component index out of bounds: 0".to_string(),
+            })
+        }
+    }
+
+    let mut new_components = Vec::<RouteComponent>::new();
+    let mut preserved_grouped_legs = BTreeMap::<usize, Vec<ResolvedLeg>>::new();
+    let old_grouped_legs = grouped_component_legs(&plan);
+
+    let procedure_component_index = new_components.len();
+    new_components.push(RouteComponent::Procedure {
+        procedure: procedure.clone(),
+    });
+
+    for old_index in 0..plan.route_components.len() {
+        let new_index = new_components.len();
+        new_components.push(plan.route_components[old_index].clone());
+        if let Some(legs) = old_grouped_legs.get(&old_index) {
+            preserved_grouped_legs.insert(new_index, rewrite_grouped_legs_source(legs, new_index));
+        }
+    }
+
+    preserved_grouped_legs.insert(
+        procedure_component_index,
+        rewrite_grouped_legs_source(&procedure_legs, procedure_component_index),
+    );
+
+    let resolved_legs =
+        rebuild_resolved_legs_with_grouped_components(&new_components, &preserved_grouped_legs);
+
+    if resolved_legs.is_empty() {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "flight plan must contain at least one flyable leg after procedure insertion"
+                .to_string(),
+        });
+    }
+    let old_index_by_new_index =
+        std::iter::once(None).chain((0..plan.route_components.len()).map(Some));
     let (route_component_uids, route_component_uid_counter) =
         route_component_uids_from_remap(&plan, old_index_by_new_index);
 
@@ -7143,9 +7228,79 @@ mod tests {
     fn project_ui_state_enables_procedure_insertion_before_airport_with_waypoint_predecessor() {
         let ui = project_ui_state(&sample_waypoint_only_plan());
 
-        assert!(!ui.components[0].can_add_procedure_before);
+        assert!(ui.components[0].can_add_procedure_before);
         assert!(ui.components[1].can_add_procedure_before);
         assert!(ui.components[2].can_add_procedure_before);
+    }
+
+    #[test]
+    fn project_ui_state_enables_procedure_insertion_for_single_airport_plan() {
+        let ui = project_ui_state(&sample_single_component_plan());
+
+        assert_eq!(ui.components.len(), 1);
+        assert!(ui.components[0].can_add_procedure_before);
+        let airport_row = ui
+            .display_rows
+            .iter()
+            .find(|row| row.component_index == Some(0))
+            .expect("single airport row");
+        assert!(
+            flight_plan_row_actions(airport_row)
+                .any(|action| action.id == FlightPlanRowActionId::SelectProcedure && action.enabled),
+            "single airport row should offer Select Procedure"
+        );
+    }
+
+    #[test]
+    fn insert_initial_procedure_before_airport_allows_airport_only_route_to_load_approach() {
+        let plan = sample_single_component_plan();
+        let procedure = ProcedureSegment {
+            airport_id: AirportId("KRNT".to_string()),
+            procedure_id: "R16".to_string(),
+            kind: ProcedureKind::Approach,
+            runway_transition: None,
+            enroute_transition: Some("JAWBN".to_string()),
+            terminal_discontinuity: None,
+        };
+        let procedure_legs = vec![
+            ResolvedLeg {
+                id: "procedure-R16-A-10".to_string(),
+                from: NavRef::Fix("JAWBN".to_string()),
+                to: NavRef::Fix("KANGU".to_string()),
+                source: ResolvedLegSource::RouteComponent {
+                    component_index: 99,
+                },
+                procedure_provenance: None,
+            },
+            ResolvedLeg {
+                id: "procedure-R16-R-20".to_string(),
+                from: NavRef::Fix("KANGU".to_string()),
+                to: NavRef::Airport("KRNT".to_string()),
+                source: ResolvedLegSource::RouteComponent {
+                    component_index: 99,
+                },
+                procedure_provenance: None,
+            },
+        ];
+
+        let inserted =
+            insert_initial_procedure_before_airport(&plan, 0, procedure, procedure_legs).unwrap();
+
+        assert!(matches!(
+            inserted.route_components[0],
+            RouteComponent::Procedure { .. }
+        ));
+        assert!(matches!(
+            inserted.route_components[1],
+            RouteComponent::Waypoint {
+                waypoint: NavRef::Airport(ref airport)
+            } if airport == "KRNT"
+        ));
+        assert_eq!(inserted.resolved_legs.len(), 2);
+        assert!(inserted
+            .resolved_legs
+            .iter()
+            .all(|leg| { leg.source == ResolvedLegSource::RouteComponent { component_index: 0 } }));
     }
 
     #[test]

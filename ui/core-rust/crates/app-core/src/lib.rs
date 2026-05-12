@@ -105,23 +105,24 @@ pub use planning::{
     flatten_component_to_waypoints, flight_plan_contains_nav_ref,
     flight_plan_has_direct_to_overlay, insert_airport_waypoint, insert_airway_after_airway,
     insert_airway_after_waypoint, insert_airway_between_waypoints,
-    insert_procedure_between_waypoints, insert_waypoint, intercept_course_requirement,
-    materialize_airway_exit_before_component, move_component, project_ui_state, reconcile_handoff,
-    reentry_to_anchor_requirement, remove_airway_child_waypoint, remove_all_above,
-    remove_all_above_airway_child_waypoint, replace_airway_component, replace_procedure_component,
-    restore_direct_to, sequence_active_detail, sequence_active_leg,
-    start_requirement_from_leg_characteristics, suspend_sequencing,
-    terminal_hold_start_detail_index_for_leg, terminal_hold_start_element_index_for_leg,
-    terminal_state_with_leg_characteristics, top_level_waypoint_component_count,
-    top_level_waypoint_component_index, unsuspend_sequencing, yieldable_course_to_fix_requirement,
-    AirwaySegment, CodedFixSatisfaction, CommonSegmentTerminalState, ConcretizedNavItem,
-    DirectToState, DirectToUiView, FlightPlan, FlightPlanDisplayRowKind,
-    FlightPlanRowActionExecution, FlightPlanRowActionId, FlightPlanUiState, GuidanceState,
-    GuidanceUiView, HandoffDecision, HoldTerminalState, LegDisplayElement, LegDisplayPath,
-    LegDisplayPathStyle, NavRef, PathTermination, PlanLeg, ProcedureDiscontinuity, ProcedureKind,
-    ProcedureLegProvenance, ProcedureSegment, ProcedureSegmentRole, ProcedureTurnTerminalState,
-    ResolvedLeg, ResolvedLegSource, ResolvedLegUiView, RouteComponent, RouteComponentUiView,
-    RouteComponentViewKind, SequencingMode, StartRequirement, TerminalState,
+    insert_initial_procedure_before_airport, insert_procedure_between_waypoints, insert_waypoint,
+    intercept_course_requirement, materialize_airway_exit_before_component, move_component,
+    project_ui_state, reconcile_handoff, reentry_to_anchor_requirement,
+    remove_airway_child_waypoint, remove_all_above, remove_all_above_airway_child_waypoint,
+    replace_airway_component, replace_procedure_component, restore_direct_to,
+    sequence_active_detail, sequence_active_leg, start_requirement_from_leg_characteristics,
+    suspend_sequencing, terminal_hold_start_detail_index_for_leg,
+    terminal_hold_start_element_index_for_leg, terminal_state_with_leg_characteristics,
+    top_level_waypoint_component_count, top_level_waypoint_component_index, unsuspend_sequencing,
+    yieldable_course_to_fix_requirement, AirwaySegment, CodedFixSatisfaction,
+    CommonSegmentTerminalState, ConcretizedNavItem, DirectToState, DirectToUiView, FlightPlan,
+    FlightPlanDisplayRowKind, FlightPlanRowActionExecution, FlightPlanRowActionId,
+    FlightPlanUiState, GuidanceState, GuidanceUiView, HandoffDecision, HoldTerminalState,
+    LegDisplayElement, LegDisplayPath, LegDisplayPathStyle, NavRef, PathTermination, PlanLeg,
+    ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance, ProcedureSegment,
+    ProcedureSegmentRole, ProcedureTurnTerminalState, ResolvedLeg, ResolvedLegSource,
+    ResolvedLegUiView, RouteComponent, RouteComponentUiView, RouteComponentViewKind,
+    SequencingMode, StartRequirement, TerminalState,
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use publication::{
@@ -1215,6 +1216,26 @@ pub fn insert_procedure_materialized_ui(
         concretized_items: built.concretized_items,
         plan: inserted,
         component_index,
+    }))
+}
+
+pub fn insert_initial_procedure_materialized_ui(
+    plan: &FlightPlan,
+    airport_component_index: usize,
+    built: MaterializedProcedure,
+) -> AppResult<ProcedurePlanUiMutation> {
+    let inserted = insert_initial_procedure_before_airport(
+        plan,
+        airport_component_index,
+        built.procedure.clone(),
+        built.resolved_legs.clone(),
+    )?;
+    Ok(project_procedure_mutation(ProcedurePlanMutation {
+        procedure: component_procedure(&inserted, 0)?,
+        resolved_legs: with_component_index_source(&built.resolved_legs, 0),
+        concretized_items: built.concretized_items,
+        plan: inserted,
+        component_index: 0,
     }))
 }
 

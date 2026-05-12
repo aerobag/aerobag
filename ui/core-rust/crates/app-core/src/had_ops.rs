@@ -3505,6 +3505,38 @@ mod tests {
     }
 
     #[test]
+    fn generated_nav_kv_lists_khvr_approaches_from_geometry_keys() {
+        let store = load_current_nav_kv_store();
+
+        let outcome = run_had_operation(
+            &store,
+            HadOperation::ListProcedures {
+                airport_id: "KHVR".to_string(),
+                procedure_kind: ProcedureKind::Approach,
+            },
+        )
+        .expect("list KHVR approaches through generated nav_kv");
+
+        let HadOperationOutcome::Complete { result } = outcome else {
+            panic!("expected complete outcome, got missing resources: {outcome:?}");
+        };
+        let procedures = serde_json::from_value::<Vec<ProcedureSummary>>(result)
+            .expect("decode KHVR approach summaries");
+        let procedure_ids = procedures
+            .iter()
+            .map(|procedure| procedure.procedure_id.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            procedure_ids.contains(&"R08"),
+            "KHVR geometry procedures should include R08: {procedure_ids:?}"
+        );
+        assert!(
+            procedure_ids.contains(&"R26"),
+            "KHVR geometry procedures should include R26: {procedure_ids:?}"
+        );
+    }
+
+    #[test]
     fn fixture_nav_kv_resolves_waypoint_identifier() {
         let store = load_fixture_nav_kv_store();
         let outcome = run_had_operation(

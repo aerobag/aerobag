@@ -1181,19 +1181,17 @@ pub fn select_procedure_at_flight_plan_row_in_session(
             }
         });
     let mut airport_component_index = airport_component_index;
-    if replace_component_index.is_none() {
+    if replace_component_index.is_none() && airport_component_index > 0 {
         let repaired =
             crate::materialize_airway_exit_before_component(&plan, airport_component_index)?;
         plan = repaired.0;
         airport_component_index = repaired.1;
     }
-    let start_component_index = airport_component_index
-        .checked_sub(1)
-        .ok_or_else(|| AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: "procedure insert target has no preceding component".to_string(),
-        })?;
+    let start_component_index = airport_component_index.checked_sub(1);
     let store = session_nav_kv_store(session)?;
+    let procedure_component_index = replace_component_index
+        .or(start_component_index)
+        .unwrap_or(airport_component_index);
     let built = match materialize_procedure(
         store,
         &airport_id,
@@ -1201,7 +1199,7 @@ pub fn select_procedure_at_flight_plan_row_in_session(
         kind,
         runway_transition.as_deref(),
         enroute_transition.as_deref(),
-        airport_component_index,
+        procedure_component_index,
     ) {
         Ok(built) => built,
         Err(HadReadError::NeedPages(pages)) => {
@@ -1218,13 +1216,15 @@ pub fn select_procedure_at_flight_plan_row_in_session(
     };
     let mutation = if let Some(replace_component_index) = replace_component_index {
         crate::replace_procedure_materialized_ui(&plan, replace_component_index, built)?
-    } else {
+    } else if let Some(start_component_index) = start_component_index {
         crate::insert_procedure_materialized_ui(
             &plan,
             start_component_index,
             airport_component_index,
             built,
         )?
+    } else {
+        crate::insert_initial_procedure_materialized_ui(&plan, airport_component_index, built)?
     };
     commit_session_flight_plan_with_snapshot_outcome(session, mutation.mutation.plan)
 }
@@ -1287,19 +1287,17 @@ pub fn load_plate_procedure_in_session(
             }
         });
     let mut airport_component_index = airport_component_index;
-    if replace_component_index.is_none() {
+    if replace_component_index.is_none() && airport_component_index > 0 {
         let repaired =
             crate::materialize_airway_exit_before_component(&plan, airport_component_index)?;
         plan = repaired.0;
         airport_component_index = repaired.1;
     }
-    let start_component_index = airport_component_index
-        .checked_sub(1)
-        .ok_or_else(|| AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: "procedure load target has no preceding component".to_string(),
-        })?;
+    let start_component_index = airport_component_index.checked_sub(1);
     let store = session_nav_kv_store(session)?;
+    let procedure_component_index = replace_component_index
+        .or(start_component_index)
+        .unwrap_or(airport_component_index);
     let built = match materialize_procedure(
         store,
         &command.airport_id,
@@ -1307,7 +1305,7 @@ pub fn load_plate_procedure_in_session(
         command.kind,
         command.runway_transition.as_deref(),
         command.enroute_transition.as_deref(),
-        airport_component_index,
+        procedure_component_index,
     ) {
         Ok(built) => built,
         Err(HadReadError::NeedPages(pages)) => {
@@ -1324,13 +1322,15 @@ pub fn load_plate_procedure_in_session(
     };
     let mutation = if let Some(replace_component_index) = replace_component_index {
         crate::replace_procedure_materialized_ui(&plan, replace_component_index, built)?
-    } else {
+    } else if let Some(start_component_index) = start_component_index {
         crate::insert_procedure_materialized_ui(
             &plan,
             start_component_index,
             airport_component_index,
             built,
         )?
+    } else {
+        crate::insert_initial_procedure_materialized_ui(&plan, airport_component_index, built)?
     };
     commit_session_flight_plan_with_snapshot_outcome(session, mutation.mutation.plan)
 }
@@ -4247,6 +4247,59 @@ mod tests {
                 "label_tile_max_zoom": 0
             }
         }"#
+    }
+
+    #[test]
+    fn selecting_procedure_for_initial_airport_reaches_nav_lookup_without_predecessor_error() {
+        let plan = FlightPlan {
+            id: "khvr-only".to_string(),
+            name: "KHVR".to_string(),
+            legs: Vec::new(),
+            route_components: vec![RouteComponent::Waypoint {
+                waypoint: NavRef::Airport("KHVR".to_string()),
+            }],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: Some(AirportId("KHVR".to_string())),
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+        let init = create_ui_session(minimal_vector_manifest_json(), plan, &[], None, None)
+            .expect("create session");
+        let row_uid = init
+            .snapshot
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .expect("active plan")
+            .display_rows
+            .iter()
+            .find(|row| row.label == "KHVR")
+            .expect("KHVR row")
+            .uid
+            .clone();
+
+        let err = select_procedure_at_flight_plan_row_in_session(
+            init.handle,
+            row_uid,
+            "KHVR".to_string(),
+            "R26".to_string(),
+            crate::ProcedureKind::Approach,
+            None,
+            Some("ISITE".to_string()),
+        )
+        .expect_err("missing nav store should still fail");
+
+        assert!(
+            err.message.contains("nav kv store"),
+            "initial procedure selection should not fail predecessor repair first: {err:?}"
+        );
     }
 
     #[test]

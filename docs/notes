@@ -1,934 +1,66 @@
-x First thing we're going to do is reproduce and clean up the preprocessing
-x pipeline. The current one is janky and has no tests or anything to keep it out
-x of trouble.
-x 
-x Here's what I think happens:
-x 
-x - Certain image data layers are rendered as tiles for dynamic fetching. This includes the WAC, Sectionals, TACs, IFR High & Low, a few specialty charts (like the
-x Portland inset and the Grand Canyon). I assume these all use the standard
-x mercator quadtree. (whenever I make assumptions, correct me if they're wrong!)
-x 
-x - Other image data are small enough that they're standalone, like approach plates,
-x af/d ("chart supplement" as the kids call them these days). Some of these
-x have georeferencing data, but rather than squish the chart to a standard geo
-x layout, the client goes the opposite direction from the tiling approach: it
-x renders the chart roughly in its original pixels, and draws a little airplane
-x by mapping geo coordinates to plate coordinates.
-x     - Some of the georeference data is collected by the Avare folks. Can we
-x     fetch it from a database they provide?
-x 
-x 
-x We're going to write our preprocessor in Rust.
-x It will have an intelligent fetching-and-caching layer so we're not hitting the
-x upstream image sources over-and-over during testing.
-x It will organize its work in a way that reveals a lot of parallelism, since the
-x tile rendering task is pretty parallelizable. We want to get a lot of benefit
-x from the 20 cores on my server.
-x 
-x One thing we should do is run a copy of the original preprocessor and collect
-x logs of all the tiles it made, and figure out how to use that info to write
-x tests to ensure that our version doesn't introduce new gaps.
-x 
-x We can do some quick prototypes here, but once we really start chewing through
-x data, we'll move that work onto a container on my server to exploit its many
-x cores. If you think we can exploit a GPU, I can give you one of those too.
-x 
-x I think our first cut should reproduce the layout & data format of the original
-x tool directly, so we can compare their output straight across and confirm
-x that the tiles match: all the same tiles selected, and sample a bunch to confirm
-x they basically match visually.
-x 
-x I understand the original code is a hodge-podge of scripts. I'd like our thing
-x to be as clean and orderly as possible for maintenance going forward.
-x 
-x Considering what you've read already and the goals I've stated here, make a
-x plan and discuss.
-
-------------------------------------------------------------------------------
-
-x The concepts of regions are kind of baked into the code various places. I see
-x them at:
-x preprocessor-charts/src/lib.rs:780
-x preprocessor-cli/src/main.rs:128
-x I bet they were even more implicit in the original source. But let's be
-x very explicit here. Let's have the set of regions be defined in one
-x place and then referenced symbolically.
-
-------------------------------------------------------------------------------
-x We have absolutely nothing to start with on Android. Like, you get to choose *everything*, the framework, the
-x   language. Want any help deciding?
-x   And for the android side, let's figure out how to spin up an emulator; maybe I can poke at it over X (ssh -Y)?
-
-------------------------------------------------------------------------------
-
-x   - tpp implementation and parity in Rust
-x   - csup implementation and parity in Rust
-x   - turning today_s chart validation from _targeted runs plus regression commands_ into a more complete repeatable harness
-x   - accounting for legacy artifact families outside the current chart slice: things like WAC/ONC/TPC/terrain/topo/VFR area/CAN_ADS
-x     and other avare/extra/ outputs
-x   - deciding how much output parity we require beyond structure and provenance, for example sampled visual diffs or stronger
-x     artifact-hash expectations
-
-------------------------------------------------------------------------------
-
-x The procedure names in the UI are ridiculous.
-x APD-CA-AIRPORT DIAGRAM should be displayed as "Airport Diagram"
-x CSup should be displayed as "Chart Supplement"
-x MIN-CA-ALTERNATE MINIMUMS-2 should be "Alt Minimums 2"
-x MIN-CA-ALTERNATE MINIMUMS-22 should be "Alt Minimums 22"
-x IAP-CA-ILS OR LOC RWY 34 should be "ILS or LOC 34"
-x IAP-CA-RNAV (GPS) RWY 16 should be "RNAV 16"
-x IAP-CA-VOR RWY 34 should be "VOR 34"
-x DP-CA-HOMAN THREE should be "HOMAN THREE"
-x 
-x The preprocessor should find or construct these pretty names.
-x I'm hoping that "DP-CA-HOMAN THREE" already lives in a db column
-x intended for human consumption (not a machine identifier), so we're just
-x going to be writing better values there.
-
-------------------------------------------------------------------------------
-x Once we know we're creating equivalent content, we're free to reorganize it.
-x Does the avare android app unpack those zip files? I think it would be more
-x awesome to just fetch content out of them as we run.
-
-x You did a bunch of this and found "compatibility-first" wonkinesses where
-x you had to hold your nose to get parity. What features/protocols/conventions
-x would you change to make the new system less brittle and easier to maintain?
-
-------------------------------------------------------------------------------
-
-x Let's talk about UI.
-x 
-x The first idea I want to share is that the UI will be designed for big clumsy
-x fingers in turbulence. We're going to define a unit, the "thumb", that sizes buttons
-x and widgets. Let's define it in one place so I can later say "make thumb 20% bigger"
-x and all the widgets get bigger or "make thumb 20% smaller" and now there's more
-x screen real estate under the widgets.
-x 
-x Let's begin with three main "pages" of the app.
-x Chart page is tiled charts. Put a one-thumb button in the upper-left corner (with a 0.1 thumb margin
-x so we can see the chart poking beyond) that shows the current chart. Clicking it will slide out a
-x tray of one-thumb buttons to select among SECTIONAL, TAC, IFR-LOW, IFR-HIGH.
-------------------------------------------------------------------------------
-
-x Trays are modal. They gray everything beyond the tray; clicking outside the tray closes it
-x (without effecting a change).
-
-------------------------------------------------------------------------------
-
-x Let's replace the placeholder Nav Element with a real one.
-x 
-x Core should send the instructions for what to render.
-x The top row is a description of the active FP leg ("UBG -> OLM crs 342"), or empty if
-x none is active.
-x The bottom is a CDI. It has two open circles, a vertical bar, and two more open circles,
-x all evenly spaced, with a quarter-space more at each end. That is, define the inter-dot
-x spacing as X. Now the whole bar is 4.5X wide: 0.25X, dot, X, dot, X, |, X, dot, X, dot, 0.25X.
-x (The geometry of the CDI is fixed. It should define the width of the nav bar.)
-x When core sends a non-None CDI indicator, we paint a pink isosceles triangle (flat
-x bottom, point on top) in the position it commands. Position is specified such that -2 is the
-x left dot, 0 is the |, +2 is the right dot. The pink pointer is painted behind the dots and
-x bar.
-x 
-x For now, have core stub out the CDI events with just "-0.2 dots", until it has information
-x to compute CDI guidance from.
-
-x For clarity, the nav bar should be reusable; we're probably going to paint it at the bottom
-x center of most or all pages.
-
-x At the bottom of the chart, centered, is a Nav Element. It's 2/3thumb high and 3 thumb wide.
-x It's split into two rows. The top row summarizes the current leg ("UBG -> OLM crs 342"),
-x the bottom row is a CDI depiction ("°  ° ^|  °  °") -- the triangle depicts current position,
-x in this case a little left of course. A "dot" deviation has a standard definition depending
-x on the flight plan leg (enroute vs approach).
-x 
-x The next page is the Flight Plan page. We navigate there by tapping the Nav Element.
-x This page is a table. On the left are waypoints (1 thumb high by 2.5 thumb wide). To the
-x right are columns ("distance (nm)", "ETE (h:m)", "course (°)", ... eventually configurable?).
-x Waypoints may be grouped into procedures, in which case the top waypoint in the list is the
-x procedure name ("RNTN3 departure"), and the waypoints that belong to the procedure are indented
-x 0.1 thumb. (Keep this in mind, but we can start with simple flight plans that don't have
-x grouped procedures.)
-x 
-x Clicking on a waypoint brings up a modal (that covers the remaining columns in the table) with
-x actions associated with the waypoint: "remove", "insert", "reorder", "waypoint info", "Add airway",
-x "Select procedure", "Charts". Clicking "charts" navigates to the Chart top-level page.
-x (don't worry implementing the other actions yet.)
-x 
-x The third page is the Chart page. It displays plates and CSups. These are just flat PNGs,
-x not tiled layers. From a UI perspective, they act like the chart page: I can pinch/zoom and
-x drag-pan to be able to read small text. Dragging is allowed to pull the image one thumb
-x farther onto the screen than the edge of the display, so that we can read features at the
-x edge of the image out from under any UI elements we stuck over the display.
-x The Chart page has two one-thumb button in the upper-left corner. The left button shows
-x which airport we're looking at charts for ("KRNT"); clicking it pulls up a tray of
-x several airports that have been recently accessed on the chart page (or also appear
-x on the flight plan). The second button displays which chart we're viewing ("RNAV 16 Z", "CSup", "RNTN3").
-x Clicking it slides out a tray to select among the available charts for the currently selected airport.
-
-
-------------------------------------------------------------------------------
-
-x Okay, we have placeholders for a lot of stuff, but I think it makes sense to
-x get real nav data & real plates & complete charts in place to do further
-x adventuring.  We have the fixture doing a lot of work that should be getting
-x done by a real data stream. Some of the things:
-x - We should probably be pulling the aviation database from runs/20260407T053200Z-data-build/work/data/databases.zip
-x - We should activate all four chart tile sources for all areas: Sectional, TAC, IFR Low, IFR High
-x 	- the old avare app "uses hardcoded chart-type lists and hardcoded coverage polygons";
-x 	we should replace that with a metadata index file
-x - We should index and make accessible all the TPP/CSUP data. Again, the avare app just used
-x the filesystem contents for that index. We might want to construct a metadata index file
-x that travels with the top-level database.zip, so that the UI can tell you what you're
-x missing (for example).
-
-------------------------------------------------------------------------------
-
-x On android, changing charts resets the lat-lon-zoom. Same bug we had on web. When we fix a bug,
-x always look for it on the other platform, too, I don't want to do all of this stuff twice.
-
-x Android buttons aren't 1-thumb yet. And there's some debugging fluff: "Local NW_TAC" and
-x (Show labels)". Get rid of that stuff. We'll add a separate debugging HUD later as we need it.
-
-------------------------------------------------------------------------------
-
-x What stands in the way of showing some plates?
-
-x gdalwarped plates (eg KRNT RNAV Z RWY 16) have little narrow strips of black on the edges that look stupid. Can
-x we fix the pipeline to make those transparent instead?
-
-x (android) The plate selection button and its menu are wide, but too narrow to display the actual
-x plate names. The important part, the runway, is at the end, and it's truncated. On web, the names
-x wrap inside the tray buttons, so the ends are visible.
-
-x (both) there are enough plates that, at one thumb per entry in the tray, they don't all fit
-x on the screen.
-
-x (android) Plates scroll a little left to right (I asked for a thumb of scroll), but not up
-x and down, nor do they zoom.
-
-x (web) Plates start out zoomed wider than the display (perhaps 100%?), and I can't scroll them onto
-x the display. Zoom in works great, but of course I can't get far enough out.
-
-x Many plates and CSups come in two pages ("Continued").  Can we modify the preprocessing to concatenate
-x such plates into one long image, so the user experience is "this is a tall piece of paper I can
-x scroll through", not "I have to sift through a huge list to select page 2".
-
-------------------------------------------------------------------------------
-
-x If you leave Android app and return, it starts over at the beginning, rather than picking
-x up where it left off (say, on a flight plan page). That seems weird. Did it crash?
-
-
-x Let's have the "back" button do something meaningful in both UIs. And the same meaningful thing.
-x Like, have a stack of views, so if I tap from charts to flight plan to plates, and hit back, I'll
-x walk back through those views (including their scroll state).
-
-------------------------------------------------------------------------------
-
-x For big airports, the list of plates is long and tedious to scroll through and interpret
-x just as text. Let's add a "folder" view.
-x 
-x On the preprocessing side:
-x Add, if we don't have it, metadata to the index for each plate that describes its type:
-x csup, airport-diagram, takeoff mins -  approach, departure, STAR. (Are there any other types?)
-x For each plate, render its png down to a thumbnail view:
-x 	- the output is a box 100x150 pixels,
-x 	- padding it transparency in whatever dimension is required to maintain the aspect ratio.
-x 
-x On the UI side:
-x I'm going to mention some specific colors.  Make a common theme file (maybe json?) shared by
-x both platforms that defines the colors, so we can iterate the theme in one place.
-x 
-x Add a 1x1 button to the right of the wide plate-selector
-x called FLDR (we'll add icons later :v). When it's clicked, the plate is replaced with a scrollable
-x grid of 2w3h-thumb thumbnail boxes (with 0.3 thumb gutters and margins). Each thumbnail represents a plate.
-x 
-x The box starts with a #303030 background (defined in the theme file). Then, if a thumbnail is available
-x for the plate (preprocessor is working on those now, I'll have them in the index for you shortly),
-x paint that thumbnail image to fill the rect. (It may have transparency, so some gray will peek through the
-x edges. Then paint a rectangle at the bottom, full width, in a color to be specified, as a background for
-x the label. Then paint the plate label over that color block.
-x 
-x Color assignments:
-x 	csup, airport-diagram, takeoff-mins - blue 1a84d8
-x 	approach - burnt orange b1591a
-x 	departure - green 518b12
-x 	STAR - magenta b93f8a
-x On the grid, sort the plate thumbnails:  airport diagram, csup, to-mins, approach, departure, star
-
-------------------------------------------------------------------------------
-
-x (both)
-x Back-button stack should distinguish CHT(SEC) from CHT(IFR-L) and so on, so we can "back" through charts too.
-x Back-button stack should include FLDR.
-
-x (web) plate scroll bounds are wonky. If I bring up DP-WA-BELLEVUE FOUR zoomed all the way out and drag it
-x around, it's jumpy and snappy, rather than moving smoothly to the margin limits.
-x If I then click FLDR and CSup, the CSup chart isn't centered, it's left justified - *until* I drag it.
-x If I flip back to a one-page chart (with "back" or going through FLDR), it's now scrolled off screen
-x to the right (that is, same left margin as the skinny chart, but that's not right for the tall chart).
-x I feel like the scroll bounds logic is kinda broken (for drags) and not being executed at the right time
-x for arriving fresh at a chart from one with a different aspect ratio.
-
-x The blocked buttons don't end up "under the scrim", so they're not dimmed like the chart/plate display
-x surface. I could imagine that we either move them "under" the grey, or maybe it's easier/cleaner to just have
-x them use the "blocked" flag to dim themselves and fake it to blend in (the same way we fake hit transparency
-x as opposed to having the scrim catch the hits "before" they reach the buttons).
-
-x Selecting a new plate from FLDR should move back to the default zoom, not remember the zoom of the previously
-x viewed plate.
-
-x (android) on plate page, scrim dims the background behind the plate but not the plate
-
-x (web) on android, folder previews are fit to box, showing the entire plate and leaving a dark grey letterbox.
-x On web, the preview is fit-width, which is too zoomed in, you can't see the overall shape.
-
-x (android) no thumbnails on FLDR view.
-
-x (both) the chart labels sit on colored boxes. Those boxes are supposed to be 75% alpha, not 100%, so we can see
-x the chart peeking through them.
-
-x (android) plates come up with no margin; expected 1-thumb margin for draggability.
-x Plates don't zoom/unzoom with +/-. (don't know if they drag, because no margin)
-
-x (web) if I have a plate up and click FLDR and select a different plate, it's not taking me there anymore,
-x but back to the first plate. That's wierd.
-x Clicking FLDR in the FDLR view shouldn't do anything -- it shouldn't be a toggle, it should just idempotently
-x "take us to the folder view".
-
-x Buttons and flight plan cells look different on web vs android. Let's define a common appearance.
-x I like the rounded rects; each flight plan waypoint should be a rounded rect.
-x The colors should be in the theme. Let's say for now buttoncolor is a dark blue.
-
-x (android) disabled buttons (fake scrim) are transparent. They're supposed to be opaque
-x but covered with transparent gray (alpha defined to match web side).
-
-x (both) Probably should bound the depth of the back-button stack so it doesn't become a memory leak.
-
-x (android) Buttons in the menu trays on web continue the theme colors, dark blue and a lighter blue
-x for the currently-active item. Not so on android.
-
-x (both) flight plan header row should be 0.5 thumb tall. (It's not clickable)
-
-x (web) on flight plan page, PLN menu tray doesn't scrim -- no dimming, and clicking outside it doesn't
-x stow the tray. (Is there a valid reason it doesn't work the same way as every other page? Why isn't this
-x behavior factored out so the bugs don't keep popping up?)
-
-x (web) scroll wheel on plate is janky. I can scroll "in", and the view hops in and out.
-x Is there a way to capture a trace you can inspect? Or do you already know what it is,
-x something about the zoom bounds thing racing with subsequent inputs?
-
-(web) dragging plates has a little jank in it.
-x (web) dragging charts has a lot of jank in it.
-x PLN:remove isn't enabled for first waypoint.
-
-x (web) After the app restarts, the first visit to the Plate page (which might be the first thing
-x we see after restart), the page is blank, even though it has an airport & chart selected.
-
-
--------------------------------------------------------------------------------
-
-Preprocessor:
-
-x main.db (and various other generated bits) makes me realize that we're mixing source code with generated output,
-x and that's generally a stupid idea. Can we restructure both build systems so
-x that the source tree stays pristine (no .gitignores needed to mask outputs),
-x and everything ends up in a ~/ui-target/{web,android} directory?
-x (local.properties, node_modules is one such bit of crap)
-
-x Some STARs (EG STAR-WA-GLASR THREE) are really landscape -- they want to be rotated 90° before
-x being displayed. (The FAA assumed we'd print the book out and turn it.)
-x Can we detect landscapiness by parsing the PDFs and seeing the dominant angle of the text?
-
-x split cycles for artifacts with different expiration times to reduce download
-x costs. Enumerate them.
-
-x Let's address the "daily" problem. I think we should define the "daily" data as having a date
-x code of the date we fetched the data. (And if we're trying to fetch today's data again,
-x we should use the cache.) This will require enlightening the fetcher to understand that we're
-x trying to get "obstacle_2026.04.10", but the backing URL isn't that, but the saved name should
-x include that date. (In all other cases, the backing URL and the cache save path match).
-x Then, I think the database is going to need a longer name: the 28-day cycle code
-x concatenated with the obstacle single-date: data_2604_obs2026.04.10. Does this
-x scheme accurately represent our understanding of the validity dates of the inputs?
-
-one top-level build (scons?) with options to:
-- build all the artifacts for current cycle(s)
-- build the web app / cloud side
-- launch the web server locally for interactive UI testing
-- build the android app
-- launch the x11fb-vnc+emulator+android app for interactive UI testing
-
-  - core owns:
-      - tile request planning
-      - tile fetch/load policy
-      - caching
-      - visible-feature assembly
-  - platform bridge provides:
-      - a tile source implementation
-      - local zip mode
-      - remote URL mode
-  - UI only receives:
-      - visible features
-      - warnings/status
-
-x At Seattle there's SEATTLE 116.80 -- that's the VOR. It should render "SEA 116.80".
-x Then there's "SEATTLE-TACOMA 117.50". What is that, the ILS? We don't want to render
-x those. Is a failure of labeling/filtering on the preprocessor end that generated
-x the tiles?
-x 
-x   - preprocessor should split or filter the nav layer so the “VOR” overlay only contains VOR-family
-x     navaids:
-x       - vor
-x       - vor/dme
-x       - vortac
-x   - and excludes:
-x       - vot
-x       - ndb
-x       - anything else non-VOR
-
-
 ------------------------------------------------------------------------------
 
 Flight plans
 
-x - clicking on a flight plan item brings up a menu tray. That menu should cover the
-x non-waypoint columns, but not the waypoints, so we can see the waypoint we clicked
-x highlighted.
-
-x disable all the placeholder menu items we haven't implemented.
-
-x remove is easy to implement
-
-x - PLN:waypoint:Charts button should take us to the plate (and it does) but it should also (a) set the
-x airport to match the waypoint, (b) put it into FLDR mode. Also, the charts menu
-x item should only be enabled if the waypoint is an airport. Make the default plan
-x be KRNT SEA PAE KAWO (note that the absent K means VOR not airport).
-
-
-x I think the "resolver" question is pretty easy. We already have a common concept that every
-x airway/procedure ends up turning into a concrete list of waypoints in the flight plan (both for
-x the UI inside the procedure container, and because that's what gets concetated to make the
-x physical waypoint list to draw on the screen). So "resolving" an entry is just taking the first
-x item in the list, and resolving the exit is just the last. I think you may have overthought
-x "resolving" in the airway case, and specialized it to airways.
-x 
-x "clean geometric “exit point” for downstream bridging. ... vectors" Yeah, I think this
-x represents a "gap" in the flight plan. I think we might represent this as a concrete waypoint
-x called "vectors"; that's the last waypoint in the concretized procedure. When the UI sees that,
-x it knows there's a discontinuity here that affects drawing and sequencing.
-x "  - A procedure may need a notion of unresolved or suspended continuation." Yep!
-x 
-x "Not every enroute transition works with every runway transition." -- so that affects
-x what things we allow the pilot to select, rejecting invalid combinations?
-x 
-x "  - The UI should not ask for “entry fix” on a STAR.  - It should ask for “transition.”" Agreed.
-x 
-x What is an example of "extra derived provenance" you're worried about?
-
-x "- For procedures, IF/TF/CF/DF/FM/VA/... are the procedure.
-x - You cannot really fake this for long with fix-to-fix lines." I don't understand this.
-
-
-x - Reorder should replace the menu tray with a tray containing two 1x1 buttons:
-x (up) and (down);
-x clicking on them moves the waypoint in the list (via the core, obvs!).
-x Clickout outside the reorder tray commits the change. (although I guess it just closes
-x the tray; each click is a commit to the core)
-
-x Add Airway doesn't need a Cancel button; the menu tray cancels when you click outside it.
-
-Add Airway doesn't needs to indicate "entry" vs "exit". Maybe, when you select
-an entry, it becomes the top thing in the list, deactivated color, then a
-half-thumb label "Select exit" separates it from the list of exit choices.
-
-x What I'd like to see in the ui for the structured flight plans:
-x If we have [KRNT V2(params)[NEEDL, FESUS, VAMPS] KUAO], I want to see a table:
-x KRNT
-x V2
-x  NEEDL
-x  FESUS
-x  VAMPS
-x KUAO
-x 
-x -- so the logical structure is expressed with indentation. Ideally, we'd draw a nesting
-x box around V2 and its contents, to really emphasize their groupedness.
-x 
-x Let's leave a 0.5thumb left margen.
-x When a leg is active, we draw in the left margin a magenta arrow: starts at the left center
-x of the from waypoint, moves to the center of the margin, drops to the centerline of the end
-x waypoint, moves to the right edge of the margin, and ends in an arrowhead. So KRNT->NEEDL
-x would have an arrowhead that went a little farther in to meet the indented NEEDL waypoint.
-
-x Does it make sense to "add airway" to a waypoint that is followed by an airway already?
-x Maybe "change airway", that implies deleting the existing airway if the new selection completes?
-x 
-x The menu for a waypoint used to have ~7 items, most disabled. Now it *only* has the enabled
-x items. That's not quite the right ui (driven by core). Instead, the set of visible items
-x should be driven by the *type* of the button that popped the menu. The set of enabled
-x items should be driven by the state. So I'm not saying "I swore I saw that option before,
-x but now I can't find it" -- it's right there, just deliberately not enabled.
-
-x Why can't i add an airway to the last waypoint in a plan? I can imagine a user flow:
-x 	* Add the first airport.
-x 	* Add an airway (before the system knows "where we're headed").
-x In this style, the airway UI won't be able to "guess" the exit; that'll be the user's
-x problem to scroll.
-
-x When we bring up the select-airway-entry or -exit lists, and there's a recommended entry/exit,
-x scroll it to be in view.
-
-x plain-waypoint Remove and reorder are disabled.
-
-The last waypoint inside the V23 airway is "KUAO", but that's not a part of the airway. That's
-the next waypoint *after* the airway (where it also appears).
-x 
-x With the current initial state: If I first V23->remove, then the remaining three waypoints
-x allow both Remove and Reorder. If I first KRDD->remove, then V23->remove, then for some reason KRNT and KUAO don't support Remove and Reoder. o
-x 
-x I think we need to change what valid means. Users are gonna construct 1-waypoint flight plans;
-x that's how you get from an empty flight plan to a 2-waypoint flight plan.
-x Gut instinct: No matter the flight plan contents,
-x - Every top-level object (waypoint, airway block, procedure block) can be removed or reordered.
-x - Such reordering may cause a flight plan to start with an airway, or end with an airway, or
-x only have an airway, or have an airway before an airway. I don't care. There are still
-x a clearly defined set of legs: materialize all the waypoints on the airways, and the legs
-x are the pairwise edges.
-x This route is "Let the user move their legos; we'll find some sort of meaning for it afterward."
-x Can we make this work? What are some corner cases I need to pass judgment on?
-
-x dedupe is yes. If the airway ends with UBG and UBG is also a top-level waypoint, remove
-x the trailing UBG atom from the airway's materialization. But the airway spec is still
-x V23(-, UBG), so that if the flight plan changes around it, the terminal UBG atom will pop
-x into exstince. This approach just keeps there from being a confusing duplicate on the FP
-x view, or from having a 0-length active leg.
-x 
-x zero components-- yep, I think you'd have the container (V23), but no atoms, and the active
-x leg would jut hop right over it.
-x 
-x #4 guidance -- sounds right.
-x 
-x #5 YES that's right. Keep the intent.
-x 
-x #6 Reordering: if a flight plan has only one top-level thing, Reorder is disabled for that
-x thing because it would bring up a menu where both up and down buttons are disabled.
-x 
-x #8 And to pile on: if you have airway-before-airway, and the materialized end of the first
-x matches the materialized beginning of the second, we hide the end of the first (following the
-x dedup-as-hiding rule above).
-x Hmm. If you have PAE before an airway that starts at PAE, we should also hide the first atom
-x in the airway to dedupe. But we have to be careful (write a test!) that airway-airway doesn't
-x hide *both*!
-x 
-x A big change indeed, but an important one.
-
-Interactions between containers (airways/procedures) and top-level waypoints:
-Reorder of top-level waypoints should skip over procedures -- that is, we're
-reordiring among the list of top-level things.
-Reorder is not available inside containers.
-
-Removing the first or last point of an airway should be allowed, because it's
-well-defined: just redefine the airway spec to start one stop later / end earlier.
-If an airway has degenerated to V23(PAE,PAE) (which materializes to PAE), then
-removing the waypoint deletes the container, too.
-
-Should we allow other removing inside a container? Hmm, but how would we represent this intent?
-With tombstones? Eewww. No, let's defer this idea. Maybe we'll add a "flatten" action
-the user can do if they really must break a procedure. But not for now.
-
-Write tests for this stuff.
-
-
-"- guidance geometry - the flight-plan core now knows more semantics, but it still mostly resolves to fix-to-fix pathing plus discontinuities"
-
-I think you're talking about two things here.
-One is, given a current position ("situation"), what should we display on the CDI?
-
-The second is, given the current leg (and perhaps an understanding of the next leg / discontinuity),
-how do we determine when we've completed the leg and should either advance to the next leg or
-suspend guidance? I think I have a good intuition here:
-- If the current leg is a straight segment and is the last (or before a
-  discontinuity), then we're "done" when we pass the line normal to the leg
-that intercepts the end waypoint.
-- If the current leg is a straight segment and so is the next, then we're "done"
-when we pass the line that bisects the angle between the two segments.
-- If either leg is an arc, we can model it as a segment that meets at the common waypoint
-and leaves tangent to the arc.
-Did I miss anything else?
-
-I'd love it if we had a test suite of different leg-completion-detection cases.
-A matrix of interesting combinations -- different leg types, different join angles.
-And for each cell, a selection of points in space on and near the lines, and some quite
-off the intended track, and the intended match.
-And then (this is the hooman part) a way to draw a sample chart, laid over sectional
-tiles (HTML is fine!), with the two legs drawn in magenta & grey, and then draw the boundary
-of the half-plane (or whatever) that defines "still in the leg" vs "passed into next leg".
-And the test case dots plotted in their respective locations in red or white depending
-on whether they're "in" or "out."
-And then I can flip through a bunch of these "screenshots" (or HTML pages) and
-see if they look about right.
-
-x The PLN/Waypoint/"charts" button should say "Plates", and take you to the folder
-x for that airport.
-x 
-x Procedure select entry tray doesn't need a "back" button.
-
-x Procedures should have a menu tray option "change procedure" analogous to "change airway"
-
-x These two are probably related:
-x 
-x RDD Procs have names like "I34" and "B16", which are too terse. Does the database provide
-x better names for the UI that match the plate, like "ILS OR LOC RWY 34"?
-x 
-x Container objects should have a "View Plate" button that whisks us to the right
-x PLT / airport / plate selection.
-
-Hotspots (UAO HOT_OR_HOT SPOT-0) should be concatenated visually like continued procedures
-
-iap-matching-handoff.md
-
-x Hotspots (UAO HOT_OR_HOT SPOT-0) should be grouped with blue stuff, sorted
-x last after minimums.  IAPs should sort first, then DPs & STARs, then blue
-x stuff.
-
 ------------------------------------------------------------------------------
+# Publication contract
 
-x Current position and georeferencing
+## Contract versioning
 
-xTerrain
-x  product x phase directory bill:
-x    terrain: 229G                      
-x      upstream fetch cache: 70G (1887 blobs)
-x      node cache: 56G
-x        tiles/package nodes: 56G
-x      private work: 73G       
-x        private work: 73G           
-x      published packaged: 8.1G
-x      published unpacked mirror: 22G
+simultaneous products during contract upgrades. Give
+users a cycle or two to update their android.
 
-xQuestions:
-x- We're consuming 70G and emitting 8.1G. Why the 10x difference?
-x- Why is packaged ~3x smaller than unpacked? Is the issue that unpacked is uncompressed?
-xWhat's the file format?
-x- node cache is duplicating fetch cache? Is this a hardlink opportunity?
-x- why is node cache *smaller* than fetch cache? What 14G did we fetch and don't use?
-x- Is the 73G of private work hardlink-able, or intermediate product? Can we
-xgive it a cleanup treatment like we've used before, where it's cheap to
-xreconsruct from the node or upstream fetch cache?
 
-x Introduce into the core a model of our "current position." Our position can be:
-x - a LatLon (being fed in live),
-x - a flightplan location
-x 	If we're playing around with flight planning offline, we want to make
-x 	a leg active and have our "current position" be at the beginning of the
-x 	activated leg. We should paint "Simulated Position" in orange letters
-x 	in the upper-right corner of the chart/plate surface so the user knows
-x 	this isn't a live representation of their aircraft in space.
-x - unknown
-x 	The UI should *not* draw a little airplane on the chart/plate, and should paint
-x 	"Location Unknown" in red letters in the upper-right corner, so the user knows
-x 	they're not getting an expected feed.
-x The "situation" record contains a position plus optional orientation and optional speed.
-x 
-x Planning ahead, there will be some common path by which situation information flows
-x into the core (from the GPS sensor, from a live or replayed ADSB feed, from Web location?).
-x There will be another path by which situation info flows from the core back to the UI,
-x which will use it to update textual status boxes, the CDI guidance "needle", and a
-x graphical representation.
-x 
-x Let's begin with the graphical. Let's iterate on the web (because it's fast) until I like
-x the look, then you can reproduce that look on the android when I'm happy.
-x 
-x Paint a little white airplane on the map, rotated to the situation.orientation (or north, if
-x not available). Paint a light gray arrow pointing one minute ahead of the little airplane (omit
-x it if situation.speed is not available).
+- decouple from top-level current-artifacts? Or maybe current-artifacts is small
+enough it doesn't matter?
 
-x Paint a white ring around the little airplane, with ticks at 30° increments, and a label
-x at the 45° point (rotated baseline to be tangent to the circle) that indicates the radius
-x of the ring in nautical miles (eg "8nm"). Select a ring size that makes the ring diameter be
-x 50-80% of the smaller dimension of the map surface. Select the ring radii from a fixed list
-x of available sizes: [0.25, 0.5, 0.8, 1, 1.5, 2, 3, 5, 8, 10, 15, 20, 30, 50, 100, 150, 200].
-x (Maybe we'll tweak that list later, but the user isn't going to find a 4.23nm ring useful.)
+- measure network cost of re-fetching fast products through current contract
+
+- measure frequency and volume of fast product updates
+
+- compute optimal data volume for continuous refresh
+
+- consider a watch-like contract
+
+- consider a hanging-get for discovering invalidations
 
 ------------------------------------------------------------------------------
 
 Database plotting
-
-x Okay, let's talk about preparing to draw points (airports, intersections) and nonpoint
-x features (airspace boundaries, TFRs) on the chart in the UI. You're not gonna do the UI
-x work, but you need to prepare the preprocessing to make the UI run fast.
-x The big concern here is that we don't want to have the UI need to iterate over the
-x entire database.
-x 
-x Points seem easy: Put them in tiles at a single zoom level where the points-per-tile is
-x neither too big nor too small. The app will iterate over all tiles that intersect the viewport,
-x unless it's zoomed out far enough that the list is too big, in which case we won't draw that
-x layer anyway.
-x 
-x What about non-point features, like airspace boundaries? They should also get segmented
-x spatially, but cutting lines and curves at tile boundaries sucks. Maybe instead we have a
-x list of bounding boxes and pointers into a table of boundary shapes. Then we tile the
-x (bounding box,ptr) records, and put the records into every tile they overlap. We'll choose
-x a zoom level where we're not ridiculously duplicating them. The UI will enumerate the tiles,
-x gather all the bboxes that intersect its viewport, discarding duplicates (by some identifier),
-x and that's the list of features to draw.
-x 
-x Anything else we need to think about to prepare vector data for realtime plotting in the UI?
-
-x Preproc: We discovered on the UI side that the "tiled" vector (point) data is one big-ass json
-x file. That ... kind of defeats the purpose of tiles. What I expected was a zip file with files
-x named in quadtrees just like the tiled charts, but instead of a PNG, each file in a json with
-x the records for just that region.
-
-Database plotting
-
-x Okay, let's talk about drawing points (airports, intersections) (and eventually, but not
-x now, nonpoint features like airspace boundaries, TFRs) on the chart in the UI.
-x 
-x   Point vectors are now available as a first-cut side artifact under <source-root>/../aerobag-artifacts/product-builds/shared/work/
-x   vectors-2604/output/ . The current zip is vectors_2604.zip and contains separate tiled point files by layer:
-x   point_tiles_airport_z9.json, point_tiles_fix_z10.json, point_tiles_nav_z9.json, point_tiles_awos_z9.json, and
-x   point_tiles_obstacle_z12.json, plus stats.json and a small vectors manifest. Each tile file is a simple JSON object with
-x   schema_version, zoom, and a tiles[] array; each tile has z/x/y and records[], and each record has id, kind, lat, lon, label, and
-x   style_class. Current measured maxima are airport 107, fix 128, nav 9, awos 10, obstacle 286. This is also wired into the product
-x   build graph, so the next successful build-product run will materialize the same vectors node in the normal shared outputs.
-
-x Let's start on the web side and get that how we want it first.
-x Let's start drawing intersections. Cyan solid triangle, name in all caps.
-
-x Let's draw airports. For now, a magenta circle with the airport code adjacent. Clip off the ICAO K prefix.
-x (but don't clip it off of a 3-letter airport code that happens to start with K!) Airport detection & string trimming happens in core, only the ui appearange happens in split UI code!
-
-x Let's draw the airports twice the diameter so we can add features:
-x 	With control tower? It's blue.
-x 	With fuel? It gets little square protrusions on the four cardinal edges.
-x 	Draw the a white bar in the orientation of the biggest runway.
-x 	I have updated the vectors tiles to include fuel & long-runway info.
-
-x Let's draw airspace boundaries.
-x 
-x   On FAA boundary sources: I found official FAA indications that boundary-ish data is available as services, but not yet a clean
-x   static polygon product I’d build against.
-x 
-x   - FAA’s aeronautical data/products page explicitly lists Special Use Airspace and Temporary Flight Restrictions (TFR) under Servi
-x     ces: https://www.faa.gov/data/aero_data (https://www.faa.gov/data/aero_data)
-x   - FAA’s aeronautical data page points to the AIS data ecosystem generally:
-x     https://www.faa.gov/air_traffic/flight_info/aeronav/aero_data (https://www.faa.gov/air_traffic/flight_info/aeronav/aero_data)
-x   - The AIM/AIP material confirms SUA is authoritative FAA airspace content, but that’s descriptive text, not a geometry download:
-x       - https://www.faa.gov/air_traffic/publications/atpubs/aip_html/part2_enr_section_5.1.html
-x         (https://www.faa.gov/air_traffic/publications/atpubs/aip_html/part2_enr_section_5.1.html)
-x       - https://www.faa.gov/air_traffic/publications/atpubs/aim_html/chap3_section_4.html
-x         (https://www.faa.gov/air_traffic/publications/atpubs/aim_html/chap3_section_4.html)
-x 
-
-
 
 VORs & rings? NDBs? Probably not.
 - Garmin paints low-contrast VOR rings. But it was written back when there were
 still some operative VORs.
 
-x   Let's work through these the way we began the project: inspect the avare
-x   code for one path. Run the avare code. Build an aerobag rust library that
-x   does the same thing. Write a parity check that proves that we can produce
-x   identical results. Then improve the aerobag version (if there's a better
-x   discpline / product versioning scheme) and integrate it into our parallel
-x   production fetch pipeline.
-
-
-x  tile products:
-x shaded relief
-x terrain
-x	-- use the obstactles, too
-
-x terrain clearance red/yellow -- using terrain tiles? (Can we do the pixel-level subtraction on android?
-x on web? Quickly enough? Maybe wasm? In the rust code? Be nice if it were common)
-
-x The DEM tiles are coming in through our cached fetch path, I trust?
-x So there's no harm in fetching
-
-x A matter of taste for the shaded relief:
-x - let's use a color table that matches the sectional:
-x     0- 1000 light green
-x  1000- 2000 darker green
-x  2000- 3000 beige
-x  3000- 5000 tan
-x  5000- 9000 mid brown
-x  9000- up   dark brown
-x (I'll take eyedropper hex code samples for you later)
-x Can we get boundaries of water bodies and glaciers and paint
-x those blue & white? How cool would that be. But don't overthink
-x it because we have the sectional, after all.
-
-x geo magnetic variation & geoid offset
   Fast products:
-x TFRs
-x METARs
-x NEXRAD graphical radar
   Winds aloft
   Icing and other graphical products?
 
-x Right now I can't construct a flight plan except by asking you to hardcode one.
-x Let's fix that!
-x Let's replace the Insert button with Insert Before and Insert After. (Core tells ui
-x which are enabled.) Clicking one brings up an airport selector. Right now, that's
-x just a text box with comically huge letters. On web, it's a blinking cursor, relying
-x on the user's keyboard (or mobile soft keyboard).
-x On android, we'll pop up a custom soft keyboard using half the screen real estate
-x (adaptive to display orientation), just A-Z 0-9 backspace and enter. (Want those
-x targets to be easy to hit in a bouncy plane.)
- 
-x The entry might be an airport ID, a VOR, or an intersection. Deciding what it is
-x (and giving adaptive feedback to the UI as keystrokes come in) is the core's problem.
-
-x Avare also has two other frequently-updated data sets: METARs (also json) and NEXRAD (raster).
-x Reproduce them, following this same style: Write new rust code that proves (with a test)
-x it can extract something identical to what Avare got. Then discuss the changes we want when
-x packaging for Aerobag, where we're free to design better formats.
-
-x Avare's own bug(s) -- what kinds of errors would they manifest in prouction?
-x Parity is bug-compatible, and thus losing content? Presumably the aerobag version
-x should fix all these bugs, yes?
-x 
-x How are you suggesting we package Nexrad? Should it be a (shallow) tile tree? Or just a flat raster, because it's not big enough to worry about asking the renderer to unpack and carry around?
-
-x When you froze a test fixture for TFRs, was that in /tmp? Or in the source tree?
-x Do we now have frozen fixtures for TFR, METAR and NEXRAD? How big are they?
-x Let's check those into the repo (but in test_fixtures/, not next to the source code
-x under product/ or ui/).
-
-x Write a handoff to tell UI about the new data sources.
-
-x Write a handoff in /tmp/ownship-for-android to describe all the changes we made to web
-x that haven't been to Android yet. I'm going to set another codex on updating for parity.
-
-
 ------------------------------------------------------------------------------
 
-x Refactoring & Cleanups
-
-x disk cleanups:
-x   - Add an explicit GC tool/policy for private-work and cache/nodes: keep
-x     public snapshots durable, keep current reachable/cache-useful nodes, evict
-x     stale render/work outputs by age or root-set reachability.
-
-x   - The staged terrain DEM files have link count 1, so they are real copies,
-x Could we be using hardlinks in our production pipeline to avoid unneeded copies?
-x Is this one such place? Are there more places?
-
-
-x clean up a name
-x 
-x   - we did not invent recommended_navaid in app-core
-x   - it is inherited from the raw CIFP import table schema in preprocessor:
-x       - aerobag/product/preprocessor/preprocessor-data/src/lib.rs
-x       - aerobag/baseline/avare_equivalent/preprocessor-data/src/lib.rs
-x   - those importers preserve the fixed-width FAA/ARINC-style field layout
-x     directly into cifp_sid_star_app
-
-x ** clean up web db accesses
-x 
-x   1. aerobag/ui/web-app/src/domain/airwayPlanner.ts
-x 
-x   - suggest nearby airways
-x   - load airway branches/points
-x   - resolve point names to NavRef
-x   - resolve NavRef -> lat/lon
-x   - materialize airway selections
-x 
-x   2. aerobag/ui/web-app/src/domain/procedurePlanner.ts
-x 
-x   - identify whether a token is airport/nav/fix
-x   - list procedures
-x   - load distinct procedure rows
-x   - load procedure materialization rows
-x 
-x   And then aerobag/ui/web-app/src/App.tsx uses that resolver for chart route drawing.
-x 
-x   So the bad architectural truth is:
-x 
-x   - web still has a browser-side mini nav-db application layer
-x   - Android mostly calls core instead
-x   - that is duplicated policy/data access
-x 
-x   I think the right target is:
-x 
-x   - UI never touches nav DB directly
-x   - core owns:
-x       - airway suggestion/planning
-x       - procedure listing/options/materialization
-x       - NavRef -> position
-x       - chart route projection
-x   - UI just renders projected results and sends user selections back
-x 
-x   The only web-specific thing that should remain is:
-x 
-x   - opening the SQLite file itself in the browser, if core stays in WASM and needs JS to hand it bytes or a
-x     virtual file handle
-x 
-x   But SQL queries and interpretation should not live in TS long-term.
-x 
-x   So the cleanup direction is clear:
-x 
-x   1. move airwayPlanner.ts logic into core/FFI
-x   2. move procedurePlanner.ts logic into core/FFI
-x   3. delete browser-side nav DB querying from the UI layer
-x   4. keep webNavDb.ts only if it remains necessary as a transport/bootstrap layer for WASM SQLite access
-
-  Longer-term, an even cleaner shape would be:
-
-  - Android provides a generic byte reader / zip entry adapter
-  - core owns the higher-level “open nav-db artifact” workflow
-  - then core could be the one concluding “this artifact is unreadable”
-
-------------------------------------------------------------------------------
-
-x Let's add a facility for selecting items on the chart and learing about them.
-x A "click" (which we need to differentiate from a drag-- will both platforms have
-x good UI filtering for that so we can ignore it?) on a spot on the chart should:
-x 
-x - identify all the clickable points in a 1-thumb diameter from the click (using
-x 	vector tiles for performance. We may have to check four tiles, if the click is near an intersection.)
-x - union in all the polygon regions that the exact click intersects. (No thumb-diameter
-x 	slop here; if the poly is too small to click accurately, user can zoom or didn't mean it)
-x 	
-x - pop up a menu tray with categories:
-x 	airport
-x 	navaid (VORs, intersections)
-x 	airspace (polygons)
-x 	spot (a special item that is always present, representing the exact lat/lon of the click)
-x Each tray row will have a (possibly-empty) list of matching items, 1x1 thumb
-x each. The tray is 3.5 thumb wide, so if there are >3 items in a row, the user
-x will see the 4th hiding under the edge, as a hint to scroll. Each row
-x drag-scrolls horizontally separately, so the user can slide a long list without
-x shifting the other rows.
-x 
-x When the user selects an item from a list, an item-specific sub-tray will pop up with options:
-x navaids: [one cell is display-only: show the freq for a VOR], [direct-to], [Insert in flight plan]
-x airports: [one cell is display-only: show elev], [direct-to], [Insert in flight plan],
-x 	[plates], [Chart Supp (jumps straight to csup on plate page)], [runways].
-x 	(later we'll add WX, Notams)
-x airspace: [display-only cell: shows the type, bottom and top altitude limits]
-x spot: [display-only cell shows point elevation from terrain tile], [direct-to], [Insert in flight plan (we'll have to discuss representation)]
-x 
-x As you plan this feature, remember: the feature should occur almost entirely in core.
-x The ONLY thing you can do in UI is: send the lat/lon down on click, receive the tray info and
-x render it (including which buttons/cells are enabled), forward tray-button clicks.
-x Trays are modal like any other tray, with scrim.
-x Some of these behaviors may not be well-defined yet; for those, let's put in placeholders (wired
-x all the way into core) until we want to fill them out.
-
-------------------------------------------------------------------------------
 Bugs/Incomplete
+
+Here's a bug:
+If I enter a FP: KRNT SEA V2 ELN KYKM
+and then activate the leg SEA -> VAMPS,
+and then delete KRNT, the active leg becomes VAMPS->BANDR.
+That suggests the active leg is being computed/recomputed as an index into
+an array that just changed out from under it.
+I thought we carefully assigned row-uids to the flight plan elements
+exactly so we could avoid this class of bug?
+Write a test case, then fix this in a general, robust way that isn't
+"try to put the pieces back together after the damage" and more "if the
+operation didn't destroy the rows involved in the active leg, then it should
+be pretty damn obvious where the active leg still is."
+
+
+Something horrible happened to the NW corner of the Atlanta bravo.
 
 Android says "LIVE POSITION", web says "NO GPS POSITION". Why do those diverge?
 M-VC split failure?
 
 Approaches:
 CEC ILS or LOC RWY 12: 10 nm from SLAMM. We good?
-x BDR ILS or LOC RWY 6: funky
-x HIO ILS or LOC RWY 13R: sharp left at turn BTG-DUCKA-COUVE
-x BHM RNAV RWY 36: BASKN teleports to hold (track 281)
 X CYS RNAV RWY 13: sharp turn at EMOTY -- hold for PT?
 HYR ILS 21: GRASS 250 hdg ; presently jumps direct DAIVE
 
@@ -952,30 +84,6 @@ Warnings include:
 - {ADSB, NEXRAD, METAR} data is old
 data age cautions for NEXRAD, METARs, ADSB, NOTAMs, TFRs.
 
-x I think we're ready to productionize this thing. Here's what we're going to do:
-x 1. Move procedure decoding into preproc. Where are you finding the "preprocessed" rows
-x right now? They're in the internal sqlitedb, not the nav-db, right?
-x 2. You're going to emit nav-db records with a key scheme like:
-x procedure-geometry/KRGK/VOR-A/DARTE -> json{}
-x The key fields should be standard keys; if we don't have one already, stop and discuss.
-x Right now, I can select KRGK/VOR A/DARTE from the flight plan page; we should be using
-x the unique keys that match those.
-x 3. We want four things in the output:
-x - the sequence of geometry elements (segments & arcs) we're going to draw (and
-x   sequence through as ownship moves)
-x - the named waypoints from the input rows along that geometry. In the UI, we might
-x   have an "active leg" that's actually a sequence of geometric steps but is conceptually
-x   one "leg" from the FP point of view. The user wants to see step-down fixes sequencing
-x   in the CDI.
-x - the sequencing rule at the end of each of these leg bundles. Do we sequence to the next
-x   one, or suspend (because we're in a hold)? I think the raw rows are supposed to tell us
-x   this, right?
-x - An annotation indicating data quality. The default is None. But for every place we have
-x   an explicit validator apology, we're going to generate Some(str) where the string
-x   describes what's suspicious. For example,
-x   "Procedure encoding says remain within 1.0NM, assumed error; read plate for controlling value."
-x   (We're going to surface this in the UI with a caution icon that can be expanded to show
-x   this message.)
 
 SIDs and STARs
 
@@ -988,161 +96,109 @@ from various regions.
 
 CDI arrow should flip on passing the leg-end waypoint (notable if we're suspended)
 
-x aerobag-four:
-x Long flight plan lines are straight on web mercator. We're not doing great circles,
-x are we? Does this mean our distance computations are wrong, too?
-
-x We've had a few winding-error bugs. You just fixed the arc-union one.
-x On the client side, we had trouble with the nested paths that mean holes in A-381,
-x and fixed that with a containment heuristic. (I said "heuristic", you know where
-x this is going.) Now I look at HOG B MOA, and it has inside/outside bugs -- ui
-x draws the feathers on the wrong side -- because that containment heuristic fired
-x even though the components are nested, not holes.
-x 
-x I have this feeling that the data is telling us how to draw these paths and we're
-x ignoring it. The most obvious way it might be telling us is that it might always
-x present paths with a right- (or left-) hand winding rule: the inside is always
-x a certain way. That would clearly identify holes (because they'd wind the other
-x way) but enable nesting (because they'd agree).
-x Can you please:
-x (a) spot-check these two cases to see if the winding rule works
-x (b) read the reference docs for the data source to see if the winding rule is
-x declared
-x (c) consider writing a test that checks *every* SAA object against the heuristics
-x we're using right now to see how often the winding rule agrees?
-
-x Performance at z6 is pretty clunky because we're parsing and
-x rendering too many vectors (including feathers).  Can you do a count of SAA vector
-x features at z6 and z7 and confirm/refute this hypothesis? I think we want to tweak the
-x when-to-render rule; I'll make a concrete suggestion after we see the counts.
-x 
-x Okay, I think we should have small features (<6 miles or so) disappear sooner
-x than 3 pixels. How big is a class D at z6? I bet 25-50 pixels would be a good
-x threshhold.
-x And even the class B stuff is way too detailed out there. Could we keep only
-x the outer perimeter (the union of all the paths) at high zooms, and then let the
-x shelves materialize as the user zooms in?
-
-x Hit-testing for airports only selects those that survive our rendering filter. But it
-x should include all airports, because if I click on KGRF or a seaport, I might want to
-x know about it, and there's room in the tray.
-x 
-x METARs shouldn't render past z5 OR we should have some "high priority filter" for big stations.
-
 METAR icon
 
 Click testing should look for METARs (in z7 tiles), and if it finds one, paint the
 symbol in a cell on the tray. It goes in the same row as SPOT, and sorted after SPOT.
 
+TFRs lost altitude. Should add NOTAM text. That probably means getting the NOTAM feed
+running and cross-referencing them.
+
+------------------------------------------------------------------------------
+bugs
+AK north and SE south bboxs should be extended!
+Gap in aluetians.
+SW plate s boundary is weird.
+
+------------------------------------------------------------------------------
+Perf
+
+LOH
+
+Measuring at the client, the dominant source of startup (or viewport teleport)
+delay is now dynamically fetching the vectors, which involves the many
+RTTs of the binary search. Instead of navigating the keyspace with log_2
+RTTs, how about we navigate it with log_k for a much bigger k, using a B+-tree
+shaped thing?
+
+So instead of the current offset table / keys / values, we just have a B+-tree:
+interior nodes have a list of pivot keys and child pointers. Leaf nodes
+have a sorted key list and a value list, both of length k. So we still use
+binsearch on the final node.
+
+We can keep the page size at 64KiB. If a typical key is, say, 32B, that gives
+us a fanout of ~2000! Much better than 2.
+
+This is another breaking contract change, no legacy no regrets. Swap out the
+nav-db builder and the core reader in one go.
+
+We should still have a prefetch story: we can use the same key policy, walk
+the b+tree at preproc to convert those keys into pages, and recommend prefetching
+the list of touched pages.
+
+
+- compress pages on disk. Somehow statically.
+
+- do some more accounting. What's the bulk of the navdb being spent on?
+
+
 ------------------------------------------------------------------------------
 Refactoring & Cleanups
 
-x "The FAA PDF names already encode the output region prefix,"
-x Whoah, that sounds brittle! What if the FAA draws the boundaries somewhere
-x other than where we drew lat/lon boundaries for tiled charts?
-x Let's do an experiment where we render TPP sites (using our join table to get
-x runway/airport lat lons) on a map, and also render our nine region polygons
-x on the same map, and see how well they agree.
+• cargo test -p app-core currently has 6 failing tests:
 
-x Some TPP labels are competing with the Chart labels. Let's compute their bounding
-x boxes at about z4, grow them by 150%, and if they overlap, bump them apart until
-x they don't.
+  - had_ops::tests::fixture_nav_kv_previews_append_entry_with_relationship_issue
+  - had_ops::tests::generated_nav_kv_projects_kpae_vor_a_inserted_plan_ui_state
+  - session::tests::replay_source_is_selectable_and_controls_playback_panel_visi
+    bility
+  - session::tests::row_action_activate_leg_works_after_on_plan_direct_to
+  - session::tests::row_action_direct_to_targets_clicked_duplicate_row_uid
+  - session::tests::session_projects_cdi_from_injected_guidance_geometry
 
-x There are some longitude troubles in how we render vector & tile features.
-x 
-x 1. If I zoom out to z2 and drag the map left so the conus is disappearing
-x off the left edge, the AK and PAC polygons "unwrap" -- they get super long in the
-x longitude dimension.
-x 
-x 2. There's a giant pile of pireps over ... greenland? The north pacific? Are those
-x actually where they go? Maybe they're real.
-x 
-x 3. If I keep scrolling so the Pacific comes back into view, I see a bunch
-x of what appear to be SW alaska and HI pireps. But those weren't on the AK and HI
-x that was left of the original view.
-x 
-x 4. If I keep scrolling, I see another copy of the US chart boundary polygons. But
-x no charts! No ownship. No flight plan.
-x 
-x If we're going to allow the world to "wrap", then it should really wrap properly (modular tile
-x math, careful polygon unwrapping for antimeridian).
 
-a4: when the autopilot is flying a hold, the CDI is empty. But it has legs it is following!
-so clearly we could be presenting guidance. The guidance label could say "HOLD". Or maybe
-we should ask preproc to produce a better label, like "HOLD at ECEPO".
 
-x Let's rename "NW TPP/CSUP" -> "NW Plates" and "NW charts" -> "NW Charts"
 
-x When we render them, let's have core send the data needed to draw the offline summary:
-x "NW Charts
-x (white present icon) 2604 (magenta play icon) 2604 (2)
-x (orange pause icon) 2604 (2)
-x "
-x 
-x These would be arranged in the two rows below the title, and visually exactly
-x as they appear on the offline charts page.
-x Let's wire up the chart/plate polygons to be useful! When the layer is active, it should
-x participate in inspection-click-hitting, producing a new row under the weather
-x row in the inspect box.
-x Clicking near KBMC would bring a "NW" and "SW" button, because
-x it overlaps NW plates, SW plates, and NW Charts. Clicking the NW button brings
-x up in the detail pane::
-x 
-x * a "NW Region" button containing a
-x play/pause/delete icon matching the region row of the current offline packages
-x config. Clicking the button would cycle that mode, just like on the offline
-x packages page. The changes would reflect both in the button on the tray and in
-x the labels for the polygons.
-x 
-x * an "Offline Packages" button that jumps to the Settings page with the Offline Packages
-x modal brought up. (This is a discoverable way to adjust the products, to complement
-x the other button that selects regions cartographically.)
+  Longer-term, an even cleaner shape would be:
 
-x There are different policies for how we handle low zoom numbers for avare-ancestry
-x chart products vs shaded relief, and I think both are kinda dumb.
-x 
-x In SEC, TAC, and IFR charts, every region carries every tile at z7 and lower (I think).
-x So we're duplicating the zoomed-out views. I think the idea is that, if you only load
-x NW and SW offline, at least you can still kinda squint at the rest of the country when
-x you're zoomed out.
-x 
-x Shaded Relief only carries exactly the tiles for its region, so if you only load NW,
-x and zoom out, the world look stupid with big holes in the data.
-x 
-x How much space are we wasting with duplicated low-zoom tiles in the avare-style products?
-x How much is that relative to the overall product size?
-x 
-x I propose a different strategy. Let's have a new "wide-angle" region: it admits every
-x tile the product supplies, but only down to the threshold zoom (z7?). Ideally, this is
-x pretty small. If you select ANY region in the IFR-L product, the planner will also select
-x the wide-angle region as well (without being asked) -- but only one copy! The metadata
-x will communicate to the tile planner how to find tiles for that product when z crosses
-x the threshhold.
-x 
-x And then let's implement this strategy for all the products, avare-style and also the
-x shaded relief, so that the user experience is consistent:
-x - if you asked for no regions of a product, you'll see nothing when you turn it on.
-x - if you asked for *any* region of a product, it'll be sharp in the regions you requested,
-x and visible (at the threshhold zoom) everywhere it's published.
+  - Android provides a generic byte reader / zip entry adapter
+  - core owns the higher-level “open nav-db artifact” workflow
+  - then core could be the one concluding “this artifact is unreadable”
 
+
+a-ui is working on: aerobag/docs/refactor/core-platform-ui-boundary-audit.md
+
+
+cleaning up web knowledge of core stuff:
+
+  But I would not claim “entirely” without one caveat: web no longer knows the
+  publication contract, but it still has a thin
+  resolvePackageMemberUrl(packageId, memberPath) transport helper because some
+  core APIs return product_id/path pairs for terrain/NEXRAD. That’s not parsing
+  manifests or bundle roots, but it is still a platform-visible “package member”
+  concept.
+
+  So the honest grade:
+
+  - Good: current_artifacts, bundle manifests, artifact roots, package lookup,
+    and URL construction moved into core.
+  - Good: web no longer has packageContract.ts, @current-artifacts, or
+    package://.
+  - Good: platform fetches opaque URLs from core and ingests bytes by resource
+    id.
+  - Still worth tightening later: APIs like terrain/NEXRAD should probably
+    return core resource requests directly, so web never asks “resolve package
+    member” at all.
+
+
+------------------------------------------------------------------------------
 UI cleanups
-- insert before/after should be much leaner looking.
 
 Easy replace-all method when entering a fresh FP.
+
 UNDO for flight plan actions! That'd be cool!
+
 Save FPs.
 
-We need to straighten out the static path serving story. We've got a bunch of janky staging
-thingies in vite. Then a big stack of janky redirects in nginx. But I should think, if we
-organize the unpacking step correctly in preproc, we should emit a single directory that has
-everything we want, each in its rightful place. Then we can strip out all the janky patchery
-and have things work very simply both in dev and prod and eventually when we serve from an
-S3 or CDN sort of static environment.
-
-LOH a3
-x Go looking through the source tree for dead code or plumbing for features we
-x don't have. Surface it all and let's discuss eliminating it.
-x Divide this task into: ui-core, ui-web, ui-android, and preprocessor.
 
 Look through both web- and android- paths for early-development staging/seeding
 cruft. We did a lot of early hacks, but now the real channels are all there, and
@@ -1151,9 +207,6 @@ those hacks should be scrubbed out.
 Look through the source tree to find leftover development fixtures and cruft.
 What can we clean out?
 
-x Look through the source tree with an eye towards cleanup. Are there things
-x we're doing k times that might be candidates for factoring into a common
-x place?
 
 Go through all the logging. Turn it all off? Maybe comment out stuff that's
 valuable / guard it with a flag we can turn back on.
@@ -1161,80 +214,25 @@ valuable / guard it with a flag we can turn back on.
 Control any upstream backchannel path so when we deploy this, end-users don't
 find themselves streaming log data back to my server.
 
+What do we need to do with the sequence buttons on the flight plan page?
+Under what circumstances does a user actually care about them?
 
+------------------------------------------------------------------------------
+source cleanup
 
-x It's easy to develop features first on web.
-x I spend a lot of time trying to get Android back to parity with web.
-x I wonder if I can get you to do that. What if you could:
-x - launch web in a headless chrome designed for automated UI testing.
-x - launch android in a corresponding test environment.
-x - navigate the UIs. Develop "user journeys" through the map, through the plates,
-x across the pages, through the flight plan. Then confirm that the journeys
-x work the same on both, that the widgets used for the journeys are present
-x on both, look basically the same, work the same. Drive the user journeys to
-x touch all the surfaces & appearances.
-x - It's okay to "cheat" (use app metadata) to find the buttons and things if
-x image interpretation is tricky, but either is fine.
-x 
-x Sound feasible?
-
-x Need to do the symbol commoning treatment for:
-x seaports
-x heliports
-x private airports
-x SPOT symbol
-x wx + pirep symbols
-
-x airspace normalization for button appearance on android doesn't match web, which fills the icon
-x and centers.
-
-
-x  On shared symbol assets: yes, we should do that. The clean version is a single
-x  shared symbol spec directory, probably SVG/path-oriented, plus a build step that
-x  emits web constants and Android Path builders from the same source. I did not do
-x  that generator in this pass; I fixed the current mismatches directly first.
-
+scrub out all the avare-parity stuff; it's not useful anymore
 
 Clean up stale avare refs
-rename java namespace to org.aerobag
+
+Add license
+
+rename java namespace to org.aerobag.app?
+
 
 ------------------------------------------------------------------------------
 Major missing features
 
-x Ownship from real GPS!
-x 
-x Let's turn the ownship-location pill into a menu-tray-opening button. When it's closed,
-x it says one of these things that comes from the Situation source:
-x  [ GPS, Replay, Plan Preview, ... AHARS ]
-x GPS means from the local device -- android or browser GPS API. Its status can be ready ("GPS" in green) or unavailable ("No GPS" in red).
-x Replay means replaying an ADSB (or later other format) trace. "Replay" in black. Selecting it opens the replay controller.
-x "Plan Preview" (in black) is an internally generate source that puts ownship somewhere on the flight plan.
-x We may add more later like AHARS if we have a way to collect an external data feed.
-x 
-x When the user clicks the pill, they get a tray with a button for each mode, one of which is the
-x theme 'selected' color (matching the pill label). Clicking a button changes the source and
-x dismisses the tray.
 
-x Let's make the flight plan preview useful. We're going to accept four keystrokes, which of course
-x go directly into core for processing. When the situation-selector tray is open, it'll also have
-x a row of four 1x1 thumb buttons that produce these same inputs. The actions are:
-x skip-backward ⏮ '<'
-x fast-rewind ⏪ '('
-x fast-forward ⏩ ')'
-x skip-forward ⏭'>'
-x 
-x When we enter Plan Preview, if there's an active leg, we should put the ownship at the beginning
-x waypoint of that leg.
-x In plan preview mode, the skip operations move the ownship to the preceding or next waypoint in the plan. (if the ownship is not on the plan, put it at the first waypoint)
-x The fast- operations move the ownship 10 or 20 miles along whatever leg it's on, stopping at fp waypoints.
-x The data model (inside core, obvs) driving the plan preview position should be a pointer into the FP row (by rowuid so it's stable if the FP gets moved around) and an offset along that leg in nm. Write tests that sane things happen as we try to advance across waypoints, past the end/beginning of the FP, or rearrange the FP while the preview pointer is pointing at a leg.
-x 
-x In GPS mode these events are ignored.
-x 
-x In Replay mode, the fast buttons move the jog dial 30s at a time. The skip
-x buttons move it 10min at a time. Both motions should not enter "dead" regions
-x of the timeline; if we have 2 minutes til the next dead region, skip should
-x continue 8min farther on the other side.
 
 
   Altitude optimizer!
@@ -1266,62 +264,16 @@ Direct-to buttons
 
 pills on (visually long enough) flight plan legs showing distances
 
-x obstacles -- what do we do with them? Draw them!
-x 
-x The obstacle layer wants an improvement. Right now we only have
-x obstacles at z12. Can we add a progressive filter so that lower
-x zooms have manageable obstacle counts? That is, for zoom z=6,
-x let's select an AGL altitude that keeps the max obstacles/tile
-x below, say, 100. Let's choose threshholds that are multiples of
-x 50' AGL. Can you write a script to find those threshholds for every
-x zoom level and print it out here as a table to see if it looks sane?
 
-x RNT VAMP V298 Ibeam KLGd
 
 Eventually, all the packages (and also this one) will
 report data sizes, so the user has an idea how much damage their SIM card will
 suffer.
 
-Let's design the settings/library page better.
-Each row should be divided up like this:
-First, a pair of buttons:
-[trashcan] [pause/play]
-	Clicking trashcan tells core state is OFF.
-	Clicking pause/play when it's showing "pause" tells core state is PLAY
-	Clicking pause/play when it's showing "play" tells core state is PAUSE
-	Core responding state is OFF sets trashcan to highlighted, pause/play to normal, and shows pause.
-	Core responding state is PLAY sets trashcan to normal, pause/play to highlighted, and shows play.
-	Core responding state is PAUSE sets trashcan to normal, pause/play to highlighted, and shows pause.
-The next field is the product/region name.
-The last field is the available cycles (or prod date for non-cycle products).
-	For a given row, say NW, we accumulate all the products * cycles we know
-	about (from the active root manifest(s)).
-	For each (Product,Cycle) pair, we create a (Cycle,State) pair. States are:
-	Fetching: not installed and scheduled to install
-	Uninstalled: not installed
-	Removing: installed and scheduled to uninstall
-	Active: installed and the cycle's validity includes the current clock
-	Standby: installed and not presently valid (a future cycle waiting to be ready)
-	All the (Cycle,State) pairs are counted up. We display in the last field
-	a sequence of "CYCLE (N)" labels, such as "2603 (4)". Each label is
-	rendered as follows:
-	
-	Top row, sorted by state first then cycle number:
-		Active: Magenta text, top row
-		Standby: White text, top row
-	Bottom row, sorted by state first then cycle number:
-		Fetching: Yellow text with a "+" prefix, bottom row
-		Removing: Gray text with a strikethrough, bottom row
-		Uninstalled: Gray text, bottom row
-	Display GB to fetch / to GC free / total used / device available
-
-
 wx cams (eg SAC 150 13nm)
 
 
-x Airspace boundaries
 
-x Let's draw TFRs!
 Live SAA activation schedules from sua.faa.gov
 https://sua.faa.gov/datafeed/suagw/n24sua?user=
   - n24sua: all non-Military Training Route reservations scheduled in the next
@@ -1367,35 +319,21 @@ Version migration story:
 
 Share screen! That would be cool.
 
+How do we know what nav_db we're using?
+When a new nav_db becomes current, how do we switch to it?
+How do we ensure that we're not carrying around stale cached data that we
+unpacked from the old nav_db? Is session re-creation enough?
+
 ------------------------------------------------------------------------------
 Fit & Finish
 
 We should replace a lot of buttons with icons! Charts with crops off of samples.
 
-x VORs don't need frequency
-
-x Match label layout to Garmin
-
-x Match ring radii to Garmin
-x 	Available ring radii:
-x 	{1 1.5 2 3 5 8} x {1, 10, 100} nm
-x 	500 800 1000 1500 2000 3000 5000 ft
-x 	(800 is north-up)
-x Label the ticks on the ring N,E,S,W with letters the size of the ring radius
-x label, baselines tangent to the circle, letters on the inside anchored centered
-on their ticks.
 
 Do a nationwide scan of density for each vector object and decide if we should
 change the thresholds. Show me the densest areas (by pointing the map there) for
 each feature type.
 
-Tweak the button layout to optimize flow.
-
-x Checkboxes to control overlays:
-x 	NEXRAD,
-x 	Metars,
-x 	Terrain,
-x 	DB Vector data?
 
 Status boxes:
 	"NEXRAD age: 7 minutes" (computed relative to original data!)
@@ -1408,6 +346,8 @@ Add (?) help pages.
 
 Add a way to pop up the chart legends! -- make it a feature of the chart
 boundary inspection tray.
+
+There's a honolulu inset we're not rendering on TAC.
 
 Make vector features clickable; pop up to add to flight plan.
 
@@ -1434,25 +374,10 @@ Search for airports by city/friendly name. Just a full-text scan? Or fancy prefi
 Should we make some adjustments to zoom fallback to reduce the phase-in effect
 at startup / improve performance? Maybe it's too little to worry about.
 
-Highlight flight plan waypoint labels on the map.
-Always show their symbols, even if they would be rejected by other rules
-(such as too far zoomed out, or paved/seaplane/heliport filter).
-
 Flight plan munging/hiding. When you select a procedure, does it *replace* the
 airport? (For approaches, I think it does on the 750.) If so, we should put the
 airport name and symbol in the procedure heading.
 
-x Upper-left button on CHART page is now a toggle. If we're on the chart page, it shows CHART and the
-x chart icon, has a little toggle icon at the top center, and when you click it, we jump to the plate
-x page. On the PLATE page, same idea, shows PLATE and the plate icon, toggle is slid the other way, and
-x when you click it, you jump back to the CHART page.
-x 
-x Okay, but now scoot all the buttons over one space and insert a HOME button. That takes us to what is
-x now called the Settings page. We're going to rename that the HOME page. (So we'll need that HOME button
-x on the PLAN page, too, to be able to get anywhere interesting.)
-x 
-x The buttons on the home page become: CHART, PLATE, FLIGHT PLAN, and OFFLINE PACKAGES (which only shows
-x up on Android right now.)
 
 
 We need health monitoring on the preprocessing pipeline:
@@ -1463,11 +388,23 @@ We need health monitoring on the preprocessing pipeline:
 ------------------------------------------------------------------------------
 Android parity gaps
 
+Intersections in bay area way too dense. We're not doing overlapping-label removal (which was supposed
+to be in core). And it is just looking a lot more dense -- is that because Android has pixels that
+are or pretend to be smaller?
+
+I can click right through the play button in the Replay panel. Z-order?
+
+Web added upper-left buttons to FP & Home to make the inter-page flow more regular. Read what it
+did. Tell me what you'll do to bring android ui to parity.
+
+Procedure rendering!
+
 Airspace boundary rendering.
 
-free text flight plan input
+Flight plan waypoint ident highlighting. (Pay attention to web z-order.)
 
-change package path to org.aerobag.app?
+Highlights of selected inspector-panel features, including path features.
+
 
 
 Perf
@@ -1481,8 +418,13 @@ Perf
   - Reduce planned Android raster count if density/viewport math is over-eager. This is the first thing I’d                                                                         
     measure next, because 96 vs 22 is a much bigger gap than 300ms vs 200ms.              
 
+
+
 ------------------------------------------------------------------------------
+Usability:
 
-Hot list
+Whenever core issues a 'disabled' state for a button, include a hover-over
+message explaining why. (motivating example: Bad AP unavailable because no
+active FP leg.)
 
-Nasty delay on refresh operation.
+------------------------------------------------------------------------------

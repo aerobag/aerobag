@@ -238,29 +238,8 @@ Major missing features
   Altitude optimizer!
 
 Download manager
-- progress
 - background downloads with dropdown progress
 - unattended download update checks
-
-Long-press to select vector features:
-- Selects items in a reasonable radius of your click (based on zoom level)
-- Brings up a menu, scrollable in both dims
-	- closest airports, left to right (sorted by runway length)
-	- closest intersections
-	- closest VOR
-	- identify airspaces (left to right, sorted by altitude)
-	- identify obstacle
-	- identify ADSB target
-		(selects & highlights target, brings up a movable tile with
-		target info, dismissing panel unselects. Panel stays live even
-		if depiction times out; holds vector on screen in a 50% translucent ghost
-		rendering.  Click-through links to photos of plane!)
-	- point-in-space: brings up a tray showing:
-		- lat/lon, ground elevation from terrain
-		- distance/bearing from ownship
-		- add to FP / direct-to
-
-Direct-to buttons
 
 pills on (visually long enough) flight plan legs showing distances
 

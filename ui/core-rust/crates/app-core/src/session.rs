@@ -2488,17 +2488,17 @@ fn terrain_overlay_resources(
             if session.terrain_source_tile_cache.contains_key(&key) {
                 continue;
             }
-            resources.push(CoreResourceRequest {
-                id: format!("terrain/source/{key}"),
-                address: format!(
-                    "/terrain-products/{}/{}",
-                    source_tile.product_id, source_tile.path
-                ),
-                optional: false,
-            });
+            extend_package_resource_requests(
+                session,
+                &mut resources,
+                &format!("terrain/source/{key}"),
+                &source_tile.product_id,
+                &source_tile.path,
+                false,
+            );
         }
     }
-    resources
+    dedupe_resource_requests(resources)
 }
 
 fn terrain_source_tiles(

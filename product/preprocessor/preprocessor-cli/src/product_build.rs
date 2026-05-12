@@ -572,6 +572,7 @@ fn static_product_task_ids(config: &ProductBuildConfig) -> Vec<String> {
                 .iter()
                 .map(|region| format!("publish-terrain-{}", region.code().to_ascii_lowercase())),
         );
+        task_ids.push(format!("publish-terrain-{WIDE_ANGLE_REGION_ID}"));
         task_ids.extend(config.profile.terrain_regions().iter().map(|region| {
             format!(
                 "publish-shaded-relief-{}",
@@ -681,6 +682,50 @@ fn stable_product_package_metadata(id: &str) -> BTreeMap<String, serde_json::Val
             (
                 "tile_path_template".to_string(),
                 serde_json::json!("tiles/0/{z}/{x}/{y}.webp"),
+            ),
+            (
+                "tile_size".to_string(),
+                serde_json::json!(TERRAIN_TILE_SIZE),
+            ),
+            (
+                "wide_angle_region_id".to_string(),
+                serde_json::json!(WIDE_ANGLE_REGION_ID),
+            ),
+            (
+                "wide_angle_max_zoom".to_string(),
+                serde_json::json!(FULL_COVERAGE_ZOOM),
+            ),
+            ("wide_angle".to_string(), serde_json::json!(is_wide_angle)),
+        ]);
+        if is_wide_angle {
+            metadata.insert("min_zoom".to_string(), serde_json::json!(TERRAIN_MIN_ZOOM));
+            metadata.insert(
+                "max_source_zoom".to_string(),
+                serde_json::json!(FULL_COVERAGE_ZOOM),
+            );
+        } else {
+            metadata.insert(
+                "min_source_zoom".to_string(),
+                serde_json::json!(FULL_COVERAGE_ZOOM + 1),
+            );
+            metadata.insert(
+                "max_source_zoom".to_string(),
+                serde_json::json!(TERRAIN_ZOOM),
+            );
+        }
+        return metadata;
+    }
+    if let Some(region_id) = id.strip_prefix("terrain-") {
+        let is_wide_angle = region_id == WIDE_ANGLE_REGION_ID;
+        let mut metadata = BTreeMap::from([
+            ("tile_format".to_string(), serde_json::json!("ABT1")),
+            (
+                "tile_path_template".to_string(),
+                serde_json::json!("tiles/{z}/{x}/{y}.terrain"),
+            ),
+            (
+                "tile_content_encoding".to_string(),
+                serde_json::json!("gzip"),
             ),
             (
                 "tile_size".to_string(),
@@ -996,9 +1041,15 @@ struct ProductTaskCompletion {
 
 #[derive(Debug, Clone)]
 struct PublishedZipArtifact {
-    source_zip_path: PathBuf,
+    unpack_strategy: PublishedZipUnpackStrategy,
     published_zip_path: PathBuf,
     checksum_sha256: String,
+}
+
+#[derive(Debug, Clone)]
+enum PublishedZipUnpackStrategy {
+    ExtractZip,
+    HardlinkZipMembers { source_roots: Vec<PathBuf> },
 }
 
 #[derive(Debug, Clone)]
@@ -1229,7 +1280,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         WorldBasemapPublish,
         TerrainDiscovery,
         TerrainBuild { region: Region },
+        TerrainWideBuild,
         TerrainPublish { region: Region },
+        TerrainWidePublish,
         WaterMaskBuild { region: Region },
         ShadedReliefBuild { region: Region },
         ShadedReliefWideBuild,
@@ -1498,6 +1551,24 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     kind: ProductScheduledTaskKind::ShadedReliefPublish { region: *region },
                 });
             }
+            let terrain_wide_deps = config
+                .profile
+                .terrain_regions()
+                .iter()
+                .map(|region| format!("build-terrain-{}", region.code().to_ascii_lowercase()))
+                .collect::<Vec<_>>();
+            pending_tasks.push(ProductScheduledTask {
+                id: format!("build-terrain-{WIDE_ANGLE_REGION_ID}"),
+                deps: terrain_wide_deps,
+                weight: 1,
+                kind: ProductScheduledTaskKind::TerrainWideBuild,
+            });
+            pending_tasks.push(ProductScheduledTask {
+                id: format!("publish-terrain-{WIDE_ANGLE_REGION_ID}"),
+                deps: vec![format!("build-terrain-{WIDE_ANGLE_REGION_ID}")],
+                weight: 1,
+                kind: ProductScheduledTaskKind::TerrainWidePublish,
+            });
             let shaded_relief_wide_deps = config
                 .profile
                 .terrain_regions()
@@ -1529,12 +1600,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     format!("publish-terrain-{}", region.code().to_ascii_lowercase())
                 }),
             );
+            current_artifacts_deps.push(format!("publish-terrain-{WIDE_ANGLE_REGION_ID}"));
             current_artifacts_deps.extend(config.profile.terrain_regions().iter().map(|region| {
                 format!(
                     "publish-shaded-relief-{}",
                     region.code().to_ascii_lowercase()
                 )
             }));
+            current_artifacts_deps.push(format!("publish-shaded-relief-{WIDE_ANGLE_REGION_ID}"));
         }
         pending_tasks.push(ProductScheduledTask {
             id: "current-artifacts".to_string(),
@@ -1553,12 +1626,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     format!("publish-terrain-{}", region.code().to_ascii_lowercase())
                 }),
             );
+            product_unpack_deps.push(format!("publish-terrain-{WIDE_ANGLE_REGION_ID}"));
             product_unpack_deps.extend(config.profile.terrain_regions().iter().map(|region| {
                 format!(
                     "publish-shaded-relief-{}",
                     region.code().to_ascii_lowercase()
                 )
             }));
+            product_unpack_deps.push(format!("publish-shaded-relief-{WIDE_ANGLE_REGION_ID}"));
         }
         pending_tasks.push(ProductScheduledTask {
             id: "product-unpack".to_string(),
@@ -2332,6 +2407,56 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 completion_detail: format!("cache_hit={cache_hit}"),
                             })
                         }
+                        ProductScheduledTaskKind::TerrainWideBuild => {
+                            let mut regional_products = Vec::new();
+                            for region in config.profile.terrain_regions() {
+                                let region_id = region.code().to_ascii_lowercase();
+                                let task_id = format!("build-terrain-{region_id}");
+                                match task_values_snapshot.get(&task_id) {
+                                    Some(ProductTaskValue::BuiltStandaloneProduct {
+                                        zip_path,
+                                        zip_sha256,
+                                        source_version,
+                                        source_fetched_at_utc,
+                                        ..
+                                    }) => {
+                                        let output_dir = zip_path
+                                            .parent()
+                                            .with_context(|| {
+                                                format!(
+                                                    "terrain zip has no parent for {}",
+                                                    zip_path.display()
+                                                )
+                                            })?
+                                            .to_path_buf();
+                                        regional_products.push((
+                                            region_id,
+                                            output_dir,
+                                            source_version.clone(),
+                                            zip_sha256.clone().unwrap_or_default(),
+                                            source_fetched_at_utc.clone(),
+                                        ));
+                                    }
+                                    _ => bail!("missing terrain build output for {}", region.code()),
+                                }
+                            }
+                            let (zip_path, source_version, source_fetched_at_utc, record) =
+                                build_terrain_wide_product(&config, &regional_products)?;
+                            let cache_hit = record.cache_hit;
+                            let (zip_sha256, zip_size_bytes) =
+                                node_output_file_detail(&record, "zip");
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![record],
+                                value: ProductTaskValue::BuiltStandaloneProduct {
+                                    zip_path,
+                                    zip_sha256,
+                                    zip_size_bytes,
+                                    source_version,
+                                    source_fetched_at_utc,
+                                },
+                                completion_detail: format!("cache_hit={cache_hit}"),
+                            })
+                        }
                         ProductScheduledTaskKind::WaterMaskBuild { region } => {
                             let (_zip_path, mask_tiles_dir, source_version, _source_fetched_at_utc, record) =
                                 build_water_mask_product(&config, region)?;
@@ -2582,6 +2707,48 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 completion_detail: "published".to_string(),
                             })
                         }
+                        ProductScheduledTaskKind::TerrainWidePublish => {
+                            let task_id = format!("build-terrain-{WIDE_ANGLE_REGION_ID}");
+                            let built = match task_values_snapshot.get(&task_id) {
+                                Some(ProductTaskValue::BuiltStandaloneProduct {
+                                    zip_path,
+                                    zip_sha256,
+                                    zip_size_bytes,
+                                    source_version,
+                                    source_fetched_at_utc,
+                                    ..
+                                }) => (
+                                    zip_path.clone(),
+                                    zip_sha256.clone(),
+                                    *zip_size_bytes,
+                                    source_version.clone(),
+                                    source_fetched_at_utc.clone(),
+                                ),
+                                _ => bail!("missing terrain wide-angle build output"),
+                            };
+                            let product_id = format!("terrain-{WIDE_ANGLE_REGION_ID}");
+                            let (published_zip, sha256, size_bytes) =
+                                publish_content_addressed_zip(
+                                    &config.build_root,
+                                    &built.0,
+                                    &product_id,
+                                    built.1.as_deref(),
+                                    built.2,
+                                )?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::PublishedStandaloneProduct {
+                                    id: product_id,
+                                    source_zip_path: built.0,
+                                    published_zip,
+                                    sha256,
+                                    size_bytes,
+                                    source_version: built.3,
+                                    source_fetched_at_utc: built.4,
+                                },
+                                completion_detail: "published".to_string(),
+                            })
+                        }
                         ProductScheduledTaskKind::ShadedReliefPublish { region } => {
                             let region_id = region.code().to_ascii_lowercase();
                             let task_id = format!("build-shaded-relief-{region_id}");
@@ -2751,12 +2918,32 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             ) {
                                 Some(path) => load_fast_bundle_products(&path)?
                                     .into_iter()
-                                    .map(|product| PublishedZipArtifact {
-                                        source_zip_path: product.source_zip_path,
-                                        published_zip_path: product.published_zip,
-                                        checksum_sha256: product.checksum_sha256,
+                                    .map(|product| {
+                                        let source_root = product
+                                            .source_zip_path
+                                            .parent()
+                                            .map(Path::to_path_buf)
+                                            .with_context(|| {
+                                                format!(
+                                                    "fast product source zip has no parent: {}",
+                                                    product.source_zip_path.display()
+                                                )
+                                            })?;
+                                        let unpack_strategy =
+                                            if product.source_zip_path == product.published_zip {
+                                                PublishedZipUnpackStrategy::ExtractZip
+                                            } else {
+                                                PublishedZipUnpackStrategy::HardlinkZipMembers {
+                                                    source_roots: vec![source_root],
+                                                }
+                                            };
+                                        Ok(PublishedZipArtifact {
+                                            unpack_strategy,
+                                            published_zip_path: product.published_zip,
+                                            checksum_sha256: product.checksum_sha256,
+                                        })
                                     })
-                                    .collect::<Vec<_>>(),
+                                    .collect::<anyhow::Result<Vec<_>>>()?,
                                 None => Vec::new(),
                             };
                             let static_products = static_product_task_ids(&config)
@@ -2766,12 +2953,17 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                         source_zip_path,
                                         published_zip,
                                         sha256,
+                                        id,
                                         ..
-                                    }) => Ok(PublishedZipArtifact {
-                                        source_zip_path: source_zip_path.clone(),
-                                        published_zip_path: published_zip.clone(),
-                                        checksum_sha256: sha256.clone(),
-                                    }),
+                                    }) => {
+                                        let unpack_strategy =
+                                            static_product_unpacked_strategy(id, source_zip_path)?;
+                                        Ok(PublishedZipArtifact {
+                                            unpack_strategy,
+                                            published_zip_path: published_zip.clone(),
+                                            checksum_sha256: sha256.clone(),
+                                        })
+                                    }
                                     _ => bail!("missing published static product output for {}", task_id),
                                 })
                                 .collect::<anyhow::Result<Vec<_>>>()?;
@@ -3380,18 +3572,6 @@ fn sync_referenced_fast_bundle_unpacked_zips(
                 products_by_filename.entry(filename).or_insert(product);
             }
             for package in &fast_bundle.packages {
-                let unpack_dir = unpacked_target_dir(unpacked_root, &package.filename)?;
-                let marker_path = unpacked_marker_path(unpacked_root, &package.filename)?;
-                if unpack_dir.is_dir()
-                    && unpacked_dir_has_files(&unpack_dir)?
-                    && fs::read_to_string(&marker_path)
-                        .ok()
-                        .as_deref()
-                        .map(str::trim)
-                        == Some(package.checksum_sha256.as_str())
-                {
-                    continue;
-                }
                 let Some(product) = products_by_filename.get(&package.filename) else {
                     if !is_current_discovery {
                         eprintln!(
@@ -4532,7 +4712,7 @@ fn build_bundle_manifest(
         .packages
         .iter()
         .map(|package| {
-            let package_path = resolve_bundle_package_source_path(config, build_manifest, package)?;
+            let package_path = resolve_bundle_package_source_path(config, package)?;
             let filename = canonical_package_filename_hashed(
                 &package.family_id,
                 &package.region_id,
@@ -8160,21 +8340,21 @@ fn max_zoom_for_levels(_collection: &preprocessor_resource_index::ChartCollectio
 
 fn resolve_bundle_package_source_path(
     config: &ProductBuildConfig,
-    build_manifest: &BuildManifest,
     package: &preprocessor_resource_index::ResourcePackage,
 ) -> anyhow::Result<PathBuf> {
-    let region_id = package.region_id.to_ascii_lowercase();
-    let node_name = match package.family_id.as_str() {
-        "csup" => format!("csup-package-{region_id}"),
-        "tpp" => format!("tpp-{region_id}-package"),
-        family_id => format!("charts-{family_id}-package-{region_id}"),
-    };
-    let record = build_manifest
-        .nodes
-        .iter()
-        .find(|node| node.name == node_name)
-        .with_context(|| format!("build manifest missing package node {node_name}"))?;
-    Ok(resolve_artifact_path(config, output_path(record, "zip")?))
+    let artifact_path = package
+        .artifact_path
+        .as_deref()
+        .with_context(|| format!("package {} missing artifact_path", package.id))?;
+    let package_path = resolve_artifact_path(config, artifact_path);
+    if !package_path.is_file() {
+        bail!(
+            "package {} artifact_path does not exist: {}",
+            package.id,
+            package_path.display()
+        );
+    }
+    Ok(package_path)
 }
 
 fn output_path<'a>(record: &'a NodeRecord, key: &str) -> anyhow::Result<&'a str> {
@@ -8249,12 +8429,49 @@ fn unpacked_marker_path(unpacked_root: &Path, published_filename: &str) -> anyho
         .join(unpacked_dir_name);
     fs::create_dir_all(&marker_dir)
         .with_context(|| format!("failed to create {}", marker_dir.display()))?;
-    Ok(marker_dir.join(format!("{published_filename}.source-zip-sha256")))
+    Ok(marker_dir.join(format!("{published_filename}.unpack-fingerprint")))
+}
+
+fn unpacked_fingerprint(strategy: &str, zip_sha256: &str, source_roots: &[&Path]) -> String {
+    let inputs = serde_json::json!({
+        "version": 1,
+        "strategy": strategy,
+        "zip_sha256": zip_sha256,
+        "source_roots": source_roots
+            .iter()
+            .map(|root| root.display().to_string())
+            .collect::<Vec<_>>(),
+    });
+    hash_text(&serde_json::to_string(&inputs).expect("unpack fingerprint inputs should encode"))
+}
+
+fn unpacked_fingerprint_matches(marker_path: &Path, expected: &str) -> bool {
+    fs::read_to_string(marker_path)
+        .ok()
+        .as_deref()
+        .map(str::trim)
+        == Some(expected)
 }
 
 fn sync_unpacked_zip_from_source(
     zip_path: &Path,
     source_root: &Path,
+    unpacked_root: &Path,
+    published_filename: &str,
+    known_sha256: Option<&str>,
+) -> anyhow::Result<(bool, PathBuf)> {
+    sync_unpacked_zip_from_sources(
+        zip_path,
+        &[source_root],
+        unpacked_root,
+        published_filename,
+        known_sha256,
+    )
+}
+
+fn sync_unpacked_zip_from_sources(
+    zip_path: &Path,
+    source_roots: &[&Path],
     unpacked_root: &Path,
     published_filename: &str,
     known_sha256: Option<&str>,
@@ -8265,13 +8482,14 @@ fn sync_unpacked_zip_from_source(
         Some(value) => value.to_string(),
         None => hash_file(zip_path)?,
     };
+    let fingerprint = unpacked_fingerprint(
+        "hardlink_zip_members_from_sources",
+        &zip_sha256,
+        source_roots,
+    );
     if unpack_dir.is_dir()
         && unpacked_dir_has_files(&unpack_dir)?
-        && fs::read_to_string(&marker_path)
-            .ok()
-            .as_deref()
-            .map(str::trim)
-            == Some(zip_sha256.as_str())
+        && unpacked_fingerprint_matches(&marker_path, &fingerprint)
     {
         return Ok((true, unpack_dir));
     }
@@ -8281,8 +8499,8 @@ fn sync_unpacked_zip_from_source(
     }
     fs::create_dir_all(&unpack_dir)
         .with_context(|| format!("failed to create {}", unpack_dir.display()))?;
-    hardlink_zip_members_from_source_root(zip_path, source_root, &unpack_dir)?;
-    fs::write(&marker_path, format!("{zip_sha256}\n"))
+    hardlink_zip_members_from_source_roots(zip_path, source_roots, &unpack_dir)?;
+    fs::write(&marker_path, format!("{fingerprint}\n"))
         .with_context(|| format!("failed to write {}", marker_path.display()))?;
     Ok((false, unpack_dir))
 }
@@ -8295,13 +8513,10 @@ fn sync_unpacked_dir_from_existing(
 ) -> anyhow::Result<(bool, PathBuf)> {
     let unpack_dir = unpacked_target_dir(unpacked_root, published_filename)?;
     let marker_path = unpacked_marker_path(unpacked_root, published_filename)?;
+    let fingerprint = unpacked_fingerprint("hardlink_dir_recursive", known_sha256, &[source_dir]);
     if unpack_dir.is_dir()
         && unpacked_dir_has_files(&unpack_dir)?
-        && fs::read_to_string(&marker_path)
-            .ok()
-            .as_deref()
-            .map(str::trim)
-            == Some(known_sha256)
+        && unpacked_fingerprint_matches(&marker_path, &fingerprint)
     {
         return Ok((true, unpack_dir));
     }
@@ -8310,7 +8525,7 @@ fn sync_unpacked_dir_from_existing(
             .with_context(|| format!("failed to remove {}", unpack_dir.display()))?;
     }
     hardlink_dir_recursive(source_dir, &unpack_dir)?;
-    fs::write(&marker_path, format!("{known_sha256}\n"))
+    fs::write(&marker_path, format!("{fingerprint}\n"))
         .with_context(|| format!("failed to write {}", marker_path.display()))?;
     Ok((false, unpack_dir))
 }
@@ -8327,13 +8542,10 @@ fn sync_unpacked_zip_by_extract(
         Some(value) => value.to_string(),
         None => hash_file(zip_path)?,
     };
+    let fingerprint = unpacked_fingerprint("extract_zip", &zip_sha256, &[]);
     if unpack_dir.is_dir()
         && unpacked_dir_has_files(&unpack_dir)?
-        && fs::read_to_string(&marker_path)
-            .ok()
-            .as_deref()
-            .map(str::trim)
-            == Some(zip_sha256.as_str())
+        && unpacked_fingerprint_matches(&marker_path, &fingerprint)
     {
         return Ok((true, unpack_dir));
     }
@@ -8370,7 +8582,7 @@ fn sync_unpacked_zip_by_extract(
         std::io::copy(&mut entry, &mut out)
             .with_context(|| format!("failed to extract {}", outpath.display()))?;
     }
-    fs::write(&marker_path, format!("{zip_sha256}\n"))
+    fs::write(&marker_path, format!("{fingerprint}\n"))
         .with_context(|| format!("failed to write {}", marker_path.display()))?;
     Ok((false, unpack_dir))
 }
@@ -8420,9 +8632,9 @@ fn unpacked_dir_has_files(path: &Path) -> anyhow::Result<bool> {
     Ok(false)
 }
 
-fn hardlink_zip_members_from_source_root(
+fn hardlink_zip_members_from_source_roots(
     zip_path: &Path,
-    source_root: &Path,
+    source_roots: &[&Path],
     output_dir: &Path,
 ) -> anyhow::Result<()> {
     let file =
@@ -8447,15 +8659,25 @@ fn hardlink_zip_members_from_source_root(
             fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
-        let source = resolve_source_member_path(source_root, &member)?;
-        if !source.is_file() {
+        let source = source_roots
+            .iter()
+            .map(|source_root| resolve_source_member_path(source_root, &member))
+            .collect::<anyhow::Result<Vec<_>>>()?
+            .into_iter()
+            .find(|source| source.is_file());
+        let Some(source) = source else {
+            let roots = source_roots
+                .iter()
+                .map(|root| root.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
             bail!(
-                "missing source member {} for {} under {}",
+                "missing source member {} for {} under [{}]",
                 member,
                 zip_path.display(),
-                source_root.display()
+                roots
             );
-        }
+        };
         fs::hard_link(&source, &outpath).with_context(|| {
             format!(
                 "failed to hardlink {} to {}",
@@ -8589,8 +8811,8 @@ fn sync_cycle_bundle_unpacked_zips(
                 continue;
             }
         }
-        let package_root = if let Some(task_values) = task_values {
-            resolve_cycle_bundle_package_root(task_values, &bundle_manifest.cycle, package)?
+        let package_roots = if let Some(task_values) = task_values {
+            resolve_cycle_bundle_package_roots(task_values, &bundle_manifest.cycle, package)?
         } else {
             resolve_cycle_bundle_package_root_from_build_manifest(
                 config,
@@ -8599,11 +8821,16 @@ fn sync_cycle_bundle_unpacked_zips(
                     .expect("build manifest fallback should exist for standalone cycle unpack"),
                 package,
             )?
+            .map(|root| vec![root])
         }
-        .with_context(|| format!("failed to resolve source root for package {}", package.id))?;
-        sync_unpacked_zip_from_source(
+        .with_context(|| format!("failed to resolve source roots for package {}", package.id))?;
+        let source_roots = package_roots
+            .iter()
+            .map(PathBuf::as_path)
+            .collect::<Vec<_>>();
+        sync_unpacked_zip_from_sources(
             &config.build_root.join(&package.filename),
-            &package_root,
+            &source_roots,
             unpacked_root,
             &package.filename,
             Some(&package.checksum_sha256),
@@ -8664,11 +8891,11 @@ fn resolve_cycle_bundle_package_root_from_build_manifest(
     Ok(root)
 }
 
-fn resolve_cycle_bundle_package_root(
+fn resolve_cycle_bundle_package_roots(
     task_values: &BTreeMap<String, ProductTaskValue>,
     bundle_cycle: &str,
     package: &BundlePackageArtifact,
-) -> anyhow::Result<Option<PathBuf>> {
+) -> anyhow::Result<Option<Vec<PathBuf>>> {
     fn task_id(cycle: &str, name: &str) -> String {
         format!("{cycle}:{name}")
     }
@@ -8692,15 +8919,19 @@ fn resolve_cycle_bundle_package_root(
         _ => return Ok(None),
     };
 
-    let root = match task_values.get(&task_id) {
-        Some(ProductTaskValue::ChartSource(source)) => source.package_root.clone(),
-        Some(ProductTaskValue::CsupSource(source)) => source.package_root.clone(),
+    let roots = match task_values.get(&task_id) {
+        Some(ProductTaskValue::ChartSource(source)) => {
+            vec![source.package_root.clone(), source.asset_root.clone()]
+        }
+        Some(ProductTaskValue::CsupSource(source)) => {
+            vec![source.package_root.clone(), source.asset_root.clone()]
+        }
         Some(ProductTaskValue::FingerprintedTppSource { source, .. }) => {
-            source.package_root.clone()
+            vec![source.package_root.clone()]
         }
         _ => return Ok(None),
     };
-    Ok(Some(root))
+    Ok(Some(roots))
 }
 
 fn sync_unpacked_file(source_path: &Path, unpacked_root: &Path) -> anyhow::Result<()> {
@@ -8722,13 +8953,47 @@ fn sync_unpacked_discovery_manifests(
     Ok(())
 }
 
+fn static_product_unpacked_strategy(
+    id: &str,
+    source_zip_path: &Path,
+) -> anyhow::Result<PublishedZipUnpackStrategy> {
+    let source_root = source_zip_path
+        .parent()
+        .map(Path::to_path_buf)
+        .with_context(|| {
+            format!(
+                "static product source zip has no parent: {}",
+                source_zip_path.display()
+            )
+        })?;
+    let uses_staged_package_root = id
+        .strip_prefix("terrain-")
+        .or_else(|| id.strip_prefix("shaded-relief-"))
+        .is_some_and(|region_id| region_id != WIDE_ANGLE_REGION_ID);
+    if uses_staged_package_root {
+        let package_root = source_root.join("package");
+        if !package_root.is_dir() {
+            bail!(
+                "static product {} must unpack from staged package root {}, but it does not exist",
+                id,
+                package_root.display()
+            );
+        }
+        return Ok(PublishedZipUnpackStrategy::HardlinkZipMembers {
+            source_roots: vec![package_root],
+        });
+    }
+    Ok(PublishedZipUnpackStrategy::HardlinkZipMembers {
+        source_roots: vec![source_root],
+    })
+}
+
 fn sync_product_level_unpacked(
     build_root: &Path,
     current_artifacts_path: &Path,
     zip_artifacts: &[PublishedZipArtifact],
 ) -> anyhow::Result<()> {
     let unpacked_root = published_unpacked_root_from_build_root(build_root)?;
-    let packaged_root = build_root.join("published_packaged");
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
     sync_unpacked_discovery_manifests(build_root, current_artifacts_path, &unpacked_root)?;
@@ -8746,33 +9011,29 @@ fn sync_product_level_unpacked(
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| anyhow::anyhow!("failed to determine published filename"))?;
-        let source_root = artifact
-            .source_zip_path
-            .parent()
-            .unwrap_or_else(|| Path::new("/"));
-        if source_root == packaged_root {
-            let unpack_dir = unpacked_target_dir(&unpacked_root, published_filename)?;
-            let marker_path = unpacked_marker_path(&unpacked_root, published_filename)?;
-            let marker_matches = fs::read_to_string(&marker_path)
-                .ok()
-                .as_deref()
-                .map(str::trim)
-                == Some(artifact.checksum_sha256.as_str());
-            if unpack_dir.is_dir() && marker_matches {
-                continue;
+        match &artifact.unpack_strategy {
+            PublishedZipUnpackStrategy::ExtractZip => {
+                sync_unpacked_zip_by_extract(
+                    &artifact.published_zip_path,
+                    &unpacked_root,
+                    published_filename,
+                    Some(&artifact.checksum_sha256),
+                )?;
             }
-            bail!(
-                "missing unpacked source tree for preserved published package {}",
-                artifact.published_zip_path.display()
-            );
+            PublishedZipUnpackStrategy::HardlinkZipMembers { source_roots } => {
+                let source_roots = source_roots
+                    .iter()
+                    .map(PathBuf::as_path)
+                    .collect::<Vec<_>>();
+                sync_unpacked_zip_from_sources(
+                    &artifact.published_zip_path,
+                    &source_roots,
+                    &unpacked_root,
+                    published_filename,
+                    Some(&artifact.checksum_sha256),
+                )?;
+            }
         }
-        sync_unpacked_zip_from_source(
-            &artifact.published_zip_path,
-            source_root,
-            &unpacked_root,
-            published_filename,
-            Some(&artifact.checksum_sha256),
-        )?;
     }
     cleanup_published_unpacked_root(&unpacked_root, current_artifacts_path)?;
     Ok(())
@@ -9613,8 +9874,9 @@ fn build_terrain_product(
             &inputs,
         )?;
         let output_dir = prepared.dir.join("output");
+        let package_dir = output_dir.join("package");
         let zip_path = output_dir.join(format!("terrain_{region_id}_{version_label}.zip"));
-        let manifest_path = output_dir.join("manifest.json");
+        let manifest_path = package_dir.join("manifest.json");
         if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), manifest_path])? {
             return Ok((zip_path, version_label, source_fetched_at_utc, record));
         }
@@ -9651,8 +9913,9 @@ fn build_terrain_product(
         &inputs,
     )?;
     let output_dir = prepared.dir.join("output");
+    let package_dir = output_dir.join("package");
     let zip_path = output_dir.join(format!("terrain_{region_id}_{version_label}.zip"));
-    let manifest_path = output_dir.join("manifest.json");
+    let manifest_path = package_dir.join("manifest.json");
     let _build_lock = match claim_or_wait_for_node(&prepared, &[zip_path.clone(), manifest_path])? {
         NodeCacheState::CacheHit(record) => {
             return Ok((zip_path, version_label, source_fetched_at_utc, record));
@@ -9677,11 +9940,18 @@ fn build_terrain_product(
         &version_label,
         &dem_selection,
     )?;
-    zip_directory_deterministic(&zip_path, &output_dir, &["manifest.json", "tiles"])?;
+    stage_static_tile_zoom_subset(
+        &output_dir,
+        &package_dir,
+        Some(FULL_COVERAGE_ZOOM + 1),
+        None,
+        true,
+    )?;
+    zip_directory_deterministic(&zip_path, &package_dir, &["manifest.json", "tiles"])?;
     let outputs = BTreeMap::from([
         (
             "manifest".to_string(),
-            relative_artifact_path(&output_dir.join("manifest.json"), &config.build_root),
+            relative_artifact_path(&package_dir.join("manifest.json"), &config.build_root),
         ),
         (
             "zip".to_string(),
@@ -9698,6 +9968,176 @@ fn build_terrain_product(
         started.elapsed().as_millis() as u64,
     )?;
     Ok((zip_path, version_label, source_fetched_at_utc, record))
+}
+
+fn build_terrain_wide_product(
+    config: &ProductBuildConfig,
+    regional_products: &[(String, PathBuf, String, String, Option<String>)],
+) -> anyhow::Result<(PathBuf, String, Option<String>, NodeRecord)> {
+    let source_fingerprint = terrain_wide_source_fingerprint(regional_products);
+    let version_label = fast_product_version_label(&source_fingerprint);
+    let source_fetched_at_utc = regional_products
+        .iter()
+        .filter_map(
+            |(_region_id, _output_dir, _source_version, _zip_sha256, fetched_at)| {
+                fetched_at.clone()
+            },
+        )
+        .max();
+    let inputs = terrain_wide_product_inputs(regional_products, &source_fingerprint);
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, &format!("static-terrain-{WIDE_ANGLE_REGION_ID}"))?,
+        &format!("static-terrain-{WIDE_ANGLE_REGION_ID}"),
+        &inputs,
+    )?;
+    let output_dir = prepared.dir.join("output");
+    let manifest_path = output_dir.join("manifest.json");
+    let zip_path = output_dir.join(format!(
+        "terrain_{WIDE_ANGLE_REGION_ID}_{version_label}.zip"
+    ));
+    if let Some(record) =
+        try_load_node_record(&prepared, &[zip_path.clone(), manifest_path.clone()])?
+    {
+        return Ok((zip_path, version_label, source_fetched_at_utc, record));
+    }
+    let _build_lock =
+        match claim_or_wait_for_node(&prepared, &[zip_path.clone(), manifest_path.clone()])? {
+            NodeCacheState::CacheHit(record) => {
+                return Ok((zip_path, version_label, source_fetched_at_utc, record));
+            }
+            NodeCacheState::Build(lock) => lock,
+        };
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    if output_dir.exists() {
+        fs::remove_dir_all(&output_dir)
+            .with_context(|| format!("failed to clear {}", output_dir.display()))?;
+    }
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
+    composite_terrain_wide_tiles(
+        regional_products,
+        &output_dir,
+        &version_label,
+        &source_fingerprint,
+    )?;
+    zip_directory_deterministic(&zip_path, &output_dir, &["manifest.json", "tiles"])?;
+    let outputs = BTreeMap::from([
+        (
+            "manifest".to_string(),
+            relative_artifact_path(&manifest_path, &config.build_root),
+        ),
+        (
+            "zip".to_string(),
+            relative_artifact_path(&zip_path, &config.build_root),
+        ),
+    ]);
+    let record = write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok((zip_path, version_label, source_fetched_at_utc, record))
+}
+
+fn terrain_wide_source_fingerprint(
+    regional_products: &[(String, PathBuf, String, String, Option<String>)],
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"terrain-wide-v1");
+    hasher.update(FULL_COVERAGE_ZOOM.to_string().as_bytes());
+    for (region_id, _output_dir, source_version, zip_sha256, _fetched_at) in regional_products {
+        hasher.update(region_id.as_bytes());
+        hasher.update([0]);
+        hasher.update(source_version.as_bytes());
+        hasher.update([0]);
+        hasher.update(zip_sha256.as_bytes());
+        hasher.update([0xff]);
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn terrain_wide_product_inputs(
+    regional_products: &[(String, PathBuf, String, String, Option<String>)],
+    source_fingerprint: &str,
+) -> BTreeMap<String, String> {
+    let region_versions = regional_products
+        .iter()
+        .map(
+            |(region_id, _output_dir, source_version, zip_sha256, _fetched_at)| {
+                format!("{region_id}:{source_version}:{zip_sha256}")
+            },
+        )
+        .collect::<Vec<_>>()
+        .join(",");
+    BTreeMap::from([
+        (
+            "product_id".to_string(),
+            format!("terrain-{WIDE_ANGLE_REGION_ID}"),
+        ),
+        (
+            "wide_angle_max_zoom".to_string(),
+            FULL_COVERAGE_ZOOM.to_string(),
+        ),
+        ("tile_size".to_string(), TERRAIN_TILE_SIZE.to_string()),
+        (
+            "source_fingerprint".to_string(),
+            source_fingerprint.to_string(),
+        ),
+        ("region_versions".to_string(), region_versions),
+        (
+            "terrain_pipeline".to_string(),
+            TERRAIN_PIPELINE_VERSION.to_string(),
+        ),
+        (
+            "wide_angle_script".to_string(),
+            hash_text(TERRAIN_WIDE_TILE_SCRIPT),
+        ),
+    ])
+}
+
+fn composite_terrain_wide_tiles(
+    regional_products: &[(String, PathBuf, String, String, Option<String>)],
+    output_dir: &Path,
+    version_label: &str,
+    source_fingerprint: &str,
+) -> anyhow::Result<()> {
+    let script_path = output_dir.join("build_terrain_wide_tiles.py");
+    fs::write(&script_path, TERRAIN_WIDE_TILE_SCRIPT)
+        .with_context(|| format!("failed to write {}", script_path.display()))?;
+    let mut command = Command::new("python3");
+    command
+        .arg(&script_path)
+        .arg("--output-dir")
+        .arg(output_dir)
+        .arg("--version-label")
+        .arg(version_label)
+        .arg("--source-fingerprint")
+        .arg(source_fingerprint)
+        .arg("--max-zoom")
+        .arg(FULL_COVERAGE_ZOOM.to_string())
+        .arg("--tile-size")
+        .arg(TERRAIN_TILE_SIZE.to_string());
+    for (_region_id, output_dir, _source_version, _zip_sha256, _fetched_at) in regional_products {
+        command.arg("--source-dir").arg(output_dir);
+    }
+    let output = command
+        .output()
+        .with_context(|| format!("failed to run {}", script_path.display()))?;
+    if !output.status.success() {
+        bail!(
+            "terrain wide tile builder failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fs::remove_file(&script_path)
+        .with_context(|| format!("failed to remove {}", script_path.display()))?;
+    Ok(())
 }
 
 fn terrain_product_inputs(
@@ -10389,6 +10829,7 @@ fn build_shaded_relief_product(
         &package_dir,
         Some(FULL_COVERAGE_ZOOM + 1),
         None,
+        false,
     )?;
     let tile_levels = read_static_tile_manifest_levels(&package_dir.join("manifest.json"))?;
     zip_directory_deterministic(&zip_path, &package_dir, &["manifest.json", "tiles"])?;
@@ -10912,6 +11353,7 @@ fn stage_static_tile_zoom_subset(
     package_dir: &Path,
     min_zoom: Option<u32>,
     max_zoom: Option<u32>,
+    direct_zoom_tiles: bool,
 ) -> anyhow::Result<()> {
     if package_dir.exists() {
         fs::remove_dir_all(package_dir)
@@ -10967,7 +11409,13 @@ fn stage_static_tile_zoom_subset(
     })?;
     let source_tiles_dir = source_output_dir.join("tiles");
     let package_tiles_dir = package_dir.join("tiles");
-    hardlink_static_tile_zoom_subset(&source_tiles_dir, &package_tiles_dir, min_zoom, max_zoom)?;
+    hardlink_static_tile_zoom_subset(
+        &source_tiles_dir,
+        &package_tiles_dir,
+        min_zoom,
+        max_zoom,
+        direct_zoom_tiles,
+    )?;
     Ok(())
 }
 
@@ -10976,6 +11424,7 @@ fn hardlink_static_tile_zoom_subset(
     output_dir: &Path,
     min_zoom: Option<u32>,
     max_zoom: Option<u32>,
+    direct_zoom_tiles: bool,
 ) -> anyhow::Result<()> {
     for entry in fs::read_dir(source_dir)
         .with_context(|| format!("failed to read {}", source_dir.display()))?
@@ -10993,7 +11442,7 @@ fn hardlink_static_tile_zoom_subset(
                 .parent()
                 .and_then(|parent| parent.file_name())
                 .and_then(|name| name.to_str())
-                .map(|name| name == "0")
+                .map(|name| name == "0" || (direct_zoom_tiles && name == "tiles"))
                 .unwrap_or(false);
             if zoom_filter_applies {
                 if let Ok(zoom) = name.parse::<u32>() {
@@ -11004,7 +11453,13 @@ fn hardlink_static_tile_zoom_subset(
                     }
                 }
             }
-            hardlink_static_tile_zoom_subset(&path, &output, min_zoom, max_zoom)?;
+            hardlink_static_tile_zoom_subset(
+                &path,
+                &output,
+                min_zoom,
+                max_zoom,
+                direct_zoom_tiles,
+            )?;
         } else if file_type.is_file() {
             if let Some(parent) = output.parent() {
                 fs::create_dir_all(parent)
@@ -12674,6 +13129,154 @@ def main():
             'primary_roads': 'U.S. Census TIGER/Line 2025 national primary roads, 60% blue-gray paired strokes',
         },
         'source_region_count': len(args.source_dir),
+        'levels': levels,
+        'files': {'tiles': 'tiles'},
+    }
+    (output_dir / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+
+if __name__ == '__main__':
+    main()
+"#;
+
+const TERRAIN_WIDE_TILE_SCRIPT: &str = r#"
+import argparse
+import gzip
+import json
+import struct
+from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
+
+TERRAIN_TILE_SUFFIXES = {'.terrain'}
+NODATA = -32768
+
+def read_tile(path, tile_size):
+    with gzip.open(path, 'rb') as f:
+        raw = f.read()
+    if raw[:4] != b'ABT1':
+        raise ValueError(f'{path} is not an ABT1 terrain tile')
+    width, height, nodata, _reserved, scale, offset = struct.unpack('<HHhhff', raw[4:20])
+    if width != tile_size or height != tile_size or nodata != NODATA:
+        raise ValueError(f'{path} has unexpected terrain header')
+    samples = np.frombuffer(raw[20:], dtype='<i2').reshape((tile_size, tile_size))
+    return scale, offset, samples
+
+def write_tile(path, payload, tile_size):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = b'ABT1' + struct.pack('<HHhhff', tile_size, tile_size, NODATA, 0, 1.0, 0.0) + payload
+    with open(path, 'wb') as f:
+        f.write(gzip.compress(raw, mtime=0))
+
+def scan_sources(source_dirs, max_zoom):
+    groups = defaultdict(list)
+    for source_dir in source_dirs:
+        tiles_root = Path(source_dir) / 'tiles'
+        if not tiles_root.exists():
+            continue
+        for z_dir in tiles_root.iterdir():
+            if not z_dir.is_dir():
+                continue
+            try:
+                z = int(z_dir.name)
+            except ValueError:
+                continue
+            if z > max_zoom:
+                continue
+            for x_dir in z_dir.iterdir():
+                if not x_dir.is_dir():
+                    continue
+                for tile_path in x_dir.iterdir():
+                    if tile_path.suffix.lower() in TERRAIN_TILE_SUFFIXES:
+                        rel = tile_path.relative_to(Path(source_dir)).as_posix()
+                        groups[rel].append(tile_path)
+    return groups
+
+def composite_group(paths, output_path, tile_size):
+    first_scale, first_offset, first_samples = read_tile(paths[0], tile_size)
+    composite = np.full(first_samples.shape, NODATA, dtype='<i2')
+    composite_elevations = np.full(first_samples.shape, -np.inf, dtype=np.float64)
+    for path in paths:
+        scale, offset, samples = read_tile(path, tile_size)
+        valid = samples != NODATA
+        elevations = samples.astype(np.float64) * scale + offset
+        better = valid & (elevations > composite_elevations)
+        encoded = np.rint((elevations - first_offset) / first_scale)
+        encoded = np.clip(encoded, np.iinfo(np.int16).min, np.iinfo(np.int16).max).astype('<i2')
+        composite[better] = encoded[better]
+        composite_elevations[better] = elevations[better]
+    write_tile(output_path, composite.tobytes(), tile_size)
+
+def scan_levels(output_dir):
+    levels = []
+    tiles_root = Path(output_dir) / 'tiles'
+    for z_dir in sorted((path for path in tiles_root.iterdir() if path.is_dir()), key=lambda path: int(path.name)):
+        zoom = int(z_dir.name)
+        coords = []
+        for x_dir in z_dir.iterdir():
+            if not x_dir.is_dir():
+                continue
+            x = int(x_dir.name)
+            for tile_path in x_dir.iterdir():
+                if tile_path.suffix.lower() != '.terrain':
+                    continue
+                coords.append((x, int(tile_path.stem)))
+        if not coords:
+            continue
+        xs = [x for x, _ in coords]
+        ys = [y for _, y in coords]
+        levels.append({
+            'zoom': zoom,
+            'tile_count': len(coords),
+            'boxes': [{
+                'x_min': min(xs),
+                'x_max': max(xs),
+                'y_tms_min': min(ys),
+                'y_tms_max': max(ys),
+            }],
+        })
+    return levels
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--source-dir', action='append', required=True)
+    parser.add_argument('--output-dir', required=True)
+    parser.add_argument('--version-label', required=True)
+    parser.add_argument('--source-fingerprint', required=True)
+    parser.add_argument('--max-zoom', required=True, type=int)
+    parser.add_argument('--tile-size', required=True, type=int)
+    args = parser.parse_args()
+
+    output_dir = Path(args.output_dir)
+    groups = scan_sources(args.source_dir, args.max_zoom)
+    for rel, paths in sorted(groups.items()):
+        composite_group(paths, output_dir / rel, args.tile_size)
+    levels = scan_levels(output_dir)
+    if not levels:
+        raise SystemExit('no terrain wide-angle tiles were produced')
+    manifest = {
+        'schema_version': 1,
+        'product': 'terrain',
+        'region': 'wide',
+        'version_label': args.version_label,
+        'source_fingerprint': args.source_fingerprint,
+        'min_zoom': min(level['zoom'] for level in levels),
+        'max_zoom': args.max_zoom,
+        'base_zoom': args.max_zoom,
+        'tile_size': args.tile_size,
+        'tile_format': 'ABT1',
+        'tile_content_encoding': 'gzip',
+        'zip_member_compression': 'stored',
+        'wide_angle': True,
+        'wide_angle_max_zoom': args.max_zoom,
+        'parent_tile_policy': 'max valid elevation over regional low-zoom source samples; all-nodata regions remain nodata',
+        'source_policy': 'max-composite matching low-zoom tiles from regional terrain products',
+        'sample_encoding': 'int16_le',
+        'sample_units': 'feet',
+        'sample_vertical_datum': 'WGS84 ellipsoid',
+        'nodata': NODATA,
+        'source_region_count': len(args.source_dir),
+        'tile_count': sum(level['tile_count'] for level in levels),
         'levels': levels,
         'files': {'tiles': 'tiles'},
     }
@@ -15543,6 +16146,7 @@ fn build_chart_package_nodes(
         ChartSource {
             family_id,
             package_outputs_path: aggregate_path,
+            asset_root: work_dir,
             package_root,
             source_urls_path: Some(source_urls_path),
         },
@@ -19041,9 +19645,10 @@ mod tests {
         let unpack_dir = unpacked_target_dir(&unpacked_root, package_filename).unwrap();
         let marker_path = unpacked_marker_path(&unpacked_root, package_filename).unwrap();
         assert!(unpack_dir.join("manifest.json").is_file());
+        let expected_fingerprint = unpacked_fingerprint("extract_zip", &checksum_sha256, &[]);
         assert_eq!(
             fs::read_to_string(marker_path).unwrap().trim(),
-            checksum_sha256.as_str()
+            expected_fingerprint.as_str()
         );
     }
 

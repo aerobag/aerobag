@@ -29,6 +29,7 @@ pub struct BuildResourceIndexRequest {
 pub struct ChartSource {
     pub family_id: String,
     pub package_outputs_path: PathBuf,
+    pub asset_root: PathBuf,
     pub package_root: PathBuf,
     pub source_urls_path: Option<PathBuf>,
 }
@@ -2436,6 +2437,7 @@ mod tests {
             chart_sources: vec![ChartSource {
                 family_id: "sec".to_string(),
                 package_outputs_path: chart_outputs,
+                asset_root: chart_root.clone(),
                 package_root: chart_root,
                 source_urls_path: Some(chart_source_urls),
             }],

@@ -50,13 +50,13 @@ class CoreResourceLocationTest {
     fun rejectsUnsupportedAddress() {
         val error = kotlin.runCatching {
             resolveCoreResourceLocation(
-                "/terrain-products/shaded-relief/tile.webp",
+                "/not-a-publication-route/example.bin",
                 "http://10.0.2.2:8083/packages",
             )
         }.exceptionOrNull()
 
         assertEquals(
-            "unsupported core resource address: /terrain-products/shaded-relief/tile.webp",
+            "unsupported core resource address: /not-a-publication-route/example.bin",
             error?.message,
         )
     }

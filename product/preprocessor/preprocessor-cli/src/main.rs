@@ -574,6 +574,7 @@ fn parse_chart_source_spec(value: &str) -> anyhow::Result<ChartSource> {
     Ok(ChartSource {
         family_id: family_id.to_string(),
         package_outputs_path: PathBuf::from(package_outputs_path),
+        asset_root: PathBuf::from(package_root),
         package_root: PathBuf::from(package_root),
         source_urls_path: source_urls_path.map(PathBuf::from),
     })

@@ -167,7 +167,6 @@ function aerobagStaticPlugin(): Plugin {
       "/plates",
       "/sectional-packages",
       "/shaded-relief-products",
-      "/terrain-products",
       "/thumbnails",
       "/world-basemap-products",
     ]) {

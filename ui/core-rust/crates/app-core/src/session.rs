@@ -27,14 +27,14 @@ use crate::{
     AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
     AirspaceReferenceTilePayload, AirwayPresentationPlan, AppError, AppErrorKind, AppEvent,
     AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
-    FlightPlanRowActionExecution, FlightPlanRowActionId, GuidanceState, LatLon, MapOverlayConfig,
-    MapOverlayQueryResult, MapSelectionSessionAction, MapViewport, MetarProductPayload,
-    MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore, NavRef, PirepRecord, PlanLeg,
-    PlaybackUiState, PointTilePayload, ProcedureDiscontinuity, ProcedureKind, ProcedureLoadCommand,
-    PublicationResolver, RasterMapCatalog, RasterResourceMode, RasterTilePlan, ResolvedLeg,
-    ResolvedLegSource, RouteComponentViewKind, SequencingMode, SituationControlInput,
-    SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload,
-    UiSnapshotAppState, VectorAggregateTilePayload, VectorIdentLabelStyle,
+    FlightPlanRowActionExecution, FlightPlanRowActionId, GuidanceState, LatLon, LegDisplayElement,
+    MapOverlayConfig, MapOverlayQueryResult, MapSelectionSessionAction, MapViewport,
+    MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore, NavRef,
+    PirepRecord, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity, ProcedureKind,
+    ProcedureLoadCommand, PublicationResolver, RasterMapCatalog, RasterResourceMode,
+    RasterTilePlan, ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode,
+    SituationControlInput, SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult,
+    TfrProductPayload, UiSnapshotAppState, VectorAggregateTilePayload, VectorIdentLabelStyle,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3946,9 +3946,22 @@ fn apply_situation_to_ownship(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
 struct SequencingFinishPlane {
     point: LatLon,
     normal_course_deg: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SequencingFinishCriterion {
+    Plane(SequencingFinishPlane),
+    ArcSector {
+        center: LatLon,
+        finish_point: LatLon,
+        finish_bearing_deg: f64,
+        untraveled_mid_bearing_deg: f64,
+        clockwise: bool,
+    },
 }
 
 fn sequence_guidance_by_ownship_position(session: &mut UiSession) -> AppResult<()> {
@@ -3967,7 +3980,7 @@ fn sequence_guidance_by_ownship_position(session: &mut UiSession) -> AppResult<(
             return Ok(());
         };
         let suspended_hold = guidance.sequencing_mode == SequencingMode::Suspended;
-        let Some(finish_plane) = active_detail_finish_plane(
+        let Some(finish_criterion) = active_detail_finish_criterion(
             plan,
             active_detail_index,
             &session.guidance_leg_geometry,
@@ -3975,9 +3988,7 @@ fn sequence_guidance_by_ownship_position(session: &mut UiSession) -> AppResult<(
         ) else {
             return Ok(());
         };
-        if crate::great_circle_distance_nm(position, finish_plane.point) > 10.0
-            || signed_distance_beyond_finish_plane(position, finish_plane) <= 0.05
-        {
+        if !position_satisfies_finish_criterion(position, finish_criterion) {
             return Ok(());
         }
         let next_plan = if suspended_hold {
@@ -3991,14 +4002,17 @@ fn sequence_guidance_by_ownship_position(session: &mut UiSession) -> AppResult<(
     Ok(())
 }
 
-fn active_detail_finish_plane(
+fn active_detail_finish_criterion(
     plan: &FlightPlan,
     active_detail_index: usize,
     geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
     wrap_terminal_hold: bool,
-) -> Option<SequencingFinishPlane> {
+) -> Option<SequencingFinishCriterion> {
     let current_id = guidance_detail_id_for_index(plan, active_detail_index)?;
     let current = geometry_by_leg_id.get(&current_id)?;
+    if let Some(arc_criterion) = active_detail_arc_finish_criterion(plan, active_detail_index) {
+        return Some(arc_criterion);
+    }
     let current_course = terminal_course_for_guidance_geometry(current)?;
     let next_detail_index = if wrap_terminal_hold {
         next_terminal_hold_detail_index(plan, active_detail_index)
@@ -4010,9 +4024,53 @@ fn active_detail_finish_plane(
         .and_then(|next_id| geometry_by_leg_id.get(&next_id))
         .and_then(initial_course_for_guidance_geometry)
         .unwrap_or(current_course);
-    Some(SequencingFinishPlane {
+    Some(SequencingFinishCriterion::Plane(SequencingFinishPlane {
         point: current.to,
         normal_course_deg: finish_line_normal_course_deg(current_course, next_course),
+    }))
+}
+
+fn active_detail_arc_finish_criterion(
+    plan: &FlightPlan,
+    active_detail_index: usize,
+) -> Option<SequencingFinishCriterion> {
+    let detail = crate::planning::guidance_detail_ref_by_index(plan, active_detail_index)?;
+    let leg = plan.resolved_legs.get(detail.leg_index)?;
+    let element = leg
+        .procedure_provenance
+        .as_ref()?
+        .display_path
+        .as_ref()?
+        .elements
+        .get(detail.element_index)?;
+    let LegDisplayElement::Arc {
+        center,
+        start: _,
+        end,
+        clockwise,
+        sweep_degrees,
+        ..
+    } = element
+    else {
+        return None;
+    };
+    let sweep = sweep_degrees.abs().min(360.0);
+    let untraveled_sweep = 360.0 - sweep;
+    if untraveled_sweep <= 1e-6 {
+        return None;
+    }
+    let finish_bearing_deg = bearing_degrees(*center, *end);
+    let untraveled_mid_bearing_deg = if *clockwise {
+        normalize_course_degrees(finish_bearing_deg + untraveled_sweep / 2.0)
+    } else {
+        normalize_course_degrees(finish_bearing_deg - untraveled_sweep / 2.0)
+    };
+    Some(SequencingFinishCriterion::ArcSector {
+        center: *center,
+        finish_point: *end,
+        finish_bearing_deg,
+        untraveled_mid_bearing_deg,
+        clockwise: *clockwise,
     })
 }
 
@@ -4127,6 +4185,59 @@ fn signed_distance_beyond_finish_plane(
     let north_nm = (position.lat - finish_plane.point.lat).to_radians() * 3440.065;
     let normal = finish_plane.normal_course_deg.to_radians();
     east_nm * normal.sin() + north_nm * normal.cos()
+}
+
+fn position_satisfies_finish_criterion(
+    position: LatLon,
+    finish_criterion: SequencingFinishCriterion,
+) -> bool {
+    match finish_criterion {
+        SequencingFinishCriterion::Plane(finish_plane) => {
+            crate::great_circle_distance_nm(position, finish_plane.point) <= 10.0
+                && signed_distance_beyond_finish_plane(position, finish_plane) > 0.05
+        }
+        SequencingFinishCriterion::ArcSector {
+            center,
+            finish_point,
+            finish_bearing_deg,
+            untraveled_mid_bearing_deg,
+            clockwise,
+        } => {
+            if crate::great_circle_distance_nm(position, finish_point) > 10.0 {
+                return false;
+            }
+            let bearing = bearing_degrees(center, position);
+            bearing_is_in_arc_finish_sector(
+                bearing,
+                finish_bearing_deg,
+                untraveled_mid_bearing_deg,
+                clockwise,
+            )
+        }
+    }
+}
+
+fn bearing_is_in_arc_finish_sector(
+    bearing_deg: f64,
+    finish_bearing_deg: f64,
+    untraveled_mid_bearing_deg: f64,
+    clockwise: bool,
+) -> bool {
+    let sector_width = if clockwise {
+        clockwise_delta_degrees(finish_bearing_deg, untraveled_mid_bearing_deg)
+    } else {
+        clockwise_delta_degrees(untraveled_mid_bearing_deg, finish_bearing_deg)
+    };
+    let distance_into_sector = if clockwise {
+        clockwise_delta_degrees(finish_bearing_deg, bearing_deg)
+    } else {
+        clockwise_delta_degrees(bearing_deg, finish_bearing_deg)
+    };
+    distance_into_sector <= sector_width + 1e-6
+}
+
+fn clockwise_delta_degrees(from_deg: f64, to_deg: f64) -> f64 {
+    (normalize_course_degrees(to_deg) - normalize_course_degrees(from_deg)).rem_euclid(360.0)
 }
 
 fn derive_compact_chart_page_state(
@@ -5740,6 +5851,148 @@ mod tests {
                 .lat
                 > b.lat,
             "driver must continue along the next leg even when it only has coarse geometry"
+        );
+    }
+
+    #[test]
+    fn ownship_sequencing_does_not_skip_over_large_hold_entry_arc() {
+        let center = LatLon {
+            lat: 40.0,
+            lon: -120.0,
+        };
+        let arc_start = project_nm_from(center, 0.0, 1.0);
+        let arc_end = project_nm_from(center, 210.0, 1.0);
+        let inbound_end = project_nm_from(arc_end, 60.0, 2.0);
+        let outbound_start = project_nm_from(arc_start, 270.0, 2.0);
+        let just_past_outbound_finish = project_nm_from(arc_start, 90.0, 0.2);
+        let leg = ResolvedLeg {
+            id: "hold-entry".to_string(),
+            from: NavRef::LatLon(outbound_start),
+            to: NavRef::LatLon(inbound_end),
+            source: ResolvedLegSource::RouteComponent { component_index: 0 },
+            procedure_provenance: Some(ProcedureLegProvenance {
+                airport_id: "KAAA".to_string(),
+                procedure_id: "TEST".to_string(),
+                kind: ProcedureKind::Approach,
+                role: ProcedureSegmentRole::Common,
+                path_termination: PathTermination::TrackToFix,
+                leg_sequence: 10,
+                display_path: Some(LegDisplayPath {
+                    style: LegDisplayPathStyle::Solid,
+                    elements: vec![
+                        LegDisplayElement::Segment {
+                            start: outbound_start,
+                            end: arc_start,
+                        },
+                        LegDisplayElement::Arc {
+                            center,
+                            radius_nm: 1.0,
+                            start: arc_start,
+                            end: arc_end,
+                            clockwise: true,
+                            sweep_degrees: 210.0,
+                        },
+                        LegDisplayElement::Segment {
+                            start: arc_end,
+                            end: inbound_end,
+                        },
+                    ],
+                    effective_terminal_course_deg: None,
+                    debug_element_sources: Vec::new(),
+                    debug_element_roles: Vec::new(),
+                }),
+            }),
+        };
+        let plan = FlightPlan {
+            id: "large-hold-entry-arc".to_string(),
+            name: "large hold entry arc".to_string(),
+            legs: Vec::new(),
+            route_components: vec![RouteComponent::Procedure {
+                procedure: crate::ProcedureSegment {
+                    airport_id: AirportId("KAAA".to_string()),
+                    procedure_id: "TEST".to_string(),
+                    kind: ProcedureKind::Approach,
+                    runway_transition: None,
+                    enroute_transition: None,
+                    terminal_discontinuity: None,
+                },
+            }],
+            route_component_uids: vec!["row-proc".to_string()],
+            route_component_uid_counter: 1,
+            resolved_legs: vec![leg.clone()],
+            guidance: Some(GuidanceState {
+                active_leg_index: 0,
+                active_detail_index: Some(0),
+                display_split_leg_id: Some(leg.id.clone()),
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+        let init = create_ui_session(minimal_vector_manifest_json(), plan, &[], None, None)
+            .expect("create session");
+        set_guidance_leg_geometry_in_session(
+            init.handle,
+            vec![
+                GuidanceLegGeometry {
+                    leg_id: guidance_detail_id_for_leg_element(&leg, 0),
+                    from: outbound_start,
+                    to: arc_start,
+                    path: vec![outbound_start, arc_start],
+                },
+                GuidanceLegGeometry {
+                    leg_id: guidance_detail_id_for_leg_element(&leg, 1),
+                    from: arc_start,
+                    to: arc_end,
+                    path: vec![
+                        arc_start,
+                        project_nm_from(center, 70.0, 1.0),
+                        project_nm_from(center, 140.0, 1.0),
+                        arc_end,
+                    ],
+                },
+                GuidanceLegGeometry {
+                    leg_id: guidance_detail_id_for_leg_element(&leg, 2),
+                    from: arc_end,
+                    to: inbound_end,
+                    path: vec![arc_end, inbound_end],
+                },
+            ],
+        )
+        .expect("install guidance geometry");
+
+        set_situation_in_session(
+            init.handle,
+            crate::Situation {
+                position: crate::SituationPosition::LatLon {
+                    lat: just_past_outbound_finish.lat,
+                    lon: just_past_outbound_finish.lon,
+                },
+                orientation_deg: Some(90.0),
+                speed_kt: Some(120.0),
+                altitude_msl_ft: None,
+            },
+        )
+        .expect("push ownship sample");
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let guidance = snapshot
+            .app_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .expect("guidance");
+
+        assert_eq!(
+            guidance.active_detail_index,
+            Some(1),
+            "crossing the outbound finish line should activate the 210-degree arc, not skip to the inbound leg"
         );
     }
 

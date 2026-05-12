@@ -298,7 +298,7 @@ export type FlightPlanRouteSegment = {
   distance_nm: number;
   course_deg: number;
   status: "completed" | "active" | "active_leg_remaining" | "remaining";
-  finish_line?: { start: LatLon; end: LatLon } | null;
+  finish_lines?: { start: LatLon; end: LatLon }[];
 };
 
 export type SequencingMode = "follow_plan" | "suspended" | "direct_to";

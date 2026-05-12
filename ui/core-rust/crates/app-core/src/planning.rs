@@ -2361,8 +2361,7 @@ fn project_display_rows(
     }
 
     if let Some(active_leg_index) = plan.guidance.as_ref().and_then(|guidance| {
-        (guidance.sequencing_mode == SequencingMode::FollowPlan)
-            .then_some(guidance.active_leg_index)
+        (guidance.sequencing_mode != SequencingMode::DirectTo).then_some(guidance.active_leg_index)
     }) {
         let active_detail = plan
             .guidance
@@ -2371,20 +2370,20 @@ fn project_display_rows(
             .and_then(|detail_index| guidance_detail_ref_by_index(plan, detail_index));
         let active_hold_detail_start =
             terminal_hold_start_detail_index_for_leg(plan, active_leg_index);
+        let active_in_terminal_hold = active_hold_detail_start.is_some_and(|hold_start| {
+            active_detail.as_ref().is_some_and(|detail| {
+                detail.leg_index == active_leg_index && detail.detail_index >= hold_start
+            })
+        });
         for row in &mut rows {
             if row.leg_index == Some(active_leg_index) {
                 let hold_row = row.row_kind == FlightPlanDisplayRowKind::Discontinuity
                     && row.label == ProcedureDiscontinuity::Hold.display_label();
                 for action in flight_plan_row_actions_mut(row) {
                     if action.id == FlightPlanRowActionId::ActivateLeg {
-                        let hold_already_active = hold_row
-                            && active_hold_detail_start.is_some_and(|hold_start| {
-                                active_detail.as_ref().is_some_and(|detail| {
-                                    detail.leg_index == active_leg_index
-                                        && detail.detail_index >= hold_start
-                                })
-                            });
-                        if !hold_row || hold_already_active {
+                        if (hold_row && active_in_terminal_hold)
+                            || (!hold_row && !active_in_terminal_hold)
+                        {
                             action.enabled = false;
                         }
                     }
@@ -6340,6 +6339,139 @@ mod tests {
         let guidance = sequenced.guidance.as_ref().unwrap();
         assert_eq!(guidance.active_leg_index, 3);
         assert_eq!(guidance.sequencing_mode, SequencingMode::Suspended);
+    }
+
+    #[test]
+    fn procedure_waypoint_on_hold_leg_remains_activatable_while_holding() {
+        let leg = ResolvedLeg {
+            id: "khvr-hold-entry-to-etoho".to_string(),
+            from: NavRef::Fix("CIBMI".to_string()),
+            to: NavRef::Fix("ETOHO".to_string()),
+            source: ResolvedLegSource::RouteComponent { component_index: 0 },
+            procedure_provenance: Some(ProcedureLegProvenance {
+                airport_id: "KHVR".to_string(),
+                procedure_id: "R26".to_string(),
+                kind: ProcedureKind::Approach,
+                role: ProcedureSegmentRole::Common,
+                path_termination: PathTermination::TrackToFix,
+                leg_sequence: 10,
+                display_path: Some(LegDisplayPath {
+                    style: LegDisplayPathStyle::Solid,
+                    elements: vec![
+                        LegDisplayElement::Segment {
+                            start: LatLon {
+                                lat: 48.0,
+                                lon: -109.0,
+                            },
+                            end: LatLon {
+                                lat: 48.1,
+                                lon: -109.0,
+                            },
+                        },
+                        LegDisplayElement::Segment {
+                            start: LatLon {
+                                lat: 48.1,
+                                lon: -109.0,
+                            },
+                            end: LatLon {
+                                lat: 48.1,
+                                lon: -108.9,
+                            },
+                        },
+                        LegDisplayElement::Segment {
+                            start: LatLon {
+                                lat: 48.1,
+                                lon: -108.9,
+                            },
+                            end: LatLon {
+                                lat: 48.0,
+                                lon: -108.9,
+                            },
+                        },
+                        LegDisplayElement::Segment {
+                            start: LatLon {
+                                lat: 48.0,
+                                lon: -108.9,
+                            },
+                            end: LatLon {
+                                lat: 48.0,
+                                lon: -109.0,
+                            },
+                        },
+                        LegDisplayElement::Segment {
+                            start: LatLon {
+                                lat: 48.0,
+                                lon: -109.0,
+                            },
+                            end: LatLon {
+                                lat: 48.1,
+                                lon: -109.0,
+                            },
+                        },
+                    ],
+                    effective_terminal_course_deg: None,
+                    debug_element_sources: Vec::new(),
+                    debug_element_roles: Vec::new(),
+                }),
+            }),
+        };
+        let plan = FlightPlan {
+            id: "khvr-hold-active".to_string(),
+            name: "KHVR hold active".to_string(),
+            legs: Vec::new(),
+            route_components: vec![RouteComponent::Procedure {
+                procedure: ProcedureSegment {
+                    airport_id: AirportId("KHVR".to_string()),
+                    procedure_id: "R26".to_string(),
+                    kind: ProcedureKind::Approach,
+                    runway_transition: None,
+                    enroute_transition: Some("ISITE".to_string()),
+                    terminal_discontinuity: Some(ProcedureDiscontinuity::Hold),
+                },
+            }],
+            route_component_uids: vec!["row-proc".to_string()],
+            route_component_uid_counter: 1,
+            resolved_legs: vec![leg],
+            guidance: Some(GuidanceState {
+                active_leg_index: 0,
+                active_detail_index: Some(1),
+                display_split_leg_id: Some("khvr-hold-entry-to-etoho".to_string()),
+                sequencing_mode: SequencingMode::Suspended,
+                direct_to: None,
+                suspend_reason: Some(SuspendReason::Boundary),
+            }),
+            departure: None,
+            destination: Some(AirportId("KHVR".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+
+        let ui = project_ui_state(&plan);
+        let etoho_row = ui
+            .display_rows
+            .iter()
+            .find(|row| row.depth == 1 && row.label == "ETOHO")
+            .expect("ETOHO procedure row");
+        assert!(
+            flight_plan_row_actions(etoho_row).any(|action| {
+                action.id == FlightPlanRowActionId::ActivateLeg && action.enabled
+            }),
+            "ETOHO should be activatable while the same coarse leg is suspended in its terminal hold"
+        );
+        let hold_row = ui
+            .display_rows
+            .iter()
+            .find(|row| row.depth == 1 && row.label == "HOLD")
+            .expect("HOLD row");
+        assert!(
+            flight_plan_row_actions(hold_row).any(|action| {
+                action.id == FlightPlanRowActionId::ActivateLeg && !action.enabled
+            }),
+            "already-active hold should keep its Activate Leg disabled"
+        );
     }
 
     #[test]

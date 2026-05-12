@@ -276,7 +276,7 @@ pub struct FlightPlanRouteSegment {
     pub course_deg: f64,
     pub status: FlightPlanRouteSegmentStatus,
     #[serde(default)]
-    pub finish_line: Option<FlightPlanRouteFinishLine>,
+    pub finish_lines: Vec<FlightPlanRouteFinishLine>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -516,7 +516,7 @@ fn finish_line_normal_course_deg(inbound_course_deg: f64, outbound_course_deg: f
     }
 }
 
-fn sequencing_finish_line(
+fn sequencing_plane_finish_line(
     current: &GuidanceRouteGeometry,
     next: Option<&GuidanceRouteGeometry>,
 ) -> FlightPlanRouteFinishLine {
@@ -532,6 +532,49 @@ fn sequencing_finish_line(
         start: route_destination_point(intersection, line_course + 180.0, 20.0),
         end: route_destination_point(intersection, line_course, 20.0),
     }
+}
+
+fn sequencing_arc_finish_lines(
+    current: &GuidanceRouteGeometry,
+) -> Option<Vec<FlightPlanRouteFinishLine>> {
+    let GuidanceRouteGeometry::Arc {
+        center,
+        end,
+        clockwise,
+        sweep_degrees,
+        ..
+    } = current
+    else {
+        return None;
+    };
+    let sweep = sweep_degrees.abs().min(360.0);
+    let untraveled_sweep = 360.0 - sweep;
+    if untraveled_sweep <= 1e-6 {
+        return None;
+    }
+    let finish_bearing = route_bearing_from(*center, *end);
+    let untraveled_mid_bearing = if *clockwise {
+        normalize_bearing_degrees(finish_bearing + untraveled_sweep / 2.0)
+    } else {
+        normalize_bearing_degrees(finish_bearing - untraveled_sweep / 2.0)
+    };
+    Some(
+        [finish_bearing, untraveled_mid_bearing]
+            .into_iter()
+            .map(|bearing| FlightPlanRouteFinishLine {
+                start: *center,
+                end: route_destination_point(*center, bearing, 20.0),
+            })
+            .collect(),
+    )
+}
+
+fn sequencing_finish_lines(
+    current: &GuidanceRouteGeometry,
+    next: Option<&GuidanceRouteGeometry>,
+) -> Vec<FlightPlanRouteFinishLine> {
+    sequencing_arc_finish_lines(current)
+        .unwrap_or_else(|| vec![sequencing_plane_finish_line(current, next)])
 }
 
 fn guidance_route_endpoints(geometry: &GuidanceRouteGeometry) -> (LatLon, LatLon) {
@@ -600,7 +643,7 @@ where
                     distance_nm: guidance_route_distance_nm(&geometry),
                     course_deg: guidance_route_course_deg(&geometry),
                     status: route_status_for_detail(&plan, leg_index, element_index),
-                    finish_line: None,
+                    finish_lines: Vec::new(),
                 });
             }
         } else {
@@ -619,7 +662,7 @@ where
                 distance_nm: guidance_route_distance_nm(&geometry),
                 course_deg: guidance_route_course_deg(&geometry),
                 status: route_status_for_detail(&plan, leg_index, 0),
-                finish_line: None,
+                finish_lines: Vec::new(),
             });
         }
     }
@@ -628,10 +671,8 @@ where
         .map(|segment| segment.geometry.clone())
         .collect::<Vec<_>>();
     for index in 0..route.len() {
-        route[index].finish_line = Some(sequencing_finish_line(
-            &route_geometries[index],
-            route_geometries.get(index + 1),
-        ));
+        route[index].finish_lines =
+            sequencing_finish_lines(&route_geometries[index], route_geometries.get(index + 1));
     }
     if let Some(direct_to) = plan
         .guidance
@@ -656,7 +697,7 @@ where
             distance_nm: guidance_route_distance_nm(&geometry),
             course_deg: guidance_route_course_deg(&geometry),
             status: FlightPlanRouteSegmentStatus::Active,
-            finish_line: Some(sequencing_finish_line(&geometry, None)),
+            finish_lines: sequencing_finish_lines(&geometry, None),
         });
     }
     Ok(route)

@@ -68,11 +68,11 @@ x   - aerobag/product/preprocessor/preprocessor-tpp/src/lib.rs
 x   - also uses prefix tests for pipeline choice and filtering
 x   - This works, but it’s string-convention glue, not a typed FAA model.
 
-  2. Avare/Outer World Apps geotag compatibility
+  2. Outer World Apps geotag compatibility
 
   - aerobag/product/preprocessor/preprocessor-tpp/src/lib.rs
-  - still fetches avare_aptdiags.php
-  - still writes EXIF UserComment for Avare parity
+  - still fetches airport diagram tag metadata
+  - still writes EXIF UserComment for georeference compatibility
   - We added typed JSON georef, but the legacy EXIF/Outer World Apps path is still present.
 
 x  3. Heuristic CIFP↔TPP matching itself

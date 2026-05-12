@@ -8,7 +8,8 @@ labels:
   - source
   - deployment
   - cat:productionization
-dependencies: []
+dependencies:
+  - TASK-34
 priority: medium
 ordinal: 35000
 ---
@@ -25,4 +26,3 @@ Add an explicit project license.
 - [ ] #2 Add the license file and any package metadata references.
 - [ ] #3 Verify third-party dependency/license implications are acceptable.
 <!-- AC:END -->
-

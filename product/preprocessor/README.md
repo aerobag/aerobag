@@ -1,8 +1,7 @@
 # Aerobag Preprocessor
 
-This workspace builds the authoritative Aerobag product artifacts. Legacy
-Avare comparison tooling has been removed from the product CLI; use product
-builds and app/core tests as the contract.
+This workspace builds the authoritative Aerobag product artifacts. Product
+builds and app/core tests are the contract.
 
 ## Common Commands
 

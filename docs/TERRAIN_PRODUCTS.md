@@ -171,8 +171,8 @@ terrain height transform, and writes:
 The scatter plot compares transformed DEM height against charted airport/runway
 elevation plus the same geoid offset.
 
-Current limitation: the implemented audit transform uses the existing Avare
-`geo.csv` one-degree geoid-height grid as an approximate offset model. That is
-good enough to catch sign errors, unit errors, and obvious source mistakes. The
+Current limitation: the implemented audit transform uses the packaged
+one-degree geoid-height grid as an approximate offset model. That is good
+enough to catch sign errors, unit errors, and obvious source mistakes. The
 production terrain product should fail closed unless a real source vertical CRS
 to WGS84 ellipsoid transform is available for the DEM tile being processed.

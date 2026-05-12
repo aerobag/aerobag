@@ -61,7 +61,7 @@ that, when they're at 6000 MSL over Poughkipsee with no internet, they'll be abl
 the approach plates they need. The trivial way to satisfy this is to send the app every package
 at every cycle. However, that's ~10GB: it may be too much data for some users' devices, or more
 likely, too much to squeeze through a crappy hotel wifi. So we need to give users a little control
-over the package management process. Avare had very fined grained control, which maybe made sense
+over the package management process. Older EFBs had very fine grained control, which maybe made sense
 in the era of 32GB flash tablets, but it was very tedious. We're going to aim for something
 a bit easier at the cost of precise control, at least in the common case.
 
@@ -95,7 +95,7 @@ half-cycles and hence not expired.
 
 (We should write extensive tests around this.)
 
-This scheme is much coarser than Avare's. That's a blessing because it's set-and-forget; the
+This scheme is intentionally coarse. That's a blessing because it's set-and-forget; the
 app just ensures a steady supply of fresh charts. It may be limiting in a few cases:
 
 - Some users might want to pick from the region x product matrix in a finer-grained way, rather
@@ -108,7 +108,7 @@ thinking of is that I'm staying in a crappy hotel in rural Texas with a 56 kilob
 internet uplink. I want to fetch *only* the SC plates and enroute charts; if I wait for my
 entire preferred matrix, I won't be able to leave until Thursday.
 
-Avare has an affordance for this: each package has 3 UI states: "trash it", "I want it generally",
+One useful affordance is giving each package 3 UI states: "trash it", "I want it generally",
 and "I want it NOW." If you select a few packages in the NOW state and click "download", it'll
 fetch exactly those packages (and then reset them to "generally"). It won't do a bulk update
 until you click "update", which then refreshes all of the packages with either "want" label.

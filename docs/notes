@@ -419,6 +419,9 @@ Perf
     measure next, because 96 vs 22 is a much bigger gap than 300ms vs 200ms.              
 
 
+- Remaining Android gap: KPAE enables LOAD APPCH, but the opened load tray
+exposes no selectable options. That looks like a real Android plate-load parity
+issue, not initial FP drift.
 
 ------------------------------------------------------------------------------
 Usability:

@@ -31,12 +31,13 @@ ln -sfn "$WEB_SOURCE_DIR/public" "$WORKSPACE_DIR/public"
 ln -sfn "$WEB_SOURCE_DIR/scripts" "$WORKSPACE_DIR/scripts"
 ln -sfn "$REPO_ROOT/ui/icons" "$WORKSPACE_DIR/icons"
 
-SOURCE_LOCK_HASH="$(sha256sum "$WEB_SOURCE_DIR/package-lock.json" | awk '{print $1}')"
+INSTALL_POLICY="npm-ci-ignore-scripts-v1"
+SOURCE_LOCK_HASH="$INSTALL_POLICY:$(sha256sum "$WEB_SOURCE_DIR/package-lock.json" | awk '{print $1}')"
 STAMP_FILE="$WORKSPACE_DIR/.package-lock.sha256"
 STAGED_LOCK_HASH="$(cat "$STAMP_FILE" 2>/dev/null || true)"
 
 if [ ! -d "$WORKSPACE_DIR/node_modules" ] || [ "$SOURCE_LOCK_HASH" != "$STAGED_LOCK_HASH" ]; then
-  (cd "$WORKSPACE_DIR" && npm install)
+  (cd "$WORKSPACE_DIR" && npm ci --ignore-scripts)
   printf '%s\n' "$SOURCE_LOCK_HASH" > "$STAMP_FILE"
 fi
 

@@ -103,24 +103,25 @@ pub use planning::{
     direct_to_fix_with_course_continuation_requirement, enter_hold_requirement,
     established_on_course_requirement, first_guidance_detail_index_for_leg,
     flatten_component_to_waypoints, flight_plan_contains_nav_ref,
-    flight_plan_has_direct_to_overlay, insert_airport_waypoint, insert_airway_after_waypoint,
-    insert_airway_between_waypoints, insert_procedure_between_waypoints, insert_waypoint,
-    intercept_course_requirement, materialize_airway_exit_before_component, move_component,
-    project_ui_state, reconcile_handoff, reentry_to_anchor_requirement, remove_all_above,
-    replace_airway_component, replace_procedure_component, restore_direct_to,
-    sequence_active_detail, sequence_active_leg, start_requirement_from_leg_characteristics,
-    suspend_sequencing, terminal_hold_start_detail_index_for_leg,
-    terminal_hold_start_element_index_for_leg, terminal_state_with_leg_characteristics,
-    top_level_waypoint_component_count, top_level_waypoint_component_index, unsuspend_sequencing,
-    yieldable_course_to_fix_requirement, AirwaySegment, CodedFixSatisfaction,
-    CommonSegmentTerminalState, ConcretizedNavItem, DirectToState, DirectToUiView, FlightPlan,
-    FlightPlanDisplayRowKind, FlightPlanRowActionExecution, FlightPlanRowActionId,
-    FlightPlanUiState, GuidanceState, GuidanceUiView, HandoffDecision, HoldTerminalState,
-    LegDisplayElement, LegDisplayPath, LegDisplayPathStyle, NavRef, PathTermination, PlanLeg,
-    ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance, ProcedureSegment,
-    ProcedureSegmentRole, ProcedureTurnTerminalState, ResolvedLeg, ResolvedLegSource,
-    ResolvedLegUiView, RouteComponent, RouteComponentUiView, RouteComponentViewKind,
-    SequencingMode, StartRequirement, TerminalState,
+    flight_plan_has_direct_to_overlay, insert_airport_waypoint, insert_airway_after_airway,
+    insert_airway_after_waypoint, insert_airway_between_waypoints,
+    insert_procedure_between_waypoints, insert_waypoint, intercept_course_requirement,
+    materialize_airway_exit_before_component, move_component, project_ui_state, reconcile_handoff,
+    reentry_to_anchor_requirement, remove_airway_child_waypoint, remove_all_above,
+    remove_all_above_airway_child_waypoint, replace_airway_component, replace_procedure_component,
+    restore_direct_to, sequence_active_detail, sequence_active_leg,
+    start_requirement_from_leg_characteristics, suspend_sequencing,
+    terminal_hold_start_detail_index_for_leg, terminal_hold_start_element_index_for_leg,
+    terminal_state_with_leg_characteristics, top_level_waypoint_component_count,
+    top_level_waypoint_component_index, unsuspend_sequencing, yieldable_course_to_fix_requirement,
+    AirwaySegment, CodedFixSatisfaction, CommonSegmentTerminalState, ConcretizedNavItem,
+    DirectToState, DirectToUiView, FlightPlan, FlightPlanDisplayRowKind,
+    FlightPlanRowActionExecution, FlightPlanRowActionId, FlightPlanUiState, GuidanceState,
+    GuidanceUiView, HandoffDecision, HoldTerminalState, LegDisplayElement, LegDisplayPath,
+    LegDisplayPathStyle, NavRef, PathTermination, PlanLeg, ProcedureDiscontinuity, ProcedureKind,
+    ProcedureLegProvenance, ProcedureSegment, ProcedureSegmentRole, ProcedureTurnTerminalState,
+    ResolvedLeg, ResolvedLegSource, ResolvedLegUiView, RouteComponent, RouteComponentUiView,
+    RouteComponentViewKind, SequencingMode, StartRequirement, TerminalState,
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use publication::{
@@ -1130,16 +1131,31 @@ pub fn insert_airway_materialized_ui(
     resolved_legs: Vec<ResolvedLeg>,
 ) -> AppResult<AirwayPlanUiMutation> {
     let (inserted, component_index) = match end_component_index {
-        Some(end_component_index) => (
-            insert_airway_between_waypoints(
+        Some(end_component_index) => {
+            let inserted = insert_airway_between_waypoints(
                 plan,
                 start_component_index,
                 end_component_index,
-                airway,
+                airway.clone(),
                 resolved_legs.clone(),
-            )?,
-            start_component_index + 1,
-        ),
+            )?;
+            let component_index = inserted
+                .route_components
+                .iter()
+                .enumerate()
+                .skip(start_component_index)
+                .find_map(|(index, component)| match component {
+                    RouteComponent::Airway {
+                        airway: inserted_airway,
+                    } if inserted_airway == &airway => Some(index),
+                    _ => None,
+                })
+                .ok_or_else(|| AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message: "inserted airway component was not found".to_string(),
+                })?;
+            (inserted, component_index)
+        }
         None => {
             let inserted = insert_airway_after_waypoint(
                 plan,

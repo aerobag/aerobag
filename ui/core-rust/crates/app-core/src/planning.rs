@@ -2139,6 +2139,19 @@ fn project_display_rows(
                 following_waypoint: component.following_waypoint.clone(),
                 action_matrix: action_matrix_from_actions(&actions),
             });
+            let airway_child_waypoints = if component.kind == RouteComponentViewKind::Airway {
+                component
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        ConcretizedNavItem::Waypoint { nav_ref } => Some(nav_ref.clone()),
+                        ConcretizedNavItem::Discontinuity { .. } => None,
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            let mut airway_child_waypoint_index = 0usize;
             for item in &component.items {
                 match item {
                     ConcretizedNavItem::Waypoint { nav_ref } => {
@@ -2153,6 +2166,7 @@ fn project_display_rows(
                         let leg_index = child_waypoint_row_leg_index(
                             plan,
                             component.component_index,
+                            airway_child_waypoint_index,
                             *waypoint_occurrence,
                             nav_ref,
                         );
@@ -2165,21 +2179,16 @@ fn project_display_rows(
                         );
                         let actions = assign_action_uids(
                             &uid,
-                            waypoint_actions_for_row(
+                            child_waypoint_actions_for_row(
                                 FlightPlanDisplayRowKind::Waypoint,
-                                1,
+                                component.kind.clone(),
                                 leg_index,
                                 Some(nav_ref),
-                                false,
-                                false,
-                                false,
-                                false,
-                                false,
-                                None,
-                                None,
-                                None,
+                                airway_child_waypoint_index,
+                                airway_child_waypoints.len(),
                             ),
                         );
+                        airway_child_waypoint_index += 1;
                         rows.push(FlightPlanDisplayRowUiView {
                             uid,
                             label: nav_ref_label(nav_ref),
@@ -2632,6 +2641,35 @@ fn waypoint_actions_for_row(
     }
 }
 
+fn child_waypoint_actions_for_row(
+    row_kind: FlightPlanDisplayRowKind,
+    component_kind: RouteComponentViewKind,
+    leg_index: Option<usize>,
+    nav_ref: Option<&NavRef>,
+    waypoint_index: usize,
+    waypoint_count: usize,
+) -> Vec<FlightPlanRowActionUiView> {
+    if row_kind != FlightPlanDisplayRowKind::Waypoint {
+        return Vec::new();
+    }
+    let mut actions = vec![
+        core_session_action(FlightPlanRowActionId::ActivateLeg, leg_index.is_some()),
+        core_session_action(FlightPlanRowActionId::DirectTo, nav_ref.is_some()),
+    ];
+    if component_kind == RouteComponentViewKind::Airway {
+        let is_endpoint = waypoint_index == 0 || waypoint_index + 1 == waypoint_count;
+        actions.push(core_session_action(
+            FlightPlanRowActionId::Remove,
+            is_endpoint,
+        ));
+        actions.push(core_session_action(
+            FlightPlanRowActionId::RemoveAllAbove,
+            nav_ref.is_some(),
+        ));
+    }
+    actions
+}
+
 fn top_level_waypoint_row_leg_index(plan: &FlightPlan, component_index: usize) -> Option<usize> {
     let Some(RouteComponent::Waypoint { waypoint }) = plan.route_components.get(component_index)
     else {
@@ -2667,10 +2705,12 @@ fn top_level_waypoint_row_leg_index(plan: &FlightPlan, component_index: usize) -
 fn child_waypoint_row_leg_index(
     plan: &FlightPlan,
     component_index: usize,
+    item_index: usize,
     waypoint_occurrence: usize,
     nav_ref: &NavRef,
 ) -> Option<usize> {
-    plan.resolved_legs
+    let local_leg_index = plan
+        .resolved_legs
         .iter()
         .enumerate()
         .filter(|(_, leg)| {
@@ -2679,7 +2719,28 @@ fn child_waypoint_row_leg_index(
                 && &leg.to == nav_ref
         })
         .nth(waypoint_occurrence)
-        .map(|(index, _)| index)
+        .map(|(index, _)| index);
+    if local_leg_index.is_some() || item_index != 0 {
+        return local_leg_index;
+    }
+
+    let first_component_leg_index =
+        plan.resolved_legs
+            .iter()
+            .enumerate()
+            .find_map(|(leg_index, leg)| match leg.source {
+                ResolvedLegSource::RouteComponent {
+                    component_index: source_component_index,
+                } if source_component_index == component_index => Some(leg_index),
+                _ => None,
+            })?;
+    first_component_leg_index
+        .checked_sub(1)
+        .filter(|previous_leg_index| {
+            plan.resolved_legs
+                .get(*previous_leg_index)
+                .is_some_and(|leg| &leg.to == nav_ref)
+        })
 }
 
 fn last_guidance_leg_index_for_component(
@@ -3030,6 +3091,225 @@ pub fn delete_component(plan: &FlightPlan, component_index: usize) -> AppResult<
     ))
 }
 
+fn airway_points_and_legs(
+    plan: &FlightPlan,
+    component_index: usize,
+) -> AppResult<(AirwaySegment, Vec<NavRef>, Vec<ResolvedLeg>)> {
+    let plan = plan.clone().normalized();
+    let airway = match plan.route_components.get(component_index) {
+        Some(RouteComponent::Airway { airway }) => airway.clone(),
+        Some(_) => {
+            return Err(AppError {
+                kind: AppErrorKind::UnsupportedOperation,
+                message: "target component is not an airway".to_string(),
+            })
+        }
+        None => {
+            return Err(AppError {
+                kind: AppErrorKind::UnsupportedOperation,
+                message: format!("component index out of bounds: {component_index}"),
+            })
+        }
+    };
+    let legs = grouped_component_legs(&plan)
+        .get(&component_index)
+        .cloned()
+        .unwrap_or_default();
+    let mut points = Vec::new();
+    if let Some(first) = legs.first() {
+        points.push(first.from.clone());
+        points.extend(legs.iter().map(|leg| leg.to.clone()));
+    } else {
+        points.push(airway.entry.clone());
+        if airway.exit != airway.entry {
+            points.push(airway.exit.clone());
+        }
+    }
+    Ok((airway, points, legs))
+}
+
+fn rebuild_with_airway_replacement(
+    plan: &FlightPlan,
+    component_index: usize,
+    replacement: Option<(RouteComponent, Option<Vec<ResolvedLeg>>)>,
+    drop_before_target: bool,
+) -> AppResult<FlightPlan> {
+    let plan = plan.clone().normalized();
+    if component_index >= plan.route_components.len() {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("component index out of bounds: {component_index}"),
+        });
+    }
+
+    let old_grouped_legs = grouped_component_legs(&plan);
+    let start_index = if drop_before_target {
+        component_index
+    } else {
+        0
+    };
+    let mut new_components = Vec::new();
+    let mut old_index_by_new_index = Vec::new();
+    let mut grouped_by_component = BTreeMap::new();
+
+    for old_index in start_index..plan.route_components.len() {
+        if old_index == component_index {
+            let Some((component, replacement_legs)) = replacement.clone() else {
+                continue;
+            };
+            let new_index = new_components.len();
+            if let Some(legs) = replacement_legs {
+                grouped_by_component
+                    .insert(new_index, rewrite_grouped_legs_source(&legs, new_index));
+            }
+            new_components.push(component);
+            old_index_by_new_index.push(Some(old_index));
+            continue;
+        }
+
+        let new_index = new_components.len();
+        if let Some(legs) = old_grouped_legs.get(&old_index) {
+            grouped_by_component.insert(new_index, rewrite_grouped_legs_source(legs, new_index));
+        }
+        new_components.push(plan.route_components[old_index].clone());
+        old_index_by_new_index.push(Some(old_index));
+    }
+
+    let resolved =
+        rebuild_resolved_legs_with_grouped_components(&new_components, &grouped_by_component);
+    let (route_component_uids, next_counter) =
+        route_component_uids_from_remap(&plan, old_index_by_new_index);
+    let guidance = revalidate_guidance_after_plan_edit(plan.guidance, &resolved);
+    Ok(FlightPlan {
+        legs: Vec::new(),
+        route_components: new_components,
+        route_component_uids,
+        route_component_uid_counter: next_counter,
+        resolved_legs: resolved,
+        guidance,
+        ..plan
+    }
+    .normalized())
+}
+
+fn airway_replacement_from_remaining_points(
+    airway: AirwaySegment,
+    remaining_points: Vec<NavRef>,
+    remaining_legs: Vec<ResolvedLeg>,
+    following_waypoint: Option<NavRef>,
+) -> Option<(RouteComponent, Option<Vec<ResolvedLeg>>)> {
+    match remaining_points.as_slice() {
+        [] => None,
+        [single] if following_waypoint.as_ref() == Some(single) => None,
+        [single] => Some((
+            RouteComponent::Waypoint {
+                waypoint: single.clone(),
+            },
+            None,
+        )),
+        [entry, .., exit] => Some((
+            RouteComponent::Airway {
+                airway: AirwaySegment {
+                    entry: entry.clone(),
+                    exit: exit.clone(),
+                    ..airway
+                },
+            },
+            Some(remaining_legs),
+        )),
+    }
+}
+
+pub fn remove_airway_child_waypoint(
+    plan: &FlightPlan,
+    component_index: usize,
+    nav_ref: &NavRef,
+) -> AppResult<FlightPlan> {
+    let plan = plan.clone().normalized();
+    let (airway, points, legs) = airway_points_and_legs(&plan, component_index)?;
+    let Some(point_index) = points.iter().position(|point| point == nav_ref) else {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!(
+                "airway child waypoint is not in component: {}",
+                nav_ref_label(nav_ref)
+            ),
+        });
+    };
+    let last_index = points.len().saturating_sub(1);
+    let preceding_waypoint =
+        adjacent_waypoint_component(&plan.route_components, component_index, -1);
+    let following_waypoint =
+        adjacent_waypoint_component(&plan.route_components, component_index, 1);
+    let first_visible_index = if preceding_waypoint.as_ref() == points.first() && points.len() > 1 {
+        1
+    } else {
+        0
+    };
+    let last_visible_index = if following_waypoint.as_ref() == points.last() && points.len() > 1 {
+        last_index.saturating_sub(1)
+    } else {
+        last_index
+    };
+    if point_index != first_visible_index && point_index != last_visible_index {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: "only visible airway endpoints can be removed directly".to_string(),
+        });
+    }
+
+    let (remaining_points, remaining_legs) = if point_index == first_visible_index {
+        (
+            points[point_index + 1..].to_vec(),
+            legs.get(point_index + 1..).unwrap_or(&[]).to_vec(),
+        )
+    } else {
+        (
+            points[..point_index].to_vec(),
+            legs.get(..point_index.saturating_sub(1))
+                .unwrap_or(&[])
+                .to_vec(),
+        )
+    };
+    let replacement = airway_replacement_from_remaining_points(
+        airway,
+        remaining_points,
+        remaining_legs,
+        following_waypoint,
+    );
+    rebuild_with_airway_replacement(&plan, component_index, replacement, false)
+}
+
+pub fn remove_all_above_airway_child_waypoint(
+    plan: &FlightPlan,
+    component_index: usize,
+    nav_ref: &NavRef,
+) -> AppResult<FlightPlan> {
+    let plan = plan.clone().normalized();
+    let (airway, points, legs) = airway_points_and_legs(&plan, component_index)?;
+    let Some(point_index) = points.iter().position(|point| point == nav_ref) else {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!(
+                "airway child waypoint is not in component: {}",
+                nav_ref_label(nav_ref)
+            ),
+        });
+    };
+
+    let remaining_points = points.get(point_index + 1..).unwrap_or(&[]).to_vec();
+    let remaining_legs = legs.get(point_index + 1..).unwrap_or(&[]).to_vec();
+    let following_waypoint =
+        adjacent_waypoint_component(&plan.route_components, component_index, 1);
+    let replacement = airway_replacement_from_remaining_points(
+        airway,
+        remaining_points,
+        remaining_legs,
+        following_waypoint,
+    );
+    rebuild_with_airway_replacement(&plan, component_index, replacement, true)
+}
+
 pub fn remove_all_above(plan: &FlightPlan, component_index: usize) -> AppResult<FlightPlan> {
     let plan = plan.clone().normalized();
     if component_index >= plan.route_components.len() {
@@ -3340,11 +3620,30 @@ pub fn insert_airway_between_waypoints(
         });
     }
 
+    let consume_start = matches!(
+        plan.route_components.get(start_component_index),
+        Some(RouteComponent::Waypoint { waypoint }) if waypoint == &airway.entry
+    );
+    let consume_end = matches!(
+        plan.route_components.get(end_component_index),
+        Some(RouteComponent::Waypoint { waypoint }) if waypoint == &airway.exit
+    );
+    let preserve_start_end = if consume_start {
+        start_component_index
+    } else {
+        start_component_index + 1
+    };
+    let preserve_end_start = if consume_end {
+        end_component_index + 1
+    } else {
+        end_component_index
+    };
+
     let mut new_components = Vec::<RouteComponent>::new();
     let mut preserved_grouped_legs = BTreeMap::<usize, Vec<ResolvedLeg>>::new();
     let old_grouped_legs = grouped_component_legs(&plan);
 
-    for old_index in 0..=start_component_index {
+    for old_index in 0..preserve_start_end {
         let new_index = new_components.len();
         new_components.push(plan.route_components[old_index].clone());
         if let Some(legs) = old_grouped_legs.get(&old_index) {
@@ -3357,7 +3656,7 @@ pub fn insert_airway_between_waypoints(
         airway: airway.clone(),
     });
 
-    for old_index in end_component_index..plan.route_components.len() {
+    for old_index in preserve_end_start..plan.route_components.len() {
         let new_index = new_components.len();
         new_components.push(plan.route_components[old_index].clone());
         if let Some(legs) = old_grouped_legs.get(&old_index) {
@@ -3380,10 +3679,10 @@ pub fn insert_airway_between_waypoints(
                 .to_string(),
         });
     }
-    let old_index_by_new_index = (0..=start_component_index)
+    let old_index_by_new_index = (0..preserve_start_end)
         .map(Some)
         .chain(std::iter::once(None))
-        .chain((end_component_index..plan.route_components.len()).map(Some));
+        .chain((preserve_end_start..plan.route_components.len()).map(Some));
     let (route_component_uids, route_component_uid_counter) =
         route_component_uids_from_remap(&plan, old_index_by_new_index);
 
@@ -3429,15 +3728,111 @@ pub fn insert_airway_after_waypoint(
         });
     }
 
+    let consume_start = matches!(
+        plan.route_components.get(start_component_index),
+        Some(RouteComponent::Waypoint { waypoint }) if waypoint == &airway.entry
+    );
+    let preserve_start_end = if consume_start {
+        start_component_index
+    } else {
+        start_component_index + 1
+    };
+
+    let mut new_components = plan.route_components[..preserve_start_end].to_vec();
+    let airway_component_index = new_components.len();
+    new_components.push(RouteComponent::Airway {
+        airway: airway.clone(),
+    });
+
+    let old_grouped_legs = grouped_component_legs(&plan);
+    let mut grouped_legs = BTreeMap::<usize, Vec<ResolvedLeg>>::new();
+    for old_index in 0..preserve_start_end {
+        if let Some(legs) = old_grouped_legs.get(&old_index) {
+            grouped_legs.insert(old_index, legs.clone());
+        }
+    }
+    grouped_legs.insert(
+        airway_component_index,
+        rewrite_grouped_legs_source(&airway_legs, airway_component_index),
+    );
+
+    let resolved_legs =
+        rebuild_resolved_legs_with_grouped_components(&new_components, &grouped_legs);
+    if resolved_legs.is_empty() {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "flight plan must contain at least one flyable leg after airway insertion"
+                .to_string(),
+        });
+    }
+    let old_index_by_new_index = (0..preserve_start_end)
+        .map(Some)
+        .chain(std::iter::once(None));
+    let (route_component_uids, route_component_uid_counter) =
+        route_component_uids_from_remap(&plan, old_index_by_new_index);
+
+    Ok(FlightPlan {
+        route_components: new_components,
+        route_component_uids,
+        route_component_uid_counter,
+        resolved_legs: resolved_legs.clone(),
+        guidance: revalidate_guidance_after_plan_edit(plan.guidance.clone(), &resolved_legs),
+        ..plan
+    })
+}
+
+pub fn insert_airway_after_airway(
+    plan: &FlightPlan,
+    start_component_index: usize,
+    airway: AirwaySegment,
+    airway_legs: Vec<ResolvedLeg>,
+) -> AppResult<FlightPlan> {
+    let plan = plan.clone().normalized();
+    match plan.route_components.get(start_component_index) {
+        Some(RouteComponent::Airway {
+            airway: existing_airway,
+        }) if existing_airway.exit == airway.entry => {}
+        Some(RouteComponent::Airway {
+            airway: existing_airway,
+        }) => {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: format!(
+                    "{} cannot start after {}",
+                    airway.name,
+                    nav_ref_label(&existing_airway.exit)
+                ),
+            })
+        }
+        Some(_) => {
+            return Err(AppError {
+                kind: AppErrorKind::UnsupportedOperation,
+                message: "airway chaining start must be an airway component".to_string(),
+            })
+        }
+        None => {
+            return Err(AppError {
+                kind: AppErrorKind::UnsupportedOperation,
+                message: format!("component index out of bounds: {start_component_index}"),
+            })
+        }
+    }
+
+    if start_component_index + 1 != plan.route_components.len() {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: "airway chaining requires the selected airway to be the end of the route"
+                .to_string(),
+        });
+    }
+
     let mut new_components = plan.route_components.clone();
     let airway_component_index = new_components.len();
     new_components.push(RouteComponent::Airway {
         airway: airway.clone(),
     });
 
-    let mut grouped_legs = grouped_component_legs(&plan)
-        .into_iter()
-        .collect::<BTreeMap<usize, Vec<ResolvedLeg>>>();
+    let mut grouped_legs = grouped_component_legs(&plan);
     grouped_legs.insert(
         airway_component_index,
         rewrite_grouped_legs_source(&airway_legs, airway_component_index),
@@ -4943,6 +5338,85 @@ mod tests {
         )
     }
 
+    fn sample_v165_plan_with_explicit_endpoints() -> FlightPlan {
+        let airway = AirwaySegment {
+            name: "V165".to_string(),
+            branch_key: Some("V165-0".to_string()),
+            entry: NavRef::Navaid("OLM".to_string()),
+            exit: NavRef::Fix("RAWER".to_string()),
+        };
+        let points = vec![
+            NavRef::Navaid("OLM".to_string()),
+            NavRef::Fix("CETRA".to_string()),
+            NavRef::Fix("HOKBO".to_string()),
+            NavRef::Fix("UBG".to_string()),
+            NavRef::Fix("RAWER".to_string()),
+        ];
+        let airway_legs = points
+            .windows(2)
+            .enumerate()
+            .map(|(index, pair)| ResolvedLeg {
+                id: format!("airway-v165-{index}"),
+                from: pair[0].clone(),
+                to: pair[1].clone(),
+                source: ResolvedLegSource::RouteComponent { component_index: 2 },
+                procedure_provenance: None,
+            })
+            .collect::<Vec<_>>();
+
+        FlightPlan {
+            id: "plan-v165".to_string(),
+            name: "V165 explicit endpoints".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KOLM".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Navaid("OLM".to_string()),
+                },
+                RouteComponent::Airway { airway },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Fix("RAWER".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KUAO".to_string()),
+                },
+            ],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: vec![
+                ResolvedLeg {
+                    id: "component-0-1".to_string(),
+                    from: NavRef::Airport("KOLM".to_string()),
+                    to: NavRef::Navaid("OLM".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                    procedure_provenance: None,
+                },
+                airway_legs[0].clone(),
+                airway_legs[1].clone(),
+                airway_legs[2].clone(),
+                airway_legs[3].clone(),
+                ResolvedLeg {
+                    id: "component-3-4".to_string(),
+                    from: NavRef::Fix("RAWER".to_string()),
+                    to: NavRef::Airport("KUAO".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 3 },
+                    procedure_provenance: None,
+                },
+            ],
+            guidance: None,
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        }
+        .normalized()
+    }
+
     fn sample_two_waypoint_plan() -> FlightPlan {
         FlightPlan {
             id: "plan-2pt".to_string(),
@@ -5117,10 +5591,16 @@ mod tests {
 
         let inserted = insert_airway_between_waypoints(&plan, 0, 1, airway, airway_legs).unwrap();
 
-        assert_eq!(inserted.route_components.len(), 4);
+        assert_eq!(inserted.route_components.len(), 2);
         assert!(matches!(
-            inserted.route_components[1],
+            inserted.route_components[0],
             RouteComponent::Airway { .. }
+        ));
+        assert!(matches!(
+            &inserted.route_components[1],
+            RouteComponent::Waypoint {
+                waypoint: NavRef::Airport(id)
+            } if id == "KHIO"
         ));
     }
 
@@ -7201,6 +7681,155 @@ mod tests {
             direct_to.execution,
             FlightPlanRowActionExecution::CoreSession
         );
+    }
+
+    #[test]
+    fn airway_child_rows_expose_remove_for_visible_endpoints_only_and_remove_all_above_for_all() {
+        let ui = project_ui_state(&sample_v165_plan_with_explicit_endpoints());
+        let airway_rows = ui
+            .display_rows
+            .iter()
+            .filter(|row| {
+                row.component_kind == Some(RouteComponentViewKind::Airway)
+                    && row.row_kind == FlightPlanDisplayRowKind::Waypoint
+            })
+            .collect::<Vec<_>>();
+        let row_actions = |label: &str| {
+            let row = airway_rows
+                .iter()
+                .find(|row| row.label == label)
+                .unwrap_or_else(|| panic!("airway row {label}"));
+            flight_plan_row_actions(row)
+                .map(|action| (action.id.clone(), action.enabled, action.execution.clone()))
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            airway_rows
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["CETRA", "HOKBO", "UBG"]
+        );
+        assert!(row_actions("CETRA").contains(&(
+            FlightPlanRowActionId::Remove,
+            true,
+            FlightPlanRowActionExecution::CoreSession
+        )));
+        assert!(row_actions("HOKBO").contains(&(
+            FlightPlanRowActionId::Remove,
+            false,
+            FlightPlanRowActionExecution::CoreSession
+        )));
+        assert!(row_actions("UBG").contains(&(
+            FlightPlanRowActionId::Remove,
+            true,
+            FlightPlanRowActionExecution::CoreSession
+        )));
+        for label in ["CETRA", "HOKBO", "UBG"] {
+            assert!(row_actions(label).contains(&(
+                FlightPlanRowActionId::RemoveAllAbove,
+                true,
+                FlightPlanRowActionExecution::CoreSession
+            )));
+        }
+    }
+
+    #[test]
+    fn remove_first_visible_airway_child_retargets_airway_entry() {
+        let changed = remove_airway_child_waypoint(
+            &sample_v165_plan_with_explicit_endpoints(),
+            2,
+            &NavRef::Fix("CETRA".to_string()),
+        )
+        .unwrap();
+
+        let RouteComponent::Airway { airway } = &changed.route_components[2] else {
+            panic!("expected airway");
+        };
+        assert_eq!(airway.entry, NavRef::Fix("HOKBO".to_string()));
+        assert_eq!(airway.exit, NavRef::Fix("RAWER".to_string()));
+        assert!(changed
+            .resolved_legs
+            .iter()
+            .any(|leg| leg.from == NavRef::Fix("HOKBO".to_string())
+                && leg.to == NavRef::Fix("UBG".to_string())));
+    }
+
+    #[test]
+    fn remove_last_visible_airway_child_retargets_airway_exit() {
+        let changed = remove_airway_child_waypoint(
+            &sample_v165_plan_with_explicit_endpoints(),
+            2,
+            &NavRef::Fix("UBG".to_string()),
+        )
+        .unwrap();
+
+        let RouteComponent::Airway { airway } = &changed.route_components[2] else {
+            panic!("expected airway");
+        };
+        assert_eq!(airway.entry, NavRef::Navaid("OLM".to_string()));
+        assert_eq!(airway.exit, NavRef::Fix("HOKBO".to_string()));
+        assert!(changed
+            .resolved_legs
+            .iter()
+            .any(|leg| leg.from == NavRef::Fix("CETRA".to_string())
+                && leg.to == NavRef::Fix("HOKBO".to_string())));
+    }
+
+    #[test]
+    fn remove_all_above_airway_child_retargets_airway_to_remaining_tail() {
+        let changed = remove_all_above_airway_child_waypoint(
+            &sample_v165_plan_with_explicit_endpoints(),
+            2,
+            &NavRef::Fix("CETRA".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(changed.route_components.len(), 3);
+        let RouteComponent::Airway { airway } = &changed.route_components[0] else {
+            panic!("expected airway");
+        };
+        assert_eq!(airway.entry, NavRef::Fix("HOKBO".to_string()));
+        assert_eq!(airway.exit, NavRef::Fix("RAWER".to_string()));
+    }
+
+    #[test]
+    fn remove_all_above_next_to_last_airway_child_collapses_to_singleton_waypoint() {
+        let mut plan = sample_v165_plan_with_explicit_endpoints();
+        plan.route_components.remove(3);
+        plan = plan.normalized();
+        let changed =
+            remove_all_above_airway_child_waypoint(&plan, 2, &NavRef::Fix("UBG".to_string()))
+                .unwrap();
+
+        assert!(matches!(
+            changed.route_components.first(),
+            Some(RouteComponent::Waypoint {
+                waypoint: NavRef::Fix(id)
+            }) if id == "RAWER"
+        ));
+    }
+
+    #[test]
+    fn remove_all_above_last_airway_child_deletes_airway_block() {
+        let changed = remove_all_above_airway_child_waypoint(
+            &sample_v165_plan_with_explicit_endpoints(),
+            2,
+            &NavRef::Fix("RAWER".to_string()),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            changed.route_components.first(),
+            Some(RouteComponent::Waypoint {
+                waypoint: NavRef::Fix(id)
+            }) if id == "RAWER"
+        ));
+        assert!(!matches!(
+            changed.route_components.first(),
+            Some(RouteComponent::Airway { .. })
+        ));
     }
 
     #[test]

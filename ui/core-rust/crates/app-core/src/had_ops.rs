@@ -9,17 +9,18 @@ use crate::{
     chart_page::{airport_ids_from_plan, derive_chart_page_state_from_airports},
     describe_plate_procedure_load_options, describe_show_plate_for_procedure,
     flight_leg_distance_nm, flight_plan_contains_nav_ref, flight_plan_has_direct_to_overlay,
-    insert_airway_after_waypoint, insert_waypoint, prepare_airway_presentation,
-    project_flight_plan_route_with_resolver, AirportId, AirwayAutoSelection, AirwayBranch,
-    AirwayEntryCandidate, AirwayExitCandidate, AirwayPresentationPlan, AirwaySegment,
-    AirwaySpatialPoint, AirwaySuggestion, AppError, AppErrorKind, AppResult, CifpTppMatchRow,
-    ConcretizedNavItem, FlightPlan, FlightPlanRouteSegment, FlightPlanUiMutation,
-    FlightPlanUiState, LatLon, LegDisplayElement, LegDisplayPath, LegDisplayPathStyle,
-    MaterializedProcedure, NavKvLookup, NavKvQuery, NavKvStore, NavRef, NavSymbolFeature,
-    PathTermination, PlateProcedureLoadCandidateInput, PolygonRecord, ProcedureDiscontinuity,
-    ProcedureKind, ProcedureLegProvenance, ProcedureLoadOption, ProcedureOptions, ProcedureSegment,
-    ProcedureSegmentRole, ProcedureSummary, ResolvedLeg, ResolvedLegSource, RouteComponent,
-    WaypointIdentifierRecord, WaypointIdentifierSuggestion,
+    insert_airway_after_airway, insert_airway_after_waypoint, insert_waypoint,
+    prepare_airway_presentation, project_flight_plan_route_with_resolver, AirportId,
+    AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,
+    AirwayPresentationPlan, AirwaySegment, AirwaySpatialPoint, AirwaySuggestion, AppError,
+    AppErrorKind, AppResult, CifpTppMatchRow, ConcretizedNavItem, FlightPlan,
+    FlightPlanRouteSegment, FlightPlanUiMutation, FlightPlanUiState, LatLon, LegDisplayElement,
+    LegDisplayPath, LegDisplayPathStyle, MaterializedProcedure, NavKvLookup, NavKvQuery,
+    NavKvStore, NavRef, NavSymbolFeature, PathTermination, PlateProcedureLoadCandidateInput,
+    PolygonRecord, ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance,
+    ProcedureLoadOption, ProcedureOptions, ProcedureSegment, ProcedureSegmentRole,
+    ProcedureSummary, ResolvedLeg, ResolvedLegSource, RouteComponent, WaypointIdentifierRecord,
+    WaypointIdentifierSuggestion,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2336,16 +2337,6 @@ fn append_waypoint_tail(plan: &FlightPlan, waypoint: NavRef) -> Result<FlightPla
         next_plan.resolved_legs.clear();
         return Ok(next_plan.normalized());
     }
-    if let Some(RouteComponent::Airway { airway }) = plan.route_components.last() {
-        let with_exit = insert_waypoint(
-            plan,
-            plan.route_components.len() - 1,
-            false,
-            airway.exit.clone(),
-        )
-        .map_err(HadReadError::from)?;
-        return append_waypoint_tail(&with_exit, waypoint);
-    }
     insert_waypoint(plan, plan.route_components.len() - 1, false, waypoint).map_err(Into::into)
 }
 
@@ -2353,8 +2344,8 @@ fn append_airway_tail(
     plan: &FlightPlan,
     materialized: ExactAirwayMaterialization,
 ) -> Result<FlightPlan, HadReadError> {
-    let mut plan = plan.clone();
-    let mut start_component_index = plan
+    let plan = plan.clone();
+    let start_component_index = plan
         .route_components
         .len()
         .checked_sub(1)
@@ -2369,8 +2360,13 @@ fn append_airway_tail(
                 nav_ref_display_label(&airway.exit)
             )));
         }
-        plan = append_waypoint_tail(&plan, airway.exit.clone())?;
-        start_component_index = plan.route_components.len() - 1;
+        return insert_airway_after_airway(
+            &plan,
+            start_component_index,
+            materialized.airway,
+            materialized.resolved_legs,
+        )
+        .map_err(Into::into);
     }
     insert_airway_after_waypoint(
         &plan,
@@ -3863,27 +3859,22 @@ mod tests {
             }
         };
 
-        assert_eq!(mutation.plan.route_components.len(), 5);
+        assert_eq!(mutation.plan.route_components.len(), 3);
         assert!(matches!(
             mutation.plan.route_components[0],
             RouteComponent::Waypoint { .. }
         ));
         assert!(matches!(
             mutation.plan.route_components[1],
-            RouteComponent::Waypoint { waypoint: NavRef::Navaid(ref id) } if id == "SEA"
-        ));
-        assert!(matches!(
-            mutation.plan.route_components[2],
             RouteComponent::Airway { ref airway } if airway.name == "V2"
         ));
         assert!(matches!(
-            mutation.plan.route_components[3],
-            RouteComponent::Waypoint { waypoint: NavRef::Fix(ref id) } if id == "VAMPS"
-        ));
-        assert!(matches!(
-            mutation.plan.route_components[4],
+            mutation.plan.route_components[2],
             RouteComponent::Waypoint { waypoint: NavRef::Airport(ref id) } if id == "KUAO"
         ));
+        assert!(!mutation.plan.route_components.iter().any(|component| {
+            matches!(component, RouteComponent::Waypoint { waypoint: NavRef::Fix(id) } if id == "VAMPS")
+        }));
     }
 
     #[test]
@@ -4009,14 +4000,34 @@ mod tests {
         let mutation = append_flight_plan_entry(&store, &plan, input).expect("append route");
 
         assert!(mutation.plan.route_components.iter().any(|component| {
-            matches!(component, RouteComponent::Waypoint { waypoint: NavRef::Navaid(id) } if id == "SEA")
-        }));
-        assert!(mutation.plan.route_components.iter().any(|component| {
             matches!(component, RouteComponent::Airway { airway } if airway.name == "V23")
         }));
         assert!(mutation.plan.route_components.iter().any(|component| {
             matches!(component, RouteComponent::Airway { airway } if airway.name == "V495")
         }));
+        assert!(!mutation.plan.route_components.iter().any(|component| {
+            matches!(component, RouteComponent::Waypoint { waypoint: NavRef::Navaid(id) } if id == "SEA")
+        }));
+        assert!(!mutation.plan.route_components.iter().any(|component| {
+            matches!(component, RouteComponent::Waypoint { waypoint: NavRef::Fix(id) } if id == "VAUGN")
+        }));
+        let airway_child_labels = mutation
+            .ui_state
+            .display_rows
+            .iter()
+            .filter(|row| {
+                row.component_kind == Some(crate::RouteComponentViewKind::Airway) && row.depth > 0
+            })
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            airway_child_labels.starts_with(&["PAE", "SEA"]),
+            "{airway_child_labels:?}"
+        );
+        assert!(
+            airway_child_labels.ends_with(&["VAUGN"]),
+            "{airway_child_labels:?}"
+        );
     }
 
     #[test]
@@ -4049,14 +4060,17 @@ mod tests {
             matches!(
                 (&window[0], &window[1]),
                 (
-                    RouteComponent::Waypoint {
-                        waypoint: NavRef::Fix(exit)
+                    RouteComponent::Airway {
+                        airway: AirwaySegment { exit, .. }
                     },
                     RouteComponent::Waypoint {
                         waypoint: NavRef::Airport(airport)
                     },
-                ) if exit == "VAUGN" && airport == "KEUG"
+                ) if exit == &NavRef::Fix("VAUGN".to_string()) && airport == "KEUG"
             )
+        }));
+        assert!(!route.iter().any(|component| {
+            matches!(component, RouteComponent::Waypoint { waypoint: NavRef::Fix(id) } if id == "VAUGN")
         }));
 
         let keug_row = mutation
@@ -4074,6 +4088,141 @@ mod tests {
                 .any(|action| action.id == FlightPlanRowActionId::SelectProcedure && action.enabled),
             "final airport after airway exit should offer Select Procedure"
         );
+    }
+
+    #[test]
+    fn chained_airway_handoff_row_can_activate_inbound_leg() {
+        let mutation = append_route_entry_for_chained_airways();
+        let sea_leg_index = mutation
+            .plan
+            .resolved_legs
+            .iter()
+            .position(|leg| {
+                leg.from == NavRef::Navaid("PAE".to_string())
+                    && leg.to == NavRef::Navaid("SEA".to_string())
+            })
+            .expect("PAE to SEA leg");
+        let sea_row = mutation
+            .ui_state
+            .display_rows
+            .iter()
+            .find(|row| {
+                row.depth == 1
+                    && row.component_kind == Some(crate::RouteComponentViewKind::Airway)
+                    && row.label == "SEA"
+            })
+            .expect("visible SEA airway child row");
+
+        assert_eq!(sea_row.leg_index, Some(sea_leg_index));
+        assert!(
+            crate::planning::flight_plan_row_actions(sea_row)
+                .any(|action| action.id == FlightPlanRowActionId::ActivateLeg && action.enabled),
+            "SEA airway child row should activate PAE -> SEA"
+        );
+    }
+
+    #[test]
+    fn activate_next_leg_from_first_leg_keeps_chained_airway_arrow_visible() {
+        let mutation = append_route_entry_for_chained_airways();
+        let first_leg_index = mutation
+            .plan
+            .resolved_legs
+            .iter()
+            .position(|leg| {
+                leg.from == NavRef::Airport("KPAE".to_string())
+                    && leg.to == NavRef::Navaid("PAE".to_string())
+            })
+            .expect("KPAE to PAE leg");
+        let activated = crate::activate_leg(&mutation.plan, first_leg_index).expect("activate leg");
+        let next = crate::activate_next_leg(&activated).expect("activate next leg");
+        let ui = crate::project_ui_state(&next);
+        let guidance = ui.guidance.as_ref().expect("guidance");
+
+        assert_eq!(
+            guidance.active_leg,
+            Some(crate::PlanLeg {
+                from: NavRef::Navaid("PAE".to_string()),
+                to: NavRef::Navaid("SEA".to_string()),
+                airway: None,
+            })
+        );
+        assert!(
+            guidance.active_from_row_uid.is_some(),
+            "active from row should remain visible"
+        );
+        assert!(
+            guidance.active_to_row_uid.is_some(),
+            "active to row should remain visible"
+        );
+    }
+
+    #[test]
+    fn sequence_active_leg_walks_chained_airway_route_to_last_leg() {
+        let mutation = append_route_entry_for_chained_airways();
+        let mut plan = crate::activate_leg(&mutation.plan, 0).expect("activate first leg");
+        let expected = mutation
+            .plan
+            .resolved_legs
+            .iter()
+            .map(|leg| (leg.from.clone(), leg.to.clone()))
+            .collect::<Vec<_>>();
+
+        for (index, (from, to)) in expected.iter().enumerate() {
+            let active = crate::active_guidance_leg(&plan).expect("active leg");
+            assert_eq!(
+                (active.from.clone(), active.to.clone()),
+                (from.clone(), to.clone()),
+                "active leg {index}"
+            );
+            let ui = crate::project_ui_state(&plan);
+            let guidance = ui.guidance.as_ref().expect("guidance");
+            assert!(
+                guidance.active_to_row_uid.is_some(),
+                "active to row should be visible for leg {index}: {from:?} -> {to:?}"
+            );
+            if index + 1 < expected.len() {
+                plan = crate::sequence_active_leg(&plan).expect("sequence active leg");
+            }
+        }
+
+        let final_active = crate::active_guidance_leg(&plan).expect("final active leg");
+        let (last_from, last_to) = expected.last().expect("last leg");
+        assert_eq!(
+            (final_active.from, final_active.to),
+            (last_from.clone(), last_to.clone())
+        );
+        let suspended = crate::sequence_active_leg(&plan).expect("sequence at route end");
+        assert_eq!(
+            suspended
+                .guidance
+                .as_ref()
+                .expect("route-end guidance")
+                .sequencing_mode,
+            crate::SequencingMode::Suspended
+        );
+    }
+
+    fn append_route_entry_for_chained_airways() -> FlightPlanUiMutation {
+        let store = load_current_nav_kv_store();
+        let plan = FlightPlan {
+            id: "route".to_string(),
+            name: "Route".to_string(),
+            legs: Vec::new(),
+            route_components: Vec::new(),
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+        append_flight_plan_entry(&store, &plan, "KPAE PAE V23 SEA V495 VAUGN KEUG")
+            .expect("append chained airway route")
     }
 
     #[test]

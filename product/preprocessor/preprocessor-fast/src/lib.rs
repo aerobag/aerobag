@@ -39,39 +39,6 @@ pub struct BuildTfrResult {
 }
 
 #[derive(Debug, Clone)]
-pub struct BuildTfrAvareParityResult {
-    pub tfr_manifest_path: PathBuf,
-    pub tfr_text_path: PathBuf,
-}
-
-#[derive(Debug, Clone)]
-pub struct BuildMetarParityRequest {
-    pub input_xml_path: PathBuf,
-    pub output_dir: PathBuf,
-}
-
-#[derive(Debug, Clone)]
-pub struct BuildMetarParityResult {
-    pub output_path: PathBuf,
-    pub metar_count: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct BuildNexradParityRequest {
-    pub input_dir: PathBuf,
-    pub output_dir: PathBuf,
-    pub generated_at_utc: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone)]
-pub struct BuildNexradParityResult {
-    pub manifest_path: PathBuf,
-    pub latest_txt_path: PathBuf,
-    pub png_paths: Vec<PathBuf>,
-    pub zip_path: PathBuf,
-}
-
-#[derive(Debug, Clone)]
 pub struct BuildMetarRequest {
     pub metar_xml_path: PathBuf,
     pub taf_xml_path: PathBuf,
@@ -692,10 +659,6 @@ pub fn sanitize_notam_id(notam_id: &str) -> String {
     notam_id.replace('/', "_")
 }
 
-pub fn avare_tfr_manifest_timestamp(generated_at_utc: DateTime<Utc>) -> String {
-    generated_at_utc.format("%m_%d_%Y_%H:%M_UTC").to_string()
-}
-
 pub fn build_tfr_dataset(request: &BuildTfrRequest) -> anyhow::Result<BuildTfrResult> {
     if request.output_dir.exists() {
         fs::remove_dir_all(&request.output_dir)
@@ -770,152 +733,6 @@ pub fn build_tfr_dataset(request: &BuildTfrRequest) -> anyhow::Result<BuildTfrRe
         zip_path,
         notam_count: entries.len(),
         area_group_count: parsed_areas.len(),
-    })
-}
-
-pub fn build_tfr_avare_parity_artifacts(
-    request: &BuildTfrRequest,
-) -> anyhow::Result<BuildTfrAvareParityResult> {
-    if request.output_dir.exists() {
-        fs::remove_dir_all(&request.output_dir)
-            .with_context(|| format!("failed to clear {}", request.output_dir.display()))?;
-    }
-    fs::create_dir_all(&request.output_dir)
-        .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
-
-    let (_entries, parsed_areas) = load_parsed_tfr_areas(&request.input_dir)?;
-    let tfr_text = parsed_areas
-        .iter()
-        .map(|area| area.summary_text.clone())
-        .collect::<Vec<_>>()
-        .join(",");
-    let tfr_manifest_path = request.output_dir.join("TFRs");
-    let tfr_text_path = request.output_dir.join("tfr.txt");
-    fs::write(&tfr_text_path, &tfr_text)
-        .with_context(|| format!("failed to write {}", tfr_text_path.display()))?;
-    fs::write(
-        &tfr_manifest_path,
-        format!(
-            "{}\ntfr.txt\n",
-            avare_tfr_manifest_timestamp(request.generated_at_utc)
-        ),
-    )
-    .with_context(|| format!("failed to write {}", tfr_manifest_path.display()))?;
-    Ok(BuildTfrAvareParityResult {
-        tfr_manifest_path,
-        tfr_text_path,
-    })
-}
-
-pub fn build_metar_avare_parity_artifacts(
-    request: &BuildMetarParityRequest,
-) -> anyhow::Result<BuildMetarParityResult> {
-    if request.output_dir.exists() {
-        fs::remove_dir_all(&request.output_dir)
-            .with_context(|| format!("failed to clear {}", request.output_dir.display()))?;
-    }
-    fs::create_dir_all(&request.output_dir)
-        .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
-
-    let xml = fs::read_to_string(&request.input_xml_path)
-        .with_context(|| format!("failed to read {}", request.input_xml_path.display()))?;
-    let mut reader = Reader::from_str(&xml);
-    let mut buffer = Vec::new();
-    let mut output = String::new();
-    let mut metar_count = 0usize;
-    let mut in_metar = false;
-    let mut mode = None;
-    let mut raw_text = String::new();
-    let mut observation_time = String::new();
-    let mut latitude = String::new();
-    let mut longitude = String::new();
-    let mut station_id = String::new();
-    let mut flight_category = String::new();
-
-    loop {
-        match reader.read_event_into(&mut buffer) {
-            Ok(Event::Start(event)) => match event.name().as_ref() {
-                b"METAR" => {
-                    in_metar = true;
-                    raw_text.clear();
-                    observation_time.clear();
-                    latitude.clear();
-                    longitude.clear();
-                    station_id.clear();
-                    flight_category.clear();
-                    mode = None;
-                }
-                b"raw_text" if in_metar => mode = Some(MetarTextMode::RawText),
-                b"observation_time" if in_metar => mode = Some(MetarTextMode::ObservationTime),
-                b"latitude" if in_metar => mode = Some(MetarTextMode::Latitude),
-                b"longitude" if in_metar => mode = Some(MetarTextMode::Longitude),
-                b"station_id" if in_metar => mode = Some(MetarTextMode::StationId),
-                b"flight_category" if in_metar => mode = Some(MetarTextMode::FlightCategory),
-                _ => {}
-            },
-            Ok(Event::End(event)) => match event.name().as_ref() {
-                b"METAR" if in_metar => {
-                    if !raw_text.is_empty() && !flight_category.is_empty() {
-                        output.push_str(&flight_category);
-                        output.push(',');
-                        output.push_str(&raw_text.replace('\n', ""));
-                        output.push('\n');
-                        metar_count += 1;
-                    }
-                    in_metar = false;
-                    mode = None;
-                }
-                b"raw_text" | b"observation_time" | b"latitude" | b"longitude" | b"station_id"
-                | b"flight_category" => mode = None,
-                _ => {}
-            },
-            Ok(Event::Text(event)) if in_metar => {
-                let text = event
-                    .xml_content()
-                    .context("failed to decode METAR XML text")?
-                    .into_owned();
-                match mode {
-                    Some(MetarTextMode::RawText) => raw_text.push_str(&text),
-                    Some(MetarTextMode::ObservationTime) => observation_time = text,
-                    Some(MetarTextMode::Latitude) => latitude = text,
-                    Some(MetarTextMode::Longitude) => longitude = text,
-                    Some(MetarTextMode::StationId) => station_id = text,
-                    Some(MetarTextMode::FlightCategory) => flight_category = text,
-                    None => {}
-                }
-            }
-            Ok(Event::CData(event)) if in_metar => {
-                let text = event
-                    .xml_content()
-                    .context("failed to decode METAR XML cdata")?
-                    .into_owned();
-                match mode {
-                    Some(MetarTextMode::RawText) => raw_text.push_str(&text),
-                    Some(MetarTextMode::ObservationTime) => observation_time = text,
-                    Some(MetarTextMode::Latitude) => latitude = text,
-                    Some(MetarTextMode::Longitude) => longitude = text,
-                    Some(MetarTextMode::StationId) => station_id = text,
-                    Some(MetarTextMode::FlightCategory) => flight_category = text,
-                    None => {}
-                }
-            }
-            Ok(Event::Eof) => break,
-            Ok(_) => {}
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("failed to parse {}", request.input_xml_path.display())
-                });
-            }
-        }
-        buffer.clear();
-    }
-
-    let output_path = request.output_dir.join("metars.txt");
-    fs::write(&output_path, output)
-        .with_context(|| format!("failed to write {}", output_path.display()))?;
-    Ok(BuildMetarParityResult {
-        output_path,
-        metar_count,
     })
 }
 
@@ -1665,131 +1482,6 @@ fn choose_metar_cloud_symbol(layers: &[(&'static str, Option<u32>)]) -> Option<&
                 .min_by_key(|(_, height_ft)| height_ft.unwrap_or(u32::MAX))
         })
         .map(|(amount, _)| *amount)
-}
-
-pub fn build_nexrad_avare_parity_artifacts(
-    request: &BuildNexradParityRequest,
-) -> anyhow::Result<BuildNexradParityResult> {
-    if request.output_dir.exists() {
-        fs::remove_dir_all(&request.output_dir)
-            .with_context(|| format!("failed to clear {}", request.output_dir.display()))?;
-    }
-    fs::create_dir_all(&request.output_dir)
-        .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
-
-    let listings = parse_radar_listing(&request.input_dir.join("index.html"))?;
-    if listings.len() < 11 {
-        bail!(
-            "expected at least 11 radar listings, found {}",
-            listings.len()
-        );
-    }
-
-    let selected = [0usize, 5usize, 10usize]
-        .into_iter()
-        .map(|index| listings[index].clone())
-        .collect::<Vec<_>>();
-
-    let manifest_path = request.output_dir.join("conus");
-    let latest_txt_path = request.output_dir.join("latest.txt");
-    let zip_path = request.output_dir.join("conus.zip");
-    let image_bases = ["latest_radaronly", "latest_radaronly1", "latest_radaronly2"];
-    let mut manifest = format!(
-        "{}\nlatest.txt\n",
-        request.generated_at_utc.format("%m_%d_%Y_%H:%M_UTC")
-    );
-    let mut latest_txt = String::new();
-    let mut png_paths = Vec::new();
-    let corner_labels = ["Upper Left", "Lower Left", "Upper Right", "Lower Right"];
-
-    for (entry, image_base) in selected.iter().zip(image_bases) {
-        let copied_gz_path = request.output_dir.join(&entry.file_name);
-        let source_gz_path = request.input_dir.join(&entry.file_name);
-        fs::copy(&source_gz_path, &copied_gz_path).with_context(|| {
-            format!(
-                "failed to copy {} to {}",
-                source_gz_path.display(),
-                copied_gz_path.display()
-            )
-        })?;
-        run_command("gzip", &["-d", copied_gz_path.to_str().unwrap()])?;
-
-        let source_tif_name = entry.file_name.trim_end_matches(".gz");
-        let source_tif_path = request.output_dir.join(source_tif_name);
-        let warped_tif_path = request.output_dir.join(format!("{image_base}.tif"));
-        let png_path = request.output_dir.join(format!("{image_base}.png"));
-
-        run_command(
-            "gdalwarp",
-            &[
-                "-r",
-                "near",
-                "-s_srs",
-                "EPSG:4326",
-                "-t_srs",
-                "EPSG:3857",
-                "-of",
-                "gtiff",
-                source_tif_path.to_str().unwrap(),
-                warped_tif_path.to_str().unwrap(),
-            ],
-        )?;
-        run_command(
-            "convert",
-            &[
-                warped_tif_path.to_str().unwrap(),
-                "-transparent",
-                "black",
-                "-resize",
-                "25%",
-                png_path.to_str().unwrap(),
-            ],
-        )?;
-
-        let gdalinfo_output =
-            run_command_capture("gdalinfo", &[warped_tif_path.to_str().unwrap(), "-noct"])?;
-        for label in corner_labels {
-            let line = gdalinfo_output
-                .lines()
-                .find(|line| line.trim_start().starts_with(label))
-                .ok_or_else(|| anyhow::anyhow!("missing {label} in gdalinfo output"))?;
-            let start = line
-                .rfind('(')
-                .ok_or_else(|| anyhow::anyhow!("missing '(' in gdalinfo output line: {line}"))?;
-            let end = line[start + 1..]
-                .find(')')
-                .ok_or_else(|| anyhow::anyhow!("missing ')' in gdalinfo output line: {line}"))?;
-            latest_txt.push_str(&line[start + 1..start + 1 + end]);
-            latest_txt.push('\n');
-        }
-        latest_txt.push_str(&entry.observed_at_utc.format("%Y%m%d_%H%M").to_string());
-        latest_txt.push('\n');
-
-        manifest.push_str(&format!("{image_base}.png\n"));
-        png_paths.push(png_path);
-    }
-
-    fs::write(&manifest_path, manifest)
-        .with_context(|| format!("failed to write {}", manifest_path.display()))?;
-    fs::write(&latest_txt_path, latest_txt)
-        .with_context(|| format!("failed to write {}", latest_txt_path.display()))?;
-
-    let mut members = vec![
-        ("conus", manifest_path.as_path()),
-        ("latest.txt", latest_txt_path.as_path()),
-    ];
-    for png_path in &png_paths {
-        let name = png_path.file_name().and_then(|name| name.to_str()).unwrap();
-        members.push((name, png_path.as_path()));
-    }
-    write_zip(&zip_path, &members)?;
-
-    Ok(BuildNexradParityResult {
-        manifest_path,
-        latest_txt_path,
-        png_paths,
-        zip_path,
-    })
 }
 
 pub fn build_nexrad_dataset(request: &BuildNexradRequest) -> anyhow::Result<BuildNexradResult> {
@@ -3319,56 +3011,18 @@ fn run_command_capture(program: &str, args: &[&str]) -> anyhow::Result<String> {
 }
 
 #[cfg(test)]
-fn run_command_capture_metric(program: &str, args: &[&str]) -> anyhow::Result<String> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to execute {program}"))?;
-    if !output.status.success() {
-        bail!("{program} exited with status {}", output.status);
-    }
-    let stderr = String::from_utf8(output.stderr).context("command stderr was not valid utf-8")?;
-    Ok(stderr)
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn avare_parity_fixture_root(name: &str) -> PathBuf {
+    fn geo_grid_fixture_path() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
             .nth(3)
             .expect("preprocessor-fast crate should live under product/preprocessor")
             .join("test_fixtures")
-            .join("avare_parity")
-            .join(name)
-    }
-
-    #[test]
-    fn avare_fixture_parity() -> anyhow::Result<()> {
-        let fixture_root = avare_parity_fixture_root("tfr_parity");
-        let output_dir = TempDir::new().context("failed to create temp dir")?;
-        let generated_at_utc = DateTime::parse_from_rfc3339("2026-04-15T03:30:00Z")
-            .expect("valid fixture timestamp")
-            .with_timezone(&Utc);
-        let result = build_tfr_avare_parity_artifacts(&BuildTfrRequest {
-            input_dir: fixture_root.join("input"),
-            output_dir: output_dir.path().join("out"),
-            version_label: "fixture".to_string(),
-            generated_at_utc,
-        })?;
-
-        assert_eq!(
-            fs::read_to_string(fixture_root.join("expected").join("tfr.txt"))?,
-            fs::read_to_string(&result.tfr_text_path)?,
-        );
-        assert_eq!(
-            fs::read_to_string(fixture_root.join("expected").join("TFRs"))?,
-            fs::read_to_string(&result.tfr_manifest_path)?,
-        );
-        Ok(())
+            .join("geo_grid")
+            .join("geo.csv")
     }
 
     #[test]
@@ -3461,23 +3115,6 @@ mod tests {
         })
         .expect_err("projected coordinates should fail loudly");
         assert!(format!("{error:#}").contains("not lon/lat"));
-        Ok(())
-    }
-
-    #[test]
-    fn metar_fixture_parity() -> anyhow::Result<()> {
-        let fixture_root = avare_parity_fixture_root("metar_parity");
-        let output_dir = TempDir::new().context("failed to create temp dir")?;
-        let result = build_metar_avare_parity_artifacts(&BuildMetarParityRequest {
-            input_xml_path: fixture_root.join("input").join("metars.cache.xml"),
-            output_dir: output_dir.path().join("out"),
-        })?;
-
-        assert_eq!(
-            fs::read_to_string(fixture_root.join("expected").join("avare_handler.txt"))?,
-            fs::read_to_string(&result.output_path)?,
-        );
-        assert!(result.metar_count > 0);
         Ok(())
     }
 
@@ -3900,70 +3537,20 @@ mod tests {
     }
 
     #[test]
-    fn nexrad_fixture_parity() -> anyhow::Result<()> {
-        let fixture_root = avare_parity_fixture_root("nexrad_parity");
-        let output_dir = TempDir::new().context("failed to create temp dir")?;
-        let generated_at_utc = DateTime::parse_from_rfc3339("2026-04-16T01:29:00Z")
-            .expect("valid fixture timestamp")
-            .with_timezone(&Utc);
-        let result = build_nexrad_avare_parity_artifacts(&BuildNexradParityRequest {
-            input_dir: fixture_root.join("input"),
-            output_dir: output_dir.path().join("out"),
-            generated_at_utc,
-        })?;
-
-        assert_eq!(
-            fs::read_to_string(fixture_root.join("expected").join("conus"))?,
-            fs::read_to_string(&result.manifest_path)?,
-        );
-        assert_eq!(
-            fs::read_to_string(fixture_root.join("expected").join("latest.txt"))?,
-            fs::read_to_string(&result.latest_txt_path)?,
-        );
-        for png_name in [
-            "latest_radaronly.png",
-            "latest_radaronly1.png",
-            "latest_radaronly2.png",
-        ] {
-            let expected_png = fixture_root.join("expected").join(png_name);
-            let actual_png = output_dir.path().join("out").join(png_name);
-            assert_eq!(
-                "0",
-                run_command_capture_metric(
-                    "compare",
-                    &[
-                        "-metric",
-                        "AE",
-                        actual_png.to_str().unwrap(),
-                        expected_png.to_str().unwrap(),
-                        "null:",
-                    ],
-                )?
-                .trim(),
-            );
-        }
-        assert!(result.zip_path.exists());
-        Ok(())
-    }
-
-    #[test]
-    fn geo_fixture_parity() -> anyhow::Result<()> {
-        let fixture_root = avare_parity_fixture_root("geo_parity");
+    fn geo_dataset_preserves_source_grid() -> anyhow::Result<()> {
+        let source_csv_path = geo_grid_fixture_path();
         let output_dir = TempDir::new().context("failed to create temp dir")?;
         let generated_at_utc = DateTime::parse_from_rfc3339("2026-04-16T00:00:00Z")
             .expect("valid fixture timestamp")
             .with_timezone(&Utc);
         let result = build_geo_dataset(&BuildGeoRequest {
-            source_csv_path: fixture_root.join("input").join("geo.csv"),
+            source_csv_path: source_csv_path.clone(),
             output_dir: output_dir.path().join("out"),
             version_label: "fixture".to_string(),
             generated_at_utc,
         })?;
 
-        assert_eq!(
-            fs::read(fixture_root.join("expected").join("geo.csv"))?,
-            fs::read(&result.csv_path)?,
-        );
+        assert_eq!(fs::read(source_csv_path)?, fs::read(&result.csv_path)?);
         assert_eq!(64_800, result.point_count);
         Ok(())
     }
@@ -4080,9 +3667,8 @@ mod tests {
     }
 
     #[test]
-    fn geoid_grid_interpolates_avare_geo_fixture() -> anyhow::Result<()> {
-        let fixture_root = avare_parity_fixture_root("geo_parity");
-        let grid = GeoidGrid::from_avare_geo_csv(&fixture_root.join("input").join("geo.csv"))?;
+    fn geoid_grid_interpolates_geo_fixture() -> anyhow::Result<()> {
+        let grid = GeoidGrid::from_avare_geo_csv(&geo_grid_fixture_path())?;
         assert_eq!(grid.geoid_height_feet_bilinear(-90.0, -180.0), -30.0);
         assert_eq!(grid.geoid_height_feet_bilinear(89.0, 179.0), 10.0);
 
@@ -4095,8 +3681,7 @@ mod tests {
 
     #[test]
     fn terrain_transform_adds_geoid_height_after_meter_to_feet_conversion() -> anyhow::Result<()> {
-        let fixture_root = avare_parity_fixture_root("geo_parity");
-        let grid = GeoidGrid::from_avare_geo_csv(&fixture_root.join("input").join("geo.csv"))?;
+        let grid = GeoidGrid::from_avare_geo_csv(&geo_grid_fixture_path())?;
         let transformed =
             terrain_ellipsoid_height_feet_from_navd88_meters(100.0, -90.0, -180.0, &grid);
         assert!((transformed - 298.0839895).abs() < 0.0001);

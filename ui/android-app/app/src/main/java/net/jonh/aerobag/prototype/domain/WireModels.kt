@@ -769,6 +769,7 @@ sealed interface WireMapSelectionHighlight {
     data class FeatureRef(val id: String) : WireMapSelectionHighlight
     data class Metar(val station_id: String) : WireMapSelectionHighlight
     data class Pirep(val id: String) : WireMapSelectionHighlight
+    data class OfflineRegion(val id: String) : WireMapSelectionHighlight
     data class Spot(val lat: Double, val lon: Double) : WireMapSelectionHighlight
 }
 
@@ -778,6 +779,7 @@ object WireMapSelectionHighlightSerializer : JsonContentPolymorphicSerializer<Wi
             "feature_ref" -> WireMapSelectionHighlightFeatureRef.serializer()
             "metar" -> WireMapSelectionHighlightMetar.serializer()
             "pirep" -> WireMapSelectionHighlightPirep.serializer()
+            "offline_region" -> WireMapSelectionHighlightOfflineRegion.serializer()
             "spot" -> WireMapSelectionHighlightSpot.serializer()
             else -> WireMapSelectionHighlightSpot.serializer()
         }
@@ -802,6 +804,13 @@ data class WireMapSelectionHighlightMetar(
 @SerialName("pirep")
 data class WireMapSelectionHighlightPirep(
     val kind: String = "pirep",
+    val id: String,
+) : WireMapSelectionHighlight
+
+@Serializable
+@SerialName("offline_region")
+data class WireMapSelectionHighlightOfflineRegion(
+    val kind: String = "offline_region",
     val id: String,
 ) : WireMapSelectionHighlight
 

@@ -266,6 +266,7 @@ sealed interface MapSelectionHighlight {
     data class FeatureRef(val id: String) : MapSelectionHighlight
     data class Metar(val stationId: String) : MapSelectionHighlight
     data class Pirep(val id: String) : MapSelectionHighlight
+    data class OfflineRegion(val id: String) : MapSelectionHighlight
     data class Spot(val lat: Double, val lon: Double) : MapSelectionHighlight
 }
 
@@ -2128,10 +2129,12 @@ private fun WireMapSelectionHighlight.toUi(): MapSelectionHighlight = when (this
     is WireMapSelectionHighlightFeatureRef -> MapSelectionHighlight.FeatureRef(id)
     is WireMapSelectionHighlightMetar -> MapSelectionHighlight.Metar(station_id)
     is WireMapSelectionHighlightPirep -> MapSelectionHighlight.Pirep(id)
+    is WireMapSelectionHighlightOfflineRegion -> MapSelectionHighlight.OfflineRegion(id)
     is WireMapSelectionHighlightSpot -> MapSelectionHighlight.Spot(lat, lon)
     is WireMapSelectionHighlight.FeatureRef -> MapSelectionHighlight.FeatureRef(id)
     is WireMapSelectionHighlight.Metar -> MapSelectionHighlight.Metar(station_id)
     is WireMapSelectionHighlight.Pirep -> MapSelectionHighlight.Pirep(id)
+    is WireMapSelectionHighlight.OfflineRegion -> MapSelectionHighlight.OfflineRegion(id)
     is WireMapSelectionHighlight.Spot -> MapSelectionHighlight.Spot(lat, lon)
 }
 

@@ -2257,23 +2257,8 @@ private fun OfflineRegionsOverlayLayer(
             style = Paint.Style.FILL
         }
         displayedMapOverlay.offlineRegions.forEach { region ->
-            val path = Path().apply {
-                val first = region.points.firstOrNull() ?: return@forEach
-                moveTo(first.x.toFloat(), first.y.toFloat())
-                region.points.drop(1).forEach { point -> lineTo(point.x.toFloat(), point.y.toFloat()) }
-                close()
-            }
             val color = aviationColor(uiTheme, region.colorKey)
-            drawPath(
-                path,
-                Color.White.copy(alpha = 0.8f),
-                style = Stroke(width = 5f * densityScale, join = StrokeJoin.Round),
-            )
-            drawPath(
-                path,
-                color,
-                style = Stroke(width = 2.5f * densityScale, join = StrokeJoin.Round),
-            )
+            drawOfflineRegion(region, densityScale, uiTheme, selected = false)
             labelFill.color = color.toArgb()
             drawContext.canvas.nativeCanvas.apply {
                 val x = region.labelX.toFloat()
@@ -2283,6 +2268,31 @@ private fun OfflineRegionsOverlayLayer(
             }
         }
     }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawOfflineRegion(
+    region: net.jonh.aerobag.prototype.domain.OfflineRegionDisplay,
+    densityScale: Float,
+    uiTheme: UiTheme,
+    selected: Boolean,
+) {
+    val path = Path().apply {
+        val first = region.points.firstOrNull() ?: return
+        moveTo(first.x.toFloat(), first.y.toFloat())
+        region.points.drop(1).forEach { point -> lineTo(point.x.toFloat(), point.y.toFloat()) }
+        close()
+    }
+    val color = aviationColor(uiTheme, region.colorKey)
+    drawPath(
+        path,
+        Color.White.copy(alpha = if (selected) 0.95f else 0.8f),
+        style = Stroke(width = (if (selected) 8f else 5f) * densityScale, join = StrokeJoin.Round),
+    )
+    drawPath(
+        path,
+        color,
+        style = Stroke(width = (if (selected) 4f else 2.5f) * densityScale, join = StrokeJoin.Round),
+    )
 }
 
 @Composable
@@ -2349,6 +2359,11 @@ private fun MapSelectionHighlightLayer(
                     val center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat())
                     drawCircle(Color.White, radius = 25f * densityScale, center = center, style = Stroke(width = 4f * densityScale))
                     drawPirepSymbol(feature, center, densityScale, uiTheme, symbolScale = 0.32f)
+                }
+            }
+            is MapSelectionHighlight.OfflineRegion -> {
+                displayedMapOverlay.offlineRegions.firstOrNull { it.id == highlight.id }?.let { region ->
+                    drawOfflineRegion(region, densityScale, uiTheme, selected = true)
                 }
             }
             is MapSelectionHighlight.Spot -> {

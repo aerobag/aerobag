@@ -2047,7 +2047,6 @@ fn project_display_rows(
                     component.can_reorder_up,
                     component.can_reorder_down,
                     component.component_index.into(),
-                    plan.route_components.len(),
                     chart_airport_id.as_ref(),
                     origin_anchor.as_ref(),
                 ),
@@ -2177,7 +2176,6 @@ fn project_display_rows(
                                 false,
                                 false,
                                 None,
-                                plan.route_components.len(),
                                 None,
                                 None,
                             ),
@@ -2587,7 +2585,6 @@ fn waypoint_actions_for_row(
     can_reorder_up: bool,
     can_reorder_down: bool,
     component_index: Option<usize>,
-    route_component_count: usize,
     chart_airport_id: Option<&String>,
     origin_anchor: Option<&NavRef>,
 ) -> Vec<FlightPlanRowActionUiView> {
@@ -2614,18 +2611,8 @@ fn waypoint_actions_for_row(
                 FlightPlanRowActionId::InsertAfter,
                 component_index.is_some(),
             ),
-            move_action(
-                FlightPlanRowActionId::MoveUp,
-                can_reorder_up,
-                component_index,
-                route_component_count,
-            ),
-            move_action(
-                FlightPlanRowActionId::MoveDown,
-                can_reorder_down,
-                component_index,
-                route_component_count,
-            ),
+            move_action(FlightPlanRowActionId::MoveUp, can_reorder_up),
+            move_action(FlightPlanRowActionId::MoveDown, can_reorder_down),
             action(FlightPlanRowActionId::WaypointInfo, false),
             action(
                 FlightPlanRowActionId::AddAirway,
@@ -2751,24 +2738,14 @@ fn core_session_action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRo
     }
 }
 
-fn move_action(
-    id: FlightPlanRowActionId,
-    enabled: bool,
-    component_index: Option<usize>,
-    route_component_count: usize,
-) -> FlightPlanRowActionUiView {
-    let dismiss_tray_on_success = match (id.clone(), enabled, component_index) {
-        (FlightPlanRowActionId::MoveUp, true, Some(index)) => index <= 1,
-        (FlightPlanRowActionId::MoveDown, true, Some(index)) => index + 2 >= route_component_count,
-        _ => true,
-    };
+fn move_action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView {
     FlightPlanRowActionUiView {
         label: action_label(&id).to_string(),
         uid: String::new(),
         id,
         enabled,
         execution: FlightPlanRowActionExecution::CoreSession,
-        dismiss_tray_on_success,
+        dismiss_tray_on_success: false,
     }
 }
 
@@ -6118,7 +6095,7 @@ mod tests {
     }
 
     #[test]
-    fn move_row_actions_dismiss_only_when_next_move_would_be_disabled() {
+    fn move_row_actions_never_dismiss_the_tray() {
         let ui = project_ui_state(&sample_waypoint_only_plan());
         let action_for_component = |component_index: usize, id: FlightPlanRowActionId| {
             ui.display_rows
@@ -6128,10 +6105,18 @@ mod tests {
                 .expect("row action")
         };
 
+        assert!(!action_for_component(0, FlightPlanRowActionId::MoveUp).enabled);
+        assert!(action_for_component(0, FlightPlanRowActionId::MoveDown).enabled);
+        assert!(action_for_component(1, FlightPlanRowActionId::MoveUp).enabled);
+        assert!(action_for_component(1, FlightPlanRowActionId::MoveDown).enabled);
+        assert!(action_for_component(2, FlightPlanRowActionId::MoveUp).enabled);
+        assert!(!action_for_component(2, FlightPlanRowActionId::MoveDown).enabled);
+        assert!(!action_for_component(0, FlightPlanRowActionId::MoveUp).dismiss_tray_on_success);
         assert!(!action_for_component(0, FlightPlanRowActionId::MoveDown).dismiss_tray_on_success);
-        assert!(action_for_component(1, FlightPlanRowActionId::MoveUp).dismiss_tray_on_success);
-        assert!(action_for_component(1, FlightPlanRowActionId::MoveDown).dismiss_tray_on_success);
+        assert!(!action_for_component(1, FlightPlanRowActionId::MoveUp).dismiss_tray_on_success);
+        assert!(!action_for_component(1, FlightPlanRowActionId::MoveDown).dismiss_tray_on_success);
         assert!(!action_for_component(2, FlightPlanRowActionId::MoveUp).dismiss_tray_on_success);
+        assert!(!action_for_component(2, FlightPlanRowActionId::MoveDown).dismiss_tray_on_success);
     }
 
     #[test]

@@ -136,7 +136,6 @@ import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -249,7 +248,6 @@ import net.jonh.aerobag.prototype.domain.RouteComponentViewKind
 import net.jonh.aerobag.prototype.domain.RouteComponent
 import net.jonh.aerobag.prototype.domain.ScreenPoint
 import net.jonh.aerobag.prototype.domain.SectionalPackages
-import net.jonh.aerobag.prototype.domain.SampleData
 import net.jonh.aerobag.prototype.domain.SequencingMode
 import net.jonh.aerobag.prototype.domain.SituationControlInput
 import net.jonh.aerobag.prototype.domain.SituationRingCandidate
@@ -341,10 +339,7 @@ internal fun PlaybackWidget(
     onSnapshotChange: (UiSessionSnapshot) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val context = LocalContext.current
-    val devServerBaseUrl = remember(context) {
-        loadAndroidDevServerBaseUrl(context.applicationContext)
-    }
+    val devServerBaseUrl = remember { androidDevServerBaseUrl() }
     val scope = rememberCoroutineScope()
     var isBusy by remember { mutableStateOf(false) }
     var scrubCursorSeconds by remember { mutableStateOf<Double?>(null) }

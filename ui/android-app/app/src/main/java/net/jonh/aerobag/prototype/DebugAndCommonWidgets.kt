@@ -249,7 +249,6 @@ import net.jonh.aerobag.prototype.domain.RouteComponentViewKind
 import net.jonh.aerobag.prototype.domain.RouteComponent
 import net.jonh.aerobag.prototype.domain.ScreenPoint
 import net.jonh.aerobag.prototype.domain.SectionalPackages
-import net.jonh.aerobag.prototype.domain.SampleData
 import net.jonh.aerobag.prototype.domain.SequencingMode
 import net.jonh.aerobag.prototype.domain.SituationControlInput
 import net.jonh.aerobag.prototype.domain.SituationRingCandidate

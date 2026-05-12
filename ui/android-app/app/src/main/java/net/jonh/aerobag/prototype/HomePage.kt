@@ -249,7 +249,7 @@ import net.jonh.aerobag.prototype.domain.RouteComponentViewKind
 import net.jonh.aerobag.prototype.domain.RouteComponent
 import net.jonh.aerobag.prototype.domain.ScreenPoint
 import net.jonh.aerobag.prototype.domain.SectionalPackages
-import net.jonh.aerobag.prototype.domain.SampleData
+import net.jonh.aerobag.prototype.domain.AndroidRuntimeContent
 import net.jonh.aerobag.prototype.domain.SequencingMode
 import net.jonh.aerobag.prototype.domain.SituationControlInput
 import net.jonh.aerobag.prototype.domain.SituationRingCandidate
@@ -338,7 +338,7 @@ internal fun HomePage(
     pageHistory: List<AppViewSnapshot>,
     mostRecentChartOrPlatePage: AppPage = AppPage.Map,
     uptimeLabel: String,
-    bootstrap: net.jonh.aerobag.prototype.domain.BootstrapFixture,
+    bootstrap: net.jonh.aerobag.prototype.domain.RuntimeBootstrap,
     debugState: UiDebugState,
     navElement: NavElementUiView?,
     onSelectPage: (AppPage) -> Unit,
@@ -599,7 +599,7 @@ internal fun HomePage(
                     return@produceState
                 }
                 value = withContext(Dispatchers.IO) {
-                    SampleData.inspectNavDbStatus(context.applicationContext)
+                    AndroidRuntimeContent.inspectNavDbStatus(context.applicationContext)
                 }
             }
             LaunchedEffect(navDbStatus) {

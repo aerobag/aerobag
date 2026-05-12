@@ -251,7 +251,6 @@ import net.jonh.aerobag.prototype.domain.RouteComponentViewKind
 import net.jonh.aerobag.prototype.domain.RouteComponent
 import net.jonh.aerobag.prototype.domain.RasterMapUiState
 import net.jonh.aerobag.prototype.domain.ScreenPoint
-import net.jonh.aerobag.prototype.domain.SampleData
 import net.jonh.aerobag.prototype.domain.SequencingMode
 import net.jonh.aerobag.prototype.domain.SituationControlInput
 import net.jonh.aerobag.prototype.domain.SituationRingCandidate
@@ -333,17 +332,54 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
 
-private fun fetchCorePackageResource(
+private fun fetchCoreResource(
     context: Context,
     resource: net.jonh.aerobag.prototype.domain.CoreResourceRequest,
 ): ByteArray {
-    val address = resource.address
-    require(address.startsWith("package://")) { "unsupported core resource address: $address" }
-    val packageAddress = address.removePrefix("package://")
-    val packageId = packageAddress.substringBefore('/', missingDelimiterValue = "")
-    val memberPath = packageAddress.substringAfter('/', missingDelimiterValue = "")
-    require(packageId.isNotBlank() && memberPath.isNotBlank()) { "invalid package resource address: $address" }
-    return InstalledPackages.readZipEntryBytes(context, packageId, memberPath)
+    val prefs = context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE)
+    val publicationRootUrl = resolvePublicationRootUrl(readPackageSourceBaseUrl(context.applicationContext, prefs))
+    return when (val location = resolveCoreResourceLocation(resource.address, publicationRootUrl)) {
+        is CoreResourceLocation.InstalledPackage ->
+            InstalledPackages.readZipEntryBytes(context, location.packageId, location.memberPath)
+        is CoreResourceLocation.Url ->
+            fetchResourceBytes(location.url)
+    }
+}
+
+internal sealed class CoreResourceLocation {
+    data class InstalledPackage(
+        val packageId: String,
+        val memberPath: String,
+    ) : CoreResourceLocation()
+
+    data class Url(
+        val url: String,
+    ) : CoreResourceLocation()
+}
+
+internal fun resolveCoreResourceLocation(
+    address: String,
+    publicationRootUrl: String,
+): CoreResourceLocation {
+    if (address.startsWith("package://")) {
+        val packageAddress = address.removePrefix("package://")
+        val packageId = packageAddress.substringBefore('/', missingDelimiterValue = "")
+        val memberPath = packageAddress.substringAfter('/', missingDelimiterValue = "")
+        require(packageId.isNotBlank() && memberPath.isNotBlank()) { "invalid package resource address: $address" }
+        return CoreResourceLocation.InstalledPackage(packageId, memberPath)
+    }
+    if (address.startsWith("publication-error:")) {
+        error(address)
+    }
+    if (address.startsWith("http://") || address.startsWith("https://")) {
+        return CoreResourceLocation.Url(address)
+    }
+    if (address.startsWith("/packages/")) {
+        return CoreResourceLocation.Url(
+            resolvePackageSourceUrl(address.removePrefix("/packages/"), publicationRootUrl),
+        )
+    }
+    error("unsupported core resource address: $address")
 }
 
 private fun WireRasterTileSource.toRenderTileSource(): RenderTileSource? {
@@ -431,9 +467,7 @@ internal fun MapExplorerPage(
     val activity = context as? MainActivity
     val density = LocalDensity.current
     val json = remember { Json { ignoreUnknownKeys = true } }
-    val devServerBaseUrl = remember(context) {
-        loadAndroidDevServerBaseUrl(context.applicationContext)
-    }
+    val devServerBaseUrl = remember { androidDevServerBaseUrl() }
     val focusRequester = remember { FocusRequester() }
     var chartTrayOpen by remember { mutableStateOf(false) }
     var layerTrayOpen by remember { mutableStateOf(false) }
@@ -1121,7 +1155,7 @@ internal fun MapExplorerPage(
             onViewportChange(nextViewport)
         }
     }
-    LaunchedEffect(uiSession, viewport, surfaceSize, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.offlineRegions.visible, devServerBaseUrl) {
+    LaunchedEffect(uiSession, viewport, surfaceSize, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.offlineRegions.visible) {
         if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
             mapOverlayError = null
             return@LaunchedEffect
@@ -1149,7 +1183,7 @@ internal fun MapExplorerPage(
             val overlayStartMs = SystemClock.elapsedRealtime()
             val overlay = withContext(Dispatchers.IO) {
                 uiSession.queryMapOverlay(viewport, overlayWidthPx.toDouble(), overlayHeightPx.toDouble()) { resource ->
-                    fetchCorePackageResource(context, resource)
+                    fetchCoreResource(context, resource)
                 }
             }
             currentCoroutineContext().ensureActive()

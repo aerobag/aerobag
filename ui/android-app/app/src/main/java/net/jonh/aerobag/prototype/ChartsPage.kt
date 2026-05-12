@@ -249,7 +249,6 @@ import net.jonh.aerobag.prototype.domain.RouteComponentViewKind
 import net.jonh.aerobag.prototype.domain.RouteComponent
 import net.jonh.aerobag.prototype.domain.ScreenPoint
 import net.jonh.aerobag.prototype.domain.SectionalPackages
-import net.jonh.aerobag.prototype.domain.SampleData
 import net.jonh.aerobag.prototype.domain.SequencingMode
 import net.jonh.aerobag.prototype.domain.SituationControlInput
 import net.jonh.aerobag.prototype.domain.SituationRingCandidate
@@ -382,14 +381,11 @@ internal fun ChartsPage(
             withContext(Dispatchers.IO) {
                 runCatching {
                     val localFile = java.io.File(context.filesDir, path)
-                    val inputStream =
-                        if (localFile.isFile) {
-                            localFile.inputStream()
-                        } else {
-                            val chartBytes = ChartPackages.loadChartBytes(context, chart) ?: context.assets.open(path).use { it.readBytes() }
-                            chartBytes.inputStream()
-                        }
-                    inputStream.use { stream ->
+                    val inputStream = when {
+                        localFile.isFile -> localFile.inputStream()
+                        else -> ChartPackages.loadChartBytes(context, chart)?.inputStream()
+                    }
+                    inputStream?.use { stream ->
                         BitmapFactory.decodeStream(stream)?.asImageBitmap()
                     }
                 }.getOrNull()

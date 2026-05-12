@@ -249,7 +249,6 @@ import net.jonh.aerobag.prototype.domain.RouteComponentViewKind
 import net.jonh.aerobag.prototype.domain.RouteComponent
 import net.jonh.aerobag.prototype.domain.ScreenPoint
 import net.jonh.aerobag.prototype.domain.SectionalPackages
-import net.jonh.aerobag.prototype.domain.SampleData
 import net.jonh.aerobag.prototype.domain.SequencingMode
 import net.jonh.aerobag.prototype.domain.SituationControlInput
 import net.jonh.aerobag.prototype.domain.SituationRingCandidate
@@ -332,13 +331,7 @@ import kotlin.math.pow
 import kotlin.math.sin
 
 
-internal fun loadAndroidDevServerBaseUrl(context: Context): String =
-    runCatching {
-        context.assets.open("fixtures/android-dev-server-base-url.txt")
-            .bufferedReader()
-            .use { it.readText().trim() }
-            .takeIf { it.isNotBlank() }
-    }.getOrNull() ?: DefaultAndroidDevServerBaseUrl
+internal fun androidDevServerBaseUrl(): String = DefaultAndroidDevServerBaseUrl
 
 internal fun loadAndroidPackageSourceBaseUrl(context: Context): String =
     runCatching {

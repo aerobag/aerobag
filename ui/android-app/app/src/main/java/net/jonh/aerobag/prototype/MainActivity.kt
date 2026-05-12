@@ -250,7 +250,7 @@ import net.jonh.aerobag.prototype.domain.RouteComponentViewKind
 import net.jonh.aerobag.prototype.domain.RouteComponent
 import net.jonh.aerobag.prototype.domain.ScreenPoint
 import net.jonh.aerobag.prototype.domain.SectionalPackages
-import net.jonh.aerobag.prototype.domain.SampleData
+import net.jonh.aerobag.prototype.domain.AndroidRuntimeContent
 import net.jonh.aerobag.prototype.domain.SequencingMode
 import net.jonh.aerobag.prototype.domain.SituationControlInput
 import net.jonh.aerobag.prototype.domain.SituationRingCandidate
@@ -2202,16 +2202,16 @@ internal fun situationControlInputForKeyEvent(event: AndroidKeyEvent): Situation
 internal fun AerobagApp() {
     val context = LocalContext.current
     val prefs = remember(context) { context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE) }
-    val bootstrap = remember(context) { SampleData.loadBootstrap(context.applicationContext) }
+    val bootstrap = remember(context) { AndroidRuntimeContent.loadBootstrap(context.applicationContext) }
     var runtimeReloadToken by remember { mutableStateOf(0) }
     val offlinePackagesControllerHandle = remember(prefs) { initialOfflinePackagesControllerHandle(prefs) }
     DisposableEffect(offlinePackagesControllerHandle) {
         onDispose { NativeBindings.destroyOfflinePackagesController(offlinePackagesControllerHandle) }
     }
     val uiTheme = remember(context) { UiThemeLoader.load(context.applicationContext) }
-    val runtimeFixture by produceState<Result<net.jonh.aerobag.prototype.domain.ContentFixture>?>(initialValue = null, context, bootstrap, runtimeReloadToken) {
+    val runtimeFixture by produceState<Result<net.jonh.aerobag.prototype.domain.RuntimeContent>?>(initialValue = null, context, bootstrap, runtimeReloadToken) {
         value = withContext(Dispatchers.IO) {
-            runCatching { SampleData.loadRuntime(context.applicationContext, bootstrap) }
+            runCatching { AndroidRuntimeContent.loadInstalledRuntime(context.applicationContext, bootstrap) }
         }
     }
     var keepOfflinePackagesVisible by remember { mutableStateOf(false) }

@@ -1,0 +1,29 @@
+---
+id: TASK-49
+title: Add NOTAM support
+status: Next
+assignee: []
+created_date: '2026-05-12 16:35'
+labels:
+  - feature
+  - safety
+  - data
+  - cat:productionization
+dependencies: []
+priority: high
+ordinal: 49000
+---
+
+## Description
+
+<!-- SECTION:DESCRIPTION:BEGIN -->
+Add NOTAM ingestion, display, inspection, and freshness warning support.
+<!-- SECTION:DESCRIPTION:END -->
+
+## Acceptance Criteria
+<!-- AC:BEGIN -->
+- [ ] #1 Preproc/core ingest NOTAM data relevant to chart and airport inspection.
+- [ ] #2 UI can show relevant NOTAMs without platform-side filtering logic.
+- [ ] #3 Stale NOTAM data contributes to the caution/status system.
+<!-- AC:END -->
+

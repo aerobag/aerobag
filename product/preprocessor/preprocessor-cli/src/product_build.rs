@@ -29,8 +29,7 @@ use preprocessor_csup::{
     stage_work_dir_for_product,
 };
 use preprocessor_data::{
-    build_data_package, build_data_package_with_tpp_matches, DataBuildMode, DataBuildRequest,
-    DataTppMatchRequest,
+    build_data_package, build_data_package_with_tpp_matches, DataBuildRequest, DataTppMatchRequest,
 };
 use preprocessor_fast::{
     build_geo_dataset, build_metar_dataset, build_nexrad_dataset, build_tfr_dataset,
@@ -13523,7 +13522,7 @@ def main():
         'sample_vertical_datum': 'WGS84 ellipsoid',
         'source_dem': 'USGS 3DEP 1 arc-second DEM',
         'source_dem_vertical_datum': 'source tile metadata; generally NAVD88 in CONUS',
-        'geoid_model': 'avare geo.csv one-degree grid, applied once per tile at tile center (temporary approximation)',
+        'geoid_model': 'packaged geo.csv one-degree grid, applied once per tile at tile center (temporary approximation)',
         'worker_count': workers,
         'refresh_policy': {
             'identity': 'published filename is content-addressed by ZIP bytes',
@@ -16810,7 +16809,6 @@ fn build_data_nodes(
     let request = DataBuildRequest {
         input_dir: staged_input_dir.clone(),
         output_dir: prepared.dir.join("output"),
-        mode: DataBuildMode::Production,
         manifest_version: data_manifest_version.clone(),
         artifact_stem: Some(artifact_stem),
     };

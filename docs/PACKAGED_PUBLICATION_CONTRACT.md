@@ -242,7 +242,7 @@ bundle.
 
 Optional standalone static geo grid artifact.
 
-It contains Avare-compatible `geo.csv` with one-degree grid rows:
+It contains `geo.csv` with one-degree grid rows:
 `Latitude,Longitude,geoid_height,magnetic_declination`.
 
 It is listed in the current cycle bundle `packages[]`.

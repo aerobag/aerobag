@@ -17,7 +17,7 @@ use preprocessor_core::{ChartFamily, ConcurrencyConfig, Parallelism, Region, Wor
 use preprocessor_csup::{run_native_csup, NativeCsupRunRequest};
 use preprocessor_data::{
     audit_tpp_cifp_matching, build_data_package, choose_matching_bundle, load_matching_bundle,
-    resolve_matching_db_path, tpp_zip_paths_from_bundle, DataBuildMode, DataBuildRequest,
+    resolve_matching_db_path, tpp_zip_paths_from_bundle, DataBuildRequest,
 };
 use preprocessor_fast::{
     build_notam_dataset, terrain_ellipsoid_height_feet_from_navd88_meters, BuildNotamRequest,
@@ -614,7 +614,6 @@ struct BuildDataCommand {
     input_dir: PathBuf,
     output_dir: PathBuf,
     manifest_version: String,
-    mode: DataBuildMode,
     resource_index_output: Option<PathBuf>,
     chart_sources: Vec<ChartSource>,
     tpp_sources: Vec<AssetSource>,
@@ -625,7 +624,6 @@ fn parse_build_data_command(args: &[String]) -> anyhow::Result<BuildDataCommand>
     let mut input_dir = None;
     let mut output_dir = None;
     let mut manifest_version = None;
-    let mut mode = DataBuildMode::Production;
     let mut resource_index_output = None;
     let mut chart_sources = Vec::new();
     let mut tpp_sources = Vec::new();
@@ -655,14 +653,6 @@ fn parse_build_data_command(args: &[String]) -> anyhow::Result<BuildDataCommand>
                         .cloned()
                         .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
                 );
-                index += 2;
-            }
-            Some("--data-mode") => {
-                mode = DataBuildMode::parse(
-                    args.get(index + 1)
-                        .map(String::as_str)
-                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-                )?;
                 index += 2;
             }
             Some("--resource-index-output") => {
@@ -705,7 +695,6 @@ fn parse_build_data_command(args: &[String]) -> anyhow::Result<BuildDataCommand>
         input_dir: input_dir.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
         output_dir: output_dir.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
         manifest_version: manifest_version.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-        mode,
         resource_index_output,
         chart_sources,
         tpp_sources,
@@ -1168,7 +1157,7 @@ fn audit_terrain_airports_command(args: &[String]) -> anyhow::Result<()> {
     fs::create_dir_all(&output_dir)
         .with_context(|| format!("failed to create {}", output_dir.display()))?;
 
-    let geoid_grid = GeoidGrid::from_avare_geo_csv(&geo_csv)?;
+    let geoid_grid = GeoidGrid::from_geo_csv(&geo_csv)?;
     let points = load_terrain_audit_points(&nav_db, bbox, include_heliports, limit)?;
     let mut rows = Vec::new();
     for point in points {
@@ -2158,7 +2147,6 @@ fn main() -> anyhow::Result<()> {
                 input_dir: command.input_dir,
                 output_dir: command.output_dir,
                 manifest_version: command.manifest_version,
-                mode: command.mode,
                 artifact_stem: None,
             })?;
             println!("main_db {}", result.main_db.display());
@@ -2668,7 +2656,6 @@ mod tests {
         assert_eq!(command.input_dir, PathBuf::from("/tmp/input"));
         assert_eq!(command.output_dir, PathBuf::from("/tmp/output"));
         assert_eq!(command.manifest_version, "2604");
-        assert_eq!(command.mode, DataBuildMode::Production);
         assert_eq!(command.resource_index_output, None);
         assert!(command.chart_sources.is_empty());
         assert!(command.tpp_sources.is_empty());
@@ -2728,23 +2715,5 @@ mod tests {
             command.csup_sources[0].asset_root,
             PathBuf::from("/tmp/csup-root")
         );
-    }
-
-    #[test]
-    fn parse_build_data_command_accepts_data_mode() {
-        let args = vec![
-            "preprocessor-cli".to_string(),
-            "build-data".to_string(),
-            "--input-dir".to_string(),
-            "/tmp/input".to_string(),
-            "--output-dir".to_string(),
-            "/tmp/output".to_string(),
-            "--manifest-version".to_string(),
-            "2604".to_string(),
-            "--data-mode".to_string(),
-            "legacy_avare".to_string(),
-        ];
-        let command = parse_build_data_command(&args).expect("parse build-data");
-        assert_eq!(command.mode, DataBuildMode::LegacyAvare);
     }
 }

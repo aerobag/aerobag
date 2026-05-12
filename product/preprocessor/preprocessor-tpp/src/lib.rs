@@ -715,8 +715,9 @@ fn make_continued_plate_group(
         rendered_parts.push(temp_png.clone());
     }
 
-    // Product UX intentionally diverges from legacy here: CONT. pages are separate FAA/Avare
-    // artifacts, but in the delivered product we want one tall scrollable procedure image.
+    // Product UX intentionally diverges from the source-page layout here: CONT.
+    // pages are separate FAA artifacts, but in the delivered product we want one
+    // tall scrollable procedure image.
     append_pngs_vertical(
         work_dir,
         &work_dir.join(".rust-logs"),
@@ -725,9 +726,10 @@ fn make_continued_plate_group(
         &format!("tpp-continued-{}", sanitize_label(&group.output_name)),
     )?;
     if let Some(comment) = geotag_comment.as_deref() {
-        // Avare's 4-value plate geotag is anchored at the image top-left and uses pixel-per-degree
-        // scale, so when only page 1 is georeferenced we can safely keep that same transform on
-        // the taller concatenated image. The appended continuation pages just extend downward.
+        // The 4-value plate geotag is anchored at the image top-left and uses
+        // pixel-per-degree scale, so when only page 1 is georeferenced we can
+        // safely keep that same transform on the taller concatenated image. The
+        // appended continuation pages just extend downward.
         write_user_comment(work_dir, &final_png_path, comment)?;
     }
     for rendered_part in rendered_parts {
@@ -1015,10 +1017,9 @@ fn render_png_preserve_alpha(
 }
 
 fn write_user_comment(work_dir: &Path, png_path: &Path, comment: &str) -> anyhow::Result<()> {
-    // Avare's Android client reads plate georeference from PNG EXIF UserComment via
-    // ExifInterface. Aerobag should not depend on that legacy metadata path, but we
-    // still emit it so the Avare parity checks continue to pass while we migrate the
-    // real georeference contract into typed metadata.
+    // Some georeference consumers read plate georeference from PNG EXIF
+    // UserComment via ExifInterface. Aerobag should use typed metadata, but we
+    // still emit the EXIF path for compatibility with geotag-aware tooling.
     let temp_path = PathBuf::from(format!("{}_exiftool_tmp", png_path.display()));
     if temp_path.exists() {
         fs::remove_file(&temp_path)
@@ -1080,7 +1081,7 @@ fn find_plate_pages_script() -> anyhow::Result<PathBuf> {
     // Keep the TPP helper resilient to repo refactors. This compatibility
     // layer must sometimes run from binaries compiled before or during a tree
     // reorganization, and we do not want a stale baked-in crate path to break
-    // parity runs when the helper script is still present elsewhere in the
+    // compatibility runs when the helper script is still present elsewhere in the
     // repo. Prefer the current crate layout, then fall back across known
     // workspace homes for the same compatibility code.
     if let Ok(current_exe) = std::env::current_exe() {

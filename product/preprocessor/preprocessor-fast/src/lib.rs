@@ -585,7 +585,7 @@ impl GeoidGrid {
     const MAX_LON_EXCLUSIVE: i32 = 180;
     const LON_COUNT: usize = 360;
 
-    pub fn from_avare_geo_csv(path: &Path) -> anyhow::Result<Self> {
+    pub fn from_geo_csv(path: &Path) -> anyhow::Result<Self> {
         let mut values = vec![0; 180 * Self::LON_COUNT];
         let mut seen = vec![false; values.len()];
         for point in parse_geo_csv(path)? {
@@ -3668,7 +3668,7 @@ mod tests {
 
     #[test]
     fn geoid_grid_interpolates_geo_fixture() -> anyhow::Result<()> {
-        let grid = GeoidGrid::from_avare_geo_csv(&geo_grid_fixture_path())?;
+        let grid = GeoidGrid::from_geo_csv(&geo_grid_fixture_path())?;
         assert_eq!(grid.geoid_height_feet_bilinear(-90.0, -180.0), -30.0);
         assert_eq!(grid.geoid_height_feet_bilinear(89.0, 179.0), 10.0);
 
@@ -3681,7 +3681,7 @@ mod tests {
 
     #[test]
     fn terrain_transform_adds_geoid_height_after_meter_to_feet_conversion() -> anyhow::Result<()> {
-        let grid = GeoidGrid::from_avare_geo_csv(&geo_grid_fixture_path())?;
+        let grid = GeoidGrid::from_geo_csv(&geo_grid_fixture_path())?;
         let transformed =
             terrain_ellipsoid_height_feet_from_navd88_meters(100.0, -90.0, -180.0, &grid);
         assert!((transformed - 298.0839895).abs() < 0.0001);

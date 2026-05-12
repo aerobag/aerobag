@@ -11484,7 +11484,8 @@ fn static_geo_source_path() -> PathBuf {
         .expect("workspace root should live under product")
         .parent()
         .expect("product should live under repo root")
-        .join("avare-assets")
+        .join("third_party")
+        .join("apps4av")
         .join("geo")
         .join("geo.csv")
 }
@@ -15741,7 +15742,10 @@ impl ProductBuildConfig {
         let artifact_root = default_artifact_write_path(&repo_root);
 
         let mut profile = ProductBuildProfile::Production;
-        let mut chart_cutline_root = repo_root.join("avare-assets").join("chart-cutlines");
+        let mut chart_cutline_root = repo_root
+            .join("third_party")
+            .join("apps4av")
+            .join("chart-cutlines");
         let mut build_root = match profile {
             ProductBuildProfile::Production => artifact_root.join("published_packaged"),
             ProductBuildProfile::Validation => artifact_root.join("published_packaged_validation"),

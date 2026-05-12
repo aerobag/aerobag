@@ -9,7 +9,7 @@ labels:
   - source
   - cat:productionization
 dependencies: []
-priority: medium
+priority: done
 ordinal: 34000
 ---
 
@@ -21,7 +21,7 @@ Scrub Avare parity artifacts and stale Avare references that are no longer usefu
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Find Avare parity files, tests, names, and comments.
-- [ ] #2 Remove unused parity artifacts.
-- [ ] #3 Rename or rewrite any remaining references that describe current behavior rather than Avare compatibility.
+- [x] #1 Find Avare parity files, tests, names, and comments.
+- [x] #2 Remove unused parity artifacts.
+- [x] #3 Rename or rewrite any remaining references that describe current behavior rather than Avare compatibility.
 <!-- AC:END -->

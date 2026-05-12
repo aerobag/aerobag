@@ -129,6 +129,59 @@ struct UiSession {
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<TfrProductPayload>,
     terrain_source_tile_cache: HashMap<String, Vec<u8>>,
+    nexrad_manifest: Option<NexradManifest>,
+    nexrad_frame_cache: HashMap<String, Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NexradOverlayQueryResult {
+    pub status: NexradOverlayStatus,
+    pub frames: Vec<NexradOverlayFrame>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum NexradOverlayStatus {
+    Hidden,
+    Unavailable { reason: String },
+    Loading,
+    Ready { frame_count: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NexradOverlayFrame {
+    pub key: String,
+    pub filename: String,
+    pub observed_at_utc: String,
+    pub width: u32,
+    pub height: u32,
+    pub bounds: NexradBounds,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct NexradManifest {
+    schema_version: u32,
+    version_label: String,
+    frame_count: usize,
+    projection: String,
+    frames: Vec<NexradManifestFrame>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct NexradManifestFrame {
+    filename: String,
+    observed_at_utc: String,
+    width: u32,
+    height: u32,
+    bounds: NexradBounds,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NexradBounds {
+    pub west: f64,
+    pub south: f64,
+    pub east: f64,
+    pub north: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -344,6 +397,8 @@ fn create_ui_session_inner(
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
             terrain_source_tile_cache: HashMap::new(),
+            nexrad_manifest: None,
+            nexrad_frame_cache: HashMap::new(),
         },
     );
     if let Some(mark) = mark.as_deref_mut() {
@@ -455,6 +510,7 @@ pub fn get_raster_tile_plan_in_session(
             1.0
         },
         resource_mode: session.raster_resource_mode,
+        device_pixel_ratio: 1.0,
     };
     let catalog = raster_catalog_for_layer_state(catalog, &session.map_layer_state);
     Ok(crate::raster_tile_plan_with_options(
@@ -476,6 +532,36 @@ pub fn get_raster_tile_plan_in_session_with_options(
             kind: AppErrorKind::Internal,
             message: "session missing raster map catalog".to_string(),
         });
+    };
+    let catalog = raster_catalog_for_layer_state(catalog, &session.map_layer_state);
+    Ok(crate::raster_tile_plan_with_options(
+        &catalog, &viewport, width_px, height_px, options,
+    ))
+}
+
+pub fn get_raster_tile_plan_in_session_with_display_scale(
+    handle: u32,
+    viewport: MapViewport,
+    width_px: f64,
+    height_px: f64,
+    device_pixel_ratio: f64,
+) -> AppResult<RasterTilePlan> {
+    let sessions = lock_sessions();
+    let session = session_ref(&sessions, handle)?;
+    let Some(catalog) = session.raster_map_catalog.as_ref() else {
+        return Err(AppError {
+            kind: AppErrorKind::Internal,
+            message: "session missing raster map catalog".to_string(),
+        });
+    };
+    let options = crate::RasterTilePlanOptions {
+        max_tile_display_multiplier: if session.debug_state.fast_tiles {
+            2.0
+        } else {
+            1.0
+        },
+        device_pixel_ratio,
+        resource_mode: session.raster_resource_mode,
     };
     let catalog = raster_catalog_for_layer_state(catalog, &session.map_layer_state);
     Ok(crate::raster_tile_plan_with_options(
@@ -861,7 +947,8 @@ pub fn tick_debug_ownship_driver_in_session(
     snapshot_for_session(session)
 }
 
-pub fn replace_flight_plan_in_session(
+#[allow(dead_code)]
+fn replace_flight_plan_in_session(
     handle: u32,
     plan: FlightPlan,
 ) -> AppResult<UiSessionSnapshot> {
@@ -1048,6 +1135,58 @@ pub fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
             message: err.to_string(),
         })?,
     })
+}
+
+pub fn preview_flight_plan_entry_in_session(
+    handle: u32,
+    input: String,
+) -> AppResult<HadOperationOutcome> {
+    let sessions = lock_sessions();
+    let session = session_ref(&sessions, handle)?;
+    let plan = session_plan(session)?;
+    let store = session_nav_kv_store(session)?;
+    match crate::had_ops::preview_flight_plan_entry(store, &plan, &input) {
+        Ok(preview) => Ok(HadOperationOutcome::Complete {
+            result: serde_json::to_value(preview).map_err(|err| AppError {
+                kind: AppErrorKind::Internal,
+                message: err.to_string(),
+            })?,
+        }),
+        Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
+            resources: nav_kv_page_resources(pages),
+        }),
+        Err(HadReadError::Fatal(message)) => Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message,
+        }),
+    }
+}
+
+pub fn append_flight_plan_entry_in_session(
+    handle: u32,
+    input: String,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    let plan = session_plan(session)?;
+    let mutation = {
+        let store = session_nav_kv_store(session)?;
+        match crate::had_ops::append_flight_plan_entry(store, &plan, &input) {
+            Ok(mutation) => mutation,
+            Err(HadReadError::NeedPages(pages)) => {
+                return Ok(HadOperationOutcome::NeedResources {
+                    resources: nav_kv_page_resources(pages),
+                })
+            }
+            Err(HadReadError::Fatal(message)) => {
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message,
+                });
+            }
+        }
+    };
+    commit_session_flight_plan_with_snapshot_outcome(session, mutation.plan)
 }
 
 pub fn insert_airway_at_flight_plan_row_in_session(
@@ -1894,10 +2033,50 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
             .insert(rest.to_string(), bytes.to_vec());
         return Ok(());
     }
+    if resource_id == "nexrad/manifest" {
+        let mut sessions = lock_sessions();
+        let session = session_mut(&mut sessions, handle)?;
+        if bytes.is_empty() {
+            session.nexrad_manifest = Some(NexradManifest {
+                schema_version: 1,
+                version_label: "unavailable".to_string(),
+                frame_count: 0,
+                projection: "EPSG:3857".to_string(),
+                frames: Vec::new(),
+            });
+            session.nexrad_frame_cache.clear();
+            return Ok(());
+        }
+        let manifest: NexradManifest = serde_json::from_slice(bytes).map_err(|err| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("failed to parse NEXRAD manifest: {err}"),
+        })?;
+        if manifest.projection != "EPSG:3857" {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message: format!("unsupported NEXRAD projection {}", manifest.projection),
+            });
+        }
+        session.nexrad_manifest = Some(manifest);
+        session.nexrad_frame_cache.clear();
+        return Ok(());
+    }
+    if let Some(frame_key) = resource_id.strip_prefix("nexrad/frame/") {
+        let mut sessions = lock_sessions();
+        let session = session_mut(&mut sessions, handle)?;
+        session
+            .nexrad_frame_cache
+            .insert(frame_key.to_string(), bytes.to_vec());
+        return Ok(());
+    }
     Err(AppError {
         kind: AppErrorKind::UnsupportedOperation,
         message: format!("unsupported session resource id: {resource_id}"),
     })
+}
+
+fn nexrad_frame_key(filename: &str) -> String {
+    filename.replace('/', "__")
 }
 
 fn parse_metar_tile_resource_path(resource_id: &str, rest: &str) -> AppResult<(u32, u32, u32)> {
@@ -2475,6 +2654,96 @@ pub fn get_terrain_overlay_in_session(
     Ok(HadOperationOutcome::Complete {
         result: serde_json::to_value(query).map_err(internal_json_error)?,
     })
+}
+
+pub fn get_nexrad_overlay_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+    let sessions = lock_sessions();
+    let session = session_ref(&sessions, handle)?;
+    if !session.map_layer_state.nexrad.visible {
+        return Ok(HadOperationOutcome::Complete {
+            result: serde_json::to_value(NexradOverlayQueryResult {
+                status: NexradOverlayStatus::Hidden,
+                frames: Vec::new(),
+            })
+            .map_err(internal_json_error)?,
+        });
+    }
+    let mut resources = Vec::new();
+    let Some(manifest) = session.nexrad_manifest.as_ref() else {
+        extend_package_resource_requests(
+            session,
+            &mut resources,
+            "nexrad/manifest",
+            "nexrad",
+            "nexrad.json",
+            true,
+        );
+        return Ok(HadOperationOutcome::NeedResources { resources });
+    };
+    if manifest.frames.is_empty() {
+        return Ok(HadOperationOutcome::Complete {
+            result: serde_json::to_value(NexradOverlayQueryResult {
+                status: NexradOverlayStatus::Unavailable {
+                    reason: "not_found".to_string(),
+                },
+                frames: Vec::new(),
+            })
+            .map_err(internal_json_error)?,
+        });
+    }
+    for frame in &manifest.frames {
+        let key = nexrad_frame_key(&frame.filename);
+        if !session.nexrad_frame_cache.contains_key(&key) {
+            extend_package_resource_requests(
+                session,
+                &mut resources,
+                &format!("nexrad/frame/{key}"),
+                "nexrad",
+                &frame.filename,
+                false,
+            );
+        }
+    }
+    if !resources.is_empty() {
+        return Ok(HadOperationOutcome::NeedResources {
+            resources: dedupe_resource_requests(resources),
+        });
+    }
+    let frames = manifest
+        .frames
+        .iter()
+        .rev()
+        .map(|frame| NexradOverlayFrame {
+            key: nexrad_frame_key(&frame.filename),
+            filename: frame.filename.clone(),
+            observed_at_utc: frame.observed_at_utc.clone(),
+            width: frame.width,
+            height: frame.height,
+            bounds: frame.bounds.clone(),
+        })
+        .collect::<Vec<_>>();
+    Ok(HadOperationOutcome::Complete {
+        result: serde_json::to_value(NexradOverlayQueryResult {
+            status: NexradOverlayStatus::Ready {
+                frame_count: frames.len(),
+            },
+            frames,
+        })
+        .map_err(internal_json_error)?,
+    })
+}
+
+pub fn nexrad_frame_bytes_in_session(handle: u32, frame_key: &str) -> AppResult<Vec<u8>> {
+    let sessions = lock_sessions();
+    let session = session_ref(&sessions, handle)?;
+    session
+        .nexrad_frame_cache
+        .get(frame_key)
+        .cloned()
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("NEXRAD frame bytes missing for {frame_key}"),
+        })
 }
 
 fn terrain_overlay_resources(

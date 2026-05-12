@@ -8,17 +8,23 @@ Core owns:
 - tile fetch/load policy
 - caching policy
 - visible-feature assembly
+- package/publication-contract interpretation
+- flight-plan mutation policy
+- chart/plate selection policy
+- layer availability and status policy
 
 Platform bridge provides:
 
 - tile/resource source implementation
 - local zip mode
 - remote URL mode
+- cancellable byte fetch for opaque core resource requests
 
 UI receives:
 
 - visible features
 - warnings/status
+- view models and opaque action ids
 
 ## Current State
 
@@ -35,26 +41,18 @@ generic resource requests for terrain source bytes, stores those bytes in the
 session, and platforms ask core to render a terrain image by core tile key. The
 remaining platform-side state is mechanical decoded-image/render scheduling.
 
-## Violations To Burn Down
+This audit pass was refreshed on 2026-05-12. The concrete platform/core drift
+items from TASK-24 have been burned down through TASK-110. TASK-25 remains as a
+separate contract decision because eliminating all platform-visible package
+member resolution would change the raster/plate asset transport contract.
 
-1. NEXRAD is platform-owned on both web and Android. Each platform fetches the
-   manifest and frames directly, owns playback state, and owns error handling.
-   It should become a core-planned resource flow.
+## Remaining Contract Decision
 
-2. Web adjusts the raster planning viewport for device pixel ratio before asking
-   core. That is defensible as display geometry, but the cleaner contract is for
-   UI to pass raw viewport plus display scale and for core to own the request
-   planning decision.
-
-3. Web terrain warning still owns rendered-image cache lifetime, in-flight tile
-   rendering, render queue pumping, and frame publication. That may be acceptable
-   as paint-pipeline mechanics, but it should stay out of source tile selection,
-   source-byte caching, and fetch policy.
-
-4. Android raster rendering still iterates core-provided candidate sources in
-   the platform zip bridge. That is transport/local-storage behavior, not policy,
-   as long as source ordering remains core-provided and UI does not invent
-   fallback choices.
+Platform-visible package-member resolution still exists for raster tiles,
+plates, thumbnails, and generic web publication resolver helpers. NEXRAD and
+terrain now use core resource requests, but moving raster/plate assets to the
+same opaque-resource contract would alter the current tile/plate handoff. Track
+that explicitly under `TASK-25`.
 
 ## Completed Burn-Down
 
@@ -70,14 +68,20 @@ remaining platform-side state is mechanical decoded-image/render scheduling.
 - Removed Android's old parent/child bitmap fallback drawing path; Android now
   paints core-planned raster tiles and uses platform code only to satisfy
   core-provided source candidates from local zip storage.
-
-## Remaining Execution Order
-
-1. Move NEXRAD manifest/frame loading into a core-planned resource loop.
-2. Move web DPR shaping into core input/options.
-3. Decide whether terrain rendered-image queue/cache belongs in core or remains
-   platform paint mechanics.
-
-Each step should keep the UI contract moving toward: platform asks core for what
-to paint; platform supplies bytes when core asks for resources; platform paints
-the result.
+- Android raster rendering still iterates core-provided candidate sources in the
+  platform zip bridge. That is transport/local-storage behavior, not policy, as
+  long as source ordering remains core-provided and UI does not invent fallback
+  choices.
+- Web terrain warning still owns rendered-image cache lifetime, in-flight tile
+  rendering, render queue pumping, and frame publication. That is currently
+  classified as paint-pipeline mechanics, not source-selection policy; revisit
+  only if perf or divergence evidence appears.
+- NEXRAD manifest/frame loading moved into a core-planned resource loop.
+- Web startup vector-manifest synthesis is gone; session startup uses a minimal
+  bootstrap and core/HAD owns the real vector manifest.
+- Android metadata-free package ZIPs are no longer guessed into installed
+  artifacts.
+- Web and Android chart-page fallback helpers were removed from platform UI.
+- Platform-facing mirrored flight-plan mutation APIs were removed; route-entry
+  preview/append now operate on the live session.
+- Web DPR raster planning policy moved into core input/options.

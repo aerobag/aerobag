@@ -27,45 +27,11 @@ interface NativeBridge {
 
     fun emptyFlightPlanJson(): String
 
-    fun activateLegUiJson(planJson: String, legIndex: Int): String
-
     fun prepareAirwayPresentationJson(
         airwayName: String,
         branchesJson: String,
         originPositionJson: String,
         destinationPositionJson: String,
-    ): String
-
-    fun sortAirwaySuggestionsForUiJson(suggestionsJson: String): String
-
-    fun insertAirwayMaterializedUiJson(
-        planJson: String,
-        startComponentIndex: Int,
-        endComponentIndexJson: String,
-        selectionJson: String,
-        airwayJson: String,
-        resolvedLegsJson: String,
-    ): String
-
-    fun replaceAirwayMaterializedUiJson(
-        planJson: String,
-        componentIndex: Int,
-        selectionJson: String,
-        airwayJson: String,
-        resolvedLegsJson: String,
-    ): String
-
-    fun insertProcedureMaterializedUiJson(
-        planJson: String,
-        startComponentIndex: Int,
-        endComponentIndex: Int,
-        builtJson: String,
-    ): String
-
-    fun replaceProcedureMaterializedUiJson(
-        planJson: String,
-        componentIndex: Int,
-        builtJson: String,
     ): String
 
     fun createUiSessionJson(
@@ -99,6 +65,16 @@ interface NativeBridge {
         before: Boolean,
         prefix: String,
         limit: Int,
+    ): String
+
+    fun previewFlightPlanEntryInSessionJson(
+        handle: Long,
+        input: String,
+    ): String
+
+    fun appendFlightPlanEntryInSessionJson(
+        handle: Long,
+        input: String,
     ): String
 
     fun insertAirwayAtFlightPlanRowInSessionJson(
@@ -237,11 +213,6 @@ interface NativeBridge {
 
     fun getSessionSnapshotJson(handle: Long): String
 
-    fun replaceFlightPlanInSessionJson(
-        handle: Long,
-        planJson: String,
-    ): String
-
     fun performFlightPlanRowActionInSessionJson(
         handle: Long,
         rowUid: String,
@@ -321,6 +292,8 @@ interface NativeBridge {
         heightPx: Double,
     ): String
 
+    fun getNexradOverlayInSessionJson(handle: Long): String
+
     fun getRasterTilePlanInSessionJson(
         handle: Long,
         viewportJson: String,
@@ -340,6 +313,11 @@ interface NativeBridge {
         aircraftAltitudeFt: Double,
     ): ByteArray
 
+    fun nexradFrameBytesInSession(
+        handle: Long,
+        frameKey: String,
+    ): ByteArray
+
     fun renderTerrainOverlayTilesInSession(
         handle: Long,
         packedTileBytes: ByteArray,
@@ -354,27 +332,6 @@ interface NativeBridge {
     ): String
 
     fun destroySession(handle: Long)
-
-    fun removeFlightPlanLegJson(
-        planJson: String,
-        index: Int,
-    ): String
-
-    fun replaceFlightPlanStateJson(
-        stateJson: String,
-        planJson: String,
-    ): String
-
-    fun setContentPolicyStateJson(
-        stateJson: String,
-        policyJson: String,
-    ): String
-
-    fun refreshContentStateJson(
-        stateJson: String,
-        inventoryJson: String,
-    ): String
-
 }
 
 object NativeBindings : NativeBridge {
@@ -406,45 +363,11 @@ object NativeBindings : NativeBridge {
 
     external override fun situationRingCandidatesJson(): String
 
-    external override fun activateLegUiJson(planJson: String, legIndex: Int): String
-
     external override fun prepareAirwayPresentationJson(
         airwayName: String,
         branchesJson: String,
         originPositionJson: String,
         destinationPositionJson: String,
-    ): String
-
-    external override fun sortAirwaySuggestionsForUiJson(suggestionsJson: String): String
-
-    external override fun insertAirwayMaterializedUiJson(
-        planJson: String,
-        startComponentIndex: Int,
-        endComponentIndexJson: String,
-        selectionJson: String,
-        airwayJson: String,
-        resolvedLegsJson: String,
-    ): String
-
-    external override fun replaceAirwayMaterializedUiJson(
-        planJson: String,
-        componentIndex: Int,
-        selectionJson: String,
-        airwayJson: String,
-        resolvedLegsJson: String,
-    ): String
-
-    external override fun insertProcedureMaterializedUiJson(
-        planJson: String,
-        startComponentIndex: Int,
-        endComponentIndex: Int,
-        builtJson: String,
-    ): String
-
-    external override fun replaceProcedureMaterializedUiJson(
-        planJson: String,
-        componentIndex: Int,
-        builtJson: String,
     ): String
 
     external override fun emptyFlightPlanJson(): String
@@ -480,6 +403,16 @@ object NativeBindings : NativeBridge {
         before: Boolean,
         prefix: String,
         limit: Int,
+    ): String
+
+    external override fun previewFlightPlanEntryInSessionJson(
+        handle: Long,
+        input: String,
+    ): String
+
+    external override fun appendFlightPlanEntryInSessionJson(
+        handle: Long,
+        input: String,
     ): String
 
     external override fun insertAirwayAtFlightPlanRowInSessionJson(
@@ -618,11 +551,6 @@ object NativeBindings : NativeBridge {
 
     external override fun getSessionSnapshotJson(handle: Long): String
 
-    external override fun replaceFlightPlanInSessionJson(
-        handle: Long,
-        planJson: String,
-    ): String
-
     external override fun performFlightPlanRowActionInSessionJson(
         handle: Long,
         rowUid: String,
@@ -702,6 +630,8 @@ object NativeBindings : NativeBridge {
         heightPx: Double,
     ): String
 
+    external override fun getNexradOverlayInSessionJson(handle: Long): String
+
     external override fun getRasterTilePlanInSessionJson(
         handle: Long,
         viewportJson: String,
@@ -721,6 +651,11 @@ object NativeBindings : NativeBridge {
         aircraftAltitudeFt: Double,
     ): ByteArray
 
+    external override fun nexradFrameBytesInSession(
+        handle: Long,
+        frameKey: String,
+    ): ByteArray
+
     external override fun renderTerrainOverlayTilesInSession(
         handle: Long,
         packedTileBytes: ByteArray,
@@ -735,25 +670,4 @@ object NativeBindings : NativeBridge {
     ): String
 
     external override fun destroySession(handle: Long)
-
-    external override fun removeFlightPlanLegJson(
-        planJson: String,
-        index: Int,
-    ): String
-
-    external override fun replaceFlightPlanStateJson(
-        stateJson: String,
-        planJson: String,
-    ): String
-
-    external override fun setContentPolicyStateJson(
-        stateJson: String,
-        policyJson: String,
-    ): String
-
-    external override fun refreshContentStateJson(
-        stateJson: String,
-        inventoryJson: String,
-    ): String
-
 }

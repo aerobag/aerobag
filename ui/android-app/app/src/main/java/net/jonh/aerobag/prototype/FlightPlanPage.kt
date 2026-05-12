@@ -590,8 +590,7 @@ internal fun FlightPlanPage(
         routeEntrySubmitting = true
         routeEntryError = null
         runCatching {
-            val mutation = appCore.appendFlightPlanEntry(plan, input)
-            uiSession.replaceFlightPlan(mutation.plan)
+            uiSession.appendFlightPlanEntry(input)
         }.onSuccess { snapshot ->
             onApplySessionSnapshot(snapshot)
             routeEntryText = ""
@@ -617,7 +616,7 @@ internal fun FlightPlanPage(
         routeEntryLoading = true
         runCatching {
             withContext(Dispatchers.IO) {
-                appCore.previewFlightPlanEntry(plan, routeEntryText)
+                uiSession.previewFlightPlanEntry(routeEntryText)
             }
         }.onSuccess { preview ->
             routeEntryPreview = preview

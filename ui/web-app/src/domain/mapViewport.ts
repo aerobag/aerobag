@@ -8,11 +8,6 @@ export type MapViewportState = {
   zoom: number;
 };
 
-export type RasterPlanViewport = {
-  deviceViewport: MapViewportState;
-  cssViewport: MapViewportState;
-};
-
 export type ScreenPoint = {
   x: number;
   y: number;
@@ -43,26 +38,6 @@ export function preserveViewportForMap(
 
 export function clampZoom(zoom: number, mapView: ViewportMap): number {
   return Math.min(mapView.max_zoom, Math.max(mapView.min_zoom, zoom));
-}
-
-export function rasterPlanViewportForDevice(
-  viewport: MapViewportState,
-  devicePixelRatio: number,
-  maxPlannerZoom: number,
-): RasterPlanViewport {
-  const dpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
-  const dprZoom = Math.log2(dpr);
-  const plannerZoom = Math.min(maxPlannerZoom, viewport.zoom + dprZoom);
-  return {
-    deviceViewport: {
-      ...viewport,
-      zoom: plannerZoom,
-    },
-    cssViewport: {
-      ...viewport,
-      zoom: plannerZoom - dprZoom,
-    },
-  };
 }
 
 export function latLonToWorld(lat: number, lon: number): { x: number; y: number } {

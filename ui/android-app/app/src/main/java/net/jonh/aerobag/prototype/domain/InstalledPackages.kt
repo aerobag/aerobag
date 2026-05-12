@@ -59,17 +59,6 @@ object InstalledPackages {
                 runCatching { json.decodeFromString<InstalledArtifactMetadata>(file.readText()) }.getOrNull()
             }
 
-    private fun fallbackArtifact(zipFile: File): InstalledPackageArtifact {
-        val legacyArtifactId = zipFile.name.removeSuffix(".zip")
-        return InstalledPackageArtifact(
-            artifactId = legacyArtifactId,
-            filename = zipFile.name,
-            file = zipFile,
-            sizeBytes = zipFile.length(),
-            checksumSha256 = null,
-        )
-    }
-
     fun listInstalledArtifacts(context: Context): List<InstalledPackageArtifact> {
         val directories = listOfNotNull(
             context.getExternalFilesDir(null)?.let { File(it, InstalledPackagesDirectoryName) },
@@ -82,18 +71,14 @@ object InstalledPackages {
             .filter { it.isFile && it.extension == "zip" }
             .sortedBy { it.name }
             .forEach { zipFile ->
-                val metadata = readMetadata(zipFile)
-                val artifact = if (metadata != null) {
-                    InstalledPackageArtifact(
-                        artifactId = metadata.artifactId,
-                        filename = metadata.filename,
-                        file = zipFile,
-                        sizeBytes = metadata.sizeBytes ?: zipFile.length(),
-                        checksumSha256 = metadata.checksumSha256,
-                    )
-                } else {
-                    fallbackArtifact(zipFile)
-                }
+                val metadata = readMetadata(zipFile) ?: return@forEach
+                val artifact = InstalledPackageArtifact(
+                    artifactId = metadata.artifactId,
+                    filename = metadata.filename,
+                    file = zipFile,
+                    sizeBytes = metadata.sizeBytes ?: zipFile.length(),
+                    checksumSha256 = metadata.checksumSha256,
+                )
                 artifactsByFilename.putIfAbsent(artifact.filename, artifact)
             }
         return artifactsByFilename.values.sortedBy { it.filename }

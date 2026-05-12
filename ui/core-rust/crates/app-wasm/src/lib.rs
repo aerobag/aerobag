@@ -327,6 +327,28 @@ pub fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
 }
 
 #[wasm_bindgen]
+pub fn preview_flight_plan_entry_in_session(
+    session_handle: u32,
+    input: &str,
+) -> Result<String, JsValue> {
+    let outcome =
+        app_core::session::preview_flight_plan_entry_in_session(session_handle, input.to_string())
+            .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn append_flight_plan_entry_in_session(
+    session_handle: u32,
+    input: &str,
+) -> Result<String, JsValue> {
+    let outcome =
+        app_core::session::append_flight_plan_entry_in_session(session_handle, input.to_string())
+            .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn insert_airway_at_flight_plan_row_in_session(
     session_handle: u32,
     row_uid: &str,
@@ -693,11 +715,6 @@ pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> Result<String
 }
 
 #[wasm_bindgen]
-pub fn replace_flight_plan_in_session(handle: u32, plan_json: &str) -> Result<String, JsValue> {
-    replace_flight_plan_in_session_json(handle, plan_json).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
 pub fn select_chart_in_session(handle: u32, chart_id_json: &str) -> Result<String, JsValue> {
     select_chart_in_session_json(handle, chart_id_json).map_err(|err| JsValue::from_str(&err))
 }
@@ -838,6 +855,17 @@ pub fn get_terrain_overlay_in_session(
 }
 
 #[wasm_bindgen]
+pub fn get_nexrad_overlay_in_session(handle: u32) -> Result<String, JsValue> {
+    get_nexrad_overlay_in_session_json(handle).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn nexrad_frame_bytes_in_session(handle: u32, frame_key: &str) -> Result<Vec<u8>, JsValue> {
+    app_core::nexrad_frame_bytes_in_session(handle, frame_key)
+        .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn get_raster_tile_plan_in_session(
     handle: u32,
     viewport_json: &str,
@@ -846,6 +874,24 @@ pub fn get_raster_tile_plan_in_session(
 ) -> Result<String, JsValue> {
     get_raster_tile_plan_in_session_json(handle, viewport_json, width_px, height_px)
         .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn get_raster_tile_plan_in_session_with_display_scale(
+    handle: u32,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+    device_pixel_ratio: f64,
+) -> Result<String, JsValue> {
+    get_raster_tile_plan_in_session_with_display_scale_json(
+        handle,
+        viewport_json,
+        width_px,
+        height_px,
+        device_pixel_ratio,
+    )
+    .map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -1272,14 +1318,6 @@ fn tick_playback_in_session_json(handle: u32, now_epoch_ms: f64) -> Result<Strin
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn replace_flight_plan_in_session_json(handle: u32, plan_json: &str) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let snapshot =
-        app_core::replace_flight_plan_in_session(handle, plan).map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
-}
-
 fn select_chart_in_session_json(handle: u32, chart_id_json: &str) -> Result<String, String> {
     let chart_id: String = serde_json::from_str(chart_id_json).map_err(|err| err.to_string())?;
     let snapshot =
@@ -1439,6 +1477,31 @@ fn get_raster_tile_plan_in_session_json(
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
     let plan = app_core::get_raster_tile_plan_in_session(handle, viewport, width_px, height_px)
         .map_err(|err| err.to_string())?;
+    serde_json::to_string(&plan).map_err(|err| err.to_string())
+}
+
+fn get_nexrad_overlay_in_session_json(handle: u32) -> Result<String, String> {
+    let overlay = app_core::get_nexrad_overlay_in_session(handle).map_err(|err| err.to_string())?;
+    serde_json::to_string(&overlay).map_err(|err| err.to_string())
+}
+
+fn get_raster_tile_plan_in_session_with_display_scale_json(
+    handle: u32,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+    device_pixel_ratio: f64,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let plan = app_core::get_raster_tile_plan_in_session_with_display_scale(
+        handle,
+        viewport,
+        width_px,
+        height_px,
+        device_pixel_ratio,
+    )
+    .map_err(|err| err.to_string())?;
     serde_json::to_string(&plan).map_err(|err| err.to_string())
 }
 

@@ -8,7 +8,6 @@ import type {
   FlightPlan,
   FlightPlanEntryPreview,
   FlightPlanRouteSegment,
-  FlightPlanUiMutation,
   FlightPlanUiState,
   LatLon,
   NavSymbolFeature,
@@ -66,6 +65,7 @@ import {
   type MapLayerId,
   type MapSelectionItem,
   type MapSelectionQueryResult,
+  type NexradOverlayFrame as CoreNexradOverlayFrame,
   type RasterMapUiState,
   type RasterTileDraw,
   type UiMapLayerState,
@@ -80,7 +80,6 @@ import {
   dragViewport,
   latLonToWorld,
   preserveViewportForMap,
-  rasterPlanViewportForDevice,
   scaleForZoom,
   screenToWorld,
   viewportCenterLatLon,
@@ -381,27 +380,6 @@ type AviationThemeColorKey = keyof UiThemeJson["aviation"];
 type TrayDockStyle = "compact" | "plate_narrow" | "plate_wide" | "wide" | "situation";
 type PlateFolderCategory = ChartAsset["folder_category"];
 
-type NexradManifest = {
-  schema_version: number;
-  version_label: string;
-  frame_count: number;
-  projection: string;
-  frames: NexradFrame[];
-};
-
-type NexradFrame = {
-  filename: string;
-  observed_at_utc: string;
-  width: number;
-  height: number;
-  bounds: {
-    west: number;
-    south: number;
-    east: number;
-    north: number;
-  };
-};
-
 const emptyChartPage: ChartPageData = { airports: [] };
 const O88_POSITION = { lat: 38.19338888888888, lon: -121.70363888888889 };
 const PAGE_CHART_ICON_SRC = "/icons/icons/page-chart-icon.png?v=20260424b";
@@ -447,7 +425,7 @@ function layerIconSrc(layerId: MapLayerId): string {
   }
 }
 
-type NexradOverlayFrame = NexradFrame & {
+type NexradOverlayFrame = CoreNexradOverlayFrame & {
   url: string;
 };
 
@@ -1246,12 +1224,8 @@ export default function App() {
     () => ({
       airports: emptyChartPage.airports,
       recent_airport_ids: initialRecentAirportIds,
-      selected_airport_id: resolveAirportId(emptyChartPage.airports, persistedUiState.selectedAirportId, initialRecentAirportIds),
-      selected_chart_id: resolveChartId(
-        emptyChartPage.airports,
-        resolveAirportId(emptyChartPage.airports, persistedUiState.selectedAirportId, initialRecentAirportIds),
-        persistedUiState.selectedChartId,
-      ),
+      selected_airport_id: persistedUiState.selectedAirportId ?? initialRecentAirportIds[0] ?? "",
+      selected_chart_id: persistedUiState.selectedChartId ?? "",
     }),
     [initialRecentAirportIds, persistedUiState.selectedAirportId, persistedUiState.selectedChartId],
   );
@@ -1973,9 +1947,6 @@ export default function App() {
   function openPlateTarget(airportId: string, target: "Folder" | "CSup") {
     const targetChartId = `Plate:${airportId}:${target}`;
     const nextRecentAirportIds = moveAirportToFront(recentAirportIds, airportId, chartPageData.airports);
-    const localChartId = resolveChartId(chartPageData.airports, airportId, targetChartId);
-    const localAirport = chartPageData.airports.find((entry) => entry.id === airportId);
-    const localChart = localAirport?.charts.find((chart) => chart.id === localChartId);
     if (uiSession) {
       void uiSession.restoreChartPageState(
         nextRecentAirportIds,
@@ -1994,8 +1965,8 @@ export default function App() {
     pushViewSnapshot({
       page: "charts",
       selectedAirportId: airportId,
-      selectedChartId: localChartId || targetChartId,
-      selectedChartLabel: localChart?.label ?? "",
+      selectedChartId: targetChartId,
+      selectedChartLabel: "",
       recentAirportIds: nextRecentAirportIds,
       chartViewport: null,
       chartFolderOpen: target === "Folder",
@@ -2184,15 +2155,13 @@ export default function App() {
             setSessionSnapshot(nextSnapshot);
           }}
           onPreviewFlightPlanEntry={async (input) => {
-            if (!appCoreAdapter) {
-              throw new Error("app core adapter unavailable");
-            }
-            return appCoreAdapter.previewFlightPlanEntry(currentPlan, input);
+            if (!uiSession) throw new Error("flight plan preview requires live core session");
+            return uiSession.previewFlightPlanEntry(input);
           }}
           onAppendFlightPlanEntry={async (input) => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.appendFlightPlanEntry(currentPlan, input);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
+            if (!uiSession) return;
+            const nextSnapshot = await uiSession.appendFlightPlanEntry(input);
+            setSessionSnapshot(nextSnapshot);
           }}
           onActivateNextLeg={async () => {
             if (!uiSession) return;
@@ -2645,11 +2614,11 @@ function MapPage(props: {
       return;
     }
     const devicePixelRatio = window.devicePixelRatio || 1;
-    const { deviceViewport, cssViewport } = rasterPlanViewportForDevice(viewport, devicePixelRatio, selectedMap.max_zoom);
     uiSession.queryRasterTilePlan(
-      deviceViewport,
-      surfaceSize.width * devicePixelRatio,
-      surfaceSize.height * devicePixelRatio,
+      viewport,
+      surfaceSize.width,
+      surfaceSize.height,
+      devicePixelRatio,
     )
       .then((plan) => {
         if (!cancelled) {
@@ -2666,7 +2635,7 @@ function MapPage(props: {
             .then((nextTiles) => {
               if (!cancelled) {
                 setTiles(nextTiles);
-                setRasterTileViewport(cssViewport);
+                setRasterTileViewport(viewport);
               }
             })
             .catch((error) => {
@@ -2763,46 +2732,46 @@ function MapPage(props: {
   }, [flightPlanRoute, surfaceSize.height, surfaceSize.width, viewport]);
 
   useEffect(() => {
-    if (!mapLayerState.nexrad.visible || !mapLayerState.nexrad.enabled) {
+    if (!uiSession || !mapLayerState.nexrad.visible || !mapLayerState.nexrad.enabled) {
       setNexradStatus({ state: "unavailable", reason: "hidden" });
       setNexradFrames([]);
       setNexradFrameIndex(0);
       return;
     }
-    const controller = new AbortController();
     let cancelled = false;
+    const objectUrls: string[] = [];
     setNexradStatus({ state: "loading" });
+    const session = uiSession;
 
     async function loadNexrad() {
-      const response = await fetch(await resolvePackageMemberUrl("nexrad", "nexrad.json"), { signal: controller.signal });
-      if (response.status === 404) {
-        if (uiSession) {
-          void uiSession.setMapLayerEnabled("nexrad", false).then(onPlaybackSnapshotChange).catch(() => {});
-        }
+      const overlay = await session.queryNexradOverlay();
+      if (overlay.status.state === "hidden") {
         return {
-          status: { state: "unavailable", reason: "not_found" } satisfies NexradLayerStatus,
+          status: { state: "unavailable", reason: "hidden" } satisfies NexradLayerStatus,
           frames: [],
         };
       }
-      if (!response.ok) {
+      if (overlay.status.state === "unavailable") {
+        void session.setMapLayerEnabled("nexrad", false).then(onPlaybackSnapshotChange).catch(() => {});
         return {
-          status: { state: "unavailable", reason: `http_${response.status}` } satisfies NexradLayerStatus,
+          status: { state: "unavailable", reason: overlay.status.reason } satisfies NexradLayerStatus,
           frames: [],
         };
       }
-      const manifest = (await response.json()) as NexradManifest;
-      if (manifest.projection !== "EPSG:3857") {
+      if (overlay.status.state === "loading") {
         return {
-          status: { state: "unavailable", reason: `unsupported_projection_${manifest.projection}` } satisfies NexradLayerStatus,
+          status: { state: "loading" } satisfies NexradLayerStatus,
           frames: [],
         };
       }
-      const frames = await Promise.all([...manifest.frames]
-        .reverse()
-        .map(async (frame) => ({
-          ...frame,
-          url: await resolvePackageMemberUrl("nexrad", frame.filename),
-        })));
+      const frames = await Promise.all(overlay.frames.map(async (frame) => {
+        const bytes = await session.nexradFrameBytes(frame.key);
+        const blobBytes = new Uint8Array(bytes.length);
+        blobBytes.set(bytes);
+        const url = URL.createObjectURL(new Blob([blobBytes], { type: "image/png" }));
+        objectUrls.push(url);
+        return { ...frame, url };
+      }));
       return {
         status: { state: "available", frame_count: frames.length } satisfies NexradLayerStatus,
         frames,
@@ -2832,7 +2801,7 @@ function MapPage(props: {
 
     return () => {
       cancelled = true;
-      controller.abort();
+      objectUrls.forEach((url) => URL.revokeObjectURL(url));
     };
   }, [mapLayerState.nexrad.enabled, mapLayerState.nexrad.visible, onPlaybackSnapshotChange, uiSession]);
 
@@ -7442,37 +7411,8 @@ function moveAirportToFront(
   return mergedIds.includes(airportId) ? mergedIds : [airportId, ...mergedIds];
 }
 
-function resolveAirportId(
-  airports: ChartPageData["airports"],
-  candidateAirportId: string | undefined,
-  recentAirportIds: string[],
-) {
-  if (candidateAirportId && airports.some((airport) => airport.id === candidateAirportId)) {
-    return candidateAirportId;
-  }
-  return recentAirportIds[0] ?? airports[0]?.id ?? "";
-}
-
 function plateFolderColor(category: PlateFolderCategory) {
   return plateFolderTheme.label_colors[category as keyof typeof plateFolderTheme.label_colors] ?? plateFolderTheme.label_colors.other ?? "#52656d";
-}
-
-function resolveChartId(
-  airports: ChartPageData["airports"],
-  airportId: string,
-  candidateChartId: string | undefined,
-) {
-  const airport = airports.find((entry) => entry.id === airportId);
-  if (candidateChartId === `Plate:${airportId}:CSup`) {
-    return airport?.charts.find((chart) => chart.kind === "csup" || chart.folder_category === "csup")?.id ?? "";
-  }
-  if (candidateChartId === `Plate:${airportId}:Folder`) {
-    return airport?.charts[0]?.id ?? "";
-  }
-  if (candidateChartId && airport?.charts.some((chart) => chart.id === candidateChartId)) {
-    return candidateChartId;
-  }
-  return airport?.charts[0]?.id ?? "";
 }
 
 function airportIdFromNavRef(navRef: NavRef | null | undefined): string | null {
@@ -7869,18 +7809,6 @@ function flightPlanEntryPreviewSegments(
     });
   }
   return segments;
-}
-
-async function applyFlightPlanMutation(
-  uiSession: UiSession | null,
-  setSessionSnapshot: Dispatch<SetStateAction<UiSessionSnapshot>>,
-  mutation: FlightPlanUiMutation,
-) {
-  if (!uiSession) {
-    throw new Error("flight plan mutation requires live core session");
-  }
-  const nextSnapshot = await uiSession.replaceFlightPlan(mutation.plan);
-  setSessionSnapshot(nextSnapshot);
 }
 
 function navRefKey(value: NavRef) {

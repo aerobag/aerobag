@@ -136,6 +136,7 @@ pub struct RasterTilePlan {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RasterTilePlanOptions {
     pub max_tile_display_multiplier: f64,
+    pub device_pixel_ratio: f64,
     pub resource_mode: RasterResourceMode,
 }
 
@@ -149,6 +150,7 @@ impl Default for RasterTilePlanOptions {
     fn default() -> Self {
         Self {
             max_tile_display_multiplier: 1.0,
+            device_pixel_ratio: 1.0,
             resource_mode: RasterResourceMode::InstalledPackage,
         }
     }
@@ -362,6 +364,23 @@ pub fn raster_tile_plan_with_options(
             tiles: Vec::new(),
         };
     }
+    let device_pixel_ratio = if options.device_pixel_ratio.is_finite() && options.device_pixel_ratio > 0.0 {
+        options.device_pixel_ratio
+    } else {
+        1.0
+    };
+    let planning_viewport = if (device_pixel_ratio - 1.0).abs() > f64::EPSILON {
+        MapViewport {
+            center: viewport.center,
+            zoom: viewport.zoom + device_pixel_ratio.log2(),
+            rotation_deg: viewport.rotation_deg,
+            pitch_deg: viewport.pitch_deg,
+        }
+    } else {
+        *viewport
+    };
+    let planning_width_px = width_px * device_pixel_ratio;
+    let planning_height_px = height_px * device_pixel_ratio;
     let mut by_family: HashMap<String, Vec<(String, RasterMapViewOption)>> = HashMap::new();
     for view in &catalog.displayed_maps {
         by_family
@@ -378,9 +397,9 @@ pub fn raster_tile_plan_with_options(
     for family_views in by_family.values() {
         planned.extend(render_tiles_for_family(
             family_views,
-            viewport,
-            width_px,
-            height_px,
+            &planning_viewport,
+            planning_width_px,
+            planning_height_px,
             selected_region_id,
             options,
         ));

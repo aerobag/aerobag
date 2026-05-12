@@ -65,7 +65,6 @@ fn exported_plain_snapshot_session_apis_are_allowlisted() {
         "tick_playback_in_session",
         "set_situation_in_session",
         "tick_debug_ownship_driver_in_session",
-        "replace_flight_plan_in_session",
         "activate_next_leg_in_session",
         "suspend_sequencing_in_session",
         "unsuspend_sequencing_in_session",
@@ -112,6 +111,7 @@ fn paged_flight_plan_mutations_commit_only_after_snapshot_projection() {
         "insert_airway_at_flight_plan_row_in_session",
         "select_procedure_at_flight_plan_row_in_session",
         "load_plate_procedure_in_session",
+        "append_flight_plan_entry_in_session",
         "perform_flight_plan_row_action_in_session",
     ];
     let mut violations = Vec::new();

@@ -1254,28 +1254,28 @@ pub(crate) struct MaterializedAirwayResponse {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum FlightPlanEntryTokenState {
+pub(crate) enum FlightPlanEntryTokenState {
     Neutral,
     Recognized,
     Invalid,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct FlightPlanEntryToken {
+pub(crate) struct FlightPlanEntryToken {
     start: usize,
     end: usize,
     state: FlightPlanEntryTokenState,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct FlightPlanEntryIssue {
+pub(crate) struct FlightPlanEntryIssue {
     start: usize,
     end: usize,
     message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct FlightPlanEntryPreview {
+pub(crate) struct FlightPlanEntryPreview {
     can_commit: bool,
     tokens: Vec<FlightPlanEntryToken>,
     issues: Vec<FlightPlanEntryIssue>,
@@ -1889,7 +1889,7 @@ fn path_termination_from_geometry(path: pgt::ProcedurePathTermination) -> PathTe
     }
 }
 
-fn preview_flight_plan_entry(
+pub(crate) fn preview_flight_plan_entry(
     store: &NavKvStore,
     plan: &FlightPlan,
     input: &str,
@@ -1919,7 +1919,7 @@ fn preview_flight_plan_entry(
     })
 }
 
-fn append_flight_plan_entry(
+pub(crate) fn append_flight_plan_entry(
     store: &NavKvStore,
     plan: &FlightPlan,
     input: &str,

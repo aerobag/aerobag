@@ -401,38 +401,8 @@ internal data class WireRasterTileResource(
 
 internal data class LatLon(val lat: Double, val lon: Double)
 
-@Serializable
-internal data class NexradManifest(
-    @SerialName("schema_version")
-    val schemaVersion: Int,
-    @SerialName("version_label")
-    val versionLabel: String,
-    @SerialName("frame_count")
-    val frameCount: Int,
-    val projection: String,
-    val frames: List<NexradFrame>,
-)
-
-@Serializable
-internal data class NexradFrame(
-    val filename: String,
-    @SerialName("observed_at_utc")
-    val observedAtUtc: String,
-    val width: Int,
-    val height: Int,
-    val bounds: NexradBounds,
-)
-
-@Serializable
-internal data class NexradBounds(
-    val west: Double,
-    val south: Double,
-    val east: Double,
-    val north: Double,
-)
-
 internal data class NexradOverlayFrame(
-    val frame: NexradFrame,
+    val frame: net.jonh.aerobag.prototype.domain.NexradFrame,
     val bitmap: androidx.compose.ui.graphics.ImageBitmap,
 )
 
@@ -1270,35 +1240,6 @@ internal fun moveAirportToFront(
 
 internal fun boundedHistory(history: List<AppViewSnapshot>): List<AppViewSnapshot> =
     if (history.size <= MaxViewHistoryDepth) history else history.takeLast(MaxViewHistoryDepth)
-
-internal fun resolveAirportId(
-    airports: List<ChartAirport>,
-    candidateAirportId: String?,
-    recentAirportIds: List<String>,
-): String {
-    if (candidateAirportId != null && airports.any { it.id == candidateAirportId }) {
-        return candidateAirportId
-    }
-    return recentAirportIds.firstOrNull() ?: airports.firstOrNull()?.id.orEmpty()
-}
-
-internal fun resolveChartId(
-    airports: List<ChartAirport>,
-    airportId: String,
-    candidateChartId: String?,
-): String {
-    val airport = airports.firstOrNull { it.id == airportId }
-    if (candidateChartId == "Plate:$airportId:CSup") {
-        return airport?.charts?.firstOrNull { it.kind == "csup" || it.folderCategory == "csup" }?.id.orEmpty()
-    }
-    if (candidateChartId == "Plate:$airportId:Folder") {
-        return airport?.charts?.firstOrNull()?.id.orEmpty()
-    }
-    if (candidateChartId != null && airport?.charts?.any { it.id == candidateChartId } == true) {
-        return candidateChartId
-    }
-    return airport?.charts?.firstOrNull()?.id.orEmpty()
-}
 
 internal fun routeSegmentColor(uiTheme: UiTheme, status: RouteSegmentStatus): Color =
     when (status) {

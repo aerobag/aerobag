@@ -1,6 +1,8 @@
 package net.jonh.aerobag.prototype.domain
 
 import android.util.Log
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -203,6 +205,50 @@ data class UiMapLayerState(
     val offlineRegions: UiMapLayerToggleState,
 )
 
+@Serializable
+data class NexradOverlayQueryResult(
+    val status: NexradOverlayStatus,
+    val frames: List<NexradFrame>,
+)
+
+@Serializable
+sealed class NexradOverlayStatus {
+    @Serializable
+    @SerialName("hidden")
+    data object Hidden : NexradOverlayStatus()
+
+    @Serializable
+    @SerialName("unavailable")
+    data class Unavailable(val reason: String) : NexradOverlayStatus()
+
+    @Serializable
+    @SerialName("loading")
+    data object Loading : NexradOverlayStatus()
+
+    @Serializable
+    @SerialName("ready")
+    data class Ready(@SerialName("frame_count") val frameCount: Int) : NexradOverlayStatus()
+}
+
+@Serializable
+data class NexradFrame(
+    val key: String,
+    val filename: String,
+    @SerialName("observed_at_utc")
+    val observedAtUtc: String,
+    val width: Int,
+    val height: Int,
+    val bounds: NexradBounds,
+)
+
+@Serializable
+data class NexradBounds(
+    val west: Double,
+    val south: Double,
+    val east: Double,
+    val north: Double,
+)
+
 data class RasterMapUiState(
     val selectedMapId: String,
     val selectedMapLabel: String,
@@ -316,7 +362,7 @@ class NativeAppCoreAdapter(
         encodeDefaults = true
         ignoreUnknownKeys = true
     },
-) : AppCoreAdapter {
+) {
     fun situationRingCandidates(): List<SituationRingCandidate> =
         json.decodeFromString<List<WireSituationRingCandidate>>(bridge.situationRingCandidatesJson())
             .map { it.toUi() }
@@ -368,33 +414,6 @@ class NativeAppCoreAdapter(
             },
         )
         return json.decodeFromJsonElement<WireDerivedChartPageState>(result).toUi()
-    }
-
-    fun removeFlightPlanLeg(plan: FlightPlan, index: Int): FlightPlan {
-        val planJson = json.encodeToString(plan.toWire())
-        val nextJson = bridge.removeFlightPlanLegJson(planJson, index)
-        return json.decodeFromString<WireFlightPlan>(nextJson).toUiFlightPlan()
-    }
-
-    override fun replaceFlightPlan(state: AppState, plan: FlightPlan): AppState {
-        val stateJson = json.encodeToString(state.toWire())
-        val planJson = json.encodeToString(plan.toWire())
-        val nextJson = bridge.replaceFlightPlanStateJson(stateJson, planJson)
-        return json.decodeFromString<WireAppState>(nextJson).toUi()
-    }
-
-    override fun setContentPolicy(state: AppState, policy: ContentPolicy): AppState {
-        val stateJson = json.encodeToString(state.toWire())
-        val policyJson = json.encodeToString(policy.toWire())
-        val nextJson = bridge.setContentPolicyStateJson(stateJson, policyJson)
-        return json.decodeFromString<WireAppState>(nextJson).toUi()
-    }
-
-    override fun refreshContent(state: AppState, inventory: ContentInventory): AppState {
-        val stateJson = json.encodeToString(state.toWire())
-        val inventoryJson = json.encodeToString(inventory.toWire())
-        val nextJson = bridge.refreshContentStateJson(stateJson, inventoryJson)
-        return json.decodeFromString<WireAppState>(nextJson).toUi()
     }
 
     fun suggestAirwaysNear(anchor: NavRef, limit: Int = 5): List<AirwaySuggestion> {
@@ -472,28 +491,6 @@ class NativeAppCoreAdapter(
             },
         )
         return json.decodeFromJsonElement<List<WireWaypointIdentifierSuggestion>>(result).map { it.toUi() }
-    }
-
-    fun previewFlightPlanEntry(plan: FlightPlan, input: String): FlightPlanEntryPreview {
-        val result = runHadOperationElement(
-            buildJsonObject {
-                put("kind", "preview_flight_plan_entry")
-                put("plan", json.encodeToJsonElement(plan.toWire()))
-                put("input", input)
-            },
-        )
-        return json.decodeFromJsonElement<WireFlightPlanEntryPreview>(result).toUi()
-    }
-
-    fun appendFlightPlanEntry(plan: FlightPlan, input: String): FlightPlanUiMutation {
-        val result = runHadOperationElement(
-            buildJsonObject {
-                put("kind", "append_flight_plan_entry")
-                put("plan", json.encodeToJsonElement(plan.toWire()))
-                put("input", input)
-            },
-        )
-        return json.decodeFromJsonElement<WireFlightPlanUiMutation>(result).toUi()
     }
 
     fun prepareAirwayPresentationForAnchors(
@@ -608,117 +605,6 @@ class NativeAppCoreAdapter(
         navKvStore?.runCoreOperationElement(operation)
             ?: error("nav_kv store is required for core data operation ${operation["kind"]}")
 
-    fun activateLegUi(plan: FlightPlan, legIndex: Int): FlightPlanUiMutation {
-        val nextJson = bridge.activateLegUiJson(json.encodeToString(plan.toWire()), legIndex)
-        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
-    }
-
-    fun prepareAirwayPresentation(
-        airwayName: String,
-        branches: List<AirwayBranch>,
-        originPosition: LatLonPoint,
-        destinationPosition: LatLonPoint?,
-    ): AirwayPresentationPlan {
-        val nextJson =
-            bridge.prepareAirwayPresentationJson(
-                airwayName,
-                json.encodeToString(branches.map { it.toWire() }),
-                json.encodeToString(originPosition.toWire()),
-                json.encodeToString(destinationPosition?.toWire()),
-            )
-        return json.decodeFromString<WireAirwayPresentationPlan>(nextJson).toUi()
-    }
-
-    fun sortAirwaySuggestionsForUi(suggestions: List<AirwaySuggestion>): List<AirwaySuggestion> {
-        val nextJson = bridge.sortAirwaySuggestionsForUiJson(json.encodeToString(suggestions.map { it.toWire() }))
-        return json.decodeFromString<List<WireAirwaySuggestion>>(nextJson).map { it.toUi() }
-    }
-
-    fun insertAirwayMaterializedUi(
-        plan: FlightPlan,
-        startComponentIndex: Int,
-        endComponentIndex: Int?,
-        selection: AirwayAutoSelection,
-        airway: AirwaySegment,
-        resolvedLegs: List<ResolvedLeg>,
-    ): FlightPlanUiMutation {
-        val nextJson =
-            bridge.insertAirwayMaterializedUiJson(
-                json.encodeToString(plan.toWire()),
-                startComponentIndex,
-                json.encodeToString(endComponentIndex),
-                json.encodeToString(selection.toWire()),
-                json.encodeToString(airway.toWire()),
-                json.encodeToString(resolvedLegs.map { it.toWire() }),
-            )
-        return json.decodeFromString<WireAirwayPlanUiMutation>(nextJson).toUi()
-    }
-
-    fun replaceAirwayMaterializedUi(
-        plan: FlightPlan,
-        componentIndex: Int,
-        selection: AirwayAutoSelection,
-        airway: AirwaySegment,
-        resolvedLegs: List<ResolvedLeg>,
-    ): FlightPlanUiMutation {
-        val nextJson =
-            bridge.replaceAirwayMaterializedUiJson(
-                json.encodeToString(plan.toWire()),
-                componentIndex,
-                json.encodeToString(selection.toWire()),
-                json.encodeToString(airway.toWire()),
-                json.encodeToString(resolvedLegs.map { it.toWire() }),
-            )
-        return json.decodeFromString<WireAirwayPlanUiMutation>(nextJson).toUi()
-    }
-
-    fun insertProcedureMaterializedUi(
-        plan: FlightPlan,
-        startComponentIndex: Int,
-        endComponentIndex: Int,
-        built: MaterializedProcedure,
-    ): FlightPlanUiMutation {
-        val nextJson =
-            bridge.insertProcedureMaterializedUiJson(
-                json.encodeToString(plan.toWire()),
-                startComponentIndex,
-                endComponentIndex,
-                json.encodeToString(built.toWire()),
-            )
-        val mutation = runCatching {
-            json.decodeFromString<WireProcedurePlanUiMutation>(nextJson)
-        }.getOrElse { error ->
-            Log.e("AerobagProcedure", "insertProcedureMaterializedUi decode failed json=$nextJson", error)
-            throw error
-        }
-        return FlightPlanUiMutation(
-            plan = mutation.mutation.plan.toUiForTesting(),
-            uiState = mutation.ui_state.toUi(),
-        )
-    }
-
-    fun replaceProcedureMaterializedUi(
-        plan: FlightPlan,
-        componentIndex: Int,
-        built: MaterializedProcedure,
-    ): FlightPlanUiMutation {
-        val nextJson =
-            bridge.replaceProcedureMaterializedUiJson(
-                json.encodeToString(plan.toWire()),
-                componentIndex,
-                json.encodeToString(built.toWire()),
-            )
-        val mutation = runCatching {
-            json.decodeFromString<WireProcedurePlanUiMutation>(nextJson)
-        }.getOrElse { error ->
-            Log.e("AerobagProcedure", "replaceProcedureMaterializedUi decode failed json=$nextJson", error)
-            throw error
-        }
-        return FlightPlanUiMutation(
-            plan = mutation.mutation.plan.toUiForTesting(),
-            uiState = mutation.ui_state.toUi(),
-        )
-    }
 }
 
 class NativeUiSession internal constructor(
@@ -815,6 +701,25 @@ class NativeUiSession internal constructor(
                 )
             }
         return json.decodeFromJsonElement<List<WireWaypointIdentifierSuggestion>>(result).map { it.toUi() }
+    }
+
+    fun previewFlightPlanEntry(input: String): FlightPlanEntryPreview {
+        val store = navKvStore ?: error("nav_kv store is required to preview a flight plan entry")
+        val result =
+            store.runPagedSessionOperationElement {
+                bridge.previewFlightPlanEntryInSessionJson(handle, input)
+            }
+        return json.decodeFromJsonElement<WireFlightPlanEntryPreview>(result).toUi()
+    }
+
+    fun appendFlightPlanEntry(input: String): UiSessionSnapshot {
+        val store = navKvStore ?: error("nav_kv store is required to append a flight plan entry")
+        val result =
+            store.runPagedSessionOperationElement {
+                bridge.appendFlightPlanEntryInSessionJson(handle, input)
+            }
+        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi()
+        return syncGuidanceGeometry()
     }
 
     fun insertAirwayAtFlightPlanRow(
@@ -1017,11 +922,6 @@ class NativeUiSession internal constructor(
         return syncGuidanceGeometry()
     }
 
-    fun replaceFlightPlan(plan: FlightPlan): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.replaceFlightPlanInSessionJson(handle, json.encodeToString(plan.toWire())))
-        return syncGuidanceGeometry()
-    }
-
     fun performFlightPlanRowAction(rowUid: String, actionUid: String): UiSessionSnapshot {
         val store = navKvStore ?: error("nav_kv store is required to perform flight plan row action")
         snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(
@@ -1143,6 +1043,23 @@ class NativeUiSession internal constructor(
             ),
         ).toUi()
     }
+
+    fun queryNexradOverlay(fetchResource: (CoreResourceRequest) -> ByteArray): NexradOverlayQueryResult {
+        return json.decodeFromJsonElement(
+            navKvStore?.runPagedSessionOperationElement(
+                operation = {
+                    bridge.getNexradOverlayInSessionJson(handle)
+                },
+                fetchSessionResource = fetchResource,
+                ingestSessionResource = { resource, bytes ->
+                    bridge.ingestResourceInSession(handle, resource.id, bytes)
+                },
+            ) ?: error("session missing nav_db for NEXRAD overlay"),
+        )
+    }
+
+    fun nexradFrameBytes(frameKey: String): ByteArray =
+        bridge.nexradFrameBytesInSession(handle, frameKey)
 
     fun queryRasterTilePlanJson(
         viewport: MapViewportState,

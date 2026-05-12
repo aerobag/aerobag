@@ -5,7 +5,6 @@ import {
   createInitialViewport,
   createPinchSnapshot,
   preserveViewportForMap,
-  rasterPlanViewportForDevice,
   screenToWorld,
   viewportCenterLatLon,
   zoomAroundPoint,
@@ -100,23 +99,5 @@ describe("mapViewport", () => {
     );
 
     expect(capped.zoom).toBe(12.5);
-  });
-
-  it("keeps clamped high-DPI raster plans in their effective CSS viewport", () => {
-    const viewport = {
-      centerWorldX: 42,
-      centerWorldY: 99,
-      zoom: 11,
-    };
-
-    const planned = rasterPlanViewportForDevice(viewport, 3, 12.5);
-
-    expect(planned.deviceViewport.centerWorldX).toBe(viewport.centerWorldX);
-    expect(planned.deviceViewport.centerWorldY).toBe(viewport.centerWorldY);
-    expect(planned.deviceViewport.zoom).toBeCloseTo(12.5, 8);
-    expect(planned.cssViewport.centerWorldX).toBe(viewport.centerWorldX);
-    expect(planned.cssViewport.centerWorldY).toBe(viewport.centerWorldY);
-    expect(planned.cssViewport.zoom).toBeCloseTo(12.5 - Math.log2(3), 8);
-    expect(planned.cssViewport.zoom).toBeLessThan(viewport.zoom);
   });
 });

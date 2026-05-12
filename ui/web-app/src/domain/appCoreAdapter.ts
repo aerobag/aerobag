@@ -9,7 +9,6 @@ import type {
   FlightPlan,
   FlightPlanEntryPreview,
   FlightPlanRouteSegment,
-  FlightPlanUiMutation,
   ChartFamilyId,
   LatLon,
   MapFollowUiState,
@@ -30,7 +29,7 @@ import type {
   WaypointIdentifierSuggestion,
 } from "./types";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
-import { attachNavKvStoreToSession, PublicationResolver, runCoreHadOperation, runCoreHadSessionOperation } from "./navKv";
+import { attachNavKvStoreToSession, runCoreHadOperation, runCoreHadSessionOperation } from "./navKv";
 import { debugLog, debugTiming, installRustDebugLogBridge } from "./debugLog";
 
 export type DerivedChartPageState = {
@@ -397,6 +396,29 @@ export type TerrainOverlayQueryResult = {
   tile_requests: TerrainOverlayTileRequest[];
 };
 
+export type NexradOverlayQueryResult = {
+  status:
+    | { state: "hidden" }
+    | { state: "unavailable"; reason: string }
+    | { state: "loading" }
+    | { state: "ready"; frame_count: number };
+  frames: NexradOverlayFrame[];
+};
+
+export type NexradOverlayFrame = {
+  key: string;
+  filename: string;
+  observed_at_utc: string;
+  width: number;
+  height: number;
+  bounds: {
+    west: number;
+    south: number;
+    east: number;
+    north: number;
+  };
+};
+
 export type RasterTileSource = {
   map_view_id: string;
   package_name?: string | null;
@@ -428,9 +450,10 @@ export type RasterTilePlan = {
 
 export interface UiSession {
   snapshot(): Promise<UiSessionSnapshot>;
-  replaceFlightPlan(plan: FlightPlan): Promise<UiSessionSnapshot>;
   insertWaypointAtFlightPlanRow(rowUid: string, before: boolean, waypoint: NavRef): Promise<UiSessionSnapshot>;
   suggestWaypointIdentifiersAtFlightPlanRow(rowUid: string, before: boolean, prefix: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
+  previewFlightPlanEntry(input: string): Promise<FlightPlanEntryPreview>;
+  appendFlightPlanEntry(input: string): Promise<UiSessionSnapshot>;
   insertAirwayAtFlightPlanRow(rowUid: string, presentation: AirwayPresentationPlan, entryIndex: number, exitIndex: number): Promise<UiSessionSnapshot>;
   selectProcedureAtFlightPlanRow(rowUid: string, airportId: string, procedureId: string, kind: ProcedureKind, runwayTransition: string | null, enrouteTransition: string | null): Promise<UiSessionSnapshot>;
   loadPlateProcedure(loadId: string): Promise<UiSessionSnapshot>;
@@ -473,7 +496,9 @@ export interface UiSession {
   queryMapOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<MapOverlayQueryResult>;
   queryMapSelection(viewport: MapViewportState, widthPx: number, heightPx: number, click: LatLon, hitRadiusPx: number): Promise<MapSelectionQueryResult>;
   queryTerrainOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<TerrainOverlayQueryResult>;
-  queryRasterTilePlan(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<RasterTilePlan>;
+  queryNexradOverlay(): Promise<NexradOverlayQueryResult>;
+  nexradFrameBytes(frameKey: string): Promise<Uint8Array>;
+  queryRasterTilePlan(viewport: MapViewportState, widthPx: number, heightPx: number, devicePixelRatio?: number): Promise<RasterTilePlan>;
   renderTerrainOverlayTileByKey(tileKey: string, aircraftAltitudeFt: number): Promise<Uint8Array>;
   projectFlightPlanRoute(): Promise<FlightPlanRouteSegment[]>;
   restoreChartPageState(recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<UiSessionSnapshot>;
@@ -496,8 +521,6 @@ export interface AppCoreAdapter {
     selectedAirportId?: string,
     selectedChartId?: string,
   ): Promise<DerivedChartPageState>;
-  previewFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanEntryPreview>;
-  appendFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanUiMutation>;
   resolveWaypointIdentifier(identifier: string): Promise<NavRef | null>;
   resolveNavRefPosition(navRef: NavRef): Promise<LatLon>;
   suggestWaypointIdentifiersNear(anchor: LatLon, prefix: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
@@ -536,91 +559,15 @@ function sourceIdString(sourceId: { 0: string } | string): string {
   return typeof sourceId === "string" ? sourceId : sourceId[0];
 }
 
-async function fetchVectorManifestJson(module: WasmModule): Promise<string> {
-  const publicationResolver = new PublicationResolver(module, module.publication_resolver_open("/packages"));
-  const baseManifest: Record<string, unknown> = {
-    airspace: {
-      reference_tile_min_zoom: 0,
-      reference_tile_max_zoom: 12,
-      label_tile_min_zoom: 0,
-      label_tile_max_zoom: 12,
-    },
-    point_layers: {},
-  };
-  try {
-    const obstacleResponse = await fetch(await publicationResolver.resolveObstacleManifest(), { cache: "no-cache" });
-    if (obstacleResponse.ok) {
-      const obstacleManifest = JSON.parse(await obstacleResponse.text()) as {
-        point_layers?: Record<string, unknown>;
-        files?: Record<string, unknown>;
-      };
-      if (obstacleManifest.point_layers?.obstacle) {
-        baseManifest.point_layers = {
-          ...(typeof baseManifest.point_layers === "object" && baseManifest.point_layers !== null
-            ? baseManifest.point_layers as Record<string, unknown>
-            : {}),
-          obstacle: obstacleManifest.point_layers.obstacle,
-        };
-      }
-      if (obstacleManifest.files?.point_tiles_obstacle || obstacleManifest.files?.stats) {
-        baseManifest.files = {
-          ...(typeof baseManifest.files === "object" && baseManifest.files !== null
-            ? baseManifest.files as Record<string, unknown>
-            : {}),
-          ...(obstacleManifest.files ?? {}),
-        };
-      }
-    }
-  } catch {
-    // Obstacle overlay is optional; keep the base vector manifest usable if the fast product is absent.
-  }
-  try {
-    const metarResponse = await fetch(await publicationResolver.resolveMetarManifest(), { cache: "no-cache" });
-    if (metarResponse.ok) {
-      const metarManifest = JSON.parse(await metarResponse.text()) as {
-        map_view?: {
-          min_zoom?: number;
-          max_zoom?: number;
-          levels?: Array<{ zoom?: number }>;
-          tile_path_template?: string;
-        };
-      };
-      const mapView = metarManifest.map_view;
-      const availableZooms = Array.from(new Set(
-        mapView?.levels
-          ?.map((level) => level.zoom)
-          .filter((zoom): zoom is number => typeof zoom === "number" && Number.isInteger(zoom))
-          ?? [],
-      )).sort((a, b) => a - b);
-      if (mapView && availableZooms && availableZooms.length > 0) {
-        baseManifest.point_layers = {
-          ...(typeof baseManifest.point_layers === "object" && baseManifest.point_layers !== null
-            ? baseManifest.point_layers as Record<string, unknown>
-            : {}),
-          metars: {
-            min_zoom: typeof mapView.min_zoom === "number" ? mapView.min_zoom : availableZooms[0],
-            max_zoom: typeof mapView.max_zoom === "number" ? mapView.max_zoom : availableZooms[availableZooms.length - 1],
-            available_zooms: availableZooms,
-            tile_path_template: mapView.tile_path_template ?? "points/metars/{z}/{x}/{y}.json",
-          },
-        };
-      }
-      if (mapView?.tile_path_template) {
-        baseManifest.files = {
-          ...(typeof baseManifest.files === "object" && baseManifest.files !== null
-            ? baseManifest.files as Record<string, unknown>
-            : {}),
-          point_tiles_metars: mapView.tile_path_template,
-          metars: "metars.json",
-        };
-      }
-    }
-  } catch {
-    // METAR overlay is optional; keep the base vector manifest usable if the fast product is absent.
-  }
-  publicationResolver.destroy();
-  return JSON.stringify(baseManifest);
-}
+const BOOTSTRAP_VECTOR_MANIFEST_JSON = JSON.stringify({
+  airspace: {
+    reference_tile_min_zoom: 0,
+    reference_tile_max_zoom: 0,
+    label_tile_min_zoom: 0,
+    label_tile_max_zoom: 0,
+  },
+  point_layers: {},
+});
 
 type WasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
@@ -661,10 +608,11 @@ type WasmModule = {
   project_flight_plan_route_in_session(handle: number): Promise<string> | string;
   select_map_family_in_session(handle: number, familyIdJson: string): Promise<string> | string;
   select_raster_map_in_session(handle: number, selectedMapIdJson: string): Promise<string> | string;
-  replace_flight_plan_in_session(handle: number, planJson: string): Promise<string> | string;
   perform_map_selection_action_in_session(sessionHandle: number, actionJson: string): Promise<string> | string;
   insert_waypoint_at_flight_plan_row_in_session(sessionHandle: number, rowUid: string, before: boolean, waypointJson: string): Promise<string> | string;
   suggest_waypoint_identifiers_at_flight_plan_row_in_session(sessionHandle: number, rowUid: string, before: boolean, prefix: string, limit: number): Promise<string> | string;
+  preview_flight_plan_entry_in_session(sessionHandle: number, input: string): Promise<string> | string;
+  append_flight_plan_entry_in_session(sessionHandle: number, input: string): Promise<string> | string;
   insert_airway_at_flight_plan_row_in_session(sessionHandle: number, rowUid: string, presentationJson: string, entryIndex: number, exitIndex: number): Promise<string> | string;
   select_procedure_at_flight_plan_row_in_session(
     sessionHandle: number,
@@ -692,7 +640,9 @@ type WasmModule = {
   get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
   get_map_selection_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, clickJson: string, hitRadiusPx: number): Promise<string> | string;
   get_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
-  get_raster_tile_plan_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
+  get_nexrad_overlay_in_session(handle: number): Promise<string> | string;
+  nexrad_frame_bytes_in_session(handle: number, frameKey: string): Promise<Uint8Array> | Uint8Array;
+  get_raster_tile_plan_in_session_with_display_scale(handle: number, viewportJson: string, widthPx: number, heightPx: number, devicePixelRatio: number): Promise<string> | string;
   render_terrain_overlay_tile_by_key_in_session(handle: number, terrainTileKey: string, aircraftAltitudeFt: number): Promise<Uint8Array> | Uint8Array;
   get_session_snapshot(handle: number): Promise<string> | string;
   restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
@@ -707,14 +657,7 @@ type WasmModule = {
 };
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
-  private vectorManifestJsonPromise: Promise<string> | null = null;
-
   constructor(private readonly module: WasmModule) {}
-
-  private async vectorManifestJson(): Promise<string> {
-    this.vectorManifestJsonPromise ??= fetchVectorManifestJson(this.module);
-    return this.vectorManifestJsonPromise;
-  }
 
   async prewarm(): Promise<void> {}
 
@@ -736,7 +679,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     selectedAirportId?: string,
     selectedChartId?: string,
   ): Promise<UiSession> {
-    const vectorManifestJson = await debugTiming("startup.vector_manifest.fetch", () => this.vectorManifestJson());
     const module = this.module;
     const createSession = async (
       nextPlan: FlightPlan,
@@ -750,7 +692,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       const selectedChartIdJson = JSON.stringify(nextSelectedChartId ?? null);
       const createUiSession = module.create_ui_session_profiled ?? module.create_ui_session;
       const createdJson = await debugTiming("startup.session.wasm_call", () => createUiSession(
-        vectorManifestJson,
+        BOOTSTRAP_VECTOR_MANIFEST_JSON,
         planJson,
         recentAirportIdsJson,
         selectedAirportIdJson,
@@ -820,13 +762,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         return snapshot;
       },
-      replaceFlightPlan: async (plan) => {
-        snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.replace_flight_plan_in_session(handle, JSON.stringify(plan))),
-        );
-        await syncGuidanceGeometry();
-        return snapshot;
-      },
       performMapSelectionAction: async (action) => {
         snapshot = await withSessionRetry(async () =>
           runCoreHadSessionOperation<UiSessionSnapshot>(() =>
@@ -862,6 +797,22 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             ),
           ),
         );
+      },
+      previewFlightPlanEntry: async (input) => {
+        return withSessionRetry(async () =>
+          runCoreHadSessionOperation<FlightPlanEntryPreview>(() =>
+            this.module.preview_flight_plan_entry_in_session(handle, input),
+          ),
+        );
+      },
+      appendFlightPlanEntry: async (input) => {
+        snapshot = await withSessionRetry(async () =>
+          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+            this.module.append_flight_plan_entry_in_session(handle, input),
+          ),
+        );
+        await syncGuidanceGeometry();
+        return snapshot;
       },
       insertAirwayAtFlightPlanRow: async (rowUid, presentation, entryIndex, exitIndex) => {
         snapshot = await withSessionRetry(async () =>
@@ -1190,14 +1141,26 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
           ),
         ),
-      queryRasterTilePlan: async (viewport, widthPx, heightPx) =>
+      queryNexradOverlay: async () =>
+        withSessionRetry(async () =>
+          runCoreHadSessionOperation<NexradOverlayQueryResult>(
+            () => this.module.get_nexrad_overlay_in_session(handle),
+            (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
+          ),
+        ),
+      nexradFrameBytes: async (frameKey) =>
+        withSessionRetry(async () =>
+          new Uint8Array(await this.module.nexrad_frame_bytes_in_session(handle, frameKey)),
+        ),
+      queryRasterTilePlan: async (viewport, widthPx, heightPx, devicePixelRatio = 1) =>
         withSessionRetry(async () =>
           JSON.parse(
-            await this.module.get_raster_tile_plan_in_session(
+            await this.module.get_raster_tile_plan_in_session_with_display_scale(
               handle,
               JSON.stringify(coreViewportForMap(viewport)),
               widthPx,
               heightPx,
+              devicePixelRatio,
             ),
           ) as RasterTilePlan,
         ),
@@ -1242,22 +1205,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       recent_airport_ids: recentAirportIds,
       selected_airport_id: selectedAirportId ?? null,
       selected_chart_id: selectedChartId ?? null,
-    });
-  }
-
-  async previewFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanEntryPreview> {
-    return runCoreHadOperation<FlightPlanEntryPreview>({
-      kind: "preview_flight_plan_entry",
-      plan,
-      input,
-    });
-  }
-
-  async appendFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanUiMutation> {
-    return runCoreHadOperation<FlightPlanUiMutation>({
-      kind: "append_flight_plan_entry",
-      plan,
-      input,
     });
   }
 
@@ -1390,7 +1337,6 @@ async function loadBestAvailableAdapterUncached(
     "project_flight_plan_route_in_session",
     "select_map_family_in_session",
     "select_raster_map_in_session",
-    "replace_flight_plan_in_session",
     "perform_map_selection_action_in_session",
     "select_airport_in_session",
     "select_chart_in_session",
@@ -1401,7 +1347,9 @@ async function loadBestAvailableAdapterUncached(
     "get_map_overlay_in_session",
     "get_map_selection_in_session",
     "get_terrain_overlay_in_session",
-    "get_raster_tile_plan_in_session",
+    "get_nexrad_overlay_in_session",
+    "nexrad_frame_bytes_in_session",
+    "get_raster_tile_plan_in_session_with_display_scale",
     "render_terrain_overlay_tile_by_key_in_session",
     "get_session_snapshot",
     "restore_chart_page_state_in_session",
@@ -1409,6 +1357,8 @@ async function loadBestAvailableAdapterUncached(
     "install_rust_debug_logger",
     "insert_waypoint_at_flight_plan_row_in_session",
     "suggest_waypoint_identifiers_at_flight_plan_row_in_session",
+    "preview_flight_plan_entry_in_session",
+    "append_flight_plan_entry_in_session",
     "insert_airway_at_flight_plan_row_in_session",
     "select_procedure_at_flight_plan_row_in_session",
     "load_plate_procedure_in_session",

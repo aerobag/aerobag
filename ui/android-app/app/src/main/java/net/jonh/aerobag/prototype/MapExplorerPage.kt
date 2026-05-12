@@ -498,7 +498,6 @@ internal fun MapExplorerPage(
     var committedOverlaySurfaceUnits by remember(uiSession) { mutableStateOf<OverlaySurfaceUnits?>(null) }
     var mapOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
     var nexradFrames by remember(uiSession) { mutableStateOf<List<NexradOverlayFrame>>(emptyList()) }
-    var nexradFrameSourceUrl by remember(uiSession) { mutableStateOf<String?>(null) }
     var nexradFrameIndex by remember(uiSession) { mutableStateOf(0) }
     var terrainOverlay by remember(uiSession) { mutableStateOf<List<TerrainOverlayImage>>(emptyList()) }
     var terrainOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
@@ -1206,37 +1205,28 @@ internal fun MapExplorerPage(
         committedOverlaySurfaceUnits = OverlaySurfaceUnits(overlayWidthPx, overlayHeightPx)
         mapOverlayError = null
     }
-    LaunchedEffect(uiSession, mapLayerState.nexrad.visible, mapLayerState.nexrad.enabled, devServerBaseUrl) {
+    LaunchedEffect(uiSession, mapLayerState.nexrad.visible, mapLayerState.nexrad.enabled) {
         val effectStartMs = SystemClock.elapsedRealtime()
         if (!mapLayerState.nexrad.visible || !mapLayerState.nexrad.enabled) {
             nexradFrameIndex = 0
             Log.i(MapLayerLogTag, "nexrad hidden cachedFrames=${nexradFrames.size} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}")
             return@LaunchedEffect
         }
-        if (nexradFrameSourceUrl == devServerBaseUrl && nexradFrames.isNotEmpty()) {
-            Log.i(MapLayerLogTag, "nexrad cached frames=${nexradFrames.size} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}")
-            return@LaunchedEffect
-        }
         runCatching {
-            var manifestBytes = 0
             var imageBytes = 0L
             var fetchMs = 0L
             var decodeMs = 0L
-            val manifestJson = withContext(Dispatchers.IO) {
-                val fetchStartMs = SystemClock.elapsedRealtime()
-                URL(resolvePlaybackTraceUrl("/fast-products/nexrad/nexrad.json", devServerBaseUrl)).readText()
-                    .also {
-                        fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
-                        manifestBytes = it.length
-                    }
-            }
-            val manifest = json.decodeFromString<NexradManifest>(manifestJson)
-            require(manifest.projection == "EPSG:3857") { "unsupported nexrad projection ${manifest.projection}" }
-            val frames = withContext(Dispatchers.IO) {
-                manifest.frames.reversed().map { frame ->
+            val overlay = withContext(Dispatchers.IO) {
+                uiSession.queryNexradOverlay { resource ->
                     val fetchStartMs = SystemClock.elapsedRealtime()
-                    val bytes = URL(resolvePlaybackTraceUrl("/fast-products/nexrad/${frame.filename}", devServerBaseUrl)).openStream().buffered().use { it.readBytes() }
-                    fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                    fetchCoreResource(context, resource).also {
+                        fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                    }
+                }
+            }
+            val frames = withContext(Dispatchers.IO) {
+                overlay.frames.map { frame ->
+                    val bytes = uiSession.nexradFrameBytes(frame.key)
                     imageBytes += bytes.size
                     val decodeStartMs = SystemClock.elapsedRealtime()
                     val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
@@ -1247,16 +1237,14 @@ internal fun MapExplorerPage(
             }
             Log.i(
                 MapLayerLogTag,
-                "nexrad loaded frames=${frames.size} manifestBytes=$manifestBytes imageBytes=$imageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}",
+                "nexrad loaded frames=${frames.size} imageBytes=$imageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}",
             )
             frames
         }.onSuccess { frames ->
             nexradFrames = frames
-            nexradFrameSourceUrl = devServerBaseUrl
             nexradFrameIndex = 0
         }.onFailure { error ->
             nexradFrames = emptyList()
-            nexradFrameSourceUrl = null
             nexradFrameIndex = 0
             Log.w("AerobagLayers", "nexrad unavailable", error)
         }

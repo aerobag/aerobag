@@ -10,7 +10,7 @@ labels:
   - cat:productionization
 dependencies:
   - TASK-34
-priority: medium
+priority: done
 ordinal: 35000
 ---
 
@@ -22,7 +22,7 @@ Add an explicit project license.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Choose the intended license.
-- [ ] #2 Add the license file and any package metadata references.
-- [ ] #3 Verify third-party dependency/license implications are acceptable.
+- [x] #1 Choose the intended license.
+- [x] #2 Add the license file and any package metadata references.
+- [x] #3 Verify third-party dependency/license implications are acceptable.
 <!-- AC:END -->

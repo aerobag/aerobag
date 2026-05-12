@@ -11,7 +11,7 @@ labels:
   - android
   - cat:web
 dependencies: []
-priority: medium
+priority: high
 ordinal: 31000
 ---
 

@@ -1078,23 +1078,10 @@ fn find_plate_pages_script() -> anyhow::Result<PathBuf> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut candidates = vec![manifest_dir.join("scripts").join("find_plate_pages.py")];
 
-    // Keep the TPP helper resilient to repo refactors. This compatibility
-    // layer must sometimes run from binaries compiled before or during a tree
-    // reorganization, and we do not want a stale baked-in crate path to break
-    // compatibility runs when the helper script is still present elsewhere in the
-    // repo. Prefer the current crate layout, then fall back across known
-    // workspace homes for the same compatibility code.
     if let Ok(current_exe) = std::env::current_exe() {
         for ancestor in current_exe.ancestors() {
-            candidates
-                .push(ancestor.join(
-                    "baseline/avare_equivalent/preprocessor-tpp/scripts/find_plate_pages.py",
-                ));
             candidates.push(
                 ancestor.join("product/preprocessor/preprocessor-tpp/scripts/find_plate_pages.py"),
-            );
-            candidates.push(
-                ancestor.join("rust-preprocessor/preprocessor-tpp/scripts/find_plate_pages.py"),
             );
         }
     }

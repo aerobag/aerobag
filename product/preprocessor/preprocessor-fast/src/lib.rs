@@ -564,7 +564,7 @@ pub struct StructuredTfrArea {
     upper_limit: StructuredTfrLimit,
     lower_limit: StructuredTfrLimit,
     polygon: Vec<StructuredTfrPoint>,
-    avare_text: String,
+    summary_text: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -595,7 +595,7 @@ struct ParsedTfrArea {
     lower_value_text: String,
     lower_unit: String,
     polygon: Vec<StructuredTfrPoint>,
-    avare_text: String,
+    summary_text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -721,7 +721,7 @@ pub fn build_tfr_dataset(request: &BuildTfrRequest) -> anyhow::Result<BuildTfrRe
                 unit: area.lower_unit,
             },
             polygon: area.polygon.clone(),
-            avare_text: area.avare_text,
+            summary_text: area.summary_text,
         })
         .collect::<Vec<_>>();
     let structured_json_path = request.output_dir.join("tfrs.json");
@@ -786,7 +786,7 @@ pub fn build_tfr_avare_parity_artifacts(
     let (_entries, parsed_areas) = load_parsed_tfr_areas(&request.input_dir)?;
     let tfr_text = parsed_areas
         .iter()
-        .map(|area| area.avare_text.clone())
+        .map(|area| area.summary_text.clone())
         .collect::<Vec<_>>()
         .join(",");
     let tfr_manifest_path = request.output_dir.join("TFRs");
@@ -2841,7 +2841,7 @@ fn parse_wfs_geojson_areas(path: &Path) -> anyhow::Result<Vec<ParsedTfrArea>> {
             areas.push(ParsedTfrArea {
                 notam_id: notam_id.clone(),
                 area_index: feature_area_index,
-                avare_text: build_tfr_avare_text(
+                summary_text: build_tfr_summary_text(
                     &schedule_fragments,
                     &upper_value_text,
                     &upper_unit,
@@ -2997,7 +2997,7 @@ fn geojson_lon_lat_point(value: Value) -> anyhow::Result<(f64, f64)> {
     Ok((lon, lat))
 }
 
-fn build_tfr_avare_text(
+fn build_tfr_summary_text(
     schedule_fragments: &[StructuredTfrScheduleFragment],
     upper_value_text: &str,
     upper_unit: &str,
@@ -3053,7 +3053,7 @@ fn parse_detail_xml_groups(path: &Path, notam_id: &str) -> anyhow::Result<Vec<Pa
         lower_value_text: String::new(),
         lower_unit: String::new(),
         polygon: Vec::new(),
-        avare_text: String::new(),
+        summary_text: String::new(),
     };
     let mut in_area_group = false;
     let mut in_area = false;
@@ -3074,7 +3074,7 @@ fn parse_detail_xml_groups(path: &Path, notam_id: &str) -> anyhow::Result<Vec<Pa
                         lower_value_text: String::new(),
                         lower_unit: String::new(),
                         polygon: Vec::new(),
-                        avare_text: "TFR:: ".to_string(),
+                        summary_text: "TFR:: ".to_string(),
                     };
                 }
                 b"dateEffective" if in_area_group => mode = Some(TextMode::DateEffective),
@@ -3119,9 +3119,9 @@ fn parse_detail_xml_groups(path: &Path, notam_id: &str) -> anyhow::Result<Vec<Pa
                 }
                 match mode {
                     Some(TextMode::DateEffective) => {
-                        current_group.avare_text.push_str("Eff ");
-                        current_group.avare_text.push_str(&text);
-                        current_group.avare_text.push(' ');
+                        current_group.summary_text.push_str("Eff ");
+                        current_group.summary_text.push_str(&text);
+                        current_group.summary_text.push(' ');
                         current_group
                             .schedule_fragments
                             .push(StructuredTfrScheduleFragment {
@@ -3130,9 +3130,9 @@ fn parse_detail_xml_groups(path: &Path, notam_id: &str) -> anyhow::Result<Vec<Pa
                             });
                     }
                     Some(TextMode::DateExpire) => {
-                        current_group.avare_text.push_str("Exp ");
-                        current_group.avare_text.push_str(&text);
-                        current_group.avare_text.push(' ');
+                        current_group.summary_text.push_str("Exp ");
+                        current_group.summary_text.push_str(&text);
+                        current_group.summary_text.push(' ');
                         current_group
                             .schedule_fragments
                             .push(StructuredTfrScheduleFragment {
@@ -3141,39 +3141,39 @@ fn parse_detail_xml_groups(path: &Path, notam_id: &str) -> anyhow::Result<Vec<Pa
                             });
                     }
                     Some(TextMode::Upper) => {
-                        current_group.avare_text.push_str("Top ");
-                        current_group.avare_text.push_str(&text);
-                        current_group.avare_text.push(' ');
+                        current_group.summary_text.push_str("Top ");
+                        current_group.summary_text.push_str(&text);
+                        current_group.summary_text.push(' ');
                         current_group.upper_value_text = text;
                     }
                     Some(TextMode::Lower) => {
-                        current_group.avare_text.push_str("Low ");
-                        current_group.avare_text.push_str(&text);
-                        current_group.avare_text.push(' ');
+                        current_group.summary_text.push_str("Low ");
+                        current_group.summary_text.push_str(&text);
+                        current_group.summary_text.push(' ');
                         current_group.lower_value_text = text;
                     }
                     Some(TextMode::UpperUnit) => {
-                        current_group.avare_text.push_str(&text);
-                        current_group.avare_text.push(' ');
+                        current_group.summary_text.push_str(&text);
+                        current_group.summary_text.push(' ');
                         current_group.upper_unit = text;
                     }
                     Some(TextMode::LowerUnit) => {
-                        current_group.avare_text.push_str(&text);
-                        current_group.avare_text.push(' ');
+                        current_group.summary_text.push_str(&text);
+                        current_group.summary_text.push(' ');
                         current_group.lower_unit = text;
                     }
                     Some(TextMode::GeoLat) if in_area => {
-                        current_group.avare_text.push(',');
+                        current_group.summary_text.push(',');
                         current_group
-                            .avare_text
+                            .summary_text
                             .push_str(&normalize_geo_number_string(&text)?);
                         pending_lat = Some(parse_geo_value(&text)?);
                     }
                     Some(TextMode::GeoLon) if in_area => {
                         let lon = parse_geo_value(&text)?;
-                        current_group.avare_text.push(',');
+                        current_group.summary_text.push(',');
                         current_group
-                            .avare_text
+                            .summary_text
                             .push_str(&normalize_geo_number_string(&text)?);
                         let lat = pending_lat.take().ok_or_else(|| {
                             anyhow::anyhow!(
@@ -3198,17 +3198,17 @@ fn parse_detail_xml_groups(path: &Path, notam_id: &str) -> anyhow::Result<Vec<Pa
                 }
                 match mode {
                     Some(TextMode::GeoLat) if in_area => {
-                        current_group.avare_text.push(',');
+                        current_group.summary_text.push(',');
                         current_group
-                            .avare_text
+                            .summary_text
                             .push_str(&normalize_geo_number_string(&text)?);
                         pending_lat = Some(parse_geo_value(&text)?);
                     }
                     Some(TextMode::GeoLon) if in_area => {
                         let lon = parse_geo_value(&text)?;
-                        current_group.avare_text.push(',');
+                        current_group.summary_text.push(',');
                         current_group
-                            .avare_text
+                            .summary_text
                             .push_str(&normalize_geo_number_string(&text)?);
                         let lat = pending_lat.take().ok_or_else(|| {
                             anyhow::anyhow!(

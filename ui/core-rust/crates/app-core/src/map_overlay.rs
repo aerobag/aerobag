@@ -316,7 +316,7 @@ pub struct TfrAreaPayload {
     pub upper_limit: TfrAltitudeLimit,
     pub lower_limit: TfrAltitudeLimit,
     pub polygon: Vec<TfrLatLonPoint>,
-    pub avare_text: String,
+    pub summary_text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5712,7 +5712,7 @@ mod tests {
                         lon: -122.08,
                     },
                 ],
-                avare_text: String::new(),
+                summary_text: String::new(),
             }],
         };
 
@@ -5784,7 +5784,7 @@ mod tests {
                         lon: -122.001,
                     },
                 ],
-                avare_text: String::new(),
+                summary_text: String::new(),
             }],
         };
 

@@ -42,7 +42,7 @@ The web prototype reverses the manifest frame order and loops oldest-to-newest. 
 
 Android can use the same model: load `nexrad.json`, decode the PNG frames, convert EPSG:3857 meter bounds into the map's Web Mercator world coordinates, and draw the current frame as a bitmap overlay under route/ownship symbology. Keep the radar layer pointer-transparent and treat absence or unsupported projection as "no radar layer", not as a fatal map error.
 
-METAR and TFR are not wired in web yet. METAR records have `station_id`, `raw_text`, `observation_time_utc`, `flight_category`, `longitude`, and `latitude`. TFR records are grouped as `areas`, with NOTAM metadata, schedule fragments, altitude limits, `avare_text`, and lat/lon polygon points.
+METAR and TFR are not wired in web yet. METAR records have `station_id`, `raw_text`, `observation_time_utc`, `flight_category`, `longitude`, and `latitude`. TFR records are grouped as `areas`, with NOTAM metadata, schedule fragments, altitude limits, `summary_text`, and lat/lon polygon points.
 
 ## Terrain draft
 

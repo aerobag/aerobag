@@ -2010,8 +2010,14 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVisibleMapFeatu
     fixLabelFillPaint: Paint,
     airportToweredLabelFillPaint: Paint,
     airportUntoweredLabelFillPaint: Paint,
+    contrastOnly: Boolean = false,
+    drawLabel: Boolean = true,
+    selectedLabel: Boolean = false,
+    labelOverride: String? = null,
 ) {
     val center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat())
+    val contrastColor = Color.White
+    val contrastStrokeWidth = 8f * densityScale
     val isAirport = feature.styleClass == "airport" || feature.kind.equals("airport", ignoreCase = true)
     val isVor = feature.styleClass == "nav" || feature.kind.lowercase().contains("vor")
     val isObstacle =
@@ -2019,6 +2025,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVisibleMapFeatu
             feature.kind.equals("obs", ignoreCase = true) ||
             feature.kind.equals("obstacle", ignoreCase = true)
     if (isAirport) {
+        val label = labelOverride ?: feature.label
         val airportFillColor = if (feature.towered) airportToweredFillColor else airportUntoweredFillColor
         val airportLabelPaint = if (feature.towered) airportToweredLabelFillPaint else airportUntoweredLabelFillPaint
         val usesOpenAirportCircle =
@@ -2027,35 +2034,50 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVisibleMapFeatu
                 feature.hasPavedRunway == false
         if (usesOpenAirportCircle) {
             airportOpenMarkerSymbol(center, densityScale).forEach { layer ->
-                drawNavSymbolLayer(layer, densityScale, uiTheme)
+                if (contrastOnly) {
+                    drawNavSymbolLayerAsContrast(layer, densityScale, contrastColor, contrastStrokeWidth)
+                } else {
+                    drawNavSymbolLayer(layer, densityScale, uiTheme)
+                }
             }
         } else if (feature.fuelAvailable) {
             val markerPath = airportFuelMarkerPath(center, densityScale)
-            drawPath(markerPath, airportFillColor)
-            drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * densityScale))
+            if (contrastOnly) {
+                drawPath(markerPath, contrastColor, style = Stroke(width = contrastStrokeWidth, join = StrokeJoin.Round))
+            } else {
+                drawPath(markerPath, airportFillColor)
+                drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * densityScale))
+            }
         } else {
             val markerPath = airportCircleMarkerPath(center, densityScale)
-            drawPath(markerPath, airportFillColor)
-            drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * densityScale))
+            if (contrastOnly) {
+                drawPath(markerPath, contrastColor, style = Stroke(width = contrastStrokeWidth, join = StrokeJoin.Round))
+            } else {
+                drawPath(markerPath, airportFillColor)
+                drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * densityScale))
+            }
         }
         if (feature.heliport == true) {
             val heliportPath = heliportHPath(center, densityScale)
             drawPath(
                 heliportPath,
-                airportUntoweredFillColor,
-                style = Stroke(width = 2.4f * densityScale, cap = StrokeCap.Round),
+                if (contrastOnly) contrastColor else airportUntoweredFillColor,
+                style = Stroke(width = if (contrastOnly) contrastStrokeWidth else 2.4f * densityScale, cap = StrokeCap.Round),
             )
         } else if (feature.hasWaterRunway == true) {
             rotate(15f, center) {
                 val anchorPath = seaplaneAnchorPath(center, densityScale)
                 drawPath(
                     anchorPath,
-                    airportUntoweredFillColor,
-                    style = Stroke(width = 2.2f * densityScale, cap = StrokeCap.Round),
+                    if (contrastOnly) contrastColor else airportUntoweredFillColor,
+                    style = Stroke(width = if (contrastOnly) contrastStrokeWidth else 2.2f * densityScale, cap = StrokeCap.Round),
                 )
             }
         }
         if (!usesOpenAirportCircle) feature.longestRunwayHeadingTrueDeg?.let { headingDeg ->
+            if (contrastOnly) {
+                return@let
+            }
             val headingRad = Math.toRadians(headingDeg)
             val runwayHalfLength = (8f * feature.runwayLengthRatio.toFloat().coerceIn(0f, 1f)).coerceAtLeast(1.6f) * densityScale
             val dx = kotlin.math.sin(headingRad).toFloat() * runwayHalfLength
@@ -2075,34 +2097,53 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVisibleMapFeatu
                 cap = StrokeCap.Round,
             )
         }
-        drawVectorIdentLabel(
-            label = feature.label,
-            centerX = center.x,
-            baselineY = center.y - 24f * densityScale,
-            strokePaint = airportLabelStrokePaint,
-            fillPaint = airportLabelPaint,
-            labelStyle = feature.labelStyle,
-            densityScale = densityScale,
-            uiTheme = uiTheme,
-        )
+        if (!contrastOnly && drawLabel) {
+            if (selectedLabel) {
+                drawSelectedVectorIdentLabel(label, center.x, center.y - 24f * densityScale, densityScale)
+            } else {
+                drawVectorIdentLabel(
+                    label = label,
+                    centerX = center.x,
+                    baselineY = center.y - 24f * densityScale,
+                    strokePaint = airportLabelStrokePaint,
+                    fillPaint = airportLabelPaint,
+                    labelStyle = feature.labelStyle,
+                    densityScale = densityScale,
+                    uiTheme = uiTheme,
+                )
+            }
+        }
     } else if (isVor) {
+        val label = labelOverride ?: feature.label
         val radius = 8f * densityScale
         val outerHex = vorOuterHexPath(center, radius)
         val band = vorBandPath(center, radius)
-        drawPath(band, vorMarkerColor)
-        drawPath(band, vorMarkerStrokeColor, style = Stroke(width = 1.6f * densityScale))
-        drawPath(outerHex, vorMarkerStrokeColor, style = Stroke(width = 1.6f * densityScale))
-        drawVectorIdentLabel(
-            label = feature.label,
-            centerX = center.x,
-            baselineY = center.y - 24f * densityScale,
-            strokePaint = fixLabelStrokePaint,
-            fillPaint = vorLabelFillPaint,
-            labelStyle = feature.labelStyle,
-            densityScale = densityScale,
-            uiTheme = uiTheme,
-        )
+        if (contrastOnly) {
+            drawPath(band, contrastColor, style = Stroke(width = contrastStrokeWidth, join = StrokeJoin.Round))
+            drawPath(outerHex, contrastColor, style = Stroke(width = contrastStrokeWidth, join = StrokeJoin.Round))
+        } else {
+            drawPath(band, vorMarkerColor)
+            drawPath(band, vorMarkerStrokeColor, style = Stroke(width = 1.6f * densityScale))
+            drawPath(outerHex, vorMarkerStrokeColor, style = Stroke(width = 1.6f * densityScale))
+            if (drawLabel) {
+                if (selectedLabel) {
+                    drawSelectedVectorIdentLabel(label, center.x, center.y - 24f * densityScale, densityScale)
+                } else {
+                    drawVectorIdentLabel(
+                        label = label,
+                        centerX = center.x,
+                        baselineY = center.y - 24f * densityScale,
+                        strokePaint = fixLabelStrokePaint,
+                        fillPaint = vorLabelFillPaint,
+                        labelStyle = feature.labelStyle,
+                        densityScale = densityScale,
+                        uiTheme = uiTheme,
+                    )
+                }
+            }
+        }
     } else if (isObstacle) {
+        val label = labelOverride ?: feature.label
         val isTallObstacle = feature.obstacleVariant == "tall"
         val obstaclePath = if (isTallObstacle) {
             obstacleTallPath(center, densityScale)
@@ -2116,52 +2157,120 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVisibleMapFeatu
             else -> Color(0xFFFFD34D)
         }
         val obstacleUnderColor = Color(0xD1081218)
-        drawPath(
-            obstaclePath,
-            obstacleUnderColor,
-            style = Stroke(width = 2.4f * densityScale, join = StrokeJoin.Miter),
-        )
-        drawPath(
-            obstaclePath,
-            obstacleColor,
-            style = Stroke(width = 1.2f * densityScale, join = StrokeJoin.Miter),
-        )
-        drawCircle(
-            color = obstacleUnderColor,
-            radius = obstacleDotRadius * densityScale,
-            center = Offset(center.x, center.y + dotY * densityScale),
-        )
-        drawCircle(
-            color = obstacleColor,
-            radius = obstacleDotRadius * densityScale,
-            center = Offset(center.x, center.y + dotY * densityScale),
-        )
-        if (feature.label.isNotEmpty()) {
-            drawVectorIdentLabel(
-                label = feature.label,
-                centerX = center.x,
-                baselineY = center.y - 14f * densityScale,
-                strokePaint = fixLabelStrokePaint,
-                fillPaint = fixLabelFillPaint,
-                labelStyle = feature.labelStyle,
-                densityScale = densityScale,
-                uiTheme = uiTheme,
+        if (contrastOnly) {
+            drawPath(
+                obstaclePath,
+                contrastColor,
+                style = Stroke(width = contrastStrokeWidth, join = StrokeJoin.Miter),
+            )
+            drawCircle(
+                color = contrastColor,
+                radius = obstacleDotRadius * densityScale + contrastStrokeWidth * 0.35f,
+                center = Offset(center.x, center.y + dotY * densityScale),
+            )
+        } else {
+            drawPath(
+                obstaclePath,
+                obstacleUnderColor,
+                style = Stroke(width = 2.4f * densityScale, join = StrokeJoin.Miter),
+            )
+            drawPath(
+                obstaclePath,
+                obstacleColor,
+                style = Stroke(width = 1.2f * densityScale, join = StrokeJoin.Miter),
+            )
+            drawCircle(
+                color = obstacleUnderColor,
+                radius = obstacleDotRadius * densityScale,
+                center = Offset(center.x, center.y + dotY * densityScale),
+            )
+            drawCircle(
+                color = obstacleColor,
+                radius = obstacleDotRadius * densityScale,
+                center = Offset(center.x, center.y + dotY * densityScale),
             )
         }
+        if (label.isNotEmpty()) {
+            if (!contrastOnly && drawLabel) {
+                if (selectedLabel) {
+                    drawSelectedVectorIdentLabel(label, center.x, center.y - 14f * densityScale, densityScale)
+                } else {
+                    drawVectorIdentLabel(
+                        label = label,
+                        centerX = center.x,
+                        baselineY = center.y - 14f * densityScale,
+                        strokePaint = fixLabelStrokePaint,
+                        fillPaint = fixLabelFillPaint,
+                        labelStyle = feature.labelStyle,
+                        densityScale = densityScale,
+                        uiTheme = uiTheme,
+                    )
+                }
+            }
+        }
     } else {
+        val label = labelOverride ?: feature.label
         val triangle = fixTrianglePath(center, 8f * densityScale)
-        drawPath(triangle, fixMarkerFillColor)
-        drawPath(triangle, fixMarkerStrokeColor, style = Stroke(width = 2.5f * densityScale))
-        drawVectorIdentLabel(
-            label = feature.label,
-            centerX = center.x,
-            baselineY = center.y - 15f * densityScale,
-            strokePaint = fixLabelStrokePaint,
-            fillPaint = fixLabelFillPaint,
-            labelStyle = feature.labelStyle,
-            densityScale = densityScale,
-            uiTheme = uiTheme,
-        )
+        if (contrastOnly) {
+            drawPath(triangle, contrastColor, style = Stroke(width = contrastStrokeWidth, join = StrokeJoin.Round))
+        } else {
+            drawPath(triangle, fixMarkerFillColor)
+            drawPath(triangle, fixMarkerStrokeColor, style = Stroke(width = 2.5f * densityScale))
+            if (drawLabel) {
+                if (selectedLabel) {
+                    drawSelectedVectorIdentLabel(label, center.x, center.y - 15f * densityScale, densityScale)
+                } else {
+                    drawVectorIdentLabel(
+                        label = label,
+                        centerX = center.x,
+                        baselineY = center.y - 15f * densityScale,
+                        strokePaint = fixLabelStrokePaint,
+                        fillPaint = fixLabelFillPaint,
+                        labelStyle = feature.labelStyle,
+                        densityScale = densityScale,
+                        uiTheme = uiTheme,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSelectedVectorIdentLabel(
+    label: String,
+    centerX: Float,
+    baselineY: Float,
+    densityScale: Float,
+) {
+    if (label.isBlank()) return
+    val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.rgb(8, 18, 24)
+        textAlign = Paint.Align.CENTER
+        textSize = 14f * densityScale
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        style = Paint.Style.FILL
+    }
+    val boxFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.WHITE
+        style = Paint.Style.FILL
+    }
+    val boxStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.rgb(8, 18, 24)
+        style = Paint.Style.STROKE
+        strokeWidth = 2f * densityScale
+    }
+    val width = kotlin.math.max(26f * densityScale, fillPaint.measureText(label) + 14f * densityScale)
+    val height = 15f * densityScale
+    val rect = RectF(
+        centerX - width / 2f,
+        baselineY - height + 2f * densityScale,
+        centerX + width / 2f,
+        baselineY + 2f * densityScale,
+    )
+    drawContext.canvas.nativeCanvas.apply {
+        drawRoundRect(rect, 2f * densityScale, 2f * densityScale, boxFillPaint)
+        drawRoundRect(rect, 2f * densityScale, 2f * densityScale, boxStrokePaint)
+        drawText(label, centerX, baselineY, fillPaint)
     }
 }
 
@@ -2340,9 +2449,78 @@ private fun MapSelectionHighlightLayer(
             is MapSelectionHighlight.FeatureRef -> {
                 val feature = displayedMapOverlay.visibleFeatures.firstOrNull { it.id == highlight.id }
                 if (feature != null) {
-                    drawCircle(Color.White, radius = 20f * densityScale, center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), style = Stroke(width = 4f * densityScale))
+                    drawVisibleMapFeature(
+                        feature = feature,
+                        densityScale = densityScale,
+                        uiTheme = uiTheme,
+                        fixMarkerStrokeColor = Color.Transparent,
+                        fixMarkerFillColor = Color.Transparent,
+                        airportMarkerStrokeColor = Color.Transparent,
+                        airportToweredFillColor = Color.Transparent,
+                        airportUntoweredFillColor = Color.Transparent,
+                        vorMarkerColor = Color.Transparent,
+                        vorMarkerStrokeColor = Color.Transparent,
+                        fixLabelStrokePaint = Paint(),
+                        airportLabelStrokePaint = Paint(),
+                        vorLabelFillPaint = Paint(),
+                        fixLabelFillPaint = Paint(),
+                        airportToweredLabelFillPaint = Paint(),
+                        airportUntoweredLabelFillPaint = Paint(),
+                        contrastOnly = true,
+                    )
+                    drawVisibleMapFeature(
+                        feature = feature,
+                        densityScale = densityScale,
+                        uiTheme = uiTheme,
+                        fixMarkerStrokeColor = Color(0xCC06121A),
+                        fixMarkerFillColor = uiTheme.aviation.intersectionCyan,
+                        airportMarkerStrokeColor = Color(0xCC06121A),
+                        airportToweredFillColor = Color(0xFF0F4C81),
+                        airportUntoweredFillColor = uiTheme.aviation.classCMagenta,
+                        vorMarkerColor = uiTheme.aviation.classBDBlue,
+                        vorMarkerStrokeColor = Color(0xCC06121A),
+                        fixLabelStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                            color = android.graphics.Color.argb(205, 0, 0, 0)
+                            textAlign = Paint.Align.CENTER
+                            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                            style = Paint.Style.STROKE
+                        },
+                        airportLabelStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                            color = android.graphics.Color.argb(205, 0, 0, 0)
+                            textAlign = Paint.Align.CENTER
+                            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                            style = Paint.Style.STROKE
+                        },
+                        vorLabelFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                            color = uiTheme.aviation.classBDBlue.toArgb()
+                            textAlign = Paint.Align.CENTER
+                            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                            style = Paint.Style.FILL
+                        },
+                        fixLabelFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                            color = uiTheme.aviation.intersectionCyan.toArgb()
+                            textAlign = Paint.Align.CENTER
+                            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                            style = Paint.Style.FILL
+                        },
+                        airportToweredLabelFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                            color = uiTheme.aviation.classBDBlue.toArgb()
+                            textAlign = Paint.Align.CENTER
+                            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                            style = Paint.Style.FILL
+                        },
+                        airportUntoweredLabelFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                            color = uiTheme.aviation.classCMagenta.toArgb()
+                            textAlign = Paint.Align.CENTER
+                            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                            style = Paint.Style.FILL
+                        },
+                        selectedLabel = true,
+                        labelOverride = item.label,
+                    )
                 }
                 (displayedMapOverlay.airspacePaths + displayedMapOverlay.tfrPaths).firstOrNull { it.id == highlight.id }?.let { path ->
+                    drawAirspaceDisplayPathContrast(path)
                     drawAirspaceDisplayPath(uiTheme, path)
                 }
             }
@@ -2657,6 +2835,28 @@ internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawNavSymbolLayer
             stroke,
             style = Stroke(
                 width = (layer.strokeWidth ?: 1f) * scale,
+                cap = navSymbolStrokeCap(layer.lineCap),
+                join = navSymbolStrokeJoin(layer.lineJoin),
+            ),
+        )
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawNavSymbolLayerAsContrast(
+    layer: NavSymbolLayer,
+    scale: Float,
+    color: Color,
+    strokeWidth: Float,
+) {
+    if (layer.fill != null && layer.fill != "none") {
+        drawPath(layer.path, color, style = Stroke(width = strokeWidth, join = navSymbolStrokeJoin(layer.lineJoin)))
+    }
+    if (layer.stroke != null && layer.stroke != "none") {
+        drawPath(
+            layer.path,
+            color,
+            style = Stroke(
+                width = kotlin.math.max(strokeWidth, ((layer.strokeWidth ?: 1f) * scale) + strokeWidth),
                 cap = navSymbolStrokeCap(layer.lineCap),
                 join = navSymbolStrokeJoin(layer.lineJoin),
             ),

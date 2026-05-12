@@ -390,6 +390,20 @@ internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceDispla
     }
 }
 
+internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceDisplayPathContrast(feature: AirspaceDisplayPath) {
+    feature.paths.forEach { subpath ->
+        drawPath(
+            path = airspacePath(subpath),
+            color = Color.White,
+            style = Stroke(
+                width = 9f,
+                cap = StrokeCap.Round,
+                join = StrokeJoin.Round,
+            ),
+        )
+    }
+}
+
 internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceLimitGlyph(
     uiTheme: UiTheme,
     glyph: AirspaceLimitGlyph,

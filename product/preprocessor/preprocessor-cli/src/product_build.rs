@@ -32,9 +32,8 @@ use preprocessor_data::{
     build_data_package, build_data_package_with_tpp_matches, DataBuildRequest, DataTppMatchRequest,
 };
 use preprocessor_fast::{
-    build_geo_dataset, build_metar_dataset, build_nexrad_dataset, build_tfr_dataset,
-    metar_content_fingerprint, BuildGeoRequest, BuildMetarRequest, BuildNexradRequest,
-    BuildTfrRequest,
+    build_metar_dataset, build_nexrad_dataset, build_tfr_dataset, metar_content_fingerprint,
+    BuildMetarRequest, BuildNexradRequest, BuildTfrRequest,
 };
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
@@ -559,10 +558,7 @@ fn build_fast_bundle_manifest(
 }
 
 fn static_product_task_ids(config: &ProductBuildConfig) -> Vec<String> {
-    let mut task_ids = vec![
-        "publish-geo".to_string(),
-        "publish-world-basemap".to_string(),
-    ];
+    let mut task_ids = vec!["publish-world-basemap".to_string()];
     if include_static_terrain_products() {
         task_ids.extend(
             config
@@ -584,9 +580,6 @@ fn static_product_task_ids(config: &ProductBuildConfig) -> Vec<String> {
 }
 
 fn stable_product_family_region(id: &str) -> anyhow::Result<(String, Option<String>)> {
-    if id == "geo" {
-        return Ok(("geo".to_string(), None));
-    }
     if id == "world-basemap" {
         return Ok(("world-basemap".to_string(), None));
     }
@@ -1301,8 +1294,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         ResourceIndex { cycle: String },
         NavDb { cycle: String },
         BundleManifest { cycle: String },
-        GeoBuild,
-        GeoPublish,
         WorldBasemapBuild,
         WorldBasemapPublish,
         TerrainDiscovery,
@@ -1512,18 +1503,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         }
 
         pending_tasks.push(ProductScheduledTask {
-            id: "build-geo".to_string(),
-            deps: vec![],
-            weight: 1,
-            kind: ProductScheduledTaskKind::GeoBuild,
-        });
-        pending_tasks.push(ProductScheduledTask {
-            id: "publish-geo".to_string(),
-            deps: vec!["build-geo".to_string()],
-            weight: 1,
-            kind: ProductScheduledTaskKind::GeoPublish,
-        });
-        pending_tasks.push(ProductScheduledTask {
             id: "build-world-basemap".to_string(),
             deps: vec![],
             weight: 1,
@@ -1618,7 +1597,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         let mut current_artifacts_deps = cycles
             .iter()
             .map(|cycle| cycle_task_id(cycle, "bundle-manifest"))
-            .chain(std::iter::once("publish-geo".to_string()))
             .chain(std::iter::once("publish-world-basemap".to_string()))
             .collect::<Vec<_>>();
         if include_static_terrain_products() {
@@ -1644,7 +1622,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         });
         let mut product_unpack_deps = vec![
             "current-artifacts".to_string(),
-            "publish-geo".to_string(),
             "publish-world-basemap".to_string(),
         ];
         if include_static_terrain_products() {
@@ -2354,23 +2331,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 completion_detail: "published".to_string(),
                             })
                         }
-                        ProductScheduledTaskKind::GeoBuild => {
-                            let (zip_path, source_version, record) = build_geo_product(&config)?;
-                            let cache_hit = record.cache_hit;
-                            let (zip_sha256, zip_size_bytes) =
-                                node_output_file_detail(&record, "zip");
-                            Ok(ProductTaskCompletion {
-                                node_records: vec![record],
-                                value: ProductTaskValue::BuiltStandaloneProduct {
-                                    zip_path,
-                                    zip_sha256,
-                                    zip_size_bytes,
-                                    source_version,
-                                    source_fetched_at_utc: None,
-                                },
-                                completion_detail: format!("cache_hit={cache_hit}"),
-                            })
-                        }
                         ProductScheduledTaskKind::WorldBasemapBuild => {
                             let (zip_path, source_version, source_fetched_at_utc, tile_levels, record) =
                                 build_world_basemap_product(&config)?;
@@ -2609,46 +2569,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     tile_levels,
                                 },
                                 completion_detail: format!("cache_hit={cache_hit}"),
-                            })
-                        }
-                        ProductScheduledTaskKind::GeoPublish => {
-                            let built = match task_values_snapshot.get("build-geo") {
-                                Some(ProductTaskValue::BuiltStandaloneProduct {
-                                    zip_path,
-                                    zip_sha256,
-                                    zip_size_bytes,
-                                    source_version,
-                                    source_fetched_at_utc,
-                                    ..
-                                }) => (
-                                    zip_path.clone(),
-                                    zip_sha256.clone(),
-                                    *zip_size_bytes,
-                                    source_version.clone(),
-                                    source_fetched_at_utc.clone(),
-                                ),
-                                _ => bail!("missing geo build output"),
-                            };
-                            let (published_zip, sha256, size_bytes) =
-                                publish_content_addressed_zip(
-                                    &config.build_root,
-                                    &built.0,
-                                    "geo",
-                                    built.1.as_deref(),
-                                    built.2,
-                                )?;
-                            Ok(ProductTaskCompletion {
-                                node_records: vec![],
-                                value: ProductTaskValue::PublishedStandaloneProduct {
-                                    id: "geo".to_string(),
-                                    source_zip_path: built.0,
-                                    published_zip,
-                                    sha256,
-                                    size_bytes,
-                                    source_version: built.3,
-                                    source_fetched_at_utc: built.4,
-                                },
-                                completion_detail: "published".to_string(),
                             })
                         }
                         ProductScheduledTaskKind::WorldBasemapPublish => {
@@ -4830,6 +4750,10 @@ fn build_nav_kv_artifact(
             "vector_had_pairs".to_string(),
             hash_file(vector_had_pairs_path)?,
         ),
+        (
+            "magvar_geo_source".to_string(),
+            hash_file(static_geo_source_path())?,
+        ),
         ("cycle".to_string(), cycle.to_string()),
         (
             "package_artifacts".to_string(),
@@ -4884,6 +4808,7 @@ fn build_nav_kv_artifact(
                 pairs.extend(build_nav_kv_plate_pairs(&resource_index)?);
                 pairs.extend(build_nav_kv_package_pairs(&package_artifacts)?);
                 pairs.extend(build_nav_kv_navref_pairs(intermediate_sqlite_db_path)?);
+                pairs.extend(build_nav_kv_magvar_pairs(&static_geo_source_path())?);
                 pairs.extend(build_nav_kv_vector_pairs(vector_had_pairs_path)?);
                 let built = build_nav_kv_sorted(pairs, 64 * 1024)
                     .map_err(|err| anyhow::anyhow!("failed to build nav_kv: {err}"))?;
@@ -6169,6 +6094,78 @@ fn build_nav_kv_vector_pairs(path: &Path) -> anyhow::Result<Vec<NavKvPair>> {
     }
     if pairs.is_empty() {
         bail!("vector HAD pair file {} had no records", path.display());
+    }
+    Ok(pairs)
+}
+
+fn build_nav_kv_magvar_pairs(path: &Path) -> anyhow::Result<Vec<NavKvPair>> {
+    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mut pairs = Vec::new();
+    let mut keys = BTreeSet::new();
+    for (line_index, line) in std::io::BufReader::new(file).lines().enumerate() {
+        let line = line.with_context(|| format!("failed to read {}", path.display()))?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let fields = trimmed.split(',').map(str::trim).collect::<Vec<_>>();
+        if fields.len() != 4 {
+            bail!(
+                "geo.csv line {} in {} has {} fields; expected 4",
+                line_index + 1,
+                path.display(),
+                fields.len()
+            );
+        }
+        let lat = fields[0].parse::<i32>().with_context(|| {
+            format!(
+                "failed to parse geo.csv latitude at {}:{}",
+                path.display(),
+                line_index + 1
+            )
+        })?;
+        let lon = fields[1].parse::<i32>().with_context(|| {
+            format!(
+                "failed to parse geo.csv longitude at {}:{}",
+                path.display(),
+                line_index + 1
+            )
+        })?;
+        let magvar = fields[3].parse::<f64>().with_context(|| {
+            format!(
+                "failed to parse geo.csv magnetic declination at {}:{}",
+                path.display(),
+                line_index + 1
+            )
+        })?;
+        if !(-90..=89).contains(&lat) {
+            bail!(
+                "geo.csv latitude {lat} at {}:{} is outside -90..89",
+                path.display(),
+                line_index + 1
+            );
+        }
+        if !(-180..=179).contains(&lon) {
+            bail!(
+                "geo.csv longitude {lon} at {}:{} is outside -180..179",
+                path.display(),
+                line_index + 1
+            );
+        }
+        let key = format!("magvar/{lat}/{lon}");
+        if !keys.insert(key.clone()) {
+            bail!("duplicate geo.csv magvar key {key}");
+        }
+        pairs.push(NavKvPair {
+            key,
+            value: serde_json::to_vec(&magvar).context("failed to encode nav_kv magvar value")?,
+        });
+    }
+    if pairs.is_empty() {
+        bail!(
+            "geo.csv file {} had no magnetic variation records",
+            path.display()
+        );
     }
     Ok(pairs)
 }
@@ -9710,68 +9707,6 @@ fn build_nexrad_product(
             })
         },
     )
-}
-
-fn build_geo_product(config: &ProductBuildConfig) -> anyhow::Result<(PathBuf, String, NodeRecord)> {
-    let source_csv_path = static_geo_source_path();
-    let source_fingerprint = hash_file(&source_csv_path)?;
-    let version_label = fast_product_version_label(&source_fingerprint);
-    let inputs = fast_product_node_inputs("geo", &source_fingerprint)?;
-    let prepared = prepare_node_at(
-        &build_shared_node_dir(config, "static-geo")?,
-        "static-geo",
-        &inputs,
-    )?;
-    let output_dir = prepared.dir.join("output");
-    let csv_path = output_dir.join("geo.csv");
-    let manifest_path = output_dir.join(format!("geo_{version_label}.manifest.json"));
-    let zip_path = output_dir.join(format!("geo_{version_label}.zip"));
-    let _build_lock = match claim_or_wait_for_node(
-        &prepared,
-        &[csv_path.clone(), manifest_path, zip_path.clone()],
-    )? {
-        NodeCacheState::CacheHit(record) => {
-            return Ok((zip_path, version_label, record));
-        }
-        NodeCacheState::Build(lock) => lock,
-    };
-    let started_at_utc = utc_now_string();
-    let started = Instant::now();
-    let generated_at_utc = Utc::now()
-        .with_second(0)
-        .expect("zero seconds should be valid")
-        .with_nanosecond(0)
-        .expect("zero nanos should be valid");
-    let result = build_geo_dataset(&BuildGeoRequest {
-        source_csv_path,
-        output_dir,
-        version_label: version_label.clone(),
-        generated_at_utc,
-    })?;
-    let outputs = BTreeMap::from([
-        (
-            "manifest".to_string(),
-            relative_artifact_path(&result.manifest_path, &config.build_root),
-        ),
-        (
-            "csv".to_string(),
-            relative_artifact_path(&result.csv_path, &config.build_root),
-        ),
-        (
-            "zip".to_string(),
-            relative_artifact_path(&result.zip_path, &config.build_root),
-        ),
-    ]);
-    let record = write_node_record(
-        prepared,
-        inputs,
-        outputs,
-        false,
-        started_at_utc,
-        utc_now_string(),
-        started.elapsed().as_millis() as u64,
-    )?;
-    Ok((result.zip_path, version_label, record))
 }
 
 struct FastStructuredProductOutputs {
@@ -13543,7 +13478,7 @@ def main():
         'sample_vertical_datum': 'WGS84 ellipsoid',
         'source_dem': 'USGS 3DEP 1 arc-second DEM',
         'source_dem_vertical_datum': 'source tile metadata; generally NAVD88 in CONUS',
-        'geoid_model': 'packaged geo.csv one-degree grid, applied once per tile at tile center (temporary approximation)',
+        'geoid_model': 'internal geo.csv one-degree grid, applied once per tile at tile center (temporary approximation)',
         'worker_count': workers,
         'refresh_policy': {
             'identity': 'published filename is content-addressed by ZIP bytes',
@@ -19199,6 +19134,26 @@ mod tests {
 
         let temporal = pair_value("resource/temporal-summary");
         assert_eq!(temporal["uniform_cycle_code"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn nav_kv_magvar_pairs_emit_one_degree_grid_keys() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("geo.csv");
+        fs::write(&path, "-90,-180,-105,9\n48,-110,-82,14\n89,179,12,-3\n").unwrap();
+
+        let pairs = build_nav_kv_magvar_pairs(&path).unwrap();
+        let value = |key: &str| -> f64 {
+            let pair = pairs
+                .iter()
+                .find(|pair| pair.key == key)
+                .unwrap_or_else(|| panic!("missing nav_kv pair {key}"));
+            serde_json::from_slice(&pair.value).unwrap()
+        };
+
+        assert_eq!(value("magvar/-90/-180"), 9.0);
+        assert_eq!(value("magvar/48/-110"), 14.0);
+        assert_eq!(value("magvar/89/179"), -3.0);
     }
 
     #[test]

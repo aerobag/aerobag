@@ -1,10 +1,10 @@
 ---
 id: TASK-24
 title: Execute core/platform UI boundary audit
-status: Done
+status: Next
 assignee: []
 created_date: '2026-05-12 16:20'
-updated_date: '2026-05-12 21:10'
+updated_date: 2026-05-12 21:10
 labels:
   - refactor
   - core
@@ -14,7 +14,7 @@ labels:
 dependencies: []
 references:
   - docs/refactor/core-platform-ui-boundary-audit.md
-priority: high
+priority: medium
 ordinal: 24000
 ---
 

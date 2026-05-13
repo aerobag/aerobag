@@ -10,7 +10,7 @@ labels:
   - mvp
   - cat:core
 dependencies: []
-priority: high
+priority: medium
 ordinal: 53000
 ---
 

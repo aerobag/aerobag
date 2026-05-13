@@ -17,7 +17,6 @@ ordinal: 101000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Nice product selection tool for chart coverage
-Confirm a route is covered
+Nice product selection tool for chart coverage Confirm a route is covered
 <!-- SECTION:DESCRIPTION:END -->
 

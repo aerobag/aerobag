@@ -17,7 +17,11 @@ ordinal: 18000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Known regional data defects: extend Alaska north and Southeast south bounding boxes, fix the Aleutians gap, and investigate the weird Southwest plate southern boundary.
+Known regional data defects:
+extend Alaska north and -- fixed
+Southeast south bounding boxes, -- fixed
+fix the Aleutians gap, and -- waiting to confirm this fix
+investigate the weird Southwest plate southern boundary. -- this is just IFR-H covering a lot of terrain
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

@@ -576,11 +576,29 @@ pub fn register_ownship_source_in_session(
 }
 
 #[wasm_bindgen]
+pub fn register_ownship_source_in_session_paged(
+    handle: u32,
+    registration_json: &str,
+) -> Result<String, JsValue> {
+    register_ownship_source_in_session_paged_json(handle, registration_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn update_ownship_source_status_in_session(
     handle: u32,
     update_json: &str,
 ) -> Result<String, JsValue> {
     update_ownship_source_status_in_session_json(handle, update_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn update_ownship_source_status_in_session_paged(
+    handle: u32,
+    update_json: &str,
+) -> Result<String, JsValue> {
+    update_ownship_source_status_in_session_paged_json(handle, update_json)
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -591,11 +609,29 @@ pub fn push_situation_sample_in_session(handle: u32, sample_json: &str) -> Resul
 }
 
 #[wasm_bindgen]
+pub fn push_situation_sample_in_session_paged(
+    handle: u32,
+    sample_json: &str,
+) -> Result<String, JsValue> {
+    push_situation_sample_in_session_paged_json(handle, sample_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn select_ownship_source_in_session(
     handle: u32,
     selection_json: &str,
 ) -> Result<String, JsValue> {
     select_ownship_source_in_session_json(handle, selection_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn select_ownship_source_in_session_paged(
+    handle: u32,
+    selection_json: &str,
+) -> Result<String, JsValue> {
+    select_ownship_source_in_session_paged_json(handle, selection_json)
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -615,11 +651,29 @@ pub fn set_situation_in_session(handle: u32, situation_json: &str) -> Result<Str
 }
 
 #[wasm_bindgen]
+pub fn set_situation_in_session_paged(
+    handle: u32,
+    situation_json: &str,
+) -> Result<String, JsValue> {
+    set_situation_in_session_paged_json(handle, situation_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn tick_debug_ownship_driver_in_session(
     handle: u32,
     now_epoch_ms: f64,
 ) -> Result<String, JsValue> {
     tick_debug_ownship_driver_in_session_json(handle, now_epoch_ms)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn tick_debug_ownship_driver_in_session_paged(
+    handle: u32,
+    now_epoch_ms: f64,
+) -> Result<String, JsValue> {
+    tick_debug_ownship_driver_in_session_paged_json(handle, now_epoch_ms)
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -1151,6 +1205,17 @@ fn register_ownship_source_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+fn register_ownship_source_in_session_paged_json(
+    handle: u32,
+    registration_json: &str,
+) -> Result<String, String> {
+    let registration: app_core::OwnshipSourceRegistration =
+        serde_json::from_str(registration_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::register_ownship_source_in_session_outcome(handle, registration)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 fn update_ownship_source_status_in_session_json(
     handle: u32,
     update_json: &str,
@@ -1162,12 +1227,34 @@ fn update_ownship_source_status_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+fn update_ownship_source_status_in_session_paged_json(
+    handle: u32,
+    update_json: &str,
+) -> Result<String, String> {
+    let update: app_core::OwnshipSourceStatusUpdate =
+        serde_json::from_str(update_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::update_ownship_source_status_in_session_outcome(handle, update)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 fn push_situation_sample_in_session_json(handle: u32, sample_json: &str) -> Result<String, String> {
     let sample: app_core::SituationSample =
         serde_json::from_str(sample_json).map_err(|err| err.to_string())?;
     let snapshot = app_core::push_situation_sample_in_session(handle, sample)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn push_situation_sample_in_session_paged_json(
+    handle: u32,
+    sample_json: &str,
+) -> Result<String, String> {
+    let sample: app_core::SituationSample =
+        serde_json::from_str(sample_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::push_situation_sample_in_session_outcome(handle, sample)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
 fn select_ownship_source_in_session_json(
@@ -1179,6 +1266,17 @@ fn select_ownship_source_in_session_json(
     let snapshot = app_core::select_ownship_source_in_session(handle, selection)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn select_ownship_source_in_session_paged_json(
+    handle: u32,
+    selection_json: &str,
+) -> Result<String, String> {
+    let selection: app_core::OwnshipSelectionCommand =
+        serde_json::from_str(selection_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::select_ownship_source_in_session_outcome(handle, selection)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
 fn apply_situation_control_input_in_session_json(
@@ -1201,6 +1299,17 @@ fn set_situation_in_session_json(handle: u32, situation_json: &str) -> Result<St
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+fn set_situation_in_session_paged_json(
+    handle: u32,
+    situation_json: &str,
+) -> Result<String, String> {
+    let situation: app_core::Situation =
+        serde_json::from_str(situation_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::set_situation_in_session_outcome(handle, situation)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 fn tick_debug_ownship_driver_in_session_json(
     handle: u32,
     now_epoch_ms: f64,
@@ -1208,6 +1317,15 @@ fn tick_debug_ownship_driver_in_session_json(
     let snapshot = app_core::tick_debug_ownship_driver_in_session(handle, now_epoch_ms)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn tick_debug_ownship_driver_in_session_paged_json(
+    handle: u32,
+    now_epoch_ms: f64,
+) -> Result<String, String> {
+    let outcome = app_core::tick_debug_ownship_driver_in_session_outcome(handle, now_epoch_ms)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
 fn engage_map_follow_in_session_json(handle: u32, viewport_json: &str) -> Result<String, String> {

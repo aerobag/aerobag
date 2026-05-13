@@ -583,8 +583,8 @@ type WasmModule = {
   create_ui_session(vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   create_ui_session_profiled?: (vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
   set_raster_resource_mode_in_session(handle: number, modeJson: string): Promise<string> | string;
-  set_situation_in_session(handle: number, situationJson: string): Promise<string> | string;
-  tick_debug_ownship_driver_in_session(handle: number, nowEpochMs: number): Promise<string> | string;
+  set_situation_in_session_paged(handle: number, situationJson: string): Promise<string> | string;
+  tick_debug_ownship_driver_in_session_paged(handle: number, nowEpochMs: number): Promise<string> | string;
   engage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
   disengage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
   set_map_follow_offset_in_session(handle: number, viewportJson: string, offsetXPx: number, offsetYPx: number): Promise<string> | string;
@@ -595,10 +595,10 @@ type WasmModule = {
   seek_playback_in_session(handle: number, cursorSeconds: number, nowEpochMs: number): Promise<string> | string;
   set_playback_rate_in_session(handle: number, rate: number, nowEpochMs: number): Promise<string> | string;
   tick_playback_in_session(handle: number, nowEpochMs: number): Promise<string> | string;
-  register_ownship_source_in_session(handle: number, registrationJson: string): Promise<string> | string;
-  update_ownship_source_status_in_session(handle: number, updateJson: string): Promise<string> | string;
-  push_situation_sample_in_session(handle: number, sampleJson: string): Promise<string> | string;
-  select_ownship_source_in_session(handle: number, selectionJson: string): Promise<string> | string;
+  register_ownship_source_in_session_paged(handle: number, registrationJson: string): Promise<string> | string;
+  update_ownship_source_status_in_session_paged(handle: number, updateJson: string): Promise<string> | string;
+  push_situation_sample_in_session_paged(handle: number, sampleJson: string): Promise<string> | string;
+  select_ownship_source_in_session_paged(handle: number, selectionJson: string): Promise<string> | string;
   apply_situation_control_input_in_session(handle: number, inputJson: string, nowEpochMs: number): Promise<string> | string;
   set_map_layer_visibility_in_session(handle: number, layerIdJson: string, visible: boolean): Promise<string> | string;
   set_map_layer_enabled_in_session(handle: number, layerIdJson: string, enabled: boolean): Promise<string> | string;
@@ -901,38 +901,50 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       setSituation: async (situation) => {
         snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.set_situation_in_session(handle, JSON.stringify(situation))),
+          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+            this.module.set_situation_in_session_paged(handle, JSON.stringify(situation)),
+          ),
         );
         return snapshot;
       },
       tickDebugOwnshipDriver: async (nowEpochMs) => {
         snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.tick_debug_ownship_driver_in_session(handle, nowEpochMs)),
+          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+            this.module.tick_debug_ownship_driver_in_session_paged(handle, nowEpochMs),
+          ),
         );
         await syncGuidanceGeometry();
         return snapshot;
       },
       registerOwnshipSource: async (registration) => {
-        snapshot = await parseSessionSnapshot(
-          this.module.register_ownship_source_in_session(handle, JSON.stringify(registration)),
+        snapshot = await withSessionRetry(async () =>
+          runCoreHadSessionOperation<UiSessionSnapshot>(
+            () => this.module.register_ownship_source_in_session_paged(handle, JSON.stringify(registration)),
+          ),
         );
         return snapshot;
       },
       updateOwnshipSourceStatus: async (update) => {
-        snapshot = await parseSessionSnapshot(
-          this.module.update_ownship_source_status_in_session(handle, JSON.stringify(update)),
+        snapshot = await withSessionRetry(async () =>
+          runCoreHadSessionOperation<UiSessionSnapshot>(
+            () => this.module.update_ownship_source_status_in_session_paged(handle, JSON.stringify(update)),
+          ),
         );
         return snapshot;
       },
       pushSituationSample: async (sample) => {
-        snapshot = await parseSessionSnapshot(
-          this.module.push_situation_sample_in_session(handle, JSON.stringify(sample)),
+        snapshot = await withSessionRetry(async () =>
+          runCoreHadSessionOperation<UiSessionSnapshot>(
+            () => this.module.push_situation_sample_in_session_paged(handle, JSON.stringify(sample)),
+          ),
         );
         return snapshot;
       },
       selectOwnshipSource: async (selection) => {
-        snapshot = await parseSessionSnapshot(
-          this.module.select_ownship_source_in_session(handle, JSON.stringify(ownshipSelectionToCore(selection))),
+        snapshot = await withSessionRetry(async () =>
+          runCoreHadSessionOperation<UiSessionSnapshot>(
+            () => this.module.select_ownship_source_in_session_paged(handle, JSON.stringify(ownshipSelectionToCore(selection))),
+          ),
         );
         return snapshot;
       },
@@ -1312,8 +1324,8 @@ async function loadBestAvailableAdapterUncached(
     "create_ui_session",
     "set_raster_resource_mode_in_session",
     "perform_flight_plan_row_action_in_session",
-    "set_situation_in_session",
-    "tick_debug_ownship_driver_in_session",
+    "set_situation_in_session_paged",
+    "tick_debug_ownship_driver_in_session_paged",
     "engage_map_follow_in_session",
     "disengage_map_follow_in_session",
     "set_map_follow_offset_in_session",
@@ -1324,10 +1336,10 @@ async function loadBestAvailableAdapterUncached(
     "seek_playback_in_session",
     "set_playback_rate_in_session",
     "tick_playback_in_session",
-    "register_ownship_source_in_session",
-    "update_ownship_source_status_in_session",
-    "push_situation_sample_in_session",
-    "select_ownship_source_in_session",
+    "register_ownship_source_in_session_paged",
+    "update_ownship_source_status_in_session_paged",
+    "push_situation_sample_in_session_paged",
+    "select_ownship_source_in_session_paged",
     "apply_situation_control_input_in_session",
     "set_map_layer_visibility_in_session",
     "set_map_layer_enabled_in_session",

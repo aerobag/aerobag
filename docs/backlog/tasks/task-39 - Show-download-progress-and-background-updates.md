@@ -1,6 +1,6 @@
 ---
 id: TASK-39
-title: Show download progress and background updates
+title: Background updates
 status: MVP
 assignee: []
 created_date: '2026-05-12 16:35'
@@ -11,14 +11,14 @@ labels:
   - cat:data
 dependencies:
   - TASK-38
-priority: high
+priority: low
 ordinal: 39000
 ---
 
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-The download manager needs background downloads with dropdown progress and unattended update checks.
+Android should be able to fetch cycle updates while I'm asleep.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

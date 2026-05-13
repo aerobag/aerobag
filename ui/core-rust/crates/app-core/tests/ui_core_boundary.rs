@@ -151,6 +151,12 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "perform_flight_plan_row_action_in_session",
         "sync_guidance_geometry_in_session",
         "project_flight_plan_route_in_session",
+        "set_situation_in_session_paged",
+        "tick_debug_ownship_driver_in_session_paged",
+        "register_ownship_source_in_session_paged",
+        "update_ownship_source_status_in_session_paged",
+        "push_situation_sample_in_session_paged",
+        "select_ownship_source_in_session_paged",
     ];
     let mut violations = Vec::new();
     for export in paged_web_exports {
@@ -194,9 +200,66 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         }
     }
 
+    let paged_android_snapshot_helper_exports = [
+        "registerOwnshipSourceInSessionPagedJson",
+        "updateOwnshipSourceStatusInSessionPagedJson",
+        "pushSituationSampleInSessionPagedJson",
+        "selectOwnshipSourceInSessionPagedJson",
+    ];
+    for export in paged_android_snapshot_helper_exports {
+        let needle = format!("bridge.{export}");
+        let Some(index) = android.find(&needle) else {
+            violations.push(format!("android missing {export}"));
+            continue;
+        };
+        let window = &android[index.saturating_sub(220)..android.len().min(index + 420)];
+        if !window.contains("runPagedSnapshot") {
+            violations.push(format!("android calls {export} without runPagedSnapshot"));
+        }
+    }
+
     assert!(
         violations.is_empty(),
         "platform adapters must drive paged session exports through resource loops:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn platform_adapters_do_not_call_plain_had_sensitive_snapshot_exports() {
+    let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
+    let android = read_repo_file(
+        "ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/NativeAppCoreAdapter.kt",
+    );
+    let mut violations = Vec::new();
+
+    for export in [
+        "set_situation_in_session",
+        "tick_debug_ownship_driver_in_session",
+        "register_ownship_source_in_session",
+        "update_ownship_source_status_in_session",
+        "push_situation_sample_in_session",
+        "select_ownship_source_in_session",
+    ] {
+        if web.contains(&format!("this.module.{export}(")) {
+            violations.push(format!("web calls plain HAD-sensitive export {export}"));
+        }
+    }
+
+    for export in [
+        "registerOwnshipSourceInSessionJson",
+        "updateOwnshipSourceStatusInSessionJson",
+        "pushSituationSampleInSessionJson",
+        "selectOwnshipSourceInSessionJson",
+    ] {
+        if android.contains(&format!("bridge.{export}(")) {
+            violations.push(format!("android calls plain HAD-sensitive export {export}"));
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "full session snapshots can need HAD resources during projection; platform adapters must call paged variants:\n{}",
         violations.join("\n")
     );
 }

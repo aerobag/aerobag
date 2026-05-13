@@ -2551,43 +2551,46 @@ private fun SituationOverlayLayer(
     if (situationOverlay == null) return
     Canvas(modifier = Modifier.fillMaxSize()) {
         val center = situationOverlay.pointUnits
-        val ringRadius = situationOverlay.ring.radiusUnits
-        drawCircle(
-            color = Color(0x66000000),
-            radius = ringRadius,
-            center = center,
-            style = Stroke(width = 16f),
-        )
-        drawCircle(
-            color = Color.White,
-            radius = ringRadius,
-            center = center,
-            style = Stroke(width = 6f),
-        )
-        situationOverlay.ring.tickMarks.forEach { tick ->
-            val inner = tick.innerUnits
-            val outer = tick.outerUnits
-            drawLine(Color(0x66000000), inner, outer, strokeWidth = 8f)
-            drawLine(Color.White, inner, outer, strokeWidth = 6f)
-        }
-        drawContext.canvas.nativeCanvas.apply {
-            labelStrokePaint.textSize = 16f * densityScale
-            labelFillPaint.textSize = 16f * densityScale
-            situationOverlay.ring.cardinalLabels.forEach { label ->
-                val point = label.pointUnits
-                save()
-                rotate(label.rotationDeg, point.x, point.y)
-                drawText(label.text, point.x, point.y + labelFillPaint.textSize * 0.33f, labelStrokePaint)
-                drawText(label.text, point.x, point.y + labelFillPaint.textSize * 0.33f, labelFillPaint)
-                restore()
+        val ring = situationOverlay.ring
+        if (ring != null) {
+            val ringRadius = ring.radiusUnits
+            drawCircle(
+                color = Color(0x66000000),
+                radius = ringRadius,
+                center = center,
+                style = Stroke(width = 16f),
+            )
+            drawCircle(
+                color = Color.White,
+                radius = ringRadius,
+                center = center,
+                style = Stroke(width = 6f),
+            )
+            ring.tickMarks.forEach { tick ->
+                val inner = tick.innerUnits
+                val outer = tick.outerUnits
+                drawLine(Color(0x66000000), inner, outer, strokeWidth = 8f)
+                drawLine(Color.White, inner, outer, strokeWidth = 6f)
             }
+            drawContext.canvas.nativeCanvas.apply {
+                labelStrokePaint.textSize = 16f * densityScale
+                labelFillPaint.textSize = 16f * densityScale
+                ring.cardinalLabels.forEach { label ->
+                    val point = label.pointUnits
+                    save()
+                    rotate(label.rotationDeg, point.x, point.y)
+                    drawText(label.text, point.x, point.y + labelFillPaint.textSize * 0.33f, labelStrokePaint)
+                    drawText(label.text, point.x, point.y + labelFillPaint.textSize * 0.33f, labelFillPaint)
+                    restore()
+                }
+            }
+            drawCircle(
+                color = Color.White,
+                radius = ringRadius,
+                center = center,
+                style = Stroke(width = 6f),
+            )
         }
-        drawCircle(
-            color = Color.White,
-            radius = ringRadius,
-            center = center,
-            style = Stroke(width = 6f),
-        )
         if (situationOverlay.predictorUnits != null) {
             val predictor = situationOverlay.predictorUnits
             val shaftEnd = arrowShaftEndPoint(center, predictor)
@@ -2598,14 +2601,16 @@ private fun SituationOverlayLayer(
             drawPath(arrow, Color(0x66000000), style = Stroke(width = 1.5f))
         }
         drawContext.canvas.nativeCanvas.apply {
-            val labelPoint = situationOverlay.ring.labelPointUnits
-            save()
-            rotate(situationOverlay.ring.labelRotationDeg, labelPoint.x, labelPoint.y)
-            labelStrokePaint.textSize = 16f * densityScale
-            labelFillPaint.textSize = 16f * densityScale
-            drawText(situationOverlay.ring.labelText, labelPoint.x, labelPoint.y + labelFillPaint.textSize * 0.33f, labelStrokePaint)
-            drawText(situationOverlay.ring.labelText, labelPoint.x, labelPoint.y + labelFillPaint.textSize * 0.33f, labelFillPaint)
-            restore()
+            if (ring != null) {
+                val labelPoint = ring.labelPointUnits
+                save()
+                rotate(ring.labelRotationDeg, labelPoint.x, labelPoint.y)
+                labelStrokePaint.textSize = 16f * densityScale
+                labelFillPaint.textSize = 16f * densityScale
+                drawText(ring.labelText, labelPoint.x, labelPoint.y + labelFillPaint.textSize * 0.33f, labelStrokePaint)
+                drawText(ring.labelText, labelPoint.x, labelPoint.y + labelFillPaint.textSize * 0.33f, labelFillPaint)
+                restore()
+            }
             val iconSizePx = ThumbSize.toPx() * 0.72f
             val left = (center.x - iconSizePx / 2f).roundToInt()
             val top = (center.y - iconSizePx / 2f).roundToInt()

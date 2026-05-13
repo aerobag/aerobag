@@ -530,6 +530,71 @@ pub(crate) fn nav_ref_position(
     )
 }
 
+pub(crate) fn true_to_magnetic_course_deg(
+    store: &NavKvStore,
+    true_course_deg: f64,
+    position: LatLon,
+) -> Result<f64, HadReadError> {
+    Ok(normalize_course_degrees(
+        true_course_deg - magnetic_variation_degrees(store, position)?,
+    ))
+}
+
+pub(crate) fn magnetic_variation_degrees(
+    store: &NavKvStore,
+    position: LatLon,
+) -> Result<f64, HadReadError> {
+    let lat = position.lat.clamp(-90.0, 89.0);
+    let lon = normalize_magvar_longitude(position.lon);
+    let lat0 = lat.floor() as i32;
+    let lat1 = (lat0 + 1).min(89);
+    let lon0 = lon.floor() as i32;
+    let lon1 = wrap_magvar_longitude(lon0 + 1);
+    let lat_t = lat - f64::from(lat0);
+    let lon_t = lon - f64::from(lon0);
+
+    let sw = read_magvar_corner(store, lat0, lon0)?;
+    let se = read_magvar_corner(store, lat0, lon1)?;
+    let nw = read_magvar_corner(store, lat1, lon0)?;
+    let ne = read_magvar_corner(store, lat1, lon1)?;
+    let south = sw * (1.0 - lon_t) + se * lon_t;
+    let north = nw * (1.0 - lon_t) + ne * lon_t;
+    Ok(south * (1.0 - lat_t) + north * lat_t)
+}
+
+fn read_magvar_corner(store: &NavKvStore, lat: i32, lon: i32) -> Result<f64, HadReadError> {
+    read_required(
+        store,
+        NavKvQuery::MagneticVariation { lat, lon },
+        "magnetic variation",
+    )
+}
+
+fn normalize_magvar_longitude(longitude: f64) -> f64 {
+    let mut lon = longitude;
+    while lon < -180.0 {
+        lon += 360.0;
+    }
+    while lon >= 180.0 {
+        lon -= 360.0;
+    }
+    lon
+}
+
+fn wrap_magvar_longitude(longitude: i32) -> i32 {
+    if longitude >= 180 {
+        longitude - 360
+    } else if longitude < -180 {
+        longitude + 360
+    } else {
+        longitude
+    }
+}
+
+fn normalize_course_degrees(course_deg: f64) -> f64 {
+    course_deg.rem_euclid(360.0)
+}
+
 pub(crate) fn nav_symbol_feature(
     store: &NavKvStore,
     nav_ref: &NavRef,
@@ -565,7 +630,11 @@ pub(crate) fn flight_plan_ui_state(
                                 .map(|segment| segment.distance_nm)
                                 .sum::<f64>(),
                     );
-                    row.course_deg = Some(first_segment.course_deg);
+                    row.course_deg = Some(true_to_magnetic_course_deg(
+                        store,
+                        first_segment.course_deg,
+                        crate::great_circle_intermediate(first_segment.from, first_segment.to, 0.5),
+                    )?);
                 }
             }
         }
@@ -2879,12 +2948,73 @@ mod tests {
             .iter()
             .map(|(key, value)| (*key, value.as_slice()))
             .collect::<Vec<_>>();
+        let mut entry_refs = entry_refs;
+        entry_refs.sort_by(|left, right| left.0.cmp(right.0));
         let (root, pages) = fixture(&entry_refs, 65536);
         let mut store = NavKvStore::new(root);
         for (index, page) in pages.into_iter().enumerate() {
             store.insert_page(index as u32, page);
         }
         store
+    }
+
+    #[test]
+    fn flight_plan_ui_state_projects_magnetic_course_columns() {
+        let store = test_nav_kv_store(&[
+            ("magvar/48/-111", serde_json::json!(14.0)),
+            ("magvar/48/-110", serde_json::json!(14.0)),
+            ("magvar/49/-111", serde_json::json!(14.0)),
+            ("magvar/49/-110", serde_json::json!(14.0)),
+            (
+                "navref/position/airport/KAAA",
+                serde_json::json!({"lat": 48.0, "lon": -110.0}),
+            ),
+            (
+                "navref/position/airport/KBBB",
+                serde_json::json!({"lat": 48.0, "lon": -111.0}),
+            ),
+        ]);
+        let plan = crate::build_flight_plan(FlightPlan {
+            id: "plan-magvar".to_string(),
+            name: "KAAA KBBB".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KAAA".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KBBB".to_string()),
+                },
+            ],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: Some(AirportId("KAAA".to_string())),
+            destination: Some(AirportId("KBBB".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        })
+        .expect("build plan");
+        let true_course = project_flight_plan_route(&store, &plan).unwrap()[0].course_deg;
+        let ui_state = flight_plan_ui_state(
+            &store,
+            plan.clone(),
+            crate::planning::project_ui_state(&plan),
+        )
+        .expect("project flight plan ui state");
+        let row_course = ui_state
+            .display_rows
+            .iter()
+            .find(|row| row.label == "KBBB")
+            .and_then(|row| row.course_deg)
+            .expect("destination row course");
+
+        assert!((true_course - 270.3).abs() < 0.5, "{true_course}");
+        assert!((row_course - (true_course - 14.0)).abs() < 1e-6);
     }
 
     #[test]

@@ -120,6 +120,10 @@ pub enum NavKvQuery {
         lat_tile: i32,
         lon_tile: i32,
     },
+    MagneticVariation {
+        lat: i32,
+        lon: i32,
+    },
     WaypointIdentifier {
         identifier: String,
     },
@@ -592,6 +596,7 @@ pub fn nav_kv_key_for_query(query: &NavKvQuery) -> Option<String> {
         NavKvQuery::AirwaySpatial { lat_tile, lon_tile } => {
             Some(format!("airway/spatial/{lat_tile}/{lon_tile}"))
         }
+        NavKvQuery::MagneticVariation { lat, lon } => Some(format!("magvar/{lat}/{lon}")),
         NavKvQuery::WaypointIdentifier { identifier } => Some(format!(
             "waypoint/identifier/{}",
             upper_component(identifier)
@@ -758,6 +763,79 @@ fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, String> {
 }
 
 #[cfg(test)]
+pub(crate) fn nav_kv_store_for_test(entries: &[(&str, &[u8])], page_size: u32) -> NavKvStore {
+    let (root, pages) = test_build_root(entries, page_size);
+    let mut store = NavKvStore::new(NavKvRoot::parse(&root).unwrap());
+    for (index, page) in pages.into_iter().enumerate() {
+        store.insert_page(index as u32, page);
+    }
+    store
+}
+
+#[cfg(test)]
+pub(crate) fn nav_kv_store_without_pages_for_test(
+    entries: &[(&str, &[u8])],
+    page_size: u32,
+) -> NavKvStore {
+    let (root, _) = test_build_root(entries, page_size);
+    NavKvStore::new(NavKvRoot::parse(&root).unwrap())
+}
+
+#[cfg(test)]
+fn test_build_root(entries: &[(&str, &[u8])], page_size: u32) -> (Vec<u8>, Vec<Vec<u8>>) {
+    let mut entries = entries.to_vec();
+    entries.sort_by(|left, right| left.0.cmp(right.0));
+    let mut value_bytes = Vec::new();
+    let mut leaf = Vec::new();
+    leaf.extend_from_slice(&NODE_KIND_LEAF.to_le_bytes());
+    leaf.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    leaf.extend_from_slice(&NO_PAGE.to_le_bytes());
+    for (key, value) in &entries {
+        leaf.extend_from_slice(&(key.len() as u32).to_le_bytes());
+        if value.len() > 4 {
+            let offset = value_bytes.len() as u32;
+            leaf.extend_from_slice(&VALUE_KIND_EXTERNAL.to_le_bytes());
+            leaf.extend_from_slice(&offset.to_le_bytes());
+            leaf.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            value_bytes.extend_from_slice(value);
+        } else {
+            leaf.extend_from_slice(&VALUE_KIND_INLINE.to_le_bytes());
+            leaf.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            leaf.extend_from_slice(&0u32.to_le_bytes());
+        }
+        leaf.extend_from_slice(key.as_bytes());
+        if value.len() <= 4 {
+            leaf.extend_from_slice(value);
+        }
+    }
+    assert!(leaf.len() <= page_size as usize);
+    let mut pages = vec![leaf];
+    let value_page_start = pages.len() as u32;
+    pages.extend(
+        value_bytes
+            .chunks(page_size as usize)
+            .map(|chunk| chunk.to_vec()),
+    );
+    let page_count = pages.len() as u32;
+
+    let mut root = vec![0; HEADER_LEN];
+    root[..MAGIC.len()].copy_from_slice(MAGIC);
+    test_write_u32(&mut root, 16, VERSION);
+    test_write_u32(&mut root, 20, entries.len() as u32);
+    test_write_u32(&mut root, 24, page_size);
+    test_write_u32(&mut root, 28, 0);
+    test_write_u32(&mut root, 32, page_count);
+    test_write_u32(&mut root, 36, value_page_start);
+    test_write_u32(&mut root, 40, value_bytes.len() as u32);
+    (root, pages)
+}
+
+#[cfg(test)]
+fn test_write_u32(bytes: &mut [u8], offset: usize, value: u32) {
+    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -836,6 +914,10 @@ mod tests {
                 plate_id: "plate:KRDD:IAP-CA-ILS OR LOC RWY 34.png".to_string()
             }),
             Some("plate/by-id/plate%3AKRDD%3AIAP-CA-ILS%20OR%20LOC%20RWY%2034.png".to_string())
+        );
+        assert_eq!(
+            nav_kv_key_for_query(&NavKvQuery::MagneticVariation { lat: 48, lon: -110 }),
+            Some("magvar/48/-110".to_string())
         );
         assert_eq!(
             nav_kv_key_for_query(&NavKvQuery::ProcedureGeometry {

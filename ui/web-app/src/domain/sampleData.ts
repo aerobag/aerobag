@@ -111,6 +111,7 @@ export const emptyState: AppState = {
       draw_cdi: false,
       position: null,
       orientation_deg: null,
+      magnetic_variation_deg: null,
       speed_kt: null,
       altitude_msl_ft: null,
       pressure_altitude_ft: null,

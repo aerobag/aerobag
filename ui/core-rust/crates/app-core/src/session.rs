@@ -722,6 +722,19 @@ pub fn register_ownship_source_in_session(
     snapshot_for_session(session)
 }
 
+pub fn register_ownship_source_in_session_outcome(
+    handle: u32,
+    registration: crate::OwnshipSourceRegistration,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::RegisterOwnshipSource(registration),
+    )?;
+    session_snapshot_outcome(session)
+}
+
 pub fn update_ownship_source_status_in_session(
     handle: u32,
     update: crate::OwnshipSourceStatusUpdate,
@@ -735,6 +748,19 @@ pub fn update_ownship_source_status_in_session(
     snapshot_for_session(session)
 }
 
+pub fn update_ownship_source_status_in_session_outcome(
+    handle: u32,
+    update: crate::OwnshipSourceStatusUpdate,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::UpdateOwnshipSourceStatus(update),
+    )?;
+    session_snapshot_outcome(session)
+}
+
 pub fn push_situation_sample_in_session(
     handle: u32,
     sample: crate::SituationSample,
@@ -743,6 +769,16 @@ pub fn push_situation_sample_in_session(
     let session = session_mut(&mut sessions, handle)?;
     session.app_state = state::reduce(&session.app_state, AppEvent::PushSituationSample(sample))?;
     snapshot_for_session(session)
+}
+
+pub fn push_situation_sample_in_session_outcome(
+    handle: u32,
+    sample: crate::SituationSample,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    session.app_state = state::reduce(&session.app_state, AppEvent::PushSituationSample(sample))?;
+    session_snapshot_outcome(session)
 }
 
 pub fn set_ownship_policy_in_session(
@@ -789,6 +825,42 @@ pub fn select_ownship_source_in_session(
         _ => {}
     }
     snapshot_for_session(session)
+}
+
+pub fn select_ownship_source_in_session_outcome(
+    handle: u32,
+    selection: crate::OwnshipSelectionCommand,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    let selected_source_kind = match &selection {
+        crate::OwnshipSelectionCommand::Source { source_id } => session
+            .app_state
+            .ownship
+            .sources
+            .iter()
+            .find(|source| source.source_id == *source_id)
+            .map(|source| source.source_kind),
+        crate::OwnshipSelectionCommand::Auto => None,
+    };
+    if selected_source_kind == Some(crate::OwnshipSourceKind::DebugOwnshipDriver)
+        && !debug_ownship_driver_available(session)
+    {
+        return session_snapshot_outcome(session);
+    }
+    session.app_state =
+        state::reduce(&session.app_state, AppEvent::SelectOwnshipSource(selection))?;
+    match selected_source_kind {
+        Some(crate::OwnshipSourceKind::FlightPlanSimulator) => {
+            sync_plan_preview_to_active_leg(session)?;
+        }
+        Some(crate::OwnshipSourceKind::DebugOwnshipDriver) => {
+            session.debug_ownship_driver = DebugOwnshipDriverState::default();
+            tick_debug_ownship_driver(session, 0.0)?;
+        }
+        _ => {}
+    }
+    session_snapshot_outcome(session)
 }
 
 fn is_replay_ownship_source(kind: crate::OwnshipSourceKind) -> bool {
@@ -937,6 +1009,23 @@ pub fn set_situation_in_session(
     snapshot_for_session(session)
 }
 
+pub fn set_situation_in_session_outcome(
+    handle: u32,
+    situation: crate::Situation,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    apply_situation_to_ownship(
+        session,
+        DIRECT_SITUATION_SOURCE_ID,
+        crate::OwnshipSourceKind::FlightPlanSimulator,
+        "Plan Preview",
+        situation,
+        0,
+    )?;
+    session_snapshot_outcome(session)
+}
+
 pub fn tick_debug_ownship_driver_in_session(
     handle: u32,
     now_epoch_ms: f64,
@@ -947,11 +1036,18 @@ pub fn tick_debug_ownship_driver_in_session(
     snapshot_for_session(session)
 }
 
-#[allow(dead_code)]
-fn replace_flight_plan_in_session(
+pub fn tick_debug_ownship_driver_in_session_outcome(
     handle: u32,
-    plan: FlightPlan,
-) -> AppResult<UiSessionSnapshot> {
+    now_epoch_ms: f64,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    tick_debug_ownship_driver(session, now_epoch_ms)?;
+    session_snapshot_outcome(session)
+}
+
+#[allow(dead_code)]
+fn replace_flight_plan_in_session(handle: u32, plan: FlightPlan) -> AppResult<UiSessionSnapshot> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     replace_session_flight_plan(session, plan)?;
@@ -3250,10 +3346,18 @@ fn empty_map_overlay_query() -> MapOverlayQueryResult {
 fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadReadError> {
     let mut app_ui_state = state::project_app_ui_state(&session.app_state);
     project_debug_ownship_driver_availability(session, &mut app_ui_state);
+    if let (Some(store), Some(position)) = (
+        session.nav_kv_store.as_ref(),
+        app_ui_state.ownship.render.position,
+    ) {
+        app_ui_state.ownship.render.magnetic_variation_deg =
+            Some(crate::had_ops::magnetic_variation_degrees(store, position)?);
+    }
     app_ui_state.ownship.controls.situation_controls = project_situation_controls(session);
     if let Some(active_plan) = app_ui_state.active_plan.as_mut() {
         if let Some(guidance) = active_plan.guidance.as_mut() {
-            guidance.nav_element = project_active_leg_nav_element(session);
+            guidance.nav_element =
+                project_active_leg_nav_element(session, session.nav_kv_store.as_ref())?;
         }
     }
     if let (Some(store), Some(plan), Some(active_plan)) = (
@@ -3426,16 +3530,19 @@ fn situation_source_handler_for_ownship(
     }
 }
 
-fn project_active_leg_nav_element(session: &UiSession) -> NavElementUiView {
+fn project_active_leg_nav_element(
+    session: &UiSession,
+    store: Option<&NavKvStore>,
+) -> Result<NavElementUiView, HadReadError> {
     let Some(plan) = session.app_state.active_plan.as_ref() else {
-        return NavElementUiView::default();
+        return Ok(NavElementUiView::default());
     };
     let Some(active_leg) = crate::active_guidance_leg(plan) else {
-        return NavElementUiView::default();
+        return Ok(NavElementUiView::default());
     };
     let Some(geometry) = active_leg_geometry(plan, &active_leg, &session.guidance_leg_geometry)
     else {
-        return NavElementUiView {
+        return Ok(NavElementUiView {
             active_leg_summary: format!(
                 "{} -> {}",
                 nav_ref_label(&active_leg.from),
@@ -3443,15 +3550,10 @@ fn project_active_leg_nav_element(session: &UiSession) -> NavElementUiView {
             ),
             cdi_indicator_dots: None,
             cdi_offscale_readout: None,
-        };
+        });
     };
-    let course_deg = session
-        .app_state
-        .ownship
-        .render
-        .position
-        .and_then(|position| active_course_deg(&geometry, position))
-        .unwrap_or_else(|| bearing_degrees(geometry.from, geometry.to));
+    let position = session.app_state.ownship.render.position;
+    let course_deg = active_display_course_deg(&geometry, position, store)?;
     let cdi_indicator_dots = session
         .app_state
         .ownship
@@ -3461,15 +3563,21 @@ fn project_active_leg_nav_element(session: &UiSession) -> NavElementUiView {
     let cdi_offscale_readout = cdi_indicator_dots.and_then(cdi_offscale_readout);
     let active_leg_summary = active_guidance_leg_summary(plan, &active_leg);
 
-    NavElementUiView {
-        active_leg_summary: format!(
+    let active_leg_summary = if let Some(course_deg) = course_deg {
+        format!(
             "{} CRS {}",
             active_leg_summary,
-            format_course_degrees(course_deg),
-        ),
+            format_course_degrees(course_deg)
+        )
+    } else {
+        active_leg_summary
+    };
+
+    Ok(NavElementUiView {
+        active_leg_summary,
         cdi_indicator_dots,
         cdi_offscale_readout,
-    }
+    })
 }
 
 fn active_guidance_leg_summary(plan: &FlightPlan, active_leg: &PlanLeg) -> String {
@@ -4054,8 +4162,25 @@ fn cdi_dots_for_guidance_geometry(geometry: &GuidanceLegGeometry, position: LatL
     cdi_dots_for_leg(from, to, position)
 }
 
-fn active_course_deg(geometry: &GuidanceLegGeometry, position: LatLon) -> Option<f64> {
-    nearest_guidance_segment(geometry, position).map(|(from, to)| bearing_degrees(from, to))
+fn active_display_course_deg(
+    geometry: &GuidanceLegGeometry,
+    position: Option<LatLon>,
+    store: Option<&NavKvStore>,
+) -> Result<Option<f64>, HadReadError> {
+    let (from, to) = position
+        .and_then(|position| nearest_guidance_segment(geometry, position))
+        .unwrap_or((geometry.from, geometry.to));
+    let true_course_deg = bearing_degrees(from, to);
+    let Some(store) = store else {
+        return Ok(None);
+    };
+    let variation_position = position.unwrap_or_else(|| midpoint_for_variation(from, to));
+    crate::had_ops::true_to_magnetic_course_deg(store, true_course_deg, variation_position)
+        .map(Some)
+}
+
+fn midpoint_for_variation(from: LatLon, to: LatLon) -> LatLon {
+    crate::great_circle_intermediate(from, to, 0.5)
 }
 
 fn nearest_guidance_segment(
@@ -5130,6 +5255,190 @@ mod tests {
         assert_eq!(format_course_degrees(0.4), "360");
         assert_eq!(format_course_degrees(1.0), "001");
         assert_eq!(format_course_degrees(-1.0), "359");
+    }
+
+    #[test]
+    fn cdi_display_course_uses_local_east_magnetic_declination() {
+        let store = crate::navkv::nav_kv_store_for_test(
+            &[
+                ("magvar/48/-110", b"14"),
+                ("magvar/48/-109", b"14"),
+                ("magvar/49/-110", b"14"),
+                ("magvar/49/-109", b"14"),
+            ],
+            256,
+        );
+        let position = LatLon {
+            lat: 48.54,
+            lon: -109.76,
+        };
+
+        assert_eq!(
+            format_course_degrees(
+                crate::had_ops::true_to_magnetic_course_deg(&store, 271.0, position).unwrap()
+            ),
+            "257"
+        );
+    }
+
+    fn empty_test_plan() -> FlightPlan {
+        FlightPlan {
+            id: "empty-test-plan".to_string(),
+            name: "Empty".to_string(),
+            legs: Vec::new(),
+            route_components: Vec::new(),
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        }
+    }
+
+    #[test]
+    fn ownship_render_exposes_magnetic_variation_for_compass_rose() {
+        let store = crate::navkv::nav_kv_store_for_test(
+            &[
+                ("magvar/48/-110", b"14"),
+                ("magvar/48/-109", b"14"),
+                ("magvar/49/-110", b"14"),
+                ("magvar/49/-109", b"14"),
+            ],
+            256,
+        );
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            empty_test_plan(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+
+        let snapshot = push_situation_sample_in_session(
+            init.handle,
+            SituationSample {
+                source_id: OwnshipSourceId("test-gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 1_000,
+                received_time_epoch_ms: 1_000,
+                position: Some(LatLon {
+                    lat: 48.54,
+                    lon: -109.76,
+                }),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(45.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: Some(3000.0),
+                pressure_altitude_ft: None,
+            },
+        )
+        .expect("push gps sample");
+
+        assert_eq!(
+            snapshot.app_ui_state.ownship.render.magnetic_variation_deg,
+            Some(14.0)
+        );
+    }
+
+    #[test]
+    fn ownship_render_omits_magnetic_variation_without_nav_kv_store() {
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            empty_test_plan(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+
+        let snapshot = push_situation_sample_in_session(
+            init.handle,
+            SituationSample {
+                source_id: OwnshipSourceId("test-gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 1_000,
+                received_time_epoch_ms: 1_000,
+                position: Some(LatLon {
+                    lat: 48.54,
+                    lon: -109.76,
+                }),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(45.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: Some(3000.0),
+                pressure_altitude_ft: None,
+            },
+        )
+        .expect("push gps sample");
+
+        assert_eq!(
+            snapshot.app_ui_state.ownship.render.magnetic_variation_deg,
+            None
+        );
+    }
+
+    #[test]
+    fn magnetic_variation_wraps_dateline_through_had_keys() {
+        let store = crate::navkv::nav_kv_store_for_test(
+            &[
+                ("magvar/0/-180", b"9"),
+                ("magvar/0/-179", b"3"),
+                ("magvar/1/-180", b"9"),
+                ("magvar/1/-179", b"3"),
+            ],
+            256,
+        );
+
+        assert_eq!(
+            crate::had_ops::magnetic_variation_degrees(
+                &store,
+                LatLon {
+                    lat: 0.0,
+                    lon: 180.0,
+                }
+            )
+            .unwrap(),
+            9.0
+        );
+    }
+
+    #[test]
+    fn magnetic_variation_reports_had_pages_when_not_faulted_in() {
+        let store = crate::navkv::nav_kv_store_without_pages_for_test(
+            &[
+                ("magvar/48/-110", b"14"),
+                ("magvar/48/-109", b"14"),
+                ("magvar/49/-110", b"14"),
+                ("magvar/49/-109", b"14"),
+            ],
+            256,
+        );
+
+        let err = crate::had_ops::magnetic_variation_degrees(
+            &store,
+            LatLon {
+                lat: 48.54,
+                lon: -109.76,
+            },
+        )
+        .expect_err("missing magvar pages should fault");
+
+        assert!(
+            matches!(&err, HadReadError::NeedPages(pages) if !pages.is_empty()),
+            "expected HAD page fault, got {err:?}"
+        );
     }
 
     #[test]
@@ -6434,13 +6743,9 @@ mod tests {
         let nav_element = {
             let sessions = lock_sessions();
             let session = sessions.get(&init.handle).expect("session");
-            project_active_leg_nav_element(session)
+            project_active_leg_nav_element(session, None).expect("nav element")
         };
-        assert!(
-            nav_element.active_leg_summary.starts_with("HOLD CRS "),
-            "hold CDI should identify hold guidance, got {:?}",
-            nav_element.active_leg_summary
-        );
+        assert_eq!(nav_element.active_leg_summary, "HOLD");
         assert!(
             nav_element.cdi_indicator_dots.is_some(),
             "hold CDI should present deviation from active hold detail"

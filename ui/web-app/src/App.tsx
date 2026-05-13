@@ -1248,6 +1248,7 @@ export default function App() {
           draw_cdi: false,
           position: null,
           orientation_deg: null,
+          magnetic_variation_deg: null,
           speed_kt: null,
           altitude_msl_ft: null,
           pressure_altitude_ft: null,
@@ -4104,49 +4105,88 @@ function MapPage(props: {
         {mapIsVisible && situationOverlay ? (
           <>
             <svg className="situationOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
-              <circle
-                cx={situationOverlay.point.x}
-                cy={situationOverlay.point.y}
-                r={situationOverlay.ring.radiusPx}
-                fill="none"
-                stroke="rgba(0, 0, 0, 0.4)"
-                strokeWidth="8"
-              />
-              <circle
-                cx={situationOverlay.point.x}
-                cy={situationOverlay.point.y}
-                r={situationOverlay.ring.radiusPx}
-                fill="none"
-                stroke="#ffffff"
-                strokeWidth="3"
-              />
-              {situationOverlay.ring.tickMarks.map((tick, index) => (
-                <Fragment key={index}>
-                  <line
-                    x1={tick.inner.x}
-                    y1={tick.inner.y}
-                    x2={tick.outer.x}
-                    y2={tick.outer.y}
+              {situationOverlay.ring ? (
+                <>
+                  <circle
+                    cx={situationOverlay.point.x}
+                    cy={situationOverlay.point.y}
+                    r={situationOverlay.ring.radiusPx}
+                    fill="none"
                     stroke="rgba(0, 0, 0, 0.4)"
                     strokeWidth="8"
-                    strokeLinecap="round"
                   />
-                  <line
-                    x1={tick.inner.x}
-                    y1={tick.inner.y}
-                    x2={tick.outer.x}
-                    y2={tick.outer.y}
+                  <circle
+                    cx={situationOverlay.point.x}
+                    cy={situationOverlay.point.y}
+                    r={situationOverlay.ring.radiusPx}
+                    fill="none"
                     stroke="#ffffff"
                     strokeWidth="3"
-                    strokeLinecap="round"
                   />
-                </Fragment>
-              ))}
-              {situationOverlay.ring.cardinalLabels.map((label) => (
-                <Fragment key={label.text}>
+                  {situationOverlay.ring.tickMarks.map((tick, index) => (
+                    <Fragment key={index}>
+                      <line
+                        x1={tick.inner.x}
+                        y1={tick.inner.y}
+                        x2={tick.outer.x}
+                        y2={tick.outer.y}
+                        stroke="rgba(0, 0, 0, 0.4)"
+                        strokeWidth="8"
+                        strokeLinecap="round"
+                      />
+                      <line
+                        x1={tick.inner.x}
+                        y1={tick.inner.y}
+                        x2={tick.outer.x}
+                        y2={tick.outer.y}
+                        stroke="#ffffff"
+                        strokeWidth="3"
+                        strokeLinecap="round"
+                      />
+                    </Fragment>
+                  ))}
+                  {situationOverlay.ring.cardinalLabels.map((label) => (
+                    <Fragment key={label.text}>
+                      <text
+                        x={label.point.x}
+                        y={label.point.y}
+                        fill="none"
+                        stroke="rgba(0, 0, 0, 0.4)"
+                        strokeWidth="5"
+                        strokeLinejoin="round"
+                        fontSize="16"
+                        fontWeight="700"
+                        textAnchor="middle"
+                        dominantBaseline="middle"
+                        transform={`rotate(${label.rotationDeg} ${label.point.x} ${label.point.y})`}
+                      >
+                        {label.text}
+                      </text>
+                      <text
+                        x={label.point.x}
+                        y={label.point.y}
+                        fill="#ffffff"
+                        fontSize="16"
+                        fontWeight="700"
+                        textAnchor="middle"
+                        dominantBaseline="middle"
+                        transform={`rotate(${label.rotationDeg} ${label.point.x} ${label.point.y})`}
+                      >
+                        {label.text}
+                      </text>
+                    </Fragment>
+                  ))}
+                  <circle
+                    cx={situationOverlay.point.x}
+                    cy={situationOverlay.point.y}
+                    r={situationOverlay.ring.radiusPx}
+                    fill="none"
+                    stroke="#ffffff"
+                    strokeWidth="3"
+                  />
                   <text
-                    x={label.point.x}
-                    y={label.point.y}
+                    x={situationOverlay.ring.label.point.x}
+                    y={situationOverlay.ring.label.point.y}
                     fill="none"
                     stroke="rgba(0, 0, 0, 0.4)"
                     strokeWidth="5"
@@ -4155,59 +4195,24 @@ function MapPage(props: {
                     fontWeight="700"
                     textAnchor="middle"
                     dominantBaseline="middle"
-                    transform={`rotate(${label.rotationDeg} ${label.point.x} ${label.point.y})`}
+                    transform={`rotate(${situationOverlay.ring.label.rotationDeg} ${situationOverlay.ring.label.point.x} ${situationOverlay.ring.label.point.y})`}
                   >
-                    {label.text}
+                    {situationOverlay.ring.label.text}
                   </text>
                   <text
-                    x={label.point.x}
-                    y={label.point.y}
+                    x={situationOverlay.ring.label.point.x}
+                    y={situationOverlay.ring.label.point.y}
                     fill="#ffffff"
                     fontSize="16"
                     fontWeight="700"
                     textAnchor="middle"
                     dominantBaseline="middle"
-                    transform={`rotate(${label.rotationDeg} ${label.point.x} ${label.point.y})`}
+                    transform={`rotate(${situationOverlay.ring.label.rotationDeg} ${situationOverlay.ring.label.point.x} ${situationOverlay.ring.label.point.y})`}
                   >
-                    {label.text}
+                    {situationOverlay.ring.label.text}
                   </text>
-                </Fragment>
-              ))}
-              <circle
-                cx={situationOverlay.point.x}
-                cy={situationOverlay.point.y}
-                r={situationOverlay.ring.radiusPx}
-                fill="none"
-                stroke="#ffffff"
-                strokeWidth="3"
-              />
-              <text
-                x={situationOverlay.ring.label.point.x}
-                y={situationOverlay.ring.label.point.y}
-                fill="none"
-                stroke="rgba(0, 0, 0, 0.4)"
-                strokeWidth="5"
-                strokeLinejoin="round"
-                fontSize="16"
-                fontWeight="700"
-                textAnchor="middle"
-                dominantBaseline="middle"
-                transform={`rotate(${situationOverlay.ring.label.rotationDeg} ${situationOverlay.ring.label.point.x} ${situationOverlay.ring.label.point.y})`}
-              >
-                {situationOverlay.ring.label.text}
-              </text>
-              <text
-                x={situationOverlay.ring.label.point.x}
-                y={situationOverlay.ring.label.point.y}
-                fill="#ffffff"
-                fontSize="16"
-                fontWeight="700"
-                textAnchor="middle"
-                dominantBaseline="middle"
-                transform={`rotate(${situationOverlay.ring.label.rotationDeg} ${situationOverlay.ring.label.point.x} ${situationOverlay.ring.label.point.y})`}
-              >
-                {situationOverlay.ring.label.text}
-              </text>
+                </>
+              ) : null}
               {situationOverlay.predictor ? (
                 <g>
                   {(() => {
@@ -7560,7 +7565,17 @@ function resolveSituationOverlay(
   }
   const point = latLonToScreen(ownship.position.lat, ownship.position.lon, viewport, width, height);
   const headingDeg = ownship.orientation_deg ?? 0;
-  const ring = selectSituationRing(ownship.position.lat, ownship.position.lon, viewport, width, height, ringCandidates);
+  const ring = ownship.magnetic_variation_deg === null
+    ? null
+    : selectSituationRing(
+      ownship.position.lat,
+      ownship.position.lon,
+      viewport,
+      width,
+      height,
+      ringCandidates,
+      ownship.magnetic_variation_deg,
+    );
   const ahead =
     ownship.draw_predictor && ownship.speed_kt !== null
       ? projectAhead(ownship.position.lat, ownship.position.lon, headingDeg, ownship.speed_kt / 60)
@@ -7699,6 +7714,7 @@ function selectSituationRing(
   width: number,
   height: number,
   ringCandidates: SituationRingCandidate[],
+  magneticVariationDeg: number,
 ) {
   const center = latLonToScreen(lat, lon, viewport, width, height);
   const smaller = Math.min(width, height);
@@ -7720,8 +7736,8 @@ function selectSituationRing(
   const labelPoint = pointOnCircle(center, best.radiusPx + 16, labelAngle);
   return {
     radiusPx: best.radiusPx,
-    tickMarks: buildRingTickMarks(center, best.radiusPx),
-    cardinalLabels: buildRingCardinalLabels(center, best.radiusPx),
+    tickMarks: buildRingTickMarks(center, best.radiusPx, magneticVariationDeg),
+    cardinalLabels: buildRingCardinalLabels(center, best.radiusPx, magneticVariationDeg),
     label: {
       point: labelPoint,
       rotationDeg: 45,
@@ -7730,7 +7746,7 @@ function selectSituationRing(
   };
 }
 
-function buildRingCardinalLabels(center: { x: number; y: number }, radiusPx: number) {
+function buildRingCardinalLabels(center: { x: number; y: number }, radiusPx: number, magneticVariationDeg: number) {
   const labelRadius = Math.max(0, radiusPx - 30);
   return [
     { text: "N", angleDeg: -90, rotationDeg: 0 },
@@ -7739,13 +7755,13 @@ function buildRingCardinalLabels(center: { x: number; y: number }, radiusPx: num
     { text: "W", angleDeg: 180, rotationDeg: -90 },
   ].map((label) => ({
     ...label,
-    point: pointOnCircle(center, labelRadius, label.angleDeg),
+    point: pointOnCircle(center, labelRadius, label.angleDeg + magneticVariationDeg),
   }));
 }
 
-function buildRingTickMarks(center: { x: number; y: number }, radiusPx: number) {
+function buildRingTickMarks(center: { x: number; y: number }, radiusPx: number, magneticVariationDeg: number) {
   return Array.from({ length: 12 }, (_, index) => {
-    const angleDeg = index * 30;
+    const angleDeg = index * 30 + magneticVariationDeg;
     return {
       inner: pointOnCircle(center, radiusPx - 14, angleDeg),
       outer: pointOnCircle(center, radiusPx, angleDeg),

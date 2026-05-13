@@ -217,6 +217,7 @@ pub struct OwnshipRenderState {
     pub draw_cdi: bool,
     pub position: Option<LatLon>,
     pub orientation_deg: Option<f64>,
+    pub magnetic_variation_deg: Option<f64>,
     pub speed_kt: Option<f64>,
     pub altitude_msl_ft: Option<f64>,
     pub pressure_altitude_ft: Option<f64>,
@@ -624,6 +625,7 @@ fn project_render_state(resolved: &ResolvedOwnshipState) -> OwnshipRenderState {
             .as_ref()
             .map(|kinematics| kinematics.position),
         orientation_deg,
+        magnetic_variation_deg: None,
         speed_kt,
         altitude_msl_ft,
         pressure_altitude_ft,

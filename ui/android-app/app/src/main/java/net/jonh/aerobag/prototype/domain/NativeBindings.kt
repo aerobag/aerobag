@@ -100,7 +100,17 @@ interface NativeBridge {
         registrationJson: String,
     ): String
 
+    fun registerOwnshipSourceInSessionPagedJson(
+        handle: Long,
+        registrationJson: String,
+    ): String
+
     fun updateOwnshipSourceStatusInSessionJson(
+        handle: Long,
+        updateJson: String,
+    ): String
+
+    fun updateOwnshipSourceStatusInSessionPagedJson(
         handle: Long,
         updateJson: String,
     ): String
@@ -110,7 +120,17 @@ interface NativeBridge {
         sampleJson: String,
     ): String
 
+    fun pushSituationSampleInSessionPagedJson(
+        handle: Long,
+        sampleJson: String,
+    ): String
+
     fun selectOwnshipSourceInSessionJson(
+        handle: Long,
+        selectionJson: String,
+    ): String
+
+    fun selectOwnshipSourceInSessionPagedJson(
         handle: Long,
         selectionJson: String,
     ): String
@@ -438,7 +458,17 @@ object NativeBindings : NativeBridge {
         registrationJson: String,
     ): String
 
+    external override fun registerOwnshipSourceInSessionPagedJson(
+        handle: Long,
+        registrationJson: String,
+    ): String
+
     external override fun updateOwnshipSourceStatusInSessionJson(
+        handle: Long,
+        updateJson: String,
+    ): String
+
+    external override fun updateOwnshipSourceStatusInSessionPagedJson(
         handle: Long,
         updateJson: String,
     ): String
@@ -448,7 +478,17 @@ object NativeBindings : NativeBridge {
         sampleJson: String,
     ): String
 
+    external override fun pushSituationSampleInSessionPagedJson(
+        handle: Long,
+        sampleJson: String,
+    ): String
+
     external override fun selectOwnshipSourceInSessionJson(
+        handle: Long,
+        selectionJson: String,
+    ): String
+
+    external override fun selectOwnshipSourceInSessionPagedJson(
         handle: Long,
         selectionJson: String,
     ): String

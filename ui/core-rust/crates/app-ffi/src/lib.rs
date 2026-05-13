@@ -322,6 +322,17 @@ pub fn register_ownship_source_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn register_ownship_source_in_session_paged_json(
+    handle: u64,
+    registration_json: &str,
+) -> Result<String, String> {
+    let registration: app_core::OwnshipSourceRegistration =
+        serde_json::from_str(registration_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::register_ownship_source_in_session_outcome(handle as u32, registration)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 pub fn update_ownship_source_status_in_session_json(
     handle: u64,
     update_json: &str,
@@ -331,6 +342,17 @@ pub fn update_ownship_source_status_in_session_json(
     let snapshot = app_core::update_ownship_source_status_in_session(handle as u32, update)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn update_ownship_source_status_in_session_paged_json(
+    handle: u64,
+    update_json: &str,
+) -> Result<String, String> {
+    let update: app_core::OwnshipSourceStatusUpdate =
+        serde_json::from_str(update_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::update_ownship_source_status_in_session_outcome(handle as u32, update)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
 pub fn push_situation_sample_in_session_json(
@@ -344,6 +366,17 @@ pub fn push_situation_sample_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn push_situation_sample_in_session_paged_json(
+    handle: u64,
+    sample_json: &str,
+) -> Result<String, String> {
+    let sample: app_core::SituationSample =
+        serde_json::from_str(sample_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::push_situation_sample_in_session_outcome(handle as u32, sample)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 pub fn select_ownship_source_in_session_json(
     handle: u64,
     selection_json: &str,
@@ -353,6 +386,17 @@ pub fn select_ownship_source_in_session_json(
     let snapshot = app_core::select_ownship_source_in_session(handle as u32, selection)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn select_ownship_source_in_session_paged_json(
+    handle: u64,
+    selection_json: &str,
+) -> Result<String, String> {
+    let selection: app_core::OwnshipSelectionCommand =
+        serde_json::from_str(selection_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::select_ownship_source_in_session_outcome(handle as u32, selection)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
 pub fn apply_situation_control_input_in_session_json(
@@ -1598,6 +1642,20 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_reg
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_registerOwnshipSourceInSessionPagedJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    registration_json: JString,
+) -> jstring {
+    let result = (|| {
+        let registration_json = get_java_string(&mut env, registration_json)?;
+        register_ownship_source_in_session_paged_json(handle as u64, &registration_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_updateOwnshipSourceStatusInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -1607,6 +1665,20 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_upd
     let result = (|| {
         let update_json = get_java_string(&mut env, update_json)?;
         update_ownship_source_status_in_session_json(handle as u64, &update_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_updateOwnshipSourceStatusInSessionPagedJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    update_json: JString,
+) -> jstring {
+    let result = (|| {
+        let update_json = get_java_string(&mut env, update_json)?;
+        update_ownship_source_status_in_session_paged_json(handle as u64, &update_json)
     })();
     return_string(&mut env, result)
 }
@@ -1626,6 +1698,20 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_pus
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_pushSituationSampleInSessionPagedJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    sample_json: JString,
+) -> jstring {
+    let result = (|| {
+        let sample_json = get_java_string(&mut env, sample_json)?;
+        push_situation_sample_in_session_paged_json(handle as u64, &sample_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_selectOwnshipSourceInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -1635,6 +1721,20 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sel
     let result = (|| {
         let selection_json = get_java_string(&mut env, selection_json)?;
         select_ownship_source_in_session_json(handle as u64, &selection_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_selectOwnshipSourceInSessionPagedJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    selection_json: JString,
+) -> jstring {
+    let result = (|| {
+        let selection_json = get_java_string(&mut env, selection_json)?;
+        select_ownship_source_in_session_paged_json(handle as u64, &selection_json)
     })();
     return_string(&mut env, result)
 }

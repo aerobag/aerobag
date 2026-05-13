@@ -421,7 +421,7 @@ internal data class SituationOverlay(
     val pointUnits: Offset,
     val headingDeg: Float,
     val predictorUnits: Offset?,
-    val ring: SituationRing,
+    val ring: SituationRing?,
 )
 
 internal data class SituationRing(
@@ -1399,7 +1399,16 @@ internal fun resolveSituationOverlay(
         pointUnits = point,
         headingDeg = heading,
         predictorUnits = predictor,
-        ring = selectSituationRing(position, viewport, widthUnits, heightUnits, ringCandidates),
+        ring = ownship.magneticVariationDeg?.let { magneticVariationDeg ->
+            selectSituationRing(
+                position,
+                viewport,
+                widthUnits,
+                heightUnits,
+                ringCandidates,
+                magneticVariationDeg.toFloat(),
+            )
+        },
     )
 }
 
@@ -1710,6 +1719,7 @@ internal fun selectSituationRing(
     widthUnits: Float,
     heightUnits: Float,
     ringCandidates: List<SituationRingCandidate>,
+    magneticVariationDeg: Float,
 ): SituationRing {
     val center = latLonToScreen(position.lat, position.lon, viewport, widthUnits, heightUnits)
     val smaller = minOf(widthUnits, heightUnits)
@@ -1734,24 +1744,24 @@ internal fun selectSituationRing(
     val labelPoint = pointOnCircle(center, best.second + 16f, -45f)
     return SituationRing(
         radiusUnits = best.second,
-        tickMarks = buildSituationTickMarks(center, best.second),
-        cardinalLabels = buildSituationCardinalLabels(center, best.second),
+        tickMarks = buildSituationTickMarks(center, best.second, magneticVariationDeg),
+        cardinalLabels = buildSituationCardinalLabels(center, best.second, magneticVariationDeg),
         labelPointUnits = labelPoint,
         labelRotationDeg = 45f,
         labelText = best.first.label,
     )
 }
 
-internal fun buildSituationTickMarks(center: Offset, radiusUnits: Float): List<SituationTickMark> =
+internal fun buildSituationTickMarks(center: Offset, radiusUnits: Float, magneticVariationDeg: Float): List<SituationTickMark> =
     List(12) { index ->
-        val angle = index * 30f
+        val angle = index * 30f + magneticVariationDeg
         SituationTickMark(
             innerUnits = pointOnCircle(center, radiusUnits - 14f, angle),
             outerUnits = pointOnCircle(center, radiusUnits, angle),
         )
     }
 
-internal fun buildSituationCardinalLabels(center: Offset, radiusUnits: Float): List<SituationCardinalLabel> {
+internal fun buildSituationCardinalLabels(center: Offset, radiusUnits: Float, magneticVariationDeg: Float): List<SituationCardinalLabel> {
     val labelRadius = maxOf(0f, radiusUnits - 30f)
     return listOf(
         Triple("N", -90f, 0f),
@@ -1761,7 +1771,7 @@ internal fun buildSituationCardinalLabels(center: Offset, radiusUnits: Float): L
     ).map { (text, angleDeg, rotationDeg) ->
         SituationCardinalLabel(
             text = text,
-            pointUnits = pointOnCircle(center, labelRadius, angleDeg),
+            pointUnits = pointOnCircle(center, labelRadius, angleDeg + magneticVariationDeg),
             rotationDeg = rotationDeg,
         )
     }

@@ -168,6 +168,7 @@ mod tests {
             draw_cdi: true,
             position: Some(LatLon { lat, lon }),
             orientation_deg: None,
+            magnetic_variation_deg: None,
             speed_kt: None,
             altitude_msl_ft: None,
             pressure_altitude_ft: None,

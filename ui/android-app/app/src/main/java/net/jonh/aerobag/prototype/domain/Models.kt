@@ -625,6 +625,7 @@ data class OwnshipRenderState(
     val drawCdi: Boolean = false,
     val position: LatLonPoint? = null,
     val orientationDeg: Double? = null,
+    val magneticVariationDeg: Double? = null,
     val speedKt: Double? = null,
 )
 

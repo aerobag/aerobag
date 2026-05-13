@@ -617,6 +617,20 @@ class NativeUiSession internal constructor(
     var snapshot: UiSessionSnapshot = initialSnapshot
         private set
 
+    private fun runPagedSnapshot(operation: () -> String): UiSessionSnapshot {
+        val result = navKvStore?.runPagedSessionOperationElement(operation = operation)
+            ?: run {
+                val outcome = json.parseToJsonElement(operation()).jsonObject
+                when (val state = outcome.getValue("state").jsonPrimitive.content) {
+                    "complete" -> outcome["result"] ?: JsonNull
+                    "need_resources" -> error("nav_kv store is required for paged session resources")
+                    else -> error("unknown HAD session operation state: $state")
+                }
+            }
+        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi()
+        return snapshot
+    }
+
     fun syncGuidanceGeometry(): UiSessionSnapshot {
         val store = navKvStore ?: return snapshot
         snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(
@@ -769,23 +783,27 @@ class NativeUiSession internal constructor(
     }
 
     fun registerOwnshipSource(registration: OwnshipSourceRegistration): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.registerOwnshipSourceInSessionJson(handle, registration.toCoreJson(json)))
-        return snapshot
+        return runPagedSnapshot {
+            bridge.registerOwnshipSourceInSessionPagedJson(handle, registration.toCoreJson(json))
+        }
     }
 
     fun updateOwnshipSourceStatus(update: OwnshipSourceStatusUpdate): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.updateOwnshipSourceStatusInSessionJson(handle, update.toCoreJson(json)))
-        return snapshot
+        return runPagedSnapshot {
+            bridge.updateOwnshipSourceStatusInSessionPagedJson(handle, update.toCoreJson(json))
+        }
     }
 
     fun pushSituationSample(sample: SituationSample): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.pushSituationSampleInSessionJson(handle, sample.toCoreJson(json)))
-        return snapshot
+        return runPagedSnapshot {
+            bridge.pushSituationSampleInSessionPagedJson(handle, sample.toCoreJson(json))
+        }
     }
 
     fun selectOwnshipSource(selection: OwnshipSelection): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.selectOwnshipSourceInSessionJson(handle, selection.toCoreJson(json)))
-        return snapshot
+        return runPagedSnapshot {
+            bridge.selectOwnshipSourceInSessionPagedJson(handle, selection.toCoreJson(json))
+        }
     }
 
     fun applySituationControlInput(input: SituationControlInput, nowEpochMs: Double): UiSessionSnapshot {
@@ -1200,6 +1218,7 @@ private fun OwnshipRenderState.toWire() = WireOwnshipRenderState(
     draw_cdi = drawCdi,
     position = position?.toWire(),
     orientation_deg = orientationDeg,
+    magnetic_variation_deg = magneticVariationDeg,
     speed_kt = speedKt,
 )
 
@@ -1319,6 +1338,7 @@ private fun WireOwnshipRenderState.toUi() = OwnshipRenderState(
     drawCdi = draw_cdi,
     position = position?.toUi(),
     orientationDeg = orientation_deg,
+    magneticVariationDeg = magnetic_variation_deg,
     speedKt = speed_kt,
 )
 

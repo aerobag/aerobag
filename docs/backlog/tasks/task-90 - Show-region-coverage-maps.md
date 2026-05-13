@@ -1,7 +1,7 @@
 ---
 id: TASK-90
 title: Show region coverage maps
-status: Next
+status: Done
 assignee: []
 created_date: '2026-05-12 20:10'
 labels:
@@ -9,7 +9,7 @@ labels:
   - ui-affordances
   - cat:data
 dependencies: []
-priority: medium
+priority: done
 ordinal: 90000
 ---
 

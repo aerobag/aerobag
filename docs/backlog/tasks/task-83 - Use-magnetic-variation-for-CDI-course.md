@@ -17,4 +17,6 @@ ordinal: 83000
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
 CDI course magnetic? Need to use geo table to back out true
+
+CIBMI-ETOHO
 <!-- SECTION:DESCRIPTION:END -->

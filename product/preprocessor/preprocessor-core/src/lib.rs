@@ -48,6 +48,17 @@ pub mod nav_kv {
         prefetch_pages: Vec<u32>,
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct NavKvPrefixStats {
+        pub key_count: usize,
+        pub key_bytes: usize,
+        pub value_bytes: usize,
+        pub inline_value_count: usize,
+        pub external_value_count: usize,
+        pub matching_leaf_pages: Vec<u32>,
+        pub external_value_pages: Vec<u32>,
+    }
+
     #[derive(Debug, Clone)]
     struct LeafEntry {
         key: Vec<u8>,
@@ -317,6 +328,75 @@ pub mod nav_kv {
                 match leaf.next_leaf {
                     Some(next) => leaf_page = next,
                     None => return Some(out),
+                }
+            }
+        }
+
+        pub fn prefix_stats<P: FnMut(u32) -> Option<Vec<u8>>>(
+            &self,
+            prefix: &str,
+            mut page_provider: P,
+        ) -> Option<NavKvPrefixStats> {
+            let prefix = prefix.as_bytes();
+            let mut leaf_page = self.find_leaf_page_for_key(prefix, &mut page_provider)?;
+            let mut matching_leaf_pages = BTreeSet::new();
+            let mut external_value_pages = BTreeSet::new();
+            let mut stats = NavKvPrefixStats {
+                key_count: 0,
+                key_bytes: 0,
+                value_bytes: 0,
+                inline_value_count: 0,
+                external_value_count: 0,
+                matching_leaf_pages: Vec::new(),
+                external_value_pages: Vec::new(),
+            };
+
+            loop {
+                let leaf = self.read_leaf(leaf_page, &mut page_provider)?;
+                let mut matched_leaf = false;
+                for entry in &leaf.entries {
+                    if entry.key.as_slice() < prefix {
+                        continue;
+                    }
+                    if !entry.key.starts_with(prefix) {
+                        if matched_leaf {
+                            matching_leaf_pages.insert(leaf_page);
+                        }
+                        stats.matching_leaf_pages = matching_leaf_pages.into_iter().collect();
+                        stats.external_value_pages = external_value_pages.into_iter().collect();
+                        return Some(stats);
+                    }
+                    matched_leaf = true;
+                    stats.key_count += 1;
+                    stats.key_bytes += entry.key.len();
+                    match &entry.value {
+                        LeafEntryValue::Inline(bytes) => {
+                            stats.inline_value_count += 1;
+                            stats.value_bytes += bytes.len();
+                        }
+                        LeafEntryValue::External { offset, len } => {
+                            stats.external_value_count += 1;
+                            stats.value_bytes += *len as usize;
+                            if *len > 0 {
+                                let start_page = *offset / self.page_size;
+                                let end_page = (*offset + *len - 1) / self.page_size;
+                                for page in start_page..=end_page {
+                                    external_value_pages.insert(self.value_page_start + page);
+                                }
+                            }
+                        }
+                    }
+                }
+                if matched_leaf {
+                    matching_leaf_pages.insert(leaf_page);
+                }
+                match leaf.next_leaf {
+                    Some(next) => leaf_page = next,
+                    None => {
+                        stats.matching_leaf_pages = matching_leaf_pages.into_iter().collect();
+                        stats.external_value_pages = external_value_pages.into_iter().collect();
+                        return Some(stats);
+                    }
                 }
             }
         }
@@ -895,6 +975,35 @@ pub mod nav_kv {
                     "waypoint/id/KRNT".to_string()
                 ]
             );
+        }
+
+        #[test]
+        fn prefix_stats_reports_payload_sizes_and_storage_pages() {
+            let external_value = "x".repeat(INLINE_VALUE_MAX_LEN + 200);
+            let built = build_nav_kv_sorted(
+                vec![
+                    pair("magvar/0/0", "1234"),
+                    NavKvPair {
+                        key: "magvar/0/1".to_string(),
+                        value: external_value.as_bytes().to_vec(),
+                    },
+                    pair("waypoint/id/KRDD", "unrelated"),
+                ],
+                TEST_PAGE_SIZE,
+            )
+            .expect("build nav kv");
+            let root = NavKvRoot::parse(&built.root_bytes).expect("parse root");
+            let stats = root
+                .prefix_stats("magvar/", |page| built.pages.get(page as usize).cloned())
+                .expect("prefix stats");
+
+            assert_eq!(stats.key_count, 2);
+            assert_eq!(stats.key_bytes, "magvar/0/0".len() + "magvar/0/1".len());
+            assert_eq!(stats.value_bytes, 4 + INLINE_VALUE_MAX_LEN + 200);
+            assert_eq!(stats.inline_value_count, 1);
+            assert_eq!(stats.external_value_count, 1);
+            assert!(!stats.matching_leaf_pages.is_empty());
+            assert!(!stats.external_value_pages.is_empty());
         }
 
         #[test]

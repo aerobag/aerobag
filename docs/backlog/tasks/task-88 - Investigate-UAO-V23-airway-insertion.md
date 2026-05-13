@@ -10,7 +10,7 @@ labels:
   - bug
   - cat:core
 dependencies: []
-priority: high
+priority: medium
 ordinal: 88000
 ---
 

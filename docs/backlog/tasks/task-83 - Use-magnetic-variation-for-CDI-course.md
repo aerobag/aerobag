@@ -1,7 +1,7 @@
 ---
 id: TASK-83
 title: CDI course magnetic?
-status: Next
+status: Done
 assignee: []
 created_date: '2026-05-12 20:10'
 labels:
@@ -9,7 +9,7 @@ labels:
   - core
   - cat:core
 dependencies: []
-priority: high
+priority: done
 ordinal: 83000
 ---
 
@@ -18,4 +18,3 @@ ordinal: 83000
 <!-- SECTION:DESCRIPTION:BEGIN -->
 CDI course magnetic? Need to use geo table to back out true
 <!-- SECTION:DESCRIPTION:END -->
-

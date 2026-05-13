@@ -1256,7 +1256,7 @@ impl Region {
                 &[
                     RegionBounds {
                         lon_min: -180.0,
-                        lat_max: 71.0,
+                        lat_max: 72.0,
                         lon_max: -126.0,
                         lat_min: 51.0,
                     },
@@ -1334,7 +1334,7 @@ impl Region {
                 lon_min: -90.0,
                 lat_max: 37.0,
                 lon_max: -60.0,
-                lat_min: 15.0,
+                lat_min: 14.0,
             }],
         }
     }

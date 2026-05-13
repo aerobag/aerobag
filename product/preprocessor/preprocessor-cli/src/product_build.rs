@@ -18465,6 +18465,68 @@ mod tests {
     }
 
     #[test]
+    fn alaska_chart_offline_region_reaches_northern_chart_boundary() {
+        let index = minimal_resource_index();
+        let catalog = build_offline_region_catalog(&index, &BTreeMap::new());
+        let ak = catalog
+            .regions
+            .iter()
+            .find(|region| region.id == "chart:ak")
+            .expect("AK chart region");
+
+        assert!(ak.polygons.iter().any(|polygon| {
+            polygon.contains(&OfflineRegionLatLon {
+                lat: 72.0,
+                lon: -180.0,
+            })
+        }));
+        assert!(
+            !ak.polygons.iter().any(|polygon| {
+                polygon.contains(&OfflineRegionLatLon {
+                    lat: 71.0,
+                    lon: -180.0,
+                }) && !polygon.contains(&OfflineRegionLatLon {
+                    lat: 72.0,
+                    lon: -180.0,
+                })
+            }),
+            "AK chart polygon should not be clipped one degree south of the chart boundary: {:?}",
+            ak.polygons
+        );
+    }
+
+    #[test]
+    fn southeast_chart_offline_region_reaches_caribbean_chart_boundary() {
+        let index = minimal_resource_index();
+        let catalog = build_offline_region_catalog(&index, &BTreeMap::new());
+        let se = catalog
+            .regions
+            .iter()
+            .find(|region| region.id == "chart:se")
+            .expect("SE chart region");
+
+        assert!(se.polygons.iter().any(|polygon| {
+            polygon.contains(&OfflineRegionLatLon {
+                lat: 14.0,
+                lon: -60.0,
+            })
+        }));
+        assert!(
+            !se.polygons.iter().any(|polygon| {
+                polygon.contains(&OfflineRegionLatLon {
+                    lat: 15.0,
+                    lon: -60.0,
+                }) && !polygon.contains(&OfflineRegionLatLon {
+                    lat: 14.0,
+                    lon: -60.0,
+                })
+            }),
+            "SE chart polygon should not be clipped one degree north of the chart boundary: {:?}",
+            se.polygons
+        );
+    }
+
+    #[test]
     fn chart_offline_region_uses_simplified_cutline_union_when_available() {
         let index = minimal_resource_index();
         let mut polygon_sets = BTreeMap::new();

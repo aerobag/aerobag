@@ -364,11 +364,12 @@ pub fn raster_tile_plan_with_options(
             tiles: Vec::new(),
         };
     }
-    let device_pixel_ratio = if options.device_pixel_ratio.is_finite() && options.device_pixel_ratio > 0.0 {
-        options.device_pixel_ratio
-    } else {
-        1.0
-    };
+    let device_pixel_ratio =
+        if options.device_pixel_ratio.is_finite() && options.device_pixel_ratio > 0.0 {
+            options.device_pixel_ratio
+        } else {
+            1.0
+        };
     let planning_viewport = if (device_pixel_ratio - 1.0).abs() > f64::EPSILON {
         MapViewport {
             center: viewport.center,

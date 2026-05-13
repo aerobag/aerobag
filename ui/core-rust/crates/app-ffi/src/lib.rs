@@ -238,9 +238,8 @@ pub fn preview_flight_plan_entry_in_session_json(
     handle: u64,
     input: &str,
 ) -> Result<String, String> {
-    let outcome =
-        app_core::preview_flight_plan_entry_in_session(handle as u32, input.to_string())
-            .map_err(|err| err.to_string())?;
+    let outcome = app_core::preview_flight_plan_entry_in_session(handle as u32, input.to_string())
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
@@ -248,9 +247,8 @@ pub fn append_flight_plan_entry_in_session_json(
     handle: u64,
     input: &str,
 ) -> Result<String, String> {
-    let outcome =
-        app_core::append_flight_plan_entry_in_session(handle as u32, input.to_string())
-            .map_err(|err| err.to_string())?;
+    let outcome = app_core::append_flight_plan_entry_in_session(handle as u32, input.to_string())
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
@@ -659,8 +657,8 @@ pub fn get_terrain_overlay_in_session_json(
 }
 
 pub fn get_nexrad_overlay_in_session_json(handle: u64) -> Result<String, String> {
-    let overlay = app_core::get_nexrad_overlay_in_session(handle as u32)
-        .map_err(|err| err.to_string())?;
+    let overlay =
+        app_core::get_nexrad_overlay_in_session(handle as u32).map_err(|err| err.to_string())?;
     serde_json::to_string(&overlay).map_err(|err| err.to_string())
 }
 
@@ -731,8 +729,7 @@ pub fn nexrad_frame_bytes_in_session_bytes(
     handle: u64,
     frame_key: &str,
 ) -> Result<Vec<u8>, String> {
-    app_core::nexrad_frame_bytes_in_session(handle as u32, frame_key)
-        .map_err(|err| err.to_string())
+    app_core::nexrad_frame_bytes_in_session(handle as u32, frame_key).map_err(|err| err.to_string())
 }
 
 pub fn render_terrain_overlay_tiles_in_session_bytes(

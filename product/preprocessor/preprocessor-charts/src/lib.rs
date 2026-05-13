@@ -504,10 +504,7 @@ fn build_vfr_vrts(
     // specific reordering quirks exactly, instead of choosing a tidier/deterministic order
     // of our own.
     let inputs = ordered_chart_input_names(spec.family, &chart_dir)?;
-    let vrts = inputs
-        .iter()
-        .map(|base_name| work_dir.join(format!("{base_name}.vrt")))
-        .collect::<Vec<_>>();
+    let vrts = vfr_vrt_paths(work_dir, &inputs)?;
 
     let queue = Arc::new(Mutex::new(inputs));
     let job_count = cpu_jobs.max(1);
@@ -729,7 +726,7 @@ fn build_one_vfr_vrt(
             "-cutline".to_string(),
             cutline,
             "-crop_to_cutline".to_string(),
-            rgb_vrt_name,
+            rgb_vrt_name.clone(),
             vrt_name,
         ],
         cwd: work_dir.to_path_buf(),
@@ -745,6 +742,134 @@ fn build_one_vfr_vrt(
         bail!("gdalwarp failed for {base_name}");
     }
 
+    if let Some(supplement) = antimeridian_supplement_from_chart_metadata(work_dir, base_name)? {
+        build_vfr_antimeridian_supplement_vrt(
+            work_dir,
+            base_name,
+            &rgb_vrt_name,
+            supplement,
+            family,
+            worker_index,
+        )?;
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct AntimeridianSupplement {
+    west_lon: f64,
+    south_lat: f64,
+    east_lon: f64,
+    north_lat: f64,
+}
+
+fn vfr_vrt_paths(work_dir: &Path, inputs: &[String]) -> anyhow::Result<Vec<PathBuf>> {
+    let mut vrts = Vec::new();
+    for base_name in inputs {
+        vrts.push(work_dir.join(format!("{base_name}.vrt")));
+        if antimeridian_supplement_from_chart_metadata(work_dir, base_name)?.is_some() {
+            vrts.push(antimeridian_supplement_vrt_path(work_dir, base_name));
+        }
+    }
+    Ok(vrts)
+}
+
+fn antimeridian_supplement_from_chart_metadata(
+    work_dir: &Path,
+    base_name: &str,
+) -> anyhow::Result<Option<AntimeridianSupplement>> {
+    let html_name = resolve_chart_input_filename(work_dir, base_name, "htm")?;
+    let html = fs::read_to_string(work_dir.join(html_name))
+        .with_context(|| format!("failed to read metadata for {base_name}"))?;
+    Ok(antimeridian_supplement_from_html(&html))
+}
+
+fn antimeridian_supplement_from_html(html: &str) -> Option<AntimeridianSupplement> {
+    let west_lon = html_meta_content_f64(html, "dc.coverage.x.min")?;
+    let wrapped_east_lon = html_meta_content_f64(html, "dc.coverage.x.max")?;
+    if west_lon <= wrapped_east_lon {
+        return None;
+    }
+    // FAA VFR metadata encodes dateline-crossing charts as x.min > x.max.
+    // The normal cutline warp only covers the wrapped negative-longitude side;
+    // add a tightly bounded positive-longitude warp so tiles just west of
+    // +180 are not silently all-nodata.
+    Some(AntimeridianSupplement {
+        west_lon,
+        south_lat: html_meta_content_f64(html, "dc.coverage.y.min")?,
+        east_lon: 180.0,
+        north_lat: html_meta_content_f64(html, "dc.coverage.y.max")?,
+    })
+}
+
+fn html_meta_content_f64(html: &str, name: &str) -> Option<f64> {
+    for line in html.lines() {
+        if !line.contains(name) {
+            continue;
+        }
+        let content_start = line.find("content=\"")? + "content=\"".len();
+        let content_end = line[content_start..].find('"')? + content_start;
+        return line[content_start..content_end].parse().ok();
+    }
+    None
+}
+
+fn antimeridian_supplement_vrt_path(work_dir: &Path, base_name: &str) -> PathBuf {
+    work_dir.join(format!("{base_name} antimeridian-east.vrt"))
+}
+
+fn build_vfr_antimeridian_supplement_vrt(
+    work_dir: &Path,
+    base_name: &str,
+    rgb_vrt_name: &str,
+    supplement: AntimeridianSupplement,
+    family: ChartFamily,
+    worker_index: usize,
+) -> anyhow::Result<()> {
+    let vrt_path = antimeridian_supplement_vrt_path(work_dir, base_name);
+    remove_if_exists(vrt_path.clone())?;
+    let vrt_name = vrt_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("failed to derive antimeridian VRT filename"))?
+        .to_string();
+    let logs_dir = work_dir.join(".rust-logs");
+    let family_label = family.capture_label();
+
+    let warp = ToolInvocation {
+        program: "gdalwarp".to_string(),
+        args: vec![
+            "-of".to_string(),
+            "vrt".to_string(),
+            "-r".to_string(),
+            "cubicspline".to_string(),
+            "-dstnodata".to_string(),
+            "51".to_string(),
+            "-t_srs".to_string(),
+            "EPSG:3857".to_string(),
+            "-te".to_string(),
+            supplement.west_lon.to_string(),
+            supplement.south_lat.to_string(),
+            supplement.east_lon.to_string(),
+            supplement.north_lat.to_string(),
+            "-te_srs".to_string(),
+            "EPSG:4326".to_string(),
+            rgb_vrt_name.to_string(),
+            vrt_name,
+        ],
+        cwd: work_dir.to_path_buf(),
+        label: format!(
+            "{family_label}-warp-{worker_index}-{}-antimeridian-east",
+            sanitize_label(base_name)
+        ),
+        env: Vec::new(),
+        stdin_text: None,
+    };
+    let warp_outcome = warp.run_logged(&logs_dir)?;
+    if !warp_outcome.success {
+        bail!("gdalwarp failed for {base_name} antimeridian supplement");
+    }
     Ok(())
 }
 
@@ -1437,7 +1562,10 @@ fn count_files_recursive(path: &Path, count: &mut u64) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_dir_recursive, resolve_chart_input_filename, tile_belongs_to_region};
+    use super::{
+        antimeridian_supplement_from_html, copy_dir_recursive, resolve_chart_input_filename,
+        tile_belongs_to_region, vfr_vrt_paths, AntimeridianSupplement,
+    };
     use preprocessor_core::Region;
     use std::{
         fs,
@@ -1542,8 +1670,67 @@ mod tests {
     fn alaska_region_admits_detailed_tiles_on_both_sides_of_antimeridian() {
         assert!(tile_belongs_to_region("tiles/0/8/0/171.webp", &Region::Ak));
         assert!(tile_belongs_to_region(
+            "tiles/0/8/255/171.webp",
+            &Region::Ak
+        ));
+        assert!(tile_belongs_to_region(
             "tiles/0/8/253/171.webp",
             &Region::Ak
         ));
+        assert!(tile_belongs_to_region(
+            "tiles/0/9/510/342.webp",
+            &Region::Ak
+        ));
+    }
+
+    #[test]
+    fn antimeridian_chart_metadata_requests_positive_hemisphere_supplement() {
+        let html = r#"
+            <meta name="dc.coverage.x.min" scheme="DD" content="177.159202"/>
+            <meta name="dc.coverage.x.max" scheme="DD" content="-172.350442"/>
+            <meta name="dc.coverage.y.min" scheme="DD" content="50.754556"/>
+            <meta name="dc.coverage.y.max" scheme="DD" content="53.287320"/>
+        "#;
+
+        assert_eq!(
+            antimeridian_supplement_from_html(html),
+            Some(AntimeridianSupplement {
+                west_lon: 177.159202,
+                south_lat: 50.754556,
+                east_lon: 180.0,
+                north_lat: 53.287320,
+            })
+        );
+    }
+
+    #[test]
+    fn antimeridian_chart_vrt_inputs_include_supplemental_positive_side() {
+        let temp = TempDir::new("charts-antimeridian-vrts");
+        fs::write(
+            temp.path().join("Western Aleutian Islands East SEC.htm"),
+            r#"
+                <meta name="dc.coverage.x.min" scheme="DD" content="177.159202"/>
+                <meta name="dc.coverage.x.max" scheme="DD" content="-172.350442"/>
+                <meta name="dc.coverage.y.min" scheme="DD" content="50.754556"/>
+                <meta name="dc.coverage.y.max" scheme="DD" content="53.287320"/>
+            "#,
+        )
+        .expect("write metadata");
+
+        let vrts = vfr_vrt_paths(
+            temp.path(),
+            &[String::from("Western Aleutian Islands East SEC")],
+        )
+        .expect("vrt paths");
+
+        assert_eq!(
+            vrts.iter()
+                .map(|path| path.file_name().unwrap().to_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "Western Aleutian Islands East SEC.vrt",
+                "Western Aleutian Islands East SEC antimeridian-east.vrt",
+            ]
+        );
     }
 }

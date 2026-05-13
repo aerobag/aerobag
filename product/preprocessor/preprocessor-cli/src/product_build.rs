@@ -16665,6 +16665,15 @@ fn chart_render_inputs(
         ("source_urls".to_string(), hash_file(source_urls)?),
         ("cpu_jobs".to_string(), cpu_jobs.to_string()),
         ("fetch_jobs".to_string(), fetch_jobs.to_string()),
+        (
+            "chart_render_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-charts/src/lib.rs"),
+            )?,
+        ),
     ]))
 }
 

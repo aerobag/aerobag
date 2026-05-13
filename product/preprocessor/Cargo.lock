@@ -18,6 +18,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "airspace-geometry"
+version = "0.1.0"
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -42,6 +46,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 name = "app-core"
 version = "0.1.0"
 dependencies = [
+ "airspace-geometry",
  "png",
  "procedure-geometry-types",
  "rusqlite",
@@ -857,6 +862,7 @@ dependencies = [
 name = "preprocessor-vectors"
 version = "0.1.0"
 dependencies = [
+ "airspace-geometry",
  "anyhow",
  "geo",
  "preprocessor-zip",

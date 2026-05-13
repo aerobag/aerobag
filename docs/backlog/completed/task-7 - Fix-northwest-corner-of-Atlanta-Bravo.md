@@ -1,9 +1,10 @@
 ---
 id: TASK-7
 title: Fix northwest corner of Atlanta Bravo
-status: Inbox
+status: Done
 assignee: []
 created_date: '2026-05-12 16:20'
+updated_date: '2026-05-13 05:56'
 labels:
   - bug
   - data
@@ -22,8 +23,7 @@ Something is visibly wrong with the northwest corner of the Atlanta Class B depi
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Capture a reproducible viewport/snapshot showing the ATL Bravo defect.
-- [ ] #2 Identify whether the bad geometry originates in preproc output, core transformation, or UI drawing.
-- [ ] #3 Fix the defect or file a precise upstream preproc task.
+- [x] #1 Capture a reproducible viewport/snapshot showing the ATL Bravo defect.
+- [x] #2 Identify whether the bad geometry originates in preproc output, core transformation, or UI drawing.
+- [x] #3 Fix the defect or file a precise upstream preproc task.
 <!-- AC:END -->
-

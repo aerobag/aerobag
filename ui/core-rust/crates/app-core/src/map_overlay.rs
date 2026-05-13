@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use airspace_geometry::{expand_airspace_path, AirspaceSegment};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -3582,98 +3583,24 @@ fn project_airspace_feature(
 }
 
 fn lon_lat_points_for_airspace_path(path: &AirspaceFeaturePath) -> Vec<[f64; 2]> {
-    let mut points = Vec::with_capacity(path.segments.len() + 1);
-    let mut current = path.start;
-    points.push(current);
-    for segment in &path.segments {
-        match segment {
-            AirspaceFeaturePathSegment::Line { to } => {
-                current = *to;
-                points.push(current);
-            }
+    let segments = path
+        .segments
+        .iter()
+        .map(|segment| match segment {
+            AirspaceFeaturePathSegment::Line { to } => AirspaceSegment::Line { to: *to },
             AirspaceFeaturePathSegment::Arc {
                 center,
                 radius_ft: _,
                 clockwise,
                 to,
-            } => {
-                append_airspace_arc_points(&mut points, current, *center, *to, *clockwise);
-                current = *to;
-            }
-        }
-    }
-    points
-}
-
-fn append_airspace_arc_points(
-    points: &mut Vec<[f64; 2]>,
-    start: [f64; 2],
-    center: [f64; 2],
-    end: [f64; 2],
-    clockwise: bool,
-) {
-    let projection = AirspaceLocalProjection::new(center[0], center[1]);
-    let start_xy = projection.project(start);
-    let end_xy = projection.project(end);
-    let start_angle = (start_xy[1]).atan2(start_xy[0]);
-    let end_angle = (end_xy[1]).atan2(end_xy[0]);
-    let sweep = if clockwise {
-        -positive_angle_delta(end_angle, start_angle)
-    } else {
-        positive_angle_delta(start_angle, end_angle)
-    };
-    let steps = ((sweep.abs().to_degrees() / 4.0).ceil() as usize).clamp(1, 180);
-    let radius = (start_xy[0] * start_xy[0] + start_xy[1] * start_xy[1]).sqrt();
-    for step in 1..=steps {
-        let fraction = step as f64 / steps as f64;
-        let angle = start_angle + sweep * fraction;
-        let point = projection.unproject([radius * angle.cos(), radius * angle.sin()]);
-        if points.last() != Some(&point) {
-            points.push(point);
-        }
-    }
-    if points.last() != Some(&end) {
-        points.push(end);
-    }
-}
-
-struct AirspaceLocalProjection {
-    origin_lon: f64,
-    origin_lat: f64,
-    feet_per_degree_lon: f64,
-    feet_per_degree_lat: f64,
-}
-
-impl AirspaceLocalProjection {
-    fn new(origin_lon: f64, origin_lat: f64) -> Self {
-        let feet_per_degree_lat = 60.0 * 6076.12;
-        let feet_per_degree_lon =
-            feet_per_degree_lat * origin_lat.to_radians().cos().abs().max(0.001);
-        Self {
-            origin_lon,
-            origin_lat,
-            feet_per_degree_lon,
-            feet_per_degree_lat,
-        }
-    }
-
-    fn project(&self, point: [f64; 2]) -> [f64; 2] {
-        [
-            (point[0] - self.origin_lon) * self.feet_per_degree_lon,
-            (point[1] - self.origin_lat) * self.feet_per_degree_lat,
-        ]
-    }
-
-    fn unproject(&self, point: [f64; 2]) -> [f64; 2] {
-        [
-            self.origin_lon + point[0] / self.feet_per_degree_lon,
-            self.origin_lat + point[1] / self.feet_per_degree_lat,
-        ]
-    }
-}
-
-fn positive_angle_delta(from: f64, to: f64) -> f64 {
-    (to - from).rem_euclid(std::f64::consts::TAU)
+            } => AirspaceSegment::Arc {
+                center: *center,
+                clockwise: *clockwise,
+                to: *to,
+            },
+        })
+        .collect::<Vec<_>>();
+    expand_airspace_path(path.start, &segments)
 }
 
 fn airspace_decorations(

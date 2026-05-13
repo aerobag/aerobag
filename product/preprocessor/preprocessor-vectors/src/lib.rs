@@ -3,6 +3,7 @@ use std::fs;
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 
+use airspace_geometry::{expand_airspace_path, AirspaceSegment};
 use anyhow::{bail, Context};
 use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
@@ -54,6 +55,9 @@ const CONTROLLED_AIRSPACE_OUTLINE_MIN_RING_AREA_DEGREES2: f64 = 1.0e-6;
 const ARC_FIT_CORNER_TURN_DEGREES: f64 = 10.0;
 const AIRSPACE_PATH_COMPRESS_TOLERANCE_DEGREES: f64 = 0.00005;
 const AIRSPACE_PATH_COMPRESS_MAX_DEVIATION_FT: f64 = 50.0;
+const AIRSPACE_PATH_COMPRESS_MAX_ARC_RADIUS_NM: f64 = 100.0;
+const AIRSPACE_PATH_COMPRESS_MAX_ARC_RADIUS_FT: f64 =
+    AIRSPACE_PATH_COMPRESS_MAX_ARC_RADIUS_NM * 6076.12;
 const AIRSPACE_LABEL_MIN_ZOOM: u8 = 0;
 const AIRSPACE_LABEL_MAX_ZOOM: u8 = 12;
 const AIRSPACE_LABEL_MIN_PIXEL_SPAN: f64 = 50.0;
@@ -3407,7 +3411,9 @@ fn append_compressed_subchain_segments(
         return;
     }
     if let (Some(circle), Some(error)) = (arc, arc_error) {
-        if error <= tolerance_ft {
+        if error <= tolerance_ft
+            && decoded_arc_deviation_ft(points, start, end, projection, circle) <= tolerance_ft
+        {
             push_arc_segment(compression, projection, circle, points[end], error);
             return;
         }
@@ -3446,6 +3452,84 @@ fn push_arc_segment(
         to,
     });
     compression.max_deviation_ft = compression.max_deviation_ft.max(error);
+}
+
+fn decoded_arc_deviation_ft(
+    points: &[[f64; 2]],
+    start: usize,
+    end: usize,
+    projection: LocalProjection,
+    circle: ArcFitCircle,
+) -> f64 {
+    let serialized = AirspacePathSegment::Arc {
+        center: projection.unproject(circle.center),
+        radius_ft: round_float(circle.radius_ft),
+        clockwise: circle.clockwise,
+        to: points[end],
+    };
+    let decoded = expand_airspace_path(
+        points[start],
+        &[airspace_geometry_segment_from_path_segment(&serialized)],
+    );
+    max_polyline_pair_deviation_ft(&points[start..=end], &decoded, false)
+}
+
+fn decoded_airspace_path_deviation_ft(
+    source_points: &[[f64; 2]],
+    compression: &AirspacePathCompression,
+    closed: bool,
+) -> f64 {
+    let segments = compression
+        .segments
+        .iter()
+        .map(airspace_geometry_segment_from_path_segment)
+        .collect::<Vec<_>>();
+    let decoded = expand_airspace_path(compression.start, &segments);
+    max_polyline_pair_deviation_ft(source_points, &decoded, closed)
+}
+
+fn airspace_geometry_segment_from_path_segment(segment: &AirspacePathSegment) -> AirspaceSegment {
+    match segment {
+        AirspacePathSegment::Line { to } => AirspaceSegment::Line { to: *to },
+        AirspacePathSegment::Arc {
+            center,
+            radius_ft: _,
+            clockwise,
+            to,
+        } => AirspaceSegment::Arc {
+            center: *center,
+            clockwise: *clockwise,
+            to: *to,
+        },
+    }
+}
+
+fn max_polyline_pair_deviation_ft(left: &[[f64; 2]], right: &[[f64; 2]], closed: bool) -> f64 {
+    if left.len() < 2 || right.len() < 2 {
+        return 0.0;
+    }
+    let mut max_deviation = 0.0f64;
+    for point in left {
+        max_deviation = max_deviation.max(point_polyline_distance_feet(*point, right, closed));
+    }
+    for pair in left.windows(2) {
+        max_deviation = max_deviation.max(point_polyline_distance_feet(
+            midpoint(pair[0], pair[1]),
+            right,
+            closed,
+        ));
+    }
+    for point in right {
+        max_deviation = max_deviation.max(point_polyline_distance_feet(*point, left, closed));
+    }
+    for pair in right.windows(2) {
+        max_deviation = max_deviation.max(point_polyline_distance_feet(
+            midpoint(pair[0], pair[1]),
+            left,
+            closed,
+        ));
+    }
+    max_deviation
 }
 
 fn arc_fit_closed_ring_for_audit(points: &[[f64; 2]], tolerance_ft: f64) -> ArcFitRingAudit {
@@ -3570,8 +3654,11 @@ fn arc_fit_run_for_audit(points: &[[f64; 2]], tolerance_ft: f64, total: &mut Arc
         total.max_deviation_ft = total.max_deviation_ft.max(line_error);
         return;
     }
-    if let (Some(_circle), Some(error)) = (arc, arc_error) {
-        if error <= tolerance_ft {
+    if let (Some(circle), Some(error)) = (arc, arc_error) {
+        if error <= tolerance_ft
+            && decoded_arc_deviation_ft(points, 0, points.len() - 1, projection, circle)
+                <= tolerance_ft
+        {
             total.primitive_count += 1;
             total.arc_count += 1;
             total.estimated_json_bytes += estimated_arc_primitive_json_bytes();
@@ -3611,8 +3698,10 @@ fn arc_fit_subchain_for_audit(
         total.max_deviation_ft = total.max_deviation_ft.max(line_error);
         return;
     }
-    if let (Some(_circle), Some(error)) = (arc, arc_error) {
-        if error <= tolerance_ft {
+    if let (Some(circle), Some(error)) = (arc, arc_error) {
+        if error <= tolerance_ft
+            && decoded_arc_deviation_ft(points, start, end, projection, circle) <= tolerance_ft
+        {
             total.primitive_count += 1;
             total.arc_count += 1;
             total.estimated_json_bytes += estimated_arc_primitive_json_bytes();
@@ -3647,7 +3736,10 @@ fn fit_arc_for_subchain(
     let b = projection.project(points[mid]);
     let c = projection.project(points[end]);
     let circle = circle_through_points(a, b, c)?;
-    if circle.radius_ft < 100.0 || !circle.radius_ft.is_finite() {
+    if circle.radius_ft < 100.0
+        || circle.radius_ft > AIRSPACE_PATH_COMPRESS_MAX_ARC_RADIUS_FT
+        || !circle.radius_ft.is_finite()
+    {
         return None;
     }
     let start_angle = angle_from(circle.center, a);
@@ -3684,7 +3776,10 @@ fn fit_whole_ring_circle_for_audit(
     let b = projection.project(points[points.len() / 3]);
     let c = projection.project(points[(points.len() * 2) / 3]);
     let circle = circle_through_points(a, b, c)?;
-    if circle.radius_ft < 100.0 || !circle.radius_ft.is_finite() {
+    if circle.radius_ft < 100.0
+        || circle.radius_ft > AIRSPACE_PATH_COMPRESS_MAX_ARC_RADIUS_FT
+        || !circle.radius_ft.is_finite()
+    {
         return None;
     }
     let signed_turn = ring_signed_turn_degrees(points, projection);
@@ -4279,14 +4374,21 @@ fn append_path_points(target: &mut Vec<[f64; 2]>, points: &[[f64; 2]]) {
 fn airspace_path_from_points(points: &[[f64; 2]], role: &str) -> Option<AirspacePath> {
     let _ = points.first()?;
     let compression = compress_airspace_path_segments(points);
+    let closed = points.first() == points.last();
     assert!(
         compression.max_deviation_ft <= AIRSPACE_PATH_COMPRESS_MAX_DEVIATION_FT,
         "airspace path compression exceeded max deviation: {:.1} ft",
         compression.max_deviation_ft
     );
+    let decoded_deviation_ft = decoded_airspace_path_deviation_ft(points, &compression, closed);
+    assert!(
+        decoded_deviation_ft <= AIRSPACE_PATH_COMPRESS_MAX_DEVIATION_FT,
+        "decoded airspace path compression exceeded max deviation: {:.1} ft",
+        decoded_deviation_ft
+    );
     Some(AirspacePath {
         role: role.to_string(),
-        closed: points.first() == points.last(),
+        closed,
         interior_side: None,
         start: compression.start,
         segments: compression.segments,
@@ -4297,14 +4399,22 @@ fn airspace_path_from_points(points: &[[f64; 2]], role: &str) -> Option<Airspace
 fn saa_airspace_path(path: &SaaPath, role: &str) -> Option<AirspacePath> {
     let _ = path.points.first()?;
     let compression = compress_airspace_path_segments(&path.points);
+    let closed = path.points.first() == path.points.last();
     assert!(
         compression.max_deviation_ft <= AIRSPACE_PATH_COMPRESS_MAX_DEVIATION_FT,
         "SAA airspace path compression exceeded max deviation: {:.1} ft",
         compression.max_deviation_ft
     );
+    let decoded_deviation_ft =
+        decoded_airspace_path_deviation_ft(&path.points, &compression, closed);
+    assert!(
+        decoded_deviation_ft <= AIRSPACE_PATH_COMPRESS_MAX_DEVIATION_FT,
+        "decoded SAA airspace path compression exceeded max deviation: {:.1} ft",
+        decoded_deviation_ft
+    );
     Some(AirspacePath {
         role: role.to_string(),
-        closed: path.points.first() == path.points.last(),
+        closed,
         interior_side: saa_path_interior_side(path),
         start: compression.start,
         segments: compression.segments,
@@ -4631,6 +4741,34 @@ mod tests {
         assert_eq!(
             encoded["segments"][0]["kind"],
             serde_json::Value::String("arc".to_string())
+        );
+    }
+
+    #[test]
+    fn airspace_path_compression_rejects_pathological_large_radius_arcs() {
+        let center = [-84.0, 34.0];
+        let feet_per_degree_lat = 60.0 * 6076.12;
+        let projection = LocalProjection {
+            origin_lon: center[0],
+            origin_lat: center[1],
+            feet_per_degree_lon: feet_per_degree_lat
+                * center[1].to_radians().cos().abs().max(0.001),
+            feet_per_degree_lat,
+        };
+        let radius_ft = 200.0 * 6076.12;
+        let mut points = Vec::new();
+        for degrees in (0..=10).step_by(1) {
+            let radians = (degrees as f64).to_radians();
+            points
+                .push(projection.unproject([radius_ft * radians.cos(), radius_ft * radians.sin()]));
+        }
+
+        let path = airspace_path_from_points(&points, "boundary").unwrap();
+        assert!(
+            path.segments
+                .iter()
+                .all(|segment| matches!(segment, AirspacePathSegment::Line { .. })),
+            "very large fitted arcs are visually indistinguishable from broken straight segments"
         );
     }
 

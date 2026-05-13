@@ -895,6 +895,34 @@ fn output_sha_or_hash(record: &NodeRecord, key: &str, path: &Path) -> anyhow::Re
         .unwrap_or(hash_file(path)?))
 }
 
+fn preprocessor_workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("preprocessor-cli should live under workspace root")
+        .to_path_buf()
+}
+
+fn repo_root_from_preprocessor_workspace() -> PathBuf {
+    preprocessor_workspace_root()
+        .parent()
+        .expect("preprocessor workspace should live under product/")
+        .parent()
+        .expect("product should live under repo root")
+        .to_path_buf()
+}
+
+fn vectors_code_fingerprint() -> anyhow::Result<String> {
+    let workspace_root = preprocessor_workspace_root();
+    let repo_root = repo_root_from_preprocessor_workspace();
+    let inputs = serde_json::json!({
+        "preprocessor_vectors": hash_tree(&workspace_root.join("preprocessor-vectors"))?,
+        "airspace_geometry": hash_tree(&repo_root.join("crates/airspace-geometry"))?,
+    });
+    Ok(hash_text(
+        &serde_json::to_string(&inputs).context("vectors code fingerprint json")?,
+    ))
+}
+
 fn sqlite_output_path(record: &NodeRecord) -> anyhow::Result<&str> {
     record
         .outputs
@@ -3283,15 +3311,7 @@ fn build_obstacles_product(
     let inputs = BTreeMap::from([
         ("product_id".to_string(), "obstacles".to_string()),
         ("source_url".to_string(), request.cache_key.clone()),
-        (
-            "vectors_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-vectors/src/lib.rs"),
-            )?,
-        ),
+        ("vectors_lib".to_string(), vectors_code_fingerprint()?),
     ]);
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, "fast-obstacles")?,
@@ -16984,15 +17004,7 @@ fn build_vectors_node(
             relative_artifact_path(source_input_dir, &config.build_root),
         ),
         ("version_label".to_string(), version_label.to_string()),
-        (
-            "vectors_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-vectors/src/lib.rs"),
-            )?,
-        ),
+        ("vectors_lib".to_string(), vectors_code_fingerprint()?),
     ]);
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, "vectors")?,

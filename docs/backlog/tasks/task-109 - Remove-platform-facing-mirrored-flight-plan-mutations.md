@@ -12,7 +12,7 @@ labels:
 dependencies: []
 references:
   - docs/refactor/core-platform-ui-boundary-audit.md
-priority: high
+priority: done
 ordinal: 109000
 ---
 

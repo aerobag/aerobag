@@ -1,6 +1,6 @@
 ---
 id: TASK-63
-title: Improve airport selector suggestions
+title: Plate page airport list: Improve suggestions
 status: Next
 assignee: []
 created_date: '2026-05-12 16:35'
@@ -9,7 +9,7 @@ labels:
   - navigation
   - cat:navigation
 dependencies: []
-priority: medium
+priority: low
 ordinal: 63000
 ---
 

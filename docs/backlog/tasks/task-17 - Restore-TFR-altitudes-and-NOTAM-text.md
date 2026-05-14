@@ -11,7 +11,7 @@ labels:
   - feature
   - cat:productionization
 dependencies: []
-priority: high
+priority: medium
 ordinal: 17000
 ---
 

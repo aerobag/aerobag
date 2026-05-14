@@ -9,7 +9,7 @@ labels:
   - navigation
   - cat:navigation
 dependencies: []
-priority: medium
+priority: low
 ordinal: 28000
 ---
 

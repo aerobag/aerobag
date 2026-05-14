@@ -1,7 +1,7 @@
 ---
 id: TASK-99
 title: Unify <z7 model
-status: Next
+status: Done
 assignee: []
 created_date: '2026-05-12 20:10'
 labels:
@@ -9,7 +9,7 @@ labels:
   - data
   - cat:core
 dependencies: []
-priority: medium
+priority: done
 ordinal: 99000
 ---
 

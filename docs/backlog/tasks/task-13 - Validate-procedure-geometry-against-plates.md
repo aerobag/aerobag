@@ -10,7 +10,7 @@ labels:
   - tests
   - cat:navigation
 dependencies: []
-priority: medium
+priority: low
 ordinal: 13000
 ---
 

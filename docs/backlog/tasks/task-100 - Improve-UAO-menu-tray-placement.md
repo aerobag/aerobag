@@ -1,7 +1,7 @@
 ---
 id: TASK-100
 title: Web UAO menu tray crowded
-status: Next
+status: Done
 assignee: []
 created_date: '2026-05-12 20:10'
 labels:
@@ -9,7 +9,7 @@ labels:
   - web
   - cat:ui-affordances
 dependencies: []
-priority: low
+priority: done
 ordinal: 100000
 ---
 

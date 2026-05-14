@@ -9,7 +9,7 @@ labels:
   - deployment
   - web
   - android
-  - cat:web
+  - cat:productionization
 dependencies: []
 priority: high
 ordinal: 31000

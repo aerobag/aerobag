@@ -1,6 +1,6 @@
 ---
 id: TASK-94
-title: AHRS AI
+title: AHARS AI emergency panel
 status: Next
 assignee: []
 created_date: '2026-05-12 20:10'
@@ -9,7 +9,7 @@ labels:
   - feature
   - cat:navigation
 dependencies: []
-priority: medium
+priority: someday
 ordinal: 94000
 ---
 

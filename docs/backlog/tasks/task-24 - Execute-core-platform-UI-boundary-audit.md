@@ -1,6 +1,6 @@
 ---
 id: TASK-24
-title: Execute core/platform UI boundary audit
+title: Audit core/platform UI boundary
 status: Next
 assignee: []
 created_date: '2026-05-12 16:20'
@@ -21,9 +21,7 @@ ordinal: 24000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Work through the core/platform UI boundary audit and burn down remaining cases where platform UI owns business logic, data contract knowledge, or duplicated policy that should be core-owned.
-
-2026-05-12 audit pass completed. Remaining actionable violations were recorded in `docs/refactor/core-platform-ui-boundary-audit.md` and split into follow-up tasks `TASK-25`, `TASK-105`, `TASK-106`, `TASK-107`, `TASK-108`, `TASK-109`, and `TASK-110`.
+Work through the core/platform UI boundary audit and burn down remaining cases where platform UI owns business logic, data contract knowledge, or duplicated policy that should be core-owned. 2026-05-12 audit pass completed. Remaining actionable violations were recorded in `docs/refactor/core-platform-ui-boundary-audit.md` and split into follow-up tasks `TASK-25`, `TASK-105`, `TASK-106`, `TASK-107`, `TASK-108`, `TASK-109`, and `TASK-110`.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

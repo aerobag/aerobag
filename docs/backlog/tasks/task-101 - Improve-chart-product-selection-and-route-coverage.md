@@ -1,7 +1,7 @@
 ---
 id: TASK-101
 title: Chart coverage product selection
-status: Next
+status: Done
 assignee: []
 created_date: '2026-05-12 20:10'
 labels:
@@ -10,7 +10,7 @@ labels:
   - feature
   - cat:productionization
 dependencies: []
-priority: medium
+priority: done
 ordinal: 101000
 ---
 

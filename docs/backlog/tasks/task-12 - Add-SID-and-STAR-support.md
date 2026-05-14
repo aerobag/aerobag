@@ -10,7 +10,7 @@ labels:
   - core
   - cat:core
 dependencies: []
-priority: medium
+priority: low
 ordinal: 12000
 ---
 

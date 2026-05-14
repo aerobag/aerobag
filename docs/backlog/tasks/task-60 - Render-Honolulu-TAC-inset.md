@@ -18,6 +18,7 @@ ordinal: 60000
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
 The Honolulu TAC inset is not currently rendered.
+Probably needs a cutline.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

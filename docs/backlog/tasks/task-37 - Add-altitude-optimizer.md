@@ -9,7 +9,7 @@ labels:
   - navigation
   - cat:weather
 dependencies: []
-priority: medium
+priority: low
 ordinal: 37000
 ---
 

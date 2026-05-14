@@ -7,7 +7,7 @@ created_date: '2026-05-12 16:35'
 labels:
   - feature
   - plates
-  - cat:navigation
+  - cat:ui-affordances
 dependencies: []
 priority: low
 ordinal: 59000

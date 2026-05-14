@@ -10,7 +10,7 @@ labels:
   - feature
   - cat:weather
 dependencies: []
-priority: medium
+priority: someday
 ordinal: 92000
 ---
 

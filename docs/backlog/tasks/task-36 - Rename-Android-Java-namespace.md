@@ -8,9 +8,9 @@ labels:
   - android
   - cleanup
   - source
-  - cat:android
+  - cat:productionization
 dependencies: []
-priority: low
+priority: medium
 ordinal: 36000
 ---
 

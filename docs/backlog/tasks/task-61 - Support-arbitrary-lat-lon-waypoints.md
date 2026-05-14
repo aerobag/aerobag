@@ -1,7 +1,7 @@
 ---
 id: TASK-61
 title: Support arbitrary lat/lon waypoints
-status: Next
+status: Done
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -9,7 +9,7 @@ labels:
   - navigation
   - cat:navigation
 dependencies: []
-priority: medium
+priority: done
 ordinal: 61000
 ---
 

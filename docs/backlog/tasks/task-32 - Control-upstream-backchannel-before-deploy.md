@@ -10,7 +10,7 @@ labels:
   - web
   - android
   - mvp
-  - cat:web
+  - cat:productionization
 dependencies: []
 priority: high
 ordinal: 32000

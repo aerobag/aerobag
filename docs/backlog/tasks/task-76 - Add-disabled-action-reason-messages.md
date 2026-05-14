@@ -1,13 +1,13 @@
 ---
 id: TASK-76
-title: Add disabled action reason messages
+title: Help: Add disabled action reason messages
 status: Next
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
   - feature
   - core
-  - cat:core
+  - cat:ui-affordances
 dependencies: []
 priority: medium
 ordinal: 76000

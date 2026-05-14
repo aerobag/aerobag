@@ -10,7 +10,7 @@ labels:
   - feature
   - cat:navigation
 dependencies: []
-priority: medium
+priority: low
 ordinal: 89000
 ---
 

@@ -10,7 +10,7 @@ labels:
   - data
   - cat:productionization
 dependencies: []
-priority: high
+priority: medium
 ordinal: 49000
 ---
 

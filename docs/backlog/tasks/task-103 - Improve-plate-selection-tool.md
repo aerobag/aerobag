@@ -1,7 +1,7 @@
 ---
 id: TASK-103
 title: Better plate selection tool
-status: Next
+status: Done
 assignee: []
 created_date: '2026-05-12 20:10'
 labels:
@@ -9,7 +9,7 @@ labels:
   - ui-affordances
   - cat:ui-affordances
 dependencies: []
-priority: medium
+priority: done
 ordinal: 103000
 ---
 

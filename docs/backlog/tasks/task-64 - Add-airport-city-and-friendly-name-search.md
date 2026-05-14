@@ -1,7 +1,7 @@
 ---
 id: TASK-64
 title: Add airport city and friendly name search
-status: Next
+state: low
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -10,7 +10,6 @@ labels:
   - data
   - cat:navigation
 dependencies: []
-priority: low
 ordinal: 64000
 ---
 

@@ -1,7 +1,7 @@
 ---
 id: TASK-88
 title: Investigate UAO V23 absent
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 20:10'
 labels:
@@ -10,7 +10,6 @@ labels:
   - bug
   - cat:core
 dependencies: []
-priority: medium
 ordinal: 88000
 ---
 

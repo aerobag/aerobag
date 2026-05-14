@@ -1,7 +1,7 @@
 ---
 id: TASK-32
 title: Control upstream backchannel before deploy
-status: MVP
+state: high
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -12,7 +12,6 @@ labels:
   - mvp
   - cat:productionization
 dependencies: []
-priority: high
 ordinal: 32000
 ---
 

@@ -1,7 +1,7 @@
 ---
 id: TASK-25
 title: Eliminate platform-visible package member resolution
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -11,7 +11,6 @@ labels:
   - android
   - cat:core
 dependencies: []
-priority: medium
 ordinal: 25000
 ---
 

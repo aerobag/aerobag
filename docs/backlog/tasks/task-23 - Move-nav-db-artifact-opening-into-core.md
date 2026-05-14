@@ -1,7 +1,7 @@
 ---
 id: TASK-23
 title: Move nav-db artifact opening into core
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -11,7 +11,6 @@ labels:
   - web
   - cat:core
 dependencies: []
-priority: medium
 ordinal: 23000
 ---
 

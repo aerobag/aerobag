@@ -1,7 +1,7 @@
 ---
 id: TASK-13
 title: Validate procedure geometry against plates
-status: Next
+state: low
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -10,7 +10,6 @@ labels:
   - tests
   - cat:navigation
 dependencies: []
-priority: low
 ordinal: 13000
 ---
 

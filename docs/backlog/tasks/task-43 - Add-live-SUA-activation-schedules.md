@@ -1,7 +1,7 @@
 ---
 id: TASK-43
 title: Add live SUA activation schedules
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -13,7 +13,6 @@ dependencies: []
 references:
   - https://sua.faa.gov/datafeed/suagw/n24sua?user=
   - https://sua.faa.gov/ops/docs/suagwDataFmt.html
-priority: medium
 ordinal: 43000
 ---
 

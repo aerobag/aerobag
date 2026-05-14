@@ -1,7 +1,7 @@
 ---
 id: TASK-9
 title: Validate known approach leg geometry edge cases
-status: Inbox
+state: medium
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -11,7 +11,6 @@ labels:
   - bug
   - cat:core
 dependencies: []
-priority: medium
 ordinal: 9000
 ---
 

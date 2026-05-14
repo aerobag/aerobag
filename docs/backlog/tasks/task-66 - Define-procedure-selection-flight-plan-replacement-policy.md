@@ -1,7 +1,7 @@
 ---
 id: TASK-66
 title: Define procedure selection flight plan replacement policy
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -9,7 +9,6 @@ labels:
   - core
   - cat:core
 dependencies: []
-priority: medium
 ordinal: 66000
 ---
 

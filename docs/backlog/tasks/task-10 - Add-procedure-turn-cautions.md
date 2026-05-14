@@ -1,7 +1,7 @@
 ---
 id: TASK-10
 title: Approach decoding quality warning
-status: Next
+state: high
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -11,7 +11,6 @@ labels:
   - feature
   - cat:core
 dependencies: []
-priority: high
 ordinal: 10000
 ---
 

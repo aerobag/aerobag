@@ -1,14 +1,13 @@
 ---
 id: TASK-48
 title: Add logbook page
-status: Next
+state: someday
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
   - feature
   - cat:features
 dependencies: []
-priority: someday
 ordinal: 48000
 ---
 

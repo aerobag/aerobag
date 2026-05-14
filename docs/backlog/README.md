@@ -7,9 +7,9 @@ This directory is the repo-local task database. It is intentionally file-backed:
 - Markdown body for human-readable detail
 - no dependency on Backlog.md runtime semantics
 
-## Priority
+## State
 
-Every task has one priority:
+Every task has one state:
 
 - `high`
 - `medium`
@@ -17,8 +17,8 @@ Every task has one priority:
 - `someday`
 - `done`
 
-The category board sorts each category by this priority order. The priority is
-edited directly from the card.
+The category board sorts each category by this state order. The state is edited
+directly from the card.
 
 ## Category Invariant
 

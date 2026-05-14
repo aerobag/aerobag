@@ -1,7 +1,7 @@
 ---
 id: TASK-6
 title: Preserve active leg by row UID after flight plan edits
-status: MVP
+state: medium
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -11,7 +11,6 @@ labels:
   - mvp
   - cat:core
 dependencies: []
-priority: medium
 ordinal: 6000
 ---
 

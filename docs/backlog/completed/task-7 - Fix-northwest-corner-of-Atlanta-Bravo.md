@@ -1,7 +1,7 @@
 ---
 id: TASK-7
 title: Fix northwest corner of Atlanta Bravo
-status: Done
+state: done
 assignee: []
 created_date: '2026-05-12 16:20'
 updated_date: '2026-05-13 05:56'
@@ -11,7 +11,6 @@ labels:
   - preprocessor
   - cat:preprocessor
 dependencies: []
-priority: medium
 ordinal: 7000
 ---
 

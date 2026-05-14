@@ -1,7 +1,7 @@
 ---
 id: TASK-70
 title: Bring Android page navigation buttons to web parity
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -9,7 +9,6 @@ labels:
   - parity
   - cat:android
 dependencies: []
-priority: medium
 ordinal: 70000
 ---
 

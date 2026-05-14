@@ -1,14 +1,13 @@
 ---
 id: TASK-58
 title: Add help and mouseover explanations
-status: Next
+state: low
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
   - feature
   - cat:ui-affordances
 dependencies: []
-priority: low
 ordinal: 58000
 ---
 

@@ -1,7 +1,7 @@
 ---
 id: TASK-68
 title: Fix Android vector density and label overlap
-status: MVP
+state: high
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -11,7 +11,6 @@ labels:
   - mvp
   - cat:android
 dependencies: []
-priority: high
 ordinal: 68000
 ---
 

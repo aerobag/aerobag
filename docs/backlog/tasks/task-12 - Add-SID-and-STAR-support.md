@@ -1,7 +1,7 @@
 ---
 id: TASK-12
 title: Add SID and STAR support
-status: Next
+state: low
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -10,7 +10,6 @@ labels:
   - core
   - cat:core
 dependencies: []
-priority: low
 ordinal: 12000
 ---
 

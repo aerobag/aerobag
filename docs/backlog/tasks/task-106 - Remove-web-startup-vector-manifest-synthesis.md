@@ -1,7 +1,7 @@
 ---
 id: TASK-106
 title: Remove web startup vector manifest synthesis
-status: Done
+state: done
 assignee: []
 created_date: '2026-05-12 21:10'
 labels:
@@ -12,7 +12,6 @@ labels:
 dependencies: []
 references:
   - docs/refactor/core-platform-ui-boundary-audit.md
-priority: done
 ordinal: 106000
 ---
 

@@ -1,7 +1,7 @@
 ---
 id: TASK-4
 title: Measure and redesign fast product refresh contract
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -10,7 +10,6 @@ labels:
   - data
   - cat:data
 dependencies: []
-priority: medium
 ordinal: 4000
 ---
 

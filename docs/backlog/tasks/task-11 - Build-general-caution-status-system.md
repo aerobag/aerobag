@@ -1,7 +1,7 @@
 ---
 id: TASK-11
 title: Build general caution status system
-status: Next
+state: high
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -11,7 +11,6 @@ labels:
   - mvp
   - cat:core
 dependencies: []
-priority: high
 ordinal: 11000
 ---
 

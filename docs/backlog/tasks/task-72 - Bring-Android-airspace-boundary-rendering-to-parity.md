@@ -1,7 +1,7 @@
 ---
 id: TASK-72
 title: Bring Android airspace boundary rendering to parity
-status: MVP
+state: high
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -11,7 +11,6 @@ labels:
   - mvp
   - cat:android
 dependencies: []
-priority: high
 ordinal: 72000
 ---
 

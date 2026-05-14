@@ -1,7 +1,7 @@
 ---
 id: TASK-83
 title: CDI course magnetic?
-status: Done
+state: done
 assignee: []
 created_date: '2026-05-12 20:10'
 labels:
@@ -9,7 +9,6 @@ labels:
   - core
   - cat:core
 dependencies: []
-priority: done
 ordinal: 83000
 ---
 

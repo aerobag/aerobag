@@ -1,7 +1,7 @@
 ---
 id: TASK-95
 title: Flight director
-status: Next
+state: someday
 assignee: []
 created_date: '2026-05-12 20:10'
 labels:
@@ -9,7 +9,6 @@ labels:
   - feature
   - cat:navigation
 dependencies: []
-priority: someday
 ordinal: 95000
 ---
 

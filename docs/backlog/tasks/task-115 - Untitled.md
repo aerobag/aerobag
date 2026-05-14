@@ -1,13 +1,12 @@
 ---
 id: TASK-115
 title: live-feeds products blocked by cycle production lock
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-13 22:11'
 labels:
   - cat:weather
 dependencies: []
-priority: medium
 ordinal: 115000
 ---
 ## Description

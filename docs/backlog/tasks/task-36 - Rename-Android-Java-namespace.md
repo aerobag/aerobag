@@ -1,7 +1,7 @@
 ---
 id: TASK-36
 title: Rename Android Java namespace
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -10,7 +10,6 @@ labels:
   - source
   - cat:productionization
 dependencies: []
-priority: medium
 ordinal: 36000
 ---
 

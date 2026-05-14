@@ -1,14 +1,13 @@
 ---
 id: TASK-52
 title: Add share screen feature
-status: Next
+state: someday
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
   - feature
   - cat:features
 dependencies: []
-priority: someday
 ordinal: 52000
 ---
 

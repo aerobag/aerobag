@@ -1,7 +1,7 @@
 ---
 id: TASK-44
 title: Fix ownship-driven sequencing and suspend
-status: Done
+state: done
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -11,7 +11,6 @@ labels:
   - mvp
   - cat:core
 dependencies: []
-priority: done
 ordinal: 44000
 ---
 

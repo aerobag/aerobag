@@ -1,7 +1,7 @@
 ---
 id: TASK-26
 title: Add replace-all flight plan entry flow
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -10,7 +10,6 @@ labels:
   - core
   - cat:core
 dependencies: []
-priority: medium
 ordinal: 26000
 ---
 

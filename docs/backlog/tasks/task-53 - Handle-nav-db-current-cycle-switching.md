@@ -1,7 +1,7 @@
 ---
 id: TASK-53
 title: Handle nav-db current cycle switching
-status: MVP
+state: medium
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -10,7 +10,6 @@ labels:
   - mvp
   - cat:core
 dependencies: []
-priority: medium
 ordinal: 53000
 ---
 

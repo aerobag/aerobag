@@ -1,7 +1,7 @@
 ---
 id: TASK-77
 title: Complete vector feature click-to-add flow
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 16:42'
 labels:
@@ -10,7 +10,6 @@ labels:
   - navigation
   - cat:core
 dependencies: []
-priority: medium
 ordinal: 77000
 ---
 

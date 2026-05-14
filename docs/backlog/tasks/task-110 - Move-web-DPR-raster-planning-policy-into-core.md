@@ -1,7 +1,7 @@
 ---
 id: TASK-110
 title: Move web DPR raster planning policy into core
-status: Done
+state: done
 assignee: []
 created_date: '2026-05-12 21:10'
 labels:
@@ -12,7 +12,6 @@ labels:
 dependencies: []
 references:
   - docs/refactor/core-platform-ui-boundary-audit.md
-priority: medium
 ordinal: 110000
 ---
 

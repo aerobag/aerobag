@@ -1,7 +1,7 @@
 ---
 id: TASK-29
 title: Scrub development seeding and staging cruft
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -11,7 +11,6 @@ labels:
   - core
   - cat:core
 dependencies: []
-priority: medium
 ordinal: 29000
 ---
 

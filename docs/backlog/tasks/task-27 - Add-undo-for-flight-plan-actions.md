@@ -1,7 +1,7 @@
 ---
 id: TASK-27
 title: Add undo for flight plan actions
-status: Next
+state: low
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -10,7 +10,6 @@ labels:
   - core
   - cat:core
 dependencies: []
-priority: low
 ordinal: 27000
 ---
 

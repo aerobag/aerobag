@@ -1,7 +1,7 @@
 ---
 id: TASK-55
 title: Scan vector density and tune thresholds
-status: Next
+state: low
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -10,7 +10,6 @@ labels:
   - preprocessor
   - cat:preprocessor
 dependencies: []
-priority: low
 ordinal: 55000
 ---
 

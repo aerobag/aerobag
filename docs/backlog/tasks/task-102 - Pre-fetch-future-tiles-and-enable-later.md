@@ -1,7 +1,7 @@
 ---
 id: TASK-102
 title: Fetch future tiles ahead
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 20:10'
 labels:
@@ -10,7 +10,6 @@ labels:
   - feature
   - cat:productionization
 dependencies: []
-priority: medium
 ordinal: 102000
 ---
 

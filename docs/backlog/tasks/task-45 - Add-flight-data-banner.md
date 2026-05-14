@@ -1,7 +1,7 @@
 ---
 id: TASK-45
 title: Add flight data banner
-status: Next
+state: high
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -9,7 +9,6 @@ labels:
   - navigation
   - cat:navigation
 dependencies: []
-priority: high
 ordinal: 45000
 ---
 

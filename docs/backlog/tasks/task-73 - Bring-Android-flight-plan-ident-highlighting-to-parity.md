@@ -1,7 +1,7 @@
 ---
 id: TASK-73
 title: Bring Android flight plan ident highlighting to parity
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -10,7 +10,6 @@ labels:
   - navigation
   - cat:android
 dependencies: []
-priority: medium
 ordinal: 73000
 ---
 

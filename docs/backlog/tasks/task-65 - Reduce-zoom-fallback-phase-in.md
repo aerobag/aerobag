@@ -1,7 +1,7 @@
 ---
 id: TASK-65
 title: Reduce zoom fallback phase-in
-status: Next
+state: low
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -9,7 +9,6 @@ labels:
   - core
   - cat:core
 dependencies: []
-priority: low
 ordinal: 65000
 ---
 

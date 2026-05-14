@@ -1,7 +1,7 @@
 ---
 id: TASK-56
 title: Product age warnings
-status: Next
+state: high
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -11,7 +11,6 @@ labels:
   - feature
   - cat:productionization
 dependencies: []
-priority: high
 ordinal: 56000
 ---
 

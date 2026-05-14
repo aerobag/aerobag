@@ -1,7 +1,7 @@
 ---
 id: TASK-14
 title: Implement full coverage zoom for shaded relief and terrain
-status: Done
+state: done
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -11,7 +11,6 @@ labels:
   - feature
   - cat:preprocessor
 dependencies: []
-priority: done
 ordinal: 14000
 ---
 

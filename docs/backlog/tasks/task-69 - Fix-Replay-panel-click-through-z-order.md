@@ -1,7 +1,7 @@
 ---
 id: TASK-69
 title: Fix Replay panel click-through z-order
-status: Inbox
+state: medium
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -9,7 +9,6 @@ labels:
   - bug
   - cat:android
 dependencies: []
-priority: medium
 ordinal: 69000
 ---
 

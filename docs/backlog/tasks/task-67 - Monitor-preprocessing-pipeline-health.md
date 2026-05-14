@@ -1,7 +1,7 @@
 ---
 id: TASK-67
 title: Monitor preprocessing pipeline health
-status: Next
+state: high
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -10,7 +10,6 @@ labels:
   - data
   - cat:preprocessor
 dependencies: []
-priority: high
 ordinal: 67000
 ---
 

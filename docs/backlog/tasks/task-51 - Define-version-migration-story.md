@@ -1,7 +1,7 @@
 ---
 id: TASK-51
 title: Define product contract versioning and migration story
-status: MVP
+state: high
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -13,7 +13,6 @@ labels:
   - mvp
   - cat:productionization
 dependencies: []
-priority: high
 ordinal: 51000
 ---
 

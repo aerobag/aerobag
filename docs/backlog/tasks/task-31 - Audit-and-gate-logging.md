@@ -1,7 +1,7 @@
 ---
 id: TASK-31
 title: Audit and gate logging
-status: Next
+state: high
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -11,7 +11,6 @@ labels:
   - android
   - cat:productionization
 dependencies: []
-priority: high
 ordinal: 31000
 ---
 

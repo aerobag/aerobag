@@ -1,13 +1,12 @@
 ---
 id: TASK-80
 title: text route validation slow
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 19:51'
 labels:
   - cat:performance
 dependencies: []
-priority: medium
 ordinal: 80000
 ---
 ## Description

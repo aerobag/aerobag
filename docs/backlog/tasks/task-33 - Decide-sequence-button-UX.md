@@ -1,7 +1,7 @@
 ---
 id: TASK-33
 title: Decide sequence button UX
-status: Inbox
+state: low
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -9,7 +9,6 @@ labels:
   - feature
   - cat:navigation
 dependencies: []
-priority: low
 ordinal: 33000
 ---
 

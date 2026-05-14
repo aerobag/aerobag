@@ -1,7 +1,7 @@
 ---
 id: TASK-34
 title: Remove Avare parity artifacts and references
-status: Next
+state: done
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -9,7 +9,6 @@ labels:
   - source
   - cat:productionization
 dependencies: []
-priority: done
 ordinal: 34000
 ---
 

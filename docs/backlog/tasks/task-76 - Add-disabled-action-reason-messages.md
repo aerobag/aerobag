@@ -1,7 +1,7 @@
 ---
 id: TASK-76
 title: Help: Add disabled action reason messages
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -9,7 +9,6 @@ labels:
   - core
   - cat:ui-affordances
 dependencies: []
-priority: medium
 ordinal: 76000
 ---
 

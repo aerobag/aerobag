@@ -1,7 +1,7 @@
 ---
 id: TASK-57
 title: Add track-up view
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -9,7 +9,6 @@ labels:
   - navigation
   - cat:navigation
 dependencies: []
-priority: medium
 ordinal: 57000
 ---
 

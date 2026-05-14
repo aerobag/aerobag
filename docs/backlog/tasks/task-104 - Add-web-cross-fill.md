@@ -1,7 +1,7 @@
 ---
 id: TASK-104
 title: Cross fill with web
-status: Next
+state: low
 assignee: []
 created_date: '2026-05-12 20:10'
 labels:
@@ -10,7 +10,6 @@ labels:
   - feature
   - cat:data
 dependencies: []
-priority: low
 ordinal: 104000
 ---
 

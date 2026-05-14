@@ -1,7 +1,7 @@
 ---
 id: TASK-97
 title: Android-web landscape sequence buttons eat space
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 20:10'
 labels:
@@ -11,7 +11,6 @@ labels:
   - bug
   - cat:ui-affordances
 dependencies: []
-priority: medium
 ordinal: 97000
 ---
 

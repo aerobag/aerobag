@@ -1,7 +1,7 @@
 ---
 id: TASK-17
 title: Restore TFR altitudes and NOTAM text
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -11,7 +11,6 @@ labels:
   - feature
   - cat:productionization
 dependencies: []
-priority: medium
 ordinal: 17000
 ---
 

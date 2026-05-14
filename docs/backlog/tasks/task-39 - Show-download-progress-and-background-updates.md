@@ -1,7 +1,7 @@
 ---
 id: TASK-39
 title: Background updates
-status: MVP
+state: low
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -11,7 +11,6 @@ labels:
   - cat:data
 dependencies:
   - TASK-38
-priority: low
 ordinal: 39000
 ---
 

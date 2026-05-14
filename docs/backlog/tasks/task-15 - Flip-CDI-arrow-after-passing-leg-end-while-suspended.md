@@ -1,7 +1,7 @@
 ---
 id: TASK-15
 title: Flip CDI arrow after passing leg end while suspended
-status: Inbox
+state: low
 assignee: []
 created_date: '2026-05-12 16:20'
 updated_date: '2026-05-12 17:49'
@@ -11,7 +11,6 @@ labels:
   - bug
   - cat:core
 dependencies: []
-priority: low
 ordinal: 15000
 ---
 

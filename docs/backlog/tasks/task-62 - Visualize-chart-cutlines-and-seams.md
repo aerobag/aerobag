@@ -1,7 +1,7 @@
 ---
 id: TASK-62
 title: Visualize chart cutlines and seams
-status: Next
+state: low
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -9,7 +9,6 @@ labels:
   - plates
   - cat:navigation
 dependencies: []
-priority: low
 ordinal: 62000
 ---
 

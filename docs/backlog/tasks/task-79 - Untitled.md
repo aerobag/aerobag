@@ -1,13 +1,12 @@
 ---
 id: TASK-79
 title: NavCanada
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 19:39'
 labels:
   - cat:data
 dependencies: []
-priority: medium
 ordinal: 79000
 ---
 ## Description

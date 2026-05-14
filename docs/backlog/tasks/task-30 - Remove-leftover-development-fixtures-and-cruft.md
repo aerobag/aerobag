@@ -1,7 +1,7 @@
 ---
 id: TASK-30
 title: Remove leftover development fixtures and cruft
-status: Next
+state: low
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -9,7 +9,6 @@ labels:
   - source
   - cat:productionization
 dependencies: []
-priority: low
 ordinal: 30000
 ---
 

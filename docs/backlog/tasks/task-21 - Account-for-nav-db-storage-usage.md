@@ -1,7 +1,7 @@
 ---
 id: TASK-21
 title: Account for nav-db storage usage
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -10,7 +10,6 @@ labels:
   - preprocessor
   - cat:performance
 dependencies: []
-priority: medium
 ordinal: 21000
 ---
 

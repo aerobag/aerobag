@@ -1,7 +1,7 @@
 ---
 id: TASK-41
 title: Report package data sizes before download
-status: Done
+state: done
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -11,7 +11,6 @@ labels:
   - cat:data
 dependencies:
   - TASK-38
-priority: done
 ordinal: 41000
 ---
 

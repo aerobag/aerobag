@@ -1,13 +1,12 @@
 ---
 id: TASK-113
 title: Offline app & charts for web
-status: Next
+state: someday
 assignee: []
 created_date: '2026-05-13 04:55'
 labels:
   - cat:web
 dependencies: []
-priority: someday
 ordinal: 113000
 ---
 ## Description

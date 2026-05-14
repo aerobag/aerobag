@@ -1,7 +1,7 @@
 ---
 id: TASK-75
 title: Improve Android raster tile performance
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -9,7 +9,6 @@ labels:
   - performance
   - cat:android
 dependencies: []
-priority: medium
 ordinal: 75000
 ---
 

@@ -1,7 +1,7 @@
 ---
 id: TASK-82
 title: HVR RNAV 26 sequencing skipped hold entry arc
-status: Done
+state: done
 assignee: []
 created_date: '2026-05-12 20:10'
 labels:
@@ -10,7 +10,6 @@ labels:
   - bug
   - cat:core
 dependencies: []
-priority: done
 ordinal: 82000
 ---
 

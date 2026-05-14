@@ -1,7 +1,7 @@
 ---
 id: TASK-46
 title: Design cloud account server
-status: Next
+state: low
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -9,7 +9,6 @@ labels:
   - data
   - cat:data
 dependencies: []
-priority: low
 ordinal: 46000
 ---
 

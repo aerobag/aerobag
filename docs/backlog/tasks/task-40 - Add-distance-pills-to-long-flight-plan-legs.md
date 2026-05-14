@@ -1,7 +1,7 @@
 ---
 id: TASK-40
 title: Plot distances on chart
-status: Next
+state: low
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -9,7 +9,6 @@ labels:
   - navigation
   - cat:navigation
 dependencies: []
-priority: low
 ordinal: 40000
 ---
 

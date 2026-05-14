@@ -1,7 +1,7 @@
 ---
 id: TASK-1
 title: Android plate LOAD APPCH tray exposes no selectable procedure options
-status: MVP
+state: high
 assignee: []
 created_date: '2026-05-12 15:58'
 labels:
@@ -14,7 +14,6 @@ labels:
 dependencies: []
 references:
   - tools/parity/run-flight-plan-inspect-journey.mjs
-priority: high
 ordinal: 1000
 ---
 

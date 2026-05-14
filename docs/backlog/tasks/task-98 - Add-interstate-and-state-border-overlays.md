@@ -1,7 +1,7 @@
 ---
 id: TASK-98
 title: Interstates and state borders
-status: Done
+state: done
 assignee: []
 created_date: '2026-05-12 20:10'
 labels:
@@ -9,7 +9,6 @@ labels:
   - feature
   - cat:data
 dependencies: []
-priority: done
 ordinal: 98000
 ---
 

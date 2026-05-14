@@ -1,7 +1,7 @@
 ---
 id: TASK-37
 title: Altitude/wind/performance calculation
-status: Next
+state: low
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -9,7 +9,6 @@ labels:
   - navigation
   - cat:weather
 dependencies: []
-priority: low
 ordinal: 37000
 ---
 

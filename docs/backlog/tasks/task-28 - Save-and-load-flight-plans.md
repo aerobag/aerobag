@@ -1,7 +1,7 @@
 ---
 id: TASK-28
 title: Save and load flight plans
-status: Next
+state: low
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -9,7 +9,6 @@ labels:
   - navigation
   - cat:navigation
 dependencies: []
-priority: low
 ordinal: 28000
 ---
 

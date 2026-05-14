@@ -38,8 +38,8 @@ CATEGORY_COLUMNS = [
 
 CATEGORY_KEYS = {key for key, _title in CATEGORY_COLUMNS}
 CATEGORY_LABELS = {f"cat:{key}" for key in CATEGORY_KEYS}
-PRIORITIES = ["high", "medium", "low", "someday", "done"]
-PRIORITY_RANK = {priority: index for index, priority in enumerate(PRIORITIES)}
+TASK_STATES = ["high", "medium", "low", "someday", "done"]
+TASK_STATE_RANK = {state: index for index, state in enumerate(TASK_STATES)}
 
 
 @dataclass
@@ -47,9 +47,8 @@ class Task:
     path: Path
     id: str
     title: str
-    status: str
     labels: list[str]
-    priority: str
+    state: str
     ordinal: int
     description: str
 
@@ -153,9 +152,13 @@ def replace_description(body: str, description: str) -> str:
     return f"## Description\n\n{replacement}\n"
 
 
-def normalize_priority(priority: object) -> str:
-    value = str(priority or "medium").lower()
-    return value if value in PRIORITY_RANK else "medium"
+def normalize_task_state(state: object) -> str:
+    value = str(state or "medium").lower()
+    return value if value in TASK_STATE_RANK else "medium"
+
+
+def task_state_from_frontmatter(data: dict[str, object]) -> str:
+    return normalize_task_state(data.get("state", ""))
 
 
 def load_tasks(backlog_dir: Path) -> list[Task]:
@@ -178,14 +181,13 @@ def load_tasks(backlog_dir: Path) -> list[Task]:
                 path=path,
                 id=str(data.get("id", path.stem)),
                 title=str(data.get("title", path.stem)),
-                status=str(data.get("status", "Inbox")),
                 labels=[str(label) for label in labels],
-                priority=normalize_priority(data.get("priority", "")),
+                state=task_state_from_frontmatter(data),
                 ordinal=ordinal,
                 description=extract_description(body),
             )
         )
-    return sorted(tasks, key=lambda t: (PRIORITY_RANK.get(t.priority, 99), t.ordinal, t.id))
+    return sorted(tasks, key=lambda t: (TASK_STATE_RANK.get(t.state, 99), t.ordinal, t.id))
 
 
 def task_column(task: Task) -> str:
@@ -224,30 +226,15 @@ def update_task_category(backlog_dir: Path, task_id: str, category: str) -> None
     task.path.write_text(render_frontmatter(data) + body, encoding="utf-8")
 
 
-def update_task_status(backlog_dir: Path, task_id: str, status: str) -> None:
+def update_task_state(backlog_dir: Path, task_id: str, state: str) -> None:
+    state = normalize_task_state(state)
     matching = [task for task in load_tasks(backlog_dir) if task.id == task_id]
     if not matching:
         raise ValueError(f"unknown task: {task_id}")
     task = matching[0]
     text = task.path.read_text(encoding="utf-8")
     data, body = parse_frontmatter(text)
-    data["status"] = status
-    task.path.write_text(render_frontmatter(data) + body, encoding="utf-8")
-
-
-def update_task_priority(backlog_dir: Path, task_id: str, priority: str) -> None:
-    priority = normalize_priority(priority)
-    matching = [task for task in load_tasks(backlog_dir) if task.id == task_id]
-    if not matching:
-        raise ValueError(f"unknown task: {task_id}")
-    task = matching[0]
-    text = task.path.read_text(encoding="utf-8")
-    data, body = parse_frontmatter(text)
-    data["priority"] = priority
-    if priority == "done":
-        data["status"] = "Done"
-    elif str(data.get("status", "")) == "Done":
-        data["status"] = "Next"
+    data["state"] = state
     task.path.write_text(render_frontmatter(data) + body, encoding="utf-8")
 
 
@@ -292,12 +279,11 @@ def create_task(backlog_dir: Path, category: str) -> Task:
     data: dict[str, object] = {
         "id": task_id,
         "title": title,
-        "status": "Next",
         "assignee": [],
         "created_date": datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
         "labels": [f"cat:{category}"],
         "dependencies": [],
-        "priority": "medium",
+        "state": "medium",
         "ordinal": max_ordinal + 1000,
     }
     body = replace_description("", "")
@@ -414,7 +400,7 @@ def render_page(tasks: list[Task]) -> bytes:
       outline: 4px solid rgba(31, 112, 168, 0.35);
       outline-offset: -4px;
     }}
-    .priorityDivider {{
+    .stateDivider {{
       margin: 20px 6px 12px;
       display: flex;
       align-items: center;
@@ -425,17 +411,17 @@ def render_page(tasks: list[Task]) -> bytes:
       letter-spacing: 0.11em;
       text-transform: uppercase;
     }}
-    .priorityDivider::before,
-    .priorityDivider::after {{
+    .stateDivider::before,
+    .stateDivider::after {{
       content: "";
       height: 1px;
       flex: 1;
       background: rgba(8, 25, 35, 0.18);
     }}
-    .priorityDivider.someday {{
+    .stateDivider.someday {{
       margin-top: 28px;
     }}
-    .priorityDivider.done {{
+    .stateDivider.done {{
       margin-top: 24px;
       opacity: 0.78;
     }}
@@ -477,17 +463,17 @@ def render_page(tasks: list[Task]) -> bytes:
       font-size: 12px;
       font-weight: 700;
     }}
-    .priority-high {{ background: rgba(168, 35, 53, 0.13); color: var(--red); }}
-    .priority-medium {{ background: rgba(31, 112, 168, 0.12); color: var(--blue); }}
-    .priority-low {{ background: rgba(23, 111, 76, 0.12); color: var(--green); }}
-    .priority-someday {{ background: rgba(92, 114, 128, 0.14); color: var(--muted); }}
-    .priority-done {{ background: rgba(8, 25, 35, 0.14); color: #26343c; }}
-    .priorityButton {{
+    .state-high {{ background: rgba(168, 35, 53, 0.13); color: var(--red); }}
+    .state-medium {{ background: rgba(31, 112, 168, 0.12); color: var(--blue); }}
+    .state-low {{ background: rgba(23, 111, 76, 0.12); color: var(--green); }}
+    .state-someday {{ background: rgba(92, 114, 128, 0.14); color: var(--muted); }}
+    .state-done {{ background: rgba(8, 25, 35, 0.14); color: #26343c; }}
+    .stateButton {{
       border-radius: 999px;
       padding: 4px 9px;
       font-size: 12px;
     }}
-    .priorityMenu {{
+    .stateMenu {{
       position: fixed;
       z-index: 20;
       display: none;
@@ -499,7 +485,7 @@ def render_page(tasks: list[Task]) -> bytes:
       background: #fffdf6;
       box-shadow: 0 10px 28px rgba(8, 25, 35, 0.24);
     }}
-    .priorityMenu.open {{ display: grid; }}
+    .stateMenu.open {{ display: grid; }}
     .desc {{
       margin-top: 8px;
       color: #233c49;
@@ -581,15 +567,15 @@ def render_page(tasks: list[Task]) -> bytes:
 <body>
   <header>
     <h1>Aerobag Backlog by Category</h1>
-    <div class="hint">{total} tasks. Columns are exactly-one <code>cat:*</code> partitions; cards sort by priority.</div>
+    <div class="hint">{total} tasks. Columns are exactly-one <code>cat:*</code> partitions; cards sort by state.</div>
   </header>
   <main class="board">{body}</main>
-  <div id="priorityMenu" class="priorityMenu">
-    <button class="priorityButton priority-high" onclick="setPriority('high')">high</button>
-    <button class="priorityButton priority-medium" onclick="setPriority('medium')">medium</button>
-    <button class="priorityButton priority-low" onclick="setPriority('low')">low</button>
-    <button class="priorityButton priority-someday" onclick="setPriority('someday')">someday</button>
-    <button class="priorityButton priority-done" onclick="setPriority('done')">done</button>
+  <div id="stateMenu" class="stateMenu">
+    <button class="stateButton state-high" onclick="setState('high')">high</button>
+    <button class="stateButton state-medium" onclick="setState('medium')">medium</button>
+    <button class="stateButton state-low" onclick="setState('low')">low</button>
+    <button class="stateButton state-someday" onclick="setState('someday')">someday</button>
+    <button class="stateButton state-done" onclick="setState('done')">done</button>
   </div>
   <div id="editorScrim" class="modalScrim">
     <div class="editor">
@@ -602,7 +588,7 @@ def render_page(tasks: list[Task]) -> bytes:
   </div>
   <script>
     let draggedTaskId = null;
-    let priorityTaskId = null;
+    let stateTaskId = null;
     let editorTaskId = null;
     document.addEventListener('dragstart', (event) => {{
       const card = event.target.closest('.card');
@@ -622,7 +608,7 @@ def render_page(tasks: list[Task]) -> bytes:
     document.addEventListener('click', (event) => {{
       const card = event.target.closest('.card');
       if (!card || card.dataset.dragging === 'true') return;
-      if (event.target.closest('.priorityButton')) return;
+      if (event.target.closest('.stateButton')) return;
       openEditor(card.dataset.taskId);
     }});
     document.addEventListener('dragover', (event) => {{
@@ -645,8 +631,8 @@ def render_page(tasks: list[Task]) -> bytes:
       location.reload();
     }});
     document.addEventListener('click', (event) => {{
-      const menu = document.getElementById('priorityMenu');
-      if (!event.target.closest('.priorityMenu') && !event.target.closest('.priorityButton')) {{
+      const menu = document.getElementById('stateMenu');
+      if (!event.target.closest('.stateMenu') && !event.target.closest('.stateButton')) {{
         menu.classList.remove('open');
       }}
     }});
@@ -656,17 +642,17 @@ def render_page(tasks: list[Task]) -> bytes:
         closeEditor();
       }}
     }});
-    function openPriorityMenu(event, taskId) {{
+    function openStateMenu(event, taskId) {{
       event.stopPropagation();
-      priorityTaskId = taskId;
-      const menu = document.getElementById('priorityMenu');
+      stateTaskId = taskId;
+      const menu = document.getElementById('stateMenu');
       menu.style.left = `${{event.clientX}}px`;
       menu.style.top = `${{event.clientY}}px`;
       menu.classList.add('open');
     }}
-    async function setPriority(priority) {{
-      if (!priorityTaskId) return;
-      await post('/api/priority', {{taskId: priorityTaskId, priority}});
+    async function setState(state) {{
+      if (!stateTaskId) return;
+      await post('/api/state', {{taskId: stateTaskId, state}});
       location.reload();
     }}
     async function createTask(category) {{
@@ -724,8 +710,8 @@ def render_page(tasks: list[Task]) -> bytes:
 
 
 def render_column(key: str, title: str, tasks: list[Task]) -> str:
-    tasks = sorted(tasks, key=lambda task: (PRIORITY_RANK.get(task.priority, 99), task.ordinal, task.id))
-    cards = render_priority_grouped_cards(tasks)
+    tasks = sorted(tasks, key=lambda task: (TASK_STATE_RANK.get(task.state, 99), task.ordinal, task.id))
+    cards = render_state_grouped_cards(tasks)
     new_button = "" if key == "needs-category" else f'<button class="newButton" onclick="createTask(\'{html.escape(key)}\')">New</button>'
     return f"""<section class="column" data-category="{html.escape(key)}">
   <div class="columnHeader"><span class="columnTitle"><span>{html.escape(title)}</span><span class="count">{len(tasks)}</span></span>{new_button}</div>
@@ -733,34 +719,34 @@ def render_column(key: str, title: str, tasks: list[Task]) -> str:
 </section>"""
 
 
-def render_priority_grouped_cards(tasks: list[Task]) -> str:
+def render_state_grouped_cards(tasks: list[Task]) -> str:
     parts: list[str] = []
     seen_someday = False
     seen_done = False
     for task in tasks:
-        if task.priority == "someday" and not seen_someday:
-            parts.append('<div class="priorityDivider someday">Someday</div>')
+        if task.state == "someday" and not seen_someday:
+            parts.append('<div class="stateDivider someday">Someday</div>')
             seen_someday = True
-        if task.priority == "done" and not seen_done:
-            parts.append('<div class="priorityDivider done">Done</div>')
+        if task.state == "done" and not seen_done:
+            parts.append('<div class="stateDivider done">Done</div>')
             seen_done = True
         parts.append(render_card(task))
     return "\n".join(parts)
 
 
 def render_card(task: Task) -> str:
-    priority_class = f"priority-{html.escape(task.priority)}" if task.priority else ""
-    card_class = "card doneCard" if task.priority == "done" else "card"
-    priority = (
-        f'<button class="priorityButton {priority_class}" '
-        f'onclick="openPriorityMenu(event, \'{html.escape(task.id)}\')">{html.escape(task.priority)}</button>'
+    state_class = f"state-{html.escape(task.state)}" if task.state else ""
+    card_class = "card doneCard" if task.state == "done" else "card"
+    state = (
+        f'<button class="stateButton {state_class}" '
+        f'onclick="openStateMenu(event, \'{html.escape(task.id)}\')">{html.escape(task.state)}</button>'
     )
     category_error = validate_category_labels(task)
     warning = f'<div class="warning">{html.escape(category_error)}</div>' if category_error else ""
     desc = f'<div class="desc">{html.escape(task.description)}</div>' if task.description else ""
     return f"""<article class="{card_class}" draggable="true" data-task-id="{html.escape(task.id)}">
   <div class="title"><span class="taskId">{html.escape(task.id)}</span>{html.escape(task.title)}</div>
-  <div class="meta">{priority}</div>
+  <div class="meta">{state}</div>
   {warning}
   {desc}
 </article>"""
@@ -769,8 +755,8 @@ def render_card(task: Task) -> str:
 class CategoryBoardHandler(BaseHTTPRequestHandler):
     backlog_dir: Path
 
-    def _send(self, status: int, content_type: str, body: bytes) -> None:
-        self.send_response(status)
+    def _send(self, code: int, content_type: str, body: bytes) -> None:
+        self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -788,7 +774,7 @@ class CategoryBoardHandler(BaseHTTPRequestHandler):
                         "id": task.id,
                         "title": task.title,
                         "description": task.description,
-                        "priority": task.priority,
+                        "state": task.state,
                         "labels": task.labels,
                     }
                 ).encode("utf-8")
@@ -831,12 +817,8 @@ class CategoryBoardHandler(BaseHTTPRequestHandler):
                 update_task_category(self.backlog_dir, str(payload["taskId"]), str(payload["category"]))
                 self._send(200, "application/json", b'{"ok":true}')
                 return
-            if self.path == "/api/status":
-                update_task_status(self.backlog_dir, str(payload["taskId"]), str(payload["status"]))
-                self._send(200, "application/json", b'{"ok":true}')
-                return
-            if self.path == "/api/priority":
-                update_task_priority(self.backlog_dir, str(payload["taskId"]), str(payload["priority"]))
+            if self.path == "/api/state":
+                update_task_state(self.backlog_dir, str(payload["taskId"]), str(payload["state"]))
                 self._send(200, "application/json", b'{"ok":true}')
                 return
             if self.path == "/api/task":

@@ -1,7 +1,7 @@
 ---
 id: TASK-60
 title: Render Honolulu TAC inset
-status: Inbox
+state: medium
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -10,7 +10,6 @@ labels:
   - data
   - cat:navigation
 dependencies: []
-priority: medium
 ordinal: 60000
 ---
 

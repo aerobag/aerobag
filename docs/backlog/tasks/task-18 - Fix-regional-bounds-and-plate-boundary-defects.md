@@ -1,7 +1,7 @@
 ---
 id: TASK-18
 title: Fix regional bounds and plate boundary defects
-status: Done
+state: done
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -10,7 +10,6 @@ labels:
   - bug
   - cat:preprocessor
 dependencies: []
-priority: done
 ordinal: 18000
 ---
 

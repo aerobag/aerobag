@@ -1,7 +1,7 @@
 ---
 id: TASK-81
 title: Flight plan fields are mostly silly
-status: Next
+state: medium
 assignee: []
 created_date: '2026-05-12 20:10'
 labels:
@@ -9,7 +9,6 @@ labels:
   - ui-affordances
   - cat:ui-affordances
 dependencies: []
-priority: medium
 ordinal: 81000
 ---
 

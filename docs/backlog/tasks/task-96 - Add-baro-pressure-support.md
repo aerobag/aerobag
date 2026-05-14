@@ -1,7 +1,7 @@
 ---
 id: TASK-96
 title: Baro pressure
-status: Next
+state: low
 assignee: []
 created_date: '2026-05-12 20:10'
 labels:
@@ -9,7 +9,6 @@ labels:
   - feature
   - cat:navigation
 dependencies: []
-priority: low
 ordinal: 96000
 ---
 

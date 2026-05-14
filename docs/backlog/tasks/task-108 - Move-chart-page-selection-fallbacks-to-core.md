@@ -1,7 +1,7 @@
 ---
 id: TASK-108
 title: Move chart-page selection fallbacks to core
-status: Done
+state: done
 assignee: []
 created_date: '2026-05-12 21:10'
 labels:
@@ -13,7 +13,6 @@ labels:
 dependencies: []
 references:
   - docs/refactor/core-platform-ui-boundary-audit.md
-priority: medium
 ordinal: 108000
 ---
 

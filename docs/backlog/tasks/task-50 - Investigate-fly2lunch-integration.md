@@ -1,14 +1,13 @@
 ---
 id: TASK-50
 title: Investigate fly2lunch integration
-status: Next
+state: low
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
   - feature
   - cat:data
 dependencies: []
-priority: low
 ordinal: 50000
 ---
 

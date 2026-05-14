@@ -1,7 +1,7 @@
 ---
 id: TASK-16
 title: Include METAR symbols in chart click inspector
-status: Done
+state: done
 assignee: []
 created_date: '2026-05-12 16:20'
 updated_date: '2026-05-12 17:54'
@@ -10,7 +10,6 @@ labels:
   - core
   - feature
 dependencies: []
-priority: medium
 ordinal: 16000
 ---
 

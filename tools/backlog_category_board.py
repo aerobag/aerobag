@@ -298,7 +298,14 @@ def render_page(tasks: list[Task]) -> bytes:
     grouped: dict[str, list[Task]] = {key: [] for key, _title in columns}
     for task in tasks:
         grouped.setdefault(task_column(task), []).append(task)
-    total = len(tasks)
+    state_counts = {state: 0 for state in TASK_STATES}
+    for task in tasks:
+        if task.state in state_counts:
+            state_counts[task.state] += 1
+    state_count_pills = " ".join(
+        f'<span class="stateCount state-{html.escape(state)}">{state_counts[state]} {html.escape(state)}</span>'
+        for state in TASK_STATES
+    )
     body = "\n".join(render_column(key, title, grouped.get(key, [])) for key, title in columns)
     page = f"""<!doctype html>
 <html>
@@ -342,7 +349,19 @@ def render_page(tasks: list[Task]) -> bytes:
       font-size: 18px;
       letter-spacing: 0.02em;
     }}
-    .hint {{ color: var(--muted); }}
+    .titleEnd {{
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      flex-wrap: wrap;
+    }}
+    .stateCount {{
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 12px;
+      font-weight: 850;
+      white-space: nowrap;
+    }}
     .board {{
       display: grid;
       grid-auto-flow: column;
@@ -566,8 +585,8 @@ def render_page(tasks: list[Task]) -> bytes:
 </head>
 <body>
   <header>
-    <h1>Aerobag Backlog by Category</h1>
-    <div class="hint">{total} tasks. Columns are exactly-one <code>cat:*</code> partitions; cards sort by state.</div>
+    <h1>Aerobag Bugs</h1>
+    <div class="titleEnd">{state_count_pills}</div>
   </header>
   <main class="board">{body}</main>
   <div id="stateMenu" class="stateMenu">

@@ -17,7 +17,9 @@ ordinal: 9000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Check known suspicious approach cases: `CEC ILS or LOC RWY 12` around the 10 nm leg from SLAMM, `CYS RNAV RWY 13` sharp turn at EMOTY and possible hold/procedure-turn behavior, and `HYR ILS 21` where GRASS 250 heading currently appears to jump direct DAIVE.
+`CEC ILS or LOC RWY 12` Instead of intercepting CEC R-166, we fly direct CHIDE
+
+HYR ILS 21 has an "OBBEY JODES" intersection and a "DAIVE TARRO". I thought we eliminated that case
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

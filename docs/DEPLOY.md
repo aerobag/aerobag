@@ -97,10 +97,10 @@ build depends on the cycle product existing first.
 time "$CARGO_TARGET_DIR/release/preprocessor-cli" build-product --source-root "$SOURCE_ROOT"
 ```
 
-Then run the fast subset build once:
+Then run the fast product update once:
 
 ```bash
-time "$CARGO_TARGET_DIR/release/preprocessor-cli" build-fast-subset --source-root "$SOURCE_ROOT"
+time "$CARGO_TARGET_DIR/release/preprocessor-cli" update-live-feeds --source-root "$SOURCE_ROOT"
 ```
 
 After these complete, `$ARTIFACT_ROOT` should contain the published artifact
@@ -170,10 +170,10 @@ Every 2 hours, run `build-product`:
 time "$CARGO_TARGET_DIR/release/preprocessor-cli" build-product --source-root "$SOURCE_ROOT"
 ```
 
-Every 5 minutes, run `build-fast-subset`:
+Every minute, run `update-live-feeds`:
 
 ```bash
-time "$CARGO_TARGET_DIR/release/preprocessor-cli" build-fast-subset --source-root "$SOURCE_ROOT"
+time "$CARGO_TARGET_DIR/release/preprocessor-cli" update-live-feeds --source-root "$SOURCE_ROOT"
 ```
 
 When the published artifacts change, rebuild and redeploy the web static tree:

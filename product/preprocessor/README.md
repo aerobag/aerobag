@@ -12,11 +12,11 @@ cargo build -p preprocessor-cli
 ../../aerobag-artifacts/target/debug/preprocessor-cli build-product
 ```
 
-Build fast products:
+Update live feeds:
 
 ```bash
 cargo build -p preprocessor-cli
-../../aerobag-artifacts/target/debug/preprocessor-cli build-fast-subset
+../../aerobag-artifacts/target/debug/preprocessor-cli update-live-feeds
 ```
 
 Run tests:

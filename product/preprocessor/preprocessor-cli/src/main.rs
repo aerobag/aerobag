@@ -39,10 +39,10 @@ use preprocessor_vectors::{
     BuildObstacleDatasetRequest, BuildVectorsRequest,
 };
 use product_build::{
-    audit_procedure_geometry_from_sqlite, build_cycle, build_fast_subset, build_product,
-    default_artifact_write_path, explain_product_build, gc_build_cache,
-    maybe_reexec_build_cycle_under_cgroup, publish_discovery_manifest, BuildCacheGcConfig,
-    BuildCacheGcMode, ProcedureGeometryAuditFilter, ProductBuildConfig, ProductBuildProfile,
+    audit_procedure_geometry_from_sqlite, build_cycle, build_product, default_artifact_write_path,
+    explain_product_build, gc_build_cache, maybe_reexec_build_cycle_under_cgroup,
+    publish_discovery_manifest, update_live_feeds, BuildCacheGcConfig, BuildCacheGcMode,
+    ProcedureGeometryAuditFilter, ProductBuildConfig, ProductBuildProfile,
 };
 use sha2::{Digest, Sha256};
 
@@ -52,7 +52,7 @@ fn usage() -> &'static str {
   preprocessor-cli publish-discovery-manifest [--profile <validation|production>] [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
   preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
   preprocessor-cli normalize-swim-notams --input-jsonl <path> --output-dir <path> --version-label <label>
-  preprocessor-cli build-fast-subset [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli update-live-feeds [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
 
 Use --long-help to show internal/debug commands."
 }
@@ -84,7 +84,7 @@ fn long_usage() -> &'static str {
   preprocessor-cli build-cycle [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli publish-discovery-manifest [--profile <validation|production>] [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
-  preprocessor-cli build-fast-subset [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli update-live-feeds [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli gc-build-cache [--profile <validation|production>] [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>] [--bootstrap-from-build-manifests]
   preprocessor-cli explain-product-build [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli run-chart --family <sec|tac|enr-l|enr-h> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]"
@@ -1603,7 +1603,7 @@ fn main() -> anyhow::Result<()> {
                 | "audit-class-airspace-simplification"
                 | "build-obstacles"
                 | "build-cycle"
-                | "build-fast-subset"
+                | "update-live-feeds"
                 | "build-product"
                 | "audit-terrain-airports"
                 | "run-chart"
@@ -2487,18 +2487,22 @@ fn main() -> anyhow::Result<()> {
             )?;
             println!("{}", path.display());
         }
-        Some("build-fast-subset") => {
+        Some("update-live-feeds") => {
             let config = ProductBuildConfig::from_env_and_args(&args[2..])?;
-            let result = build_fast_subset(&config)?;
-            println!(
-                "current_artifacts {}",
-                result.current_artifacts_path.display()
-            );
-            for product in result.fast_products {
+            let result = update_live_feeds(&config)?;
+            println!("live_feeds_root {}", result.root.display());
+            println!("current {}", result.current_path.display());
+            for product in result.products {
                 println!(
-                    "fast_product {} {}",
-                    product.id,
-                    product.published_zip.display()
+                    "product {} version={} state={} delta={}",
+                    product.product,
+                    product.version,
+                    product.state_path.display(),
+                    product
+                        .delta_path
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "none".to_string())
                 );
             }
         }

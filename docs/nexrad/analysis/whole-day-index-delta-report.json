@@ -1,0 +1,15 @@
+{
+  "frames": 809,
+  "deltas": 808,
+  "source_tif_gz_median_mb": 3.0206127166748047,
+  "indexed_frame_zlib_median_mb": 0.901397705078125,
+  "indexed_frame_zlib_p90_mb": 1.0264978408813477,
+  "xor_delta_zlib_median_mb": 0.5372920036315918,
+  "xor_delta_zlib_p90_mb": 1.0198030471801758,
+  "mod_delta_zlib_median_mb": 0.542759895324707,
+  "mod_delta_zlib_p90_mb": 1.0387754440307617,
+  "changed_pixels_median_pct": 1.7398326530612245,
+  "changed_pixels_p90_pct": 3.644187755102041,
+  "mod_delta_vs_indexed_frame_median": 0.6055090105048693,
+  "xor_delta_vs_indexed_frame_median": 0.5999519513607088
+}

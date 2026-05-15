@@ -129,7 +129,7 @@ publication-contract error.
 HAD records describe logical package contents. Paths inside HAD records are
 relative to the package that owns the record; they must not contain public server
 routes such as `/packages/...`, `/sectional-packages/...`, `/nav-kv/...`, or
-`/fast-products/...`.
+`/live-feeds/...`.
 
 For raster map records, `package_name` identifies the package and
 `tile_url_root` is the package-relative tile root, normally `tiles`. Clients
@@ -141,7 +141,7 @@ Clients and server-side staging code should use the same package-member
 resolution path: discover `/packages/current_artifacts.json`, choose the
 published package, and append the package-relative member path. Do not introduce
 alternate public content aliases such as `/nav-kv/`, `/sectional-packages/`, or
-`/fast-products/`; they create a second contract that can drift from the
+`/live-feeds/`; they create a second contract that can drift from the
 published package tree.
 
 ## Rule Of Thumb

@@ -57,6 +57,16 @@ pub struct BuildMetarResult {
     pub metar_count: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MetarStationDelta {
+    pub schema_version: u32,
+    pub product: String,
+    pub from_version: String,
+    pub to_version: String,
+    pub changed: BTreeMap<String, Value>,
+    pub removed: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct BuildNexradRequest {
     pub input_dir: PathBuf,
@@ -891,6 +901,91 @@ pub fn metar_content_fingerprint(
     let bytes = serde_json::to_vec(&(METAR_PRODUCT_CONTRACT_VERSION, model))
         .context("failed to encode canonical METAR model")?;
     Ok(format!("{:x}", Sha256::digest(&bytes)))
+}
+
+pub fn build_metar_station_delta(
+    from_state: &Value,
+    to_state: &Value,
+) -> anyhow::Result<MetarStationDelta> {
+    let from_version = metar_state_version(from_state)?;
+    let to_version = metar_state_version(to_state)?;
+    let from_metars = metar_state_records(from_state)?;
+    let to_metars = metar_state_records(to_state)?;
+
+    let mut changed = BTreeMap::new();
+    for (station_id, to_record) in to_metars {
+        if from_metars.get(station_id) != Some(to_record) {
+            changed.insert(station_id.clone(), to_record.clone());
+        }
+    }
+
+    let mut removed = from_metars
+        .keys()
+        .filter(|station_id| !to_metars.contains_key(*station_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    removed.sort();
+
+    Ok(MetarStationDelta {
+        schema_version: 1,
+        product: "metars".to_string(),
+        from_version: from_version.to_string(),
+        to_version: to_version.to_string(),
+        changed,
+        removed,
+    })
+}
+
+pub fn apply_metar_station_delta(
+    from_state: &Value,
+    delta: &MetarStationDelta,
+) -> anyhow::Result<Value> {
+    let from_version = metar_state_version(from_state)?;
+    if from_version != delta.from_version {
+        bail!(
+            "delta starts at {}, but local METAR state is {}",
+            delta.from_version,
+            from_version
+        );
+    }
+
+    let mut result = from_state.clone();
+    let record_count = {
+        let records = result
+            .get_mut("metars_by_station")
+            .and_then(Value::as_object_mut)
+            .context("METAR state missing metars_by_station object")?;
+        for station_id in &delta.removed {
+            records.remove(station_id);
+        }
+        for (station_id, record) in &delta.changed {
+            records.insert(station_id.clone(), record.clone());
+        }
+        records.len()
+    };
+    if let Some(version) = result.get_mut("version_label") {
+        *version = Value::String(delta.to_version.clone());
+    } else {
+        bail!("METAR state missing version_label");
+    }
+    if let Some(count) = result.get_mut("metar_count") {
+        *count = serde_json::json!(record_count);
+    }
+    Ok(result)
+}
+
+fn metar_state_version(state: &Value) -> anyhow::Result<&str> {
+    state
+        .get("version_label")
+        .and_then(Value::as_str)
+        .context("METAR state missing version_label")
+}
+
+fn metar_state_records(state: &Value) -> anyhow::Result<&serde_json::Map<String, Value>> {
+    state
+        .get("metars_by_station")
+        .and_then(Value::as_object)
+        .context("METAR state missing metars_by_station object")
 }
 
 fn metar_product_model(
@@ -3013,7 +3108,11 @@ fn run_command_capture(program: &str, args: &[&str]) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Cursor, Read, Write};
     use tempfile::TempDir;
+    use zip::{
+        write::SimpleFileOptions, CompressionMethod, DateTime as ZipDateTime, ZipArchive, ZipWriter,
+    };
 
     fn geo_grid_fixture_path() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -3686,5 +3785,187 @@ mod tests {
             terrain_ellipsoid_height_feet_from_navd88_meters(100.0, -90.0, -180.0, &grid);
         assert!((transformed - 298.0839895).abs() < 0.0001);
         Ok(())
+    }
+
+    #[test]
+    fn metar_station_delta_round_trips_changed_added_and_removed_records() -> anyhow::Result<()> {
+        let from = serde_json::json!({
+            "schema_version": 2,
+            "version_label": "from",
+            "metar_count": 2,
+            "metars_by_station": {
+                "KAAA": {"raw_text": "old", "observed_at_utc": "2026-01-01T00:00:00Z"},
+                "KBBB": {"raw_text": "removed", "observed_at_utc": "2026-01-01T00:00:00Z"}
+            }
+        });
+        let to = serde_json::json!({
+            "schema_version": 2,
+            "version_label": "to",
+            "metar_count": 2,
+            "metars_by_station": {
+                "KAAA": {"raw_text": "new", "observed_at_utc": "2026-01-01T00:05:00Z"},
+                "KCCC": {"raw_text": "added", "observed_at_utc": "2026-01-01T00:05:00Z"}
+            }
+        });
+
+        let delta = build_metar_station_delta(&from, &to)?;
+        assert_eq!(delta.from_version, "from");
+        assert_eq!(delta.to_version, "to");
+        assert_eq!(
+            delta.changed.keys().cloned().collect::<Vec<_>>(),
+            vec!["KAAA".to_string(), "KCCC".to_string()]
+        );
+        assert_eq!(delta.removed, vec!["KBBB".to_string()]);
+
+        let applied = apply_metar_station_delta(&from, &delta)?;
+        assert_eq!(applied, to);
+        Ok(())
+    }
+
+    #[test]
+    fn metar_station_delta_is_small_for_sparse_updates() -> anyhow::Result<()> {
+        let mut from_records = serde_json::Map::new();
+        let mut to_records = serde_json::Map::new();
+        for index in 0..1000 {
+            let station_id = format!("K{index:03}");
+            let record = serde_json::json!({
+                "raw_text": format!("METAR {station_id} 010000Z AUTO"),
+                "observed_at_utc": "2026-01-01T00:00:00Z"
+            });
+            from_records.insert(station_id.clone(), record.clone());
+            to_records.insert(station_id, record);
+        }
+        to_records.insert(
+            "K123".to_string(),
+            serde_json::json!({
+                "raw_text": "METAR K123 010005Z AUTO",
+                "observed_at_utc": "2026-01-01T00:05:00Z"
+            }),
+        );
+        let from = serde_json::json!({
+            "schema_version": 2,
+            "version_label": "from",
+            "metar_count": from_records.len(),
+            "metars_by_station": from_records
+        });
+        let to = serde_json::json!({
+            "schema_version": 2,
+            "version_label": "to",
+            "metar_count": to_records.len(),
+            "metars_by_station": to_records
+        });
+
+        let delta = build_metar_station_delta(&from, &to)?;
+        let full_bytes = serde_json::to_vec(&to)?;
+        let delta_bytes = serde_json::to_vec(&delta)?;
+        assert_eq!(delta.changed.len(), 1);
+        assert!(delta_bytes.len() * 20 < full_bytes.len());
+        Ok(())
+    }
+
+    #[test]
+    fn metar_delta_fixture_reconstructs_three_hour_capture() -> anyhow::Result<()> {
+        let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("metar_delta_three_hour");
+        let mut zip_paths = fs::read_dir(&fixture_root)
+            .with_context(|| format!("failed to read {}", fixture_root.display()))?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("zip"))
+            .collect::<Vec<_>>();
+        zip_paths.sort();
+        assert!(
+            zip_paths.len() >= 20,
+            "expected about two dozen METAR fixture states"
+        );
+
+        let states = zip_paths
+            .iter()
+            .map(|path| read_metars_json_from_zip(path))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        println!(
+            "{:<17} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8} {:>8}",
+            "to_version",
+            "state_raw",
+            "delta_raw",
+            "state_zip",
+            "delta_zip",
+            "zip_rat",
+            "changed",
+            "removed"
+        );
+        let mut compressed_ratios = Vec::new();
+        for pair in states.windows(2) {
+            let from = &pair[0];
+            let to = &pair[1];
+            let delta = build_metar_station_delta(from, to)?;
+            let applied = apply_metar_station_delta(from, &delta)?;
+            assert_eq!(
+                applied, *to,
+                "delta {} -> {} did not reconstruct target state",
+                delta.from_version, delta.to_version
+            );
+
+            let state_bytes = serde_json::to_vec(to)?;
+            let delta_bytes = serde_json::to_vec(&delta)?;
+            let state_zip_bytes = deflated_zip_member_size(&state_bytes)?;
+            let delta_zip_bytes = deflated_zip_member_size(&delta_bytes)?;
+            let compressed_ratio = delta_zip_bytes as f64 / state_zip_bytes as f64;
+            compressed_ratios.push(compressed_ratio);
+            println!(
+                "{:<17} {:>10} {:>10} {:>10} {:>10} {:>8.3} {:>8} {:>8}",
+                delta.to_version,
+                state_bytes.len(),
+                delta_bytes.len(),
+                state_zip_bytes,
+                delta_zip_bytes,
+                compressed_ratio,
+                delta.changed.len(),
+                delta.removed.len()
+            );
+        }
+        assert!(
+            compressed_ratios.iter().all(|ratio| *ratio < 0.5),
+            "expected all compressed METAR deltas to be less than 0.5 of compressed full state: {compressed_ratios:?}"
+        );
+        compressed_ratios.sort_by(|left, right| left.total_cmp(right));
+        let median_ratio = compressed_ratios[compressed_ratios.len() / 2];
+        assert!(
+            median_ratio < 0.15,
+            "expected median compressed METAR delta ratio below 0.15, got {median_ratio:.3}"
+        );
+        Ok(())
+    }
+
+    fn read_metars_json_from_zip(path: &Path) -> anyhow::Result<Value> {
+        let file = fs::File::open(path)
+            .with_context(|| format!("failed to open METAR fixture {}", path.display()))?;
+        let mut archive = ZipArchive::new(file)
+            .with_context(|| format!("failed to read METAR fixture zip {}", path.display()))?;
+        let mut member = archive
+            .by_name("metars.json")
+            .with_context(|| format!("{} missing metars.json", path.display()))?;
+        let mut bytes = Vec::new();
+        member
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("failed to read metars.json from {}", path.display()))?;
+        serde_json::from_slice(&bytes)
+            .with_context(|| format!("failed to parse metars.json from {}", path.display()))
+    }
+
+    fn deflated_zip_member_size(bytes: &[u8]) -> anyhow::Result<usize> {
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = ZipWriter::new(cursor);
+        let options = SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Deflated)
+            .last_modified_time(ZipDateTime::default());
+        writer.start_file("payload.json", options)?;
+        writer.write_all(bytes)?;
+        let cursor = writer.finish()?;
+        Ok(cursor.into_inner().len())
     }
 }

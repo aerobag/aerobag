@@ -2328,11 +2328,12 @@ fn insert_best_position_action(plan: Option<&FlightPlan>, nav_ref: &NavRef) -> M
 
 fn spot_selection_item(click: LatLon, plan: Option<&FlightPlan>) -> MapSelectionItem {
     let nav_ref = NavRef::Spot(click);
+    let coordinates = format!("{:.4}, {:.4}", click.lat, click.lon);
     MapSelectionItem {
         id: format!("spot:{:.6}:{:.6}", click.lat, click.lon),
         label: "SPOT".to_string(),
-        sublabel: format!("{:.4}, {:.4}", click.lat, click.lon),
-        description: None,
+        sublabel: coordinates.clone(),
+        description: Some(coordinates),
         detail_text: None,
         highlight: MapSelectionHighlight::Spot {
             lat: click.lat,
@@ -6102,6 +6103,9 @@ mod tests {
             .iter()
             .find(|item| item.id.starts_with("spot:"))
             .expect("spot selection item");
+        let spot_coordinates = format!("{:.4}, {:.4}", viewport.center.lat, viewport.center.lon);
+        assert_eq!(spot.description.as_deref(), Some(spot_coordinates.as_str()));
+        assert_eq!(spot.detail_text, None);
         let spot_nav_ref = NavRef::Spot(viewport.center);
         assert_eq!(spot.nav_ref, Some(spot_nav_ref.clone()));
         let direct_to = spot

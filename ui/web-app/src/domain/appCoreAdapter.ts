@@ -426,6 +426,16 @@ export type NexradOverlayTile = {
 export type NexradOverlayQueryResult = {
   status: NexradOverlayStatus;
   tiles: NexradOverlayTile[];
+  stats: {
+    source_tile_count: number;
+    render_piece_count: number;
+    split_count: number;
+    max_affine_error_px: number;
+    level_pixel_span_px: number;
+    max_level_pixel_stretch_px: number;
+    max_stack_depth: number;
+    res?: number | null;
+  };
 };
 
 export type RasterTileSource = {

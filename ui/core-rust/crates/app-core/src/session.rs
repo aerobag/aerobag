@@ -142,6 +142,20 @@ pub struct NexradOverlayQueryResult {
     pub status: NexradOverlayStatus,
     #[serde(default)]
     pub tiles: Vec<NexradOverlayTile>,
+    #[serde(default)]
+    pub stats: NexradOverlayStats,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NexradOverlayStats {
+    pub source_tile_count: usize,
+    pub render_piece_count: usize,
+    pub split_count: usize,
+    pub max_affine_error_px: f64,
+    pub level_pixel_span_px: f64,
+    pub max_level_pixel_stretch_px: f64,
+    pub max_stack_depth: usize,
+    pub res: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2810,6 +2824,7 @@ pub fn get_nexrad_overlay_in_session(
             result: serde_json::to_value(NexradOverlayQueryResult {
                 status: NexradOverlayStatus::Hidden,
                 tiles: Vec::new(),
+                stats: NexradOverlayStats::default(),
             })
             .map_err(internal_json_error)?,
         });
@@ -2822,6 +2837,7 @@ pub fn get_nexrad_overlay_in_session(
             result: serde_json::to_value(NexradOverlayQueryResult {
                 status: NexradOverlayStatus::Loading,
                 tiles: Vec::new(),
+                stats: NexradOverlayStats::default(),
             })
             .map_err(internal_json_error)?,
         });
@@ -2865,6 +2881,7 @@ fn nexrad_overlay_query(
         return Ok(NexradOverlayQueryResult {
             status: NexradOverlayStatus::Ready { count: 0 },
             tiles: Vec::new(),
+            stats: NexradOverlayStats::default(),
         });
     }
     let manifest: NexradSourceGridManifest =
@@ -2881,16 +2898,9 @@ fn nexrad_overlay_query(
                 ),
             },
             tiles: Vec::new(),
+            stats: NexradOverlayStats::default(),
         });
     }
-    let Some(level) = nexrad_level_for_viewport(&manifest.levels, viewport.zoom) else {
-        return Ok(NexradOverlayQueryResult {
-            status: NexradOverlayStatus::Unavailable {
-                reason: "NEXRAD manifest has no resolution levels".to_string(),
-            },
-            tiles: Vec::new(),
-        });
-    };
     let viewport_bounds = viewport_lat_lon_bounds(viewport, width_px, height_px);
     let [origin_lon, pixel_lon, _rot_x, origin_lat, _rot_y, pixel_lat] =
         manifest.source_grid.geo_transform;
@@ -2900,8 +2910,25 @@ fn nexrad_overlay_query(
                 reason: "NEXRAD source grid has invalid geo transform".to_string(),
             },
             tiles: Vec::new(),
+            stats: NexradOverlayStats::default(),
         });
     }
+    let Some(level) = nexrad_level_for_viewport(
+        &manifest.levels,
+        viewport,
+        width_px,
+        height_px,
+        pixel_lon,
+        pixel_lat,
+    ) else {
+        return Ok(NexradOverlayQueryResult {
+            status: NexradOverlayStatus::Unavailable {
+                reason: "NEXRAD manifest has no resolution levels".to_string(),
+            },
+            tiles: Vec::new(),
+            stats: NexradOverlayStats::default(),
+        });
+    };
     let level_scale = 2_f64.powi(level.res as i32);
     let level_pixel_lon = pixel_lon * level_scale;
     let level_pixel_lat = pixel_lat * level_scale;
@@ -2919,6 +2946,7 @@ fn nexrad_overlay_query(
         return Ok(NexradOverlayQueryResult {
             status: NexradOverlayStatus::Ready { count: 0 },
             tiles: Vec::new(),
+            stats: NexradOverlayStats::default(),
         });
     }
 
@@ -2931,8 +2959,19 @@ fn nexrad_overlay_query(
     let y_end = (((grid_north - south) / tile_span_lat).floor() as i64)
         .clamp(0, level.tile_rows as i64 - 1) as u32;
 
-    const NEXRAD_RENDER_SLICE_PX: u32 = 64;
+    const NEXRAD_RENDER_MAX_SOURCE_SLICE_PX: u32 = 256;
+    const NEXRAD_RENDER_MAX_AFFINE_ERROR_PX: f64 = 1.0;
+    const NEXRAD_MAX_LEVEL_PIXEL_STRETCH_PX: f64 = 1.5;
     let mut tiles = Vec::new();
+    let mut stats = NexradOverlayStats {
+        source_tile_count: ((x_end - x_start + 1) as usize) * ((y_end - y_start + 1) as usize),
+        level_pixel_span_px: nexrad_level_screen_pixel_span(
+            viewport, width_px, height_px, pixel_lon, pixel_lat, level.res,
+        ),
+        max_level_pixel_stretch_px: NEXRAD_MAX_LEVEL_PIXEL_STRETCH_PX,
+        res: Some(level.res),
+        ..NexradOverlayStats::default()
+    };
     for y in y_start..=y_end {
         for x in x_start..=x_end {
             let tile_level_x0 = x * manifest.tile_size;
@@ -2943,77 +2982,192 @@ fn nexrad_overlay_query(
                 "/live-feeds/states/nexrad/{}/tiles/res{}/{}/{}.png",
                 manifest.state_id, level.res, x, y
             );
-            let mut source_y = 0;
-            while source_y < image_height {
-                let source_height = NEXRAD_RENDER_SLICE_PX.min(image_height - source_y);
-                let mut source_x = 0;
-                while source_x < image_width {
-                    let source_width = NEXRAD_RENDER_SLICE_PX.min(image_width - source_x);
-                    let level_x0 = tile_level_x0 + source_x;
-                    let level_x1 = level_x0 + source_width;
-                    let level_y0 = tile_level_y0 + source_y;
-                    let level_y1 = level_y0 + source_height;
-                    let lon0 = origin_lon + level_pixel_lon * level_x0 as f64;
-                    let lon1 = origin_lon + level_pixel_lon * level_x1 as f64;
-                    let lat0 = origin_lat + level_pixel_lat * level_y0 as f64;
-                    let lat1 = origin_lat + level_pixel_lat * level_y1 as f64;
-                    let west = lon0.min(lon1).max(grid_west);
-                    let east = lon0.max(lon1).min(grid_east);
-                    let south = lat0.min(lat1).max(grid_south);
-                    let north = lat0.max(lat1).min(grid_north);
-                    let corners = NexradOverlayTileCorners {
-                        nw: screen_point_for_lat_lon(viewport, width_px, height_px, north, west),
-                        ne: screen_point_for_lat_lon(viewport, width_px, height_px, north, east),
-                        se: screen_point_for_lat_lon(viewport, width_px, height_px, south, east),
-                        sw: screen_point_for_lat_lon(viewport, width_px, height_px, south, west),
-                    };
-                    tiles.push(NexradOverlayTile {
-                        key: format!(
-                            "nexrad/{}/res{}/{}/{}/{}/{}",
-                            manifest.state_id, level.res, x, y, source_x, source_y
-                        ),
-                        src: src.clone(),
-                        res: level.res,
-                        x,
-                        y,
-                        source_x,
-                        source_y,
-                        source_width,
-                        source_height,
-                        image_width,
-                        image_height,
-                        corners,
-                    });
-                    source_x += source_width;
+            let mut stack = vec![(0, 0, image_width, image_height)];
+            while let Some((source_x, source_y, source_width, source_height)) = stack.pop() {
+                stats.max_stack_depth = stats.max_stack_depth.max(stack.len() + 1);
+                let affine_error_px = nexrad_render_piece_affine_error_px(
+                    viewport,
+                    width_px,
+                    height_px,
+                    origin_lon,
+                    level_pixel_lon,
+                    origin_lat,
+                    level_pixel_lat,
+                    tile_level_x0 + source_x,
+                    tile_level_y0 + source_y,
+                    source_width,
+                    source_height,
+                );
+                if source_width > 1
+                    && (source_width > NEXRAD_RENDER_MAX_SOURCE_SLICE_PX
+                        || affine_error_px > NEXRAD_RENDER_MAX_AFFINE_ERROR_PX)
+                    && source_width >= source_height
+                {
+                    stats.split_count += 1;
+                    let left_width = source_width / 2;
+                    let right_width = source_width - left_width;
+                    stack.push((source_x + left_width, source_y, right_width, source_height));
+                    stack.push((source_x, source_y, left_width, source_height));
+                    continue;
                 }
-                source_y += source_height;
+                if source_height > 1
+                    && (source_height > NEXRAD_RENDER_MAX_SOURCE_SLICE_PX
+                        || affine_error_px > NEXRAD_RENDER_MAX_AFFINE_ERROR_PX)
+                {
+                    stats.split_count += 1;
+                    let top_height = source_height / 2;
+                    let bottom_height = source_height - top_height;
+                    stack.push((source_x, source_y + top_height, source_width, bottom_height));
+                    stack.push((source_x, source_y, source_width, top_height));
+                    continue;
+                }
+
+                stats.render_piece_count += 1;
+                stats.max_affine_error_px = stats.max_affine_error_px.max(affine_error_px);
+                let level_x0 = tile_level_x0 + source_x;
+                let level_x1 = level_x0 + source_width;
+                let level_y0 = tile_level_y0 + source_y;
+                let level_y1 = level_y0 + source_height;
+                let lon0 = origin_lon + level_pixel_lon * level_x0 as f64;
+                let lon1 = origin_lon + level_pixel_lon * level_x1 as f64;
+                let lat0 = origin_lat + level_pixel_lat * level_y0 as f64;
+                let lat1 = origin_lat + level_pixel_lat * level_y1 as f64;
+                let west = lon0.min(lon1).max(grid_west);
+                let east = lon0.max(lon1).min(grid_east);
+                let south = lat0.min(lat1).max(grid_south);
+                let north = lat0.max(lat1).min(grid_north);
+                let corners = NexradOverlayTileCorners {
+                    nw: screen_point_for_lat_lon(viewport, width_px, height_px, north, west),
+                    ne: screen_point_for_lat_lon(viewport, width_px, height_px, north, east),
+                    se: screen_point_for_lat_lon(viewport, width_px, height_px, south, east),
+                    sw: screen_point_for_lat_lon(viewport, width_px, height_px, south, west),
+                };
+                tiles.push(NexradOverlayTile {
+                    key: format!(
+                        "nexrad/{}/res{}/{}/{}/{}/{}",
+                        manifest.state_id, level.res, x, y, source_x, source_y
+                    ),
+                    src: src.clone(),
+                    res: level.res,
+                    x,
+                    y,
+                    source_x,
+                    source_y,
+                    source_width,
+                    source_height,
+                    image_width,
+                    image_height,
+                    corners,
+                });
             }
         }
     }
 
     Ok(NexradOverlayQueryResult {
         status: NexradOverlayStatus::Ready { count: tiles.len() },
+        stats,
         tiles,
     })
 }
 
+fn nexrad_render_piece_affine_error_px(
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    origin_lon: f64,
+    level_pixel_lon: f64,
+    origin_lat: f64,
+    level_pixel_lat: f64,
+    level_x0: u32,
+    level_y0: u32,
+    source_width: u32,
+    source_height: u32,
+) -> f64 {
+    let lon0 = origin_lon + level_pixel_lon * level_x0 as f64;
+    let lon1 = origin_lon + level_pixel_lon * (level_x0 + source_width) as f64;
+    let lat0 = origin_lat + level_pixel_lat * level_y0 as f64;
+    let lat1 = origin_lat + level_pixel_lat * (level_y0 + source_height) as f64;
+    let west = lon0.min(lon1);
+    let east = lon0.max(lon1);
+    let south = lat0.min(lat1);
+    let north = lat0.max(lat1);
+    let true_center = screen_point_for_lat_lon(
+        viewport,
+        width_px,
+        height_px,
+        (north + south) * 0.5,
+        (west + east) * 0.5,
+    );
+    let nw = screen_point_for_lat_lon(viewport, width_px, height_px, north, west);
+    let ne = screen_point_for_lat_lon(viewport, width_px, height_px, north, east);
+    let se = screen_point_for_lat_lon(viewport, width_px, height_px, south, east);
+    let sw = screen_point_for_lat_lon(viewport, width_px, height_px, south, west);
+    let affine_center = ScreenPoint {
+        x: (nw.x + ne.x + se.x + sw.x) * 0.25,
+        y: (nw.y + ne.y + se.y + sw.y) * 0.25,
+    };
+    ((true_center.x - affine_center.x).powi(2) + (true_center.y - affine_center.y).powi(2)).sqrt()
+}
+
 fn nexrad_level_for_viewport(
     levels: &[NexradSourceGridLevel],
-    viewport_zoom: f64,
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    source_pixel_lon: f64,
+    source_pixel_lat: f64,
 ) -> Option<NexradSourceGridLevel> {
-    let target_res = if viewport_zoom >= 8.0 {
-        0
-    } else if viewport_zoom >= 6.0 {
-        1
-    } else if viewport_zoom >= 4.0 {
-        2
-    } else {
-        3
-    };
+    const NEXRAD_MAX_PIXEL_STRETCH: f64 = 1.5;
     levels
         .iter()
-        .min_by_key(|level| level.res.abs_diff(target_res))
+        .filter(|level| {
+            nexrad_level_screen_pixel_span(
+                viewport,
+                width_px,
+                height_px,
+                source_pixel_lon,
+                source_pixel_lat,
+                level.res,
+            ) <= NEXRAD_MAX_PIXEL_STRETCH
+        })
+        .max_by_key(|level| level.res)
+        .or_else(|| levels.iter().min_by_key(|level| level.res))
         .cloned()
+}
+
+fn nexrad_level_screen_pixel_span(
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    source_pixel_lon: f64,
+    source_pixel_lat: f64,
+    res: u32,
+) -> f64 {
+    let scale = 2_f64.powi(res as i32);
+    let center = screen_point_for_lat_lon(
+        viewport,
+        width_px,
+        height_px,
+        viewport.center.lat,
+        viewport.center.lon,
+    );
+    let horizontal = screen_point_for_lat_lon(
+        viewport,
+        width_px,
+        height_px,
+        viewport.center.lat,
+        viewport.center.lon + source_pixel_lon * scale,
+    );
+    let vertical = screen_point_for_lat_lon(
+        viewport,
+        width_px,
+        height_px,
+        viewport.center.lat + source_pixel_lat * scale,
+        viewport.center.lon,
+    );
+    (horizontal.x - center.x)
+        .abs()
+        .max((vertical.y - center.y).abs())
 }
 
 fn viewport_lat_lon_bounds(
@@ -7272,5 +7426,107 @@ mod tests {
 
         assert!((bearing_degrees(from, north) - 0.0).abs() < 0.1);
         assert!((bearing_degrees(from, east) - 89.6).abs() < 0.5);
+    }
+
+    #[test]
+    fn nexrad_mesh_error_budget_splits_coarse_source_grid_pieces() {
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 48.0,
+                lon: -101.0,
+            },
+            zoom: 8.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let full_res3_error = nexrad_render_piece_affine_error_px(
+            &viewport, 1024.0, 768.0, -130.0, 0.08, 55.0, -0.08, 300, 80, 64, 64,
+        );
+        let split_res3_error = nexrad_render_piece_affine_error_px(
+            &viewport, 1024.0, 768.0, -130.0, 0.08, 55.0, -0.08, 300, 80, 32, 32,
+        );
+
+        assert!(
+            full_res3_error > 1.0,
+            "coarse source-grid pieces must exceed the mesh error budget"
+        );
+        assert!(
+            split_res3_error < full_res3_error,
+            "subdividing source-grid pieces must reduce affine error"
+        );
+    }
+
+    fn nexrad_test_levels() -> Vec<NexradSourceGridLevel> {
+        (0..=3)
+            .map(|res| NexradSourceGridLevel {
+                res,
+                width: 7000 >> res,
+                height: 3500 >> res,
+                tile_cols: 1,
+                tile_rows: 1,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn nexrad_level_selection_chooses_cheapest_level_with_bounded_pixel_stretch() {
+        let levels = nexrad_test_levels();
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.0,
+                lon: -122.0,
+            },
+            zoom: 4.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+
+        let selected = nexrad_level_for_viewport(&levels, &viewport, 1024.0, 768.0, 0.01, -0.01)
+            .expect("selected level");
+
+        assert_eq!(selected.res, 3);
+        assert!(
+            nexrad_level_screen_pixel_span(&viewport, 1024.0, 768.0, 0.01, -0.01, selected.res)
+                <= 1.5
+        );
+    }
+
+    #[test]
+    fn nexrad_level_selection_rejects_cheapest_level_when_it_would_overstretch_pixels() {
+        let levels = nexrad_test_levels();
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.0,
+                lon: -122.0,
+            },
+            zoom: 4.25,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+
+        let selected = nexrad_level_for_viewport(&levels, &viewport, 1024.0, 768.0, 0.01, -0.01)
+            .expect("selected level");
+
+        assert_eq!(selected.res, 2);
+        assert!(nexrad_level_screen_pixel_span(&viewport, 1024.0, 768.0, 0.01, -0.01, 3) > 1.5);
+    }
+
+    #[test]
+    fn nexrad_level_selection_uses_finest_level_when_all_available_levels_would_stretch() {
+        let levels = nexrad_test_levels();
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.0,
+                lon: -122.0,
+            },
+            zoom: 12.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+
+        let selected = nexrad_level_for_viewport(&levels, &viewport, 1024.0, 768.0, 0.01, -0.01)
+            .expect("selected level");
+
+        assert_eq!(selected.res, 0);
     }
 }

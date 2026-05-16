@@ -1182,6 +1182,19 @@ function defaultUiDebugState(): UiDebugState {
   };
 }
 
+function emptyNexradOverlayStats(): NexradOverlayQueryResult["stats"] {
+  return {
+    source_tile_count: 0,
+    render_piece_count: 0,
+    split_count: 0,
+    max_affine_error_px: 0,
+    level_pixel_span_px: 0,
+    max_level_pixel_stretch_px: 0,
+    max_stack_depth: 0,
+    res: null,
+  };
+}
+
 export default function App() {
   const [sessionStartMs] = useState(() => Date.now());
   const uptimeLabel = useSessionUptimeLabel(sessionStartMs);
@@ -2428,6 +2441,7 @@ function MapPage(props: {
   const [nexradOverlay, setNexradOverlay] = useState<NexradOverlayQueryResult>({
     status: { state: "hidden" },
     tiles: [],
+    stats: emptyNexradOverlayStats(),
   });
   const [nexradOverlayViewport, setNexradOverlayViewport] = useState<MapViewportState | null>(null);
   const [terrainOverlay, setTerrainOverlay] = useState<TerrainOverlayUiState>({ query: null, images: [] });
@@ -2864,7 +2878,7 @@ function MapPage(props: {
   useEffect(() => {
     let cancelled = false;
     if (!mapIsVisible || !uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0 || !mapLayerState.nexrad.visible) {
-      setNexradOverlay({ status: { state: "hidden" }, tiles: [] });
+      setNexradOverlay({ status: { state: "hidden" }, tiles: [], stats: emptyNexradOverlayStats() });
       setNexradOverlayViewport(null);
       return;
     }
@@ -2876,6 +2890,8 @@ function MapPage(props: {
           setNexradOverlayViewport(queryViewport);
           if (query.status.state !== "ready") {
             debugLog("nexrad.overlay.unavailable", { status: query.status });
+          } else if (debugState.nexrad_tile_labels) {
+            debugLog("nexrad.overlay.mesh", query.stats);
           }
         }
       })
@@ -2884,6 +2900,7 @@ function MapPage(props: {
           setNexradOverlay({
             status: { state: "unavailable", reason: errorMessage(error) },
             tiles: [],
+            stats: emptyNexradOverlayStats(),
           });
           setNexradOverlayViewport(null);
         }
@@ -2891,7 +2908,7 @@ function MapPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [mapIsVisible, mapLayerState.nexrad.visible, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
+  }, [debugState.nexrad_tile_labels, mapIsVisible, mapLayerState.nexrad.visible, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
 
   useEffect(() => {
     debugLog("map.nav_element.render", {
@@ -3795,6 +3812,7 @@ function MapPage(props: {
             {nexradOverlay.tiles.map((tile) => {
               const bounds = nexradTileBounds(tile);
               const label = `res${tile.res} x${tile.x} y${tile.y}`;
+              const labelTone = (tile.res + tile.x + tile.y) % 2 === 0 ? " isBlue" : " isOrange";
               return (
                 <g key={tile.key}>
                   <svg
@@ -3816,7 +3834,7 @@ function MapPage(props: {
                     />
                   </svg>
                   {debugState.nexrad_tile_labels ? (
-                    <g className="nexradTileLabel" transform={`translate(${bounds.left + 4} ${bounds.top + 15})`}>
+                    <g className={`nexradTileLabel${labelTone}`} transform={`translate(${bounds.left + 4} ${bounds.top + 15})`}>
                       <rect x={-3} y={-12} width={label.length * 7 + 6} height={16} rx={4} />
                       <text x={0} y={0}>{label}</text>
                     </g>

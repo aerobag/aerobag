@@ -724,9 +724,16 @@ button {
 }
 
 .nexradTileLabel rect {
-  fill: rgba(14, 22, 28, 0.88);
   stroke: rgba(255, 255, 255, 0.18);
   stroke-width: 1;
+}
+
+.nexradTileLabel.isBlue rect {
+  fill: rgba(15, 47, 86, 0.9);
+}
+
+.nexradTileLabel.isOrange rect {
+  fill: rgba(102, 48, 12, 0.9);
 }
 
 .nexradTileLabel text {

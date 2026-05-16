@@ -2982,6 +2982,7 @@ fn run_command_capture(program: &str, args: &[&str]) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
     use std::io::{Cursor, Read, Write};
     use tempfile::TempDir;
     use zip::{
@@ -3720,27 +3721,7 @@ mod tests {
 
     #[test]
     fn metar_delta_fixture_reconstructs_three_hour_capture() -> anyhow::Result<()> {
-        let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("fixtures")
-            .join("metar_delta_three_hour");
-        let mut zip_paths = fs::read_dir(&fixture_root)
-            .with_context(|| format!("failed to read {}", fixture_root.display()))?
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("zip"))
-            .collect::<Vec<_>>();
-        zip_paths.sort();
-        assert!(
-            zip_paths.len() >= 20,
-            "expected about two dozen METAR fixture states"
-        );
-
-        let states = zip_paths
-            .iter()
-            .map(|path| read_metars_json_from_zip(path))
-            .collect::<anyhow::Result<Vec<_>>>()?;
+        let states = metar_delta_fixture_states()?;
 
         println!(
             "{:<17} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8} {:>8}",
@@ -3794,6 +3775,460 @@ mod tests {
             "expected median compressed METAR delta ratio below 0.15, got {median_ratio:.3}"
         );
         Ok(())
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct TestCurrentManifest {
+        products: BTreeMap<String, TestCurrentEntry>,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct TestCurrentEntry {
+        current: String,
+        version_manifest_url: String,
+        state_url: String,
+        state_sha256: String,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct TestVersionManifest {
+        product: String,
+        version: String,
+        previous: Option<String>,
+        state: TestPayloadRef,
+        delta_from_previous: Option<TestDeltaRef>,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct TestPayloadRef {
+        url: String,
+        state_sha256: String,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct TestDeltaRef {
+        from_version: String,
+        from_state_sha256: String,
+        to_version: String,
+        to_state_sha256: String,
+        url: String,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct TestSseProductEvent {
+        product: String,
+        version: String,
+        version_manifest_url: String,
+    }
+
+    #[derive(Debug, Clone)]
+    enum TestSseStep {
+        Event(TestSseProductEvent),
+        Disconnect,
+    }
+
+    #[derive(Debug)]
+    struct TestMetarPublication {
+        current: TestCurrentManifest,
+        states: BTreeMap<String, Value>,
+        version_manifests: BTreeMap<String, TestVersionManifest>,
+        deltas: BTreeMap<String, MetarStationDelta>,
+    }
+
+    impl TestMetarPublication {
+        fn from_states(states: &[Value], current_index: usize) -> anyhow::Result<Self> {
+            let mut published = Self {
+                current: TestCurrentManifest {
+                    products: BTreeMap::new(),
+                },
+                states: BTreeMap::new(),
+                version_manifests: BTreeMap::new(),
+                deltas: BTreeMap::new(),
+            };
+            for (index, state) in states.iter().enumerate() {
+                let version = metar_state_version(state)?.to_string();
+                let state_url = format!("states/metars/{version}.json");
+                let state_sha256 = test_json_sha256(state)?;
+                published.states.insert(state_url.clone(), state.clone());
+                let delta_from_previous = if index == 0 {
+                    None
+                } else {
+                    let previous = &states[index - 1];
+                    let delta = build_metar_station_delta(previous, state)?;
+                    let delta_url = format!(
+                        "deltas/metars/{}__{}.json",
+                        delta.from_version, delta.to_version
+                    );
+                    published.deltas.insert(delta_url.clone(), delta.clone());
+                    Some(TestDeltaRef {
+                        from_version: delta.from_version.clone(),
+                        from_state_sha256: test_json_sha256(previous)?,
+                        to_version: delta.to_version.clone(),
+                        to_state_sha256: state_sha256.clone(),
+                        url: delta_url,
+                    })
+                };
+                let manifest_url = format!("versions/metars/{version}.json");
+                let manifest = TestVersionManifest {
+                    product: "metars".to_string(),
+                    version: version.clone(),
+                    previous: if index == 0 {
+                        None
+                    } else {
+                        Some(metar_state_version(&states[index - 1])?.to_string())
+                    },
+                    state: TestPayloadRef {
+                        url: state_url.clone(),
+                        state_sha256: state_sha256.clone(),
+                    },
+                    delta_from_previous,
+                };
+                published.version_manifests.insert(manifest_url, manifest);
+            }
+            published.set_current(states, current_index)?;
+            Ok(published)
+        }
+
+        fn set_current(&mut self, states: &[Value], index: usize) -> anyhow::Result<()> {
+            let state = states
+                .get(index)
+                .with_context(|| format!("missing fixture state {index}"))?;
+            let version = metar_state_version(state)?.to_string();
+            self.current.products.insert(
+                "metars".to_string(),
+                TestCurrentEntry {
+                    current: version.clone(),
+                    version_manifest_url: format!("versions/metars/{version}.json"),
+                    state_url: format!("states/metars/{version}.json"),
+                    state_sha256: test_json_sha256(state)?,
+                },
+            );
+            Ok(())
+        }
+    }
+
+    trait TestLiveFeedFetch {
+        fn fetch_current(&mut self) -> anyhow::Result<TestCurrentManifest>;
+        fn fetch_version_manifest(&mut self, url: &str) -> anyhow::Result<TestVersionManifest>;
+        fn fetch_state(&mut self, url: &str) -> anyhow::Result<Value>;
+        fn fetch_metar_delta(&mut self, url: &str) -> anyhow::Result<MetarStationDelta>;
+    }
+
+    impl TestLiveFeedFetch for TestMetarPublication {
+        fn fetch_current(&mut self) -> anyhow::Result<TestCurrentManifest> {
+            Ok(self.current.clone())
+        }
+
+        fn fetch_version_manifest(&mut self, url: &str) -> anyhow::Result<TestVersionManifest> {
+            self.version_manifests
+                .get(url)
+                .cloned()
+                .with_context(|| format!("missing version manifest {url}"))
+        }
+
+        fn fetch_state(&mut self, url: &str) -> anyhow::Result<Value> {
+            self.states
+                .get(url)
+                .cloned()
+                .with_context(|| format!("missing state {url}"))
+        }
+
+        fn fetch_metar_delta(&mut self, url: &str) -> anyhow::Result<MetarStationDelta> {
+            self.deltas
+                .get(url)
+                .cloned()
+                .with_context(|| format!("missing delta {url}"))
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct TestMetarLiveFeedClient {
+        state: Option<Value>,
+        version: Option<String>,
+        seen_versions: BTreeSet<String>,
+        failures: Vec<String>,
+        fake_now_seconds: u64,
+        fallback_interval_seconds: u64,
+        last_current_fetch_seconds: Option<u64>,
+    }
+
+    impl TestMetarLiveFeedClient {
+        fn new() -> Self {
+            Self {
+                fallback_interval_seconds: 60,
+                ..Self::default()
+            }
+        }
+
+        fn bootstrap(&mut self, fetch: &mut impl TestLiveFeedFetch) -> anyhow::Result<()> {
+            self.fetch_current(fetch)
+        }
+
+        fn advance_time(&mut self, seconds: u64) {
+            self.fake_now_seconds += seconds;
+        }
+
+        fn maybe_poll_current(&mut self, fetch: &mut impl TestLiveFeedFetch) -> anyhow::Result<()> {
+            let should_poll = self
+                .last_current_fetch_seconds
+                .map(|last| {
+                    self.fake_now_seconds.saturating_sub(last) >= self.fallback_interval_seconds
+                })
+                .unwrap_or(true);
+            if should_poll {
+                self.fetch_current(fetch)?;
+            }
+            Ok(())
+        }
+
+        fn fetch_current(&mut self, fetch: &mut impl TestLiveFeedFetch) -> anyhow::Result<()> {
+            self.last_current_fetch_seconds = Some(self.fake_now_seconds);
+            let current = fetch.fetch_current()?;
+            let Some(entry) = current.products.get("metars") else {
+                return Ok(());
+            };
+            if self.version.as_deref() == Some(entry.current.as_str()) {
+                return Ok(());
+            }
+            let event = TestSseProductEvent {
+                product: "metars".to_string(),
+                version: entry.current.clone(),
+                version_manifest_url: entry.version_manifest_url.clone(),
+            };
+            self.handle_event(fetch, &event)
+        }
+
+        fn handle_event(
+            &mut self,
+            fetch: &mut impl TestLiveFeedFetch,
+            event: &TestSseProductEvent,
+        ) -> anyhow::Result<()> {
+            if event.product != "metars" || self.seen_versions.contains(&event.version) {
+                return Ok(());
+            }
+            match self.apply_event(fetch, event) {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    self.failures.push(format!("{}: {error:#}", event.version));
+                    Ok(())
+                }
+            }
+        }
+
+        fn apply_event(
+            &mut self,
+            fetch: &mut impl TestLiveFeedFetch,
+            event: &TestSseProductEvent,
+        ) -> anyhow::Result<()> {
+            let manifest = fetch.fetch_version_manifest(&event.version_manifest_url)?;
+            if self
+                .version
+                .as_deref()
+                .is_some_and(|version| version == manifest.version)
+            {
+                self.seen_versions.insert(manifest.version);
+                return Ok(());
+            }
+            let next = match (
+                &self.state,
+                &self.version,
+                manifest.delta_from_previous.as_ref(),
+            ) {
+                (Some(state), Some(local_version), Some(delta_ref))
+                    if delta_ref.from_version == *local_version =>
+                {
+                    let local_sha = test_json_sha256(state)?;
+                    if local_sha != delta_ref.from_state_sha256 {
+                        bail!(
+                            "local state hash mismatch for {}: expected {}, got {}",
+                            local_version,
+                            delta_ref.from_state_sha256,
+                            local_sha
+                        );
+                    }
+                    let delta = fetch.fetch_metar_delta(&delta_ref.url)?;
+                    let applied = apply_metar_station_delta(state, &delta)?;
+                    let applied_sha = test_json_sha256(&applied)?;
+                    if applied_sha != delta_ref.to_state_sha256 {
+                        bail!(
+                            "delta target hash mismatch for {}: expected {}, got {}",
+                            delta_ref.to_version,
+                            delta_ref.to_state_sha256,
+                            applied_sha
+                        );
+                    }
+                    applied
+                }
+                _ => {
+                    let state = fetch.fetch_state(&manifest.state.url)?;
+                    let state_sha = test_json_sha256(&state)?;
+                    if state_sha != manifest.state.state_sha256 {
+                        bail!(
+                            "state hash mismatch for {}: expected {}, got {}",
+                            manifest.version,
+                            manifest.state.state_sha256,
+                            state_sha
+                        );
+                    }
+                    state
+                }
+            };
+            self.version = Some(metar_state_version(&next)?.to_string());
+            self.seen_versions.insert(manifest.version);
+            self.state = Some(next);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn metar_live_feed_core_replays_sse_and_current_timeline() -> anyhow::Result<()> {
+        let states = metar_delta_fixture_states()?;
+        let mut publication = TestMetarPublication::from_states(&states, 0)?;
+        let mut client = TestMetarLiveFeedClient::new();
+        client.bootstrap(&mut publication)?;
+        assert_eq!(client.state.as_ref(), Some(&states[0]));
+
+        for state in states.iter().take(8).skip(1) {
+            let version = metar_state_version(state)?.to_string();
+            client.advance_time(5);
+            client.handle_event(
+                &mut publication,
+                &TestSseProductEvent {
+                    product: "metars".to_string(),
+                    version: version.clone(),
+                    version_manifest_url: format!("versions/metars/{version}.json"),
+                },
+            )?;
+            assert_eq!(client.state.as_ref(), Some(state));
+        }
+
+        let stale_version = metar_state_version(&states[2])?.to_string();
+        client.handle_event(
+            &mut publication,
+            &TestSseProductEvent {
+                product: "metars".to_string(),
+                version: stale_version.clone(),
+                version_manifest_url: format!("versions/metars/{stale_version}.json"),
+            },
+        )?;
+        assert_eq!(client.state.as_ref(), Some(&states[7]));
+
+        publication.set_current(&states, 12)?;
+        client.advance_time(61);
+        client.maybe_poll_current(&mut publication)?;
+        assert_eq!(client.state.as_ref(), Some(&states[12]));
+        assert!(client.failures.is_empty());
+        Ok(())
+    }
+
+    #[derive(Debug)]
+    struct TestScriptedSseServer {
+        publication: TestMetarPublication,
+        stream: VecDeque<TestSseStep>,
+    }
+
+    impl TestScriptedSseServer {
+        fn new(publication: TestMetarPublication) -> Self {
+            Self {
+                publication,
+                stream: VecDeque::new(),
+            }
+        }
+
+        fn emit_metars(&mut self, version: &str) {
+            self.stream
+                .push_back(TestSseStep::Event(TestSseProductEvent {
+                    product: "metars".to_string(),
+                    version: version.to_string(),
+                    version_manifest_url: format!("versions/metars/{version}.json"),
+                }));
+        }
+
+        fn disconnect(&mut self) {
+            self.stream.push_back(TestSseStep::Disconnect);
+        }
+
+        fn next_sse(&mut self) -> Option<TestSseStep> {
+            self.stream.pop_front()
+        }
+    }
+
+    impl TestLiveFeedFetch for TestScriptedSseServer {
+        fn fetch_current(&mut self) -> anyhow::Result<TestCurrentManifest> {
+            self.publication.fetch_current()
+        }
+
+        fn fetch_version_manifest(&mut self, url: &str) -> anyhow::Result<TestVersionManifest> {
+            self.publication.fetch_version_manifest(url)
+        }
+
+        fn fetch_state(&mut self, url: &str) -> anyhow::Result<Value> {
+            self.publication.fetch_state(url)
+        }
+
+        fn fetch_metar_delta(&mut self, url: &str) -> anyhow::Result<MetarStationDelta> {
+            self.publication.fetch_metar_delta(url)
+        }
+    }
+
+    #[test]
+    fn metar_live_feed_scripted_sse_server_disconnects_and_falls_back() -> anyhow::Result<()> {
+        let states = metar_delta_fixture_states()?;
+        let publication = TestMetarPublication::from_states(&states, 0)?;
+        let mut server = TestScriptedSseServer::new(publication);
+        let mut client = TestMetarLiveFeedClient::new();
+        client.bootstrap(&mut server)?;
+
+        for state in states.iter().take(5).skip(1) {
+            server.emit_metars(metar_state_version(state)?);
+        }
+        server.disconnect();
+        while let Some(step) = server.next_sse() {
+            match step {
+                TestSseStep::Event(event) => client.handle_event(&mut server, &event)?,
+                TestSseStep::Disconnect => {
+                    server.publication.set_current(&states, 9)?;
+                    client.advance_time(61);
+                    client.maybe_poll_current(&mut server)?;
+                    server.emit_metars(metar_state_version(&states[10])?);
+                }
+            }
+        }
+
+        assert_eq!(
+            client.version.as_deref(),
+            Some(metar_state_version(&states[10])?)
+        );
+        assert_eq!(client.state.as_ref(), Some(&states[10]));
+        assert!(client.failures.is_empty());
+        Ok(())
+    }
+
+    fn metar_delta_fixture_states() -> anyhow::Result<Vec<Value>> {
+        let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("metar_delta_three_hour");
+        let mut zip_paths = fs::read_dir(&fixture_root)
+            .with_context(|| format!("failed to read {}", fixture_root.display()))?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("zip"))
+            .collect::<Vec<_>>();
+        zip_paths.sort();
+        assert!(
+            zip_paths.len() >= 20,
+            "expected about two dozen METAR fixture states"
+        );
+        zip_paths
+            .iter()
+            .map(|path| read_metars_json_from_zip(path))
+            .collect::<anyhow::Result<Vec<_>>>()
+    }
+
+    fn test_json_sha256(value: &Value) -> anyhow::Result<String> {
+        Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
     }
 
     fn read_metars_json_from_zip(path: &Path) -> anyhow::Result<Value> {

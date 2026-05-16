@@ -20,6 +20,7 @@ use crate::{
         HadOperationOutcome, HadReadError,
     },
     map_follow::{MapFollowSessionState, MapFollowUiState},
+    map_overlay::FlightPlanSelectionPoint,
     map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
     planning::NavElementUiView,
     playback::PlaybackSessionState,
@@ -2522,6 +2523,40 @@ fn flight_plan_overlay_features(
     width_px: f64,
     height_px: f64,
 ) -> Result<Vec<crate::VisibleMapFeature>, HadReadError> {
+    let points = flight_plan_selection_points(session)?;
+    let Some(plan) = session.app_state.active_plan.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let plan = crate::build_flight_plan(plan.clone()).map_err(|err| {
+        HadReadError::Fatal(format!("failed to build flight plan overlay plan: {err}"))
+    })?;
+    let active_target = crate::active_guidance_leg(&plan).map(|leg| leg.to);
+    Ok(points
+        .into_iter()
+        .map(|point| {
+            let mut symbol = point.symbol;
+            symbol.label = chart_ident_label_for_nav_ref_symbol(&point.nav_ref, &symbol);
+            let label_style = if active_target.as_ref() == Some(&point.nav_ref) {
+                VectorIdentLabelStyle::ActiveFlightPlan
+            } else {
+                VectorIdentLabelStyle::FlightPlan
+            };
+            project_nav_symbol_feature(
+                format!("flight-plan:{}", nav_ref_overlay_key(&point.nav_ref)),
+                symbol,
+                point.position,
+                viewport,
+                width_px,
+                height_px,
+                label_style,
+            )
+        })
+        .collect())
+}
+
+fn flight_plan_selection_points(
+    session: &UiSession,
+) -> Result<Vec<FlightPlanSelectionPoint>, HadReadError> {
     let Some(plan) = session.app_state.active_plan.as_ref() else {
         return Ok(Vec::new());
     };
@@ -2531,7 +2566,6 @@ fn flight_plan_overlay_features(
     let Some(store) = session.nav_kv_store.as_ref() else {
         return Ok(Vec::new());
     };
-    let active_target = crate::active_guidance_leg(&plan).map(|leg| leg.to);
     let mut nav_refs = Vec::<(NavRef, Option<String>)>::new();
     for leg in &plan.resolved_legs {
         let procedure_airport_id = leg.procedure_provenance.as_ref().and_then(|provenance| {
@@ -2551,25 +2585,15 @@ fn flight_plan_overlay_features(
 
     let mut features = Vec::new();
     for (nav_ref, procedure_airport_id) in nav_refs {
-        let Some(mut symbol) = nav_symbol_feature(store, &nav_ref)? else {
+        let Some(symbol) = nav_symbol_feature(store, &nav_ref)? else {
             continue;
         };
-        symbol.label = chart_ident_label_for_nav_ref_symbol(&nav_ref, &symbol);
         let position = nav_ref_position(store, &nav_ref, procedure_airport_id.as_deref())?;
-        let label_style = if active_target.as_ref() == Some(&nav_ref) {
-            VectorIdentLabelStyle::ActiveFlightPlan
-        } else {
-            VectorIdentLabelStyle::FlightPlan
-        };
-        features.push(project_nav_symbol_feature(
-            format!("flight-plan:{}", nav_ref_overlay_key(&nav_ref)),
+        features.push(FlightPlanSelectionPoint {
+            nav_ref,
             symbol,
             position,
-            viewport,
-            width_px,
-            height_px,
-            label_style,
-        ));
+        });
     }
     Ok(features)
 }
@@ -2727,6 +2751,10 @@ pub fn get_map_selection_in_session(
     } else {
         Vec::new()
     };
+    let flight_plan_points = match flight_plan_selection_points(session) {
+        Ok(points) => points,
+        Err(err) => return had_read_error_to_overlay_outcome(err),
+    };
     let selection = query_map_selection(
         &viewport,
         width_px,
@@ -2742,6 +2770,7 @@ pub fn get_map_selection_in_session(
         &offline_region_records,
         &session.airspace_feature_cache,
         session.tfr_payload.as_ref(),
+        &flight_plan_points,
         &mut availability,
     );
     if !missing_pages.is_empty() {

@@ -556,6 +556,13 @@ pub struct MapSelectionQueryResult {
     pub categories: Vec<MapSelectionCategory>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct FlightPlanSelectionPoint {
+    pub nav_ref: NavRef,
+    pub position: LatLon,
+    pub symbol: NavSymbolFeature,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MapSelectionCategory {
     pub id: String,
@@ -1750,6 +1757,7 @@ pub fn query_map_selection(
     offline_region_records: &[OfflineRegionRecord],
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
+    flight_plan_points: &[FlightPlanSelectionPoint],
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
 ) -> MapSelectionQueryResult {
     let center_world = lat_lon_to_world(viewport.center);
@@ -1767,6 +1775,7 @@ pub fn query_map_selection(
     let mut weather = Vec::new();
     let mut offline_regions = BTreeMap::<String, Vec<&OfflineRegionRecord>>::new();
     let mut airspaces = Vec::new();
+    let mut matched_nav_refs = BTreeSet::new();
 
     for tile in visible_point_display_tile_window(config, viewport, width_px, height_px, None) {
         let Some(payload) = vector_tile_cache.get(&aggregate_vector_tile_cache_key(
@@ -1818,6 +1827,9 @@ pub fn query_map_selection(
                     taf_payload.and_then(|payload| payload.tafs_by_station.get(airport_id))
                 });
                 let item = selection_item_for_point(record, &symbol, plan, availability, taf);
+                if let Some(key) = nav_ref_match_key(item.nav_ref.as_ref()) {
+                    matched_nav_refs.insert(key);
+                }
                 airports.push(MapSelectionPointMatch { item, distance_px });
             } else if record.style_class == "fix" || record.style_class == "nav" {
                 let item = selection_item_for_point(
@@ -1827,8 +1839,31 @@ pub fn query_map_selection(
                     AirportPlateAvailability::default(),
                     None,
                 );
+                if let Some(key) = nav_ref_match_key(item.nav_ref.as_ref()) {
+                    matched_nav_refs.insert(key);
+                }
                 navaids.push(MapSelectionPointMatch { item, distance_px });
             }
+        }
+    }
+
+    for matched in query_flight_plan_selection_matches(
+        width_px,
+        height_px,
+        plan,
+        center_world,
+        scale,
+        click_screen,
+        hit_radius_px,
+        flight_plan_points,
+        &matched_nav_refs,
+        taf_payload,
+        airport_plate_availability,
+    ) {
+        if matches!(matched.item.nav_ref, Some(NavRef::Airport(_))) {
+            airports.push(matched);
+        } else {
+            navaids.push(matched);
         }
     }
 
@@ -2144,6 +2179,127 @@ fn selection_item_for_point(
             actions
         },
     }
+}
+
+fn query_flight_plan_selection_matches(
+    width_px: f64,
+    height_px: f64,
+    plan: Option<&FlightPlan>,
+    center_world: WorldPoint,
+    scale: f64,
+    click_screen: WorldPoint,
+    hit_radius_px: f64,
+    points: &[FlightPlanSelectionPoint],
+    matched_nav_refs: &BTreeSet<String>,
+    taf_payload: Option<&TafProductPayload>,
+    airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
+) -> Vec<MapSelectionPointMatch> {
+    let mut matches = Vec::new();
+    for point in points {
+        let Some(key) = nav_ref_match_key(Some(&point.nav_ref)) else {
+            continue;
+        };
+        if matched_nav_refs.contains(&key) {
+            continue;
+        }
+        let screen_point =
+            nearest_wrapped_screen_point(center_world, scale, width_px, height_px, point.position);
+        let distance_px = ((screen_point.x - click_screen.x).powi(2)
+            + (screen_point.y - click_screen.y).powi(2))
+        .sqrt();
+        if distance_px > hit_radius_px {
+            continue;
+        }
+        matches.push(MapSelectionPointMatch {
+            item: selection_item_for_flight_plan_point(
+                point,
+                plan,
+                taf_payload,
+                airport_plate_availability,
+            ),
+            distance_px,
+        });
+    }
+    matches
+}
+
+fn selection_item_for_flight_plan_point(
+    point: &FlightPlanSelectionPoint,
+    plan: Option<&FlightPlan>,
+    taf_payload: Option<&TafProductPayload>,
+    airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
+) -> MapSelectionItem {
+    let nav_ref = &point.nav_ref;
+    let label = chart_ident_label_for_nav_ref_symbol(nav_ref, &point.symbol);
+    let mut symbol_feature = point.symbol.clone();
+    symbol_feature.label = label.clone();
+    let remove_row_action =
+        selection_flight_plan_row_action(plan, nav_ref, FlightPlanRowActionId::Remove);
+    let direct_to_row_action =
+        selection_flight_plan_row_action(plan, nav_ref, FlightPlanRowActionId::DirectTo);
+    let insert_action = if remove_row_action.is_some() {
+        row_action(
+            "remove_from_flight_plan",
+            "Remove from flight plan",
+            remove_row_action,
+        )
+    } else if selection_plan_top_level_waypoint_count(plan, nav_ref) > 1 {
+        disabled_action("remove_from_flight_plan", "Remove ambiguous")
+    } else if !selection_plan_contains_nav_ref(plan, nav_ref) {
+        insert_best_position_action(plan, nav_ref)
+    } else {
+        disabled_action("insert", "In grouped route")
+    };
+    let taf = match nav_ref {
+        NavRef::Airport(airport_id) => {
+            taf_payload.and_then(|payload| payload.tafs_by_station.get(airport_id))
+        }
+        _ => None,
+    };
+    let mut actions = if let NavRef::Airport(airport_id) = nav_ref {
+        let availability = airport_plate_availability(airport_id);
+        vec![
+            direct_to_action(plan, Some(nav_ref), direct_to_row_action),
+            insert_action,
+            action_for_availability("plates", "Plates", availability.plates),
+            action_for_availability("csup", "Chart Supp", availability.csup),
+            taf.map(|record| detail_action("taf", "TAF", taf_detail_text(record)))
+                .unwrap_or_else(|| disabled_action("taf", "TAF")),
+            disabled_action("runways", "Runways"),
+        ]
+    } else {
+        vec![
+            direct_to_action(plan, Some(nav_ref), direct_to_row_action),
+            insert_action,
+        ]
+    };
+    MapSelectionItem {
+        id: format!("flight-plan:{}", nav_ref_overlay_key(nav_ref)),
+        label,
+        sublabel: point.symbol.kind.trim().to_ascii_uppercase(),
+        description: None,
+        detail_text: None,
+        highlight: MapSelectionHighlight::FeatureRef {
+            id: format!("flight-plan:{}", nav_ref_overlay_key(nav_ref)),
+        },
+        nav_ref: Some(nav_ref.clone()),
+        symbol_feature: Some(symbol_feature),
+        metar_feature: None,
+        pirep_feature: None,
+        airspace_icon: None,
+        actions: {
+            actions.shrink_to_fit();
+            actions
+        },
+    }
+}
+
+fn nav_ref_match_key(nav_ref: Option<&NavRef>) -> Option<String> {
+    nav_ref.map(|nav_ref| serde_json::to_string(nav_ref).unwrap_or_else(|_| format!("{nav_ref:?}")))
+}
+
+fn nav_ref_overlay_key(nav_ref: &NavRef) -> String {
+    serde_json::to_string(nav_ref).unwrap_or_else(|_| format!("{nav_ref:?}"))
 }
 
 fn action_for_availability(id: &str, label: &str, available: bool) -> MapSelectionAction {
@@ -4974,6 +5130,7 @@ mod tests {
             &[],
             &HashMap::new(),
             None,
+            &[],
             &mut |_| AirportPlateAvailability::default(),
         );
         let weather = result
@@ -5085,6 +5242,7 @@ mod tests {
             &[],
             &HashMap::new(),
             None,
+            &[],
             &mut |_| AirportPlateAvailability::default(),
         );
         let weather = result
@@ -5158,6 +5316,7 @@ mod tests {
             &regions,
             &HashMap::new(),
             None,
+            &[],
             &mut |_| AirportPlateAvailability::default(),
         );
         let offline = result
@@ -5290,6 +5449,7 @@ mod tests {
             &[],
             &HashMap::from([(feature.id.clone(), feature)]),
             None,
+            &[],
             &mut |_| AirportPlateAvailability::default(),
         );
         let airspace = result
@@ -5365,6 +5525,7 @@ mod tests {
             &[],
             &HashMap::from([(detail.id.clone(), detail), (outline.id.clone(), outline)]),
             None,
+            &[],
             &mut |_| AirportPlateAvailability::default(),
         );
 
@@ -5918,6 +6079,7 @@ mod tests {
             &[],
             &HashMap::new(),
             None,
+            &[],
             &mut |_| AirportPlateAvailability {
                 plates: true,
                 csup: true,
@@ -6259,6 +6421,84 @@ mod tests {
     }
 
     #[test]
+    fn map_selection_hits_flight_plan_only_fix_point() {
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.0,
+                lon: -122.0,
+            },
+            zoom: 9.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let nav_ref = NavRef::Fix("WIBAT".to_string());
+        let selection = query_map_selection(
+            &viewport,
+            800.0,
+            600.0,
+            &test_map_overlay_config(),
+            None,
+            viewport.center,
+            32.0,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            None,
+            &[],
+            &HashMap::new(),
+            None,
+            &[FlightPlanSelectionPoint {
+                nav_ref: nav_ref.clone(),
+                position: viewport.center,
+                symbol: NavSymbolFeature {
+                    kind: "fix".to_string(),
+                    label: "WIBAT".to_string(),
+                    style_class: "fix".to_string(),
+                    obstacle_variant: None,
+                    towered: false,
+                    fuel_available: false,
+                    has_paved_runway: None,
+                    heliport: None,
+                    has_water_runway: None,
+                    runway_length_ratio: 0.0,
+                    longest_runway_heading_true_deg: None,
+                },
+            }],
+            &mut |_| AirportPlateAvailability::default(),
+        );
+
+        let navaids = selection
+            .categories
+            .iter()
+            .find(|category| category.id == "navaid")
+            .expect("navaid category");
+        let wibat = navaids
+            .items
+            .iter()
+            .find(|item| item.label == "WIBAT")
+            .expect("flight-plan-only fix should be selectable");
+        assert_eq!(wibat.nav_ref, Some(nav_ref.clone()));
+        assert!(matches!(
+            wibat.highlight,
+            MapSelectionHighlight::FeatureRef { ref id }
+                if id.starts_with("flight-plan:")
+        ));
+        let direct_to = wibat
+            .actions
+            .iter()
+            .find(|action| action.id == "direct_to")
+            .expect("direct-to action");
+        assert!(direct_to.enabled);
+        assert_eq!(
+            serde_json::from_str::<MapSelectionSessionAction>(
+                direct_to.session_action.as_deref().expect("session action")
+            )
+            .expect("session action decodes"),
+            MapSelectionSessionAction::ActivateDirectToNavRef { nav_ref }
+        );
+    }
+
+    #[test]
     fn vor_symbol_labels_omit_frequency() {
         let record = PointVectorRecord {
             id: "nav:ELN:VOR".to_string(),
@@ -6553,6 +6793,7 @@ mod tests {
             &[],
             &HashMap::new(),
             None,
+            &[],
             &mut |_| AirportPlateAvailability::default(),
         );
         let airport_ids = selection.categories[0]

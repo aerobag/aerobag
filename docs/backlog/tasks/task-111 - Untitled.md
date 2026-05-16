@@ -1,7 +1,7 @@
 ---
 id: TASK-111
 title: Can't select flight plan intersections
-state: medium
+state: done
 assignee: []
 created_date: '2026-05-13 04:54'
 labels:

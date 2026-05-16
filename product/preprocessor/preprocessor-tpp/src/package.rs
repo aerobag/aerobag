@@ -94,7 +94,7 @@ pub(crate) fn package_region_versioned(
         &[PackageOutputRecord {
             label: format!("tpp-{}", region.code().to_ascii_lowercase()),
             chart: None,
-            region: region.code().to_string(),
+            region: region.code().to_ascii_lowercase(),
             manifest: manifest_name,
             manifest_sha256: hash_file(&manifest_path)?,
             zip: zip_name,

@@ -1152,7 +1152,7 @@ fn package_region_records_from_spec(
             package_records.push(PackageOutputRecord {
                 label: spec.family.capture_label().to_string(),
                 chart: Some(spec.chart_name.to_string()),
-                region: region.code().to_string(),
+                region: region.code().to_ascii_lowercase(),
                 manifest: manifest_name,
                 manifest_sha256: hash_file(&manifest_path)?,
                 zip: zip_name,

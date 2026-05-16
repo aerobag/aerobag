@@ -7893,7 +7893,65 @@ fn build_nav_kv_procedure_pairs(
     if let Some(filter) = procedure_geometry_filter {
         geometry_records.retain(|record| filter.matches_geometry_record(record));
     }
-    for record in geometry_records {
+    pairs.extend(build_nav_kv_procedure_geometry_pairs(geometry_records)?);
+
+    Ok(pairs)
+}
+
+fn build_nav_kv_procedure_geometry_pairs(
+    geometry_records: Vec<pgt::ProcedureGeometryRecord>,
+) -> anyhow::Result<Vec<NavKvPair>> {
+    let mut segment_counts = BTreeMap::<String, usize>::new();
+    let mut segment_records = BTreeMap::<String, pgt::ProcedureGeometrySegmentRecord>::new();
+    let mut segment_bytes = BTreeMap::<String, Vec<u8>>::new();
+
+    for record in &geometry_records {
+        let mut record_segment_refs = BTreeSet::<String>::new();
+        for leg_bundles in procedure_geometry_role_groups(&record.leg_bundles) {
+            let segment = pgt::ProcedureGeometrySegmentRecord { leg_bundles };
+            let bytes = serde_json::to_vec(&segment)
+                .context("failed to encode procedure geometry segment candidate")?;
+            let segment_ref = sha256_hex(&bytes);
+            record_segment_refs.insert(segment_ref.clone());
+            if let Some(existing) = segment_bytes.get(&segment_ref) {
+                if existing != &bytes {
+                    bail!("procedure geometry segment sha256 collision: {segment_ref}");
+                }
+            } else {
+                segment_bytes.insert(segment_ref.clone(), bytes);
+                segment_records.insert(segment_ref, segment);
+            }
+        }
+        for segment_ref in record_segment_refs {
+            *segment_counts.entry(segment_ref).or_default() += 1;
+        }
+    }
+
+    let mut pairs = Vec::new();
+    for mut record in geometry_records {
+        let groups = procedure_geometry_role_groups(&record.leg_bundles);
+        record.components = groups
+            .into_iter()
+            .map(|leg_bundles| {
+                let segment = pgt::ProcedureGeometrySegmentRecord {
+                    leg_bundles: leg_bundles.clone(),
+                };
+                let bytes = serde_json::to_vec(&segment)
+                    .expect("procedure geometry segment candidate should serialize");
+                let segment_ref = sha256_hex(&bytes);
+                if segment_counts
+                    .get(&segment_ref)
+                    .copied()
+                    .unwrap_or_default()
+                    >= 2
+                {
+                    pgt::ProcedureGeometryComponent::SegmentRef { segment_ref }
+                } else {
+                    pgt::ProcedureGeometryComponent::LegBundles { leg_bundles }
+                }
+            })
+            .collect();
+        record.leg_bundles.clear();
         pairs.push(json_pair(
             pgt::procedure_geometry_navdb_key(&record.key),
             &serde_json::to_value(record)?,
@@ -7901,7 +7959,44 @@ fn build_nav_kv_procedure_pairs(
         )?);
     }
 
+    for (segment_ref, segment_record) in segment_records {
+        if segment_counts
+            .get(&segment_ref)
+            .copied()
+            .unwrap_or_default()
+            < 2
+        {
+            continue;
+        }
+        pairs.push(json_pair(
+            pgt::procedure_geometry_segment_navdb_key(&segment_ref),
+            &serde_json::to_value(segment_record)?,
+            "procedure geometry segment",
+        )?);
+    }
+
     Ok(pairs)
+}
+
+fn procedure_geometry_role_groups(
+    leg_bundles: &[pgt::ProcedureGeometryLegBundle],
+) -> Vec<Vec<pgt::ProcedureGeometryLegBundle>> {
+    let mut groups = Vec::<Vec<pgt::ProcedureGeometryLegBundle>>::new();
+    for bundle in leg_bundles {
+        if groups
+            .last()
+            .and_then(|group| group.last())
+            .is_some_and(|previous| previous.role == bundle.role)
+        {
+            groups
+                .last_mut()
+                .expect("last group exists after role match")
+                .push(bundle.clone());
+        } else {
+            groups.push(vec![bundle.clone()]);
+        }
+    }
+    groups
 }
 
 #[derive(Debug, Clone)]
@@ -9274,16 +9369,34 @@ fn resolve_bundle_package_source_path(
 ) -> anyhow::Result<PathBuf> {
     let region_id = package.region_id.to_ascii_lowercase();
     let node_name = match package.family_id.as_str() {
-        "csup" => format!("csup-package-{region_id}"),
+        "csup" => "csup-package".to_string(),
         "tpp" => format!("tpp-{region_id}-package"),
-        family_id => format!("charts-{family_id}-package-{region_id}"),
+        family_id => format!("charts-{family_id}-package"),
     };
     let record = build_manifest
         .nodes
         .iter()
         .find(|node| node.name == node_name)
         .with_context(|| format!("build manifest missing package node {node_name}"))?;
-    Ok(resolve_artifact_path(config, output_path(record, "zip")?))
+    if let Some(zip_path) = record.outputs.get("zip") {
+        return Ok(resolve_artifact_path(config, zip_path));
+    }
+    let package_outputs = resolve_artifact_path(config, output_path(record, "package_outputs")?);
+    let package_record = read_package_outputs_by_region(&package_outputs)?
+        .remove(&package.region_id)
+        .with_context(|| {
+            format!(
+                "build manifest package node {node_name} missing package output for region {}",
+                package.region_id
+            )
+        })?;
+    let package_root = record
+        .outputs
+        .get("package_root")
+        .map(|path| resolve_artifact_path(config, path))
+        .or_else(|| package_outputs.parent().map(Path::to_path_buf))
+        .with_context(|| format!("build manifest package node {node_name} missing package root"))?;
+    Ok(package_root.join(package_record.zip))
 }
 
 fn output_path<'a>(record: &'a NodeRecord, key: &str) -> anyhow::Result<&'a str> {
@@ -9800,10 +9913,10 @@ fn resolve_cycle_bundle_package_root_from_build_manifest(
         .unwrap_or_default()
         .to_ascii_lowercase();
     let node_name = match package.family_id.as_str() {
-        "csup" => format!("csup-package-{region_id}"),
+        "csup" => "csup-package".to_string(),
         "tpp" => format!("tpp-{region_id}-package"),
         "sec" | "tac" | "enr-l" | "enr-h" => {
-            format!("charts-{}-package-{region_id}", package.family_id)
+            format!("charts-{}-package", package.family_id)
         }
         "vectors" => "vectors".to_string(),
         _ => return Ok(None),
@@ -12504,6 +12617,20 @@ fn hardlink_static_tile_zoom_subset(
         }
     }
     Ok(())
+}
+
+fn static_geo_source_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("preprocessor-cli should live under workspace root")
+        .parent()
+        .expect("workspace root should live under product")
+        .parent()
+        .expect("product should live under repo root")
+        .join("third_party")
+        .join("apps4av")
+        .join("geo")
+        .join("geo.csv")
 }
 
 fn terrain_tnmaccess_request(region: Region) -> PrefetchRequest {
@@ -16751,7 +16878,10 @@ impl ProductBuildConfig {
         let artifact_root = default_artifact_write_path(&repo_root);
 
         let mut profile = ProductBuildProfile::Production;
-        let mut chart_cutline_root = repo_root.join("avare-assets").join("chart-cutlines");
+        let mut chart_cutline_root = repo_root
+            .join("third_party")
+            .join("apps4av")
+            .join("chart-cutlines");
         let mut build_root = match profile {
             ProductBuildProfile::Production => artifact_root.join("published_packaged"),
             ProductBuildProfile::Validation => artifact_root.join("published_packaged_validation"),
@@ -17671,6 +17801,15 @@ fn chart_render_inputs(
         ("source_urls".to_string(), hash_file(source_urls)?),
         ("cpu_jobs".to_string(), cpu_jobs.to_string()),
         ("fetch_jobs".to_string(), fetch_jobs.to_string()),
+        (
+            "chart_render_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-charts/src/lib.rs"),
+            )?,
+        ),
     ]))
 }
 
@@ -18341,7 +18480,7 @@ fn read_package_outputs_by_region(
 
 fn package_record_for_region(path: &Path, region: Region) -> anyhow::Result<PackageOutputRecord> {
     read_package_outputs_by_region(path)?
-        .remove(region.code())
+        .remove(&region.code().to_ascii_lowercase())
         .ok_or_else(|| anyhow::anyhow!("missing package output for region {}", region.code()))
 }
 
@@ -20104,6 +20243,177 @@ mod tests {
         assert_eq!(nav_db["cycle_version"], "01");
         let sec = pair_value("package/by-id/NW_SEC_2604_01");
         assert_eq!(sec["metadata"]["wide_angle_region_id"], "wide");
+    }
+
+    #[test]
+    fn nav_kv_procedure_geometry_pairs_split_reused_role_segments_losslessly() {
+        let common = vec![test_procedure_geometry_bundle(
+            "common-10",
+            pgt::ProcedureSegmentRole::Common,
+            "ENTRY",
+            "FINAL",
+            10,
+        )];
+        let first = test_procedure_geometry_record(
+            "KAAA",
+            "RNAV-A",
+            Some("TRANS1"),
+            vec![
+                test_procedure_geometry_bundle(
+                    "feeder-1",
+                    pgt::ProcedureSegmentRole::EnrouteTransition,
+                    "IF1",
+                    "ENTRY",
+                    1,
+                ),
+                common[0].clone(),
+            ],
+        );
+        let second = test_procedure_geometry_record(
+            "KAAA",
+            "RNAV-A",
+            Some("TRANS2"),
+            vec![
+                test_procedure_geometry_bundle(
+                    "feeder-2",
+                    pgt::ProcedureSegmentRole::EnrouteTransition,
+                    "IF2",
+                    "ENTRY",
+                    1,
+                ),
+                common[0].clone(),
+            ],
+        );
+        let originals = vec![first.clone(), second.clone()];
+
+        let pairs = build_nav_kv_procedure_geometry_pairs(originals.clone()).unwrap();
+        let segment_pairs = pairs
+            .iter()
+            .filter(|pair| pair.key.starts_with("procedure/geometry-segment/"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            segment_pairs.len(),
+            1,
+            "the reused common segment should be emitted exactly once"
+        );
+        let mut segment_record: pgt::ProcedureGeometrySegmentRecord =
+            serde_json::from_slice(&segment_pairs[0].value).unwrap();
+        populate_test_segment_waypoints(&mut segment_record);
+        assert_eq!(segment_record.leg_bundles, common);
+
+        let segments = segment_pairs
+            .iter()
+            .map(|pair| {
+                let segment_ref = pair
+                    .key
+                    .strip_prefix("procedure/geometry-segment/")
+                    .unwrap()
+                    .to_ascii_lowercase()
+                    .to_string();
+                let record: pgt::ProcedureGeometrySegmentRecord =
+                    serde_json::from_slice(&pair.value).unwrap();
+                (segment_ref, record)
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        for original in originals {
+            let pair = pairs
+                .iter()
+                .find(|pair| pair.key == pgt::procedure_geometry_navdb_key(&original.key))
+                .expect("split geometry pair");
+            let mut split: pgt::ProcedureGeometryRecord =
+                serde_json::from_slice(&pair.value).unwrap();
+            split.key = original.key.clone();
+            split.leg_bundles = reassemble_test_geometry_components(&split.components, &segments);
+            split.components.clear();
+            pgt::populate_derived_procedure_geometry_fields(&mut split);
+            assert_eq!(split, original);
+        }
+    }
+
+    fn test_procedure_geometry_record(
+        airport_id: &str,
+        procedure_id: &str,
+        enroute_transition: Option<&str>,
+        leg_bundles: Vec<pgt::ProcedureGeometryLegBundle>,
+    ) -> pgt::ProcedureGeometryRecord {
+        pgt::ProcedureGeometryRecord {
+            key: pgt::ProcedureGeometryKey {
+                airport_id: airport_id.to_string(),
+                procedure_id: procedure_id.to_string(),
+                kind: pgt::ProcedureKind::Approach,
+                runway_transition: None,
+                enroute_transition: enroute_transition.map(str::to_string),
+            },
+            terminal_discontinuity: None,
+            components: Vec::new(),
+            leg_bundles,
+            data_quality: Vec::new(),
+        }
+    }
+
+    fn test_procedure_geometry_bundle(
+        id: &str,
+        role: pgt::ProcedureSegmentRole,
+        from: &str,
+        to: &str,
+        leg_sequence: i32,
+    ) -> pgt::ProcedureGeometryLegBundle {
+        pgt::ProcedureGeometryLegBundle {
+            id: id.to_string(),
+            role,
+            from: pgt::ProcedureNavRef::Fix(from.to_string()),
+            to: pgt::ProcedureNavRef::Fix(to.to_string()),
+            path_termination: pgt::ProcedurePathTermination::TrackToFix,
+            leg_sequence,
+            path: pgt::ProcedureGeometryPath {
+                style: pgt::ProcedureGeometryPathStyle::Solid,
+                elements: Vec::new(),
+                effective_terminal_course_deg: None,
+            },
+            waypoints: vec![pgt::ProcedureGeometryWaypoint {
+                nav_ref: pgt::ProcedureNavRef::Fix(to.to_string()),
+                name: None,
+            }],
+            sequencing_after: pgt::ProcedureSequencingRule::Continue,
+            source_row_sequences: vec![leg_sequence],
+        }
+    }
+
+    fn reassemble_test_geometry_components(
+        components: &[pgt::ProcedureGeometryComponent],
+        segments: &BTreeMap<String, pgt::ProcedureGeometrySegmentRecord>,
+    ) -> Vec<pgt::ProcedureGeometryLegBundle> {
+        let mut leg_bundles = Vec::new();
+        for component in components {
+            match component {
+                pgt::ProcedureGeometryComponent::LegBundles {
+                    leg_bundles: inline,
+                } => leg_bundles.extend(inline.clone()),
+                pgt::ProcedureGeometryComponent::SegmentRef { segment_ref } => {
+                    leg_bundles.extend(
+                        segments
+                            .get(segment_ref)
+                            .unwrap_or_else(|| panic!("missing segment {segment_ref}"))
+                            .leg_bundles
+                            .clone(),
+                    );
+                }
+            }
+        }
+        leg_bundles
+    }
+
+    fn populate_test_segment_waypoints(segment: &mut pgt::ProcedureGeometrySegmentRecord) {
+        let mut record = pgt::ProcedureGeometryRecord {
+            key: pgt::ProcedureGeometryKey::default(),
+            terminal_discontinuity: None,
+            components: Vec::new(),
+            leg_bundles: std::mem::take(&mut segment.leg_bundles),
+            data_quality: Vec::new(),
+        };
+        pgt::populate_derived_procedure_geometry_fields(&mut record);
+        segment.leg_bundles = record.leg_bundles;
     }
 
     #[test]

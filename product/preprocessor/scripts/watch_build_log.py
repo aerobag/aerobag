@@ -12,14 +12,14 @@ from pathlib import Path
 
 
 LAUNCH_RE = re.compile(
-    r"^(?:(?P<wall>\S+)\s+)?(?P<ts>\+\d+:\d+(?::\d+)?)\s+launch\s+(?P<task>\S+)\s+"
+    r"^(?:(?P<wall>\S+)\s+)?(?P<ts>\+\d+:\d+(?::\d+)?)\s+(?:product-scheduler-)?launch\s+(?P<task>\S+)\s+"
     r"launched=(?P<launched>\d+)/(?P<total>\d+)\s+"
     r"completed=(?P<completed>\d+)/(?P=total)\s+"
     r"weight=(?P<weight>\d+)\s+running_units=(?P<running>\d+)/(?P<budget>\d+)"
 )
 
 COMPLETE_RE = re.compile(
-    r"^(?:(?P<wall>\S+)\s+)?(?P<ts>\+\d+:\d+(?::\d+)?)\s+complete\s+(?P<task>\S+)\s+"
+    r"^(?:(?P<wall>\S+)\s+)?(?P<ts>\+\d+(?::\d+){1,2})\s+(?:product-scheduler-)?complete\s+(?P<task>\S+)\s+"
     r"completed=(?P<completed>\d+)/(?P<total>\d+)\s+"
     r"running_units=(?P<running>\d+)/(?P<budget>\d+)(?P<rest>.*)$"
 )

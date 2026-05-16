@@ -114,7 +114,7 @@ fn package_csup_region_records(
             package_records.push(PackageOutputRecord {
                 label: "csup".to_string(),
                 chart: None,
-                region: region.code().to_string(),
+                region: region.code().to_ascii_lowercase(),
                 manifest: manifest_name,
                 manifest_sha256: hash_file(&manifest_path)?,
                 zip: zip_name,

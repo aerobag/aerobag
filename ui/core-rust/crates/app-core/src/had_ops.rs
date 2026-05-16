@@ -645,6 +645,21 @@ fn read_required<T: DeserializeOwned>(
     })
 }
 
+fn read_required_key<T: DeserializeOwned>(
+    store: &NavKvStore,
+    key: &str,
+    family: &str,
+) -> Result<T, HadReadError> {
+    match store.get_bytes(key).map_err(HadReadError::Fatal)? {
+        NavKvLookup::Hit(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|err| HadReadError::Fatal(format!("HAD JSON decode failed for {key}: {err}"))),
+        NavKvLookup::MissingKey => Err(HadReadError::Fatal(format!(
+            "HAD missing required {family} key: {key}"
+        ))),
+        NavKvLookup::MissingPages(pages) => Err(HadReadError::NeedPages(pages)),
+    }
+}
+
 fn read_optional<T: DeserializeOwned>(
     store: &NavKvStore,
     query: NavKvQuery,
@@ -1808,18 +1823,56 @@ pub(crate) fn materialize_procedure(
     enroute_transition: Option<&str>,
     component_index: usize,
 ) -> Result<MaterializedProcedure, HadReadError> {
-    let record = read_required::<pgt::ProcedureGeometryRecord>(
+    let mut record = read_required::<pgt::ProcedureGeometryRecord>(
         store,
         NavKvQuery::ProcedureGeometry {
             airport_id: airport_id.to_string(),
-            procedure_kind: kind,
+            procedure_kind: kind.clone(),
             procedure_id: procedure_id.to_string(),
             runway_transition: runway_transition.map(str::to_string),
             enroute_transition: enroute_transition.map(str::to_string),
         },
         "procedure geometry",
     )?;
+    record.key = pgt::ProcedureGeometryKey {
+        airport_id: airport_id.trim().to_string(),
+        procedure_id: procedure_id.trim().to_string(),
+        kind: procedure_kind_to_geometry(&kind),
+        runway_transition: runway_transition.map(str::to_string),
+        enroute_transition: enroute_transition.map(str::to_string),
+    };
+    expand_procedure_geometry_segments(store, &mut record)?;
+    pgt::populate_derived_procedure_geometry_fields(&mut record);
     materialized_procedure_from_geometry_record(record, component_index).map_err(Into::into)
+}
+
+fn expand_procedure_geometry_segments(
+    store: &NavKvStore,
+    record: &mut pgt::ProcedureGeometryRecord,
+) -> Result<(), HadReadError> {
+    if record.components.is_empty() {
+        return Ok(());
+    }
+
+    let mut leg_bundles = Vec::new();
+    for component in &record.components {
+        match component {
+            pgt::ProcedureGeometryComponent::LegBundles {
+                leg_bundles: inline,
+            } => leg_bundles.extend(inline.clone()),
+            pgt::ProcedureGeometryComponent::SegmentRef { segment_ref } => {
+                let key = pgt::procedure_geometry_segment_navdb_key(segment_ref);
+                let segment = read_required_key::<pgt::ProcedureGeometrySegmentRecord>(
+                    store,
+                    &key,
+                    "procedure geometry segment",
+                )?;
+                leg_bundles.extend(segment.leg_bundles);
+            }
+        }
+    }
+    record.leg_bundles = leg_bundles;
+    Ok(())
 }
 
 fn list_procedures_from_geometry(
@@ -2132,6 +2185,14 @@ fn procedure_kind_from_geometry(kind: pgt::ProcedureKind) -> ProcedureKind {
         pgt::ProcedureKind::Sid => ProcedureKind::Sid,
         pgt::ProcedureKind::Star => ProcedureKind::Star,
         pgt::ProcedureKind::Approach => ProcedureKind::Approach,
+    }
+}
+
+fn procedure_kind_to_geometry(kind: &ProcedureKind) -> pgt::ProcedureKind {
+    match kind {
+        ProcedureKind::Sid => pgt::ProcedureKind::Sid,
+        ProcedureKind::Star => pgt::ProcedureKind::Star,
+        ProcedureKind::Approach => pgt::ProcedureKind::Approach,
     }
 }
 
@@ -3253,6 +3314,132 @@ mod tests {
             store.insert_page(index as u32, page);
         }
         store
+    }
+
+    #[test]
+    fn procedure_geometry_materialization_rehydrates_omitted_wire_fields() {
+        let key = crate::navkv::procedure_geometry_key(
+            "KAAA",
+            &ProcedureKind::Approach,
+            "RNAV-A",
+            None,
+            Some("TRANS"),
+        );
+        let store = test_nav_kv_store(&[(
+            &key,
+            serde_json::json!({
+                "leg_bundles": [{
+                    "id": "leg-1",
+                    "role": "common",
+                    "from": { "kind": "airport", "value": "KAAA" },
+                    "to": { "kind": "fix", "value": "FIXA" },
+                    "path_termination": "track_to_fix",
+                    "leg_sequence": 10,
+                    "path": { "elements": [] }
+                }]
+            }),
+        )]);
+
+        let options = describe_procedure_options(&store, "KAAA", "RNAV-A", ProcedureKind::Approach)
+            .expect("describe key-only procedure choices");
+        assert_eq!(
+            options.valid_choices,
+            vec![crate::ProcedureSpecChoice {
+                runway_transition: None,
+                enroute_transition: Some("TRANS".to_string())
+            }]
+        );
+
+        let materialized = materialize_procedure(
+            &store,
+            "KAAA",
+            "RNAV-A",
+            ProcedureKind::Approach,
+            None,
+            Some("TRANS"),
+            2,
+        )
+        .expect("materialize keyless waypointless procedure geometry");
+
+        assert_eq!(
+            materialized.procedure.airport_id,
+            AirportId("KAAA".to_string())
+        );
+        assert_eq!(materialized.procedure.procedure_id, "RNAV-A");
+        assert_eq!(
+            materialized.procedure.enroute_transition,
+            Some("TRANS".to_string())
+        );
+        assert_eq!(
+            materialized.concretized_items,
+            vec![ConcretizedNavItem::Waypoint {
+                nav_ref: NavRef::Fix("FIXA".to_string())
+            }]
+        );
+        assert_eq!(materialized.resolved_legs.len(), 1);
+        assert_eq!(materialized.resolved_legs[0].id, "leg-1");
+        assert_eq!(
+            materialized.resolved_legs[0].source,
+            ResolvedLegSource::RouteComponent { component_index: 2 }
+        );
+    }
+
+    #[test]
+    fn procedure_geometry_materialization_expands_segment_refs() {
+        let segment_ref = "0123456789abcdef";
+        let geometry_key = crate::navkv::procedure_geometry_key(
+            "KAAA",
+            &ProcedureKind::Approach,
+            "RNAV-A",
+            None,
+            Some("TRANS"),
+        );
+        let segment_key = pgt::procedure_geometry_segment_navdb_key(segment_ref);
+        let store = test_nav_kv_store(&[
+            (
+                &geometry_key,
+                serde_json::json!({
+                    "components": [{
+                        "kind": "segment_ref",
+                        "segment_ref": segment_ref
+                    }]
+                }),
+            ),
+            (
+                &segment_key,
+                serde_json::json!({
+                    "leg_bundles": [{
+                        "id": "seg-leg-1",
+                        "role": "common",
+                        "from": { "kind": "airport", "value": "KAAA" },
+                        "to": { "kind": "fix", "value": "FIXA" },
+                        "path_termination": "track_to_fix",
+                        "leg_sequence": 10,
+                        "path": { "elements": [] }
+                    }]
+                }),
+            ),
+        ]);
+
+        let materialized = materialize_procedure(
+            &store,
+            "KAAA",
+            "RNAV-A",
+            ProcedureKind::Approach,
+            None,
+            Some("TRANS"),
+            2,
+        )
+        .expect("materialize split procedure geometry");
+
+        assert_eq!(materialized.resolved_legs.len(), 1);
+        assert_eq!(materialized.resolved_legs[0].id, "seg-leg-1");
+        assert_eq!(
+            materialized.concretized_items,
+            vec![ConcretizedNavItem::Waypoint {
+                nav_ref: NavRef::Fix("FIXA".to_string())
+            }]
+        );
     }
 
     #[test]

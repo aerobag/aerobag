@@ -4932,6 +4932,7 @@ fn procedure_geometry_record_from_materialized(
     pgt::ProcedureGeometryRecord {
         key,
         terminal_discontinuity: terminal_discontinuity.map(procedure_discontinuity_to_geometry),
+        components: Vec::new(),
         leg_bundles,
         data_quality: built
             .data_quality

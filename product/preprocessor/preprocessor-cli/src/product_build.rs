@@ -12,7 +12,7 @@ use std::{
 };
 
 use anyhow::{bail, Context};
-use chrono::{DateTime, Datelike, NaiveDate, SecondsFormat, Timelike, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, SecondsFormat, Timelike, Utc};
 use crossbeam_channel::{self, RecvTimeoutError};
 use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use had_key::{component as had_key_component, upper_component as had_upper_key_component};
@@ -507,6 +507,7 @@ pub struct LiveFeedUpdateResult {
     pub root: PathBuf,
     pub current_path: PathBuf,
     pub products: Vec<UpdatedLiveFeedResult>,
+    pub failures: Vec<FailedLiveFeedResult>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -519,11 +520,27 @@ pub struct UpdatedLiveFeedResult {
     pub removed_count: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct FailedLiveFeedResult {
+    pub product: String,
+    pub phase: String,
+    pub error: String,
+}
+
 #[derive(Debug, Clone)]
 struct BuiltLiveMetarState {
     version: String,
     state_source_path: PathBuf,
     state_value: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+struct BuiltLiveNexradState {
+    version: String,
+    state_source_dir: PathBuf,
+    manifest_source_path: PathBuf,
+    manifest_value: serde_json::Value,
+    tile_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -538,12 +555,16 @@ struct MetarSourceNodeOutput {
 enum LiveFeedTaskKind {
     BuildMetars,
     PublishMetars,
+    BuildNexrad,
+    PublishNexrad,
 }
 
 #[derive(Debug, Clone)]
 enum LiveFeedTaskValue {
     BuiltMetars(BuiltLiveMetarState),
+    BuiltNexrad(BuiltLiveNexradState),
     Published(UpdatedLiveFeedResult),
+    Failed(FailedLiveFeedResult),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3265,6 +3286,18 @@ pub fn update_live_feeds(config: &ProductBuildConfig) -> anyhow::Result<LiveFeed
             weight: 1,
             kind: LiveFeedTaskKind::PublishMetars,
         },
+        GraphScheduledTask {
+            id: "live-feed-nexrad-build".to_string(),
+            deps: vec![],
+            weight: 3,
+            kind: LiveFeedTaskKind::BuildNexrad,
+        },
+        GraphScheduledTask {
+            id: "live-feed-nexrad-publish".to_string(),
+            deps: vec!["live-feed-nexrad-build".to_string()],
+            weight: 1,
+            kind: LiveFeedTaskKind::PublishNexrad,
+        },
     ];
     let config_for_tasks = config.clone();
     let live_root_for_tasks = live_root.clone();
@@ -3280,53 +3313,97 @@ pub fn update_live_feeds(config: &ProductBuildConfig) -> anyhow::Result<LiveFeed
             let config = config_for_tasks.clone();
             let live_root = live_root_for_tasks.clone();
             match kind {
-                LiveFeedTaskKind::BuildMetars => {
-                    let built = build_live_metars_state(&config)?;
-                    Ok(GraphTaskCompletion {
+                LiveFeedTaskKind::BuildMetars => match build_live_metars_state(&config) {
+                    Ok(built) => Ok(GraphTaskCompletion {
                         node_records: vec![],
                         value: LiveFeedTaskValue::BuiltMetars(built),
                         completion_detail: "built metars".to_string(),
-                    })
-                }
+                    }),
+                    Err(error) => live_feed_failure_completion("metars", "build", error),
+                },
                 LiveFeedTaskKind::PublishMetars => {
                     let built = match task_values.get("live-feed-metars-build") {
                         Some(LiveFeedTaskValue::BuiltMetars(built)) => built.clone(),
+                        Some(LiveFeedTaskValue::Failed(failure)) => {
+                            return Ok(GraphTaskCompletion {
+                                node_records: vec![],
+                                value: LiveFeedTaskValue::Failed(failure.clone()),
+                                completion_detail: format!(
+                                    "skipped because {} {} failed",
+                                    failure.product, failure.phase
+                                ),
+                            });
+                        }
                         _ => bail!("missing built METAR live-feed state"),
                     };
-                    let _publication_lock = acquire_named_publication_lock(
-                        &config.build_root,
-                        "live-feeds",
-                        |message| {
-                            eprintln!("{message}");
-                        },
-                    )?;
-                    let published = publish_live_metars(&live_root, built)?;
-                    let current_path = write_live_feeds_current(&live_root)?;
-                    Ok(GraphTaskCompletion {
-                        node_records: vec![],
-                        value: LiveFeedTaskValue::Published(UpdatedLiveFeedResult {
-                            product: published.product,
-                            version: published.version,
-                            state_path: published.state_path,
-                            delta_path: published.delta_path,
-                            changed_count: published.changed_count,
-                            removed_count: published.removed_count,
+                    match publish_live_feed_product(&config, &live_root, || {
+                        publish_live_metars(&live_root, built)
+                    }) {
+                        Ok((published, current_path)) => Ok(GraphTaskCompletion {
+                            node_records: vec![],
+                            value: LiveFeedTaskValue::Published(published),
+                            completion_detail: format!("current={}", current_path.display()),
                         }),
-                        completion_detail: format!("current={}", current_path.display()),
-                    })
+                        Err(error) => live_feed_failure_completion("metars", "publish", error),
+                    }
+                }
+                LiveFeedTaskKind::BuildNexrad => match build_live_nexrad_state(&config) {
+                    Ok(built) => Ok(GraphTaskCompletion {
+                        node_records: vec![],
+                        value: LiveFeedTaskValue::BuiltNexrad(built),
+                        completion_detail: "built nexrad".to_string(),
+                    }),
+                    Err(error) => live_feed_failure_completion("nexrad", "build", error),
+                },
+                LiveFeedTaskKind::PublishNexrad => {
+                    let built = match task_values.get("live-feed-nexrad-build") {
+                        Some(LiveFeedTaskValue::BuiltNexrad(built)) => built.clone(),
+                        Some(LiveFeedTaskValue::Failed(failure)) => {
+                            return Ok(GraphTaskCompletion {
+                                node_records: vec![],
+                                value: LiveFeedTaskValue::Failed(failure.clone()),
+                                completion_detail: format!(
+                                    "skipped because {} {} failed",
+                                    failure.product, failure.phase
+                                ),
+                            });
+                        }
+                        _ => bail!("missing built NEXRAD live-feed state"),
+                    };
+                    match publish_live_feed_product(&config, &live_root, || {
+                        publish_live_nexrad(&live_root, built)
+                    }) {
+                        Ok((published, current_path)) => Ok(GraphTaskCompletion {
+                            node_records: vec![],
+                            value: LiveFeedTaskValue::Published(published),
+                            completion_detail: format!("current={}", current_path.display()),
+                        }),
+                        Err(error) => live_feed_failure_completion("nexrad", "publish", error),
+                    }
                 }
             }
         },
     )?;
-    let metars = match task_values.get("live-feed-metars-publish") {
-        Some(LiveFeedTaskValue::Published(result)) => result.clone(),
-        _ => bail!("missing published METAR live-feed result"),
-    };
+    let mut products = Vec::new();
+    let mut failures = Vec::new();
+    for task_id in ["live-feed-metars-publish", "live-feed-nexrad-publish"] {
+        match task_values.get(task_id) {
+            Some(LiveFeedTaskValue::Published(result)) => products.push(result.clone()),
+            Some(LiveFeedTaskValue::Failed(failure)) => failures.push(failure.clone()),
+            _ => failures.push(FailedLiveFeedResult {
+                product: task_id.to_string(),
+                phase: "scheduler".to_string(),
+                error: "missing live-feed task result".to_string(),
+            }),
+        }
+    }
     let current_path = live_feeds_current_path(&live_root);
+    write_live_feeds_current(&live_root)?;
     Ok(LiveFeedUpdateResult {
         root: live_root,
         current_path,
-        products: vec![metars],
+        products,
+        failures,
     })
 }
 
@@ -3336,6 +3413,41 @@ fn live_feeds_root(config: &ProductBuildConfig) -> PathBuf {
 
 fn live_feeds_current_path(root: &Path) -> PathBuf {
     root.join("current.json")
+}
+
+fn live_feed_failure_completion(
+    product: &str,
+    phase: &str,
+    error: anyhow::Error,
+) -> anyhow::Result<GraphTaskCompletion<LiveFeedTaskValue>> {
+    let failure = FailedLiveFeedResult {
+        product: product.to_string(),
+        phase: phase.to_string(),
+        error: format!("{error:#}"),
+    };
+    eprintln!(
+        "live-feed {} {} failed: {}",
+        failure.product, failure.phase, failure.error
+    );
+    Ok(GraphTaskCompletion {
+        node_records: vec![],
+        completion_detail: format!("{} {} failed", failure.product, failure.phase),
+        value: LiveFeedTaskValue::Failed(failure),
+    })
+}
+
+fn publish_live_feed_product(
+    config: &ProductBuildConfig,
+    live_root: &Path,
+    publish: impl FnOnce() -> anyhow::Result<UpdatedLiveFeedResult>,
+) -> anyhow::Result<(UpdatedLiveFeedResult, PathBuf)> {
+    let _publication_lock =
+        acquire_named_publication_lock(&config.build_root, "live-feeds", |message| {
+            eprintln!("{message}");
+        })?;
+    let published = publish()?;
+    let current_path = write_live_feeds_current(live_root)?;
+    Ok((published, current_path))
 }
 
 fn build_live_metars_state(config: &ProductBuildConfig) -> anyhow::Result<BuiltLiveMetarState> {
@@ -3495,6 +3607,310 @@ fn publish_live_metars(
         changed_count,
         removed_count,
     })
+}
+
+fn build_live_nexrad_state(config: &ProductBuildConfig) -> anyhow::Result<BuiltLiveNexradState> {
+    let artifact_root = artifact_root_from_build_root(&config.build_root).to_path_buf();
+    let generated_at_utc = Utc::now()
+        .with_second(0)
+        .expect("zero seconds should be valid")
+        .with_nanosecond(0)
+        .expect("zero nanos should be valid");
+    let scratch_root = artifact_root
+        .join("private-work")
+        .join("live-nexrad")
+        .join(generated_at_utc.format("%Y%m%dT%H%MZ").to_string());
+    let input_dir = scratch_root.join("input");
+    if scratch_root.exists() {
+        fs::remove_dir_all(&scratch_root)
+            .with_context(|| format!("failed to clear {}", scratch_root.display()))?;
+    }
+    fs::create_dir_all(&input_dir)
+        .with_context(|| format!("failed to create {}", input_dir.display()))?;
+
+    let fetch_cache = FetchCacheConfig {
+        root: config.fetch_cache_root.clone(),
+        mode: FetchCacheMode::parse(&config.fetch_cache_mode)?,
+    };
+    let provenance_dir = scratch_root.join("meta").join("provenance").join("nexrad");
+    fs::create_dir_all(&provenance_dir)
+        .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
+
+    let index_url = "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/";
+    let index_request = PrefetchRequest::new(index_url)
+        .with_logical_file_name("index.html")
+        .allow_html();
+    prefetch_requests_with_provenance(
+        std::slice::from_ref(&index_request),
+        &input_dir,
+        config.fetch_jobs,
+        Some(&fetch_cache),
+        &provenance_dir,
+        "nexrad-index",
+    )?;
+
+    let listings = parse_nexrad_index_for_product(&input_dir.join("index.html"))?;
+    let source_file_name = listings
+        .first()
+        .cloned()
+        .context("NEXRAD index did not contain any source frames")?;
+    let observed_at_utc = parse_nexrad_observed_at_utc(&source_file_name)?;
+    let source_request = PrefetchRequest::new(format!("{index_url}{source_file_name}"))
+        .with_logical_file_name(&source_file_name);
+    prefetch_archives_with_provenance(
+        std::slice::from_ref(&source_request),
+        &input_dir,
+        config.fetch_jobs,
+        Some(&fetch_cache),
+        &provenance_dir,
+        "nexrad-frame",
+    )?;
+
+    let source_gz_path = input_dir.join(&source_file_name);
+    let source_sha256 = hash_file(&source_gz_path)?;
+    let version = format!(
+        "{}_{}",
+        observed_at_utc.format("%Y%m%dT%H%M%SZ"),
+        &source_sha256[..16]
+    );
+    let inputs = BTreeMap::from([
+        ("product_id".to_string(), "nexrad-source-grid".to_string()),
+        ("source_file".to_string(), source_file_name.clone()),
+        ("source_sha256".to_string(), source_sha256.clone()),
+        ("res_levels".to_string(), "0,1,2,3".to_string()),
+        ("tile_size".to_string(), "512".to_string()),
+        (
+            "source_grid_script".to_string(),
+            hash_text(NEXRAD_SOURCE_GRID_TILE_SCRIPT),
+        ),
+    ]);
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, "live-nexrad-source-grid")?,
+        "live-nexrad-source-grid",
+        &inputs,
+    )?;
+    let output_dir = prepared.dir.join("output");
+    let manifest_path = output_dir.join("manifest.json");
+    if try_load_node_record(&prepared, std::slice::from_ref(&manifest_path))?.is_some() {
+        let manifest_value = read_json_value(&manifest_path)?;
+        let tile_count = live_nexrad_tile_count(&manifest_value)?;
+        return Ok(BuiltLiveNexradState {
+            version,
+            state_source_dir: output_dir,
+            manifest_source_path: manifest_path,
+            manifest_value,
+            tile_count,
+        });
+    }
+    let _build_lock = match claim_or_wait_for_node(&prepared, std::slice::from_ref(&manifest_path))?
+    {
+        NodeCacheState::CacheHit(_record) => {
+            let manifest_value = read_json_value(&manifest_path)?;
+            let tile_count = live_nexrad_tile_count(&manifest_value)?;
+            return Ok(BuiltLiveNexradState {
+                version,
+                state_source_dir: output_dir,
+                manifest_source_path: manifest_path,
+                manifest_value,
+                tile_count,
+            });
+        }
+        NodeCacheState::Build(lock) => lock,
+    };
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    if output_dir.exists() {
+        fs::remove_dir_all(&output_dir)
+            .with_context(|| format!("failed to clear {}", output_dir.display()))?;
+    }
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
+    build_nexrad_source_grid_tiles(
+        &source_gz_path,
+        &output_dir,
+        &version,
+        &observed_at_utc.and_utc().to_rfc3339(),
+        &source_file_name,
+        &source_sha256,
+    )?;
+    let manifest_value = read_json_value(&manifest_path)?;
+    let tile_count = live_nexrad_tile_count(&manifest_value)?;
+    let outputs = BTreeMap::from([(
+        "manifest".to_string(),
+        relative_artifact_path(&manifest_path, &config.build_root),
+    )]);
+    write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok(BuiltLiveNexradState {
+        version,
+        state_source_dir: output_dir,
+        manifest_source_path: manifest_path,
+        manifest_value,
+        tile_count,
+    })
+}
+
+fn publish_live_nexrad(
+    live_root: &Path,
+    built: BuiltLiveNexradState,
+) -> anyhow::Result<UpdatedLiveFeedResult> {
+    let BuiltLiveNexradState {
+        version,
+        state_source_dir,
+        manifest_source_path,
+        manifest_value,
+        tile_count,
+    } = built;
+    let state_dir = live_root.join("states").join("nexrad").join(&version);
+    let version_dir = live_root.join("versions").join("nexrad");
+    fs::create_dir_all(&version_dir)
+        .with_context(|| format!("failed to create {}", version_dir.display()))?;
+
+    let state_sha256 = canonical_json_sha256(&manifest_value)?;
+    let manifest_bytes = fs::read(&manifest_source_path)
+        .with_context(|| format!("failed to read {}", manifest_source_path.display()))?;
+    let state_blob_sha256 = sha256_hex(&manifest_bytes);
+    let current_manifest_path = state_dir.join("manifest.json");
+    let needs_publish = if current_manifest_path.is_file() {
+        canonical_json_sha256(&read_json_value(&current_manifest_path)?)? != state_sha256
+    } else {
+        true
+    };
+    if needs_publish {
+        if state_dir.exists() {
+            fs::remove_dir_all(&state_dir)
+                .with_context(|| format!("failed to remove {}", state_dir.display()))?;
+        }
+        hardlink_dir_recursive(&state_source_dir, &state_dir)?;
+    }
+
+    let state_ref = LivePayloadRef {
+        url: live_feeds_relative_url(live_root, &current_manifest_path)?,
+        bytes: manifest_bytes.len() as u64,
+        blob_sha256: state_blob_sha256,
+        state_sha256: state_sha256.clone(),
+    };
+    let version_manifest = LiveFeedVersionManifest {
+        schema_version: 1,
+        product: "nexrad".to_string(),
+        version: version.clone(),
+        previous: None,
+        state: state_ref,
+        delta_from_previous: None,
+    };
+    let version_manifest_path = version_dir.join(format!("{version}.json"));
+    write_json_pretty_file(&version_manifest_path, &version_manifest)?;
+    let current = merge_live_feed_current(
+        live_root,
+        "nexrad",
+        LiveFeedCurrentEntry {
+            current: version.clone(),
+            version_manifest_url: live_feeds_relative_url(live_root, &version_manifest_path)?,
+            state_url: live_feeds_relative_url(live_root, &current_manifest_path)?,
+            state_sha256,
+        },
+    )?;
+    write_live_feeds_current_manifest(live_root, &current)?;
+
+    Ok(UpdatedLiveFeedResult {
+        product: "nexrad".to_string(),
+        version,
+        state_path: current_manifest_path,
+        delta_path: None,
+        changed_count: tile_count,
+        removed_count: 0,
+    })
+}
+
+fn parse_nexrad_observed_at_utc(file_name: &str) -> anyhow::Result<NaiveDateTime> {
+    let suffix = file_name
+        .strip_prefix("CONUS_L2_CREF_QCD_")
+        .with_context(|| format!("unexpected NEXRAD source filename: {file_name}"))?;
+    let (date, time_with_ext) = suffix
+        .split_once('_')
+        .with_context(|| format!("unexpected NEXRAD source filename: {file_name}"))?;
+    let time = time_with_ext
+        .strip_suffix(".tif.gz")
+        .with_context(|| format!("unexpected NEXRAD source filename: {file_name}"))?;
+    NaiveDateTime::parse_from_str(&(date.to_string() + time), "%Y%m%d%H%M%S")
+        .with_context(|| format!("failed to parse NEXRAD observed time from {file_name}"))
+}
+
+fn live_nexrad_tile_count(manifest: &serde_json::Value) -> anyhow::Result<usize> {
+    let levels = manifest
+        .get("levels")
+        .and_then(serde_json::Value::as_array)
+        .context("NEXRAD source-grid manifest missing levels")?;
+    Ok(levels
+        .iter()
+        .map(|level| {
+            let cols = level
+                .get("tile_cols")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let rows = level
+                .get("tile_rows")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            (cols * rows) as usize
+        })
+        .sum())
+}
+
+fn build_nexrad_source_grid_tiles(
+    source_gz_path: &Path,
+    output_dir: &Path,
+    version: &str,
+    observed_at_utc: &str,
+    source_file: &str,
+    source_sha256: &str,
+) -> anyhow::Result<()> {
+    let script_path = output_dir.join("build_nexrad_source_grid_tiles.py");
+    fs::write(&script_path, NEXRAD_SOURCE_GRID_TILE_SCRIPT)
+        .with_context(|| format!("failed to write {}", script_path.display()))?;
+    let output = Command::new("python3")
+        .arg(&script_path)
+        .arg("--source-gz")
+        .arg(source_gz_path)
+        .arg("--output-dir")
+        .arg(output_dir)
+        .arg("--state-id")
+        .arg(version)
+        .arg("--observed-at-utc")
+        .arg(observed_at_utc)
+        .arg("--source-file")
+        .arg(source_file)
+        .arg("--source-sha256")
+        .arg(source_sha256)
+        .arg("--tile-size")
+        .arg("512")
+        .arg("--res-level")
+        .arg("0")
+        .arg("--res-level")
+        .arg("1")
+        .arg("--res-level")
+        .arg("2")
+        .arg("--res-level")
+        .arg("3")
+        .output()
+        .with_context(|| format!("failed to run {}", script_path.display()))?;
+    if !output.status.success() {
+        bail!(
+            "NEXRAD source-grid tiler failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fs::remove_file(&script_path)
+        .with_context(|| format!("failed to remove {}", script_path.display()))?;
+    Ok(())
 }
 
 fn read_live_feeds_current(root: &Path) -> anyhow::Result<Option<LiveFeedsCurrentManifest>> {
@@ -14438,6 +14854,149 @@ if __name__ == '__main__':
     main()
 "#;
 
+const NEXRAD_SOURCE_GRID_TILE_SCRIPT: &str = r#"
+import argparse
+import gzip
+import json
+import shutil
+from pathlib import Path
+
+import numpy as np
+from osgeo import gdal
+from PIL import Image
+
+
+def open_source(source_gz, output_dir):
+    tif_path = output_dir / 'source.tif'
+    with gzip.open(source_gz, 'rb') as src, open(tif_path, 'wb') as dst:
+        shutil.copyfileobj(src, dst)
+    dataset = gdal.Open(str(tif_path))
+    if dataset is None:
+        raise SystemExit(f'failed to open {tif_path}')
+    return dataset
+
+
+def band_to_uint8(values):
+    if values.dtype == np.uint8:
+        return values
+    values = values.astype(np.float32)
+    max_value = float(np.nanmax(values)) if values.size else 0.0
+    if max_value <= 255.0:
+        return np.clip(values, 0, 255).astype(np.uint8)
+    return np.clip(values * (255.0 / max_value), 0, 255).astype(np.uint8)
+
+
+def read_rgba(dataset):
+    if dataset.RasterCount == 1:
+        band = dataset.GetRasterBand(1)
+        values = band.ReadAsArray()
+        color_table = band.GetRasterColorTable()
+        if color_table is not None:
+            count = color_table.GetCount()
+            lut = np.zeros((max(count, 256), 4), dtype=np.uint8)
+            for index in range(count):
+                red, green, blue, alpha = color_table.GetColorEntry(index)
+                lut[index] = [red, green, blue, alpha]
+            indices = np.clip(values.astype(np.int64), 0, lut.shape[0] - 1)
+            rgba = lut[indices]
+        else:
+            gray = band_to_uint8(values)
+            alpha = np.where(gray == 0, 0, 255).astype(np.uint8)
+            rgba = np.dstack([gray, gray, gray, alpha])
+    else:
+        red = band_to_uint8(dataset.GetRasterBand(1).ReadAsArray())
+        green = band_to_uint8(dataset.GetRasterBand(2).ReadAsArray())
+        blue = band_to_uint8(dataset.GetRasterBand(3).ReadAsArray())
+        if dataset.RasterCount >= 4:
+            alpha = band_to_uint8(dataset.GetRasterBand(4).ReadAsArray())
+        else:
+            alpha = np.full(red.shape, 255, dtype=np.uint8)
+        blank = (red == 0) & (green == 0) & (blue == 0)
+        alpha = np.where(blank, 0, alpha).astype(np.uint8)
+        rgba = np.dstack([red, green, blue, alpha])
+    return np.ascontiguousarray(rgba, dtype=np.uint8)
+
+
+def write_tiles(rgba, output_dir, res, tile_size):
+    stride = 1 << res
+    level = rgba[::stride, ::stride, :]
+    height, width = level.shape[:2]
+    tile_cols = (width + tile_size - 1) // tile_size
+    tile_rows = (height + tile_size - 1) // tile_size
+    level_root = output_dir / 'tiles' / f'res{res}'
+    for tile_y in range(tile_rows):
+        y0 = tile_y * tile_size
+        y1 = min(y0 + tile_size, height)
+        for tile_x in range(tile_cols):
+            x0 = tile_x * tile_size
+            x1 = min(x0 + tile_size, width)
+            tile = level[y0:y1, x0:x1, :]
+            tile_path = level_root / str(tile_x) / f'{tile_y}.png'
+            tile_path.parent.mkdir(parents=True, exist_ok=True)
+            Image.fromarray(tile, 'RGBA').save(tile_path, 'PNG', optimize=True)
+    return {
+        'res': res,
+        'width': width,
+        'height': height,
+        'tile_cols': tile_cols,
+        'tile_rows': tile_rows,
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--source-gz', required=True)
+    parser.add_argument('--output-dir', required=True)
+    parser.add_argument('--state-id', required=True)
+    parser.add_argument('--observed-at-utc', required=True)
+    parser.add_argument('--source-file', required=True)
+    parser.add_argument('--source-sha256', required=True)
+    parser.add_argument('--tile-size', type=int, required=True)
+    parser.add_argument('--res-level', type=int, action='append', required=True)
+    args = parser.parse_args()
+
+    output_dir = Path(args.output_dir)
+    dataset = open_source(Path(args.source_gz), output_dir)
+    source_width = dataset.RasterXSize
+    source_height = dataset.RasterYSize
+    projection_wkt = dataset.GetProjection()
+    geo_transform = list(dataset.GetGeoTransform())
+    rgba = read_rgba(dataset)
+    dataset = None
+    source_tif = output_dir / 'source.tif'
+    if source_tif.exists():
+        source_tif.unlink()
+    levels = [
+        write_tiles(rgba, output_dir, res, args.tile_size)
+        for res in sorted(set(args.res_level))
+    ]
+    manifest = {
+        'schema_version': 1,
+        'product': 'nexrad',
+        'state_id': args.state_id,
+        'observed_at_utc': args.observed_at_utc,
+        'source_file': args.source_file,
+        'source_sha256': args.source_sha256,
+        'tile_size': args.tile_size,
+        'res-levels': [level['res'] for level in levels],
+        'source_grid': {
+            'width': source_width,
+            'height': source_height,
+            'projection_wkt': projection_wkt,
+            'geo_transform': geo_transform,
+        },
+        'tile_path_template': 'tiles/res{res}/{x}/{y}.png',
+        'levels': levels,
+    }
+    (output_dir / 'manifest.json').write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + '\n'
+    )
+
+
+if __name__ == '__main__':
+    main()
+"#;
+
 const TERRAIN_TILE_SCRIPT: &str = r#"
 import argparse, gzip, json, math, struct
 from concurrent.futures import ProcessPoolExecutor
@@ -16905,6 +17464,12 @@ impl ProductBuildConfig {
                         args.get(index + 1)
                             .context("missing value for --build-root")?,
                     );
+                    index += 2;
+                }
+                "--source-root" => {
+                    let _ = args
+                        .get(index + 1)
+                        .context("missing value for --source-root")?;
                     index += 2;
                 }
                 "--cycle" => {

@@ -2505,6 +2505,12 @@ fn main() -> anyhow::Result<()> {
                         .unwrap_or_else(|| "none".to_string())
                 );
             }
+            for failure in result.failures {
+                println!(
+                    "failed {} phase={} error={}",
+                    failure.product, failure.phase, failure.error
+                );
+            }
         }
         Some("gc-build-cache") => {
             let config = build_cache_gc_config_from_args(&args[2..])?;

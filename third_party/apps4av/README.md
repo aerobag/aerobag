@@ -6,8 +6,6 @@ files retain their upstream provenance.
 
 Current contents:
 - chart cutline GeoJSON files used to crop FAA chart TIFFs before tiling
-- `geo/geo.csv`, a one-degree grid whose geoid-height column is currently used
-  as a terrain vertical-datum approximation
 
 Origin:
 - Upstream project: https://github.com/apps4av/avare

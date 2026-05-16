@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
     fs::{File, OpenOptions},
-    io::{BufRead, Write},
+    io::{BufRead, Read, Write},
     os::unix::{ffi::OsStrExt, fs::PermissionsExt},
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
@@ -70,6 +70,9 @@ const OFFLINE_CHART_REGION_UNION_SNAP_GRID_DEGREES: f64 = 0.0001;
 const OFFLINE_CHART_REGION_UNION_EXPAND_DEGREES: f64 = 0.01;
 const WMM_COEFFICIENTS_URL: &str =
     "https://www.ncei.noaa.gov/sites/default/files/2024-12/WMM2025COF.zip";
+const EGM2008_INTERPOLATION_GRID_URL: &str =
+    "https://earth-info.nga.mil/php/download.php?file=egm-08interpolation";
+const EGM2008_GRID_MEMBER: &str = "Und_min2.5x2.5_egm2008_isw=82_WGS84_TideFree_SE";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProductBuildProfile {
@@ -1043,6 +1046,11 @@ enum ProductTaskValue {
         cof_path: PathBuf,
         metadata_path: PathBuf,
     },
+    GeoidSource {
+        csv_path: PathBuf,
+        metadata_path: PathBuf,
+        source_fetched_at_utc: Option<String>,
+    },
     FingerprintedTppSource {
         source: AssetSource,
         fingerprint: String,
@@ -1449,6 +1457,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         WorldBasemapBuild,
         WorldBasemapPublish,
         TerrainDiscovery,
+        GeoidSource,
         TerrainBuild { region: Region },
         TerrainWideBuild,
         TerrainPublish { region: Region },
@@ -1682,6 +1691,12 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         });
         if include_static_terrain_products() {
             pending_tasks.push(GraphScheduledTask {
+                id: "geoid-source".to_string(),
+                deps: vec![],
+                weight: 1,
+                kind: ProductScheduledTaskKind::GeoidSource,
+            });
+            pending_tasks.push(GraphScheduledTask {
                 id: "terrain-discovery".to_string(),
                 deps: vec![],
                 weight: 1,
@@ -1691,7 +1706,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 let region_id = region.code().to_ascii_lowercase();
                 pending_tasks.push(GraphScheduledTask {
                     id: format!("build-terrain-{region_id}"),
-                    deps: vec!["terrain-discovery".to_string()],
+                    deps: vec!["terrain-discovery".to_string(), "geoid-source".to_string()],
                     weight: 6,
                     kind: ProductScheduledTaskKind::TerrainBuild { region: *region },
                 });
@@ -1787,7 +1802,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         });
         let mut product_unpack_deps = vec![
             "current-artifacts".to_string(),
-            "publish-geo".to_string(),
             "publish-world-basemap".to_string(),
         ];
         if include_static_terrain_products() {
@@ -2609,6 +2623,22 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             completion_detail: format!("cache_hit={cache_hit}"),
                         })
                     }
+                    ProductScheduledTaskKind::GeoidSource => {
+                        let source = build_egm2008_geoid_source_node(&config)?;
+                        let cache_hit = source.node_record.cache_hit;
+                        Ok(ProductTaskCompletion {
+                            node_records: vec![normalize_node_record_paths(
+                                source.node_record,
+                                &config.build_root,
+                            )],
+                            value: ProductTaskValue::GeoidSource {
+                                csv_path: source.csv_path,
+                                metadata_path: source.metadata_path,
+                                source_fetched_at_utc: source.source_fetched_at_utc,
+                            },
+                            completion_detail: format!("cache_hit={cache_hit}"),
+                        })
+                    }
                     ProductScheduledTaskKind::TerrainBuild { region } => {
                         let (index_path, source_fetched_at_utc) =
                             match task_values_snapshot.get("terrain-discovery") {
@@ -2618,12 +2648,28 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 }) => (index_path.clone(), source_fetched_at_utc.clone()),
                                 _ => bail!("missing terrain discovery output"),
                             };
+                        let (geoid_csv_path, geoid_metadata_path, geoid_fetched_at_utc) =
+                            match task_values_snapshot.get("geoid-source") {
+                                Some(ProductTaskValue::GeoidSource {
+                                    csv_path,
+                                    metadata_path,
+                                    source_fetched_at_utc,
+                                }) => (
+                                    csv_path.clone(),
+                                    metadata_path.clone(),
+                                    source_fetched_at_utc.clone(),
+                                ),
+                                _ => bail!("missing geoid source output"),
+                            };
                         let (zip_path, source_version, source_fetched_at_utc, record) =
                             build_terrain_product(
                                 &config,
                                 region,
                                 &index_path,
                                 source_fetched_at_utc,
+                                &geoid_csv_path,
+                                &geoid_metadata_path,
+                                geoid_fetched_at_utc,
                             )?;
                         let cache_hit = record.cache_hit;
                         let (zip_sha256, zip_size_bytes) = node_output_file_detail(&record, "zip");
@@ -5088,6 +5134,31 @@ struct BuiltWmmSource {
     node_record: NodeRecord,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Egm2008GeoidSourceMetadata {
+    source: String,
+    source_url: String,
+    source_zip_sha256: String,
+    source_fetched_at_utc: Option<String>,
+    model: String,
+    model_effective_date: String,
+    grid_release_date: String,
+    official_approval_date: String,
+    grid_spacing: String,
+    vertical_reference: String,
+    generated_grid: String,
+    generated_grid_units: String,
+    citation: String,
+}
+
+#[derive(Debug, Clone)]
+struct BuiltGeoidSource {
+    csv_path: PathBuf,
+    metadata_path: PathBuf,
+    source_fetched_at_utc: Option<String>,
+    node_record: NodeRecord,
+}
+
 fn build_wmm_source_node(config: &ProductBuildConfig) -> anyhow::Result<BuiltWmmSource> {
     let fetch_cache = static_source_fetch_cache_config(config)?;
     let inputs = BTreeMap::from([
@@ -5163,6 +5234,199 @@ fn build_wmm_source_node(config: &ProductBuildConfig) -> anyhow::Result<BuiltWmm
         metadata_path,
         node_record: record,
     })
+}
+
+fn build_egm2008_geoid_source_node(
+    config: &ProductBuildConfig,
+) -> anyhow::Result<BuiltGeoidSource> {
+    let fetch_cache = static_source_fetch_cache_config(config)?;
+    let inputs = BTreeMap::from([
+        (
+            "source_url".to_string(),
+            EGM2008_INTERPOLATION_GRID_URL.to_string(),
+        ),
+        (
+            "fetch_cache_mode".to_string(),
+            format!("{:?}", fetch_cache.mode),
+        ),
+        (
+            "geoid_source_pipeline".to_string(),
+            "egm2008-geoid-source-v1".to_string(),
+        ),
+    ]);
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, "egm2008-geoid-source")?,
+        "egm2008-geoid-source",
+        &inputs,
+    )?;
+    let output_dir = prepared.dir.join("output");
+    let input_dir = output_dir.join("input");
+    let zip_path = input_dir.join("EGM2008_Interpolation_Grid.zip");
+    let source_grid_path = input_dir.join(EGM2008_GRID_MEMBER);
+    let csv_path = output_dir.join("egm2008_geoid_1deg_feet.csv");
+    let metadata_path = output_dir.join("egm2008-geoid-source.json");
+    let expected = vec![csv_path.clone(), metadata_path.clone()];
+    let record = run_cached_node(prepared, inputs, &expected, |_prepared| {
+        if output_dir.exists() {
+            fs::remove_dir_all(&output_dir)
+                .with_context(|| format!("failed to remove {}", output_dir.display()))?;
+        }
+        fs::create_dir_all(&input_dir)
+            .with_context(|| format!("failed to create {}", input_dir.display()))?;
+        let provenance_dir = output_dir.join("provenance");
+        prefetch_requests_with_provenance(
+            &[PrefetchRequest::new(EGM2008_INTERPOLATION_GRID_URL)
+                .with_logical_file_name("EGM2008_Interpolation_Grid.zip")],
+            &input_dir,
+            1,
+            Some(&fetch_cache),
+            &provenance_dir,
+            "egm2008-geoid-source",
+        )?;
+        build_egm2008_one_degree_geoid_csv(&source_grid_path, &csv_path)?;
+        validate_egm2008_one_degree_geoid_csv(&csv_path)?;
+        let source_fetched_at_utc =
+            source_fetched_at_utc_for_urls(&fetch_cache, &[EGM2008_INTERPOLATION_GRID_URL])?;
+        let metadata = Egm2008GeoidSourceMetadata {
+            source: "NGA Earth Gravitational Model 2008".to_string(),
+            source_url: EGM2008_INTERPOLATION_GRID_URL.to_string(),
+            source_zip_sha256: hash_file(&zip_path)?,
+            source_fetched_at_utc,
+            model: "EGM2008".to_string(),
+            model_effective_date: "2008-07-08".to_string(),
+            grid_release_date: "2009-05-01".to_string(),
+            official_approval_date: "2014-07-08".to_string(),
+            grid_spacing: "2.5 arc-minutes".to_string(),
+            vertical_reference: "WGS84 ellipsoid to EGM2008 geoid height".to_string(),
+            generated_grid: "one-degree integer latitude/longitude grid sampled from NGA 2.5-minute grid".to_string(),
+            generated_grid_units: "feet".to_string(),
+            citation: "NGA EGM2008; Pavlis, N. K., Holmes, S. A., Kenyon, S. C., and Factor, J. K. 2012. The development and evaluation of the Earth Gravitational Model 2008 (EGM2008), Journal of Geophysical Research: Solid Earth, 117(B4). https://doi.org/10.1029/2011JB008916".to_string(),
+        };
+        fs::write(&metadata_path, serde_json::to_vec_pretty(&metadata)?)
+            .with_context(|| format!("failed to write {}", metadata_path.display()))?;
+        Ok(BTreeMap::from([
+            (
+                "geoid_csv".to_string(),
+                relative_artifact_path(&csv_path, &config.build_root),
+            ),
+            (
+                "metadata".to_string(),
+                relative_artifact_path(&metadata_path, &config.build_root),
+            ),
+        ]))
+    })?;
+    let metadata: Egm2008GeoidSourceMetadata = serde_json::from_slice(
+        &fs::read(&metadata_path)
+            .with_context(|| format!("failed to read {}", metadata_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
+    Ok(BuiltGeoidSource {
+        csv_path,
+        metadata_path,
+        source_fetched_at_utc: metadata.source_fetched_at_utc,
+        node_record: record,
+    })
+}
+
+fn build_egm2008_one_degree_geoid_csv(
+    source_grid_path: &Path,
+    csv_path: &Path,
+) -> anyhow::Result<()> {
+    const NROWS: usize = 4321;
+    const NCOLS: usize = 8640;
+    const ROW_BYTES: usize = NCOLS * 4;
+    const METERS_TO_FEET: f64 = 3.280_839_895;
+
+    let mut source = File::open(source_grid_path)
+        .with_context(|| format!("failed to open {}", source_grid_path.display()))?;
+    let mut rows_by_lat = BTreeMap::<i32, Vec<f32>>::new();
+    for row_index in 0..NROWS {
+        let mut marker = [0u8; 4];
+        source
+            .read_exact(&mut marker)
+            .with_context(|| format!("failed to read row marker {row_index}"))?;
+        let record_bytes = u32::from_le_bytes(marker) as usize;
+        if record_bytes != ROW_BYTES {
+            bail!(
+                "unexpected EGM2008 row byte count at row {row_index}: expected {ROW_BYTES}, got {record_bytes}"
+            );
+        }
+        let mut row_bytes = vec![0u8; ROW_BYTES];
+        source
+            .read_exact(&mut row_bytes)
+            .with_context(|| format!("failed to read EGM2008 row {row_index}"))?;
+        source
+            .read_exact(&mut marker)
+            .with_context(|| format!("failed to read trailing row marker {row_index}"))?;
+        let trailing_record_bytes = u32::from_le_bytes(marker) as usize;
+        if trailing_record_bytes != ROW_BYTES {
+            bail!(
+                "unexpected EGM2008 trailing row byte count at row {row_index}: expected {ROW_BYTES}, got {trailing_record_bytes}"
+            );
+        }
+        if row_index % 24 != 0 {
+            continue;
+        }
+        let latitude = 90 - (row_index / 24) as i32;
+        if !(-90..90).contains(&latitude) {
+            continue;
+        }
+        let row = row_bytes
+            .chunks_exact(4)
+            .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            .collect::<Vec<_>>();
+        rows_by_lat.insert(latitude, row);
+    }
+    let mut output = String::with_capacity(180 * 360 * 16);
+    for latitude in -90..90 {
+        let row = rows_by_lat
+            .get(&latitude)
+            .with_context(|| format!("missing EGM2008 latitude row {latitude}"))?;
+        for longitude in -180..180 {
+            let normalized_longitude = if longitude < 0 {
+                longitude + 360
+            } else {
+                longitude
+            };
+            let column = (normalized_longitude as usize) * 24;
+            let geoid_height_feet = (f64::from(row[column]) * METERS_TO_FEET).round() as i32;
+            output.push_str(&format!("{latitude},{longitude},{geoid_height_feet},0\n"));
+        }
+    }
+    fs::write(csv_path, output).with_context(|| format!("failed to write {}", csv_path.display()))
+}
+
+fn validate_egm2008_one_degree_geoid_csv(csv_path: &Path) -> anyhow::Result<()> {
+    let text = fs::read_to_string(csv_path)
+        .with_context(|| format!("failed to read {}", csv_path.display()))?;
+    let values = text
+        .lines()
+        .map(|line| {
+            let columns = line.split(',').collect::<Vec<_>>();
+            if columns.len() != 4 {
+                bail!("invalid geoid CSV row: {line}");
+            }
+            Ok((
+                columns[0].parse::<i32>()?,
+                columns[1].parse::<i32>()?,
+                columns[2].parse::<i32>()?,
+            ))
+        })
+        .collect::<anyhow::Result<BTreeSet<_>>>()?;
+    if values.len() != 180 * 360 {
+        bail!(
+            "expected {} one-degree EGM2008 geoid rows, got {}",
+            180 * 360,
+            values.len()
+        );
+    }
+    if !values.contains(&(-90, -180, -99)) {
+        bail!("EGM2008 geoid sanity check failed at -90,-180");
+    }
+    if !values.contains(&(37, -119, -86)) {
+        bail!("EGM2008 geoid sanity check failed at 37,-119");
+    }
+    Ok(())
 }
 
 fn validate_wmm_model_against_test_values(model: &WmmModel, path: &Path) -> anyhow::Result<()> {
@@ -10552,6 +10816,9 @@ fn build_terrain_product(
     region: Region,
     terrain_index_path: &Path,
     source_fetched_at_utc: Option<String>,
+    geoid_csv_path: &Path,
+    geoid_metadata_path: &Path,
+    geoid_source_fetched_at_utc: Option<String>,
 ) -> anyhow::Result<(PathBuf, String, Option<String>, NodeRecord)> {
     let region_id = region.code().to_ascii_lowercase();
     let input_dir = artifact_root_from_build_root(&config.build_root)
@@ -10581,9 +10848,15 @@ fn build_terrain_product(
             &cached_selection.selection.urls,
             &cached_selection.sources,
             &cached_selection.selection.missing_cells,
-        );
+            Some((geoid_csv_path, geoid_metadata_path)),
+        )?;
         let version_label = fast_product_version_label(&source_fingerprint);
-        let inputs = terrain_product_inputs(region, &source_fingerprint)?;
+        let inputs = terrain_product_inputs(
+            region,
+            &source_fingerprint,
+            geoid_csv_path,
+            geoid_metadata_path,
+        )?;
         let prepared = prepare_node_at(
             &build_shared_node_dir(config, &format!("static-terrain-{region_id}"))?,
             &format!("static-terrain-{region_id}"),
@@ -10593,7 +10866,12 @@ fn build_terrain_product(
         let zip_path = output_dir.join(format!("terrain_{region_id}_{version_label}.zip"));
         let manifest_path = output_dir.join("manifest.json");
         if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), manifest_path])? {
-            return Ok((zip_path, version_label, source_fetched_at_utc, record));
+            return Ok((
+                zip_path,
+                version_label,
+                max_optional_utc(source_fetched_at_utc, geoid_source_fetched_at_utc),
+                record,
+            ));
         }
     }
     let dem_selection = prefetch_terrain_dems_with_fallback(
@@ -10612,16 +10890,23 @@ fn build_terrain_product(
             &dem_selection.urls,
             &sources,
             &dem_selection.missing_cells,
-        )
+            Some((geoid_csv_path, geoid_metadata_path)),
+        )?
     } else {
         terrain_source_fingerprint(
             &dem_selection.urls,
             &dem_paths,
             &dem_selection.missing_cells,
+            Some((geoid_csv_path, geoid_metadata_path)),
         )?
     };
     let version_label = fast_product_version_label(&source_fingerprint);
-    let inputs = terrain_product_inputs(region, &source_fingerprint)?;
+    let inputs = terrain_product_inputs(
+        region,
+        &source_fingerprint,
+        geoid_csv_path,
+        geoid_metadata_path,
+    )?;
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, &format!("static-terrain-{region_id}"))?,
         &format!("static-terrain-{region_id}"),
@@ -10632,7 +10917,12 @@ fn build_terrain_product(
     let manifest_path = output_dir.join("manifest.json");
     let _build_lock = match claim_or_wait_for_node(&prepared, &[zip_path.clone(), manifest_path])? {
         NodeCacheState::CacheHit(record) => {
-            return Ok((zip_path, version_label, source_fetched_at_utc, record));
+            return Ok((
+                zip_path,
+                version_label,
+                max_optional_utc(source_fetched_at_utc, geoid_source_fetched_at_utc),
+                record,
+            ));
         }
         NodeCacheState::Build(lock) => lock,
     };
@@ -10649,7 +10939,8 @@ fn build_terrain_product(
     build_terrain_region_tiles(
         region,
         &vrt_path,
-        &static_geoid_source_path(),
+        geoid_csv_path,
+        geoid_metadata_path,
         &output_dir,
         &version_label,
         &dem_selection,
@@ -10674,7 +10965,12 @@ fn build_terrain_product(
         utc_now_string(),
         started.elapsed().as_millis() as u64,
     )?;
-    Ok((zip_path, version_label, source_fetched_at_utc, record))
+    Ok((
+        zip_path,
+        version_label,
+        max_optional_utc(source_fetched_at_utc, geoid_source_fetched_at_utc),
+        record,
+    ))
 }
 
 fn build_terrain_wide_product(
@@ -10850,6 +11146,8 @@ fn composite_terrain_wide_tiles(
 fn terrain_product_inputs(
     region: Region,
     source_fingerprint: &str,
+    geoid_csv_path: &Path,
+    geoid_metadata_path: &Path,
 ) -> anyhow::Result<BTreeMap<String, String>> {
     let region_id = region.code().to_ascii_lowercase();
     Ok(BTreeMap::from([
@@ -10866,9 +11164,10 @@ fn terrain_product_inputs(
             "terrain_pipeline".to_string(),
             TERRAIN_PIPELINE_VERSION.to_string(),
         ),
+        ("geoid_csv".to_string(), hash_file(geoid_csv_path)?),
         (
-            "geoid_csv".to_string(),
-            hash_file(static_geoid_source_path())?,
+            "geoid_metadata".to_string(),
+            hash_file(geoid_metadata_path)?,
         ),
     ]))
 }
@@ -11339,6 +11638,15 @@ fn source_fetched_at_utc_for_urls(
     Ok(fetched_times.into_iter().max())
 }
 
+fn max_optional_utc(left: Option<String>, right: Option<String>) -> Option<String> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
+}
+
 fn build_world_basemap_tiles(
     land_shp: &Path,
     boundaries_shp: &Path,
@@ -11429,7 +11737,8 @@ fn build_shaded_relief_product(
             &cached_selection.selection.urls,
             &cached_selection.sources,
             &cached_selection.selection.missing_cells,
-        );
+            None,
+        )?;
         let version_label = fast_product_version_label(&source_fingerprint);
         let inputs = shaded_relief_product_inputs(
             region,
@@ -11474,12 +11783,14 @@ fn build_shaded_relief_product(
             &dem_selection.urls,
             &sources,
             &dem_selection.missing_cells,
-        )
+            None,
+        )?
     } else {
         terrain_source_fingerprint(
             &dem_selection.urls,
             &dem_paths,
             &dem_selection.missing_cells,
+            None,
         )?
     };
     let version_label = fast_product_version_label(&source_fingerprint);
@@ -12187,20 +12498,6 @@ fn hardlink_static_tile_zoom_subset(
     Ok(())
 }
 
-fn static_geoid_source_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("preprocessor-cli should live under workspace root")
-        .parent()
-        .expect("workspace root should live under product")
-        .parent()
-        .expect("product should live under repo root")
-        .join("third_party")
-        .join("apps4av")
-        .join("geo")
-        .join("geo.csv")
-}
-
 fn terrain_tnmaccess_request(region: Region) -> PrefetchRequest {
     let bounds = region.bounds();
     let bbox = format!(
@@ -12813,10 +13110,21 @@ fn terrain_source_fingerprint(
     dem_urls: &[String],
     dem_paths: &[PathBuf],
     missing_cells: &[String],
+    geoid_paths: Option<(&Path, &Path)>,
 ) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
-    hasher.update(b"terrain-v1");
+    hasher.update(if geoid_paths.is_some() {
+        b"terrain-v2".as_slice()
+    } else {
+        b"terrain-v1".as_slice()
+    });
     hasher.update(TERRAIN_ZOOM.to_string().as_bytes());
+    if let Some((geoid_csv_path, geoid_metadata_path)) = geoid_paths {
+        hasher.update(hash_file(geoid_csv_path)?.as_bytes());
+        hasher.update([0]);
+        hasher.update(hash_file(geoid_metadata_path)?.as_bytes());
+        hasher.update([0xff]);
+    }
     for url in dem_urls {
         hasher.update(url.as_bytes());
         hasher.update([0]);
@@ -12843,10 +13151,21 @@ fn terrain_source_fingerprint_from_cached(
     dem_urls: &[String],
     sources: &[CachedTerrainDemSource],
     missing_cells: &[String],
-) -> String {
+    geoid_paths: Option<(&Path, &Path)>,
+) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
-    hasher.update(b"terrain-v1");
+    hasher.update(if geoid_paths.is_some() {
+        b"terrain-v2".as_slice()
+    } else {
+        b"terrain-v1".as_slice()
+    });
     hasher.update(TERRAIN_ZOOM.to_string().as_bytes());
+    if let Some((geoid_csv_path, geoid_metadata_path)) = geoid_paths {
+        hasher.update(hash_file(geoid_csv_path)?.as_bytes());
+        hasher.update([0]);
+        hasher.update(hash_file(geoid_metadata_path)?.as_bytes());
+        hasher.update([0xff]);
+    }
     for url in dem_urls {
         hasher.update(url.as_bytes());
         hasher.update([0]);
@@ -12861,7 +13180,7 @@ fn terrain_source_fingerprint_from_cached(
         hasher.update(cell.as_bytes());
         hasher.update([0xff]);
     }
-    format!("{:x}", hasher.finalize())
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn build_terrain_vrt(vrt_path: &Path, dem_paths: &[PathBuf]) -> anyhow::Result<()> {
@@ -12883,6 +13202,7 @@ fn build_terrain_region_tiles(
     region: Region,
     vrt_path: &Path,
     geoid_csv_path: &Path,
+    geoid_metadata_path: &Path,
     output_dir: &Path,
     version_label: &str,
     dem_selection: &TerrainDemSelection,
@@ -12898,6 +13218,8 @@ fn build_terrain_region_tiles(
         .arg(vrt_path)
         .arg("--geoid-csv")
         .arg(geoid_csv_path)
+        .arg("--geoid-metadata")
+        .arg(geoid_metadata_path)
         .arg("--output-dir")
         .arg(output_dir)
         .arg("--region")
@@ -14047,7 +14369,7 @@ def load_geoid(path):
     values = {}
     with open(path) as f:
         for line in f:
-            lat, lon, height, _decl = [int(x) for x in line.strip().split(',')]
+            lat, lon, height, *_unused = [int(x) for x in line.strip().split(',')]
             values[(lat, lon)] = height
     return values
 
@@ -14188,6 +14510,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--vrt', required=True)
     ap.add_argument('--geoid-csv', required=True)
+    ap.add_argument('--geoid-metadata', required=True)
     ap.add_argument('--output-dir', required=True)
     ap.add_argument('--region', required=True)
     ap.add_argument('--bbox', required=True)
@@ -14198,6 +14521,7 @@ def main():
     ap.add_argument('--missing-cells', default='')
     ap.add_argument('--workers', required=True, type=int)
     args = ap.parse_args()
+    geoid_metadata = json.loads(Path(args.geoid_metadata).read_text())
     west, south, east, north = [float(x) for x in args.bbox.split(',')]
     root = Path(args.output_dir)
     tiles_root = root / 'tiles'
@@ -14234,7 +14558,8 @@ def main():
         'sample_vertical_datum': 'WGS84 ellipsoid',
         'source_dem': 'USGS 3DEP 1 arc-second DEM',
         'source_dem_vertical_datum': 'source tile metadata; generally NAVD88 in CONUS',
-        'geoid_model': 'Apps4Av Avare geo.csv one-degree geoid-height grid, applied once per tile at tile center (temporary approximation)',
+        'geoid_model': geoid_metadata,
+        'geoid_application_policy': 'one-degree geoid-height grid applied once per tile at tile center',
         'worker_count': workers,
         'refresh_policy': {
             'identity': 'published filename is content-addressed by ZIP bytes',

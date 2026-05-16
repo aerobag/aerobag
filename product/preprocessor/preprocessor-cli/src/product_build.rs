@@ -3610,6 +3610,7 @@ fn publish_live_metars(
 }
 
 fn build_live_nexrad_state(config: &ProductBuildConfig) -> anyhow::Result<BuiltLiveNexradState> {
+    let debug_lat_lon_grid = env_flag("NEXRAD_DEBUG_LATLON_GRID");
     let artifact_root = artifact_root_from_build_root(&config.build_root).to_path_buf();
     let generated_at_utc = Utc::now()
         .with_second(0)
@@ -3628,60 +3629,81 @@ fn build_live_nexrad_state(config: &ProductBuildConfig) -> anyhow::Result<BuiltL
     fs::create_dir_all(&input_dir)
         .with_context(|| format!("failed to create {}", input_dir.display()))?;
 
-    let fetch_cache = FetchCacheConfig {
-        root: config.fetch_cache_root.clone(),
-        mode: FetchCacheMode::parse(&config.fetch_cache_mode)?,
+    let source_override = env_path("AEROBAG_LIVE_NEXRAD_SOURCE_GZ");
+    let (source_gz_path, source_file_name) = if let Some(source_path) = source_override {
+        let source_file_name = source_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("AEROBAG_LIVE_NEXRAD_SOURCE_GZ must name a source .tif.gz")?
+            .to_string();
+        (source_path, source_file_name)
+    } else {
+        let fetch_cache = FetchCacheConfig {
+            root: config.fetch_cache_root.clone(),
+            mode: FetchCacheMode::parse(&config.fetch_cache_mode)?,
+        };
+        let provenance_dir = scratch_root.join("meta").join("provenance").join("nexrad");
+        fs::create_dir_all(&provenance_dir)
+            .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
+
+        let index_url = "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/";
+        let index_request = PrefetchRequest::new(index_url)
+            .with_logical_file_name("index.html")
+            .allow_html();
+        prefetch_requests_with_provenance(
+            std::slice::from_ref(&index_request),
+            &input_dir,
+            config.fetch_jobs,
+            Some(&fetch_cache),
+            &provenance_dir,
+            "nexrad-index",
+        )?;
+
+        let listings = parse_nexrad_index_for_product(&input_dir.join("index.html"))?;
+        let source_file_name = listings
+            .first()
+            .cloned()
+            .context("NEXRAD index did not contain any source frames")?;
+        let source_request = PrefetchRequest::new(format!("{index_url}{source_file_name}"))
+            .with_logical_file_name(&source_file_name);
+        prefetch_archives_with_provenance(
+            std::slice::from_ref(&source_request),
+            &input_dir,
+            config.fetch_jobs,
+            Some(&fetch_cache),
+            &provenance_dir,
+            "nexrad-frame",
+        )?;
+        (input_dir.join(&source_file_name), source_file_name)
     };
-    let provenance_dir = scratch_root.join("meta").join("provenance").join("nexrad");
-    fs::create_dir_all(&provenance_dir)
-        .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
-
-    let index_url = "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/";
-    let index_request = PrefetchRequest::new(index_url)
-        .with_logical_file_name("index.html")
-        .allow_html();
-    prefetch_requests_with_provenance(
-        std::slice::from_ref(&index_request),
-        &input_dir,
-        config.fetch_jobs,
-        Some(&fetch_cache),
-        &provenance_dir,
-        "nexrad-index",
-    )?;
-
-    let listings = parse_nexrad_index_for_product(&input_dir.join("index.html"))?;
-    let source_file_name = listings
-        .first()
-        .cloned()
-        .context("NEXRAD index did not contain any source frames")?;
     let observed_at_utc = parse_nexrad_observed_at_utc(&source_file_name)?;
-    let source_request = PrefetchRequest::new(format!("{index_url}{source_file_name}"))
-        .with_logical_file_name(&source_file_name);
-    prefetch_archives_with_provenance(
-        std::slice::from_ref(&source_request),
-        &input_dir,
-        config.fetch_jobs,
-        Some(&fetch_cache),
-        &provenance_dir,
-        "nexrad-frame",
-    )?;
-
-    let source_gz_path = input_dir.join(&source_file_name);
     let source_sha256 = hash_file(&source_gz_path)?;
+    let source_grid_script_hash = hash_text(NEXRAD_SOURCE_GRID_TILE_SCRIPT);
+    let debug_version_suffix = if debug_lat_lon_grid {
+        format!("_debuggrid{}", &source_grid_script_hash[..8])
+    } else {
+        String::new()
+    };
     let version = format!(
-        "{}_{}",
+        "{}_{}{}",
         observed_at_utc.format("%Y%m%dT%H%M%SZ"),
-        &source_sha256[..16]
+        &source_sha256[..16],
+        debug_version_suffix
     );
     let inputs = BTreeMap::from([
         ("product_id".to_string(), "nexrad-source-grid".to_string()),
         ("source_file".to_string(), source_file_name.clone()),
         ("source_sha256".to_string(), source_sha256.clone()),
+        ("state_id".to_string(), version.clone()),
         ("res_levels".to_string(), "0,1,2,3".to_string()),
         ("tile_size".to_string(), "512".to_string()),
         (
+            "debug_lat_lon_grid".to_string(),
+            debug_lat_lon_grid.to_string(),
+        ),
+        (
             "source_grid_script".to_string(),
-            hash_text(NEXRAD_SOURCE_GRID_TILE_SCRIPT),
+            source_grid_script_hash,
         ),
     ]);
     let prepared = prepare_node_at(
@@ -3732,6 +3754,7 @@ fn build_live_nexrad_state(config: &ProductBuildConfig) -> anyhow::Result<BuiltL
         &observed_at_utc.and_utc().to_rfc3339(),
         &source_file_name,
         &source_sha256,
+        debug_lat_lon_grid,
     )?;
     let manifest_value = read_json_value(&manifest_path)?;
     let tile_count = live_nexrad_tile_count(&manifest_value)?;
@@ -3871,6 +3894,7 @@ fn build_nexrad_source_grid_tiles(
     observed_at_utc: &str,
     source_file: &str,
     source_sha256: &str,
+    debug_lat_lon_grid: bool,
 ) -> anyhow::Result<()> {
     let script_path = output_dir.join("build_nexrad_source_grid_tiles.py");
     fs::write(&script_path, NEXRAD_SOURCE_GRID_TILE_SCRIPT)
@@ -3899,6 +3923,7 @@ fn build_nexrad_source_grid_tiles(
         .arg("2")
         .arg("--res-level")
         .arg("3")
+        .args(debug_lat_lon_grid.then_some("--debug-lat-lon-grid"))
         .output()
         .with_context(|| format!("failed to run {}", script_path.display()))?;
     if !output.status.success() {
@@ -14863,7 +14888,7 @@ from pathlib import Path
 
 import numpy as np
 from osgeo import gdal
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 def open_source(source_gz, output_dir):
@@ -14917,9 +14942,95 @@ def read_rgba(dataset):
     return np.ascontiguousarray(rgba, dtype=np.uint8)
 
 
-def write_tiles(rgba, output_dir, res, tile_size):
+def pixel_for_lon_lat(lon, lat, geo_transform):
+    origin_lon, pixel_lon, rot_x, origin_lat, rot_y, pixel_lat = geo_transform
+    if abs(rot_x) > 1e-12 or abs(rot_y) > 1e-12:
+        raise SystemExit('debug lat-lon grid only supports north-up source grids')
+    if pixel_lon == 0 or pixel_lat == 0:
+        raise SystemExit('debug lat-lon grid source has invalid geotransform')
+    return (
+        (lon - origin_lon) / pixel_lon,
+        (lat - origin_lat) / pixel_lat,
+    )
+
+
+def composite_lat_lon_grid_under_radar(rgba, geo_transform):
+    height, width = rgba.shape[:2]
+    origin_lon, pixel_lon, _rot_x, origin_lat, _rot_y, pixel_lat = geo_transform
+    east_lon = origin_lon + pixel_lon * width
+    south_lat = origin_lat + pixel_lat * height
+    west = min(origin_lon, east_lon)
+    east = max(origin_lon, east_lon)
+    south = min(origin_lat, south_lat)
+    north = max(origin_lat, south_lat)
+    grid = np.zeros((height, width, 4), dtype=np.uint8)
+    lon_start = int(np.ceil(west))
+    lon_end = int(np.floor(east))
+    lat_start = int(np.ceil(south))
+    lat_end = int(np.floor(north))
+    major_lon = (255, 255, 255, 210)
+    minor_lon = (30, 80, 255, 190)
+    major_lat = (255, 255, 255, 210)
+    minor_lat = (255, 70, 20, 190)
+
+    def paint_boundary_column(x, color, width_px):
+        half = width_px / 2.0
+        start = max(0, int(np.floor(x - half)))
+        end = min(width, int(np.ceil(x + half)))
+        for col in range(start, end):
+            coverage = max(0.0, min(col + 1.0, x + half) - max(col, x - half))
+            if coverage <= 0.0:
+                continue
+            alpha = int(round(color[3] * min(coverage, 1.0)))
+            stronger = alpha > grid[:, col, 3]
+            grid[stronger, col, 0] = color[0]
+            grid[stronger, col, 1] = color[1]
+            grid[stronger, col, 2] = color[2]
+            grid[stronger, col, 3] = alpha
+
+    def paint_boundary_row(y, color, width_px):
+        half = width_px / 2.0
+        start = max(0, int(np.floor(y - half)))
+        end = min(height, int(np.ceil(y + half)))
+        for row in range(start, end):
+            coverage = max(0.0, min(row + 1.0, y + half) - max(row, y - half))
+            if coverage <= 0.0:
+                continue
+            alpha = int(round(color[3] * min(coverage, 1.0)))
+            stronger = alpha > grid[row, :, 3]
+            grid[row, stronger, 0] = color[0]
+            grid[row, stronger, 1] = color[1]
+            grid[row, stronger, 2] = color[2]
+            grid[row, stronger, 3] = alpha
+
+    for lon in range(lon_start, lon_end + 1):
+        x, _y = pixel_for_lon_lat(lon, south, geo_transform)
+        color = major_lon if lon % 5 == 0 else minor_lon
+        width_px = 3 if lon % 5 == 0 else 1
+        paint_boundary_column(x, color, width_px)
+    for lat in range(lat_start, lat_end + 1):
+        _x, y = pixel_for_lon_lat(west, lat, geo_transform)
+        color = major_lat if lat % 5 == 0 else minor_lat
+        width_px = 3 if lat % 5 == 0 else 1
+        paint_boundary_row(y, color, width_px)
+    radar = Image.fromarray(rgba, 'RGBA')
+    return np.asarray(Image.alpha_composite(Image.fromarray(grid, 'RGBA'), radar), dtype=np.uint8)
+
+
+def write_tiles(rgba, output_dir, res, tile_size, geo_transform, debug_lat_lon_grid):
     stride = 1 << res
     level = rgba[::stride, ::stride, :]
+    if debug_lat_lon_grid:
+        origin_lon, pixel_lon, rot_x, origin_lat, rot_y, pixel_lat = geo_transform
+        level_geo_transform = [
+            origin_lon,
+            pixel_lon * stride,
+            rot_x,
+            origin_lat,
+            rot_y,
+            pixel_lat * stride,
+        ]
+        level = composite_lat_lon_grid_under_radar(level, level_geo_transform)
     height, width = level.shape[:2]
     tile_cols = (width + tile_size - 1) // tile_size
     tile_rows = (height + tile_size - 1) // tile_size
@@ -14953,6 +15064,7 @@ def main():
     parser.add_argument('--source-sha256', required=True)
     parser.add_argument('--tile-size', type=int, required=True)
     parser.add_argument('--res-level', type=int, action='append', required=True)
+    parser.add_argument('--debug-lat-lon-grid', action='store_true')
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -14967,7 +15079,7 @@ def main():
     if source_tif.exists():
         source_tif.unlink()
     levels = [
-        write_tiles(rgba, output_dir, res, args.tile_size)
+        write_tiles(rgba, output_dir, res, args.tile_size, geo_transform, args.debug_lat_lon_grid)
         for res in sorted(set(args.res_level))
     ]
     manifest = {
@@ -14978,6 +15090,7 @@ def main():
         'source_file': args.source_file,
         'source_sha256': args.source_sha256,
         'tile_size': args.tile_size,
+        'debug_lat_lon_grid': args.debug_lat_lon_grid,
         'res-levels': [level['res'] for level in levels],
         'source_grid': {
             'width': source_width,
@@ -19762,6 +19875,12 @@ fn env_usize(name: &str) -> Option<usize> {
     env::var(name).ok()?.parse().ok()
 }
 
+fn env_flag(name: &str) -> bool {
+    env::var(name)
+        .ok()
+        .is_some_and(|value| !matches!(value.as_str(), "" | "0" | "false" | "FALSE" | "no" | "NO"))
+}
+
 fn default_cpu_jobs() -> usize {
     std::thread::available_parallelism()
         .map(usize::from)
@@ -20244,6 +20363,7 @@ mod tests {
                 &observed_at.to_rfc3339(),
                 &frame.file,
                 &frame.sha256,
+                false,
             )?;
 
             let manifest_path = output_dir.join("manifest.json");

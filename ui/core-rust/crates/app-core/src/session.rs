@@ -71,6 +71,8 @@ pub struct UiCautionState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiDebugState {
     pub tile_labels: bool,
+    #[serde(default)]
+    pub nexrad_tile_labels: bool,
     pub playback_visible: bool,
     pub fast_tiles: bool,
     pub offline_simulated_clock_buttons: bool,
@@ -138,12 +140,47 @@ struct UiSession {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NexradOverlayQueryResult {
     pub status: NexradOverlayStatus,
+    #[serde(default)]
+    pub tiles: Vec<NexradOverlayTile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum NexradOverlayStatus {
     Hidden,
+    Loading,
+    Unavailable { reason: String },
+    Ready { count: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NexradOverlayTile {
+    pub key: String,
+    pub src: String,
+    pub res: u32,
+    pub x: u32,
+    pub y: u32,
+    pub source_x: u32,
+    pub source_y: u32,
+    pub source_width: u32,
+    pub source_height: u32,
+    pub image_width: u32,
+    pub image_height: u32,
+    pub corners: NexradOverlayTileCorners,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NexradOverlayTileCorners {
+    pub nw: ScreenPoint,
+    pub ne: ScreenPoint,
+    pub se: ScreenPoint,
+    pub sw: ScreenPoint,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ScreenPoint {
+    pub x: f64,
+    pub y: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -1833,6 +1870,7 @@ pub fn set_debug_flag_in_session(
     let session = session_mut(&mut sessions, handle)?;
     match flag_id {
         "tile_labels" => session.debug_state.tile_labels = enabled,
+        "nexrad_tile_labels" => session.debug_state.nexrad_tile_labels = enabled,
         "fast_tiles" => session.debug_state.fast_tiles = enabled,
         "offline_simulated_clock_buttons" => {
             session.debug_state.offline_simulated_clock_buttons = enabled
@@ -2759,16 +2797,307 @@ pub fn get_terrain_overlay_in_session(
     })
 }
 
-pub fn get_nexrad_overlay_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+pub fn get_nexrad_overlay_in_session(
+    handle: u32,
+    viewport: MapViewport,
+    width_px: f64,
+    height_px: f64,
+) -> AppResult<HadOperationOutcome> {
     let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
-    let _ = session;
+    if !session.map_layer_state.nexrad.visible {
+        return Ok(HadOperationOutcome::Complete {
+            result: serde_json::to_value(NexradOverlayQueryResult {
+                status: NexradOverlayStatus::Hidden,
+                tiles: Vec::new(),
+            })
+            .map_err(internal_json_error)?,
+        });
+    }
+    if let HadOperationOutcome::NeedResources { resources } = session.live_feeds.sync_outcome() {
+        return Ok(HadOperationOutcome::NeedResources { resources });
+    }
+    let Some(manifest) = session.live_feeds.product_state_manifest("nexrad") else {
+        return Ok(HadOperationOutcome::Complete {
+            result: serde_json::to_value(NexradOverlayQueryResult {
+                status: NexradOverlayStatus::Loading,
+                tiles: Vec::new(),
+            })
+            .map_err(internal_json_error)?,
+        });
+    };
+    let query = nexrad_overlay_query(manifest, &viewport, width_px, height_px)?;
     Ok(HadOperationOutcome::Complete {
-        result: serde_json::to_value(NexradOverlayQueryResult {
-            status: NexradOverlayStatus::Hidden,
-        })
-        .map_err(internal_json_error)?,
+        result: serde_json::to_value(query).map_err(internal_json_error)?,
     })
+}
+
+#[derive(Debug, Deserialize)]
+struct NexradSourceGridManifest {
+    state_id: String,
+    source_grid: NexradSourceGrid,
+    levels: Vec<NexradSourceGridLevel>,
+    tile_size: u32,
+    tile_path_template: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct NexradSourceGrid {
+    geo_transform: [f64; 6],
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct NexradSourceGridLevel {
+    res: u32,
+    width: u32,
+    height: u32,
+    tile_cols: u32,
+    tile_rows: u32,
+}
+
+fn nexrad_overlay_query(
+    manifest: &serde_json::Value,
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+) -> AppResult<NexradOverlayQueryResult> {
+    if width_px <= 0.0 || height_px <= 0.0 {
+        return Ok(NexradOverlayQueryResult {
+            status: NexradOverlayStatus::Ready { count: 0 },
+            tiles: Vec::new(),
+        });
+    }
+    let manifest: NexradSourceGridManifest =
+        serde_json::from_value(manifest.clone()).map_err(|err| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("failed to parse NEXRAD source-grid manifest: {err}"),
+        })?;
+    if manifest.tile_path_template != "tiles/res{res}/{x}/{y}.png" {
+        return Ok(NexradOverlayQueryResult {
+            status: NexradOverlayStatus::Unavailable {
+                reason: format!(
+                    "unsupported NEXRAD tile path template: {}",
+                    manifest.tile_path_template
+                ),
+            },
+            tiles: Vec::new(),
+        });
+    }
+    let Some(level) = nexrad_level_for_viewport(&manifest.levels, viewport.zoom) else {
+        return Ok(NexradOverlayQueryResult {
+            status: NexradOverlayStatus::Unavailable {
+                reason: "NEXRAD manifest has no resolution levels".to_string(),
+            },
+            tiles: Vec::new(),
+        });
+    };
+    let viewport_bounds = viewport_lat_lon_bounds(viewport, width_px, height_px);
+    let [origin_lon, pixel_lon, _rot_x, origin_lat, _rot_y, pixel_lat] =
+        manifest.source_grid.geo_transform;
+    if pixel_lon == 0.0 || pixel_lat == 0.0 {
+        return Ok(NexradOverlayQueryResult {
+            status: NexradOverlayStatus::Unavailable {
+                reason: "NEXRAD source grid has invalid geo transform".to_string(),
+            },
+            tiles: Vec::new(),
+        });
+    }
+    let level_scale = 2_f64.powi(level.res as i32);
+    let level_pixel_lon = pixel_lon * level_scale;
+    let level_pixel_lat = pixel_lat * level_scale;
+    let tile_span_lon = level_pixel_lon.abs() * manifest.tile_size as f64;
+    let tile_span_lat = level_pixel_lat.abs() * manifest.tile_size as f64;
+    let grid_west = origin_lon.min(origin_lon + level_pixel_lon * level.width as f64);
+    let grid_east = origin_lon.max(origin_lon + level_pixel_lon * level.width as f64);
+    let grid_south = origin_lat.min(origin_lat + level_pixel_lat * level.height as f64);
+    let grid_north = origin_lat.max(origin_lat + level_pixel_lat * level.height as f64);
+    let west = viewport_bounds.west.max(grid_west);
+    let east = viewport_bounds.east.min(grid_east);
+    let south = viewport_bounds.south.max(grid_south);
+    let north = viewport_bounds.north.min(grid_north);
+    if west >= east || south >= north {
+        return Ok(NexradOverlayQueryResult {
+            status: NexradOverlayStatus::Ready { count: 0 },
+            tiles: Vec::new(),
+        });
+    }
+
+    let x_start = (((west - grid_west) / tile_span_lon).floor() as i64)
+        .clamp(0, level.tile_cols as i64 - 1) as u32;
+    let x_end = (((east - grid_west) / tile_span_lon).floor() as i64)
+        .clamp(0, level.tile_cols as i64 - 1) as u32;
+    let y_start = (((grid_north - north) / tile_span_lat).floor() as i64)
+        .clamp(0, level.tile_rows as i64 - 1) as u32;
+    let y_end = (((grid_north - south) / tile_span_lat).floor() as i64)
+        .clamp(0, level.tile_rows as i64 - 1) as u32;
+
+    const NEXRAD_RENDER_SLICE_PX: u32 = 64;
+    let mut tiles = Vec::new();
+    for y in y_start..=y_end {
+        for x in x_start..=x_end {
+            let tile_level_x0 = x * manifest.tile_size;
+            let tile_level_y0 = y * manifest.tile_size;
+            let image_width = manifest.tile_size.min(level.width - tile_level_x0);
+            let image_height = manifest.tile_size.min(level.height - tile_level_y0);
+            let src = format!(
+                "/live-feeds/states/nexrad/{}/tiles/res{}/{}/{}.png",
+                manifest.state_id, level.res, x, y
+            );
+            let mut source_y = 0;
+            while source_y < image_height {
+                let source_height = NEXRAD_RENDER_SLICE_PX.min(image_height - source_y);
+                let mut source_x = 0;
+                while source_x < image_width {
+                    let source_width = NEXRAD_RENDER_SLICE_PX.min(image_width - source_x);
+                    let level_x0 = tile_level_x0 + source_x;
+                    let level_x1 = level_x0 + source_width;
+                    let level_y0 = tile_level_y0 + source_y;
+                    let level_y1 = level_y0 + source_height;
+                    let lon0 = origin_lon + level_pixel_lon * level_x0 as f64;
+                    let lon1 = origin_lon + level_pixel_lon * level_x1 as f64;
+                    let lat0 = origin_lat + level_pixel_lat * level_y0 as f64;
+                    let lat1 = origin_lat + level_pixel_lat * level_y1 as f64;
+                    let west = lon0.min(lon1).max(grid_west);
+                    let east = lon0.max(lon1).min(grid_east);
+                    let south = lat0.min(lat1).max(grid_south);
+                    let north = lat0.max(lat1).min(grid_north);
+                    let corners = NexradOverlayTileCorners {
+                        nw: screen_point_for_lat_lon(viewport, width_px, height_px, north, west),
+                        ne: screen_point_for_lat_lon(viewport, width_px, height_px, north, east),
+                        se: screen_point_for_lat_lon(viewport, width_px, height_px, south, east),
+                        sw: screen_point_for_lat_lon(viewport, width_px, height_px, south, west),
+                    };
+                    tiles.push(NexradOverlayTile {
+                        key: format!(
+                            "nexrad/{}/res{}/{}/{}/{}/{}",
+                            manifest.state_id, level.res, x, y, source_x, source_y
+                        ),
+                        src: src.clone(),
+                        res: level.res,
+                        x,
+                        y,
+                        source_x,
+                        source_y,
+                        source_width,
+                        source_height,
+                        image_width,
+                        image_height,
+                        corners,
+                    });
+                    source_x += source_width;
+                }
+                source_y += source_height;
+            }
+        }
+    }
+
+    Ok(NexradOverlayQueryResult {
+        status: NexradOverlayStatus::Ready { count: tiles.len() },
+        tiles,
+    })
+}
+
+fn nexrad_level_for_viewport(
+    levels: &[NexradSourceGridLevel],
+    viewport_zoom: f64,
+) -> Option<NexradSourceGridLevel> {
+    let target_res = if viewport_zoom >= 8.0 {
+        0
+    } else if viewport_zoom >= 6.0 {
+        1
+    } else if viewport_zoom >= 4.0 {
+        2
+    } else {
+        3
+    };
+    levels
+        .iter()
+        .min_by_key(|level| level.res.abs_diff(target_res))
+        .cloned()
+}
+
+fn viewport_lat_lon_bounds(
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+) -> crate::GeoBounds {
+    let center_world = lat_lon_to_world_xy(viewport.center.lat, viewport.center.lon);
+    let scale = scale_for_map_zoom(viewport.zoom);
+    let corners = [
+        world_to_lat_lon(
+            center_world.0 - width_px / 2.0 / scale,
+            center_world.1 - height_px / 2.0 / scale,
+        ),
+        world_to_lat_lon(
+            center_world.0 + width_px / 2.0 / scale,
+            center_world.1 - height_px / 2.0 / scale,
+        ),
+        world_to_lat_lon(
+            center_world.0 + width_px / 2.0 / scale,
+            center_world.1 + height_px / 2.0 / scale,
+        ),
+        world_to_lat_lon(
+            center_world.0 - width_px / 2.0 / scale,
+            center_world.1 + height_px / 2.0 / scale,
+        ),
+    ];
+    crate::GeoBounds {
+        south: corners
+            .iter()
+            .map(|point| point.lat)
+            .fold(f64::INFINITY, f64::min),
+        west: corners
+            .iter()
+            .map(|point| point.lon)
+            .fold(f64::INFINITY, f64::min),
+        north: corners
+            .iter()
+            .map(|point| point.lat)
+            .fold(f64::NEG_INFINITY, f64::max),
+        east: corners
+            .iter()
+            .map(|point| point.lon)
+            .fold(f64::NEG_INFINITY, f64::max),
+    }
+}
+
+fn screen_point_for_lat_lon(
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    lat: f64,
+    lon: f64,
+) -> ScreenPoint {
+    let center_world = lat_lon_to_world_xy(viewport.center.lat, viewport.center.lon);
+    let point_world = lat_lon_to_world_xy(lat, lon);
+    let scale = scale_for_map_zoom(viewport.zoom);
+    ScreenPoint {
+        x: (point_world.0 - center_world.0) * scale + width_px / 2.0,
+        y: (point_world.1 - center_world.1) * scale + height_px / 2.0,
+    }
+}
+
+fn scale_for_map_zoom(zoom: f64) -> f64 {
+    2.0_f64.powf(zoom)
+}
+
+fn lat_lon_to_world_xy(lat: f64, lon: f64) -> (f64, f64) {
+    const WORLD_SIZE: f64 = 256.0;
+    const MAX_LATITUDE: f64 = 85.051_128_78;
+    let clamped_lat = lat.clamp(-MAX_LATITUDE, MAX_LATITUDE);
+    let lat_rad = clamped_lat.to_radians();
+    (
+        ((lon + 180.0) / 360.0) * WORLD_SIZE,
+        ((1.0 - lat_rad.tan().asinh() / std::f64::consts::PI) / 2.0) * WORLD_SIZE,
+    )
+}
+
+fn world_to_lat_lon(world_x: f64, world_y: f64) -> LatLon {
+    const WORLD_SIZE: f64 = 256.0;
+    let lon = world_x / WORLD_SIZE * 360.0 - 180.0;
+    let n = std::f64::consts::PI * (1.0 - 2.0 * world_y / WORLD_SIZE);
+    let lat = n.sinh().atan().to_degrees();
+    LatLon { lat, lon }
 }
 
 fn terrain_overlay_resources(
@@ -3218,6 +3547,7 @@ fn default_caution_state() -> UiCautionState {
 fn default_debug_state() -> UiDebugState {
     UiDebugState {
         tile_labels: false,
+        nexrad_tile_labels: false,
         playback_visible: false,
         fast_tiles: false,
         offline_simulated_clock_buttons: false,

@@ -465,6 +465,7 @@ internal const val OverlayPlaneModalScrim = 80f
 internal const val OverlayPlaneModal = 90f
 internal fun defaultUiDebugState() = UiDebugState(
     tileLabels = false,
+    nexradTileLabels = false,
     playbackVisible = false,
     fastTiles = false,
     offlineSimulatedClockButtons = false,

@@ -182,6 +182,12 @@ impl LiveFeedsState {
         resource_id == CURRENT_RESOURCE_ID || resource_id.starts_with("live_feeds/")
     }
 
+    pub fn product_state_manifest(&self, product: &str) -> Option<&Value> {
+        self.products
+            .get(product)
+            .and_then(|entry| entry.state_manifest.as_ref())
+    }
+
     fn register_product(
         &mut self,
         product: String,

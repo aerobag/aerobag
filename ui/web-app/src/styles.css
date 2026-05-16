@@ -345,6 +345,19 @@ button {
   user-select: none;
 }
 
+.nexradOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.nexradOverlay image {
+  opacity: 0.72;
+  image-rendering: auto;
+}
+
 .fixMarker {
   fill: var(--theme-intersection-cyan);
   stroke: rgba(8, 18, 24, 0.7);
@@ -704,6 +717,24 @@ button {
   letter-spacing: 0.04em;
   text-shadow: none;
   border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.nexradTileLabel {
+  pointer-events: none;
+}
+
+.nexradTileLabel rect {
+  fill: rgba(14, 22, 28, 0.88);
+  stroke: rgba(255, 255, 255, 0.18);
+  stroke-width: 1;
+}
+
+.nexradTileLabel text {
+  fill: #f5f8fa;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-shadow: none;
 }
 
 .chartDock {

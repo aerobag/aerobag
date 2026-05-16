@@ -339,6 +339,7 @@ internal fun CommonDebugPanel(
 ) {
     Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
     DebugCheckbox("tile labels", debugState.tileLabels) { onDebugFlagChange("tile_labels", it) }
+    DebugCheckbox("NEXRAD tile labels", debugState.nexradTileLabels) { onDebugFlagChange("nexrad_tile_labels", it) }
     DebugCheckbox("fast tiles", debugState.fastTiles) { onDebugFlagChange("fast_tiles", it) }
     DebugCheckbox("offline simulated clock buttons", debugState.offlineSimulatedClockButtons) {
         onDebugFlagChange("offline_simulated_clock_buttons", it)

@@ -701,8 +701,18 @@ pub fn get_terrain_overlay_in_session_json(
 }
 
 pub fn get_nexrad_overlay_in_session_json(handle: u64) -> Result<String, String> {
-    let overlay =
-        app_core::get_nexrad_overlay_in_session(handle as u32).map_err(|err| err.to_string())?;
+    let overlay = app_core::get_nexrad_overlay_in_session(
+        handle as u32,
+        app_core::MapViewport {
+            center: app_core::LatLon { lat: 0.0, lon: 0.0 },
+            zoom: 0.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        },
+        0.0,
+        0.0,
+    )
+    .map_err(|err| err.to_string())?;
     serde_json::to_string(&overlay).map_err(|err| err.to_string())
 }
 

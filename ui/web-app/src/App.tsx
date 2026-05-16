@@ -101,6 +101,8 @@ import {
 import type {
   AirspaceDisplayPath,
   MapOverlayQueryResult,
+  NexradOverlayQueryResult,
+  NexradOverlayTile,
   TerrainOverlayQueryResult,
   TerrainOverlayTileRequest,
   VisibleMetarFeature,
@@ -610,6 +612,19 @@ function TerrainOverlayCanvasTile({ tile }: { tile: TerrainOverlayImage }) {
       }}
     />
   );
+}
+
+function nexradTileBounds(tile: NexradOverlayTile) {
+  const xs = [tile.corners.nw.x, tile.corners.ne.x, tile.corners.se.x, tile.corners.sw.x];
+  const ys = [tile.corners.nw.y, tile.corners.ne.y, tile.corners.se.y, tile.corners.sw.y];
+  const left = Math.min(...xs);
+  const top = Math.min(...ys);
+  return {
+    left,
+    top,
+    width: Math.max(...xs) - left,
+    height: Math.max(...ys) - top,
+  };
 }
 
 const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string; iconSrc?: string }> = [
@@ -1159,6 +1174,7 @@ function defaultUiDebugState(): UiDebugState {
   const debugTiles = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debugTiles");
   return {
     tile_labels: debugTiles,
+    nexrad_tile_labels: false,
     playback_visible: false,
     fast_tiles: false,
     offline_simulated_clock_buttons: false,
@@ -2409,6 +2425,11 @@ function MapPage(props: {
     offline_regions: [],
     warnings: [],
   });
+  const [nexradOverlay, setNexradOverlay] = useState<NexradOverlayQueryResult>({
+    status: { state: "hidden" },
+    tiles: [],
+  });
+  const [nexradOverlayViewport, setNexradOverlayViewport] = useState<MapViewportState | null>(null);
   const [terrainOverlay, setTerrainOverlay] = useState<TerrainOverlayUiState>({ query: null, images: [] });
   const terrainTileCacheRef = useRef<Map<string, TerrainTileCacheEntry>>(new Map());
   const terrainTileInFlightRef = useRef<Set<string>>(new Set());
@@ -2841,6 +2862,38 @@ function MapPage(props: {
   }, [mapIsVisible, mapLayerState.terrain_warning.visible, surfaceSize.height, surfaceSize.width, terrainAltitudeBucket, uiSession, viewport]);
 
   useEffect(() => {
+    let cancelled = false;
+    if (!mapIsVisible || !uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0 || !mapLayerState.nexrad.visible) {
+      setNexradOverlay({ status: { state: "hidden" }, tiles: [] });
+      setNexradOverlayViewport(null);
+      return;
+    }
+    const queryViewport = viewport;
+    uiSession.queryNexradOverlay(viewport, surfaceSize.width, surfaceSize.height)
+      .then((query) => {
+        if (!cancelled) {
+          setNexradOverlay(query);
+          setNexradOverlayViewport(queryViewport);
+          if (query.status.state !== "ready") {
+            debugLog("nexrad.overlay.unavailable", { status: query.status });
+          }
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setNexradOverlay({
+            status: { state: "unavailable", reason: errorMessage(error) },
+            tiles: [],
+          });
+          setNexradOverlayViewport(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mapIsVisible, mapLayerState.nexrad.visible, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
+
+  useEffect(() => {
     debugLog("map.nav_element.render", {
       app_state_active_plan: plan?.id ?? null,
       plan_guidance: planUiState?.guidance?.nav_element ?? null,
@@ -3099,6 +3152,17 @@ function MapPage(props: {
     const dy = (rasterTileViewport.centerWorldY - viewport.centerWorldY) * currentScale;
     return `translate(${dx}px, ${dy}px) scale(${scaleRatio})`;
   }, [rasterTileViewport, viewport]);
+  const nexradOverlayTransform = useMemo(() => {
+    if (!nexradOverlayViewport) {
+      return undefined;
+    }
+    const currentScale = scaleForZoom(viewport.zoom);
+    const overlayScale = scaleForZoom(nexradOverlayViewport.zoom);
+    const scaleRatio = currentScale / overlayScale;
+    const dx = (nexradOverlayViewport.centerWorldX - viewport.centerWorldX) * currentScale;
+    const dy = (nexradOverlayViewport.centerWorldY - viewport.centerWorldY) * currentScale;
+    return `translate(${dx}px, ${dy}px) scale(${scaleRatio})`;
+  }, [nexradOverlayViewport, viewport]);
 
   function updateViewport(next: MapViewportState) {
     viewportRef.current = next;
@@ -3719,6 +3783,48 @@ function MapPage(props: {
               />
             ))}
           </div>
+        ) : null}
+        {nexradOverlay.tiles.length > 0 ? (
+          <svg
+            className="nexradOverlay"
+            viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
+            preserveAspectRatio="none"
+            aria-hidden="true"
+            style={nexradOverlayTransform ? { transform: nexradOverlayTransform, transformOrigin: "center center" } : undefined}
+          >
+            {nexradOverlay.tiles.map((tile) => {
+              const bounds = nexradTileBounds(tile);
+              const label = `res${tile.res} x${tile.x} y${tile.y}`;
+              return (
+                <g key={tile.key}>
+                  <svg
+                    x={bounds.left}
+                    y={bounds.top}
+                    width={bounds.width}
+                    height={bounds.height}
+                    viewBox={`${tile.source_x} ${tile.source_y} ${tile.source_width} ${tile.source_height}`}
+                    preserveAspectRatio="none"
+                    overflow="hidden"
+                  >
+                    <image
+                      href={tile.src}
+                      x={0}
+                      y={0}
+                      width={tile.image_width}
+                      height={tile.image_height}
+                      preserveAspectRatio="none"
+                    />
+                  </svg>
+                  {debugState.nexrad_tile_labels ? (
+                    <g className="nexradTileLabel" transform={`translate(${bounds.left + 4} ${bounds.top + 15})`}>
+                      <rect x={-3} y={-12} width={label.length * 7 + 6} height={16} rx={4} />
+                      <text x={0} y={0}>{label}</text>
+                    </g>
+                  ) : null}
+                </g>
+              );
+            })}
+          </svg>
         ) : null}
         {mapIsVisible && (mapOverlay.airspace_paths.length > 0 || mapOverlay.tfr_paths.length > 0 || mapOverlay.airspace_labels.length > 0) ? (
           <svg
@@ -7137,6 +7243,7 @@ function CommonDebugPanel(props: {
 }) {
   const flags: Array<{ id: DebugFlagId; label: string }> = [
     { id: "tile_labels", label: "tile labels" },
+    { id: "nexrad_tile_labels", label: "NEXRAD tile labels" },
     { id: "fast_tiles", label: "fast tiles" },
     { id: "offline_simulated_clock_buttons", label: "offline simulated clock buttons" },
     { id: "sequencing_finish_lines", label: "sequencing finish lines" },

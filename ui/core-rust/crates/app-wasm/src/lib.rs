@@ -995,8 +995,14 @@ pub fn get_terrain_overlay_in_session(
 }
 
 #[wasm_bindgen]
-pub fn get_nexrad_overlay_in_session(handle: u32) -> Result<String, JsValue> {
-    get_nexrad_overlay_in_session_json(handle).map_err(|err| JsValue::from_str(&err))
+pub fn get_nexrad_overlay_in_session(
+    handle: u32,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+) -> Result<String, JsValue> {
+    get_nexrad_overlay_in_session_json(handle, viewport_json, width_px, height_px)
+        .map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -1678,8 +1684,16 @@ fn get_raster_tile_plan_in_session_json(
     serde_json::to_string(&plan).map_err(|err| err.to_string())
 }
 
-fn get_nexrad_overlay_in_session_json(handle: u32) -> Result<String, String> {
-    let overlay = app_core::get_nexrad_overlay_in_session(handle).map_err(|err| err.to_string())?;
+fn get_nexrad_overlay_in_session_json(
+    handle: u32,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let overlay = app_core::get_nexrad_overlay_in_session(handle, viewport, width_px, height_px)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&overlay).map_err(|err| err.to_string())
 }
 

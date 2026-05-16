@@ -981,12 +981,6 @@ pub fn get_nexrad_overlay_in_session(handle: u32) -> Result<String, JsValue> {
 }
 
 #[wasm_bindgen]
-pub fn nexrad_frame_bytes_in_session(handle: u32, frame_key: &str) -> Result<Vec<u8>, JsValue> {
-    app_core::nexrad_frame_bytes_in_session(handle, frame_key)
-        .map_err(|err| JsValue::from_str(&err.to_string()))
-}
-
-#[wasm_bindgen]
 pub fn get_raster_tile_plan_in_session(
     handle: u32,
     viewport_json: &str,

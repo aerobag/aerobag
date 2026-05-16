@@ -396,29 +396,6 @@ export type TerrainOverlayQueryResult = {
   tile_requests: TerrainOverlayTileRequest[];
 };
 
-export type NexradOverlayQueryResult = {
-  status:
-    | { state: "hidden" }
-    | { state: "unavailable"; reason: string }
-    | { state: "loading" }
-    | { state: "ready"; frame_count: number };
-  frames: NexradOverlayFrame[];
-};
-
-export type NexradOverlayFrame = {
-  key: string;
-  filename: string;
-  observed_at_utc: string;
-  width: number;
-  height: number;
-  bounds: {
-    west: number;
-    south: number;
-    east: number;
-    north: number;
-  };
-};
-
 export type RasterTileSource = {
   map_view_id: string;
   package_name?: string | null;
@@ -496,8 +473,6 @@ export interface UiSession {
   queryMapOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<MapOverlayQueryResult>;
   queryMapSelection(viewport: MapViewportState, widthPx: number, heightPx: number, click: LatLon, hitRadiusPx: number): Promise<MapSelectionQueryResult>;
   queryTerrainOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<TerrainOverlayQueryResult>;
-  queryNexradOverlay(): Promise<NexradOverlayQueryResult>;
-  nexradFrameBytes(frameKey: string): Promise<Uint8Array>;
   queryRasterTilePlan(viewport: MapViewportState, widthPx: number, heightPx: number, devicePixelRatio?: number): Promise<RasterTilePlan>;
   renderTerrainOverlayTileByKey(tileKey: string, aircraftAltitudeFt: number): Promise<Uint8Array>;
   projectFlightPlanRoute(): Promise<FlightPlanRouteSegment[]>;
@@ -639,8 +614,6 @@ type WasmModule = {
   get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
   get_map_selection_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, clickJson: string, hitRadiusPx: number): Promise<string> | string;
   get_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
-  get_nexrad_overlay_in_session(handle: number): Promise<string> | string;
-  nexrad_frame_bytes_in_session(handle: number, frameKey: string): Promise<Uint8Array> | Uint8Array;
   get_raster_tile_plan_in_session_with_display_scale(handle: number, viewportJson: string, widthPx: number, heightPx: number, devicePixelRatio: number): Promise<string> | string;
   render_terrain_overlay_tile_by_key_in_session(handle: number, terrainTileKey: string, aircraftAltitudeFt: number): Promise<Uint8Array> | Uint8Array;
   get_session_snapshot(handle: number): Promise<string> | string;
@@ -1156,17 +1129,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
           ),
         ),
-      queryNexradOverlay: async () =>
-        withSessionRetry(async () =>
-          runCoreHadSessionOperation<NexradOverlayQueryResult>(
-            () => this.module.get_nexrad_overlay_in_session(handle),
-            (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
-          ),
-        ),
-      nexradFrameBytes: async (frameKey) =>
-        withSessionRetry(async () =>
-          new Uint8Array(await this.module.nexrad_frame_bytes_in_session(handle, frameKey)),
-        ),
       queryRasterTilePlan: async (viewport, widthPx, heightPx, devicePixelRatio = 1) =>
         withSessionRetry(async () =>
           JSON.parse(
@@ -1362,8 +1324,6 @@ async function loadBestAvailableAdapterUncached(
     "get_map_overlay_in_session",
     "get_map_selection_in_session",
     "get_terrain_overlay_in_session",
-    "get_nexrad_overlay_in_session",
-    "nexrad_frame_bytes_in_session",
     "get_raster_tile_plan_in_session_with_display_scale",
     "render_terrain_overlay_tile_by_key_in_session",
     "get_session_snapshot",

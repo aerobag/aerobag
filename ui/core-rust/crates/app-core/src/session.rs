@@ -131,59 +131,17 @@ struct UiSession {
     tfr_payload: Option<TfrProductPayload>,
     overlay_resource_warnings: Vec<MapOverlayWarning>,
     terrain_source_tile_cache: HashMap<String, Vec<u8>>,
-    nexrad_manifest: Option<NexradManifest>,
-    nexrad_frame_cache: HashMap<String, Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NexradOverlayQueryResult {
     pub status: NexradOverlayStatus,
-    pub frames: Vec<NexradOverlayFrame>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum NexradOverlayStatus {
     Hidden,
-    Unavailable { reason: String },
-    Loading,
-    Ready { frame_count: usize },
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct NexradOverlayFrame {
-    pub key: String,
-    pub filename: String,
-    pub observed_at_utc: String,
-    pub width: u32,
-    pub height: u32,
-    pub bounds: NexradBounds,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct NexradManifest {
-    schema_version: u32,
-    version_label: String,
-    frame_count: usize,
-    projection: String,
-    frames: Vec<NexradManifestFrame>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct NexradManifestFrame {
-    filename: String,
-    observed_at_utc: String,
-    width: u32,
-    height: u32,
-    bounds: NexradBounds,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct NexradBounds {
-    pub west: f64,
-    pub south: f64,
-    pub east: f64,
-    pub north: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -400,8 +358,6 @@ fn create_ui_session_inner(
             tfr_payload: None,
             overlay_resource_warnings: Vec::new(),
             terrain_source_tile_cache: HashMap::new(),
-            nexrad_manifest: None,
-            nexrad_frame_cache: HashMap::new(),
         },
     );
     if let Some(mark) = mark.as_deref_mut() {
@@ -2165,50 +2121,10 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
             .insert(rest.to_string(), bytes.to_vec());
         return Ok(());
     }
-    if resource_id == "nexrad/manifest" {
-        let mut sessions = lock_sessions();
-        let session = session_mut(&mut sessions, handle)?;
-        if bytes.is_empty() {
-            session.nexrad_manifest = Some(NexradManifest {
-                schema_version: 1,
-                version_label: "unavailable".to_string(),
-                frame_count: 0,
-                projection: "EPSG:3857".to_string(),
-                frames: Vec::new(),
-            });
-            session.nexrad_frame_cache.clear();
-            return Ok(());
-        }
-        let manifest: NexradManifest = serde_json::from_slice(bytes).map_err(|err| AppError {
-            kind: AppErrorKind::InvalidManifest,
-            message: format!("failed to parse NEXRAD manifest: {err}"),
-        })?;
-        if manifest.projection != "EPSG:3857" {
-            return Err(AppError {
-                kind: AppErrorKind::InvalidManifest,
-                message: format!("unsupported NEXRAD projection {}", manifest.projection),
-            });
-        }
-        session.nexrad_manifest = Some(manifest);
-        session.nexrad_frame_cache.clear();
-        return Ok(());
-    }
-    if let Some(frame_key) = resource_id.strip_prefix("nexrad/frame/") {
-        let mut sessions = lock_sessions();
-        let session = session_mut(&mut sessions, handle)?;
-        session
-            .nexrad_frame_cache
-            .insert(frame_key.to_string(), bytes.to_vec());
-        return Ok(());
-    }
     Err(AppError {
         kind: AppErrorKind::UnsupportedOperation,
         message: format!("unsupported session resource id: {resource_id}"),
     })
-}
-
-fn nexrad_frame_key(filename: &str) -> String {
-    filename.replace('/', "__")
 }
 
 fn parse_metar_tile_resource_path(resource_id: &str, rest: &str) -> AppResult<(u32, u32, u32)> {
@@ -2822,91 +2738,13 @@ pub fn get_terrain_overlay_in_session(
 pub fn get_nexrad_overlay_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
-    if !session.map_layer_state.nexrad.visible {
-        return Ok(HadOperationOutcome::Complete {
-            result: serde_json::to_value(NexradOverlayQueryResult {
-                status: NexradOverlayStatus::Hidden,
-                frames: Vec::new(),
-            })
-            .map_err(internal_json_error)?,
-        });
-    }
-    let mut resources = Vec::new();
-    let Some(manifest) = session.nexrad_manifest.as_ref() else {
-        extend_package_resource_requests(
-            session,
-            &mut resources,
-            "nexrad/manifest",
-            "nexrad",
-            "nexrad.json",
-            true,
-        );
-        return Ok(HadOperationOutcome::NeedResources { resources });
-    };
-    if manifest.frames.is_empty() {
-        return Ok(HadOperationOutcome::Complete {
-            result: serde_json::to_value(NexradOverlayQueryResult {
-                status: NexradOverlayStatus::Unavailable {
-                    reason: "not_found".to_string(),
-                },
-                frames: Vec::new(),
-            })
-            .map_err(internal_json_error)?,
-        });
-    }
-    for frame in &manifest.frames {
-        let key = nexrad_frame_key(&frame.filename);
-        if !session.nexrad_frame_cache.contains_key(&key) {
-            extend_package_resource_requests(
-                session,
-                &mut resources,
-                &format!("nexrad/frame/{key}"),
-                "nexrad",
-                &frame.filename,
-                false,
-            );
-        }
-    }
-    if !resources.is_empty() {
-        return Ok(HadOperationOutcome::NeedResources {
-            resources: dedupe_resource_requests(resources),
-        });
-    }
-    let frames = manifest
-        .frames
-        .iter()
-        .rev()
-        .map(|frame| NexradOverlayFrame {
-            key: nexrad_frame_key(&frame.filename),
-            filename: frame.filename.clone(),
-            observed_at_utc: frame.observed_at_utc.clone(),
-            width: frame.width,
-            height: frame.height,
-            bounds: frame.bounds.clone(),
-        })
-        .collect::<Vec<_>>();
+    let _ = session;
     Ok(HadOperationOutcome::Complete {
         result: serde_json::to_value(NexradOverlayQueryResult {
-            status: NexradOverlayStatus::Ready {
-                frame_count: frames.len(),
-            },
-            frames,
+            status: NexradOverlayStatus::Hidden,
         })
         .map_err(internal_json_error)?,
     })
-}
-
-pub fn nexrad_frame_bytes_in_session(handle: u32, frame_key: &str) -> AppResult<Vec<u8>> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
-    session
-        .nexrad_frame_cache
-        .get(frame_key)
-        .cloned()
-        .ok_or_else(|| AppError {
-            kind: AppErrorKind::InvalidManifest,
-            message: format!("NEXRAD frame bytes missing for {frame_key}"),
-        })
 }
 
 fn terrain_overlay_resources(

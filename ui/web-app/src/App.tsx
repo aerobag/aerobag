@@ -65,7 +65,6 @@ import {
   type MapLayerId,
   type MapSelectionItem,
   type MapSelectionQueryResult,
-  type NexradOverlayFrame as CoreNexradOverlayFrame,
   type RasterMapUiState,
   type RasterTileDraw,
   type UiMapLayerState,
@@ -425,15 +424,6 @@ function layerIconSrc(layerId: MapLayerId): string {
   }
 }
 
-type NexradOverlayFrame = CoreNexradOverlayFrame & {
-  url: string;
-};
-
-type NexradLayerStatus =
-  | { state: "loading" }
-  | { state: "available"; frame_count: number }
-  | { state: "unavailable"; reason: string };
-
 type TerrainOverlayImage = TerrainOverlayTileRequest & {
   rgba: Uint8ClampedArray;
   imageWidth: number;
@@ -588,7 +578,6 @@ function terrainImagesForCompleteQuery(
 
 const WEB_MERCATOR_WORLD_SIZE = 256;
 const WEB_MERCATOR_HALF_WORLD_M = 20037508.342789244;
-const NEXRAD_FRAME_INTERVAL_MS = 900;
 const RASTER_TILE_OVERDRAW_PX = 1;
 
 function mercatorMetersToWorld(xMeters: number, yMeters: number): { x: number; y: number } {
@@ -597,14 +586,6 @@ function mercatorMetersToWorld(xMeters: number, yMeters: number): { x: number; y
     x: ((xMeters + WEB_MERCATOR_HALF_WORLD_M) / worldSpanMeters) * WEB_MERCATOR_WORLD_SIZE,
     y: ((WEB_MERCATOR_HALF_WORLD_M - yMeters) / worldSpanMeters) * WEB_MERCATOR_WORLD_SIZE,
   };
-}
-
-function formatNexradObservedTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return date.toISOString().slice(11, 16);
 }
 
 function TerrainOverlayCanvasTile({ tile }: { tile: TerrainOverlayImage }) {
@@ -2404,9 +2385,6 @@ function MapPage(props: {
     offline_regions: [],
     warnings: [],
   });
-  const [nexradFrames, setNexradFrames] = useState<NexradOverlayFrame[]>([]);
-  const [nexradFrameIndex, setNexradFrameIndex] = useState(0);
-  const [, setNexradStatus] = useState<NexradLayerStatus>({ state: "loading" });
   const [terrainOverlay, setTerrainOverlay] = useState<TerrainOverlayUiState>({ query: null, images: [] });
   const terrainTileCacheRef = useRef<Map<string, TerrainTileCacheEntry>>(new Map());
   const terrainTileInFlightRef = useRef<Set<string>>(new Set());
@@ -2697,25 +2675,6 @@ function MapPage(props: {
       setLayerToggleBusyId((current) => (current === layerId ? null : current));
     }
   }, [layerToggleBusyId, onPlaybackSnapshotChange, trayGroup, uiSession]);
-  const nexradOverlay = useMemo(() => {
-    const frame = nexradFrames[nexradFrameIndex];
-    if (!frame || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
-      return null;
-    }
-    const northwestWorld = mercatorMetersToWorld(frame.bounds.west, frame.bounds.north);
-    const southeastWorld = mercatorMetersToWorld(frame.bounds.east, frame.bounds.south);
-    const northwest = worldToScreen(viewport, northwestWorld, surfaceSize.width, surfaceSize.height);
-    const southeast = worldToScreen(viewport, southeastWorld, surfaceSize.width, surfaceSize.height);
-    return {
-      frame,
-      style: {
-        left: `${northwest.x}px`,
-        top: `${northwest.y}px`,
-        width: `${southeast.x - northwest.x}px`,
-        height: `${southeast.y - northwest.y}px`,
-      } satisfies CSSProperties,
-    };
-  }, [nexradFrameIndex, nexradFrames, surfaceSize.height, surfaceSize.width, viewport]);
   const routeScreenSegments = useMemo(() => {
     if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return [];
@@ -2731,90 +2690,6 @@ function MapPage(props: {
       ),
     }));
   }, [flightPlanRoute, surfaceSize.height, surfaceSize.width, viewport]);
-
-  useEffect(() => {
-    if (!uiSession || !mapLayerState.nexrad.visible || !mapLayerState.nexrad.enabled) {
-      setNexradStatus({ state: "unavailable", reason: "hidden" });
-      setNexradFrames([]);
-      setNexradFrameIndex(0);
-      return;
-    }
-    let cancelled = false;
-    const objectUrls: string[] = [];
-    setNexradStatus({ state: "loading" });
-    const session = uiSession;
-
-    async function loadNexrad() {
-      const overlay = await session.queryNexradOverlay();
-      if (overlay.status.state === "hidden") {
-        return {
-          status: { state: "unavailable", reason: "hidden" } satisfies NexradLayerStatus,
-          frames: [],
-        };
-      }
-      if (overlay.status.state === "unavailable") {
-        void session.setMapLayerEnabled("nexrad", false).then(onPlaybackSnapshotChange).catch(() => {});
-        return {
-          status: { state: "unavailable", reason: overlay.status.reason } satisfies NexradLayerStatus,
-          frames: [],
-        };
-      }
-      if (overlay.status.state === "loading") {
-        return {
-          status: { state: "loading" } satisfies NexradLayerStatus,
-          frames: [],
-        };
-      }
-      const frames = await Promise.all(overlay.frames.map(async (frame) => {
-        const bytes = await session.nexradFrameBytes(frame.key);
-        const blobBytes = new Uint8Array(bytes.length);
-        blobBytes.set(bytes);
-        const url = URL.createObjectURL(new Blob([blobBytes], { type: "image/png" }));
-        objectUrls.push(url);
-        return { ...frame, url };
-      }));
-      return {
-        status: { state: "available", frame_count: frames.length } satisfies NexradLayerStatus,
-        frames,
-      };
-    }
-
-    loadNexrad().then(({ status, frames }) => {
-      if (!cancelled) {
-        setNexradStatus(status);
-        setNexradFrames(frames);
-        setNexradFrameIndex(0);
-      }
-    }).catch((error: unknown) => {
-      if ((error as { name?: string } | null)?.name === "AbortError") {
-        return;
-      }
-      console.warn("NEXRAD unavailable", error);
-      if (!cancelled) {
-        setNexradStatus({
-          state: "unavailable",
-          reason: error instanceof Error ? error.message : String(error),
-        });
-        setNexradFrames([]);
-        setNexradFrameIndex(0);
-      }
-    });
-
-    return () => {
-      cancelled = true;
-      objectUrls.forEach((url) => URL.revokeObjectURL(url));
-    };
-  }, [mapLayerState.nexrad.enabled, mapLayerState.nexrad.visible, onPlaybackSnapshotChange, uiSession]);
-
-  useEffect(() => {
-    if (nexradFrames.length <= 1) {
-      return;
-    }
-    const intervalId = window.setInterval(() => {
-      setNexradFrameIndex((index) => (index + 1) % nexradFrames.length);
-    }, NEXRAD_FRAME_INTERVAL_MS);
-    return () => window.clearInterval(intervalId);
-  }, [nexradFrames.length]);
 
   useEffect(() => {
     const cache = terrainTileCacheRef.current;
@@ -3811,20 +3686,6 @@ function MapPage(props: {
             </div>
           ))}
         </div>
-        {nexradOverlay ? (
-          <div className="nexradOverlay" aria-hidden="true">
-            <img
-              className="nexradFrame"
-              src={nexradOverlay.frame.url}
-              alt=""
-              draggable={false}
-              style={nexradOverlay.style}
-            />
-            <div className="nexradBadge">
-              NEXRAD {formatNexradObservedTime(nexradOverlay.frame.observed_at_utc)}Z {nexradFrameIndex + 1}/{nexradFrames.length}
-            </div>
-          </div>
-        ) : null}
         {visibleTerrainImages.length > 0 ? (
           <div className="terrainOverlay" aria-hidden="true">
             {visibleTerrainImages.map((tile) => (

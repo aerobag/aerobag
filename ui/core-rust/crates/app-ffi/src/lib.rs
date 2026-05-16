@@ -769,13 +769,6 @@ pub fn render_terrain_overlay_tile_by_key_in_session_bytes(
     .map_err(|err| err.to_string())
 }
 
-pub fn nexrad_frame_bytes_in_session_bytes(
-    handle: u64,
-    frame_key: &str,
-) -> Result<Vec<u8>, String> {
-    app_core::nexrad_frame_bytes_in_session(handle as u32, frame_key).map_err(|err| err.to_string())
-}
-
 pub fn render_terrain_overlay_tiles_in_session_bytes(
     handle: u64,
     packed_tile_bytes: &[u8],
@@ -2327,13 +2320,10 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ren
 pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_nexradFrameBytesInSession(
     mut env: JNIEnv,
     _class: JClass,
-    handle: i64,
-    frame_key: JString,
+    _handle: i64,
+    _frame_key: JString,
 ) -> jbyteArray {
-    let result = (|| {
-        let frame_key = get_java_string(&mut env, frame_key)?;
-        nexrad_frame_bytes_in_session_bytes(handle as u64, &frame_key)
-    })();
+    let result = Err("obsolete NEXRAD frame-byte API removed".to_string());
     return_byte_array(&mut env, result)
 }
 

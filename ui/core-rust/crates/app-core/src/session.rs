@@ -28,10 +28,10 @@ use crate::{
     AirspaceReferenceTilePayload, AirwayPresentationPlan, AppError, AppErrorKind, AppEvent,
     AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
     FlightPlanRowActionExecution, FlightPlanRowActionId, GuidanceState, LatLon, LegDisplayElement,
-    MapOverlayConfig, MapOverlayQueryResult, MapSelectionSessionAction, MapViewport,
-    MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore, NavRef,
-    PirepRecord, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity, ProcedureKind,
-    ProcedureLoadCommand, PublicationResolver, RasterMapCatalog, RasterResourceMode,
+    MapOverlayConfig, MapOverlayQueryResult, MapOverlayWarning, MapSelectionSessionAction,
+    MapViewport, MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore,
+    NavRef, PirepRecord, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity,
+    ProcedureKind, ProcedureLoadCommand, PublicationResolver, RasterMapCatalog, RasterResourceMode,
     RasterTilePlan, ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode,
     SituationControlInput, SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult,
     TfrProductPayload, UiSnapshotAppState, VectorAggregateTilePayload, VectorIdentLabelStyle,
@@ -128,6 +128,7 @@ struct UiSession {
     taf_payload: Option<TafProductPayload>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<TfrProductPayload>,
+    overlay_resource_warnings: Vec<MapOverlayWarning>,
     terrain_source_tile_cache: HashMap<String, Vec<u8>>,
     nexrad_manifest: Option<NexradManifest>,
     nexrad_frame_cache: HashMap<String, Vec<u8>>,
@@ -396,6 +397,7 @@ fn create_ui_session_inner(
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
+            overlay_resource_warnings: Vec::new(),
             terrain_source_tile_cache: HashMap::new(),
             nexrad_manifest: None,
             nexrad_frame_cache: HashMap::new(),
@@ -1994,7 +1996,39 @@ pub fn ingest_tfrs_in_session(handle: u32, payload: &TfrProductPayload) -> AppRe
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.tfr_payload = Some(payload.clone());
+    clear_overlay_resource_warning(session, "tfr_resource_unavailable");
     Ok(())
+}
+
+fn unavailable_tfr_payload(message: &str) -> TfrProductPayload {
+    TfrProductPayload {
+        schema_version: 1,
+        version_label: message.to_string(),
+        notam_count: 0,
+        area_group_count: 0,
+        areas: Vec::new(),
+    }
+}
+
+fn set_overlay_resource_warning(session: &mut UiSession, code: &str, message: String) {
+    if let Some(warning) = session
+        .overlay_resource_warnings
+        .iter_mut()
+        .find(|warning| warning.code == code)
+    {
+        warning.message = message;
+        return;
+    }
+    session.overlay_resource_warnings.push(MapOverlayWarning {
+        code: code.to_string(),
+        message,
+    });
+}
+
+fn clear_overlay_resource_warning(session: &mut UiSession, code: &str) {
+    session
+        .overlay_resource_warnings
+        .retain(|warning| warning.code != code);
 }
 
 pub fn ingest_metars_in_session(handle: u32, payload: &MetarProductPayload) -> AppResult<()> {
@@ -2070,21 +2104,22 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
     }
     if resource_id == "weather/tfrs" {
         if bytes.is_empty() {
-            return ingest_tfrs_in_session(
-                handle,
-                &TfrProductPayload {
-                    schema_version: 1,
-                    version_label: "unavailable".to_string(),
-                    notam_count: 0,
-                    area_group_count: 0,
-                    areas: Vec::new(),
-                },
-            );
+            return ingest_tfrs_in_session(handle, &unavailable_tfr_payload("unavailable"));
         }
-        let payload: TfrProductPayload = serde_json::from_slice(bytes).map_err(|err| AppError {
-            kind: AppErrorKind::InvalidManifest,
-            message: format!("failed to parse TFR resource: {err}"),
-        })?;
+        let payload: TfrProductPayload = match serde_json::from_slice(bytes) {
+            Ok(payload) => payload,
+            Err(err) => {
+                let mut sessions = lock_sessions();
+                let session = session_mut(&mut sessions, handle)?;
+                session.tfr_payload = Some(unavailable_tfr_payload("invalid"));
+                set_overlay_resource_warning(
+                    session,
+                    "tfr_resource_unavailable",
+                    format!("TFR layer unavailable: failed to parse TFR resource: {err}"),
+                );
+                return Ok(());
+            }
+        };
         return ingest_tfrs_in_session(handle, &payload);
     }
     if let Some(rest) = resource_id.strip_prefix("weather/metar_tile/") {
@@ -2469,6 +2504,9 @@ pub fn get_map_overlay_in_session(
     if !resources.is_empty() {
         return Ok(HadOperationOutcome::NeedResources { resources });
     }
+    overlay
+        .warnings
+        .extend(session.overlay_resource_warnings.iter().cloned());
     session.caution_state.obstacle_display_limited = overlay
         .warnings
         .iter()
@@ -4880,6 +4918,30 @@ mod tests {
             .get(&crate::tile_key("metars", 6, 8, 22))
             .expect("empty metar tile cached");
         assert!(payload.records.is_empty());
+    }
+
+    #[test]
+    fn malformed_tfr_resource_degrades_tfr_layer_without_failing_session() {
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            FlightPlan::default(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+
+        ingest_resource_in_session(init.handle, "weather/tfrs", br#"{"areas":[{}]}"#)
+            .expect("bad TFR resource should not fail unrelated overlay layers");
+
+        let sessions = lock_sessions();
+        let session = sessions.get(&init.handle).expect("session");
+        let tfr_payload = session.tfr_payload.as_ref().expect("empty TFR payload");
+        assert!(tfr_payload.areas.is_empty());
+        assert!(session
+            .overlay_resource_warnings
+            .iter()
+            .any(|warning| warning.code == "tfr_resource_unavailable"));
     }
 
     fn complete_session_snapshot(outcome: HadOperationOutcome) -> UiSessionSnapshot {

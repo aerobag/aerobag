@@ -3515,6 +3515,42 @@ mod tests {
     }
 
     #[test]
+    fn current_nav_db_plate_procedure_candidate_keys_round_trip_through_core_encoder() {
+        let store = load_current_nav_kv_store();
+        let prefix = "plate/procedure-candidates/";
+        let keys = store.keys_with_prefix(prefix);
+        assert!(
+            !keys.is_empty(),
+            "current nav-db has no {prefix} records; plate-page LOAD APPCH cannot be validated"
+        );
+
+        for key in keys {
+            let bytes = match store
+                .get_bytes(&key)
+                .unwrap_or_else(|err| panic!("read {key}: {err}"))
+            {
+                NavKvLookup::Hit(bytes) => bytes,
+                other => panic!("expected loaded value for enumerated key {key}, got {other:?}"),
+            };
+            let rows: Vec<CifpTppMatchRow> =
+                serde_json::from_slice(&bytes).unwrap_or_else(|err| panic!("decode {key}: {err}"));
+            assert!(!rows.is_empty(), "empty candidate row list at {key}");
+            for row in rows {
+                let generated =
+                    crate::nav_kv_key_for_query(&NavKvQuery::PlateProcedureCandidates {
+                        plate_id: row.plate_id.clone(),
+                    })
+                    .expect("plate procedure candidate query key");
+                assert_eq!(
+                    generated, key,
+                    "core must use the same HAD component escaping as preproc for plate_id {:?}",
+                    row.plate_id
+                );
+            }
+        }
+    }
+
+    #[test]
     fn flight_plan_ui_state_enrichment_preserves_live_guidance_nav_element() {
         let store = load_current_nav_kv_store();
         let plan = FlightPlan {

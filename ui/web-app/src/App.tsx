@@ -577,16 +577,7 @@ function terrainImagesForCompleteQuery(
 }
 
 const WEB_MERCATOR_WORLD_SIZE = 256;
-const WEB_MERCATOR_HALF_WORLD_M = 20037508.342789244;
 const RASTER_TILE_OVERDRAW_PX = 1;
-
-function mercatorMetersToWorld(xMeters: number, yMeters: number): { x: number; y: number } {
-  const worldSpanMeters = WEB_MERCATOR_HALF_WORLD_M * 2;
-  return {
-    x: ((xMeters + WEB_MERCATOR_HALF_WORLD_M) / worldSpanMeters) * WEB_MERCATOR_WORLD_SIZE,
-    y: ((WEB_MERCATOR_HALF_WORLD_M - yMeters) / worldSpanMeters) * WEB_MERCATOR_WORLD_SIZE,
-  };
-}
 
 function TerrainOverlayCanvasTile({ tile }: { tile: TerrainOverlayImage }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);

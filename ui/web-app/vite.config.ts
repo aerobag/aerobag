@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import zlib from "node:zlib";
 import { defineConfig, type Plugin } from "vite";
@@ -18,6 +19,9 @@ const workspaceRoot = path.join(webTargetRoot, "workspace");
 const generatedRoot = path.join(webTargetRoot, "generated");
 const iconsRoot = path.join(repoRoot, "ui", "icons");
 const adsbTraceRoot = path.resolve(repoRoot, "..", "adsb-traces");
+const liveFeedsRoot = process.env.AEROBAG_LIVE_FEEDS_ROOT
+  ? path.resolve(process.env.AEROBAG_LIVE_FEEDS_ROOT)
+  : path.resolve(repoRoot, "..", "live-feeds");
 const sharedRoot = path.join(repoRoot, "ui", "shared");
 const sharedFixturesRoot = path.join(repoRoot, "ui", "shared-fixtures");
 const debugLogPath = path.join("/tmp", "aerobag-web-debug.log");
@@ -118,6 +122,85 @@ function mountStaticTree(sourceRoot: string, options: { missingStatus?: number; 
   };
 }
 
+type LiveFeedCurrentManifest = {
+  products?: Record<string, LiveFeedCurrentEntry>;
+};
+
+type LiveFeedCurrentEntry = {
+  current?: string;
+  version_manifest_url?: string;
+  state_url?: string;
+  state_sha256?: string;
+};
+
+type LiveFeedSseEvent = {
+  id: string;
+  product: string;
+  version: string;
+  version_manifest_url: string;
+  state_url: string;
+  state_sha256: string;
+};
+
+function readJsonFile<T>(filePath: string): T | null {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
+  } catch {
+    return null;
+  }
+}
+
+function listLiveFeedSseEvents(root: string): LiveFeedSseEvent[] {
+  const current = readJsonFile<LiveFeedCurrentManifest>(path.join(root, "current.json"));
+  const events: LiveFeedSseEvent[] = [];
+  for (const [product, entry] of Object.entries(current?.products ?? {})) {
+    if (!entry.current || !entry.version_manifest_url || !entry.state_url || !entry.state_sha256) {
+      continue;
+    }
+    events.push({
+      id: `${product}:${entry.current}`,
+      product,
+      version: entry.current,
+      version_manifest_url: entry.version_manifest_url,
+      state_url: entry.state_url,
+      state_sha256: entry.state_sha256,
+    });
+  }
+  return events.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function installLiveFeedFixtureServer(server: { middlewares: { use: (...args: unknown[]) => void } }) {
+  server.middlewares.use("/live-feeds/events", (_req: IncomingMessage, res: ServerResponse) => {
+    const events = listLiveFeedSseEvents(liveFeedsRoot);
+    appendRequestLog({ kind: "live_feeds.events.open", root: liveFeedsRoot, event_count: events.length });
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.write(`: aerobag live-feed fixture root ${liveFeedsRoot}\n\n`);
+    if (events.length === 0) {
+      res.write("event: heartbeat\n");
+      res.write(`data: ${JSON.stringify({ schema_version: 1, products: [] })}\n\n`);
+      return;
+    }
+    let index = 0;
+    const writeNext = () => {
+      const event = events[index % events.length];
+      index += 1;
+      res.write(`id: ${event.id}\n`);
+      res.write("event: live-feed-current\n");
+      res.write(`data: ${JSON.stringify({ schema_version: 1, ...event })}\n\n`);
+    };
+    writeNext();
+    const interval = setInterval(writeNext, 2000);
+    res.on("close", () => {
+      clearInterval(interval);
+      appendRequestLog({ kind: "live_feeds.events.close" });
+    });
+  });
+  server.middlewares.use("/live-feeds", mountStaticTree(liveFeedsRoot, { missingStatus: 404, logPrefix: "live_feeds" }));
+}
+
 function aerobagStaticPlugin(): Plugin {
   function installMiddlewares(server: { middlewares: { use: (...args: unknown[]) => void } }) {
     server.middlewares.use("/__debug_log", (req, res, next) => {
@@ -156,6 +239,7 @@ function aerobagStaticPlugin(): Plugin {
       res.end();
     });
     server.middlewares.use("/packages", mountStaticTree(artifactReadRoot, { missingStatus: 404, logPrefix: "packages" }));
+    installLiveFeedFixtureServer(server);
     server.middlewares.use("/icons", mountStaticTree(iconsRoot, { missingStatus: 404, logPrefix: "icons" }));
     server.middlewares.use("/adsb-traces", mountStaticTree(adsbTraceRoot, { missingStatus: 404, logPrefix: "adsb_traces" }));
     for (const legacyPrefix of [

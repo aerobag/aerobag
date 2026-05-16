@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use airspace_geometry::{expand_airspace_path, AirspaceSegment};
 use anyhow::{bail, Context};
 use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
+use had_key::component as had_key_component;
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -4657,21 +4658,6 @@ fn write_vector_had_pairs(path: &Path, pairs: &[VectorHadPairLine]) -> anyhow::R
             .with_context(|| format!("failed to write {}", path.display()))?;
     }
     Ok(())
-}
-
-fn had_key_component(value: &str) -> String {
-    let mut out = String::new();
-    for byte in value.trim().as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(*byte as char);
-            }
-            _ => {
-                out.push_str(&format!("%{byte:02X}"));
-            }
-        }
-    }
-    out
 }
 
 fn write_zip(path: &Path, members: &[(String, PathBuf)]) -> anyhow::Result<()> {

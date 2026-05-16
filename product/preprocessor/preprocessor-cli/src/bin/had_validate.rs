@@ -1,4 +1,5 @@
 use anyhow::{bail, Context};
+use had_key::component as had_key_component;
 use preprocessor_core::nav_kv::NavKvRoot;
 use std::{
     collections::BTreeSet,
@@ -71,19 +72,6 @@ fn validate_chart_catalog_packages(had: &HadSource) -> anyhow::Result<()> {
         bail!("chart/catalog references packages missing from package/by-id: {details}");
     }
     Ok(())
-}
-
-fn had_key_component(value: &str) -> String {
-    let mut out = String::new();
-    for byte in value.bytes() {
-        let c = byte as char;
-        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
-            out.push(c);
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    out
 }
 
 enum HadSource {

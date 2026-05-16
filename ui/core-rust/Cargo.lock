@@ -42,6 +42,7 @@ version = "0.1.0"
 dependencies = [
  "airspace-geometry",
  "app-fixtures",
+ "had-key",
  "image",
  "png",
  "procedure-geometry-types",
@@ -472,6 +473,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "had-key"
+version = "0.1.0"
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -860,6 +865,7 @@ dependencies = [
 name = "procedure-geometry-types"
 version = "0.1.0"
 dependencies = [
+ "had-key",
  "serde",
 ]
 

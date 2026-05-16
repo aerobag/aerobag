@@ -1,3 +1,4 @@
+use had_key::upper_component;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -188,33 +189,4 @@ fn optional_transition_component(value: Option<&str>) -> String {
         .filter(|value| !value.is_empty())
         .map(upper_component)
         .unwrap_or_else(|| "_".to_string())
-}
-
-fn upper_component(value: &str) -> String {
-    percent_encode_component(value.trim().to_ascii_uppercase().as_bytes())
-}
-
-fn percent_encode_component(bytes: &[u8]) -> String {
-    let mut out = String::new();
-    for byte in bytes {
-        let ch = *byte as char;
-        if ch.is_ascii_alphanumeric()
-            || matches!(ch, '-' | '_' | '.' | '!' | '~' | '*' | '\'' | '(' | ')')
-        {
-            out.push(ch);
-        } else {
-            out.push('%');
-            out.push(hex_digit(byte >> 4));
-            out.push(hex_digit(byte & 0x0f));
-        }
-    }
-    out
-}
-
-fn hex_digit(value: u8) -> char {
-    match value {
-        0..=9 => (b'0' + value) as char,
-        10..=15 => (b'A' + value - 10) as char,
-        _ => unreachable!("hex nybble out of range"),
-    }
 }

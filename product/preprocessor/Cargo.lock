@@ -47,6 +47,7 @@ name = "app-core"
 version = "0.1.0"
 dependencies = [
  "airspace-geometry",
+ "had-key",
  "png",
  "procedure-geometry-types",
  "rusqlite",
@@ -412,6 +413,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "had-key"
+version = "0.1.0"
+
+[[package]]
 name = "hash32"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -712,6 +717,7 @@ dependencies = [
  "chrono",
  "crossbeam-channel",
  "geo",
+ "had-key",
  "libc",
  "preprocessor-charts",
  "preprocessor-core",
@@ -866,6 +872,7 @@ dependencies = [
  "airspace-geometry",
  "anyhow",
  "geo",
+ "had-key",
  "preprocessor-zip",
  "quick-xml",
  "rusqlite",
@@ -905,6 +912,7 @@ dependencies = [
 name = "procedure-geometry-types"
 version = "0.1.0"
 dependencies = [
+ "had-key",
  "serde",
 ]
 

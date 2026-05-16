@@ -15,6 +15,7 @@ use anyhow::{bail, Context};
 use chrono::{DateTime, Datelike, NaiveDate, SecondsFormat, Timelike, Utc};
 use crossbeam_channel::{self, RecvTimeoutError};
 use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
+use had_key::{component as had_key_component, upper_component as had_upper_key_component};
 use preprocessor_charts::{
     build_family_tiles, build_family_vrts, package_family_region_versioned_to,
     package_family_wide_angle_versioned_to, stage_work_dir, FULL_COVERAGE_ZOOM,
@@ -8239,25 +8240,6 @@ fn non_empty_string(value: &str) -> Option<&str> {
     } else {
         Some(value)
     }
-}
-
-fn had_upper_key_component(value: &str) -> String {
-    had_key_component(&value.trim().to_ascii_uppercase())
-}
-
-fn had_key_component(value: &str) -> String {
-    let mut out = String::new();
-    for byte in value.trim().as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(*byte as char);
-            }
-            _ => {
-                out.push_str(&format!("%{byte:02X}"));
-            }
-        }
-    }
-    out
 }
 
 fn arinc_navaid_had_key(

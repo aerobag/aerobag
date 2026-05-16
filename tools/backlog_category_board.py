@@ -562,6 +562,13 @@ def render_page(tasks: list[Task]) -> bytes:
       font-weight: 850;
       background: #fff;
     }}
+    .editorTaskId {{
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }}
     .editorBody {{
       width: 100%;
       min-height: 340px;
@@ -598,6 +605,7 @@ def render_page(tasks: list[Task]) -> bytes:
   </div>
   <div id="editorScrim" class="modalScrim">
     <div class="editor">
+      <div id="editorTaskId" class="editorTaskId"></div>
       <input id="editorTitle" class="editorTitle" type="text" aria-label="Task title">
       <textarea id="editorBody" class="editorBody" aria-label="Task body"></textarea>
       <div class="editorActions">
@@ -656,7 +664,9 @@ def render_page(tasks: list[Task]) -> bytes:
       }}
     }});
     document.addEventListener('keydown', (event) => {{
-      if (event.key === 'Escape' && document.getElementById('editorScrim').classList.contains('open')) {{
+      const editorIsOpen = document.getElementById('editorScrim').classList.contains('open');
+      if (!editorIsOpen) return;
+      if (event.key === 'Escape' || (event.key === 'Enter' && event.ctrlKey)) {{
         event.preventDefault();
         closeEditor();
       }}
@@ -696,6 +706,7 @@ def render_page(tasks: list[Task]) -> bytes:
       }}
       const task = await response.json();
       document.getElementById('editorTitle').value = task.title;
+      document.getElementById('editorTaskId').textContent = task.id;
       document.getElementById('editorBody').value = task.description;
       document.getElementById('editorScrim').classList.add('open');
       document.getElementById('editorTitle').focus();

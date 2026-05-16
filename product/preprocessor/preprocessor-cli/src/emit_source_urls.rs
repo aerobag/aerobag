@@ -334,11 +334,19 @@ fn render_value(value: &Value) -> anyhow::Result<String> {
 fn fetch_url_bytes(url: &str, fetch_cache: Option<&FetchCacheConfig>) -> anyhow::Result<Vec<u8>> {
     if let Some(fetch_cache) = fetch_cache {
         let layout = CacheLayout::new(&fetch_cache.root);
-        if let Some(bytes) = load_cached_bytes(&layout, url)? {
-            return Ok(bytes);
-        }
-        if matches!(fetch_cache.mode, FetchCacheMode::Offline) {
-            bail!("cache miss in offline mode for crawl {url}");
+        match fetch_cache.mode {
+            FetchCacheMode::Offline => {
+                if let Some(bytes) = load_cached_bytes(&layout, url)? {
+                    return Ok(bytes);
+                }
+                bail!("cache miss in offline mode for crawl {url}");
+            }
+            FetchCacheMode::CacheFirst => {
+                if let Some(bytes) = load_cached_bytes(&layout, url)? {
+                    return Ok(bytes);
+                }
+            }
+            FetchCacheMode::Fill => {}
         }
         let output = run_curl_fetch(url).with_context(|| format!("failed to fetch {url}"))?;
         if !output.status.success() {

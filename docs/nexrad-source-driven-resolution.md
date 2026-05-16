@@ -139,3 +139,17 @@ The intended client policy is:
 
 This gives local full-resolution quality where it matters without repeatedly
 delivering the whole CONUS source frame.
+
+## Large Fixture Tests
+
+The source tree does not carry raw NEXRAD captures. Large real-world fixtures
+live in the sibling `aerobag-test-artifacts` repository. To enable the
+three-hour source-grid trace tests:
+
+```sh
+AEROBAG_TEST_ARTIFACTS=/root/aerobag-five/aerobag-test-artifacts \
+  cargo test -p preprocessor-cli nexrad_three_hour_fixture -- --nocapture
+```
+
+Without `AEROBAG_TEST_ARTIFACTS`, these tests skip themselves so normal test
+runs stay small.

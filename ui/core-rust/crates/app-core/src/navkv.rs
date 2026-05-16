@@ -733,9 +733,7 @@ fn percent_encode_component(bytes: &[u8]) -> String {
     let mut out = String::new();
     for byte in bytes {
         let ch = *byte as char;
-        if ch.is_ascii_alphanumeric()
-            || matches!(ch, '-' | '_' | '.' | '!' | '~' | '*' | '\'' | '(' | ')')
-        {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~') {
             out.push(ch);
         } else {
             out.push('%');
@@ -914,6 +912,15 @@ mod tests {
                 plate_id: "plate:KRDD:IAP-CA-ILS OR LOC RWY 34.png".to_string()
             }),
             Some("plate/by-id/plate%3AKRDD%3AIAP-CA-ILS%20OR%20LOC%20RWY%2034.png".to_string())
+        );
+        assert_eq!(
+            nav_kv_key_for_query(&NavKvQuery::PlateProcedureCandidates {
+                plate_id: "plate:KORS:IAP-WA-RNAV (GPS)-A.png".to_string()
+            }),
+            Some(
+                "plate/procedure-candidates/plate%3AKORS%3AIAP-WA-RNAV%20%28GPS%29-A.png"
+                    .to_string()
+            )
         );
         assert_eq!(
             nav_kv_key_for_query(&NavKvQuery::MagneticVariation { lat: 48, lon: -110 }),

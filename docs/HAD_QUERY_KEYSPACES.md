@@ -166,8 +166,8 @@ interpretation.
 Current consumer: ownship/course display logic that needs local magnetic
 variation.
 
-Current source: NOAA/NCEI WMM2025 coefficients vendored under
-`third_party/noaa/wmm2025/WMM.COF`.
+Current source: NOAA/NCEI WMM coefficient ZIP fetched by the preprocessor
+source pipeline and extracted to `WMM.COF`.
 
 Value: magnetic declination in degrees east, rounded to one decimal place, on a
 one-degree integer grid.
@@ -176,7 +176,8 @@ one-degree integer grid.
 
 Current consumer: diagnostics/provenance.
 
-Value: source metadata including WMM model name, model epoch, coefficient
+Value: source metadata including upstream URL, source ZIP SHA-256, fetched
+timestamp, WMM model name, model epoch, model effective date, coefficient
 release date, computed decimal year, grid definition, and citation.
 
 ## Airway Data

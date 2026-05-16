@@ -68,6 +68,8 @@ const WAYPOINT_PREFIX_MAX_RESULTS: usize = 100;
 const OFFLINE_CHART_REGION_SIMPLIFY_TOLERANCE_DEGREES: f64 = 0.01;
 const OFFLINE_CHART_REGION_UNION_SNAP_GRID_DEGREES: f64 = 0.0001;
 const OFFLINE_CHART_REGION_UNION_EXPAND_DEGREES: f64 = 0.01;
+const WMM_COEFFICIENTS_URL: &str =
+    "https://www.ncei.noaa.gov/sites/default/files/2024-12/WMM2025COF.zip";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProductBuildProfile {
@@ -1037,6 +1039,10 @@ enum ProductTaskValue {
         pairs: PathBuf,
         errors: PathBuf,
     },
+    WmmSource {
+        cof_path: PathBuf,
+        metadata_path: PathBuf,
+    },
     FingerprintedTppSource {
         source: AssetSource,
         fingerprint: String,
@@ -1436,6 +1442,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         DataBase { cycle: String },
         DataMatch { cycle: String },
         Vectors { cycle: String },
+        WmmSource,
         ResourceIndex { cycle: String },
         NavDb { cycle: String },
         BundleManifest { cycle: String },
@@ -1486,6 +1493,12 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         ];
         let work_unit_budget = config.max_heavy_jobs.max(1) * 4 + 3;
         let mut pending_tasks = Vec::new();
+        pending_tasks.push(GraphScheduledTask {
+            id: "wmm-source".to_string(),
+            deps: vec![],
+            weight: 1,
+            kind: ProductScheduledTaskKind::WmmSource,
+        });
 
         for cycle in &cycles {
             pending_tasks.push(GraphScheduledTask {
@@ -1629,6 +1642,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 cycle_task_id(cycle, "data"),
                 cycle_task_id(cycle, "resource-index"),
                 cycle_task_id(cycle, "vectors"),
+                "wmm-source".to_string(),
             ];
             nav_db_deps.extend(static_product_task_ids(config));
             if include_static_terrain_products() {
@@ -2367,6 +2381,21 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             completion_detail: format!("cache_hit={}", cache_hit),
                         })
                     }
+                    ProductScheduledTaskKind::WmmSource => {
+                        let source = build_wmm_source_node(&config)?;
+                        let cache_hit = source.node_record.cache_hit;
+                        Ok(ProductTaskCompletion {
+                            node_records: vec![normalize_node_record_paths(
+                                source.node_record,
+                                &config.build_root,
+                            )],
+                            value: ProductTaskValue::WmmSource {
+                                cof_path: source.cof_path,
+                                metadata_path: source.metadata_path,
+                            },
+                            completion_detail: format!("cache_hit={}", cache_hit),
+                        })
+                    }
                     ProductScheduledTaskKind::NavDb { cycle } => {
                         let resource_index_path = match task_values_snapshot
                             .get(&cycle_task_id(&cycle, "resource-index"))
@@ -2431,12 +2460,22 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 Some(ProductTaskValue::VectorHad { pairs, .. }) => pairs.clone(),
                                 _ => bail!("missing vectors HAD output for cycle {cycle}"),
                             };
+                        let (wmm_cof_path, wmm_metadata_path) =
+                            match task_values_snapshot.get("wmm-source") {
+                                Some(ProductTaskValue::WmmSource {
+                                    cof_path,
+                                    metadata_path,
+                                }) => (cof_path.clone(), metadata_path.clone()),
+                                _ => bail!("missing WMM source output"),
+                            };
                         let built = build_nav_kv_artifact(
                             &cycle_config,
                             &resource_index_path,
                             &intermediate_sqlite_db,
                             &cycle,
                             &vector_had_pairs_path,
+                            &wmm_cof_path,
+                            &wmm_metadata_path,
                             &stable_packages,
                             &static_raster_tile_levels,
                         )?;
@@ -4643,12 +4682,15 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             resolve_artifact_path(config, sqlite_output_path(data_record)?);
         let vector_had_pairs_path =
             resolve_artifact_path(config, output_path(vectors_record, "had_pairs")?);
+        let wmm_source = build_wmm_source_node(config)?;
         let nav_db = build_nav_kv_artifact(
             config,
             &resource_index_path,
             &intermediate_sqlite_db,
             &bundle_cycle,
             &vector_had_pairs_path,
+            &wmm_source.cof_path,
+            &wmm_source.metadata_path,
             &[],
             &[],
         )?;
@@ -4900,20 +4942,6 @@ fn decimal_year(date: NaiveDate) -> f64 {
     f64::from(year) + day / year_days
 }
 
-fn static_wmm2025_cof_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("preprocessor-cli should live under workspace root")
-        .parent()
-        .expect("workspace root should live under product")
-        .parent()
-        .expect("product should live under repo root")
-        .join("third_party")
-        .join("noaa")
-        .join("wmm2025")
-        .join("WMM.COF")
-}
-
 #[derive(Debug, Clone)]
 struct WmmCoefficient {
     g: f64,
@@ -5038,6 +5066,153 @@ impl WmmModel {
         let geo_y = sph_by;
         geo_y.atan2(geo_x).to_degrees()
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WmmFetchedSourceMetadata {
+    source_url: String,
+    source_zip_sha256: String,
+    source_fetched_at_utc: Option<String>,
+    model: String,
+    model_epoch: f64,
+    model_effective_date: String,
+    coefficient_release_date: String,
+    valid_decimal_year_start: f64,
+    valid_decimal_year_end: f64,
+}
+
+#[derive(Debug, Clone)]
+struct BuiltWmmSource {
+    cof_path: PathBuf,
+    metadata_path: PathBuf,
+    node_record: NodeRecord,
+}
+
+fn build_wmm_source_node(config: &ProductBuildConfig) -> anyhow::Result<BuiltWmmSource> {
+    let fetch_cache = static_source_fetch_cache_config(config)?;
+    let inputs = BTreeMap::from([
+        ("source_url".to_string(), WMM_COEFFICIENTS_URL.to_string()),
+        (
+            "fetch_cache_mode".to_string(),
+            format!("{:?}", fetch_cache.mode),
+        ),
+        (
+            "wmm_source_pipeline".to_string(),
+            "wmm-source-v1".to_string(),
+        ),
+    ]);
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, "wmm-source")?,
+        "wmm-source",
+        &inputs,
+    )?;
+    let output_dir = prepared.dir.join("output");
+    let input_dir = output_dir.join("input");
+    let zip_path = input_dir.join("WMM2025COF.zip");
+    let cof_path = input_dir.join("WMM2025COF").join("WMM.COF");
+    let test_values_path = input_dir.join("WMM2025COF").join("WMM2025_TestValues.txt");
+    let metadata_path = output_dir.join("wmm-source.json");
+    let expected = vec![cof_path.clone(), metadata_path.clone()];
+    let record = run_cached_node(prepared, inputs, &expected, |_prepared| {
+        if output_dir.exists() {
+            fs::remove_dir_all(&output_dir)
+                .with_context(|| format!("failed to remove {}", output_dir.display()))?;
+        }
+        fs::create_dir_all(&input_dir)
+            .with_context(|| format!("failed to create {}", input_dir.display()))?;
+        let provenance_dir = output_dir.join("provenance");
+        prefetch_requests_with_provenance(
+            &[PrefetchRequest::new(WMM_COEFFICIENTS_URL).with_logical_file_name("WMM2025COF.zip")],
+            &input_dir,
+            1,
+            Some(&fetch_cache),
+            &provenance_dir,
+            "wmm-source",
+        )?;
+        let model = WmmModel::from_cof(&cof_path)?;
+        validate_wmm_model_against_test_values(&model, &test_values_path)?;
+        let metadata = WmmFetchedSourceMetadata {
+            source_url: WMM_COEFFICIENTS_URL.to_string(),
+            source_zip_sha256: hash_file(&zip_path)?,
+            source_fetched_at_utc: source_fetched_at_utc_for_urls(
+                &fetch_cache,
+                &[WMM_COEFFICIENTS_URL],
+            )?,
+            model: model.model_name.clone(),
+            model_epoch: model.epoch,
+            model_effective_date: decimal_year_effective_date(model.epoch)?,
+            coefficient_release_date: model.release_date.clone(),
+            valid_decimal_year_start: model.epoch,
+            valid_decimal_year_end: model.epoch + 5.0,
+        };
+        fs::write(&metadata_path, serde_json::to_vec_pretty(&metadata)?)
+            .with_context(|| format!("failed to write {}", metadata_path.display()))?;
+        Ok(BTreeMap::from([
+            (
+                "wmm_cof".to_string(),
+                relative_artifact_path(&cof_path, &config.build_root),
+            ),
+            (
+                "metadata".to_string(),
+                relative_artifact_path(&metadata_path, &config.build_root),
+            ),
+        ]))
+    })?;
+    Ok(BuiltWmmSource {
+        cof_path,
+        metadata_path,
+        node_record: record,
+    })
+}
+
+fn validate_wmm_model_against_test_values(model: &WmmModel, path: &Path) -> anyhow::Result<()> {
+    let text =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut checked = 0usize;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let columns = trimmed.split_whitespace().collect::<Vec<_>>();
+        if columns.len() < 5 {
+            continue;
+        }
+        let Ok(decimal_year) = columns[0].parse::<f64>() else {
+            continue;
+        };
+        let hae_km = columns[1].parse::<f64>()?;
+        let lat = columns[2].parse::<f64>()?;
+        let lon = columns[3].parse::<f64>()?;
+        let expected_declination = columns[4].parse::<f64>()?;
+        let actual = model.declination_degrees_at_ellipsoid_km(lat, lon, hae_km, decimal_year);
+        if (actual - expected_declination).abs() > 0.01 {
+            bail!(
+                "WMM test value mismatch at {lat},{lon} {decimal_year}: expected {expected_declination}, got {actual}"
+            );
+        }
+        checked += 1;
+    }
+    if checked == 0 {
+        bail!("{} contained no WMM test rows", path.display());
+    }
+    Ok(())
+}
+
+fn decimal_year_effective_date(decimal_year: f64) -> anyhow::Result<String> {
+    if !decimal_year.is_finite() {
+        bail!("invalid WMM decimal year {decimal_year}");
+    }
+    let year = decimal_year.floor() as i32;
+    let start = NaiveDate::from_ymd_opt(year, 1, 1)
+        .with_context(|| format!("invalid WMM epoch year {year}"))?;
+    let next = NaiveDate::from_ymd_opt(year + 1, 1, 1)
+        .with_context(|| format!("invalid WMM epoch year {}", year + 1))?;
+    let days_in_year = next.signed_duration_since(start).num_days() as f64;
+    let day_offset = ((decimal_year - f64::from(year)) * days_in_year).round() as i64;
+    Ok((start + chrono::Duration::days(day_offset))
+        .format("%Y-%m-%d")
+        .to_string())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -5173,19 +5348,62 @@ fn wmm_associated_legendre_low(phig: f64, n_max: usize) -> WmmLegendre {
     WmmLegendre { pcup, dpcup }
 }
 
-fn build_nav_kv_magvar_pairs(path: &Path, decimal_year: f64) -> anyhow::Result<Vec<NavKvPair>> {
+fn build_nav_kv_magvar_pairs(
+    path: &Path,
+    source_metadata_path: &Path,
+    decimal_year: f64,
+) -> anyhow::Result<Vec<NavKvPair>> {
     let model = WmmModel::from_cof(path)?;
+    let source_metadata: WmmFetchedSourceMetadata = serde_json::from_slice(
+        &fs::read(source_metadata_path)
+            .with_context(|| format!("failed to read {}", source_metadata_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", source_metadata_path.display()))?;
+    if source_metadata.model != model.model_name {
+        bail!(
+            "WMM source metadata names model {} but COF contains {}",
+            source_metadata.model,
+            model.model_name
+        );
+    }
+    if source_metadata.model_epoch != model.epoch {
+        bail!(
+            "WMM source metadata epoch {} but COF contains {}",
+            source_metadata.model_epoch,
+            model.epoch
+        );
+    }
+    if source_metadata.coefficient_release_date != model.release_date {
+        bail!(
+            "WMM source metadata release date {} but COF contains {}",
+            source_metadata.coefficient_release_date,
+            model.release_date
+        );
+    }
+    if decimal_year < source_metadata.valid_decimal_year_start
+        || decimal_year >= source_metadata.valid_decimal_year_end
+    {
+        bail!(
+            "WMM model {} is valid for [{valid_decimal_year_start}, {valid_decimal_year_end}) but nav-db needs {decimal_year}",
+            model.model_name,
+            valid_decimal_year_start = source_metadata.valid_decimal_year_start,
+            valid_decimal_year_end = source_metadata.valid_decimal_year_end
+        );
+    }
     let mut pairs = Vec::with_capacity(64_801);
     pairs.push(json_pair(
         "magvar/source".to_string(),
         &serde_json::json!({
             "source": "NOAA/NCEI World Magnetic Model",
-            "model": model.model_name,
-            "model_epoch": model.epoch,
-            "coefficient_release_date": model.release_date,
-            "source_package_date": "2024-12-17",
-            "valid_decimal_year_start": 2025.0,
-            "valid_decimal_year_end": 2030.0,
+            "source_url": source_metadata.source_url,
+            "source_zip_sha256": source_metadata.source_zip_sha256,
+            "source_fetched_at_utc": source_metadata.source_fetched_at_utc,
+            "model": source_metadata.model,
+            "model_epoch": source_metadata.model_epoch,
+            "model_effective_date": source_metadata.model_effective_date,
+            "coefficient_release_date": source_metadata.coefficient_release_date,
+            "valid_decimal_year_start": source_metadata.valid_decimal_year_start,
+            "valid_decimal_year_end": source_metadata.valid_decimal_year_end,
             "computed_decimal_year": decimal_year,
             "grid": {
                 "latitude_min": -90,
@@ -5220,6 +5438,8 @@ fn build_nav_kv_artifact(
     intermediate_sqlite_db_path: &Path,
     cycle: &str,
     vector_had_pairs_path: &Path,
+    wmm_cof_path: &Path,
+    wmm_metadata_path: &Path,
     stable_packages: &[BundlePackageArtifact],
     static_raster_tile_levels: &[StaticRasterCatalogEntry],
 ) -> anyhow::Result<BuiltNavDbArtifacts> {
@@ -5239,7 +5459,6 @@ fn build_nav_kv_artifact(
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let wmm_cof_path = static_wmm2025_cof_path();
     let magvar_decimal_year = nav_db_magvar_decimal_year(&resource_index)?;
     let inputs = BTreeMap::from([
         (
@@ -5264,6 +5483,10 @@ fn build_nav_kv_artifact(
             hash_text(&static_raster_json),
         ),
         ("magvar_model".to_string(), hash_file(&wmm_cof_path)?),
+        (
+            "magvar_source_metadata".to_string(),
+            hash_file(wmm_metadata_path)?,
+        ),
         (
             "magvar_decimal_year".to_string(),
             format!("{magvar_decimal_year:.6}"),
@@ -5316,6 +5539,7 @@ fn build_nav_kv_artifact(
                 pairs.extend(build_nav_kv_vector_pairs(vector_had_pairs_path)?);
                 pairs.extend(build_nav_kv_magvar_pairs(
                     &wmm_cof_path,
+                    wmm_metadata_path,
                     magvar_decimal_year,
                 )?);
                 let built = build_nav_kv_sorted(pairs, 64 * 1024)
@@ -19359,26 +19583,37 @@ mod tests {
     }
 
     #[test]
-    fn wmm2025_declination_matches_noaa_test_values() {
-        let model = WmmModel::from_cof(&static_wmm2025_cof_path()).unwrap();
-        let samples = [
-            (2025.0, 66.0, 14.0, 143.0, -0.19),
-            (2025.0, 18.0, 0.0, 21.0, 1.29),
-            (2025.5, 6.0, -36.0, -137.0, 20.28),
-            (2026.0, 46.0, -24.0, -122.0, 14.01),
-        ];
-        for (decimal_year, hae_km, lat, lon, expected_declination) in samples {
-            let actual = model.declination_degrees_at_ellipsoid_km(lat, lon, hae_km, decimal_year);
-            assert!(
-                (actual - expected_declination).abs() < 0.01,
-                "declination mismatch at {lat},{lon} {decimal_year}: expected {expected_declination}, got {actual}"
-            );
-        }
-    }
-
-    #[test]
     fn nav_kv_magvar_pairs_publish_source_metadata_and_grid() {
-        let pairs = build_nav_kv_magvar_pairs(&static_wmm2025_cof_path(), 2026.0).unwrap();
+        let temp = tempdir().expect("tempdir");
+        let cof_path = temp.path().join("WMM.COF");
+        fs::write(
+            &cof_path,
+            "\
+2025.0 WMM-TEST 01/01/2025
+1 0 -29351.8 0.0 12.0 0.0
+1 1 -1410.8 4545.4 9.7 -21.5
+999999999999999999999999999999999999999999999999
+",
+        )
+        .unwrap();
+        let metadata_path = temp.path().join("wmm-source.json");
+        fs::write(
+            &metadata_path,
+            serde_json::to_vec(&WmmFetchedSourceMetadata {
+                source_url: "https://example.test/WMM2025COF.zip".to_string(),
+                source_zip_sha256: "abc123".to_string(),
+                source_fetched_at_utc: Some("2026-01-02T03:04:05Z".to_string()),
+                model: "WMM-TEST".to_string(),
+                model_epoch: 2025.0,
+                model_effective_date: "2025-01-01".to_string(),
+                coefficient_release_date: "01/01/2025".to_string(),
+                valid_decimal_year_start: 2025.0,
+                valid_decimal_year_end: 2030.0,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let pairs = build_nav_kv_magvar_pairs(&cof_path, &metadata_path, 2026.0).unwrap();
         let pair_value = |key: &str| -> serde_json::Value {
             let pair = pairs
                 .iter()
@@ -19388,8 +19623,12 @@ mod tests {
         };
         assert_eq!(64_801, pairs.len());
         let source = pair_value("magvar/source");
-        assert_eq!(source["model"], "WMM-2025");
-        assert_eq!(source["coefficient_release_date"], "11/13/2024");
+        assert_eq!(source["source_url"], "https://example.test/WMM2025COF.zip");
+        assert_eq!(source["source_zip_sha256"], "abc123");
+        assert_eq!(source["source_fetched_at_utc"], "2026-01-02T03:04:05Z");
+        assert_eq!(source["model"], "WMM-TEST");
+        assert_eq!(source["model_effective_date"], "2025-01-01");
+        assert_eq!(source["coefficient_release_date"], "01/01/2025");
         assert_eq!(source["computed_decimal_year"], 2026.0);
         let rnt = pair_value("magvar/47/-123");
         assert!(rnt.as_f64().unwrap().abs() > 1.0);

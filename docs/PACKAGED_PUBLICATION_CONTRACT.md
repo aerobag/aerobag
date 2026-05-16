@@ -245,9 +245,11 @@ It is listed in the current cycle bundle `packages[]`.
 Consumers fetch it only if they explicitly need terrain.
 
 Magnetic variation is not published as a standalone package. It is generated
-into the nav-db HAD `magvar/` keyspace from NOAA/NCEI WMM2025 coefficients.
-The nav-db also carries `magvar/source`, which records the WMM model, epoch,
-coefficient release date, computed decimal year, and citation.
+into the nav-db HAD `magvar/` keyspace from NOAA/NCEI WMM coefficients fetched
+by the preprocessor source pipeline. The nav-db also carries `magvar/source`,
+which records the upstream URL, source ZIP SHA-256, fetched timestamp, WMM
+model, model epoch, model effective date, coefficient release date, computed
+decimal year, and citation.
 
 The package contains `manifest.json` plus `tiles/<z>/<x>/<y>.terrain` members.
 The source/max zoom is z10, and parent tiles are generated down to z0. Parent

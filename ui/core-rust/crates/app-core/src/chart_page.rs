@@ -25,6 +25,17 @@ pub struct DerivedChartAirport {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlateAirportRecord {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub airport_type: Option<String>,
+    #[serde(default)]
+    pub package_ids: Vec<String>,
+    pub chart_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DerivedChartAsset {
     pub id: String,
     pub airport_id: String,

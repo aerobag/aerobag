@@ -6,7 +6,9 @@ use serde_json::Value;
 
 use crate::planning::FlightPlanRowActionId;
 use crate::{
-    chart_page::{airport_ids_from_plan, derive_chart_page_state_from_airports},
+    chart_page::{
+        airport_ids_from_plan, derive_chart_page_state_from_airports, PlateAirportRecord,
+    },
     describe_plate_procedure_load_options, describe_show_plate_for_procedure,
     flight_leg_distance_nm, flight_plan_contains_nav_ref, flight_plan_has_direct_to_overlay,
     insert_airway_after_airway, insert_airway_after_waypoint, insert_waypoint,
@@ -357,10 +359,9 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
             selected_airport_id.as_deref(),
             selected_chart_id.as_deref(),
         )?)?,
-        HadOperation::PlateAirport { airport_id } => serde_json::to_value(read_optional::<Value>(
-            store,
-            NavKvQuery::PlateAirport { airport_id },
-        )?)?,
+        HadOperation::PlateAirport { airport_id } => {
+            serde_json::to_value(resolve_plate_airport(store, &airport_id)?)?
+        }
         HadOperation::PlateById { plate_id } => serde_json::to_value(read_optional::<Value>(
             store,
             NavKvQuery::PlateById { plate_id },
@@ -836,12 +837,7 @@ fn chart_page_state(
         {
             continue;
         }
-        if let Some(airport) = read_optional(
-            store,
-            NavKvQuery::PlateAirport {
-                airport_id: airport_id.clone(),
-            },
-        )? {
+        if let Some(airport) = resolve_plate_airport(store, &airport_id)? {
             airports.push(airport);
         }
     }
@@ -851,6 +847,61 @@ fn chart_page_state(
         candidate_airport_id,
         candidate_chart_id,
     ))
+}
+
+fn resolve_plate_airport(
+    store: &NavKvStore,
+    airport_id: &str,
+) -> Result<Option<crate::DerivedChartAirport>, HadReadError> {
+    let Some(record) = read_optional::<PlateAirportRecord>(
+        store,
+        NavKvQuery::PlateAirport {
+            airport_id: airport_id.to_string(),
+        },
+    )?
+    else {
+        return Ok(None);
+    };
+
+    let mut charts = Vec::with_capacity(record.chart_ids.len());
+    let mut missing_pages = Vec::new();
+    for plate_id in &record.chart_ids {
+        match read_plate_by_id(store, plate_id)? {
+            PlateByIdRead::Hit(chart) => charts.push(chart),
+            PlateByIdRead::MissingPages(pages) => missing_pages.extend(pages),
+        }
+    }
+    if !missing_pages.is_empty() {
+        return Err(HadReadError::NeedPages(missing_pages));
+    }
+
+    Ok(Some(crate::DerivedChartAirport {
+        id: record.id,
+        label: record.label,
+        charts,
+    }))
+}
+
+enum PlateByIdRead {
+    Hit(crate::DerivedChartAsset),
+    MissingPages(Vec<u32>),
+}
+
+fn read_plate_by_id(store: &NavKvStore, plate_id: &str) -> Result<PlateByIdRead, HadReadError> {
+    let query = NavKvQuery::PlateById {
+        plate_id: plate_id.to_string(),
+    };
+    let key = crate::nav_kv_key_for_query(&query)
+        .ok_or_else(|| HadReadError::Fatal("invalid plate id query".to_string()))?;
+    match store.get_bytes(&key).map_err(HadReadError::Fatal)? {
+        NavKvLookup::Hit(bytes) => serde_json::from_slice(&bytes)
+            .map(PlateByIdRead::Hit)
+            .map_err(|err| HadReadError::Fatal(format!("HAD JSON decode failed for {key}: {err}"))),
+        NavKvLookup::MissingKey => Err(HadReadError::Fatal(format!(
+            "HAD missing required plate asset key: {key}"
+        ))),
+        NavKvLookup::MissingPages(pages) => Ok(PlateByIdRead::MissingPages(pages)),
+    }
 }
 
 fn chart_page_airport_candidates(
@@ -2893,6 +2944,42 @@ mod tests {
             other => panic!("expected complete open result, got {other:?}"),
         }
         assert!(controller.selected_store().is_some());
+    }
+
+    #[test]
+    fn plate_airport_operation_resolves_chart_ids() {
+        let airport = br#"{"id":"KRNT","label":"RENTON MUNI","airport_type":"AIRPORT","package_ids":["NW_TPP_2604"],"chart_ids":["plate:KRNT:APD-WA-AIRPORT DIAGRAM.png"]}"#;
+        let plate = br#"{"id":"plate:KRNT:APD-WA-AIRPORT DIAGRAM.png","airport_id":"KRNT","package_id":"NW_TPP_2604","label":"Airport Diagram","kind":"plate","folder_category":"airport-diagram","source_asset_path":"plates/RNT/APD-WA-AIRPORT DIAGRAM.png","asset_path":"plates/RNT/APD-WA-AIRPORT DIAGRAM.png","thumbnail_source_path":null,"thumbnail_path":null,"georef":null}"#;
+        let (root, pages) = fixture(
+            &[
+                ("plate/airport/KRNT", airport.as_slice()),
+                (
+                    "plate/by-id/plate%3AKRNT%3AAPD-WA-AIRPORT%20DIAGRAM.png",
+                    plate.as_slice(),
+                ),
+            ],
+            1024,
+        );
+        let mut store = NavKvStore::new(root);
+        for (index, page) in pages.into_iter().enumerate() {
+            store.insert_page(index as u32, page);
+        }
+
+        let outcome = run_had_operation(
+            &store,
+            HadOperation::PlateAirport {
+                airport_id: "KRNT".to_string(),
+            },
+        )
+        .expect("resolve plate airport");
+        let HadOperationOutcome::Complete { result } = outcome else {
+            panic!("expected complete plate airport, got {outcome:?}");
+        };
+        let airport: crate::DerivedChartAirport =
+            serde_json::from_value(result).expect("decode plate airport");
+        assert_eq!(airport.id, "KRNT");
+        assert_eq!(airport.charts.len(), 1);
+        assert_eq!(airport.charts[0].label, "Airport Diagram");
     }
 
     #[test]

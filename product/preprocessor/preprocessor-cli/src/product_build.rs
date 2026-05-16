@@ -6932,8 +6932,8 @@ fn build_nav_kv_plate_pairs(resource_index: &ResourceIndex) -> anyhow::Result<Ve
         .iter()
         .map(|airport| {
             serde_json::json!({
-                "id": airport.get("id").and_then(|value| value.as_str()).unwrap_or_default(),
-                "label": airport.get("label").and_then(|value| value.as_str()).unwrap_or_default(),
+                "id": airport.record.get("id").and_then(|value| value.as_str()).unwrap_or_default(),
+                "label": airport.record.get("label").and_then(|value| value.as_str()).unwrap_or_default(),
             })
         })
         .collect::<Vec<_>>();
@@ -6943,27 +6943,25 @@ fn build_nav_kv_plate_pairs(resource_index: &ResourceIndex) -> anyhow::Result<Ve
             .context("failed to encode nav_kv plate/airport-index value")?,
     }];
     for airport in airports {
-        let Some(airport_id) = airport.get("id").and_then(|value| value.as_str()) else {
+        let Some(airport_id) = airport.record.get("id").and_then(|value| value.as_str()) else {
             continue;
         };
         pairs.push(NavKvPair {
             key: format!("plate/airport/{}", had_upper_key_component(airport_id)),
-            value: serde_json::to_vec(&airport).with_context(|| {
+            value: serde_json::to_vec(&airport.record).with_context(|| {
                 format!("failed to encode nav_kv plate/airport/{airport_id} value")
             })?,
         });
-        if let Some(charts) = airport.get("charts").and_then(|value| value.as_array()) {
-            for chart in charts {
-                let Some(plate_id) = chart.get("id").and_then(|value| value.as_str()) else {
-                    continue;
-                };
-                pairs.push(NavKvPair {
-                    key: format!("plate/by-id/{}", had_key_component(plate_id)),
-                    value: serde_json::to_vec(chart).with_context(|| {
-                        format!("failed to encode nav_kv plate/by-id/{plate_id} value")
-                    })?,
-                });
-            }
+        for chart in &airport.charts {
+            let Some(plate_id) = chart.get("id").and_then(|value| value.as_str()) else {
+                continue;
+            };
+            pairs.push(NavKvPair {
+                key: format!("plate/by-id/{}", had_key_component(plate_id)),
+                value: serde_json::to_vec(chart).with_context(|| {
+                    format!("failed to encode nav_kv plate/by-id/{plate_id} value")
+                })?,
+            });
         }
     }
     Ok(pairs)
@@ -7094,7 +7092,13 @@ fn build_nav_kv_vector_pairs(path: &Path) -> anyhow::Result<Vec<NavKvPair>> {
     Ok(pairs)
 }
 
-fn build_nav_kv_plate_airports(resource_index: &ResourceIndex) -> Vec<serde_json::Value> {
+#[derive(Debug)]
+struct NavKvPlateAirport {
+    record: serde_json::Value,
+    charts: Vec<serde_json::Value>,
+}
+
+fn build_nav_kv_plate_airports(resource_index: &ResourceIndex) -> Vec<NavKvPlateAirport> {
     let airport_by_id = resource_index
         .airports
         .iter()
@@ -7151,19 +7155,23 @@ fn build_nav_kv_plate_airports(resource_index: &ResourceIndex) -> Vec<serde_json
                 return None;
             }
             let airport = airport_by_id.get(airport_id.as_str());
-            Some(serde_json::json!({
+            let chart_ids = charts
+                .iter()
+                .filter_map(|chart| chart.get("id").and_then(|value| value.as_str()))
+                .collect::<Vec<_>>();
+            Some(NavKvPlateAirport {
+                record: serde_json::json!({
                 "id": airport_id,
                 "label": airport
                     .map(|airport| airport.facility_name.as_str())
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or(airport_id),
-                "facility_name": airport.map(|airport| airport.facility_name.as_str()),
-                "lat": airport.map(|airport| airport.lat),
-                "lon": airport.map(|airport| airport.lon),
                 "airport_type": airport.map(|airport| airport.airport_type.as_str()),
                 "package_ids": airport_resources.package_ids.clone(),
-                "charts": charts,
-            }))
+                "chart_ids": chart_ids,
+                }),
+                charts,
+            })
         })
         .collect::<Vec<_>>()
 }

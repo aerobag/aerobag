@@ -3139,16 +3139,17 @@ fn airport_plate_availability(
     .ok_or_else(|| HadReadError::Fatal("invalid plate airport query".to_string()))?;
     match store.get_bytes(&key).map_err(HadReadError::Fatal)? {
         NavKvLookup::Hit(bytes) => {
-            let airport: crate::DerivedChartAirport =
-                serde_json::from_slice(&bytes).map_err(|err| {
+            let airport: crate::chart_page::PlateAirportRecord = serde_json::from_slice(&bytes)
+                .map_err(|err| {
                     HadReadError::Fatal(format!("HAD JSON decode failed for {key}: {err}"))
                 })?;
             Ok(AirportPlateAvailability {
-                plates: !airport.charts.is_empty(),
-                csup: airport
-                    .charts
-                    .iter()
-                    .any(|chart| chart.kind == "csup" || chart.folder_category == "csup"),
+                plates: !airport.chart_ids.is_empty(),
+                csup: airport.chart_ids.iter().any(|chart_id| {
+                    chart_id
+                        .get(..5)
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("csup:"))
+                }),
             })
         }
         NavKvLookup::MissingKey => Ok(AirportPlateAvailability::default()),

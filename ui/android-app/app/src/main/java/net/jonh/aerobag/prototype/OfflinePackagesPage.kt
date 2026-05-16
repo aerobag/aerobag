@@ -1551,12 +1551,12 @@ internal fun validateInstalledPackageOrNull(
 ): String? {
     return when (pkg.familyId) {
         "nav-db" -> runCatching {
-            val installedFile = InstalledPackages.existingInstalledArtifacts(
+            val artifact = InstalledPackages.existingInstalledArtifacts(
                 context,
                 pkg.id,
-            ).firstOrNull { it.filename == pkg.filename }?.file
+            ).firstOrNull { it.filename == pkg.filename }
                 ?: error("installed file missing after fetch")
-            NavKvStore.open(navDbZip = installedFile).use { }
+            NavKvStore.open(artifact = artifact).use { }
         }.exceptionOrNull()?.let { error ->
             "installed validation failed for ${pkg.filename}: ${error.message ?: error::class.simpleName ?: "unreadable"}"
         }

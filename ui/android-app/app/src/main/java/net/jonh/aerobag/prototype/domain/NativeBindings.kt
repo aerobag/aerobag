@@ -13,7 +13,17 @@ interface NativeBridge {
 
     fun planOfflinePackagesFromBundleJson(inputJson: String): String
 
-    fun navKvOpen(rootBytes: ByteArray): Long
+    fun navDbOpenControllerCreate(candidatesJson: String): Long
+
+    fun navDbOpenControllerStep(handle: Long): String
+
+    fun navDbOpenControllerIngestResource(handle: Long, resourceId: String, resourceBytes: ByteArray)
+
+    fun navDbOpenControllerFinish(handle: Long): String
+
+    fun navDbOpenControllerStatuses(handle: Long): String
+
+    fun navDbOpenControllerDestroy(handle: Long)
 
     fun navKvInsertResource(handle: Long, resourceId: String, resourceBytes: ByteArray)
 
@@ -371,7 +381,17 @@ object NativeBindings : NativeBridge {
 
     external override fun planOfflinePackagesFromBundleJson(inputJson: String): String
 
-    external override fun navKvOpen(rootBytes: ByteArray): Long
+    external override fun navDbOpenControllerCreate(candidatesJson: String): Long
+
+    external override fun navDbOpenControllerStep(handle: Long): String
+
+    external override fun navDbOpenControllerIngestResource(handle: Long, resourceId: String, resourceBytes: ByteArray)
+
+    external override fun navDbOpenControllerFinish(handle: Long): String
+
+    external override fun navDbOpenControllerStatuses(handle: Long): String
+
+    external override fun navDbOpenControllerDestroy(handle: Long)
 
     external override fun navKvInsertResource(handle: Long, resourceId: String, resourceBytes: ByteArray)
 

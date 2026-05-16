@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BundleManifest, BundlePackageArtifact, CoreResourceRequest, CurrentArtifactsManifest,
-    HadOperationOutcome,
+    HadOperationOutcome, NavDbArtifactCandidate,
 };
 
 const CURRENT_ARTIFACTS_RESOURCE_ID: &str = "publication/current_artifacts";
@@ -68,6 +68,30 @@ impl PublicationResolver {
         member_path: &str,
     ) -> Result<HadOperationOutcome, String> {
         self.resolve_resource(|package| package.family_id == family_id, member_path)
+    }
+
+    pub fn resolve_nav_db_artifact_candidates(&self) -> Result<HadOperationOutcome, String> {
+        if let Some(resources) = self.missing_manifest_resources()? {
+            return Ok(HadOperationOutcome::NeedResources { resources });
+        }
+        let candidates =
+            self.bundle_manifests_by_filename
+                .values()
+                .flat_map(|bundle| bundle.packages.iter())
+                .filter(|package| package.family_id == "nav-db")
+                .map(|package| {
+                    Ok(NavDbArtifactCandidate {
+                        package_id: package.id.clone(),
+                        filename: package.filename.clone(),
+                        root_address: Some(self.package_member_address(
+                            |candidate| candidate.id == package.id,
+                            "root",
+                        )?),
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+        let result = serde_json::to_value(candidates).map_err(|err| err.to_string())?;
+        Ok(HadOperationOutcome::Complete { result })
     }
 
     pub fn package_resource_requests(

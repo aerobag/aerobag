@@ -809,6 +809,9 @@ pub fn destroy_session_json(handle: u64) {
 
 static NEXT_NAV_KV_HANDLE: AtomicU32 = AtomicU32::new(1);
 static NAV_KV_STORES: OnceLock<Mutex<HashMap<u32, app_core::NavKvStore>>> = OnceLock::new();
+static NEXT_NAV_DB_OPEN_HANDLE: AtomicU32 = AtomicU32::new(1);
+static NAV_DB_OPEN_CONTROLLERS: OnceLock<Mutex<HashMap<u32, app_core::NavDbOpenController>>> =
+    OnceLock::new();
 static NEXT_OFFLINE_PACKAGES_CONTROLLER_HANDLE: AtomicU32 = AtomicU32::new(1);
 static OFFLINE_PACKAGES_CONTROLLERS: OnceLock<
     Mutex<HashMap<u32, app_core::OfflinePackagesControllerState>>,
@@ -816,6 +819,10 @@ static OFFLINE_PACKAGES_CONTROLLERS: OnceLock<
 
 fn nav_kv_stores() -> &'static Mutex<HashMap<u32, app_core::NavKvStore>> {
     NAV_KV_STORES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn nav_db_open_controllers() -> &'static Mutex<HashMap<u32, app_core::NavDbOpenController>> {
+    NAV_DB_OPEN_CONTROLLERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn offline_packages_controllers(
@@ -856,14 +863,90 @@ pub fn destroy_offline_packages_controller_json(handle: u64) -> Result<(), Strin
     Ok(())
 }
 
-pub fn nav_kv_open_bytes(root_bytes: &[u8]) -> Result<u64, String> {
-    let root = app_core::NavKvRoot::parse(root_bytes)?;
-    let handle = NEXT_NAV_KV_HANDLE.fetch_add(1, Ordering::Relaxed);
+pub fn nav_db_open_controller_create_json(candidates_json: &str) -> Result<u64, String> {
+    let candidates: Vec<app_core::NavDbArtifactCandidate> =
+        serde_json::from_str(candidates_json).map_err(|err| err.to_string())?;
+    let handle = NEXT_NAV_DB_OPEN_HANDLE.fetch_add(1, Ordering::Relaxed);
+    nav_db_open_controllers()
+        .lock()
+        .map_err(|_| "nav db open controller store poisoned".to_string())?
+        .insert(handle, app_core::NavDbOpenController::new(candidates));
+    Ok(handle as u64)
+}
+
+pub fn nav_db_open_controller_step_json(handle: u64) -> Result<String, String> {
+    let controllers = nav_db_open_controllers()
+        .lock()
+        .map_err(|_| "nav db open controller store poisoned".to_string())?;
+    let controller = controllers
+        .get(&(handle as u32))
+        .ok_or_else(|| format!("invalid nav db open controller handle: {handle}"))?;
+    serde_json::to_string(&controller.step()?).map_err(|err| err.to_string())
+}
+
+pub fn nav_db_open_controller_ingest_resource_bytes(
+    handle: u64,
+    resource_id: &str,
+    resource_bytes: &[u8],
+) -> Result<(), String> {
+    let mut controllers = nav_db_open_controllers()
+        .lock()
+        .map_err(|_| "nav db open controller store poisoned".to_string())?;
+    let controller = controllers
+        .get_mut(&(handle as u32))
+        .ok_or_else(|| format!("invalid nav db open controller handle: {handle}"))?;
+    controller.ingest_resource(resource_id, resource_bytes)
+}
+
+pub fn nav_db_open_controller_finish_json(handle: u64) -> Result<String, String> {
+    #[derive(Serialize)]
+    struct FinishResult {
+        nav_kv_handle: u64,
+        open_result: app_core::NavDbOpenResult,
+    }
+
+    let mut controllers = nav_db_open_controllers()
+        .lock()
+        .map_err(|_| "nav db open controller store poisoned".to_string())?;
+    let controller = controllers
+        .remove(&(handle as u32))
+        .ok_or_else(|| format!("invalid nav db open controller handle: {handle}"))?;
+    let outcome = controller.step()?;
+    let app_core::HadOperationOutcome::Complete { result } = outcome else {
+        return Err("nav db open controller is not complete".to_string());
+    };
+    let open_result: app_core::NavDbOpenResult =
+        serde_json::from_value(result).map_err(|err| err.to_string())?;
+    let store = controller
+        .selected_store()
+        .ok_or_else(|| "nav db open controller has no selected store".to_string())?
+        .clone();
+    let nav_kv_handle = NEXT_NAV_KV_HANDLE.fetch_add(1, Ordering::Relaxed);
     nav_kv_stores()
         .lock()
         .map_err(|_| "nav kv store poisoned".to_string())?
-        .insert(handle, app_core::NavKvStore::new(root));
-    Ok(handle as u64)
+        .insert(nav_kv_handle, store);
+    serde_json::to_string(&FinishResult {
+        nav_kv_handle: nav_kv_handle as u64,
+        open_result,
+    })
+    .map_err(|err| err.to_string())
+}
+
+pub fn nav_db_open_controller_statuses_json(handle: u64) -> Result<String, String> {
+    let controllers = nav_db_open_controllers()
+        .lock()
+        .map_err(|_| "nav db open controller store poisoned".to_string())?;
+    let controller = controllers
+        .get(&(handle as u32))
+        .ok_or_else(|| format!("invalid nav db open controller handle: {handle}"))?;
+    serde_json::to_string(&controller.statuses()).map_err(|err| err.to_string())
+}
+
+pub fn nav_db_open_controller_destroy_handle(handle: u64) {
+    if let Ok(mut controllers) = nav_db_open_controllers().lock() {
+        let _ = controllers.remove(&(handle as u32));
+    }
 }
 
 fn nav_kv_insert_page_bytes(handle: u64, page_index: u32, page_bytes: &[u8]) -> Result<(), String> {
@@ -2303,18 +2386,77 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_des
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navKvOpen(
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navDbOpenControllerCreate(
     mut env: JNIEnv,
     _class: JClass,
-    root_bytes: JByteArray,
+    candidates_json: JString,
 ) -> i64 {
-    match get_java_byte_array(&mut env, root_bytes).and_then(|bytes| nav_kv_open_bytes(&bytes)) {
+    match get_java_string(&mut env, candidates_json)
+        .and_then(|candidates| nav_db_open_controller_create_json(&candidates))
+    {
         Ok(handle) => handle as i64,
         Err(message) => {
             let _ = env.throw_new("java/lang/RuntimeException", message);
             0
         }
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navDbOpenControllerStep(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    return_string(&mut env, nav_db_open_controller_step_json(handle as u64))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navDbOpenControllerIngestResource(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    resource_id: JString,
+    resource_bytes: JByteArray,
+) {
+    let result = (|| {
+        let resource_id = get_java_string(&mut env, resource_id)?;
+        let bytes = get_java_byte_array(&mut env, resource_bytes)?;
+        nav_db_open_controller_ingest_resource_bytes(handle as u64, &resource_id, &bytes)
+    })();
+    if let Err(message) = result {
+        let _ = env.throw_new("java/lang/RuntimeException", message);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navDbOpenControllerFinish(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    return_string(&mut env, nav_db_open_controller_finish_json(handle as u64))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navDbOpenControllerStatuses(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    return_string(
+        &mut env,
+        nav_db_open_controller_statuses_json(handle as u64),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navDbOpenControllerDestroy(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) {
+    nav_db_open_controller_destroy_handle(handle as u64)
 }
 
 #[unsafe(no_mangle)]

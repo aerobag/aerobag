@@ -71,6 +71,9 @@ fn now_ms() -> f64 {
 
 static NEXT_NAV_KV_HANDLE: AtomicU32 = AtomicU32::new(1);
 static NAV_KV_STORES: OnceLock<Mutex<HashMap<u32, app_core::NavKvStore>>> = OnceLock::new();
+static NEXT_NAV_DB_OPEN_HANDLE: AtomicU32 = AtomicU32::new(1);
+static NAV_DB_OPEN_CONTROLLERS: OnceLock<Mutex<HashMap<u32, app_core::NavDbOpenController>>> =
+    OnceLock::new();
 static NEXT_PUBLICATION_RESOLVER_HANDLE: AtomicU32 = AtomicU32::new(1);
 static PUBLICATION_RESOLVERS: OnceLock<Mutex<HashMap<u32, app_core::PublicationResolver>>> =
     OnceLock::new();
@@ -81,6 +84,17 @@ fn nav_kv_stores() -> &'static Mutex<HashMap<u32, app_core::NavKvStore>> {
 
 fn lock_nav_kv_stores() -> MutexGuard<'static, HashMap<u32, app_core::NavKvStore>> {
     nav_kv_stores()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn nav_db_open_controllers() -> &'static Mutex<HashMap<u32, app_core::NavDbOpenController>> {
+    NAV_DB_OPEN_CONTROLLERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn lock_nav_db_open_controllers() -> MutexGuard<'static, HashMap<u32, app_core::NavDbOpenController>>
+{
+    nav_db_open_controllers()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -103,11 +117,73 @@ pub fn install_panic_hook() {
 }
 
 #[wasm_bindgen]
-pub fn nav_kv_open(root_bytes: &[u8]) -> Result<u32, JsValue> {
-    let root = app_core::NavKvRoot::parse(root_bytes).map_err(|err| JsValue::from_str(&err))?;
-    let handle = NEXT_NAV_KV_HANDLE.fetch_add(1, Ordering::Relaxed);
-    lock_nav_kv_stores().insert(handle, app_core::NavKvStore::new(root));
+pub fn nav_db_open_controller_create(candidates_json: &str) -> Result<u32, JsValue> {
+    let candidates: Vec<app_core::NavDbArtifactCandidate> =
+        serde_json::from_str(candidates_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let handle = NEXT_NAV_DB_OPEN_HANDLE.fetch_add(1, Ordering::Relaxed);
+    lock_nav_db_open_controllers().insert(handle, app_core::NavDbOpenController::new(candidates));
     Ok(handle)
+}
+
+#[wasm_bindgen]
+pub fn nav_db_open_controller_step(handle: u32) -> Result<String, JsValue> {
+    let controllers = lock_nav_db_open_controllers();
+    let controller = controllers.get(&handle).ok_or_else(|| {
+        JsValue::from_str(&format!("invalid nav db open controller handle: {handle}"))
+    })?;
+    serde_json::to_string(&controller.step().map_err(|err| JsValue::from_str(&err))?)
+        .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn nav_db_open_controller_ingest_resource(
+    handle: u32,
+    resource_id: &str,
+    resource_bytes: &[u8],
+) -> Result<(), JsValue> {
+    let mut controllers = lock_nav_db_open_controllers();
+    let controller = controllers.get_mut(&handle).ok_or_else(|| {
+        JsValue::from_str(&format!("invalid nav db open controller handle: {handle}"))
+    })?;
+    controller
+        .ingest_resource(resource_id, resource_bytes)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn nav_db_open_controller_finish(handle: u32) -> Result<String, JsValue> {
+    #[derive(Serialize)]
+    struct FinishResult {
+        nav_kv_handle: u32,
+        open_result: app_core::NavDbOpenResult,
+    }
+
+    let mut controllers = lock_nav_db_open_controllers();
+    let controller = controllers.remove(&handle).ok_or_else(|| {
+        JsValue::from_str(&format!("invalid nav db open controller handle: {handle}"))
+    })?;
+    let outcome = controller.step().map_err(|err| JsValue::from_str(&err))?;
+    let app_core::HadOperationOutcome::Complete { result } = outcome else {
+        return Err(JsValue::from_str("nav db open controller is not complete"));
+    };
+    let open_result: app_core::NavDbOpenResult =
+        serde_json::from_value(result).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let store = controller
+        .selected_store()
+        .ok_or_else(|| JsValue::from_str("nav db open controller has no selected store"))?
+        .clone();
+    let nav_kv_handle = NEXT_NAV_KV_HANDLE.fetch_add(1, Ordering::Relaxed);
+    lock_nav_kv_stores().insert(nav_kv_handle, store);
+    serde_json::to_string(&FinishResult {
+        nav_kv_handle,
+        open_result,
+    })
+    .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn nav_db_open_controller_destroy(handle: u32) {
+    let _ = lock_nav_db_open_controllers().remove(&handle);
 }
 
 #[wasm_bindgen]
@@ -144,11 +220,17 @@ pub fn publication_resolver_ingest_resource(
 }
 
 #[wasm_bindgen]
-pub fn publication_resolver_resolve_nav_kv_resource(
+pub fn publication_resolver_resolve_nav_db_artifact_candidates(
     handle: u32,
-    member_path: &str,
 ) -> Result<String, JsValue> {
-    publication_resolver_resolve_family_resource(handle, "nav-db", member_path)
+    let resolvers = lock_publication_resolvers();
+    let resolver = resolvers.get(&handle).ok_or_else(|| {
+        JsValue::from_str(&format!("invalid publication resolver handle: {handle}"))
+    })?;
+    let outcome = resolver
+        .resolve_nav_db_artifact_candidates()
+        .map_err(|err| JsValue::from_str(&err))?;
+    app_core::serialize_publication_outcome(outcome).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -168,21 +250,6 @@ pub fn publication_resolver_resolve_package_member(
     member_path: &str,
 ) -> Result<String, JsValue> {
     publication_resolver_resolve_package_resource(handle, package_id, member_path)
-}
-
-fn publication_resolver_resolve_family_resource(
-    handle: u32,
-    family_id: &str,
-    member_path: &str,
-) -> Result<String, JsValue> {
-    let resolvers = lock_publication_resolvers();
-    let resolver = resolvers.get(&handle).ok_or_else(|| {
-        JsValue::from_str(&format!("invalid publication resolver handle: {handle}"))
-    })?;
-    let outcome = resolver
-        .resolve_family_resource(family_id, member_path)
-        .map_err(|err| JsValue::from_str(&err))?;
-    app_core::serialize_publication_outcome(outcome).map_err(|err| JsValue::from_str(&err))
 }
 
 fn publication_resolver_resolve_package_resource(

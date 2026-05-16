@@ -7565,17 +7565,15 @@ function resolveSituationOverlay(
   }
   const point = latLonToScreen(ownship.position.lat, ownship.position.lon, viewport, width, height);
   const headingDeg = ownship.orientation_deg ?? 0;
-  const ring = ownship.magnetic_variation_deg === null
-    ? null
-    : selectSituationRing(
-      ownship.position.lat,
-      ownship.position.lon,
-      viewport,
-      width,
-      height,
-      ringCandidates,
-      ownship.magnetic_variation_deg,
-    );
+  const ring = selectSituationRing(
+    ownship.position.lat,
+    ownship.position.lon,
+    viewport,
+    width,
+    height,
+    ringCandidates,
+    ownship.magnetic_variation_deg,
+  );
   const ahead =
     ownship.draw_predictor && ownship.speed_kt !== null
       ? projectAhead(ownship.position.lat, ownship.position.lon, headingDeg, ownship.speed_kt / 60)
@@ -7714,7 +7712,7 @@ function selectSituationRing(
   width: number,
   height: number,
   ringCandidates: SituationRingCandidate[],
-  magneticVariationDeg: number,
+  magneticVariationDeg: number | null,
 ) {
   const center = latLonToScreen(lat, lon, viewport, width, height);
   const smaller = Math.min(width, height);
@@ -7736,8 +7734,8 @@ function selectSituationRing(
   const labelPoint = pointOnCircle(center, best.radiusPx + 16, labelAngle);
   return {
     radiusPx: best.radiusPx,
-    tickMarks: buildRingTickMarks(center, best.radiusPx, magneticVariationDeg),
-    cardinalLabels: buildRingCardinalLabels(center, best.radiusPx, magneticVariationDeg),
+    tickMarks: magneticVariationDeg === null ? [] : buildRingTickMarks(center, best.radiusPx, magneticVariationDeg),
+    cardinalLabels: magneticVariationDeg === null ? [] : buildRingCardinalLabels(center, best.radiusPx, magneticVariationDeg),
     label: {
       point: labelPoint,
       rotationDeg: 45,

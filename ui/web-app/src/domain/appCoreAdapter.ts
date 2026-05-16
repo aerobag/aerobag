@@ -575,7 +575,6 @@ type WasmModule = {
   publication_resolver_ingest_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
   publication_resolver_open(publicBaseUrl: string): number;
   publication_resolver_resolve_metar_manifest(handle: number): Promise<string> | string;
-  publication_resolver_resolve_nav_kv_resource(handle: number, memberPath: string): Promise<string> | string;
   publication_resolver_resolve_obstacle_manifest(handle: number): Promise<string> | string;
   publication_resolver_resolve_package_member(handle: number, packageId: string, memberPath: string): Promise<string> | string;
   situation_ring_candidates_json(): Promise<string> | string;
@@ -648,7 +647,11 @@ type WasmModule = {
   restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   destroy_session(handle: number): void;
   install_rust_debug_logger(): Promise<void> | void;
-  nav_kv_open(rootBytes: Uint8Array): Promise<number> | number;
+  nav_db_open_controller_create(candidatesJson: string): Promise<number> | number;
+  nav_db_open_controller_destroy(handle: number): Promise<void> | void;
+  nav_db_open_controller_finish(handle: number): Promise<string> | string;
+  nav_db_open_controller_ingest_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
+  nav_db_open_controller_step(handle: number): Promise<string> | string;
   nav_kv_insert_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
   nav_kv_prefetch_pages(handle: number): Promise<string> | string;
   nav_kv_destroy(handle: number): Promise<void> | void;
@@ -1379,7 +1382,11 @@ async function loadBestAvailableAdapterUncached(
     "unsuspend_sequencing_in_session",
     "sequence_active_leg_in_session",
     "ingest_resource_in_session",
-    "nav_kv_open",
+    "nav_db_open_controller_create",
+    "nav_db_open_controller_destroy",
+    "nav_db_open_controller_finish",
+    "nav_db_open_controller_ingest_resource",
+    "nav_db_open_controller_step",
     "nav_kv_insert_resource",
     "nav_kv_prefetch_pages",
     "nav_kv_destroy",

@@ -3389,7 +3389,7 @@ fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadRe
         app_ui_state.ownship.render.position,
     ) {
         app_ui_state.ownship.render.magnetic_variation_deg =
-            Some(crate::had_ops::magnetic_variation_degrees(store, position)?);
+            crate::had_ops::magnetic_variation_degrees_optional(store, position)?;
     }
     app_ui_state.ownship.controls.situation_controls = project_situation_controls(session);
     if let Some(active_plan) = app_ui_state.active_plan.as_mut() {
@@ -4213,8 +4213,7 @@ fn active_display_course_deg(
         return Ok(None);
     };
     let variation_position = position.unwrap_or_else(|| midpoint_for_variation(from, to));
-    crate::had_ops::true_to_magnetic_course_deg(store, true_course_deg, variation_position)
-        .map(Some)
+    crate::had_ops::true_to_magnetic_course_deg_optional(store, true_course_deg, variation_position)
 }
 
 fn midpoint_for_variation(from: LatLon, to: LatLon) -> LatLon {
@@ -5337,7 +5336,9 @@ mod tests {
 
         assert_eq!(
             format_course_degrees(
-                crate::had_ops::true_to_magnetic_course_deg(&store, 271.0, position).unwrap()
+                crate::had_ops::true_to_magnetic_course_deg_optional(&store, 271.0, position)
+                    .unwrap()
+                    .unwrap()
             ),
             "257"
         );
@@ -5452,6 +5453,47 @@ mod tests {
     }
 
     #[test]
+    fn ownship_render_omits_magnetic_variation_when_had_keys_are_missing() {
+        let store = crate::navkv::nav_kv_store_for_test(&[], 256);
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            empty_test_plan(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+
+        let snapshot = push_situation_sample_in_session(
+            init.handle,
+            SituationSample {
+                source_id: OwnshipSourceId("test-gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 1_000,
+                received_time_epoch_ms: 1_000,
+                position: Some(LatLon {
+                    lat: 37.5,
+                    lon: -122.4,
+                }),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(45.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: Some(3000.0),
+                pressure_altitude_ft: None,
+            },
+        )
+        .expect("missing magvar should not abort ownship sample projection");
+
+        assert_eq!(
+            snapshot.app_ui_state.ownship.render.magnetic_variation_deg,
+            None
+        );
+    }
+
+    #[test]
     fn magnetic_variation_wraps_dateline_through_had_keys() {
         let store = crate::navkv::nav_kv_store_for_test(
             &[
@@ -5464,7 +5506,7 @@ mod tests {
         );
 
         assert_eq!(
-            crate::had_ops::magnetic_variation_degrees(
+            crate::had_ops::magnetic_variation_degrees_optional(
                 &store,
                 LatLon {
                     lat: 0.0,
@@ -5472,7 +5514,7 @@ mod tests {
                 }
             )
             .unwrap(),
-            9.0
+            Some(9.0)
         );
     }
 
@@ -5488,7 +5530,7 @@ mod tests {
             256,
         );
 
-        let err = crate::had_ops::magnetic_variation_degrees(
+        let err = crate::had_ops::magnetic_variation_degrees_optional(
             &store,
             LatLon {
                 lat: 48.54,

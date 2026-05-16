@@ -59,8 +59,7 @@ object AndroidRuntimeContent {
 
     fun loadInstalledRuntime(context: Context, bootstrap: RuntimeBootstrap): RuntimeContent {
         val navKvOpenStartMs = SystemClock.elapsedRealtime()
-        val navDbArtifact = latestReadableInstalledNavDbArtifact(context)
-        val navKvStore = NavKvStore.open(navDbZip = navDbArtifact.file)
+        val navKvStore = openInstalledNavDb(context).first
         val navKvOpenMs = SystemClock.elapsedRealtime() - navKvOpenStartMs
         return loadInstalledRuntime(
             bootstrap = bootstrap,
@@ -100,36 +99,32 @@ object AndroidRuntimeContent {
         bridge: NativeBridge = NativeBindings,
     ): NavDbStatus {
         val appContext = context.applicationContext
-        val installed = InstalledPackages.listInstalledArtifacts(appContext)
-            .filter { it.artifactId.startsWith("NAV_DB_") }
-            .sortedWith(compareByDescending<InstalledPackageArtifact> { it.file.lastModified() }.thenByDescending { it.filename })
-            .map { artifact ->
-                val status = runCatching {
-                    NavKvStore.open(navDbZip = artifact.file, bridge = bridge).use { }
-                    NavDbArtifactStatus(
-                        packageId = artifact.artifactId,
-                        filename = artifact.filename,
-                        readable = true,
-                    )
-                }.getOrElse { error ->
-                    NavDbArtifactStatus(
-                        packageId = artifact.artifactId,
-                        filename = artifact.filename,
-                        readable = false,
-                        message = error.message ?: error::class.simpleName,
-                    )
-                }
-                status
+        val installed = runCatching {
+            NavKvStore.inspectCandidates(installedNavDbArtifacts(appContext), bridge = bridge).statuses
+        }.getOrElse {
+            installedNavDbArtifacts(appContext).map { artifact ->
+                NavDbArtifactStatus(
+                    packageId = artifact.artifactId,
+                    filename = artifact.filename,
+                    readable = false,
+                    message = it.message ?: it::class.simpleName,
+                )
             }
+        }
         return NavDbStatus(installed = installed)
     }
-}
 
-private fun latestReadableInstalledNavDbArtifact(context: Context): InstalledPackageArtifact =
-    InstalledPackages.listInstalledArtifacts(context)
-        .filter { it.artifactId.startsWith("NAV_DB_") }
-        .sortedWith(compareByDescending<InstalledPackageArtifact> { it.file.lastModified() }.thenByDescending { it.filename })
-        .firstOrNull { artifact ->
-            runCatching { NavKvStore.open(navDbZip = artifact.file).use { } }.isSuccess
-        }
-        ?: error("missing readable installed data package with prefix NAV_DB_")
+    private fun openInstalledNavDb(
+        context: Context,
+        bridge: NativeBridge = NativeBindings,
+    ): Pair<NavKvStore, NavDbOpenReport> =
+        NavKvStore.openCandidates(installedNavDbArtifacts(context.applicationContext), bridge = bridge)
+
+    private fun installedNavDbArtifacts(context: Context): List<InstalledPackageArtifact> =
+        InstalledPackages.listInstalledArtifacts(context)
+            .filter { it.artifactId.startsWith("NAV_DB_") }
+            .sortedWith(
+                compareByDescending<InstalledPackageArtifact> { it.file.lastModified() }
+                    .thenByDescending { it.filename },
+            )
+}

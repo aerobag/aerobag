@@ -1399,16 +1399,14 @@ internal fun resolveSituationOverlay(
         pointUnits = point,
         headingDeg = heading,
         predictorUnits = predictor,
-        ring = ownship.magneticVariationDeg?.let { magneticVariationDeg ->
-            selectSituationRing(
-                position,
-                viewport,
-                widthUnits,
-                heightUnits,
-                ringCandidates,
-                magneticVariationDeg.toFloat(),
-            )
-        },
+        ring = selectSituationRing(
+            position,
+            viewport,
+            widthUnits,
+            heightUnits,
+            ringCandidates,
+            ownship.magneticVariationDeg?.toFloat(),
+        ),
     )
 }
 
@@ -1719,7 +1717,7 @@ internal fun selectSituationRing(
     widthUnits: Float,
     heightUnits: Float,
     ringCandidates: List<SituationRingCandidate>,
-    magneticVariationDeg: Float,
+    magneticVariationDeg: Float?,
 ): SituationRing {
     val center = latLonToScreen(position.lat, position.lon, viewport, widthUnits, heightUnits)
     val smaller = minOf(widthUnits, heightUnits)
@@ -1744,8 +1742,8 @@ internal fun selectSituationRing(
     val labelPoint = pointOnCircle(center, best.second + 16f, -45f)
     return SituationRing(
         radiusUnits = best.second,
-        tickMarks = buildSituationTickMarks(center, best.second, magneticVariationDeg),
-        cardinalLabels = buildSituationCardinalLabels(center, best.second, magneticVariationDeg),
+        tickMarks = magneticVariationDeg?.let { buildSituationTickMarks(center, best.second, it) }.orEmpty(),
+        cardinalLabels = magneticVariationDeg?.let { buildSituationCardinalLabels(center, best.second, it) }.orEmpty(),
         labelPointUnits = labelPoint,
         labelRotationDeg = 45f,
         labelText = best.first.label,

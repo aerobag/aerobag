@@ -15,13 +15,15 @@ use crate::{
     AirwayPresentationPlan, AirwaySegment, AirwaySpatialPoint, AirwaySuggestion, AppError,
     AppErrorKind, AppResult, CifpTppMatchRow, ConcretizedNavItem, FlightPlan,
     FlightPlanRouteSegment, FlightPlanUiMutation, FlightPlanUiState, LatLon, LegDisplayElement,
-    LegDisplayPath, LegDisplayPathStyle, MaterializedProcedure, NavKvLookup, NavKvQuery,
+    LegDisplayPath, LegDisplayPathStyle, MaterializedProcedure, NavKvLookup, NavKvQuery, NavKvRoot,
     NavKvStore, NavRef, NavSymbolFeature, PathTermination, PlateProcedureLoadCandidateInput,
     PolygonRecord, ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance,
     ProcedureLoadOption, ProcedureOptions, ProcedureSegment, ProcedureSegmentRole,
     ProcedureSummary, ResolvedLeg, ResolvedLegSource, RouteComponent, WaypointIdentifierRecord,
     WaypointIdentifierSuggestion,
 };
+
+const NAV_DB_ROOT_MEMBER_PATH: &str = "root";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -36,6 +38,152 @@ pub struct CoreResourceRequest {
     pub address: String,
     #[serde(default)]
     pub optional: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NavDbArtifactCandidate {
+    pub package_id: String,
+    pub filename: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_address: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NavDbArtifactOpenStatus {
+    pub package_id: String,
+    pub filename: String,
+    pub readable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NavDbOpenResult {
+    pub selected_package_id: String,
+    pub selected_filename: String,
+    pub statuses: Vec<NavDbArtifactOpenStatus>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NavDbOpenController {
+    candidates: Vec<NavDbArtifactCandidate>,
+    statuses: Vec<Option<NavDbArtifactOpenStatus>>,
+    stores: Vec<Option<NavKvStore>>,
+}
+
+impl NavDbOpenController {
+    pub fn new(candidates: Vec<NavDbArtifactCandidate>) -> Self {
+        let len = candidates.len();
+        Self {
+            candidates,
+            statuses: vec![None; len],
+            stores: vec![None; len],
+        }
+    }
+
+    pub fn step(&self) -> Result<HadOperationOutcome, String> {
+        for (index, candidate) in self.candidates.iter().enumerate() {
+            match &self.statuses[index] {
+                Some(status) if status.readable => {
+                    return Ok(HadOperationOutcome::Complete {
+                        result: serde_json::to_value(NavDbOpenResult {
+                            selected_package_id: candidate.package_id.clone(),
+                            selected_filename: candidate.filename.clone(),
+                            statuses: self.statuses.iter().filter_map(Clone::clone).collect(),
+                        })
+                        .map_err(|err| err.to_string())?,
+                    });
+                }
+                Some(_) => continue,
+                None => {
+                    return Ok(HadOperationOutcome::NeedResources {
+                        resources: vec![nav_db_artifact_resource(index, candidate)],
+                    });
+                }
+            }
+        }
+        Err("missing readable installed data package with prefix NAV_DB_".to_string())
+    }
+
+    pub fn ingest_resource(
+        &mut self,
+        resource_id: &str,
+        resource_bytes: &[u8],
+    ) -> Result<(), String> {
+        let Some(index) = nav_db_artifact_resource_index(resource_id) else {
+            return Err(format!(
+                "unsupported nav_db open resource id: {resource_id}"
+            ));
+        };
+        let candidate = self
+            .candidates
+            .get(index)
+            .ok_or_else(|| format!("nav_db open resource index out of range: {index}"))?;
+        if resource_bytes.is_empty() {
+            self.statuses[index] = Some(NavDbArtifactOpenStatus {
+                package_id: candidate.package_id.clone(),
+                filename: candidate.filename.clone(),
+                readable: false,
+                message: Some("missing root".to_string()),
+            });
+            return Ok(());
+        }
+        match NavKvRoot::parse(resource_bytes) {
+            Ok(root) => {
+                self.stores[index] = Some(NavKvStore::new(root));
+                self.statuses[index] = Some(NavDbArtifactOpenStatus {
+                    package_id: candidate.package_id.clone(),
+                    filename: candidate.filename.clone(),
+                    readable: true,
+                    message: None,
+                });
+            }
+            Err(message) => {
+                self.statuses[index] = Some(NavDbArtifactOpenStatus {
+                    package_id: candidate.package_id.clone(),
+                    filename: candidate.filename.clone(),
+                    readable: false,
+                    message: Some(message),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    pub fn selected_store(&self) -> Option<&NavKvStore> {
+        self.statuses
+            .iter()
+            .position(|status| status.as_ref().is_some_and(|status| status.readable))
+            .and_then(|index| self.stores.get(index))
+            .and_then(Option::as_ref)
+    }
+
+    pub fn statuses(&self) -> Vec<NavDbArtifactOpenStatus> {
+        self.statuses.iter().filter_map(Clone::clone).collect()
+    }
+}
+
+fn nav_db_artifact_resource(
+    index: usize,
+    candidate: &NavDbArtifactCandidate,
+) -> CoreResourceRequest {
+    CoreResourceRequest {
+        id: format!("nav_db/artifact/{index}/root"),
+        address: candidate.root_address.clone().unwrap_or_else(|| {
+            format!(
+                "installed-artifact://{}/{}",
+                candidate.filename, NAV_DB_ROOT_MEMBER_PATH
+            )
+        }),
+        optional: true,
+    }
+}
+
+fn nav_db_artifact_resource_index(resource_id: &str) -> Option<usize> {
+    resource_id
+        .strip_prefix("nav_db/artifact/")
+        .and_then(|rest| rest.strip_suffix("/root"))
+        .and_then(|index| index.parse::<usize>().ok())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -181,7 +329,7 @@ pub(crate) fn nav_kv_page_resources(mut pages: Vec<u32>) -> Vec<CoreResourceRequ
 pub(crate) fn nav_kv_page_resource(page: u32) -> CoreResourceRequest {
     CoreResourceRequest {
         id: format!("nav_kv/page/{page:04}"),
-        address: format!("nav-kv://page/{page:04}"),
+        address: format!("nav-kv://page_{page:04}"),
         optional: false,
     }
 }
@@ -530,20 +678,20 @@ pub(crate) fn nav_ref_position(
     )
 }
 
-pub(crate) fn true_to_magnetic_course_deg(
+pub(crate) fn true_to_magnetic_course_deg_optional(
     store: &NavKvStore,
     true_course_deg: f64,
     position: LatLon,
-) -> Result<f64, HadReadError> {
-    Ok(normalize_course_degrees(
-        true_course_deg - magnetic_variation_degrees(store, position)?,
-    ))
+) -> Result<Option<f64>, HadReadError> {
+    magnetic_variation_degrees_optional(store, position).map(|variation| {
+        variation.map(|variation| normalize_course_degrees(true_course_deg - variation))
+    })
 }
 
-pub(crate) fn magnetic_variation_degrees(
+pub(crate) fn magnetic_variation_degrees_optional(
     store: &NavKvStore,
     position: LatLon,
-) -> Result<f64, HadReadError> {
+) -> Result<Option<f64>, HadReadError> {
     let lat = position.lat.clamp(-90.0, 89.0);
     let lon = normalize_magvar_longitude(position.lon);
     let lat0 = lat.floor() as i32;
@@ -553,21 +701,29 @@ pub(crate) fn magnetic_variation_degrees(
     let lat_t = lat - f64::from(lat0);
     let lon_t = lon - f64::from(lon0);
 
-    let sw = read_magvar_corner(store, lat0, lon0)?;
-    let se = read_magvar_corner(store, lat0, lon1)?;
-    let nw = read_magvar_corner(store, lat1, lon0)?;
-    let ne = read_magvar_corner(store, lat1, lon1)?;
+    let Some(sw) = read_magvar_corner_optional(store, lat0, lon0)? else {
+        return Ok(None);
+    };
+    let Some(se) = read_magvar_corner_optional(store, lat0, lon1)? else {
+        return Ok(None);
+    };
+    let Some(nw) = read_magvar_corner_optional(store, lat1, lon0)? else {
+        return Ok(None);
+    };
+    let Some(ne) = read_magvar_corner_optional(store, lat1, lon1)? else {
+        return Ok(None);
+    };
     let south = sw * (1.0 - lon_t) + se * lon_t;
     let north = nw * (1.0 - lon_t) + ne * lon_t;
-    Ok(south * (1.0 - lat_t) + north * lat_t)
+    Ok(Some(south * (1.0 - lat_t) + north * lat_t))
 }
 
-fn read_magvar_corner(store: &NavKvStore, lat: i32, lon: i32) -> Result<f64, HadReadError> {
-    read_required(
-        store,
-        NavKvQuery::MagneticVariation { lat, lon },
-        "magnetic variation",
-    )
+fn read_magvar_corner_optional(
+    store: &NavKvStore,
+    lat: i32,
+    lon: i32,
+) -> Result<Option<f64>, HadReadError> {
+    read_optional(store, NavKvQuery::MagneticVariation { lat, lon })
 }
 
 fn normalize_magvar_longitude(longitude: f64) -> f64 {
@@ -630,11 +786,11 @@ pub(crate) fn flight_plan_ui_state(
                                 .map(|segment| segment.distance_nm)
                                 .sum::<f64>(),
                     );
-                    row.course_deg = Some(true_to_magnetic_course_deg(
+                    row.course_deg = true_to_magnetic_course_deg_optional(
                         store,
                         first_segment.course_deg,
                         crate::great_circle_intermediate(first_segment.from, first_segment.to, 0.5),
-                    )?);
+                    )?;
                 }
             }
         }
@@ -2683,6 +2839,60 @@ mod tests {
                 panic!("unexpected resources: {resources:?}")
             }
         }
+    }
+
+    #[test]
+    fn nav_db_open_controller_skips_bad_candidate_and_selects_readable_root() {
+        let (root_bytes, _pages) = load_fixture_nav_kv_pages();
+        let mut controller = NavDbOpenController::new(vec![
+            NavDbArtifactCandidate {
+                package_id: "NAV_DB_BAD".to_string(),
+                filename: "nav_db_bad.zip".to_string(),
+                root_address: None,
+            },
+            NavDbArtifactCandidate {
+                package_id: "NAV_DB_GOOD".to_string(),
+                filename: "nav_db_good.zip".to_string(),
+                root_address: Some("https://example.test/nav_db/root".to_string()),
+            },
+        ]);
+
+        match controller.step().expect("step bad candidate") {
+            HadOperationOutcome::NeedResources { resources } => {
+                assert_eq!(resources[0].id, "nav_db/artifact/0/root");
+                assert_eq!(
+                    resources[0].address,
+                    "installed-artifact://nav_db_bad.zip/root"
+                );
+            }
+            other => panic!("expected first root resource, got {other:?}"),
+        }
+        controller
+            .ingest_resource("nav_db/artifact/0/root", b"not a nav db root")
+            .expect("ingest bad root");
+        match controller.step().expect("step good candidate") {
+            HadOperationOutcome::NeedResources { resources } => {
+                assert_eq!(resources[0].id, "nav_db/artifact/1/root");
+                assert_eq!(resources[0].address, "https://example.test/nav_db/root");
+            }
+            other => panic!("expected second root resource, got {other:?}"),
+        }
+        controller
+            .ingest_resource("nav_db/artifact/1/root", &root_bytes)
+            .expect("ingest good root");
+
+        match controller.step().expect("complete") {
+            HadOperationOutcome::Complete { result } => {
+                let result: NavDbOpenResult =
+                    serde_json::from_value(result).expect("decode result");
+                assert_eq!(result.selected_package_id, "NAV_DB_GOOD");
+                assert_eq!(result.statuses.len(), 2);
+                assert!(!result.statuses[0].readable);
+                assert!(result.statuses[1].readable);
+            }
+            other => panic!("expected complete open result, got {other:?}"),
+        }
+        assert!(controller.selected_store().is_some());
     }
 
     #[test]

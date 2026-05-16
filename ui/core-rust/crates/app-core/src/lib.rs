@@ -40,7 +40,8 @@ pub use geodesy::{
 pub use geometry::{GeoBounds, GeometryBundle, LatLon, MapViewport, PolygonRecord};
 pub use had_ops::{
     nav_kv_page_index_from_resource_id, run_had_operation, CoreResourceRequest, HadOperation,
-    HadOperationOutcome,
+    HadOperationOutcome, NavDbArtifactCandidate, NavDbArtifactOpenStatus, NavDbOpenController,
+    NavDbOpenResult,
 };
 pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
 pub use map_follow::MapFollowUiState;

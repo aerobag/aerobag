@@ -345,6 +345,25 @@ pub fn core_had_operation(nav_kv_handle: u32, operation_json: &str) -> Result<St
 }
 
 #[wasm_bindgen]
+pub fn sync_live_feeds_in_session(session_handle: u32) -> Result<String, JsValue> {
+    let outcome = app_core::sync_live_feeds_in_session(session_handle)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn ingest_live_feed_sse_event_in_session(
+    session_handle: u32,
+    event_json: &str,
+) -> Result<String, JsValue> {
+    let event: app_core::LiveFeedSseEvent =
+        serde_json::from_str(event_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome = app_core::ingest_live_feed_sse_event_in_session(session_handle, &event)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn perform_map_selection_action_in_session(
     session_handle: u32,
     action_json: &str,

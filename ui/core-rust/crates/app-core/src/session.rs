@@ -19,6 +19,7 @@ use crate::{
         nav_ref_position, nav_symbol_feature, suggest_waypoint_identifiers, CoreResourceRequest,
         HadOperationOutcome, HadReadError,
     },
+    live_feeds::{LiveFeedSseEvent, LiveFeedsState},
     map_follow::{MapFollowSessionState, MapFollowUiState},
     map_overlay::FlightPlanSelectionPoint,
     map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
@@ -121,6 +122,7 @@ struct UiSession {
     debug_state: UiDebugState,
     raster_resource_mode: RasterResourceMode,
     publication_resolver: PublicationResolver,
+    live_feeds: LiveFeedsState,
     raster_map_catalog: Option<RasterMapCatalog>,
     vector_tile_cache: HashMap<String, VectorAggregateTilePayload>,
     metar_tile_cache: HashMap<String, MetarTilePayload>,
@@ -348,6 +350,7 @@ fn create_ui_session_inner(
             debug_state,
             raster_resource_mode: RasterResourceMode::InstalledPackage,
             publication_resolver: PublicationResolver::new("/packages"),
+            live_feeds: LiveFeedsState::default(),
             raster_map_catalog: None,
             vector_tile_cache: HashMap::new(),
             metar_tile_cache: HashMap::new(),
@@ -2017,6 +2020,21 @@ pub fn ingest_tafs_in_session(handle: u32, payload: &TafProductPayload) -> AppRe
     Ok(())
 }
 
+pub fn sync_live_feeds_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+    let sessions = lock_sessions();
+    let session = session_ref(&sessions, handle)?;
+    Ok(session.live_feeds.sync_outcome())
+}
+
+pub fn ingest_live_feed_sse_event_in_session(
+    handle: u32,
+    event: &LiveFeedSseEvent,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    session.live_feeds.ingest_sse_event(event.clone())
+}
+
 #[derive(Debug, Deserialize)]
 struct PirepProductPayload {
     #[serde(default)]
@@ -2024,6 +2042,12 @@ struct PirepProductPayload {
 }
 
 pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) -> AppResult<()> {
+    if LiveFeedsState::handles_resource(resource_id) {
+        let mut sessions = lock_sessions();
+        let session = session_mut(&mut sessions, handle)?;
+        session.live_feeds.ingest_resource(resource_id, bytes)?;
+        return Ok(());
+    }
     if resource_id.starts_with("publication/") {
         let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, handle)?;

@@ -72,6 +72,7 @@ import {
   type UiDebugState,
   type UiSession,
   type UiSessionSnapshot,
+  type LiveFeedSseEvent,
 } from "./domain/appCoreAdapter";
 import {
   applyPinchGesture,
@@ -1677,6 +1678,38 @@ export default function App() {
       void nextSession?.destroy();
     };
   }, [adapterBackend, appCoreAdapter, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, initialDebugState, initialRecentAirportIds, markStartupProgress, reportStartupFatalError]);
+
+  useEffect(() => {
+    if (!uiSession) {
+      return;
+    }
+    let cancelled = false;
+    void uiSession.syncLiveFeeds().catch((error) => {
+      debugLog("live_feeds.bootstrap.failed", { message: error instanceof Error ? error.message : String(error) });
+    });
+    const events = new EventSource("/live-feeds/events");
+    events.addEventListener("live-feed-current", (event) => {
+      if (cancelled) {
+        return;
+      }
+      const message = event as MessageEvent<string>;
+      const liveFeedEvent: LiveFeedSseEvent = {
+        id: message.lastEventId || null,
+        event: "live-feed-current",
+        data: message.data,
+      };
+      void uiSession.ingestLiveFeedSseEvent(liveFeedEvent).catch((error) => {
+        debugLog("live_feeds.sse_event.failed", { message: error instanceof Error ? error.message : String(error) });
+      });
+    });
+    events.onerror = () => {
+      debugLog("live_feeds.sse.error", {});
+    };
+    return () => {
+      cancelled = true;
+      events.close();
+    };
+  }, [uiSession]);
 
   useEffect(() => {
     if (!sessionSnapshot.raster_map) {

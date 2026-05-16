@@ -476,9 +476,17 @@ export interface UiSession {
   queryRasterTilePlan(viewport: MapViewportState, widthPx: number, heightPx: number, devicePixelRatio?: number): Promise<RasterTilePlan>;
   renderTerrainOverlayTileByKey(tileKey: string, aircraftAltitudeFt: number): Promise<Uint8Array>;
   projectFlightPlanRoute(): Promise<FlightPlanRouteSegment[]>;
+  syncLiveFeeds(): Promise<void>;
+  ingestLiveFeedSseEvent(event: LiveFeedSseEvent): Promise<void>;
   restoreChartPageState(recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<UiSessionSnapshot>;
   destroy(): Promise<void>;
 }
+
+export type LiveFeedSseEvent = {
+  id?: string | null;
+  event?: string | null;
+  data: string;
+};
 
 export interface AppCoreAdapter {
   prewarm(): Promise<void>;
@@ -630,6 +638,8 @@ type WasmModule = {
   nav_kv_destroy(handle: number): Promise<void> | void;
   attach_nav_kv_store_to_session(navKvHandle: number, sessionHandle: number): Promise<void> | void;
   core_had_operation(handle: number, operationJson: string): Promise<string> | string;
+  sync_live_feeds_in_session(handle: number): Promise<string> | string;
+  ingest_live_feed_sse_event_in_session(handle: number, eventJson: string): Promise<string> | string;
 };
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
@@ -1151,6 +1161,22 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             this.module.project_flight_plan_route_in_session(handle),
           ),
         ),
+      syncLiveFeeds: async () => {
+        await withSessionRetry(async () =>
+          runCoreHadSessionOperation<unknown>(
+            () => this.module.sync_live_feeds_in_session(handle),
+            (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
+          ),
+        );
+      },
+      ingestLiveFeedSseEvent: async (event) => {
+        await withSessionRetry(async () =>
+          runCoreHadSessionOperation<unknown>(
+            () => this.module.ingest_live_feed_sse_event_in_session(handle, JSON.stringify(event)),
+            (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
+          ),
+        );
+      },
       restoreChartPageState: async (nextRecentAirportIds, nextSelectedAirportId, nextSelectedChartId) => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(

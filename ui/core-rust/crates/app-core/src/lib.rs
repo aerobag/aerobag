@@ -8,6 +8,7 @@ pub mod geodesy;
 pub mod geometry;
 pub mod had_ops;
 pub mod ids;
+pub mod live_feeds;
 pub mod map_follow;
 pub mod map_overlay;
 pub mod navdb_types;
@@ -44,6 +45,7 @@ pub use had_ops::{
     NavDbOpenResult,
 };
 pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
+pub use live_feeds::{LiveFeedSseEvent, LiveFeedsSnapshot, LiveFeedsState};
 pub use map_follow::MapFollowUiState;
 pub use map_overlay::{
     aggregate_vector_tile_cache_key, airspace_feature_path, airspace_label_tile_key,
@@ -147,11 +149,12 @@ pub use session::{
     get_raster_tile_plan_in_session_with_options, get_session_snapshot,
     get_terrain_overlay_in_session, ingest_airspace_features_in_session,
     ingest_airspace_label_tiles_in_session, ingest_airspace_ref_tiles_in_session,
-    ingest_metar_tiles_in_session, ingest_metars_in_session, ingest_point_tiles_in_session,
-    ingest_resource_in_session, ingest_tafs_in_session, ingest_tfrs_in_session,
-    insert_airway_at_flight_plan_row_in_session, insert_nav_kv_page_for_attached_sessions,
-    insert_waypoint_at_flight_plan_row_in_session, load_plate_procedure_in_session,
-    load_playback_trace_in_session, load_raster_map_catalog_in_session, pause_playback_in_session,
+    ingest_live_feed_sse_event_in_session, ingest_metar_tiles_in_session, ingest_metars_in_session,
+    ingest_point_tiles_in_session, ingest_resource_in_session, ingest_tafs_in_session,
+    ingest_tfrs_in_session, insert_airway_at_flight_plan_row_in_session,
+    insert_nav_kv_page_for_attached_sessions, insert_waypoint_at_flight_plan_row_in_session,
+    load_plate_procedure_in_session, load_playback_trace_in_session,
+    load_raster_map_catalog_in_session, pause_playback_in_session,
     perform_flight_plan_row_action_in_session, perform_map_selection_action_in_session,
     play_playback_in_session, preview_flight_plan_entry_in_session,
     project_flight_plan_route_in_session, push_situation_sample_in_session,
@@ -166,12 +169,13 @@ pub use session::{
     set_map_layer_enabled_in_session, set_map_layer_visibility_in_session,
     set_playback_rate_in_session, set_raster_resource_mode_in_session, set_situation_in_session,
     set_situation_in_session_outcome, suggest_waypoint_identifiers_at_flight_plan_row_in_session,
-    suspend_sequencing_in_session, sync_guidance_geometry_in_session, sync_map_follow_in_session,
-    tick_debug_ownship_driver_in_session, tick_debug_ownship_driver_in_session_outcome,
-    tick_playback_in_session, unsuspend_sequencing_in_session,
-    update_ownship_source_status_in_session, update_ownship_source_status_in_session_outcome,
-    GuidanceLegGeometry, UiCautionState, UiChartPageState, UiDebugState, UiMapLayerState,
-    UiMapLayerToggleState, UiSessionInitResult, UiSessionSnapshot,
+    suspend_sequencing_in_session, sync_guidance_geometry_in_session, sync_live_feeds_in_session,
+    sync_map_follow_in_session, tick_debug_ownship_driver_in_session,
+    tick_debug_ownship_driver_in_session_outcome, tick_playback_in_session,
+    unsuspend_sequencing_in_session, update_ownship_source_status_in_session,
+    update_ownship_source_status_in_session_outcome, GuidanceLegGeometry, UiCautionState,
+    UiChartPageState, UiDebugState, UiMapLayerState, UiMapLayerToggleState, UiSessionInitResult,
+    UiSessionSnapshot,
 };
 pub use situation::{Situation, SituationPosition};
 pub use state::{

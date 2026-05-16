@@ -156,7 +156,7 @@ The audit command:
 preprocessor-cli audit-terrain-airports \
   --nav-db <main.db> \
   --dem-vrt <dem.tif-or.vrt> \
-  --geo-csv <geo.csv> \
+  --geo-csv <geoid-source.csv> \
   --output-dir <dir> \
   [--bbox <west,south,east,north>] \
   [--limit <count>]

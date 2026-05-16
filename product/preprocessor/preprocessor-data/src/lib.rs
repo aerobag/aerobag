@@ -251,7 +251,6 @@ CREATE TABLE saa(designator TEXT,name TEXT,upperlimit TEXT,lowerlimit TEXT,begin
 -- public ARINC 424 field-list mirrors use the term `Recommended Navaid`, so we keep
 -- that naming here instead of renaming it to something local and less traceable.
 CREATE TABLE cifp_sid_star_app(record_type Text,customer_area_code Text,section_code Text,airport_identifier Text,icao_code_1 Text,subsection_code Text,sid_star_approach_identifier Text,route_type Text,transition_identifier Text,sequence_number Text,fix_identifier Text,icao_code_2 Text,section_code_2 Text,subsection_code_2 Text,continuation_record_number Text,waypoint_description_code Text,turn_direction Text,rnp Text,path_and_termination Text,turn_direction_valid Text,recommended_navaid Text,icao_code_3 Text,arc_radius Text,theta Text,rho Text,magnetic_course Text,route_distance_holding_distance_or_time Text,recd_nav_section Text,recd_nav_subsection Text,reserved Text,altitude_description Text,atc_indicator Text,altitude_1 Text,altitude_2 Text,transition_altitude Text,speed_limit Text,vertical_angle Text,center_fix_or_taa_procedure_turn_indicator Text,multiple_code_or_taa_sector_identifier Text,icao_code_4 Text,section_code_3 Text,subsection_code_3 Text,gps_fms_indication Text,speed_limit_description Text,apch_route_qualifier_1 Text,apch_route_qualifier_2 Text,file_record_number Text,cycle_date Text);
-CREATE TABLE geo(Latitude float, Longitude float, height float, declination float);
 ";
     let airway_schema =
         "CREATE TABLE airways_branch(name Text, branch_key Text, sequence_number Integer, sequence_token Text, point_name Text, Latitude float, Longitude float);
@@ -2103,7 +2102,7 @@ mod tests {
         write_empty(&input_dir.join("TWR.txt"));
         write_empty(&input_dir.join("AWOS.txt"));
         write_empty(&input_dir.join("FAACIFP18"));
-        for name in ["NAV.txt", "FIX.txt", "DOF.DAT", "geo.csv"] {
+        for name in ["NAV.txt", "FIX.txt", "DOF.DAT"] {
             write_empty(&input_dir.join(name));
         }
         fs::write(

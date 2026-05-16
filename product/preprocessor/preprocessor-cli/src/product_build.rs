@@ -4876,6 +4876,344 @@ fn build_bundle_manifest(
     })
 }
 
+fn nav_db_magvar_decimal_year(resource_index: &ResourceIndex) -> anyhow::Result<f64> {
+    let date = resource_index
+        .temporal_summary
+        .uniform_good_beyond_date
+        .as_ref()
+        .or(resource_index
+            .temporal_summary
+            .uniform_effective_date
+            .as_ref())
+        .context("resource-index missing date for magnetic variation generation")?;
+    let date = NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .with_context(|| format!("failed to parse magnetic variation date {date}"))?;
+    Ok(decimal_year(date))
+}
+
+fn decimal_year(date: NaiveDate) -> f64 {
+    let year = date.year();
+    let year_start = NaiveDate::from_ymd_opt(year, 1, 1).expect("valid year start");
+    let next_year_start = NaiveDate::from_ymd_opt(year + 1, 1, 1).expect("valid next year start");
+    let day = date.signed_duration_since(year_start).num_days() as f64;
+    let year_days = next_year_start.signed_duration_since(year_start).num_days() as f64;
+    f64::from(year) + day / year_days
+}
+
+fn static_wmm2025_cof_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("preprocessor-cli should live under workspace root")
+        .parent()
+        .expect("workspace root should live under product")
+        .parent()
+        .expect("product should live under repo root")
+        .join("third_party")
+        .join("noaa")
+        .join("wmm2025")
+        .join("WMM.COF")
+}
+
+#[derive(Debug, Clone)]
+struct WmmCoefficient {
+    g: f64,
+    h: f64,
+    g_dot: f64,
+    h_dot: f64,
+}
+
+#[derive(Debug, Clone)]
+struct WmmModel {
+    epoch: f64,
+    model_name: String,
+    release_date: String,
+    n_max: usize,
+    coefficients: Vec<WmmCoefficient>,
+}
+
+impl WmmModel {
+    fn from_cof(path: &Path) -> anyhow::Result<Self> {
+        let text = fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let mut lines = text.lines();
+        let header = lines
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("{} is empty", path.display()))?;
+        let header_columns = header.split_whitespace().collect::<Vec<_>>();
+        if header_columns.len() < 3 {
+            bail!("invalid WMM.COF header in {}", path.display());
+        }
+        let epoch = header_columns[0]
+            .parse::<f64>()
+            .with_context(|| format!("failed to parse WMM epoch in {}", path.display()))?;
+        let model_name = header_columns[1].to_string();
+        let release_date = header_columns[2].to_string();
+        let mut raw = Vec::new();
+        let mut n_max = 0usize;
+        for line in lines {
+            let columns = line.split_whitespace().collect::<Vec<_>>();
+            if columns.first() == Some(&"999999999999999999999999999999999999999999999999") {
+                break;
+            }
+            if columns.len() != 6 {
+                bail!("invalid WMM coefficient line in {}: {line}", path.display());
+            }
+            let n = columns[0].parse::<usize>()?;
+            let m = columns[1].parse::<usize>()?;
+            n_max = n_max.max(n);
+            raw.push((
+                n,
+                m,
+                WmmCoefficient {
+                    g: columns[2].parse::<f64>()?,
+                    h: columns[3].parse::<f64>()?,
+                    g_dot: columns[4].parse::<f64>()?,
+                    h_dot: columns[5].parse::<f64>()?,
+                },
+            ));
+        }
+        let mut coefficients = vec![
+            WmmCoefficient {
+                g: 0.0,
+                h: 0.0,
+                g_dot: 0.0,
+                h_dot: 0.0,
+            };
+            wmm_index(n_max, n_max) + 1
+        ];
+        for (n, m, coefficient) in raw {
+            coefficients[wmm_index(n, m)] = coefficient;
+        }
+        Ok(Self {
+            epoch,
+            model_name,
+            release_date,
+            n_max,
+            coefficients,
+        })
+    }
+
+    fn declination_degrees(&self, latitude: f64, longitude: f64, decimal_year: f64) -> f64 {
+        self.declination_degrees_at_ellipsoid_km(latitude, longitude, 0.0, decimal_year)
+    }
+
+    fn declination_degrees_at_ellipsoid_km(
+        &self,
+        latitude: f64,
+        longitude: f64,
+        height_above_ellipsoid_km: f64,
+        decimal_year: f64,
+    ) -> f64 {
+        let spherical = wmm_geodetic_to_spherical(latitude, longitude, height_above_ellipsoid_km);
+        let spherical_harmonic = wmm_spherical_harmonic_variables(spherical, self.n_max);
+        let legendre = wmm_associated_legendre_low(spherical.phig, self.n_max);
+        let mut sph_bx = 0.0;
+        let mut sph_by = 0.0;
+        let mut sph_bz = 0.0;
+        let years_since_epoch = decimal_year - self.epoch;
+        for n in 1..=self.n_max {
+            for m in 0..=n {
+                let index = wmm_index(n, m);
+                let coefficient = &self.coefficients[index];
+                let g = coefficient.g + years_since_epoch * coefficient.g_dot;
+                let h = coefficient.h + years_since_epoch * coefficient.h_dot;
+                let relative_radius_power = spherical_harmonic.relative_radius_power[n];
+                let cos_mlambda = spherical_harmonic.cos_mlambda[m];
+                let sin_mlambda = spherical_harmonic.sin_mlambda[m];
+                let gauss = g * cos_mlambda + h * sin_mlambda;
+                sph_bz -= relative_radius_power * gauss * (n as f64 + 1.0) * legendre.pcup[index];
+                sph_by += relative_radius_power
+                    * (g * sin_mlambda - h * cos_mlambda)
+                    * m as f64
+                    * legendre.pcup[index];
+                sph_bx -= relative_radius_power * gauss * legendre.dpcup[index];
+            }
+        }
+        let cos_phi = spherical.phig.to_radians().cos();
+        if cos_phi.abs() > 1.0e-10 {
+            sph_by /= cos_phi;
+        }
+        let psi = (spherical.phig - latitude).to_radians();
+        let geo_x = sph_bx * psi.cos() - sph_bz * psi.sin();
+        let geo_y = sph_by;
+        geo_y.atan2(geo_x).to_degrees()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WmmSphericalCoord {
+    lambda: f64,
+    phig: f64,
+    r: f64,
+}
+
+#[derive(Debug, Clone)]
+struct WmmSphericalHarmonicVariables {
+    relative_radius_power: Vec<f64>,
+    cos_mlambda: Vec<f64>,
+    sin_mlambda: Vec<f64>,
+}
+
+#[derive(Debug, Clone)]
+struct WmmLegendre {
+    pcup: Vec<f64>,
+    dpcup: Vec<f64>,
+}
+
+fn wmm_index(n: usize, m: usize) -> usize {
+    n * (n + 1) / 2 + m
+}
+
+fn wmm_geodetic_to_spherical(
+    latitude: f64,
+    longitude: f64,
+    height_above_ellipsoid_km: f64,
+) -> WmmSphericalCoord {
+    const WGS84_A_KM: f64 = 6378.137;
+    const WGS84_EPS_SQ: f64 = 0.006_694_379_990_141_316_5;
+    let cos_lat = latitude.to_radians().cos();
+    let sin_lat = latitude.to_radians().sin();
+    let rc = WGS84_A_KM / (1.0 - WGS84_EPS_SQ * sin_lat * sin_lat).sqrt();
+    let xp = (rc + height_above_ellipsoid_km) * cos_lat;
+    let zp = (rc * (1.0 - WGS84_EPS_SQ) + height_above_ellipsoid_km) * sin_lat;
+    let r = (xp * xp + zp * zp).sqrt();
+    WmmSphericalCoord {
+        lambda: longitude,
+        phig: (zp / r).asin().to_degrees(),
+        r,
+    }
+}
+
+fn wmm_spherical_harmonic_variables(
+    spherical: WmmSphericalCoord,
+    n_max: usize,
+) -> WmmSphericalHarmonicVariables {
+    const WMM_REFERENCE_RADIUS_KM: f64 = 6371.2;
+    let mut relative_radius_power = vec![0.0; n_max + 1];
+    let mut cos_mlambda = vec![0.0; n_max + 1];
+    let mut sin_mlambda = vec![0.0; n_max + 1];
+    let radius_ratio = WMM_REFERENCE_RADIUS_KM / spherical.r;
+    relative_radius_power[0] = radius_ratio * radius_ratio;
+    for n in 1..=n_max {
+        relative_radius_power[n] = relative_radius_power[n - 1] * radius_ratio;
+    }
+    let cos_lambda = spherical.lambda.to_radians().cos();
+    let sin_lambda = spherical.lambda.to_radians().sin();
+    cos_mlambda[0] = 1.0;
+    sin_mlambda[0] = 0.0;
+    if n_max >= 1 {
+        cos_mlambda[1] = cos_lambda;
+        sin_mlambda[1] = sin_lambda;
+    }
+    for m in 2..=n_max {
+        cos_mlambda[m] = cos_mlambda[m - 1] * cos_lambda - sin_mlambda[m - 1] * sin_lambda;
+        sin_mlambda[m] = cos_mlambda[m - 1] * sin_lambda + sin_mlambda[m - 1] * cos_lambda;
+    }
+    WmmSphericalHarmonicVariables {
+        relative_radius_power,
+        cos_mlambda,
+        sin_mlambda,
+    }
+}
+
+fn wmm_associated_legendre_low(phig: f64, n_max: usize) -> WmmLegendre {
+    let x = phig.to_radians().sin();
+    let z = ((1.0 - x) * (1.0 + x)).sqrt();
+    let terms = (n_max + 1) * (n_max + 2) / 2;
+    let mut pcup = vec![0.0; terms];
+    let mut dpcup = vec![0.0; terms];
+    let mut schmidt = vec![0.0; terms + 1];
+    pcup[0] = 1.0;
+    dpcup[0] = 0.0;
+    for n in 1..=n_max {
+        for m in 0..=n {
+            let index = wmm_index(n, m);
+            if n == m {
+                let index1 = wmm_index(n - 1, m - 1);
+                pcup[index] = z * pcup[index1];
+                dpcup[index] = z * dpcup[index1] + x * pcup[index1];
+            } else if n == 1 && m == 0 {
+                let index1 = wmm_index(n - 1, m);
+                pcup[index] = x * pcup[index1];
+                dpcup[index] = x * dpcup[index1] - z * pcup[index1];
+            } else {
+                let index1 = wmm_index(n - 2, m);
+                let index2 = wmm_index(n - 1, m);
+                if m > n - 2 {
+                    pcup[index] = x * pcup[index2];
+                    dpcup[index] = x * dpcup[index2] - z * pcup[index2];
+                } else {
+                    let k =
+                        (((n - 1) * (n - 1) - m * m) as f64) / (((2 * n - 1) * (2 * n - 3)) as f64);
+                    pcup[index] = x * pcup[index2] - k * pcup[index1];
+                    dpcup[index] = x * dpcup[index2] - z * pcup[index2] - k * dpcup[index1];
+                }
+            }
+        }
+    }
+    schmidt[0] = 1.0;
+    for n in 1..=n_max {
+        let index = wmm_index(n, 0);
+        let index1 = wmm_index(n - 1, 0);
+        schmidt[index] = schmidt[index1] * (2 * n - 1) as f64 / n as f64;
+        for m in 1..=n {
+            let index = wmm_index(n, m);
+            let index1 = wmm_index(n, m - 1);
+            let numerator = ((n - m + 1) * if m == 1 { 2 } else { 1 }) as f64;
+            schmidt[index] = schmidt[index1] * (numerator / (n + m) as f64).sqrt();
+        }
+    }
+    for n in 1..=n_max {
+        for m in 0..=n {
+            let index = wmm_index(n, m);
+            pcup[index] *= schmidt[index];
+            dpcup[index] *= -schmidt[index];
+        }
+    }
+    WmmLegendre { pcup, dpcup }
+}
+
+fn build_nav_kv_magvar_pairs(path: &Path, decimal_year: f64) -> anyhow::Result<Vec<NavKvPair>> {
+    let model = WmmModel::from_cof(path)?;
+    let mut pairs = Vec::with_capacity(64_801);
+    pairs.push(json_pair(
+        "magvar/source".to_string(),
+        &serde_json::json!({
+            "source": "NOAA/NCEI World Magnetic Model",
+            "model": model.model_name,
+            "model_epoch": model.epoch,
+            "coefficient_release_date": model.release_date,
+            "source_package_date": "2024-12-17",
+            "valid_decimal_year_start": 2025.0,
+            "valid_decimal_year_end": 2030.0,
+            "computed_decimal_year": decimal_year,
+            "grid": {
+                "latitude_min": -90,
+                "latitude_max_exclusive": 90,
+                "longitude_min": -180,
+                "longitude_max_exclusive": 180,
+                "step_degrees": 1,
+                "altitude_reference": "WGS84 ellipsoid",
+                "altitude_km": 0.0,
+                "value_units": "degrees east"
+            },
+            "citation": "NOAA NCEI Geomagnetic Modeling Team; British Geological Survey. 2024: World Magnetic Model 2025. NOAA National Centers for Environmental Information. https://doi.org/10.25921/aqfd-sd83."
+        }),
+        "magvar source",
+    )?);
+    for lat in -90..90 {
+        for lon in -180..180 {
+            let declination = model.declination_degrees(lat as f64, lon as f64, decimal_year);
+            pairs.push(json_pair(
+                format!("magvar/{lat}/{lon}"),
+                &serde_json::json!((declination * 10.0).round() / 10.0),
+                "magnetic variation",
+            )?);
+        }
+    }
+    Ok(pairs)
+}
+
 fn build_nav_kv_artifact(
     config: &ProductBuildConfig,
     resource_index_path: &Path,
@@ -4901,6 +5239,8 @@ fn build_nav_kv_artifact(
         })
         .collect::<Vec<_>>()
         .join("\n");
+    let wmm_cof_path = static_wmm2025_cof_path();
+    let magvar_decimal_year = nav_db_magvar_decimal_year(&resource_index)?;
     let inputs = BTreeMap::from([
         (
             "resource_index".to_string(),
@@ -4922,6 +5262,11 @@ fn build_nav_kv_artifact(
         (
             "static_raster_tile_levels".to_string(),
             hash_text(&static_raster_json),
+        ),
+        ("magvar_model".to_string(), hash_file(&wmm_cof_path)?),
+        (
+            "magvar_decimal_year".to_string(),
+            format!("{magvar_decimal_year:.6}"),
         ),
         ("nav_kv_page_bytes".to_string(), (64 * 1024).to_string()),
         (
@@ -4969,6 +5314,10 @@ fn build_nav_kv_artifact(
                 pairs.extend(build_nav_kv_package_pairs(&package_artifacts)?);
                 pairs.extend(build_nav_kv_navref_pairs(intermediate_sqlite_db_path)?);
                 pairs.extend(build_nav_kv_vector_pairs(vector_had_pairs_path)?);
+                pairs.extend(build_nav_kv_magvar_pairs(
+                    &wmm_cof_path,
+                    magvar_decimal_year,
+                )?);
                 let built = build_nav_kv_sorted(pairs, 64 * 1024)
                     .map_err(|err| anyhow::anyhow!("failed to build nav_kv: {err}"))?;
                 let root_source_path = source_dir.join(root_filename);
@@ -10076,7 +10425,7 @@ fn build_terrain_product(
     build_terrain_region_tiles(
         region,
         &vrt_path,
-        &static_geo_source_path(),
+        &static_geoid_source_path(),
         &output_dir,
         &version_label,
         &dem_selection,
@@ -10293,7 +10642,10 @@ fn terrain_product_inputs(
             "terrain_pipeline".to_string(),
             TERRAIN_PIPELINE_VERSION.to_string(),
         ),
-        ("geo_csv".to_string(), hash_file(static_geo_source_path())?),
+        (
+            "geoid_csv".to_string(),
+            hash_file(static_geoid_source_path())?,
+        ),
     ]))
 }
 
@@ -11611,7 +11963,7 @@ fn hardlink_static_tile_zoom_subset(
     Ok(())
 }
 
-fn static_geo_source_path() -> PathBuf {
+fn static_geoid_source_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("preprocessor-cli should live under workspace root")
@@ -11619,7 +11971,8 @@ fn static_geo_source_path() -> PathBuf {
         .expect("workspace root should live under product")
         .parent()
         .expect("product should live under repo root")
-        .join("avare-assets")
+        .join("third_party")
+        .join("apps4av")
         .join("geo")
         .join("geo.csv")
 }
@@ -12305,7 +12658,7 @@ fn build_terrain_vrt(vrt_path: &Path, dem_paths: &[PathBuf]) -> anyhow::Result<(
 fn build_terrain_region_tiles(
     region: Region,
     vrt_path: &Path,
-    geo_csv_path: &Path,
+    geoid_csv_path: &Path,
     output_dir: &Path,
     version_label: &str,
     dem_selection: &TerrainDemSelection,
@@ -12319,8 +12672,8 @@ fn build_terrain_region_tiles(
         .arg(&script_path)
         .arg("--vrt")
         .arg(vrt_path)
-        .arg("--geo-csv")
-        .arg(geo_csv_path)
+        .arg("--geoid-csv")
+        .arg(geoid_csv_path)
         .arg("--output-dir")
         .arg(output_dir)
         .arg("--region")
@@ -13431,7 +13784,7 @@ RADIUS = 6378137.0
 ORIGIN_SHIFT = math.pi * RADIUS
 
 WORKER_DS = None
-WORKER_GEO = None
+WORKER_GEOID = None
 WORKER_TILES_ROOT = None
 WORKER_ZOOM = None
 WORKER_TILE_SIZE = None
@@ -13466,7 +13819,7 @@ def tile_range(west, south, east, north, z, tile_size):
     y1 = math.floor((north_m + ORIGIN_SHIFT) / resolution / tile_size)
     return range(x0, x1 + 1), range(y0, y1 + 1)
 
-def load_geo(path):
+def load_geoid(path):
     values = {}
     with open(path) as f:
         for line in f:
@@ -13574,12 +13927,12 @@ def scan_terrain_levels(tiles_root):
         })
     return levels
 
-def init_worker(vrt_path, geo_csv_path, tiles_root, zoom, tile_size):
-    global WORKER_DS, WORKER_GEO, WORKER_TILES_ROOT, WORKER_ZOOM, WORKER_TILE_SIZE
+def init_worker(vrt_path, geoid_csv_path, tiles_root, zoom, tile_size):
+    global WORKER_DS, WORKER_GEOID, WORKER_TILES_ROOT, WORKER_ZOOM, WORKER_TILE_SIZE
     WORKER_DS = gdal.Open(vrt_path)
     if WORKER_DS is None:
         raise RuntimeError(f'failed to open {vrt_path}')
-    WORKER_GEO = load_geo(geo_csv_path)
+    WORKER_GEOID = load_geoid(geoid_csv_path)
     WORKER_TILES_ROOT = Path(tiles_root)
     WORKER_ZOOM = zoom
     WORKER_TILE_SIZE = tile_size
@@ -13595,7 +13948,7 @@ def render_tile(task):
     )
     arr = warped.ReadAsArray()
     center_lon, center_lat = lonlat((minx + maxx) / 2.0, (miny + maxy) / 2.0)
-    tile_geoid_ft = geoid(WORKER_GEO, center_lat, center_lon)
+    tile_geoid_ft = geoid(WORKER_GEOID, center_lat, center_lon)
     invalid = (arr <= -999998.0) | np.isnan(arr)
     samples = np.rint(arr.astype(np.float64) * 3.280839895 + tile_geoid_ft)
     samples = np.clip(samples, -32767, 32767).astype('<i2')
@@ -13610,7 +13963,7 @@ def render_tile(task):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--vrt', required=True)
-    ap.add_argument('--geo-csv', required=True)
+    ap.add_argument('--geoid-csv', required=True)
     ap.add_argument('--output-dir', required=True)
     ap.add_argument('--region', required=True)
     ap.add_argument('--bbox', required=True)
@@ -13628,13 +13981,13 @@ def main():
     tasks = [(x, y) for x in x_range for y in y_range]
     workers = max(1, args.workers)
     if workers == 1:
-        init_worker(args.vrt, args.geo_csv, str(tiles_root), args.zoom, args.tile_size)
+        init_worker(args.vrt, args.geoid_csv, str(tiles_root), args.zoom, args.tile_size)
         count = sum(render_tile(task) for task in tasks)
     else:
         with ProcessPoolExecutor(
             max_workers=workers,
             initializer=init_worker,
-            initargs=(args.vrt, args.geo_csv, str(tiles_root), args.zoom, args.tile_size),
+            initargs=(args.vrt, args.geoid_csv, str(tiles_root), args.zoom, args.tile_size),
         ) as pool:
             count = sum(pool.map(render_tile, tasks, chunksize=8))
     level_counts = build_parent_pyramid(tiles_root, args.zoom, args.tile_size)
@@ -13657,7 +14010,7 @@ def main():
         'sample_vertical_datum': 'WGS84 ellipsoid',
         'source_dem': 'USGS 3DEP 1 arc-second DEM',
         'source_dem_vertical_datum': 'source tile metadata; generally NAVD88 in CONUS',
-        'geoid_model': 'avare geo.csv one-degree grid, applied once per tile at tile center (temporary approximation)',
+        'geoid_model': 'Apps4Av Avare geo.csv one-degree geoid-height grid, applied once per tile at tile center (temporary approximation)',
         'worker_count': workers,
         'refresh_policy': {
             'identity': 'published filename is content-addressed by ZIP bytes',
@@ -19003,6 +19356,43 @@ mod tests {
         assert_eq!(z10["boxes"][0]["x_max"], 219);
         assert_eq!(z10["boxes"][0]["y_tms_min"], 636);
         assert_eq!(z10["boxes"][0]["y_tms_max"], 676);
+    }
+
+    #[test]
+    fn wmm2025_declination_matches_noaa_test_values() {
+        let model = WmmModel::from_cof(&static_wmm2025_cof_path()).unwrap();
+        let samples = [
+            (2025.0, 66.0, 14.0, 143.0, -0.19),
+            (2025.0, 18.0, 0.0, 21.0, 1.29),
+            (2025.5, 6.0, -36.0, -137.0, 20.28),
+            (2026.0, 46.0, -24.0, -122.0, 14.01),
+        ];
+        for (decimal_year, hae_km, lat, lon, expected_declination) in samples {
+            let actual = model.declination_degrees_at_ellipsoid_km(lat, lon, hae_km, decimal_year);
+            assert!(
+                (actual - expected_declination).abs() < 0.01,
+                "declination mismatch at {lat},{lon} {decimal_year}: expected {expected_declination}, got {actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn nav_kv_magvar_pairs_publish_source_metadata_and_grid() {
+        let pairs = build_nav_kv_magvar_pairs(&static_wmm2025_cof_path(), 2026.0).unwrap();
+        let pair_value = |key: &str| -> serde_json::Value {
+            let pair = pairs
+                .iter()
+                .find(|pair| pair.key == key)
+                .unwrap_or_else(|| panic!("missing nav_kv pair {key}"));
+            serde_json::from_slice(&pair.value).unwrap()
+        };
+        assert_eq!(64_801, pairs.len());
+        let source = pair_value("magvar/source");
+        assert_eq!(source["model"], "WMM-2025");
+        assert_eq!(source["coefficient_release_date"], "11/13/2024");
+        assert_eq!(source["computed_decimal_year"], 2026.0);
+        let rnt = pair_value("magvar/47/-123");
+        assert!(rnt.as_f64().unwrap().abs() > 1.0);
     }
 
     #[test]

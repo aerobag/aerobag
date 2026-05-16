@@ -132,7 +132,6 @@ nav_db_2604_01_<sha256>.zip
 Stable product examples:
 
 ```text
-geo_<sha256>.zip
 terrain-nw_<sha256>.zip
 shaded-relief-nw_<sha256>.zip
 ```
@@ -161,7 +160,6 @@ Stable products are durable packages that may be useful across many FAA cycles, 
 Examples:
 
 ```text
-geo_*.zip
 terrain-*.zip
 shaded-relief-*.zip
 ```

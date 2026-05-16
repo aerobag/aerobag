@@ -57,7 +57,6 @@ Standalone artifacts:
 - `tfrs_<sha256>.zip`
 - `metars_<sha256>.zip`
 - `nexrad_<sha256>.zip`
-- `geo_<sha256>.zip`
 
 Operational files:
 
@@ -95,7 +94,6 @@ bundle_cycle_YYCC_VV_<sha256>.json
     ├── tpp_*.zip
     ├── vectors_data_*.zip
     ├── nav_db_*.zip
-    ├── geo_*.zip
     ├── terrain-*.zip
     └── shaded-relief-*.zip
 
@@ -238,15 +236,6 @@ It is published as a package row in `bundle_fast_<sha256>.json`, not in any cycl
 bundle.
 
 
-### `geo_<sha256>.zip`
-
-Optional standalone static geo grid artifact.
-
-It contains `geo.csv` with one-degree grid rows:
-`Latitude,Longitude,geoid_height,magnetic_declination`.
-
-It is listed in the current cycle bundle `packages[]`.
-
 ### `terrain-<region>_<sha256>.zip`
 
 Standalone content-addressed terrain artifact.
@@ -254,6 +243,11 @@ Standalone content-addressed terrain artifact.
 It is listed in the current cycle bundle `packages[]`.
 
 Consumers fetch it only if they explicitly need terrain.
+
+Magnetic variation is not published as a standalone package. It is generated
+into the nav-db HAD `magvar/` keyspace from NOAA/NCEI WMM2025 coefficients.
+The nav-db also carries `magvar/source`, which records the WMM model, epoch,
+coefficient release date, computed decimal year, and citation.
 
 The package contains `manifest.json` plus `tiles/<z>/<x>/<y>.terrain` members.
 The source/max zoom is z10, and parent tiles are generated down to z0. Parent

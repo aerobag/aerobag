@@ -84,22 +84,6 @@ pub struct BuildNexradResult {
 }
 
 #[derive(Debug, Clone)]
-pub struct BuildGeoRequest {
-    pub source_csv_path: PathBuf,
-    pub output_dir: PathBuf,
-    pub version_label: String,
-    pub generated_at_utc: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone)]
-pub struct BuildGeoResult {
-    pub manifest_path: PathBuf,
-    pub csv_path: PathBuf,
-    pub zip_path: PathBuf,
-    pub point_count: usize,
-}
-
-#[derive(Debug, Clone)]
 pub struct BuildNotamRequest {
     pub input_jsonl_path: PathBuf,
     pub output_dir: PathBuf,
@@ -207,40 +191,6 @@ struct NexradManifestFiles {
 #[derive(Debug, Clone, Serialize)]
 struct NexradManifestCounts {
     frames: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct GeoManifest {
-    schema_version: u32,
-    version_label: String,
-    generated_at_utc: String,
-    grid: GeoManifestGrid,
-    files: GeoManifestFiles,
-    counts: GeoManifestCounts,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct GeoManifestGrid {
-    latitude_step_degrees: i32,
-    longitude_step_degrees: i32,
-    value_units: GeoManifestValueUnits,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct GeoManifestValueUnits {
-    geoid_height: String,
-    magnetic_declination: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct GeoManifestFiles {
-    csv: String,
-    zip: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct GeoManifestCounts {
-    points: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -580,7 +530,6 @@ struct GeoGridPoint {
     latitude: i32,
     longitude: i32,
     geoid_height_feet: i32,
-    magnetic_declination_degrees: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -1724,61 +1673,6 @@ pub fn build_nexrad_dataset(request: &BuildNexradRequest) -> anyhow::Result<Buil
     })
 }
 
-pub fn build_geo_dataset(request: &BuildGeoRequest) -> anyhow::Result<BuildGeoResult> {
-    if request.output_dir.exists() {
-        fs::remove_dir_all(&request.output_dir)
-            .with_context(|| format!("failed to clear {}", request.output_dir.display()))?;
-    }
-    fs::create_dir_all(&request.output_dir)
-        .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
-
-    let points = parse_geo_csv(&request.source_csv_path)?;
-    let csv_path = request.output_dir.join("geo.csv");
-    let manifest_path = request
-        .output_dir
-        .join(format!("geo_{}.manifest.json", request.version_label));
-    let zip_path = request
-        .output_dir
-        .join(format!("geo_{}.zip", request.version_label));
-
-    write_geo_csv(&csv_path, &points)?;
-    write_json_pretty(
-        &manifest_path,
-        &GeoManifest {
-            schema_version: 1,
-            version_label: request.version_label.clone(),
-            generated_at_utc: request.generated_at_utc.to_rfc3339(),
-            grid: GeoManifestGrid {
-                latitude_step_degrees: 1,
-                longitude_step_degrees: 1,
-                value_units: GeoManifestValueUnits {
-                    geoid_height: "feet_msl_offset_rounded".to_string(),
-                    magnetic_declination: "degrees_east_rounded".to_string(),
-                },
-            },
-            files: GeoManifestFiles {
-                csv: "geo.csv".to_string(),
-                zip: zip_path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or_default()
-                    .to_string(),
-            },
-            counts: GeoManifestCounts {
-                points: points.len(),
-            },
-        },
-    )?;
-    write_zip(&zip_path, &[("geo.csv", &csv_path)])?;
-
-    Ok(BuildGeoResult {
-        manifest_path,
-        csv_path,
-        zip_path,
-        point_count: points.len(),
-    })
-}
-
 pub fn build_notam_dataset(request: &BuildNotamRequest) -> anyhow::Result<BuildNotamResult> {
     if request.output_dir.exists() {
         fs::remove_dir_all(&request.output_dir)
@@ -1866,12 +1760,6 @@ fn parse_geo_csv(path: &Path) -> anyhow::Result<Vec<GeoGridPoint>> {
                 latitude: parse_geo_i32(path, index, "latitude", columns[0])?,
                 longitude: parse_geo_i32(path, index, "longitude", columns[1])?,
                 geoid_height_feet: parse_geo_i32(path, index, "geoid height", columns[2])?,
-                magnetic_declination_degrees: parse_geo_i32(
-                    path,
-                    index,
-                    "magnetic declination",
-                    columns[3],
-                )?,
             })
         })
         .collect()
@@ -2150,20 +2038,6 @@ fn parse_geo_i32(
             zero_based_line + 1
         )
     })
-}
-
-fn write_geo_csv(path: &Path, points: &[GeoGridPoint]) -> anyhow::Result<()> {
-    let mut output = String::new();
-    for point in points {
-        output.push_str(&format!(
-            "{},{},{},{}\n",
-            point.latitude,
-            point.longitude,
-            point.geoid_height_feet,
-            point.magnetic_declination_degrees
-        ));
-    }
-    fs::write(path, output).with_context(|| format!("failed to write {}", path.display()))
 }
 
 fn normalize_longitude(longitude: f64) -> f64 {
@@ -3633,25 +3507,6 @@ mod tests {
         let clouds =
             structured_metar_clouds("METAR KAAA 160400Z 00000KT 1/4SM FG VV002 10/08 A3000");
         assert_eq!(clouds.symbol, Some("VV".to_string()));
-    }
-
-    #[test]
-    fn geo_dataset_preserves_source_grid() -> anyhow::Result<()> {
-        let source_csv_path = geo_grid_fixture_path();
-        let output_dir = TempDir::new().context("failed to create temp dir")?;
-        let generated_at_utc = DateTime::parse_from_rfc3339("2026-04-16T00:00:00Z")
-            .expect("valid fixture timestamp")
-            .with_timezone(&Utc);
-        let result = build_geo_dataset(&BuildGeoRequest {
-            source_csv_path: source_csv_path.clone(),
-            output_dir: output_dir.path().join("out"),
-            version_label: "fixture".to_string(),
-            generated_at_utc,
-        })?;
-
-        assert_eq!(fs::read(source_csv_path)?, fs::read(&result.csv_path)?);
-        assert_eq!(64_800, result.point_count);
-        Ok(())
     }
 
     #[test]

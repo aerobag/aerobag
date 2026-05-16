@@ -159,6 +159,26 @@ variation, airport magnetic variation, runway threshold position, and fix/nav
 classification. Core still owns the path-termination and transition-selection
 interpretation.
 
+## Magnetic Variation
+
+`magvar/{lat}/{lon}`
+
+Current consumer: ownship/course display logic that needs local magnetic
+variation.
+
+Current source: NOAA/NCEI WMM2025 coefficients vendored under
+`third_party/noaa/wmm2025/WMM.COF`.
+
+Value: magnetic declination in degrees east, rounded to one decimal place, on a
+one-degree integer grid.
+
+`magvar/source`
+
+Current consumer: diagnostics/provenance.
+
+Value: source metadata including WMM model name, model epoch, coefficient
+release date, computed decimal year, grid definition, and citation.
+
 ## Airway Data
 
 `airway/{airway_name}`

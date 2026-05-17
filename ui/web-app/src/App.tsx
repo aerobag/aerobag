@@ -642,6 +642,27 @@ function nexradTileBounds(tile: NexradOverlayTile) {
   };
 }
 
+function preloadImage(src: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error(`failed to load image: ${src}`));
+    image.src = src;
+  });
+}
+
+async function preloadNexradOverlayImages(query: NexradOverlayQueryResult): Promise<{ loaded: number; failed: number }> {
+  if (query.status.state !== "ready" || query.tiles.length === 0) {
+    return { loaded: 0, failed: 0 };
+  }
+  const srcs = Array.from(new Set(query.tiles.map((tile) => tile.src)));
+  const results = await Promise.allSettled(srcs.map(preloadImage));
+  return {
+    loaded: results.filter((result) => result.status === "fulfilled").length,
+    failed: results.filter((result) => result.status === "rejected").length,
+  };
+}
+
 const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string; iconSrc?: string }> = [
   { id: "map", label: "CHART", launcherLabel: "CHART", iconSrc: PAGE_CHART_ICON_SRC },
   { id: "charts", label: "PLATE", launcherLabel: "PLATE", iconSrc: PAGE_PLATE_ICON_SRC },
@@ -2481,8 +2502,21 @@ function MapPage(props: {
     tiles: [],
     stats: emptyNexradOverlayStats(),
   });
-  const [nexradTransferSamples, setNexradTransferSamples] = useState<Array<{ atMs: number; bytes: number }>>([]);
+  const [nexradTransferSamples, setNexradTransferSamples] = useState<
+    Array<{ atMs: number; transferBytes: number; encodedBytes: number; decodedBytes: number }>
+  >([]);
   const [nexradOverlayViewport, setNexradOverlayViewport] = useState<MapViewportState | null>(null);
+  const nexradQueryRequestRef = useRef<{
+    id: number;
+    session: UiSession;
+    viewport: MapViewportState;
+    width: number;
+    height: number;
+    debugTileLabels: boolean;
+  } | null>(null);
+  const nexradQueryRequestIdRef = useRef(0);
+  const nexradQueryPendingRef = useRef(false);
+  const nexradQueryPumpActiveRef = useRef(false);
   const [terrainOverlay, setTerrainOverlay] = useState<TerrainOverlayUiState>({ query: null, images: [] });
   const terrainTileCacheRef = useRef<Map<string, TerrainTileCacheEntry>>(new Map());
   const terrainTileInFlightRef = useRef<Set<string>>(new Set());
@@ -2599,6 +2633,64 @@ function MapPage(props: {
         terrainRenderPumpActiveRef.current = false;
         if (terrainRenderQueueRef.current.size > 0) {
           pumpTerrainRenderQueue();
+        }
+      }
+    })();
+  }
+
+  function pumpNexradQueryQueue() {
+    if (nexradQueryPumpActiveRef.current) {
+      return;
+    }
+    nexradQueryPumpActiveRef.current = true;
+    void (async () => {
+      try {
+        while (nexradQueryPendingRef.current) {
+          nexradQueryPendingRef.current = false;
+          const request = nexradQueryRequestRef.current;
+          if (!request) {
+            continue;
+          }
+          const startedAt = performance.now();
+          try {
+            const query = await request.session.queryNexradOverlay(request.viewport, request.width, request.height);
+            if (nexradQueryRequestRef.current?.id !== request.id) {
+              continue;
+            }
+            const preload = await preloadNexradOverlayImages(query);
+            if (nexradQueryRequestRef.current?.id !== request.id) {
+              continue;
+            }
+            setNexradOverlay(query);
+            setNexradOverlayViewport(request.viewport);
+            debugLog("nexrad.overlay.frame.ready", {
+              status: query.status,
+              tiles: query.tiles.length,
+              loaded_images: preload.loaded,
+              failed_images: preload.failed,
+              elapsed_ms: Math.round(performance.now() - startedAt),
+            });
+            if (query.status.state !== "ready") {
+              debugLog("nexrad.overlay.unavailable", { status: query.status });
+            } else if (request.debugTileLabels) {
+              debugLog("nexrad.overlay.mesh", query.stats);
+            }
+          } catch (error: unknown) {
+            if (nexradQueryRequestRef.current?.id !== request.id) {
+              continue;
+            }
+            setNexradOverlay({
+              status: { state: "unavailable", reason: errorMessage(error) },
+              tiles: [],
+              stats: emptyNexradOverlayStats(),
+            });
+            setNexradOverlayViewport(null);
+          }
+        }
+      } finally {
+        nexradQueryPumpActiveRef.current = false;
+        if (nexradQueryPendingRef.current) {
+          pumpNexradQueryQueue();
         }
       }
     })();
@@ -2915,38 +3007,23 @@ function MapPage(props: {
   }, [mapIsVisible, mapLayerState.terrain_warning.visible, surfaceSize.height, surfaceSize.width, terrainAltitudeBucket, uiInvalidationRevisions.terrain_overlay, uiSession, viewport]);
 
   useEffect(() => {
-    let cancelled = false;
     if (!mapIsVisible || !uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0 || !mapLayerState.nexrad.visible) {
+      nexradQueryRequestRef.current = null;
+      nexradQueryPendingRef.current = false;
       setNexradOverlay({ status: { state: "hidden" }, tiles: [], stats: emptyNexradOverlayStats() });
       setNexradOverlayViewport(null);
       return;
     }
-    const queryViewport = viewport;
-    uiSession.queryNexradOverlay(viewport, surfaceSize.width, surfaceSize.height)
-      .then((query) => {
-        if (!cancelled) {
-          setNexradOverlay(query);
-          setNexradOverlayViewport(queryViewport);
-          if (query.status.state !== "ready") {
-            debugLog("nexrad.overlay.unavailable", { status: query.status });
-          } else if (debugState.nexrad_tile_labels) {
-            debugLog("nexrad.overlay.mesh", query.stats);
-          }
-        }
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          setNexradOverlay({
-            status: { state: "unavailable", reason: errorMessage(error) },
-            tiles: [],
-            stats: emptyNexradOverlayStats(),
-          });
-          setNexradOverlayViewport(null);
-        }
-      });
-    return () => {
-      cancelled = true;
+    nexradQueryRequestRef.current = {
+      id: ++nexradQueryRequestIdRef.current,
+      session: uiSession,
+      viewport,
+      width: surfaceSize.width,
+      height: surfaceSize.height,
+      debugTileLabels: debugState.nexrad_tile_labels,
     };
+    nexradQueryPendingRef.current = true;
+    pumpNexradQueryQueue();
   }, [debugState.nexrad_tile_labels, mapIsVisible, mapLayerState.nexrad.visible, surfaceSize.height, surfaceSize.width, uiInvalidationRevisions.nexrad_overlay, uiSession, viewport]);
 
   useEffect(() => {
@@ -2954,7 +3031,7 @@ function MapPage(props: {
       return;
     }
     const observer = new PerformanceObserver((list) => {
-      const samples: Array<{ atMs: number; bytes: number }> = [];
+      const samples: Array<{ atMs: number; transferBytes: number; encodedBytes: number; decodedBytes: number }> = [];
       for (const entry of list.getEntries()) {
         if (!(entry instanceof PerformanceResourceTiming)) {
           continue;
@@ -2962,11 +3039,13 @@ function MapPage(props: {
         if (!entry.name.includes("/live-feeds/states/nexrad/") || !entry.name.endsWith(".png")) {
           continue;
         }
-        const bytes = entry.transferSize || entry.encodedBodySize || entry.decodedBodySize || 0;
-        if (bytes <= 0) {
+        const transferBytes = entry.transferSize || 0;
+        const encodedBytes = entry.encodedBodySize || 0;
+        const decodedBytes = entry.decodedBodySize || 0;
+        if (transferBytes <= 0 && encodedBytes <= 0 && decodedBytes <= 0) {
           continue;
         }
-        samples.push({ atMs: Date.now(), bytes });
+        samples.push({ atMs: Date.now(), transferBytes, encodedBytes, decodedBytes });
       }
       if (samples.length === 0) {
         return;
@@ -2986,18 +3065,30 @@ function MapPage(props: {
     if (observedAt) {
       const observedAtMs = Date.parse(observedAt);
       if (Number.isFinite(observedAtMs)) {
+        lines.push(`NEXRAD obs: ${new Date(observedAtMs).toISOString().slice(11, 19)}Z`);
         lines.push(`NEXRAD age: ${formatUptimeMs(Date.now() - observedAtMs)}`);
       } else {
-        lines.push(`NEXRAD age: ${observedAt}`);
+        lines.push(`NEXRAD obs: ${observedAt}`);
+        lines.push("NEXRAD age: n/a");
       }
     } else {
+      lines.push("NEXRAD obs: n/a");
       lines.push("NEXRAD age: n/a");
     }
     const cutoff = Date.now() - 60_000;
     const recentBytes = nexradTransferSamples
       .filter((sample) => sample.atMs >= cutoff)
-      .reduce((sum, sample) => sum + sample.bytes, 0);
-    lines.push(`NEXRAD fetch: ${formatMegabytesPerSecond(recentBytes / 60)}`);
+      .reduce(
+        (sum, sample) => ({
+          transferBytes: sum.transferBytes + sample.transferBytes,
+          encodedBytes: sum.encodedBytes + sample.encodedBytes,
+          decodedBytes: sum.decodedBytes + sample.decodedBytes,
+        }),
+        { transferBytes: 0, encodedBytes: 0, decodedBytes: 0 },
+      );
+    lines.push(`NEXRAD net: ${formatMegabytesPerSecond(recentBytes.transferBytes / 60)}`);
+    lines.push(`NEXRAD encoded: ${formatMegabytesPerSecond(recentBytes.encodedBytes / 60)}`);
+    lines.push(`NEXRAD decoded: ${formatMegabytesPerSecond(recentBytes.decodedBytes / 60)}`);
     return lines;
   }, [nexradOverlay.stats.observed_at_utc, nexradTransferSamples, uptimeLabel]);
 

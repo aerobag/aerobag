@@ -236,7 +236,10 @@ function installLiveFeedFixtureServer(server: { middlewares: { use: (...args: un
     }
     let index = 0;
     const writeNext = () => {
-      const event = events[index % events.length];
+      if (index >= events.length) {
+        return;
+      }
+      const event = events[index];
       index += 1;
       res.write(`id: ${event.id}\n`);
       res.write("event: live-feed-current\n");

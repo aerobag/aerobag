@@ -21,7 +21,7 @@ use crate::{
     },
     live_feeds::{LiveFeedSseEvent, LiveFeedsState},
     map_follow::{MapFollowSessionState, MapFollowUiState},
-    map_overlay::FlightPlanSelectionPoint,
+    map_overlay::{FlightPlanSelectionPoint, MetarTileRecord},
     map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
     planning::NavElementUiView,
     playback::PlaybackSessionState,
@@ -32,12 +32,14 @@ use crate::{
     FlightPlanRowActionExecution, FlightPlanRowActionId, GuidanceState, LatLon, LegDisplayElement,
     MapOverlayConfig, MapOverlayQueryResult, MapOverlayWarning, MapSelectionSessionAction,
     MapViewport, MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore,
-    NavRef, PirepRecord, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity,
-    ProcedureKind, ProcedureLoadCommand, PublicationResolver, RasterMapCatalog, RasterResourceMode,
+    NavRef, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity, ProcedureKind,
+    ProcedureLoadCommand, PublicationResolver, RasterMapCatalog, RasterResourceMode,
     RasterTilePlan, ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode,
     SituationControlInput, SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult,
     TfrProductPayload, UiSnapshotAppState, VectorAggregateTilePayload, VectorIdentLabelStyle,
 };
+
+const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiChartPageState {
@@ -129,7 +131,6 @@ struct UiSession {
     vector_tile_cache: HashMap<String, VectorAggregateTilePayload>,
     metar_tile_cache: HashMap<String, MetarTilePayload>,
     metar_payload: Option<MetarProductPayload>,
-    pending_pireps: Option<Vec<PirepRecord>>,
     taf_payload: Option<TafProductPayload>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<TfrProductPayload>,
@@ -407,7 +408,6 @@ fn create_ui_session_inner(
             vector_tile_cache: HashMap::new(),
             metar_tile_cache: HashMap::new(),
             metar_payload: None,
-            pending_pireps: None,
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
@@ -1928,18 +1928,6 @@ pub fn ingest_point_tiles_in_session(handle: u32, tiles: &[PointTilePayload]) ->
     Ok(())
 }
 
-pub fn ingest_metar_tiles_in_session(handle: u32, tiles: &[MetarTilePayload]) -> AppResult<()> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    for tile in tiles {
-        session.metar_tile_cache.insert(
-            crate::tile_key("metars", tile.z, tile.x, tile.y),
-            tile.clone(),
-        );
-    }
-    Ok(())
-}
-
 pub fn ingest_airspace_ref_tiles_in_session(
     handle: u32,
     tiles: &[AirspaceReferenceTilePayload],
@@ -2044,28 +2032,6 @@ fn clear_overlay_resource_warning(session: &mut UiSession, code: &str) {
         .retain(|warning| warning.code != code);
 }
 
-pub fn ingest_metars_in_session(handle: u32, payload: &MetarProductPayload) -> AppResult<()> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    let mut payload = payload.clone();
-    if let Some(pireps) = session.pending_pireps.clone() {
-        payload.pireps = pireps;
-    }
-    session.metar_payload = Some(payload);
-    Ok(())
-}
-
-pub fn ingest_pireps_in_session(handle: u32, pireps: &[PirepRecord]) -> AppResult<()> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    let pireps = pireps.to_vec();
-    if let Some(metars) = session.metar_payload.as_mut() {
-        metars.pireps = pireps.clone();
-    }
-    session.pending_pireps = Some(pireps);
-    Ok(())
-}
-
 pub fn ingest_tafs_in_session(handle: u32, payload: &TafProductPayload) -> AppResult<()> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
@@ -2088,12 +2054,6 @@ pub fn ingest_live_feed_sse_event_in_session(
     session.live_feeds.ingest_sse_event(event.clone())
 }
 
-#[derive(Debug, Deserialize)]
-struct PirepProductPayload {
-    #[serde(default)]
-    pireps: Vec<PirepRecord>,
-}
-
 pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) -> AppResult<()> {
     if LiveFeedsState::handles_resource(resource_id) {
         let mut sessions = lock_sessions();
@@ -2113,29 +2073,6 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
                 message,
             })?;
         return Ok(());
-    }
-    if resource_id == "weather/metars" {
-        let payload: MetarProductPayload =
-            serde_json::from_slice(bytes).map_err(|err| AppError {
-                kind: AppErrorKind::InvalidManifest,
-                message: format!("failed to parse METAR resource: {err}"),
-            })?;
-        return ingest_metars_in_session(handle, &payload);
-    }
-    if resource_id == "weather/pireps" {
-        let payload: PirepProductPayload =
-            serde_json::from_slice(bytes).map_err(|err| AppError {
-                kind: AppErrorKind::InvalidManifest,
-                message: format!("failed to parse PIREP resource: {err}"),
-            })?;
-        return ingest_pireps_in_session(handle, &payload.pireps);
-    }
-    if resource_id == "weather/tafs" {
-        let payload: TafProductPayload = serde_json::from_slice(bytes).map_err(|err| AppError {
-            kind: AppErrorKind::InvalidManifest,
-            message: format!("failed to parse TAF resource: {err}"),
-        })?;
-        return ingest_tafs_in_session(handle, &payload);
     }
     if resource_id == "weather/tfrs" {
         if bytes.is_empty() {
@@ -2157,40 +2094,6 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
         };
         return ingest_tfrs_in_session(handle, &payload);
     }
-    if let Some(rest) = resource_id.strip_prefix("weather/metar_tile/") {
-        let (z, x, y) = parse_metar_tile_resource_path(resource_id, rest)?;
-        if bytes.is_empty() {
-            let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, handle)?;
-            session.metar_tile_cache.insert(
-                crate::tile_key("metars", z, x, y),
-                MetarTilePayload {
-                    schema_version: 1,
-                    layer: "metars".to_string(),
-                    z,
-                    x,
-                    y,
-                    records: Vec::new(),
-                },
-            );
-            return Ok(());
-        }
-        let payload: MetarTilePayload = serde_json::from_slice(bytes).map_err(|err| AppError {
-            kind: AppErrorKind::InvalidManifest,
-            message: format!("failed to parse METAR tile resource {resource_id}: {err}"),
-        })?;
-        let expected_key = crate::tile_key("metars", payload.z, payload.x, payload.y);
-        if (z, x, y) != (payload.z, payload.x, payload.y) {
-            return Err(AppError {
-                kind: AppErrorKind::InvalidManifest,
-                message: format!("METAR tile resource id {resource_id} does not match payload"),
-            });
-        }
-        let mut sessions = lock_sessions();
-        let session = session_mut(&mut sessions, handle)?;
-        session.metar_tile_cache.insert(expected_key, payload);
-        return Ok(());
-    }
     if let Some(rest) = resource_id.strip_prefix("terrain/source/") {
         let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, handle)?;
@@ -2207,54 +2110,73 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
 
 fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
     if let Some(metars_value) = session.live_feeds.product_state_manifest("metars").cloned() {
-        let mut payload: MetarProductPayload =
+        let payload: MetarProductPayload =
             serde_json::from_value(metars_value).map_err(|err| AppError {
                 kind: AppErrorKind::InvalidManifest,
                 message: format!("failed to parse live-feed METAR state: {err}"),
             })?;
-        if let Some(pireps) = session.pending_pireps.clone() {
-            payload.pireps = pireps;
-        }
+        session.metar_tile_cache = metar_tile_cache_for_live_feed(
+            &payload,
+            session.map_overlay_config.metar_layer.as_ref(),
+        );
         session.metar_payload = Some(payload);
     }
     Ok(())
 }
 
-fn parse_metar_tile_resource_path(resource_id: &str, rest: &str) -> AppResult<(u32, u32, u32)> {
-    let mut parts = rest.split('/');
-    let Some(z) = parts.next() else {
-        return invalid_metar_tile_resource_id(resource_id);
+fn metar_tile_cache_for_live_feed(
+    payload: &MetarProductPayload,
+    layer: Option<&crate::map_overlay::PointTileLayerConfig>,
+) -> HashMap<String, MetarTilePayload> {
+    let Some(layer) = layer else {
+        return HashMap::new();
     };
-    let Some(x) = parts.next() else {
-        return invalid_metar_tile_resource_id(resource_id);
-    };
-    let Some(y) = parts.next() else {
-        return invalid_metar_tile_resource_id(resource_id);
-    };
-    if parts.next().is_some() {
-        return invalid_metar_tile_resource_id(resource_id);
+    let mut cache = HashMap::new();
+    for zoom in &layer.available_zooms {
+        for record in payload.metars_by_station.values() {
+            let Some((x, y)) = metar_tile_xy(record.latitude, record.longitude, *zoom) else {
+                continue;
+            };
+            let key = crate::tile_key("metars", *zoom, x, y);
+            cache
+                .entry(key)
+                .or_insert_with(|| MetarTilePayload {
+                    schema_version: 1,
+                    layer: "metars".to_string(),
+                    z: *zoom,
+                    x,
+                    y,
+                    records: Vec::new(),
+                })
+                .records
+                .push(MetarTileRecord {
+                    kind: "metar".to_string(),
+                    id: record.station_id.clone(),
+                });
+        }
     }
-    let z = z
-        .parse::<u32>()
-        .map_err(|_| invalid_metar_tile_resource_id_error(resource_id))?;
-    let x = x
-        .parse::<u32>()
-        .map_err(|_| invalid_metar_tile_resource_id_error(resource_id))?;
-    let y = y
-        .parse::<u32>()
-        .map_err(|_| invalid_metar_tile_resource_id_error(resource_id))?;
-    Ok((z, x, y))
+    cache
 }
 
-fn invalid_metar_tile_resource_id<T>(resource_id: &str) -> AppResult<T> {
-    Err(invalid_metar_tile_resource_id_error(resource_id))
+fn metar_tile_xy(lat: f64, lon: f64, zoom: u32) -> Option<(u32, u32)> {
+    if !lat.is_finite() || !lon.is_finite() {
+        return None;
+    }
+    let scale = 2_u32.checked_pow(zoom)?;
+    let scale_f64 = scale as f64;
+    let x = (((lon + 180.0) / 360.0) * scale_f64).floor();
+    let clamped_lat = lat.clamp(-WORLD_MERCATOR_MAX_LATITUDE, WORLD_MERCATOR_MAX_LATITUDE);
+    let y = ((1.0 - clamped_lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0
+        * scale_f64)
+        .floor();
+    Some((
+        positive_mod_i64(x as i64, scale as i64) as u32,
+        (y as i64).clamp(0, scale as i64 - 1) as u32,
+    ))
 }
 
-fn invalid_metar_tile_resource_id_error(resource_id: &str) -> AppError {
-    AppError {
-        kind: AppErrorKind::InvalidManifest,
-        message: format!("invalid METAR tile resource id: {resource_id}"),
-    }
+fn positive_mod_i64(value: i64, modulus: i64) -> i64 {
+    ((value % modulus) + modulus) % modulus
 }
 
 fn internal_json_error(err: serde_json::Error) -> AppError {
@@ -2319,12 +2241,22 @@ fn ensure_vector_manifest_loaded(session: &mut UiSession) -> Result<(), HadReadE
     };
     let manifest_json = serde_json::to_string(&manifest_json)
         .map_err(|err| HadReadError::Fatal(err.to_string()))?;
-    let previous_config = session.map_overlay_config.clone();
-    let mut next_config = map_overlay_config_from_vector_manifest_json(&manifest_json)
-        .map_err(|err| HadReadError::Fatal(err.to_string()))?;
-    next_config.metar_layer = previous_config.metar_layer;
-    next_config.obstacle_layer = previous_config.obstacle_layer;
-    session.map_overlay_config = next_config;
+    install_vector_manifest_config(session, &manifest_json).map_err(HadReadError::Fatal)?;
+    Ok(())
+}
+
+fn install_vector_manifest_config(
+    session: &mut UiSession,
+    manifest_json: &str,
+) -> Result<(), String> {
+    session.map_overlay_config = map_overlay_config_from_vector_manifest_json(&manifest_json)
+        .map_err(|err| err.to_string())?;
+    if let Some(payload) = session.metar_payload.as_ref() {
+        session.metar_tile_cache = metar_tile_cache_for_live_feed(
+            payload,
+            session.map_overlay_config.metar_layer.as_ref(),
+        );
+    }
     session.vector_manifest_loaded = true;
     Ok(())
 }
@@ -5260,6 +5192,158 @@ mod tests {
             "missing live-feed products must not poison unrelated overlay resource loading: {requests:?}"
         );
         assert!(requests.is_empty());
+    }
+
+    #[test]
+    fn live_feed_metars_build_their_own_tile_index() {
+        let config = map_overlay_config_from_vector_manifest_json(
+            r#"{
+                "point_layers": {
+                    "metars": {
+                        "min_zoom": 5,
+                        "max_zoom": 7,
+                        "available_zooms": [5, 6, 7],
+                        "tile_path_template": "unused-by-live-feeds"
+                    }
+                },
+                "airspace": {
+                    "reference_tile_min_zoom": 0,
+                    "reference_tile_max_zoom": 0,
+                    "label_tile_min_zoom": 0,
+                    "label_tile_max_zoom": 0
+                }
+            }"#,
+        )
+        .expect("metar layer config");
+        let mut metars_by_station = HashMap::new();
+        metars_by_station.insert(
+            "KAAA".to_string(),
+            crate::MetarRecord {
+                raw_text: "METAR KAAA 010000Z 00000KT 10SM SCT020 10/08 A3000".to_string(),
+                observed_at_utc: Some("2026-05-03T00:00:00.000Z".to_string()),
+                station_id: "KAAA".to_string(),
+                flight_category: Some("MVFR".to_string()),
+                clouds: Some(crate::map_overlay::MetarClouds {
+                    symbol: Some("SCT".to_string()),
+                }),
+                longitude: 0.0,
+                latitude: 0.0,
+            },
+        );
+        let payload = MetarProductPayload {
+            schema_version: 2,
+            version_label: "v1".to_string(),
+            metar_count: Some(1),
+            metars_by_station,
+            pireps: Vec::new(),
+        };
+        let metar_tile_cache =
+            metar_tile_cache_for_live_feed(&payload, config.metar_layer.as_ref());
+        let result = query_map_overlay(
+            &MapViewport {
+                center: LatLon { lat: 0.0, lon: 0.0 },
+                zoom: 8.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            240.0,
+            240.0,
+            &config,
+            false,
+            true,
+            &[],
+            None,
+            &HashMap::new(),
+            &metar_tile_cache,
+            Some(&payload),
+            &HashMap::new(),
+            None,
+        );
+
+        assert_eq!(result.visible_metars.len(), 1);
+        assert_eq!(result.visible_metars[0].station_id, "KAAA");
+        assert_eq!(result.visible_metars[0].flight_category, "mvfr");
+    }
+
+    #[test]
+    fn loaded_vector_manifest_supplies_metar_layer_after_empty_bootstrap_manifest() {
+        let mut session = UiSession {
+            app_state: register_default_situation_sources(AppState::default()).expect("app state"),
+            playback: PlaybackSessionState::default(),
+            plan_preview: PlanPreviewState::default(),
+            debug_ownship_driver: DebugOwnshipDriverState::default(),
+            map_follow: MapFollowSessionState::default(),
+            guidance_leg_geometry: HashMap::new(),
+            map_overlay_config: map_overlay_config_from_vector_manifest_json(
+                minimal_vector_manifest_json(),
+            )
+            .expect("bootstrap manifest"),
+            vector_manifest_loaded: false,
+            chart_page_state: derive_compact_chart_page_state(
+                &FlightPlan::default(),
+                &[],
+                None,
+                None,
+            ),
+            nav_kv_store_id: None,
+            nav_kv_store: None,
+            map_layer_state: default_map_layer_state(),
+            caution_state: default_caution_state(),
+            debug_state: default_debug_state(),
+            raster_resource_mode: RasterResourceMode::InstalledPackage,
+            publication_resolver: PublicationResolver::new("/packages"),
+            live_feeds: LiveFeedsState::default(),
+            raster_map_catalog: None,
+            vector_tile_cache: HashMap::new(),
+            metar_tile_cache: HashMap::new(),
+            metar_payload: None,
+            taf_payload: None,
+            airspace_feature_cache: HashMap::new(),
+            tfr_payload: None,
+            overlay_resource_warnings: Vec::new(),
+            terrain_source_tile_cache: HashMap::new(),
+        };
+        let mut metars_by_station = HashMap::new();
+        metars_by_station.insert(
+            "KAAA".to_string(),
+            crate::MetarRecord {
+                raw_text: "METAR KAAA 010000Z 00000KT 10SM SCT020 10/08 A3000".to_string(),
+                observed_at_utc: Some("2026-05-03T00:00:00.000Z".to_string()),
+                station_id: "KAAA".to_string(),
+                flight_category: Some("MVFR".to_string()),
+                clouds: None,
+                longitude: 0.0,
+                latitude: 0.0,
+            },
+        );
+        session.metar_payload = Some(MetarProductPayload {
+            schema_version: 2,
+            version_label: "v1".to_string(),
+            metar_count: Some(1),
+            metars_by_station,
+            pireps: Vec::new(),
+        });
+        let manifest = serde_json::json!({
+            "point_layers": {
+                "metars": {
+                    "min_zoom": 5,
+                    "max_zoom": 7,
+                    "available_zooms": [5, 6, 7],
+                    "tile_path_template": "unused-by-live-feeds"
+                }
+            },
+            "airspace": {
+                "reference_tile_min_zoom": 0,
+                "reference_tile_max_zoom": 0,
+                "label_tile_min_zoom": 0,
+                "label_tile_max_zoom": 0
+            }
+        });
+        install_vector_manifest_config(&mut session, &manifest.to_string())
+            .expect("load vector manifest");
+
+        assert!(session.map_overlay_config.metar_layer.is_some());
+        assert!(!session.metar_tile_cache.is_empty());
     }
 
     #[test]

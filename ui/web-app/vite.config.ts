@@ -166,16 +166,21 @@ function readJsonFile<T>(filePath: string): T | null {
 }
 
 function listLiveFeedVersionEvents(root: string): LiveFeedSseEvent[] {
+  return listLiveFeedVersionEventFrames(root).flat();
+}
+
+function listLiveFeedVersionEventFrames(root: string): LiveFeedSseEvent[][] {
   const versionsRoot = path.join(root, "versions");
   if (!fs.existsSync(versionsRoot) || !fs.statSync(versionsRoot).isDirectory()) {
     return [];
   }
-  const events: OrderedLiveFeedSseEvent[] = [];
+  const eventsByProduct = new Map<string, OrderedLiveFeedSseEvent[]>();
   for (const product of fs.readdirSync(versionsRoot).sort()) {
     const productRoot = path.join(versionsRoot, product);
     if (!fs.statSync(productRoot).isDirectory()) {
       continue;
     }
+    const productEvents: OrderedLiveFeedSseEvent[] = [];
     for (const fileName of fs.readdirSync(productRoot).sort()) {
       if (!fileName.endsWith(".json")) {
         continue;
@@ -189,7 +194,7 @@ function listLiveFeedVersionEvents(root: string): LiveFeedSseEvent[] {
       if (!stateUrl || !stateSha256) {
         continue;
       }
-      events.push({
+      productEvents.push({
         sort_key: `${fileName}:${manifestProduct}`,
         event: {
           id: `${manifestProduct}:${version}`,
@@ -201,8 +206,39 @@ function listLiveFeedVersionEvents(root: string): LiveFeedSseEvent[] {
         },
       });
     }
+    if (productEvents.length > 0) {
+      eventsByProduct.set(
+        product,
+        productEvents.sort((a, b) => a.sort_key.localeCompare(b.sort_key)),
+      );
+    }
   }
-  return events.sort((a, b) => a.sort_key.localeCompare(b.sort_key)).map(({ event }) => event);
+  const frames: LiveFeedSseEvent[][] = [];
+  const products = [...eventsByProduct.keys()].sort();
+  let index = 0;
+  while (products.some((product) => index < (eventsByProduct.get(product)?.length ?? 0))) {
+    const frame: LiveFeedSseEvent[] = [];
+    for (const product of products) {
+      const event = eventsByProduct.get(product)?.[index]?.event;
+      if (event) {
+        frame.push(event);
+      }
+    }
+    if (frame.length > 0) {
+      frames.push(frame);
+    }
+    index += 1;
+  }
+  return frames;
+}
+
+function listLiveFeedSseEventFrames(root: string): LiveFeedSseEvent[][] {
+  const versionEventFrames = listLiveFeedVersionEventFrames(root);
+  if (versionEventFrames.length > 0) {
+    return versionEventFrames;
+  }
+  const currentEvents = listLiveFeedSseEvents(root);
+  return currentEvents.length > 0 ? [currentEvents] : [];
 }
 
 function listLiveFeedSseEvents(root: string): LiveFeedSseEvent[] {
@@ -230,28 +266,31 @@ function listLiveFeedSseEvents(root: string): LiveFeedSseEvent[] {
 
 function installLiveFeedFixtureServer(server: { middlewares: { use: (...args: unknown[]) => void } }) {
   server.middlewares.use("/live-feeds/events", (_req: IncomingMessage, res: ServerResponse) => {
-    const events = listLiveFeedSseEvents(liveFeedsRoot);
-    appendRequestLog({ kind: "live_feeds.events.open", root: liveFeedsRoot, event_count: events.length });
+    const frames = listLiveFeedSseEventFrames(liveFeedsRoot);
+    const eventCount = frames.reduce((count, frame) => count + frame.length, 0);
+    appendRequestLog({ kind: "live_feeds.events.open", root: liveFeedsRoot, event_count: eventCount, frame_count: frames.length });
     res.statusCode = 200;
     res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
     res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("Connection", "keep-alive");
     res.write(`: aerobag live-feed fixture root ${liveFeedsRoot}\n\n`);
-    if (events.length === 0) {
+    if (frames.length === 0) {
       res.write("event: heartbeat\n");
       res.write(`data: ${JSON.stringify({ schema_version: 1, products: [] })}\n\n`);
       return;
     }
     let index = 0;
     const writeNext = () => {
-      if (index >= events.length) {
+      if (index >= frames.length) {
         return;
       }
-      const event = events[index];
+      const frame = frames[index];
       index += 1;
-      res.write(`id: ${event.id}\n`);
-      res.write("event: live-feed-current\n");
-      res.write(`data: ${JSON.stringify({ schema_version: 1, ...event })}\n\n`);
+      for (const event of frame) {
+        res.write(`id: ${event.id}\n`);
+        res.write("event: live-feed-current\n");
+        res.write(`data: ${JSON.stringify({ schema_version: 1, ...event })}\n\n`);
+      }
     };
     writeNext();
     const interval = setInterval(writeNext, Number.isFinite(liveFeedEventIntervalMs) ? liveFeedEventIntervalMs : 5000);

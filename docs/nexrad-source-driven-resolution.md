@@ -45,6 +45,16 @@ We can publish only selected levels. The initial live-feed product publishes:
 
 The Avare-style nominal 16:1 pixel-count reduction is `res2`.
 
+## Tile Encoding
+
+NEXRAD source-grid tiles are normal browser-renderable PNG files using
+`png8-fixed-palette` encoding. The generator maps source RGBA colors to the
+checked-in fixed palette from `docs/nexrad/analysis/whole-day-greedy-255-palette.json`,
+with index 0 reserved for transparency. Each tile then remaps those fixed
+indices into the shortest PNG-local palette that represents the colors actually
+used in that tile. This keeps color choice stable across frames while avoiding a
+full 256-entry `PLTE` chunk on empty or low-color tiles.
+
 ## Tile Math
 
 For a source image with width `W`, height `H`, tile size `T`, and resolution
@@ -89,6 +99,12 @@ levels:
   "observed_at_utc": "...",
   "source_file": "CONUS_L2_CREF_QCD_....tif.gz",
   "source_sha256": "...",
+  "tile_encoding": "png8-fixed-palette",
+  "palette": {
+    "transparent_index": 0,
+    "opaque_indices": [1, 255],
+    "sha256": "..."
+  },
   "tile_size": 512,
   "res-levels": [0, 1, 2, 3],
   "source_grid": {

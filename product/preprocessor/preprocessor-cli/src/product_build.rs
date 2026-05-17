@@ -3678,16 +3678,21 @@ fn build_live_nexrad_state(config: &ProductBuildConfig) -> anyhow::Result<BuiltL
     };
     let observed_at_utc = parse_nexrad_observed_at_utc(&source_file_name)?;
     let source_sha256 = hash_file(&source_gz_path)?;
-    let source_grid_script_hash = hash_text(NEXRAD_SOURCE_GRID_TILE_SCRIPT);
+    let palette_hash = hash_text(NEXRAD_FIXED_OPAQUE_PALETTE_JSON);
+    let source_grid_script_hash = hash_text(&format!(
+        "{}\n{}",
+        NEXRAD_SOURCE_GRID_TILE_SCRIPT, NEXRAD_FIXED_OPAQUE_PALETTE_JSON
+    ));
     let debug_version_suffix = if debug_lat_lon_grid {
         format!("_debuggrid{}", &source_grid_script_hash[..8])
     } else {
         String::new()
     };
     let version = format!(
-        "{}_{}{}",
+        "{}_{}_png8{}{}",
         observed_at_utc.format("%Y%m%dT%H%M%SZ"),
         &source_sha256[..16],
+        &palette_hash[..8],
         debug_version_suffix
     );
     let inputs = BTreeMap::from([
@@ -3701,10 +3706,8 @@ fn build_live_nexrad_state(config: &ProductBuildConfig) -> anyhow::Result<BuiltL
             "debug_lat_lon_grid".to_string(),
             debug_lat_lon_grid.to_string(),
         ),
-        (
-            "source_grid_script".to_string(),
-            source_grid_script_hash,
-        ),
+        ("source_grid_script".to_string(), source_grid_script_hash),
+        ("fixed_palette_sha256".to_string(), palette_hash),
     ]);
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, "live-nexrad-source-grid")?,
@@ -3897,10 +3900,15 @@ fn build_nexrad_source_grid_tiles(
     debug_lat_lon_grid: bool,
 ) -> anyhow::Result<()> {
     let script_path = output_dir.join("build_nexrad_source_grid_tiles.py");
+    let palette_path = output_dir.join("nexrad_fixed_palette.json");
     fs::write(&script_path, NEXRAD_SOURCE_GRID_TILE_SCRIPT)
         .with_context(|| format!("failed to write {}", script_path.display()))?;
+    fs::write(&palette_path, NEXRAD_FIXED_OPAQUE_PALETTE_JSON)
+        .with_context(|| format!("failed to write {}", palette_path.display()))?;
     let output = Command::new("python3")
         .arg(&script_path)
+        .arg("--palette")
+        .arg(&palette_path)
         .arg("--source-gz")
         .arg(source_gz_path)
         .arg("--output-dir")
@@ -3935,6 +3943,8 @@ fn build_nexrad_source_grid_tiles(
     }
     fs::remove_file(&script_path)
         .with_context(|| format!("failed to remove {}", script_path.display()))?;
+    fs::remove_file(&palette_path)
+        .with_context(|| format!("failed to remove {}", palette_path.display()))?;
     Ok(())
 }
 
@@ -14879,9 +14889,13 @@ if __name__ == '__main__':
     main()
 "#;
 
+const NEXRAD_FIXED_OPAQUE_PALETTE_JSON: &str =
+    include_str!("../../../../docs/nexrad/analysis/whole-day-greedy-255-palette.json");
+
 const NEXRAD_SOURCE_GRID_TILE_SCRIPT: &str = r#"
 import argparse
 import gzip
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -14889,6 +14903,8 @@ from pathlib import Path
 import numpy as np
 from osgeo import gdal
 from PIL import Image, ImageDraw
+
+TRANSPARENT_INDEX = 0
 
 
 def open_source(source_gz, output_dir):
@@ -14940,6 +14956,60 @@ def read_rgba(dataset):
         alpha = np.where(blank, 0, alpha).astype(np.uint8)
         rgba = np.dstack([red, green, blue, alpha])
     return np.ascontiguousarray(rgba, dtype=np.uint8)
+
+
+def load_fixed_palette(path):
+    opaque_palette = np.asarray(json.loads(Path(path).read_text()), dtype=np.uint8)
+    if opaque_palette.shape != (255, 3):
+        raise SystemExit(f'expected 255 RGB palette entries in {path}, got {opaque_palette.shape}')
+    palette = np.zeros((256, 3), dtype=np.uint8)
+    palette[1:, :] = opaque_palette
+    flat_palette = palette.reshape(-1).tolist()
+    transparency = bytes([0] + [255] * 255)
+    palette_sha256 = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    return palette, flat_palette, transparency, palette_sha256
+
+
+def quantize_rgba_to_fixed_palette_indices(rgba, palette):
+    indices = np.zeros(rgba.shape[:2], dtype=np.uint8)
+    opaque = rgba[:, :, 3] > 0
+    if not np.any(opaque):
+        return indices
+    colors = rgba[:, :, :3][opaque]
+    unique, inverse = np.unique(colors.reshape(-1, 3), axis=0, return_inverse=True)
+    palette_i16 = palette[1:, :].astype(np.int16)
+    unique_i16 = unique.astype(np.int16)
+    distances = np.max(np.abs(unique_i16[:, None, :] - palette_i16[None, :, :]), axis=2)
+    mapped_unique = (np.argmin(distances, axis=1) + 1).astype(np.uint8)
+    indices[opaque] = mapped_unique[inverse]
+    return indices
+
+
+def save_fixed_palette_png(indices, path, palette):
+    used = np.unique(indices)
+    if used.size == 0:
+        used = np.asarray([TRANSPARENT_INDEX], dtype=np.uint8)
+    if TRANSPARENT_INDEX in used:
+        local_indices = [TRANSPARENT_INDEX] + [int(index) for index in used if int(index) != TRANSPARENT_INDEX]
+    else:
+        local_indices = [int(index) for index in used]
+    remap = np.zeros(256, dtype=np.uint8)
+    for local_index, global_index in enumerate(local_indices):
+        remap[global_index] = local_index
+    compact = remap[indices]
+    local_palette = palette[np.asarray(local_indices, dtype=np.uint8)]
+    flat_palette = local_palette.reshape(-1).tolist()
+    transparency = None
+    if local_indices and local_indices[0] == TRANSPARENT_INDEX:
+        transparency = bytes([0] + [255] * (len(local_indices) - 1))
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image = Image.fromarray(compact, 'P')
+    image.putpalette(flat_palette)
+    if transparency is None:
+        image.save(path, 'PNG', optimize=True)
+    else:
+        image.save(path, 'PNG', optimize=True, transparency=transparency)
 
 
 def pixel_for_lon_lat(lon, lat, geo_transform):
@@ -15017,7 +15087,7 @@ def composite_lat_lon_grid_under_radar(rgba, geo_transform):
     return np.asarray(Image.alpha_composite(Image.fromarray(grid, 'RGBA'), radar), dtype=np.uint8)
 
 
-def write_tiles(rgba, output_dir, res, tile_size, geo_transform, debug_lat_lon_grid):
+def write_tiles(rgba, output_dir, res, tile_size, geo_transform, debug_lat_lon_grid, palette):
     stride = 1 << res
     level = rgba[::stride, ::stride, :]
     if debug_lat_lon_grid:
@@ -15031,6 +15101,7 @@ def write_tiles(rgba, output_dir, res, tile_size, geo_transform, debug_lat_lon_g
             pixel_lat * stride,
         ]
         level = composite_lat_lon_grid_under_radar(level, level_geo_transform)
+    level_indices = quantize_rgba_to_fixed_palette_indices(level, palette)
     height, width = level.shape[:2]
     tile_cols = (width + tile_size - 1) // tile_size
     tile_rows = (height + tile_size - 1) // tile_size
@@ -15041,10 +15112,9 @@ def write_tiles(rgba, output_dir, res, tile_size, geo_transform, debug_lat_lon_g
         for tile_x in range(tile_cols):
             x0 = tile_x * tile_size
             x1 = min(x0 + tile_size, width)
-            tile = level[y0:y1, x0:x1, :]
+            tile = level_indices[y0:y1, x0:x1]
             tile_path = level_root / str(tile_x) / f'{tile_y}.png'
-            tile_path.parent.mkdir(parents=True, exist_ok=True)
-            Image.fromarray(tile, 'RGBA').save(tile_path, 'PNG', optimize=True)
+            save_fixed_palette_png(tile, tile_path, palette)
     return {
         'res': res,
         'width': width,
@@ -15056,6 +15126,7 @@ def write_tiles(rgba, output_dir, res, tile_size, geo_transform, debug_lat_lon_g
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--palette', required=True)
     parser.add_argument('--source-gz', required=True)
     parser.add_argument('--output-dir', required=True)
     parser.add_argument('--state-id', required=True)
@@ -15068,6 +15139,7 @@ def main():
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
+    palette, _flat_palette, _transparency, palette_sha256 = load_fixed_palette(Path(args.palette))
     dataset = open_source(Path(args.source_gz), output_dir)
     source_width = dataset.RasterXSize
     source_height = dataset.RasterYSize
@@ -15079,7 +15151,7 @@ def main():
     if source_tif.exists():
         source_tif.unlink()
     levels = [
-        write_tiles(rgba, output_dir, res, args.tile_size, geo_transform, args.debug_lat_lon_grid)
+        write_tiles(rgba, output_dir, res, args.tile_size, geo_transform, args.debug_lat_lon_grid, palette)
         for res in sorted(set(args.res_level))
     ]
     manifest = {
@@ -15089,6 +15161,12 @@ def main():
         'observed_at_utc': args.observed_at_utc,
         'source_file': args.source_file,
         'source_sha256': args.source_sha256,
+        'tile_encoding': 'png8-fixed-palette',
+        'palette': {
+            'transparent_index': TRANSPARENT_INDEX,
+            'opaque_indices': [1, 255],
+            'sha256': palette_sha256,
+        },
         'tile_size': args.tile_size,
         'debug_lat_lon_grid': args.debug_lat_lon_grid,
         'res-levels': [level['res'] for level in levels],
@@ -20291,6 +20369,53 @@ mod tests {
             .with_timezone(&Utc))
     }
 
+    fn collect_png_paths(root: &Path, paths: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+        for entry in
+            fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                collect_png_paths(&path, paths)?;
+            } else if path.extension().is_some_and(|extension| extension == "png") {
+                paths.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    fn png_color_type_and_palette_lengths(path: &Path) -> anyhow::Result<(u8, Vec<usize>)> {
+        let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+        let signature = b"\x89PNG\r\n\x1a\n";
+        if bytes.len() < signature.len() || &bytes[..signature.len()] != signature {
+            bail!("{} is not a PNG", path.display());
+        }
+        let mut offset = signature.len();
+        let mut color_type = None;
+        let mut palette_lengths = Vec::new();
+        while offset + 12 <= bytes.len() {
+            let length = u32::from_be_bytes(bytes[offset..offset + 4].try_into()?) as usize;
+            let chunk_type = &bytes[offset + 4..offset + 8];
+            let data_start = offset + 8;
+            let data_end = data_start + length;
+            if data_end + 4 > bytes.len() {
+                bail!("{} has truncated PNG chunk", path.display());
+            }
+            if chunk_type == b"IHDR" {
+                if length != 13 {
+                    bail!("{} has unexpected IHDR length {length}", path.display());
+                }
+                color_type = Some(bytes[data_start + 9]);
+            } else if chunk_type == b"PLTE" {
+                palette_lengths.push(length);
+            } else if chunk_type == b"IEND" {
+                break;
+            }
+            offset = data_end + 4;
+        }
+        Ok((color_type.context("PNG missing IHDR")?, palette_lengths))
+    }
+
     #[test]
     fn nexrad_three_hour_fixture_manifest_validates_real_upstream_frames() -> anyhow::Result<()> {
         let Some(fixture_root) = nexrad_three_hour_fixture_root()? else {
@@ -20341,6 +20466,7 @@ mod tests {
         let manifest = read_nexrad_fixture_manifest(&fixture_root)?;
         let temp = tempdir()?;
         let live_root = temp.path().join("live-feeds");
+        let palette_hash = hash_text(NEXRAD_FIXED_OPAQUE_PALETTE_JSON);
 
         let mut previous_version: Option<String> = None;
         let mut expected_last_version = None;
@@ -20348,9 +20474,10 @@ mod tests {
             let source_path = fixture_root.join("raw").join(&frame.file);
             let observed_at = parsed_fixture_time(frame)?;
             let version = format!(
-                "{}_{}",
+                "{}_{}_png8{}",
                 observed_at.format("%Y%m%dT%H%M%SZ"),
-                &frame.sha256[..16]
+                &frame.sha256[..16],
+                &palette_hash[..8]
             );
             expected_last_version = Some(version.clone());
             let output_dir = temp.path().join("states").join(format!("{index:03}"));
@@ -20372,6 +20499,8 @@ mod tests {
             assert_eq!(manifest_value["state_id"], version);
             assert_eq!(manifest_value["source_file"], frame.file);
             assert_eq!(manifest_value["source_sha256"], frame.sha256);
+            assert_eq!(manifest_value["tile_encoding"], "png8-fixed-palette");
+            assert_eq!(manifest_value["palette"]["sha256"], palette_hash);
             assert_eq!(
                 manifest_value["res-levels"],
                 serde_json::json!([0, 1, 2, 3])
@@ -20380,6 +20509,42 @@ mod tests {
             assert_eq!(manifest_value["source_grid"]["height"], 3500);
             let tile_count = live_nexrad_tile_count(&manifest_value)?;
             assert_eq!(tile_count, 136);
+
+            let mut png_paths = Vec::new();
+            collect_png_paths(&output_dir.join("tiles"), &mut png_paths)?;
+            assert_eq!(png_paths.len(), tile_count);
+            let mut min_palette_length = usize::MAX;
+            for png_path in &png_paths {
+                let (color_type, palette_lengths) = png_color_type_and_palette_lengths(png_path)?;
+                assert_eq!(
+                    color_type,
+                    3,
+                    "{} should be indexed PNG",
+                    png_path.display()
+                );
+                assert_eq!(
+                    palette_lengths.len(),
+                    1,
+                    "{} should carry one PNG palette",
+                    png_path.display()
+                );
+                assert_eq!(
+                    palette_lengths[0] % 3,
+                    0,
+                    "{} PLTE length should be RGB triples",
+                    png_path.display()
+                );
+                assert!(
+                    palette_lengths[0] <= 768,
+                    "{} PLTE should fit PNG8",
+                    png_path.display()
+                );
+                min_palette_length = min_palette_length.min(palette_lengths[0]);
+            }
+            assert!(
+                min_palette_length < 768,
+                "at least one NEXRAD tile should use a compact palette"
+            );
 
             let result = publish_live_nexrad(
                 &live_root,

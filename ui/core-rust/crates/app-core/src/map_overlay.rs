@@ -29,6 +29,71 @@ const WEATHER_DISPLAY_FEATURE_LIMIT: usize = 1_000;
 const WORLD_SIZE: f64 = 256.0;
 const MAX_LATITUDE: f64 = 85.051_128_78;
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MapSurfaceMetrics {
+    pub viewport: MapViewport,
+    pub width_px: f64,
+    pub height_px: f64,
+    pub display_scale: f64,
+}
+
+impl MapSurfaceMetrics {
+    pub fn new(viewport: MapViewport, width_px: f64, height_px: f64, display_scale: f64) -> Self {
+        Self {
+            viewport,
+            width_px,
+            height_px,
+            display_scale: normalized_display_scale(display_scale),
+        }
+    }
+
+    fn effective_display_zoom(self) -> f64 {
+        let effective_zoom = self.viewport.zoom - self.display_scale.log2();
+        if effective_zoom.is_finite() {
+            effective_zoom
+        } else {
+            self.viewport.zoom
+        }
+    }
+
+    fn point_tile_zoom(self) -> u32 {
+        self.effective_display_zoom()
+            .floor()
+            .clamp(0.0, POINT_TILE_ZOOM as f64) as u32
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OverlaySurfaceDecision {
+    pub raw_zoom: f64,
+    pub width_px: f64,
+    pub height_px: f64,
+    pub display_scale: f64,
+    pub effective_display_zoom: f64,
+    pub point_tile_zoom: u32,
+    pub airspace_ref_zoom: Option<u32>,
+    pub airspace_label_zoom: Option<u32>,
+}
+
+pub fn overlay_surface_decision(
+    metrics: MapSurfaceMetrics,
+    config: &MapOverlayConfig,
+) -> OverlaySurfaceDecision {
+    let effective_display_zoom = metrics.effective_display_zoom();
+    OverlaySurfaceDecision {
+        raw_zoom: metrics.viewport.zoom,
+        width_px: metrics.width_px,
+        height_px: metrics.height_px,
+        display_scale: metrics.display_scale,
+        effective_display_zoom,
+        point_tile_zoom: metrics.point_tile_zoom(),
+        airspace_ref_zoom: (effective_display_zoom >= AIRSPACE_MIN_DISPLAY_ZOOM)
+            .then(|| airspace_reference_zoom(effective_display_zoom, config)),
+        airspace_label_zoom: (effective_display_zoom >= AIRSPACE_MIN_DISPLAY_ZOOM)
+            .then(|| airspace_label_zoom(effective_display_zoom, config)),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VectorTileRequest {
     pub layer: String,
@@ -947,12 +1012,14 @@ fn visible_obstacle_tile_window(
 }
 
 fn effective_point_display_zoom(viewport: &MapViewport, point_display_scale: f64) -> f64 {
-    let scale = point_display_scale.max(0.1);
-    let effective_zoom = viewport.zoom - scale.log2();
-    if effective_zoom.is_finite() {
-        effective_zoom
+    MapSurfaceMetrics::new(*viewport, 1.0, 1.0, point_display_scale).effective_display_zoom()
+}
+
+fn normalized_display_scale(display_scale: f64) -> f64 {
+    if display_scale.is_finite() {
+        display_scale.max(0.1)
     } else {
-        viewport.zoom
+        1.0
     }
 }
 
@@ -1192,6 +1259,40 @@ pub fn query_map_overlay_with_point_display_scale(
     tfr_payload: Option<&TfrProductPayload>,
     point_display_scale: f64,
 ) -> MapOverlayQueryResult {
+    let metrics = MapSurfaceMetrics::new(*viewport, width_px, height_px, point_display_scale);
+    query_map_overlay_for_surface(
+        &metrics,
+        config,
+        display_vectors,
+        display_metars,
+        offline_region_records,
+        obstacle_context,
+        vector_tile_cache,
+        metar_tile_cache,
+        metar_payload,
+        airspace_feature_cache,
+        tfr_payload,
+    )
+}
+
+pub fn query_map_overlay_for_surface(
+    metrics: &MapSurfaceMetrics,
+    config: &MapOverlayConfig,
+    display_vectors: bool,
+    display_metars: bool,
+    offline_region_records: &[OfflineRegionRecord],
+    obstacle_context: Option<&ObstacleOverlayContext>,
+    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
+    metar_tile_cache: &HashMap<String, MetarTilePayload>,
+    metar_payload: Option<&MetarProductPayload>,
+    airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
+    tfr_payload: Option<&TfrProductPayload>,
+) -> MapOverlayQueryResult {
+    let viewport = &metrics.viewport;
+    let width_px = metrics.width_px;
+    let height_px = metrics.height_px;
+    let point_display_scale = metrics.display_scale;
+    let decision = overlay_surface_decision(*metrics, config);
     let mut needed_vector_tiles = Vec::new();
     let mut visible_features = Vec::new();
     let mut limit_hit = false;
@@ -1204,8 +1305,6 @@ pub fn query_map_overlay_with_point_display_scale(
         width_px,
         height_px,
     );
-    let point_effective_zoom = effective_point_display_zoom(viewport, point_display_scale);
-    let point_tile_zoom = point_vector_tile_zoom(point_effective_zoom);
     let mut point_tile_count = 0_usize;
 
     if display_vectors {
@@ -1296,8 +1395,6 @@ pub fn query_map_overlay_with_point_display_scale(
         )
     } else {
         AirspaceOverlayProjection {
-            ref_zoom: None,
-            label_zoom: None,
             needed_tiles: Vec::new(),
             needed_features: Vec::new(),
             paths: Vec::new(),
@@ -1315,6 +1412,7 @@ pub fn query_map_overlay_with_point_display_scale(
             center_world,
             scale,
             tfr_payload,
+            point_display_scale,
         )
     } else {
         TfrOverlayProjection {
@@ -1368,12 +1466,12 @@ pub fn query_map_overlay_with_point_display_scale(
             "height_px": height_px,
             "display_vectors": display_vectors,
             "display_metars": display_metars,
-            "point_display_scale": point_display_scale,
-            "point_effective_zoom": point_effective_zoom,
-            "point_tile_zoom": point_tile_zoom,
+            "point_display_scale": decision.display_scale,
+            "point_effective_zoom": decision.effective_display_zoom,
+            "point_tile_zoom": decision.point_tile_zoom,
             "point_tile_count": point_tile_count,
-            "airspace_ref_zoom": airspace.ref_zoom,
-            "airspace_label_zoom": airspace.label_zoom,
+            "airspace_ref_zoom": decision.airspace_ref_zoom,
+            "airspace_label_zoom": decision.airspace_label_zoom,
             "needed_vector_tiles": tile_counts_by_zoom(&needed_vector_tiles),
             "needed_metar_tiles": tile_counts_by_zoom(&metars.needed_tiles),
             "needed_airspace_features": airspace.needed_features.len(),
@@ -1925,6 +2023,45 @@ pub fn query_map_selection_with_point_display_scale(
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
     point_display_scale: f64,
 ) -> MapSelectionQueryResult {
+    let metrics = MapSurfaceMetrics::new(*viewport, width_px, height_px, point_display_scale);
+    query_map_selection_for_surface(
+        &metrics,
+        config,
+        plan,
+        click,
+        hit_radius_px,
+        vector_tile_cache,
+        metar_tile_cache,
+        metar_payload,
+        taf_payload,
+        offline_region_records,
+        airspace_feature_cache,
+        tfr_payload,
+        flight_plan_points,
+        airport_plate_availability,
+    )
+}
+
+pub fn query_map_selection_for_surface(
+    metrics: &MapSurfaceMetrics,
+    config: &MapOverlayConfig,
+    plan: Option<&FlightPlan>,
+    click: LatLon,
+    hit_radius_px: f64,
+    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
+    metar_tile_cache: &HashMap<String, MetarTilePayload>,
+    metar_payload: Option<&MetarProductPayload>,
+    taf_payload: Option<&TafProductPayload>,
+    offline_region_records: &[OfflineRegionRecord],
+    airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
+    tfr_payload: Option<&TfrProductPayload>,
+    flight_plan_points: &[FlightPlanSelectionPoint],
+    airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
+) -> MapSelectionQueryResult {
+    let viewport = &metrics.viewport;
+    let width_px = metrics.width_px;
+    let height_px = metrics.height_px;
+    let point_display_scale = metrics.display_scale;
     let center_world = lat_lon_to_world(viewport.center);
     let scale = 2.0_f64.powf(viewport.zoom);
     let click_screen = world_to_screen_projected(
@@ -3407,6 +3544,7 @@ fn query_tfr_overlay(
     center_world: WorldPoint,
     scale: f64,
     tfr_payload: Option<&TfrProductPayload>,
+    display_scale: f64,
 ) -> TfrOverlayProjection {
     if width_px <= 0.0 || height_px <= 0.0 || viewport.zoom < AIRSPACE_MIN_DISPLAY_ZOOM {
         return TfrOverlayProjection {
@@ -3461,6 +3599,7 @@ fn query_tfr_overlay(
             scale,
             width_px,
             height_px,
+            display_scale,
         ) {
             labels.push(AirspaceDisplayLabel {
                 feature_id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
@@ -3516,8 +3655,9 @@ fn tfr_label_screen_point(
     scale: f64,
     width_px: f64,
     height_px: f64,
+    display_scale: f64,
 ) -> Option<AirspaceScreenPoint> {
-    if !tfr_polygon_can_fit_label(area, projected_points) {
+    if !tfr_polygon_can_fit_label(area, projected_points, display_scale) {
         return None;
     }
     let centroid = tfr_polygon_centroid(area)?;
@@ -3571,12 +3711,14 @@ fn tfr_polygon_centroid(area: &TfrAreaPayload) -> Option<LatLon> {
 fn tfr_polygon_can_fit_label(
     area: &TfrAreaPayload,
     projected_points: &[AirspaceScreenPoint],
+    display_scale: f64,
 ) -> bool {
     let Some((bbox_width, bbox_height)) = projected_bbox_size(projected_points) else {
         return false;
     };
-    let label_width = tfr_fraction_label_width_px(area);
-    let label_height = 22.0;
+    let scale = normalized_display_scale(display_scale);
+    let label_width = tfr_fraction_label_width_px(area) * scale;
+    let label_height = 22.0 * scale;
     bbox_width >= label_width && bbox_height >= label_height
 }
 
@@ -3613,8 +3755,6 @@ fn tfr_limit_label(limit: &TfrAltitudeLimit) -> String {
 }
 
 struct AirspaceOverlayProjection {
-    ref_zoom: Option<u32>,
-    label_zoom: Option<u32>,
     needed_tiles: Vec<VectorTileRequest>,
     needed_features: Vec<AirspaceFeatureRequest>,
     paths: Vec<AirspaceDisplayPath>,
@@ -3669,8 +3809,6 @@ fn query_airspace_overlay(
     let effective_zoom = effective_point_display_zoom(viewport, point_display_scale);
     if effective_zoom < AIRSPACE_MIN_DISPLAY_ZOOM || width_px <= 0.0 || height_px <= 0.0 {
         return AirspaceOverlayProjection {
-            ref_zoom: None,
-            label_zoom: None,
             needed_tiles: Vec::new(),
             needed_features: Vec::new(),
             paths: Vec::new(),
@@ -3825,8 +3963,6 @@ fn query_airspace_overlay(
     }
 
     AirspaceOverlayProjection {
-        ref_zoom: Some(ref_zoom),
-        label_zoom: Some(label_zoom),
         needed_tiles,
         needed_features,
         paths,
@@ -4893,6 +5029,46 @@ mod tests {
         assert_eq!(result.airspace_paths.len(), 1);
         assert_eq!(result.airspace_labels.len(), 1);
         assert!(!result.needed_vector_tiles.iter().any(|tile| tile.z == 10));
+    }
+
+    #[test]
+    fn surface_decision_normalizes_web_and_android_pixel_spaces() {
+        let effective_zoom = 9.3;
+        let android_scale = 2.625_f64;
+        let web_metrics = MapSurfaceMetrics::new(
+            MapViewport {
+                center: LatLon {
+                    lat: 37.45,
+                    lon: -122.25,
+                },
+                zoom: effective_zoom,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            500.0,
+            921.0,
+            1.0,
+        );
+        let android_metrics = MapSurfaceMetrics::new(
+            MapViewport {
+                center: web_metrics.viewport.center,
+                zoom: effective_zoom + android_scale.log2(),
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            1080.0,
+            2146.0,
+            android_scale,
+        );
+
+        let config = test_map_overlay_config();
+        let web = overlay_surface_decision(web_metrics, &config);
+        let android = overlay_surface_decision(android_metrics, &config);
+
+        assert!((web.effective_display_zoom - android.effective_display_zoom).abs() < 1e-9);
+        assert_eq!(web.point_tile_zoom, android.point_tile_zoom);
+        assert_eq!(web.airspace_ref_zoom, android.airspace_ref_zoom);
+        assert_eq!(web.airspace_label_zoom, android.airspace_label_zoom);
     }
 
     #[test]
@@ -6166,6 +6342,7 @@ mod tests {
             center_world,
             scale,
             Some(&payload),
+            1.0,
         );
 
         assert_eq!(result.paths.len(), 1);
@@ -6238,6 +6415,7 @@ mod tests {
             center_world,
             scale,
             Some(&payload),
+            1.0,
         );
 
         assert_eq!(result.paths.len(), 1);

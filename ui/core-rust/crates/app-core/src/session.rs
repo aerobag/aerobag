@@ -25,19 +25,18 @@ use crate::{
     map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
     planning::NavElementUiView,
     playback::PlaybackSessionState,
-    project_nav_symbol_feature, query_map_overlay_with_point_display_scale,
-    query_map_selection_with_point_display_scale, state, AirportPlateAvailability,
-    AirspaceFeaturePayload, AirspaceLabelTilePayload, AirspaceReferenceTilePayload,
-    AirwayPresentationPlan, AppError, AppErrorKind, AppEvent, AppResult, AppState, AppUiState,
-    FlightPlan, FlightPlanDisplayRowKind, FlightPlanRowActionExecution, FlightPlanRowActionId,
-    GuidanceState, LatLon, LegDisplayElement, MapOverlayConfig, MapOverlayQueryResult,
-    MapOverlayWarning, MapSelectionSessionAction, MapViewport, MetarProductPayload,
-    MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore, NavRef, PlanLeg, PlaybackUiState,
-    PointTilePayload, ProcedureDiscontinuity, ProcedureKind, ProcedureLoadCommand,
-    PublicationResolver, RasterMapCatalog, RasterResourceMode, RasterTilePlan, ResolvedLeg,
-    ResolvedLegSource, RouteComponentViewKind, SequencingMode, SituationControlInput,
-    SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload,
-    UiSnapshotAppState, VectorAggregateTilePayload, VectorIdentLabelStyle,
+    project_nav_symbol_feature, query_map_overlay_for_surface, query_map_selection_for_surface,
+    state, AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
+    AirspaceReferenceTilePayload, AirwayPresentationPlan, AppError, AppErrorKind, AppEvent,
+    AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
+    FlightPlanRowActionExecution, FlightPlanRowActionId, GuidanceState, LatLon, LegDisplayElement,
+    MapOverlayConfig, MapOverlayQueryResult, MapOverlayWarning, MapSelectionSessionAction,
+    MapSurfaceMetrics, MapViewport, MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery,
+    NavKvStore, NavRef, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity,
+    ProcedureKind, ProcedureLoadCommand, PublicationResolver, RasterMapCatalog, RasterResourceMode,
+    RasterTilePlan, ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode,
+    SituationControlInput, SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult,
+    TfrProductPayload, UiSnapshotAppState, VectorAggregateTilePayload, VectorIdentLabelStyle,
 };
 
 const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
@@ -2264,17 +2263,12 @@ fn install_vector_manifest_config(
 
 fn ensure_vector_inputs_loaded(
     session: &mut UiSession,
-    viewport: &MapViewport,
-    width_px: f64,
-    height_px: f64,
-    point_display_scale: f64,
+    metrics: &MapSurfaceMetrics,
 ) -> Result<(), HadReadError> {
     ensure_vector_manifest_loaded(session)?;
     for _ in 0..8 {
-        let overlay = query_map_overlay_with_point_display_scale(
-            viewport,
-            width_px,
-            height_px,
+        let overlay = query_map_overlay_for_surface(
+            metrics,
             &session.map_overlay_config,
             true,
             false,
@@ -2285,7 +2279,6 @@ fn ensure_vector_inputs_loaded(
             session.metar_payload.as_ref(),
             &session.airspace_feature_cache,
             session.tfr_payload.as_ref(),
-            point_display_scale,
         );
         let needed_vector_inputs =
             overlay.needed_vector_tiles.len() + overlay.needed_airspace_features.len();
@@ -2403,6 +2396,7 @@ pub fn get_map_overlay_in_session_with_point_display_scale(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    let metrics = MapSurfaceMetrics::new(viewport, width_px, height_px, point_display_scale);
     if !session.map_layer_state.vectors.visible
         && !session.map_layer_state.metars.visible
         && !session.map_layer_state.offline_regions.visible
@@ -2413,13 +2407,7 @@ pub fn get_map_overlay_in_session_with_point_display_scale(
         ));
     }
     if session.map_layer_state.vectors.visible {
-        if let Err(err) = ensure_vector_inputs_loaded(
-            session,
-            &viewport,
-            width_px,
-            height_px,
-            point_display_scale,
-        ) {
+        if let Err(err) = ensure_vector_inputs_loaded(session, &metrics) {
             return had_read_error_to_overlay_outcome(err);
         }
     }
@@ -2439,10 +2427,8 @@ pub fn get_map_overlay_in_session_with_point_display_scale(
     } else {
         Vec::new()
     };
-    let mut overlay = query_map_overlay_with_point_display_scale(
-        &viewport,
-        width_px,
-        height_px,
+    let mut overlay = query_map_overlay_for_surface(
+        &metrics,
         &session.map_overlay_config,
         session.map_layer_state.vectors.visible,
         session.map_layer_state.metars.visible,
@@ -2453,7 +2439,6 @@ pub fn get_map_overlay_in_session_with_point_display_scale(
         session.metar_payload.as_ref(),
         &session.airspace_feature_cache,
         session.tfr_payload.as_ref(),
-        point_display_scale,
     );
     if session.map_layer_state.vectors.visible {
         overlay.flight_plan_features =
@@ -2666,9 +2651,8 @@ pub fn get_map_selection_in_session_with_point_display_scale(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    if let Err(err) =
-        ensure_vector_inputs_loaded(session, &viewport, width_px, height_px, point_display_scale)
-    {
+    let metrics = MapSurfaceMetrics::new(viewport, width_px, height_px, point_display_scale);
+    if let Err(err) = ensure_vector_inputs_loaded(session, &metrics) {
         return had_read_error_to_overlay_outcome(err);
     }
     let plan = session.app_state.active_plan.as_ref();
@@ -2698,10 +2682,8 @@ pub fn get_map_selection_in_session_with_point_display_scale(
         Ok(points) => points,
         Err(err) => return had_read_error_to_overlay_outcome(err),
     };
-    let selection = query_map_selection_with_point_display_scale(
-        &viewport,
-        width_px,
-        height_px,
+    let selection = query_map_selection_for_surface(
+        &metrics,
         &session.map_overlay_config,
         plan,
         click,
@@ -2715,7 +2697,6 @@ pub fn get_map_selection_in_session_with_point_display_scale(
         session.tfr_payload.as_ref(),
         &flight_plan_points,
         &mut availability,
-        point_display_scale,
     );
     if !missing_pages.is_empty() {
         return Ok(HadOperationOutcome::NeedResources {

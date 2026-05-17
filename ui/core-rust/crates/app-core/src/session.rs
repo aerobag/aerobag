@@ -5266,7 +5266,7 @@ mod tests {
     }
 
     #[test]
-    fn loaded_vector_manifest_supplies_metar_layer_after_empty_bootstrap_manifest() {
+    fn live_metar_layer_survives_vector_manifest_without_weather_layers() {
         let mut session = UiSession {
             app_state: register_default_situation_sources(AppState::default()).expect("app state"),
             playback: PlaybackSessionState::default(),
@@ -5325,11 +5325,8 @@ mod tests {
         });
         let manifest = serde_json::json!({
             "point_layers": {
-                "metars": {
-                    "min_zoom": 5,
-                    "max_zoom": 7,
-                    "available_zooms": [5, 6, 7],
-                    "tile_path_template": "unused-by-live-feeds"
+                "airport": {
+                    "available_zooms": [9]
                 }
             },
             "airspace": {

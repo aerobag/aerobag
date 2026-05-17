@@ -656,6 +656,15 @@ pub struct PointTileLayerConfig {
     pub tile_path_template: Option<String>,
 }
 
+pub fn live_metar_layer_config() -> PointTileLayerConfig {
+    PointTileLayerConfig {
+        min_zoom: 5,
+        max_zoom: 7,
+        available_zooms: vec![5, 6, 7],
+        tile_path_template: None,
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct VectorOverlayManifest {
     #[serde(default)]
@@ -712,18 +721,13 @@ pub fn map_overlay_config_from_vector_manifest_json(
         .get("obstacle")
         .map(obstacle_layer_config_from_manifest)
         .transpose()?;
-    let metar_layer = manifest
-        .point_layers
-        .get("metars")
-        .map(|layer| point_tile_layer_config_from_manifest("metars", layer))
-        .transpose()?;
     Ok(MapOverlayConfig {
         airspace_reference_tile_min_zoom: manifest.airspace.reference_tile_min_zoom,
         airspace_reference_tile_max_zoom: manifest.airspace.reference_tile_max_zoom,
         airspace_label_tile_min_zoom: manifest.airspace.label_tile_min_zoom,
         airspace_label_tile_max_zoom: manifest.airspace.label_tile_max_zoom,
         obstacle_layer,
-        metar_layer,
+        metar_layer: Some(live_metar_layer_config()),
     })
 }
 

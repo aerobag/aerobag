@@ -3212,12 +3212,14 @@ function MapPage(props: {
       try {
         debugLog("map.overlay.query.start", {
           zoom: viewport.zoom,
+          center,
           width: surfaceSize.width,
           height: surfaceSize.height,
         });
         overlay = await session.queryMapOverlay(viewport, surfaceSize.width, surfaceSize.height);
         debugLog("map.overlay.query.done", {
           zoom: viewport.zoom,
+          center,
           elapsed_ms: Math.round(performance.now() - startedAt),
           visible_features: overlay.visible_features.length,
           visible_metars: overlay.visible_metars.length,

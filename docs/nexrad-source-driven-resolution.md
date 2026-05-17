@@ -55,6 +55,10 @@ indices into the shortest PNG-local palette that represents the colors actually
 used in that tile. This keeps color choice stable across frames while avoiding a
 full 256-entry `PLTE` chunk on empty or low-color tiles.
 
+Future delta transport is deferred to TASK-121. That work should treat the
+palette-index stream as the delta source and will require an explicit client
+decoder/reconstruction path; it should not be hidden inside PNG.
+
 ## Tile Math
 
 For a source image with width `W`, height `H`, tile size `T`, and resolution

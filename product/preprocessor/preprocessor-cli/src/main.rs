@@ -72,7 +72,7 @@ fn long_usage() -> &'static str {
   preprocessor-cli run-native-chart --family <sec|tac|enr-l|enr-h> --source-repo <path> --run-root <path> --cpu-jobs <count> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli run-native-csup --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli run-native-tpp --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
-  preprocessor-cli build-data --input-dir <path> --output-dir <path> --manifest-version <cycle> [--resource-index-output <path>] [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>:<package_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>:<package_root>]...
+  preprocessor-cli build-data --input-dir <path> --output-dir <path> --manifest-version <cycle> [--resource-index-output <path>] [--chart-source <family-id>:<package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]...
   preprocessor-cli audit-procedure-geometry --main-db <path> [--airport <id>] [--procedure <id>] [--transition <id>]
   preprocessor-cli build-vectors --main-db <path> --output-dir <path> --version-label <label> [--data-input-dir <path>] [--include-class-e-airspace]
   preprocessor-cli audit-bravo-unions --class-airspace-shp <path> --output-svg <path> [--version-label <label>]
@@ -80,7 +80,7 @@ fn long_usage() -> &'static str {
   preprocessor-cli build-obstacles [--build-root <path>] [--fetch-jobs <count>] [--snapshot-date <YYYY-MM-DD>]
   preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
   preprocessor-cli normalize-swim-notams --input-jsonl <path> --output-dir <path> --version-label <label>
-  preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>:<package_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>:<package_root>]...
+  preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]...
   preprocessor-cli build-cycle [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli publish-discovery-manifest [--profile <validation|production>] [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
@@ -557,7 +557,7 @@ fn compare_image_rmse(left: &Path, right: &Path) -> anyhow::Result<f64> {
 }
 
 fn parse_chart_source_spec(value: &str) -> anyhow::Result<ChartSource> {
-    let mut parts = value.splitn(4, ':');
+    let mut parts = value.splitn(6, ':');
     let family_id = parts
         .next()
         .filter(|part| !part.is_empty())
@@ -566,22 +566,31 @@ fn parse_chart_source_spec(value: &str) -> anyhow::Result<ChartSource> {
         .next()
         .filter(|part| !part.is_empty())
         .ok_or_else(|| anyhow::anyhow!("chart source is missing package outputs path"))?;
+    let asset_root = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("chart source is missing asset root"))?;
     let package_root = parts
         .next()
         .filter(|part| !part.is_empty())
         .ok_or_else(|| anyhow::anyhow!("chart source is missing package root"))?;
+    let unpack_source_root = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("chart source is missing unpack source root"))?;
     let source_urls_path = parts.next().filter(|part| !part.is_empty());
     Ok(ChartSource {
         family_id: family_id.to_string(),
         package_outputs_path: PathBuf::from(package_outputs_path),
-        asset_root: PathBuf::from(package_root),
+        asset_root: PathBuf::from(asset_root),
         package_root: PathBuf::from(package_root),
+        unpack_source_root: PathBuf::from(unpack_source_root),
         source_urls_path: source_urls_path.map(PathBuf::from),
     })
 }
 
 fn parse_asset_source_spec(value: &str) -> anyhow::Result<AssetSource> {
-    let mut parts = value.splitn(4, ':');
+    let mut parts = value.splitn(5, ':');
     let package_outputs_path = parts
         .next()
         .filter(|part| !part.is_empty())
@@ -590,21 +599,20 @@ fn parse_asset_source_spec(value: &str) -> anyhow::Result<AssetSource> {
         .next()
         .filter(|part| !part.is_empty())
         .ok_or_else(|| anyhow::anyhow!("asset source is missing asset root"))?;
-    let third = parts.next().filter(|part| !part.is_empty());
-    let fourth = parts.next().filter(|part| !part.is_empty());
-    let (package_root, source_urls_path) = match (third, fourth) {
-        (Some(package_root), Some(source_urls_path)) => (package_root, Some(source_urls_path)),
-        (Some(source_urls_path), None) if source_urls_path.ends_with(".jsonl") => {
-            (asset_root, Some(source_urls_path))
-        }
-        (Some(package_root), None) => (package_root, None),
-        (None, None) => (asset_root, None),
-        (None, Some(_)) => unreachable!("splitn(4) cannot yield fourth without third"),
-    };
+    let package_root = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("asset source is missing package root"))?;
+    let unpack_source_root = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("asset source is missing unpack source root"))?;
+    let source_urls_path = parts.next().filter(|part| !part.is_empty());
     Ok(AssetSource {
         package_outputs_path: PathBuf::from(package_outputs_path),
         asset_root: PathBuf::from(asset_root),
         package_root: PathBuf::from(package_root),
+        unpack_source_root: PathBuf::from(unpack_source_root),
         source_urls_path: source_urls_path.map(PathBuf::from),
     })
 }
@@ -2686,11 +2694,12 @@ mod tests {
             "--resource-index-output".to_string(),
             "/tmp/output/resource-index.json".to_string(),
             "--chart-source".to_string(),
-            "sectional:/tmp/sec.jsonl:/tmp/sec-root".to_string(),
+            "sectional:/tmp/sec.jsonl:/tmp/sec-assets:/tmp/sec-packages:/tmp/sec-unpack"
+                .to_string(),
             "--tpp-source".to_string(),
-            "/tmp/tpp.jsonl:/tmp/tpp-root".to_string(),
+            "/tmp/tpp.jsonl:/tmp/tpp-assets:/tmp/tpp-packages:/tmp/tpp-unpack".to_string(),
             "--csup-source".to_string(),
-            "/tmp/csup.jsonl:/tmp/csup-root".to_string(),
+            "/tmp/csup.jsonl:/tmp/csup-assets:/tmp/csup-packages:/tmp/csup-unpack".to_string(),
         ];
         let command = parse_build_data_command(&args).expect("parse build-data");
         assert_eq!(
@@ -2705,7 +2714,11 @@ mod tests {
         );
         assert_eq!(
             command.chart_sources[0].package_root,
-            PathBuf::from("/tmp/sec-root")
+            PathBuf::from("/tmp/sec-packages")
+        );
+        assert_eq!(
+            command.chart_sources[0].unpack_source_root,
+            PathBuf::from("/tmp/sec-unpack")
         );
         assert_eq!(command.tpp_sources.len(), 1);
         assert_eq!(
@@ -2714,7 +2727,15 @@ mod tests {
         );
         assert_eq!(
             command.tpp_sources[0].asset_root,
-            PathBuf::from("/tmp/tpp-root")
+            PathBuf::from("/tmp/tpp-assets")
+        );
+        assert_eq!(
+            command.tpp_sources[0].package_root,
+            PathBuf::from("/tmp/tpp-packages")
+        );
+        assert_eq!(
+            command.tpp_sources[0].unpack_source_root,
+            PathBuf::from("/tmp/tpp-unpack")
         );
         assert_eq!(command.csup_sources.len(), 1);
         assert_eq!(
@@ -2723,7 +2744,15 @@ mod tests {
         );
         assert_eq!(
             command.csup_sources[0].asset_root,
-            PathBuf::from("/tmp/csup-root")
+            PathBuf::from("/tmp/csup-assets")
+        );
+        assert_eq!(
+            command.csup_sources[0].package_root,
+            PathBuf::from("/tmp/csup-packages")
+        );
+        assert_eq!(
+            command.csup_sources[0].unpack_source_root,
+            PathBuf::from("/tmp/csup-unpack")
         );
     }
 }

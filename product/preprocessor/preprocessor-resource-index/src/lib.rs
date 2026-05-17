@@ -31,6 +31,7 @@ pub struct ChartSource {
     pub package_outputs_path: PathBuf,
     pub asset_root: PathBuf,
     pub package_root: PathBuf,
+    pub unpack_source_root: PathBuf,
     pub source_urls_path: Option<PathBuf>,
 }
 
@@ -39,6 +40,7 @@ pub struct AssetSource {
     pub package_outputs_path: PathBuf,
     pub asset_root: PathBuf,
     pub package_root: PathBuf,
+    pub unpack_source_root: PathBuf,
     pub source_urls_path: Option<PathBuf>,
 }
 
@@ -2438,19 +2440,22 @@ mod tests {
                 family_id: "sec".to_string(),
                 package_outputs_path: chart_outputs,
                 asset_root: chart_root.clone(),
-                package_root: chart_root,
+                package_root: chart_root.clone(),
+                unpack_source_root: chart_root,
                 source_urls_path: Some(chart_source_urls),
             }],
             tpp_sources: vec![AssetSource {
                 package_outputs_path: tpp_outputs,
-                asset_root: tpp_root,
+                asset_root: tpp_root.clone(),
                 package_root: temp.path().join("tpp-ne"),
+                unpack_source_root: tpp_root,
                 source_urls_path: Some(tpp_source_urls),
             }],
             csup_sources: vec![AssetSource {
                 package_outputs_path: csup_outputs,
-                asset_root: csup_root,
+                asset_root: csup_root.clone(),
                 package_root: temp.path().join("csup"),
+                unpack_source_root: csup_root,
                 source_urls_path: Some(csup_source_urls),
             }],
         };

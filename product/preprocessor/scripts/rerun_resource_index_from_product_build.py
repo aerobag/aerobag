@@ -28,17 +28,18 @@ def first_node(nodes: list[dict], prefix: str) -> dict:
     raise SystemExit(f"missing node with prefix {prefix}")
 
 
-def package_root_from_manifest(rel_manifest: str, artifact_root: Path) -> Path:
-    return (artifact_root / rel_manifest).parent
-
-
 def chart_source_spec(nodes: list[dict], artifact_root: Path, source_urls_root: Path, family: str) -> str:
-    node = first_node(nodes, f"charts-{family}-package-")
-    package_root = package_root_from_manifest(node["outputs"]["manifest"], artifact_root)
-    family_root = package_root.parent.parent
-    package_outputs = family_root / "meta" / "provenance" / f"charts-{family}" / "package_outputs.jsonl"
+    try:
+        node = require_node(nodes, f"charts-{family}-package")
+    except SystemExit:
+        node = first_node(nodes, f"charts-{family}-package-")
+    outputs = node["outputs"]
+    package_outputs = artifact_root / outputs["package_outputs"]
+    asset_root = artifact_root / outputs["asset_root"]
+    package_root = artifact_root / outputs["package_root"]
+    unpack_source_root = artifact_root / outputs["unpack_source_root"]
     source_urls = source_urls_root / f"charts-{family}" / "source_urls.jsonl"
-    return f"{family}:{package_outputs}:{package_root}:{source_urls}"
+    return f"{family}:{package_outputs}:{asset_root}:{package_root}:{unpack_source_root}:{source_urls}"
 
 
 def asset_source_spec(
@@ -49,16 +50,13 @@ def asset_source_spec(
     source_urls_name: str,
 ) -> str:
     node = require_node(nodes, node_name)
-    if "work_dir" in node["outputs"] and "package_outputs" in node["outputs"]:
-        work_dir = artifact_root / node["outputs"]["work_dir"]
-        package_outputs = artifact_root / node["outputs"]["package_outputs"]
-    else:
-        work_dir = package_root_from_manifest(node["outputs"]["manifest"], artifact_root)
-        provenance_name = "csup" if node_name.startswith("csup-package-") else node_name.removesuffix("-package")
-        family_root = work_dir.parent.parent
-        package_outputs = family_root / "meta" / "provenance" / provenance_name / "package_outputs.jsonl"
+    outputs = node["outputs"]
+    package_outputs = artifact_root / outputs["package_outputs"]
+    asset_root = artifact_root / outputs["asset_root"]
+    package_root = artifact_root / outputs["package_root"]
+    unpack_source_root = artifact_root / outputs["unpack_source_root"]
     source_urls = source_urls_root / source_urls_name / "source_urls.jsonl"
-    return f"{package_outputs}:{work_dir}:{source_urls}"
+    return f"{package_outputs}:{asset_root}:{package_root}:{unpack_source_root}:{source_urls}"
 
 
 def main() -> int:

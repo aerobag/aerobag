@@ -1191,7 +1191,7 @@ struct PublishedZipArtifact {
 #[derive(Debug, Clone)]
 enum PublishedZipUnpackStrategy {
     ExtractZip,
-    HardlinkZipMembers { source_roots: Vec<PathBuf> },
+    HardlinkZipMembers { source_root: PathBuf },
 }
 
 fn run_weighted_task_graph<K, V, RunTask, Log>(
@@ -5015,7 +5015,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         )?;
                         let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
                             &zip_path,
-                            &source.package_root,
+                            &source.unpack_source_root,
                             &unpacked_root,
                             &published_filename,
                             Some(&package.zip_sha256),
@@ -5046,7 +5046,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         )?;
                         let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
                             &zip_path,
-                            &source.package_root,
+                            &source.unpack_source_root,
                             &unpacked_root,
                             &published_filename,
                             Some(&package.zip_sha256),
@@ -5081,7 +5081,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         )?;
                         let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
                             &zip_path,
-                            &source.package_root,
+                            &source.unpack_source_root,
                             &unpacked_root,
                             &published_filename,
                             Some(&package.zip_sha256),
@@ -9960,41 +9960,6 @@ fn sync_unpacked_zip_from_source(
     Ok((false, unpack_dir))
 }
 
-fn sync_unpacked_zip_from_sources(
-    zip_path: &Path,
-    source_roots: &[&Path],
-    unpacked_root: &Path,
-    published_filename: &str,
-    known_sha256: Option<&str>,
-) -> anyhow::Result<(bool, PathBuf)> {
-    let unpack_dir = unpacked_target_dir(unpacked_root, published_filename)?;
-    let marker_path = unpacked_marker_path(unpacked_root, published_filename)?;
-    let zip_sha256 = match known_sha256 {
-        Some(value) => value.to_string(),
-        None => hash_file(zip_path)?,
-    };
-    if unpack_dir.is_dir()
-        && unpacked_dir_has_files(&unpack_dir)?
-        && fs::read_to_string(&marker_path)
-            .ok()
-            .as_deref()
-            .map(str::trim)
-            == Some(zip_sha256.as_str())
-    {
-        return Ok((true, unpack_dir));
-    }
-    if unpack_dir.exists() {
-        fs::remove_dir_all(&unpack_dir)
-            .with_context(|| format!("failed to remove {}", unpack_dir.display()))?;
-    }
-    fs::create_dir_all(&unpack_dir)
-        .with_context(|| format!("failed to create {}", unpack_dir.display()))?;
-    hardlink_zip_members_from_source_roots(zip_path, source_roots, &unpack_dir)?;
-    fs::write(&marker_path, format!("{zip_sha256}\n"))
-        .with_context(|| format!("failed to write {}", marker_path.display()))?;
-    Ok((false, unpack_dir))
-}
-
 fn sync_unpacked_dir_from_existing(
     source_dir: &Path,
     unpacked_root: &Path,
@@ -10133,14 +10098,6 @@ fn hardlink_zip_members_from_source_root(
     source_root: &Path,
     output_dir: &Path,
 ) -> anyhow::Result<()> {
-    hardlink_zip_members_from_source_roots(zip_path, &[source_root], output_dir)
-}
-
-fn hardlink_zip_members_from_source_roots(
-    zip_path: &Path,
-    source_roots: &[&Path],
-    output_dir: &Path,
-) -> anyhow::Result<()> {
     let file =
         File::open(zip_path).with_context(|| format!("failed to open {}", zip_path.display()))?;
     let mut archive = ZipArchive::new(file)
@@ -10163,34 +10120,13 @@ fn hardlink_zip_members_from_source_roots(
             fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
-        let mut source = None;
-        for source_root in source_roots {
-            match resolve_source_member_path(source_root, &member) {
-                Ok(path) => {
-                    source = Some(path);
-                    break;
-                }
-                Err(_) => continue,
-            }
-        }
-        let source = source.with_context(|| {
-            format!(
-                "missing source member {} for {} under any source root: {}",
-                member,
-                zip_path.display(),
-                source_roots
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        })?;
+        let source = source_root.join(&member);
         if !source.is_file() {
             bail!(
                 "missing source member {} for {} under {}",
                 member,
                 zip_path.display(),
-                source.display()
+                source_root.display()
             );
         }
         fs::hard_link(&source, &outpath).with_context(|| {
@@ -10204,29 +10140,105 @@ fn hardlink_zip_members_from_source_roots(
     Ok(())
 }
 
-fn resolve_source_member_path(source_root: &Path, member: &str) -> anyhow::Result<PathBuf> {
-    let direct = source_root.join(member);
-    if direct.is_file() {
-        return Ok(direct);
+fn prepare_package_unpack_source_root(
+    zip_paths: &[PathBuf],
+    asset_root: &Path,
+    package_root: &Path,
+    unpack_source_root: &Path,
+    generated_member_prefixes: &[&str],
+) -> anyhow::Result<()> {
+    if unpack_source_root.exists() {
+        fs::remove_dir_all(unpack_source_root)
+            .with_context(|| format!("failed to remove {}", unpack_source_root.display()))?;
     }
+    fs::create_dir_all(unpack_source_root)
+        .with_context(|| format!("failed to create {}", unpack_source_root.display()))?;
+    for zip_path in zip_paths {
+        hardlink_package_zip_members_to_unpack_source_root(
+            zip_path,
+            asset_root,
+            package_root,
+            unpack_source_root,
+            generated_member_prefixes,
+        )?;
+    }
+    Ok(())
+}
 
-    let member_path = Path::new(member);
-    if member_path.components().count() == 1 && member_path.extension().is_none() {
-        let mut manifests = fs::read_dir(source_root)
-            .with_context(|| format!("failed to read {}", source_root.display()))?
-            .collect::<Result<Vec<_>, _>>()
-            .with_context(|| format!("failed to iterate {}", source_root.display()))?
-            .into_iter()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("manifest"))
-            .collect::<Vec<_>>();
-        manifests.sort();
-        if manifests.len() == 1 {
-            return Ok(manifests.remove(0));
+fn hardlink_package_zip_members_to_unpack_source_root(
+    zip_path: &Path,
+    asset_root: &Path,
+    package_root: &Path,
+    unpack_source_root: &Path,
+    generated_member_prefixes: &[&str],
+) -> anyhow::Result<()> {
+    let file =
+        File::open(zip_path).with_context(|| format!("failed to open {}", zip_path.display()))?;
+    let mut archive = ZipArchive::new(file)
+        .with_context(|| format!("failed to open zip {}", zip_path.display()))?;
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index).with_context(|| {
+            format!(
+                "failed to read zip member #{index} from {}",
+                zip_path.display()
+            )
+        })?;
+        let member = entry.name().to_string();
+        let outpath = unpack_source_root.join(&member);
+        if member.ends_with('/') || entry.is_dir() {
+            fs::create_dir_all(&outpath)
+                .with_context(|| format!("failed to create {}", outpath.display()))?;
+            continue;
         }
+        if let Some(parent) = outpath.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        let source = package_zip_member_source_path(
+            asset_root,
+            package_root,
+            &member,
+            generated_member_prefixes,
+        );
+        if !source.is_file() {
+            bail!(
+                "package zip member {} from {} is not present at disciplined unpack source {}",
+                member,
+                zip_path.display(),
+                source.display()
+            );
+        }
+        if outpath.exists() {
+            fs::remove_file(&outpath)
+                .with_context(|| format!("failed to remove {}", outpath.display()))?;
+        }
+        fs::hard_link(&source, &outpath).with_context(|| {
+            format!(
+                "failed to hardlink {} to {}",
+                source.display(),
+                outpath.display()
+            )
+        })?;
     }
+    Ok(())
+}
 
-    Ok(direct)
+fn package_zip_member_source_path(
+    asset_root: &Path,
+    package_root: &Path,
+    member: &str,
+    generated_member_prefixes: &[&str],
+) -> PathBuf {
+    let member_path = Path::new(member);
+    if member_path.components().count() == 1
+        || generated_member_prefixes
+            .iter()
+            .any(|prefix| member.starts_with(prefix))
+    {
+        package_root.join(member)
+    } else {
+        asset_root.join(member)
+    }
 }
 
 fn sync_unpacked_metadata(
@@ -10327,17 +10339,26 @@ fn sync_cycle_bundle_unpacked_zips(
             }
         }
         let source_root = if let Some(task_values) = task_values {
-            resolve_cycle_bundle_package_root(task_values, &bundle_manifest.cycle, package)?
+            resolve_cycle_bundle_package_unpack_source_root(
+                task_values,
+                &bundle_manifest.cycle,
+                package,
+            )?
         } else {
-            resolve_cycle_bundle_package_root_from_build_manifest(
+            resolve_cycle_bundle_package_unpack_source_root_from_build_manifest(
                 config,
                 build_manifest
                     .as_ref()
-                    .expect("build manifest fallback should exist for standalone cycle unpack"),
+                    .expect("build manifest should exist for standalone cycle unpack"),
                 package,
             )?
         }
-        .with_context(|| format!("failed to resolve source root for package {}", package.id))?;
+        .with_context(|| {
+            format!(
+                "failed to resolve unpack source root for package {}",
+                package.id
+            )
+        })?;
         sync_unpacked_zip_from_source(
             &config.build_root.join(&package.filename),
             &source_root,
@@ -10350,7 +10371,7 @@ fn sync_cycle_bundle_unpacked_zips(
     Ok(())
 }
 
-fn resolve_cycle_bundle_package_root_from_build_manifest(
+fn resolve_cycle_bundle_package_unpack_source_root_from_build_manifest(
     config: &ProductBuildConfig,
     build_manifest: &BuildManifest,
     package: &BundlePackageArtifact,
@@ -10382,12 +10403,12 @@ fn resolve_cycle_bundle_package_root_from_build_manifest(
     };
     let root = record
         .outputs
-        .get("asset_root")
+        .get("unpack_source_root")
         .map(|path| resolve_artifact_path(config, path));
     Ok(root)
 }
 
-fn resolve_cycle_bundle_package_root(
+fn resolve_cycle_bundle_package_unpack_source_root(
     task_values: &BTreeMap<String, ProductTaskValue>,
     bundle_cycle: &str,
     package: &BundlePackageArtifact,
@@ -10416,9 +10437,11 @@ fn resolve_cycle_bundle_package_root(
     };
 
     let root = match task_values.get(&task_id) {
-        Some(ProductTaskValue::ChartSource(source)) => source.asset_root.clone(),
-        Some(ProductTaskValue::CsupSource(source)) => source.asset_root.clone(),
-        Some(ProductTaskValue::FingerprintedTppSource { source, .. }) => source.asset_root.clone(),
+        Some(ProductTaskValue::ChartSource(source)) => source.unpack_source_root.clone(),
+        Some(ProductTaskValue::CsupSource(source)) => source.unpack_source_root.clone(),
+        Some(ProductTaskValue::FingerprintedTppSource { source, .. }) => {
+            source.unpack_source_root.clone()
+        }
         _ => return Ok(None),
     };
     Ok(Some(root))
@@ -10470,12 +10493,10 @@ fn static_product_unpacked_strategy(
             );
         }
         return Ok(PublishedZipUnpackStrategy::HardlinkZipMembers {
-            source_roots: vec![package_root],
+            source_root: package_root,
         });
     }
-    Ok(PublishedZipUnpackStrategy::HardlinkZipMembers {
-        source_roots: vec![source_root],
-    })
+    Ok(PublishedZipUnpackStrategy::HardlinkZipMembers { source_root })
 }
 
 fn sync_product_level_unpacked(
@@ -10510,14 +10531,10 @@ fn sync_product_level_unpacked(
                     Some(&artifact.checksum_sha256),
                 )?;
             }
-            PublishedZipUnpackStrategy::HardlinkZipMembers { source_roots } => {
-                let source_roots = source_roots
-                    .iter()
-                    .map(PathBuf::as_path)
-                    .collect::<Vec<_>>();
-                sync_unpacked_zip_from_sources(
+            PublishedZipUnpackStrategy::HardlinkZipMembers { source_root } => {
+                sync_unpacked_zip_from_source(
                     &artifact.published_zip_path,
-                    &source_roots,
+                    source_root,
                     &unpacked_root,
                     published_filename,
                     Some(&artifact.checksum_sha256),
@@ -17919,7 +17936,7 @@ fn build_chart_package_nodes(
         ),
         (
             "package_node_contract".to_string(),
-            "asset-root-source-v1".to_string(),
+            "unpack-source-root-v1".to_string(),
         ),
         ("version_label".to_string(), version_label.to_string()),
         (
@@ -17938,6 +17955,7 @@ fn build_chart_package_nodes(
         &inputs,
     )?;
     let package_root = prepared.dir.join("output");
+    let unpack_source_root = prepared.dir.join("unpack-source");
     let aggregate_path = package_root.join("package_outputs.jsonl");
     let wide_manifest_path = package_root.join(format!(
         "WIDE_{}_{}.manifest",
@@ -17951,6 +17969,7 @@ fn build_chart_package_nodes(
     ));
     let mut expected_outputs = Vec::from([
         aggregate_path.clone(),
+        unpack_source_root.clone(),
         wide_zip_path.clone(),
         wide_manifest_path.clone(),
     ]);
@@ -17977,6 +17996,11 @@ fn build_chart_package_nodes(
                 fs::remove_dir_all(&package_root)
                     .with_context(|| format!("failed to remove {}", package_root.display()))?;
             }
+            if unpack_source_root.exists() {
+                fs::remove_dir_all(&unpack_source_root).with_context(|| {
+                    format!("failed to remove {}", unpack_source_root.display())
+                })?;
+            }
             fs::create_dir_all(&package_root)
                 .with_context(|| format!("failed to create {}", package_root.display()))?;
             let mut package_records = Vec::new();
@@ -18001,6 +18025,17 @@ fn build_chart_package_nodes(
                 version_label,
             )?);
             write_package_outputs_jsonl(&package_root, &package_records)?;
+            let zip_paths = package_records
+                .iter()
+                .map(|record| package_root.join(&record.zip))
+                .collect::<Vec<_>>();
+            prepare_package_unpack_source_root(
+                &zip_paths,
+                &work_dir,
+                &package_root,
+                &unpack_source_root,
+                &[],
+            )?;
             let outputs = BTreeMap::from([
                 (
                     "asset_root".to_string(),
@@ -18009,6 +18044,10 @@ fn build_chart_package_nodes(
                 (
                     "package_root".to_string(),
                     relative_artifact_path(&package_root, &config.build_root),
+                ),
+                (
+                    "unpack_source_root".to_string(),
+                    relative_artifact_path(&unpack_source_root, &config.build_root),
                 ),
                 (
                     "package_outputs".to_string(),
@@ -18035,6 +18074,7 @@ fn build_chart_package_nodes(
             package_outputs_path: aggregate_path,
             asset_root: work_dir,
             package_root,
+            unpack_source_root,
             source_urls_path: Some(source_urls_path),
         },
     ))
@@ -18230,7 +18270,7 @@ fn build_csup_package_nodes(
         ),
         (
             "package_node_contract".to_string(),
-            "asset-root-source-v1".to_string(),
+            "unpack-source-root-v1".to_string(),
         ),
         ("version_label".to_string(), version_label.to_string()),
         (
@@ -18278,8 +18318,9 @@ fn build_csup_package_nodes(
         &inputs,
     )?;
     let package_root = prepared.dir.join("output");
+    let unpack_source_root = prepared.dir.join("unpack-source");
     let aggregate_path = package_root.join("package_outputs.jsonl");
-    let mut expected_outputs = vec![aggregate_path.clone()];
+    let mut expected_outputs = vec![aggregate_path.clone(), unpack_source_root.clone()];
     for region in Region::ALL {
         expected_outputs.push(package_root.join(format!(
             "{}_CSUP_{}.zip",
@@ -18301,6 +18342,11 @@ fn build_csup_package_nodes(
                 fs::remove_dir_all(&package_root)
                     .with_context(|| format!("failed to remove {}", package_root.display()))?;
             }
+            if unpack_source_root.exists() {
+                fs::remove_dir_all(&unpack_source_root).with_context(|| {
+                    format!("failed to remove {}", unpack_source_root.display())
+                })?;
+            }
             fs::create_dir_all(&package_root)
                 .with_context(|| format!("failed to create {}", package_root.display()))?;
             let mut package_records = Vec::new();
@@ -18314,6 +18360,17 @@ fn build_csup_package_nodes(
                 )?);
             }
             write_package_outputs_jsonl(&package_root, &package_records)?;
+            let zip_paths = package_records
+                .iter()
+                .map(|record| package_root.join(&record.zip))
+                .collect::<Vec<_>>();
+            prepare_package_unpack_source_root(
+                &zip_paths,
+                &work_dir,
+                &package_root,
+                &unpack_source_root,
+                &[],
+            )?;
             let outputs = BTreeMap::from([
                 (
                     "asset_root".to_string(),
@@ -18322,6 +18379,10 @@ fn build_csup_package_nodes(
                 (
                     "package_root".to_string(),
                     relative_artifact_path(&package_root, &config.build_root),
+                ),
+                (
+                    "unpack_source_root".to_string(),
+                    relative_artifact_path(&unpack_source_root, &config.build_root),
                 ),
                 (
                     "package_outputs".to_string(),
@@ -18347,6 +18408,7 @@ fn build_csup_package_nodes(
             package_outputs_path: aggregate_path,
             asset_root: work_dir.clone(),
             package_root,
+            unpack_source_root,
             source_urls_path: Some(source_urls_path),
         },
     ))
@@ -18428,7 +18490,7 @@ fn build_tpp_package_node(
         ),
         (
             "package_node_contract".to_string(),
-            "asset-root-source-v1".to_string(),
+            "unpack-source-root-v1".to_string(),
         ),
         ("region".to_string(), region.code().to_string()),
         ("version_label".to_string(), version_label.to_string()),
@@ -18462,6 +18524,7 @@ fn build_tpp_package_node(
         &inputs,
     )?;
     let package_root = prepared.dir.join("output");
+    let unpack_source_root = prepared.dir.join("unpack-source");
     let provenance_dir = prepared
         .dir
         .join("meta")
@@ -18475,6 +18538,7 @@ fn build_tpp_package_node(
         &prepared,
         &[
             package_outputs_path.clone(),
+            unpack_source_root.clone(),
             zip_path.clone(),
             manifest_path.clone(),
         ],
@@ -18486,6 +18550,7 @@ fn build_tpp_package_node(
                     package_outputs_path,
                     asset_root: asset_root.clone(),
                     package_root: package_root.clone(),
+                    unpack_source_root: unpack_source_root.clone(),
                     source_urls_path: Some(source_urls_path.to_path_buf()),
                 },
             ));
@@ -18494,6 +18559,10 @@ fn build_tpp_package_node(
     };
     let started_at_utc = utc_now_string();
     let started = Instant::now();
+    if unpack_source_root.exists() {
+        fs::remove_dir_all(&unpack_source_root)
+            .with_context(|| format!("failed to remove {}", unpack_source_root.display()))?;
+    }
     let result = package_native_tpp_versioned(
         &asset_root,
         &package_root,
@@ -18501,6 +18570,13 @@ fn build_tpp_package_node(
         region,
         version_label,
         version_label,
+    )?;
+    prepare_package_unpack_source_root(
+        std::slice::from_ref(&zip_path),
+        &asset_root,
+        &package_root,
+        &unpack_source_root,
+        &["thumbnails/"],
     )?;
     let outputs = BTreeMap::from([
         (
@@ -18510,6 +18586,10 @@ fn build_tpp_package_node(
         (
             "package_root".to_string(),
             relative_artifact_path(&package_root, &config.build_root),
+        ),
+        (
+            "unpack_source_root".to_string(),
+            relative_artifact_path(&unpack_source_root, &config.build_root),
         ),
         (
             "package_outputs".to_string(),
@@ -18543,6 +18623,7 @@ fn build_tpp_package_node(
             package_outputs_path,
             asset_root,
             package_root,
+            unpack_source_root,
             source_urls_path: Some(source_urls_path.to_path_buf()),
         },
     ))
@@ -20170,10 +20251,91 @@ mod tests {
     }
 
     #[test]
-    fn cycle_bundle_package_resolution_uses_asset_roots_for_unpack_sources() {
+    fn package_unpack_source_root_mirrors_package_member_namespace() {
+        use zip::{write::SimpleFileOptions, ZipWriter};
+
         let temp = tempdir().expect("tempdir");
         let asset_root = temp.path().join("assets");
         let package_root = temp.path().join("packages");
+        let unpack_source_root = temp.path().join("unpack-source");
+        fs::create_dir_all(asset_root.join("afd/01A")).expect("create asset dir");
+        fs::create_dir_all(&package_root).expect("create package dir");
+        fs::write(
+            package_root.join("AK_CSUP_2605.manifest"),
+            b"generated manifest",
+        )
+        .expect("write manifest");
+        fs::write(
+            package_root.join("package-assets.json"),
+            b"generated package metadata",
+        )
+        .expect("write package metadata");
+        fs::create_dir_all(package_root.join("thumbnails/plates/BKH"))
+            .expect("create generated thumbnail dir");
+        fs::write(
+            package_root.join("thumbnails/plates/BKH/APD-HI-AIRPORT DIAGRAM.png"),
+            b"generated thumbnail",
+        )
+        .expect("write generated thumbnail");
+        fs::write(asset_root.join("afd/01A/CSUP-AK_0.png"), b"source image").expect("write image");
+
+        let zip_path = package_root.join("AK_CSUP_2605.zip");
+        let file = File::create(&zip_path).expect("create zip");
+        let mut zip = ZipWriter::new(file);
+        zip.start_file("AK_CSUP_2605.manifest", SimpleFileOptions::default())
+            .expect("start manifest");
+        zip.write_all(b"zip manifest").expect("write manifest");
+        zip.start_file("package-assets.json", SimpleFileOptions::default())
+            .expect("start package metadata");
+        zip.write_all(b"zip package metadata")
+            .expect("write package metadata");
+        zip.start_file(
+            "thumbnails/plates/BKH/APD-HI-AIRPORT DIAGRAM.png",
+            SimpleFileOptions::default(),
+        )
+        .expect("start generated thumbnail");
+        zip.write_all(b"zip generated thumbnail")
+            .expect("write generated thumbnail");
+        zip.start_file("afd/01A/CSUP-AK_0.png", SimpleFileOptions::default())
+            .expect("start image");
+        zip.write_all(b"zip image").expect("write image");
+        zip.finish().expect("finish zip");
+
+        prepare_package_unpack_source_root(
+            &[zip_path],
+            &asset_root,
+            &package_root,
+            &unpack_source_root,
+            &["thumbnails/"],
+        )
+        .expect("prepare unpack source root");
+
+        assert_eq!(
+            fs::read(unpack_source_root.join("AK_CSUP_2605.manifest")).expect("read manifest"),
+            b"generated manifest"
+        );
+        assert_eq!(
+            fs::read(unpack_source_root.join("package-assets.json"))
+                .expect("read package metadata"),
+            b"generated package metadata"
+        );
+        assert_eq!(
+            fs::read(unpack_source_root.join("thumbnails/plates/BKH/APD-HI-AIRPORT DIAGRAM.png"))
+                .expect("read generated thumbnail"),
+            b"generated thumbnail"
+        );
+        assert_eq!(
+            fs::read(unpack_source_root.join("afd/01A/CSUP-AK_0.png")).expect("read image"),
+            b"source image"
+        );
+    }
+
+    #[test]
+    fn cycle_bundle_package_resolution_uses_declared_unpack_source_root() {
+        let temp = tempdir().expect("tempdir");
+        let asset_root = temp.path().join("assets");
+        let package_root = temp.path().join("packages");
+        let unpack_source_root = temp.path().join("unpack-source");
         let package_outputs_path = package_root.join("package_outputs.jsonl");
 
         let mut task_values = BTreeMap::new();
@@ -20184,6 +20346,7 @@ mod tests {
                 package_outputs_path: package_outputs_path.clone(),
                 asset_root: asset_root.clone(),
                 package_root: package_root.clone(),
+                unpack_source_root: unpack_source_root.clone(),
                 source_urls_path: None,
             }),
         );
@@ -20193,6 +20356,7 @@ mod tests {
                 package_outputs_path: package_outputs_path.clone(),
                 asset_root: asset_root.clone(),
                 package_root: package_root.clone(),
+                unpack_source_root: unpack_source_root.clone(),
                 source_urls_path: None,
             }),
         );
@@ -20202,7 +20366,8 @@ mod tests {
                 source: AssetSource {
                     package_outputs_path,
                     asset_root: asset_root.clone(),
-                    package_root,
+                    package_root: package_root.clone(),
+                    unpack_source_root: unpack_source_root.clone(),
                     source_urls_path: None,
                 },
                 fingerprint: "tpp-fingerprint".to_string(),
@@ -20215,8 +20380,10 @@ mod tests {
             bundle_package("tpp", Some("ak")),
         ] {
             let resolved =
-                resolve_cycle_bundle_package_root(&task_values, "2605", &package).unwrap();
-            assert_eq!(resolved.as_deref(), Some(asset_root.as_path()));
+                resolve_cycle_bundle_package_unpack_source_root(&task_values, "2605", &package)
+                    .unwrap()
+                    .expect("package root");
+            assert_eq!(resolved, unpack_source_root);
         }
     }
 

@@ -319,7 +319,16 @@ def read_diagnostics_state(state: BuildState) -> DiagnosticsState:
             color="yellow",
         )
 
-    diagnostics_path = current_artifacts_path.parent / filename
+    diagnostics_path = diagnostics_manifest_path(current_artifacts_path, current, filename)
+    if diagnostics_path is None:
+        return DiagnosticsState(
+            status="invalid",
+            text=(
+                "diagnostics: invalid packaged artifact root in "
+                f"{current_artifacts_path.name}"
+            ),
+            color="yellow",
+        )
     try:
         payload = json.loads(diagnostics_path.read_text(encoding="utf-8"))
     except OSError as exc:
@@ -345,14 +354,43 @@ def read_diagnostics_state(state: BuildState) -> DiagnosticsState:
 
 
 def latest_current_artifacts_path(build_root: Path) -> Path | None:
-    latest_alias = build_root / "current_artifacts.json"
+    latest_alias = publication_root_for_packaged_root(build_root) / "current_artifacts.json"
     if latest_alias.is_file():
         return latest_alias
     try:
-        candidates = sorted(build_root.glob("current_artifacts_*T*.json"))
+        candidates = sorted(
+            publication_root_for_packaged_root(build_root).glob("current_artifacts_*T*.json")
+        )
     except OSError:
         return None
     return candidates[-1] if candidates else None
+
+
+def publication_root_for_packaged_root(packaged_root: Path) -> Path:
+    if packaged_root.name == "published_packaged":
+        return packaged_root.parent
+    return packaged_root
+
+
+def diagnostics_manifest_path(
+    current_artifacts_path: Path, current: dict, filename: str
+) -> Path | None:
+    roots = current.get("artifact_roots")
+    if not isinstance(roots, dict):
+        return None
+    packaged = roots.get("packaged")
+    if not isinstance(packaged, str) or not packaged:
+        return None
+    packaged_path = Path(packaged)
+    filename_path = Path(filename)
+    if (
+        packaged_path.is_absolute()
+        or filename_path.is_absolute()
+        or ".." in packaged_path.parts
+        or ".." in filename_path.parts
+    ):
+        return None
+    return current_artifacts_path.parent / packaged_path / filename_path
 
 
 def diagnostics_from_count(error_count: int, source: str) -> DiagnosticsState:

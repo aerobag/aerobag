@@ -915,7 +915,7 @@ pub fn nav_db_open_controller_finish_json(handle: u64) -> Result<String, String>
         .remove(&(handle as u32))
         .ok_or_else(|| format!("invalid nav db open controller handle: {handle}"))?;
     let outcome = controller.step()?;
-    let app_core::HadOperationOutcome::Complete { result } = outcome else {
+    let app_core::HadOperationOutcome::Complete { result, .. } = outcome else {
         return Err("nav db open controller is not complete".to_string());
     };
     let open_result: app_core::NavDbOpenResult =

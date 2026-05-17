@@ -91,7 +91,7 @@ impl PublicationResolver {
                 })
                 .collect::<Result<Vec<_>, String>>()?;
         let result = serde_json::to_value(candidates).map_err(|err| err.to_string())?;
-        Ok(HadOperationOutcome::Complete { result })
+        Ok(HadOperationOutcome::complete(result))
     }
 
     pub fn package_resource_requests(

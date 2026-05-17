@@ -124,14 +124,14 @@ impl NavDbOpenController {
         for (index, candidate) in self.candidates.iter().enumerate() {
             match &self.statuses[index] {
                 Some(status) if status.readable => {
-                    return Ok(HadOperationOutcome::Complete {
-                        result: serde_json::to_value(NavDbOpenResult {
+                    return Ok(HadOperationOutcome::complete(
+                        serde_json::to_value(NavDbOpenResult {
                             selected_package_id: candidate.package_id.clone(),
                             selected_filename: candidate.filename.clone(),
                             statuses: self.statuses.iter().filter_map(Clone::clone).collect(),
                         })
                         .map_err(|err| err.to_string())?,
-                    });
+                    ));
                 }
                 Some(_) => continue,
                 None => {

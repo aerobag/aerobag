@@ -127,8 +127,8 @@ pub fn nav_db_open_controller_create(candidates_json: &str) -> Result<u32, JsVal
 
 #[wasm_bindgen]
 pub fn nav_db_open_controller_step(handle: u32) -> Result<String, JsValue> {
-    let controllers = lock_nav_db_open_controllers();
-    let controller = controllers.get(&handle).ok_or_else(|| {
+    let mut controllers = lock_nav_db_open_controllers();
+    let controller = controllers.get_mut(&handle).ok_or_else(|| {
         JsValue::from_str(&format!("invalid nav db open controller handle: {handle}"))
     })?;
     serde_json::to_string(&controller.step().map_err(|err| JsValue::from_str(&err))?)
@@ -159,11 +159,11 @@ pub fn nav_db_open_controller_finish(handle: u32) -> Result<String, JsValue> {
     }
 
     let mut controllers = lock_nav_db_open_controllers();
-    let controller = controllers.remove(&handle).ok_or_else(|| {
+    let mut controller = controllers.remove(&handle).ok_or_else(|| {
         JsValue::from_str(&format!("invalid nav db open controller handle: {handle}"))
     })?;
     let outcome = controller.step().map_err(|err| JsValue::from_str(&err))?;
-    let app_core::HadOperationOutcome::Complete { result } = outcome else {
+    let app_core::HadOperationOutcome::Complete { result, .. } = outcome else {
         return Err(JsValue::from_str("nav db open controller is not complete"));
     };
     let open_result: app_core::NavDbOpenResult =

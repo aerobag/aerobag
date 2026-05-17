@@ -9875,7 +9875,7 @@ fn sync_cycle_bundle_unpacked_zips(
                 continue;
             }
         }
-        let package_root = if let Some(task_values) = task_values {
+        let source_root = if let Some(task_values) = task_values {
             resolve_cycle_bundle_package_root(task_values, &bundle_manifest.cycle, package)?
         } else {
             resolve_cycle_bundle_package_root_from_build_manifest(
@@ -9889,7 +9889,7 @@ fn sync_cycle_bundle_unpacked_zips(
         .with_context(|| format!("failed to resolve source root for package {}", package.id))?;
         sync_unpacked_zip_from_source(
             &config.build_root.join(&package.filename),
-            &package_root,
+            &source_root,
             unpacked_root,
             &package.filename,
             Some(&package.checksum_sha256),
@@ -9929,24 +9929,10 @@ fn resolve_cycle_bundle_package_root_from_build_manifest(
         Some(record) => record,
         None => return Ok(None),
     };
-    let root = match package.family_id.as_str() {
-        "tpp" => record
-            .outputs
-            .get("package_root")
-            .map(|path| resolve_artifact_path(config, path))
-            .or_else(|| {
-                record
-                    .outputs
-                    .get("zip")
-                    .map(|path| resolve_artifact_path(config, path))
-                    .and_then(|path| path.parent().map(Path::to_path_buf))
-            }),
-        _ => record
-            .outputs
-            .get("zip")
-            .map(|path| resolve_artifact_path(config, path))
-            .and_then(|path| path.parent().map(Path::to_path_buf)),
-    };
+    let root = record
+        .outputs
+        .get("asset_root")
+        .map(|path| resolve_artifact_path(config, path));
     Ok(root)
 }
 
@@ -9979,11 +9965,9 @@ fn resolve_cycle_bundle_package_root(
     };
 
     let root = match task_values.get(&task_id) {
-        Some(ProductTaskValue::ChartSource(source)) => source.package_root.clone(),
-        Some(ProductTaskValue::CsupSource(source)) => source.package_root.clone(),
-        Some(ProductTaskValue::FingerprintedTppSource { source, .. }) => {
-            source.package_root.clone()
-        }
+        Some(ProductTaskValue::ChartSource(source)) => source.asset_root.clone(),
+        Some(ProductTaskValue::CsupSource(source)) => source.asset_root.clone(),
+        Some(ProductTaskValue::FingerprintedTppSource { source, .. }) => source.asset_root.clone(),
         _ => return Ok(None),
     };
     Ok(Some(root))
@@ -17177,6 +17161,10 @@ fn build_chart_package_nodes(
             "render_fingerprint".to_string(),
             render_record.fingerprint.clone(),
         ),
+        (
+            "package_node_contract".to_string(),
+            "asset-root-source-v1".to_string(),
+        ),
         ("version_label".to_string(), version_label.to_string()),
         (
             "chart_package_lib".to_string(),
@@ -17259,6 +17247,10 @@ fn build_chart_package_nodes(
             write_package_outputs_jsonl(&package_root, &package_records)?;
             let outputs = BTreeMap::from([
                 (
+                    "asset_root".to_string(),
+                    relative_artifact_path(&work_dir, &config.build_root),
+                ),
+                (
                     "package_root".to_string(),
                     relative_artifact_path(&package_root, &config.build_root),
                 ),
@@ -17285,7 +17277,7 @@ fn build_chart_package_nodes(
         ChartSource {
             family_id,
             package_outputs_path: aggregate_path,
-            asset_root: package_root.clone(),
+            asset_root: work_dir,
             package_root,
             source_urls_path: Some(source_urls_path),
         },
@@ -17480,6 +17472,10 @@ fn build_csup_package_nodes(
             "stage_fingerprint".to_string(),
             stage_record.fingerprint.clone(),
         ),
+        (
+            "package_node_contract".to_string(),
+            "asset-root-source-v1".to_string(),
+        ),
         ("version_label".to_string(), version_label.to_string()),
         (
             "csup_package".to_string(),
@@ -17563,6 +17559,10 @@ fn build_csup_package_nodes(
             }
             write_package_outputs_jsonl(&package_root, &package_records)?;
             let outputs = BTreeMap::from([
+                (
+                    "asset_root".to_string(),
+                    relative_artifact_path(&work_dir, &config.build_root),
+                ),
                 (
                     "package_root".to_string(),
                     relative_artifact_path(&package_root, &config.build_root),
@@ -17669,6 +17669,10 @@ fn build_tpp_package_node(
         (
             "render_fingerprint".to_string(),
             render_record.fingerprint.clone(),
+        ),
+        (
+            "package_node_contract".to_string(),
+            "asset-root-source-v1".to_string(),
         ),
         ("region".to_string(), region.code().to_string()),
         ("version_label".to_string(), version_label.to_string()),
@@ -19380,6 +19384,78 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, lines.join("\n") + "\n").unwrap();
+    }
+
+    fn bundle_package(family_id: &str, region_id: Option<&str>) -> BundlePackageArtifact {
+        BundlePackageArtifact {
+            id: format!("{}_2605_01", family_id.to_ascii_uppercase()),
+            family_id: family_id.to_string(),
+            region_id: region_id.map(str::to_string),
+            filename: format!("{family_id}_2605_01_deadbeef.zip"),
+            relative_path: format!("{family_id}_2605_01_deadbeef.zip"),
+            cycle: Some("2605".to_string()),
+            cycle_version: Some(PACKAGE_CYCLE_VERSION.to_string()),
+            checksum_sha256: "deadbeef".to_string(),
+            size_bytes: 123,
+            published_at_utc: None,
+            source_generated_at_utc: None,
+            source_version: None,
+            source_fetched_at_utc: None,
+            effective_date: Some("2026-05-14".to_string()),
+            expiration_date: Some("2026-06-11".to_string()),
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn cycle_bundle_package_resolution_uses_asset_roots_for_unpack_sources() {
+        let temp = tempdir().expect("tempdir");
+        let asset_root = temp.path().join("assets");
+        let package_root = temp.path().join("packages");
+        let package_outputs_path = package_root.join("package_outputs.jsonl");
+
+        let mut task_values = BTreeMap::new();
+        task_values.insert(
+            "2605:charts-sec-package".to_string(),
+            ProductTaskValue::ChartSource(ChartSource {
+                family_id: "sec".to_string(),
+                package_outputs_path: package_outputs_path.clone(),
+                asset_root: asset_root.clone(),
+                package_root: package_root.clone(),
+                source_urls_path: None,
+            }),
+        );
+        task_values.insert(
+            "2605:csup-package".to_string(),
+            ProductTaskValue::CsupSource(AssetSource {
+                package_outputs_path: package_outputs_path.clone(),
+                asset_root: asset_root.clone(),
+                package_root: package_root.clone(),
+                source_urls_path: None,
+            }),
+        );
+        task_values.insert(
+            "2605:tpp-ak-package".to_string(),
+            ProductTaskValue::FingerprintedTppSource {
+                source: AssetSource {
+                    package_outputs_path,
+                    asset_root: asset_root.clone(),
+                    package_root,
+                    source_urls_path: None,
+                },
+                fingerprint: "tpp-fingerprint".to_string(),
+            },
+        );
+
+        for package in [
+            bundle_package("sec", Some("nw")),
+            bundle_package("csup", Some("ak")),
+            bundle_package("tpp", Some("ak")),
+        ] {
+            let resolved =
+                resolve_cycle_bundle_package_root(&task_values, "2605", &package).unwrap();
+            assert_eq!(resolved.as_deref(), Some(asset_root.as_path()));
+        }
     }
 
     fn minimal_resource_index() -> ResourceIndex {

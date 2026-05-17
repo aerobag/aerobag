@@ -156,6 +156,7 @@ pub struct NexradOverlayStats {
     pub max_level_pixel_stretch_px: f64,
     pub max_stack_depth: usize,
     pub res: Option<u32>,
+    pub observed_at_utc: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2851,6 +2852,7 @@ pub fn get_nexrad_overlay_in_session(
 #[derive(Debug, Deserialize)]
 struct NexradSourceGridManifest {
     state_id: String,
+    observed_at_utc: Option<String>,
     source_grid: NexradSourceGrid,
     levels: Vec<NexradSourceGridLevel>,
     tile_size: u32,
@@ -2904,6 +2906,7 @@ fn nexrad_overlay_query(
     let viewport_bounds = viewport_lat_lon_bounds(viewport, width_px, height_px);
     let [origin_lon, pixel_lon, _rot_x, origin_lat, _rot_y, pixel_lat] =
         manifest.source_grid.geo_transform;
+    let observed_at_utc = manifest.observed_at_utc.clone();
     if pixel_lon == 0.0 || pixel_lat == 0.0 {
         return Ok(NexradOverlayQueryResult {
             status: NexradOverlayStatus::Unavailable {
@@ -2970,6 +2973,7 @@ fn nexrad_overlay_query(
         ),
         max_level_pixel_stretch_px: NEXRAD_MAX_LEVEL_PIXEL_STRETCH_PX,
         res: Some(level.res),
+        observed_at_utc,
         ..NexradOverlayStats::default()
     };
     for y in y_start..=y_end {

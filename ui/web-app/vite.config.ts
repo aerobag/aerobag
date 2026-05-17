@@ -22,6 +22,7 @@ const adsbTraceRoot = path.resolve(repoRoot, "..", "adsb-traces");
 const liveFeedsRoot = process.env.AEROBAG_LIVE_FEEDS_ROOT
   ? path.resolve(process.env.AEROBAG_LIVE_FEEDS_ROOT)
   : path.resolve(repoRoot, "..", "live-feeds");
+const liveFeedEventIntervalMs = Number.parseInt(process.env.AEROBAG_LIVE_FEED_EVENT_INTERVAL_MS ?? "5000", 10);
 const sharedRoot = path.join(repoRoot, "ui", "shared");
 const sharedFixturesRoot = path.join(repoRoot, "ui", "shared-fixtures");
 const debugLogPath = path.join("/tmp", "aerobag-web-debug.log");
@@ -142,6 +143,15 @@ type LiveFeedSseEvent = {
   state_sha256: string;
 };
 
+type LiveFeedVersionManifest = {
+  product?: string;
+  version?: string;
+  state?: {
+    url?: string;
+    state_sha256?: string;
+  };
+};
+
 function readJsonFile<T>(filePath: string): T | null {
   try {
     return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
@@ -150,7 +160,48 @@ function readJsonFile<T>(filePath: string): T | null {
   }
 }
 
+function listLiveFeedVersionEvents(root: string): LiveFeedSseEvent[] {
+  const versionsRoot = path.join(root, "versions");
+  if (!fs.existsSync(versionsRoot) || !fs.statSync(versionsRoot).isDirectory()) {
+    return [];
+  }
+  const events: LiveFeedSseEvent[] = [];
+  for (const product of fs.readdirSync(versionsRoot).sort()) {
+    const productRoot = path.join(versionsRoot, product);
+    if (!fs.statSync(productRoot).isDirectory()) {
+      continue;
+    }
+    for (const fileName of fs.readdirSync(productRoot).sort()) {
+      if (!fileName.endsWith(".json")) {
+        continue;
+      }
+      const versionManifestPath = path.join(productRoot, fileName);
+      const manifest = readJsonFile<LiveFeedVersionManifest>(versionManifestPath);
+      const manifestProduct = manifest?.product ?? product;
+      const version = manifest?.version ?? fileName.replace(/\.json$/, "");
+      const stateUrl = manifest?.state?.url;
+      const stateSha256 = manifest?.state?.state_sha256;
+      if (!stateUrl || !stateSha256) {
+        continue;
+      }
+      events.push({
+        id: `${manifestProduct}:${version}`,
+        product: manifestProduct,
+        version,
+        version_manifest_url: `versions/${manifestProduct}/${fileName}`,
+        state_url: stateUrl,
+        state_sha256: stateSha256,
+      });
+    }
+  }
+  return events.sort((a, b) => a.id.localeCompare(b.id));
+}
+
 function listLiveFeedSseEvents(root: string): LiveFeedSseEvent[] {
+  const versionEvents = listLiveFeedVersionEvents(root);
+  if (versionEvents.length > 0) {
+    return versionEvents;
+  }
   const current = readJsonFile<LiveFeedCurrentManifest>(path.join(root, "current.json"));
   const events: LiveFeedSseEvent[] = [];
   for (const [product, entry] of Object.entries(current?.products ?? {})) {
@@ -192,7 +243,7 @@ function installLiveFeedFixtureServer(server: { middlewares: { use: (...args: un
       res.write(`data: ${JSON.stringify({ schema_version: 1, ...event })}\n\n`);
     };
     writeNext();
-    const interval = setInterval(writeNext, 2000);
+    const interval = setInterval(writeNext, Number.isFinite(liveFeedEventIntervalMs) ? liveFeedEventIntervalMs : 5000);
     res.on("close", () => {
       clearInterval(interval);
       appendRequestLog({ kind: "live_feeds.events.close" });

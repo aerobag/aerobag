@@ -50,6 +50,8 @@ WORKSPACE_DIR="$UI_TARGET_ROOT/web/workspace"
 list_dev_roots() {
   ps -eo pid=,args= | awk -v port="$PORT" '
     index($0, "run-target-workspace.sh") && index($0, "--port " port) && index($0, "vite") { print $1 }
+    index($0, "npm run inner:dev") && index($0, "--port " port) { print $1 }
+    index($0, "sh -c npm run generate:symbols") && index($0, "--port " port) { print $1 }
   '
 }
 
@@ -57,6 +59,10 @@ list_workspace_pids() {
   ps -eo pid=,args= | awk -v workspace="$WORKSPACE_DIR" '
     index($0, workspace "/node_modules/.bin/vite") || index($0, workspace "/node_modules/@esbuild/") { print $1 }
   '
+}
+
+list_port_listener_pids() {
+  lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true
 }
 
 kill_tree() {
@@ -76,7 +82,7 @@ wait_for_shutdown() {
   while [ "$attempts" -gt 0 ]; do
     remaining_roots="$(list_dev_roots || true)"
     remaining_workspace="$(list_workspace_pids || true)"
-    listeners="$(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)"
+    listeners="$(list_port_listener_pids)"
     if [ -z "$remaining_roots" ] && [ -z "$remaining_workspace" ] && [ -z "$listeners" ]; then
       return 0
     fi
@@ -103,6 +109,11 @@ while read -r pid; do
   [ -n "$pid" ] || continue
   kill "$pid" 2>/dev/null || true
 done < <(list_workspace_pids || true)
+
+while read -r pid; do
+  [ -n "$pid" ] || continue
+  kill_tree "$pid"
+done < <(list_port_listener_pids)
 
 wait_for_shutdown
 

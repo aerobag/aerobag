@@ -435,6 +435,7 @@ export type NexradOverlayQueryResult = {
     max_level_pixel_stretch_px: number;
     max_stack_depth: number;
     res?: number | null;
+    observed_at_utc?: string | null;
   };
 };
 

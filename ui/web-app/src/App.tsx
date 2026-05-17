@@ -1192,6 +1192,7 @@ function emptyNexradOverlayStats(): NexradOverlayQueryResult["stats"] {
     max_level_pixel_stretch_px: 0,
     max_stack_depth: 0,
     res: null,
+    observed_at_utc: null,
   };
 }
 
@@ -2443,6 +2444,7 @@ function MapPage(props: {
     tiles: [],
     stats: emptyNexradOverlayStats(),
   });
+  const [nexradTransferSamples, setNexradTransferSamples] = useState<Array<{ atMs: number; bytes: number }>>([]);
   const [nexradOverlayViewport, setNexradOverlayViewport] = useState<MapViewportState | null>(null);
   const [terrainOverlay, setTerrainOverlay] = useState<TerrainOverlayUiState>({ query: null, images: [] });
   const terrainTileCacheRef = useRef<Map<string, TerrainTileCacheEntry>>(new Map());
@@ -2909,6 +2911,58 @@ function MapPage(props: {
       cancelled = true;
     };
   }, [debugState.nexrad_tile_labels, mapIsVisible, mapLayerState.nexrad.visible, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
+
+  useEffect(() => {
+    if (typeof PerformanceObserver === "undefined") {
+      return;
+    }
+    const observer = new PerformanceObserver((list) => {
+      const samples: Array<{ atMs: number; bytes: number }> = [];
+      for (const entry of list.getEntries()) {
+        if (!(entry instanceof PerformanceResourceTiming)) {
+          continue;
+        }
+        if (!entry.name.includes("/live-feeds/states/nexrad/") || !entry.name.endsWith(".png")) {
+          continue;
+        }
+        const bytes = entry.transferSize || entry.encodedBodySize || entry.decodedBodySize || 0;
+        if (bytes <= 0) {
+          continue;
+        }
+        samples.push({ atMs: Date.now(), bytes });
+      }
+      if (samples.length === 0) {
+        return;
+      }
+      setNexradTransferSamples((current) => {
+        const cutoff = Date.now() - 60_000;
+        return [...current, ...samples].filter((sample) => sample.atMs >= cutoff);
+      });
+    });
+    observer.observe({ type: "resource", buffered: true });
+    return () => observer.disconnect();
+  }, []);
+
+  const nexradDebugLines = useMemo(() => {
+    const lines: string[] = [];
+    const observedAt = nexradOverlay.stats.observed_at_utc;
+    if (observedAt) {
+      const observedAtMs = Date.parse(observedAt);
+      if (Number.isFinite(observedAtMs)) {
+        lines.push(`NEXRAD age: ${formatUptimeMs(Date.now() - observedAtMs)}`);
+      } else {
+        lines.push(`NEXRAD age: ${observedAt}`);
+      }
+    } else {
+      lines.push("NEXRAD age: n/a");
+    }
+    const cutoff = Date.now() - 60_000;
+    const recentBytes = nexradTransferSamples
+      .filter((sample) => sample.atMs >= cutoff)
+      .reduce((sum, sample) => sum + sample.bytes, 0);
+    lines.push(`NEXRAD fetch: ${formatMegabytesPerSecond(recentBytes / 60)}`);
+    return lines;
+  }, [nexradOverlay.stats.observed_at_utc, nexradTransferSamples, uptimeLabel]);
 
   useEffect(() => {
     debugLog("map.nav_element.render", {
@@ -4362,6 +4416,7 @@ function MapPage(props: {
                 uptimeLabel={uptimeLabel}
                 debugState={debugState}
                 onDebugFlagChange={onDebugFlagChange}
+                extraLines={nexradDebugLines}
               />
             </DebugDock>
           </div>
@@ -7258,6 +7313,7 @@ function CommonDebugPanel(props: {
   uptimeLabel: string;
   debugState: UiDebugState;
   onDebugFlagChange: (flagId: DebugFlagId, enabled: boolean) => void;
+  extraLines?: string[];
 }) {
   const flags: Array<{ id: DebugFlagId; label: string }> = [
     { id: "tile_labels", label: "tile labels" },
@@ -7270,6 +7326,9 @@ function CommonDebugPanel(props: {
   return (
     <>
       <div className="debugLine">up: {props.uptimeLabel}</div>
+      {(props.extraLines ?? []).map((line) => (
+        <div key={line} className="debugLine">{line}</div>
+      ))}
       {flags.map((flag) => (
         <label key={flag.id} className="debugToggle">
           <input
@@ -7415,6 +7474,10 @@ function formatUptimeMs(elapsedMs: number) {
     return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   }
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatMegabytesPerSecond(bytesPerSecond: number) {
+  return `${(bytesPerSecond / (1024 * 1024)).toFixed(3)} MiB/s`;
 }
 
 function moveAirportToFront(

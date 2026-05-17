@@ -306,12 +306,12 @@ interface NativeBridge {
         heightPx: Double,
     ): String
 
-    fun getMapOverlayInSessionWithPointLabelScaleJson(
+    fun getMapOverlayInSessionWithPointDisplayScaleJson(
         handle: Long,
         viewportJson: String,
         widthPx: Double,
         heightPx: Double,
-        pointLabelScale: Double,
+        pointDisplayScale: Double,
     ): String
 
     fun getMapSelectionInSessionJson(
@@ -321,6 +321,16 @@ interface NativeBridge {
         heightPx: Double,
         clickJson: String,
         hitRadiusPx: Double,
+    ): String
+
+    fun getMapSelectionInSessionWithPointDisplayScaleJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+        clickJson: String,
+        hitRadiusPx: Double,
+        pointDisplayScale: Double,
     ): String
 
     fun getTerrainOverlayInSessionJson(
@@ -375,7 +385,10 @@ interface NativeBridge {
 object NativeBindings : NativeBridge {
     init {
         System.loadLibrary("app_ffi")
+        installCoreDebugLogger()
     }
+
+    private external fun installCoreDebugLogger()
 
     external override fun createOfflinePackagesController(packagesStateJson: String): Long
 
@@ -682,12 +695,12 @@ object NativeBindings : NativeBridge {
         heightPx: Double,
     ): String
 
-    external override fun getMapOverlayInSessionWithPointLabelScaleJson(
+    external override fun getMapOverlayInSessionWithPointDisplayScaleJson(
         handle: Long,
         viewportJson: String,
         widthPx: Double,
         heightPx: Double,
-        pointLabelScale: Double,
+        pointDisplayScale: Double,
     ): String
 
     external override fun getMapSelectionInSessionJson(
@@ -697,6 +710,16 @@ object NativeBindings : NativeBridge {
         heightPx: Double,
         clickJson: String,
         hitRadiusPx: Double,
+    ): String
+
+    external override fun getMapSelectionInSessionWithPointDisplayScaleJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+        clickJson: String,
+        hitRadiusPx: Double,
+        pointDisplayScale: Double,
     ): String
 
     external override fun getTerrainOverlayInSessionJson(

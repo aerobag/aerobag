@@ -1558,6 +1558,7 @@ internal fun MapExplorerPage(
                                     surfaceHeightPx.toDouble(),
                                     LatLonPoint(lat = lat, lon = lon),
                                     with(density) { (ThumbSize * 0.5f).toPx().toDouble() },
+                                    density.density.toDouble(),
                                 )
                             }.onSuccess { result ->
                                 mapSelection = MapSelectionUiState(point = point, result = result, selectedItem = null)

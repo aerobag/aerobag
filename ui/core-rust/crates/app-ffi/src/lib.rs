@@ -5,8 +5,41 @@ use jni::sys::jstring;
 use jni::JNIEnv;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
+#[cfg(target_os = "android")]
+use std::ffi::CString;
+#[cfg(target_os = "android")]
+use std::os::raw::{c_char, c_int};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
+
+#[cfg(target_os = "android")]
+const ANDROID_LOG_INFO: c_int = 4;
+
+#[cfg(target_os = "android")]
+#[link(name = "log")]
+unsafe extern "C" {
+    fn __android_log_write(prio: c_int, tag: *const c_char, text: *const c_char) -> c_int;
+}
+
+pub fn install_core_debug_logger() {
+    app_core::set_core_debug_logger(Some(log_core_debug));
+}
+
+#[cfg(target_os = "android")]
+fn log_core_debug(tag: &str, data: &serde_json::Value) {
+    let Ok(tag) = CString::new(tag) else {
+        return;
+    };
+    let Ok(text) = CString::new(data.to_string()) else {
+        return;
+    };
+    unsafe {
+        let _ = __android_log_write(ANDROID_LOG_INFO, tag.as_ptr(), text.as_ptr());
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn log_core_debug(_tag: &str, _data: &serde_json::Value) {}
 
 pub fn build_flight_plan_json(plan_json: &str) -> Result<String, String> {
     let plan: app_core::FlightPlan =
@@ -654,7 +687,7 @@ pub fn get_map_overlay_in_session_json(
     width_px: f64,
     height_px: f64,
 ) -> Result<String, String> {
-    get_map_overlay_in_session_with_point_label_scale_json(
+    get_map_overlay_in_session_with_point_display_scale_json(
         handle,
         viewport_json,
         width_px,
@@ -663,21 +696,21 @@ pub fn get_map_overlay_in_session_json(
     )
 }
 
-pub fn get_map_overlay_in_session_with_point_label_scale_json(
+pub fn get_map_overlay_in_session_with_point_display_scale_json(
     handle: u64,
     viewport_json: &str,
     width_px: f64,
     height_px: f64,
-    point_label_scale: f64,
+    point_display_scale: f64,
 ) -> Result<String, String> {
     let viewport: app_core::MapViewport =
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
-    let overlay = app_core::get_map_overlay_in_session_with_point_label_scale(
+    let overlay = app_core::get_map_overlay_in_session_with_point_display_scale(
         handle as u32,
         viewport,
         width_px,
         height_px,
-        point_label_scale,
+        point_display_scale,
     )
     .map_err(|err| err.to_string())?;
     serde_json::to_string(&overlay).map_err(|err| err.to_string())
@@ -691,17 +724,38 @@ pub fn get_map_selection_in_session_json(
     click_json: &str,
     hit_radius_px: f64,
 ) -> Result<String, String> {
+    get_map_selection_in_session_with_point_display_scale_json(
+        handle,
+        viewport_json,
+        width_px,
+        height_px,
+        click_json,
+        hit_radius_px,
+        1.0,
+    )
+}
+
+pub fn get_map_selection_in_session_with_point_display_scale_json(
+    handle: u64,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+    click_json: &str,
+    hit_radius_px: f64,
+    point_display_scale: f64,
+) -> Result<String, String> {
     let viewport: app_core::MapViewport =
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
     let click: app_core::LatLon =
         serde_json::from_str(click_json).map_err(|err| err.to_string())?;
-    let selection = app_core::get_map_selection_in_session(
+    let selection = app_core::get_map_selection_in_session_with_point_display_scale(
         handle as u32,
         viewport,
         width_px,
         height_px,
         click,
         hit_radius_px,
+        point_display_scale,
     )
     .map_err(|err| err.to_string())?;
     serde_json::to_string(&selection).map_err(|err| err.to_string())
@@ -1316,6 +1370,14 @@ fn return_byte_array(env: &mut JNIEnv, value: Result<Vec<u8>, String>) -> jbyteA
             std::ptr::null_mut()
         }
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_installCoreDebugLogger(
+    _env: JNIEnv,
+    _class: JClass,
+) {
+    install_core_debug_logger();
 }
 
 #[unsafe(no_mangle)]
@@ -2211,23 +2273,23 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getMapOverlayInSessionWithPointLabelScaleJson(
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getMapOverlayInSessionWithPointDisplayScaleJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
     viewport_json: JString,
     width_px: f64,
     height_px: f64,
-    point_label_scale: f64,
+    point_display_scale: f64,
 ) -> jstring {
     let result = (|| {
         let viewport = get_java_string(&mut env, viewport_json)?;
-        get_map_overlay_in_session_with_point_label_scale_json(
+        get_map_overlay_in_session_with_point_display_scale_json(
             handle as u64,
             &viewport,
             width_px,
             height_px,
-            point_label_scale,
+            point_display_scale,
         )
     })();
     return_string(&mut env, result)
@@ -2254,6 +2316,34 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
             height_px,
             &click,
             hit_radius_px,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getMapSelectionInSessionWithPointDisplayScaleJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    viewport_json: JString,
+    width_px: f64,
+    height_px: f64,
+    click_json: JString,
+    hit_radius_px: f64,
+    point_display_scale: f64,
+) -> jstring {
+    let result = (|| {
+        let viewport = get_java_string(&mut env, viewport_json)?;
+        let click = get_java_string(&mut env, click_json)?;
+        get_map_selection_in_session_with_point_display_scale_json(
+            handle as u64,
+            &viewport,
+            width_px,
+            height_px,
+            &click,
+            hit_radius_px,
+            point_display_scale,
         )
     })();
     return_string(&mut env, result)

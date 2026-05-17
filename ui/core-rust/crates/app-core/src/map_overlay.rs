@@ -2,10 +2,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use airspace_geometry::{expand_airspace_path, AirspaceSegment};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::{
-    geometry::LatLon, great_circle_distance_nm, AppError, AppErrorKind, AppResult, FlightPlan,
-    FlightPlanRowActionId, MapViewport, NavRef, RouteComponentViewKind,
+    core_debug_log, geometry::LatLon, great_circle_distance_nm, AppError, AppErrorKind, AppResult,
+    FlightPlan, FlightPlanRowActionId, MapViewport, NavRef, RouteComponentViewKind,
 };
 
 pub const VECTOR_DISPLAY_FEATURE_LIMIT: usize = 500;
@@ -805,10 +806,35 @@ pub fn visible_point_tile_window(
     height_px: f64,
     obstacle_context: Option<&ObstacleOverlayContext>,
 ) -> Vec<VectorTileRequest> {
+    visible_point_tile_window_with_display_scale(
+        config,
+        viewport,
+        width_px,
+        height_px,
+        obstacle_context,
+        1.0,
+    )
+}
+
+pub fn visible_point_tile_window_with_display_scale(
+    config: &MapOverlayConfig,
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    obstacle_context: Option<&ObstacleOverlayContext>,
+    point_display_scale: f64,
+) -> Vec<VectorTileRequest> {
     dedupe_vector_tile_requests(
-        visible_point_display_tile_window(config, viewport, width_px, height_px, obstacle_context)
-            .into_iter()
-            .map(|tile| tile.request),
+        visible_point_display_tile_window(
+            config,
+            viewport,
+            width_px,
+            height_px,
+            obstacle_context,
+            point_display_scale,
+        )
+        .into_iter()
+        .map(|tile| tile.request),
     )
 }
 
@@ -818,30 +844,33 @@ fn visible_point_display_tile_window(
     width_px: f64,
     height_px: f64,
     obstacle_context: Option<&ObstacleOverlayContext>,
+    point_display_scale: f64,
 ) -> Vec<DisplayVectorTile> {
     let mut tiles = Vec::new();
-    if viewport.zoom >= AIRPORT_MIN_DISPLAY_ZOOM {
+    let effective_zoom = effective_point_display_zoom(viewport, point_display_scale);
+    let point_tile_zoom = point_vector_tile_zoom(effective_zoom);
+    if effective_zoom >= AIRPORT_MIN_DISPLAY_ZOOM {
         tiles.extend(visible_layer_display_tile_window(
             "airport",
-            POINT_TILE_ZOOM,
+            point_tile_zoom,
             viewport,
             width_px,
             height_px,
         ));
     }
-    if viewport.zoom >= FIX_MIN_DISPLAY_ZOOM {
+    if effective_zoom >= FIX_MIN_DISPLAY_ZOOM {
         tiles.extend(visible_layer_display_tile_window(
             "fix",
-            POINT_TILE_ZOOM,
+            point_tile_zoom,
             viewport,
             width_px,
             height_px,
         ));
     }
-    if viewport.zoom >= NAV_MIN_DISPLAY_ZOOM {
+    if effective_zoom >= NAV_MIN_DISPLAY_ZOOM {
         tiles.extend(visible_layer_display_tile_window(
             "nav",
-            POINT_TILE_ZOOM,
+            point_tile_zoom,
             viewport,
             width_px,
             height_px,
@@ -855,6 +884,7 @@ fn visible_point_display_tile_window(
                 width_px,
                 height_px,
                 obstacle_context,
+                point_display_scale,
             )
             .into_iter()
             .map(|request| DisplayVectorTile {
@@ -872,11 +902,13 @@ fn visible_obstacle_tile_window(
     width_px: f64,
     height_px: f64,
     obstacle_context: Option<&ObstacleOverlayContext>,
+    point_display_scale: f64,
 ) -> Vec<VectorTileRequest> {
-    if viewport.zoom < OBSTACLE_MIN_DISPLAY_ZOOM {
+    let effective_zoom = effective_point_display_zoom(viewport, point_display_scale);
+    if effective_zoom < OBSTACLE_MIN_DISPLAY_ZOOM {
         return Vec::new();
     }
-    let display_zoom = nearest_available_zoom(config, viewport.zoom.floor() as u32);
+    let display_zoom = nearest_available_zoom(config, effective_zoom.floor() as u32);
     let mut requests =
         visible_layer_tile_window("obstacle", display_zoom, viewport, width_px, height_px);
     let Some(context) = obstacle_context else {
@@ -912,6 +944,20 @@ fn visible_obstacle_tile_window(
         }
     }
     requests
+}
+
+fn effective_point_display_zoom(viewport: &MapViewport, point_display_scale: f64) -> f64 {
+    let scale = point_display_scale.max(0.1);
+    let effective_zoom = viewport.zoom - scale.log2();
+    if effective_zoom.is_finite() {
+        effective_zoom
+    } else {
+        viewport.zoom
+    }
+}
+
+fn point_vector_tile_zoom(effective_zoom: f64) -> u32 {
+    effective_zoom.floor().clamp(0.0, POINT_TILE_ZOOM as f64) as u32
 }
 
 fn nearest_available_zoom(config: &ObstacleLayerConfig, desired_zoom: u32) -> u32 {
@@ -1112,7 +1158,7 @@ pub fn query_map_overlay(
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
 ) -> MapOverlayQueryResult {
-    query_map_overlay_with_point_label_scale(
+    query_map_overlay_with_point_display_scale(
         viewport,
         width_px,
         height_px,
@@ -1130,7 +1176,7 @@ pub fn query_map_overlay(
     )
 }
 
-pub fn query_map_overlay_with_point_label_scale(
+pub fn query_map_overlay_with_point_display_scale(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
@@ -1144,7 +1190,7 @@ pub fn query_map_overlay_with_point_label_scale(
     metar_payload: Option<&MetarProductPayload>,
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
-    point_label_scale: f64,
+    point_display_scale: f64,
 ) -> MapOverlayQueryResult {
     let mut needed_vector_tiles = Vec::new();
     let mut visible_features = Vec::new();
@@ -1158,6 +1204,9 @@ pub fn query_map_overlay_with_point_label_scale(
         width_px,
         height_px,
     );
+    let point_effective_zoom = effective_point_display_zoom(viewport, point_display_scale);
+    let point_tile_zoom = point_vector_tile_zoom(point_effective_zoom);
+    let mut point_tile_count = 0_usize;
 
     if display_vectors {
         let tile_window = visible_point_display_tile_window(
@@ -1166,7 +1215,9 @@ pub fn query_map_overlay_with_point_label_scale(
             width_px,
             height_px,
             obstacle_context,
+            point_display_scale,
         );
+        point_tile_count = tile_window.len();
         let mut needed_seen = BTreeSet::new();
         for tile in tile_window {
             let key =
@@ -1241,9 +1292,12 @@ pub fn query_map_overlay_with_point_label_scale(
             scale,
             vector_tile_cache,
             airspace_feature_cache,
+            point_display_scale,
         )
     } else {
         AirspaceOverlayProjection {
+            ref_zoom: None,
+            label_zoom: None,
             needed_tiles: Vec::new(),
             needed_features: Vec::new(),
             paths: Vec::new(),
@@ -1299,14 +1353,42 @@ pub fn query_map_overlay_with_point_label_scale(
     suppress_overlapping_vector_labels(
         &mut visible_features,
         &mut airspace_labels,
-        point_label_scale,
+        point_display_scale,
+    );
+
+    let needed_vector_tiles =
+        merge_aggregate_vector_tile_requests(needed_vector_tiles, airspace.needed_tiles);
+    core_debug_log(
+        "map.overlay.core",
+        &json!({
+            "center_lat": viewport.center.lat,
+            "center_lon": viewport.center.lon,
+            "raw_zoom": viewport.zoom,
+            "width_px": width_px,
+            "height_px": height_px,
+            "display_vectors": display_vectors,
+            "display_metars": display_metars,
+            "point_display_scale": point_display_scale,
+            "point_effective_zoom": point_effective_zoom,
+            "point_tile_zoom": point_tile_zoom,
+            "point_tile_count": point_tile_count,
+            "airspace_ref_zoom": airspace.ref_zoom,
+            "airspace_label_zoom": airspace.label_zoom,
+            "needed_vector_tiles": tile_counts_by_zoom(&needed_vector_tiles),
+            "needed_metar_tiles": tile_counts_by_zoom(&metars.needed_tiles),
+            "needed_airspace_features": airspace.needed_features.len(),
+            "visible_features": visible_features.len(),
+            "visible_metars": metars.visible_metars.len(),
+            "visible_pireps": metars.visible_pireps.len(),
+            "airspace_paths": airspace.paths.len(),
+            "airspace_labels": airspace_labels.len(),
+            "tfr_paths": tfrs.paths.len(),
+            "warnings": warnings.iter().map(|warning| warning.code.as_str()).collect::<Vec<_>>(),
+        }),
     );
 
     MapOverlayQueryResult {
-        needed_vector_tiles: merge_aggregate_vector_tile_requests(
-            needed_vector_tiles,
-            airspace.needed_tiles,
-        ),
+        needed_vector_tiles,
         needed_metar_tiles: metars.needed_tiles,
         needed_airspace_features: airspace.needed_features,
         needed_metars: metars.needed_metars,
@@ -1803,6 +1885,46 @@ pub fn query_map_selection(
     flight_plan_points: &[FlightPlanSelectionPoint],
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
 ) -> MapSelectionQueryResult {
+    query_map_selection_with_point_display_scale(
+        viewport,
+        width_px,
+        height_px,
+        config,
+        plan,
+        click,
+        hit_radius_px,
+        vector_tile_cache,
+        metar_tile_cache,
+        metar_payload,
+        taf_payload,
+        offline_region_records,
+        airspace_feature_cache,
+        tfr_payload,
+        flight_plan_points,
+        airport_plate_availability,
+        1.0,
+    )
+}
+
+pub fn query_map_selection_with_point_display_scale(
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    config: &MapOverlayConfig,
+    plan: Option<&FlightPlan>,
+    click: LatLon,
+    hit_radius_px: f64,
+    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
+    metar_tile_cache: &HashMap<String, MetarTilePayload>,
+    metar_payload: Option<&MetarProductPayload>,
+    taf_payload: Option<&TafProductPayload>,
+    offline_region_records: &[OfflineRegionRecord],
+    airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
+    tfr_payload: Option<&TfrProductPayload>,
+    flight_plan_points: &[FlightPlanSelectionPoint],
+    airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
+    point_display_scale: f64,
+) -> MapSelectionQueryResult {
     let center_world = lat_lon_to_world(viewport.center);
     let scale = 2.0_f64.powf(viewport.zoom);
     let click_screen = world_to_screen_projected(
@@ -1820,7 +1942,14 @@ pub fn query_map_selection(
     let mut airspaces = Vec::new();
     let mut matched_nav_refs = BTreeSet::new();
 
-    for tile in visible_point_display_tile_window(config, viewport, width_px, height_px, None) {
+    for tile in visible_point_display_tile_window(
+        config,
+        viewport,
+        width_px,
+        height_px,
+        None,
+        point_display_scale,
+    ) {
         let Some(payload) = vector_tile_cache.get(&aggregate_vector_tile_cache_key(
             tile.request.z,
             tile.request.x,
@@ -1916,6 +2045,7 @@ pub fn query_map_selection(
         height_px,
         config,
         vector_tile_cache,
+        point_display_scale,
     ) {
         let Some(feature) = airspace_feature_cache.get(&feature_id) else {
             continue;
@@ -2608,11 +2738,13 @@ fn selectable_airspace_feature_ids_for_viewport(
     height_px: f64,
     config: &MapOverlayConfig,
     vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
+    point_display_scale: f64,
 ) -> BTreeSet<String> {
-    if viewport.zoom < AIRSPACE_MIN_DISPLAY_ZOOM || width_px <= 0.0 || height_px <= 0.0 {
+    let effective_zoom = effective_point_display_zoom(viewport, point_display_scale);
+    if effective_zoom < AIRSPACE_MIN_DISPLAY_ZOOM || width_px <= 0.0 || height_px <= 0.0 {
         return BTreeSet::new();
     }
-    let ref_zoom = airspace_reference_zoom(viewport.zoom, config);
+    let ref_zoom = airspace_reference_zoom(effective_zoom, config);
     visible_layer_tile_window("airspace", ref_zoom, viewport, width_px, height_px)
         .into_iter()
         .filter_map(|tile| {
@@ -3156,12 +3288,12 @@ enum LabelRef {
 fn suppress_overlapping_vector_labels(
     visible_features: &mut [VisibleMapFeature],
     airspace_labels: &mut Vec<AirspaceDisplayLabel>,
-    point_label_scale: f64,
+    point_display_scale: f64,
 ) {
-    let point_label_scale = point_label_scale.max(0.1);
+    let point_display_scale = point_display_scale.max(0.1);
     let mut candidates = Vec::<(LabelRef, LabelRect)>::new();
     for (index, label) in airspace_labels.iter().enumerate() {
-        if let Some(rect) = airspace_label_rect(label) {
+        if let Some(rect) = airspace_label_rect(label, point_display_scale) {
             candidates.push((
                 LabelRef::Airspace(index),
                 rect.padded(LABEL_COLLISION_PADDING_PX),
@@ -3169,7 +3301,7 @@ fn suppress_overlapping_vector_labels(
         }
     }
     for (index, feature) in visible_features.iter().enumerate() {
-        if let Some(rect) = point_feature_label_rect(feature, point_label_scale) {
+        if let Some(rect) = point_feature_label_rect(feature, point_display_scale) {
             candidates.push((
                 LabelRef::Point(index),
                 rect.padded(LABEL_COLLISION_PADDING_PX),
@@ -3205,10 +3337,11 @@ fn suppress_overlapping_vector_labels(
     });
 }
 
-fn airspace_label_rect(label: &AirspaceDisplayLabel) -> Option<LabelRect> {
+fn airspace_label_rect(label: &AirspaceDisplayLabel, scale: f64) -> Option<LabelRect> {
     if !label.screen_x.is_finite() || !label.screen_y.is_finite() {
         return None;
     }
+    let scale = scale.max(0.1);
     let width = label
         .glyph
         .upper
@@ -3216,8 +3349,9 @@ fn airspace_label_rect(label: &AirspaceDisplayLabel) -> Option<LabelRect> {
         .count()
         .max(label.glyph.lower.chars().count()) as f64
         * 8.2
-        + 10.0;
-    let height = 30.0;
+        * scale
+        + 10.0 * scale;
+    let height = 30.0 * scale;
     Some(centered_rect(label.screen_x, label.screen_y, width, height))
 }
 
@@ -3479,6 +3613,8 @@ fn tfr_limit_label(limit: &TfrAltitudeLimit) -> String {
 }
 
 struct AirspaceOverlayProjection {
+    ref_zoom: Option<u32>,
+    label_zoom: Option<u32>,
     needed_tiles: Vec<VectorTileRequest>,
     needed_features: Vec<AirspaceFeatureRequest>,
     paths: Vec<AirspaceDisplayPath>,
@@ -3528,9 +3664,13 @@ fn query_airspace_overlay(
     scale: f64,
     vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
     feature_cache: &HashMap<String, AirspaceFeaturePayload>,
+    point_display_scale: f64,
 ) -> AirspaceOverlayProjection {
-    if viewport.zoom < AIRSPACE_MIN_DISPLAY_ZOOM || width_px <= 0.0 || height_px <= 0.0 {
+    let effective_zoom = effective_point_display_zoom(viewport, point_display_scale);
+    if effective_zoom < AIRSPACE_MIN_DISPLAY_ZOOM || width_px <= 0.0 || height_px <= 0.0 {
         return AirspaceOverlayProjection {
+            ref_zoom: None,
+            label_zoom: None,
             needed_tiles: Vec::new(),
             needed_features: Vec::new(),
             paths: Vec::new(),
@@ -3539,7 +3679,7 @@ fn query_airspace_overlay(
         };
     }
 
-    let ref_zoom = airspace_reference_zoom(viewport.zoom, config);
+    let ref_zoom = airspace_reference_zoom(effective_zoom, config);
     let ref_tiles = visible_layer_tile_window("airspace", ref_zoom, viewport, width_px, height_px);
     let mut needed_tiles = Vec::new();
     let mut needed_seen = BTreeSet::new();
@@ -3593,7 +3733,7 @@ fn query_airspace_overlay(
         }
     }
 
-    let label_zoom = airspace_label_zoom(viewport.zoom, config);
+    let label_zoom = airspace_label_zoom(effective_zoom, config);
     let label_tiles =
         visible_layer_tile_window("airspace-labels", label_zoom, viewport, width_px, height_px);
     let mut label_by_feature = HashMap::<String, AirspaceLabelCandidate>::new();
@@ -3685,6 +3825,8 @@ fn query_airspace_overlay(
     }
 
     AirspaceOverlayProjection {
+        ref_zoom: Some(ref_zoom),
+        label_zoom: Some(label_zoom),
         needed_tiles,
         needed_features,
         paths,
@@ -4206,6 +4348,14 @@ fn merge_aggregate_vector_tile_requests(
     out
 }
 
+fn tile_counts_by_zoom(tiles: &[VectorTileRequest]) -> BTreeMap<u32, usize> {
+    let mut counts = BTreeMap::new();
+    for tile in tiles {
+        *counts.entry(tile.z).or_insert(0) += 1;
+    }
+    counts
+}
+
 pub fn chart_ident_label_for_nav_ref_symbol(nav_ref: &NavRef, symbol: &NavSymbolFeature) -> String {
     let airport_ident = match nav_ref {
         NavRef::Airport(ident) => Some(ident.as_str()),
@@ -4525,6 +4675,39 @@ mod tests {
         )
     }
 
+    fn query_map_overlay_with_point_display_scale(
+        viewport: &MapViewport,
+        width_px: f64,
+        height_px: f64,
+        point_tile_cache: &HashMap<String, PointTilePayload>,
+        airspace_ref_tile_cache: &HashMap<String, AirspaceReferenceTilePayload>,
+        airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
+        airspace_label_tile_cache: &HashMap<String, AirspaceLabelTilePayload>,
+        point_display_scale: f64,
+    ) -> MapOverlayQueryResult {
+        let vector_tile_cache = aggregate_test_vector_tiles(
+            point_tile_cache,
+            airspace_ref_tile_cache,
+            airspace_label_tile_cache,
+        );
+        super::query_map_overlay_with_point_display_scale(
+            viewport,
+            width_px,
+            height_px,
+            &test_map_overlay_config(),
+            true,
+            false,
+            &[],
+            None,
+            &vector_tile_cache,
+            &HashMap::new(),
+            None,
+            airspace_feature_cache,
+            None,
+            point_display_scale,
+        )
+    }
+
     fn aggregate_test_vector_tiles(
         point_tile_cache: &HashMap<String, PointTilePayload>,
         airspace_ref_tile_cache: &HashMap<String, AirspaceReferenceTilePayload>,
@@ -4587,6 +4770,129 @@ mod tests {
         assert!(tiles.iter().any(|tile| tile.layer == "airport"));
         assert!(!tiles.iter().any(|tile| tile.layer == "fix"));
         assert!(tiles.iter().any(|tile| tile.layer == "nav"));
+    }
+
+    #[test]
+    fn point_tile_zoom_tracks_density_normalized_display_zoom() {
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.36,
+                lon: -121.98,
+            },
+            zoom: 9.6,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+
+        let unscaled =
+            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0, None);
+        assert!(unscaled
+            .iter()
+            .any(|tile| tile.layer == "airport" && tile.z == 9));
+
+        let density_scaled = visible_point_tile_window_with_display_scale(
+            &test_map_overlay_config(),
+            &viewport,
+            1200.0,
+            900.0,
+            None,
+            3.0,
+        );
+        assert!(density_scaled
+            .iter()
+            .any(|tile| tile.layer == "airport" && tile.z == 8));
+        assert!(!density_scaled
+            .iter()
+            .any(|tile| tile.layer == "airport" && tile.z == 9));
+    }
+
+    #[test]
+    fn airspace_tile_zoom_tracks_density_normalized_display_zoom() {
+        let viewport = MapViewport {
+            center: LatLon { lat: 0.0, lon: 0.0 },
+            zoom: 10.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let feature = AirspaceFeaturePayload {
+            schema_version: 1,
+            id: "airspace:test:scaled".to_string(),
+            kind: "airspace".to_string(),
+            name: "SCALED AIRSPACE".to_string(),
+            ident: "SCALE".to_string(),
+            airspace_class: "B".to_string(),
+            style_hint: "class_b".to_string(),
+            vertical: test_airspace_vertical("40", "23"),
+            bbox: [-1.0, -1.0, 1.0, 1.0],
+            paths: vec![test_airspace_path(
+                true,
+                None,
+                vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
+            )],
+        };
+        let mut ref_cache = HashMap::new();
+        for tile in visible_layer_tile_window(
+            "airspace",
+            airspace_reference_zoom(8.0, &test_map_overlay_config()),
+            &viewport,
+            1024.0,
+            768.0,
+        ) {
+            ref_cache.insert(
+                airspace_ref_tile_key(tile.z, tile.x, tile.y),
+                AirspaceReferenceTilePayload {
+                    schema_version: 1,
+                    layer: "airspace".to_string(),
+                    z: tile.z,
+                    x: tile.x,
+                    y: tile.y,
+                    refs: vec![feature.id.clone()],
+                },
+            );
+        }
+        let mut label_cache = HashMap::new();
+        for tile in visible_layer_tile_window(
+            "airspace-labels",
+            airspace_label_zoom(8.0, &test_map_overlay_config()),
+            &viewport,
+            1024.0,
+            768.0,
+        ) {
+            label_cache.insert(
+                airspace_label_tile_key(tile.z, tile.x, tile.y),
+                AirspaceLabelTilePayload {
+                    schema_version: 1,
+                    layer: "airspace-labels".to_string(),
+                    z: tile.z,
+                    x: tile.x,
+                    y: tile.y,
+                    labels: vec![AirspaceLabelRecord {
+                        feature_id: feature.id.clone(),
+                        text: "40/23".to_string(),
+                        lon: 0.0,
+                        lat: 0.0,
+                        rank: 0,
+                        score: Some(1.0),
+                        style_hint: "class_b".to_string(),
+                    }],
+                },
+            );
+        }
+
+        let result = query_map_overlay_with_point_display_scale(
+            &viewport,
+            1024.0,
+            768.0,
+            &HashMap::new(),
+            &ref_cache,
+            &HashMap::from([(feature.id.clone(), feature)]),
+            &label_cache,
+            4.0,
+        );
+
+        assert_eq!(result.airspace_paths.len(), 1);
+        assert_eq!(result.airspace_labels.len(), 1);
+        assert!(!result.needed_vector_tiles.iter().any(|tile| tile.z == 10));
     }
 
     #[test]
@@ -6063,6 +6369,63 @@ mod tests {
 
         assert_eq!(features[0].label, "");
         assert_eq!(features[1].label, "LONGB");
+    }
+
+    #[test]
+    fn scaled_airspace_label_rects_match_android_drawn_density() {
+        let features = Vec::new();
+        let airspace_label = AirspaceDisplayLabel {
+            feature_id: "airspace:a".to_string(),
+            glyph: AirspaceLimitGlyph {
+                upper: "100".to_string(),
+                lower: "50".to_string(),
+                style_key: "class_b".to_string(),
+                color_key: "class_b_d_blue".to_string(),
+            },
+            screen_x: 100.0,
+            screen_y: 100.0,
+        };
+        let mut airspace_labels = vec![
+            airspace_label.clone(),
+            AirspaceDisplayLabel {
+                feature_id: "airspace:b".to_string(),
+                screen_y: 140.0,
+                ..airspace_label
+            },
+        ];
+        let mut unscaled_features = features.clone();
+        suppress_overlapping_vector_labels(&mut unscaled_features, &mut airspace_labels, 1.0);
+        assert_eq!(airspace_labels.len(), 2);
+
+        let mut airspace_labels = vec![
+            AirspaceDisplayLabel {
+                feature_id: "airspace:a".to_string(),
+                glyph: AirspaceLimitGlyph {
+                    upper: "100".to_string(),
+                    lower: "50".to_string(),
+                    style_key: "class_b".to_string(),
+                    color_key: "class_b_d_blue".to_string(),
+                },
+                screen_x: 100.0,
+                screen_y: 100.0,
+            },
+            AirspaceDisplayLabel {
+                feature_id: "airspace:b".to_string(),
+                glyph: AirspaceLimitGlyph {
+                    upper: "100".to_string(),
+                    lower: "50".to_string(),
+                    style_key: "class_b".to_string(),
+                    color_key: "class_b_d_blue".to_string(),
+                },
+                screen_x: 100.0,
+                screen_y: 140.0,
+            },
+        ];
+        let mut scaled_features = features;
+        suppress_overlapping_vector_labels(&mut scaled_features, &mut airspace_labels, 3.0);
+
+        assert_eq!(airspace_labels.len(), 1);
+        assert_eq!(airspace_labels[0].feature_id, "airspace:b");
     }
 
     #[test]

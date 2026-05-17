@@ -1007,7 +1007,7 @@ class NativeUiSession internal constructor(
         viewport: MapViewportState,
         widthPx: Double,
         heightPx: Double,
-        pointLabelScale: Double,
+        pointDisplayScale: Double,
         fetchResource: (CoreResourceRequest) -> ByteArray,
     ): MapOverlayQueryResult {
         val viewportJson = json.encodeToString(viewport.toWire())
@@ -1015,12 +1015,12 @@ class NativeUiSession internal constructor(
         return json.decodeFromJsonElement<WireMapOverlayQueryResult>(
             store.runPagedSessionOperationElement(
                 operation = {
-                    bridge.getMapOverlayInSessionWithPointLabelScaleJson(
+                    bridge.getMapOverlayInSessionWithPointDisplayScaleJson(
                         handle,
                         viewportJson,
                         widthPx,
                         heightPx,
-                        pointLabelScale,
+                        pointDisplayScale,
                     )
                 },
                 fetchSessionResource = fetchResource,
@@ -1037,13 +1037,22 @@ class NativeUiSession internal constructor(
         heightPx: Double,
         click: LatLonPoint,
         hitRadiusPx: Double,
+        pointDisplayScale: Double,
     ): MapSelectionQueryResult {
         val viewportJson = json.encodeToString(viewport.toWire())
         val clickJson = json.encodeToString(click.toWire())
         val store = navKvStore ?: error("session missing nav_db for map selection")
         return json.decodeFromJsonElement<WireMapSelectionQueryResult>(
             store.runPagedSessionOperationElement {
-                bridge.getMapSelectionInSessionJson(handle, viewportJson, widthPx, heightPx, clickJson, hitRadiusPx)
+                bridge.getMapSelectionInSessionWithPointDisplayScaleJson(
+                    handle,
+                    viewportJson,
+                    widthPx,
+                    heightPx,
+                    clickJson,
+                    hitRadiusPx,
+                    pointDisplayScale,
+                )
             },
         ).toUi()
     }

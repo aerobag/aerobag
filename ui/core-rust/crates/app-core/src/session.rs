@@ -666,22 +666,22 @@ pub fn project_flight_plan_route_in_session(handle: u32) -> AppResult<HadOperati
     let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
     let Some(plan) = session.app_state.active_plan.clone() else {
-        return Ok(HadOperationOutcome::Complete {
-            result: serde_json::to_value(Vec::<crate::FlightPlanRouteSegment>::new()).map_err(
-                |err| AppError {
+        return Ok(HadOperationOutcome::complete(
+            serde_json::to_value(Vec::<crate::FlightPlanRouteSegment>::new()).map_err(|err| {
+                AppError {
                     kind: AppErrorKind::Internal,
                     message: err.to_string(),
-                },
-            )?,
-        });
+                }
+            })?,
+        ));
     };
     match crate::had_ops::project_flight_plan_route(session_nav_kv_store(session)?, &plan) {
-        Ok(route) => Ok(HadOperationOutcome::Complete {
-            result: serde_json::to_value(route).map_err(|err| AppError {
+        Ok(route) => Ok(HadOperationOutcome::complete(
+            serde_json::to_value(route).map_err(|err| AppError {
                 kind: AppErrorKind::Internal,
                 message: err.to_string(),
             })?,
-        }),
+        )),
         Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
             resources: nav_kv_page_resources(pages),
         }),
@@ -1123,12 +1123,12 @@ pub fn perform_map_selection_action_in_session(
         }
         MapSelectionSessionAction::ActivateDirectToNavRef { nav_ref } => {
             let snapshot = activate_direct_to_nav_ref_in_session(handle, nav_ref)?;
-            Ok(HadOperationOutcome::Complete {
-                result: serde_json::to_value(snapshot).map_err(|err| AppError {
+            Ok(HadOperationOutcome::complete(
+                serde_json::to_value(snapshot).map_err(|err| AppError {
                     kind: AppErrorKind::Internal,
                     message: err.to_string(),
                 })?,
-            })
+            ))
         }
     }
 }
@@ -1239,12 +1239,12 @@ pub fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
                 });
             }
         };
-    Ok(HadOperationOutcome::Complete {
-        result: serde_json::to_value(suggestions).map_err(|err| AppError {
+    Ok(HadOperationOutcome::complete(
+        serde_json::to_value(suggestions).map_err(|err| AppError {
             kind: AppErrorKind::Internal,
             message: err.to_string(),
         })?,
-    })
+    ))
 }
 
 pub fn preview_flight_plan_entry_in_session(
@@ -1256,12 +1256,12 @@ pub fn preview_flight_plan_entry_in_session(
     let plan = session_plan(session)?;
     let store = session_nav_kv_store(session)?;
     match crate::had_ops::preview_flight_plan_entry(store, &plan, &input) {
-        Ok(preview) => Ok(HadOperationOutcome::Complete {
-            result: serde_json::to_value(preview).map_err(|err| AppError {
+        Ok(preview) => Ok(HadOperationOutcome::complete(
+            serde_json::to_value(preview).map_err(|err| AppError {
                 kind: AppErrorKind::Internal,
                 message: err.to_string(),
             })?,
-        }),
+        )),
         Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
             resources: nav_kv_page_resources(pages),
         }),
@@ -2076,7 +2076,7 @@ pub fn ingest_tafs_in_session(handle: u32, payload: &TafProductPayload) -> AppRe
 pub fn sync_live_feeds_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
-    Ok(session.live_feeds.sync_outcome())
+    Ok(session.live_feeds.sync_outcome_with_invalidations())
 }
 
 pub fn ingest_live_feed_sse_event_in_session(
@@ -2447,9 +2447,9 @@ pub fn get_map_overlay_in_session(
         && !session.map_layer_state.offline_regions.visible
     {
         session.caution_state.obstacle_display_limited = false;
-        return Ok(HadOperationOutcome::Complete {
-            result: serde_json::to_value(empty_map_overlay_query()).map_err(internal_json_error)?,
-        });
+        return Ok(HadOperationOutcome::complete(
+            serde_json::to_value(empty_map_overlay_query()).map_err(internal_json_error)?,
+        ));
     }
     if session.map_layer_state.vectors.visible {
         if let Err(err) = ensure_vector_inputs_loaded(session, &viewport, width_px, height_px) {
@@ -2505,9 +2505,9 @@ pub fn get_map_overlay_in_session(
         .warnings
         .iter()
         .any(|warning| warning.code == "vector_display_feature_limit");
-    Ok(HadOperationOutcome::Complete {
-        result: serde_json::to_value(overlay).map_err(internal_json_error)?,
-    })
+    Ok(HadOperationOutcome::complete(
+        serde_json::to_value(overlay).map_err(internal_json_error)?,
+    ))
 }
 
 fn flight_plan_overlay_features(
@@ -2771,12 +2771,12 @@ pub fn get_map_selection_in_session(
             resources: nav_kv_page_resources(missing_pages),
         });
     }
-    Ok(HadOperationOutcome::Complete {
-        result: serde_json::to_value(selection).map_err(|err| AppError {
+    Ok(HadOperationOutcome::complete(
+        serde_json::to_value(selection).map_err(|err| AppError {
             kind: AppErrorKind::Internal,
             message: err.to_string(),
         })?,
-    })
+    ))
 }
 
 pub fn get_terrain_overlay_in_session(
@@ -2792,9 +2792,9 @@ pub fn get_terrain_overlay_in_session(
             status: crate::TerrainOverlayStatus::Hidden,
             tile_requests: Vec::new(),
         };
-        return Ok(HadOperationOutcome::Complete {
-            result: serde_json::to_value(result).map_err(internal_json_error)?,
-        });
+        return Ok(HadOperationOutcome::complete(
+            serde_json::to_value(result).map_err(internal_json_error)?,
+        ));
     }
     let kinematics = session.app_state.ownship.resolved.kinematics.as_ref();
     let has_position = kinematics.is_some_and(|kinematics| {
@@ -2807,9 +2807,9 @@ pub fn get_terrain_overlay_in_session(
     if !resources.is_empty() {
         return Ok(HadOperationOutcome::NeedResources { resources });
     }
-    Ok(HadOperationOutcome::Complete {
-        result: serde_json::to_value(query).map_err(internal_json_error)?,
-    })
+    Ok(HadOperationOutcome::complete(
+        serde_json::to_value(query).map_err(internal_json_error)?,
+    ))
 }
 
 pub fn get_nexrad_overlay_in_session(
@@ -2821,32 +2821,32 @@ pub fn get_nexrad_overlay_in_session(
     let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
     if !session.map_layer_state.nexrad.visible {
-        return Ok(HadOperationOutcome::Complete {
-            result: serde_json::to_value(NexradOverlayQueryResult {
+        return Ok(HadOperationOutcome::complete(
+            serde_json::to_value(NexradOverlayQueryResult {
                 status: NexradOverlayStatus::Hidden,
                 tiles: Vec::new(),
                 stats: NexradOverlayStats::default(),
             })
             .map_err(internal_json_error)?,
-        });
+        ));
     }
     if let HadOperationOutcome::NeedResources { resources } = session.live_feeds.sync_outcome() {
         return Ok(HadOperationOutcome::NeedResources { resources });
     }
     let Some(manifest) = session.live_feeds.product_state_manifest("nexrad") else {
-        return Ok(HadOperationOutcome::Complete {
-            result: serde_json::to_value(NexradOverlayQueryResult {
+        return Ok(HadOperationOutcome::complete(
+            serde_json::to_value(NexradOverlayQueryResult {
                 status: NexradOverlayStatus::Loading,
                 tiles: Vec::new(),
                 stats: NexradOverlayStats::default(),
             })
             .map_err(internal_json_error)?,
-        });
+        ));
     };
     let query = nexrad_overlay_query(manifest, &viewport, width_px, height_px)?;
-    Ok(HadOperationOutcome::Complete {
-        result: serde_json::to_value(query).map_err(internal_json_error)?,
-    })
+    Ok(HadOperationOutcome::complete(
+        serde_json::to_value(query).map_err(internal_json_error)?,
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -3531,7 +3531,7 @@ fn commit_session_flight_plan_with_snapshot_outcome(
         Ok(snapshot) => {
             *session = candidate;
             serde_json::to_value(snapshot)
-                .map(|result| HadOperationOutcome::Complete { result })
+                .map(HadOperationOutcome::complete)
                 .map_err(|err| AppError {
                     kind: AppErrorKind::Internal,
                     message: err.to_string(),
@@ -3566,7 +3566,7 @@ fn snapshot_for_session(session: &UiSession) -> AppResult<UiSessionSnapshot> {
 fn session_snapshot_outcome(session: &UiSession) -> AppResult<HadOperationOutcome> {
     match try_snapshot_for_session(session) {
         Ok(snapshot) => serde_json::to_value(snapshot)
-            .map(|result| HadOperationOutcome::Complete { result })
+            .map(HadOperationOutcome::complete)
             .map_err(|err| AppError {
                 kind: AppErrorKind::Internal,
                 message: err.to_string(),
@@ -5325,7 +5325,7 @@ mod tests {
 
     fn complete_session_snapshot(outcome: HadOperationOutcome) -> UiSessionSnapshot {
         match outcome {
-            HadOperationOutcome::Complete { result } => {
+            HadOperationOutcome::Complete { result, .. } => {
                 serde_json::from_value(result).expect("session snapshot outcome")
             }
             HadOperationOutcome::NeedResources { resources } => {

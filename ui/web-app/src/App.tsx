@@ -72,6 +72,7 @@ import {
   type UiDebugState,
   type UiSession,
   type UiSessionSnapshot,
+  type UiInvalidation,
   type LiveFeedSseEvent,
 } from "./domain/appCoreAdapter";
 import {
@@ -116,6 +117,20 @@ type SurfaceSize = {
   width: number;
   height: number;
 };
+
+type UiInvalidationRevisions = Record<UiInvalidation, number>;
+
+function initialUiInvalidationRevisions(): UiInvalidationRevisions {
+  return {
+    session_snapshot: 0,
+    raster_tiles: 0,
+    map_overlay: 0,
+    nexrad_overlay: 0,
+    terrain_overlay: 0,
+    flight_plan_route: 0,
+    debug_panel: 0,
+  };
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -1233,6 +1248,9 @@ export default function App() {
     [initialRecentAirportIds, persistedUiState.selectedAirportId, persistedUiState.selectedChartId],
   );
   const [uiSession, setUiSession] = useState<UiSession | null>(null);
+  const [uiInvalidationRevisions, setUiInvalidationRevisions] = useState<UiInvalidationRevisions>(
+    initialUiInvalidationRevisions,
+  );
   const [sessionSnapshot, setSessionSnapshot] = useState<UiSessionSnapshot>({
     app_state: {
       active_plan: null,
@@ -1386,6 +1404,22 @@ export default function App() {
     }, startupHighLatencyWarningGraceMs);
     return () => window.clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    if (!uiSession) {
+      return;
+    }
+    uiSession.setInvalidationListener((invalidations) => {
+      setUiInvalidationRevisions((current) => {
+        const next = { ...current };
+        for (const invalidation of invalidations) {
+          next[invalidation] = (next[invalidation] ?? 0) + 1;
+        }
+        return next;
+      });
+    });
+    return () => uiSession.setInvalidationListener(null);
+  }, [uiSession]);
 
   useEffect(() => {
     if (!uiSession || playbackUiState.status !== "playing") {
@@ -2090,6 +2124,7 @@ export default function App() {
           familyOptions={rasterMapState.family_options}
           viewport={mapViewport}
           pageTilePaintTiming={pageTilePaintTimingRef.current}
+          uiInvalidationRevisions={uiInvalidationRevisions}
           onPageTilePaintTimingComplete={(id) => {
             if (pageTilePaintTimingRef.current?.id === id) {
               pageTilePaintTimingRef.current = null;
@@ -2353,6 +2388,7 @@ function MapPage(props: {
   familyOptions: RasterMapUiState["family_options"];
   viewport: MapViewportState;
   pageTilePaintTiming: WebPageTilePaintTiming | null;
+  uiInvalidationRevisions: UiInvalidationRevisions;
   onPageTilePaintTimingComplete: (id: number) => void;
   onViewportChange: (next: MapViewportState) => void;
   onSelectMapFamily: (familyId: ChartFamilyId) => void;
@@ -2390,6 +2426,7 @@ function MapPage(props: {
     familyOptions,
     viewport,
     pageTilePaintTiming,
+    uiInvalidationRevisions,
     onPageTilePaintTimingComplete,
     onViewportChange,
     onSelectMapFamily,
@@ -2875,7 +2912,7 @@ function MapPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [mapIsVisible, mapLayerState.terrain_warning.visible, surfaceSize.height, surfaceSize.width, terrainAltitudeBucket, uiSession, viewport]);
+  }, [mapIsVisible, mapLayerState.terrain_warning.visible, surfaceSize.height, surfaceSize.width, terrainAltitudeBucket, uiInvalidationRevisions.terrain_overlay, uiSession, viewport]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2910,7 +2947,7 @@ function MapPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [debugState.nexrad_tile_labels, mapIsVisible, mapLayerState.nexrad.visible, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
+  }, [debugState.nexrad_tile_labels, mapIsVisible, mapLayerState.nexrad.visible, surfaceSize.height, surfaceSize.width, uiInvalidationRevisions.nexrad_overlay, uiSession, viewport]);
 
   useEffect(() => {
     if (typeof PerformanceObserver === "undefined") {
@@ -3017,7 +3054,7 @@ function MapPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [onHighLatencyWarning, plan.id, plan.version, plan.guidance, plan.resolved_legs, uiSession]);
+  }, [onHighLatencyWarning, plan.id, plan.version, plan.guidance, plan.resolved_legs, uiInvalidationRevisions.flight_plan_route, uiSession]);
 
   useEffect(() => {
     if (!mapIsVisible) {
@@ -3142,6 +3179,7 @@ function MapPage(props: {
     onDebugWarning,
     surfaceSize.height,
     surfaceSize.width,
+    uiInvalidationRevisions.map_overlay,
     uiSession,
     viewport,
   ]);

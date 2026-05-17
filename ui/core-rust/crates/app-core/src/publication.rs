@@ -152,7 +152,7 @@ impl PublicationResolver {
         let address = self.package_member_address(matches_package, member_path)?;
         let result = serde_json::to_value(PublicationResolvedResource { address })
             .map_err(|err| err.to_string())?;
-        Ok(HadOperationOutcome::Complete { result })
+        Ok(HadOperationOutcome::complete(result))
     }
 
     fn package_member_address(
@@ -356,7 +356,7 @@ mod tests {
         let outcome = resolver
             .resolve_family_resource("nav-db", "page_0007")
             .expect("resolve outcome");
-        let HadOperationOutcome::Complete { result } = outcome else {
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
             panic!("expected complete result");
         };
         let resolved: PublicationResolvedResource = serde_json::from_value(result).unwrap();

@@ -29,7 +29,7 @@ import type {
   WaypointIdentifierSuggestion,
 } from "./types";
 import { viewportCenterLatLon, type MapViewportState, type ScreenPoint } from "./mapViewport";
-import { attachNavKvStoreToSession, runCoreHadOperation, runCoreHadSessionOperation } from "./navKv";
+import { attachNavKvStoreToSession, runCoreHadOperation, runCoreHadSessionOperation, type UiInvalidation, type UiInvalidationListener } from "./navKv";
 import { debugLog, debugTiming, installRustDebugLogBridge } from "./debugLog";
 
 export type DerivedChartPageState = {
@@ -469,6 +469,7 @@ export type RasterTilePlan = {
 };
 
 export interface UiSession {
+  setInvalidationListener(listener: UiInvalidationListener | null): void;
   snapshot(): Promise<UiSessionSnapshot>;
   insertWaypointAtFlightPlanRow(rowUid: string, before: boolean, waypoint: NavRef): Promise<UiSessionSnapshot>;
   suggestWaypointIdentifiersAtFlightPlanRow(rowUid: string, before: boolean, prefix: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
@@ -531,6 +532,8 @@ export type LiveFeedSseEvent = {
   event?: string | null;
   data: string;
 };
+
+export type { UiInvalidation };
 
 export interface AppCoreAdapter {
   prewarm(): Promise<void>;
@@ -711,6 +714,18 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     selectedChartId?: string,
   ): Promise<UiSession> {
     const module = this.module;
+    let invalidationListener: UiInvalidationListener | null = null;
+    const publishInvalidations: UiInvalidationListener = (invalidations) => {
+      if (invalidations.length === 0) {
+        return;
+      }
+      debugLog("core.ui.invalidations", { invalidations });
+      invalidationListener?.(invalidations);
+    };
+    const runSessionOperation = <T>(
+      operation: (navKvHandle: number) => Promise<string> | string,
+      ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
+    ) => runCoreHadSessionOperation<T>(operation, ingestSessionResource, publishInvalidations);
     const createSession = async (
       nextPlan: FlightPlan,
       nextRecentAirportIds: string[],
@@ -737,7 +752,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       await attachNavKvStoreToSession(created.handle);
       await module.set_raster_resource_mode_in_session(created.handle, JSON.stringify("public_unpacked"));
       const catalogedSnapshot = await debugTiming("startup.session.load_raster_catalog", () =>
-        runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+        runSessionOperation<UiSessionSnapshot>(() =>
           module.load_raster_map_catalog_in_session(created.handle),
         ),
       );
@@ -752,7 +767,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     const parseSessionSnapshot = async (json: Promise<string> | string) =>
       JSON.parse(await json) as UiSessionSnapshot;
     const syncGuidanceGeometry = async () => {
-      snapshot = await runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+      snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
         this.module.sync_guidance_geometry_in_session(handle),
       );
       return snapshot;
@@ -787,6 +802,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     };
     await syncGuidanceGeometry();
     return {
+      setInvalidationListener: (listener) => {
+        invalidationListener = listener;
+      },
       snapshot: async () => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.get_session_snapshot(handle)),
@@ -795,7 +813,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       performMapSelectionAction: async (action) => {
         snapshot = await withSessionRetry(async () =>
-          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+          runSessionOperation<UiSessionSnapshot>(() =>
             this.module.perform_map_selection_action_in_session(handle, action),
           ),
         );
@@ -804,7 +822,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       insertWaypointAtFlightPlanRow: async (rowUid, before, waypoint) => {
         snapshot = await withSessionRetry(async () =>
-          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+          runSessionOperation<UiSessionSnapshot>(() =>
             this.module.insert_waypoint_at_flight_plan_row_in_session(
               handle,
               rowUid,
@@ -818,7 +836,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       suggestWaypointIdentifiersAtFlightPlanRow: async (rowUid, before, prefix, limit = 8) => {
         return withSessionRetry(async () =>
-          runCoreHadSessionOperation<WaypointIdentifierSuggestion[]>(() =>
+          runSessionOperation<WaypointIdentifierSuggestion[]>(() =>
             this.module.suggest_waypoint_identifiers_at_flight_plan_row_in_session(
               handle,
               rowUid,
@@ -831,14 +849,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       previewFlightPlanEntry: async (input) => {
         return withSessionRetry(async () =>
-          runCoreHadSessionOperation<FlightPlanEntryPreview>(() =>
+          runSessionOperation<FlightPlanEntryPreview>(() =>
             this.module.preview_flight_plan_entry_in_session(handle, input),
           ),
         );
       },
       appendFlightPlanEntry: async (input) => {
         snapshot = await withSessionRetry(async () =>
-          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+          runSessionOperation<UiSessionSnapshot>(() =>
             this.module.append_flight_plan_entry_in_session(handle, input),
           ),
         );
@@ -847,7 +865,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       insertAirwayAtFlightPlanRow: async (rowUid, presentation, entryIndex, exitIndex) => {
         snapshot = await withSessionRetry(async () =>
-          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+          runSessionOperation<UiSessionSnapshot>(() =>
             this.module.insert_airway_at_flight_plan_row_in_session(
               handle,
               rowUid,
@@ -862,7 +880,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       selectProcedureAtFlightPlanRow: async (rowUid, airportId, procedureId, kind, runwayTransition, enrouteTransition) => {
         snapshot = await withSessionRetry(async () =>
-          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+          runSessionOperation<UiSessionSnapshot>(() =>
             this.module.select_procedure_at_flight_plan_row_in_session(
               handle,
               rowUid,
@@ -879,7 +897,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       loadPlateProcedure: async (loadId) => {
         snapshot = await withSessionRetry(async () =>
-          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+          runSessionOperation<UiSessionSnapshot>(() =>
             this.module.load_plate_procedure_in_session(handle, loadId),
           ),
         );
@@ -895,7 +913,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       performFlightPlanRowAction: async (rowUid, actionUid) => {
         snapshot = await withSessionRetry(async () =>
-          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+          runSessionOperation<UiSessionSnapshot>(() =>
             this.module.perform_flight_plan_row_action_in_session(handle, rowUid, actionUid),
           ),
         );
@@ -932,7 +950,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       setSituation: async (situation) => {
         snapshot = await withSessionRetry(async () =>
-          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+          runSessionOperation<UiSessionSnapshot>(() =>
             this.module.set_situation_in_session_paged(handle, JSON.stringify(situation)),
           ),
         );
@@ -940,7 +958,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       tickDebugOwnshipDriver: async (nowEpochMs) => {
         snapshot = await withSessionRetry(async () =>
-          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+          runSessionOperation<UiSessionSnapshot>(() =>
             this.module.tick_debug_ownship_driver_in_session_paged(handle, nowEpochMs),
           ),
         );
@@ -949,7 +967,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       registerOwnshipSource: async (registration) => {
         snapshot = await withSessionRetry(async () =>
-          runCoreHadSessionOperation<UiSessionSnapshot>(
+          runSessionOperation<UiSessionSnapshot>(
             () => this.module.register_ownship_source_in_session_paged(handle, JSON.stringify(registration)),
           ),
         );
@@ -957,7 +975,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       updateOwnshipSourceStatus: async (update) => {
         snapshot = await withSessionRetry(async () =>
-          runCoreHadSessionOperation<UiSessionSnapshot>(
+          runSessionOperation<UiSessionSnapshot>(
             () => this.module.update_ownship_source_status_in_session_paged(handle, JSON.stringify(update)),
           ),
         );
@@ -965,7 +983,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       pushSituationSample: async (sample) => {
         snapshot = await withSessionRetry(async () =>
-          runCoreHadSessionOperation<UiSessionSnapshot>(
+          runSessionOperation<UiSessionSnapshot>(
             () => this.module.push_situation_sample_in_session_paged(handle, JSON.stringify(sample)),
           ),
         );
@@ -973,7 +991,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       selectOwnshipSource: async (selection) => {
         snapshot = await withSessionRetry(async () =>
-          runCoreHadSessionOperation<UiSessionSnapshot>(
+          runSessionOperation<UiSessionSnapshot>(
             () => this.module.select_ownship_source_in_session_paged(handle, JSON.stringify(ownshipSelectionToCore(selection))),
           ),
         );
@@ -1010,14 +1028,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return snapshot;
       },
       loadRasterMapCatalog: async () => {
-        snapshot = await runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
           this.module.load_raster_map_catalog_in_session(handle),
         );
         return snapshot;
       },
       selectMapFamily: async (familyId) => {
         snapshot = await withSessionRetry(async () =>
-          runCoreHadSessionOperation<UiSessionSnapshot>(() =>
+          runSessionOperation<UiSessionSnapshot>(() =>
             this.module.select_map_family_in_session(handle, JSON.stringify(familyId)),
           ),
         );
@@ -1147,7 +1165,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       queryMapOverlay: async (viewport, widthPx, heightPx) =>
         withSessionRetry(async () =>
-          runCoreHadSessionOperation<MapOverlayQueryResult>(
+          runSessionOperation<MapOverlayQueryResult>(
             () =>
               this.module.get_map_overlay_in_session(
                 handle,
@@ -1160,7 +1178,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         ),
       queryMapSelection: async (viewport, widthPx, heightPx, click, hitRadiusPx) =>
         withSessionRetry(async () =>
-          runCoreHadSessionOperation<MapSelectionQueryResult>(() =>
+          runSessionOperation<MapSelectionQueryResult>(() =>
             this.module.get_map_selection_in_session(
               handle,
               JSON.stringify(coreViewportForMap(viewport)),
@@ -1173,7 +1191,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         ),
       queryTerrainOverlay: async (viewport, widthPx, heightPx) =>
         withSessionRetry(async () =>
-          runCoreHadSessionOperation<TerrainOverlayQueryResult>(
+          runSessionOperation<TerrainOverlayQueryResult>(
             () =>
               this.module.get_terrain_overlay_in_session(
                 handle,
@@ -1186,7 +1204,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         ),
       queryNexradOverlay: async (viewport, widthPx, heightPx) =>
         withSessionRetry(async () =>
-          runCoreHadSessionOperation<NexradOverlayQueryResult>(
+          runSessionOperation<NexradOverlayQueryResult>(
             () =>
               this.module.get_nexrad_overlay_in_session(
                 handle,
@@ -1215,13 +1233,13 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         ),
       projectFlightPlanRoute: async () =>
         withSessionRetry(async () =>
-          runCoreHadSessionOperation<FlightPlanRouteSegment[]>(() =>
+          runSessionOperation<FlightPlanRouteSegment[]>(() =>
             this.module.project_flight_plan_route_in_session(handle),
           ),
         ),
       syncLiveFeeds: async () => {
         await withSessionRetry(async () =>
-          runCoreHadSessionOperation<unknown>(
+          runSessionOperation<unknown>(
             () => this.module.sync_live_feeds_in_session(handle),
             (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
           ),
@@ -1229,7 +1247,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       ingestLiveFeedSseEvent: async (event) => {
         await withSessionRetry(async () =>
-          runCoreHadSessionOperation<unknown>(
+          runSessionOperation<unknown>(
             () => this.module.ingest_live_feed_sse_event_in_session(handle, JSON.stringify(event)),
             (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
           ),

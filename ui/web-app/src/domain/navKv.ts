@@ -11,6 +11,17 @@ export type PublicationResolverWasmModule = {
   publication_resolver_resolve_package_member(handle: number, packageId: string, memberPath: string): Promise<string> | string;
 };
 
+export type UiInvalidation =
+  | "session_snapshot"
+  | "raster_tiles"
+  | "map_overlay"
+  | "nexrad_overlay"
+  | "terrain_overlay"
+  | "flight_plan_route"
+  | "debug_panel";
+
+export type UiInvalidationListener = (invalidations: UiInvalidation[]) => void;
+
 type NavKvWasmModule = PublicationResolverWasmModule & {
   attach_nav_kv_store_to_session(handle: number, sessionHandle: number): void;
   core_had_operation(handle: number, operationJson: string): string;
@@ -123,8 +134,9 @@ export class NavKvStore {
   async runCoreSessionOperation<T>(
     operation: (navKvHandle: number) => Promise<string> | string,
     ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
+    onInvalidations?: UiInvalidationListener,
   ): Promise<T> {
-    return this.runPagedOperation<T>(() => operation(this.handle), ingestSessionResource);
+    return this.runPagedOperation<T>(() => operation(this.handle), ingestSessionResource, onInvalidations);
   }
 
   attachToSession(sessionHandle: number): void {
@@ -145,12 +157,16 @@ export class NavKvStore {
   private async runPagedOperation<T>(
     operation: () => Promise<string> | string,
     ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
+    onInvalidations?: UiInvalidationListener,
   ): Promise<T> {
     for (;;) {
       const response = JSON.parse(await operation()) as
-        | { state: "complete"; result: T }
+        | { state: "complete"; result: T; invalidations?: UiInvalidation[] }
         | { state: "need_resources"; resources: CoreResourceRequest[] };
       if (response.state === "complete") {
+        if (response.invalidations && response.invalidations.length > 0) {
+          onInvalidations?.(response.invalidations);
+        }
         return response.result;
       }
       await Promise.all(response.resources.map((resource) => this.ensureResource(resource, ingestSessionResource)));
@@ -350,12 +366,13 @@ export async function runCoreHadOperation<T>(operation: unknown): Promise<T> {
 export async function runCoreHadSessionOperation<T>(
   operation: (navKvHandle: number) => Promise<string> | string,
   ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
+  onInvalidations?: UiInvalidationListener,
 ): Promise<T> {
   const store = await getNavKvStore();
   if (!store) {
     throw new Error("nav_kv root is unavailable");
   }
-  return store.runCoreSessionOperation<T>(operation, ingestSessionResource);
+  return store.runCoreSessionOperation<T>(operation, ingestSessionResource, onInvalidations);
 }
 
 export async function attachNavKvStoreToSession(sessionHandle: number): Promise<void> {

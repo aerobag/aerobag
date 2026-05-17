@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::{AppError, AppErrorKind, AppResult, CoreResourceRequest, HadOperationOutcome};
+use crate::{
+    AppError, AppErrorKind, AppResult, CoreResourceRequest, HadOperationOutcome, UiInvalidation,
+};
 
 const CURRENT_RESOURCE_ID: &str = "live_feeds/current";
 const CURRENT_ADDRESS: &str = "/live-feeds/current.json";
@@ -91,10 +93,21 @@ impl LiveFeedsState {
     pub fn sync_outcome(&self) -> HadOperationOutcome {
         let resources = self.missing_resources();
         if resources.is_empty() {
-            HadOperationOutcome::Complete {
-                result: serde_json::to_value(self.snapshot())
-                    .expect("live feed snapshot serializes"),
-            }
+            HadOperationOutcome::complete(
+                serde_json::to_value(self.snapshot()).expect("live feed snapshot serializes"),
+            )
+        } else {
+            HadOperationOutcome::NeedResources { resources }
+        }
+    }
+
+    pub fn sync_outcome_with_invalidations(&self) -> HadOperationOutcome {
+        let resources = self.missing_resources();
+        if resources.is_empty() {
+            HadOperationOutcome::complete_with_invalidations(
+                serde_json::to_value(self.snapshot()).expect("live feed snapshot serializes"),
+                self.invalidations(),
+            )
         } else {
             HadOperationOutcome::NeedResources { resources }
         }
@@ -116,7 +129,7 @@ impl LiveFeedsState {
             }
             _ => {}
         }
-        Ok(self.sync_outcome())
+        Ok(self.sync_outcome_with_invalidations())
     }
 
     pub fn ingest_resource(&mut self, resource_id: &str, bytes: &[u8]) -> AppResult<()> {
@@ -271,6 +284,31 @@ impl LiveFeedsState {
             .collect();
         products.sort_by(|left, right| left.product.cmp(&right.product));
         LiveFeedsSnapshot { products }
+    }
+
+    fn invalidations(&self) -> Vec<UiInvalidation> {
+        let mut invalidations = Vec::new();
+        for (product, entry) in &self.products {
+            if entry.state_manifest.is_none() {
+                continue;
+            }
+            match product.as_str() {
+                "nexrad" => {
+                    invalidations.push(UiInvalidation::NexradOverlay);
+                    invalidations.push(UiInvalidation::DebugPanel);
+                }
+                "metars" | "tfrs" | "pireps" => {
+                    invalidations.push(UiInvalidation::MapOverlay);
+                    invalidations.push(UiInvalidation::DebugPanel);
+                }
+                _ => {
+                    invalidations.push(UiInvalidation::DebugPanel);
+                }
+            }
+        }
+        invalidations.sort_by_key(|invalidation| format!("{invalidation:?}"));
+        invalidations.dedup();
+        invalidations
     }
 }
 

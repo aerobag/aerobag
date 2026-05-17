@@ -30,8 +30,45 @@ const NAV_DB_ROOT_MEMBER_PATH: &str = "root";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum HadOperationOutcome {
-    Complete { result: Value },
-    NeedResources { resources: Vec<CoreResourceRequest> },
+    Complete {
+        result: Value,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        invalidations: Vec<UiInvalidation>,
+    },
+    NeedResources {
+        resources: Vec<CoreResourceRequest>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UiInvalidation {
+    SessionSnapshot,
+    RasterTiles,
+    MapOverlay,
+    NexradOverlay,
+    TerrainOverlay,
+    FlightPlanRoute,
+    DebugPanel,
+}
+
+impl HadOperationOutcome {
+    pub fn complete(result: Value) -> Self {
+        Self::Complete {
+            result,
+            invalidations: Vec::new(),
+        }
+    }
+
+    pub fn complete_with_invalidations(
+        result: Value,
+        invalidations: impl Into<Vec<UiInvalidation>>,
+    ) -> Self {
+        Self::Complete {
+            result,
+            invalidations: invalidations.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -311,7 +348,7 @@ impl From<AppError> for HadReadError {
 
 pub fn run_had_operation(store: &NavKvStore, op: HadOperation) -> AppResult<HadOperationOutcome> {
     match run_had_operation_value(store, op) {
-        Ok(result) => Ok(HadOperationOutcome::Complete { result }),
+        Ok(result) => Ok(HadOperationOutcome::complete(result)),
         Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
             resources: nav_kv_page_resources(pages),
         }),
@@ -2927,9 +2964,7 @@ mod tests {
 
         assert_eq!(
             run_had_operation(&store, HadOperation::VectorManifest).unwrap(),
-            HadOperationOutcome::Complete {
-                result: serde_json::json!({"layers":[]})
-            }
+            HadOperationOutcome::complete(serde_json::json!({"layers":[]}))
         );
     }
 
@@ -2944,7 +2979,7 @@ mod tests {
 
         let outcome = run_had_operation(&store, HadOperation::VectorManifest).unwrap();
         match outcome {
-            HadOperationOutcome::Complete { result } => {
+            HadOperationOutcome::Complete { result, .. } => {
                 assert_eq!(result["airspace"]["reference_tile_max_zoom"], 12);
             }
             HadOperationOutcome::NeedResources { resources } => {
@@ -3551,7 +3586,7 @@ mod tests {
         )
         .expect("materialize KPAE VOR-A ECEPO through generated nav_kv")
         {
-            HadOperationOutcome::Complete { result } => {
+            HadOperationOutcome::Complete { result, .. } => {
                 serde_json::from_value::<MaterializedProcedure>(result)
                     .expect("decode materialized procedure")
             }
@@ -3585,7 +3620,7 @@ mod tests {
         .expect("project flight plan ui state");
 
         match outcome {
-            HadOperationOutcome::Complete { result } => {
+            HadOperationOutcome::Complete { result, .. } => {
                 let ui_state: FlightPlanUiState =
                     serde_json::from_value(result).expect("decode ui state");
                 assert!(
@@ -3886,7 +3921,7 @@ mod tests {
         .expect("project enriched flight plan ui state");
 
         match outcome {
-            HadOperationOutcome::Complete { result } => {
+            HadOperationOutcome::Complete { result, .. } => {
                 let ui_state: FlightPlanUiState =
                     serde_json::from_value(result).expect("decode ui state");
                 let nav_element = &ui_state.guidance.as_ref().expect("guidance").nav_element;
@@ -3911,7 +3946,7 @@ mod tests {
         )
         .expect("load generated KPAE plate airport")
         {
-            HadOperationOutcome::Complete { result } => {
+            HadOperationOutcome::Complete { result, .. } => {
                 serde_json::from_value::<crate::DerivedChartAirport>(result)
                     .expect("decode generated KPAE plate airport")
             }
@@ -4138,7 +4173,7 @@ mod tests {
         .expect("materialize KPAE VOR-A ECEPO through generated nav_kv");
 
         match outcome {
-            HadOperationOutcome::Complete { result } => {
+            HadOperationOutcome::Complete { result, .. } => {
                 let materialized = serde_json::from_value::<MaterializedProcedure>(result)
                     .expect("decode materialized procedure");
                 assert_eq!(materialized.procedure.procedure_id, "VOR-A");
@@ -4167,7 +4202,7 @@ mod tests {
         )
         .expect("list KHVR approaches through generated nav_kv");
 
-        let HadOperationOutcome::Complete { result } = outcome else {
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
             panic!("expected complete outcome, got missing resources: {outcome:?}");
         };
         let procedures = serde_json::from_value::<Vec<ProcedureSummary>>(result)
@@ -4197,7 +4232,7 @@ mod tests {
         )
         .expect("resolve OLM through fixture nav_kv");
         match outcome {
-            HadOperationOutcome::Complete { result } => {
+            HadOperationOutcome::Complete { result, .. } => {
                 let nav_ref =
                     serde_json::from_value::<Option<NavRef>>(result).expect("decode nav ref");
                 assert_eq!(nav_ref, Some(NavRef::Navaid("OLM".to_string())));
@@ -4253,7 +4288,7 @@ mod tests {
         )
         .expect("suggest waypoint identifiers near view center");
         match outcome {
-            HadOperationOutcome::Complete { result } => {
+            HadOperationOutcome::Complete { result, .. } => {
                 let suggestions =
                     serde_json::from_value::<Vec<WaypointIdentifierSuggestion>>(result)
                         .expect("decode waypoint suggestions");
@@ -4339,7 +4374,7 @@ mod tests {
         )
         .expect("suggest nearby airways through fixture nav_kv");
         match outcome {
-            HadOperationOutcome::Complete { result } => {
+            HadOperationOutcome::Complete { result, .. } => {
                 let suggestions = serde_json::from_value::<Vec<AirwaySuggestion>>(result)
                     .expect("decode airway suggestions");
                 assert!(!suggestions.is_empty());
@@ -4370,7 +4405,7 @@ mod tests {
         )
         .expect("prepare airway presentation through fixture nav_kv")
         {
-            HadOperationOutcome::Complete { result } => {
+            HadOperationOutcome::Complete { result, .. } => {
                 serde_json::from_value::<AirwayPresentationPlan>(result)
                     .expect("decode airway presentation")
             }
@@ -4403,7 +4438,7 @@ mod tests {
         )
         .expect("materialize airway presentation selection through fixture nav_kv")
         {
-            HadOperationOutcome::Complete { result } => {
+            HadOperationOutcome::Complete { result, .. } => {
                 serde_json::from_value::<MaterializedAirwayResponse>(result)
                     .expect("decode materialized airway response")
             }
@@ -4472,7 +4507,7 @@ mod tests {
         )
         .expect("preview route entry")
         {
-            HadOperationOutcome::Complete { result } => {
+            HadOperationOutcome::Complete { result, .. } => {
                 serde_json::from_value::<FlightPlanEntryPreview>(result).expect("decode preview")
             }
             HadOperationOutcome::NeedResources { resources } => {
@@ -4532,7 +4567,7 @@ mod tests {
         )
         .expect("append route entry")
         {
-            HadOperationOutcome::Complete { result } => {
+            HadOperationOutcome::Complete { result, .. } => {
                 serde_json::from_value::<FlightPlanUiMutation>(result)
                     .expect("decode append mutation")
             }
@@ -4937,7 +4972,7 @@ mod tests {
         )
         .expect("append route entry to empty plan")
         {
-            HadOperationOutcome::Complete { result } => {
+            HadOperationOutcome::Complete { result, .. } => {
                 serde_json::from_value::<FlightPlanUiMutation>(result)
                     .expect("decode append mutation")
             }

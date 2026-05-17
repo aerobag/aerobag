@@ -1084,6 +1084,7 @@ enum ProductTaskValue {
     },
     BuiltStandaloneProduct {
         zip_path: PathBuf,
+        unpack_source_root: PathBuf,
         zip_sha256: Option<String>,
         zip_size_bytes: Option<u64>,
         source_version: String,
@@ -1091,6 +1092,7 @@ enum ProductTaskValue {
     },
     BuiltStaticTileProduct {
         zip_path: PathBuf,
+        unpack_source_root: PathBuf,
         zip_sha256: Option<String>,
         zip_size_bytes: Option<u64>,
         source_version: String,
@@ -1107,7 +1109,7 @@ enum ProductTaskValue {
     },
     PublishedStandaloneProduct {
         id: String,
-        source_zip_path: PathBuf,
+        unpack_source_root: PathBuf,
         published_zip: PathBuf,
         sha256: String,
         size_bytes: u64,
@@ -2618,10 +2620,17 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             build_world_basemap_product(&config)?;
                         let cache_hit = record.cache_hit;
                         let (zip_sha256, zip_size_bytes) = node_output_file_detail(&record, "zip");
+                        let unpack_source_root = zip_path
+                            .parent()
+                            .with_context(|| {
+                                format!("world basemap zip has no parent: {}", zip_path.display())
+                            })?
+                            .to_path_buf();
                         Ok(ProductTaskCompletion {
                             node_records: vec![record],
                             value: ProductTaskValue::BuiltStaticTileProduct {
                                 zip_path,
+                                unpack_source_root,
                                 zip_sha256,
                                 zip_size_bytes,
                                 source_version,
@@ -2694,10 +2703,17 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             )?;
                         let cache_hit = record.cache_hit;
                         let (zip_sha256, zip_size_bytes) = node_output_file_detail(&record, "zip");
+                        let unpack_source_root = zip_path
+                            .parent()
+                            .with_context(|| {
+                                format!("terrain zip has no parent: {}", zip_path.display())
+                            })?
+                            .to_path_buf();
                         Ok(ProductTaskCompletion {
                             node_records: vec![record],
                             value: ProductTaskValue::BuiltStandaloneProduct {
                                 zip_path,
+                                unpack_source_root,
                                 zip_sha256,
                                 zip_size_bytes,
                                 source_version,
@@ -2743,10 +2759,17 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             build_terrain_wide_product(&config, &regional_products)?;
                         let cache_hit = record.cache_hit;
                         let (zip_sha256, zip_size_bytes) = node_output_file_detail(&record, "zip");
+                        let unpack_source_root = zip_path
+                            .parent()
+                            .with_context(|| {
+                                format!("terrain wide zip has no parent: {}", zip_path.display())
+                            })?
+                            .to_path_buf();
                         Ok(ProductTaskCompletion {
                             node_records: vec![record],
                             value: ProductTaskValue::BuiltStandaloneProduct {
                                 zip_path,
+                                unpack_source_root,
                                 zip_sha256,
                                 zip_size_bytes,
                                 source_version,
@@ -2803,10 +2826,17 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             )?;
                         let cache_hit = record.cache_hit;
                         let (zip_sha256, zip_size_bytes) = node_output_file_detail(&record, "zip");
+                        let unpack_source_root = zip_path
+                            .parent()
+                            .with_context(|| {
+                                format!("shaded relief zip has no parent: {}", zip_path.display())
+                            })?
+                            .join("package");
                         Ok(ProductTaskCompletion {
                             node_records: vec![record],
                             value: ProductTaskValue::BuiltStaticTileProduct {
                                 zip_path,
+                                unpack_source_root,
                                 zip_sha256,
                                 zip_size_bytes,
                                 source_version,
@@ -2861,10 +2891,20 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             )?;
                         let cache_hit = record.cache_hit;
                         let (zip_sha256, zip_size_bytes) = node_output_file_detail(&record, "zip");
+                        let unpack_source_root = zip_path
+                            .parent()
+                            .with_context(|| {
+                                format!(
+                                    "shaded relief wide zip has no parent: {}",
+                                    zip_path.display()
+                                )
+                            })?
+                            .to_path_buf();
                         Ok(ProductTaskCompletion {
                             node_records: vec![record],
                             value: ProductTaskValue::BuiltStaticTileProduct {
                                 zip_path,
+                                unpack_source_root,
                                 zip_sha256,
                                 zip_size_bytes,
                                 source_version,
@@ -2878,6 +2918,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let built = match task_values_snapshot.get("build-world-basemap") {
                             Some(ProductTaskValue::BuiltStaticTileProduct {
                                 zip_path,
+                                unpack_source_root,
                                 zip_sha256,
                                 zip_size_bytes,
                                 source_version,
@@ -2885,6 +2926,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 ..
                             }) => (
                                 zip_path.clone(),
+                                unpack_source_root.clone(),
                                 zip_sha256.clone(),
                                 *zip_size_bytes,
                                 source_version.clone(),
@@ -2896,19 +2938,19 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             &config.build_root,
                             &built.0,
                             "world-basemap",
-                            built.1.as_deref(),
-                            built.2,
+                            built.2.as_deref(),
+                            built.3,
                         )?;
                         Ok(ProductTaskCompletion {
                             node_records: vec![],
                             value: ProductTaskValue::PublishedStandaloneProduct {
                                 id: "world-basemap".to_string(),
-                                source_zip_path: built.0,
+                                unpack_source_root: built.1,
                                 published_zip,
                                 sha256,
                                 size_bytes,
-                                source_version: built.3,
-                                source_fetched_at_utc: built.4,
+                                source_version: built.4,
+                                source_fetched_at_utc: built.5,
                             },
                             completion_detail: "published".to_string(),
                         })
@@ -2919,6 +2961,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let built = match task_values_snapshot.get(&task_id) {
                             Some(ProductTaskValue::BuiltStandaloneProduct {
                                 zip_path,
+                                unpack_source_root,
                                 zip_sha256,
                                 zip_size_bytes,
                                 source_version,
@@ -2926,6 +2969,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 ..
                             }) => (
                                 zip_path.clone(),
+                                unpack_source_root.clone(),
                                 zip_sha256.clone(),
                                 *zip_size_bytes,
                                 source_version.clone(),
@@ -2938,19 +2982,19 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             &config.build_root,
                             &built.0,
                             &product_id,
-                            built.1.as_deref(),
-                            built.2,
+                            built.2.as_deref(),
+                            built.3,
                         )?;
                         Ok(ProductTaskCompletion {
                             node_records: vec![],
                             value: ProductTaskValue::PublishedStandaloneProduct {
                                 id: product_id,
-                                source_zip_path: built.0,
+                                unpack_source_root: built.1,
                                 published_zip,
                                 sha256,
                                 size_bytes,
-                                source_version: built.3,
-                                source_fetched_at_utc: built.4,
+                                source_version: built.4,
+                                source_fetched_at_utc: built.5,
                             },
                             completion_detail: "published".to_string(),
                         })
@@ -2960,6 +3004,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let built = match task_values_snapshot.get(&task_id) {
                             Some(ProductTaskValue::BuiltStandaloneProduct {
                                 zip_path,
+                                unpack_source_root,
                                 zip_sha256,
                                 zip_size_bytes,
                                 source_version,
@@ -2967,6 +3012,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 ..
                             }) => (
                                 zip_path.clone(),
+                                unpack_source_root.clone(),
                                 zip_sha256.clone(),
                                 *zip_size_bytes,
                                 source_version.clone(),
@@ -2979,19 +3025,19 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             &config.build_root,
                             &built.0,
                             &product_id,
-                            built.1.as_deref(),
-                            built.2,
+                            built.2.as_deref(),
+                            built.3,
                         )?;
                         Ok(ProductTaskCompletion {
                             node_records: vec![],
                             value: ProductTaskValue::PublishedStandaloneProduct {
                                 id: product_id,
-                                source_zip_path: built.0,
+                                unpack_source_root: built.1,
                                 published_zip,
                                 sha256,
                                 size_bytes,
-                                source_version: built.3,
-                                source_fetched_at_utc: built.4,
+                                source_version: built.4,
+                                source_fetched_at_utc: built.5,
                             },
                             completion_detail: "published".to_string(),
                         })
@@ -3002,6 +3048,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let built = match task_values_snapshot.get(&task_id) {
                             Some(ProductTaskValue::BuiltStaticTileProduct {
                                 zip_path,
+                                unpack_source_root,
                                 zip_sha256,
                                 zip_size_bytes,
                                 source_version,
@@ -3009,6 +3056,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 ..
                             }) => (
                                 zip_path.clone(),
+                                unpack_source_root.clone(),
                                 zip_sha256.clone(),
                                 *zip_size_bytes,
                                 source_version.clone(),
@@ -3021,19 +3069,19 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             &config.build_root,
                             &built.0,
                             &product_id,
-                            built.1.as_deref(),
-                            built.2,
+                            built.2.as_deref(),
+                            built.3,
                         )?;
                         Ok(ProductTaskCompletion {
                             node_records: vec![],
                             value: ProductTaskValue::PublishedStandaloneProduct {
                                 id: product_id,
-                                source_zip_path: built.0,
+                                unpack_source_root: built.1,
                                 published_zip,
                                 sha256,
                                 size_bytes,
-                                source_version: built.3,
-                                source_fetched_at_utc: built.4,
+                                source_version: built.4,
+                                source_fetched_at_utc: built.5,
                             },
                             completion_detail: "published".to_string(),
                         })
@@ -3043,6 +3091,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let built = match task_values_snapshot.get(&task_id) {
                             Some(ProductTaskValue::BuiltStaticTileProduct {
                                 zip_path,
+                                unpack_source_root,
                                 zip_sha256,
                                 zip_size_bytes,
                                 source_version,
@@ -3050,6 +3099,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 ..
                             }) => (
                                 zip_path.clone(),
+                                unpack_source_root.clone(),
                                 zip_sha256.clone(),
                                 *zip_size_bytes,
                                 source_version.clone(),
@@ -3062,19 +3112,19 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             &config.build_root,
                             &built.0,
                             &product_id,
-                            built.1.as_deref(),
-                            built.2,
+                            built.2.as_deref(),
+                            built.3,
                         )?;
                         Ok(ProductTaskCompletion {
                             node_records: vec![],
                             value: ProductTaskValue::PublishedStandaloneProduct {
                                 id: product_id,
-                                source_zip_path: built.0,
+                                unpack_source_root: built.1,
                                 published_zip,
                                 sha256,
                                 size_bytes,
-                                source_version: built.3,
-                                source_fetched_at_utc: built.4,
+                                source_version: built.4,
+                                source_fetched_at_utc: built.5,
                             },
                             completion_detail: "published".to_string(),
                         })
@@ -3162,13 +3212,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             .map(|task_id| match task_values_snapshot.get(task_id) {
                                 Some(ProductTaskValue::PublishedStandaloneProduct {
                                     id,
-                                    source_zip_path,
+                                    unpack_source_root,
                                     published_zip,
                                     sha256,
                                     ..
                                 }) => {
                                     let unpack_strategy =
-                                        static_product_unpacked_strategy(id, source_zip_path)?;
+                                        static_product_unpacked_strategy(id, unpack_source_root)?;
                                     Ok(PublishedZipArtifact {
                                         unpack_strategy,
                                         published_zip_path: published_zip.clone(),
@@ -10468,35 +10518,18 @@ fn sync_unpacked_discovery_manifests(
 
 fn static_product_unpacked_strategy(
     id: &str,
-    source_zip_path: &Path,
+    unpack_source_root: &Path,
 ) -> anyhow::Result<PublishedZipUnpackStrategy> {
-    let source_root = source_zip_path
-        .parent()
-        .map(Path::to_path_buf)
-        .with_context(|| {
-            format!(
-                "static product source zip has no parent: {}",
-                source_zip_path.display()
-            )
-        })?;
-    let uses_staged_package_root = id
-        .strip_prefix("terrain-")
-        .or_else(|| id.strip_prefix("shaded-relief-"))
-        .is_some_and(|region_id| region_id != WIDE_ANGLE_REGION_ID);
-    if uses_staged_package_root {
-        let package_root = source_root.join("package");
-        if !package_root.is_dir() {
-            bail!(
-                "static product {} must unpack from staged package root {}, but it does not exist",
-                id,
-                package_root.display()
-            );
-        }
-        return Ok(PublishedZipUnpackStrategy::HardlinkZipMembers {
-            source_root: package_root,
-        });
+    if !unpack_source_root.is_dir() {
+        bail!(
+            "static product {} must unpack from declared source root {}, but it does not exist",
+            id,
+            unpack_source_root.display()
+        );
     }
-    Ok(PublishedZipUnpackStrategy::HardlinkZipMembers { source_root })
+    Ok(PublishedZipUnpackStrategy::HardlinkZipMembers {
+        source_root: unpack_source_root.to_path_buf(),
+    })
 }
 
 fn sync_product_level_unpacked(
@@ -20384,6 +20417,22 @@ mod tests {
                     .unwrap()
                     .expect("package root");
             assert_eq!(resolved, unpack_source_root);
+        }
+    }
+
+    #[test]
+    fn static_product_unpack_strategy_uses_declared_source_root() {
+        let temp = tempdir().expect("tempdir");
+        let terrain_root = temp.path().join("terrain-output");
+        fs::create_dir_all(&terrain_root).expect("create terrain root");
+
+        let strategy =
+            static_product_unpacked_strategy("terrain-ak", &terrain_root).expect("strategy");
+        match strategy {
+            PublishedZipUnpackStrategy::HardlinkZipMembers { source_root } => {
+                assert_eq!(source_root, terrain_root);
+            }
+            PublishedZipUnpackStrategy::ExtractZip => panic!("unexpected extract strategy"),
         }
     }
 

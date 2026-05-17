@@ -1154,7 +1154,7 @@ internal fun MapExplorerPage(
             onViewportChange(nextViewport)
         }
     }
-    LaunchedEffect(uiSession, viewport, surfaceSize, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.offlineRegions.visible) {
+    LaunchedEffect(uiSession, viewport, surfaceSize, density.density, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.offlineRegions.visible) {
         if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
             mapOverlayError = null
             return@LaunchedEffect
@@ -1181,7 +1181,12 @@ internal fun MapExplorerPage(
             currentCoroutineContext().ensureActive()
             val overlayStartMs = SystemClock.elapsedRealtime()
             val overlay = withContext(Dispatchers.IO) {
-                uiSession.queryMapOverlay(viewport, overlayWidthPx.toDouble(), overlayHeightPx.toDouble()) { resource ->
+                uiSession.queryMapOverlay(
+                    viewport,
+                    overlayWidthPx.toDouble(),
+                    overlayHeightPx.toDouble(),
+                    density.density.toDouble(),
+                ) { resource ->
                     fetchCoreResource(context, resource)
                 }
             }

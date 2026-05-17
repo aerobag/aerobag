@@ -654,11 +654,32 @@ pub fn get_map_overlay_in_session_json(
     width_px: f64,
     height_px: f64,
 ) -> Result<String, String> {
+    get_map_overlay_in_session_with_point_label_scale_json(
+        handle,
+        viewport_json,
+        width_px,
+        height_px,
+        1.0,
+    )
+}
+
+pub fn get_map_overlay_in_session_with_point_label_scale_json(
+    handle: u64,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+    point_label_scale: f64,
+) -> Result<String, String> {
     let viewport: app_core::MapViewport =
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
-    let overlay =
-        app_core::get_map_overlay_in_session(handle as u32, viewport, width_px, height_px)
-            .map_err(|err| err.to_string())?;
+    let overlay = app_core::get_map_overlay_in_session_with_point_label_scale(
+        handle as u32,
+        viewport,
+        width_px,
+        height_px,
+        point_label_scale,
+    )
+    .map_err(|err| err.to_string())?;
     serde_json::to_string(&overlay).map_err(|err| err.to_string())
 }
 
@@ -2185,6 +2206,29 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
     let result = (|| {
         let viewport = get_java_string(&mut env, viewport_json)?;
         get_map_overlay_in_session_json(handle as u64, &viewport, width_px, height_px)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getMapOverlayInSessionWithPointLabelScaleJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    viewport_json: JString,
+    width_px: f64,
+    height_px: f64,
+    point_label_scale: f64,
+) -> jstring {
+    let result = (|| {
+        let viewport = get_java_string(&mut env, viewport_json)?;
+        get_map_overlay_in_session_with_point_label_scale_json(
+            handle as u64,
+            &viewport,
+            width_px,
+            height_px,
+            point_label_scale,
+        )
     })();
     return_string(&mut env, result)
 }

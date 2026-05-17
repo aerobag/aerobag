@@ -1007,6 +1007,7 @@ class NativeUiSession internal constructor(
         viewport: MapViewportState,
         widthPx: Double,
         heightPx: Double,
+        pointLabelScale: Double,
         fetchResource: (CoreResourceRequest) -> ByteArray,
     ): MapOverlayQueryResult {
         val viewportJson = json.encodeToString(viewport.toWire())
@@ -1014,7 +1015,13 @@ class NativeUiSession internal constructor(
         return json.decodeFromJsonElement<WireMapOverlayQueryResult>(
             store.runPagedSessionOperationElement(
                 operation = {
-                    bridge.getMapOverlayInSessionJson(handle, viewportJson, widthPx, heightPx)
+                    bridge.getMapOverlayInSessionWithPointLabelScaleJson(
+                        handle,
+                        viewportJson,
+                        widthPx,
+                        heightPx,
+                        pointLabelScale,
+                    )
                 },
                 fetchSessionResource = fetchResource,
                 ingestSessionResource = { resource, bytes ->

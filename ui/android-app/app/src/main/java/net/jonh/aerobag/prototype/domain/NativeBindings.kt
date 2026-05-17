@@ -306,6 +306,14 @@ interface NativeBridge {
         heightPx: Double,
     ): String
 
+    fun getMapOverlayInSessionWithPointLabelScaleJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+        pointLabelScale: Double,
+    ): String
+
     fun getMapSelectionInSessionJson(
         handle: Long,
         viewportJson: String,
@@ -672,6 +680,14 @@ object NativeBindings : NativeBridge {
         viewportJson: String,
         widthPx: Double,
         heightPx: Double,
+    ): String
+
+    external override fun getMapOverlayInSessionWithPointLabelScaleJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+        pointLabelScale: Double,
     ): String
 
     external override fun getMapSelectionInSessionJson(

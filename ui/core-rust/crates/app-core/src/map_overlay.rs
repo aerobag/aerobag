@@ -1112,6 +1112,40 @@ pub fn query_map_overlay(
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
 ) -> MapOverlayQueryResult {
+    query_map_overlay_with_point_label_scale(
+        viewport,
+        width_px,
+        height_px,
+        config,
+        display_vectors,
+        display_metars,
+        offline_region_records,
+        obstacle_context,
+        vector_tile_cache,
+        metar_tile_cache,
+        metar_payload,
+        airspace_feature_cache,
+        tfr_payload,
+        1.0,
+    )
+}
+
+pub fn query_map_overlay_with_point_label_scale(
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    config: &MapOverlayConfig,
+    display_vectors: bool,
+    display_metars: bool,
+    offline_region_records: &[OfflineRegionRecord],
+    obstacle_context: Option<&ObstacleOverlayContext>,
+    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
+    metar_tile_cache: &HashMap<String, MetarTilePayload>,
+    metar_payload: Option<&MetarProductPayload>,
+    airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
+    tfr_payload: Option<&TfrProductPayload>,
+    point_label_scale: f64,
+) -> MapOverlayQueryResult {
     let mut needed_vector_tiles = Vec::new();
     let mut visible_features = Vec::new();
     let mut limit_hit = false;
@@ -1262,7 +1296,11 @@ pub fn query_map_overlay(
         labels.extend(tfrs.labels);
         labels
     };
-    suppress_overlapping_vector_labels(&mut visible_features, &mut airspace_labels);
+    suppress_overlapping_vector_labels(
+        &mut visible_features,
+        &mut airspace_labels,
+        point_label_scale,
+    );
 
     MapOverlayQueryResult {
         needed_vector_tiles: merge_aggregate_vector_tile_requests(
@@ -3118,7 +3156,9 @@ enum LabelRef {
 fn suppress_overlapping_vector_labels(
     visible_features: &mut [VisibleMapFeature],
     airspace_labels: &mut Vec<AirspaceDisplayLabel>,
+    point_label_scale: f64,
 ) {
+    let point_label_scale = point_label_scale.max(0.1);
     let mut candidates = Vec::<(LabelRef, LabelRect)>::new();
     for (index, label) in airspace_labels.iter().enumerate() {
         if let Some(rect) = airspace_label_rect(label) {
@@ -3129,7 +3169,7 @@ fn suppress_overlapping_vector_labels(
         }
     }
     for (index, feature) in visible_features.iter().enumerate() {
-        if let Some(rect) = point_feature_label_rect(feature) {
+        if let Some(rect) = point_feature_label_rect(feature, point_label_scale) {
             candidates.push((
                 LabelRef::Point(index),
                 rect.padded(LABEL_COLLISION_PADDING_PX),
@@ -3181,7 +3221,7 @@ fn airspace_label_rect(label: &AirspaceDisplayLabel) -> Option<LabelRect> {
     Some(centered_rect(label.screen_x, label.screen_y, width, height))
 }
 
-fn point_feature_label_rect(feature: &VisibleMapFeature) -> Option<LabelRect> {
+fn point_feature_label_rect(feature: &VisibleMapFeature, scale: f64) -> Option<LabelRect> {
     let text = feature.label.trim();
     if text.is_empty() || !feature.screen_x.is_finite() || !feature.screen_y.is_finite() {
         return None;
@@ -3189,20 +3229,20 @@ fn point_feature_label_rect(feature: &VisibleMapFeature) -> Option<LabelRect> {
     let style = feature.style_class.to_ascii_lowercase();
     let kind = feature.kind.to_ascii_lowercase();
     let label_y = if style == "airport" || kind == "airport" {
-        -24.0
+        -24.0 * scale
     } else if style == "nav" || kind.contains("vor") {
-        -24.0
+        -24.0 * scale
     } else if style.starts_with("obstacle") || kind == "obs" || kind == "obstacle" {
-        -14.0
+        -14.0 * scale
     } else {
-        -15.0
+        -15.0 * scale
     };
     let font_px = if style.starts_with("obstacle") {
-        12.0
+        12.0 * scale
     } else {
-        14.0
+        14.0 * scale
     };
-    let width = text.chars().count() as f64 * font_px * 0.64 + 8.0;
+    let width = text.chars().count() as f64 * font_px * 0.64 + 8.0 * scale;
     Some(centered_rect(
         feature.screen_x,
         feature.screen_y + label_y,
@@ -5969,7 +6009,7 @@ mod tests {
         ];
         let mut airspace_labels = Vec::new();
 
-        suppress_overlapping_vector_labels(&mut features, &mut airspace_labels);
+        suppress_overlapping_vector_labels(&mut features, &mut airspace_labels, 1.0);
 
         assert_eq!(features[0].label, "");
         assert_eq!(features[1].label, "ABC");
@@ -5997,10 +6037,32 @@ mod tests {
             screen_y: 100.0,
         }];
 
-        suppress_overlapping_vector_labels(&mut features, &mut airspace_labels);
+        suppress_overlapping_vector_labels(&mut features, &mut airspace_labels, 1.0);
 
         assert!(airspace_labels.is_empty());
         assert_eq!(features[0].label, "ABC");
+    }
+
+    #[test]
+    fn scaled_point_label_rects_match_android_drawn_density() {
+        let mut features = vec![
+            test_visible_feature("fix:LONGA", "fix", "fix", "LONGA", 100.0, 100.0),
+            test_visible_feature("fix:LONGB", "fix", "fix", "LONGB", 100.0, 130.0),
+        ];
+        let mut airspace_labels = Vec::new();
+
+        suppress_overlapping_vector_labels(&mut features, &mut airspace_labels, 1.0);
+        assert_eq!(features[0].label, "LONGA");
+        assert_eq!(features[1].label, "LONGB");
+
+        let mut features = vec![
+            test_visible_feature("fix:LONGA", "fix", "fix", "LONGA", 100.0, 100.0),
+            test_visible_feature("fix:LONGB", "fix", "fix", "LONGB", 100.0, 130.0),
+        ];
+        suppress_overlapping_vector_labels(&mut features, &mut airspace_labels, 3.0);
+
+        assert_eq!(features[0].label, "");
+        assert_eq!(features[1].label, "LONGB");
     }
 
     #[test]

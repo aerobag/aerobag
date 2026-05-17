@@ -25,10 +25,10 @@ use crate::{
     map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
     planning::NavElementUiView,
     playback::PlaybackSessionState,
-    project_nav_symbol_feature, query_map_overlay, query_map_selection, state,
-    AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
-    AirspaceReferenceTilePayload, AirwayPresentationPlan, AppError, AppErrorKind, AppEvent,
-    AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
+    project_nav_symbol_feature, query_map_overlay, query_map_overlay_with_point_label_scale,
+    query_map_selection, state, AirportPlateAvailability, AirspaceFeaturePayload,
+    AirspaceLabelTilePayload, AirspaceReferenceTilePayload, AirwayPresentationPlan, AppError,
+    AppErrorKind, AppEvent, AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
     FlightPlanRowActionExecution, FlightPlanRowActionId, GuidanceState, LatLon, LegDisplayElement,
     MapOverlayConfig, MapOverlayQueryResult, MapOverlayWarning, MapSelectionSessionAction,
     MapViewport, MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore,
@@ -2388,6 +2388,16 @@ pub fn get_map_overlay_in_session(
     width_px: f64,
     height_px: f64,
 ) -> AppResult<HadOperationOutcome> {
+    get_map_overlay_in_session_with_point_label_scale(handle, viewport, width_px, height_px, 1.0)
+}
+
+pub fn get_map_overlay_in_session_with_point_label_scale(
+    handle: u32,
+    viewport: MapViewport,
+    width_px: f64,
+    height_px: f64,
+    point_label_scale: f64,
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     if !session.map_layer_state.vectors.visible
@@ -2420,7 +2430,7 @@ pub fn get_map_overlay_in_session(
     } else {
         Vec::new()
     };
-    let mut overlay = query_map_overlay(
+    let mut overlay = query_map_overlay_with_point_label_scale(
         &viewport,
         width_px,
         height_px,
@@ -2434,6 +2444,7 @@ pub fn get_map_overlay_in_session(
         session.metar_payload.as_ref(),
         &session.airspace_feature_cache,
         session.tfr_payload.as_ref(),
+        point_label_scale,
     );
     if session.map_layer_state.vectors.visible {
         overlay.flight_plan_features =

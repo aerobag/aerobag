@@ -2637,32 +2637,7 @@ fn weather_overlay_resources(
             {
                 resources.extend(live_feed_resources);
             }
-        } else {
-            extend_package_resource_requests(
-                session,
-                &mut resources,
-                "weather/metars",
-                "metars",
-                "metars.json",
-                false,
-            );
         }
-        extend_package_resource_requests(
-            session,
-            &mut resources,
-            "weather/pireps",
-            "metars",
-            "pireps.json",
-            false,
-        );
-        extend_package_resource_requests(
-            session,
-            &mut resources,
-            "weather/tafs",
-            "metars",
-            "tafs.json",
-            false,
-        );
     }
     if overlay.needed_tfrs {
         extend_package_resource_requests(
@@ -2673,24 +2648,6 @@ fn weather_overlay_resources(
             "tfrs.json",
             true,
         );
-    }
-    if !overlay.needed_metar_tiles.is_empty() {
-        let template = session
-            .map_overlay_config
-            .metar_layer
-            .as_ref()
-            .and_then(|layer| layer.tile_path_template.as_deref())
-            .unwrap_or("points/metars/{z}/{x}/{y}.json");
-        for tile in &overlay.needed_metar_tiles {
-            extend_package_resource_requests(
-                session,
-                &mut resources,
-                &format!("weather/metar_tile/{}/{}/{}", tile.z, tile.x, tile.y),
-                "metars",
-                &apply_tile_path_template(template, tile.z, tile.x, tile.y),
-                true,
-            );
-        }
     }
     dedupe_resource_requests(resources)
 }
@@ -2710,6 +2667,7 @@ fn extend_package_resource_requests(
         optional,
     ) {
         Ok(mut requested) => resources.append(&mut requested),
+        Err(_) if optional => {}
         Err(message) => resources.push(CoreResourceRequest {
             id: target_resource_id.to_string(),
             address: format!("publication-error:{message}"),
@@ -2724,13 +2682,6 @@ fn dedupe_resource_requests(resources: Vec<CoreResourceRequest>) -> Vec<CoreReso
         by_id.entry(resource.id.clone()).or_insert(resource);
     }
     by_id.into_values().collect()
-}
-
-fn apply_tile_path_template(template: &str, z: u32, x: u32, y: u32) -> String {
-    template
-        .replace("{z}", &z.to_string())
-        .replace("{x}", &x.to_string())
-        .replace("{y}", &y.to_string())
 }
 
 pub fn get_map_selection_in_session(
@@ -5250,7 +5201,7 @@ mod tests {
     }
 
     #[test]
-    fn sparse_metar_tile_resources_are_optional_and_cache_as_empty() {
+    fn removed_fast_product_packages_do_not_abort_vector_overlay_resources() {
         let init = create_ui_session(
             minimal_vector_manifest_json(),
             FlightPlan::default(),
@@ -5283,18 +5234,13 @@ mod tests {
             init.handle,
             "publication/bundle/bundle_fast.json",
             br#"{
-                "packages": [
-                    {
-                        "id": "metars",
-                        "family_id": "metars",
-                        "filename": "metars_hash.zip",
-                        "relative_path": "metars_hash.zip"
-                    }
-                ]
+                "packages": []
             }"#,
         )
         .expect("ingest bundle");
         let mut overlay = empty_map_overlay_query();
+        overlay.needed_metars = true;
+        overlay.needed_tfrs = true;
         overlay.needed_metar_tiles.push(crate::VectorTileRequest {
             layer: "metars".to_string(),
             z: 6,
@@ -5307,21 +5253,13 @@ mod tests {
             let session = sessions.get(&init.handle).expect("session");
             weather_overlay_resources(session, &overlay)
         };
-        let metar_tile_request = requests
-            .iter()
-            .find(|request| request.id == "weather/metar_tile/6/8/22")
-            .expect("metar tile request");
-        assert!(metar_tile_request.optional);
-
-        ingest_resource_in_session(init.handle, "weather/metar_tile/6/8/22", &[])
-            .expect("ingest empty sparse tile");
-        let sessions = lock_sessions();
-        let session = sessions.get(&init.handle).expect("session");
-        let payload = session
-            .metar_tile_cache
-            .get(&crate::tile_key("metars", 6, 8, 22))
-            .expect("empty metar tile cached");
-        assert!(payload.records.is_empty());
+        assert!(
+            requests
+                .iter()
+                .all(|request| !request.address.starts_with("publication-error:")),
+            "missing live-feed products must not poison unrelated overlay resource loading: {requests:?}"
+        );
+        assert!(requests.is_empty());
     }
 
     #[test]

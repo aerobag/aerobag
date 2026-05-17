@@ -2099,6 +2099,7 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
         let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, handle)?;
         session.live_feeds.ingest_resource(resource_id, bytes)?;
+        install_live_feed_payloads(session)?;
         return Ok(());
     }
     if resource_id.starts_with("publication/") {
@@ -2202,6 +2203,21 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
         kind: AppErrorKind::UnsupportedOperation,
         message: format!("unsupported session resource id: {resource_id}"),
     })
+}
+
+fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
+    if let Some(metars_value) = session.live_feeds.product_state_manifest("metars").cloned() {
+        let mut payload: MetarProductPayload =
+            serde_json::from_value(metars_value).map_err(|err| AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message: format!("failed to parse live-feed METAR state: {err}"),
+            })?;
+        if let Some(pireps) = session.pending_pireps.clone() {
+            payload.pireps = pireps;
+        }
+        session.metar_payload = Some(payload);
+    }
+    Ok(())
 }
 
 fn parse_metar_tile_resource_path(resource_id: &str, rest: &str) -> AppResult<(u32, u32, u32)> {
@@ -2614,14 +2630,23 @@ fn weather_overlay_resources(
 ) -> Vec<CoreResourceRequest> {
     let mut resources = Vec::new();
     if overlay.needed_metars {
-        extend_package_resource_requests(
-            session,
-            &mut resources,
-            "weather/metars",
-            "metars",
-            "metars.json",
-            false,
-        );
+        if session.live_feeds.has_product_current_version("metars") {
+            if let HadOperationOutcome::NeedResources {
+                resources: live_feed_resources,
+            } = session.live_feeds.sync_outcome()
+            {
+                resources.extend(live_feed_resources);
+            }
+        } else {
+            extend_package_resource_requests(
+                session,
+                &mut resources,
+                "weather/metars",
+                "metars",
+                "metars.json",
+                false,
+            );
+        }
         extend_package_resource_requests(
             session,
             &mut resources,

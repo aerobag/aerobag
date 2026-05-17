@@ -21,9 +21,11 @@ pub struct LiveFeedsState {
 #[derive(Debug, Clone, PartialEq, Default)]
 struct LiveFeedProductState {
     current_version: Option<String>,
+    loaded_version: Option<String>,
     version_manifest_url: Option<String>,
     state_url: Option<String>,
     expected_state_sha256: Option<String>,
+    delta_from_previous: Option<LiveFeedDeltaRef>,
     version_manifest: Option<Value>,
     state_manifest: Option<Value>,
 }
@@ -69,6 +71,8 @@ struct CurrentProduct {
 struct VersionManifest {
     product: String,
     version: String,
+    #[serde(default)]
+    delta_from_previous: Option<LiveFeedDeltaRef>,
     state: VersionStateRef,
 }
 
@@ -76,6 +80,26 @@ struct VersionManifest {
 struct VersionStateRef {
     url: String,
     state_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct LiveFeedDeltaRef {
+    from_version: String,
+    from_state_sha256: String,
+    to_version: String,
+    to_state_sha256: String,
+    url: String,
+    #[serde(default)]
+    blob_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct MetarStationDelta {
+    product: String,
+    from_version: String,
+    to_version: String,
+    changed: serde_json::Map<String, Value>,
+    removed: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,6 +188,7 @@ impl LiveFeedsState {
             }
             entry.state_url = Some(manifest.state.url);
             entry.expected_state_sha256 = Some(manifest.state.state_sha256);
+            entry.delta_from_previous = manifest.delta_from_previous;
             entry.version_manifest =
                 Some(serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?);
             return Ok(());
@@ -184,6 +209,66 @@ impl LiveFeedsState {
                 }
             }
             entry.state_manifest = Some(parsed);
+            entry.loaded_version = Some(version);
+            return Ok(());
+        }
+        if let Some(rest) = resource_id.strip_prefix("live_feeds/delta/") {
+            let (product, from_version, to_version) = split_product_from_to(resource_id, rest)?;
+            if product != "metars" {
+                return Err(invalid_live_feed(format!(
+                    "unsupported live feed delta product: {product}"
+                )));
+            }
+            let entry = self.products.entry(product.clone()).or_default();
+            if entry.current_version.as_deref() != Some(to_version.as_str()) {
+                return Ok(());
+            }
+            let delta_ref = entry.delta_from_previous.clone().ok_or_else(|| {
+                invalid_live_feed(format!("delta resource {resource_id} was not expected"))
+            })?;
+            if delta_ref.from_version != from_version || delta_ref.to_version != to_version {
+                return Err(invalid_live_feed(format!(
+                    "delta resource {resource_id} does not match version manifest"
+                )));
+            }
+            if let Some(expected_blob_sha256) = &delta_ref.blob_sha256 {
+                let actual_blob_sha256 = sha256_hex(bytes);
+                if &actual_blob_sha256 != expected_blob_sha256 {
+                    return Err(invalid_live_feed(format!(
+                        "delta blob hash mismatch for {resource_id}: expected {expected_blob_sha256}, got {actual_blob_sha256}"
+                    )));
+                }
+            }
+            let current_state = entry.state_manifest.as_ref().ok_or_else(|| {
+                invalid_live_feed(format!(
+                    "cannot apply {resource_id}: local METAR state is missing"
+                ))
+            })?;
+            if entry.loaded_version.as_deref() != Some(from_version.as_str()) {
+                return Err(invalid_live_feed(format!(
+                    "cannot apply {resource_id}: local version is {:?}",
+                    entry.loaded_version
+                )));
+            }
+            let current_state_sha256 = canonical_json_sha256(current_state)?;
+            if current_state_sha256 != delta_ref.from_state_sha256 {
+                return Err(invalid_live_feed(format!(
+                    "local state hash mismatch for {from_version}: expected {}, got {}",
+                    delta_ref.from_state_sha256, current_state_sha256
+                )));
+            }
+            let delta: MetarStationDelta =
+                serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?;
+            let next_state = apply_metar_station_delta(current_state, &delta)?;
+            let next_state_sha256 = canonical_json_sha256(&next_state)?;
+            if next_state_sha256 != delta_ref.to_state_sha256 {
+                return Err(invalid_live_feed(format!(
+                    "delta target hash mismatch for {to_version}: expected {}, got {}",
+                    delta_ref.to_state_sha256, next_state_sha256
+                )));
+            }
+            entry.state_manifest = Some(next_state);
+            entry.loaded_version = Some(to_version);
             return Ok(());
         }
         Err(invalid_live_feed(format!(
@@ -196,9 +281,22 @@ impl LiveFeedsState {
     }
 
     pub fn product_state_manifest(&self, product: &str) -> Option<&Value> {
+        let entry = self.products.get(product)?;
+        if !entry
+            .current_version
+            .as_deref()
+            .is_some_and(|version| entry.loaded_version.as_deref() == Some(version))
+        {
+            return None;
+        }
+        entry.state_manifest.as_ref()
+    }
+
+    pub fn has_product_current_version(&self, product: &str) -> bool {
         self.products
             .get(product)
-            .and_then(|entry| entry.state_manifest.as_ref())
+            .and_then(|entry| entry.current_version.as_ref())
+            .is_some()
     }
 
     fn register_product(
@@ -228,8 +326,8 @@ impl LiveFeedsState {
         entry.version_manifest_url = Some(version_manifest_url);
         entry.state_url = state_url;
         entry.expected_state_sha256 = state_sha256;
+        entry.delta_from_previous = None;
         entry.version_manifest = None;
-        entry.state_manifest = None;
         Ok(())
     }
 
@@ -258,14 +356,26 @@ impl LiveFeedsState {
                     continue;
                 }
             }
-            if entry.state_manifest.is_none() {
-                if let Some(url) = &entry.state_url {
-                    resources.push(CoreResourceRequest {
-                        id: format!("live_feeds/state/{product}/{version}"),
-                        address: live_feed_address(url),
-                        optional: false,
-                    });
-                }
+            if entry.loaded_version.as_deref() == Some(version.as_str()) {
+                continue;
+            }
+            if let Some(delta) = entry.applicable_delta(product) {
+                resources.push(CoreResourceRequest {
+                    id: format!(
+                        "live_feeds/delta/{}/{}/{}",
+                        product, delta.from_version, delta.to_version
+                    ),
+                    address: live_feed_address(&delta.url),
+                    optional: false,
+                });
+                continue;
+            }
+            if let Some(url) = &entry.state_url {
+                resources.push(CoreResourceRequest {
+                    id: format!("live_feeds/state/{product}/{version}"),
+                    address: live_feed_address(url),
+                    optional: false,
+                });
             }
         }
         resources
@@ -279,7 +389,10 @@ impl LiveFeedsState {
                 product: product.clone(),
                 current_version: entry.current_version.clone(),
                 version_manifest_loaded: entry.version_manifest.is_some(),
-                state_manifest_loaded: entry.state_manifest.is_some(),
+                state_manifest_loaded: entry
+                    .current_version
+                    .as_deref()
+                    .is_some_and(|version| entry.loaded_version.as_deref() == Some(version)),
             })
             .collect();
         products.sort_by(|left, right| left.product.cmp(&right.product));
@@ -289,7 +402,11 @@ impl LiveFeedsState {
     fn invalidations(&self) -> Vec<UiInvalidation> {
         let mut invalidations = Vec::new();
         for (product, entry) in &self.products {
-            if entry.state_manifest.is_none() {
+            if !entry
+                .current_version
+                .as_deref()
+                .is_some_and(|version| entry.loaded_version.as_deref() == Some(version))
+            {
                 continue;
             }
             match product.as_str() {
@@ -312,6 +429,23 @@ impl LiveFeedsState {
     }
 }
 
+impl LiveFeedProductState {
+    fn applicable_delta(&self, product: &str) -> Option<&LiveFeedDeltaRef> {
+        if product != "metars" {
+            return None;
+        }
+        let delta = self.delta_from_previous.as_ref()?;
+        if self.loaded_version.as_deref() == Some(delta.from_version.as_str())
+            && self.current_version.as_deref() == Some(delta.to_version.as_str())
+            && self.state_manifest.is_some()
+        {
+            Some(delta)
+        } else {
+            None
+        }
+    }
+}
+
 fn split_product_version(resource_id: &str, rest: &str) -> AppResult<(String, String)> {
     let Some((product, version)) = rest.split_once('/') else {
         return Err(invalid_live_feed(format!(
@@ -319,6 +453,20 @@ fn split_product_version(resource_id: &str, rest: &str) -> AppResult<(String, St
         )));
     };
     Ok((product.to_string(), version.to_string()))
+}
+
+fn split_product_from_to(resource_id: &str, rest: &str) -> AppResult<(String, String, String)> {
+    let parts = rest.split('/').collect::<Vec<_>>();
+    if parts.len() != 3 || parts.iter().any(|part| part.is_empty()) {
+        return Err(invalid_live_feed(format!(
+            "invalid live feed resource id: {resource_id}"
+        )));
+    }
+    Ok((
+        parts[0].to_string(),
+        parts[1].to_string(),
+        parts[2].to_string(),
+    ))
 }
 
 fn live_feed_address(relative_url: &str) -> String {
@@ -339,7 +487,54 @@ fn validate_relative_url(url: &str) -> AppResult<()> {
 
 fn canonical_json_sha256(value: &Value) -> AppResult<String> {
     let bytes = serde_json::to_vec(value).map_err(invalid_live_feed_json)?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    Ok(sha256_hex(&bytes))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn apply_metar_station_delta(from_state: &Value, delta: &MetarStationDelta) -> AppResult<Value> {
+    if delta.product != "metars" {
+        return Err(invalid_live_feed(format!(
+            "METAR delta had product {}",
+            delta.product
+        )));
+    }
+    let from_version = from_state
+        .get("version_label")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_live_feed("METAR state missing version_label".to_string()))?;
+    if from_version != delta.from_version {
+        return Err(invalid_live_feed(format!(
+            "delta starts at {}, but local METAR state is {}",
+            delta.from_version, from_version
+        )));
+    }
+    let mut result = from_state.clone();
+    let record_count = {
+        let records = result
+            .get_mut("metars_by_station")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| {
+                invalid_live_feed("METAR state missing metars_by_station object".to_string())
+            })?;
+        for station_id in &delta.removed {
+            records.remove(station_id);
+        }
+        for (station_id, record) in &delta.changed {
+            records.insert(station_id.clone(), record.clone());
+        }
+        records.len()
+    };
+    let version = result
+        .get_mut("version_label")
+        .ok_or_else(|| invalid_live_feed("METAR state missing version_label".to_string()))?;
+    *version = Value::String(delta.to_version.clone());
+    if let Some(count) = result.get_mut("metar_count") {
+        *count = serde_json::json!(record_count);
+    }
+    Ok(result)
 }
 
 fn invalid_live_feed_json(err: impl std::fmt::Display) -> AppError {
@@ -356,6 +551,53 @@ fn invalid_live_feed(message: String) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn metar_state(version: &str, stations: &[(&str, &str)]) -> Value {
+        let mut metars_by_station = serde_json::Map::new();
+        for (station_id, raw_text) in stations {
+            metars_by_station.insert(
+                (*station_id).to_string(),
+                serde_json::json!({
+                    "raw_text": raw_text,
+                    "station_id": station_id,
+                    "latitude": 47.0,
+                    "longitude": -122.0,
+                    "flight_category": "VFR"
+                }),
+            );
+        }
+        serde_json::json!({
+            "schema_version": 2,
+            "version_label": version,
+            "metar_count": metars_by_station.len(),
+            "metars_by_station": metars_by_station
+        })
+    }
+
+    fn metar_delta(from: &Value, to: &Value) -> Value {
+        let from_version = from["version_label"].as_str().unwrap();
+        let to_version = to["version_label"].as_str().unwrap();
+        let from_records = from["metars_by_station"].as_object().unwrap();
+        let to_records = to["metars_by_station"].as_object().unwrap();
+        let changed = to_records
+            .iter()
+            .filter(|(station_id, record)| from_records.get(*station_id) != Some(*record))
+            .map(|(station_id, record)| (station_id.clone(), record.clone()))
+            .collect::<serde_json::Map<_, _>>();
+        let removed = from_records
+            .keys()
+            .filter(|station_id| !to_records.contains_key(*station_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "schema_version": 1,
+            "product": "metars",
+            "from_version": from_version,
+            "to_version": to_version,
+            "changed": changed,
+            "removed": removed
+        })
+    }
 
     #[test]
     fn sync_requests_current_manifest_first() {
@@ -415,5 +657,129 @@ mod tests {
             panic!("expected version request");
         };
         assert_eq!(resources[0].id, "live_feeds/version/nexrad/v2");
+    }
+
+    #[test]
+    fn metar_live_feed_prefers_applicable_delta_and_invalidates_overlay() {
+        let v1 = metar_state("v1", &[("KAAA", "METAR KAAA 010000Z AUTO")]);
+        let v2 = metar_state(
+            "v2",
+            &[
+                ("KAAA", "METAR KAAA 010005Z AUTO"),
+                ("KBBB", "METAR KBBB 010005Z AUTO"),
+            ],
+        );
+        let delta = metar_delta(&v1, &v2);
+        let delta_bytes = serde_json::to_vec(&delta).unwrap();
+        let mut state = LiveFeedsState::default();
+        state
+            .ingest_resource(
+                "live_feeds/current",
+                format!(
+                    r#"{{
+                    "products": {{
+                        "metars": {{
+                            "current": "v1",
+                            "version_manifest_url": "versions/metars/v1.json",
+                            "state_url": "states/metars/v1.json",
+                            "state_sha256": "{}"
+                        }}
+                    }}
+                }}"#,
+                    canonical_json_sha256(&v1).unwrap()
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        state
+            .ingest_resource(
+                "live_feeds/version/metars/v1",
+                format!(
+                    r#"{{
+                    "product": "metars",
+                    "version": "v1",
+                    "state": {{
+                        "url": "states/metars/v1.json",
+                        "state_sha256": "{}"
+                    }}
+                }}"#,
+                    canonical_json_sha256(&v1).unwrap()
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        state
+            .ingest_resource(
+                "live_feeds/state/metars/v1",
+                &serde_json::to_vec(&v1).unwrap(),
+            )
+            .unwrap();
+
+        state
+            .ingest_sse_event(LiveFeedSseEvent {
+                id: Some("metars:v2".to_string()),
+                event: Some("live-feed-current".to_string()),
+                data: r#"{
+                    "product": "metars",
+                    "version": "v2",
+                    "version_manifest_url": "versions/metars/v2.json"
+                }"#
+                .to_string(),
+            })
+            .unwrap();
+        let HadOperationOutcome::NeedResources { resources } = state.sync_outcome() else {
+            panic!("expected version request");
+        };
+        assert_eq!(resources[0].id, "live_feeds/version/metars/v2");
+
+        state
+            .ingest_resource(
+                "live_feeds/version/metars/v2",
+                format!(
+                    r#"{{
+                    "product": "metars",
+                    "version": "v2",
+                    "previous": "v1",
+                    "state": {{
+                        "url": "states/metars/v2.json",
+                        "state_sha256": "{}"
+                    }},
+                    "delta_from_previous": {{
+                        "from_version": "v1",
+                        "from_state_sha256": "{}",
+                        "to_version": "v2",
+                        "to_state_sha256": "{}",
+                        "url": "deltas/metars/v1__v2.json",
+                        "blob_sha256": "{}"
+                    }}
+                }}"#,
+                    canonical_json_sha256(&v2).unwrap(),
+                    canonical_json_sha256(&v1).unwrap(),
+                    canonical_json_sha256(&v2).unwrap(),
+                    sha256_hex(&delta_bytes),
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        let HadOperationOutcome::NeedResources { resources } = state.sync_outcome() else {
+            panic!("expected delta request");
+        };
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].id, "live_feeds/delta/metars/v1/v2");
+        assert_eq!(
+            resources[0].address,
+            "/live-feeds/deltas/metars/v1__v2.json"
+        );
+
+        state
+            .ingest_resource("live_feeds/delta/metars/v1/v2", &delta_bytes)
+            .unwrap();
+        assert_eq!(state.product_state_manifest("metars"), Some(&v2));
+        let outcome = state.sync_outcome_with_invalidations();
+        let HadOperationOutcome::Complete { invalidations, .. } = outcome else {
+            panic!("expected complete");
+        };
+        assert!(invalidations.contains(&UiInvalidation::MapOverlay));
+        assert!(invalidations.contains(&UiInvalidation::DebugPanel));
     }
 }

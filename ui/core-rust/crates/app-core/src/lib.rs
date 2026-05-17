@@ -74,6 +74,7 @@ pub use navdb_types::{
 };
 pub use navkv::{
     nav_kv_key_for_query, NavKvLookup, NavKvLookupDiagnostic, NavKvQuery, NavKvRoot, NavKvStore,
+    NAV_DB_CONTRACT_KEY, REQUIRED_NAV_DB_CONTRACT_VERSION,
 };
 pub use ownship::{
     push_sample, register_source, set_policy, situation_ring_candidates, update_source_status,
@@ -87,15 +88,15 @@ pub use ownship::{
 pub use package_management::{
     default_offline_package_preferences, initialize_offline_packages, plan_offline_packages,
     reduce_offline_packages, reduce_offline_packages_controller, BundleManifest,
-    BundlePackageArtifact, CurrentArtifactsBundleRef, CurrentArtifactsManifest, InstalledArtifact,
-    OfflinePackagePreferences, OfflinePackageSelection, OfflinePackagesControllerCommand,
-    OfflinePackagesControllerEvent, OfflinePackagesControllerInput,
-    OfflinePackagesControllerResult, OfflinePackagesControllerState,
-    OfflinePackagesControllerUiState, OfflinePackagesEvent, OfflinePackagesInitInput,
-    OfflinePackagesLibraryCache, OfflinePackagesReduceInput, OfflinePackagesReduceResult,
-    OfflinePackagesState, OfflinePackagesSyncProgress, OfflinePackagesSyncSummary,
-    OfflinePackagesUiRow, OfflinePackagesUiState, OfflinePackagesWarning, PackageManagementInput,
-    PackageManagementPlan,
+    BundlePackageArtifact, BundlePackageMetadata, CurrentArtifactsBundleRef,
+    CurrentArtifactsManifest, InstalledArtifact, OfflinePackagePreferences,
+    OfflinePackageSelection, OfflinePackagesControllerCommand, OfflinePackagesControllerEvent,
+    OfflinePackagesControllerInput, OfflinePackagesControllerResult,
+    OfflinePackagesControllerState, OfflinePackagesControllerUiState, OfflinePackagesEvent,
+    OfflinePackagesInitInput, OfflinePackagesLibraryCache, OfflinePackagesReduceInput,
+    OfflinePackagesReduceResult, OfflinePackagesState, OfflinePackagesSyncProgress,
+    OfflinePackagesSyncSummary, OfflinePackagesUiRow, OfflinePackagesUiState,
+    OfflinePackagesWarning, PackageManagementInput, PackageManagementPlan,
 };
 pub use planning::{
     activate_direct_to, activate_direct_to_component, activate_direct_to_leg, activate_leg,

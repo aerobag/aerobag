@@ -878,11 +878,11 @@ pub fn nav_db_open_controller_create_json(candidates_json: &str) -> Result<u64, 
 }
 
 pub fn nav_db_open_controller_step_json(handle: u64) -> Result<String, String> {
-    let controllers = nav_db_open_controllers()
+    let mut controllers = nav_db_open_controllers()
         .lock()
         .map_err(|_| "nav db open controller store poisoned".to_string())?;
     let controller = controllers
-        .get(&(handle as u32))
+        .get_mut(&(handle as u32))
         .ok_or_else(|| format!("invalid nav db open controller handle: {handle}"))?;
     serde_json::to_string(&controller.step()?).map_err(|err| err.to_string())
 }
@@ -911,7 +911,7 @@ pub fn nav_db_open_controller_finish_json(handle: u64) -> Result<String, String>
     let mut controllers = nav_db_open_controllers()
         .lock()
         .map_err(|_| "nav db open controller store poisoned".to_string())?;
-    let controller = controllers
+    let mut controller = controllers
         .remove(&(handle as u32))
         .ok_or_else(|| format!("invalid nav db open controller handle: {handle}"))?;
     let outcome = controller.step()?;

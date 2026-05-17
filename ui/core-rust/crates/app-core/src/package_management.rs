@@ -40,6 +40,7 @@ pub struct BundlePackageArtifact {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundlePackageMetadata {
+    pub nav_db_contract_version: Option<u32>,
     pub full_coverage_zoom: Option<u32>,
     pub wide_angle_region_id: Option<String>,
     pub wide_angle_max_zoom: Option<u32>,
@@ -1745,6 +1746,15 @@ fn cycle_selection(selections: &mut BTreeMap<String, OfflinePackageSelection>, i
 }
 
 fn bundle_package_to_artifact(pkg: &BundlePackageArtifact) -> Option<AvailablePackageArtifact> {
+    if pkg.family_id == "nav-db"
+        && pkg
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.nav_db_contract_version)
+            != Some(crate::REQUIRED_NAV_DB_CONTRACT_VERSION)
+    {
+        return None;
+    }
     match pkg.family_id.as_str() {
         "sec" | "tac" | "shaded-relief" | "enr-l" | "enr-h" | "tpp" | "csup" | "nav-db" | "geo"
         | "terrain" | "world-basemap" => Some(AvailablePackageArtifact {
@@ -1967,7 +1977,20 @@ mod tests {
             size_bytes: None,
             effective_date: effective.map(str::to_string),
             expiration_date: expires.map(str::to_string),
-            metadata: None,
+            metadata: (product == "nav-db").then(nav_db_metadata),
+        }
+    }
+
+    fn nav_db_metadata() -> BundlePackageMetadata {
+        BundlePackageMetadata {
+            nav_db_contract_version: Some(crate::REQUIRED_NAV_DB_CONTRACT_VERSION),
+            full_coverage_zoom: None,
+            wide_angle_region_id: None,
+            wide_angle_max_zoom: None,
+            wide_angle: None,
+            min_source_zoom: None,
+            max_source_zoom: None,
+            tile_count: None,
         }
     }
 
@@ -1979,6 +2002,7 @@ mod tests {
     ) -> BundlePackageArtifact {
         let mut pkg = pkg(id, product, Some(region), None, expires);
         pkg.metadata = Some(BundlePackageMetadata {
+            nav_db_contract_version: None,
             full_coverage_zoom: None,
             wide_angle_region_id: Some(region.to_string()),
             wide_angle_max_zoom: Some(7),
@@ -2651,7 +2675,7 @@ mod tests {
                 size_bytes: None,
                 effective_date: Some("2026-03-20".to_string()),
                 expiration_date: Some("2026-04-16".to_string()),
-                metadata: None,
+                metadata: Some(nav_db_metadata()),
             }],
         };
         let bundle_2604 = BundleManifest {
@@ -2667,7 +2691,7 @@ mod tests {
                 size_bytes: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
-                metadata: None,
+                metadata: Some(nav_db_metadata()),
             }],
         };
 
@@ -2756,7 +2780,7 @@ mod tests {
                 size_bytes: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
-                metadata: None,
+                metadata: Some(nav_db_metadata()),
             }],
         };
         let result = reduce_offline_packages_controller(&OfflinePackagesControllerInput {

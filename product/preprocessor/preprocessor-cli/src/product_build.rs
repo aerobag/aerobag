@@ -61,6 +61,7 @@ use zip::ZipArchive;
 use crate::emit_source_urls::{cycle_effective_date, discover_published_cycles, emit_source_urls};
 
 const PACKAGE_CYCLE_VERSION: &str = "01";
+const NAV_DB_CONTRACT_VERSION: u32 = 1;
 const WAYPOINT_PREFIX_MAX_RESULTS: usize = 100;
 // Offline chart region polygons are only visual guides in the package picker.
 // Grow chart cutlines coarsely before unioning to collapse tiny source-boundary
@@ -6262,6 +6263,10 @@ fn build_nav_kv_artifact(
             NAV_KV_VERSION.to_string(),
         ),
         (
+            "nav_db_contract_version".to_string(),
+            NAV_DB_CONTRACT_VERSION.to_string(),
+        ),
+        (
             "nav_kv_builder".to_string(),
             hash_file(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/product_build.rs"))?,
         ),
@@ -6289,10 +6294,19 @@ fn build_nav_kv_artifact(
                     build_nav_kv_chart_catalog(&resource_index, static_raster_tile_levels);
                 let chart_catalog_bytes = serde_json::to_vec(&chart_catalog)
                     .context("failed to encode nav_kv chart/catalog value")?;
-                let mut pairs = vec![NavKvPair {
-                    key: "chart/catalog".to_string(),
-                    value: chart_catalog_bytes,
-                }];
+                let mut pairs = vec![
+                    NavKvPair {
+                        key: "contract/nav-db".to_string(),
+                        value: serde_json::to_vec(&serde_json::json!({
+                            "nav_db_contract_version": NAV_DB_CONTRACT_VERSION,
+                        }))
+                        .context("failed to encode nav_kv contract/nav-db value")?,
+                    },
+                    NavKvPair {
+                        key: "chart/catalog".to_string(),
+                        value: chart_catalog_bytes,
+                    },
+                ];
                 pairs.extend(build_nav_kv_offline_region_pairs(
                     &resource_index,
                     &chart_cutline_polygon_sets,
@@ -6397,7 +6411,10 @@ fn build_nav_kv_artifact(
                         .first()
                         .cloned()
                 }),
-            metadata: BTreeMap::new(),
+            metadata: BTreeMap::from([(
+                "nav_db_contract_version".to_string(),
+                serde_json::json!(NAV_DB_CONTRACT_VERSION),
+            )]),
         },
     })
 }
@@ -21532,7 +21549,10 @@ mod tests {
                 source_fetched_at_utc: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
-                metadata: BTreeMap::new(),
+                metadata: BTreeMap::from([(
+                    "nav_db_contract_version".to_string(),
+                    serde_json::json!(NAV_DB_CONTRACT_VERSION),
+                )]),
             },
         ])
         .unwrap();
@@ -21564,6 +21584,10 @@ mod tests {
         assert_eq!(nav_db["checksum_sha256"], "cafebabe");
         assert_eq!(nav_db["cycle"], "2604");
         assert_eq!(nav_db["cycle_version"], "01");
+        assert_eq!(
+            nav_db["metadata"]["nav_db_contract_version"],
+            NAV_DB_CONTRACT_VERSION
+        );
         let sec = pair_value("package/by-id/NW_SEC_2604_01");
         assert_eq!(sec["metadata"]["wide_angle_region_id"], "wide");
     }

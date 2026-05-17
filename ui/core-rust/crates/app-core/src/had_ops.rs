@@ -22,7 +22,7 @@ use crate::{
     PolygonRecord, ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance,
     ProcedureLoadOption, ProcedureOptions, ProcedureSegment, ProcedureSegmentRole,
     ProcedureSummary, ResolvedLeg, ResolvedLegSource, RouteComponent, WaypointIdentifierRecord,
-    WaypointIdentifierSuggestion,
+    WaypointIdentifierSuggestion, REQUIRED_NAV_DB_CONTRACT_VERSION,
 };
 
 const NAV_DB_ROOT_MEMBER_PATH: &str = "root";
@@ -120,7 +120,7 @@ impl NavDbOpenController {
         }
     }
 
-    pub fn step(&self) -> Result<HadOperationOutcome, String> {
+    pub fn step(&mut self) -> Result<HadOperationOutcome, String> {
         for (index, candidate) in self.candidates.iter().enumerate() {
             match &self.statuses[index] {
                 Some(status) if status.readable => {
@@ -135,8 +135,48 @@ impl NavDbOpenController {
                 }
                 Some(_) => continue,
                 None => {
+                    if let Some(store) = self.stores.get(index).and_then(Option::as_ref) {
+                        match validate_nav_db_contract(store)? {
+                            NavDbContractValidation::Valid => {
+                                self.statuses[index] = Some(NavDbArtifactOpenStatus {
+                                    package_id: candidate.package_id.clone(),
+                                    filename: candidate.filename.clone(),
+                                    readable: true,
+                                    message: None,
+                                });
+                                return Ok(HadOperationOutcome::complete(
+                                    serde_json::to_value(NavDbOpenResult {
+                                        selected_package_id: candidate.package_id.clone(),
+                                        selected_filename: candidate.filename.clone(),
+                                        statuses: self
+                                            .statuses
+                                            .iter()
+                                            .filter_map(Clone::clone)
+                                            .collect(),
+                                    })
+                                    .map_err(|err| err.to_string())?,
+                                ));
+                            }
+                            NavDbContractValidation::NeedPages(pages) => {
+                                return Ok(HadOperationOutcome::NeedResources {
+                                    resources: nav_db_artifact_page_resources(
+                                        index, candidate, pages,
+                                    ),
+                                });
+                            }
+                            NavDbContractValidation::Invalid(message) => {
+                                self.statuses[index] = Some(NavDbArtifactOpenStatus {
+                                    package_id: candidate.package_id.clone(),
+                                    filename: candidate.filename.clone(),
+                                    readable: false,
+                                    message: Some(message),
+                                });
+                                continue;
+                            }
+                        }
+                    }
                     return Ok(HadOperationOutcome::NeedResources {
-                        resources: vec![nav_db_artifact_resource(index, candidate)],
+                        resources: vec![nav_db_artifact_root_resource(index, candidate)],
                     });
                 }
             }
@@ -149,11 +189,12 @@ impl NavDbOpenController {
         resource_id: &str,
         resource_bytes: &[u8],
     ) -> Result<(), String> {
-        let Some(index) = nav_db_artifact_resource_index(resource_id) else {
+        let Some(resource) = nav_db_artifact_resource_index(resource_id) else {
             return Err(format!(
                 "unsupported nav_db open resource id: {resource_id}"
             ));
         };
+        let index = resource.index;
         let candidate = self
             .candidates
             .get(index)
@@ -167,15 +208,18 @@ impl NavDbOpenController {
             });
             return Ok(());
         }
+        if let Some(page_index) = resource.page_index {
+            let store = self
+                .stores
+                .get_mut(index)
+                .and_then(Option::as_mut)
+                .ok_or_else(|| format!("nav_db open page arrived before root for index {index}"))?;
+            store.insert_page(page_index, resource_bytes.to_vec());
+            return Ok(());
+        }
         match NavKvRoot::parse(resource_bytes) {
             Ok(root) => {
                 self.stores[index] = Some(NavKvStore::new(root));
-                self.statuses[index] = Some(NavDbArtifactOpenStatus {
-                    package_id: candidate.package_id.clone(),
-                    filename: candidate.filename.clone(),
-                    readable: true,
-                    message: None,
-                });
             }
             Err(message) => {
                 self.statuses[index] = Some(NavDbArtifactOpenStatus {
@@ -202,7 +246,7 @@ impl NavDbOpenController {
     }
 }
 
-fn nav_db_artifact_resource(
+fn nav_db_artifact_root_resource(
     index: usize,
     candidate: &NavDbArtifactCandidate,
 ) -> CoreResourceRequest {
@@ -218,11 +262,90 @@ fn nav_db_artifact_resource(
     }
 }
 
-fn nav_db_artifact_resource_index(resource_id: &str) -> Option<usize> {
-    resource_id
+fn nav_db_artifact_page_resources(
+    index: usize,
+    candidate: &NavDbArtifactCandidate,
+    mut pages: Vec<u32>,
+) -> Vec<CoreResourceRequest> {
+    pages.sort_unstable();
+    pages.dedup();
+    pages
+        .into_iter()
+        .map(|page| CoreResourceRequest {
+            id: format!("nav_db/artifact/{index}/page/{page:04}"),
+            address: nav_db_artifact_page_address(candidate, page),
+            optional: false,
+        })
+        .collect()
+}
+
+fn nav_db_artifact_page_address(candidate: &NavDbArtifactCandidate, page: u32) -> String {
+    let page_member = format!("page_{page:04}");
+    if let Some(root_address) = candidate.root_address.as_ref() {
+        if let Some(prefix) = root_address.strip_suffix(NAV_DB_ROOT_MEMBER_PATH) {
+            return format!("{prefix}{page_member}");
+        }
+    }
+    format!("installed-artifact://{}/{page_member}", candidate.filename)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NavDbArtifactResource {
+    index: usize,
+    page_index: Option<u32>,
+}
+
+fn nav_db_artifact_resource_index(resource_id: &str) -> Option<NavDbArtifactResource> {
+    if let Some(index) = resource_id
         .strip_prefix("nav_db/artifact/")
         .and_then(|rest| rest.strip_suffix("/root"))
         .and_then(|index| index.parse::<usize>().ok())
+    {
+        return Some(NavDbArtifactResource {
+            index,
+            page_index: None,
+        });
+    }
+    let rest = resource_id.strip_prefix("nav_db/artifact/")?;
+    let (index, page) = rest.split_once("/page/")?;
+    Some(NavDbArtifactResource {
+        index: index.parse().ok()?,
+        page_index: Some(page.parse().ok()?),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct NavDbContractRecord {
+    nav_db_contract_version: u32,
+}
+
+enum NavDbContractValidation {
+    Valid,
+    NeedPages(Vec<u32>),
+    Invalid(String),
+}
+
+fn validate_nav_db_contract(store: &NavKvStore) -> Result<NavDbContractValidation, String> {
+    match store.get_bytes(crate::NAV_DB_CONTRACT_KEY)? {
+        NavKvLookup::Hit(bytes) => match serde_json::from_slice::<NavDbContractRecord>(&bytes) {
+            Ok(record) if record.nav_db_contract_version == REQUIRED_NAV_DB_CONTRACT_VERSION => {
+                Ok(NavDbContractValidation::Valid)
+            }
+            Ok(record) => Ok(NavDbContractValidation::Invalid(format!(
+                "unsupported nav_db_contract_version {}; required {}",
+                record.nav_db_contract_version, REQUIRED_NAV_DB_CONTRACT_VERSION
+            ))),
+            Err(err) => Ok(NavDbContractValidation::Invalid(format!(
+                "invalid nav_db contract record: {err}"
+            ))),
+        },
+        NavKvLookup::MissingKey => Ok(NavDbContractValidation::Invalid(format!(
+            "missing nav_db_contract_version {}; required {}",
+            crate::NAV_DB_CONTRACT_KEY,
+            REQUIRED_NAV_DB_CONTRACT_VERSION
+        ))),
+        NavKvLookup::MissingPages(pages) => Ok(NavDbContractValidation::NeedPages(pages)),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2990,7 +3113,8 @@ mod tests {
 
     #[test]
     fn nav_db_open_controller_skips_bad_candidate_and_selects_readable_root() {
-        let (root_bytes, _pages) = load_fixture_nav_kv_pages();
+        let contract = br#"{"nav_db_contract_version":1}"#;
+        let (root_bytes, pages) = build_root(&[("contract/nav-db", contract.as_slice())], 256);
         let mut controller = NavDbOpenController::new(vec![
             NavDbArtifactCandidate {
                 package_id: "NAV_DB_BAD".to_string(),
@@ -3027,9 +3151,22 @@ mod tests {
         controller
             .ingest_resource("nav_db/artifact/1/root", &root_bytes)
             .expect("ingest good root");
+        match controller.step().expect("request contract page") {
+            HadOperationOutcome::NeedResources { resources } => {
+                assert_eq!(resources[0].id, "nav_db/artifact/1/page/0000");
+                assert_eq!(
+                    resources[0].address,
+                    "https://example.test/nav_db/page_0000"
+                );
+            }
+            other => panic!("expected contract page resource, got {other:?}"),
+        }
+        controller
+            .ingest_resource("nav_db/artifact/1/page/0000", &pages[0])
+            .expect("ingest contract page");
 
         match controller.step().expect("complete") {
-            HadOperationOutcome::Complete { result } => {
+            HadOperationOutcome::Complete { result, .. } => {
                 let result: NavDbOpenResult =
                     serde_json::from_value(result).expect("decode result");
                 assert_eq!(result.selected_package_id, "NAV_DB_GOOD");
@@ -3040,6 +3177,45 @@ mod tests {
             other => panic!("expected complete open result, got {other:?}"),
         }
         assert!(controller.selected_store().is_some());
+    }
+
+    #[test]
+    fn nav_db_open_controller_rejects_missing_contract_version() {
+        let (root_bytes, pages) = build_root(&[("vector/manifest", b"{}")], 256);
+        let mut controller = NavDbOpenController::new(vec![NavDbArtifactCandidate {
+            package_id: "NAV_DB_OLD".to_string(),
+            filename: "nav_db_old.zip".to_string(),
+            root_address: None,
+        }]);
+        controller
+            .ingest_resource("nav_db/artifact/0/root", &root_bytes)
+            .expect("ingest root");
+        match controller.step().expect("request contract page") {
+            HadOperationOutcome::NeedResources { resources } => {
+                assert_eq!(resources[0].id, "nav_db/artifact/0/page/0000");
+            }
+            other => panic!("expected contract page resource, got {other:?}"),
+        }
+        controller
+            .ingest_resource("nav_db/artifact/0/page/0000", &pages[0])
+            .expect("ingest page");
+        let err = controller
+            .step()
+            .expect_err("missing contract rejects nav_db");
+        assert!(
+            err.contains("missing readable installed data package"),
+            "{err}"
+        );
+        let statuses = controller.statuses();
+        assert_eq!(statuses.len(), 1);
+        assert!(!statuses[0].readable);
+        assert!(
+            statuses[0]
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("missing nav_db_contract_version")),
+            "{statuses:?}"
+        );
     }
 
     #[test]
@@ -3068,7 +3244,7 @@ mod tests {
             },
         )
         .expect("resolve plate airport");
-        let HadOperationOutcome::Complete { result } = outcome else {
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
             panic!("expected complete plate airport, got {outcome:?}");
         };
         let airport: crate::DerivedChartAirport =

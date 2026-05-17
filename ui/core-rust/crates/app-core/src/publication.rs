@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BundleManifest, BundlePackageArtifact, CoreResourceRequest, CurrentArtifactsManifest,
-    HadOperationOutcome, NavDbArtifactCandidate,
+    HadOperationOutcome, NavDbArtifactCandidate, REQUIRED_NAV_DB_CONTRACT_VERSION,
 };
 
 const CURRENT_ARTIFACTS_RESOURCE_ID: &str = "publication/current_artifacts";
@@ -79,6 +79,13 @@ impl PublicationResolver {
                 .values()
                 .flat_map(|bundle| bundle.packages.iter())
                 .filter(|package| package.family_id == "nav-db")
+                .filter(|package| {
+                    package
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.nav_db_contract_version)
+                        == Some(REQUIRED_NAV_DB_CONTRACT_VERSION)
+                })
                 .map(|package| {
                     Ok(NavDbArtifactCandidate {
                         package_id: package.id.clone(),
@@ -293,7 +300,16 @@ mod tests {
                 size_bytes: None,
                 effective_date: None,
                 expiration_date: None,
-                metadata: None,
+                metadata: Some(crate::package_management::BundlePackageMetadata {
+                    nav_db_contract_version: Some(REQUIRED_NAV_DB_CONTRACT_VERSION),
+                    full_coverage_zoom: None,
+                    wide_angle_region_id: None,
+                    wide_angle_max_zoom: None,
+                    wide_angle: None,
+                    min_source_zoom: None,
+                    max_source_zoom: None,
+                    tile_count: None,
+                }),
             }],
         }
     }

@@ -823,6 +823,7 @@ pub mod nav_kv {
 
     fn startup_prefetch_pages(root: &NavKvRoot, pages: &[Vec<u8>]) -> Result<Vec<u32>, String> {
         let mut touched = BTreeSet::new();
+        trace_extract_value(root, pages, &mut touched, "contract/nav-db")?;
         if !trace_extract_value(root, pages, &mut touched, "chart/catalog")? {
             return Ok(Vec::new());
         }

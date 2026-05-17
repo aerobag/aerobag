@@ -15,6 +15,8 @@ const INTERNAL_HEADER_LEN: usize = 12;
 const NO_PAGE: u32 = u32::MAX;
 const VALUE_KIND_EXTERNAL: u32 = 0;
 const VALUE_KIND_INLINE: u32 = 1;
+pub const REQUIRED_NAV_DB_CONTRACT_VERSION: u32 = 1;
+pub const NAV_DB_CONTRACT_KEY: &str = "contract/nav-db";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NavKvRoot {
@@ -81,6 +83,7 @@ pub struct NavKvStore {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NavKvQuery {
+    NavDbContract,
     ChartCatalog,
     OfflineRegionCatalog,
     PackageById {
@@ -551,6 +554,7 @@ fn format_page_list(pages: &[u32]) -> String {
 
 pub fn nav_kv_key_for_query(query: &NavKvQuery) -> Option<String> {
     match query {
+        NavKvQuery::NavDbContract => Some(NAV_DB_CONTRACT_KEY.to_string()),
         NavKvQuery::ChartCatalog => Some("chart/catalog".to_string()),
         NavKvQuery::OfflineRegionCatalog => Some("offline-region/catalog".to_string()),
         NavKvQuery::PackageById { package_id } => {
@@ -859,6 +863,10 @@ mod tests {
 
     #[test]
     fn builds_plate_and_procedure_keys_in_core() {
+        assert_eq!(
+            nav_kv_key_for_query(&NavKvQuery::NavDbContract),
+            Some("contract/nav-db".to_string())
+        );
         assert_eq!(
             nav_kv_key_for_query(&NavKvQuery::PackageById {
                 package_id: " world-basemap ".to_string()

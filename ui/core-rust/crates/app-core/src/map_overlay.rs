@@ -212,6 +212,7 @@ pub struct MetarProductPayload {
     pub version_label: String,
     #[serde(default)]
     pub metar_count: Option<u32>,
+    pub important_station_ids: HashSet<String>,
     pub metars_by_station: HashMap<String, MetarRecord>,
     #[serde(default)]
     pub pireps: Vec<PirepRecord>,
@@ -5025,9 +5026,10 @@ mod tests {
             },
         );
         let metars = MetarProductPayload {
-            schema_version: 2,
+            schema_version: 3,
             version_label: "test".to_string(),
             metar_count: Some(1),
+            important_station_ids: HashSet::from(["KAAA".to_string()]),
             metars_by_station,
             pireps: Vec::new(),
         };
@@ -5097,9 +5099,10 @@ mod tests {
             },
         );
         let metars = MetarProductPayload {
-            schema_version: 2,
+            schema_version: 3,
             version_label: "test".to_string(),
             metar_count: Some(1),
+            important_station_ids: HashSet::from(["KAAA".to_string()]),
             metars_by_station,
             pireps: Vec::new(),
         };
@@ -5222,9 +5225,10 @@ mod tests {
             },
         );
         let metars = MetarProductPayload {
-            schema_version: 2,
+            schema_version: 3,
             version_label: "test".to_string(),
             metar_count: Some(1),
+            important_station_ids: HashSet::from(["KAAA".to_string()]),
             metars_by_station,
             pireps: Vec::new(),
         };

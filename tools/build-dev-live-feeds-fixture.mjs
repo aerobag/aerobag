@@ -64,8 +64,28 @@ function loadMetarStates(fixtureRoot) {
     .map((name) => {
       const zipPath = path.join(fixtureRoot, name);
       const state = JSON.parse(readZipMember(zipPath, "metars.json").toString("utf8"));
+      if (!Array.isArray(state.important_station_ids)) {
+        state.schema_version = 3;
+        state.important_station_ids = loadImportantMetarStationIds(zipPath);
+      }
       return { name, state, version: state.version_label };
     });
+}
+
+function loadImportantMetarStationIds(zipPath) {
+  const stationIds = new Set();
+  for (const memberName of listZipMemberNames(zipPath)) {
+    if (!memberName.startsWith("points/wx/5/") || !memberName.endsWith(".json")) {
+      continue;
+    }
+    const tile = JSON.parse(readZipMember(zipPath, memberName).toString("utf8"));
+    for (const record of tile.records ?? []) {
+      if (record.kind === "metar" && typeof record.id === "string") {
+        stationIds.add(record.id);
+      }
+    }
+  }
+  return [...stationIds].sort();
 }
 
 function publishMetarStates(root, states) {
@@ -258,11 +278,40 @@ function resetCurrentToFirstFixtureVersions(root) {
 
 function readZipMember(zipPath, memberName) {
   const bytes = fs.readFileSync(zipPath);
+  for (const entry of readZipCentralDirectory(bytes, zipPath)) {
+    if (entry.fileName !== memberName) {
+      continue;
+    }
+    const { compressionMethod, compressedSize, localHeaderOffset } = entry;
+    if (bytes.readUInt32LE(localHeaderOffset) !== 0x04034b50) {
+      throw new Error(`${zipPath}: invalid local header for ${memberName}`);
+    }
+    const localFileNameLength = bytes.readUInt16LE(localHeaderOffset + 26);
+    const localExtraLength = bytes.readUInt16LE(localHeaderOffset + 28);
+    const dataOffset = localHeaderOffset + 30 + localFileNameLength + localExtraLength;
+    const compressed = bytes.subarray(dataOffset, dataOffset + compressedSize);
+    if (compressionMethod === 0) {
+      return Buffer.from(compressed);
+    }
+    if (compressionMethod === 8) {
+      return zlib.inflateRawSync(compressed);
+    }
+    throw new Error(`${zipPath}: unsupported compression method ${compressionMethod} for ${memberName}`);
+  }
+  throw new Error(`${zipPath}: missing ${memberName}`);
+}
+
+function listZipMemberNames(zipPath) {
+  return readZipCentralDirectory(fs.readFileSync(zipPath), zipPath).map((entry) => entry.fileName);
+}
+
+function readZipCentralDirectory(bytes, zipPath) {
   const eocdOffset = findEndOfCentralDirectory(bytes);
   const centralDirectorySize = bytes.readUInt32LE(eocdOffset + 12);
   const centralDirectoryOffset = bytes.readUInt32LE(eocdOffset + 16);
   let offset = centralDirectoryOffset;
   const end = centralDirectoryOffset + centralDirectorySize;
+  const entries = [];
   while (offset < end) {
     if (bytes.readUInt32LE(offset) !== 0x02014b50) {
       throw new Error(`${zipPath}: invalid central directory entry at ${offset}`);
@@ -274,25 +323,10 @@ function readZipMember(zipPath, memberName) {
     const commentLength = bytes.readUInt16LE(offset + 32);
     const localHeaderOffset = bytes.readUInt32LE(offset + 42);
     const fileName = bytes.subarray(offset + 46, offset + 46 + fileNameLength).toString("utf8");
-    if (fileName === memberName) {
-      if (bytes.readUInt32LE(localHeaderOffset) !== 0x04034b50) {
-        throw new Error(`${zipPath}: invalid local header for ${memberName}`);
-      }
-      const localFileNameLength = bytes.readUInt16LE(localHeaderOffset + 26);
-      const localExtraLength = bytes.readUInt16LE(localHeaderOffset + 28);
-      const dataOffset = localHeaderOffset + 30 + localFileNameLength + localExtraLength;
-      const compressed = bytes.subarray(dataOffset, dataOffset + compressedSize);
-      if (compressionMethod === 0) {
-        return Buffer.from(compressed);
-      }
-      if (compressionMethod === 8) {
-        return zlib.inflateRawSync(compressed);
-      }
-      throw new Error(`${zipPath}: unsupported compression method ${compressionMethod} for ${memberName}`);
-    }
+    entries.push({ compressionMethod, compressedSize, localHeaderOffset, fileName });
     offset += 46 + fileNameLength + extraLength + commentLength;
   }
-  throw new Error(`${zipPath}: missing ${memberName}`);
+  return entries;
 }
 
 function findEndOfCentralDirectory(bytes) {

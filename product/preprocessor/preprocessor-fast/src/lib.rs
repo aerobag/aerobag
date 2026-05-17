@@ -330,6 +330,7 @@ pub struct StructuredMetarDataset {
     schema_version: u32,
     version_label: String,
     metar_count: usize,
+    important_station_ids: Vec<String>,
     metars_by_station: BTreeMap<String, StructuredMetarRecord>,
 }
 
@@ -735,9 +736,10 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
     write_json_pretty(
         &structured_json_path,
         &StructuredMetarDataset {
-            schema_version: 2,
+            schema_version: 3,
             version_label: request.version_label.clone(),
             metar_count,
+            important_station_ids: model.important_station_ids.iter().cloned().collect(),
             metars_by_station: model.metars_by_station.clone(),
         },
     )?;

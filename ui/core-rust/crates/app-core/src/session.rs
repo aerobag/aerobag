@@ -2134,6 +2134,11 @@ fn metar_tile_cache_for_live_feed(
     let mut cache = HashMap::new();
     for zoom in &layer.available_zooms {
         for record in payload.metars_by_station.values() {
+            if *zoom == layer.min_zoom
+                && !payload.important_station_ids.contains(&record.station_id)
+            {
+                continue;
+            }
             let Some((x, y)) = metar_tile_xy(record.latitude, record.longitude, *zoom) else {
                 continue;
             };
@@ -5231,9 +5236,10 @@ mod tests {
             },
         );
         let payload = MetarProductPayload {
-            schema_version: 2,
+            schema_version: 3,
             version_label: "v1".to_string(),
             metar_count: Some(1),
+            important_station_ids: std::collections::HashSet::from(["KAAA".to_string()]),
             metars_by_station,
             pireps: Vec::new(),
         };
@@ -5317,9 +5323,10 @@ mod tests {
             },
         );
         session.metar_payload = Some(MetarProductPayload {
-            schema_version: 2,
+            schema_version: 3,
             version_label: "v1".to_string(),
             metar_count: Some(1),
+            important_station_ids: std::collections::HashSet::from(["KAAA".to_string()]),
             metars_by_station,
             pireps: Vec::new(),
         });
@@ -5341,6 +5348,70 @@ mod tests {
 
         assert!(session.map_overlay_config.metar_layer.is_some());
         assert!(!session.metar_tile_cache.is_empty());
+    }
+
+    #[test]
+    fn live_metar_low_zoom_keeps_only_important_stations() {
+        let config = map_overlay_config_from_vector_manifest_json(
+            r#"{
+                "point_layers": {
+                    "metars": {
+                        "min_zoom": 5,
+                        "max_zoom": 7,
+                        "available_zooms": [5, 6, 7],
+                        "tile_path_template": "unused-by-live-feeds"
+                    }
+                },
+                "airspace": {
+                    "reference_tile_min_zoom": 0,
+                    "reference_tile_max_zoom": 0,
+                    "label_tile_min_zoom": 0,
+                    "label_tile_max_zoom": 0
+                }
+            }"#,
+        )
+        .expect("metar layer config");
+        let mut metars_by_station = HashMap::new();
+        for (station_id, lat, lon) in [("KAAA", 0.0, 0.0), ("KBBB", 0.1, 0.1)] {
+            metars_by_station.insert(
+                station_id.to_string(),
+                crate::MetarRecord {
+                    raw_text: format!("METAR {station_id} 010000Z 00000KT 10SM SCT020 10/08 A3000"),
+                    observed_at_utc: Some("2026-05-03T00:00:00.000Z".to_string()),
+                    station_id: station_id.to_string(),
+                    flight_category: Some("VFR".to_string()),
+                    clouds: None,
+                    longitude: lon,
+                    latitude: lat,
+                },
+            );
+        }
+        let payload = MetarProductPayload {
+            schema_version: 3,
+            version_label: "v1".to_string(),
+            metar_count: Some(2),
+            important_station_ids: std::collections::HashSet::from(["KAAA".to_string()]),
+            metars_by_station,
+            pireps: Vec::new(),
+        };
+
+        let cache = metar_tile_cache_for_live_feed(&payload, config.metar_layer.as_ref());
+        let low_zoom_records = cache
+            .values()
+            .filter(|tile| tile.z == 5)
+            .flat_map(|tile| tile.records.iter())
+            .map(|record| record.id.as_str())
+            .collect::<Vec<_>>();
+        let high_zoom_records = cache
+            .values()
+            .filter(|tile| tile.z == 7)
+            .flat_map(|tile| tile.records.iter())
+            .map(|record| record.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(low_zoom_records, vec!["KAAA"]);
+        assert!(high_zoom_records.contains(&"KAAA"));
+        assert!(high_zoom_records.contains(&"KBBB"));
     }
 
     #[test]

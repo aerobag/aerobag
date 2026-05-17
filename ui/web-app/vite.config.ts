@@ -152,6 +152,11 @@ type LiveFeedVersionManifest = {
   };
 };
 
+type OrderedLiveFeedSseEvent = {
+  sort_key: string;
+  event: LiveFeedSseEvent;
+};
+
 function readJsonFile<T>(filePath: string): T | null {
   try {
     return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
@@ -165,7 +170,7 @@ function listLiveFeedVersionEvents(root: string): LiveFeedSseEvent[] {
   if (!fs.existsSync(versionsRoot) || !fs.statSync(versionsRoot).isDirectory()) {
     return [];
   }
-  const events: LiveFeedSseEvent[] = [];
+  const events: OrderedLiveFeedSseEvent[] = [];
   for (const product of fs.readdirSync(versionsRoot).sort()) {
     const productRoot = path.join(versionsRoot, product);
     if (!fs.statSync(productRoot).isDirectory()) {
@@ -185,16 +190,19 @@ function listLiveFeedVersionEvents(root: string): LiveFeedSseEvent[] {
         continue;
       }
       events.push({
-        id: `${manifestProduct}:${version}`,
-        product: manifestProduct,
-        version,
-        version_manifest_url: `versions/${manifestProduct}/${fileName}`,
-        state_url: stateUrl,
-        state_sha256: stateSha256,
+        sort_key: `${fileName}:${manifestProduct}`,
+        event: {
+          id: `${manifestProduct}:${version}`,
+          product: manifestProduct,
+          version,
+          version_manifest_url: `versions/${manifestProduct}/${fileName}`,
+          state_url: stateUrl,
+          state_sha256: stateSha256,
+        },
       });
     }
   }
-  return events.sort((a, b) => a.id.localeCompare(b.id));
+  return events.sort((a, b) => a.sort_key.localeCompare(b.sort_key)).map(({ event }) => event);
 }
 
 function listLiveFeedSseEvents(root: string): LiveFeedSseEvent[] {

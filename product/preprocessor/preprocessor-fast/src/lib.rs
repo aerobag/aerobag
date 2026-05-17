@@ -4205,10 +4205,17 @@ mod tests {
     }
 
     fn metar_delta_fixture_states() -> anyhow::Result<Vec<Value>> {
-        let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("fixtures")
-            .join("metar_delta_three_hour");
+        let test_artifacts_root = std::env::var_os("AEROBAG_TEST_ARTIFACTS_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("..")
+                    .join("..")
+                    .join("..")
+                    .join("..")
+                    .join("aerobag-test-artifacts")
+            });
+        let fixture_root = test_artifacts_root.join("metars").join("delta-three-hour");
         let mut zip_paths = fs::read_dir(&fixture_root)
             .with_context(|| format!("failed to read {}", fixture_root.display()))?
             .collect::<Result<Vec<_>, _>>()?

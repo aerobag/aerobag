@@ -1,7 +1,7 @@
 ---
 id: TASK-36
 title: Rename Android Java namespace
-state: high
+state: done
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -25,4 +25,3 @@ Rename the Android Java/Kotlin namespace to the intended package, likely `org.ae
 - [ ] #2 Rename package declarations, Gradle namespace/applicationId, and tests consistently.
 - [ ] #3 Android build and tests pass after the rename.
 <!-- AC:END -->
-

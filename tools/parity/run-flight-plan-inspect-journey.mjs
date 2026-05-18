@@ -9,7 +9,7 @@ import { spawn, spawnSync } from "node:child_process";
 
 const DEFAULT_WEB_URL = "http://127.0.0.1:8082/";
 const JOURNEY_NAME = "flight-plan-inspect-insert";
-const ANDROID_PACKAGE = "net.jonh.aerobag.prototype";
+const ANDROID_PACKAGE = "org.aerobag.app";
 const ANDROID_ACTIVITY = `${ANDROID_PACKAGE}/.MainActivity`;
 const LAYER_OPTION_IDS = ["vectors", "metars", "nexrad", "terrain_warning", "world_basemap", "offline_regions"];
 const ANDROID_OFFLINE_REGION_IDS = ["ak", "ec", "nc", "ne", "nw", "pac", "sc", "se", "sw"];

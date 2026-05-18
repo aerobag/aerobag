@@ -9,7 +9,7 @@ if [[ -f "$INSTANCE_CONFIG" ]]; then
 fi
 
 APP_DIR="$ROOT/ui/android-app"
-APP_ID="net.jonh.aerobag.prototype"
+APP_ID="org.aerobag.app"
 ACTIVITY="$APP_ID/.MainActivity"
 TARGET_ROOT_FILE="$ROOT/ui/target-root.txt"
 cleanup_repo_local_tool_dirs() {

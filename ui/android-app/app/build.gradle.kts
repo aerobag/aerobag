@@ -145,18 +145,18 @@ val generateSharedNavSymbols by tasks.registering(Exec::class) {
         "node",
         repoRoot.resolve("tools/generate-nav-symbols.mjs").absolutePath,
         "--android-out",
-        generatedSymbolSourceDir.get().asFile.resolve("net/jonh/aerobag/prototype/generated").absolutePath,
+        generatedSymbolSourceDir.get().asFile.resolve("org/aerobag/app/generated").absolutePath,
         "--web-out",
         repoRoot.resolve("ui/web-app/src/generated/navSymbols.ts").absolutePath,
     )
 }
 
 android {
-    namespace = "net.jonh.aerobag.prototype"
+    namespace = "org.aerobag.app"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "net.jonh.aerobag.prototype"
+        applicationId = "org.aerobag.app"
         minSdk = 26
         targetSdk = 34
         versionCode = 1

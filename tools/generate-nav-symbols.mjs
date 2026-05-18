@@ -32,7 +32,7 @@ const androidOut =
   args.get("--android-out") ??
   path.join(
     repoRoot,
-    "ui/android-app/app/build/generated/aerobagSymbols/kotlin/net/jonh/aerobag/prototype/generated",
+    "ui/android-app/app/build/generated/aerobagSymbols/kotlin/org/aerobag/app/generated",
   );
 
 const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
@@ -238,7 +238,7 @@ export const vorBandPath = ${JSON.stringify(vorBandPath)};
 
 const fuel = spec.airport_fuel_marker;
 const androidSource = `${generatedBanner.replace("//", "//")}
-package net.jonh.aerobag.prototype.generated
+package org.aerobag.app.generated
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect

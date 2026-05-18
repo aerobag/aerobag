@@ -1,7 +1,7 @@
 ---
 id: TASK-36
 title: Rename Android Java namespace
-state: medium
+state: high
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:

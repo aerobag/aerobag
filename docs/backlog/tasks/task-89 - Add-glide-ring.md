@@ -1,7 +1,7 @@
 ---
 id: TASK-89
 title: Glide ring
-state: low
+state: someday
 assignee: []
 created_date: '2026-05-12 20:10'
 labels:

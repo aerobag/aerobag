@@ -1,7 +1,7 @@
 ---
 id: TASK-1
 title: Android plate LOAD APPCH tray exposes no selectable procedure options
-state: high
+state: done
 assignee: []
 created_date: '2026-05-12 15:58'
 labels:

@@ -94,7 +94,7 @@ struct LiveFeedDeltaRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-struct MetarStationDelta {
+struct LiveFeedRecordDelta {
     product: String,
     from_version: String,
     to_version: String,
@@ -214,7 +214,7 @@ impl LiveFeedsState {
         }
         if let Some(rest) = resource_id.strip_prefix("live_feeds/delta/") {
             let (product, from_version, to_version) = split_product_from_to(resource_id, rest)?;
-            if product != "metars" {
+            if !supports_record_delta(&product) {
                 return Err(invalid_live_feed(format!(
                     "unsupported live feed delta product: {product}"
                 )));
@@ -241,7 +241,7 @@ impl LiveFeedsState {
             }
             let current_state = entry.state_manifest.as_ref().ok_or_else(|| {
                 invalid_live_feed(format!(
-                    "cannot apply {resource_id}: local METAR state is missing"
+                    "cannot apply {resource_id}: local {product} state is missing"
                 ))
             })?;
             if entry.loaded_version.as_deref() != Some(from_version.as_str()) {
@@ -257,9 +257,9 @@ impl LiveFeedsState {
                     delta_ref.from_state_sha256, current_state_sha256
                 )));
             }
-            let delta: MetarStationDelta =
+            let delta: LiveFeedRecordDelta =
                 serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?;
-            let next_state = apply_metar_station_delta(current_state, &delta)?;
+            let next_state = apply_live_feed_record_delta(current_state, &delta)?;
             let next_state_sha256 = canonical_json_sha256(&next_state)?;
             if next_state_sha256 != delta_ref.to_state_sha256 {
                 return Err(invalid_live_feed(format!(
@@ -414,7 +414,7 @@ impl LiveFeedsState {
                     invalidations.push(UiInvalidation::NexradOverlay);
                     invalidations.push(UiInvalidation::DebugPanel);
                 }
-                "metars" | "tfrs" | "pireps" => {
+                "metars" | "tfrs" | "pireps" | "obstacles" => {
                     invalidations.push(UiInvalidation::MapOverlay);
                     invalidations.push(UiInvalidation::DebugPanel);
                 }
@@ -431,7 +431,7 @@ impl LiveFeedsState {
 
 impl LiveFeedProductState {
     fn applicable_delta(&self, product: &str) -> Option<&LiveFeedDeltaRef> {
-        if product != "metars" {
+        if !supports_record_delta(product) {
             return None;
         }
         let delta = self.delta_from_previous.as_ref()?;
@@ -494,31 +494,44 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-fn apply_metar_station_delta(from_state: &Value, delta: &MetarStationDelta) -> AppResult<Value> {
-    if delta.product != "metars" {
-        return Err(invalid_live_feed(format!(
-            "METAR delta had product {}",
-            delta.product
-        )));
+fn supports_record_delta(product: &str) -> bool {
+    matches!(product, "metars" | "obstacles")
+}
+
+fn record_delta_schema(product: &str) -> Option<(&'static str, &'static str)> {
+    match product {
+        "metars" => Some(("metars_by_station", "metar_count")),
+        "obstacles" => Some(("obstacles_by_id", "obstacle_count")),
+        _ => None,
     }
+}
+
+fn apply_live_feed_record_delta(
+    from_state: &Value,
+    delta: &LiveFeedRecordDelta,
+) -> AppResult<Value> {
+    let (records_key, count_key) = record_delta_schema(&delta.product).ok_or_else(|| {
+        invalid_live_feed(format!(
+            "unsupported live feed delta product: {}",
+            delta.product
+        ))
+    })?;
     let from_version = from_state
         .get("version_label")
         .and_then(Value::as_str)
-        .ok_or_else(|| invalid_live_feed("METAR state missing version_label".to_string()))?;
+        .ok_or_else(|| invalid_live_feed("live feed state missing version_label".to_string()))?;
     if from_version != delta.from_version {
         return Err(invalid_live_feed(format!(
-            "delta starts at {}, but local METAR state is {}",
+            "delta starts at {}, but local state is {}",
             delta.from_version, from_version
         )));
     }
     let mut result = from_state.clone();
     let record_count = {
         let records = result
-            .get_mut("metars_by_station")
+            .get_mut(records_key)
             .and_then(Value::as_object_mut)
-            .ok_or_else(|| {
-                invalid_live_feed("METAR state missing metars_by_station object".to_string())
-            })?;
+            .ok_or_else(|| invalid_live_feed(format!("state missing {records_key} object")))?;
         for station_id in &delta.removed {
             records.remove(station_id);
         }
@@ -529,9 +542,9 @@ fn apply_metar_station_delta(from_state: &Value, delta: &MetarStationDelta) -> A
     };
     let version = result
         .get_mut("version_label")
-        .ok_or_else(|| invalid_live_feed("METAR state missing version_label".to_string()))?;
+        .ok_or_else(|| invalid_live_feed("live feed state missing version_label".to_string()))?;
     *version = Value::String(delta.to_version.clone());
-    if let Some(count) = result.get_mut("metar_count") {
+    if let Some(count) = result.get_mut(count_key) {
         *count = serde_json::json!(record_count);
     }
     Ok(result)
@@ -726,6 +739,44 @@ mod tests {
         };
         assert!(invalidations.contains(&UiInvalidation::MapOverlay));
         assert!(invalidations.contains(&UiInvalidation::DebugPanel));
+    }
+
+    #[test]
+    fn obstacle_delta_applies_keyed_record_changes() {
+        let from = serde_json::json!({
+            "schema_version": 1,
+            "product_id": "obstacles",
+            "version_label": "from",
+            "obstacle_count": 2,
+            "obstacles_by_id": {
+                "obs:a": {"id": "obs:a", "label": "old"},
+                "obs:b": {"id": "obs:b", "label": "removed"}
+            }
+        });
+        let delta = LiveFeedRecordDelta {
+            product: "obstacles".to_string(),
+            from_version: "from".to_string(),
+            to_version: "to".to_string(),
+            changed: serde_json::Map::from_iter([
+                (
+                    "obs:a".to_string(),
+                    serde_json::json!({"id": "obs:a", "label": "new"}),
+                ),
+                (
+                    "obs:c".to_string(),
+                    serde_json::json!({"id": "obs:c", "label": "added"}),
+                ),
+            ]),
+            removed: vec!["obs:b".to_string()],
+        };
+
+        let applied = apply_live_feed_record_delta(&from, &delta).unwrap();
+
+        assert_eq!(applied["version_label"], "to");
+        assert_eq!(applied["obstacle_count"], 2);
+        assert_eq!(applied["obstacles_by_id"]["obs:a"]["label"], "new");
+        assert_eq!(applied["obstacles_by_id"]["obs:c"]["label"], "added");
+        assert!(applied["obstacles_by_id"].get("obs:b").is_none());
     }
 
     #[test]

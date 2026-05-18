@@ -133,6 +133,7 @@ pub struct BuildObstacleDatasetRequest {
 pub struct BuildObstacleDatasetResult {
     pub manifest_path: PathBuf,
     pub stats_path: PathBuf,
+    pub structured_json_path: PathBuf,
     pub zip_path: PathBuf,
 }
 
@@ -341,6 +342,15 @@ struct VectorAggregateTileFile {
     airspace_refs: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     airspace_labels: Vec<AirspaceTileLabel>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ObstacleLiveState {
+    schema_version: u32,
+    product_id: String,
+    version_label: String,
+    obstacle_count: usize,
+    obstacles_by_id: BTreeMap<String, PointRecord>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1349,6 +1359,7 @@ pub fn build_obstacle_dataset(
     let manifest_path = request
         .output_dir
         .join(format!("obstacles_{}.manifest", request.version_label));
+    let structured_json_path = request.output_dir.join("obstacles.json");
     let zip_path = request
         .output_dir
         .join(format!("obstacles_{}.zip", request.version_label));
@@ -1360,9 +1371,25 @@ pub fn build_obstacle_dataset(
     let mut point_layers = BTreeMap::new();
     let mut zip_members = vec![
         ("obstacles".to_string(), manifest_path.clone()),
+        ("obstacles.json".to_string(), structured_json_path.clone()),
         ("stats.json".to_string(), stats_path.clone()),
     ];
     let mut zoom_level_stats = Vec::new();
+
+    let obstacles_by_id = obstacle_points
+        .iter()
+        .map(|point| (point.record.id.clone(), point.record.clone()))
+        .collect::<BTreeMap<_, _>>();
+    write_json_pretty(
+        &structured_json_path,
+        &ObstacleLiveState {
+            schema_version: 1,
+            product_id: "obstacles".to_string(),
+            version_label: request.version_label.clone(),
+            obstacle_count: obstacles_by_id.len(),
+            obstacles_by_id,
+        },
+    )?;
 
     for &(zoom, min_agl_ft) in OBSTACLE_MIN_AGL_BY_ZOOM {
         let filtered = zoom <= OBSTACLE_THINNING_MAX_ZOOM;
@@ -1478,6 +1505,7 @@ pub fn build_obstacle_dataset(
     Ok(BuildObstacleDatasetResult {
         manifest_path,
         stats_path,
+        structured_json_path,
         zip_path,
     })
 }

@@ -2001,14 +2001,10 @@ pub fn ingest_tfrs_in_session(handle: u32, payload: &TfrProductPayload) -> AppRe
     Ok(())
 }
 
-fn unavailable_tfr_payload(message: &str) -> TfrProductPayload {
-    TfrProductPayload {
-        schema_version: 1,
-        version_label: message.to_string(),
-        notam_count: 0,
-        area_group_count: 0,
-        areas: Vec::new(),
-    }
+fn clear_overlay_resource_warning(session: &mut UiSession, code: &str) {
+    session
+        .overlay_resource_warnings
+        .retain(|warning| warning.code != code);
 }
 
 fn set_overlay_resource_warning(session: &mut UiSession, code: &str, message: String) {
@@ -2024,12 +2020,6 @@ fn set_overlay_resource_warning(session: &mut UiSession, code: &str, message: St
         code: code.to_string(),
         message,
     });
-}
-
-fn clear_overlay_resource_warning(session: &mut UiSession, code: &str) {
-    session
-        .overlay_resource_warnings
-        .retain(|warning| warning.code != code);
 }
 
 pub fn ingest_tafs_in_session(handle: u32, payload: &TafProductPayload) -> AppResult<()> {
@@ -2074,26 +2064,6 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
             })?;
         return Ok(());
     }
-    if resource_id == "weather/tfrs" {
-        if bytes.is_empty() {
-            return ingest_tfrs_in_session(handle, &unavailable_tfr_payload("unavailable"));
-        }
-        let payload: TfrProductPayload = match serde_json::from_slice(bytes) {
-            Ok(payload) => payload,
-            Err(err) => {
-                let mut sessions = lock_sessions();
-                let session = session_mut(&mut sessions, handle)?;
-                session.tfr_payload = Some(unavailable_tfr_payload("invalid"));
-                set_overlay_resource_warning(
-                    session,
-                    "tfr_resource_unavailable",
-                    format!("TFR layer unavailable: failed to parse TFR resource: {err}"),
-                );
-                return Ok(());
-            }
-        };
-        return ingest_tfrs_in_session(handle, &payload);
-    }
     if let Some(rest) = resource_id.strip_prefix("terrain/source/") {
         let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, handle)?;
@@ -2110,16 +2080,41 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
 
 fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
     if let Some(metars_value) = session.live_feeds.product_state_manifest("metars").cloned() {
-        let payload: MetarProductPayload =
-            serde_json::from_value(metars_value).map_err(|err| AppError {
-                kind: AppErrorKind::InvalidManifest,
-                message: format!("failed to parse live-feed METAR state: {err}"),
-            })?;
-        session.metar_tile_cache = metar_tile_cache_for_live_feed(
-            &payload,
-            session.map_overlay_config.metar_layer.as_ref(),
-        );
-        session.metar_payload = Some(payload);
+        match serde_json::from_value::<MetarProductPayload>(metars_value) {
+            Ok(payload) => {
+                session.metar_tile_cache = metar_tile_cache_for_live_feed(
+                    &payload,
+                    session.map_overlay_config.metar_layer.as_ref(),
+                );
+                session.metar_payload = Some(payload);
+                clear_overlay_resource_warning(session, "live_feed_metars_unavailable");
+            }
+            Err(err) => {
+                session.metar_tile_cache.clear();
+                session.metar_payload = None;
+                set_overlay_resource_warning(
+                    session,
+                    "live_feed_metars_unavailable",
+                    format!("METAR live feed unavailable: failed to parse state: {err}"),
+                );
+            }
+        }
+    }
+    if let Some(tfrs_value) = session.live_feeds.product_state_manifest("tfrs").cloned() {
+        match serde_json::from_value::<TfrProductPayload>(tfrs_value) {
+            Ok(payload) => {
+                session.tfr_payload = Some(payload);
+                clear_overlay_resource_warning(session, "live_feed_tfrs_unavailable");
+            }
+            Err(err) => {
+                session.tfr_payload = None;
+                set_overlay_resource_warning(
+                    session,
+                    "live_feed_tfrs_unavailable",
+                    format!("TFR live feed unavailable: failed to parse state: {err}"),
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -2577,14 +2572,14 @@ fn weather_overlay_resources(
         }
     }
     if overlay.needed_tfrs {
-        extend_package_resource_requests(
-            session,
-            &mut resources,
-            "weather/tfrs",
-            "tfrs",
-            "tfrs.json",
-            true,
-        );
+        if session.live_feeds.has_product_current_version("tfrs") {
+            if let HadOperationOutcome::NeedResources {
+                resources: live_feed_resources,
+            } = session.live_feeds.sync_outcome()
+            {
+                resources.extend(live_feed_resources);
+            }
+        }
     }
     dedupe_resource_requests(resources)
 }
@@ -5415,27 +5410,125 @@ mod tests {
     }
 
     #[test]
-    fn malformed_tfr_resource_degrades_tfr_layer_without_failing_session() {
-        let init = create_ui_session(
-            minimal_vector_manifest_json(),
-            FlightPlan::default(),
-            &[],
-            None,
-            None,
-        )
-        .expect("create session");
+    fn malformed_live_tfr_state_records_warning_without_failing_overlay() {
+        let mut session = UiSession {
+            app_state: register_default_situation_sources(AppState::default()).expect("app state"),
+            playback: PlaybackSessionState::default(),
+            plan_preview: PlanPreviewState::default(),
+            debug_ownship_driver: DebugOwnshipDriverState::default(),
+            map_follow: MapFollowSessionState::default(),
+            guidance_leg_geometry: HashMap::new(),
+            map_overlay_config: map_overlay_config_from_vector_manifest_json(
+                minimal_vector_manifest_json(),
+            )
+            .expect("bootstrap manifest"),
+            vector_manifest_loaded: false,
+            chart_page_state: derive_compact_chart_page_state(
+                &FlightPlan::default(),
+                &[],
+                None,
+                None,
+            ),
+            nav_kv_store_id: None,
+            nav_kv_store: None,
+            map_layer_state: default_map_layer_state(),
+            caution_state: default_caution_state(),
+            debug_state: default_debug_state(),
+            raster_resource_mode: RasterResourceMode::InstalledPackage,
+            publication_resolver: PublicationResolver::new("/packages"),
+            live_feeds: LiveFeedsState::default(),
+            raster_map_catalog: None,
+            vector_tile_cache: HashMap::new(),
+            metar_tile_cache: HashMap::new(),
+            metar_payload: None,
+            taf_payload: None,
+            airspace_feature_cache: HashMap::new(),
+            tfr_payload: None,
+            overlay_resource_warnings: Vec::new(),
+            terrain_source_tile_cache: HashMap::new(),
+        };
+        let bad_tfr_state = serde_json::json!({
+            "schema_version": 1,
+            "version_label": "bad",
+            "notam_count": 1,
+            "area_group_count": 1,
+            "areas": [{
+                "notam_id": "6/0001",
+                "area_index": 0,
+                "schedule_fragments": [],
+                "upper_limit": { "value_text": "100", "unit": "MSL" },
+                "lower_limit": { "value_text": "SFC", "unit": "SFC" },
+                "polygon": [
+                    { "lat": 47.0, "lon": -122.0 },
+                    { "lat": 47.0, "lon": -121.9 },
+                    { "lat": 47.1, "lon": -121.9 }
+                ]
+            }]
+        });
+        let bad_tfr_state_sha = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(
+                serde_json::to_string(&bad_tfr_state)
+                    .expect("state json")
+                    .as_bytes(),
+            );
+            format!("{:x}", hasher.finalize())
+        };
+        session
+            .live_feeds
+            .ingest_resource(
+                "live_feeds/current",
+                format!(
+                    r#"{{
+                    "products": {{
+                        "tfrs": {{
+                            "current": "bad",
+                            "version_manifest_url": "versions/tfrs/bad.json",
+                            "state_url": "states/tfrs/bad.json",
+                            "state_sha256": "{}"
+                        }}
+                    }}
+                }}"#,
+                    bad_tfr_state_sha
+                )
+                .as_bytes(),
+            )
+            .expect("current manifest");
+        session
+            .live_feeds
+            .ingest_resource(
+                "live_feeds/version/tfrs/bad",
+                format!(
+                    r#"{{
+                    "product": "tfrs",
+                    "version": "bad",
+                    "state": {{
+                        "url": "states/tfrs/bad.json",
+                        "state_sha256": "{}"
+                    }}
+                }}"#,
+                    bad_tfr_state_sha
+                )
+                .as_bytes(),
+            )
+            .expect("version manifest");
+        session
+            .live_feeds
+            .ingest_resource(
+                "live_feeds/state/tfrs/bad",
+                &serde_json::to_vec(&bad_tfr_state).expect("state json"),
+            )
+            .expect("state manifest");
 
-        ingest_resource_in_session(init.handle, "weather/tfrs", br#"{"areas":[{}]}"#)
-            .expect("bad TFR resource should not fail unrelated overlay layers");
+        install_live_feed_payloads(&mut session).expect("install should degrade");
 
-        let sessions = lock_sessions();
-        let session = sessions.get(&init.handle).expect("session");
-        let tfr_payload = session.tfr_payload.as_ref().expect("empty TFR payload");
-        assert!(tfr_payload.areas.is_empty());
+        assert!(session.tfr_payload.is_none());
         assert!(session
             .overlay_resource_warnings
             .iter()
-            .any(|warning| warning.code == "tfr_resource_unavailable"));
+            .any(|warning| warning.code == "live_feed_tfrs_unavailable"
+                && warning.message.contains("summary_text")));
     }
 
     fn complete_session_snapshot(outcome: HadOperationOutcome) -> UiSessionSnapshot {

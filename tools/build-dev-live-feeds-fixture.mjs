@@ -20,6 +20,7 @@ const args = parseArgs(process.argv.slice(2));
 const outputRoot = path.resolve(args.output ?? path.join(repoRoot, "..", "live-feeds-dev-fixture"));
 const liveFeedsRoot = path.join(outputRoot, "live-feeds");
 const metarFixtureRoot = path.resolve(args.metars ?? defaultMetarFixtureRoot);
+const tfrStatePath = args.tfrState ? path.resolve(args.tfrState) : null;
 const mergeRoot = args.mergeRoot ? path.resolve(args.mergeRoot) : null;
 
 if (fs.existsSync(outputRoot)) {
@@ -37,8 +38,14 @@ if (metarStates.length === 0) {
 }
 
 publishMetarStates(liveFeedsRoot, metarStates);
+if (tfrStatePath) {
+  publishSingleStateProduct(liveFeedsRoot, "tfrs", tfrStatePath);
+}
 resetCurrentToFirstFixtureVersions(liveFeedsRoot);
 console.log(`wrote ${metarStates.length} METAR live-feed states to ${liveFeedsRoot}`);
+if (tfrStatePath) {
+  console.log(`wrote TFR live-feed state from ${tfrStatePath}`);
+}
 
 function parseArgs(argv) {
   const parsed = {};
@@ -48,6 +55,8 @@ function parseArgs(argv) {
       parsed.output = argv[++index];
     } else if (arg === "--metars") {
       parsed.metars = argv[++index];
+    } else if (arg === "--tfr-state") {
+      parsed.tfrState = argv[++index];
     } else if (arg === "--merge-root") {
       parsed.mergeRoot = argv[++index];
     } else {
@@ -55,6 +64,53 @@ function parseArgs(argv) {
     }
   }
   return parsed;
+}
+
+function publishSingleStateProduct(root, product, sourcePath) {
+  const state = JSON.parse(fs.readFileSync(sourcePath, "utf8"));
+  const version = state.version_label;
+  if (typeof version !== "string" || version.length === 0) {
+    throw new Error(`${sourcePath}: missing version_label`);
+  }
+  const stateDir = path.join(root, "states", product);
+  const versionDir = path.join(root, "versions", product);
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(versionDir, { recursive: true });
+
+  const stateJson = canonicalJson(state);
+  const stateSha256 = sha256Hex(stateJson);
+  const statePath = path.join(stateDir, `${version}.json`);
+  fs.writeFileSync(statePath, `${prettyJson(state)}\n`);
+
+  const versionManifest = {
+    schema_version: 1,
+    product,
+    version,
+    previous: null,
+    state: {
+      url: relativeUrl(root, statePath),
+      bytes: fs.statSync(statePath).size,
+      blob_sha256: sha256Hex(fs.readFileSync(statePath)),
+      state_sha256: stateSha256,
+    },
+    delta_from_previous: null,
+  };
+  const versionPath = path.join(versionDir, `${version}.json`);
+  fs.writeFileSync(versionPath, `${prettyJson(versionManifest)}\n`);
+
+  const currentPath = path.join(root, "current.json");
+  const current = readJsonIfExists(currentPath) ?? {
+    schema_version: 1,
+    generated_at_utc: new Date().toISOString(),
+    products: {},
+  };
+  current.products[product] = {
+    current: version,
+    version_manifest_url: relativeUrl(root, versionPath),
+    state_url: relativeUrl(root, statePath),
+    state_sha256: stateSha256,
+  };
+  fs.writeFileSync(currentPath, `${prettyJson(current)}\n`);
 }
 
 function loadMetarStates(fixtureRoot) {

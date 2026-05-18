@@ -636,6 +636,76 @@ mod tests {
     }
 
     #[test]
+    fn tfr_live_feed_uses_full_state_and_invalidates_overlay() {
+        let tfrs = serde_json::json!({
+            "schema_version": 1,
+            "version_label": "v1",
+            "notam_count": 1,
+            "area_group_count": 0,
+            "areas": []
+        });
+        let state_sha256 = canonical_json_sha256(&tfrs).unwrap();
+        let mut state = LiveFeedsState::default();
+        state
+            .ingest_resource(
+                "live_feeds/current",
+                format!(
+                    r#"{{
+                    "products": {{
+                        "tfrs": {{
+                            "current": "v1",
+                            "version_manifest_url": "versions/tfrs/v1.json",
+                            "state_url": "states/tfrs/v1.json",
+                            "state_sha256": "{state_sha256}"
+                        }}
+                    }}
+                }}"#
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        let HadOperationOutcome::NeedResources { resources } = state.sync_outcome() else {
+            panic!("expected version request");
+        };
+        assert_eq!(resources[0].id, "live_feeds/version/tfrs/v1");
+
+        state
+            .ingest_resource(
+                "live_feeds/version/tfrs/v1",
+                format!(
+                    r#"{{
+                    "product": "tfrs",
+                    "version": "v1",
+                    "state": {{
+                        "url": "states/tfrs/v1.json",
+                        "state_sha256": "{state_sha256}"
+                    }}
+                }}"#
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        let HadOperationOutcome::NeedResources { resources } = state.sync_outcome() else {
+            panic!("expected state request");
+        };
+        assert_eq!(resources[0].id, "live_feeds/state/tfrs/v1");
+
+        state
+            .ingest_resource(
+                "live_feeds/state/tfrs/v1",
+                &serde_json::to_vec(&tfrs).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(state.product_state_manifest("tfrs"), Some(&tfrs));
+        let outcome = state.sync_outcome_with_invalidations();
+        let HadOperationOutcome::Complete { invalidations, .. } = outcome else {
+            panic!("expected complete");
+        };
+        assert!(invalidations.contains(&UiInvalidation::MapOverlay));
+        assert!(invalidations.contains(&UiInvalidation::DebugPanel));
+    }
+
+    #[test]
     fn sse_event_updates_product_without_platform_contract_logic() {
         let mut state = LiveFeedsState {
             current_loaded: true,

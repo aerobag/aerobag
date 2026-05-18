@@ -3256,6 +3256,19 @@ function MapPage(props: {
         zoom: viewport.zoom,
         error: errorMessage(error),
       });
+      if (!cancelled) {
+        setMapOverlay({
+          visible_features: [],
+          visible_metars: [],
+          visible_pireps: [],
+          airspace_paths: [],
+          tfr_paths: [],
+          airspace_labels: [],
+          offline_regions: [],
+          warnings: [],
+        });
+        setMapOverlayViewport(null);
+      }
       console.error(error);
     });
 

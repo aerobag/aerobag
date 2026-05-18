@@ -545,6 +545,14 @@ struct BuiltLiveNexradState {
 }
 
 #[derive(Debug, Clone)]
+struct BuiltLiveTfrState {
+    version: String,
+    state_source_path: PathBuf,
+    state_value: serde_json::Value,
+    area_group_count: usize,
+}
+
+#[derive(Debug, Clone)]
 struct MetarSourceNodeOutput {
     metar_xml_path: PathBuf,
     taf_xml_path: PathBuf,
@@ -558,12 +566,15 @@ enum LiveFeedTaskKind {
     PublishMetars,
     BuildNexrad,
     PublishNexrad,
+    BuildTfrs,
+    PublishTfrs,
 }
 
 #[derive(Debug, Clone)]
 enum LiveFeedTaskValue {
     BuiltMetars(BuiltLiveMetarState),
     BuiltNexrad(BuiltLiveNexradState),
+    BuiltTfrs(BuiltLiveTfrState),
     Published(UpdatedLiveFeedResult),
     Failed(FailedLiveFeedResult),
 }
@@ -3349,6 +3360,18 @@ pub fn update_live_feeds(config: &ProductBuildConfig) -> anyhow::Result<LiveFeed
             weight: 1,
             kind: LiveFeedTaskKind::PublishNexrad,
         },
+        GraphScheduledTask {
+            id: "live-feed-tfrs-build".to_string(),
+            deps: vec![],
+            weight: 1,
+            kind: LiveFeedTaskKind::BuildTfrs,
+        },
+        GraphScheduledTask {
+            id: "live-feed-tfrs-publish".to_string(),
+            deps: vec!["live-feed-tfrs-build".to_string()],
+            weight: 1,
+            kind: LiveFeedTaskKind::PublishTfrs,
+        },
     ];
     let config_for_tasks = config.clone();
     let live_root_for_tasks = live_root.clone();
@@ -3432,12 +3455,50 @@ pub fn update_live_feeds(config: &ProductBuildConfig) -> anyhow::Result<LiveFeed
                         Err(error) => live_feed_failure_completion("nexrad", "publish", error),
                     }
                 }
+                LiveFeedTaskKind::BuildTfrs => match build_live_tfrs_state(&config) {
+                    Ok(built) => Ok(GraphTaskCompletion {
+                        node_records: vec![],
+                        value: LiveFeedTaskValue::BuiltTfrs(built),
+                        completion_detail: "built tfrs".to_string(),
+                    }),
+                    Err(error) => live_feed_failure_completion("tfrs", "build", error),
+                },
+                LiveFeedTaskKind::PublishTfrs => {
+                    let built = match task_values.get("live-feed-tfrs-build") {
+                        Some(LiveFeedTaskValue::BuiltTfrs(built)) => built.clone(),
+                        Some(LiveFeedTaskValue::Failed(failure)) => {
+                            return Ok(GraphTaskCompletion {
+                                node_records: vec![],
+                                value: LiveFeedTaskValue::Failed(failure.clone()),
+                                completion_detail: format!(
+                                    "skipped because {} {} failed",
+                                    failure.product, failure.phase
+                                ),
+                            });
+                        }
+                        _ => bail!("missing built TFR live-feed state"),
+                    };
+                    match publish_live_feed_product(&config, &live_root, || {
+                        publish_live_tfrs(&live_root, built)
+                    }) {
+                        Ok((published, current_path)) => Ok(GraphTaskCompletion {
+                            node_records: vec![],
+                            value: LiveFeedTaskValue::Published(published),
+                            completion_detail: format!("current={}", current_path.display()),
+                        }),
+                        Err(error) => live_feed_failure_completion("tfrs", "publish", error),
+                    }
+                }
             }
         },
     )?;
     let mut products = Vec::new();
     let mut failures = Vec::new();
-    for task_id in ["live-feed-metars-publish", "live-feed-nexrad-publish"] {
+    for task_id in [
+        "live-feed-metars-publish",
+        "live-feed-nexrad-publish",
+        "live-feed-tfrs-publish",
+    ] {
         match task_values.get(task_id) {
             Some(LiveFeedTaskValue::Published(result)) => products.push(result.clone()),
             Some(LiveFeedTaskValue::Failed(failure)) => failures.push(failure.clone()),
@@ -3570,7 +3631,7 @@ fn publish_live_metars(
     let mut delta_path = None;
     let mut changed_count = 0;
     let mut removed_count = 0;
-    if let Some(previous) = previous_entry {
+    if let Some(previous) = previous_entry.as_ref() {
         if previous.current == version {
             if previous.state_sha256 != state_sha256 {
                 bail!(
@@ -3617,7 +3678,7 @@ fn publish_live_metars(
                 bytes: bytes.len() as u64,
                 blob_sha256: sha256_hex(&bytes),
             });
-            previous_version = Some(previous.current);
+            previous_version = Some(previous.current.clone());
             delta_path = Some(path);
         }
     }
@@ -3657,6 +3718,131 @@ fn publish_live_metars(
         delta_path,
         changed_count,
         removed_count,
+    })
+}
+
+fn build_live_tfrs_state(config: &ProductBuildConfig) -> anyhow::Result<BuiltLiveTfrState> {
+    let (_source_zip_path, _source_generated_at_utc, record) = build_tfrs_product(config)?;
+    let structured_json_relative = record
+        .outputs
+        .get("structured_json")
+        .context("TFR node record missing structured_json output")?;
+    let state_source_path =
+        artifact_root_from_build_root(&config.build_root).join(structured_json_relative);
+    if !state_source_path.is_file() {
+        bail!(
+            "TFR structured state does not exist: {}",
+            state_source_path.display()
+        );
+    }
+    let state_value = read_json_value(&state_source_path)?;
+    let version = state_value
+        .get("version_label")
+        .and_then(serde_json::Value::as_str)
+        .context("TFR state missing version_label")?
+        .to_string();
+    let area_group_count = state_value
+        .get("areas")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    Ok(BuiltLiveTfrState {
+        version,
+        state_source_path,
+        state_value,
+        area_group_count,
+    })
+}
+
+fn publish_live_tfrs(
+    live_root: &Path,
+    built: BuiltLiveTfrState,
+) -> anyhow::Result<UpdatedLiveFeedResult> {
+    let BuiltLiveTfrState {
+        version,
+        state_source_path,
+        state_value,
+        area_group_count,
+    } = built;
+    let state_dir = live_root.join("states").join("tfrs");
+    let version_dir = live_root.join("versions").join("tfrs");
+    fs::create_dir_all(&state_dir)
+        .with_context(|| format!("failed to create {}", state_dir.display()))?;
+    fs::create_dir_all(&version_dir)
+        .with_context(|| format!("failed to create {}", version_dir.display()))?;
+
+    let state_path = state_dir.join(format!("{version}.json"));
+    if !state_path.is_file() {
+        fs::copy(&state_source_path, &state_path).with_context(|| {
+            format!(
+                "failed to copy {} to {}",
+                state_source_path.display(),
+                state_path.display()
+            )
+        })?;
+    }
+    let state_bytes = fs::read(&state_path)
+        .with_context(|| format!("failed to read {}", state_path.display()))?;
+    let state_blob_sha256 = sha256_hex(&state_bytes);
+    let state_sha256 = canonical_json_sha256(&state_value)?;
+
+    let previous_entry = read_live_feeds_current(live_root)?
+        .and_then(|current| current.products.get("tfrs").cloned());
+    if let Some(previous) = previous_entry.as_ref() {
+        if previous.current == version {
+            if previous.state_sha256 != state_sha256 {
+                bail!(
+                    "current TFR state hash mismatch for {}: expected {}, got {}",
+                    previous.current,
+                    previous.state_sha256,
+                    state_sha256
+                );
+            }
+            return Ok(UpdatedLiveFeedResult {
+                product: "tfrs".to_string(),
+                version,
+                state_path,
+                delta_path: None,
+                changed_count: 0,
+                removed_count: 0,
+            });
+        }
+    }
+
+    let state_ref = LivePayloadRef {
+        url: live_feeds_relative_url(live_root, &state_path)?,
+        bytes: state_bytes.len() as u64,
+        blob_sha256: state_blob_sha256,
+        state_sha256: state_sha256.clone(),
+    };
+    let version_manifest = LiveFeedVersionManifest {
+        schema_version: 1,
+        product: "tfrs".to_string(),
+        version: version.clone(),
+        previous: previous_entry.map(|entry| entry.current),
+        state: state_ref,
+        delta_from_previous: None,
+    };
+    let version_manifest_path = version_dir.join(format!("{version}.json"));
+    write_json_pretty_file(&version_manifest_path, &version_manifest)?;
+    let current = merge_live_feed_current(
+        live_root,
+        "tfrs",
+        LiveFeedCurrentEntry {
+            current: version.clone(),
+            version_manifest_url: live_feeds_relative_url(live_root, &version_manifest_path)?,
+            state_url: live_feeds_relative_url(live_root, &state_path)?,
+            state_sha256,
+        },
+    )?;
+    write_live_feeds_current_manifest(live_root, &current)?;
+
+    Ok(UpdatedLiveFeedResult {
+        product: "tfrs".to_string(),
+        version,
+        state_path,
+        delta_path: None,
+        changed_count: area_group_count,
+        removed_count: 0,
     })
 }
 

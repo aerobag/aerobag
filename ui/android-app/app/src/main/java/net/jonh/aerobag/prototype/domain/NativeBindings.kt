@@ -320,7 +320,6 @@ interface NativeBridge {
         widthPx: Double,
         heightPx: Double,
         clickJson: String,
-        hitRadiusPx: Double,
     ): String
 
     fun getMapSelectionInSessionWithPointDisplayScaleJson(
@@ -329,7 +328,6 @@ interface NativeBridge {
         widthPx: Double,
         heightPx: Double,
         clickJson: String,
-        hitRadiusPx: Double,
         pointDisplayScale: Double,
     ): String
 
@@ -709,7 +707,6 @@ object NativeBindings : NativeBridge {
         widthPx: Double,
         heightPx: Double,
         clickJson: String,
-        hitRadiusPx: Double,
     ): String
 
     external override fun getMapSelectionInSessionWithPointDisplayScaleJson(
@@ -718,7 +715,6 @@ object NativeBindings : NativeBridge {
         widthPx: Double,
         heightPx: Double,
         clickJson: String,
-        hitRadiusPx: Double,
         pointDisplayScale: Double,
     ): String
 

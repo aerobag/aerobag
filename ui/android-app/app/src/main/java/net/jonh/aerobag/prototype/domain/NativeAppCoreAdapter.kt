@@ -1036,7 +1036,6 @@ class NativeUiSession internal constructor(
         widthPx: Double,
         heightPx: Double,
         click: LatLonPoint,
-        hitRadiusPx: Double,
         pointDisplayScale: Double,
     ): MapSelectionQueryResult {
         val viewportJson = json.encodeToString(viewport.toWire())
@@ -1050,7 +1049,6 @@ class NativeUiSession internal constructor(
                     widthPx,
                     heightPx,
                     clickJson,
-                    hitRadiusPx,
                     pointDisplayScale,
                 )
             },

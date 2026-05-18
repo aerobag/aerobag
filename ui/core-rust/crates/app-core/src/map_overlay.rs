@@ -28,6 +28,8 @@ const OBSTACLE_DANGER_LOWER_FT: f64 = 200.0;
 const WEATHER_DISPLAY_FEATURE_LIMIT: usize = 1_000;
 const WORLD_SIZE: f64 = 256.0;
 const MAX_LATITUDE: f64 = 85.051_128_78;
+const UI_THUMB_SIZE_LOGICAL_PX: f64 = 56.0;
+const INSPECTOR_HIT_RADIUS_THUMBS: f64 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct MapSurfaceMetrics {
@@ -60,6 +62,14 @@ impl MapSurfaceMetrics {
         self.effective_display_zoom()
             .floor()
             .clamp(0.0, POINT_TILE_ZOOM as f64) as u32
+    }
+
+    fn logical_px_to_surface_px(self, logical_px: f64) -> f64 {
+        logical_px * self.display_scale
+    }
+
+    fn inspector_hit_radius_px(self) -> f64 {
+        self.logical_px_to_surface_px(UI_THUMB_SIZE_LOGICAL_PX * INSPECTOR_HIT_RADIUS_THUMBS)
     }
 }
 
@@ -1972,7 +1982,6 @@ pub fn query_map_selection(
     config: &MapOverlayConfig,
     plan: Option<&FlightPlan>,
     click: LatLon,
-    hit_radius_px: f64,
     vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
@@ -1990,7 +1999,6 @@ pub fn query_map_selection(
         config,
         plan,
         click,
-        hit_radius_px,
         vector_tile_cache,
         metar_tile_cache,
         metar_payload,
@@ -2011,7 +2019,6 @@ pub fn query_map_selection_with_point_display_scale(
     config: &MapOverlayConfig,
     plan: Option<&FlightPlan>,
     click: LatLon,
-    hit_radius_px: f64,
     vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
@@ -2029,7 +2036,6 @@ pub fn query_map_selection_with_point_display_scale(
         config,
         plan,
         click,
-        hit_radius_px,
         vector_tile_cache,
         metar_tile_cache,
         metar_payload,
@@ -2047,7 +2053,6 @@ pub fn query_map_selection_for_surface(
     config: &MapOverlayConfig,
     plan: Option<&FlightPlan>,
     click: LatLon,
-    hit_radius_px: f64,
     vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
@@ -2062,6 +2067,7 @@ pub fn query_map_selection_for_surface(
     let width_px = metrics.width_px;
     let height_px = metrics.height_px;
     let point_display_scale = metrics.display_scale;
+    let hit_radius_px = metrics.inspector_hit_radius_px();
     let center_world = lat_lon_to_world(viewport.center);
     let scale = 2.0_f64.powf(viewport.zoom);
     let click_screen = world_to_screen_projected(
@@ -5072,6 +5078,31 @@ mod tests {
     }
 
     #[test]
+    fn inspector_hit_radius_uses_surface_display_scale() {
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 37.45,
+                lon: -122.25,
+            },
+            zoom: 9.3,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+
+        let web_metrics = MapSurfaceMetrics::new(viewport, 500.0, 921.0, 1.0);
+        let android_metrics = MapSurfaceMetrics::new(viewport, 1080.0, 2146.0, 2.625);
+
+        assert_eq!(
+            web_metrics.inspector_hit_radius_px(),
+            UI_THUMB_SIZE_LOGICAL_PX * INSPECTOR_HIT_RADIUS_THUMBS
+        );
+        assert_eq!(
+            android_metrics.inspector_hit_radius_px(),
+            UI_THUMB_SIZE_LOGICAL_PX * INSPECTOR_HIT_RADIUS_THUMBS * 2.625
+        );
+    }
+
+    #[test]
     fn vector_tile_window_wraps_source_x_for_repeated_worlds() {
         let viewport = MapViewport {
             center: LatLon {
@@ -5652,7 +5683,6 @@ mod tests {
             &test_map_overlay_config(),
             None,
             viewport.center,
-            32.0,
             &HashMap::new(),
             &metar_tile_cache,
             Some(&metars),
@@ -5765,7 +5795,6 @@ mod tests {
                 lat: 0.0,
                 lon: 360.0,
             },
-            32.0,
             &HashMap::new(),
             &metar_tile_cache,
             Some(&metars),
@@ -5839,7 +5868,6 @@ mod tests {
             &test_map_overlay_config(),
             None,
             LatLon { lat: 0.0, lon: 0.0 },
-            32.0,
             &HashMap::new(),
             &HashMap::new(),
             None,
@@ -5972,7 +6000,6 @@ mod tests {
                 lat: 0.0,
                 lon: 360.0,
             },
-            32.0,
             &vector_cache,
             &HashMap::new(),
             None,
@@ -6048,7 +6075,6 @@ mod tests {
             &test_map_overlay_config(),
             None,
             LatLon { lat: 0.0, lon: 0.0 },
-            32.0,
             &vector_cache,
             &HashMap::new(),
             None,
@@ -6683,7 +6709,6 @@ mod tests {
             &test_map_overlay_config(),
             Some(&plan),
             viewport.center,
-            32.0,
             &vector_cache,
             &HashMap::new(),
             None,
@@ -7054,7 +7079,6 @@ mod tests {
             &test_map_overlay_config(),
             None,
             viewport.center,
-            32.0,
             &HashMap::new(),
             &HashMap::new(),
             None,
@@ -7400,7 +7424,6 @@ mod tests {
             &test_map_overlay_config(),
             None,
             viewport.center,
-            32.0,
             &vector_cache,
             &HashMap::new(),
             None,

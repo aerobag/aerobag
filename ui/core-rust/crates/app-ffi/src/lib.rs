@@ -722,7 +722,6 @@ pub fn get_map_selection_in_session_json(
     width_px: f64,
     height_px: f64,
     click_json: &str,
-    hit_radius_px: f64,
 ) -> Result<String, String> {
     get_map_selection_in_session_with_point_display_scale_json(
         handle,
@@ -730,7 +729,6 @@ pub fn get_map_selection_in_session_json(
         width_px,
         height_px,
         click_json,
-        hit_radius_px,
         1.0,
     )
 }
@@ -741,7 +739,6 @@ pub fn get_map_selection_in_session_with_point_display_scale_json(
     width_px: f64,
     height_px: f64,
     click_json: &str,
-    hit_radius_px: f64,
     point_display_scale: f64,
 ) -> Result<String, String> {
     let viewport: app_core::MapViewport =
@@ -754,7 +751,6 @@ pub fn get_map_selection_in_session_with_point_display_scale_json(
         width_px,
         height_px,
         click,
-        hit_radius_px,
         point_display_scale,
     )
     .map_err(|err| err.to_string())?;
@@ -2304,19 +2300,11 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
     width_px: f64,
     height_px: f64,
     click_json: JString,
-    hit_radius_px: f64,
 ) -> jstring {
     let result = (|| {
         let viewport = get_java_string(&mut env, viewport_json)?;
         let click = get_java_string(&mut env, click_json)?;
-        get_map_selection_in_session_json(
-            handle as u64,
-            &viewport,
-            width_px,
-            height_px,
-            &click,
-            hit_radius_px,
-        )
+        get_map_selection_in_session_json(handle as u64, &viewport, width_px, height_px, &click)
     })();
     return_string(&mut env, result)
 }
@@ -2330,7 +2318,6 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
     width_px: f64,
     height_px: f64,
     click_json: JString,
-    hit_radius_px: f64,
     point_display_scale: f64,
 ) -> jstring {
     let result = (|| {
@@ -2342,7 +2329,6 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
             width_px,
             height_px,
             &click,
-            hit_radius_px,
             point_display_scale,
         )
     })();

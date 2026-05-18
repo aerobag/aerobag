@@ -515,7 +515,7 @@ export interface UiSession {
   ingestAirspaceFeatures(features: AirspaceFeaturePayload[]): Promise<void>;
   ingestAirspaceLabelTiles(tiles: AirspaceLabelTilePayload[]): Promise<void>;
   queryMapOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<MapOverlayQueryResult>;
-  queryMapSelection(viewport: MapViewportState, widthPx: number, heightPx: number, click: LatLon, hitRadiusPx: number): Promise<MapSelectionQueryResult>;
+  queryMapSelection(viewport: MapViewportState, widthPx: number, heightPx: number, click: LatLon): Promise<MapSelectionQueryResult>;
   queryTerrainOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<TerrainOverlayQueryResult>;
   queryNexradOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<NexradOverlayQueryResult>;
   queryRasterTilePlan(viewport: MapViewportState, widthPx: number, heightPx: number, devicePixelRatio?: number): Promise<RasterTilePlan>;
@@ -667,7 +667,7 @@ type WasmModule = {
   ingest_airspace_label_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   ingest_resource_in_session(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
   get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
-  get_map_selection_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, clickJson: string, hitRadiusPx: number): Promise<string> | string;
+  get_map_selection_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, clickJson: string): Promise<string> | string;
   get_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
   get_nexrad_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
   get_raster_tile_plan_in_session_with_display_scale(handle: number, viewportJson: string, widthPx: number, heightPx: number, devicePixelRatio: number): Promise<string> | string;
@@ -1176,7 +1176,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
           ),
         ),
-      queryMapSelection: async (viewport, widthPx, heightPx, click, hitRadiusPx) =>
+      queryMapSelection: async (viewport, widthPx, heightPx, click) =>
         withSessionRetry(async () =>
           runSessionOperation<MapSelectionQueryResult>(() =>
             this.module.get_map_selection_in_session(
@@ -1185,7 +1185,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
               widthPx,
               heightPx,
               JSON.stringify(click),
-              hitRadiusPx,
             ),
           ),
         ),

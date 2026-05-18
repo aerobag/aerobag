@@ -3557,7 +3557,7 @@ function MapPage(props: {
       const world = screenToWorld(viewportRef.current, clickCandidate.latest, surfaceSize.width, surfaceSize.height);
       const click = worldToLatLon(world.x, world.y);
       void uiSession
-        .queryMapSelection(viewportRef.current, surfaceSize.width, surfaceSize.height, click, thumbPixels(0.5))
+        .queryMapSelection(viewportRef.current, surfaceSize.width, surfaceSize.height, click)
         .then((result) => {
           setMapSelection({
             point: clickCandidate.latest,
@@ -3677,7 +3677,6 @@ function MapPage(props: {
       surfaceSize.width,
       surfaceSize.height,
       position,
-      thumbPixels(0.5),
     );
     const selectedItem = selectMapSelectionItemForNavRef(result, navRef);
     setMapSelection({

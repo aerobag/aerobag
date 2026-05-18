@@ -1557,7 +1557,6 @@ internal fun MapExplorerPage(
                                     surfaceWidthPx.toDouble(),
                                     surfaceHeightPx.toDouble(),
                                     LatLonPoint(lat = lat, lon = lon),
-                                    with(density) { (ThumbSize * 0.5f).toPx().toDouble() },
                                     density.density.toDouble(),
                                 )
                             }.onSuccess { result ->

@@ -2627,16 +2627,9 @@ pub fn get_map_selection_in_session(
     width_px: f64,
     height_px: f64,
     click: LatLon,
-    hit_radius_px: f64,
 ) -> AppResult<HadOperationOutcome> {
     get_map_selection_in_session_with_point_display_scale(
-        handle,
-        viewport,
-        width_px,
-        height_px,
-        click,
-        hit_radius_px,
-        1.0,
+        handle, viewport, width_px, height_px, click, 1.0,
     )
 }
 
@@ -2646,7 +2639,6 @@ pub fn get_map_selection_in_session_with_point_display_scale(
     width_px: f64,
     height_px: f64,
     click: LatLon,
-    hit_radius_px: f64,
     point_display_scale: f64,
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
@@ -2687,7 +2679,6 @@ pub fn get_map_selection_in_session_with_point_display_scale(
         &session.map_overlay_config,
         plan,
         click,
-        hit_radius_px,
         &session.vector_tile_cache,
         &session.metar_tile_cache,
         session.metar_payload.as_ref(),

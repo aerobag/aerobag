@@ -600,6 +600,29 @@ mod tests {
     }
 
     #[test]
+    fn canonical_json_hash_is_independent_of_object_insertion_order() {
+        let mut left_inner = serde_json::Map::new();
+        left_inner.insert("bravo".to_string(), serde_json::json!(2));
+        left_inner.insert("alpha".to_string(), serde_json::json!(1));
+        let mut left = serde_json::Map::new();
+        left.insert("outer_b".to_string(), Value::Object(left_inner));
+        left.insert("outer_a".to_string(), serde_json::json!(0));
+
+        let mut right_inner = serde_json::Map::new();
+        right_inner.insert("alpha".to_string(), serde_json::json!(1));
+        right_inner.insert("bravo".to_string(), serde_json::json!(2));
+        let mut right = serde_json::Map::new();
+        right.insert("outer_a".to_string(), serde_json::json!(0));
+        right.insert("outer_b".to_string(), Value::Object(right_inner));
+
+        assert_eq!(Value::Object(left.clone()), Value::Object(right.clone()));
+        assert_eq!(
+            canonical_json_sha256(&Value::Object(left)).unwrap(),
+            canonical_json_sha256(&Value::Object(right)).unwrap()
+        );
+    }
+
+    #[test]
     fn sync_requests_current_manifest_first() {
         let state = LiveFeedsState::default();
         let HadOperationOutcome::NeedResources { resources } = state.sync_outcome() else {

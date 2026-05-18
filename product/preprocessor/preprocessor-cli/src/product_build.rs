@@ -21667,6 +21667,36 @@ mod tests {
     }
 
     #[test]
+    fn canonical_json_hash_is_independent_of_object_insertion_order() -> anyhow::Result<()> {
+        let mut left_inner = serde_json::Map::new();
+        left_inner.insert("bravo".to_string(), serde_json::json!(2));
+        left_inner.insert("alpha".to_string(), serde_json::json!(1));
+        let mut left = serde_json::Map::new();
+        left.insert("outer_b".to_string(), serde_json::Value::Object(left_inner));
+        left.insert("outer_a".to_string(), serde_json::json!(0));
+
+        let mut right_inner = serde_json::Map::new();
+        right_inner.insert("alpha".to_string(), serde_json::json!(1));
+        right_inner.insert("bravo".to_string(), serde_json::json!(2));
+        let mut right = serde_json::Map::new();
+        right.insert("outer_a".to_string(), serde_json::json!(0));
+        right.insert(
+            "outer_b".to_string(),
+            serde_json::Value::Object(right_inner),
+        );
+
+        assert_eq!(
+            serde_json::Value::Object(left.clone()),
+            serde_json::Value::Object(right.clone())
+        );
+        assert_eq!(
+            canonical_json_sha256(&serde_json::Value::Object(left))?,
+            canonical_json_sha256(&serde_json::Value::Object(right))?
+        );
+        Ok(())
+    }
+
+    #[test]
     fn winds_aloft_live_feed_publishes_full_state_without_delta() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let live_root = temp.path().join("live-feeds");

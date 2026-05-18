@@ -553,6 +553,14 @@ struct BuiltLiveTfrState {
 }
 
 #[derive(Debug, Clone)]
+struct BuiltLiveWindsAloftState {
+    version: String,
+    state_source_path: PathBuf,
+    state_value: serde_json::Value,
+    file_count: usize,
+}
+
+#[derive(Debug, Clone)]
 struct MetarSourceNodeOutput {
     metar_xml_path: PathBuf,
     taf_xml_path: PathBuf,
@@ -568,6 +576,8 @@ enum LiveFeedTaskKind {
     PublishNexrad,
     BuildTfrs,
     PublishTfrs,
+    BuildWindsAloft,
+    PublishWindsAloft,
 }
 
 #[derive(Debug, Clone)]
@@ -575,6 +585,7 @@ enum LiveFeedTaskValue {
     BuiltMetars(BuiltLiveMetarState),
     BuiltNexrad(BuiltLiveNexradState),
     BuiltTfrs(BuiltLiveTfrState),
+    BuiltWindsAloft(BuiltLiveWindsAloftState),
     Published(UpdatedLiveFeedResult),
     Failed(FailedLiveFeedResult),
 }
@@ -3372,6 +3383,18 @@ pub fn update_live_feeds(config: &ProductBuildConfig) -> anyhow::Result<LiveFeed
             weight: 1,
             kind: LiveFeedTaskKind::PublishTfrs,
         },
+        GraphScheduledTask {
+            id: "live-feed-winds-aloft-build".to_string(),
+            deps: vec![],
+            weight: 1,
+            kind: LiveFeedTaskKind::BuildWindsAloft,
+        },
+        GraphScheduledTask {
+            id: "live-feed-winds-aloft-publish".to_string(),
+            deps: vec!["live-feed-winds-aloft-build".to_string()],
+            weight: 1,
+            kind: LiveFeedTaskKind::PublishWindsAloft,
+        },
     ];
     let config_for_tasks = config.clone();
     let live_root_for_tasks = live_root.clone();
@@ -3489,6 +3512,40 @@ pub fn update_live_feeds(config: &ProductBuildConfig) -> anyhow::Result<LiveFeed
                         Err(error) => live_feed_failure_completion("tfrs", "publish", error),
                     }
                 }
+                LiveFeedTaskKind::BuildWindsAloft => match build_live_winds_aloft_state(&config) {
+                    Ok(built) => Ok(GraphTaskCompletion {
+                        node_records: vec![],
+                        value: LiveFeedTaskValue::BuiltWindsAloft(built),
+                        completion_detail: "built winds-aloft".to_string(),
+                    }),
+                    Err(error) => live_feed_failure_completion("winds-aloft", "build", error),
+                },
+                LiveFeedTaskKind::PublishWindsAloft => {
+                    let built = match task_values.get("live-feed-winds-aloft-build") {
+                        Some(LiveFeedTaskValue::BuiltWindsAloft(built)) => built.clone(),
+                        Some(LiveFeedTaskValue::Failed(failure)) => {
+                            return Ok(GraphTaskCompletion {
+                                node_records: vec![],
+                                value: LiveFeedTaskValue::Failed(failure.clone()),
+                                completion_detail: format!(
+                                    "skipped because {} {} failed",
+                                    failure.product, failure.phase
+                                ),
+                            });
+                        }
+                        _ => bail!("missing built winds-aloft live-feed state"),
+                    };
+                    match publish_live_feed_product(&config, &live_root, || {
+                        publish_live_winds_aloft(&live_root, built)
+                    }) {
+                        Ok((published, current_path)) => Ok(GraphTaskCompletion {
+                            node_records: vec![],
+                            value: LiveFeedTaskValue::Published(published),
+                            completion_detail: format!("current={}", current_path.display()),
+                        }),
+                        Err(error) => live_feed_failure_completion("winds-aloft", "publish", error),
+                    }
+                }
             }
         },
     )?;
@@ -3498,6 +3555,7 @@ pub fn update_live_feeds(config: &ProductBuildConfig) -> anyhow::Result<LiveFeed
         "live-feed-metars-publish",
         "live-feed-nexrad-publish",
         "live-feed-tfrs-publish",
+        "live-feed-winds-aloft-publish",
     ] {
         match task_values.get(task_id) {
             Some(LiveFeedTaskValue::Published(result)) => products.push(result.clone()),
@@ -3842,6 +3900,129 @@ fn publish_live_tfrs(
         state_path,
         delta_path: None,
         changed_count: area_group_count,
+        removed_count: 0,
+    })
+}
+
+fn build_live_winds_aloft_state(
+    config: &ProductBuildConfig,
+) -> anyhow::Result<BuiltLiveWindsAloftState> {
+    let (_source_zip_path, _source_generated_at_utc, record) = build_winds_aloft_product(config)?;
+    let structured_json_relative = record
+        .outputs
+        .get("structured_json")
+        .context("winds-aloft node record missing structured_json output")?;
+    let state_source_path =
+        artifact_root_from_build_root(&config.build_root).join(structured_json_relative);
+    if !state_source_path.is_file() {
+        bail!(
+            "winds-aloft structured state does not exist: {}",
+            state_source_path.display()
+        );
+    }
+    let state_value = read_json_value(&state_source_path)?;
+    let version = fast_product_version_label(&record.fingerprint);
+    let file_count = state_value
+        .get("files")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    Ok(BuiltLiveWindsAloftState {
+        version,
+        state_source_path,
+        state_value,
+        file_count,
+    })
+}
+
+fn publish_live_winds_aloft(
+    live_root: &Path,
+    built: BuiltLiveWindsAloftState,
+) -> anyhow::Result<UpdatedLiveFeedResult> {
+    let BuiltLiveWindsAloftState {
+        version,
+        state_source_path,
+        state_value,
+        file_count,
+    } = built;
+    let state_dir = live_root.join("states").join("winds-aloft");
+    let version_dir = live_root.join("versions").join("winds-aloft");
+    fs::create_dir_all(&state_dir)
+        .with_context(|| format!("failed to create {}", state_dir.display()))?;
+    fs::create_dir_all(&version_dir)
+        .with_context(|| format!("failed to create {}", version_dir.display()))?;
+
+    let state_path = state_dir.join(format!("{version}.json"));
+    if !state_path.is_file() {
+        fs::copy(&state_source_path, &state_path).with_context(|| {
+            format!(
+                "failed to copy {} to {}",
+                state_source_path.display(),
+                state_path.display()
+            )
+        })?;
+    }
+    let state_bytes = fs::read(&state_path)
+        .with_context(|| format!("failed to read {}", state_path.display()))?;
+    let state_blob_sha256 = sha256_hex(&state_bytes);
+    let state_sha256 = canonical_json_sha256(&state_value)?;
+
+    let previous_entry = read_live_feeds_current(live_root)?
+        .and_then(|current| current.products.get("winds-aloft").cloned());
+    if let Some(previous) = previous_entry.as_ref() {
+        if previous.current == version {
+            if previous.state_sha256 != state_sha256 {
+                bail!(
+                    "current winds-aloft state hash mismatch for {}: expected {}, got {}",
+                    previous.current,
+                    previous.state_sha256,
+                    state_sha256
+                );
+            }
+            return Ok(UpdatedLiveFeedResult {
+                product: "winds-aloft".to_string(),
+                version,
+                state_path,
+                delta_path: None,
+                changed_count: 0,
+                removed_count: 0,
+            });
+        }
+    }
+
+    let state_ref = LivePayloadRef {
+        url: live_feeds_relative_url(live_root, &state_path)?,
+        bytes: state_bytes.len() as u64,
+        blob_sha256: state_blob_sha256,
+        state_sha256: state_sha256.clone(),
+    };
+    let version_manifest = LiveFeedVersionManifest {
+        schema_version: 1,
+        product: "winds-aloft".to_string(),
+        version: version.clone(),
+        previous: previous_entry.map(|entry| entry.current),
+        state: state_ref,
+        delta_from_previous: None,
+    };
+    let version_manifest_path = version_dir.join(format!("{version}.json"));
+    write_json_pretty_file(&version_manifest_path, &version_manifest)?;
+    let current = merge_live_feed_current(
+        live_root,
+        "winds-aloft",
+        LiveFeedCurrentEntry {
+            current: version.clone(),
+            version_manifest_url: live_feeds_relative_url(live_root, &version_manifest_path)?,
+            state_url: live_feeds_relative_url(live_root, &state_path)?,
+            state_sha256,
+        },
+    )?;
+    write_live_feeds_current_manifest(live_root, &current)?;
+
+    Ok(UpdatedLiveFeedResult {
+        product: "winds-aloft".to_string(),
+        version,
+        state_path,
+        delta_path: None,
+        changed_count: file_count,
         removed_count: 0,
     })
 }
@@ -11023,7 +11204,9 @@ fn build_winds_aloft_product(
         move |output_dir| {
             fs::create_dir_all(&output_dir)
                 .with_context(|| format!("failed to create {}", output_dir.display()))?;
-            let manifest_path = output_dir.join("manifest.json");
+            let structured_json_path = output_dir.join("winds-aloft.json");
+            let manifest_path =
+                output_dir.join(format!("winds-aloft_{zip_version_label}.manifest.json"));
             let zip_path = output_dir.join(format!("winds-aloft_{zip_version_label}.zip"));
             let grib_output_dir = output_dir.join("grib2");
             fs::create_dir_all(&grib_output_dir)
@@ -11079,17 +11262,20 @@ fn build_winds_aloft_product(
                 "variables": ["UGRD", "VGRD", "HGT"],
                 "files": grib_files,
                 "notes": [
-                    "Raw measuring package; not yet a client wire format.",
+                    "Raw measuring state; not yet a client rendering wire format.",
                     "UGRD/VGRD are wind vector components. HGT is included to map pressure levels to geometric altitude."
                 ],
             });
-            fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)
+            let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
+            fs::write(&structured_json_path, &manifest_bytes)
+                .with_context(|| format!("failed to write {}", structured_json_path.display()))?;
+            fs::write(&manifest_path, &manifest_bytes)
                 .with_context(|| format!("failed to write {}", manifest_path.display()))?;
-            members.push(ZipSource::new("manifest.json", &manifest_path));
+            members.push(ZipSource::new("manifest.json", &structured_json_path));
             write_deterministic_zip(&zip_path, &members)?;
             Ok(FastStructuredProductOutputs {
                 manifest_path: manifest_path.clone(),
-                structured_json_path: manifest_path,
+                structured_json_path,
                 zip_path,
             })
         },
@@ -21478,6 +21664,61 @@ mod tests {
         ] {
             assert!(url.contains(fragment), "{url} missing {fragment}");
         }
+    }
+
+    #[test]
+    fn winds_aloft_live_feed_publishes_full_state_without_delta() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let live_root = temp.path().join("live-feeds");
+        let state_source_path = temp.path().join("winds-aloft.json");
+        let state_value = serde_json::json!({
+            "schema_version": 1,
+            "product_id": "winds-aloft",
+            "generated_at_utc": "2026-05-09T06:00:00Z",
+            "files": [
+                {
+                    "forecast_hour": 3,
+                    "path": "grib2/gfs_20260509_06_f003.grib2",
+                    "size_bytes": 123
+                }
+            ]
+        });
+        write_json_pretty_file(&state_source_path, &state_value)?;
+
+        let result = publish_live_winds_aloft(
+            &live_root,
+            BuiltLiveWindsAloftState {
+                version: "v1".to_string(),
+                state_source_path: state_source_path.clone(),
+                state_value: state_value.clone(),
+                file_count: 1,
+            },
+        )?;
+
+        assert_eq!(result.product, "winds-aloft");
+        assert_eq!(result.version, "v1");
+        assert_eq!(result.changed_count, 1);
+        assert_eq!(result.delta_path, None);
+
+        let current = read_live_feeds_current(&live_root)?.expect("current manifest");
+        let entry = current
+            .products
+            .get("winds-aloft")
+            .expect("winds-aloft current entry");
+        assert_eq!(entry.current, "v1");
+        assert_eq!(entry.state_url, "states/winds-aloft/v1.json");
+        assert_eq!(entry.state_sha256, canonical_json_sha256(&state_value)?);
+
+        let version_manifest_path = live_root
+            .join("versions")
+            .join("winds-aloft")
+            .join("v1.json");
+        let version_manifest: LiveFeedVersionManifest =
+            serde_json::from_slice(&fs::read(version_manifest_path)?)?;
+        assert_eq!(version_manifest.product, "winds-aloft");
+        assert_eq!(version_manifest.previous, None);
+        assert!(version_manifest.delta_from_previous.is_none());
+        Ok(())
     }
 
     #[test]

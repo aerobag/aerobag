@@ -3728,7 +3728,7 @@ fn project_flight_data_banner(
     let track = match (store, position, ownship.orientation_deg) {
         (Some(store), Some(position), Some(true_course_deg)) => {
             crate::had_ops::true_to_magnetic_course_deg_optional(store, true_course_deg, position)?
-                .map(|course| format!("{}{}", format_course_degrees(course), "\u{00b0}"))
+                .map(format_course_degrees)
         }
         _ => None,
     };
@@ -3749,7 +3749,7 @@ fn project_flight_data_banner(
             active_leg_geometry(plan, &active_leg, &session.guidance_leg_geometry)
         {
             desired_track = active_display_course_deg(&geometry, position, store)?
-                .map(|course| format!("{}{}", format_course_degrees(course), "\u{00b0}"));
+                .map(format_course_degrees);
             waypoint_distance_nm =
                 position.map(|position| crate::great_circle_distance_nm(position, geometry.to));
         }
@@ -3773,6 +3773,7 @@ fn project_flight_data_banner(
     }
 
     let waypoint_distance = waypoint_distance_nm.map(format_nm);
+    let ground_speed = speed_kt.map(format_knots);
     let waypoint_ete = waypoint_distance_nm
         .zip(speed_kt)
         .map(|(distance, speed)| format_ete(distance, speed));
@@ -3783,13 +3784,14 @@ fn project_flight_data_banner(
 
     Ok(crate::FlightDataBannerModel {
         cells: vec![
-            flight_data_cell("altitude", "ALT", altitude),
-            flight_data_cell("vertical_speed", "VS", None),
-            flight_data_cell("track", "TRK", track),
-            flight_data_cell("desired_track", "DTK", desired_track),
-            flight_data_cell("waypoint_distance", "WPT", waypoint_distance),
+            flight_data_cell("altitude", "ALT ft", altitude),
+            flight_data_cell("ground_speed", "GS kt", ground_speed),
+            flight_data_cell("vertical_speed", "VS fpm", None),
+            flight_data_cell("track", "TRK °M", track),
+            flight_data_cell("desired_track", "DTK °M", desired_track),
+            flight_data_cell("waypoint_distance", "WPT nm", waypoint_distance),
             flight_data_cell("waypoint_ete", "ETE", waypoint_ete),
-            flight_data_cell("final_distance", "FINAL", final_distance),
+            flight_data_cell("final_distance", "FINAL nm", final_distance),
             flight_data_cell("final_ete", "F-ETE", final_ete),
             flight_data_cell("final_eta", "ETA", None),
         ],
@@ -3805,25 +3807,32 @@ fn flight_data_cell(id: &str, label: &str, value: Option<String>) -> crate::Flig
 }
 
 fn format_feet(value: f64) -> String {
-    format!("{:.0}ft", value)
+    format!("{value:.0}")
 }
 
 fn format_nm(value: f64) -> String {
     if value < 10.0 {
-        format!("{value:.1}nm")
+        format!("{value:.1}")
     } else {
-        format!("{value:.0}nm")
+        format!("{value:.0}")
     }
 }
 
+fn format_knots(value: f64) -> String {
+    format!("{value:.0}")
+}
+
 fn format_ete(distance_nm: f64, speed_kt: f64) -> String {
-    let total_minutes = (distance_nm / speed_kt * 60.0).round().max(0.0) as u32;
-    let hours = total_minutes / 60;
-    let minutes = total_minutes % 60;
-    if hours > 0 {
-        format!("{hours}h{minutes:02}m")
+    let total_seconds = (distance_nm / speed_kt * 3600.0).round().max(0.0) as u32;
+    if total_seconds >= 3600 {
+        let total_minutes = (total_seconds + 30) / 60;
+        let hours = total_minutes / 60;
+        let minutes = total_minutes % 60;
+        format!("{hours:02}:{minutes:02}")
     } else {
-        format!("{minutes}m")
+        let minutes = total_seconds / 60;
+        let seconds = total_seconds % 60;
+        format!("{minutes:02}:{seconds:02}")
     }
 }
 

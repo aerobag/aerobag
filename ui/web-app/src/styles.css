@@ -1764,11 +1764,11 @@ button {
 }
 
 .flightDataLabel {
-  font-size: calc(var(--thumb) * 0.13);
+  font-size: calc(var(--thumb) * 0.16);
   font-weight: 800;
   line-height: 1;
-  letter-spacing: 0.08em;
-  opacity: 0.74;
+  letter-spacing: 0.035em;
+  opacity: 0.82;
 }
 
 .flightDataValue {
@@ -1776,10 +1776,10 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: calc(var(--thumb) * 0.18);
+  font-size: calc(var(--thumb) * 0.34);
   font-weight: 900;
-  line-height: 1.05;
-  letter-spacing: 0.02em;
+  line-height: 0.96;
+  letter-spacing: -0.02em;
 }
 
 .flightDataValue.isMissing {

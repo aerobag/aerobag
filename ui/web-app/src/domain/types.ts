@@ -643,8 +643,19 @@ export type Situation = {
 export type AppUiState = {
   active_plan: FlightPlanUiState | null;
   ownship: OwnshipUiState;
+  flight_data_banner: FlightDataBannerModel;
   content_policy: ContentPolicy;
   last_content_report: AppState["last_content_report"];
+};
+
+export type FlightDataBannerCell = {
+  id: string;
+  label: string;
+  value: string | null;
+};
+
+export type FlightDataBannerModel = {
+  cells: FlightDataBannerCell[];
 };
 
 export type OwnshipMode = "none" | "live" | "replay" | "simulated";

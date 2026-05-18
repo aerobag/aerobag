@@ -1686,6 +1686,146 @@ button {
   stroke-linejoin: round;
 }
 
+.flightDataBanner {
+  position: absolute;
+  top: calc(var(--safe-top) + var(--thumb-gap));
+  left: calc(var(--safe-left) + var(--thumb-gap) + (var(--thumb) * 9.05));
+  right: calc(var(--safe-right) + var(--thumb-gap) + (var(--thumb) * 2.7));
+  z-index: 6;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, calc(var(--thumb) * 1.28));
+  justify-content: center;
+  gap: calc(var(--thumb) * 0.06);
+  pointer-events: none;
+}
+
+.flightDataBanner.isLowered {
+  top: calc(var(--safe-top) + (var(--thumb) * 2) + (var(--thumb-gap) * 3));
+  left: calc(var(--safe-left) + var(--thumb-gap));
+  right: calc(var(--safe-right) + var(--thumb-gap));
+  grid-template-columns: repeat(auto-fit, calc(var(--thumb) * 1.28));
+}
+
+.flightDataBanner.isEdgeLayout {
+  top: calc(var(--safe-top) + (var(--thumb) * 0.72));
+  bottom: calc(var(--safe-bottom) + (var(--thumb) * 1.25));
+  width: calc(var(--thumb) * 1.28);
+  grid-template-columns: calc(var(--thumb) * 1.28);
+  justify-content: start;
+  align-content: start;
+  gap: calc(var(--thumb) * 0.06);
+}
+
+.flightDataBanner.isEdgeLayout.isEdgeColumns2 {
+  width: calc(var(--thumb) * 2.62);
+  grid-template-columns: repeat(2, calc(var(--thumb) * 1.28));
+}
+
+.flightDataBanner.isEdgeLayout.isEdgeColumns3 {
+  width: calc(var(--thumb) * 3.96);
+  grid-template-columns: repeat(3, calc(var(--thumb) * 1.28));
+}
+
+.flightDataBanner.isEdgeLayout.isLeftEdge {
+  left: calc(var(--safe-left) + var(--thumb-gap));
+  right: auto;
+}
+
+.flightDataBanner.isEdgeLayout.isRightEdge {
+  left: auto;
+  right: calc(var(--safe-right) + var(--thumb-gap));
+}
+
+.flightDataBanner.isEdgeLayout.isLowered {
+  top: calc(var(--safe-top) + (var(--thumb) * 2.15));
+}
+
+.flightDataBanner.isEdgeLayout .flightDataCell {
+  min-height: calc(var(--thumb) * 0.64);
+  padding-inline: calc(var(--thumb) * 0.045);
+}
+
+.flightDataCell {
+  width: calc(var(--thumb) * 1.28);
+  height: calc(var(--thumb) * 0.64);
+  min-width: 0;
+  padding: calc(var(--thumb) * 0.055) calc(var(--thumb) * 0.08);
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  border-radius: calc(var(--thumb-radius) * 0.38);
+  background: rgba(12, 20, 24, 0.74);
+  color: #ffffff;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(8px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--thumb) * 0.01);
+}
+
+.flightDataLabel {
+  font-size: calc(var(--thumb) * 0.13);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  opacity: 0.74;
+}
+
+.flightDataValue {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 900;
+  line-height: 1.05;
+  letter-spacing: 0.02em;
+}
+
+.flightDataValue.isMissing {
+  opacity: 0.58;
+}
+
+@media (max-width: 1180px) {
+  .flightDataBanner {
+    top: calc(var(--safe-top) + var(--thumb) + (var(--thumb-gap) * 2));
+    left: calc(var(--safe-left) + var(--thumb-gap));
+    right: calc(var(--safe-right) + var(--thumb-gap));
+    grid-template-columns: repeat(auto-fit, calc(var(--thumb) * 1.28));
+  }
+
+  .flightDataBanner.isLowered {
+    top: calc(var(--safe-top) + (var(--thumb) * 1.72));
+  }
+
+  .flightDataBanner.isEdgeLayout {
+    top: calc(var(--safe-top) + (var(--thumb) * 0.72));
+  }
+
+  .flightDataBanner.isEdgeLayout.isLowered {
+    top: calc(var(--safe-top) + (var(--thumb) * 2.15));
+  }
+}
+
+@media (max-width: 720px) and (orientation: portrait) {
+  .flightDataBanner {
+    top: calc(var(--safe-top) + var(--thumb) + (var(--thumb-gap) * 2.4));
+    grid-template-columns: repeat(auto-fit, calc(var(--thumb) * 1.28));
+  }
+
+  .flightDataBanner.isLowered {
+    top: calc(var(--safe-top) + (var(--thumb) * 1.72));
+  }
+
+  .flightDataBanner.isEdgeLayout {
+    top: calc(var(--safe-top) + (var(--thumb) * 0.72));
+  }
+
+  .flightDataBanner.isEdgeLayout.isLowered {
+    top: calc(var(--safe-top) + (var(--thumb) * 2.15));
+  }
+}
+
 .playbackWidget {
   position: absolute;
   right: var(--thumb-gap);

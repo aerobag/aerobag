@@ -185,7 +185,7 @@ pub use session::{
 pub use situation::{Situation, SituationPosition};
 pub use state::{
     project_app_ui_state, project_ui_snapshot_app_state, AppEvent, AppState, AppUiState,
-    UiSnapshotAppState,
+    FlightDataBannerCell, FlightDataBannerModel, UiSnapshotAppState,
 };
 pub use terrain::{
     parse_abt1_tile, query_terrain_overlay, render_terrain_warning_png,

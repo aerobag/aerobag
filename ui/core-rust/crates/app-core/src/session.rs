@@ -3708,7 +3708,123 @@ fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadRe
     ) {
         app_ui_state.active_plan = Some(flight_plan_ui_state(store, plan, active_plan.clone())?);
     }
+    app_ui_state.flight_data_banner = project_flight_data_banner(session, &app_ui_state)?;
     Ok(app_ui_state)
+}
+
+fn project_flight_data_banner(
+    session: &UiSession,
+    app_ui_state: &AppUiState,
+) -> Result<crate::FlightDataBannerModel, HadReadError> {
+    let ownship = &app_ui_state.ownship.render;
+    let position = ownship.position;
+    let store = session.nav_kv_store.as_ref();
+    let speed_kt = ownship.speed_kt.filter(|speed| *speed > 1.0);
+
+    let altitude = ownship
+        .altitude_msl_ft
+        .or(ownship.pressure_altitude_ft)
+        .map(format_feet);
+    let track = match (store, position, ownship.orientation_deg) {
+        (Some(store), Some(position), Some(true_course_deg)) => {
+            crate::had_ops::true_to_magnetic_course_deg_optional(store, true_course_deg, position)?
+                .map(|course| format!("{}{}", format_course_degrees(course), "\u{00b0}"))
+        }
+        _ => None,
+    };
+
+    let mut desired_track = None;
+    let mut waypoint_distance_nm = None;
+    let mut final_distance_nm = None;
+
+    if let (Some(plan), Some(active_leg)) = (
+        session.app_state.active_plan.as_ref(),
+        session
+            .app_state
+            .active_plan
+            .as_ref()
+            .and_then(crate::active_guidance_leg),
+    ) {
+        if let Some(geometry) =
+            active_leg_geometry(plan, &active_leg, &session.guidance_leg_geometry)
+        {
+            desired_track = active_display_course_deg(&geometry, position, store)?
+                .map(|course| format!("{}{}", format_course_degrees(course), "\u{00b0}"));
+            waypoint_distance_nm =
+                position.map(|position| crate::great_circle_distance_nm(position, geometry.to));
+        }
+
+        if let (Some(position), Some(guidance)) = (position, plan.guidance.as_ref()) {
+            let records = plan_preview_legs(plan, &session.guidance_leg_geometry);
+            let active_index = guidance
+                .active_leg_index
+                .min(records.len().saturating_sub(1));
+            if let Some(record) = records.get(active_index) {
+                let active_remaining_nm =
+                    crate::great_circle_distance_nm(position, record.geometry.to);
+                let later_nm: f64 = records
+                    .iter()
+                    .skip(active_index + 1)
+                    .map(|record| record.distance_nm)
+                    .sum();
+                final_distance_nm = Some(active_remaining_nm + later_nm);
+            }
+        }
+    }
+
+    let waypoint_distance = waypoint_distance_nm.map(format_nm);
+    let waypoint_ete = waypoint_distance_nm
+        .zip(speed_kt)
+        .map(|(distance, speed)| format_ete(distance, speed));
+    let final_distance = final_distance_nm.map(format_nm);
+    let final_ete = final_distance_nm
+        .zip(speed_kt)
+        .map(|(distance, speed)| format_ete(distance, speed));
+
+    Ok(crate::FlightDataBannerModel {
+        cells: vec![
+            flight_data_cell("altitude", "ALT", altitude),
+            flight_data_cell("vertical_speed", "VS", None),
+            flight_data_cell("track", "TRK", track),
+            flight_data_cell("desired_track", "DTK", desired_track),
+            flight_data_cell("waypoint_distance", "WPT", waypoint_distance),
+            flight_data_cell("waypoint_ete", "ETE", waypoint_ete),
+            flight_data_cell("final_distance", "FINAL", final_distance),
+            flight_data_cell("final_ete", "F-ETE", final_ete),
+            flight_data_cell("final_eta", "ETA", None),
+        ],
+    })
+}
+
+fn flight_data_cell(id: &str, label: &str, value: Option<String>) -> crate::FlightDataBannerCell {
+    crate::FlightDataBannerCell {
+        id: id.to_string(),
+        label: label.to_string(),
+        value,
+    }
+}
+
+fn format_feet(value: f64) -> String {
+    format!("{:.0}ft", value)
+}
+
+fn format_nm(value: f64) -> String {
+    if value < 10.0 {
+        format!("{value:.1}nm")
+    } else {
+        format!("{value:.0}nm")
+    }
+}
+
+fn format_ete(distance_nm: f64, speed_kt: f64) -> String {
+    let total_minutes = (distance_nm / speed_kt * 60.0).round().max(0.0) as u32;
+    let hours = total_minutes / 60;
+    let minutes = total_minutes % 60;
+    if hours > 0 {
+        format!("{hours}h{minutes:02}m")
+    } else {
+        format!("{minutes}m")
+    }
 }
 
 fn project_debug_ownship_driver_availability(session: &UiSession, app_ui_state: &mut AppUiState) {

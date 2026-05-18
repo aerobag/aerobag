@@ -30,6 +30,7 @@ const snapshotJson = JSON.stringify({
         situation_controls: [],
       },
     },
+    flight_data_banner: { cells: [] },
     content_policy: "PreferLocal",
     last_content_report: null,
   },

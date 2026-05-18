@@ -21,8 +21,21 @@ pub struct AppState {
 pub struct AppUiState {
     pub active_plan: Option<FlightPlanUiState>,
     pub ownship: OwnshipUiState,
+    pub flight_data_banner: FlightDataBannerModel,
     pub content_policy: ContentPolicy,
     pub last_content_report: Option<ContentReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlightDataBannerCell {
+    pub id: String,
+    pub label: String,
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlightDataBannerModel {
+    pub cells: Vec<FlightDataBannerCell>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -105,6 +118,7 @@ pub fn project_app_ui_state(state: &AppState) -> AppUiState {
             render: state.ownship.render.clone(),
             controls: state.ownship.controls.clone(),
         },
+        flight_data_banner: FlightDataBannerModel::default(),
         content_policy: state.content_policy,
         last_content_report: state.last_content_report.clone(),
     }

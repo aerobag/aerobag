@@ -9,6 +9,7 @@ import type {
   FlightPlanEntryPreview,
   FlightPlanRouteSegment,
   FlightPlanUiState,
+  FlightDataBannerModel,
   LatLon,
   NavSymbolFeature,
   NavElementUiView,
@@ -681,6 +682,7 @@ const startupHighLatencyWarningGraceMs = 10_000;
 const browserGeolocationSourceId = "browser-geolocation";
 const metersPerSecondToKnots = 1.9438444924406;
 const metersToFeet = 3.280839895;
+const flightDataBannerEdge: FlightDataBannerEdge = "right";
 
 type PersistedWebUiState = {
   page?: AppPage;
@@ -688,6 +690,8 @@ type PersistedWebUiState = {
   selectedChartId?: string;
   recentAirportIds?: string[];
 };
+
+type FlightDataBannerEdge = "left" | "right";
 
 type AppViewSnapshot = {
   page: AppPage;
@@ -752,7 +756,7 @@ async function renderTileFromCore(tile: RasterTileDraw, cssScale = 1): Promise<R
   };
 }
 
-function thumbPixels(multiplier: number) {
+function thumbPixels(multiplier = 1) {
   if (typeof window === "undefined") {
     return 0;
   }
@@ -770,6 +774,24 @@ function thumbPixels(multiplier: number) {
 
 function shouldLowerSituationDock(surfaceWidthPx: number) {
   return surfaceWidthPx > 0 && surfaceWidthPx < thumbPixels(10);
+}
+
+function flightDataEdgeColumnCount(
+  surfaceSize: SurfaceSize,
+  cellCount: number,
+  situationDockLowered: boolean,
+) {
+  if (cellCount <= 0 || surfaceSize.height <= 0) {
+    return 1;
+  }
+  const thumb = thumbPixels();
+  const gap = thumbPixels(0.06);
+  const topReserve = thumbPixels(situationDockLowered ? 2.15 : 0.72);
+  const bottomReserve = thumbPixels(1.25);
+  const availableHeight = Math.max(thumb, surfaceSize.height - topReserve - bottomReserve);
+  const readableCellHeight = thumbPixels(0.64);
+  const rowsPerColumn = Math.max(1, Math.floor((availableHeight + gap) / (readableCellHeight + gap)));
+  return Math.min(3, Math.max(1, Math.ceil(cellCount / rowsPerColumn)));
 }
 
 const airportLabelY = -24;
@@ -1304,6 +1326,7 @@ export default function App() {
           situation_controls: [],
         },
       },
+      flight_data_banner: { cells: [] },
       content_policy: "PreferLocal",
       last_content_report: null,
     },
@@ -2165,6 +2188,7 @@ export default function App() {
           onOpenPlateTarget={openPlateTarget}
           ownship={appUiState.ownship.render}
           ownshipControls={appUiState.ownship.controls}
+          flightDataBanner={appUiState.flight_data_banner}
           plan={currentPlan}
           planUiState={planUiState}
           playbackUiState={playbackUiState}
@@ -2371,6 +2395,7 @@ export default function App() {
           }}
           ownship={appUiState.ownship.render}
           ownshipControls={appUiState.ownship.controls}
+          flightDataBanner={appUiState.flight_data_banner}
           playbackUiState={playbackUiState}
           playbackSourcePath={playbackSourcePath}
           onPlaybackSourcePathChange={setPlaybackSourcePath}
@@ -2418,6 +2443,7 @@ function MapPage(props: {
   onOpenPlateTarget: (airportId: string, target: "Folder" | "CSup") => void;
   ownship: OwnshipRenderState;
   ownshipControls: OwnshipControlModel;
+  flightDataBanner: FlightDataBannerModel;
   plan: FlightPlan;
   planUiState: FlightPlanUiState | null;
   playbackUiState: PlaybackUiState;
@@ -2456,6 +2482,7 @@ function MapPage(props: {
     onOpenPlateTarget,
     ownship,
     ownshipControls,
+    flightDataBanner,
     plan,
     planUiState,
     uiSession,
@@ -2544,6 +2571,11 @@ function MapPage(props: {
   } | null>(null);
   const firstVisualReadyRef = useRef(false);
   const lastOverlayWarningKeyRef = useRef("");
+  const situationDockLowered = shouldLowerSituationDock(surfaceSize.width);
+  const flightDataBannerEdgeLayout = surfaceSize.width > surfaceSize.height;
+  const flightDataBannerEdgeColumnCount = flightDataBannerEdgeLayout
+    ? flightDataEdgeColumnCount(surfaceSize, flightDataBanner.cells.length, situationDockLowered)
+    : 1;
 
   function pumpTerrainRenderQueue() {
     if (terrainRenderPumpActiveRef.current) {
@@ -3858,6 +3890,13 @@ function MapPage(props: {
         onDoubleClick={handleDoubleClick}
       >
         <div className="mapBackdrop" />
+        <FlightDataBanner
+          banner={flightDataBanner}
+          edge={flightDataBannerEdge}
+          edgeColumnCount={flightDataBannerEdgeColumnCount}
+          edgeLayout={flightDataBannerEdgeLayout}
+          lowered={situationDockLowered}
+        />
         {trayGroup.scrimOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
         {mapSelection ? (
           <>
@@ -4302,7 +4341,7 @@ function MapPage(props: {
         ) : null}
         <SituationStatusBadge
           controls={ownshipControls}
-          lowered={shouldLowerSituationDock(surfaceSize.width)}
+          lowered={situationDockLowered}
           open={trayGroup.isOpen("ownship")}
           onToggle={() => trayGroup.toggle("ownship")}
           options={ownshipSourceOptions}
@@ -4611,6 +4650,39 @@ function NavElementButton(props: {
     >
       <NavElementView navElement={displayedNavElement} />
     </button>
+  );
+}
+
+function FlightDataBanner(props: {
+  banner: FlightDataBannerModel;
+  edge: FlightDataBannerEdge;
+  edgeColumnCount?: number;
+  edgeLayout?: boolean;
+  lowered?: boolean;
+}) {
+  const cells = props.banner.cells;
+  if (cells.length === 0) {
+    return null;
+  }
+  const edgeClass = props.edge === "left" ? " isLeftEdge" : " isRightEdge";
+  const edgeColumnClass =
+    props.edgeLayout && props.edgeColumnCount && props.edgeColumnCount > 1
+      ? ` isEdgeColumns${props.edgeColumnCount}`
+      : "";
+  return (
+    <div
+      className={`flightDataBanner${props.edgeLayout ? ` isEdgeLayout${edgeClass}` : ""}${edgeColumnClass}${props.lowered ? " isLowered" : ""}`}
+      aria-label="Flight data"
+    >
+      {cells.map((cell) => (
+        <div key={cell.id} className="flightDataCell">
+          <span className="flightDataLabel">{cell.label}</span>
+          <span className={`flightDataValue${cell.value ? "" : " isMissing"}`}>
+            {cell.value ?? "\u2014"}
+          </span>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -6749,10 +6821,11 @@ function ChartsPage(props: {
   uiSession: UiSession | null;
   ownship: OwnshipRenderState;
   ownshipControls: OwnshipControlModel;
+  flightDataBanner: FlightDataBannerModel;
   debugWarningActive: boolean;
   onFirstVisualReady: () => void;
 }) {
-  const { appCoreAdapter, page, plan, planUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, ownship, ownshipControls, onFirstVisualReady } = props;
+  const { appCoreAdapter, page, plan, planUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, ownship, ownshipControls, flightDataBanner, onFirstVisualReady } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -6763,6 +6836,11 @@ function ChartsPage(props: {
   const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
   const pinchRef = useRef<{ viewport: ImageViewportState; distance: number; midpoint: ScreenPoint } | null>(null);
+  const situationDockLowered = shouldLowerSituationDock(surfaceSize.width);
+  const flightDataBannerEdgeLayout = surfaceSize.width > surfaceSize.height;
+  const flightDataBannerEdgeColumnCount = flightDataBannerEdgeLayout
+    ? flightDataEdgeColumnCount(surfaceSize, flightDataBanner.cells.length, situationDockLowered)
+    : 1;
   const lastChartLayoutKeyRef = useRef("");
   const firstVisualReadyRef = useRef(false);
   const trayGroup = useModalTrayGroup(["airport", "chart", "load", "ownship"] as const);
@@ -7225,9 +7303,16 @@ function ChartsPage(props: {
         onDoubleClick={handleDoubleClick}
       >
         <div className="mapBackdrop" />
+        <FlightDataBanner
+          banner={flightDataBanner}
+          edge={flightDataBannerEdge}
+          edgeColumnCount={flightDataBannerEdgeColumnCount}
+          edgeLayout={flightDataBannerEdgeLayout}
+          lowered={situationDockLowered}
+        />
         <SituationStatusBadge
           controls={ownshipControls}
-          lowered={shouldLowerSituationDock(surfaceSize.width)}
+          lowered={situationDockLowered}
           open={trayGroup.isOpen("ownship")}
           onToggle={() => trayGroup.toggle("ownship")}
           options={ownshipSourceOptions}

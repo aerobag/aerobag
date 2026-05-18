@@ -130,7 +130,7 @@ def extract_description(body: str) -> str:
     )
     if not match:
         return ""
-    return re.sub(r"\s+", " ", match.group(1)).strip()
+    return match.group(1).replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
 def replace_description(body: str, description: str) -> str:
@@ -511,6 +511,7 @@ def render_page(tasks: list[Task]) -> bytes:
       font-size: 12px;
       max-height: 4.1em;
       overflow: hidden;
+      white-space: pre-wrap;
     }}
     .warning {{
       margin-top: 8px;

@@ -1196,8 +1196,12 @@ fn modified_time(path: &Path) -> SystemTime {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use std::io::{Cursor, Read, Write};
     use std::sync::Mutex;
     use tempfile::tempdir;
+    use zip::{
+        write::SimpleFileOptions, CompressionMethod, DateTime as ZipDateTime, ZipArchive, ZipWriter,
+    };
 
     #[test]
     fn record_delta_round_trips_canonical_state() -> anyhow::Result<()> {
@@ -1255,6 +1259,67 @@ mod tests {
         assert_eq!(
             apply_record_delta("records", Some("record_count"), &from, &delta)?,
             to
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn generic_metar_delta_fixture_reconstructs_three_hour_capture() -> anyhow::Result<()> {
+        let states = metar_delta_fixture_states()?;
+
+        println!(
+            "{:<17} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8} {:>8} {:>8}",
+            "to_version",
+            "state_raw",
+            "delta_raw",
+            "state_zip",
+            "delta_zip",
+            "zip_rat",
+            "changed",
+            "removed",
+            "top"
+        );
+        let mut compressed_ratios = Vec::new();
+        for pair in states.windows(2) {
+            let from = &pair[0];
+            let to = &pair[1];
+            let delta = build_record_delta("metars", "metars_by_station", from, to)?;
+            let applied =
+                apply_record_delta("metars_by_station", Some("metar_count"), from, &delta)?;
+            assert_eq!(
+                applied, *to,
+                "delta {} -> {} did not reconstruct target state",
+                delta.from_version, delta.to_version
+            );
+
+            let state_bytes = serde_json::to_vec(to)?;
+            let delta_bytes = serde_json::to_vec(&delta)?;
+            let state_zip_bytes = deflated_zip_member_size(&state_bytes)?;
+            let delta_zip_bytes = deflated_zip_member_size(&delta_bytes)?;
+            let compressed_ratio = delta_zip_bytes as f64 / state_zip_bytes as f64;
+            compressed_ratios.push(compressed_ratio);
+            println!(
+                "{:<17} {:>10} {:>10} {:>10} {:>10} {:>8.3} {:>8} {:>8} {:>8}",
+                delta.to_version,
+                state_bytes.len(),
+                delta_bytes.len(),
+                state_zip_bytes,
+                delta_zip_bytes,
+                compressed_ratio,
+                delta.changed.len(),
+                delta.removed.len(),
+                delta.top_level_changed.len() + delta.top_level_removed.len()
+            );
+        }
+        assert!(
+            compressed_ratios.iter().all(|ratio| *ratio < 0.5),
+            "expected all compressed METAR deltas to be less than 0.5 of compressed full state: {compressed_ratios:?}"
+        );
+        compressed_ratios.sort_by(|left, right| left.total_cmp(right));
+        let median_ratio = compressed_ratios[compressed_ratios.len() / 2];
+        assert!(
+            median_ratio < 0.15,
+            "expected median compressed METAR delta ratio below 0.15, got {median_ratio:.3}"
         );
         Ok(())
     }
@@ -1708,5 +1773,63 @@ mod tests {
             },
             changed_count_if_no_delta: records.len(),
         })
+    }
+
+    fn metar_delta_fixture_states() -> anyhow::Result<Vec<Value>> {
+        let test_artifacts_root = std::env::var_os("AEROBAG_TEST_ARTIFACTS_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("..")
+                    .join("..")
+                    .join("..")
+                    .join("..")
+                    .join("aerobag-test-artifacts")
+            });
+        let fixture_root = test_artifacts_root.join("metars").join("delta-three-hour");
+        let mut zip_paths = fs::read_dir(&fixture_root)
+            .with_context(|| format!("failed to read {}", fixture_root.display()))?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("zip"))
+            .collect::<Vec<_>>();
+        zip_paths.sort();
+        assert!(
+            zip_paths.len() >= 20,
+            "expected about two dozen METAR fixture states"
+        );
+        zip_paths
+            .iter()
+            .map(|path| read_metars_json_from_zip(path))
+            .collect::<anyhow::Result<Vec<_>>>()
+    }
+
+    fn read_metars_json_from_zip(path: &Path) -> anyhow::Result<Value> {
+        let file = fs::File::open(path)
+            .with_context(|| format!("failed to open METAR fixture {}", path.display()))?;
+        let mut archive = ZipArchive::new(file)
+            .with_context(|| format!("failed to read METAR fixture zip {}", path.display()))?;
+        let mut member = archive
+            .by_name("metars.json")
+            .with_context(|| format!("{} missing metars.json", path.display()))?;
+        let mut bytes = Vec::new();
+        member
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("failed to read metars.json from {}", path.display()))?;
+        serde_json::from_slice(&bytes)
+            .with_context(|| format!("failed to parse metars.json from {}", path.display()))
+    }
+
+    fn deflated_zip_member_size(bytes: &[u8]) -> anyhow::Result<usize> {
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = ZipWriter::new(cursor);
+        let options = SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Deflated)
+            .last_modified_time(ZipDateTime::default());
+        writer.start_file("payload.json", options)?;
+        writer.write_all(bytes)?;
+        let cursor = writer.finish()?;
+        Ok(cursor.into_inner().len())
     }
 }

@@ -672,6 +672,146 @@ button {
   color: var(--theme-situation-status-fg);
 }
 
+.dataStatusDock {
+  position: absolute;
+  top: var(--thumb-gap);
+  right: calc(var(--thumb-gap) + (var(--thumb) * 1.86));
+  z-index: 20;
+}
+
+.dataStatusDock.isLowered {
+  top: calc(var(--thumb) + (var(--thumb-gap) * 2));
+}
+
+.dataStatusLauncher {
+  min-width: calc(var(--thumb) * 1.16);
+  height: calc(var(--thumb) * 0.72);
+  padding: 0 calc(var(--thumb) * 0.14);
+  border: 1px solid rgba(72, 45, 8, 0.32);
+  border-radius: calc(var(--thumb-radius) * 0.78);
+  background: rgba(252, 220, 99, 0.92);
+  box-shadow: var(--shadow);
+  color: #402b00;
+  font-size: calc(var(--thumb) * 0.19);
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
+.dataStatusLauncher.isOpen {
+  background: rgba(255, 231, 133, 0.96);
+}
+
+.dataStatusLauncher.isQuiet {
+  background: rgba(252, 248, 241, 0.88);
+  color: #52656d;
+}
+
+.dataStatusLauncher.statusSeverity-warning {
+  background: #c8741b;
+  color: #fff7ef;
+}
+
+.dataStatusPanel {
+  position: absolute;
+  top: calc(100% + (var(--thumb-gap) * 0.55));
+  right: 0;
+  width: calc(var(--thumb) * 4.25);
+  max-width: calc(100vw - (var(--thumb-gap) * 2));
+  padding: calc(var(--thumb) * 0.14);
+  border: 1px solid rgba(19, 33, 41, 0.14);
+  border-radius: var(--thumb-radius);
+  background: rgba(252, 248, 241, 0.96);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
+  color: #132129;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--thumb) * 0.12);
+}
+
+.dataStatusBox,
+.dataStatusCaution {
+  border-radius: calc(var(--thumb-radius) * 0.72);
+  padding: calc(var(--thumb) * 0.12);
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: inset 0 0 0 1px rgba(19, 33, 41, 0.1);
+}
+
+.dataStatusBox.statusSeverity-caution,
+.dataStatusCaution.statusSeverity-caution {
+  box-shadow: inset 0 0 0 2px rgba(210, 146, 16, 0.72);
+}
+
+.dataStatusBox.statusSeverity-warning,
+.dataStatusCaution.statusSeverity-warning {
+  box-shadow: inset 0 0 0 2px rgba(179, 38, 30, 0.74);
+}
+
+.dataStatusBox.isHushed,
+.dataStatusCaution.isHushed {
+  opacity: 0.58;
+}
+
+.dataStatusBoxHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: calc(var(--thumb) * 0.12);
+}
+
+.dataStatusBoxLabel,
+.dataStatusCautionTitle {
+  font-size: calc(var(--thumb) * 0.17);
+  font-weight: 900;
+  letter-spacing: 0.06em;
+}
+
+.dataStatusBoxValue {
+  font-size: calc(var(--thumb) * 0.24);
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
+.dataStatusBoxDetail,
+.dataStatusCautionMessage {
+  margin-top: calc(var(--thumb) * 0.06);
+  font-size: calc(var(--thumb) * 0.15);
+  line-height: 1.18;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.dataStatusActions {
+  margin-top: calc(var(--thumb) * 0.10);
+  display: flex;
+  justify-content: flex-end;
+  gap: calc(var(--thumb) * 0.08);
+}
+
+.dataStatusAction {
+  min-width: calc(var(--thumb) * 0.9);
+  height: calc(var(--thumb) * 0.42);
+  padding: 0 calc(var(--thumb) * 0.14);
+  border: 1px solid rgba(19, 33, 41, 0.16);
+  border-radius: calc(var(--thumb-radius) * 0.45);
+  background: rgba(19, 33, 41, 0.88);
+  color: white;
+  font-size: calc(var(--thumb) * 0.14);
+  font-weight: 850;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.dataStatusAction:disabled {
+  opacity: 0.45;
+}
+
+.dataStatusCautions {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--thumb) * 0.10);
+}
+
 .trayScrim {
   position: absolute;
   inset: 0;

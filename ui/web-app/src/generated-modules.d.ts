@@ -16,6 +16,7 @@ declare module "@generated/app_wasm.js" {
   export const unsuspend_sequencing_in_session: (...args: unknown[]) => string;
   export const sequence_active_leg_in_session: (...args: unknown[]) => string;
   export const perform_flight_plan_row_action_in_session: (...args: unknown[]) => string;
+  export const perform_status_action_in_session: (...args: unknown[]) => string;
   export const perform_map_selection_action_in_session: (...args: unknown[]) => string;
   export const empty_flight_plan_json: (...args: unknown[]) => string;
   export const create_ui_session: (...args: unknown[]) => string;

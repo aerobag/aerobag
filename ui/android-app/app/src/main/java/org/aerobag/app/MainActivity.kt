@@ -256,8 +256,11 @@ import org.aerobag.app.domain.SequencingMode
 import org.aerobag.app.domain.SituationControlInput
 import org.aerobag.app.domain.SituationRingCandidate
 import org.aerobag.app.domain.TileStorageKind
+import org.aerobag.app.domain.UiCautionState
+import org.aerobag.app.domain.UiDataStatusState
 import org.aerobag.app.domain.UiDebugState
 import org.aerobag.app.domain.UiMapLayerToggleState
+import org.aerobag.app.domain.UiStatusSeverity
 import org.aerobag.app.domain.UiTheme
 import org.aerobag.app.domain.UiThemeLoader
 import org.aerobag.app.domain.UiSessionSnapshot
@@ -1057,6 +1060,11 @@ internal enum class MenuDockStyle(
         trayWidth = (ThumbSize * 4f) + 9.dp,
         launcherMaxLines = 1,
     ),
+    DataStatus(
+        buttonWidth = ThumbSize * 1.45f,
+        trayWidth = ThumbSize * 4f,
+        launcherMaxLines = 1,
+    ),
 }
 
 internal val PageOptions = listOf(
@@ -1324,6 +1332,158 @@ internal fun SituationStatusBadge(
             },
         )
     }
+}
+
+@Composable
+internal fun DataStatusBadge(
+    dataStatusState: UiDataStatusState,
+    cautionState: UiCautionState,
+    modifier: Modifier = Modifier,
+    onAction: (String) -> Unit = {},
+) {
+    val hasStatus = dataStatusState.boxes.isNotEmpty() || cautionState.items.isNotEmpty()
+    if (!hasStatus) return
+
+    var open by remember { mutableStateOf(false) }
+    val unHushedCount = cautionState.items.count { !it.hushed }
+    val launcherLabel = if (unHushedCount > 0) "\u26A0 $unHushedCount" else "STATUS"
+    val accentColor = statusSeverityColor(cautionState.severity ?: UiStatusSeverity.Info)
+    Box(modifier = modifier.wrapContentSize(unbounded = true, align = Alignment.TopEnd)) {
+        MenuDock(
+            launcherLabel = launcherLabel,
+            open = open,
+            onToggle = { open = !open },
+            style = MenuDockStyle.DataStatus,
+            options = listOf(
+                MenuDockOption(
+                    key = "status",
+                    label = launcherLabel,
+                    active = unHushedCount > 0,
+                    accentColor = accentColor,
+                ) {},
+            ),
+            body = {
+                dataStatusState.boxes.forEach { box ->
+                    DataStatusBoxRow(
+                        label = box.label,
+                        value = box.value ?: "\u2014",
+                        detail = box.detail,
+                        severity = box.severity,
+                        hushed = box.hushed,
+                    )
+                    if (box.actions.isNotEmpty()) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            box.actions.forEach { action ->
+                                CompactSquareButton(
+                                    label = action.label.uppercase(),
+                                    enabled = action.enabled,
+                                    wide = true,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(ThumbSize * 0.72f),
+                                    maxLines = 1,
+                                    onClick = { onAction(action.id) },
+                                )
+                            }
+                        }
+                    }
+                }
+                cautionState.items.forEach { item ->
+                    DataStatusBoxRow(
+                        label = item.title,
+                        value = item.severity.name.uppercase(),
+                        detail = item.message,
+                        severity = item.severity,
+                        hushed = item.hushed,
+                    )
+                    if (item.actions.isNotEmpty()) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            item.actions.forEach { action ->
+                                CompactSquareButton(
+                                    label = action.label.uppercase(),
+                                    enabled = action.enabled,
+                                    wide = true,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(ThumbSize * 0.72f),
+                                    maxLines = 1,
+                                    onClick = { onAction(action.id) },
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun DataStatusBoxRow(
+    label: String,
+    value: String,
+    detail: String,
+    severity: UiStatusSeverity,
+    hushed: Boolean,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    val accentColor = statusSeverityColor(severity)
+    val background = if (hushed) {
+        uiTheme.controls.buttonBg.copy(alpha = 0.62f)
+    } else {
+        uiTheme.controls.buttonBg
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(ThumbRadius))
+            .background(background)
+            .border(1.dp, accentColor.copy(alpha = if (hushed) 0.42f else 0.9f), RoundedCornerShape(ThumbRadius))
+            .padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                text = label,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = uiTheme.controls.buttonFg,
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                maxLines = 1,
+                color = accentColor,
+            )
+        }
+        Text(
+            text = detail,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+            color = uiTheme.controls.buttonFg.copy(alpha = if (hushed) 0.68f else 0.9f),
+        )
+    }
+}
+
+private fun statusSeverityColor(severity: UiStatusSeverity): Color = when (severity) {
+    UiStatusSeverity.Ok -> Color(0xFF7ED6A7)
+    UiStatusSeverity.Info -> Color(0xFF8FB7FF)
+    UiStatusSeverity.Caution -> Color(0xFFFFD35A)
+    UiStatusSeverity.Warning -> Color(0xFFFF8B5A)
+    UiStatusSeverity.Unavailable -> Color(0xFFB7BDC7)
 }
 
 @Composable

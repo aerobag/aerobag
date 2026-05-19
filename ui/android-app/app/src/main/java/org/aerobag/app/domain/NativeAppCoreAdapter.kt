@@ -950,6 +950,11 @@ class NativeUiSession internal constructor(
         return syncGuidanceGeometry()
     }
 
+    fun performStatusAction(actionId: String): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.performStatusActionInSessionJson(handle, actionId))
+        return snapshot
+    }
+
     fun activateNextLeg(): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.activateNextLegInSessionJson(handle))
         return syncGuidanceGeometry()
@@ -1631,6 +1636,76 @@ private data class WireUiMapLayerState(
 )
 
 @kotlinx.serialization.Serializable
+private enum class WireUiStatusSeverity {
+    @kotlinx.serialization.SerialName("ok")
+    Ok,
+
+    @kotlinx.serialization.SerialName("info")
+    Info,
+
+    @kotlinx.serialization.SerialName("caution")
+    Caution,
+
+    @kotlinx.serialization.SerialName("warning")
+    Warning,
+
+    @kotlinx.serialization.SerialName("unavailable")
+    Unavailable,
+}
+
+@kotlinx.serialization.Serializable
+private enum class WireUiStatusActionStyle {
+    @kotlinx.serialization.SerialName("normal")
+    Normal,
+
+    @kotlinx.serialization.SerialName("hush")
+    Hush,
+}
+
+@kotlinx.serialization.Serializable
+private data class WireUiStatusAction(
+    val id: String,
+    val label: String,
+    val enabled: Boolean,
+    val style: WireUiStatusActionStyle,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireUiDataStatusBox(
+    val id: String,
+    val label: String,
+    val value: String? = null,
+    val severity: WireUiStatusSeverity,
+    val detail: String,
+    val actions: List<WireUiStatusAction>,
+    val hushed: Boolean,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireUiCautionItem(
+    val id: String,
+    val severity: WireUiStatusSeverity,
+    val title: String,
+    val message: String,
+    val source_box_id: String? = null,
+    val layer_id: String? = null,
+    val actions: List<WireUiStatusAction>,
+    val hushed: Boolean,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireUiDataStatusState(
+    val boxes: List<WireUiDataStatusBox>,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireUiCautionState(
+    val active: Boolean,
+    val severity: WireUiStatusSeverity? = null,
+    val items: List<WireUiCautionItem>,
+)
+
+@kotlinx.serialization.Serializable
 private data class WireUiDebugState(
     val tile_labels: Boolean = false,
     val nexrad_tile_labels: Boolean = false,
@@ -1648,6 +1723,8 @@ private data class WireUiSessionSnapshot(
     val map_follow_target_viewport: WireMapViewport? = null,
     val chart_page_state: WireUiChartPageState,
     val map_layer_state: WireUiMapLayerState = WireUiMapLayerState(),
+    val data_status_state: WireUiDataStatusState,
+    val caution_state: WireUiCautionState,
     val debug_state: WireUiDebugState = WireUiDebugState(),
     val raster_map: WireRasterMapUiState? = null,
 )
@@ -1726,8 +1803,61 @@ data class UiSessionSnapshot(
     val mapFollowTargetViewport: CoreMapViewport?,
     val chartPageState: UiChartPageState,
     val mapLayerState: UiMapLayerState,
+    val dataStatusState: UiDataStatusState,
+    val cautionState: UiCautionState,
     val debugState: UiDebugState,
     val rasterMap: RasterMapUiState?,
+)
+
+enum class UiStatusSeverity {
+    Ok,
+    Info,
+    Caution,
+    Warning,
+    Unavailable,
+}
+
+enum class UiStatusActionStyle {
+    Normal,
+    Hush,
+}
+
+data class UiStatusAction(
+    val id: String,
+    val label: String,
+    val enabled: Boolean,
+    val style: UiStatusActionStyle,
+)
+
+data class UiDataStatusBox(
+    val id: String,
+    val label: String,
+    val value: String?,
+    val severity: UiStatusSeverity,
+    val detail: String,
+    val actions: List<UiStatusAction>,
+    val hushed: Boolean,
+)
+
+data class UiCautionItem(
+    val id: String,
+    val severity: UiStatusSeverity,
+    val title: String,
+    val message: String,
+    val sourceBoxId: String?,
+    val layerId: String?,
+    val actions: List<UiStatusAction>,
+    val hushed: Boolean,
+)
+
+data class UiDataStatusState(
+    val boxes: List<UiDataStatusBox>,
+)
+
+data class UiCautionState(
+    val active: Boolean,
+    val severity: UiStatusSeverity?,
+    val items: List<UiCautionItem>,
 )
 
 data class UiDebugState(
@@ -1815,6 +1945,57 @@ private fun WireUiMapLayerState.toUi() = UiMapLayerState(
     offlineRegions = offline_regions.toUi(),
 )
 
+private fun WireUiStatusSeverity.toUi() = when (this) {
+    WireUiStatusSeverity.Ok -> UiStatusSeverity.Ok
+    WireUiStatusSeverity.Info -> UiStatusSeverity.Info
+    WireUiStatusSeverity.Caution -> UiStatusSeverity.Caution
+    WireUiStatusSeverity.Warning -> UiStatusSeverity.Warning
+    WireUiStatusSeverity.Unavailable -> UiStatusSeverity.Unavailable
+}
+
+private fun WireUiStatusActionStyle.toUi() = when (this) {
+    WireUiStatusActionStyle.Normal -> UiStatusActionStyle.Normal
+    WireUiStatusActionStyle.Hush -> UiStatusActionStyle.Hush
+}
+
+private fun WireUiStatusAction.toUi() = UiStatusAction(
+    id = id,
+    label = label,
+    enabled = enabled,
+    style = style.toUi(),
+)
+
+private fun WireUiDataStatusBox.toUi() = UiDataStatusBox(
+    id = id,
+    label = label,
+    value = value,
+    severity = severity.toUi(),
+    detail = detail,
+    actions = actions.map { it.toUi() },
+    hushed = hushed,
+)
+
+private fun WireUiCautionItem.toUi() = UiCautionItem(
+    id = id,
+    severity = severity.toUi(),
+    title = title,
+    message = message,
+    sourceBoxId = source_box_id,
+    layerId = layer_id,
+    actions = actions.map { it.toUi() },
+    hushed = hushed,
+)
+
+private fun WireUiDataStatusState.toUi() = UiDataStatusState(
+    boxes = boxes.map { it.toUi() },
+)
+
+private fun WireUiCautionState.toUi() = UiCautionState(
+    active = active,
+    severity = severity?.toUi(),
+    items = items.map { it.toUi() },
+)
+
 private fun WireUiDebugState.toUi() = UiDebugState(
     tileLabels = tile_labels,
     nexradTileLabels = nexrad_tile_labels,
@@ -1831,6 +2012,8 @@ private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     mapFollowTargetViewport = map_follow_target_viewport?.toUi(),
     chartPageState = chart_page_state.toUi(),
     mapLayerState = map_layer_state.toUi(),
+    dataStatusState = data_status_state.toUi(),
+    cautionState = caution_state.toUi(),
     debugState = debug_state.toUi(),
     rasterMap = raster_map?.toUi(),
 )

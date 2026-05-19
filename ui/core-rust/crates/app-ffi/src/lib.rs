@@ -178,6 +178,15 @@ pub fn perform_flight_plan_row_action_in_session_json(
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
+pub fn perform_status_action_in_session_json(
+    handle: u64,
+    action_id: &str,
+) -> Result<String, String> {
+    let snapshot = app_core::perform_status_action_in_session(handle as u32, action_id.to_string())
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn load_plate_procedure_in_session_json(handle: u64, load_id: &str) -> Result<String, String> {
     let outcome =
         app_core::session::load_plate_procedure_in_session(handle as u32, load_id.to_string())
@@ -1556,6 +1565,20 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performFlightP
         let row_uid = get_java_string(&mut env, row_uid)?;
         let action_uid = get_java_string(&mut env, action_uid)?;
         perform_flight_plan_row_action_in_session_json(handle as u64, &row_uid, &action_uid)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performStatusActionInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    action_id: JString,
+) -> jstring {
+    let result = (|| {
+        let action_id = get_java_string(&mut env, action_id)?;
+        perform_status_action_in_session_json(handle as u64, &action_id)
     })();
     return_string(&mut env, result)
 }

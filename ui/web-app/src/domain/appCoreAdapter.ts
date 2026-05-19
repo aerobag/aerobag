@@ -74,6 +74,7 @@ export type UiSessionSnapshot = {
   } | null;
   chart_page_state: UiChartPageState;
   map_layer_state: UiMapLayerState;
+  data_status_state: UiDataStatusState;
   caution_state: UiCautionState;
   debug_state: UiDebugState;
   raster_map?: RasterMapUiState | null;
@@ -91,7 +92,45 @@ export type UiDebugState = {
 };
 
 export type UiCautionState = {
-  obstacle_display_limited: boolean;
+  active: boolean;
+  severity: UiStatusSeverity | null;
+  items: UiCautionItem[];
+};
+
+export type UiStatusSeverity = "ok" | "info" | "caution" | "warning" | "unavailable";
+
+export type UiStatusActionStyle = "normal" | "hush";
+
+export type UiStatusAction = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  style: UiStatusActionStyle;
+};
+
+export type UiDataStatusBox = {
+  id: string;
+  label: string;
+  value: string | null;
+  severity: UiStatusSeverity;
+  detail: string;
+  actions: UiStatusAction[];
+  hushed: boolean;
+};
+
+export type UiCautionItem = {
+  id: string;
+  severity: UiStatusSeverity;
+  title: string;
+  message: string;
+  source_box_id: string | null;
+  layer_id: MapLayerId | null;
+  actions: UiStatusAction[];
+  hushed: boolean;
+};
+
+export type UiDataStatusState = {
+  boxes: UiDataStatusBox[];
 };
 
 export type MapLayerId =
@@ -480,6 +519,7 @@ export interface UiSession {
   loadPlateProcedure(loadId: string): Promise<UiSessionSnapshot>;
   restoreDirectTo(): Promise<UiSessionSnapshot>;
   performFlightPlanRowAction(rowUid: string, actionUid: string): Promise<UiSessionSnapshot>;
+  performStatusAction(actionId: string): Promise<UiSessionSnapshot>;
   performMapSelectionAction(action: string): Promise<UiSessionSnapshot>;
   activateNextLeg(): Promise<UiSessionSnapshot>;
   suspendSequencing(): Promise<UiSessionSnapshot>;
@@ -655,6 +695,7 @@ type WasmModule = {
   load_plate_procedure_in_session(sessionHandle: number, loadId: string): Promise<string> | string;
   restore_direct_to_in_session(sessionHandle: number): Promise<string> | string;
   perform_flight_plan_row_action_in_session(sessionHandle: number, rowUid: string, actionUid: string): Promise<string> | string;
+  perform_status_action_in_session(sessionHandle: number, actionId: string): Promise<string> | string;
   activate_next_leg_in_session(sessionHandle: number): Promise<string> | string;
   suspend_sequencing_in_session(sessionHandle: number): Promise<string> | string;
   unsuspend_sequencing_in_session(sessionHandle: number): Promise<string> | string;
@@ -918,6 +959,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           ),
         );
         await syncGuidanceGeometry();
+        return snapshot;
+      },
+      performStatusAction: async (actionId) => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(this.module.perform_status_action_in_session(handle, actionId)),
+        );
         return snapshot;
       },
       activateNextLeg: async () => {
@@ -1390,6 +1437,7 @@ async function loadBestAvailableAdapterUncached(
     "create_ui_session",
     "set_raster_resource_mode_in_session",
     "perform_flight_plan_row_action_in_session",
+    "perform_status_action_in_session",
     "set_situation_in_session_paged",
     "tick_debug_ownship_driver_in_session_paged",
     "engage_map_follow_in_session",

@@ -45,8 +45,13 @@ const snapshotJson = JSON.stringify({
     nexrad: { visible: false, enabled: true },
     terrain_warning: { visible: true, enabled: true },
   },
+  data_status_state: {
+    boxes: [],
+  },
   caution_state: {
-    obstacle_display_limited: false,
+    active: false,
+    severity: null,
+    items: [],
   },
 });
 
@@ -95,6 +100,7 @@ describe("loadBestAvailableAdapter", () => {
       select_raster_map_in_session: async () => snapshotJson,
       insert_waypoint_at_flight_plan_row_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       perform_flight_plan_row_action_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
+      perform_status_action_in_session: async () => snapshotJson,
       sync_guidance_geometry_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       project_flight_plan_route_in_session: async () => JSON.stringify({ state: "complete", result: [] }),
       select_airport_in_session: async () => snapshotJson,

@@ -71,6 +71,8 @@ import {
   type UiMapLayerState,
   type UiMapLayerToggleState,
   type UiDebugState,
+  type UiCautionState,
+  type UiDataStatusState,
   type UiSession,
   type UiSessionSnapshot,
   type UiInvalidation,
@@ -1343,8 +1345,13 @@ export default function App() {
       selected_chart_id: initialChartPageState.selected_chart_id,
     },
     map_layer_state: defaultUiMapLayerState(),
+    data_status_state: {
+      boxes: [],
+    },
     caution_state: {
-      obstacle_display_limited: false,
+      active: false,
+      severity: null,
+      items: [],
     },
     debug_state: initialDebugState,
     raster_map: null,
@@ -2195,6 +2202,14 @@ export default function App() {
           ownship={appUiState.ownship.render}
           ownshipControls={appUiState.ownship.controls}
           flightDataBanner={appUiState.flight_data_banner}
+          dataStatusState={sessionSnapshot.data_status_state}
+          cautionState={sessionSnapshot.caution_state}
+          onStatusAction={(actionId) => {
+            if (!uiSession) {
+              return;
+            }
+            void uiSession.performStatusAction(actionId).then(setSessionSnapshot);
+          }}
           plan={currentPlan}
           planUiState={planUiState}
           playbackUiState={playbackUiState}
@@ -2450,6 +2465,9 @@ function MapPage(props: {
   ownship: OwnshipRenderState;
   ownshipControls: OwnshipControlModel;
   flightDataBanner: FlightDataBannerModel;
+  dataStatusState: UiDataStatusState;
+  cautionState: UiCautionState;
+  onStatusAction: (actionId: string) => void | Promise<void>;
   plan: FlightPlan;
   planUiState: FlightPlanUiState | null;
   playbackUiState: PlaybackUiState;
@@ -2489,6 +2507,9 @@ function MapPage(props: {
     ownship,
     ownshipControls,
     flightDataBanner,
+    dataStatusState,
+    cautionState,
+    onStatusAction,
     plan,
     planUiState,
     uiSession,
@@ -2505,7 +2526,7 @@ function MapPage(props: {
     onFirstVisualReady,
   } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const trayGroup = useModalTrayGroup(["family", "layers", "ownship"] as const);
+  const trayGroup = useModalTrayGroup(["family", "layers", "status", "ownship"] as const);
   const [layerToggleBusyId, setLayerToggleBusyId] = useState<MapLayerId | null>(null);
   const [chartSearch, setChartSearch] = useState<{
     query: string;
@@ -4352,6 +4373,14 @@ function MapPage(props: {
           onToggle={() => trayGroup.toggle("ownship")}
           options={ownshipSourceOptions}
           transportControls={<SituationTransportRow controls={ownshipControls.situation_controls} onInput={onSituationControlInput} />}
+        />
+        <DataStatusDock
+          dataStatusState={dataStatusState}
+          cautionState={cautionState}
+          lowered={situationDockLowered}
+          open={trayGroup.isOpen("status")}
+          onToggle={() => trayGroup.toggle("status")}
+          onAction={onStatusAction}
         />
         {mapIsVisible && situationOverlay ? (
           <>
@@ -7727,6 +7756,99 @@ function SituationStatusBadge(props: {
         options={props.options}
         footer={props.transportControls}
       />
+    </div>
+  );
+}
+
+function DataStatusDock(props: {
+  dataStatusState: UiDataStatusState;
+  cautionState: UiCautionState;
+  lowered?: boolean;
+  open: boolean;
+  onToggle: () => void;
+  onAction: (actionId: string) => void | Promise<void>;
+}) {
+  const unHushedCount = props.cautionState.items.filter((item) => !item.hushed).length;
+  const hasStatus = props.dataStatusState.boxes.length > 0 || props.cautionState.items.length > 0;
+  if (!hasStatus) {
+    return null;
+  }
+  const launcherLabel = unHushedCount > 0 ? `⚠ ${unHushedCount}` : "STATUS";
+  const severity = props.cautionState.severity ?? "info";
+
+  return (
+    <div className={`dataStatusDock${props.lowered ? " isLowered" : ""}`}>
+      <button
+        type="button"
+        className={`dataStatusLauncher statusSeverity-${severity}${props.open ? " isOpen" : ""}${unHushedCount === 0 ? " isQuiet" : ""}`}
+        aria-expanded={props.open}
+        aria-label="Data status"
+        onPointerDown={stopPointer}
+        onPointerUp={stopPointer}
+        onDoubleClick={stopDoubleClick}
+        onClick={props.onToggle}
+      >
+        {launcherLabel}
+      </button>
+      {props.open ? (
+        <section className="dataStatusPanel" aria-label="Active data status">
+          {props.dataStatusState.boxes.map((box) => (
+            <div key={box.id} className={`dataStatusBox statusSeverity-${box.severity}${box.hushed ? " isHushed" : ""}`}>
+              <div className="dataStatusBoxHeader">
+                <span className="dataStatusBoxLabel">{box.label}</span>
+                <span className="dataStatusBoxValue">{box.value ?? "—"}</span>
+              </div>
+              <div className="dataStatusBoxDetail">{box.detail}</div>
+              {box.actions.length > 0 ? (
+                <div className="dataStatusActions">
+                  {box.actions.map((action) => (
+                    <button
+                      key={action.id}
+                      type="button"
+                      className={`dataStatusAction dataStatusAction-${action.style}`}
+                      disabled={!action.enabled}
+                      onPointerDown={stopPointer}
+                      onPointerUp={stopPointer}
+                      onDoubleClick={stopDoubleClick}
+                      onClick={action.enabled ? () => props.onAction(action.id) : undefined}
+                    >
+                      {action.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ))}
+          {props.cautionState.items.length > 0 ? (
+            <div className="dataStatusCautions">
+              {props.cautionState.items.map((item) => (
+                <div key={item.id} className={`dataStatusCaution statusSeverity-${item.severity}${item.hushed ? " isHushed" : ""}`}>
+                  <div className="dataStatusCautionTitle">{item.title}</div>
+                  <div className="dataStatusCautionMessage">{item.message}</div>
+                  {item.actions.length > 0 ? (
+                    <div className="dataStatusActions">
+                      {item.actions.map((action) => (
+                        <button
+                          key={action.id}
+                          type="button"
+                          className={`dataStatusAction dataStatusAction-${action.style}`}
+                          disabled={!action.enabled}
+                          onPointerDown={stopPointer}
+                          onPointerUp={stopPointer}
+                          onDoubleClick={stopDoubleClick}
+                          onClick={action.enabled ? () => props.onAction(action.id) : undefined}
+                        >
+                          {action.label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
     </div>
   );
 }

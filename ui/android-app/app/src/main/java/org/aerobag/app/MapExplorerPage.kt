@@ -1680,6 +1680,21 @@ internal fun MapExplorerPage(
             uiTheme = uiTheme,
             modifier = Modifier.align(if (surfaceWidthPx > surfaceHeightPx) Alignment.TopEnd else Alignment.TopCenter),
         )
+        DataStatusBadge(
+            dataStatusState = sessionSnapshot.dataStatusState,
+            cautionState = sessionSnapshot.cautionState,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(
+                    top = situationDockTopPadding,
+                    end = ThumbGap + MenuDockStyle.Situation.buttonWidth + ThumbGap,
+                ),
+            onAction = { actionId ->
+                runCatching { uiSession.performStatusAction(actionId) }
+                    .onSuccess(onSessionSnapshotChange)
+                    .onFailure { error -> Log.w(MapLayerLogTag, "status action failed: $actionId", error) }
+            },
+        )
         SituationStatusBadge(
             controls = ownshipControls,
             modifier = Modifier

@@ -249,6 +249,11 @@ interface NativeBridge {
         actionUid: String,
     ): String
 
+    fun performStatusActionInSessionJson(
+        handle: Long,
+        actionId: String,
+    ): String
+
     fun loadPlateProcedureInSessionJson(
         handle: Long,
         loadId: String,
@@ -634,6 +639,11 @@ object NativeBindings : NativeBridge {
         handle: Long,
         rowUid: String,
         actionUid: String,
+    ): String
+
+    external override fun performStatusActionInSessionJson(
+        handle: Long,
+        actionId: String,
     ): String
 
     external override fun loadPlateProcedureInSessionJson(

@@ -518,6 +518,17 @@ pub fn perform_flight_plan_row_action_in_session(
 }
 
 #[wasm_bindgen]
+pub fn perform_status_action_in_session(
+    session_handle: u32,
+    action_id: &str,
+) -> Result<String, JsValue> {
+    let snapshot =
+        app_core::session::perform_status_action_in_session(session_handle, action_id.to_string())
+            .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn activate_next_leg_in_session(session_handle: u32) -> Result<String, JsValue> {
     let snapshot = app_core::activate_next_leg_in_session(session_handle)
         .map_err(|err| JsValue::from_str(&err.to_string()))?;

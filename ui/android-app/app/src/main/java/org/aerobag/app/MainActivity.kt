@@ -1348,6 +1348,10 @@ internal fun DataStatusBadge(
     val unHushedCount = cautionState.items.count { !it.hushed }
     val launcherLabel = if (unHushedCount > 0) "\u26A0 $unHushedCount" else "STATUS"
     val accentColor = statusSeverityColor(cautionState.severity ?: UiStatusSeverity.Info)
+    val dataStatusBoxIds = dataStatusState.boxes.map { it.id }.toSet()
+    val standaloneCautionItems = cautionState.items.filter { item ->
+        item.sourceBoxId == null || !dataStatusBoxIds.contains(item.sourceBoxId)
+    }
     Box(modifier = modifier.wrapContentSize(unbounded = true, align = Alignment.TopEnd)) {
         MenuDock(
             launcherLabel = launcherLabel,
@@ -1391,7 +1395,7 @@ internal fun DataStatusBadge(
                         }
                     }
                 }
-                cautionState.items.forEach { item ->
+                standaloneCautionItems.forEach { item ->
                     DataStatusBoxRow(
                         label = item.title,
                         value = item.severity.name.uppercase(),

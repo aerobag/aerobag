@@ -7772,6 +7772,10 @@ function DataStatusDock(props: {
   if (!hasStatus) {
     return null;
   }
+  const dataStatusBoxIds = new Set(props.dataStatusState.boxes.map((box) => box.id));
+  const standaloneCautionItems = props.cautionState.items.filter((item) => {
+    return !item.source_box_id || !dataStatusBoxIds.has(item.source_box_id);
+  });
   const launcherLabel = unHushedCount > 0 ? `⚠ ${unHushedCount}` : "STATUS";
   const severity = props.cautionState.severity ?? "info";
 
@@ -7818,9 +7822,9 @@ function DataStatusDock(props: {
               ) : null}
             </div>
           ))}
-          {props.cautionState.items.length > 0 ? (
+          {standaloneCautionItems.length > 0 ? (
             <div className="dataStatusCautions">
-              {props.cautionState.items.map((item) => (
+              {standaloneCautionItems.map((item) => (
                 <div key={item.id} className={`dataStatusCaution statusSeverity-${item.severity}${item.hushed ? " isHushed" : ""}`}>
                   <div className="dataStatusCautionTitle">{item.title}</div>
                   <div className="dataStatusCautionMessage">{item.message}</div>

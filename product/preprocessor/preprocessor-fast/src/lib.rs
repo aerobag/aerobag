@@ -4207,7 +4207,7 @@ mod tests {
     }
 
     fn metar_delta_fixture_states() -> anyhow::Result<Vec<Value>> {
-        let test_artifacts_root = std::env::var_os("AEROBAG_TEST_ARTIFACTS_ROOT")
+        let test_artifacts_root = std::env::var_os("AEROBAG_TEST_ARTIFACTS")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))

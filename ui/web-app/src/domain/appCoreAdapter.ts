@@ -631,7 +631,7 @@ type WasmModule = {
   empty_flight_plan_json(): Promise<string> | string;
   create_ui_session(vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   create_ui_session_profiled?: (vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
-  set_raster_resource_mode_in_session(handle: number, modeJson: string): Promise<string> | string;
+  set_resource_policy_in_session(handle: number, policyJson: string): Promise<string> | string;
   set_situation_in_session_paged(handle: number, situationJson: string): Promise<string> | string;
   tick_debug_ownship_driver_in_session_paged(handle: number, nowEpochMs: number): Promise<string> | string;
   engage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
@@ -772,7 +772,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       }
       const created = createdEnvelope.result ?? createdEnvelope;
       await attachNavKvStoreToSession(created.handle);
-      await module.set_raster_resource_mode_in_session(created.handle, JSON.stringify("public_unpacked"));
+      await module.set_resource_policy_in_session(created.handle, JSON.stringify("public_unpacked"));
       const catalogedSnapshot = await debugTiming("startup.session.load_raster_catalog", () =>
         runSessionOperation<UiSessionSnapshot>(() =>
           module.load_raster_map_catalog_in_session(created.handle),
@@ -1424,7 +1424,7 @@ async function loadBestAvailableAdapterUncached(
     "situation_ring_candidates_json",
     "empty_flight_plan_json",
     "create_ui_session",
-    "set_raster_resource_mode_in_session",
+    "set_resource_policy_in_session",
     "perform_flight_plan_row_action_in_session",
     "perform_status_action_in_session",
     "set_situation_in_session_paged",

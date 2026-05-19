@@ -100,6 +100,9 @@ export class NavKvStore {
         );
       }
     } catch (error) {
+      if (isCoreSourceAssertion(error)) {
+        throw error;
+      }
       debugLog("nav_kv.root.missing", { reason: error instanceof Error ? error.message : String(error) });
       return null;
     } finally {
@@ -112,11 +115,15 @@ export class NavKvStore {
       return null;
     }
     const selected = byFilename.get(finish.open_result.selected_filename);
-    if (!selected?.root_address) {
+    const rootUrl = selected?.root_source ? publicResourceUrl({
+      id: `nav_db/artifact/${selected.filename}/root`,
+      source: selected.root_source,
+    }) : null;
+    if (!rootUrl) {
       debugLog("nav_kv.root.missing", { selected_filename: finish.open_result.selected_filename });
       return null;
     }
-    const store = new NavKvStore(wasm, finish.nav_kv_handle, selected.root_address);
+    const store = new NavKvStore(wasm, finish.nav_kv_handle, rootUrl);
     await store.prefetchRootPages();
     return store;
   }
@@ -242,8 +249,8 @@ export class PublicationResolver {
   }
 
   private async resolve(operation: () => Promise<string> | string): Promise<string> {
-    const result = await this.resolveResult<{ address: string }>(operation);
-    return result.address;
+    const result = await this.resolveResult<{ source: CoreResourceSource }>(operation);
+    return publicResourceUrl({ id: "publication/resolved_package_member", source: result.source });
   }
 
   private async resolveResult<T>(operation: () => Promise<string> | string): Promise<T> {
@@ -263,12 +270,13 @@ export class PublicationResolver {
   }
 
   private async fetchAndIngest(resource: CoreResourceRequest): Promise<void> {
-    const response = await debugTiming("publication.resource.fetch", () => fetch(resource.address, { cache: "no-cache" }), {
+    const url = publicResourceUrl(resource);
+    const response = await debugTiming("publication.resource.fetch", () => fetch(url, { cache: "no-cache" }), {
       id: resource.id,
-      address: resource.address,
+      url,
     });
     if (!response.ok) {
-      throw new Error(`failed to fetch publication resource ${resource.id} at ${resource.address}: ${response.status}`);
+      throw new Error(`failed to fetch publication resource ${resource.id} at ${url}: ${response.status}`);
     }
     const bytes = new Uint8Array(await response.arrayBuffer());
     await this.wasm.publication_resolver_ingest_resource(this.handle, resource.id, bytes);
@@ -292,14 +300,21 @@ export async function resolvePackageMemberUrl(packageId: string, memberPath: str
 
 type CoreResourceRequest = {
   id: string;
-  address: string;
+  source: CoreResourceSource;
   optional?: boolean;
 };
+
+type CoreResourceSource =
+  | { kind: "public_url"; url: string }
+  | { kind: "package_member"; package_id: string; filename: string; member_path: string }
+  | { kind: "installed_artifact_member"; filename: string; member_path: string }
+  | { kind: "nav_kv_member"; member_path: string }
+  | { kind: "unavailable"; message: string };
 
 type NavDbArtifactCandidate = {
   package_id: string;
   filename: string;
-  root_address?: string;
+  root_source?: CoreResourceSource;
 };
 
 type NavDbArtifactOpenStatus = {
@@ -325,19 +340,40 @@ async function fetchAndIngestResource(
   ingestResource: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
   timingLabel: string,
 ): Promise<void> {
-  const response = await debugTiming(timingLabel, () => fetch(withNavKvCacheKey(resource.address)), {
+  const url = publicResourceUrl(resource);
+  const response = await debugTiming(timingLabel, () => fetch(withNavKvCacheKey(url)), {
     id: resource.id,
-    address: resource.address,
+    url,
   });
   if (!response.ok) {
     if (resource.optional) {
       await ingestResource(resource.id, new Uint8Array());
       return;
     }
-    throw new Error(`failed to fetch core resource ${resource.id} at ${resource.address}: ${response.status}`);
+    throw new Error(`failed to fetch core resource ${resource.id} at ${url}: ${response.status}`);
   }
   const bytes = new Uint8Array(await response.arrayBuffer());
   await ingestResource(resource.id, bytes);
+}
+
+function publicResourceUrl(resource: CoreResourceRequest): string {
+  const source = resource.source;
+  if (!source) {
+    throw new Error(`core resource ${resource.id} is missing typed source`);
+  }
+  if (source.kind === "public_url") {
+    return source.url;
+  }
+  if (source.kind === "unavailable") {
+    throw new Error(`core resource ${resource.id} is unavailable: ${source.message}`);
+  }
+  throw new Error(`web cannot fetch ${source.kind} resource ${resource.id}; expected public_url`);
+}
+
+function isCoreSourceAssertion(error: unknown): boolean {
+  return error instanceof Error
+    && (error.message.startsWith("web cannot fetch ")
+      || error.message.includes(" is missing typed source"));
 }
 
 function withNavKvCacheKey(address: string): string {

@@ -381,11 +381,11 @@ impl LiveFeedsState {
 
     fn missing_resources(&self) -> Vec<CoreResourceRequest> {
         if !self.current_loaded {
-            return vec![CoreResourceRequest {
-                id: CURRENT_RESOURCE_ID.to_string(),
-                address: CURRENT_ADDRESS.to_string(),
-                optional: false,
-            }];
+            return vec![CoreResourceRequest::public_url(
+                CURRENT_RESOURCE_ID,
+                CURRENT_ADDRESS,
+                false,
+            )];
         }
         let products = self.products.keys().map(String::as_str).collect::<Vec<_>>();
         self.missing_resources_for_products(products)
@@ -408,11 +408,11 @@ impl LiveFeedsState {
             };
             if entry.version_manifest.is_none() {
                 if let Some(url) = &entry.version_manifest_url {
-                    resources.push(CoreResourceRequest {
-                        id: format!("live_feeds/version/{product}/{version}"),
-                        address: live_feed_address(url),
-                        optional: false,
-                    });
+                    resources.push(CoreResourceRequest::public_url(
+                        format!("live_feeds/version/{product}/{version}"),
+                        live_feed_address(url),
+                        false,
+                    ));
                     continue;
                 }
             }
@@ -420,22 +420,22 @@ impl LiveFeedsState {
                 continue;
             }
             if let Some(delta) = entry.applicable_delta(product) {
-                resources.push(CoreResourceRequest {
-                    id: format!(
+                resources.push(CoreResourceRequest::public_url(
+                    format!(
                         "live_feeds/delta/{}/{}/{}",
                         product, delta.from_version, delta.to_version
                     ),
-                    address: live_feed_address(&delta.url),
-                    optional: false,
-                });
+                    live_feed_address(&delta.url),
+                    false,
+                ));
                 continue;
             }
             if let Some(url) = &entry.state_url {
-                resources.push(CoreResourceRequest {
-                    id: format!("live_feeds/state/{product}/{version}"),
-                    address: live_feed_address(url),
-                    optional: false,
-                });
+                resources.push(CoreResourceRequest::public_url(
+                    format!("live_feeds/state/{product}/{version}"),
+                    live_feed_address(url),
+                    false,
+                ));
             }
         }
         resources
@@ -726,7 +726,12 @@ mod tests {
         };
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].id, "live_feeds/current");
-        assert_eq!(resources[0].address, "/live-feeds/current.json");
+        assert_eq!(
+            resources[0].source,
+            crate::CoreResourceSource::PublicUrl {
+                url: "/live-feeds/current.json".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -751,7 +756,12 @@ mod tests {
             panic!("expected version request");
         };
         assert_eq!(resources[0].id, "live_feeds/version/nexrad/v1");
-        assert_eq!(resources[0].address, "/live-feeds/versions/nexrad/v1.json");
+        assert_eq!(
+            resources[0].source,
+            crate::CoreResourceSource::PublicUrl {
+                url: "/live-feeds/versions/nexrad/v1.json".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -1147,8 +1157,10 @@ mod tests {
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].id, "live_feeds/delta/metars/v1/v2");
         assert_eq!(
-            resources[0].address,
-            "/live-feeds/deltas/metars/v1__v2.json"
+            resources[0].source,
+            crate::CoreResourceSource::PublicUrl {
+                url: "/live-feeds/deltas/metars/v1__v2.json".to_string(),
+            }
         );
 
         state

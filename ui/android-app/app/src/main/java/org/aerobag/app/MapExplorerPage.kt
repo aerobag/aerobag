@@ -209,6 +209,8 @@ import org.aerobag.app.domain.FlightPlanRouteSegment
 import org.aerobag.app.domain.FlightPlanUiState
 import org.aerobag.app.domain.GuidanceState
 import org.aerobag.app.domain.InstalledPackages
+import org.aerobag.app.domain.CoreResourceRequest
+import org.aerobag.app.domain.CoreResourceSource
 import org.aerobag.app.domain.AirspaceDisplayDecoration
 import org.aerobag.app.domain.AirspaceDisplayLabel
 import org.aerobag.app.domain.AirspaceDisplayPath
@@ -271,6 +273,7 @@ import org.aerobag.app.domain.createPinchSnapshot
 import org.aerobag.app.domain.dragImageViewport
 import org.aerobag.app.domain.dragViewport
 import org.aerobag.app.domain.imageDisplaySize
+import org.aerobag.app.domain.kindForLog
 import org.aerobag.app.domain.latLonToWorld
 import org.aerobag.app.domain.preserveViewportForMap
 import org.aerobag.app.domain.renderTileKey
@@ -317,7 +320,6 @@ import kotlinx.serialization.encodeToString
 import java.io.BufferedOutputStream
 import java.io.File
 import java.nio.ByteBuffer
-import java.net.URL
 import java.security.MessageDigest
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -335,52 +337,30 @@ import kotlin.math.sin
 
 private fun fetchCoreResource(
     context: Context,
-    resource: org.aerobag.app.domain.CoreResourceRequest,
+    resource: CoreResourceRequest,
+    devServerBaseUrl: String,
 ): ByteArray {
     val prefs = context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE)
     val publicationRootUrl = resolvePublicationRootUrl(readPackageSourceBaseUrl(context.applicationContext, prefs))
-    return when (val location = resolveCoreResourceLocation(resource.address, publicationRootUrl)) {
-        is CoreResourceLocation.InstalledPackage ->
-            InstalledPackages.readZipEntryBytes(context, location.packageId, location.memberPath)
-        is CoreResourceLocation.Url ->
-            fetchResourceBytes(location.url)
+    return when (val source = resource.source) {
+        is CoreResourceSource.PackageMember ->
+            InstalledPackages.readZipEntryBytes(context, source.packageId, source.memberPath)
+        is CoreResourceSource.PublicUrl -> {
+            require(resource.id.startsWith("publication/") || resource.id.startsWith("live_feeds/")) {
+                "Android received public_url for package-backed resource ${resource.id}"
+            }
+            val url = if (source.url.startsWith("/packages/")) {
+                resolvePackageSourceUrl(source.url.removePrefix("/packages/"), publicationRootUrl)
+            } else {
+                resolvePlaybackTraceUrl(source.url, devServerBaseUrl)
+            }
+            fetchResourceBytes(url)
+        }
+        is CoreResourceSource.Unavailable ->
+            error("core resource ${resource.id} is unavailable: ${source.message}")
+        is CoreResourceSource.InstalledArtifactMember, is CoreResourceSource.NavKvMember ->
+            error("Android session fetch cannot handle ${source.kindForLog()} for ${resource.id}")
     }
-}
-
-internal sealed class CoreResourceLocation {
-    data class InstalledPackage(
-        val packageId: String,
-        val memberPath: String,
-    ) : CoreResourceLocation()
-
-    data class Url(
-        val url: String,
-    ) : CoreResourceLocation()
-}
-
-internal fun resolveCoreResourceLocation(
-    address: String,
-    publicationRootUrl: String,
-): CoreResourceLocation {
-    if (address.startsWith("package://")) {
-        val packageAddress = address.removePrefix("package://")
-        val packageId = packageAddress.substringBefore('/', missingDelimiterValue = "")
-        val memberPath = packageAddress.substringAfter('/', missingDelimiterValue = "")
-        require(packageId.isNotBlank() && memberPath.isNotBlank()) { "invalid package resource address: $address" }
-        return CoreResourceLocation.InstalledPackage(packageId, memberPath)
-    }
-    if (address.startsWith("publication-error:")) {
-        error(address)
-    }
-    if (address.startsWith("http://") || address.startsWith("https://")) {
-        return CoreResourceLocation.Url(address)
-    }
-    if (address.startsWith("/packages/")) {
-        return CoreResourceLocation.Url(
-            resolvePackageSourceUrl(address.removePrefix("/packages/"), publicationRootUrl),
-        )
-    }
-    error("unsupported core resource address: $address")
 }
 
 private fun WireRasterTileSource.toRenderTileSource(): RenderTileSource? {
@@ -1156,7 +1136,7 @@ internal fun MapExplorerPage(
             onViewportChange(nextViewport)
         }
     }
-    LaunchedEffect(uiSession, viewport, surfaceSize, density.density, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.offlineRegions.visible) {
+    LaunchedEffect(uiSession, viewport, surfaceSize, density.density, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.offlineRegions.visible, devServerBaseUrl) {
         if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
             mapOverlayError = null
             return@LaunchedEffect
@@ -1173,7 +1153,7 @@ internal fun MapExplorerPage(
                     overlayHeightPx.toDouble(),
                     density.density.toDouble(),
                 ) { resource ->
-                    fetchCoreResource(context, resource)
+                    fetchCoreResource(context, resource, devServerBaseUrl)
                 }
             }
             currentCoroutineContext().ensureActive()
@@ -1200,7 +1180,7 @@ internal fun MapExplorerPage(
         committedOverlaySurfaceUnits = OverlaySurfaceUnits(overlayWidthPx, overlayHeightPx)
         mapOverlayError = null
     }
-    LaunchedEffect(uiSession, mapLayerState.nexrad.visible, mapLayerState.nexrad.enabled) {
+    LaunchedEffect(uiSession, mapLayerState.nexrad.visible, mapLayerState.nexrad.enabled, devServerBaseUrl) {
         val effectStartMs = SystemClock.elapsedRealtime()
         if (!mapLayerState.nexrad.visible || !mapLayerState.nexrad.enabled) {
             nexradFrameIndex = 0
@@ -1214,7 +1194,7 @@ internal fun MapExplorerPage(
             val overlay = withContext(Dispatchers.IO) {
                 uiSession.queryNexradOverlay { resource ->
                     val fetchStartMs = SystemClock.elapsedRealtime()
-                    fetchCoreResource(context, resource).also {
+                    fetchCoreResource(context, resource, devServerBaseUrl).also {
                         fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
                     }
                 }
@@ -1274,11 +1254,10 @@ internal fun MapExplorerPage(
             var parseMs = 0L
             var rawBytesTotal = 0L
             var requestCount = 0
-            val query = uiSession.queryTerrainOverlay(viewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble()) { resource ->
-                URL(resolvePlaybackTraceUrl(resource.address, devServerBaseUrl))
-                    .openStream()
-                    .buffered()
-                    .use { it.readBytes() }
+            val query = withContext(Dispatchers.IO) {
+                uiSession.queryTerrainOverlay(viewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble()) { resource ->
+                    fetchCoreResource(context, resource, devServerBaseUrl)
+                }
             }.also { queryMs = SystemClock.elapsedRealtime() - effectStartMs }
             if (query.status !is org.aerobag.app.domain.TerrainOverlayStatus.Ready) {
                 Log.i(

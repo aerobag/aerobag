@@ -3,31 +3,52 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BundleManifest, BundlePackageArtifact, CoreResourceRequest, CurrentArtifactsManifest,
-    HadOperationOutcome, NavDbArtifactCandidate, REQUIRED_NAV_DB_CONTRACT_VERSION,
+    BundleManifest, BundlePackageArtifact, CoreResourceRequest, CoreResourceSource,
+    CurrentArtifactsManifest, HadOperationOutcome, NavDbArtifactCandidate,
+    REQUIRED_NAV_DB_CONTRACT_VERSION,
 };
 
 const CURRENT_ARTIFACTS_RESOURCE_ID: &str = "publication/current_artifacts";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoreResourcePolicy {
+    PublicUnpacked,
+    InstalledPackage,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicationResolver {
     public_base_url: String,
+    resource_policy: CoreResourcePolicy,
     current_artifacts: Option<CurrentArtifactsManifest>,
     bundle_manifests_by_filename: BTreeMap<String, BundleManifest>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublicationResolvedResource {
-    pub address: String,
+    pub source: CoreResourceSource,
 }
 
 impl PublicationResolver {
     pub fn new(public_base_url: impl Into<String>) -> Self {
+        Self::with_resource_policy(public_base_url, CoreResourcePolicy::PublicUnpacked)
+    }
+
+    pub fn with_resource_policy(
+        public_base_url: impl Into<String>,
+        resource_policy: CoreResourcePolicy,
+    ) -> Self {
         Self {
             public_base_url: trim_url_root(public_base_url.into()),
+            resource_policy,
             current_artifacts: None,
             bundle_manifests_by_filename: BTreeMap::new(),
         }
+    }
+
+    pub fn set_resource_policy(&mut self, resource_policy: CoreResourcePolicy) {
+        self.resource_policy = resource_policy;
     }
 
     pub fn ingest_resource(
@@ -74,29 +95,26 @@ impl PublicationResolver {
         if let Some(resources) = self.missing_manifest_resources()? {
             return Ok(HadOperationOutcome::NeedResources { resources });
         }
-        let candidates =
-            self.bundle_manifests_by_filename
-                .values()
-                .flat_map(|bundle| bundle.packages.iter())
-                .filter(|package| package.family_id == "nav-db")
-                .filter(|package| {
-                    package
-                        .metadata
-                        .as_ref()
-                        .and_then(|metadata| metadata.nav_db_contract_version)
-                        == Some(REQUIRED_NAV_DB_CONTRACT_VERSION)
+        let candidates = self
+            .bundle_manifests_by_filename
+            .values()
+            .flat_map(|bundle| bundle.packages.iter())
+            .filter(|package| package.family_id == "nav-db")
+            .filter(|package| {
+                package
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.nav_db_contract_version)
+                    == Some(REQUIRED_NAV_DB_CONTRACT_VERSION)
+            })
+            .map(|package| {
+                Ok(NavDbArtifactCandidate {
+                    package_id: package.id.clone(),
+                    filename: package.filename.clone(),
+                    root_source: Some(self.package_member_source(package, "root")?),
                 })
-                .map(|package| {
-                    Ok(NavDbArtifactCandidate {
-                        package_id: package.id.clone(),
-                        filename: package.filename.clone(),
-                        root_address: Some(self.package_member_address(
-                            |candidate| candidate.id == package.id,
-                            "root",
-                        )?),
-                    })
-                })
-                .collect::<Result<Vec<_>, String>>()?;
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         let result = serde_json::to_value(candidates).map_err(|err| err.to_string())?;
         Ok(HadOperationOutcome::complete(result))
     }
@@ -141,9 +159,10 @@ impl PublicationResolver {
         if let Some(resources) = self.missing_manifest_resources()? {
             return Ok(resources);
         }
+        let package = self.matching_package(matches_package)?;
         Ok(vec![CoreResourceRequest {
             id: target_resource_id.to_string(),
-            address: self.package_member_address(matches_package, member_path)?,
+            source: self.package_member_source(package, member_path)?,
             optional,
         }])
     }
@@ -156,23 +175,51 @@ impl PublicationResolver {
         if let Some(resources) = self.missing_manifest_resources()? {
             return Ok(HadOperationOutcome::NeedResources { resources });
         }
-        let address = self.package_member_address(matches_package, member_path)?;
-        let result = serde_json::to_value(PublicationResolvedResource { address })
+        if self.resource_policy != CoreResourcePolicy::PublicUnpacked {
+            return Err(
+                "publication URL resolution requires public_unpacked resource policy".to_string(),
+            );
+        }
+        let package = self.matching_package(matches_package)?;
+        let source = self.package_member_source(package, member_path)?;
+        let result = serde_json::to_value(PublicationResolvedResource { source })
             .map_err(|err| err.to_string())?;
         Ok(HadOperationOutcome::complete(result))
     }
 
-    fn package_member_address(
+    fn package_member_source(
+        &self,
+        package: &BundlePackageArtifact,
+        member_path: &str,
+    ) -> Result<CoreResourceSource, String> {
+        match self.resource_policy {
+            CoreResourcePolicy::PublicUnpacked => Ok(CoreResourceSource::PublicUrl {
+                url: self.package_member_address(package, member_path)?,
+            }),
+            CoreResourcePolicy::InstalledPackage => Ok(CoreResourceSource::PackageMember {
+                package_id: package.id.clone(),
+                filename: package.filename.clone(),
+                member_path: member_path.to_string(),
+            }),
+        }
+    }
+
+    fn matching_package(
         &self,
         matches_package: impl Fn(&BundlePackageArtifact) -> bool,
-        member_path: &str,
-    ) -> Result<String, String> {
-        let package = self
-            .bundle_manifests_by_filename
+    ) -> Result<&BundlePackageArtifact, String> {
+        self.bundle_manifests_by_filename
             .values()
             .flat_map(|bundle| bundle.packages.iter())
             .find(|package| matches_package(package))
-            .ok_or_else(|| "package not found in active publication bundles".to_string())?;
+            .ok_or_else(|| "package not found in active publication bundles".to_string())
+    }
+
+    fn package_member_address(
+        &self,
+        package: &BundlePackageArtifact,
+        member_path: &str,
+    ) -> Result<String, String> {
         let package_dir = package.relative_path.strip_suffix(".zip").ok_or_else(|| {
             format!(
                 "package {} relative_path is not a zip: {}",
@@ -193,11 +240,11 @@ impl PublicationResolver {
 
     fn missing_manifest_resources(&self) -> Result<Option<Vec<CoreResourceRequest>>, String> {
         let Some(current_artifacts) = self.current_artifacts.as_ref() else {
-            return Ok(Some(vec![CoreResourceRequest {
-                id: CURRENT_ARTIFACTS_RESOURCE_ID.to_string(),
-                address: join_url([self.public_base_url.as_str(), "current_artifacts.json"]),
-                optional: false,
-            }]));
+            return Ok(Some(vec![CoreResourceRequest::public_url(
+                CURRENT_ARTIFACTS_RESOURCE_ID,
+                join_url([self.public_base_url.as_str(), "current_artifacts.json"]),
+                false,
+            )]));
         };
         let resources = current_artifacts
             .bundles
@@ -207,14 +254,16 @@ impl PublicationResolver {
                     .bundle_manifests_by_filename
                     .contains_key(&bundle.filename)
             })
-            .map(|bundle| CoreResourceRequest {
-                id: format!("publication/bundle/{}", bundle.filename),
-                address: join_url([
-                    self.public_base_url.as_str(),
-                    current_artifacts.artifact_roots.packaged.as_str(),
-                    bundle.relative_path.as_str(),
-                ]),
-                optional: false,
+            .map(|bundle| {
+                CoreResourceRequest::public_url(
+                    format!("publication/bundle/{}", bundle.filename),
+                    join_url([
+                        self.public_base_url.as_str(),
+                        current_artifacts.artifact_roots.packaged.as_str(),
+                        bundle.relative_path.as_str(),
+                    ]),
+                    false,
+                )
             })
             .collect::<Vec<_>>();
         if resources.is_empty() {
@@ -325,7 +374,12 @@ mod tests {
         };
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].id, "publication/current_artifacts");
-        assert_eq!(resources[0].address, "/packages/current_artifacts.json");
+        assert_eq!(
+            resources[0].source,
+            CoreResourceSource::PublicUrl {
+                url: "/packages/current_artifacts.json".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -347,8 +401,10 @@ mod tests {
         };
         assert_eq!(resources[0].id, "publication/bundle/bundle_cycle.json");
         assert_eq!(
-            resources[0].address,
-            "/packages/published_packaged/bundles/bundle_cycle.json"
+            resources[0].source,
+            CoreResourceSource::PublicUrl {
+                url: "/packages/published_packaged/bundles/bundle_cycle.json".to_string(),
+            }
         );
     }
 
@@ -377,8 +433,10 @@ mod tests {
         };
         let resolved: PublicationResolvedResource = serde_json::from_value(result).unwrap();
         assert_eq!(
-            resolved.address,
-            "/packages/published_unpacked/nav_db_hash/page_0007"
+            resolved.source,
+            CoreResourceSource::PublicUrl {
+                url: "/packages/published_unpacked/nav_db_hash/page_0007".to_string(),
+            }
         );
     }
 
@@ -405,8 +463,43 @@ mod tests {
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].id, "nav/root");
         assert_eq!(
-            resources[0].address,
-            "/packages/published_unpacked/nav_db_hash/root"
+            resources[0].source,
+            CoreResourceSource::PublicUrl {
+                url: "/packages/published_unpacked/nav_db_hash/root".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn resolver_produces_installed_package_request_when_policy_requires_packages() {
+        let mut resolver = PublicationResolver::with_resource_policy(
+            "/packages",
+            CoreResourcePolicy::InstalledPackage,
+        );
+        resolver
+            .ingest_resource(
+                "publication/current_artifacts",
+                serde_json::to_string(&current_artifacts())
+                    .unwrap()
+                    .as_bytes(),
+            )
+            .unwrap();
+        resolver
+            .ingest_resource(
+                "publication/bundle/bundle_cycle.json",
+                serde_json::to_string(&bundle()).unwrap().as_bytes(),
+            )
+            .unwrap();
+        let resources = resolver
+            .family_resource_requests("nav/root", "nav-db", "root", false)
+            .unwrap();
+        assert_eq!(
+            resources[0].source,
+            CoreResourceSource::PackageMember {
+                package_id: "nav-db".to_string(),
+                filename: "nav_db_hash.zip".to_string(),
+                member_path: "root".to_string(),
+            }
         );
     }
 }

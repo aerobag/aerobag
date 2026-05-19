@@ -145,22 +145,22 @@ pub fn create_ui_session_json(
     serde_json::to_string(&result).map_err(|err| err.to_string())
 }
 
-pub fn set_raster_resource_mode_in_session_json(
+pub fn set_resource_policy_in_session_json(
     handle: u64,
-    mode_json: &str,
+    policy_json: &str,
 ) -> Result<String, String> {
-    let mode: String = serde_json::from_str(mode_json).map_err(|err| err.to_string())?;
-    let mode = raster_resource_mode_from_wire(&mode)?;
-    let snapshot = app_core::set_raster_resource_mode_in_session(handle as u32, mode)
+    let policy: String = serde_json::from_str(policy_json).map_err(|err| err.to_string())?;
+    let policy = resource_policy_from_wire(&policy)?;
+    let snapshot = app_core::set_resource_policy_in_session(handle as u32, policy)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn raster_resource_mode_from_wire(mode: &str) -> Result<app_core::RasterResourceMode, String> {
-    match mode {
-        "public_unpacked" => Ok(app_core::RasterResourceMode::PublicUnpacked),
-        "installed_package" => Ok(app_core::RasterResourceMode::InstalledPackage),
-        other => Err(format!("unknown raster resource mode: {other}")),
+fn resource_policy_from_wire(policy: &str) -> Result<app_core::CoreResourcePolicy, String> {
+    match policy {
+        "public_unpacked" => Ok(app_core::CoreResourcePolicy::PublicUnpacked),
+        "installed_package" => Ok(app_core::CoreResourcePolicy::InstalledPackage),
+        other => Err(format!("unknown resource policy: {other}")),
     }
 }
 
@@ -1540,15 +1540,15 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_createUiSessio
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setRasterResourceModeInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setResourcePolicyInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
-    mode_json: JString,
+    policy_json: JString,
 ) -> jstring {
     let result = (|| {
-        let mode_json = get_java_string(&mut env, mode_json)?;
-        set_raster_resource_mode_in_session_json(handle as u64, &mode_json)
+        let policy_json = get_java_string(&mut env, policy_json)?;
+        set_resource_policy_in_session_json(handle as u64, &policy_json)
     })();
     return_string(&mut env, result)
 }

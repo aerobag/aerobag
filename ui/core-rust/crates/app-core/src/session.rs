@@ -8,6 +8,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use crate::CoreResourcePolicy;
 use crate::{
     chart_ident_label_for_nav_ref_symbol,
     chart_page::airport_ids_from_plan,
@@ -125,7 +126,7 @@ struct UiSession {
     hushed_status_ids: BTreeSet<String>,
     data_status_state: UiDataStatusState,
     debug_state: UiDebugState,
-    raster_resource_mode: RasterResourceMode,
+    resource_policy: CoreResourcePolicy,
     publication_resolver: PublicationResolver,
     live_feeds: LiveFeedsState,
     raster_map_catalog: Option<RasterMapCatalog>,
@@ -500,8 +501,11 @@ fn create_ui_session_inner(
             hushed_status_ids: BTreeSet::new(),
             data_status_state,
             debug_state,
-            raster_resource_mode: RasterResourceMode::InstalledPackage,
-            publication_resolver: PublicationResolver::new("/packages"),
+            resource_policy: CoreResourcePolicy::InstalledPackage,
+            publication_resolver: PublicationResolver::with_resource_policy(
+                "/packages",
+                CoreResourcePolicy::InstalledPackage,
+            ),
             live_feeds: LiveFeedsState::default(),
             raster_map_catalog: None,
             vector_tile_cache: HashMap::new(),
@@ -551,17 +555,25 @@ pub fn load_raster_map_catalog_in_session(handle: u32) -> AppResult<HadOperation
     session_snapshot_outcome(session)
 }
 
-pub fn set_raster_resource_mode_in_session(
+pub fn set_resource_policy_in_session(
     handle: u32,
-    mode: RasterResourceMode,
+    policy: CoreResourcePolicy,
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    if session.raster_resource_mode != mode {
-        session.raster_resource_mode = mode;
+    if session.resource_policy != policy {
+        session.resource_policy = policy;
+        session.publication_resolver.set_resource_policy(policy);
         session.raster_map_catalog = None;
     }
     snapshot_for_session(session)
+}
+
+fn raster_resource_mode_for_policy(policy: CoreResourcePolicy) -> RasterResourceMode {
+    match policy {
+        CoreResourcePolicy::InstalledPackage => RasterResourceMode::InstalledPackage,
+        CoreResourcePolicy::PublicUnpacked => RasterResourceMode::PublicUnpacked,
+    }
 }
 
 pub fn select_map_family_in_session(
@@ -622,7 +634,7 @@ pub fn get_raster_tile_plan_in_session(
         } else {
             1.0
         },
-        resource_mode: session.raster_resource_mode,
+        resource_mode: raster_resource_mode_for_policy(session.resource_policy),
         device_pixel_ratio: 1.0,
     };
     let catalog = raster_catalog_for_layer_state(catalog, &session.map_layer_state);
@@ -674,7 +686,7 @@ pub fn get_raster_tile_plan_in_session_with_display_scale(
             1.0
         },
         device_pixel_ratio,
-        resource_mode: session.raster_resource_mode,
+        resource_mode: raster_resource_mode_for_policy(session.resource_policy),
     };
     let catalog = raster_catalog_for_layer_state(catalog, &session.map_layer_state);
     Ok(crate::raster_tile_plan_with_options(
@@ -2782,11 +2794,11 @@ fn extend_package_resource_requests(
     ) {
         Ok(mut requested) => resources.append(&mut requested),
         Err(_) if optional => {}
-        Err(message) => resources.push(CoreResourceRequest {
-            id: target_resource_id.to_string(),
-            address: format!("publication-error:{message}"),
+        Err(message) => resources.push(CoreResourceRequest::unavailable(
+            target_resource_id,
+            message,
             optional,
-        }),
+        )),
     }
 }
 
@@ -5421,7 +5433,7 @@ mod tests {
         assert!(
             requests
                 .iter()
-                .all(|request| !request.address.starts_with("publication-error:")),
+                .all(|request| !matches!(request.source, crate::CoreResourceSource::Unavailable { .. })),
             "missing live-feed products must not poison unrelated overlay resource loading: {requests:?}"
         );
         assert!(requests.is_empty());
@@ -5580,8 +5592,11 @@ mod tests {
             hushed_status_ids: BTreeSet::new(),
             data_status_state: default_data_status_state(),
             debug_state: default_debug_state(),
-            raster_resource_mode: RasterResourceMode::InstalledPackage,
-            publication_resolver: PublicationResolver::new("/packages"),
+            resource_policy: CoreResourcePolicy::InstalledPackage,
+            publication_resolver: PublicationResolver::with_resource_policy(
+                "/packages",
+                CoreResourcePolicy::InstalledPackage,
+            ),
             live_feeds: LiveFeedsState::default(),
             raster_map_catalog: None,
             vector_tile_cache: HashMap::new(),
@@ -5754,8 +5769,11 @@ mod tests {
             hushed_status_ids: BTreeSet::new(),
             data_status_state: default_data_status_state(),
             debug_state: default_debug_state(),
-            raster_resource_mode: RasterResourceMode::InstalledPackage,
-            publication_resolver: PublicationResolver::new("/packages"),
+            resource_policy: CoreResourcePolicy::InstalledPackage,
+            publication_resolver: PublicationResolver::with_resource_policy(
+                "/packages",
+                CoreResourcePolicy::InstalledPackage,
+            ),
             live_feeds: LiveFeedsState::default(),
             raster_map_catalog: None,
             vector_tile_cache: HashMap::new(),

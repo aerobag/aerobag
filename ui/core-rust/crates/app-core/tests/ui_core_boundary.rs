@@ -45,7 +45,7 @@ fn exported_plain_snapshot_session_apis_are_allowlisted() {
     let source = strip_rust_tests(&source_text);
     let allowed: BTreeSet<&str> = [
         "set_map_layer_visibility_in_session",
-        "set_raster_resource_mode_in_session",
+        "set_resource_policy_in_session",
         "select_raster_map_in_session",
         "set_map_layer_enabled_in_session",
         "project_flight_plan_route_in_session",
@@ -166,7 +166,8 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
             continue;
         };
         let window = &web[index.saturating_sub(220)..web.len().min(index + 420)];
-        if !window.contains("runCoreHadSessionOperation") {
+        if !window.contains("runCoreHadSessionOperation") && !window.contains("runSessionOperation")
+        {
             violations.push(format!(
                 "web calls {export} without runCoreHadSessionOperation"
             ));

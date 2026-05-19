@@ -52,11 +52,6 @@ interface NativeBridge {
         selectedChartIdJson: String,
     ): String
 
-    fun setRasterResourceModeInSessionJson(
-        handle: Long,
-        modeJson: String,
-    ): String
-
     fun performMapSelectionActionInSessionJson(
         handle: Long,
         actionJson: String,
@@ -442,11 +437,6 @@ object NativeBindings : NativeBridge {
         recentAirportIdsJson: String,
         selectedAirportIdJson: String,
         selectedChartIdJson: String,
-    ): String
-
-    external override fun setRasterResourceModeInSessionJson(
-        handle: Long,
-        modeJson: String,
     ): String
 
     external override fun performMapSelectionActionInSessionJson(

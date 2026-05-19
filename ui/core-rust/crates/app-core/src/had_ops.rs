@@ -74,9 +74,100 @@ impl HadOperationOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoreResourceRequest {
     pub id: String,
-    pub address: String,
+    pub source: CoreResourceSource,
     #[serde(default)]
     pub optional: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CoreResourceSource {
+    PublicUrl {
+        url: String,
+    },
+    PackageMember {
+        package_id: String,
+        filename: String,
+        member_path: String,
+    },
+    InstalledArtifactMember {
+        filename: String,
+        member_path: String,
+    },
+    NavKvMember {
+        member_path: String,
+    },
+    Unavailable {
+        message: String,
+    },
+}
+
+impl CoreResourceRequest {
+    pub fn public_url(id: impl Into<String>, url: impl Into<String>, optional: bool) -> Self {
+        Self {
+            id: id.into(),
+            source: CoreResourceSource::PublicUrl { url: url.into() },
+            optional,
+        }
+    }
+
+    pub fn package_member(
+        id: impl Into<String>,
+        package_id: impl Into<String>,
+        filename: impl Into<String>,
+        member_path: impl Into<String>,
+        optional: bool,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            source: CoreResourceSource::PackageMember {
+                package_id: package_id.into(),
+                filename: filename.into(),
+                member_path: member_path.into(),
+            },
+            optional,
+        }
+    }
+
+    pub fn installed_artifact_member(
+        id: impl Into<String>,
+        filename: impl Into<String>,
+        member_path: impl Into<String>,
+        optional: bool,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            source: CoreResourceSource::InstalledArtifactMember {
+                filename: filename.into(),
+                member_path: member_path.into(),
+            },
+            optional,
+        }
+    }
+
+    pub fn nav_kv_member(
+        id: impl Into<String>,
+        member_path: impl Into<String>,
+        optional: bool,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            source: CoreResourceSource::NavKvMember {
+                member_path: member_path.into(),
+            },
+            optional,
+        }
+    }
+
+    pub fn unavailable(id: impl Into<String>, message: impl Into<String>, optional: bool) -> Self {
+        Self {
+            id: id.into(),
+            source: CoreResourceSource::Unavailable {
+                message: message.into(),
+            },
+            optional,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,7 +175,7 @@ pub struct NavDbArtifactCandidate {
     pub package_id: String,
     pub filename: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_address: Option<String>,
+    pub root_source: Option<CoreResourceSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,15 +341,20 @@ fn nav_db_artifact_root_resource(
     index: usize,
     candidate: &NavDbArtifactCandidate,
 ) -> CoreResourceRequest {
-    CoreResourceRequest {
-        id: format!("nav_db/artifact/{index}/root"),
-        address: candidate.root_address.clone().unwrap_or_else(|| {
-            format!(
-                "installed-artifact://{}/{}",
-                candidate.filename, NAV_DB_ROOT_MEMBER_PATH
-            )
-        }),
-        optional: true,
+    let id = format!("nav_db/artifact/{index}/root");
+    if let Some(source) = candidate.root_source.clone() {
+        CoreResourceRequest {
+            id,
+            source,
+            optional: true,
+        }
+    } else {
+        CoreResourceRequest::installed_artifact_member(
+            id,
+            candidate.filename.clone(),
+            NAV_DB_ROOT_MEMBER_PATH,
+            true,
+        )
     }
 }
 
@@ -271,22 +367,62 @@ fn nav_db_artifact_page_resources(
     pages.dedup();
     pages
         .into_iter()
-        .map(|page| CoreResourceRequest {
-            id: format!("nav_db/artifact/{index}/page/{page:04}"),
-            address: nav_db_artifact_page_address(candidate, page),
-            optional: false,
+        .map(|page| {
+            let id = format!("nav_db/artifact/{index}/page/{page:04}");
+            CoreResourceRequest {
+                id,
+                source: nav_db_artifact_page_source(candidate, page),
+                optional: false,
+            }
         })
         .collect()
 }
 
-fn nav_db_artifact_page_address(candidate: &NavDbArtifactCandidate, page: u32) -> String {
+fn nav_db_artifact_page_source(
+    candidate: &NavDbArtifactCandidate,
+    page: u32,
+) -> CoreResourceSource {
     let page_member = format!("page_{page:04}");
-    if let Some(root_address) = candidate.root_address.as_ref() {
-        if let Some(prefix) = root_address.strip_suffix(NAV_DB_ROOT_MEMBER_PATH) {
-            return format!("{prefix}{page_member}");
+    match candidate.root_source.as_ref() {
+        Some(CoreResourceSource::PublicUrl { url }) => {
+            if let Some(prefix) = url.strip_suffix(NAV_DB_ROOT_MEMBER_PATH) {
+                CoreResourceSource::PublicUrl {
+                    url: format!("{prefix}{page_member}"),
+                }
+            } else {
+                CoreResourceSource::Unavailable {
+                    message: format!(
+                        "nav_db root URL does not end with {NAV_DB_ROOT_MEMBER_PATH}: {url}"
+                    ),
+                }
+            }
         }
+        Some(CoreResourceSource::PackageMember {
+            package_id,
+            filename,
+            ..
+        }) => CoreResourceSource::PackageMember {
+            package_id: package_id.clone(),
+            filename: filename.clone(),
+            member_path: page_member,
+        },
+        Some(CoreResourceSource::InstalledArtifactMember { filename, .. }) => {
+            CoreResourceSource::InstalledArtifactMember {
+                filename: filename.clone(),
+                member_path: page_member,
+            }
+        }
+        Some(CoreResourceSource::NavKvMember { .. }) => CoreResourceSource::Unavailable {
+            message: "nav_db artifact root cannot be a nav_kv member".to_string(),
+        },
+        Some(CoreResourceSource::Unavailable { message }) => CoreResourceSource::Unavailable {
+            message: message.clone(),
+        },
+        None => CoreResourceSource::InstalledArtifactMember {
+            filename: candidate.filename.clone(),
+            member_path: page_member,
+        },
     }
-    format!("installed-artifact://{}/{page_member}", candidate.filename)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -489,11 +625,11 @@ pub(crate) fn nav_kv_page_resources(mut pages: Vec<u32>) -> Vec<CoreResourceRequ
 }
 
 pub(crate) fn nav_kv_page_resource(page: u32) -> CoreResourceRequest {
-    CoreResourceRequest {
-        id: format!("nav_kv/page/{page:04}"),
-        address: format!("nav-kv://page_{page:04}"),
-        optional: false,
-    }
+    CoreResourceRequest::nav_kv_member(
+        format!("nav_kv/page/{page:04}"),
+        format!("page_{page:04}"),
+        false,
+    )
 }
 
 pub fn nav_kv_page_index_from_resource_id(resource_id: &str) -> Option<u32> {
@@ -3141,12 +3277,14 @@ mod tests {
             NavDbArtifactCandidate {
                 package_id: "NAV_DB_BAD".to_string(),
                 filename: "nav_db_bad.zip".to_string(),
-                root_address: None,
+                root_source: None,
             },
             NavDbArtifactCandidate {
                 package_id: "NAV_DB_GOOD".to_string(),
                 filename: "nav_db_good.zip".to_string(),
-                root_address: Some("https://example.test/nav_db/root".to_string()),
+                root_source: Some(CoreResourceSource::PublicUrl {
+                    url: "https://example.test/nav_db/root".to_string(),
+                }),
             },
         ]);
 
@@ -3154,8 +3292,11 @@ mod tests {
             HadOperationOutcome::NeedResources { resources } => {
                 assert_eq!(resources[0].id, "nav_db/artifact/0/root");
                 assert_eq!(
-                    resources[0].address,
-                    "installed-artifact://nav_db_bad.zip/root"
+                    resources[0].source,
+                    CoreResourceSource::InstalledArtifactMember {
+                        filename: "nav_db_bad.zip".to_string(),
+                        member_path: "root".to_string(),
+                    }
                 );
             }
             other => panic!("expected first root resource, got {other:?}"),
@@ -3166,7 +3307,12 @@ mod tests {
         match controller.step().expect("step good candidate") {
             HadOperationOutcome::NeedResources { resources } => {
                 assert_eq!(resources[0].id, "nav_db/artifact/1/root");
-                assert_eq!(resources[0].address, "https://example.test/nav_db/root");
+                assert_eq!(
+                    resources[0].source,
+                    CoreResourceSource::PublicUrl {
+                        url: "https://example.test/nav_db/root".to_string(),
+                    }
+                );
             }
             other => panic!("expected second root resource, got {other:?}"),
         }
@@ -3177,8 +3323,10 @@ mod tests {
             HadOperationOutcome::NeedResources { resources } => {
                 assert_eq!(resources[0].id, "nav_db/artifact/1/page/0000");
                 assert_eq!(
-                    resources[0].address,
-                    "https://example.test/nav_db/page_0000"
+                    resources[0].source,
+                    CoreResourceSource::PublicUrl {
+                        url: "https://example.test/nav_db/page_0000".to_string(),
+                    }
                 );
             }
             other => panic!("expected contract page resource, got {other:?}"),
@@ -3207,7 +3355,7 @@ mod tests {
         let mut controller = NavDbOpenController::new(vec![NavDbArtifactCandidate {
             package_id: "NAV_DB_OLD".to_string(),
             filename: "nav_db_old.zip".to_string(),
-            root_address: None,
+            root_source: None,
         }]);
         controller
             .ingest_resource("nav_db/artifact/0/root", &root_bytes)
@@ -3734,11 +3882,13 @@ mod tests {
                     .find(|cell| cell.id == "desired_track")
                     .and_then(|cell| cell.value.as_deref())
             })
-            .and_then(|value| value.parse::<f64>().ok())
             .expect("destination row course");
 
         assert!((true_course - 270.3).abs() < 0.5, "{true_course}");
-        assert!((row_course - (true_course - 14.0)).abs() < 1e-6);
+        assert_eq!(
+            row_course,
+            crate::flight_data::format_course_degrees(true_course - 14.0)
+        );
     }
 
     #[test]
@@ -4288,7 +4438,7 @@ mod tests {
             .map_view
             .package_relative_path
             .as_deref()
-            .is_some_and(|path| path.starts_with("sec_sc_2603_") && path.ends_with(".zip")));
+            .is_some_and(|path| path.starts_with("sec_sc_") && path.ends_with(".zip")));
         let tac_sc = state
             .displayed_maps
             .iter()

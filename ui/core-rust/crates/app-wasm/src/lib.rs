@@ -662,12 +662,8 @@ pub fn create_ui_session_profiled(
 }
 
 #[wasm_bindgen]
-pub fn set_raster_resource_mode_in_session(
-    handle: u32,
-    mode_json: &str,
-) -> Result<String, JsValue> {
-    set_raster_resource_mode_in_session_json(handle, mode_json)
-        .map_err(|err| JsValue::from_str(&err))
+pub fn set_resource_policy_in_session(handle: u32, policy_json: &str) -> Result<String, JsValue> {
+    set_resource_policy_in_session_json(handle, policy_json).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -1268,22 +1264,19 @@ fn create_ui_session_profiled_json(
     serde_json::to_string(&envelope).map_err(|err| err.to_string())
 }
 
-fn set_raster_resource_mode_in_session_json(
-    handle: u32,
-    mode_json: &str,
-) -> Result<String, String> {
-    let mode: String = serde_json::from_str(mode_json).map_err(|err| err.to_string())?;
-    let mode = raster_resource_mode_from_wire(&mode)?;
-    let snapshot = app_core::set_raster_resource_mode_in_session(handle, mode)
-        .map_err(|err| err.to_string())?;
+fn set_resource_policy_in_session_json(handle: u32, policy_json: &str) -> Result<String, String> {
+    let policy: String = serde_json::from_str(policy_json).map_err(|err| err.to_string())?;
+    let policy = resource_policy_from_wire(&policy)?;
+    let snapshot =
+        app_core::set_resource_policy_in_session(handle, policy).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn raster_resource_mode_from_wire(mode: &str) -> Result<app_core::RasterResourceMode, String> {
-    match mode {
-        "public_unpacked" => Ok(app_core::RasterResourceMode::PublicUnpacked),
-        "installed_package" => Ok(app_core::RasterResourceMode::InstalledPackage),
-        other => Err(format!("unknown raster resource mode: {other}")),
+fn resource_policy_from_wire(policy: &str) -> Result<app_core::CoreResourcePolicy, String> {
+    match policy {
+        "public_unpacked" => Ok(app_core::CoreResourcePolicy::PublicUnpacked),
+        "installed_package" => Ok(app_core::CoreResourcePolicy::InstalledPackage),
+        other => Err(format!("unknown resource policy: {other}")),
     }
 }
 

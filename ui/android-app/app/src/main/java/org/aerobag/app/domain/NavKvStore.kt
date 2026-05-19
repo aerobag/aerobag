@@ -19,9 +19,24 @@ import kotlinx.serialization.json.jsonPrimitive
 
 data class CoreResourceRequest(
     val id: String,
-    val address: String,
+    val source: CoreResourceSource,
     val optional: Boolean,
 )
+
+sealed class CoreResourceSource {
+    data class PublicUrl(val url: String) : CoreResourceSource()
+    data class PackageMember(
+        val packageId: String,
+        val filename: String,
+        val memberPath: String,
+    ) : CoreResourceSource()
+    data class InstalledArtifactMember(
+        val filename: String,
+        val memberPath: String,
+    ) : CoreResourceSource()
+    data class NavKvMember(val memberPath: String) : CoreResourceSource()
+    data class Unavailable(val message: String) : CoreResourceSource()
+}
 
 data class PagedSessionOperationResult(
     val result: JsonElement,
@@ -137,7 +152,7 @@ class NavKvStore private constructor(
                         "need_resources" -> {
                             for (resource in parseCoreResourceRequests(outcome)) {
                                 val bytes = try {
-                                    readInstalledArtifactResource(artifactsByFilename, resource.address)
+                                    readInstalledArtifactResource(artifactsByFilename, resource)
                                 } catch (error: Throwable) {
                                     if (resource.optional) {
                                         Log.i(TAG, "optional resource ${resource.id} unavailable: ${error.message}")
@@ -191,7 +206,7 @@ class NavKvStore private constructor(
                         "need_resources" -> {
                             for (resource in parseCoreResourceRequests(outcome)) {
                                 val bytes = try {
-                                    readInstalledArtifactResource(artifactsByFilename, resource.address)
+                                    readInstalledArtifactResource(artifactsByFilename, resource)
                                 } catch (error: Throwable) {
                                     if (resource.optional) {
                                         Log.i(TAG, "optional resource ${resource.id} unavailable: ${error.message}")
@@ -213,18 +228,18 @@ class NavKvStore private constructor(
 
         private fun readInstalledArtifactResource(
             artifactsByFilename: Map<String, InstalledPackageArtifact>,
-            address: String,
+            resource: CoreResourceRequest,
         ): ByteArray {
-            val withoutScheme = address.removePrefix("installed-artifact://")
-            require(withoutScheme != address) { "unsupported installed artifact address: $address" }
-            val filename = withoutScheme.substringBefore('/')
-            val memberPath = withoutScheme.substringAfter('/', missingDelimiterValue = "")
-            require(filename.isNotBlank() && memberPath.isNotBlank()) {
-                "invalid installed artifact address: $address"
+            val source = resource.source
+            if (source is CoreResourceSource.Unavailable) {
+                error("core resource ${resource.id} is unavailable: ${source.message}")
             }
-            val artifact = artifactsByFilename[filename]
-                ?: error("missing installed artifact $filename")
-            return InstalledPackages.readZipEntryBytes(artifact.file, memberPath)
+            require(source is CoreResourceSource.InstalledArtifactMember) {
+                "Android nav_db open expected installed_artifact_member for ${resource.id}, got ${source.kindForLog()}"
+            }
+            val artifact = artifactsByFilename[source.filename]
+                ?: error("missing installed artifact ${source.filename}")
+            return InstalledPackages.readZipEntryBytes(artifact.file, source.memberPath)
         }
 
         private fun parseCoreResourceRequests(outcome: JsonObject): List<CoreResourceRequest> =
@@ -232,9 +247,32 @@ class NavKvStore private constructor(
                 val resource = element.jsonObject
                 CoreResourceRequest(
                     id = resource.getValue("id").jsonPrimitive.content,
-                    address = resource.getValue("address").jsonPrimitive.content,
+                    source = parseCoreResourceSource(resource.getValue("source").jsonObject),
                     optional = resource["optional"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: false,
                 )
+            }
+
+        private fun parseCoreResourceSource(source: JsonObject): CoreResourceSource =
+            when (val kind = source.getValue("kind").jsonPrimitive.content) {
+                "public_url" -> CoreResourceSource.PublicUrl(
+                    url = source.getValue("url").jsonPrimitive.content,
+                )
+                "package_member" -> CoreResourceSource.PackageMember(
+                    packageId = source.getValue("package_id").jsonPrimitive.content,
+                    filename = source.getValue("filename").jsonPrimitive.content,
+                    memberPath = source.getValue("member_path").jsonPrimitive.content,
+                )
+                "installed_artifact_member" -> CoreResourceSource.InstalledArtifactMember(
+                    filename = source.getValue("filename").jsonPrimitive.content,
+                    memberPath = source.getValue("member_path").jsonPrimitive.content,
+                )
+                "nav_kv_member" -> CoreResourceSource.NavKvMember(
+                    memberPath = source.getValue("member_path").jsonPrimitive.content,
+                )
+                "unavailable" -> CoreResourceSource.Unavailable(
+                    message = source.getValue("message").jsonPrimitive.content,
+                )
+                else -> error("unknown core resource source kind: $kind")
             }
 
         private fun WireNavDbArtifactStatus.toStatus(): NavDbArtifactStatus =
@@ -341,12 +379,11 @@ class NavKvStore private constructor(
             return
         }
         val startMs = SystemClock.elapsedRealtime()
-        val memberPath = resource.address.removePrefix("nav-kv://").also {
-            require(it != resource.address && it.isNotBlank()) {
-                "unsupported nav_kv resource address: ${resource.address}"
-            }
+        val source = resource.source
+        require(source is CoreResourceSource.NavKvMember && source.memberPath.isNotBlank()) {
+            "Android nav_kv paging expected nav_kv_member for ${resource.id}, got ${source.kindForLog()}"
         }
-        val pageBytes = InstalledPackages.readZipEntryBytes(navDbArtifact.file, memberPath)
+        val pageBytes = InstalledPackages.readZipEntryBytes(navDbArtifact.file, source.memberPath)
         bridge.navKvInsertResource(handle, resource.id, pageBytes)
         val elapsedMs = SystemClock.elapsedRealtime() - startMs
         if (elapsedMs >= 10) {
@@ -358,3 +395,12 @@ class NavKvStore private constructor(
         bridge.navKvDestroy(handle)
     }
 }
+
+fun CoreResourceSource.kindForLog(): String =
+    when (this) {
+        is CoreResourceSource.PublicUrl -> "public_url"
+        is CoreResourceSource.PackageMember -> "package_member"
+        is CoreResourceSource.InstalledArtifactMember -> "installed_artifact_member"
+        is CoreResourceSource.NavKvMember -> "nav_kv_member"
+        is CoreResourceSource.Unavailable -> "unavailable"
+    }

@@ -1164,26 +1164,10 @@ internal fun MapExplorerPage(
         }
         val overlayWidthPx = surfaceSize.width.toFloat()
         val overlayHeightPx = surfaceSize.height.toFloat()
-        if (!mapLayerState.vectors.visible && !mapLayerState.metars.visible && !mapLayerState.offlineRegions.visible) {
-            committedMapOverlay = MapOverlayQueryResult(
-                visibleFeatures = emptyList(),
-                visibleMetars = emptyList(),
-                visiblePireps = emptyList(),
-                airspacePaths = emptyList(),
-                tfrPaths = emptyList(),
-                airspaceLabels = emptyList(),
-                offlineRegions = emptyList(),
-                warnings = emptyList(),
-            )
-            committedOverlayViewport = viewport
-            committedOverlaySurfaceUnits = OverlaySurfaceUnits(overlayWidthPx, overlayHeightPx)
-            mapOverlayError = null
-            return@LaunchedEffect
-        }
-        val overlay = try {
+        val overlayOutcome = try {
             currentCoroutineContext().ensureActive()
             val overlayStartMs = SystemClock.elapsedRealtime()
-            val overlay = withContext(Dispatchers.IO) {
+            val outcome = withContext(Dispatchers.IO) {
                 uiSession.queryMapOverlay(
                     viewport,
                     overlayWidthPx.toDouble(),
@@ -1194,12 +1178,16 @@ internal fun MapExplorerPage(
                 }
             }
             currentCoroutineContext().ensureActive()
+            if (outcome.invalidations.contains("session_snapshot")) {
+                onSessionSnapshotChange(uiSession.refreshSnapshot())
+            }
+            val overlay = outcome.overlay
             val (centerLat, centerLon) = viewportCenterLatLon(viewport)
             Log.i(
                 MapLayerLogTag,
-                "overlay center=${"%.3f".format(centerLat)},${"%.3f".format(centerLon)} zoom=${"%.2f".format(viewport.zoom)} size=${surfaceSize.width}x${surfaceSize.height} vectorsVisible=${mapLayerState.vectors.visible} metarsVisible=${mapLayerState.metars.visible} offlineRegionsVisible=${mapLayerState.offlineRegions.visible} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} airspaceLabels=${overlay.airspaceLabels.size} offlineRegions=${overlay.offlineRegions.size} metars=${overlay.visibleMetars.size} pireps=${overlay.visiblePireps.size} warnings=${overlay.warnings.size} elapsedMs=${SystemClock.elapsedRealtime() - overlayStartMs}",
+                "overlay center=${"%.3f".format(centerLat)},${"%.3f".format(centerLon)} zoom=${"%.2f".format(viewport.zoom)} size=${surfaceSize.width}x${surfaceSize.height} vectorsVisible=${mapLayerState.vectors.visible} metarsVisible=${mapLayerState.metars.visible} offlineRegionsVisible=${mapLayerState.offlineRegions.visible} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} airspaceLabels=${overlay.airspaceLabels.size} offlineRegions=${overlay.offlineRegions.size} metars=${overlay.visibleMetars.size} pireps=${overlay.visiblePireps.size} warnings=${overlay.warnings.size} invalidations=${outcome.invalidations} elapsedMs=${SystemClock.elapsedRealtime() - overlayStartMs}",
             )
-            overlay
+            outcome
         } catch (error: CancellationException) {
             mapOverlayError = null
             throw error
@@ -1208,7 +1196,7 @@ internal fun MapExplorerPage(
             Log.e(MapLayerLogTag, "overlay failed: $mapOverlayError", error)
             return@LaunchedEffect
         }
-        committedMapOverlay = overlay
+        committedMapOverlay = overlayOutcome.overlay
         committedOverlayViewport = viewport
         committedOverlaySurfaceUnits = OverlaySurfaceUnits(overlayWidthPx, overlayHeightPx)
         mapOverlayError = null

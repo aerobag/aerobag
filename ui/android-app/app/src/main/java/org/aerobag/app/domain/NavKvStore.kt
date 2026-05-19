@@ -23,6 +23,11 @@ data class CoreResourceRequest(
     val optional: Boolean,
 )
 
+data class PagedSessionOperationResult(
+    val result: JsonElement,
+    val invalidations: List<String>,
+)
+
 data class NavDbOpenReport(
     val statuses: List<NavDbArtifactStatus>,
 )
@@ -267,11 +272,27 @@ class NavKvStore private constructor(
         fetchSessionResource: ((CoreResourceRequest) -> ByteArray)? = null,
         ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)? = null,
         operation: () -> String,
-    ): JsonElement {
+    ): JsonElement = runPagedSessionOperation(
+        fetchSessionResource = fetchSessionResource,
+        ingestSessionResource = ingestSessionResource,
+        operation = operation,
+    ).result
+
+    fun runPagedSessionOperation(
+        fetchSessionResource: ((CoreResourceRequest) -> ByteArray)? = null,
+        ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)? = null,
+        operation: () -> String,
+    ): PagedSessionOperationResult {
         while (true) {
             val outcome = json.parseToJsonElement(operation()).jsonObject
             return when (val state = outcome.getValue("state").jsonPrimitive.content) {
-                "complete" -> outcome["result"] ?: JsonNull
+                "complete" -> PagedSessionOperationResult(
+                    result = outcome["result"] ?: JsonNull,
+                    invalidations = outcome["invalidations"]
+                        ?.jsonArray
+                        ?.map { it.jsonPrimitive.content }
+                        ?: emptyList(),
+                )
                 "need_resources" -> {
                     for (resource in parseCoreResourceRequests(outcome)) {
                         if (resource.id.startsWith("nav_kv/page/")) {

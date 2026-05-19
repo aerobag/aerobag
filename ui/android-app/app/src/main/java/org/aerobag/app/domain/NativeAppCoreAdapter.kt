@@ -1014,26 +1014,28 @@ class NativeUiSession internal constructor(
         heightPx: Double,
         pointDisplayScale: Double,
         fetchResource: (CoreResourceRequest) -> ByteArray,
-    ): MapOverlayQueryResult {
+    ): MapOverlayQueryOutcome {
         val viewportJson = json.encodeToString(viewport.toWire())
         val store = navKvStore ?: error("session missing nav_db for map overlay")
-        return json.decodeFromJsonElement<WireMapOverlayQueryResult>(
-            store.runPagedSessionOperationElement(
-                operation = {
-                    bridge.getMapOverlayInSessionWithPointDisplayScaleJson(
-                        handle,
-                        viewportJson,
-                        widthPx,
-                        heightPx,
-                        pointDisplayScale,
-                    )
-                },
-                fetchSessionResource = fetchResource,
-                ingestSessionResource = { resource, bytes ->
-                    bridge.ingestResourceInSession(handle, resource.id, bytes)
-                },
-            ),
-        ).toUi()
+        val outcome = store.runPagedSessionOperation(
+            operation = {
+                bridge.getMapOverlayInSessionWithPointDisplayScaleJson(
+                    handle,
+                    viewportJson,
+                    widthPx,
+                    heightPx,
+                    pointDisplayScale,
+                )
+            },
+            fetchSessionResource = fetchResource,
+            ingestSessionResource = { resource, bytes ->
+                bridge.ingestResourceInSession(handle, resource.id, bytes)
+            },
+        )
+        return MapOverlayQueryOutcome(
+            overlay = json.decodeFromJsonElement<WireMapOverlayQueryResult>(outcome.result).toUi(),
+            invalidations = outcome.invalidations,
+        )
     }
 
     fun queryMapSelection(
@@ -1807,6 +1809,11 @@ data class UiSessionSnapshot(
     val cautionState: UiCautionState,
     val debugState: UiDebugState,
     val rasterMap: RasterMapUiState?,
+)
+
+data class MapOverlayQueryOutcome(
+    val overlay: MapOverlayQueryResult,
+    val invalidations: List<String>,
 )
 
 enum class UiStatusSeverity {

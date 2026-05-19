@@ -17,7 +17,7 @@ use crate::{
         flight_plan_ui_state, insert_waypoint_best_position,
         materialize_airway_presentation_selection, materialize_procedure, nav_kv_page_resources,
         nav_ref_position, nav_symbol_feature, suggest_waypoint_identifiers, CoreResourceRequest,
-        HadOperationOutcome, HadReadError,
+        HadOperationOutcome, HadReadError, UiInvalidation,
     },
     live_feeds::{LiveFeedSseEvent, LiveFeedsState},
     map_follow::{MapFollowSessionState, MapFollowUiState},
@@ -293,13 +293,28 @@ const VECTOR_DISPLAY_LIMIT_STATUS_ID: &str = "vector_display_feature_limit";
 const STATUS_HUSH_PREFIX: &str = "status:hush:";
 const STATUS_UNHUSH_PREFIX: &str = "status:unhush:";
 
-fn set_status_active(session: &mut UiSession, status_id: &str, active: bool) {
-    if active {
-        session.active_status_ids.insert(status_id.to_string());
+fn set_status_active(session: &mut UiSession, status_id: &str, active: bool) -> bool {
+    let changed = if active {
+        session.active_status_ids.insert(status_id.to_string())
     } else {
-        session.active_status_ids.remove(status_id);
+        session.active_status_ids.remove(status_id)
+    };
+    if changed {
+        refresh_status_projection(session);
     }
-    refresh_status_projection(session);
+    changed
+}
+
+fn set_status_active_with_invalidation(
+    session: &mut UiSession,
+    status_id: &str,
+    active: bool,
+) -> Vec<UiInvalidation> {
+    if set_status_active(session, status_id, active) {
+        vec![UiInvalidation::SessionSnapshot]
+    } else {
+        Vec::new()
+    }
 }
 
 fn refresh_status_projection(session: &mut UiSession) {
@@ -2589,9 +2604,11 @@ pub fn get_map_overlay_in_session_with_point_display_scale(
         && !session.map_layer_state.metars.visible
         && !session.map_layer_state.offline_regions.visible
     {
-        set_status_active(session, VECTOR_DISPLAY_LIMIT_STATUS_ID, false);
-        return Ok(HadOperationOutcome::complete(
+        let invalidations =
+            set_status_active_with_invalidation(session, VECTOR_DISPLAY_LIMIT_STATUS_ID, false);
+        return Ok(HadOperationOutcome::complete_with_invalidations(
             serde_json::to_value(empty_map_overlay_query()).map_err(internal_json_error)?,
+            invalidations,
         ));
     }
     if session.map_layer_state.vectors.visible {
@@ -2642,7 +2659,7 @@ pub fn get_map_overlay_in_session_with_point_display_scale(
     overlay
         .warnings
         .extend(session.overlay_resource_warnings.iter().cloned());
-    set_status_active(
+    let invalidations = set_status_active_with_invalidation(
         session,
         VECTOR_DISPLAY_LIMIT_STATUS_ID,
         overlay
@@ -2650,8 +2667,9 @@ pub fn get_map_overlay_in_session_with_point_display_scale(
             .iter()
             .any(|warning| warning.code == VECTOR_DISPLAY_LIMIT_STATUS_ID),
     );
-    Ok(HadOperationOutcome::complete(
+    Ok(HadOperationOutcome::complete_with_invalidations(
         serde_json::to_value(overlay).map_err(internal_json_error)?,
+        invalidations,
     ))
 }
 
@@ -5365,6 +5383,66 @@ mod tests {
         assert!(hushed_caution.items[0].hushed);
         assert!(!hushed_caution.active);
         assert_eq!(hushed_caution.severity, None);
+    }
+
+    #[test]
+    fn status_activation_invalidates_session_snapshot_only_on_change() {
+        let mut session = UiSession {
+            app_state: register_default_situation_sources(AppState::default()).expect("app state"),
+            playback: PlaybackSessionState::default(),
+            plan_preview: PlanPreviewState::default(),
+            debug_ownship_driver: DebugOwnshipDriverState::default(),
+            map_follow: MapFollowSessionState::default(),
+            guidance_leg_geometry: HashMap::new(),
+            map_overlay_config: map_overlay_config_from_vector_manifest_json(
+                minimal_vector_manifest_json(),
+            )
+            .expect("bootstrap manifest"),
+            vector_manifest_loaded: false,
+            chart_page_state: derive_compact_chart_page_state(
+                &FlightPlan::default(),
+                &[],
+                None,
+                None,
+            ),
+            nav_kv_store_id: None,
+            nav_kv_store: None,
+            map_layer_state: default_map_layer_state(),
+            active_status_ids: BTreeSet::new(),
+            hushed_status_ids: BTreeSet::new(),
+            data_status_state: default_data_status_state(),
+            caution_state: default_caution_state(),
+            debug_state: default_debug_state(),
+            raster_resource_mode: RasterResourceMode::InstalledPackage,
+            publication_resolver: PublicationResolver::new("/packages"),
+            live_feeds: LiveFeedsState::default(),
+            raster_map_catalog: None,
+            vector_tile_cache: HashMap::new(),
+            metar_tile_cache: HashMap::new(),
+            metar_payload: None,
+            taf_payload: None,
+            airspace_feature_cache: HashMap::new(),
+            tfr_payload: None,
+            overlay_resource_warnings: Vec::new(),
+            terrain_source_tile_cache: HashMap::new(),
+        };
+
+        assert_eq!(
+            set_status_active_with_invalidation(&mut session, VECTOR_DISPLAY_LIMIT_STATUS_ID, true,),
+            vec![UiInvalidation::SessionSnapshot],
+        );
+        assert_eq!(
+            set_status_active_with_invalidation(&mut session, VECTOR_DISPLAY_LIMIT_STATUS_ID, true,),
+            Vec::<UiInvalidation>::new(),
+        );
+        assert_eq!(
+            set_status_active_with_invalidation(
+                &mut session,
+                VECTOR_DISPLAY_LIMIT_STATUS_ID,
+                false,
+            ),
+            vec![UiInvalidation::SessionSnapshot],
+        );
     }
 
     fn minimal_vector_manifest_json() -> &'static str {

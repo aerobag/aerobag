@@ -1463,6 +1463,7 @@ export default function App() {
     if (!uiSession) {
       return;
     }
+    let cancelled = false;
     uiSession.setInvalidationListener((invalidations) => {
       setUiInvalidationRevisions((current) => {
         const next = { ...current };
@@ -1471,8 +1472,20 @@ export default function App() {
         }
         return next;
       });
+      if (invalidations.includes("session_snapshot")) {
+        void uiSession.snapshot().then((nextSnapshot) => {
+          if (!cancelled) {
+            setSessionSnapshot(nextSnapshot);
+          }
+        }).catch((error: unknown) => {
+          debugLog("session.snapshot.refresh.error", { error: errorMessage(error) });
+        });
+      }
     });
-    return () => uiSession.setInvalidationListener(null);
+    return () => {
+      cancelled = true;
+      uiSession.setInvalidationListener(null);
+    };
   }, [uiSession]);
 
   useEffect(() => {
@@ -3208,20 +3221,6 @@ function MapPage(props: {
 
   useEffect(() => {
     if (!mapIsVisible) {
-      return;
-    }
-    if (!mapLayerState.vectors.visible && !mapLayerState.metars.visible && !mapLayerState.offline_regions.visible) {
-      setMapOverlay({
-        visible_features: [],
-        visible_metars: [],
-        visible_pireps: [],
-        airspace_paths: [],
-        tfr_paths: [],
-        airspace_labels: [],
-        offline_regions: [],
-        warnings: [],
-      });
-      setMapOverlayViewport(null);
       return;
     }
     if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {

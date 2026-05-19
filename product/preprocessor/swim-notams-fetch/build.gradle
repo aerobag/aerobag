@@ -15,7 +15,7 @@ dependencies {
     implementation 'com.fasterxml.jackson.core:jackson-databind:2.17.1'
 }
 
-mainClassName = 'net.jonh.aerobag.swim.SwimNotamsConsumer'
+mainClassName = 'org.aerobag.swim.SwimNotamsConsumer'
 
 tasks.withType(JavaCompile) {
     options.encoding = 'UTF-8'

@@ -1,4 +1,4 @@
-package net.jonh.aerobag.swim;
+package org.aerobag.swim;
 
 import com.solacesystems.jms.SolConnectionFactory;
 import com.solacesystems.jms.SolJmsUtility;

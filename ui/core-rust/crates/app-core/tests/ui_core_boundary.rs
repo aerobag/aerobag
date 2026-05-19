@@ -137,7 +137,7 @@ fn paged_flight_plan_mutations_commit_only_after_snapshot_projection() {
 fn platform_adapters_use_paged_loops_for_paged_session_exports() {
     let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
     let android = read_repo_file(
-        "ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/NativeAppCoreAdapter.kt",
+        "ui/android-app/app/src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt",
     );
     let paged_web_exports = [
         "load_raster_map_catalog_in_session",
@@ -229,7 +229,7 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
 fn platform_adapters_do_not_call_plain_had_sensitive_snapshot_exports() {
     let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
     let android = read_repo_file(
-        "ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/NativeAppCoreAdapter.kt",
+        "ui/android-app/app/src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt",
     );
     let mut violations = Vec::new();
 

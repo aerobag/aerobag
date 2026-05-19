@@ -305,7 +305,7 @@ Sectional package staging on Android:
 - generated staging location:
   - `ui/android-app/app/build/generated/prototypeSeedPackages/sectional-packages`
 - runtime lookup in:
-  - [SectionalPackages.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/SectionalPackages.kt)
+  - [SectionalPackages.kt](/root/aerobag/ui/android-app/app/src/main/java/org/aerobag/app/domain/SectionalPackages.kt)
   now prefers existing locally seeded package files before falling back to APK assets
 - tile rendering still reads directly from zip files, not unpacked trees
 
@@ -444,13 +444,13 @@ Working checkpoint verification sequence:
 
 ```bash
 adb logcat -c
-adb shell am start -W -n net.jonh.aerobag.prototype/.MainActivity
+adb shell am start -W -n org.aerobag.app/.MainActivity
 adb logcat -d
 ```
 
 Then verify:
 - no `FATAL EXCEPTION`
-- no `AndroidRuntime` crash from `net.jonh.aerobag.prototype`
+- no `AndroidRuntime` crash from `org.aerobag.app`
 
 Current output targets:
 - canonical shared fixture:
@@ -592,7 +592,7 @@ Useful adb controls:
 
 ```bash
 adb shell input keyevent KEYCODE_HOME
-adb shell am start -n net.jonh.aerobag.prototype/.MainActivity
+adb shell am start -n org.aerobag.app/.MainActivity
 ```
 
 ## Next Dependency Checks To Run

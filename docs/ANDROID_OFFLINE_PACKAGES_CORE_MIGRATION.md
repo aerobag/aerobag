@@ -1,7 +1,7 @@
 ## Problem
 
 Android Offline Packages currently works, but too much package-management logic still lives in
-`ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/MainActivity.kt`.
+`ui/android-app/app/src/main/java/org/aerobag/app/MainActivity.kt`.
 
 That violates the intended split:
 

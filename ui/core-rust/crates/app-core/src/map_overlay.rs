@@ -34,6 +34,21 @@ const MAX_LATITUDE: f64 = 85.051_128_78;
 const UI_THUMB_SIZE_LOGICAL_PX: f64 = 56.0;
 const INSPECTOR_HIT_RADIUS_THUMBS: f64 = 0.5;
 
+#[derive(Debug, Default)]
+struct VectorDisplayBudgetAudit {
+    scanned_records: usize,
+    displayable_records: usize,
+    omitted_after_cap: usize,
+    drawn_by_layer: BTreeMap<String, usize>,
+    omitted_by_layer: BTreeMap<String, usize>,
+    hidden_by_layer: BTreeMap<String, usize>,
+    no_symbol_by_layer: BTreeMap<String, usize>,
+}
+
+fn bump_layer_count(counts: &mut BTreeMap<String, usize>, layer: &str) {
+    *counts.entry(layer.to_string()).or_insert(0) += 1;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct MapSurfaceMetrics {
     pub viewport: MapViewport,
@@ -1304,6 +1319,7 @@ pub fn query_map_overlay_for_surface(
     let mut needed_vector_tiles = Vec::new();
     let mut visible_features = Vec::new();
     let mut limit_hit = false;
+    let mut vector_budget = VectorDisplayBudgetAudit::default();
     let center_world = lat_lon_to_world(viewport.center);
     let scale = 2.0_f64.powf(viewport.zoom);
     let offline_regions = project_offline_regions(
@@ -1330,7 +1346,7 @@ pub fn query_map_overlay_for_surface(
             let key =
                 aggregate_vector_tile_cache_key(tile.request.z, tile.request.x, tile.request.y);
             let Some(payload) = vector_tile_cache.get(&key) else {
-                if needed_seen.insert(key) {
+                if !limit_hit && needed_seen.insert(key) {
                     needed_vector_tiles.push(aggregate_vector_tile_request(
                         tile.request.z,
                         tile.request.x,
@@ -1340,11 +1356,23 @@ pub fn query_map_overlay_for_surface(
                 continue;
             };
             for record in vector_tile_point_records(payload, &tile.request.layer) {
+                vector_budget.scanned_records += 1;
+                if !should_display_record(record) {
+                    bump_layer_count(&mut vector_budget.hidden_by_layer, &tile.request.layer);
+                    continue;
+                }
+                let Some(symbol) = point_vector_record_to_symbol_feature(
+                    record,
+                    obstacle_context.and_then(|context| context.altitude_ft),
+                ) else {
+                    bump_layer_count(&mut vector_budget.no_symbol_by_layer, &tile.request.layer);
+                    continue;
+                };
+                vector_budget.displayable_records += 1;
                 if visible_features.len() >= VECTOR_DISPLAY_FEATURE_LIMIT {
                     limit_hit = true;
-                    break;
-                }
-                if !should_display_record(record) {
+                    vector_budget.omitted_after_cap += 1;
+                    bump_layer_count(&mut vector_budget.omitted_by_layer, &tile.request.layer);
                     continue;
                 }
                 let point = world_to_screen_with_x_offset(
@@ -1358,21 +1386,13 @@ pub fn query_map_overlay_for_surface(
                     },
                     tile.world_x_offset,
                 );
-                let Some(symbol) = point_vector_record_to_symbol_feature(
-                    record,
-                    obstacle_context.and_then(|context| context.altitude_ft),
-                ) else {
-                    continue;
-                };
                 visible_features.push(visible_map_feature_from_symbol(
                     record.id.clone(),
                     symbol,
                     point,
                     VectorIdentLabelStyle::Default,
                 ));
-            }
-            if limit_hit {
-                break;
+                bump_layer_count(&mut vector_budget.drawn_by_layer, &tile.request.layer);
             }
         }
     }
@@ -1384,8 +1404,9 @@ pub fn query_map_overlay_for_surface(
             UiStatusSeverity::Warning,
             true,
             format!(
-                "display capped at {} visible vector features after zoom/tile filtering",
-                VECTOR_DISPLAY_FEATURE_LIMIT
+                "display capped at {} visible vector features after zoom/tile filtering; {} additional features omitted",
+                VECTOR_DISPLAY_FEATURE_LIMIT,
+                vector_budget.omitted_after_cap
             ),
         )]
     } else {
@@ -1486,6 +1507,14 @@ pub fn query_map_overlay_for_surface(
             "needed_metar_tiles": tile_counts_by_zoom(&metars.needed_tiles),
             "needed_airspace_features": airspace.needed_features.len(),
             "visible_features": visible_features.len(),
+            "vector_budget_limit": VECTOR_DISPLAY_FEATURE_LIMIT,
+            "vector_budget_scanned": vector_budget.scanned_records,
+            "vector_budget_displayable": vector_budget.displayable_records,
+            "vector_budget_omitted_after_cap": vector_budget.omitted_after_cap,
+            "vector_budget_drawn_by_layer": vector_budget.drawn_by_layer,
+            "vector_budget_omitted_by_layer": vector_budget.omitted_by_layer,
+            "vector_budget_hidden_by_layer": vector_budget.hidden_by_layer,
+            "vector_budget_no_symbol_by_layer": vector_budget.no_symbol_by_layer,
             "visible_metars": metars.visible_metars.len(),
             "visible_pireps": metars.visible_pireps.len(),
             "airspace_paths": airspace.paths.len(),
@@ -6527,6 +6556,7 @@ mod tests {
             record.id == "map_overlay:vector_display_feature_limit"
                 && record.drives_caution
                 && record.severity == UiStatusSeverity::Warning
+                && record.detail.contains("5 additional features omitted")
         }));
     }
 

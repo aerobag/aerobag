@@ -17,7 +17,7 @@ preprocessor-csup = { path = "../preprocessor-csup" }
 preprocessor-data = { path = "../preprocessor-data" }
 preprocessor-core = { path = "../preprocessor-core" }
 preprocessor-fetch = { path = "../preprocessor-fetch" }
-preprocessor-fast = { path = "../preprocessor-fast" }
+preprocessor-live-feeds = { path = "../preprocessor-live-feeds" }
 preprocessor-procedure-geometry = { path = "../preprocessor-procedure-geometry" }
 preprocessor-resource-index = { path = "../preprocessor-resource-index" }
 preprocessor-tpp = { path = "../preprocessor-tpp" }

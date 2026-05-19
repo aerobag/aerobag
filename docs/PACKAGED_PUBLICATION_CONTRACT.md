@@ -81,8 +81,7 @@ Region codes stay lowercase:
 current_artifacts_YYYYMMDD.json
 ├── bundles[]
 │   ├── bundle_cycle_2603_01_<sha256>.json
-│   ├── bundle_cycle_2604_01_<sha256>.json
-│   └── bundle_fast_<sha256>.json
+│   └── bundle_cycle_2604_01_<sha256>.json
 
 bundle_cycle_YYCC_VV_<sha256>.json
 └── packages[]
@@ -96,13 +95,6 @@ bundle_cycle_YYCC_VV_<sha256>.json
     ├── nav_db_*.zip
     ├── terrain-*.zip
     └── shaded-relief-*.zip
-
-bundle_fast_<sha256>.json
-└── packages[]
-    ├── obstacles_*.zip
-    ├── tfrs_*.zip
-    ├── metars_*.zip
-    └── nexrad_*.zip
 ```
 
 Consumer rule:
@@ -172,9 +164,8 @@ It answers:
 
 - what date this publication set represents
 - which bundle manifests are current
-- which obstacle zip is current
 - which optional standalone static products are current
-- which standalone fast products are current
+- where packaged and unpacked cycle/static artifacts are rooted
 
 It does not replace `bundle_cycle_YYCC_VV_<sha256>.json`.
 
@@ -228,12 +219,10 @@ keyspace inventory lives in `docs/HAD_QUERY_KEYSPACES.md`.
 Per-cycle vector-data package.
 
 
-### `obstacles_<sha256>.zip`
+### Obstacles
 
-Standalone content-addressed obstacle artifact.
-
-It is published as a package row in `bundle_fast_<sha256>.json`, not in any cycle
-bundle.
+Obstacles are no longer part of the packaged cycle publication contract. They
+are published through the live-feed contract.
 
 
 ### `terrain-<region>_<sha256>.zip`

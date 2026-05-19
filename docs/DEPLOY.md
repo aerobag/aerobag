@@ -87,23 +87,18 @@ With these values:
 
 ```bash
 cd "$SOURCE_ROOT/product/preprocessor"
-cargo build --release -p preprocessor-cli
+cargo build --release -p preprocessor-cli -p live-feeds-daemon
 ```
 
-Run the product build once before installing timed executions. The fast-subset
-build depends on the cycle product existing first.
+Run the product build once before installing timed executions. The live-feed
+daemon reads the published cycle product for shared inputs such as towered
+airport metadata.
 
 ```bash
 time "$CARGO_TARGET_DIR/release/preprocessor-cli" build-product --source-root "$SOURCE_ROOT"
 ```
 
-Then run the fast product update once:
-
-```bash
-time "$CARGO_TARGET_DIR/release/preprocessor-cli" update-live-feeds --source-root "$SOURCE_ROOT"
-```
-
-After these complete, `$ARTIFACT_ROOT` should contain the published artifact
+After this completes, `$ARTIFACT_ROOT` should contain the published artifact
 contract the web build consumes:
 
 - `current_artifacts.json`
@@ -162,7 +157,8 @@ expand the shell variable inside the config file.
 
 ## Schedule product builds
 
-Once the one-shot product and web build are working, schedule content refreshes.
+Once the one-shot product and web build are working, schedule content refreshes
+and run the live-feed daemon.
 
 Every 2 hours, run `build-product`:
 
@@ -170,11 +166,20 @@ Every 2 hours, run `build-product`:
 time "$CARGO_TARGET_DIR/release/preprocessor-cli" build-product --source-root "$SOURCE_ROOT"
 ```
 
-Every minute, run `update-live-feeds`:
+Run `aerobag-live-feedsd` continuously. The exact supervisor is deployment
+policy; for a command-line test instance:
 
 ```bash
-time "$CARGO_TARGET_DIR/release/preprocessor-cli" update-live-feeds --source-root "$SOURCE_ROOT"
+"$CARGO_TARGET_DIR/release/aerobag-live-feedsd" \
+  --live-root "$ARTIFACT_ROOT/live-feeds" \
+  --publication-root "$ARTIFACT_ROOT" \
+  --scratch-root "$ARTIFACT_ROOT/private-work/live-feeds" \
+  --listen 127.0.0.1:8095
 ```
+
+Initial live-feed polling cadence is intentionally conservative and easy to
+adjust: NEXRAD 60 seconds, METARs and TFRs 5 minutes, winds aloft 1 hour, and
+obstacles 6 hours.
 
 When the published artifacts change, rebuild and redeploy the web static tree:
 
@@ -192,5 +197,5 @@ curl -I http://localhost/
 curl -I http://localhost/packages/current_artifacts.json
 ```
 
-Then verify at least one representative chart tile, plate image, fast-product
-file, and shaded-relief tile from the current published artifact set.
+Then verify at least one representative chart tile, plate image, live-feed
+manifest, and shaded-relief tile from the current published artifact set.

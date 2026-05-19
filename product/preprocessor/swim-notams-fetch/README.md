@@ -5,7 +5,7 @@ Small standalone Java collector for FAA SWIFT/SCDS NOTAM Distribution queues.
 Purpose:
 - keep the FAA queue credentials out of the Rust repo
 - use the vendor-supported Solace JMS path to drain messages
-- write raw captured messages as JSONL so Rust can normalize them later into a fast product
+- write raw captured messages as JSONL so Rust can normalize them later into a live feed
 
 Expected credential file:
 - `/root/aerobag-credentials/swim-notams.json`
@@ -63,7 +63,7 @@ Outputs:
 Current scope:
 - capture raw queue messages and JMS metadata
 - do not attempt to normalize NOTAM schema yet
-- this is the staging step before adding a Rust-side `notams` fast product
+- this is the staging step before adding a Rust-side `notams` live feed
 
 Observed live payload shape:
 - messages are `SolTextMessage`

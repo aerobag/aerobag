@@ -34,6 +34,7 @@ if [ -z "${WEB_PORT:-}" ]; then
 fi
 
 PORT="$WEB_PORT"
+LIVE_FEEDS_PORT="${AEROBAG_LIVE_FEEDS_PORT:-$((PORT + 1))}"
 TARGET_ROOT_FILE="$REPO_ROOT/ui/target-root.txt"
 DEFAULT_UI_TARGET_ROOT="$(python3 - <<'PY' "$REPO_ROOT" "$TARGET_ROOT_FILE"
 from pathlib import Path
@@ -46,6 +47,19 @@ PY
 UI_TARGET_ROOT="${AEROBAG_UI_TARGET_ROOT:-$DEFAULT_UI_TARGET_ROOT}"
 WEB_SOURCE_DIR="$REPO_ROOT/ui/web-app"
 WORKSPACE_DIR="$UI_TARGET_ROOT/web/workspace"
+ARTIFACT_READ_PATH_FILE="$REPO_ROOT/.aerobag-artifact-read-path"
+DEFAULT_ARTIFACT_READ_ROOT="$(python3 - <<'PY' "$REPO_ROOT" "$ARTIFACT_READ_PATH_FILE"
+from pathlib import Path
+import sys
+repo_root = Path(sys.argv[1])
+path_file = Path(sys.argv[2])
+configured = Path(path_file.read_text().strip())
+print((configured if configured.is_absolute() else repo_root / configured).resolve())
+PY
+)"
+ARTIFACT_READ_ROOT="${AEROBAG_ARTIFACT_READ_PATH:-$DEFAULT_ARTIFACT_READ_ROOT}"
+LIVE_FEEDS_ROOT="${AEROBAG_LIVE_FEEDS_ROOT:-$REPO_ROOT/../live-feeds}"
+LIVE_FEEDS_LOG="${AEROBAG_LIVE_FEEDS_LOG:-/tmp/aerobag-live-feedsd-$PORT.log}"
 
 list_dev_roots() {
   ps -eo pid=,args= | awk -v port="$PORT" '
@@ -63,6 +77,17 @@ list_workspace_pids() {
 
 list_port_listener_pids() {
   lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true
+}
+
+list_live_feed_port_listener_pids() {
+  lsof -tiTCP:"$LIVE_FEEDS_PORT" -sTCP:LISTEN 2>/dev/null || true
+}
+
+list_live_feed_daemon_pids() {
+  ps -eo pid=,args= | awk -v port="$LIVE_FEEDS_PORT" '
+    index($0, "aerobag-live-feedsd") && index($0, "--listen 127.0.0.1:" port) { print $1 }
+    index($0, "cargo run") && index($0, "aerobag-live-feedsd") && index($0, "--listen 127.0.0.1:" port) { print $1 }
+  '
 }
 
 kill_tree() {
@@ -83,7 +108,9 @@ wait_for_shutdown() {
     remaining_roots="$(list_dev_roots || true)"
     remaining_workspace="$(list_workspace_pids || true)"
     listeners="$(list_port_listener_pids)"
-    if [ -z "$remaining_roots" ] && [ -z "$remaining_workspace" ] && [ -z "$listeners" ]; then
+    live_feed_listeners="$(list_live_feed_port_listener_pids)"
+    live_feed_daemons="$(list_live_feed_daemon_pids || true)"
+    if [ -z "$remaining_roots" ] && [ -z "$remaining_workspace" ] && [ -z "$listeners" ] && [ -z "$live_feed_listeners" ] && [ -z "$live_feed_daemons" ]; then
       return 0
     fi
     sleep "$delay"
@@ -97,6 +124,10 @@ wait_for_shutdown() {
   list_workspace_pids >&2 || true
   echo "remaining listeners:" >&2
   lsof -iTCP:"$PORT" -sTCP:LISTEN -n -P >&2 || true
+  echo "remaining live-feed daemons:" >&2
+  list_live_feed_daemon_pids >&2 || true
+  echo "remaining live-feed listeners:" >&2
+  lsof -iTCP:"$LIVE_FEEDS_PORT" -sTCP:LISTEN -n -P >&2 || true
   return 1
 }
 
@@ -115,15 +146,38 @@ while read -r pid; do
   kill_tree "$pid"
 done < <(list_port_listener_pids)
 
+while read -r pid; do
+  [ -n "$pid" ] || continue
+  kill_tree "$pid"
+done < <(list_live_feed_daemon_pids || true)
+
+while read -r pid; do
+  [ -n "$pid" ] || continue
+  kill_tree "$pid"
+done < <(list_live_feed_port_listener_pids)
+
 wait_for_shutdown
 
 if [ "$ONLY_TEAR_DOWN" -eq 1 ]; then
   exit 0
 fi
 
+cargo run \
+  --manifest-path "$REPO_ROOT/product/preprocessor/Cargo.toml" \
+  -p live-feeds-daemon \
+  --bin aerobag-live-feedsd \
+  -- \
+  --live-root "$LIVE_FEEDS_ROOT" \
+  --publication-root "$ARTIFACT_READ_ROOT" \
+  --listen "127.0.0.1:$LIVE_FEEDS_PORT" \
+  --event-interval-ms "${AEROBAG_LIVE_FEED_EVENT_INTERVAL_MS:-5000}" \
+  >"$LIVE_FEEDS_LOG" 2>&1 &
+
 exec env \
   AEROBAG_REPO_ROOT="$REPO_ROOT" \
   AEROBAG_UI_TARGET_ROOT="$UI_TARGET_ROOT" \
+  AEROBAG_ARTIFACT_READ_PATH="$ARTIFACT_READ_ROOT" \
+  AEROBAG_LIVE_FEEDS_ORIGIN="http://127.0.0.1:$LIVE_FEEDS_PORT" \
   "$WEB_SOURCE_DIR/scripts/run-target-workspace.sh" \
   "$DEV_SCRIPT" \
   --host "$HOST" \

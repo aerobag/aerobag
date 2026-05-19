@@ -5318,7 +5318,7 @@ mod tests {
     }
 
     #[test]
-    fn removed_fast_product_packages_do_not_abort_vector_overlay_resources() {
+    fn missing_live_feed_products_do_not_abort_vector_overlay_resources() {
         let init = create_ui_session(
             minimal_vector_manifest_json(),
             FlightPlan::default(),
@@ -5336,25 +5336,10 @@ mod tests {
                     "packaged": "published_packaged",
                     "unpacked": "published_unpacked"
                 },
-                "bundles": [
-                    {
-                        "id": "fast",
-                        "bundle_type": "fast",
-                        "filename": "bundle_fast.json",
-                        "relative_path": "bundles/bundle_fast.json"
-                    }
-                ]
+                "bundles": []
             }"#,
         )
         .expect("ingest current artifacts");
-        ingest_resource_in_session(
-            init.handle,
-            "publication/bundle/bundle_fast.json",
-            br#"{
-                "packages": []
-            }"#,
-        )
-        .expect("ingest bundle");
         let mut overlay = empty_map_overlay_query();
         overlay.needed_metars = true;
         overlay.needed_tfrs = true;

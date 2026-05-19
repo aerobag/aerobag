@@ -1,9 +1,10 @@
 [workspace]
-members = [ "preprocessor-charts",
+members = [ "live-feeds-daemon",
+  "preprocessor-charts",
   "preprocessor-cli",
   "preprocessor-csup",
   "preprocessor-data",
-  "preprocessor-fast",
+  "preprocessor-live-feeds",
   "preprocessor-core",
   "preprocessor-fetch",
   "preprocessor-procedure-geometry",
@@ -22,7 +23,7 @@ version = "0.1.0"
 
 [workspace.dependencies]
 anyhow = "1.0"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 crossbeam-channel = "0.5"
 geo = "0.29"
 image = { version = "0.25", default-features = false, features = ["png"] }

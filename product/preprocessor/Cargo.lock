@@ -154,6 +154,7 @@ checksum = "c673075a2e0e5f4a1dde27ce9dee1ea4558c7ffe648f576438a20ca1d2acc4b0"
 dependencies = [
  "iana-time-zone",
  "num-traits",
+ "serde",
  "windows-link",
 ]
 
@@ -631,6 +632,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
+name = "live-feeds-daemon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "preprocessor-live-feeds",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "log"
 version = "0.4.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -724,8 +737,8 @@ dependencies = [
  "preprocessor-core",
  "preprocessor-csup",
  "preprocessor-data",
- "preprocessor-fast",
  "preprocessor-fetch",
+ "preprocessor-live-feeds",
  "preprocessor-procedure-geometry",
  "preprocessor-resource-index",
  "preprocessor-tools",
@@ -781,23 +794,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "preprocessor-fast"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "image",
- "preprocessor-zip",
- "quick-xml",
- "roxmltree",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "zip",
-]
-
-[[package]]
 name = "preprocessor-fetch"
 version = "0.1.0"
 dependencies = [
@@ -807,6 +803,24 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "preprocessor-live-feeds"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "image",
+ "preprocessor-core",
+ "preprocessor-zip",
+ "quick-xml",
+ "roxmltree",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "zip",
 ]
 
 [[package]]

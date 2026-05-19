@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import zlib from "node:zlib";
 import { defineConfig, type Plugin } from "vite";
@@ -19,10 +18,7 @@ const workspaceRoot = path.join(webTargetRoot, "workspace");
 const generatedRoot = path.join(webTargetRoot, "generated");
 const iconsRoot = path.join(repoRoot, "ui", "icons");
 const adsbTraceRoot = path.resolve(repoRoot, "..", "adsb-traces");
-const liveFeedsRoot = process.env.AEROBAG_LIVE_FEEDS_ROOT
-  ? path.resolve(process.env.AEROBAG_LIVE_FEEDS_ROOT)
-  : path.resolve(repoRoot, "..", "live-feeds");
-const liveFeedEventIntervalMs = Number.parseInt(process.env.AEROBAG_LIVE_FEED_EVENT_INTERVAL_MS ?? "5000", 10);
+const liveFeedsOrigin = process.env.AEROBAG_LIVE_FEEDS_ORIGIN ?? null;
 const sharedRoot = path.join(repoRoot, "ui", "shared");
 const sharedFixturesRoot = path.join(repoRoot, "ui", "shared-fixtures");
 const debugLogPath = path.join("/tmp", "aerobag-web-debug.log");
@@ -123,185 +119,6 @@ function mountStaticTree(sourceRoot: string, options: { missingStatus?: number; 
   };
 }
 
-type LiveFeedCurrentManifest = {
-  products?: Record<string, LiveFeedCurrentEntry>;
-};
-
-type LiveFeedCurrentEntry = {
-  current?: string;
-  version_manifest_url?: string;
-  state_url?: string;
-  state_sha256?: string;
-};
-
-type LiveFeedSseEvent = {
-  id: string;
-  product: string;
-  version: string;
-  version_manifest_url: string;
-  state_url: string;
-  state_sha256: string;
-};
-
-type LiveFeedVersionManifest = {
-  product?: string;
-  version?: string;
-  state?: {
-    url?: string;
-    state_sha256?: string;
-  };
-};
-
-type OrderedLiveFeedSseEvent = {
-  sort_key: string;
-  event: LiveFeedSseEvent;
-};
-
-function readJsonFile<T>(filePath: string): T | null {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
-  } catch {
-    return null;
-  }
-}
-
-function listLiveFeedVersionEvents(root: string): LiveFeedSseEvent[] {
-  return listLiveFeedVersionEventFrames(root).flat();
-}
-
-function listLiveFeedVersionEventFrames(root: string): LiveFeedSseEvent[][] {
-  const versionsRoot = path.join(root, "versions");
-  if (!fs.existsSync(versionsRoot) || !fs.statSync(versionsRoot).isDirectory()) {
-    return [];
-  }
-  const eventsByProduct = new Map<string, OrderedLiveFeedSseEvent[]>();
-  for (const product of fs.readdirSync(versionsRoot).sort()) {
-    const productRoot = path.join(versionsRoot, product);
-    if (!fs.statSync(productRoot).isDirectory()) {
-      continue;
-    }
-    const productEvents: OrderedLiveFeedSseEvent[] = [];
-    for (const fileName of fs.readdirSync(productRoot).sort()) {
-      if (!fileName.endsWith(".json")) {
-        continue;
-      }
-      const versionManifestPath = path.join(productRoot, fileName);
-      const manifest = readJsonFile<LiveFeedVersionManifest>(versionManifestPath);
-      const manifestProduct = manifest?.product ?? product;
-      const version = manifest?.version ?? fileName.replace(/\.json$/, "");
-      const stateUrl = manifest?.state?.url;
-      const stateSha256 = manifest?.state?.state_sha256;
-      if (!stateUrl || !stateSha256) {
-        continue;
-      }
-      productEvents.push({
-        sort_key: `${fileName}:${manifestProduct}`,
-        event: {
-          id: `${manifestProduct}:${version}`,
-          product: manifestProduct,
-          version,
-          version_manifest_url: `versions/${manifestProduct}/${fileName}`,
-          state_url: stateUrl,
-          state_sha256: stateSha256,
-        },
-      });
-    }
-    if (productEvents.length > 0) {
-      eventsByProduct.set(
-        product,
-        productEvents.sort((a, b) => a.sort_key.localeCompare(b.sort_key)),
-      );
-    }
-  }
-  const frames: LiveFeedSseEvent[][] = [];
-  const products = [...eventsByProduct.keys()].sort();
-  let index = 0;
-  while (products.some((product) => index < (eventsByProduct.get(product)?.length ?? 0))) {
-    const frame: LiveFeedSseEvent[] = [];
-    for (const product of products) {
-      const event = eventsByProduct.get(product)?.[index]?.event;
-      if (event) {
-        frame.push(event);
-      }
-    }
-    if (frame.length > 0) {
-      frames.push(frame);
-    }
-    index += 1;
-  }
-  return frames;
-}
-
-function listLiveFeedSseEventFrames(root: string): LiveFeedSseEvent[][] {
-  const versionEventFrames = listLiveFeedVersionEventFrames(root);
-  if (versionEventFrames.length > 0) {
-    return versionEventFrames;
-  }
-  const currentEvents = listLiveFeedSseEvents(root);
-  return currentEvents.length > 0 ? [currentEvents] : [];
-}
-
-function listLiveFeedSseEvents(root: string): LiveFeedSseEvent[] {
-  const versionEvents = listLiveFeedVersionEvents(root);
-  if (versionEvents.length > 0) {
-    return versionEvents;
-  }
-  const current = readJsonFile<LiveFeedCurrentManifest>(path.join(root, "current.json"));
-  const events: LiveFeedSseEvent[] = [];
-  for (const [product, entry] of Object.entries(current?.products ?? {})) {
-    if (!entry.current || !entry.version_manifest_url || !entry.state_url || !entry.state_sha256) {
-      continue;
-    }
-    events.push({
-      id: `${product}:${entry.current}`,
-      product,
-      version: entry.current,
-      version_manifest_url: entry.version_manifest_url,
-      state_url: entry.state_url,
-      state_sha256: entry.state_sha256,
-    });
-  }
-  return events.sort((a, b) => a.id.localeCompare(b.id));
-}
-
-function installLiveFeedFixtureServer(server: { middlewares: { use: (...args: unknown[]) => void } }) {
-  server.middlewares.use("/live-feeds/events", (_req: IncomingMessage, res: ServerResponse) => {
-    const frames = listLiveFeedSseEventFrames(liveFeedsRoot);
-    const eventCount = frames.reduce((count, frame) => count + frame.length, 0);
-    appendRequestLog({ kind: "live_feeds.events.open", root: liveFeedsRoot, event_count: eventCount, frame_count: frames.length });
-    res.statusCode = 200;
-    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
-    res.setHeader("Connection", "keep-alive");
-    res.write(`: aerobag live-feed fixture root ${liveFeedsRoot}\n\n`);
-    if (frames.length === 0) {
-      res.write("event: heartbeat\n");
-      res.write(`data: ${JSON.stringify({ schema_version: 1, products: [] })}\n\n`);
-      return;
-    }
-    let index = 0;
-    const writeNext = () => {
-      if (index >= frames.length) {
-        return;
-      }
-      const frame = frames[index];
-      index += 1;
-      for (const event of frame) {
-        res.write(`id: ${event.id}\n`);
-        res.write("event: live-feed-current\n");
-        res.write(`data: ${JSON.stringify({ schema_version: 1, ...event })}\n\n`);
-      }
-    };
-    writeNext();
-    const interval = setInterval(writeNext, Number.isFinite(liveFeedEventIntervalMs) ? liveFeedEventIntervalMs : 5000);
-    res.on("close", () => {
-      clearInterval(interval);
-      appendRequestLog({ kind: "live_feeds.events.close" });
-    });
-  });
-  server.middlewares.use("/live-feeds", mountStaticTree(liveFeedsRoot, { missingStatus: 404, logPrefix: "live_feeds" }));
-}
-
 function aerobagStaticPlugin(): Plugin {
   function installMiddlewares(server: { middlewares: { use: (...args: unknown[]) => void } }) {
     server.middlewares.use("/__debug_log", (req, res, next) => {
@@ -340,12 +157,10 @@ function aerobagStaticPlugin(): Plugin {
       res.end();
     });
     server.middlewares.use("/packages", mountStaticTree(artifactReadRoot, { missingStatus: 404, logPrefix: "packages" }));
-    installLiveFeedFixtureServer(server);
     server.middlewares.use("/icons", mountStaticTree(iconsRoot, { missingStatus: 404, logPrefix: "icons" }));
     server.middlewares.use("/adsb-traces", mountStaticTree(adsbTraceRoot, { missingStatus: 404, logPrefix: "adsb_traces" }));
     for (const legacyPrefix of [
       "/afd",
-      "/fast-products",
       "/files",
       "/nav-db",
       "/nav-kv",
@@ -386,6 +201,14 @@ export default defineConfig({
       "@shared-bootstrap": path.join(sharedRoot, "dev-bootstrap.json"),
       "@shared-ui-theme": path.join(sharedFixturesRoot, "ui-theme.json"),
     },
+    proxy: liveFeedsOrigin
+      ? {
+          "/live-feeds": {
+            target: liveFeedsOrigin,
+            changeOrigin: true,
+          },
+        }
+      : undefined,
   },
   server: {
     port: 4173,

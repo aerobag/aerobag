@@ -19,13 +19,13 @@ use preprocessor_data::{
     audit_tpp_cifp_matching, build_data_package, choose_matching_bundle, load_matching_bundle,
     resolve_matching_db_path, tpp_zip_paths_from_bundle, DataBuildRequest,
 };
-use preprocessor_fast::{
-    build_notam_dataset, terrain_ellipsoid_height_feet_from_navd88_meters, BuildNotamRequest,
-    GeoidGrid,
-};
 use preprocessor_fetch::{
     hash_text, prefetch_archives_with_provenance, read_download_records, read_extract_records,
     read_source_url_set, CacheLayout, FetchCacheConfig, FetchCacheMode, PrefetchRequest,
+};
+use preprocessor_live_feeds::{
+    build_notam_dataset, terrain_ellipsoid_height_feet_from_navd88_meters, BuildNotamRequest,
+    GeoidGrid,
 };
 use preprocessor_resource_index::{
     write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource,
@@ -41,8 +41,8 @@ use preprocessor_vectors::{
 use product_build::{
     audit_procedure_geometry_from_sqlite, build_cycle, build_product, default_artifact_write_path,
     explain_product_build, gc_build_cache, maybe_reexec_build_cycle_under_cgroup,
-    publish_discovery_manifest, update_live_feeds, BuildCacheGcConfig, BuildCacheGcMode,
-    ProcedureGeometryAuditFilter, ProductBuildConfig, ProductBuildProfile,
+    publish_discovery_manifest, BuildCacheGcConfig, BuildCacheGcMode, ProcedureGeometryAuditFilter,
+    ProductBuildConfig, ProductBuildProfile,
 };
 use sha2::{Digest, Sha256};
 
@@ -52,7 +52,6 @@ fn usage() -> &'static str {
   preprocessor-cli publish-discovery-manifest [--profile <validation|production>] [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
   preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
   preprocessor-cli normalize-swim-notams --input-jsonl <path> --output-dir <path> --version-label <label>
-  preprocessor-cli update-live-feeds [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
 
 Use --long-help to show internal/debug commands."
 }
@@ -84,7 +83,6 @@ fn long_usage() -> &'static str {
   preprocessor-cli build-cycle [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli publish-discovery-manifest [--profile <validation|production>] [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
-  preprocessor-cli update-live-feeds [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli gc-build-cache [--profile <validation|production>] [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>] [--bootstrap-from-build-manifests]
   preprocessor-cli explain-product-build [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli run-chart --family <sec|tac|enr-l|enr-h> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]"
@@ -1611,7 +1609,6 @@ fn main() -> anyhow::Result<()> {
                 | "audit-class-airspace-simplification"
                 | "build-obstacles"
                 | "build-cycle"
-                | "update-live-feeds"
                 | "build-product"
                 | "audit-terrain-airports"
                 | "run-chart"
@@ -2494,31 +2491,6 @@ fn main() -> anyhow::Result<()> {
                 &bundles,
             )?;
             println!("{}", path.display());
-        }
-        Some("update-live-feeds") => {
-            let config = ProductBuildConfig::from_env_and_args(&args[2..])?;
-            let result = update_live_feeds(&config)?;
-            println!("live_feeds_root {}", result.root.display());
-            println!("current {}", result.current_path.display());
-            for product in result.products {
-                println!(
-                    "product {} version={} state={} delta={}",
-                    product.product,
-                    product.version,
-                    product.state_path.display(),
-                    product
-                        .delta_path
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "none".to_string())
-                );
-            }
-            for failure in result.failures {
-                println!(
-                    "failed {} phase={} error={}",
-                    failure.product, failure.phase, failure.error
-                );
-            }
         }
         Some("gc-build-cache") => {
             let config = build_cache_gc_config_from_args(&args[2..])?;

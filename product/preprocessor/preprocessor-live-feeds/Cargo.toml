@@ -1,5 +1,5 @@
 [package]
-name = "preprocessor-fast"
+name = "preprocessor-live-feeds"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +8,7 @@ license.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 image.workspace = true
+preprocessor-core = { path = "../preprocessor-core" }
 preprocessor-zip = { path = "../preprocessor-zip" }
 quick-xml.workspace = true
 roxmltree.workspace = true

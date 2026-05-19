@@ -4,6 +4,7 @@ pub mod chart_page;
 pub mod content;
 pub mod debug_log;
 pub mod errors;
+pub mod flight_data;
 pub mod geodesy;
 pub mod geometry;
 pub mod had_ops;
@@ -34,6 +35,10 @@ pub use content::{
 };
 pub use debug_log::{core_debug_log, core_debug_log_value, set_core_debug_logger, CoreDebugLogger};
 pub use errors::{AppError, AppErrorKind, AppResult};
+pub use flight_data::{
+    FlightDataBannerInput, FlightDataBannerModel, FlightDataCell, FlightDataColumn,
+    FlightDataComputer,
+};
 pub use geodesy::{
     cross_track_left_nm, great_circle_display_path, great_circle_distance_nm,
     great_circle_intermediate, initial_course_deg,
@@ -185,7 +190,7 @@ pub use session::{
 pub use situation::{Situation, SituationPosition};
 pub use state::{
     project_app_ui_state, project_ui_snapshot_app_state, AppEvent, AppState, AppUiState,
-    FlightDataBannerCell, FlightDataBannerModel, UiSnapshotAppState,
+    UiSnapshotAppState,
 };
 pub use terrain::{
     parse_abt1_tile, query_terrain_overlay, render_terrain_warning_png,

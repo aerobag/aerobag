@@ -3706,7 +3706,12 @@ fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadRe
         session.app_state.active_plan.clone(),
         app_ui_state.active_plan.as_ref(),
     ) {
-        app_ui_state.active_plan = Some(flight_plan_ui_state(store, plan, active_plan.clone())?);
+        app_ui_state.active_plan = Some(flight_plan_ui_state(
+            store,
+            plan,
+            active_plan.clone(),
+            crate::FlightDataComputer::new(app_ui_state.ownship.render.speed_kt),
+        )?);
     }
     app_ui_state.flight_data_banner = project_flight_data_banner(session, &app_ui_state)?;
     Ok(app_ui_state)
@@ -3719,21 +3724,17 @@ fn project_flight_data_banner(
     let ownship = &app_ui_state.ownship.render;
     let position = ownship.position;
     let store = session.nav_kv_store.as_ref();
-    let speed_kt = ownship.speed_kt.filter(|speed| *speed > 1.0);
+    let flight_data_computer = crate::FlightDataComputer::new(ownship.speed_kt);
 
-    let altitude = ownship
-        .altitude_msl_ft
-        .or(ownship.pressure_altitude_ft)
-        .map(format_feet);
-    let track = match (store, position, ownship.orientation_deg) {
+    let altitude_ft = ownship.altitude_msl_ft.or(ownship.pressure_altitude_ft);
+    let track_magnetic_deg = match (store, position, ownship.orientation_deg) {
         (Some(store), Some(position), Some(true_course_deg)) => {
             crate::had_ops::true_to_magnetic_course_deg_optional(store, true_course_deg, position)?
-                .map(format_course_degrees)
         }
         _ => None,
     };
 
-    let mut desired_track = None;
+    let mut desired_track_magnetic_deg = None;
     let mut waypoint_distance_nm = None;
     let mut final_distance_nm = None;
 
@@ -3748,8 +3749,7 @@ fn project_flight_data_banner(
         if let Some(geometry) =
             active_leg_geometry(plan, &active_leg, &session.guidance_leg_geometry)
         {
-            desired_track = active_display_course_deg(&geometry, position, store)?
-                .map(format_course_degrees);
+            desired_track_magnetic_deg = active_display_course_deg(&geometry, position, store)?;
             waypoint_distance_nm =
                 position.map(|position| crate::great_circle_distance_nm(position, geometry.to));
         }
@@ -3772,68 +3772,13 @@ fn project_flight_data_banner(
         }
     }
 
-    let waypoint_distance = waypoint_distance_nm.map(format_nm);
-    let ground_speed = speed_kt.map(format_knots);
-    let waypoint_ete = waypoint_distance_nm
-        .zip(speed_kt)
-        .map(|(distance, speed)| format_ete(distance, speed));
-    let final_distance = final_distance_nm.map(format_nm);
-    let final_ete = final_distance_nm
-        .zip(speed_kt)
-        .map(|(distance, speed)| format_ete(distance, speed));
-
-    Ok(crate::FlightDataBannerModel {
-        cells: vec![
-            flight_data_cell("altitude", "ALT ft", altitude),
-            flight_data_cell("ground_speed", "GS kt", ground_speed),
-            flight_data_cell("vertical_speed", "VS fpm", None),
-            flight_data_cell("track", "TRK °M", track),
-            flight_data_cell("desired_track", "DTK °M", desired_track),
-            flight_data_cell("waypoint_distance", "WPT nm", waypoint_distance),
-            flight_data_cell("waypoint_ete", "ETE", waypoint_ete),
-            flight_data_cell("final_distance", "FINAL nm", final_distance),
-            flight_data_cell("final_ete", "F-ETE", final_ete),
-            flight_data_cell("final_eta", "ETA", None),
-        ],
-    })
-}
-
-fn flight_data_cell(id: &str, label: &str, value: Option<String>) -> crate::FlightDataBannerCell {
-    crate::FlightDataBannerCell {
-        id: id.to_string(),
-        label: label.to_string(),
-        value,
-    }
-}
-
-fn format_feet(value: f64) -> String {
-    format!("{value:.0}")
-}
-
-fn format_nm(value: f64) -> String {
-    if value < 10.0 {
-        format!("{value:.1}")
-    } else {
-        format!("{value:.0}")
-    }
-}
-
-fn format_knots(value: f64) -> String {
-    format!("{value:.0}")
-}
-
-fn format_ete(distance_nm: f64, speed_kt: f64) -> String {
-    let total_seconds = (distance_nm / speed_kt * 3600.0).round().max(0.0) as u32;
-    if total_seconds >= 3600 {
-        let total_minutes = (total_seconds + 30) / 60;
-        let hours = total_minutes / 60;
-        let minutes = total_minutes % 60;
-        format!("{hours:02}:{minutes:02}")
-    } else {
-        let minutes = total_seconds / 60;
-        let seconds = total_seconds % 60;
-        format!("{minutes:02}:{seconds:02}")
-    }
+    Ok(flight_data_computer.banner(crate::FlightDataBannerInput {
+        altitude_ft,
+        track_magnetic_deg,
+        desired_track_magnetic_deg,
+        waypoint_distance_nm,
+        final_distance_nm,
+    }))
 }
 
 fn project_debug_ownship_driver_availability(session: &UiSession, app_ui_state: &mut AppUiState) {
@@ -4033,7 +3978,7 @@ fn project_active_leg_nav_element(
         format!(
             "{} CRS {}",
             active_leg_summary,
-            format_course_degrees(course_deg)
+            crate::flight_data::format_course_degrees(course_deg)
         )
     } else {
         active_leg_summary
@@ -5024,15 +4969,6 @@ fn finish_line_normal_course_deg(inbound_course_deg: f64, outbound_course_deg: f
 
 fn normalize_course_degrees(course_deg: f64) -> f64 {
     course_deg.rem_euclid(360.0)
-}
-
-fn format_course_degrees(course_deg: f64) -> String {
-    let rounded = course_deg.round().rem_euclid(360.0) as u16;
-    if rounded == 0 {
-        "360".to_string()
-    } else {
-        format!("{rounded:03}")
-    }
 }
 
 fn signed_distance_beyond_finish_plane(
@@ -6039,11 +5975,11 @@ mod tests {
 
     #[test]
     fn cdi_course_formatter_uses_aviation_north() {
-        assert_eq!(format_course_degrees(0.0), "360");
-        assert_eq!(format_course_degrees(359.6), "360");
-        assert_eq!(format_course_degrees(0.4), "360");
-        assert_eq!(format_course_degrees(1.0), "001");
-        assert_eq!(format_course_degrees(-1.0), "359");
+        assert_eq!(crate::flight_data::format_course_degrees(0.0), "360");
+        assert_eq!(crate::flight_data::format_course_degrees(359.6), "360");
+        assert_eq!(crate::flight_data::format_course_degrees(0.4), "360");
+        assert_eq!(crate::flight_data::format_course_degrees(1.0), "001");
+        assert_eq!(crate::flight_data::format_course_degrees(-1.0), "359");
     }
 
     #[test]
@@ -6063,7 +5999,7 @@ mod tests {
         };
 
         assert_eq!(
-            format_course_degrees(
+            crate::flight_data::format_course_degrees(
                 crate::had_ops::true_to_magnetic_course_deg_optional(&store, 271.0, position)
                     .unwrap()
                     .unwrap()

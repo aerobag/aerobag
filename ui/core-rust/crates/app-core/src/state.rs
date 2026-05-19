@@ -8,6 +8,7 @@ use crate::ownship::{
     OwnshipUiState, SituationSample,
 };
 use crate::planning::{project_ui_state, FlightPlan, FlightPlanUiState};
+use crate::FlightDataBannerModel;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppState {
@@ -24,18 +25,6 @@ pub struct AppUiState {
     pub flight_data_banner: FlightDataBannerModel,
     pub content_policy: ContentPolicy,
     pub last_content_report: Option<ContentReport>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FlightDataBannerCell {
-    pub id: String,
-    pub label: String,
-    pub value: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FlightDataBannerModel {
-    pub cells: Vec<FlightDataBannerCell>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

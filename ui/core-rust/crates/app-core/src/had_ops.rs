@@ -529,10 +529,20 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
         HadOperation::FlightPlanUiState {
             plan,
             current_ui_state,
-        } => serde_json::to_value(flight_plan_ui_state(store, plan, current_ui_state)?)?,
+        } => serde_json::to_value(flight_plan_ui_state(
+            store,
+            plan,
+            current_ui_state,
+            crate::FlightDataComputer::default(),
+        )?)?,
         HadOperation::FlightPlanUiMutation { mutation } => {
             serde_json::to_value(FlightPlanUiMutation {
-                ui_state: flight_plan_ui_state(store, mutation.plan.clone(), mutation.ui_state)?,
+                ui_state: flight_plan_ui_state(
+                    store,
+                    mutation.plan.clone(),
+                    mutation.ui_state,
+                    crate::FlightDataComputer::default(),
+                )?,
                 ..mutation
             })?
         }
@@ -943,11 +953,14 @@ pub(crate) fn flight_plan_ui_state(
     store: &NavKvStore,
     plan: FlightPlan,
     current_ui_state: FlightPlanUiState,
+    computer: crate::FlightDataComputer,
 ) -> Result<FlightPlanUiState, HadReadError> {
     let plan = crate::build_flight_plan(plan)?;
     let mut ui_state = current_ui_state;
     let route = project_flight_plan_route(store, &plan)?;
     for row in &mut ui_state.display_rows {
+        let mut distance_nm = None;
+        let mut course_deg = None;
         row.symbol_feature = match &row.nav_ref {
             Some(nav_ref) => nav_symbol_feature(store, nav_ref)?,
             None => None,
@@ -956,13 +969,13 @@ pub(crate) fn flight_plan_ui_state(
             if let Some(leg) = plan.resolved_legs.get(leg_index) {
                 let mut matching_segments = route.iter().filter(|segment| segment.leg_id == leg.id);
                 if let Some(first_segment) = matching_segments.next() {
-                    row.distance_nm = Some(
+                    distance_nm = Some(
                         first_segment.distance_nm
                             + matching_segments
                                 .map(|segment| segment.distance_nm)
                                 .sum::<f64>(),
                     );
-                    row.course_deg = true_to_magnetic_course_deg_optional(
+                    course_deg = true_to_magnetic_course_deg_optional(
                         store,
                         first_segment.course_deg,
                         crate::great_circle_intermediate(first_segment.from, first_segment.to, 0.5),
@@ -970,6 +983,12 @@ pub(crate) fn flight_plan_ui_state(
                 }
             }
         }
+        row.data_cells = computer.flight_plan_row_cells(
+            row.row_kind != crate::FlightPlanDisplayRowKind::Group,
+            distance_nm,
+            None,
+            course_deg,
+        );
         if crate::planning::flight_plan_row_actions(row)
             .any(|action| action.id == FlightPlanRowActionId::ShowPlate)
         {
@@ -992,6 +1011,7 @@ pub(crate) fn flight_plan_ui_state(
             }
         }
     }
+    ui_state.data_columns = crate::flight_data::flight_plan_columns();
     Ok(ui_state)
 }
 
@@ -2438,6 +2458,7 @@ pub(crate) fn append_flight_plan_entry(
             store,
             appended.clone(),
             crate::project_ui_state(&appended),
+            crate::FlightDataComputer::default(),
         )?,
         plan: appended,
     })
@@ -2459,6 +2480,7 @@ pub(crate) fn insert_waypoint_best_position(
             store,
             inserted.clone(),
             crate::project_ui_state(&inserted),
+            crate::FlightDataComputer::default(),
         )?,
         plan: inserted,
     })
@@ -3699,13 +3721,20 @@ mod tests {
             &store,
             plan.clone(),
             crate::planning::project_ui_state(&plan),
+            crate::FlightDataComputer::default(),
         )
         .expect("project flight plan ui state");
         let row_course = ui_state
             .display_rows
             .iter()
             .find(|row| row.label == "KBBB")
-            .and_then(|row| row.course_deg)
+            .and_then(|row| {
+                row.data_cells
+                    .iter()
+                    .find(|cell| cell.id == "desired_track")
+                    .and_then(|cell| cell.value.as_deref())
+            })
+            .and_then(|value| value.parse::<f64>().ok())
             .expect("destination row course");
 
         assert!((true_course - 270.3).abs() < 0.5, "{true_course}");

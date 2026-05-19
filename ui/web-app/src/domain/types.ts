@@ -393,6 +393,7 @@ export type NavElementUiView = {
 export type FlightPlanUiState = {
   components: RouteComponentUiView[];
   resolved_legs: ResolvedLegUiView[];
+  data_columns: FlightDataColumn[];
   display_rows: FlightPlanDisplayRowUiView[];
   guidance: GuidanceUiView | null;
 };
@@ -418,11 +419,7 @@ export type FlightPlanDisplayRowUiView = {
   procedure_id: string | null;
   procedure_kind: ProcedureKind | null;
   leg_index: number | null;
-  distance_nm: number | null;
-  course_deg: number | null;
-  eta_text: string;
-  leg_time_text: string;
-  fuel_gal_text: string;
+  data_cells: FlightDataCell[];
   show_plate_target_id: string | null;
   chart_airport_id: string | null;
   nav_ref: NavRef | null;
@@ -648,14 +645,19 @@ export type AppUiState = {
   last_content_report: AppState["last_content_report"];
 };
 
-export type FlightDataBannerCell = {
+export type FlightDataCell = {
   id: string;
   label: string;
   value: string | null;
 };
 
+export type FlightDataColumn = {
+  id: string;
+  label: string;
+};
+
 export type FlightDataBannerModel = {
-  cells: FlightDataBannerCell[];
+  cells: FlightDataCell[];
 };
 
 export type OwnshipMode = "none" | "live" | "replay" | "simulated";

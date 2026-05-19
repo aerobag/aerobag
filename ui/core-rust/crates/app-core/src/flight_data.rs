@@ -1,0 +1,291 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlightDataCell {
+    pub id: String,
+    pub label: String,
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlightDataColumn {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlightDataBannerModel {
+    pub cells: Vec<FlightDataCell>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FlightDataComputer {
+    ground_speed_kt: Option<f64>,
+    fuel_flow_gph: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FlightDataBannerInput {
+    pub altitude_ft: Option<f64>,
+    pub track_magnetic_deg: Option<f64>,
+    pub desired_track_magnetic_deg: Option<f64>,
+    pub waypoint_distance_nm: Option<f64>,
+    pub final_distance_nm: Option<f64>,
+}
+
+impl FlightDataComputer {
+    pub fn new(ground_speed_kt: Option<f64>) -> Self {
+        Self::with_fuel_flow(ground_speed_kt, None)
+    }
+
+    pub fn with_fuel_flow(ground_speed_kt: Option<f64>, fuel_flow_gph: Option<f64>) -> Self {
+        Self {
+            ground_speed_kt: ground_speed_kt.filter(|speed| *speed > 1.0),
+            fuel_flow_gph: fuel_flow_gph.filter(|fuel_flow| *fuel_flow > 0.0),
+        }
+    }
+
+    pub fn banner(&self, input: FlightDataBannerInput) -> FlightDataBannerModel {
+        let waypoint_ete = input
+            .waypoint_distance_nm
+            .and_then(|distance| self.format_ete(distance));
+        let final_ete = input
+            .final_distance_nm
+            .and_then(|distance| self.format_ete(distance));
+        let final_fuel = input
+            .final_distance_nm
+            .and_then(|distance| self.format_fuel(distance));
+
+        FlightDataBannerModel {
+            cells: vec![
+                cell("altitude", "ALT ft", input.altitude_ft.map(format_feet)),
+                cell(
+                    "ground_speed",
+                    "GS kt",
+                    self.ground_speed_kt.map(format_knots),
+                ),
+                cell("vertical_speed", "VS fpm", None),
+                cell(
+                    "track",
+                    "TRK °M",
+                    input.track_magnetic_deg.map(format_course_degrees),
+                ),
+                cell(
+                    "desired_track",
+                    "DTK °M",
+                    input.desired_track_magnetic_deg.map(format_course_degrees),
+                ),
+                cell(
+                    "waypoint_distance",
+                    "WPT nm",
+                    input.waypoint_distance_nm.map(format_nm),
+                ),
+                cell("waypoint_ete", "ETE", waypoint_ete),
+                cell(
+                    "final_distance",
+                    "FINAL nm",
+                    input.final_distance_nm.map(format_nm),
+                ),
+                cell("final_ete", "F-ETE", final_ete),
+                cell("final_fuel", "F-FUEL gal", final_fuel),
+                cell("final_eta", "ETA", None),
+            ],
+        }
+    }
+
+    pub fn flight_plan_row_cells(
+        &self,
+        row_has_data: bool,
+        distance_nm: Option<f64>,
+        eta: Option<String>,
+        course_magnetic_deg: Option<f64>,
+    ) -> Vec<FlightDataCell> {
+        if !row_has_data {
+            return flight_plan_columns()
+                .into_iter()
+                .map(|column| FlightDataCell {
+                    id: column.id,
+                    label: column.label,
+                    value: Some(String::new()),
+                })
+                .collect();
+        }
+
+        let ete = distance_nm.and_then(|distance| self.format_ete(distance));
+        let fuel = distance_nm.and_then(|distance| self.format_fuel(distance));
+
+        vec![
+            cell("waypoint_distance", "WPT nm", distance_nm.map(format_nm)),
+            cell("final_eta", "ETA", eta),
+            cell("waypoint_ete", "ETE", ete),
+            cell("fuel", "FUEL gal", fuel),
+            cell(
+                "desired_track",
+                "DTK °M",
+                course_magnetic_deg.map(format_course_degrees),
+            ),
+        ]
+    }
+
+    fn format_ete(&self, distance_nm: f64) -> Option<String> {
+        self.ground_speed_kt
+            .map(|speed_kt| format_ete(distance_nm, speed_kt))
+    }
+
+    fn format_fuel(&self, distance_nm: f64) -> Option<String> {
+        self.ground_speed_kt
+            .zip(self.fuel_flow_gph)
+            .map(|(speed_kt, fuel_flow_gph)| {
+                format_fuel_gal(distance_nm / speed_kt * fuel_flow_gph)
+            })
+    }
+}
+
+pub fn flight_plan_columns() -> Vec<FlightDataColumn> {
+    vec![
+        column("waypoint_distance", "WPT nm"),
+        column("final_eta", "ETA"),
+        column("waypoint_ete", "ETE"),
+        column("fuel", "FUEL gal"),
+        column("desired_track", "DTK °M"),
+    ]
+}
+
+pub fn possible_columns() -> Vec<FlightDataColumn> {
+    vec![
+        column("altitude", "ALT ft"),
+        column("ground_speed", "GS kt"),
+        column("vertical_speed", "VS fpm"),
+        column("track", "TRK °M"),
+        column("desired_track", "DTK °M"),
+        column("waypoint_distance", "WPT nm"),
+        column("waypoint_ete", "ETE"),
+        column("final_distance", "FINAL nm"),
+        column("final_ete", "F-ETE"),
+        column("final_fuel", "F-FUEL gal"),
+        column("final_eta", "ETA"),
+        column("fuel", "FUEL gal"),
+    ]
+}
+
+pub fn cell(id: &str, label: &str, value: Option<String>) -> FlightDataCell {
+    FlightDataCell {
+        id: id.to_string(),
+        label: label.to_string(),
+        value,
+    }
+}
+
+fn column(id: &str, label: &str) -> FlightDataColumn {
+    FlightDataColumn {
+        id: id.to_string(),
+        label: label.to_string(),
+    }
+}
+
+pub fn format_feet(value: f64) -> String {
+    format!("{value:.0}")
+}
+
+pub fn format_nm(value: f64) -> String {
+    if value < 10.0 {
+        format!("{value:.1}")
+    } else {
+        format!("{value:.0}")
+    }
+}
+
+pub fn format_knots(value: f64) -> String {
+    format!("{value:.0}")
+}
+
+pub fn format_fuel_gal(value: f64) -> String {
+    format!("{value:.1}")
+}
+
+pub fn format_course_degrees(course_deg: f64) -> String {
+    let rounded = course_deg.round().rem_euclid(360.0) as u16;
+    if rounded == 0 {
+        "360".to_string()
+    } else {
+        format!("{rounded:03}")
+    }
+}
+
+fn format_ete(distance_nm: f64, speed_kt: f64) -> String {
+    let total_seconds = (distance_nm / speed_kt * 3600.0).round().max(0.0) as u32;
+    if total_seconds >= 3600 {
+        let total_minutes = (total_seconds + 30) / 60;
+        let hours = total_minutes / 60;
+        let minutes = total_minutes % 60;
+        format!("{hours:02}:{minutes:02}")
+    } else {
+        let minutes = total_seconds / 60;
+        let seconds = total_seconds % 60;
+        format!("{minutes:02}:{seconds:02}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn banner_and_flight_plan_rows_share_ete_formatting() {
+        let computer = FlightDataComputer::new(Some(120.0));
+        let banner = computer.banner(FlightDataBannerInput {
+            final_distance_nm: Some(30.0),
+            ..FlightDataBannerInput::default()
+        });
+        let final_ete = banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "final_ete")
+            .and_then(|cell| cell.value.as_deref());
+
+        let row_cells = computer.flight_plan_row_cells(true, Some(30.0), None, None);
+        let row_ete = row_cells
+            .iter()
+            .find(|cell| cell.id == "waypoint_ete")
+            .and_then(|cell| cell.value.as_deref());
+
+        assert_eq!(final_ete, Some("15:00"));
+        assert_eq!(row_ete, final_ete);
+    }
+
+    #[test]
+    fn flight_plan_columns_are_banner_cell_subset() {
+        let possible_columns = possible_columns();
+        for column in flight_plan_columns() {
+            assert!(
+                possible_columns
+                    .iter()
+                    .any(|candidate| candidate.id == column.id),
+                "flight-plan column {} is not a flight-data cell",
+                column.id
+            );
+        }
+    }
+
+    #[test]
+    fn computes_fuel_when_fuel_flow_is_available() {
+        let computer = FlightDataComputer::with_fuel_flow(Some(120.0), Some(10.0));
+        let row_cells = computer.flight_plan_row_cells(true, Some(30.0), None, None);
+        let row_fuel = row_cells
+            .iter()
+            .find(|cell| cell.id == "fuel")
+            .and_then(|cell| cell.value.as_deref());
+        let banner = computer.banner(FlightDataBannerInput {
+            final_distance_nm: Some(30.0),
+            ..FlightDataBannerInput::default()
+        });
+        let final_fuel = banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "final_fuel")
+            .and_then(|cell| cell.value.as_deref());
+
+        assert_eq!(row_fuel, Some("2.5"));
+        assert_eq!(final_fuel, Some("2.5"));
+    }
+}

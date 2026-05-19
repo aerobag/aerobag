@@ -5279,11 +5279,7 @@ function FlightPlanPage(props: {
                 : row.uid,
         rowUid: row.uid,
         label: row.label,
-        distance: row.row_kind === "group" ? "" : formatPlanDistance(row.distance_nm),
-        eta: row.eta_text,
-        legTime: row.leg_time_text,
-        fuel: row.fuel_gal_text,
-        course: row.row_kind === "group" ? "" : formatPlanCourse(row.course_deg),
+        dataCells: row.data_cells.map((cell) => cell.value ?? "\u2014"),
         active: row.active,
         enabled: row.enabled ?? true,
         syntheticDirectTo: row.synthetic_direct_to ?? false,
@@ -5317,6 +5313,7 @@ function FlightPlanPage(props: {
         actionMatrix: row.action_matrix ?? [],
       }));
   }, [planUiState.display_rows]);
+  const planDataColumns = planUiState.data_columns;
   const selectedWaypointIndex = selectedWaypointUid === null
     ? null
     : displayRows.findIndex((row) => row.rowUid === selectedWaypointUid);
@@ -5691,11 +5688,9 @@ function FlightPlanPage(props: {
               </div>
               <div className="planTable" ref={structuredTableRef}>
                 <div className="planHeader planWaypointCell">Waypoint</div>
-                <div className="planHeader">Dist (nm)</div>
-                <div className="planHeader">ETA (h:m)</div>
-                <div className="planHeader">Leg (h:m)</div>
-                <div className="planHeader">Fuel (gal)</div>
-                <div className="planHeader">Course (°)</div>
+                {planDataColumns.map((column) => (
+                  <div key={column.id} className="planHeader">{column.label}</div>
+                ))}
                 {displayRows.map((row, index) => (
                   <Fragment key={row.id}>
                     <button
@@ -5748,46 +5743,17 @@ function FlightPlanPage(props: {
                       indented={row.depth > 0}
                     />
                     </button>
-	                <div
-	                  className={[
-	                    "planCell",
-	                    row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
-	                  ].filter(Boolean).join(" ")}
-                >
-                  {row.distance}
-                </div>
-	                <div
-	                  className={[
-	                    "planCell",
-	                    row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
-	                  ].filter(Boolean).join(" ")}
-	                >
-                  {row.eta}
-                </div>
-	                <div
-	                  className={[
-	                    "planCell",
-	                    row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
-	                  ].filter(Boolean).join(" ")}
-	                >
-                  {row.legTime}
-                </div>
-	                <div
-	                  className={[
-	                    "planCell",
-	                    row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
-	                  ].filter(Boolean).join(" ")}
-	                >
-                  {row.fuel}
-                </div>
-	                <div
-	                  className={[
-	                    "planCell",
-	                    row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
-	                  ].filter(Boolean).join(" ")}
-	                >
-                  {row.course}
-                    </div>
+                    {row.dataCells.map((value, cellIndex) => (
+                      <div
+                        key={`${row.id}:data:${planDataColumns[cellIndex]?.id ?? cellIndex}`}
+                        className={[
+                          "planCell",
+                          row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
+                        ].filter(Boolean).join(" ")}
+                      >
+                        {value}
+                      </div>
+                    ))}
                   </Fragment>
                 ))}
               </div>
@@ -8074,24 +8040,6 @@ function pointOnCircle(center: { x: number; y: number }, radiusPx: number, angle
     x: center.x + radiusPx * Math.cos(radians),
     y: center.y + radiusPx * Math.sin(radians),
   };
-}
-
-function formatPlanDistance(distanceNm: number | null) {
-  if (distanceNm === null) {
-    return "—";
-  }
-  if (distanceNm < 10) {
-    return distanceNm.toFixed(1);
-  }
-  return distanceNm.toFixed(0);
-}
-
-function formatPlanCourse(courseDeg: number | null) {
-  if (courseDeg === null) {
-    return "—";
-  }
-  const rounded = Math.round(courseDeg) % 360;
-  return rounded === 0 ? "360" : rounded.toString().padStart(3, "0");
 }
 
 function flightPlanEntryPreviewSegments(

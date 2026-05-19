@@ -6,6 +6,7 @@ use crate::geodesy::initial_course_deg;
 use crate::geometry::LatLon;
 use crate::ids::AirportId;
 use crate::map_overlay::NavSymbolFeature;
+use crate::{FlightDataCell, FlightDataColumn};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlightPlan {
@@ -875,6 +876,8 @@ pub struct DirectToState {
 pub struct FlightPlanUiState {
     pub components: Vec<RouteComponentUiView>,
     pub resolved_legs: Vec<ResolvedLegUiView>,
+    #[serde(default)]
+    pub data_columns: Vec<FlightDataColumn>,
     pub display_rows: Vec<FlightPlanDisplayRowUiView>,
     pub guidance: Option<GuidanceUiView>,
 }
@@ -948,15 +951,7 @@ pub struct FlightPlanDisplayRowUiView {
     pub procedure_kind: Option<ProcedureKind>,
     pub leg_index: Option<usize>,
     #[serde(default)]
-    pub distance_nm: Option<f64>,
-    #[serde(default)]
-    pub course_deg: Option<f64>,
-    #[serde(default)]
-    pub eta_text: String,
-    #[serde(default)]
-    pub leg_time_text: String,
-    #[serde(default)]
-    pub fuel_gal_text: String,
+    pub data_cells: Vec<FlightDataCell>,
     #[serde(default)]
     pub show_plate_target_id: Option<String>,
     pub chart_airport_id: Option<String>,
@@ -1885,7 +1880,8 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
         })
         .collect();
 
-    let display_rows = project_display_rows(&plan, &components, &resolved_legs);
+    let mut display_rows = project_display_rows(&plan, &components, &resolved_legs);
+    populate_default_flight_data_cells(&mut display_rows);
     let (active_from_row_uid, active_to_row_uid) = active_guidance_row_uids(&plan, &display_rows);
 
     let guidance = plan.guidance.as_ref().map(|guidance| GuidanceUiView {
@@ -1937,7 +1933,20 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
         display_rows,
         components,
         resolved_legs,
+        data_columns: crate::flight_data::flight_plan_columns(),
         guidance,
+    }
+}
+
+fn populate_default_flight_data_cells(rows: &mut [FlightPlanDisplayRowUiView]) {
+    let computer = crate::FlightDataComputer::default();
+    for row in rows {
+        row.data_cells = computer.flight_plan_row_cells(
+            row.row_kind != FlightPlanDisplayRowKind::Group,
+            None,
+            None,
+            None,
+        );
     }
 }
 
@@ -2064,15 +2073,7 @@ fn project_display_rows(
                 procedure_id: component.procedure_id.clone(),
                 procedure_kind: component.procedure_kind.clone(),
                 leg_index,
-                distance_nm: None,
-                course_deg: None,
-                eta_text: "—".to_string(),
-                leg_time_text: if leg_index.is_some() {
-                    "0:04".to_string()
-                } else {
-                    "—".to_string()
-                },
-                fuel_gal_text: "—".to_string(),
+                data_cells: Vec::new(),
                 show_plate_target_id: None,
                 chart_airport_id,
                 nav_ref,
@@ -2111,11 +2112,7 @@ fn project_display_rows(
                 procedure_id: component.procedure_id.clone(),
                 procedure_kind: component.procedure_kind.clone(),
                 leg_index: None,
-                distance_nm: None,
-                course_deg: None,
-                eta_text: String::new(),
-                leg_time_text: String::new(),
-                fuel_gal_text: String::new(),
+                data_cells: Vec::new(),
                 show_plate_target_id: None,
                 chart_airport_id,
                 nav_ref: None,
@@ -2199,15 +2196,7 @@ fn project_display_rows(
                             procedure_id: component.procedure_id.clone(),
                             procedure_kind: component.procedure_kind.clone(),
                             leg_index,
-                            distance_nm: None,
-                            course_deg: None,
-                            eta_text: "—".to_string(),
-                            leg_time_text: if leg_index.is_some() {
-                                "0:04".to_string()
-                            } else {
-                                "—".to_string()
-                            },
-                            fuel_gal_text: "—".to_string(),
+                            data_cells: Vec::new(),
                             show_plate_target_id: None,
                             chart_airport_id: airport_id_from_nav_ref(nav_ref),
                             nav_ref: Some(nav_ref.clone()),
@@ -2263,11 +2252,7 @@ fn project_display_rows(
                             procedure_id: component.procedure_id.clone(),
                             procedure_kind: component.procedure_kind.clone(),
                             leg_index,
-                            distance_nm: None,
-                            course_deg: None,
-                            eta_text: "—".to_string(),
-                            leg_time_text: "—".to_string(),
-                            fuel_gal_text: "—".to_string(),
+                            data_cells: Vec::new(),
                             show_plate_target_id: None,
                             chart_airport_id: None,
                             nav_ref: None,
@@ -2316,11 +2301,7 @@ fn project_display_rows(
             procedure_id: None,
             procedure_kind: None,
             leg_index: None,
-            distance_nm: None,
-            course_deg: None,
-            eta_text: "—".to_string(),
-            leg_time_text: "—".to_string(),
-            fuel_gal_text: "—".to_string(),
+            data_cells: Vec::new(),
             show_plate_target_id: None,
             chart_airport_id,
             nav_ref: Some(direct_to.target.clone()),
@@ -2678,7 +2659,7 @@ fn top_level_waypoint_row_leg_index(plan: &FlightPlan, component_index: usize) -
         return None;
     };
     if component_index == 0 {
-        return Some(0).filter(|index| plan.resolved_legs.get(*index).is_some());
+        return None;
     }
     plan.resolved_legs
         .iter()
@@ -7872,7 +7853,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(rows[0].label, "KAAA");
-        assert_eq!(rows[0].leg_index, Some(0));
+        assert_eq!(rows[0].leg_index, None);
         assert_eq!(rows[1].label, "IAF");
         assert_eq!(rows[1].leg_index, Some(0));
         assert_eq!(rows[2].label, "PTURN");

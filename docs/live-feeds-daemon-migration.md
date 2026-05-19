@@ -107,8 +107,12 @@ Publication ordering is part of the contract:
   NEXRAD 60 seconds, METARs/TFRs 5 minutes, winds aloft 1 hour, obstacles 6
   hours.
 - Done: simulation scaffolding exists in `preprocessor-live-feeds`. Compiled
-  fixture timelines can be replayed as accelerated `UpstreamSource` events with
-  phase-shifted wall-clock timing.
+  fixture timelines can be replayed as accelerated `UpstreamSource` events.
+  Each product's fixture start maps to the same daemon-start zero point, emitted
+  versions and top-level timestamps are rewritten onto the virtual source clock
+  so product time advances by the recorded fixture offsets, and only delivery is
+  accelerated. The daemon restarts the fixture timeline when the shortest
+  nontrivial fixture span is exhausted.
 - Done: `aerobag-live-feedsd` exists as the daemon package and binary. It owns
   static live-feed file serving, an in-process SSE broker, the production
   polling loop, and the accelerated simulation loop. Production pollers build

@@ -1814,6 +1814,40 @@ export default function App() {
       debugLog("live_feeds.bootstrap.failed", { message: error instanceof Error ? error.message : String(error) });
     });
     const events = new EventSource("/live-feeds/events");
+    const queuedEvents: LiveFeedSseEvent[] = [];
+    let flushTimer: number | null = null;
+    let flushInFlight = false;
+    let flushAgain = false;
+    const scheduleFlush = () => {
+      if (flushTimer !== null || cancelled) {
+        return;
+      }
+      flushTimer = window.setTimeout(flushQueuedEvents, 100);
+    };
+    const flushQueuedEvents = () => {
+      flushTimer = null;
+      if (cancelled || queuedEvents.length === 0) {
+        return;
+      }
+      if (flushInFlight) {
+        flushAgain = true;
+        return;
+      }
+      const batch = queuedEvents.splice(0, queuedEvents.length);
+      flushInFlight = true;
+      void uiSession.ingestLiveFeedSseEvents(batch).catch((error) => {
+        debugLog("live_feeds.sse_events.failed", { message: error instanceof Error ? error.message : String(error) });
+      }).finally(() => {
+        flushInFlight = false;
+        if (cancelled) {
+          return;
+        }
+        if (flushAgain || queuedEvents.length > 0) {
+          flushAgain = false;
+          scheduleFlush();
+        }
+      });
+    };
     events.addEventListener("live-feed-current", (event) => {
       if (cancelled) {
         return;
@@ -1824,15 +1858,17 @@ export default function App() {
         event: "live-feed-current",
         data: message.data,
       };
-      void uiSession.ingestLiveFeedSseEvent(liveFeedEvent).catch((error) => {
-        debugLog("live_feeds.sse_event.failed", { message: error instanceof Error ? error.message : String(error) });
-      });
+      queuedEvents.push(liveFeedEvent);
+      scheduleFlush();
     });
     events.onerror = () => {
       debugLog("live_feeds.sse.error", {});
     };
     return () => {
       cancelled = true;
+      if (flushTimer !== null) {
+        window.clearTimeout(flushTimer);
+      }
       events.close();
     };
   }, [uiSession]);

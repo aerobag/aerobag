@@ -364,6 +364,18 @@ pub fn ingest_live_feed_sse_event_in_session(
 }
 
 #[wasm_bindgen]
+pub fn ingest_live_feed_sse_events_in_session(
+    session_handle: u32,
+    events_json: &str,
+) -> Result<String, JsValue> {
+    let events: Vec<app_core::LiveFeedSseEvent> =
+        serde_json::from_str(events_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome = app_core::ingest_live_feed_sse_events_in_session(session_handle, &events)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn perform_map_selection_action_in_session(
     session_handle: u32,
     action_json: &str,

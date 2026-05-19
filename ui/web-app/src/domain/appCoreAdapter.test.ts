@@ -128,6 +128,7 @@ describe("loadBestAvailableAdapter", () => {
       core_had_operation: async () => JSON.stringify({ state: "complete", result: null }),
       sync_live_feeds_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
       ingest_live_feed_sse_event_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
+      ingest_live_feed_sse_events_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
       suggest_waypoint_identifiers_at_flight_plan_row_in_session: async () => JSON.stringify({ state: "complete", result: [] }),
       preview_flight_plan_entry_in_session: async () => JSON.stringify({ state: "complete", result: { can_commit: false, tokens: [], issues: [] } }),
       append_flight_plan_entry_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),

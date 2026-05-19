@@ -125,6 +125,17 @@ impl LiveFeedsState {
         }
     }
 
+    pub fn sync_product_outcome(&self, product: &str) -> HadOperationOutcome {
+        let resources = self.missing_resources_for_products(std::iter::once(product));
+        if resources.is_empty() {
+            HadOperationOutcome::complete(
+                serde_json::to_value(self.snapshot()).expect("live feed snapshot serializes"),
+            )
+        } else {
+            HadOperationOutcome::NeedResources { resources }
+        }
+    }
+
     pub fn sync_outcome_with_invalidations(&self) -> HadOperationOutcome {
         let resources = self.missing_resources();
         if resources.is_empty() {
@@ -137,12 +148,48 @@ impl LiveFeedsState {
         }
     }
 
+    pub fn sync_products_outcome_with_invalidations<'a>(
+        &self,
+        products: impl IntoIterator<Item = &'a str>,
+    ) -> HadOperationOutcome {
+        let resources = self.missing_resources_for_products(products);
+        if resources.is_empty() {
+            HadOperationOutcome::complete_with_invalidations(
+                serde_json::to_value(self.snapshot()).expect("live feed snapshot serializes"),
+                self.invalidations(),
+            )
+        } else {
+            HadOperationOutcome::NeedResources { resources }
+        }
+    }
+
     pub fn ingest_sse_event(&mut self, event: LiveFeedSseEvent) -> AppResult<HadOperationOutcome> {
+        let affected = self.ingest_sse_events(std::iter::once(event))?;
+        Ok(self.sync_products_outcome_with_invalidations(affected.iter().map(String::as_str)))
+    }
+
+    pub fn ingest_sse_events(
+        &mut self,
+        events: impl IntoIterator<Item = LiveFeedSseEvent>,
+    ) -> AppResult<Vec<String>> {
+        let mut affected = Vec::new();
+        for event in events {
+            if let Some(product) = self.ingest_one_sse_event(event)? {
+                affected.push(product);
+            }
+        }
+        affected.sort();
+        affected.dedup();
+        Ok(affected)
+    }
+
+    fn ingest_one_sse_event(&mut self, event: LiveFeedSseEvent) -> AppResult<Option<String>> {
         let event_name = event.event.as_deref().unwrap_or("message");
         match event_name {
             "live-feed-current" | "message" => {
                 let payload: LiveFeedCurrentEvent =
                     serde_json::from_str(&event.data).map_err(invalid_live_feed_json)?;
+                let product = payload.product.clone();
                 self.register_product(
                     payload.product,
                     payload.version,
@@ -150,10 +197,10 @@ impl LiveFeedsState {
                     payload.state_url,
                     payload.state_sha256,
                 )?;
+                Ok(Some(product))
             }
-            _ => {}
+            _ => Ok(None),
         }
-        Ok(self.sync_outcome_with_invalidations())
     }
 
     pub fn ingest_resource(&mut self, resource_id: &str, bytes: &[u8]) -> AppResult<()> {
@@ -292,6 +339,10 @@ impl LiveFeedsState {
         entry.state_manifest.as_ref()
     }
 
+    pub fn loaded_product_state_manifest(&self, product: &str) -> Option<&Value> {
+        self.products.get(product)?.state_manifest.as_ref()
+    }
+
     pub fn has_product_current_version(&self, product: &str) -> bool {
         self.products
             .get(product)
@@ -339,10 +390,22 @@ impl LiveFeedsState {
                 optional: false,
             }];
         }
+        let products = self.products.keys().map(String::as_str).collect::<Vec<_>>();
+        self.missing_resources_for_products(products)
+    }
+
+    fn missing_resources_for_products<'a>(
+        &self,
+        products: impl IntoIterator<Item = &'a str>,
+    ) -> Vec<CoreResourceRequest> {
         let mut resources = Vec::new();
-        let mut products: Vec<_> = self.products.iter().collect();
-        products.sort_by(|(left, _), (right, _)| left.cmp(right));
-        for (product, entry) in products {
+        let mut products = products.into_iter().collect::<Vec<_>>();
+        products.sort();
+        products.dedup();
+        for product in products {
+            let Some(entry) = self.products.get(product) else {
+                continue;
+            };
             let Some(version) = &entry.current_version else {
                 continue;
             };
@@ -801,6 +864,65 @@ mod tests {
             panic!("expected version request");
         };
         assert_eq!(resources[0].id, "live_feeds/version/nexrad/v2");
+    }
+
+    #[test]
+    fn batched_sse_events_fetch_only_the_latest_version_per_product() {
+        let mut state = LiveFeedsState {
+            current_loaded: true,
+            ..LiveFeedsState::default()
+        };
+        let affected = state
+            .ingest_sse_events([
+                LiveFeedSseEvent {
+                    id: Some("metars:v1".to_string()),
+                    event: Some("live-feed-current".to_string()),
+                    data: r#"{
+                        "product": "metars",
+                        "version": "v1",
+                        "version_manifest_url": "versions/metars/v1.json"
+                    }"#
+                    .to_string(),
+                },
+                LiveFeedSseEvent {
+                    id: Some("metars:v2".to_string()),
+                    event: Some("live-feed-current".to_string()),
+                    data: r#"{
+                        "product": "metars",
+                        "version": "v2",
+                        "version_manifest_url": "versions/metars/v2.json"
+                    }"#
+                    .to_string(),
+                },
+                LiveFeedSseEvent {
+                    id: Some("nexrad:v7".to_string()),
+                    event: Some("live-feed-current".to_string()),
+                    data: r#"{
+                        "product": "nexrad",
+                        "version": "v7",
+                        "version_manifest_url": "versions/nexrad/v7.json"
+                    }"#
+                    .to_string(),
+                },
+            ])
+            .unwrap();
+        let HadOperationOutcome::NeedResources { resources } =
+            state.sync_products_outcome_with_invalidations(affected.iter().map(String::as_str))
+        else {
+            panic!("expected version requests");
+        };
+
+        let ids = resources
+            .iter()
+            .map(|resource| resource.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                "live_feeds/version/metars/v2",
+                "live_feeds/version/nexrad/v7"
+            ]
+        );
     }
 
     #[test]

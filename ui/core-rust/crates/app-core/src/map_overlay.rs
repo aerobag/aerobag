@@ -5753,6 +5753,390 @@ mod tests {
         assert_eq!(result.visible_metars[0].ceiling_amount, "sct");
     }
 
+    #[derive(Debug, Clone, Copy)]
+    struct OverlayIngredientMask {
+        point_tile: bool,
+        airspace_ref_tile: bool,
+        airspace_feature: bool,
+        airspace_label_tile: bool,
+        metar_tile: bool,
+        metar_product: bool,
+        tfr_product: bool,
+        offline_regions: bool,
+    }
+
+    impl OverlayIngredientMask {
+        fn from_bits(bits: u32) -> Self {
+            Self {
+                point_tile: bits & (1 << 0) != 0,
+                airspace_ref_tile: bits & (1 << 1) != 0,
+                airspace_feature: bits & (1 << 2) != 0,
+                airspace_label_tile: bits & (1 << 3) != 0,
+                metar_tile: bits & (1 << 4) != 0,
+                metar_product: bits & (1 << 5) != 0,
+                tfr_product: bits & (1 << 6) != 0,
+                offline_regions: bits & (1 << 7) != 0,
+            }
+        }
+    }
+
+    #[test]
+    fn overlay_query_renders_every_available_ingredient_across_missing_ingredient_combinations() {
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.0,
+                lon: -122.0,
+            },
+            zoom: 8.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let width_px = 1200.0;
+        let height_px = 900.0;
+        let point_tile = visible_point_tile_window(
+            &test_map_overlay_config(),
+            &viewport,
+            width_px,
+            height_px,
+            None,
+        )
+        .into_iter()
+        .find(|tile| tile.layer == "airport")
+        .expect("expected airport tile");
+        let airspace_tile = visible_layer_tile_window(
+            "airspace",
+            airspace_reference_zoom(viewport.zoom, &test_map_overlay_config()),
+            &viewport,
+            width_px,
+            height_px,
+        )
+        .into_iter()
+        .next()
+        .expect("expected airspace tile");
+        let airspace_label_tile = visible_layer_tile_window(
+            "airspace-labels",
+            airspace_label_zoom(viewport.zoom, &test_map_overlay_config()),
+            &viewport,
+            width_px,
+            height_px,
+        )
+        .into_iter()
+        .next()
+        .expect("expected airspace label tile");
+        let metar_tile = visible_layer_tile_window("metars", 7, &viewport, width_px, height_px)
+            .into_iter()
+            .next()
+            .expect("expected metar tile");
+
+        for bits in 0..(1 << 8) {
+            let mask = OverlayIngredientMask::from_bits(bits);
+            let mut vector_tile_cache = HashMap::new();
+            if mask.point_tile {
+                vector_tile_cache.insert(
+                    aggregate_vector_tile_cache_key(point_tile.z, point_tile.x, point_tile.y),
+                    VectorAggregateTilePayload {
+                        schema_version: 1,
+                        z: point_tile.z,
+                        x: point_tile.x,
+                        y: point_tile.y,
+                        airports: vec![PointVectorRecord {
+                            id: "airports:KAAA".to_string(),
+                            kind: "airport".to_string(),
+                            lat: viewport.center.lat,
+                            lon: viewport.center.lon,
+                            label: "KAAA".to_string(),
+                            style_class: "airport".to_string(),
+                            towered: Some(true),
+                            fuel_available: Some(true),
+                            public_use: Some(true),
+                            private_use: Some(false),
+                            has_paved_runway: Some(true),
+                            heliport: Some(false),
+                            has_water_runway: Some(false),
+                            longest_runway_length_ft: Some(4000.0),
+                            longest_runway_heading_true_deg: Some(180.0),
+                            elevation_msl_ft: Some(100.0),
+                            obstacle: None,
+                        }],
+                        fixes: Vec::new(),
+                        navaids: Vec::new(),
+                        obstacles: Vec::new(),
+                        airspace_refs: Vec::new(),
+                        airspace_labels: Vec::new(),
+                    },
+                );
+            }
+            if mask.airspace_ref_tile || mask.airspace_label_tile {
+                let aggregate = vector_tile_cache
+                    .entry(aggregate_vector_tile_cache_key(
+                        airspace_tile.z,
+                        airspace_tile.x,
+                        airspace_tile.y,
+                    ))
+                    .or_insert_with(|| {
+                        empty_test_vector_tile(airspace_tile.z, airspace_tile.x, airspace_tile.y)
+                    });
+                if mask.airspace_ref_tile {
+                    aggregate.airspace_refs = vec!["airspace:test:class_b".to_string()];
+                }
+            }
+            if mask.airspace_label_tile {
+                let aggregate = vector_tile_cache
+                    .entry(aggregate_vector_tile_cache_key(
+                        airspace_label_tile.z,
+                        airspace_label_tile.x,
+                        airspace_label_tile.y,
+                    ))
+                    .or_insert_with(|| {
+                        empty_test_vector_tile(
+                            airspace_label_tile.z,
+                            airspace_label_tile.x,
+                            airspace_label_tile.y,
+                        )
+                    });
+                aggregate.airspace_labels = vec![AirspaceLabelRecord {
+                    feature_id: "airspace:test:label".to_string(),
+                    text: "40/20".to_string(),
+                    lon: -121.6,
+                    lat: 47.3,
+                    rank: 1,
+                    score: Some(1.0),
+                    style_hint: "class_b".to_string(),
+                }];
+            }
+
+            let mut airspace_feature_cache = HashMap::new();
+            if mask.airspace_feature {
+                airspace_feature_cache.insert(
+                    "airspace:test:class_b".to_string(),
+                    AirspaceFeaturePayload {
+                        schema_version: 1,
+                        id: "airspace:test:class_b".to_string(),
+                        kind: "airspace".to_string(),
+                        name: "TEST CLASS B".to_string(),
+                        ident: "TEST".to_string(),
+                        airspace_class: "B".to_string(),
+                        style_hint: "class_b".to_string(),
+                        vertical: test_airspace_vertical("40", "20"),
+                        bbox: [-122.4, 46.6, -122.2, 46.8],
+                        paths: vec![test_airspace_path(
+                            true,
+                            None,
+                            vec![
+                                [-122.4, 46.6],
+                                [-122.2, 46.6],
+                                [-122.2, 46.8],
+                                [-122.4, 46.8],
+                            ],
+                        )],
+                    },
+                );
+            }
+
+            let mut metar_tile_cache = HashMap::new();
+            if mask.metar_tile {
+                metar_tile_cache.insert(
+                    tile_key(&metar_tile.layer, metar_tile.z, metar_tile.x, metar_tile.y),
+                    MetarTilePayload {
+                        schema_version: 1,
+                        layer: "metars".to_string(),
+                        z: metar_tile.z,
+                        x: metar_tile.x,
+                        y: metar_tile.y,
+                        records: vec![MetarTileRecord {
+                            kind: "metar".to_string(),
+                            id: "KMT1".to_string(),
+                        }],
+                    },
+                );
+            }
+            let metar_product = if mask.metar_product {
+                Some(MetarProductPayload {
+                    schema_version: 3,
+                    version_label: "test".to_string(),
+                    metar_count: Some(1),
+                    important_station_ids: HashSet::from(["KMT1".to_string()]),
+                    metars_by_station: HashMap::from([(
+                        "KMT1".to_string(),
+                        MetarRecord {
+                            raw_text: "METAR KMT1 010000Z 00000KT 10SM SCT020 10/08 A3000"
+                                .to_string(),
+                            observed_at_utc: Some("2026-05-03T00:00:00.000Z".to_string()),
+                            station_id: "KMT1".to_string(),
+                            flight_category: Some("VFR".to_string()),
+                            clouds: None,
+                            longitude: -121.8,
+                            latitude: 47.2,
+                        },
+                    )]),
+                    pireps: Vec::new(),
+                })
+            } else {
+                None
+            };
+            let tfr_product = if mask.tfr_product {
+                Some(TfrProductPayload {
+                    schema_version: 1,
+                    version_label: "test".to_string(),
+                    notam_count: 1,
+                    area_group_count: 1,
+                    areas: vec![TfrAreaPayload {
+                        notam_id: "1/2345".to_string(),
+                        area_index: 0,
+                        schedule_fragments: Vec::new(),
+                        upper_limit: TfrAltitudeLimit {
+                            value_text: "180".to_string(),
+                            unit: "FL".to_string(),
+                        },
+                        lower_limit: TfrAltitudeLimit {
+                            value_text: "SFC".to_string(),
+                            unit: "SFC".to_string(),
+                        },
+                        polygon: vec![
+                            TfrLatLonPoint {
+                                lat: 46.9,
+                                lon: -121.8,
+                            },
+                            TfrLatLonPoint {
+                                lat: 46.9,
+                                lon: -121.6,
+                            },
+                            TfrLatLonPoint {
+                                lat: 47.1,
+                                lon: -121.6,
+                            },
+                            TfrLatLonPoint {
+                                lat: 47.1,
+                                lon: -121.8,
+                            },
+                        ],
+                        summary_text: "test TFR".to_string(),
+                    }],
+                })
+            } else {
+                None
+            };
+            let offline_regions = if mask.offline_regions {
+                vec![OfflineRegionRecord {
+                    id: "chart:nw".to_string(),
+                    kind: "chart".to_string(),
+                    region_id: "nw".to_string(),
+                    label: "NW".to_string(),
+                    color_key: "offline_region_chart".to_string(),
+                    summary: Vec::new(),
+                    polygons: vec![vec![
+                        LatLon {
+                            lat: 47.35,
+                            lon: -121.5,
+                        },
+                        LatLon {
+                            lat: 47.35,
+                            lon: -121.3,
+                        },
+                        LatLon {
+                            lat: 47.55,
+                            lon: -121.3,
+                        },
+                        LatLon {
+                            lat: 47.55,
+                            lon: -121.5,
+                        },
+                    ]],
+                    label_position: LatLon {
+                        lat: 47.45,
+                        lon: -121.4,
+                    },
+                }]
+            } else {
+                Vec::new()
+            };
+
+            let result = super::query_map_overlay(
+                &viewport,
+                width_px,
+                height_px,
+                &test_map_overlay_config(),
+                true,
+                true,
+                &offline_regions,
+                None,
+                &vector_tile_cache,
+                &metar_tile_cache,
+                metar_product.as_ref(),
+                &airspace_feature_cache,
+                tfr_product.as_ref(),
+            );
+
+            let case = format!("{mask:?}");
+            assert_eq!(
+                result
+                    .visible_features
+                    .iter()
+                    .any(|feature| feature.id == "airports:KAAA"),
+                mask.point_tile,
+                "{case}: point vectors should depend only on the point vector tile"
+            );
+            assert_eq!(
+                result
+                    .airspace_paths
+                    .iter()
+                    .any(|path| path.id == "airspace:test:class_b"),
+                mask.airspace_ref_tile && mask.airspace_feature,
+                "{case}: airspace paths should require the ref tile and feature payload"
+            );
+            assert_eq!(
+                result
+                    .airspace_labels
+                    .iter()
+                    .any(|label| label.feature_id == "airspace:test:label"),
+                mask.airspace_label_tile,
+                "{case}: airspace labels should depend only on the label tile"
+            );
+            assert_eq!(
+                result
+                    .visible_metars
+                    .iter()
+                    .any(|metar| metar.station_id == "KMT1"),
+                mask.metar_tile && mask.metar_product,
+                "{case}: METARs should require the tile index and product payload"
+            );
+            assert_eq!(
+                result
+                    .tfr_paths
+                    .iter()
+                    .any(|path| path.id == "tfr:1/2345:0"),
+                mask.tfr_product,
+                "{case}: TFRs should depend only on the TFR product payload"
+            );
+            assert_eq!(
+                result
+                    .offline_regions
+                    .iter()
+                    .any(|region| region.id.starts_with("chart:nw:")),
+                mask.offline_regions,
+                "{case}: offline regions should depend only on their catalog records"
+            );
+            assert_eq!(
+                result.needed_metars, !mask.metar_product,
+                "{case}: missing METAR product should be reported without suppressing other ingredients"
+            );
+            if mask.airspace_ref_tile && !mask.airspace_feature {
+                assert!(
+                    result
+                        .needed_airspace_features
+                        .iter()
+                        .any(|feature| feature.id == "airspace:test:class_b"),
+                    "{case}: missing airspace feature should be requested without suppressing other ingredients"
+                );
+            }
+            assert!(
+                result.warnings.iter().all(|warning| warning.code
+                    != "airspace_interior_side_contract"),
+                "{case}: optional ingredient combinations should not create unrelated contract warnings"
+            );
+        }
+    }
+
     #[test]
     fn map_selection_returns_metars_in_weather_category() {
         let viewport = MapViewport {

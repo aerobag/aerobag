@@ -201,6 +201,11 @@ export default defineConfig({
       "@shared-bootstrap": path.join(sharedRoot, "dev-bootstrap.json"),
       "@shared-ui-theme": path.join(sharedFixturesRoot, "ui-theme.json"),
     },
+  },
+  server: {
+    port: 4173,
+    host: "0.0.0.0",
+    allowedHosts: ["aerobag-dev.iac.jonh.net"],
     proxy: liveFeedsOrigin
       ? {
           "/live-feeds": {
@@ -209,11 +214,6 @@ export default defineConfig({
           },
         }
       : undefined,
-  },
-  server: {
-    port: 4173,
-    host: "0.0.0.0",
-    allowedHosts: ["aerobag-dev.iac.jonh.net"],
     fs: {
       allow: [
         workspaceRoot,

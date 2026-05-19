@@ -542,6 +542,7 @@ export interface UiSession {
   projectFlightPlanRoute(): Promise<FlightPlanRouteSegment[]>;
   syncLiveFeeds(): Promise<void>;
   ingestLiveFeedSseEvent(event: LiveFeedSseEvent): Promise<void>;
+  ingestLiveFeedSseEvents(events: LiveFeedSseEvent[]): Promise<void>;
   restoreChartPageState(recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<UiSessionSnapshot>;
   destroy(): Promise<void>;
 }
@@ -708,6 +709,7 @@ type WasmModule = {
   core_had_operation(handle: number, operationJson: string): Promise<string> | string;
   sync_live_feeds_in_session(handle: number): Promise<string> | string;
   ingest_live_feed_sse_event_in_session(handle: number, eventJson: string): Promise<string> | string;
+  ingest_live_feed_sse_events_in_session(handle: number, eventsJson: string): Promise<string> | string;
 };
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
@@ -1278,6 +1280,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           ),
         );
       },
+      ingestLiveFeedSseEvents: async (events) => {
+        await withSessionRetry(async () =>
+          runSessionOperation<unknown>(
+            () => this.module.ingest_live_feed_sse_events_in_session(handle, JSON.stringify(events)),
+            (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
+          ),
+        );
+      },
       restoreChartPageState: async (nextRecentAirportIds, nextSelectedAirportId, nextSelectedChartId) => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(
@@ -1483,6 +1493,7 @@ async function loadBestAvailableAdapterUncached(
     "core_had_operation",
     "sync_live_feeds_in_session",
     "ingest_live_feed_sse_event_in_session",
+    "ingest_live_feed_sse_events_in_session",
   ] as const;
   const missingExports = requiredExports.filter((name) => typeof mod[name] !== "function");
   if (missingExports.length > 0) {

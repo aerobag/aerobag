@@ -2154,6 +2154,20 @@ pub fn ingest_live_feed_sse_event_in_session(
     session.live_feeds.ingest_sse_event(event.clone())
 }
 
+pub fn ingest_live_feed_sse_events_in_session(
+    handle: u32,
+    events: &[LiveFeedSseEvent],
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    let affected = session
+        .live_feeds
+        .ingest_sse_events(events.iter().cloned())?;
+    Ok(session
+        .live_feeds
+        .sync_products_outcome_with_invalidations(affected.iter().map(String::as_str)))
+}
+
 pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) -> AppResult<()> {
     if LiveFeedsState::handles_resource(resource_id) {
         let mut sessions = lock_sessions();
@@ -2676,28 +2690,9 @@ fn weather_overlay_resources(
     session: &UiSession,
     overlay: &MapOverlayQueryResult,
 ) -> Vec<CoreResourceRequest> {
-    let mut resources = Vec::new();
-    if overlay.needed_metars {
-        if session.live_feeds.has_product_current_version("metars") {
-            if let HadOperationOutcome::NeedResources {
-                resources: live_feed_resources,
-            } = session.live_feeds.sync_outcome()
-            {
-                resources.extend(live_feed_resources);
-            }
-        }
-    }
-    if overlay.needed_tfrs {
-        if session.live_feeds.has_product_current_version("tfrs") {
-            if let HadOperationOutcome::NeedResources {
-                resources: live_feed_resources,
-            } = session.live_feeds.sync_outcome()
-            {
-                resources.extend(live_feed_resources);
-            }
-        }
-    }
-    dedupe_resource_requests(resources)
+    let _ = session;
+    let _ = overlay;
+    Vec::new()
 }
 
 fn extend_package_resource_requests(
@@ -2864,10 +2859,7 @@ pub fn get_nexrad_overlay_in_session(
             .map_err(internal_json_error)?,
         ));
     }
-    if let HadOperationOutcome::NeedResources { resources } = session.live_feeds.sync_outcome() {
-        return Ok(HadOperationOutcome::NeedResources { resources });
-    }
-    let Some(manifest) = session.live_feeds.product_state_manifest("nexrad") else {
+    let Some(manifest) = session.live_feeds.loaded_product_state_manifest("nexrad") else {
         return Ok(HadOperationOutcome::complete(
             serde_json::to_value(NexradOverlayQueryResult {
                 status: NexradOverlayStatus::Loading,
@@ -5362,6 +5354,58 @@ mod tests {
             "missing live-feed products must not poison unrelated overlay resource loading: {requests:?}"
         );
         assert!(requests.is_empty());
+    }
+
+    #[test]
+    fn pending_live_feed_updates_do_not_block_vector_overlay_resources() {
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            FlightPlan::default(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            session
+                .live_feeds
+                .ingest_resource(
+                    "live_feeds/current",
+                    br#"{
+                        "products": {
+                            "metars": {
+                                "current": "v1",
+                                "version_manifest_url": "versions/metars/v1.json",
+                                "state_url": "states/metars/v1.json",
+                                "state_sha256": "unused"
+                            },
+                            "tfrs": {
+                                "current": "v1",
+                                "version_manifest_url": "versions/tfrs/v1.json",
+                                "state_url": "states/tfrs/v1.json",
+                                "state_sha256": "unused"
+                            }
+                        }
+                    }"#,
+                )
+                .expect("current manifest");
+        }
+        let mut overlay = empty_map_overlay_query();
+        overlay.needed_metars = true;
+        overlay.needed_tfrs = true;
+
+        let requests = {
+            let sessions = lock_sessions();
+            let session = sessions.get(&init.handle).expect("session");
+            weather_overlay_resources(session, &overlay)
+        };
+
+        assert!(
+            requests.is_empty(),
+            "map overlay should render available vectors/weather without waiting for live-feed freshness: {requests:?}"
+        );
     }
 
     #[test]

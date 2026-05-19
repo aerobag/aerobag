@@ -60,6 +60,8 @@ PY
 ARTIFACT_READ_ROOT="${AEROBAG_ARTIFACT_READ_PATH:-$DEFAULT_ARTIFACT_READ_ROOT}"
 LIVE_FEEDS_ROOT="${AEROBAG_LIVE_FEEDS_ROOT:-$REPO_ROOT/../live-feeds}"
 LIVE_FEEDS_LOG="${AEROBAG_LIVE_FEEDS_LOG:-/tmp/aerobag-live-feedsd-$PORT.log}"
+LIVE_FEEDS_MODE="${AEROBAG_LIVE_FEEDS_MODE:-production}"
+mkdir -p "$LIVE_FEEDS_ROOT"
 
 list_dev_roots() {
   ps -eo pid=,args= | awk -v port="$PORT" '
@@ -162,15 +164,38 @@ if [ "$ONLY_TEAR_DOWN" -eq 1 ]; then
   exit 0
 fi
 
+LIVE_FEEDS_ARGS=(
+  --live-root "$LIVE_FEEDS_ROOT"
+  --listen "127.0.0.1:$LIVE_FEEDS_PORT"
+  --event-interval-ms "${AEROBAG_LIVE_FEED_EVENT_INTERVAL_MS:-5000}"
+)
+case "$LIVE_FEEDS_MODE" in
+  production)
+    LIVE_FEEDS_ARGS+=(--publication-root "$ARTIFACT_READ_ROOT")
+    ;;
+  simulation)
+    if [ -z "${AEROBAG_LIVE_FEEDS_FIXTURE_ROOT:-}" ]; then
+      echo "AEROBAG_LIVE_FEEDS_FIXTURE_ROOT must be set for simulation mode" >&2
+      exit 1
+    fi
+    LIVE_FEEDS_ARGS+=(
+      --simulation
+      --fixture-root "$AEROBAG_LIVE_FEEDS_FIXTURE_ROOT"
+      --speedup "${AEROBAG_LIVE_FEEDS_SPEEDUP:-720}"
+    )
+    ;;
+  *)
+    echo "AEROBAG_LIVE_FEEDS_MODE must be production or simulation" >&2
+    exit 1
+    ;;
+esac
+
 cargo run \
   --manifest-path "$REPO_ROOT/product/preprocessor/Cargo.toml" \
   -p live-feeds-daemon \
   --bin aerobag-live-feedsd \
   -- \
-  --live-root "$LIVE_FEEDS_ROOT" \
-  --publication-root "$ARTIFACT_READ_ROOT" \
-  --listen "127.0.0.1:$LIVE_FEEDS_PORT" \
-  --event-interval-ms "${AEROBAG_LIVE_FEED_EVENT_INTERVAL_MS:-5000}" \
+  "${LIVE_FEEDS_ARGS[@]}" \
   >"$LIVE_FEEDS_LOG" 2>&1 &
 
 exec env \

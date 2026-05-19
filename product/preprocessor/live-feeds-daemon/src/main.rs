@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     env, fs,
     io::{BufRead, BufReader, Write},
     net::{SocketAddr, TcpListener, TcpStream},
@@ -20,7 +19,7 @@ use preprocessor_live_feeds::{
         default_poll_interval, run_upstream_live_feed_publish_tick, CompiledFixtureCache,
         CycleDataProvider, FileLiveFeedPublisher, FixedClock, FixtureCacheKeyPart,
         IntervalLiveFeedSource, LiveFeedInvalidation, LiveFeedPollingTask,
-        LiveFeedSourceAndBuilder, LiveFeedVersionManifest, SseBroker, SystemClock,
+        LiveFeedSourceAndBuilder, SseBroker, SystemClock,
     },
     products::{
         LiveFeedFetchConfig, MetarLiveFeedBuilder, NexradSourceGridLiveFeedBuilder,
@@ -28,8 +27,8 @@ use preprocessor_live_feeds::{
     },
     publication::PublishedCycleDataProvider,
     simulation::{
-        fixture_source_start, timeline_from_live_feed_root, CompiledFixtureStateBuilder,
-        SimulatedLiveFeedSource, SimulationClockMap,
+        fixture_loop_duration, timeline_from_live_feed_root, CompiledFixtureStateBuilder,
+        SimulatedLiveFeedSource,
     },
 };
 use serde::Serialize;
@@ -76,12 +75,6 @@ struct LiveFeedSseEvent {
     version_manifest_url: String,
     state_url: String,
     state_sha256: String,
-}
-
-#[derive(Debug, Clone)]
-struct OrderedLiveFeedSseEvent {
-    sort_key: String,
-    event: LiveFeedSseEvent,
 }
 
 impl DaemonConfig {
@@ -338,51 +331,67 @@ fn start_simulation_driver(
         .clone()
         .unwrap_or_else(|| config.live_root.clone());
     let timeline = timeline_from_live_feed_root(&fixture_root, "daemon-simulation")?;
-    let source_start = fixture_source_start(&timeline)?;
-    let clock_map = SimulationClockMap::new(source_start, Utc::now(), simulation.speedup)?;
     let products = timeline
         .events
         .iter()
         .map(|event| event.product.clone())
         .collect::<std::collections::BTreeSet<_>>();
+    let loop_duration = fixture_loop_duration(&timeline, simulation.speedup)?;
     let live_root = config.live_root.clone();
     let scratch_root = config.scratch_root.join("live-feed-simulation");
     let poll_interval = Duration::from_millis(config.poll_loop_interval_ms.min(1_000));
+    let speedup = simulation.speedup;
     thread::spawn(move || {
         let provider = EmptyCycleDataProvider;
         let publisher = FileLiveFeedPublisher::new(live_root, SystemClock);
-        let tasks = products
-            .into_iter()
-            .map(
-                |product| -> anyhow::Result<Box<dyn LiveFeedPollingTask + Send>> {
-                    let source = SimulatedLiveFeedSource::from_timeline(
-                        product.clone(),
-                        timeline.clone(),
-                        clock_map.clone(),
-                    )?;
-                    let builder = CompiledFixtureStateBuilder::new(fixture_root.clone(), product);
-                    Ok(Box::new(LiveFeedSourceAndBuilder::new(source, builder)))
-                },
-            )
-            .collect::<anyhow::Result<Vec<_>>>();
-        let mut tasks = match tasks {
-            Ok(tasks) => tasks,
-            Err(error) => {
-                eprintln!("live-feed simulation setup failed: {error:#}");
-                return;
-            }
-        };
         loop {
-            let result = run_upstream_live_feed_publish_tick(
-                Utc::now(),
-                &mut tasks,
-                &scratch_root,
-                &provider,
-                &publisher,
-                &broker,
-            );
-            log_tick_result("simulation", &result);
-            thread::sleep(poll_interval);
+            let simulation_zero = Utc::now();
+            let tasks = products
+                .iter()
+                .map(
+                    |product| -> anyhow::Result<Box<dyn LiveFeedPollingTask + Send>> {
+                        let source = SimulatedLiveFeedSource::from_timeline(
+                            product.clone(),
+                            timeline.clone(),
+                            simulation_zero,
+                            speedup,
+                        )?;
+                        let builder =
+                            CompiledFixtureStateBuilder::new(fixture_root.clone(), product);
+                        Ok(Box::new(LiveFeedSourceAndBuilder::new(source, builder)))
+                    },
+                )
+                .collect::<anyhow::Result<Vec<_>>>();
+            let mut tasks = match tasks {
+                Ok(tasks) => tasks,
+                Err(error) => {
+                    eprintln!("live-feed simulation setup failed: {error:#}");
+                    return;
+                }
+            };
+            loop {
+                let now = Utc::now();
+                let result = run_upstream_live_feed_publish_tick(
+                    now,
+                    &mut tasks,
+                    &scratch_root,
+                    &provider,
+                    &publisher,
+                    &broker,
+                );
+                log_tick_result("simulation", &result);
+                if loop_duration
+                    .is_some_and(|duration| now.signed_duration_since(simulation_zero) >= duration)
+                {
+                    eprintln!(
+                        "live-feed simulation restarting fixture timeline after {} ms",
+                        now.signed_duration_since(simulation_zero)
+                            .num_milliseconds()
+                    );
+                    break;
+                }
+                thread::sleep(poll_interval);
+            }
         }
     });
     Ok(())
@@ -654,10 +663,6 @@ impl SseBroker for BroadcastSseBroker {
 }
 
 fn list_live_feed_event_frames(root: &Path) -> anyhow::Result<Vec<Vec<LiveFeedSseEvent>>> {
-    let version_frames = list_live_feed_version_event_frames(root)?;
-    if !version_frames.is_empty() {
-        return Ok(version_frames);
-    }
     let current = root.join("current.json");
     if !current.is_file() {
         return Ok(Vec::new());
@@ -702,75 +707,6 @@ fn list_live_feed_event_frames(root: &Path) -> anyhow::Result<Vec<Vec<LiveFeedSs
     }
     events.sort_by(|left, right| left.id.cmp(&right.id));
     Ok((!events.is_empty()).then_some(events).into_iter().collect())
-}
-
-fn list_live_feed_version_event_frames(root: &Path) -> anyhow::Result<Vec<Vec<LiveFeedSseEvent>>> {
-    let versions_root = root.join("versions");
-    if !versions_root.is_dir() {
-        return Ok(Vec::new());
-    }
-    let mut events_by_product = BTreeMap::<String, Vec<OrderedLiveFeedSseEvent>>::new();
-    for product_entry in sorted_read_dir(&versions_root)? {
-        if !product_entry.file_type()?.is_dir() {
-            continue;
-        }
-        let product = product_entry.file_name().to_string_lossy().into_owned();
-        let mut product_events = Vec::new();
-        for version_entry in sorted_read_dir(&product_entry.path())? {
-            let file_name = version_entry.file_name().to_string_lossy().into_owned();
-            if !file_name.ends_with(".json") || !version_entry.file_type()?.is_file() {
-                continue;
-            }
-            let version_path = version_entry.path();
-            let manifest: LiveFeedVersionManifest = serde_json::from_slice(
-                &fs::read(&version_path)
-                    .with_context(|| format!("failed to read {}", version_path.display()))?,
-            )
-            .with_context(|| format!("failed to parse {}", version_path.display()))?;
-            product_events.push(OrderedLiveFeedSseEvent {
-                sort_key: format!("{file_name}:{}", manifest.product),
-                event: LiveFeedSseEvent {
-                    id: format!("{}:{}", manifest.product, manifest.version),
-                    product: manifest.product.clone(),
-                    version: manifest.version,
-                    version_manifest_url: format!("versions/{}/{}", manifest.product, file_name),
-                    state_url: manifest.state.url,
-                    state_sha256: manifest.state.state_sha256,
-                },
-            });
-        }
-        if !product_events.is_empty() {
-            product_events.sort_by(|left, right| left.sort_key.cmp(&right.sort_key));
-            events_by_product.insert(product, product_events);
-        }
-    }
-    let mut frames = Vec::new();
-    let mut index = 0;
-    while events_by_product
-        .values()
-        .any(|events| index < events.len())
-    {
-        let mut frame = Vec::new();
-        for events in events_by_product.values() {
-            if let Some(event) = events.get(index) {
-                frame.push(event.event.clone());
-            }
-        }
-        if !frame.is_empty() {
-            frames.push(frame);
-        }
-        index += 1;
-    }
-    Ok(frames)
-}
-
-fn sorted_read_dir(path: &Path) -> anyhow::Result<Vec<fs::DirEntry>> {
-    let mut entries = fs::read_dir(path)
-        .with_context(|| format!("failed to read {}", path.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    entries.sort_by_key(|entry| entry.file_name());
-    Ok(entries)
 }
 
 fn serve_live_feed_file(
@@ -943,22 +879,21 @@ mod tests {
     }
 
     #[test]
-    fn event_frames_are_grouped_by_timeline_index_across_products() -> anyhow::Result<()> {
+    fn event_frames_snapshot_current_products_only() -> anyhow::Result<()> {
         let temp = tempdir()?;
         publish_json_version(temp.path(), "metars", "m1")?;
         publish_json_version(temp.path(), "metars", "m2")?;
         publish_json_version(temp.path(), "nexrad", "n1")?;
 
         let frames = list_live_feed_event_frames(temp.path())?;
-        assert_eq!(frames.len(), 2);
+        assert_eq!(frames.len(), 1);
         assert_eq!(
             frames[0]
                 .iter()
                 .map(|event| event.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["metars:m1", "nexrad:n1"]
+            vec!["metars:m2", "nexrad:n1"]
         );
-        assert_eq!(frames[1][0].id, "metars:m2");
         Ok(())
     }
 

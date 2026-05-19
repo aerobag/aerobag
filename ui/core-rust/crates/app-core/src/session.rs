@@ -287,6 +287,7 @@ fn lock_sessions() -> MutexGuard<'static, HashMap<u32, UiSession>> {
 }
 
 const MAP_OVERLAY_STATUS_PREFIX: &str = "map_overlay:";
+const PROCEDURE_GEOMETRY_STATUS_PREFIX: &str = "procedure_geometry:";
 const LIVE_FEED_METARS_STATUS_ID: &str = "live_feed:metars_unavailable";
 const LIVE_FEED_NEXRAD_STATUS_ID: &str = "live_feed:nexrad_unavailable";
 const LIVE_FEED_TFRS_STATUS_ID: &str = "live_feed:tfrs_unavailable";
@@ -351,6 +352,88 @@ fn sync_map_overlay_status_records(
     } else {
         Vec::new()
     }
+}
+
+fn procedure_geometry_status_records_for_plan(plan: &FlightPlan) -> Vec<DataStatusRecord> {
+    plan.route_components
+        .iter()
+        .enumerate()
+        .filter_map(|(index, component)| {
+            let crate::RouteComponent::Procedure { procedure } = component else {
+                return None;
+            };
+            if procedure.data_quality.is_empty() {
+                return None;
+            }
+            let component_id = plan
+                .route_component_uids
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| {
+                    format!(
+                        "{}:{}:{index}",
+                        procedure.airport_id.0, procedure.procedure_id
+                    )
+                });
+            let transition = procedure
+                .enroute_transition
+                .as_deref()
+                .or(procedure.runway_transition.as_deref())
+                .map(|value| format!(" {value}"))
+                .unwrap_or_default();
+            let detail = format!(
+                "Procedure geometry warning for {} {}{}:\n{}",
+                procedure.airport_id.0,
+                procedure.procedure_id,
+                transition,
+                procedure
+                    .data_quality
+                    .iter()
+                    .map(|message| format!("- {message}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            Some(DataStatusRecord::new(
+                format!("{PROCEDURE_GEOMETRY_STATUS_PREFIX}{component_id}"),
+                "PROC",
+                Some(procedure.procedure_id.clone()),
+                UiStatusSeverity::Caution,
+                true,
+                detail,
+            ))
+        })
+        .collect()
+}
+
+fn sync_procedure_geometry_status_records(session: &mut UiSession, plan: &FlightPlan) -> bool {
+    let records = procedure_geometry_status_records_for_plan(plan);
+    let active_ids = records
+        .iter()
+        .map(|record| record.id.clone())
+        .collect::<BTreeSet<_>>();
+    let stale_ids = session
+        .data_status_records
+        .keys()
+        .filter(|id| id.starts_with(PROCEDURE_GEOMETRY_STATUS_PREFIX) && !active_ids.contains(*id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut changed = false;
+    for id in stale_ids {
+        changed |= session.data_status_records.remove(&id).is_some();
+    }
+    for record in records {
+        changed |= session
+            .data_status_records
+            .get(&record.id)
+            .is_none_or(|existing| existing != &record);
+        session
+            .data_status_records
+            .insert(record.id.clone(), record);
+    }
+    if changed {
+        sync_data_status_projection(session);
+    }
+    changed
 }
 
 fn live_feed_unavailable_status_record(product: &str, detail: String) -> DataStatusRecord {
@@ -480,6 +563,13 @@ fn complete_nexrad_overlay_outcome(
     ))
 }
 
+fn missing_active_plan_error(context: &str) -> AppError {
+    AppError {
+        kind: AppErrorKind::Internal,
+        message: format!("{context} produced no active flight plan"),
+    }
+}
+
 pub fn create_ui_session(
     vector_manifest_json: &str,
     plan: FlightPlan,
@@ -533,11 +623,15 @@ fn create_ui_session_inner(
     )?;
     let app_state = register_default_situation_sources(app_state)?;
     let app_state = register_debug_ownship_driver_source(app_state)?;
+    let active_plan = app_state
+        .active_plan
+        .clone()
+        .ok_or_else(|| missing_active_plan_error("create session"))?;
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_reduce_replace_flight_plan");
     }
     let chart_page_state = derive_compact_chart_page_state(
-        &plan,
+        &active_plan,
         recent_airport_ids,
         selected_airport_id,
         selected_chart_id,
@@ -565,7 +659,12 @@ fn create_ui_session_inner(
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_project_other_ui_state");
     }
-    let data_status_state = default_data_status_state();
+    let mut data_status_records = BTreeMap::new();
+    for record in procedure_geometry_status_records_for_plan(&active_plan) {
+        data_status_records.insert(record.id.clone(), record);
+    }
+    let hushed_status_ids = BTreeSet::new();
+    let data_status_state = project_data_status_state(&data_status_records, &hushed_status_ids);
     let debug_state = default_debug_state();
     let snapshot_debug_state = debug_state_for_app_state(&debug_state, &app_state);
     let snapshot = UiSessionSnapshot {
@@ -596,8 +695,8 @@ fn create_ui_session_inner(
             nav_kv_store_id: None,
             nav_kv_store: None,
             map_layer_state,
-            data_status_records: BTreeMap::new(),
-            hushed_status_ids: BTreeSet::new(),
+            data_status_records,
+            hushed_status_ids,
             data_status_state,
             debug_state,
             resource_policy: CoreResourcePolicy::InstalledPackage,
@@ -3758,13 +3857,19 @@ fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> App
         &session.app_state,
         AppEvent::ReplaceFlightPlan(plan.clone()),
     )?;
+    let normalized_plan = session
+        .app_state
+        .active_plan
+        .clone()
+        .ok_or_else(|| missing_active_plan_error("replace flight plan"))?;
     session.guidance_leg_geometry.clear();
     session.chart_page_state = derive_compact_chart_page_state(
-        &plan,
+        &normalized_plan,
         &session.chart_page_state.recent_airport_ids,
         Some(&session.chart_page_state.selected_airport_id),
         Some(&session.chart_page_state.selected_chart_id),
     );
+    sync_procedure_geometry_status_records(session, &normalized_plan);
     Ok(())
 }
 
@@ -3943,6 +4048,7 @@ fn default_map_layer_state() -> UiMapLayerState {
     }
 }
 
+#[cfg(test)]
 fn default_data_status_state() -> UiDataStatusState {
     UiDataStatusState { boxes: Vec::new() }
 }
@@ -6124,6 +6230,69 @@ mod tests {
                 && box_.detail.contains("missing from the live feed index")));
     }
 
+    #[test]
+    fn procedure_data_quality_in_flight_plan_drives_caution() {
+        let mut plan = FlightPlan {
+            id: "procedure-quality".to_string(),
+            name: "Procedure quality".to_string(),
+            legs: Vec::new(),
+            route_components: vec![RouteComponent::Procedure {
+                procedure: crate::ProcedureSegment {
+                    airport_id: AirportId("KAAA".to_string()),
+                    procedure_id: "RNAV-A".to_string(),
+                    kind: ProcedureKind::Approach,
+                    runway_transition: None,
+                    enroute_transition: Some("TRANS".to_string()),
+                    terminal_discontinuity: None,
+                    data_quality: vec!["Procedure encoding is suspicious; read plate.".to_string()],
+                },
+            }],
+            route_component_uids: vec!["row-proc".to_string()],
+            route_component_uid_counter: 1,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: None,
+            destination: Some(AirportId("KAAA".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            plan.clone(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+
+        let warning = init
+            .snapshot
+            .data_status_state
+            .boxes
+            .iter()
+            .find(|box_| box_.id == "procedure_geometry:row-proc")
+            .expect("procedure geometry caution");
+        assert_eq!(warning.label, "PROC");
+        assert_eq!(warning.value.as_deref(), Some("RNAV-A"));
+        assert!(warning.drives_caution);
+        assert!(warning.detail.contains("KAAA RNAV-A TRANS"));
+        assert!(warning.detail.contains("Procedure encoding is suspicious"));
+
+        plan.route_components.clear();
+        plan.route_component_uids.clear();
+        let snapshot =
+            replace_flight_plan_in_session(init.handle, plan).expect("replace procedure plan");
+
+        assert!(!snapshot
+            .data_status_state
+            .boxes
+            .iter()
+            .any(|box_| box_.id.starts_with(PROCEDURE_GEOMETRY_STATUS_PREFIX)));
+    }
+
     fn complete_session_snapshot(outcome: HadOperationOutcome) -> UiSessionSnapshot {
         match outcome {
             HadOperationOutcome::Complete { result, .. } => {
@@ -7334,6 +7503,7 @@ mod tests {
                         runway_transition: None,
                         enroute_transition: None,
                         terminal_discontinuity: None,
+                        data_quality: Vec::new(),
                     },
                 },
             ],
@@ -7446,6 +7616,7 @@ mod tests {
                     runway_transition: None,
                     enroute_transition: None,
                     terminal_discontinuity: None,
+                    data_quality: Vec::new(),
                 },
             }],
             route_component_uids: vec!["row-proc".to_string()],
@@ -7561,6 +7732,7 @@ mod tests {
                     runway_transition: None,
                     enroute_transition: None,
                     terminal_discontinuity: None,
+                    data_quality: Vec::new(),
                 },
             }],
             route_component_uids: vec!["row-proc".to_string()],
@@ -7778,6 +7950,7 @@ mod tests {
                     runway_transition: None,
                     enroute_transition: None,
                     terminal_discontinuity: None,
+                    data_quality: Vec::new(),
                 },
             }],
             route_component_uids: vec!["row-proc".to_string()],
@@ -7932,6 +8105,7 @@ mod tests {
                         runway_transition: None,
                         enroute_transition: None,
                         terminal_discontinuity: Some(ProcedureDiscontinuity::Hold),
+                        data_quality: Vec::new(),
                     },
                 },
                 RouteComponent::Waypoint {
@@ -8117,6 +8291,7 @@ mod tests {
                     runway_transition: None,
                     enroute_transition: None,
                     terminal_discontinuity: None,
+                    data_quality: Vec::new(),
                 },
             }],
             route_component_uids: vec!["row-proc".to_string()],

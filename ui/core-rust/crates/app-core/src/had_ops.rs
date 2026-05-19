@@ -2342,6 +2342,11 @@ fn materialized_procedure_from_geometry_record(
         .iter()
         .map(|bundle| resolved_leg_from_geometry_bundle(&record, bundle, component_index))
         .collect::<AppResult<Vec<_>>>()?;
+    let data_quality = record
+        .data_quality
+        .into_iter()
+        .map(|annotation| annotation.message)
+        .collect::<Vec<_>>();
 
     Ok(MaterializedProcedure {
         procedure: ProcedureSegment {
@@ -2351,14 +2356,11 @@ fn materialized_procedure_from_geometry_record(
             runway_transition: record.key.runway_transition,
             enroute_transition: record.key.enroute_transition,
             terminal_discontinuity,
+            data_quality: data_quality.clone(),
         },
         concretized_items,
         resolved_legs,
-        data_quality: record
-            .data_quality
-            .into_iter()
-            .map(|annotation| annotation.message)
-            .collect(),
+        data_quality,
     })
 }
 
@@ -3717,6 +3719,9 @@ mod tests {
                     "path_termination": "track_to_fix",
                     "leg_sequence": 10,
                     "path": { "elements": [] }
+                }],
+                "data_quality": [{
+                    "message": "Procedure encoding is suspicious; read plate."
                 }]
             }),
         )]);
@@ -3750,6 +3755,14 @@ mod tests {
         assert_eq!(
             materialized.procedure.enroute_transition,
             Some("TRANS".to_string())
+        );
+        assert_eq!(
+            materialized.procedure.data_quality,
+            vec!["Procedure encoding is suspicious; read plate.".to_string()]
+        );
+        assert_eq!(
+            materialized.data_quality,
+            vec!["Procedure encoding is suspicious; read plate.".to_string()]
         );
         assert_eq!(
             materialized.concretized_items,

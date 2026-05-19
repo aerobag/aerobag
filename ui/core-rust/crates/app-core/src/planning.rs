@@ -64,6 +64,8 @@ pub struct ProcedureSegment {
     pub enroute_transition: Option<String>,
     #[serde(default)]
     pub terminal_discontinuity: Option<ProcedureDiscontinuity>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data_quality: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -5200,6 +5202,7 @@ mod tests {
                     runway_transition: Some("RW10".to_string()),
                     enroute_transition: Some("FOO".to_string()),
                     terminal_discontinuity: None,
+                    data_quality: Vec::new(),
                 },
             },
             RouteComponent::Waypoint {
@@ -5240,6 +5243,7 @@ mod tests {
                     runway_transition: Some("RW10".to_string()),
                     enroute_transition: Some("FOO".to_string()),
                     terminal_discontinuity: Some(ProcedureDiscontinuity::Vectors),
+                    data_quality: Vec::new(),
                 },
             },
             RouteComponent::Waypoint {
@@ -5306,6 +5310,7 @@ mod tests {
                 runway_transition: None,
                 enroute_transition: Some("COLTS".to_string()),
                 terminal_discontinuity: Some(ProcedureDiscontinuity::Vectors),
+                data_quality: Vec::new(),
             },
             vec![
                 ResolvedLeg {
@@ -5348,6 +5353,7 @@ mod tests {
                 runway_transition: None,
                 enroute_transition: Some("PICUP".to_string()),
                 terminal_discontinuity: Some(ProcedureDiscontinuity::Vectors),
+                data_quality: Vec::new(),
             },
             vec![
                 ResolvedLeg {
@@ -6083,6 +6089,7 @@ mod tests {
                         runway_transition: Some("RW07".to_string()),
                         enroute_transition: None,
                         terminal_discontinuity: Some(ProcedureDiscontinuity::Vectors),
+                        data_quality: Vec::new(),
                     },
                 },
                 RouteComponent::Waypoint {
@@ -6408,6 +6415,7 @@ mod tests {
                     runway_transition: None,
                     enroute_transition: Some("ISITE".to_string()),
                     terminal_discontinuity: Some(ProcedureDiscontinuity::Hold),
+                    data_quality: Vec::new(),
                 },
             }],
             route_component_uids: vec!["row-proc".to_string()],
@@ -6473,6 +6481,7 @@ mod tests {
                         runway_transition: Some("RW10".to_string()),
                         enroute_transition: Some("FOO".to_string()),
                         terminal_discontinuity: None,
+                        data_quality: Vec::new(),
                     },
                 },
                 RouteComponent::Waypoint {
@@ -7374,6 +7383,7 @@ mod tests {
             runway_transition: None,
             enroute_transition: Some("JAWBN".to_string()),
             terminal_discontinuity: None,
+            data_quality: Vec::new(),
         };
         let procedure_legs = vec![
             ResolvedLeg {
@@ -7432,6 +7442,7 @@ mod tests {
                         runway_transition: Some("RW35".to_string()),
                         enroute_transition: Some("FOO".to_string()),
                         terminal_discontinuity: None,
+                        data_quality: Vec::new(),
                     },
                 },
                 RouteComponent::Waypoint {

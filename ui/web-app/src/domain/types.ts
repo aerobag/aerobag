@@ -178,6 +178,7 @@ export type ProcedureSegment = {
   runway_transition: string | null;
   enroute_transition: string | null;
   terminal_discontinuity?: ProcedureDiscontinuity | null;
+  data_quality?: string[];
 };
 
 export type ProcedureSummary = {

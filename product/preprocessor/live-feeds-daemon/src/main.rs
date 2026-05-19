@@ -17,15 +17,14 @@ use preprocessor_fetch::{FetchCacheConfig, FetchCacheMode};
 use preprocessor_live_feeds::{
     engine::{
         default_poll_interval, run_upstream_live_feed_publish_tick, CompiledFixtureCache,
-        CycleDataProvider, FileLiveFeedPublisher, FixedClock, FixtureCacheKeyPart,
-        IntervalLiveFeedSource, LiveFeedInvalidation, LiveFeedPollingTask,
-        LiveFeedSourceAndBuilder, SseBroker, SystemClock,
+        FileLiveFeedPublisher, FixedClock, FixtureCacheKeyPart, IntervalLiveFeedSource,
+        LiveFeedInvalidation, LiveFeedPollingTask, LiveFeedSourceAndBuilder, SseBroker,
+        SystemClock,
     },
     products::{
         LiveFeedFetchConfig, MetarLiveFeedBuilder, NexradSourceGridLiveFeedBuilder,
         ObstaclesLiveFeedBuilder, TfrLiveFeedBuilder, WindsAloftLiveFeedBuilder,
     },
-    publication::PublishedCycleDataProvider,
     simulation::{
         fixture_loop_duration, next_fixture_loop_virtual_zero, timeline_from_live_feed_root,
         CompiledFixtureStateBuilder, SimulatedLiveFeedSource,
@@ -35,8 +34,8 @@ use serde::Serialize;
 
 fn usage() -> &'static str {
     "usage:
-  aerobag-live-feedsd --live-root <path> --listen <addr> [--publication-root <path>] [--scratch-root <path>] [--event-interval-ms <n>]
-  aerobag-live-feedsd --simulation --live-root <path> --listen <addr> [--publication-root <path>] [--fixture-root <path>] [--fixture-cache <path>] [--speedup <n>] [--event-interval-ms <n>]
+  aerobag-live-feedsd --live-root <path> --listen <addr> [--scratch-root <path>] [--event-interval-ms <n>]
+  aerobag-live-feedsd --simulation --live-root <path> --listen <addr> [--fixture-root <path>] [--fixture-cache <path>] [--speedup <n>] [--event-interval-ms <n>]
   aerobag-live-feedsd --check-config --live-root <path> --listen <addr> [--simulation --fixture-root <path>]
 
 The daemon owns live-feed polling, publication, static live-feed payload
@@ -48,7 +47,6 @@ dev, but Vite must not synthesize live-feed events."
 struct DaemonConfig {
     live_root: PathBuf,
     listen: SocketAddr,
-    publication_root: Option<PathBuf>,
     scratch_root: PathBuf,
     fetch_cache_root: PathBuf,
     fetch_cache_mode: String,
@@ -83,7 +81,6 @@ impl DaemonConfig {
         let _program = args.next();
         let mut live_root = None;
         let mut listen = None;
-        let mut publication_root = None;
         let mut scratch_root = None;
         let mut fetch_cache_root = None;
         let mut fetch_cache_mode = "cache-first".to_string();
@@ -103,9 +100,6 @@ impl DaemonConfig {
                     std::process::exit(0);
                 }
                 "--live-root" => live_root = Some(next_path(&mut args, "--live-root")?),
-                "--publication-root" => {
-                    publication_root = Some(next_path(&mut args, "--publication-root")?)
-                }
                 "--fetch-cache-root" => {
                     fetch_cache_root = Some(next_path(&mut args, "--fetch-cache-root")?)
                 }
@@ -188,7 +182,6 @@ impl DaemonConfig {
         Ok(Self {
             live_root,
             listen,
-            publication_root,
             scratch_root,
             fetch_cache_root,
             fetch_cache_mode,
@@ -217,19 +210,6 @@ fn validate_config(config: &DaemonConfig) -> anyhow::Result<()> {
     ensure_parent(&config.scratch_root, "--scratch-root")?;
     ensure_parent(&config.fetch_cache_root, "--fetch-cache-root")?;
     FetchCacheMode::parse(&config.fetch_cache_mode)?;
-    if let Some(publication_root) = &config.publication_root {
-        if !publication_root.is_dir() {
-            bail!(
-                "--publication-root does not exist: {}",
-                publication_root.display()
-            );
-        }
-        let provider = PublishedCycleDataProvider::new(publication_root.clone());
-        let station_ids = provider.current_towered_metar_station_ids()?;
-        if station_ids.is_empty() {
-            bail!("--publication-root yielded no towered METAR station IDs");
-        }
-    }
     if let Some(simulation) = &config.simulation {
         if let Some(fixture_root) = &simulation.fixture_root {
             if !fixture_root.exists() {
@@ -293,16 +273,11 @@ fn start_live_feed_driver(config: &DaemonConfig, broker: BroadcastSseBroker) -> 
     if let Some(simulation) = &config.simulation {
         return start_simulation_driver(config, simulation, broker);
     }
-    let Some(publication_root) = config.publication_root.clone() else {
-        eprintln!("live-feed production polling disabled: no --publication-root");
-        return Ok(());
-    };
     let live_root = config.live_root.clone();
     let scratch_root = config.scratch_root.join("live-feed-build");
     let poll_interval = Duration::from_millis(config.poll_loop_interval_ms);
     let fetch = live_feed_fetch_config(config)?;
     thread::spawn(move || {
-        let provider = PublishedCycleDataProvider::new(publication_root);
         let publisher = FileLiveFeedPublisher::new(live_root, SystemClock);
         let mut tasks = production_tasks(fetch);
         loop {
@@ -310,7 +285,6 @@ fn start_live_feed_driver(config: &DaemonConfig, broker: BroadcastSseBroker) -> 
                 Utc::now(),
                 &mut tasks,
                 &scratch_root,
-                &provider,
                 &publisher,
                 &broker,
             );
@@ -342,7 +316,6 @@ fn start_simulation_driver(
     let poll_interval = Duration::from_millis(config.poll_loop_interval_ms.min(1_000));
     let speedup = simulation.speedup;
     thread::spawn(move || {
-        let provider = EmptyCycleDataProvider;
         let publisher = FileLiveFeedPublisher::new(live_root, SystemClock);
         let mut virtual_zero = None;
         loop {
@@ -378,7 +351,6 @@ fn start_simulation_driver(
                     now,
                     &mut tasks,
                     &scratch_root,
-                    &provider,
                     &publisher,
                     &broker,
                 );
@@ -476,17 +448,6 @@ fn log_tick_result(label: &str, result: &preprocessor_live_feeds::engine::LiveFe
             "live-feed {label} {} {:?} failed: {}",
             failure.product, failure.phase, failure.error
         );
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct EmptyCycleDataProvider;
-
-impl CycleDataProvider for EmptyCycleDataProvider {
-    fn current_towered_metar_station_ids(
-        &self,
-    ) -> anyhow::Result<std::collections::BTreeSet<String>> {
-        Ok(std::collections::BTreeSet::new())
     }
 }
 
@@ -825,8 +786,6 @@ mod tests {
                 "/tmp/live-feeds",
                 "--listen",
                 "127.0.0.1:8095",
-                "--publication-root",
-                "/tmp/aerobag-artifacts",
                 "--event-interval-ms",
                 "17",
             ]
@@ -835,10 +794,6 @@ mod tests {
         )?;
         assert_eq!(config.live_root, PathBuf::from("/tmp/live-feeds"));
         assert_eq!(config.listen, "127.0.0.1:8095".parse::<SocketAddr>()?);
-        assert_eq!(
-            config.publication_root,
-            Some(PathBuf::from("/tmp/aerobag-artifacts"))
-        );
         assert_eq!(config.event_interval_ms, 17);
         assert!(config.check_config);
         assert!(config.simulation.is_none());
@@ -1057,7 +1012,6 @@ mod tests {
         let config = DaemonConfig {
             live_root: root.to_path_buf(),
             listen: addr,
-            publication_root: None,
             scratch_root: root.join("../private-work"),
             fetch_cache_root: root.join("../private-work/fetch-cache"),
             fetch_cache_mode: "offline".to_string(),

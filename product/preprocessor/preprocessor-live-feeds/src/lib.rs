@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -13,10 +13,9 @@ use sha2::{Digest, Sha256};
 
 pub mod engine;
 pub mod products;
-pub mod publication;
 pub mod simulation;
 
-const METAR_PRODUCT_CONTRACT_VERSION: u32 = 6;
+const METAR_PRODUCT_CONTRACT_VERSION: u32 = 7;
 const METAR_TREND_TOKENS: &[&str] = &["BECMG", "TEMPO", "INTER", "NOSIG", "PROB30", "PROB40"];
 
 #[derive(Debug, Clone)]
@@ -44,7 +43,6 @@ pub struct BuildMetarRequest {
     pub output_dir: PathBuf,
     pub version_label: String,
     pub generated_at_utc: DateTime<Utc>,
-    pub important_station_ids: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -114,7 +112,6 @@ struct MetarManifestFiles {
 #[derive(Debug, Clone, Serialize)]
 struct MetarManifestCounts {
     metars: usize,
-    important_metars: usize,
     tafs: usize,
     pireps: usize,
 }
@@ -250,7 +247,6 @@ pub struct StructuredMetarDataset {
     schema_version: u32,
     version_label: String,
     metar_count: usize,
-    important_station_ids: Vec<String>,
     metars_by_station: BTreeMap<String, StructuredMetarRecord>,
 }
 
@@ -313,7 +309,6 @@ struct MetarProductModel {
     metars_by_station: BTreeMap<String, StructuredMetarRecord>,
     tafs_by_station: BTreeMap<String, StructuredTafRecord>,
     pireps: Vec<StructuredPirepRecord>,
-    important_station_ids: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -577,12 +572,10 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
         &request.metar_xml_path,
         &request.taf_xml_path,
         &request.pirep_xml_path,
-        &request.important_station_ids,
     )?;
     let metar_count = model.metars_by_station.len();
     let taf_count = model.tafs_by_station.len();
     let pirep_count = model.pireps.len();
-    let important_metar_count = model.important_station_ids.len();
 
     let structured_json_path = request.output_dir.join("metars.json");
     let tafs_json_path = request.output_dir.join("tafs.json");
@@ -598,10 +591,9 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
     write_json_pretty(
         &structured_json_path,
         &StructuredMetarDataset {
-            schema_version: 3,
+            schema_version: 4,
             version_label: request.version_label.clone(),
             metar_count,
-            important_station_ids: model.important_station_ids.iter().cloned().collect(),
             metars_by_station: model.metars_by_station.clone(),
         },
     )?;
@@ -646,7 +638,6 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
         },
         counts: MetarManifestCounts {
             metars: metar_count,
-            important_metars: important_metar_count,
             tafs: taf_count,
             pireps: pirep_count,
         },
@@ -672,14 +663,8 @@ pub fn metar_content_fingerprint(
     metar_xml_path: &Path,
     taf_xml_path: &Path,
     pirep_xml_path: &Path,
-    important_station_ids: &BTreeSet<String>,
 ) -> anyhow::Result<String> {
-    let model = metar_product_model(
-        metar_xml_path,
-        taf_xml_path,
-        pirep_xml_path,
-        important_station_ids,
-    )?;
+    let model = metar_product_model(metar_xml_path, taf_xml_path, pirep_xml_path)?;
     let bytes = serde_json::to_vec(&(METAR_PRODUCT_CONTRACT_VERSION, model))
         .context("failed to encode canonical METAR model")?;
     Ok(format!("{:x}", Sha256::digest(&bytes)))
@@ -689,7 +674,6 @@ fn metar_product_model(
     metar_xml_path: &Path,
     taf_xml_path: &Path,
     pirep_xml_path: &Path,
-    important_station_ids: &BTreeSet<String>,
 ) -> anyhow::Result<MetarProductModel> {
     let mut metars_by_station = BTreeMap::new();
     for mut record in structured_metar_records(metar_xml_path)? {
@@ -731,16 +715,10 @@ fn metar_product_model(
         }
     }
     let pireps = structured_pirep_records(pirep_xml_path)?;
-    let important_station_ids = important_station_ids
-        .iter()
-        .filter(|station_id| metars_by_station.contains_key(*station_id))
-        .cloned()
-        .collect::<BTreeSet<_>>();
     Ok(MetarProductModel {
         metars_by_station,
         tafs_by_station,
         pireps,
-        important_station_ids,
     })
 }
 
@@ -2509,11 +2487,8 @@ mod tests {
             format!(r#"<?xml version="1.0"?><response><data>{pirep_a}{pirep_b}</data></response>"#),
         )?;
 
-        let important_station_ids = BTreeSet::from(["KAAA".to_string()]);
-        let first_fingerprint =
-            metar_content_fingerprint(&first, &taf_first, &pirep_first, &important_station_ids)?;
-        let second_fingerprint =
-            metar_content_fingerprint(&second, &taf_second, &pirep_second, &important_station_ids)?;
+        let first_fingerprint = metar_content_fingerprint(&first, &taf_first, &pirep_first)?;
+        let second_fingerprint = metar_content_fingerprint(&second, &taf_second, &pirep_second)?;
         assert_eq!(first_fingerprint, second_fingerprint);
         let version_label = first_fingerprint.chars().take(16).collect::<String>();
         let generated_at_utc = DateTime::parse_from_rfc3339("2026-04-16T04:00:00Z")
@@ -2526,7 +2501,6 @@ mod tests {
             output_dir: temp.path().join("first-out"),
             version_label: version_label.clone(),
             generated_at_utc,
-            important_station_ids: important_station_ids.clone(),
         })?;
         let second_result = build_metar_dataset(&BuildMetarRequest {
             metar_xml_path: second,
@@ -2535,7 +2509,6 @@ mod tests {
             output_dir: temp.path().join("second-out"),
             version_label,
             generated_at_utc,
-            important_station_ids,
         })?;
 
         assert_eq!(
@@ -2574,6 +2547,7 @@ mod tests {
         assert!(dataset
             .pointer("/metars_by_station/KBBB/clouds/ceiling")
             .is_none());
+        assert!(dataset.get("important_station_ids").is_none());
 
         let manifest: Value = serde_json::from_slice(&fs::read(&first_result.manifest_path)?)?;
         assert!(first_result
@@ -2605,6 +2579,7 @@ mod tests {
         assert!(manifest
             .pointer("/counts/max_wx_records_per_tile")
             .is_none());
+        assert!(manifest.pointer("/counts/important_metars").is_none());
 
         assert_eq!(
             manifest

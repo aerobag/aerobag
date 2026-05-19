@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -43,10 +43,6 @@ impl Clock for FixedClock {
     fn now_utc(&self) -> DateTime<Utc> {
         self.now
     }
-}
-
-pub trait CycleDataProvider {
-    fn current_towered_metar_station_ids(&self) -> anyhow::Result<BTreeSet<String>>;
 }
 
 pub trait UpstreamSource {
@@ -174,7 +170,6 @@ pub trait ProductBuilder {
         &self,
         event: &UpstreamEvent,
         scratch_dir: &Path,
-        cycle_data: &dyn CycleDataProvider,
     ) -> anyhow::Result<BuiltLiveFeedState>;
 }
 
@@ -333,7 +328,6 @@ pub trait LiveFeedPollingTask {
         &self,
         event: &UpstreamEvent,
         scratch_dir: &Path,
-        cycle_data: &dyn CycleDataProvider,
     ) -> anyhow::Result<BuiltLiveFeedState>;
 }
 
@@ -353,9 +347,8 @@ where
         &self,
         event: &UpstreamEvent,
         scratch_dir: &Path,
-        cycle_data: &dyn CycleDataProvider,
     ) -> anyhow::Result<BuiltLiveFeedState> {
-        (**self).build_state(event, scratch_dir, cycle_data)
+        (**self).build_state(event, scratch_dir)
     }
 }
 
@@ -388,7 +381,6 @@ where
         &self,
         event: &UpstreamEvent,
         scratch_dir: &Path,
-        cycle_data: &dyn CycleDataProvider,
     ) -> anyhow::Result<BuiltLiveFeedState> {
         if self.builder.product_id() != self.source.product_id() {
             bail!(
@@ -397,7 +389,7 @@ where
                 self.builder.product_id()
             );
         }
-        self.builder.build_state(event, scratch_dir, cycle_data)
+        self.builder.build_state(event, scratch_dir)
     }
 }
 
@@ -442,7 +434,6 @@ pub fn run_upstream_live_feed_publish_tick<T, P, B>(
     now: DateTime<Utc>,
     tasks: &mut [T],
     scratch_root: &Path,
-    cycle_data: &dyn CycleDataProvider,
     publisher: &P,
     broker: &B,
 ) -> LiveFeedTickResult
@@ -476,7 +467,7 @@ where
                 continue;
             }
             let scratch_dir = live_feed_event_scratch_dir(scratch_root, &product_id, &event);
-            let built = match task.build_state(&event, &scratch_dir, cycle_data) {
+            let built = match task.build_state(&event, &scratch_dir) {
                 Ok(built) => built,
                 Err(error) => {
                     failures.push(FailedLiveFeedTask {
@@ -1240,7 +1231,7 @@ mod tests {
         let from = serde_json::json!({
             "version_label": "v1",
             "record_count": 1,
-            "important_station_ids": ["KAAA", "KBBB"],
+            "generated_at_utc": "2026-05-18T20:00:00Z",
             "records": {
                 "KAAA": {"value": 1}
             }
@@ -1248,7 +1239,7 @@ mod tests {
         let to = serde_json::json!({
             "version_label": "v2",
             "record_count": 1,
-            "important_station_ids": ["KAAA"],
+            "generated_at_utc": "2026-05-18T20:05:00Z",
             "records": {
                 "KAAA": {"value": 1}
             }
@@ -1479,7 +1470,6 @@ mod tests {
             Utc.with_ymd_and_hms(2026, 5, 18, 4, 0, 0).unwrap(),
             &mut tasks,
             &scratch_root,
-            &EmptyCycleData,
             &publisher,
             &broker,
         );
@@ -1724,7 +1714,6 @@ mod tests {
             &self,
             event: &UpstreamEvent,
             scratch_dir: &Path,
-            _cycle_data: &dyn CycleDataProvider,
         ) -> anyhow::Result<BuiltLiveFeedState> {
             fs::create_dir_all(scratch_dir)?;
             json_state(
@@ -1735,14 +1724,6 @@ mod tests {
                 "records",
                 &[("KSEA", 1)],
             )
-        }
-    }
-
-    struct EmptyCycleData;
-
-    impl CycleDataProvider for EmptyCycleData {
-        fn current_towered_metar_station_ids(&self) -> anyhow::Result<BTreeSet<String>> {
-            Ok(BTreeSet::new())
         }
     }
 

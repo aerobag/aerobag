@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::{
         atomic::{AtomicU32, Ordering},
         Mutex, MutexGuard, OnceLock,
@@ -132,6 +132,7 @@ struct UiSession {
     vector_tile_cache: HashMap<String, VectorAggregateTilePayload>,
     metar_tile_cache: HashMap<String, MetarTilePayload>,
     metar_payload: Option<MetarProductPayload>,
+    towered_metar_station_ids: Option<HashSet<String>>,
     taf_payload: Option<TafProductPayload>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<TfrProductPayload>,
@@ -506,6 +507,7 @@ fn create_ui_session_inner(
             vector_tile_cache: HashMap::new(),
             metar_tile_cache: HashMap::new(),
             metar_payload: None,
+            towered_metar_station_ids: None,
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
@@ -1924,6 +1926,7 @@ pub fn attach_nav_kv_store_to_session(
     let session = session_mut(&mut sessions, handle)?;
     session.nav_kv_store_id = Some(store_id);
     session.nav_kv_store = Some(store.clone());
+    session.towered_metar_station_ids = None;
     Ok(())
 }
 
@@ -2206,11 +2209,8 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
     if let Some(metars_value) = session.live_feeds.product_state_manifest("metars").cloned() {
         match serde_json::from_value::<MetarProductPayload>(metars_value) {
             Ok(payload) => {
-                session.metar_tile_cache = metar_tile_cache_for_live_feed(
-                    &payload,
-                    session.map_overlay_config.metar_layer.as_ref(),
-                );
                 session.metar_payload = Some(payload);
+                rebuild_metar_tile_cache(session);
                 clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
             }
             Err(err) => {
@@ -2250,6 +2250,7 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
 fn metar_tile_cache_for_live_feed(
     payload: &MetarProductPayload,
     layer: Option<&crate::map_overlay::PointTileLayerConfig>,
+    important_station_ids: &HashSet<String>,
 ) -> HashMap<String, MetarTilePayload> {
     let Some(layer) = layer else {
         return HashMap::new();
@@ -2257,9 +2258,7 @@ fn metar_tile_cache_for_live_feed(
     let mut cache = HashMap::new();
     for zoom in &layer.available_zooms {
         for record in payload.metars_by_station.values() {
-            if *zoom == layer.min_zoom
-                && !payload.important_station_ids.contains(&record.station_id)
-            {
+            if *zoom == layer.min_zoom && !important_station_ids.contains(&record.station_id) {
                 continue;
             }
             let Some((x, y)) = metar_tile_xy(record.latitude, record.longitude, *zoom) else {
@@ -2284,6 +2283,78 @@ fn metar_tile_cache_for_live_feed(
         }
     }
     cache
+}
+
+fn rebuild_metar_tile_cache(session: &mut UiSession) {
+    if let Some(payload) = session.metar_payload.as_ref() {
+        let empty = HashSet::new();
+        let important_station_ids = session.towered_metar_station_ids.as_ref().unwrap_or(&empty);
+        session.metar_tile_cache = metar_tile_cache_for_live_feed(
+            payload,
+            session.map_overlay_config.metar_layer.as_ref(),
+            important_station_ids,
+        );
+    } else {
+        session.metar_tile_cache.clear();
+    }
+}
+
+fn ensure_metar_station_importance_loaded(session: &mut UiSession) -> Result<(), HadReadError> {
+    if session.towered_metar_station_ids.is_some() {
+        return Ok(());
+    }
+    let Some(store) = session.nav_kv_store.as_ref() else {
+        session.towered_metar_station_ids = Some(HashSet::new());
+        return Ok(());
+    };
+    let station_ids = towered_metar_station_ids_from_nav_db(store)?;
+    session.towered_metar_station_ids = Some(station_ids);
+    rebuild_metar_tile_cache(session);
+    Ok(())
+}
+
+fn towered_metar_station_ids_from_nav_db(
+    store: &NavKvStore,
+) -> Result<HashSet<String>, HadReadError> {
+    let bytes = match store
+        .keys_with_prefix_lookup("navref/symbol/airport/")
+        .map_err(HadReadError::Fatal)?
+    {
+        NavKvLookup::Hit(bytes) => bytes,
+        NavKvLookup::MissingKey => return Ok(HashSet::new()),
+        NavKvLookup::MissingPages(pages) => return Err(HadReadError::NeedPages(pages)),
+    };
+    let keys = String::from_utf8(bytes).map_err(|err| {
+        HadReadError::Fatal(format!("HAD navref airport key list decode failed: {err}"))
+    })?;
+    let keys = keys.lines().map(str::to_string).collect::<Vec<_>>();
+    let needed_pages = store
+        .missing_pages_for_keys(&keys)
+        .map_err(HadReadError::Fatal)?;
+    if !needed_pages.is_empty() {
+        return Err(HadReadError::NeedPages(needed_pages));
+    }
+    let mut station_ids = HashSet::new();
+    for key in keys {
+        let bytes = match store.get_bytes(&key).map_err(HadReadError::Fatal)? {
+            NavKvLookup::Hit(bytes) => bytes,
+            NavKvLookup::MissingKey => continue,
+            NavKvLookup::MissingPages(pages) => return Err(HadReadError::NeedPages(pages)),
+        };
+        let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|err| {
+            HadReadError::Fatal(format!("HAD JSON decode failed for {key}: {err}"))
+        })?;
+        if value
+            .get("towered")
+            .and_then(|towered| towered.as_bool())
+            .unwrap_or(false)
+        {
+            if let Some(station_id) = key.strip_prefix("navref/symbol/airport/") {
+                station_ids.insert(station_id.trim().to_ascii_uppercase());
+            }
+        }
+    }
+    Ok(station_ids)
 }
 
 fn metar_tile_xy(lat: f64, lon: f64, zoom: u32) -> Option<(u32, u32)> {
@@ -2379,12 +2450,7 @@ fn install_vector_manifest_config(
 ) -> Result<(), String> {
     session.map_overlay_config = map_overlay_config_from_vector_manifest_json(&manifest_json)
         .map_err(|err| err.to_string())?;
-    if let Some(payload) = session.metar_payload.as_ref() {
-        session.metar_tile_cache = metar_tile_cache_for_live_feed(
-            payload,
-            session.map_overlay_config.metar_layer.as_ref(),
-        );
-    }
+    rebuild_metar_tile_cache(session);
     session.vector_manifest_loaded = true;
     Ok(())
 }
@@ -2537,6 +2603,11 @@ pub fn get_map_overlay_in_session_with_point_display_scale(
     }
     if session.map_layer_state.vectors.visible {
         if let Err(err) = ensure_vector_inputs_loaded(session, &metrics) {
+            return had_read_error_to_overlay_outcome(err);
+        }
+    }
+    if session.map_layer_state.metars.visible && session.metar_payload.is_some() {
+        if let Err(err) = ensure_metar_station_importance_loaded(session) {
             return had_read_error_to_overlay_outcome(err);
         }
     }
@@ -5448,12 +5519,14 @@ mod tests {
             schema_version: 3,
             version_label: "v1".to_string(),
             metar_count: Some(1),
-            important_station_ids: std::collections::HashSet::from(["KAAA".to_string()]),
             metars_by_station,
             pireps: Vec::new(),
         };
-        let metar_tile_cache =
-            metar_tile_cache_for_live_feed(&payload, config.metar_layer.as_ref());
+        let metar_tile_cache = metar_tile_cache_for_live_feed(
+            &payload,
+            config.metar_layer.as_ref(),
+            &HashSet::from(["KAAA".to_string()]),
+        );
         let result = crate::query_map_overlay(
             &MapViewport {
                 center: LatLon { lat: 0.0, lon: 0.0 },
@@ -5514,6 +5587,7 @@ mod tests {
             vector_tile_cache: HashMap::new(),
             metar_tile_cache: HashMap::new(),
             metar_payload: None,
+            towered_metar_station_ids: None,
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
@@ -5536,10 +5610,10 @@ mod tests {
             schema_version: 3,
             version_label: "v1".to_string(),
             metar_count: Some(1),
-            important_station_ids: std::collections::HashSet::from(["KAAA".to_string()]),
             metars_by_station,
             pireps: Vec::new(),
         });
+        session.towered_metar_station_ids = Some(HashSet::from(["KAAA".to_string()]));
         let manifest = serde_json::json!({
             "point_layers": {
                 "airport": {
@@ -5600,12 +5674,15 @@ mod tests {
             schema_version: 3,
             version_label: "v1".to_string(),
             metar_count: Some(2),
-            important_station_ids: std::collections::HashSet::from(["KAAA".to_string()]),
             metars_by_station,
             pireps: Vec::new(),
         };
 
-        let cache = metar_tile_cache_for_live_feed(&payload, config.metar_layer.as_ref());
+        let cache = metar_tile_cache_for_live_feed(
+            &payload,
+            config.metar_layer.as_ref(),
+            &HashSet::from(["KAAA".to_string()]),
+        );
         let low_zoom_records = cache
             .values()
             .filter(|tile| tile.z == 5)
@@ -5622,6 +5699,32 @@ mod tests {
         assert_eq!(low_zoom_records, vec!["KAAA"]);
         assert!(high_zoom_records.contains(&"KAAA"));
         assert!(high_zoom_records.contains(&"KBBB"));
+    }
+
+    #[test]
+    fn metar_station_importance_comes_from_nav_db_towered_airports() {
+        let store = crate::navkv::nav_kv_store_for_test(
+            &[
+                (
+                    "navref/symbol/airport/KAAA",
+                    br#"{"kind":"airport","id":"KAAA","towered":true}"#,
+                ),
+                (
+                    "navref/symbol/airport/KBBB",
+                    br#"{"kind":"airport","id":"KBBB","towered":false}"#,
+                ),
+                (
+                    "navref/symbol/airport/KCCC",
+                    br#"{"kind":"airport","id":"KCCC"}"#,
+                ),
+            ],
+            256,
+        );
+
+        let station_ids =
+            towered_metar_station_ids_from_nav_db(&store).expect("towered station ids");
+
+        assert_eq!(station_ids, HashSet::from(["KAAA".to_string()]));
     }
 
     #[test]
@@ -5658,6 +5761,7 @@ mod tests {
             vector_tile_cache: HashMap::new(),
             metar_tile_cache: HashMap::new(),
             metar_payload: None,
+            towered_metar_station_ids: None,
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,

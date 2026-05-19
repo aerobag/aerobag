@@ -12,8 +12,7 @@ use serde_json::Value;
 use crate::{
     engine::{
         read_json_value, write_json_pretty_file, BuiltLiveFeedState, CompiledFixtureEvent,
-        CompiledFixtureTimeline, CycleDataProvider, DeltaPolicy, ProductBuilder, UpstreamEvent,
-        UpstreamSource,
+        CompiledFixtureTimeline, DeltaPolicy, ProductBuilder, UpstreamEvent, UpstreamSource,
     },
     products::{directory_live_feed_state, json_live_feed_state, live_nexrad_tile_count},
 };
@@ -301,7 +300,6 @@ impl ProductBuilder for CompiledFixtureStateBuilder {
         &self,
         event: &UpstreamEvent,
         scratch_dir: &Path,
-        _cycle_data: &dyn CycleDataProvider,
     ) -> anyhow::Result<BuiltLiveFeedState> {
         if event.product != self.product_id {
             bail!(
@@ -657,16 +655,7 @@ mod tests {
     use crate::engine::LiveFeedStatePayload;
     use chrono::TimeZone;
     use serde_json::json;
-    use std::collections::BTreeSet;
     use tempfile::tempdir;
-
-    struct EmptyCycleDataProvider;
-
-    impl CycleDataProvider for EmptyCycleDataProvider {
-        fn current_towered_metar_station_ids(&self) -> anyhow::Result<BTreeSet<String>> {
-            Ok(BTreeSet::new())
-        }
-    }
 
     fn event(product: &str, version: &str, minute: u32) -> CompiledFixtureEvent {
         event_at(
@@ -939,7 +928,7 @@ mod tests {
             payload_path: Some(PathBuf::from("versions/metars/m0.json")),
         };
 
-        let built = builder.build_state(&event, scratch.path(), &EmptyCycleDataProvider)?;
+        let built = builder.build_state(&event, scratch.path())?;
         assert_eq!(built.version, "20260518T201200_000Z_m0");
         let LiveFeedStatePayload::JsonFile { path, value } = built.payload else {
             panic!("expected json payload");
@@ -996,7 +985,7 @@ mod tests {
             payload_path: Some(PathBuf::from("versions/nexrad/n0.json")),
         };
 
-        let built = builder.build_state(&event, scratch.path(), &EmptyCycleDataProvider)?;
+        let built = builder.build_state(&event, scratch.path())?;
         let LiveFeedStatePayload::Directory {
             root,
             manifest_path,

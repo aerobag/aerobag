@@ -18,8 +18,8 @@ use sha2::{Digest, Sha256};
 use crate::{
     build_metar_dataset, build_tfr_dataset,
     engine::{
-        read_json_value, sha256_hex, write_json_pretty_file, BuiltLiveFeedState, CycleDataProvider,
-        DeltaPolicy, LiveFeedStatePayload, ProductBuilder, UpstreamEvent,
+        read_json_value, sha256_hex, write_json_pretty_file, BuiltLiveFeedState, DeltaPolicy,
+        LiveFeedStatePayload, ProductBuilder, UpstreamEvent,
     },
     metar_content_fingerprint, BuildMetarRequest, BuildTfrRequest,
 };
@@ -252,7 +252,6 @@ impl ProductBuilder for MetarLiveFeedBuilder {
         &self,
         event: &UpstreamEvent,
         scratch_dir: &Path,
-        cycle_data: &dyn CycleDataProvider,
     ) -> anyhow::Result<BuiltLiveFeedState> {
         let generated_at_utc = normalized_event_time(event.observed_at_utc);
         let input_dir = fresh_dir(&scratch_dir.join("input"))?;
@@ -279,16 +278,11 @@ impl ProductBuilder for MetarLiveFeedBuilder {
         ] {
             run_gzip_decompress(&input_dir.join(file_name))?;
         }
-        let important_station_ids = cycle_data.current_towered_metar_station_ids()?;
         let metar_xml_path = input_dir.join("metars.cache.xml");
         let taf_xml_path = input_dir.join("tafs.cache.xml");
         let pirep_xml_path = input_dir.join("aircraftreports.cache.xml");
-        let fingerprint = metar_content_fingerprint(
-            &metar_xml_path,
-            &taf_xml_path,
-            &pirep_xml_path,
-            &important_station_ids,
-        )?;
+        let fingerprint =
+            metar_content_fingerprint(&metar_xml_path, &taf_xml_path, &pirep_xml_path)?;
         let version = content_version_label(&fingerprint);
         let result = build_metar_dataset(&BuildMetarRequest {
             metar_xml_path,
@@ -297,7 +291,6 @@ impl ProductBuilder for MetarLiveFeedBuilder {
             output_dir,
             version_label: version.clone(),
             generated_at_utc,
-            important_station_ids,
         })?;
         let state_value = read_json_value(&result.structured_json_path)?;
         Ok(json_live_feed_state(
@@ -334,7 +327,6 @@ impl ProductBuilder for TfrLiveFeedBuilder {
         &self,
         event: &UpstreamEvent,
         scratch_dir: &Path,
-        _cycle_data: &dyn CycleDataProvider,
     ) -> anyhow::Result<BuiltLiveFeedState> {
         let generated_at_utc = normalized_event_time(event.observed_at_utc);
         let input_dir = fresh_dir(&scratch_dir.join("input"))?;
@@ -392,7 +384,6 @@ impl ProductBuilder for WindsAloftLiveFeedBuilder {
         &self,
         event: &UpstreamEvent,
         scratch_dir: &Path,
-        _cycle_data: &dyn CycleDataProvider,
     ) -> anyhow::Result<BuiltLiveFeedState> {
         let cycle = selected_gfs_winds_aloft_cycle(event.observed_at_utc);
         let input_dir = fresh_dir(&scratch_dir.join("input"))?;
@@ -459,7 +450,6 @@ impl ProductBuilder for ObstaclesLiveFeedBuilder {
         &self,
         _event: &UpstreamEvent,
         scratch_dir: &Path,
-        _cycle_data: &dyn CycleDataProvider,
     ) -> anyhow::Result<BuiltLiveFeedState> {
         let input_dir = fresh_dir(&scratch_dir.join("input"))?;
         let output_dir = fresh_dir(&scratch_dir.join("output"))?;
@@ -528,7 +518,6 @@ impl ProductBuilder for NexradSourceGridLiveFeedBuilder {
         &self,
         event: &UpstreamEvent,
         scratch_dir: &Path,
-        _cycle_data: &dyn CycleDataProvider,
     ) -> anyhow::Result<BuiltLiveFeedState> {
         let input_dir = fresh_dir(&scratch_dir.join("input"))?;
         let output_dir = fresh_dir(&scratch_dir.join("output"))?;

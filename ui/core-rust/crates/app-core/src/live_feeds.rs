@@ -870,7 +870,7 @@ mod tests {
             "schema_version": 3,
             "version_label": "from",
             "metar_count": 1,
-            "important_station_ids": ["KAAA", "KBBB"],
+            "generated_at_utc": "2026-05-18T20:00:00Z",
             "metars_by_station": {
                 "KAAA": {"station_id": "KAAA", "raw_text": "same"}
             }
@@ -879,7 +879,7 @@ mod tests {
             "schema_version": 3,
             "version_label": "to",
             "metar_count": 1,
-            "important_station_ids": ["KAAA"],
+            "generated_at_utc": "2026-05-18T20:05:00Z",
             "metars_by_station": {
                 "KAAA": {"station_id": "KAAA", "raw_text": "same"}
             }
@@ -889,8 +889,8 @@ mod tests {
             from_version: "from".to_string(),
             to_version: "to".to_string(),
             top_level_changed: serde_json::Map::from_iter([(
-                "important_station_ids".to_string(),
-                serde_json::json!(["KAAA"]),
+                "generated_at_utc".to_string(),
+                serde_json::json!("2026-05-18T20:05:00Z"),
             )]),
             top_level_removed: Vec::new(),
             changed: serde_json::Map::new(),

@@ -9,7 +9,7 @@ labels:
   - navigation
   - safety
   - feature
-  - cat:core
+  - cat:productionization
 dependencies: []
 ordinal: 10000
 ---

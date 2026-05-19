@@ -1,7 +1,7 @@
 ---
 id: TASK-11
 title: Build general caution status system
-state: high
+state: done
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -9,7 +9,7 @@ labels:
   - safety
   - feature
   - mvp
-  - cat:core
+  - cat:productionization
 dependencies: []
 ordinal: 11000
 ---
@@ -18,6 +18,8 @@ ordinal: 11000
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Add a clickable caution signal that propagates from detailed warnings up through status pills to a top-level status pill. Opening it should show active warnings such as procedure-turn cautions and stale ADSB, NEXRAD, METAR, NOTAM, or TFR data.
+
+This duplicates TASK-56. Closed.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

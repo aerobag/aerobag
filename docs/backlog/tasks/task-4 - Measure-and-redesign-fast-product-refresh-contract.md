@@ -18,10 +18,6 @@ ordinal: 4000
 <!-- SECTION:DESCRIPTION:BEGIN -->
 What’s left in “fast-products”:
 
-  - Winds aloft: still old fast-product style. Likely convert to a live feed
-    with full-state updates; low cadence makes deltas less important.
-  - Obstacles: still not migrated. This one probably needs real delta handling
-    because the measured deltas were tiny compared to full state.
   - Legacy fast bundle plumbing in preproc: bundle_fast_*,
     PublishedFastProductResult, build_or_reuse_fast_product, sync/status/tests
     around fast bundles.
@@ -32,8 +28,22 @@ What’s left in “fast-products”:
     live-feed builders.
   - Web dev legacy route: Vite still has a /fast-products legacy/404 route.
 
-  Runtime-wise, METARs, NEXRAD, and TFRs are now live-feed driven. The remaining
-  real product migrations are winds aloft and obstacles.
+
+
+  - Wire the daemon’s real production loop: run schedulers/pollers, call the
+    shared publish tick, and announce SSE invalidations as products update.
+  - Finish simulation mode: compile/load fixture timelines and pump accelerated
+    events from the daemon, not Vite.
+  - Move the remaining live-feed test-only helpers out of preprocessor-cli/src/
+    product_build.rs when those tests get relocated.
+  - Add real upstream adapters for the daemon path, including future streaming
+    sources like SWIM/NOTAMs.
+
+
+  - Productionize serving: supervisor/reverse proxy details, SSE scaling, and
+    health/status reporting.
+  - Android live-feed consumption still trails web.
+  - NEXRAD PNG delta encoding remains deferred under the TASK-121 placeholder.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

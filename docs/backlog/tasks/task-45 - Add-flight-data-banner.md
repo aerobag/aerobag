@@ -1,7 +1,7 @@
 ---
 id: TASK-45
 title: Add flight data banner
-state: high
+state: done
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:

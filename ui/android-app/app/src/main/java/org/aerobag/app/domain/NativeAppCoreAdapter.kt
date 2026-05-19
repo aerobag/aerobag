@@ -1294,6 +1294,7 @@ private fun WireAppState.toUi() = AppState(
 private fun WireAppUiState.toUi() = AppUiState(
     activePlan = active_plan?.toUi(),
     ownship = ownship.toUi(),
+    flightDataBanner = flight_data_banner.toUi(),
     contentPolicy = content_policy.toUi(),
     lastContentReport = last_content_report?.let { report ->
         ContentReport(
@@ -2697,6 +2698,10 @@ private fun FlightDataCell.toWire() = WireFlightDataCell(
 private fun WireFlightDataColumn.toUi() = FlightDataColumn(
     id = id,
     label = label,
+)
+
+private fun WireFlightDataBannerModel.toUi() = FlightDataBannerModel(
+    cells = cells.map { it.toUi() },
 )
 
 private fun FlightDataColumn.toWire() = WireFlightDataColumn(

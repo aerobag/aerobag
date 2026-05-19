@@ -198,6 +198,7 @@ import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.CoreMapViewport
 import org.aerobag.app.domain.DerivedChartPageState
+import org.aerobag.app.domain.FlightDataBannerModel
 import org.aerobag.app.domain.FlightPlan
 import org.aerobag.app.domain.FlightPlanEntryPreview
 import org.aerobag.app.domain.FlightPlanUiMutation
@@ -438,6 +439,7 @@ internal fun MapExplorerPage(
     sessionSnapshot: UiSessionSnapshot,
     uiTheme: UiTheme,
     ownship: OwnshipRenderState,
+    flightDataBanner: FlightDataBannerModel,
     playbackUiState: PlaybackUiState,
     playbackSourcePath: String,
     mapFollowUiState: MapFollowUiState,
@@ -533,8 +535,9 @@ internal fun MapExplorerPage(
     val surfaceHeightPx = surfaceSize.height.toFloat()
     val surfaceWidthDp = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
     val surfaceHeightDp = remember(surfaceSize, density) { with(density) { surfaceSize.height.toDp().value } }
+    val situationDockLowered = surfaceWidthDp.dp < SituationDockOverlapWidth
     val situationDockTopPadding =
-        if (surfaceWidthDp.dp < SituationDockOverlapWidth) ThumbSize + (ThumbGap * 2f) else ThumbGap
+        if (situationDockLowered) ThumbSize + (ThumbGap * 2f) else ThumbGap
     val tiles = remember(selectedMapId, currentViewport, surfaceSize, uiSession, debugState.fastTiles) {
         if (surfaceSize.width == 0 || surfaceSize.height == 0) {
             emptyList()
@@ -1669,6 +1672,13 @@ internal fun MapExplorerPage(
             labelStrokePaint = labelStrokePaint,
             labelFillPaint = labelFillPaint,
             aircraftDrawable = aircraftDrawable,
+        )
+        FlightDataBanner(
+            banner = flightDataBanner,
+            surfaceSize = surfaceSize,
+            situationDockTopPadding = situationDockTopPadding,
+            uiTheme = uiTheme,
+            modifier = Modifier.align(if (surfaceWidthPx > surfaceHeightPx) Alignment.TopEnd else Alignment.TopCenter),
         )
         SituationStatusBadge(
             controls = ownshipControls,

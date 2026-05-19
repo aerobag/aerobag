@@ -197,6 +197,7 @@ import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.CoreMapViewport
 import org.aerobag.app.domain.DerivedChartPageState
+import org.aerobag.app.domain.FlightDataBannerModel
 import org.aerobag.app.domain.FlightPlan
 import org.aerobag.app.domain.FlightPlanEntryPreview
 import org.aerobag.app.domain.FlightPlanUiMutation
@@ -344,6 +345,7 @@ internal fun ChartsPage(
     uiTheme: UiTheme,
     ownship: OwnshipRenderState,
     ownshipControls: OwnshipControlModel,
+    flightDataBanner: FlightDataBannerModel,
     uiSession: NativeUiSession,
     navElement: NavElementUiView?,
     folderOpen: Boolean,
@@ -368,8 +370,9 @@ internal fun ChartsPage(
     var loadTrayOpen by remember { mutableStateOf(false) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
     val surfaceWidthDp = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
+    val situationDockLowered = surfaceWidthDp.dp < SituationDockOverlapWidth
     val situationDockTopPadding =
-        if (surfaceWidthDp.dp < SituationDockOverlapWidth) ThumbSize + (ThumbGap * 2f) else ThumbGap
+        if (situationDockLowered) ThumbSize + (ThumbGap * 2f) else ThumbGap
     val sortedCharts = selectedAirport?.charts ?: emptyList()
     val overscrollPx = with(density) { ThumbSize.toPx() }
     val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, selectedChart?.id, selectedChart?.assetPath) {
@@ -602,6 +605,14 @@ internal fun ChartsPage(
                 }
             }
         }
+
+        FlightDataBanner(
+            banner = flightDataBanner,
+            surfaceSize = surfaceSize,
+            situationDockTopPadding = situationDockTopPadding,
+            uiTheme = uiTheme,
+            modifier = Modifier.align(if (surfaceSize.width > surfaceSize.height) Alignment.TopEnd else Alignment.TopCenter),
+        )
 
         SituationStatusBadge(
             controls = ownshipControls,

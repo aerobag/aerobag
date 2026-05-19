@@ -416,6 +416,10 @@ data class FlightDataColumn(
     val label: String,
 )
 
+data class FlightDataBannerModel(
+    val cells: List<FlightDataCell> = emptyList(),
+)
+
 data class FlightPlanDisplayRowUiView(
     val uid: String = "",
     val label: String,
@@ -564,6 +568,7 @@ data class AppState(
 data class AppUiState(
     val activePlan: FlightPlanUiState? = null,
     val ownship: OwnshipUiState = OwnshipUiState(),
+    val flightDataBanner: FlightDataBannerModel = FlightDataBannerModel(),
     val contentPolicy: ContentPolicy = ContentPolicy.PreferLocal,
     val lastContentReport: ContentReport? = null,
 )

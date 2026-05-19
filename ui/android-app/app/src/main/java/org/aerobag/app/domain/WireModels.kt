@@ -31,6 +31,7 @@ data class WireAppState(
 data class WireAppUiState(
     val active_plan: WireFlightPlanUiState? = null,
     val ownship: WireOwnshipUiState = WireOwnshipUiState(),
+    val flight_data_banner: WireFlightDataBannerModel = WireFlightDataBannerModel(),
     val content_policy: WireContentPolicy = WireContentPolicy.PreferLocal,
     val last_content_report: WireContentReport? = null,
 )
@@ -1451,6 +1452,11 @@ data class WireFlightDataCell(
 data class WireFlightDataColumn(
     val id: String,
     val label: String,
+)
+
+@Serializable
+data class WireFlightDataBannerModel(
+    val cells: List<WireFlightDataCell> = emptyList(),
 )
 
 @Serializable

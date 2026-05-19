@@ -4552,6 +4552,125 @@ mod tests {
     }
 
     #[test]
+    fn generated_nav_kv_flagged_procedure_quality_reaches_session_caution() {
+        let store = load_current_nav_kv_store();
+        // This is a plumbing test: it proves that a data-quality annotation produced by
+        // procedure geometry generation survives materialization and reaches the core
+        // data-status/caution UI when the procedure is displayed in the flight plan.
+        // KGRK VOR-A DARTE is only a currently flagged exemplar. If that procedure is
+        // corrected later, update this test to another known flagged procedure rather
+        // than preserving this procedure's warning.
+        let airport_id = "KGRK";
+        let procedure_id = "VOR-A";
+        let transition = "DARTE";
+        let expected_message = "Procedure encoding requires a PI/course reversal from an excessive inbound turn; borrowed a later same-fix hold to define protected-side reversal geometry.";
+
+        let materialized = materialize_procedure(
+            &store,
+            airport_id,
+            procedure_id,
+            ProcedureKind::Approach,
+            None,
+            Some(transition),
+            0,
+        )
+        .expect("materialize currently flagged procedure");
+        assert!(
+            materialized
+                .data_quality
+                .iter()
+                .any(|message| message == expected_message),
+            "the chosen exemplar is no longer flagged with the expected message; choose another known flagged procedure if the plumbing is still required"
+        );
+
+        let plan = FlightPlan {
+            id: "procedure-quality-current-navdb".to_string(),
+            name: "KGRK".to_string(),
+            legs: Vec::new(),
+            route_components: vec![RouteComponent::Waypoint {
+                waypoint: NavRef::Airport(airport_id.to_string()),
+            }],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: None,
+            destination: Some(AirportId(airport_id.to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+        let init = crate::create_ui_session(
+            r#"{
+                "point_layers": {
+                    "airport": { "available_zooms": [9] },
+                    "fix": { "available_zooms": [9] },
+                    "nav": { "available_zooms": [9] }
+                },
+                "airspace": {
+                    "reference_tile_min_zoom": 0,
+                    "reference_tile_max_zoom": 12,
+                    "label_tile_min_zoom": 0,
+                    "label_tile_max_zoom": 12
+                }
+            }"#,
+            plan,
+            &[airport_id.to_string()],
+            Some(airport_id),
+            None,
+        )
+        .expect("create ui session");
+        crate::attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        let row_uid = init
+            .snapshot
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .expect("active plan")
+            .display_rows
+            .iter()
+            .find(|row| row.label == airport_id)
+            .expect("airport row")
+            .uid
+            .clone();
+
+        let outcome = crate::select_procedure_at_flight_plan_row_in_session(
+            init.handle,
+            row_uid,
+            airport_id.to_string(),
+            procedure_id.to_string(),
+            ProcedureKind::Approach,
+            None,
+            Some(transition.to_string()),
+        )
+        .expect("load flagged procedure into session");
+
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("expected complete outcome, got missing resources: {outcome:?}");
+        };
+        let snapshot: crate::UiSessionSnapshot =
+            serde_json::from_value(result).expect("decode session snapshot");
+        let warning = snapshot
+            .data_status_state
+            .boxes
+            .iter()
+            .find(|box_| box_.id.starts_with("procedure_geometry:"))
+            .expect("procedure geometry caution");
+        assert_eq!(warning.label, "PROC");
+        assert_eq!(warning.value.as_deref(), Some(procedure_id));
+        assert!(warning.drives_caution);
+        assert!(
+            warning.detail.contains(airport_id)
+                && warning.detail.contains(procedure_id)
+                && warning.detail.contains(transition)
+                && warning.detail.contains(expected_message),
+            "procedure caution detail should describe the surfaced geometry warning: {warning:?}"
+        );
+    }
+
+    #[test]
     fn generated_nav_kv_lists_khvr_approaches_from_geometry_keys() {
         let store = load_current_nav_kv_store();
 

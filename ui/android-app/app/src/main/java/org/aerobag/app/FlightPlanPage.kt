@@ -709,7 +709,7 @@ internal fun FlightPlanPage(
                         .padding(start = PlanArrowLane),
                     verticalArrangement = Arrangement.spacedBy(PlanGridGap),
                 ) {
-                    PlanHeaderRow()
+                    PlanHeaderRow(planUiState.dataColumns)
                     LazyColumn(
                         state = planListState,
                         modifier = Modifier

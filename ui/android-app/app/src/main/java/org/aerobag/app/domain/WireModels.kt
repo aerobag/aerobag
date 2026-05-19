@@ -1414,6 +1414,7 @@ data class WireFlightPlanUiState(
     val components: List<WireRouteComponentUiView>,
     val resolved_legs: List<WireResolvedLegUiView>,
     val display_rows: List<WireFlightPlanDisplayRowUiView>,
+    val data_columns: List<WireFlightDataColumn>,
     val guidance: WireGuidanceUiView? = null,
 )
 
@@ -1440,6 +1441,19 @@ data class WireFlightPlanRowActionUiView(
 )
 
 @Serializable
+data class WireFlightDataCell(
+    val id: String,
+    val label: String,
+    val value: String? = null,
+)
+
+@Serializable
+data class WireFlightDataColumn(
+    val id: String,
+    val label: String,
+)
+
+@Serializable
 data class WireFlightPlanDisplayRowUiView(
     val uid: String = "",
     val label: String,
@@ -1450,11 +1464,7 @@ data class WireFlightPlanDisplayRowUiView(
     val procedure_id: String? = null,
     val procedure_kind: WireProcedureKind? = null,
     val leg_index: Int? = null,
-    val distance_nm: Double? = null,
-    val course_deg: Double? = null,
-    val eta_text: String = "",
-    val leg_time_text: String = "",
-    val fuel_gal_text: String = "",
+    val data_cells: List<WireFlightDataCell>,
     val show_plate_target_id: String? = null,
     val chart_airport_id: String? = null,
     val nav_ref: WireNavRef? = null,

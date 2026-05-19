@@ -529,9 +529,9 @@ internal fun FlightPlanDataRow(
                     .alpha(1f),
             )
         }
-        PlanCell(formatPlanDistance(row.distanceNm), Modifier.weight(1f), cellHeight = cellHeight)
-        PlanCell(row.legTimeText.ifBlank { "—" }, Modifier.weight(1f), cellHeight = cellHeight)
-        PlanCell(formatPlanCourse(row.courseDeg), Modifier.weight(1f), cellHeight = cellHeight)
+        row.dataCells.forEach { cell ->
+            PlanCell(cell.value ?: "—", Modifier.weight(1f), cellHeight = cellHeight)
+        }
     }
 }
 

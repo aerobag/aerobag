@@ -2670,6 +2670,7 @@ private fun WireFlightPlanUiState.toUi() = FlightPlanUiState(
     components = components.map { it.toUi() },
     resolvedLegs = resolved_legs.map { it.toUi() },
     displayRows = display_rows.map { it.toUi() },
+    dataColumns = data_columns.map { it.toUi() },
     guidance = guidance?.toUi(),
 )
 
@@ -2677,7 +2678,30 @@ private fun FlightPlanUiState.toWire() = WireFlightPlanUiState(
     components = components.map { it.toWire() },
     resolved_legs = resolvedLegs.map { it.toWire() },
     display_rows = displayRows.map { it.toWire() },
+    data_columns = dataColumns.map { it.toWire() },
     guidance = guidance?.toWire(),
+)
+
+private fun WireFlightDataCell.toUi() = FlightDataCell(
+    id = id,
+    label = label,
+    value = value,
+)
+
+private fun FlightDataCell.toWire() = WireFlightDataCell(
+    id = id,
+    label = label,
+    value = value,
+)
+
+private fun WireFlightDataColumn.toUi() = FlightDataColumn(
+    id = id,
+    label = label,
+)
+
+private fun FlightDataColumn.toWire() = WireFlightDataColumn(
+    id = id,
+    label = label,
 )
 
 private fun WireFlightPlanDisplayRowUiView.toUi() = FlightPlanDisplayRowUiView(
@@ -2690,11 +2714,7 @@ private fun WireFlightPlanDisplayRowUiView.toUi() = FlightPlanDisplayRowUiView(
     procedureId = procedure_id,
     procedureKind = procedure_kind?.toUi(),
     legIndex = leg_index,
-    distanceNm = distance_nm,
-    courseDeg = course_deg,
-    etaText = eta_text,
-    legTimeText = leg_time_text,
-    fuelGalText = fuel_gal_text,
+    dataCells = data_cells.map { it.toUi() },
     showPlateTargetId = show_plate_target_id,
     chartAirportId = chart_airport_id,
     navRef = nav_ref?.toUi(),
@@ -2729,11 +2749,7 @@ private fun FlightPlanDisplayRowUiView.toWire() = WireFlightPlanDisplayRowUiView
     procedure_id = procedureId,
     procedure_kind = procedureKind?.toWire(),
     leg_index = legIndex,
-    distance_nm = distanceNm,
-    course_deg = courseDeg,
-    eta_text = etaText,
-    leg_time_text = legTimeText,
-    fuel_gal_text = fuelGalText,
+    data_cells = dataCells.map { it.toWire() },
     show_plate_target_id = showPlateTargetId,
     chart_airport_id = chartAirportId,
     nav_ref = navRef?.toWire(),

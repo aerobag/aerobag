@@ -198,6 +198,7 @@ import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.CoreMapViewport
 import org.aerobag.app.domain.DerivedChartPageState
 import org.aerobag.app.domain.FlightPlan
+import org.aerobag.app.domain.FlightDataColumn
 import org.aerobag.app.domain.FlightPlanEntryPreview
 import org.aerobag.app.domain.FlightPlanUiMutation
 import org.aerobag.app.domain.FlightPlanDisplayRowKind
@@ -332,12 +333,12 @@ import kotlin.math.sin
 
 
 @Composable
-internal fun PlanHeaderRow() {
+internal fun PlanHeaderRow(columns: List<FlightDataColumn>) {
     Row(horizontalArrangement = Arrangement.spacedBy(PlanGridGap)) {
         PlanCell("Waypoint", Modifier.width(ThumbSize * 2.5f), isHeader = true)
-        PlanCell("Dist (nm)", Modifier.weight(1f), isHeader = true)
-        PlanCell("ETE (h:m)", Modifier.weight(1f), isHeader = true)
-        PlanCell("Course (°)", Modifier.weight(1f), isHeader = true)
+        columns.forEach { column ->
+            PlanCell(column.label, Modifier.weight(1f), isHeader = true)
+        }
     }
 }
 
@@ -359,11 +360,7 @@ internal fun buildFlightPlanDisplayRows(planUiState: FlightPlanUiState): List<Fl
             procedureId = row.procedureId,
             procedureKind = row.procedureKind,
             legIndex = row.legIndex,
-            distanceNm = row.distanceNm,
-            courseDeg = row.courseDeg,
-            etaText = row.etaText,
-            legTimeText = row.legTimeText,
-            fuelGalText = row.fuelGalText,
+            dataCells = row.dataCells,
             showPlateTargetId = row.showPlateTargetId,
             chartAirportId = row.chartAirportId,
             navRef = row.navRef,

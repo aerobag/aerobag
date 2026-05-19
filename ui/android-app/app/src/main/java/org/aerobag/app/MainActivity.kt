@@ -200,6 +200,7 @@ import org.aerobag.app.domain.DerivedChartPageState
 import org.aerobag.app.domain.FlightPlan
 import org.aerobag.app.domain.FlightPlanEntryPreview
 import org.aerobag.app.domain.FlightPlanUiMutation
+import org.aerobag.app.domain.FlightDataCell
 import org.aerobag.app.domain.FlightPlanDisplayRowKind
 import org.aerobag.app.domain.FlightPlanDisplayRowUiView
 import org.aerobag.app.domain.FlightPlanRowActionUiView
@@ -513,11 +514,7 @@ internal data class FlightPlanDisplayRow(
     val procedureId: String? = null,
     val procedureKind: org.aerobag.app.domain.ProcedureKind? = null,
     val legIndex: Int? = null,
-    val distanceNm: Double? = null,
-    val courseDeg: Double? = null,
-    val etaText: String = "",
-    val legTimeText: String = "",
-    val fuelGalText: String = "",
+    val dataCells: List<FlightDataCell> = emptyList(),
     val showPlateTargetId: String? = null,
     val chartAirportId: String? = null,
     val navRef: NavRef? = null,
@@ -1992,21 +1989,6 @@ internal fun transformScreenPoint(
         x = (world.x - toViewport.centerWorldX) * nextScale + toSurface.width / 2.0,
         y = (world.y - toViewport.centerWorldY) * nextScale + toSurface.height / 2.0,
     )
-}
-
-internal fun formatPlanDistance(distanceNm: Double?): String =
-    when {
-        distanceNm == null -> "—"
-        distanceNm < 10.0 -> "%.1f".format(distanceNm)
-        else -> "%.0f".format(distanceNm)
-    }
-
-internal fun formatPlanCourse(courseDeg: Double?): String {
-    if (courseDeg == null) {
-        return "—"
-    }
-    val rounded = ((courseDeg.roundToInt() % 360) + 360) % 360
-    return if (rounded == 0) "360" else rounded.toString().padStart(3, '0')
 }
 
 internal fun readRecentAirportIds(context: Context): List<String> =

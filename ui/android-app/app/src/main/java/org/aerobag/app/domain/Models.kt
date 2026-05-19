@@ -386,6 +386,7 @@ data class FlightPlanUiState(
     val components: List<RouteComponentUiView>,
     val resolvedLegs: List<ResolvedLegUiView>,
     val displayRows: List<FlightPlanDisplayRowUiView>,
+    val dataColumns: List<FlightDataColumn>,
     val guidance: GuidanceUiView?,
 )
 
@@ -404,6 +405,17 @@ data class FlightPlanRowActionUiView(
     val dismissTrayOnSuccess: Boolean = true,
 )
 
+data class FlightDataCell(
+    val id: String,
+    val label: String,
+    val value: String?,
+)
+
+data class FlightDataColumn(
+    val id: String,
+    val label: String,
+)
+
 data class FlightPlanDisplayRowUiView(
     val uid: String = "",
     val label: String,
@@ -414,11 +426,7 @@ data class FlightPlanDisplayRowUiView(
     val procedureId: String?,
     val procedureKind: ProcedureKind?,
     val legIndex: Int?,
-    val distanceNm: Double?,
-    val courseDeg: Double?,
-    val etaText: String,
-    val legTimeText: String,
-    val fuelGalText: String,
+    val dataCells: List<FlightDataCell>,
     val showPlateTargetId: String?,
     val chartAirportId: String?,
     val navRef: NavRef?,

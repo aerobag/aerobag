@@ -1376,6 +1376,21 @@ pub fn query_map_overlay_for_surface(
             }
         }
     }
+    let mut data_status_records = if limit_hit {
+        vec![DataStatusRecord::new(
+            "map_overlay:vector_display_feature_limit",
+            "VECTORS",
+            Some("LIMIT".to_string()),
+            UiStatusSeverity::Warning,
+            true,
+            format!(
+                "display capped at {} visible vector features after zoom/tile filtering",
+                VECTOR_DISPLAY_FEATURE_LIMIT
+            ),
+        )]
+    } else {
+        Vec::new()
+    };
 
     let airspace = if display_vectors {
         query_airspace_overlay(
@@ -1435,7 +1450,7 @@ pub fn query_map_overlay_for_surface(
             data_status_records: Vec::new(),
         }
     };
-    let mut data_status_records = airspace.data_status_records;
+    data_status_records.extend(airspace.data_status_records);
     data_status_records.extend(metars.data_status_records);
 
     let mut airspace_labels = {
@@ -6508,7 +6523,11 @@ mod tests {
             &HashMap::new(),
         );
         assert_eq!(result.visible_features.len(), VECTOR_DISPLAY_FEATURE_LIMIT);
-        assert!(result.data_status_records.is_empty());
+        assert!(result.data_status_records.iter().any(|record| {
+            record.id == "map_overlay:vector_display_feature_limit"
+                && record.drives_caution
+                && record.severity == UiStatusSeverity::Warning
+        }));
     }
 
     #[test]

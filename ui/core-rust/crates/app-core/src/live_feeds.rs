@@ -98,6 +98,8 @@ struct LiveFeedRecordDelta {
     product: String,
     from_version: String,
     to_version: String,
+    top_level_changed: serde_json::Map<String, Value>,
+    top_level_removed: Vec<String>,
     changed: serde_json::Map<String, Value>,
     removed: Vec<String>,
 }
@@ -595,6 +597,17 @@ fn apply_live_feed_record_delta(
         )));
     }
     let mut result = from_state.clone();
+    {
+        let result_object = result.as_object_mut().ok_or_else(|| {
+            invalid_live_feed("live feed state must be a JSON object".to_string())
+        })?;
+        for key in &delta.top_level_removed {
+            result_object.remove(key);
+        }
+        for (key, value) in &delta.top_level_changed {
+            result_object.insert(key.clone(), value.clone());
+        }
+    }
     let record_count = {
         let records = result
             .get_mut(records_key)
@@ -675,6 +688,8 @@ mod tests {
             "product": "metars",
             "from_version": from_version,
             "to_version": to_version,
+            "top_level_changed": {},
+            "top_level_removed": [],
             "changed": changed,
             "removed": removed
         })
@@ -825,6 +840,8 @@ mod tests {
             product: "obstacles".to_string(),
             from_version: "from".to_string(),
             to_version: "to".to_string(),
+            top_level_changed: serde_json::Map::new(),
+            top_level_removed: Vec::new(),
             changed: serde_json::Map::from_iter([
                 (
                     "obs:a".to_string(),
@@ -845,6 +862,44 @@ mod tests {
         assert_eq!(applied["obstacles_by_id"]["obs:a"]["label"], "new");
         assert_eq!(applied["obstacles_by_id"]["obs:c"]["label"], "added");
         assert!(applied["obstacles_by_id"].get("obs:b").is_none());
+    }
+
+    #[test]
+    fn record_delta_round_trips_changed_top_level_metar_fields() {
+        let from = serde_json::json!({
+            "schema_version": 3,
+            "version_label": "from",
+            "metar_count": 1,
+            "important_station_ids": ["KAAA", "KBBB"],
+            "metars_by_station": {
+                "KAAA": {"station_id": "KAAA", "raw_text": "same"}
+            }
+        });
+        let to = serde_json::json!({
+            "schema_version": 3,
+            "version_label": "to",
+            "metar_count": 1,
+            "important_station_ids": ["KAAA"],
+            "metars_by_station": {
+                "KAAA": {"station_id": "KAAA", "raw_text": "same"}
+            }
+        });
+        let delta = LiveFeedRecordDelta {
+            product: "metars".to_string(),
+            from_version: "from".to_string(),
+            to_version: "to".to_string(),
+            top_level_changed: serde_json::Map::from_iter([(
+                "important_station_ids".to_string(),
+                serde_json::json!(["KAAA"]),
+            )]),
+            top_level_removed: Vec::new(),
+            changed: serde_json::Map::new(),
+            removed: Vec::new(),
+        };
+
+        let applied = apply_live_feed_record_delta(&from, &delta).unwrap();
+
+        assert_eq!(applied, to);
     }
 
     #[test]

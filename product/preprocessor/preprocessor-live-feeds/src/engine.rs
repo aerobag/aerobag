@@ -261,6 +261,8 @@ pub struct LiveFeedRecordDelta {
     pub product: String,
     pub from_version: String,
     pub to_version: String,
+    pub top_level_changed: BTreeMap<String, Value>,
+    pub top_level_removed: Vec<String>,
     pub changed: BTreeMap<String, Value>,
     pub removed: Vec<String>,
 }
@@ -847,8 +849,27 @@ pub fn build_record_delta(
 ) -> anyhow::Result<LiveFeedRecordDelta> {
     let from_version = state_version_label(from_state)?;
     let to_version = state_version_label(to_state)?;
+    let from_object = state_object(from_state)?;
+    let to_object = state_object(to_state)?;
     let from_records = state_record_map(from_state, records_key)?;
     let to_records = state_record_map(to_state, records_key)?;
+
+    let mut top_level_changed = BTreeMap::new();
+    for (key, to_value) in to_object {
+        if key == "version_label" || key == records_key {
+            continue;
+        }
+        if from_object.get(key) != Some(to_value) {
+            top_level_changed.insert(key.clone(), to_value.clone());
+        }
+    }
+    let mut top_level_removed = from_object
+        .keys()
+        .filter(|key| key.as_str() != "version_label" && key.as_str() != records_key)
+        .filter(|key| !to_object.contains_key(*key))
+        .cloned()
+        .collect::<Vec<_>>();
+    top_level_removed.sort();
 
     let mut changed = BTreeMap::new();
     for (record_id, to_record) in to_records {
@@ -868,6 +889,8 @@ pub fn build_record_delta(
         product: product.to_string(),
         from_version: from_version.to_string(),
         to_version: to_version.to_string(),
+        top_level_changed,
+        top_level_removed,
         changed,
         removed,
     })
@@ -888,6 +911,17 @@ pub fn apply_record_delta(
         );
     }
     let mut result = from_state.clone();
+    {
+        let result_object = result
+            .as_object_mut()
+            .context("live feed state must be a JSON object")?;
+        for key in &delta.top_level_removed {
+            result_object.remove(key);
+        }
+        for (key, value) in &delta.top_level_changed {
+            result_object.insert(key.clone(), value.clone());
+        }
+    }
     let record_count = {
         let records = result
             .get_mut(records_key)
@@ -910,6 +944,12 @@ pub fn apply_record_delta(
         }
     }
     Ok(result)
+}
+
+fn state_object(state: &Value) -> anyhow::Result<&serde_json::Map<String, Value>> {
+    state
+        .as_object()
+        .context("live feed state must be a JSON object")
 }
 
 pub fn read_live_feeds_current(root: &Path) -> anyhow::Result<Option<LiveFeedsCurrentManifest>> {
@@ -1184,6 +1224,34 @@ mod tests {
             vec!["B", "C"]
         );
         assert_eq!(delta.removed, vec!["A"]);
+        assert_eq!(
+            apply_record_delta("records", Some("record_count"), &from, &delta)?,
+            to
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn record_delta_round_trips_changed_top_level_fields() -> anyhow::Result<()> {
+        let from = serde_json::json!({
+            "version_label": "v1",
+            "record_count": 1,
+            "important_station_ids": ["KAAA", "KBBB"],
+            "records": {
+                "KAAA": {"value": 1}
+            }
+        });
+        let to = serde_json::json!({
+            "version_label": "v2",
+            "record_count": 1,
+            "important_station_ids": ["KAAA"],
+            "records": {
+                "KAAA": {"value": 1}
+            }
+        });
+
+        let delta = build_record_delta("metars", "records", &from, &to)?;
+
         assert_eq!(
             apply_record_delta("records", Some("record_count"), &from, &delta)?,
             to

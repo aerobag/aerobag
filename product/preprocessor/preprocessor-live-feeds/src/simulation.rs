@@ -34,7 +34,8 @@ struct FixturePayloadRef {
 #[derive(Debug, Clone)]
 pub struct SimulationClockMap {
     source_start_utc: DateTime<Utc>,
-    simulation_start_utc: DateTime<Utc>,
+    delivery_start_utc: DateTime<Utc>,
+    virtual_start_utc: DateTime<Utc>,
     speedup: u32,
 }
 
@@ -44,12 +45,27 @@ impl SimulationClockMap {
         simulation_start_utc: DateTime<Utc>,
         speedup: u32,
     ) -> anyhow::Result<Self> {
+        Self::with_virtual_start(
+            source_start_utc,
+            simulation_start_utc,
+            simulation_start_utc,
+            speedup,
+        )
+    }
+
+    pub fn with_virtual_start(
+        source_start_utc: DateTime<Utc>,
+        delivery_start_utc: DateTime<Utc>,
+        virtual_start_utc: DateTime<Utc>,
+        speedup: u32,
+    ) -> anyhow::Result<Self> {
         if speedup == 0 {
             bail!("simulation speedup must be greater than zero");
         }
         Ok(Self {
             source_start_utc,
-            simulation_start_utc,
+            delivery_start_utc,
+            virtual_start_utc,
             speedup,
         })
     }
@@ -60,7 +76,7 @@ impl SimulationClockMap {
     ) -> anyhow::Result<DateTime<Utc>> {
         let elapsed = self.source_elapsed(source_time);
         let scaled = elapsed.num_milliseconds() / i64::from(self.speedup);
-        self.simulation_start_utc
+        self.delivery_start_utc
             .checked_add_signed(Duration::milliseconds(scaled))
             .context("simulation time overflow")
     }
@@ -69,7 +85,7 @@ impl SimulationClockMap {
         &self,
         source_time: DateTime<Utc>,
     ) -> anyhow::Result<DateTime<Utc>> {
-        self.simulation_start_utc
+        self.virtual_start_utc
             .checked_add_signed(self.source_elapsed(source_time))
             .context("virtual simulation time overflow")
     }
@@ -102,9 +118,30 @@ impl SimulatedLiveFeedSource {
         simulation_start_utc: DateTime<Utc>,
         speedup: u32,
     ) -> anyhow::Result<Self> {
+        Self::from_timeline_with_virtual_start(
+            product_id,
+            timeline,
+            simulation_start_utc,
+            simulation_start_utc,
+            speedup,
+        )
+    }
+
+    pub fn from_timeline_with_virtual_start(
+        product_id: impl Into<String>,
+        timeline: CompiledFixtureTimeline,
+        delivery_start_utc: DateTime<Utc>,
+        virtual_start_utc: DateTime<Utc>,
+        speedup: u32,
+    ) -> anyhow::Result<Self> {
         let product_id = product_id.into();
         let source_start_utc = fixture_product_source_start(&timeline, &product_id)?;
-        let clock_map = SimulationClockMap::new(source_start_utc, simulation_start_utc, speedup)?;
+        let clock_map = SimulationClockMap::with_virtual_start(
+            source_start_utc,
+            delivery_start_utc,
+            virtual_start_utc,
+            speedup,
+        )?;
         let mut events = timeline
             .events
             .into_iter()
@@ -191,6 +228,36 @@ pub fn fixture_loop_duration(
     if speedup == 0 {
         bail!("simulation speedup must be greater than zero");
     }
+    let shortest_source_ms =
+        shortest_positive_product_span(timeline).map(|duration| duration.num_milliseconds());
+    let Some(source_ms) = shortest_source_ms else {
+        return Ok(None);
+    };
+    let speedup = i64::from(speedup);
+    let scaled_ms = ((source_ms + speedup - 1) / speedup).max(1);
+    Ok(Some(Duration::milliseconds(scaled_ms)))
+}
+
+pub fn fixture_loop_virtual_duration(
+    timeline: &CompiledFixtureTimeline,
+) -> anyhow::Result<Option<Duration>> {
+    Ok(shortest_positive_product_span(timeline))
+}
+
+pub fn next_fixture_loop_virtual_zero(
+    timeline: &CompiledFixtureTimeline,
+    current_virtual_zero: DateTime<Utc>,
+) -> anyhow::Result<Option<DateTime<Utc>>> {
+    let Some(duration) = fixture_loop_virtual_duration(timeline)? else {
+        return Ok(None);
+    };
+    current_virtual_zero
+        .checked_add_signed(duration + Duration::milliseconds(1))
+        .context("next simulation virtual zero overflow")
+        .map(Some)
+}
+
+fn shortest_positive_product_span(timeline: &CompiledFixtureTimeline) -> Option<Duration> {
     let mut bounds = BTreeMap::<String, (DateTime<Utc>, DateTime<Utc>)>::new();
     for event in &timeline.events {
         bounds
@@ -201,19 +268,13 @@ pub fn fixture_loop_duration(
             })
             .or_insert((event.observed_at_utc, event.observed_at_utc));
     }
-    let shortest_source_ms = bounds
+    bounds
         .values()
         .filter_map(|(start, end)| {
-            let millis = end.signed_duration_since(*start).num_milliseconds();
-            (millis > 0).then_some(millis)
+            let duration = end.signed_duration_since(*start);
+            (duration.num_milliseconds() > 0).then_some(duration)
         })
-        .min();
-    let Some(source_ms) = shortest_source_ms else {
-        return Ok(None);
-    };
-    let speedup = i64::from(speedup);
-    let scaled_ms = ((source_ms + speedup - 1) / speedup).max(1);
-    Ok(Some(Duration::milliseconds(scaled_ms)))
+        .min()
 }
 
 #[derive(Debug, Clone)]
@@ -744,6 +805,41 @@ mod tests {
     }
 
     #[test]
+    fn simulation_source_can_separate_delivery_zero_from_virtual_zero() -> anyhow::Result<()> {
+        let timeline = CompiledFixtureTimeline {
+            schema_version: 1,
+            fixture_id: "mixed".to_string(),
+            events: vec![event("nexrad", "n0", 0), event("nexrad", "n1", 30)],
+        };
+        let delivery_zero = Utc.with_ymd_and_hms(2026, 5, 18, 20, 0, 0).unwrap();
+        let virtual_zero = Utc.with_ymd_and_hms(2026, 5, 18, 21, 30, 0).unwrap();
+        let mut source = SimulatedLiveFeedSource::from_timeline_with_virtual_start(
+            "nexrad",
+            timeline,
+            delivery_zero,
+            virtual_zero,
+            60,
+        )?;
+
+        assert_eq!(source.poll_due(delivery_zero)?.len(), 1);
+        let due = source.poll_due(delivery_zero + Duration::seconds(30))?;
+
+        assert_eq!(
+            due.iter()
+                .map(|event| event.source_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["20260518T220000_000Z_n1"]
+        );
+        assert_eq!(
+            due.iter()
+                .map(|event| event.observed_at_utc)
+                .collect::<Vec<_>>(),
+            vec![virtual_zero + Duration::minutes(30)]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn fixture_loop_duration_uses_shortest_positive_product_span() -> anyhow::Result<()> {
         let timeline = CompiledFixtureTimeline {
             schema_version: 1,
@@ -760,6 +856,39 @@ mod tests {
         assert_eq!(
             fixture_loop_duration(&timeline, 60)?,
             Some(Duration::seconds(6))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn next_fixture_loop_virtual_zero_does_not_rewind_after_accelerated_delivery_loop(
+    ) -> anyhow::Result<()> {
+        let timeline = CompiledFixtureTimeline {
+            schema_version: 1,
+            fixture_id: "mixed".to_string(),
+            events: vec![
+                event("metars", "m0", 0),
+                event("metars", "m1", 30),
+                event("nexrad", "n0", 0),
+                event("nexrad", "n1", 6),
+                event("tfrs", "t0", 0),
+            ],
+        };
+        let delivery_zero = Utc.with_ymd_and_hms(2026, 5, 18, 20, 0, 0).unwrap();
+        let virtual_zero = delivery_zero;
+        let compressed_next_delivery_zero =
+            delivery_zero + fixture_loop_duration(&timeline, 60)?.unwrap();
+        let last_virtual_time_in_loop =
+            virtual_zero + fixture_loop_virtual_duration(&timeline)?.unwrap();
+
+        assert!(
+            compressed_next_delivery_zero < last_virtual_time_in_loop,
+            "using compressed delivery time as the next virtual zero would rewind fixture time"
+        );
+        assert!(
+            next_fixture_loop_virtual_zero(&timeline, virtual_zero)?.unwrap()
+                > last_virtual_time_in_loop,
+            "the next virtual zero must be after the prior loop's final virtual event"
         );
         Ok(())
     }

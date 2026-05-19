@@ -27,8 +27,8 @@ use preprocessor_live_feeds::{
     },
     publication::PublishedCycleDataProvider,
     simulation::{
-        fixture_loop_duration, timeline_from_live_feed_root, CompiledFixtureStateBuilder,
-        SimulatedLiveFeedSource,
+        fixture_loop_duration, next_fixture_loop_virtual_zero, timeline_from_live_feed_root,
+        CompiledFixtureStateBuilder, SimulatedLiveFeedSource,
     },
 };
 use serde::Serialize;
@@ -344,16 +344,19 @@ fn start_simulation_driver(
     thread::spawn(move || {
         let provider = EmptyCycleDataProvider;
         let publisher = FileLiveFeedPublisher::new(live_root, SystemClock);
+        let mut virtual_zero = None;
         loop {
-            let simulation_zero = Utc::now();
+            let delivery_zero = Utc::now();
+            let current_virtual_zero = virtual_zero.unwrap_or(delivery_zero);
             let tasks = products
                 .iter()
                 .map(
                     |product| -> anyhow::Result<Box<dyn LiveFeedPollingTask + Send>> {
-                        let source = SimulatedLiveFeedSource::from_timeline(
+                        let source = SimulatedLiveFeedSource::from_timeline_with_virtual_start(
                             product.clone(),
                             timeline.clone(),
-                            simulation_zero,
+                            delivery_zero,
+                            current_virtual_zero,
                             speedup,
                         )?;
                         let builder =
@@ -381,13 +384,22 @@ fn start_simulation_driver(
                 );
                 log_tick_result("simulation", &result);
                 if loop_duration
-                    .is_some_and(|duration| now.signed_duration_since(simulation_zero) >= duration)
+                    .is_some_and(|duration| now.signed_duration_since(delivery_zero) >= duration)
                 {
                     eprintln!(
                         "live-feed simulation restarting fixture timeline after {} ms",
-                        now.signed_duration_since(simulation_zero)
-                            .num_milliseconds()
+                        now.signed_duration_since(delivery_zero).num_milliseconds()
                     );
+                    virtual_zero =
+                        match next_fixture_loop_virtual_zero(&timeline, current_virtual_zero) {
+                            Ok(next) => next,
+                            Err(error) => {
+                                eprintln!(
+                                    "live-feed simulation virtual clock advance failed: {error:#}"
+                                );
+                                return;
+                            }
+                        };
                     break;
                 }
                 thread::sleep(poll_interval);

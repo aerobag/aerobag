@@ -172,35 +172,30 @@ impl LiveFeedsState {
         &mut self,
         events: impl IntoIterator<Item = LiveFeedSseEvent>,
     ) -> AppResult<Vec<String>> {
-        let mut affected = Vec::new();
+        let mut latest_current_by_product = HashMap::new();
         for event in events {
-            if let Some(product) = self.ingest_one_sse_event(event)? {
-                affected.push(product);
+            if let Some(payload) = parse_sse_current_event(event)? {
+                latest_current_by_product.insert(payload.product.clone(), payload);
             }
         }
+        let mut affected = latest_current_by_product
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
         affected.sort();
-        affected.dedup();
-        Ok(affected)
-    }
-
-    fn ingest_one_sse_event(&mut self, event: LiveFeedSseEvent) -> AppResult<Option<String>> {
-        let event_name = event.event.as_deref().unwrap_or("message");
-        match event_name {
-            "live-feed-current" | "message" => {
-                let payload: LiveFeedCurrentEvent =
-                    serde_json::from_str(&event.data).map_err(invalid_live_feed_json)?;
-                let product = payload.product.clone();
-                self.register_product(
-                    payload.product,
-                    payload.version,
-                    payload.version_manifest_url,
-                    payload.state_url,
-                    payload.state_sha256,
-                )?;
-                Ok(Some(product))
-            }
-            _ => Ok(None),
+        for product in &affected {
+            let payload = latest_current_by_product
+                .remove(product)
+                .expect("affected product came from latest_current_by_product");
+            self.register_product(
+                payload.product,
+                payload.version,
+                payload.version_manifest_url,
+                payload.state_url,
+                payload.state_sha256,
+            )?;
         }
+        Ok(affected)
     }
 
     pub fn ingest_resource(&mut self, resource_id: &str, bytes: &[u8]) -> AppResult<()> {
@@ -530,6 +525,16 @@ fn split_product_from_to(resource_id: &str, rest: &str) -> AppResult<(String, St
         parts[1].to_string(),
         parts[2].to_string(),
     ))
+}
+
+fn parse_sse_current_event(event: LiveFeedSseEvent) -> AppResult<Option<LiveFeedCurrentEvent>> {
+    let event_name = event.event.as_deref().unwrap_or("message");
+    match event_name {
+        "live-feed-current" | "message" => Ok(Some(
+            serde_json::from_str(&event.data).map_err(invalid_live_feed_json)?,
+        )),
+        _ => Ok(None),
+    }
 }
 
 fn live_feed_address(relative_url: &str) -> String {
@@ -923,6 +928,60 @@ mod tests {
                 "live_feeds/version/nexrad/v7"
             ]
         );
+    }
+
+    #[test]
+    fn replayed_batched_sse_events_do_not_forget_loaded_version_manifest() {
+        let mut state = LiveFeedsState {
+            current_loaded: true,
+            ..LiveFeedsState::default()
+        };
+        let events = vec![
+            LiveFeedSseEvent {
+                id: Some("metars:v1".to_string()),
+                event: Some("live-feed-current".to_string()),
+                data: r#"{
+                    "product": "metars",
+                    "version": "v1",
+                    "version_manifest_url": "versions/metars/v1.json"
+                }"#
+                .to_string(),
+            },
+            LiveFeedSseEvent {
+                id: Some("metars:v2".to_string()),
+                event: Some("live-feed-current".to_string()),
+                data: r#"{
+                    "product": "metars",
+                    "version": "v2",
+                    "version_manifest_url": "versions/metars/v2.json"
+                }"#
+                .to_string(),
+            },
+        ];
+        state.ingest_sse_events(events.clone()).unwrap();
+        state
+            .ingest_resource(
+                "live_feeds/version/metars/v2",
+                br#"{
+                    "product": "metars",
+                    "version": "v2",
+                    "state": {
+                        "url": "states/metars/v2.json",
+                        "state_sha256": "abc123"
+                    }
+                }"#,
+            )
+            .unwrap();
+
+        let affected = state.ingest_sse_events(events).unwrap();
+        let HadOperationOutcome::NeedResources { resources } =
+            state.sync_products_outcome_with_invalidations(affected.iter().map(String::as_str))
+        else {
+            panic!("expected state request");
+        };
+
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].id, "live_feeds/state/metars/v2");
     }
 
     #[test]

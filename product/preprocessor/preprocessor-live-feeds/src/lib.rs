@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::f64::consts::PI;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -17,10 +16,6 @@ pub mod products;
 pub mod publication;
 pub mod simulation;
 
-const WX_TILE_MIN_ZOOM: u8 = 5;
-const WX_TILE_MAX_ZOOM: u8 = 7;
-const WX_TILE_PATH_TEMPLATE: &str = "points/wx/{z}/{x}/{y}.json";
-const WX_TILE_SIZE: u16 = 256;
 const METAR_PRODUCT_CONTRACT_VERSION: u32 = 6;
 const METAR_TREND_TOKENS: &[&str] = &["BECMG", "TEMPO", "INTER", "NOSIG", "PROB30", "PROB40"];
 
@@ -103,7 +98,6 @@ struct MetarManifest {
     version_label: String,
     generated_at_utc: String,
     files: MetarManifestFiles,
-    map_view: MetarManifestMapView,
     counts: MetarManifestCounts,
 }
 
@@ -118,36 +112,11 @@ struct MetarManifestFiles {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct MetarManifestMapView {
-    layer: String,
-    storage_kind: String,
-    tile_path_template: String,
-    tile_size: u16,
-    min_zoom: u8,
-    max_zoom: u8,
-    levels: Vec<MetarManifestTileLevel>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct MetarManifestTileLevel {
-    zoom: u8,
-    tile_count: usize,
-    max_records_per_tile: usize,
-    station_count: usize,
-    metar_count: usize,
-    taf_count: usize,
-    pirep_count: usize,
-    metars_important_only: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
 struct MetarManifestCounts {
     metars: usize,
     important_metars: usize,
     tafs: usize,
     pireps: usize,
-    tile_count: usize,
-    max_wx_records_per_tile: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -340,36 +309,11 @@ pub struct StructuredPirepRecord {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct WxTileFile {
-    schema_version: u32,
-    layer: String,
-    z: u8,
-    x: u32,
-    y: u32,
-    records: Vec<WxTileReference>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct WxTileReference {
-    kind: String,
-    id: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct WxTileRecord {
-    z: u8,
-    x: u32,
-    y: u32,
-    records: Vec<WxTileReference>,
-}
-
-#[derive(Debug, Clone, Serialize)]
 struct MetarProductModel {
     metars_by_station: BTreeMap<String, StructuredMetarRecord>,
     tafs_by_station: BTreeMap<String, StructuredTafRecord>,
     pireps: Vec<StructuredPirepRecord>,
     important_station_ids: BTreeSet<String>,
-    tiles: Vec<WxTileRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -639,13 +583,6 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
     let taf_count = model.tafs_by_station.len();
     let pirep_count = model.pireps.len();
     let important_metar_count = model.important_station_ids.len();
-    let tile_count = model.tiles.len();
-    let max_wx_records_per_tile = model
-        .tiles
-        .iter()
-        .map(|tile| tile.records.len())
-        .max()
-        .unwrap_or(0);
 
     let structured_json_path = request.output_dir.join("metars.json");
     let tafs_json_path = request.output_dir.join("tafs.json");
@@ -691,26 +628,6 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
         ("tafs.json".to_string(), tafs_json_path.clone()),
         ("pireps.json".to_string(), pireps_json_path.clone()),
     ];
-    for tile in &model.tiles {
-        let relative_path = wx_tile_relative_path(tile.z, tile.x, tile.y);
-        let tile_path = request.output_dir.join(&relative_path);
-        if let Some(parent) = tile_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
-        }
-        write_json_pretty(
-            &tile_path,
-            &WxTileFile {
-                schema_version: 1,
-                layer: "wx".to_string(),
-                z: tile.z,
-                x: tile.x,
-                y: tile.y,
-                records: tile.records.clone(),
-            },
-        )?;
-        zip_members.push((relative_path, tile_path));
-    }
     let manifest = MetarManifest {
         schema_version: METAR_PRODUCT_CONTRACT_VERSION,
         version_label: request.version_label.clone(),
@@ -727,22 +644,11 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
                 .unwrap_or_default()
                 .to_string(),
         },
-        map_view: MetarManifestMapView {
-            layer: "wx".to_string(),
-            storage_kind: "live_feed".to_string(),
-            tile_path_template: WX_TILE_PATH_TEMPLATE.to_string(),
-            tile_size: WX_TILE_SIZE,
-            min_zoom: WX_TILE_MIN_ZOOM,
-            max_zoom: WX_TILE_MAX_ZOOM,
-            levels: wx_manifest_tile_levels(&model.tiles),
-        },
         counts: MetarManifestCounts {
             metars: metar_count,
             important_metars: important_metar_count,
             tafs: taf_count,
             pireps: pirep_count,
-            tile_count,
-            max_wx_records_per_tile,
         },
     };
     write_json_pretty(&canonical_manifest_path, &manifest)?;
@@ -830,151 +736,12 @@ fn metar_product_model(
         .filter(|station_id| metars_by_station.contains_key(*station_id))
         .cloned()
         .collect::<BTreeSet<_>>();
-    let tiles = build_wx_tiles(
-        &metars_by_station,
-        &tafs_by_station,
-        &pireps,
-        &important_station_ids,
-    );
     Ok(MetarProductModel {
         metars_by_station,
         tafs_by_station,
         pireps,
         important_station_ids,
-        tiles,
     })
-}
-
-fn build_wx_tiles(
-    metars_by_station: &BTreeMap<String, StructuredMetarRecord>,
-    tafs_by_station: &BTreeMap<String, StructuredTafRecord>,
-    pireps: &[StructuredPirepRecord],
-    important_station_ids: &BTreeSet<String>,
-) -> Vec<WxTileRecord> {
-    let mut tiles: BTreeMap<(u8, u32, u32), Vec<WxTileReference>> = BTreeMap::new();
-    for zoom in WX_TILE_MIN_ZOOM..=WX_TILE_MAX_ZOOM {
-        let important_only = zoom == WX_TILE_MIN_ZOOM;
-        for (station_id, record) in metars_by_station {
-            if important_only && !important_station_ids.contains(station_id) {
-                continue;
-            }
-            let (Some(latitude), Some(longitude)) = (record.latitude, record.longitude) else {
-                continue;
-            };
-            if !wx_has_valid_position(latitude, longitude) {
-                continue;
-            }
-            let (x, y) = wx_slippy_tile(latitude, longitude, zoom);
-            tiles
-                .entry((zoom, x, y))
-                .or_default()
-                .push(WxTileReference {
-                    kind: "metar".to_string(),
-                    id: station_id.clone(),
-                });
-        }
-        for (station_id, record) in tafs_by_station {
-            let (Some(latitude), Some(longitude)) = (record.latitude, record.longitude) else {
-                continue;
-            };
-            if !wx_has_valid_position(latitude, longitude) {
-                continue;
-            }
-            let (x, y) = wx_slippy_tile(latitude, longitude, zoom);
-            tiles
-                .entry((zoom, x, y))
-                .or_default()
-                .push(WxTileReference {
-                    kind: "taf".to_string(),
-                    id: station_id.clone(),
-                });
-        }
-        for record in pireps {
-            let (Some(latitude), Some(longitude)) = (record.latitude, record.longitude) else {
-                continue;
-            };
-            if !wx_has_valid_position(latitude, longitude) {
-                continue;
-            }
-            let (x, y) = wx_slippy_tile(latitude, longitude, zoom);
-            tiles
-                .entry((zoom, x, y))
-                .or_default()
-                .push(WxTileReference {
-                    kind: "pirep".to_string(),
-                    id: record.id.clone(),
-                });
-        }
-    }
-    tiles
-        .into_iter()
-        .map(|((z, x, y), records)| WxTileRecord { z, x, y, records })
-        .collect()
-}
-
-fn wx_manifest_tile_levels(tiles: &[WxTileRecord]) -> Vec<MetarManifestTileLevel> {
-    (WX_TILE_MIN_ZOOM..=WX_TILE_MAX_ZOOM)
-        .map(|zoom| {
-            let mut station_ids = BTreeSet::new();
-            let mut tile_count = 0;
-            let mut max_records_per_tile = 0;
-            let mut metar_count = 0;
-            let mut taf_count = 0;
-            let mut pirep_count = 0;
-            for tile in tiles.iter().filter(|tile| tile.z == zoom) {
-                tile_count += 1;
-                max_records_per_tile = max_records_per_tile.max(tile.records.len());
-                for record in &tile.records {
-                    match record.kind.as_str() {
-                        "metar" => {
-                            station_ids.insert(record.id.clone());
-                            metar_count += 1;
-                        }
-                        "taf" => {
-                            station_ids.insert(record.id.clone());
-                            taf_count += 1;
-                        }
-                        "pirep" => pirep_count += 1,
-                        _ => {}
-                    }
-                }
-            }
-            MetarManifestTileLevel {
-                zoom,
-                tile_count,
-                max_records_per_tile,
-                station_count: station_ids.len(),
-                metar_count,
-                taf_count,
-                pirep_count,
-                metars_important_only: zoom == WX_TILE_MIN_ZOOM,
-            }
-        })
-        .collect()
-}
-
-fn wx_tile_relative_path(z: u8, x: u32, y: u32) -> String {
-    format!("points/wx/{z}/{x}/{y}.json")
-}
-
-fn wx_has_valid_position(latitude: f64, longitude: f64) -> bool {
-    latitude.is_finite()
-        && longitude.is_finite()
-        && (-85.051_128_78..=85.051_128_78).contains(&latitude)
-        && (-180.0..=180.0).contains(&longitude)
-}
-
-fn wx_slippy_tile(latitude: f64, longitude: f64, zoom: u8) -> (u32, u32) {
-    let lat_rad = latitude.to_radians();
-    let tile_count = 2_f64.powi(i32::from(zoom));
-    let x = ((longitude + 180.0) / 360.0) * tile_count;
-    let y = (1.0 - ((lat_rad.tan() + (1.0 / lat_rad.cos())).ln() / PI)) / 2.0 * tile_count;
-    (wx_clamp_tile(x, zoom), wx_clamp_tile(y, zoom))
-}
-
-fn wx_clamp_tile(value: f64, zoom: u8) -> u32 {
-    let max_tile = (1_u32 << zoom) - 1;
-    value.floor().clamp(0.0, f64::from(max_tile)) as u32
 }
 
 fn structured_metar_records(input_xml_path: &Path) -> anyhow::Result<Vec<StructuredMetarRecord>> {
@@ -2833,93 +2600,11 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("pireps.json"),
         );
-        assert_eq!(
-            manifest
-                .pointer("/map_view/layer")
-                .and_then(|value| value.as_str()),
-            Some("wx"),
-        );
-        assert_eq!(
-            manifest
-                .pointer("/map_view/tile_path_template")
-                .and_then(|value| value.as_str()),
-            Some(WX_TILE_PATH_TEMPLATE),
-        );
-        assert_eq!(
-            manifest
-                .pointer("/map_view/storage_kind")
-                .and_then(|value| value.as_str()),
-            Some("live_feed"),
-        );
-        assert_eq!(
-            manifest
-                .pointer("/map_view/min_zoom")
-                .and_then(|value| value.as_u64()),
-            Some(u64::from(WX_TILE_MIN_ZOOM)),
-        );
-        assert_eq!(
-            manifest
-                .pointer("/map_view/max_zoom")
-                .and_then(|value| value.as_u64()),
-            Some(u64::from(WX_TILE_MAX_ZOOM)),
-        );
-        assert_eq!(
-            manifest
-                .pointer("/map_view/levels/0/zoom")
-                .and_then(|value| value.as_u64()),
-            Some(u64::from(WX_TILE_MIN_ZOOM)),
-        );
-        assert_eq!(
-            manifest
-                .pointer("/map_view/levels/0/metars_important_only")
-                .and_then(|value| value.as_bool()),
-            Some(true),
-        );
-        assert_eq!(
-            manifest
-                .pointer("/map_view/levels/0/station_count")
-                .and_then(|value| value.as_u64()),
-            Some(2),
-        );
-        assert_eq!(
-            manifest
-                .pointer("/map_view/levels/0/metar_count")
-                .and_then(|value| value.as_u64()),
-            Some(1),
-        );
-        assert_eq!(
-            manifest
-                .pointer("/map_view/levels/0/taf_count")
-                .and_then(|value| value.as_u64()),
-            Some(2),
-        );
-        assert_eq!(
-            manifest
-                .pointer("/map_view/levels/2/zoom")
-                .and_then(|value| value.as_u64()),
-            Some(u64::from(WX_TILE_MAX_ZOOM)),
-        );
-        assert!(
-            manifest
-                .pointer("/map_view/levels/2/max_records_per_tile")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(0)
-                > 0
-        );
-        assert!(
-            manifest
-                .pointer("/counts/tile_count")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(0)
-                > 0
-        );
-        assert!(
-            manifest
-                .pointer("/counts/max_wx_records_per_tile")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(0)
-                > 0
-        );
+        assert!(manifest.get("map_view").is_none());
+        assert!(manifest.pointer("/counts/tile_count").is_none());
+        assert!(manifest
+            .pointer("/counts/max_wx_records_per_tile")
+            .is_none());
 
         assert_eq!(
             manifest
@@ -2970,27 +2655,6 @@ mod tests {
             Some("none"),
         );
 
-        let (x, y) = wx_slippy_tile(1.0, 2.0, WX_TILE_MAX_ZOOM);
-        let tile_path = first_result
-            .zip_path
-            .parent()
-            .unwrap()
-            .join(wx_tile_relative_path(WX_TILE_MAX_ZOOM, x, y));
-        let tile: Value = serde_json::from_slice(&fs::read(tile_path)?)?;
-        assert_eq!(
-            tile.pointer("/layer").and_then(|value| value.as_str()),
-            Some("wx")
-        );
-        assert_eq!(
-            tile.pointer("/records/0/kind")
-                .and_then(|value| value.as_str()),
-            Some("metar")
-        );
-        assert_eq!(
-            tile.pointer("/records/0/id")
-                .and_then(|value| value.as_str()),
-            Some("KAAA")
-        );
         let zip_listing = Command::new("unzip")
             .arg("-Z1")
             .arg(&first_result.zip_path)
@@ -2999,6 +2663,9 @@ mod tests {
         assert!(zip_listing.status.success());
         let zip_listing = String::from_utf8(zip_listing.stdout)?;
         assert!(zip_listing.lines().any(|line| line == "manifest.json"));
+        assert!(!zip_listing
+            .lines()
+            .any(|line| line.starts_with("points/wx/")));
         Ok(())
     }
 

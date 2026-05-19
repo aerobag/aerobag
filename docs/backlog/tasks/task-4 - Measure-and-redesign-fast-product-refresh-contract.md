@@ -16,34 +16,14 @@ ordinal: 4000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-What’s left in “fast-products”:
-
-  - Legacy fast bundle plumbing in preproc: bundle_fast_*,
-    PublishedFastProductResult, build_or_reuse_fast_product, sync/status/tests
-    around fast bundles.
-  - Old NEXRAD package builder still exists, but runtime NEXRAD is now the live
-    tiled/source-grid path.
-  - Naming cleanup: preprocessor-fast, fast_product_* helpers, and node names
-    like fast-metars / fast-tfrs are now misleading where they’re reused for
-    live-feed builders.
-  - Web dev legacy route: Vite still has a /fast-products legacy/404 route.
-
-
-
-  - Wire the daemon’s real production loop: run schedulers/pollers, call the
-    shared publish tick, and announce SSE invalidations as products update.
-  - Finish simulation mode: compile/load fixture timelines and pump accelerated
-    events from the daemon, not Vite.
-  - Move the remaining live-feed test-only helpers out of preprocessor-cli/src/
-    product_build.rs when those tests get relocated.
-  - Add real upstream adapters for the daemon path, including future streaming
-    sources like SWIM/NOTAMs.
-
-
-  - Productionize serving: supervisor/reverse proxy details, SSE scaling, and
+- Some stale docs/backlog text still mentions fast-products and old commands.
+  - Some CLI-hosted integration tests still live under preprocessor-cli; helpers
+    are moved, tests are not fully relocated.
+  - Real future streaming adapters like SWIM/NOTAMs are not implemented yet.
+  - Production serving details remain: supervisor, reverse proxy, SSE scaling,
     health/status reporting.
   - Android live-feed consumption still trails web.
-  - NEXRAD PNG delta encoding remains deferred under the TASK-121 placeholder.
+  - NEXRAD PNG delta encoding remains deferred under TASK-121.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

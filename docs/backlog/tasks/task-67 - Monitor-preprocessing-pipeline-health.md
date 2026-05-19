@@ -8,7 +8,7 @@ labels:
   - preprocessor
   - deployment
   - data
-  - cat:preprocessor
+  - cat:productionization
 dependencies: []
 ordinal: 67000
 ---

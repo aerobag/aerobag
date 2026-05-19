@@ -48,11 +48,6 @@ const snapshotJson = JSON.stringify({
   data_status_state: {
     boxes: [],
   },
-  caution_state: {
-    active: false,
-    severity: null,
-    items: [],
-  },
 });
 
 describe("loadBestAvailableAdapter", () => {

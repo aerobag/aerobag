@@ -184,10 +184,9 @@ pub use session::{
     sync_map_follow_in_session, tick_debug_ownship_driver_in_session,
     tick_debug_ownship_driver_in_session_outcome, tick_playback_in_session,
     unsuspend_sequencing_in_session, update_ownship_source_status_in_session,
-    update_ownship_source_status_in_session_outcome, GuidanceLegGeometry, UiCautionItem,
-    UiCautionState, UiChartPageState, UiDataStatusBox, UiDataStatusState, UiDebugState,
-    UiMapLayerState, UiMapLayerToggleState, UiSessionInitResult, UiSessionSnapshot, UiStatusAction,
-    UiStatusActionStyle, UiStatusSeverity,
+    update_ownship_source_status_in_session_outcome, GuidanceLegGeometry, UiChartPageState,
+    UiDataStatusBox, UiDataStatusState, UiDebugState, UiMapLayerState, UiMapLayerToggleState,
+    UiSessionInitResult, UiSessionSnapshot, UiStatusAction, UiStatusActionStyle, UiStatusSeverity,
 };
 pub use situation::{Situation, SituationPosition};
 pub use state::{

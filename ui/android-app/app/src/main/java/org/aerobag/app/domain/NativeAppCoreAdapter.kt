@@ -1678,19 +1678,8 @@ private data class WireUiDataStatusBox(
     val label: String,
     val value: String? = null,
     val severity: WireUiStatusSeverity,
+    val drives_caution: Boolean,
     val detail: String,
-    val actions: List<WireUiStatusAction>,
-    val hushed: Boolean,
-)
-
-@kotlinx.serialization.Serializable
-private data class WireUiCautionItem(
-    val id: String,
-    val severity: WireUiStatusSeverity,
-    val title: String,
-    val message: String,
-    val source_box_id: String? = null,
-    val layer_id: String? = null,
     val actions: List<WireUiStatusAction>,
     val hushed: Boolean,
 )
@@ -1698,13 +1687,6 @@ private data class WireUiCautionItem(
 @kotlinx.serialization.Serializable
 private data class WireUiDataStatusState(
     val boxes: List<WireUiDataStatusBox>,
-)
-
-@kotlinx.serialization.Serializable
-private data class WireUiCautionState(
-    val active: Boolean,
-    val severity: WireUiStatusSeverity? = null,
-    val items: List<WireUiCautionItem>,
 )
 
 @kotlinx.serialization.Serializable
@@ -1726,7 +1708,6 @@ private data class WireUiSessionSnapshot(
     val chart_page_state: WireUiChartPageState,
     val map_layer_state: WireUiMapLayerState = WireUiMapLayerState(),
     val data_status_state: WireUiDataStatusState,
-    val caution_state: WireUiCautionState,
     val debug_state: WireUiDebugState = WireUiDebugState(),
     val raster_map: WireRasterMapUiState? = null,
 )
@@ -1806,7 +1787,6 @@ data class UiSessionSnapshot(
     val chartPageState: UiChartPageState,
     val mapLayerState: UiMapLayerState,
     val dataStatusState: UiDataStatusState,
-    val cautionState: UiCautionState,
     val debugState: UiDebugState,
     val rasterMap: RasterMapUiState?,
 )
@@ -1841,30 +1821,14 @@ data class UiDataStatusBox(
     val label: String,
     val value: String?,
     val severity: UiStatusSeverity,
+    val drivesCaution: Boolean,
     val detail: String,
-    val actions: List<UiStatusAction>,
-    val hushed: Boolean,
-)
-
-data class UiCautionItem(
-    val id: String,
-    val severity: UiStatusSeverity,
-    val title: String,
-    val message: String,
-    val sourceBoxId: String?,
-    val layerId: String?,
     val actions: List<UiStatusAction>,
     val hushed: Boolean,
 )
 
 data class UiDataStatusState(
     val boxes: List<UiDataStatusBox>,
-)
-
-data class UiCautionState(
-    val active: Boolean,
-    val severity: UiStatusSeverity?,
-    val items: List<UiCautionItem>,
 )
 
 data class UiDebugState(
@@ -1977,30 +1941,14 @@ private fun WireUiDataStatusBox.toUi() = UiDataStatusBox(
     label = label,
     value = value,
     severity = severity.toUi(),
+    drivesCaution = drives_caution,
     detail = detail,
-    actions = actions.map { it.toUi() },
-    hushed = hushed,
-)
-
-private fun WireUiCautionItem.toUi() = UiCautionItem(
-    id = id,
-    severity = severity.toUi(),
-    title = title,
-    message = message,
-    sourceBoxId = source_box_id,
-    layerId = layer_id,
     actions = actions.map { it.toUi() },
     hushed = hushed,
 )
 
 private fun WireUiDataStatusState.toUi() = UiDataStatusState(
     boxes = boxes.map { it.toUi() },
-)
-
-private fun WireUiCautionState.toUi() = UiCautionState(
-    active = active,
-    severity = severity?.toUi(),
-    items = items.map { it.toUi() },
 )
 
 private fun WireUiDebugState.toUi() = UiDebugState(
@@ -2020,7 +1968,6 @@ private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     chartPageState = chart_page_state.toUi(),
     mapLayerState = map_layer_state.toUi(),
     dataStatusState = data_status_state.toUi(),
-    cautionState = caution_state.toUi(),
     debugState = debug_state.toUi(),
     rasterMap = raster_map?.toUi(),
 )

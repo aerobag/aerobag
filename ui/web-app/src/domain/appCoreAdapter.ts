@@ -75,7 +75,6 @@ export type UiSessionSnapshot = {
   chart_page_state: UiChartPageState;
   map_layer_state: UiMapLayerState;
   data_status_state: UiDataStatusState;
-  caution_state: UiCautionState;
   debug_state: UiDebugState;
   raster_map?: RasterMapUiState | null;
 };
@@ -89,12 +88,6 @@ export type UiDebugState = {
   fast_tiles: boolean;
   offline_simulated_clock_buttons: boolean;
   sequencing_finish_lines: boolean;
-};
-
-export type UiCautionState = {
-  active: boolean;
-  severity: UiStatusSeverity | null;
-  items: UiCautionItem[];
 };
 
 export type UiStatusSeverity = "ok" | "info" | "caution" | "warning" | "unavailable";
@@ -113,18 +106,8 @@ export type UiDataStatusBox = {
   label: string;
   value: string | null;
   severity: UiStatusSeverity;
+  drives_caution: boolean;
   detail: string;
-  actions: UiStatusAction[];
-  hushed: boolean;
-};
-
-export type UiCautionItem = {
-  id: string;
-  severity: UiStatusSeverity;
-  title: string;
-  message: string;
-  source_box_id: string | null;
-  layer_id: MapLayerId | null;
   actions: UiStatusAction[];
   hushed: boolean;
 };

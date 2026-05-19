@@ -256,7 +256,6 @@ import org.aerobag.app.domain.SequencingMode
 import org.aerobag.app.domain.SituationControlInput
 import org.aerobag.app.domain.SituationRingCandidate
 import org.aerobag.app.domain.TileStorageKind
-import org.aerobag.app.domain.UiCautionState
 import org.aerobag.app.domain.UiDataStatusState
 import org.aerobag.app.domain.UiDebugState
 import org.aerobag.app.domain.UiMapLayerToggleState
@@ -1337,21 +1336,23 @@ internal fun SituationStatusBadge(
 @Composable
 internal fun DataStatusBadge(
     dataStatusState: UiDataStatusState,
-    cautionState: UiCautionState,
     modifier: Modifier = Modifier,
     onAction: (String) -> Unit = {},
 ) {
-    val hasStatus = dataStatusState.boxes.isNotEmpty() || cautionState.items.isNotEmpty()
+    val hasStatus = dataStatusState.boxes.isNotEmpty()
     if (!hasStatus) return
 
     var open by remember { mutableStateOf(false) }
-    val unHushedCount = cautionState.items.count { !it.hushed }
+    val cautionBoxes = dataStatusState.boxes.filter { it.drivesCaution }
+    val activeCautionBoxes = cautionBoxes.filter { !it.hushed }
+    val unHushedCount = activeCautionBoxes.size
     val launcherLabel = if (unHushedCount > 0) "\u26A0 $unHushedCount" else "STATUS"
-    val accentColor = statusSeverityColor(cautionState.severity ?: UiStatusSeverity.Info)
-    val dataStatusBoxIds = dataStatusState.boxes.map { it.id }.toSet()
-    val standaloneCautionItems = cautionState.items.filter { item ->
-        item.sourceBoxId == null || !dataStatusBoxIds.contains(item.sourceBoxId)
-    }
+    val accentColor = statusSeverityColor(
+        activeCautionBoxes
+            .maxByOrNull { statusSeverityRank(it.severity) }
+            ?.severity
+            ?: UiStatusSeverity.Info,
+    )
     Box(modifier = modifier.wrapContentSize(unbounded = true, align = Alignment.TopEnd)) {
         MenuDock(
             launcherLabel = launcherLabel,
@@ -1381,34 +1382,6 @@ internal fun DataStatusBadge(
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             box.actions.forEach { action ->
-                                CompactSquareButton(
-                                    label = action.label.uppercase(),
-                                    enabled = action.enabled,
-                                    wide = true,
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .height(ThumbSize * 0.72f),
-                                    maxLines = 1,
-                                    onClick = { onAction(action.id) },
-                                )
-                            }
-                        }
-                    }
-                }
-                standaloneCautionItems.forEach { item ->
-                    DataStatusBoxRow(
-                        label = item.title,
-                        value = item.severity.name.uppercase(),
-                        detail = item.message,
-                        severity = item.severity,
-                        hushed = item.hushed,
-                    )
-                    if (item.actions.isNotEmpty()) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(3.dp),
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            item.actions.forEach { action ->
                                 CompactSquareButton(
                                     label = action.label.uppercase(),
                                     enabled = action.enabled,
@@ -1488,6 +1461,14 @@ private fun statusSeverityColor(severity: UiStatusSeverity): Color = when (sever
     UiStatusSeverity.Caution -> Color(0xFFFFD35A)
     UiStatusSeverity.Warning -> Color(0xFFFF8B5A)
     UiStatusSeverity.Unavailable -> Color(0xFFB7BDC7)
+}
+
+private fun statusSeverityRank(severity: UiStatusSeverity): Int = when (severity) {
+    UiStatusSeverity.Ok -> 0
+    UiStatusSeverity.Info -> 1
+    UiStatusSeverity.Unavailable -> 2
+    UiStatusSeverity.Caution -> 3
+    UiStatusSeverity.Warning -> 4
 }
 
 @Composable

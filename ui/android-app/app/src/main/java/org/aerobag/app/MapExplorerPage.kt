@@ -1670,7 +1670,6 @@ internal fun MapExplorerPage(
         )
         DataStatusBadge(
             dataStatusState = sessionSnapshot.dataStatusState,
-            cautionState = sessionSnapshot.cautionState,
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(

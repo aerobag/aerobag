@@ -65,13 +65,6 @@ pub struct UiMapLayerState {
     pub offline_regions: UiMapLayerToggleState,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiCautionState {
-    pub active: bool,
-    pub severity: Option<UiStatusSeverity>,
-    pub items: Vec<UiCautionItem>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UiStatusSeverity {
@@ -103,19 +96,8 @@ pub struct UiDataStatusBox {
     pub label: String,
     pub value: Option<String>,
     pub severity: UiStatusSeverity,
+    pub drives_caution: bool,
     pub detail: String,
-    pub actions: Vec<UiStatusAction>,
-    pub hushed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiCautionItem {
-    pub id: String,
-    pub severity: UiStatusSeverity,
-    pub title: String,
-    pub message: String,
-    pub source_box_id: Option<String>,
-    pub layer_id: Option<MapLayerId>,
     pub actions: Vec<UiStatusAction>,
     pub hushed: bool,
 }
@@ -147,7 +129,6 @@ pub struct UiSessionSnapshot {
     pub chart_page_state: UiChartPageState,
     pub map_layer_state: UiMapLayerState,
     pub data_status_state: UiDataStatusState,
-    pub caution_state: UiCautionState,
     pub debug_state: UiDebugState,
     pub raster_map: Option<crate::RasterMapUiState>,
 }
@@ -181,7 +162,6 @@ struct UiSession {
     active_status_ids: BTreeSet<String>,
     hushed_status_ids: BTreeSet<String>,
     data_status_state: UiDataStatusState,
-    caution_state: UiCautionState,
     debug_state: UiDebugState,
     raster_resource_mode: RasterResourceMode,
     publication_resolver: PublicationResolver,
@@ -318,18 +298,15 @@ fn set_status_active_with_invalidation(
 }
 
 fn refresh_status_projection(session: &mut UiSession) {
-    let (data_status_state, caution_state) =
+    session.data_status_state =
         status_projection(&session.active_status_ids, &session.hushed_status_ids);
-    session.data_status_state = data_status_state;
-    session.caution_state = caution_state;
 }
 
 fn status_projection(
     active_status_ids: &BTreeSet<String>,
     hushed_status_ids: &BTreeSet<String>,
-) -> (UiDataStatusState, UiCautionState) {
+) -> UiDataStatusState {
     let mut boxes = Vec::new();
-    let mut items = Vec::new();
     if active_status_ids.contains(VECTOR_DISPLAY_LIMIT_STATUS_ID) {
         let hushed = hushed_status_ids.contains(VECTOR_DISPLAY_LIMIT_STATUS_ID);
         let action = hush_action(VECTOR_DISPLAY_LIMIT_STATUS_ID, hushed);
@@ -338,34 +315,13 @@ fn status_projection(
             label: "VECTORS".to_string(),
             value: Some("LIMIT".to_string()),
             severity: UiStatusSeverity::Caution,
+            drives_caution: true,
             detail: "Vector display is capped; some visible vector features are hidden at this zoom or density.".to_string(),
-            actions: vec![action.clone()],
-            hushed,
-        });
-        items.push(UiCautionItem {
-            id: VECTOR_DISPLAY_LIMIT_STATUS_ID.to_string(),
-            severity: UiStatusSeverity::Caution,
-            title: "Vector display limited".to_string(),
-            message: "Some visible vector features are hidden because the display feature limit was reached.".to_string(),
-            source_box_id: Some(VECTOR_DISPLAY_LIMIT_STATUS_ID.to_string()),
-            layer_id: Some(MapLayerId::Vectors),
             actions: vec![action],
             hushed,
         });
     }
-    let active_items = items.iter().filter(|item| !item.hushed).collect::<Vec<_>>();
-    let severity = active_items
-        .iter()
-        .map(|item| item.severity)
-        .max_by_key(|severity| status_severity_rank(*severity));
-    (
-        UiDataStatusState { boxes },
-        UiCautionState {
-            active: severity.is_some(),
-            severity,
-            items,
-        },
-    )
+    UiDataStatusState { boxes }
 }
 
 fn hush_action(status_id: &str, hushed: bool) -> UiStatusAction {
@@ -379,16 +335,6 @@ fn hush_action(status_id: &str, hushed: bool) -> UiStatusAction {
         label: label.to_string(),
         enabled: true,
         style: UiStatusActionStyle::Hush,
-    }
-}
-
-fn status_severity_rank(severity: UiStatusSeverity) -> u8 {
-    match severity {
-        UiStatusSeverity::Ok => 0,
-        UiStatusSeverity::Info => 1,
-        UiStatusSeverity::Unavailable => 2,
-        UiStatusSeverity::Caution => 3,
-        UiStatusSeverity::Warning => 4,
     }
 }
 
@@ -531,7 +477,6 @@ fn create_ui_session_inner(
         mark("core_project_other_ui_state");
     }
     let data_status_state = default_data_status_state();
-    let caution_state = default_caution_state();
     let debug_state = default_debug_state();
     let snapshot_debug_state = debug_state_for_app_state(&debug_state, &app_state);
     let snapshot = UiSessionSnapshot {
@@ -543,7 +488,6 @@ fn create_ui_session_inner(
         chart_page_state: chart_page_state.clone(),
         map_layer_state: map_layer_state.clone(),
         data_status_state: data_status_state.clone(),
-        caution_state: caution_state.clone(),
         debug_state: snapshot_debug_state,
         raster_map: None,
     };
@@ -566,7 +510,6 @@ fn create_ui_session_inner(
             active_status_ids: BTreeSet::new(),
             hushed_status_ids: BTreeSet::new(),
             data_status_state,
-            caution_state,
             debug_state,
             raster_resource_mode: RasterResourceMode::InstalledPackage,
             publication_resolver: PublicationResolver::new("/packages"),
@@ -3730,7 +3673,6 @@ fn try_snapshot_for_session(session: &UiSession) -> Result<UiSessionSnapshot, Ha
         chart_page_state: session.chart_page_state.clone(),
         map_layer_state: session.map_layer_state.clone(),
         data_status_state: session.data_status_state.clone(),
-        caution_state: session.caution_state.clone(),
         debug_state,
         raster_map: session
             .raster_map_catalog
@@ -3827,14 +3769,6 @@ fn default_map_layer_state() -> UiMapLayerState {
             visible: false,
             enabled: true,
         },
-    }
-}
-
-fn default_caution_state() -> UiCautionState {
-    UiCautionState {
-        active: false,
-        severity: None,
-        items: Vec::new(),
     }
 }
 
@@ -5361,28 +5295,23 @@ mod tests {
     }
 
     #[test]
-    fn data_status_projection_keeps_hushed_items_visible_without_active_caution() {
+    fn data_status_projection_keeps_hushed_items_visible_and_marks_caution_driver() {
         let active_status_ids = BTreeSet::from([VECTOR_DISPLAY_LIMIT_STATUS_ID.to_string()]);
-        let (data_status, caution) = status_projection(&active_status_ids, &BTreeSet::new());
+        let data_status = status_projection(&active_status_ids, &BTreeSet::new());
 
         assert_eq!(data_status.boxes.len(), 1);
         assert_eq!(data_status.boxes[0].id, VECTOR_DISPLAY_LIMIT_STATUS_ID);
         assert!(!data_status.boxes[0].hushed);
-        assert_eq!(caution.items.len(), 1);
-        assert!(caution.active);
-        assert_eq!(caution.severity, Some(UiStatusSeverity::Caution));
+        assert!(data_status.boxes[0].drives_caution);
 
-        let (hushed_data_status, hushed_caution) = status_projection(
+        let hushed_data_status = status_projection(
             &active_status_ids,
             &BTreeSet::from([VECTOR_DISPLAY_LIMIT_STATUS_ID.to_string()]),
         );
 
         assert_eq!(hushed_data_status.boxes.len(), 1);
         assert!(hushed_data_status.boxes[0].hushed);
-        assert_eq!(hushed_caution.items.len(), 1);
-        assert!(hushed_caution.items[0].hushed);
-        assert!(!hushed_caution.active);
-        assert_eq!(hushed_caution.severity, None);
+        assert!(hushed_data_status.boxes[0].drives_caution);
     }
 
     #[test]
@@ -5411,7 +5340,6 @@ mod tests {
             active_status_ids: BTreeSet::new(),
             hushed_status_ids: BTreeSet::new(),
             data_status_state: default_data_status_state(),
-            caution_state: default_caution_state(),
             debug_state: default_debug_state(),
             raster_resource_mode: RasterResourceMode::InstalledPackage,
             publication_resolver: PublicationResolver::new("/packages"),
@@ -5670,7 +5598,6 @@ mod tests {
             active_status_ids: BTreeSet::new(),
             hushed_status_ids: BTreeSet::new(),
             data_status_state: default_data_status_state(),
-            caution_state: default_caution_state(),
             debug_state: default_debug_state(),
             raster_resource_mode: RasterResourceMode::InstalledPackage,
             publication_resolver: PublicationResolver::new("/packages"),
@@ -5816,7 +5743,6 @@ mod tests {
             active_status_ids: BTreeSet::new(),
             hushed_status_ids: BTreeSet::new(),
             data_status_state: default_data_status_state(),
-            caution_state: default_caution_state(),
             debug_state: default_debug_state(),
             raster_resource_mode: RasterResourceMode::InstalledPackage,
             publication_resolver: PublicationResolver::new("/packages"),

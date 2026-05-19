@@ -841,7 +841,12 @@ pub fn content_version_label(source_fingerprint: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::{
+        canonical_json_sha256, read_live_feeds_current, FileLiveFeedPublisher, FixedClock,
+        LiveFeedPublisher, LiveFeedVersionManifest,
+    };
     use chrono::TimeZone;
+    use serde::Deserialize;
     use tempfile::tempdir;
 
     #[test]
@@ -931,6 +936,276 @@ mod tests {
             parse_latest_nexrad_listing(&path)?,
             "CONUS_L2_CREF_QCD_20260511_212042.tif.gz"
         );
+        Ok(())
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct NexradFixtureManifest {
+        product: String,
+        fixture: String,
+        frame_count: usize,
+        frames: Vec<NexradFixtureFrame>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct NexradFixtureFrame {
+        file: String,
+        observed_at_utc: String,
+        bytes: u64,
+        sha256: String,
+    }
+
+    fn nexrad_three_hour_fixture_root() -> anyhow::Result<Option<PathBuf>> {
+        let Some(root) = std::env::var_os("AEROBAG_TEST_ARTIFACTS_ROOT")
+            .or_else(|| std::env::var_os("AEROBAG_TEST_ARTIFACTS"))
+        else {
+            eprintln!("skipping large-fixture NEXRAD test: AEROBAG_TEST_ARTIFACTS_ROOT is not set");
+            return Ok(None);
+        };
+        let fixture_root = PathBuf::from(root)
+            .join("nexrad")
+            .join("source-grid-three-hour");
+        if !fixture_root.join("manifest.json").is_file() {
+            bail!("test artifacts do not contain nexrad/source-grid-three-hour/manifest.json");
+        }
+        Ok(Some(fixture_root))
+    }
+
+    fn read_nexrad_fixture_manifest(fixture_root: &Path) -> anyhow::Result<NexradFixtureManifest> {
+        let manifest_path = fixture_root.join("manifest.json");
+        let manifest: NexradFixtureManifest = serde_json::from_slice(
+            &fs::read(&manifest_path)
+                .with_context(|| format!("failed to read {}", manifest_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+        Ok(manifest)
+    }
+
+    fn parsed_fixture_time(frame: &NexradFixtureFrame) -> anyhow::Result<DateTime<Utc>> {
+        Ok(DateTime::parse_from_rfc3339(&frame.observed_at_utc)
+            .with_context(|| format!("bad observed_at_utc {}", frame.observed_at_utc))?
+            .with_timezone(&Utc))
+    }
+
+    fn collect_png_paths(root: &Path, paths: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+        for entry in
+            fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                collect_png_paths(&path, paths)?;
+            } else if path.extension().is_some_and(|extension| extension == "png") {
+                paths.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    fn png_color_type_and_palette_lengths(path: &Path) -> anyhow::Result<(u8, Vec<usize>)> {
+        let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+        let signature = b"\x89PNG\r\n\x1a\n";
+        if bytes.len() < signature.len() || &bytes[..signature.len()] != signature {
+            bail!("{} is not a PNG", path.display());
+        }
+        let mut offset = signature.len();
+        let mut color_type = None;
+        let mut palette_lengths = Vec::new();
+        while offset + 12 <= bytes.len() {
+            let length = u32::from_be_bytes(bytes[offset..offset + 4].try_into()?) as usize;
+            let chunk_type = &bytes[offset + 4..offset + 8];
+            let data_start = offset + 8;
+            let data_end = data_start + length;
+            if data_end + 4 > bytes.len() {
+                bail!("{} has truncated PNG chunk", path.display());
+            }
+            if chunk_type == b"IHDR" {
+                if length != 13 {
+                    bail!("{} has unexpected IHDR length {length}", path.display());
+                }
+                color_type = Some(bytes[data_start + 9]);
+            } else if chunk_type == b"PLTE" {
+                palette_lengths.push(length);
+            } else if chunk_type == b"IEND" {
+                break;
+            }
+            offset = data_end + 4;
+        }
+        Ok((color_type.context("PNG missing IHDR")?, palette_lengths))
+    }
+
+    #[test]
+    fn nexrad_three_hour_fixture_manifest_validates_real_upstream_frames() -> anyhow::Result<()> {
+        let Some(fixture_root) = nexrad_three_hour_fixture_root()? else {
+            return Ok(());
+        };
+        let manifest = read_nexrad_fixture_manifest(&fixture_root)?;
+
+        assert_eq!(manifest.product, "nexrad");
+        assert_eq!(manifest.fixture, "source-grid-three-hour");
+        assert_eq!(manifest.frame_count, manifest.frames.len());
+        assert!(manifest.frames.len() >= 90);
+
+        let mut previous_time: Option<DateTime<Utc>> = None;
+        let mut max_gap_seconds = 0;
+        for frame in &manifest.frames {
+            let path = fixture_root.join("raw").join(&frame.file);
+            let metadata = fs::metadata(&path)
+                .with_context(|| format!("missing fixture frame {}", path.display()))?;
+            assert_eq!(metadata.len(), frame.bytes, "fixture frame byte count");
+            assert_eq!(hash_file(&path)?, frame.sha256, "fixture frame sha256");
+
+            let parsed_from_name = parse_nexrad_observed_at_utc(&frame.file)?.and_utc();
+            let parsed_from_manifest = parsed_fixture_time(frame)?;
+            assert_eq!(parsed_from_name, parsed_from_manifest);
+
+            if let Some(previous) = previous_time {
+                let gap_seconds = (parsed_from_manifest - previous).num_seconds();
+                assert!(
+                    gap_seconds > 0,
+                    "fixture frames must be strictly time ordered"
+                );
+                max_gap_seconds = max_gap_seconds.max(gap_seconds);
+            }
+            previous_time = Some(parsed_from_manifest);
+        }
+        assert!(
+            max_gap_seconds <= 180,
+            "fixture should be contiguous enough for a live-feed timeline; max gap was {max_gap_seconds}s"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn nexrad_three_hour_fixture_builds_and_publishes_source_grid_states() -> anyhow::Result<()> {
+        let Some(fixture_root) = nexrad_three_hour_fixture_root()? else {
+            return Ok(());
+        };
+        let manifest = read_nexrad_fixture_manifest(&fixture_root)?;
+        let temp = tempdir()?;
+        let live_root = temp.path().join("live-feeds");
+        let publisher = FileLiveFeedPublisher::new(
+            live_root.clone(),
+            FixedClock::new(Utc.with_ymd_and_hms(2026, 5, 18, 0, 0, 0).unwrap()),
+        );
+        let palette_hash = hash_text(NEXRAD_FIXED_OPAQUE_PALETTE_JSON);
+
+        let mut previous_version: Option<String> = None;
+        let mut expected_last_version = None;
+        for (index, frame) in manifest.frames.iter().enumerate() {
+            let source_path = fixture_root.join("raw").join(&frame.file);
+            let observed_at = parsed_fixture_time(frame)?;
+            let version = format!(
+                "{}_{}_png8{}",
+                observed_at.format("%Y%m%dT%H%M%SZ"),
+                &frame.sha256[..16],
+                &palette_hash[..8]
+            );
+            expected_last_version = Some(version.clone());
+            let output_dir = temp.path().join("states").join(format!("{index:03}"));
+            fs::create_dir_all(&output_dir)?;
+
+            build_nexrad_source_grid_tiles(
+                &source_path,
+                &output_dir,
+                &version,
+                &observed_at.to_rfc3339(),
+                &frame.file,
+                &frame.sha256,
+                false,
+            )?;
+
+            let manifest_path = output_dir.join("manifest.json");
+            let manifest_value = read_json_value(&manifest_path)?;
+            assert_eq!(manifest_value["product"], "nexrad");
+            assert_eq!(manifest_value["state_id"], version);
+            assert_eq!(manifest_value["source_file"], frame.file);
+            assert_eq!(manifest_value["source_sha256"], frame.sha256);
+            assert_eq!(manifest_value["tile_encoding"], "png8-fixed-palette");
+            assert_eq!(manifest_value["palette"]["sha256"], palette_hash);
+            assert_eq!(
+                manifest_value["res-levels"],
+                serde_json::json!([0, 1, 2, 3])
+            );
+            assert_eq!(manifest_value["source_grid"]["width"], 7000);
+            assert_eq!(manifest_value["source_grid"]["height"], 3500);
+            let tile_count = live_nexrad_tile_count(&manifest_value)?;
+            assert_eq!(tile_count, 136);
+
+            let mut png_paths = Vec::new();
+            collect_png_paths(&output_dir.join("tiles"), &mut png_paths)?;
+            assert_eq!(png_paths.len(), tile_count);
+            let mut min_palette_length = usize::MAX;
+            for png_path in &png_paths {
+                let (color_type, palette_lengths) = png_color_type_and_palette_lengths(png_path)?;
+                assert_eq!(
+                    color_type,
+                    3,
+                    "{} should be indexed PNG",
+                    png_path.display()
+                );
+                assert_eq!(
+                    palette_lengths.len(),
+                    1,
+                    "{} should carry one PNG palette",
+                    png_path.display()
+                );
+                assert_eq!(
+                    palette_lengths[0] % 3,
+                    0,
+                    "{} PLTE length should be RGB triples",
+                    png_path.display()
+                );
+                assert!(
+                    palette_lengths[0] <= 768,
+                    "{} PLTE should fit PNG8",
+                    png_path.display()
+                );
+                min_palette_length = min_palette_length.min(palette_lengths[0]);
+            }
+            assert!(
+                min_palette_length < 768,
+                "at least one NEXRAD tile should use a compact palette"
+            );
+
+            let built = nexrad_live_feed_state(
+                version.clone(),
+                output_dir,
+                manifest_path,
+                manifest_value.clone(),
+            )?;
+            let result = publisher.publish(built)?;
+            assert_eq!(result.product, "nexrad");
+            assert_eq!(result.version, version);
+            assert_eq!(result.changed_count, tile_count);
+            assert!(result.delta_path.is_none());
+
+            let current = read_live_feeds_current(&live_root)?.expect("live-feeds current");
+            let current_nexrad = current.products.get("nexrad").expect("nexrad current");
+            assert_eq!(current_nexrad.current, version);
+            assert_eq!(
+                current_nexrad.state_sha256,
+                canonical_json_sha256(&manifest_value)?
+            );
+
+            let version_manifest_path = live_root
+                .join("versions")
+                .join("nexrad")
+                .join(format!("{version}.json"));
+            let version_manifest: LiveFeedVersionManifest =
+                serde_json::from_slice(&fs::read(&version_manifest_path)?)?;
+            assert_eq!(version_manifest.product, "nexrad");
+            assert_eq!(version_manifest.version, version);
+            assert!(version_manifest.previous.is_none());
+            assert!(version_manifest.delta_from_previous.is_none());
+
+            if let Some(previous) = previous_version.as_deref() {
+                assert_ne!(previous, current_nexrad.current);
+            }
+            previous_version = Some(current_nexrad.current.clone());
+        }
+
+        assert_eq!(previous_version, expected_last_version);
         Ok(())
     }
 }

@@ -1316,6 +1316,198 @@ mod tests {
     }
 
     #[test]
+    fn canonical_json_hash_is_independent_of_object_insertion_order() -> anyhow::Result<()> {
+        let mut left_inner = serde_json::Map::new();
+        left_inner.insert("bravo".to_string(), serde_json::json!(2));
+        left_inner.insert("alpha".to_string(), serde_json::json!(1));
+        let mut left = serde_json::Map::new();
+        left.insert("outer_b".to_string(), Value::Object(left_inner));
+        left.insert("outer_a".to_string(), serde_json::json!(0));
+
+        let mut right_inner = serde_json::Map::new();
+        right_inner.insert("alpha".to_string(), serde_json::json!(1));
+        right_inner.insert("bravo".to_string(), serde_json::json!(2));
+        let mut right = serde_json::Map::new();
+        right.insert("outer_a".to_string(), serde_json::json!(0));
+        right.insert("outer_b".to_string(), Value::Object(right_inner));
+
+        assert_eq!(Value::Object(left.clone()), Value::Object(right.clone()));
+        assert_eq!(
+            canonical_json_sha256(&Value::Object(left))?,
+            canonical_json_sha256(&Value::Object(right))?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn file_publisher_writes_json_state_without_delta() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let root = temp.path().join("live-feeds");
+        let publisher = FileLiveFeedPublisher::new(
+            root.clone(),
+            FixedClock::new(Utc.with_ymd_and_hms(2026, 5, 18, 1, 2, 3).unwrap()),
+        );
+        let state_path = temp.path().join("winds-aloft.json");
+        let state_value = serde_json::json!({
+            "schema_version": 1,
+            "product_id": "winds-aloft",
+            "generated_at_utc": "2026-05-09T06:00:00Z",
+            "files": [
+                {
+                    "forecast_hour": 3,
+                    "path": "grib2/gfs_20260509_06_f003.grib2",
+                    "size_bytes": 123
+                }
+            ]
+        });
+        write_json_pretty_file(&state_path, &state_value)?;
+
+        let result = publisher.publish(BuiltLiveFeedState {
+            product: "winds-aloft".to_string(),
+            version: "v1".to_string(),
+            payload: LiveFeedStatePayload::JsonFile {
+                path: state_path,
+                value: state_value.clone(),
+            },
+            delta_policy: DeltaPolicy::None,
+            changed_count_if_no_delta: 1,
+        })?;
+
+        assert_eq!(result.product, "winds-aloft");
+        assert_eq!(result.version, "v1");
+        assert_eq!(result.changed_count, 1);
+        assert_eq!(result.delta_path, None);
+
+        let current = read_live_feeds_current(&root)?.expect("current manifest");
+        let entry = current
+            .products
+            .get("winds-aloft")
+            .expect("winds-aloft current entry");
+        assert_eq!(entry.current, "v1");
+        assert_eq!(entry.state_url, "states/winds-aloft/v1.json");
+        assert_eq!(entry.state_sha256, canonical_json_sha256(&state_value)?);
+
+        let version_manifest_path = root.join("versions").join("winds-aloft").join("v1.json");
+        let version_manifest: LiveFeedVersionManifest =
+            serde_json::from_slice(&fs::read(version_manifest_path)?)?;
+        assert_eq!(version_manifest.product, "winds-aloft");
+        assert_eq!(version_manifest.previous, None);
+        assert!(version_manifest.delta_from_previous.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn obstacle_delta_fixture_reconstructs_captured_trace() -> anyhow::Result<()> {
+        let states = obstacle_delta_fixture_states()?;
+
+        println!(
+            "{:<24} {:>10} {:>10} {:>8} {:>8}",
+            "to_version", "state_raw", "delta_raw", "changed", "removed"
+        );
+        let mut ratios = Vec::new();
+        for pair in states.windows(2) {
+            let from = &pair[0];
+            let to = &pair[1];
+            let delta = build_record_delta("obstacles", "obstacles_by_id", from, to)?;
+            let applied =
+                apply_record_delta("obstacles_by_id", Some("obstacle_count"), from, &delta)?;
+            assert_eq!(
+                applied, *to,
+                "delta {} -> {} did not reconstruct target state",
+                delta.from_version, delta.to_version
+            );
+
+            let state_bytes = serde_json::to_vec(to)?;
+            let delta_bytes = serde_json::to_vec(&delta)?;
+            let ratio = delta_bytes.len() as f64 / state_bytes.len() as f64;
+            ratios.push(ratio);
+            println!(
+                "{:<24} {:>10} {:>10} {:>8} {:>8}",
+                delta.to_version,
+                state_bytes.len(),
+                delta_bytes.len(),
+                delta.changed.len(),
+                delta.removed.len()
+            );
+        }
+        assert!(
+            ratios.iter().all(|ratio| *ratio < 0.01),
+            "expected all obstacle deltas to be less than 1% of full state: {ratios:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn obstacle_live_feed_publishes_delta_from_previous_state() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let live_root = temp.path().join("live-feeds");
+        let publisher = FileLiveFeedPublisher::new(
+            live_root,
+            FixedClock::new(Utc.with_ymd_and_hms(2026, 5, 18, 1, 2, 3).unwrap()),
+        );
+        let first_path = temp.path().join("obstacles-v1.json");
+        let second_path = temp.path().join("obstacles-v2.json");
+        let first = obstacle_test_state(
+            "v1",
+            &[
+                ("obs:a", serde_json::json!({"id": "obs:a", "label": "1000"})),
+                ("obs:b", serde_json::json!({"id": "obs:b", "label": "2000"})),
+            ],
+        );
+        let second = obstacle_test_state(
+            "v2",
+            &[
+                ("obs:a", serde_json::json!({"id": "obs:a", "label": "1001"})),
+                ("obs:c", serde_json::json!({"id": "obs:c", "label": "3000"})),
+            ],
+        );
+        write_json_pretty_file(&first_path, &first)?;
+        write_json_pretty_file(&second_path, &second)?;
+
+        publisher.publish(BuiltLiveFeedState {
+            product: "obstacles".to_string(),
+            version: "v1".to_string(),
+            payload: LiveFeedStatePayload::JsonFile {
+                path: first_path,
+                value: first.clone(),
+            },
+            delta_policy: DeltaPolicy::KeyedRecords {
+                records_key: "obstacles_by_id".to_string(),
+                count_key: Some("obstacle_count".to_string()),
+            },
+            changed_count_if_no_delta: 2,
+        })?;
+        let result = publisher.publish(BuiltLiveFeedState {
+            product: "obstacles".to_string(),
+            version: "v2".to_string(),
+            payload: LiveFeedStatePayload::JsonFile {
+                path: second_path,
+                value: second.clone(),
+            },
+            delta_policy: DeltaPolicy::KeyedRecords {
+                records_key: "obstacles_by_id".to_string(),
+                count_key: Some("obstacle_count".to_string()),
+            },
+            changed_count_if_no_delta: 2,
+        })?;
+
+        let delta_path = result
+            .delta_path
+            .expect("second publish should write delta");
+        let delta: LiveFeedRecordDelta = serde_json::from_slice(&fs::read(delta_path)?)?;
+        assert_eq!(
+            delta.changed.keys().cloned().collect::<Vec<_>>(),
+            vec!["obs:a".to_string(), "obs:c".to_string()]
+        );
+        assert_eq!(delta.removed, vec!["obs:b".to_string()]);
+        assert_eq!(
+            apply_record_delta("obstacles_by_id", Some("obstacle_count"), &first, &delta)?,
+            second
+        );
+        Ok(())
+    }
+
+    #[test]
     fn file_publisher_writes_state_delta_current_and_invalidation() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let root = temp.path().join("live-feeds");
@@ -1800,6 +1992,100 @@ mod tests {
             .with_context(|| format!("failed to read metars.json from {}", path.display()))?;
         serde_json::from_slice(&bytes)
             .with_context(|| format!("failed to parse metars.json from {}", path.display()))
+    }
+
+    fn obstacle_test_state(version: &str, records: &[(&str, Value)]) -> Value {
+        let obstacles_by_id = records
+            .iter()
+            .map(|(id, record)| ((*id).to_string(), record.clone()))
+            .collect::<serde_json::Map<_, _>>();
+        serde_json::json!({
+            "schema_version": 1,
+            "product_id": "obstacles",
+            "version_label": version,
+            "obstacle_count": obstacles_by_id.len(),
+            "obstacles_by_id": obstacles_by_id
+        })
+    }
+
+    fn obstacle_delta_fixture_states() -> anyhow::Result<Vec<Value>> {
+        let test_artifacts_root = std::env::var_os("AEROBAG_TEST_ARTIFACTS_ROOT")
+            .or_else(|| std::env::var_os("AEROBAG_TEST_ARTIFACTS"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("..")
+                    .join("..")
+                    .join("..")
+                    .join("..")
+                    .join("aerobag-test-artifacts")
+            });
+        let fixture_root = test_artifacts_root.join("obstacles").join("delta-trace");
+        let mut zip_paths = fs::read_dir(&fixture_root)
+            .with_context(|| format!("failed to read {}", fixture_root.display()))?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("zip"))
+            .filter(|path| {
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .is_some_and(|stem| !stem.contains('_'))
+            })
+            .collect::<Vec<_>>();
+        zip_paths.sort();
+        assert!(
+            zip_paths.len() >= 4,
+            "expected several obstacle fixture states"
+        );
+        zip_paths
+            .iter()
+            .map(|path| obstacle_state_from_legacy_zip(path))
+            .collect::<anyhow::Result<Vec<_>>>()
+    }
+
+    fn obstacle_state_from_legacy_zip(path: &Path) -> anyhow::Result<Value> {
+        let file = fs::File::open(path)
+            .with_context(|| format!("failed to open obstacle fixture {}", path.display()))?;
+        let mut archive = ZipArchive::new(file)
+            .with_context(|| format!("failed to read obstacle fixture zip {}", path.display()))?;
+        let version_label = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .context("obstacle fixture zip had no utf-8 stem")?
+            .to_string();
+        let mut obstacles_by_id = serde_json::Map::new();
+        for index in 0..archive.len() {
+            let mut member = archive.by_index(index)?;
+            let name = member.name().to_string();
+            if !name.starts_with("points/obstacle/12/") || !name.ends_with(".json") {
+                continue;
+            }
+            let mut bytes = Vec::new();
+            member
+                .read_to_end(&mut bytes)
+                .with_context(|| format!("failed to read {name} from {}", path.display()))?;
+            let tile: Value = serde_json::from_slice(&bytes)
+                .with_context(|| format!("failed to parse {name} from {}", path.display()))?;
+            let records = tile
+                .get("records")
+                .and_then(Value::as_array)
+                .with_context(|| format!("{name} missing records array"))?;
+            for record in records {
+                let id = record
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .with_context(|| format!("{name} had obstacle record without id"))?;
+                obstacles_by_id.insert(id.to_string(), record.clone());
+            }
+        }
+        Ok(serde_json::json!({
+            "schema_version": 1,
+            "product_id": "obstacles",
+            "version_label": version_label,
+            "obstacle_count": obstacles_by_id.len(),
+            "obstacles_by_id": obstacles_by_id
+        }))
     }
 
     fn deflated_zip_member_size(bytes: &[u8]) -> anyhow::Result<usize> {

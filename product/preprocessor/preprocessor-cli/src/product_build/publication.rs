@@ -1,163 +1,50 @@
 use super::*;
 
-pub(super) fn fast_product_version_label(source_fingerprint: &str) -> String {
+pub(super) fn content_product_version_label(source_fingerprint: &str) -> String {
     source_fingerprint.chars().take(16).collect()
 }
 
-pub(super) fn fast_product_node_inputs(
-    product_id: &str,
-    source_fingerprint: &str,
-) -> anyhow::Result<BTreeMap<String, String>> {
-    Ok(BTreeMap::from([
-        ("product_id".to_string(), product_id.to_string()),
-        (
-            "source_fingerprint".to_string(),
-            source_fingerprint.to_string(),
-        ),
-        (
-            "fast_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-fast/src/lib.rs"),
-            )?,
-        ),
-    ]))
-}
-
-pub(super) fn fast_product_source_generated_at(
-    product_id: &str,
-    structured_json_path: &Path,
-    manifest_path: &Path,
-) -> anyhow::Result<String> {
-    let value: serde_json::Value = serde_json::from_slice(
-        &fs::read(structured_json_path)
-            .with_context(|| format!("failed to read {}", structured_json_path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", structured_json_path.display()))?;
-    match product_id {
-        "metars" => {
-            let mut timestamps = value
-                .get("metars_by_station")
-                .and_then(|value| value.as_object())
-                .map(|records| {
-                    records
-                        .values()
-                        .filter_map(|record| {
-                            record
-                                .get("observed_at_utc")
-                                .and_then(|value| value.as_str())
-                                .map(ToOwned::to_owned)
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .or_else(|| {
-                    value
-                        .get("metars")
-                        .and_then(|value| value.as_array())
-                        .map(|records| {
-                            records
-                                .iter()
-                                .filter_map(|record| {
-                                    record
-                                        .get("observed_at_utc")
-                                        .and_then(|value| value.as_str())
-                                        .map(ToOwned::to_owned)
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                })
-                .context("METAR product had no records")?;
-            let product_dir = structured_json_path
-                .parent()
-                .context("METAR structured JSON had no parent dir")?;
-            for (file_name, table_name, time_field) in [
-                ("tafs.json", "tafs_by_station", "issued_at_utc"),
-                ("pireps.json", "pireps", "observed_at_utc"),
-            ] {
-                let path = product_dir.join(file_name);
-                if !path.is_file() {
-                    continue;
-                }
-                let extra: serde_json::Value = serde_json::from_slice(
-                    &fs::read(&path)
-                        .with_context(|| format!("failed to read {}", path.display()))?,
-                )
-                .with_context(|| format!("failed to parse {}", path.display()))?;
-                if let Some(records) = extra.get(table_name).and_then(|value| value.as_object()) {
-                    timestamps.extend(records.values().filter_map(|record| {
-                        record
-                            .get(time_field)
-                            .and_then(|value| value.as_str())
-                            .map(ToOwned::to_owned)
-                    }));
-                } else if let Some(records) =
-                    extra.get(table_name).and_then(|value| value.as_array())
-                {
-                    timestamps.extend(records.iter().filter_map(|record| {
-                        record
-                            .get(time_field)
-                            .and_then(|value| value.as_str())
-                            .map(ToOwned::to_owned)
-                    }));
-                }
-            }
-            timestamps
-                .into_iter()
-                .max()
-                .context("METAR product had no weather timestamps")
-        }
-        "nexrad" => value
-            .get("frames")
-            .and_then(|value| value.as_array())
-            .and_then(|frames| {
-                frames
-                    .iter()
-                    .filter_map(|frame| {
-                        frame
-                            .get("observed_at_utc")
-                            .and_then(|value| value.as_str())
-                    })
-                    .max()
-            })
-            .map(ToOwned::to_owned)
-            .context("NEXRAD product had no observed_at_utc values"),
-        "tfrs" => {
-            let manifest: serde_json::Value = serde_json::from_slice(
-                &fs::read(manifest_path)
-                    .with_context(|| format!("failed to read {}", manifest_path.display()))?,
-            )
-            .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
-            manifest
-                .get("generated_at_utc")
-                .and_then(|value| value.as_str())
-                .map(ToOwned::to_owned)
-                .context("TFR product manifest had no generated_at_utc")
-        }
-        "winds-aloft" => value
-            .get("generated_at_utc")
-            .and_then(|value| value.as_str())
-            .map(ToOwned::to_owned)
-            .context("winds-aloft product manifest had no generated_at_utc"),
-        other => bail!("unsupported fast product id {other}"),
+pub fn publish_discovery_manifest(
+    config: &ProductBuildConfig,
+    as_of_utc: DateTime<Utc>,
+    bundle_filenames: &[String],
+) -> anyhow::Result<PathBuf> {
+    fs::create_dir_all(&config.build_root)
+        .with_context(|| format!("failed to create {}", config.build_root.display()))?;
+    if bundle_filenames.is_empty() {
+        bail!("publish-discovery-manifest requires at least one --bundle");
     }
-}
-
-pub(super) fn publish_content_addressed_fast_product_zip(
-    build_root: &Path,
-    fast_product_id: &str,
-    zip_path: &Path,
-    known_sha256: Option<&str>,
-    known_size_bytes: Option<u64>,
-) -> anyhow::Result<(PathBuf, String, u64)> {
-    publish_content_addressed_zip(
-        build_root,
-        zip_path,
-        fast_product_id,
-        known_sha256,
-        known_size_bytes,
-    )
+    let latest_alias_path = publication_current_artifacts_path(&config.build_root);
+    if !latest_alias_path.is_file() {
+        bail!(
+            "missing current artifacts alias {}; build-product first",
+            latest_alias_path.display()
+        );
+    }
+    let bundles = bundle_filenames
+        .iter()
+        .map(|filename| current_bundle_entry_from_path(&config.build_root.join(filename)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let manifest = CurrentArtifactsManifest {
+        schema_version: 1,
+        artifact_roots: default_current_artifact_roots(),
+        as_of_date: as_of_utc.date_naive().format("%Y-%m-%d").to_string(),
+        as_of_utc: as_of_utc.to_rfc3339_opts(SecondsFormat::Secs, true),
+        bundles,
+        diagnostics: None,
+    };
+    write_current_artifacts_aliases(&config.build_root, as_of_utc, &manifest)?;
+    let immutable_path = publication_root_for_packaged_root(&config.build_root)
+        .join(current_artifacts_immutable_filename(as_of_utc));
+    let unpacked_root = published_unpacked_root(config)?;
+    fs::create_dir_all(&unpacked_root)
+        .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
+    sync_unpacked_discovery_manifests(&config.build_root, &latest_alias_path, &unpacked_root)?;
+    cleanup_published_packaged_root(&config.build_root, &latest_alias_path)?;
+    cleanup_published_unpacked_root(&unpacked_root, &latest_alias_path)?;
+    validate_packaged_contract(&config.build_root, &latest_alias_path)?;
+    validate_unpacked_contract(&config.build_root, &unpacked_root, &latest_alias_path)?;
+    Ok(immutable_path)
 }
 
 pub(super) fn publish_content_addressed_zip(
@@ -188,35 +75,6 @@ pub(super) fn publish_content_addressed_zip(
         })?;
     }
     Ok((published_path, sha256, size_bytes))
-}
-
-pub(super) fn run_status_command(program: &str, args: &[&str]) -> anyhow::Result<()> {
-    let status = Command::new(program)
-        .args(args)
-        .status()
-        .with_context(|| format!("failed to execute {program}"))?;
-    if !status.success() {
-        bail!("{program} exited with status {status}");
-    }
-    Ok(())
-}
-
-pub(super) fn parse_nexrad_index_for_product(path: &Path) -> anyhow::Result<Vec<String>> {
-    let html =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let mut entries = html
-        .lines()
-        .filter_map(|line| {
-            let start = line.find("CONUS_L2_CREF_QCD_")?;
-            let tail = &line[start..];
-            let end = tail.find(".tif.gz")?;
-            Some(tail[..end + ".tif.gz".len()].to_string())
-        })
-        .collect::<Vec<_>>();
-    entries.sort();
-    entries.reverse();
-    entries.dedup();
-    Ok(entries)
 }
 
 pub(super) fn build_current_bundle_entries(
@@ -386,35 +244,6 @@ pub(super) fn current_bundle_entry_from_path(
             size_bytes: metadata.len(),
         });
     }
-    if filename.starts_with("bundle_fast_") {
-        let bundle_manifest: FastBundleManifest = serde_json::from_slice(
-            &fs::read(bundle_path)
-                .with_context(|| format!("failed to read {}", bundle_path.display()))?,
-        )
-        .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
-        let file_hash = parse_fast_bundle_filename(bundle_path)?;
-        let bundle_sha256 = hash_file(bundle_path)?;
-        if bundle_sha256 != file_hash {
-            anyhow::bail!(
-                "fast bundle hash mismatch for {}: filename hash {} != content hash {}",
-                bundle_path.display(),
-                file_hash,
-                bundle_sha256
-            );
-        }
-        return Ok(CurrentBundleEntry {
-            filename: filename.clone(),
-            relative_path: filename,
-            id: bundle_manifest.bundle_id.clone(),
-            bundle_type: "fast".to_string(),
-            cycle: String::new(),
-            cycle_version: String::new(),
-            start_valid: String::new(),
-            end_valid: String::new(),
-            checksum_sha256: bundle_sha256,
-            size_bytes: metadata.len(),
-        });
-    }
     bail!("unsupported bundle filename {}", bundle_path.display());
 }
 
@@ -440,23 +269,6 @@ pub(super) fn parse_cycle_bundle_filename(path: &Path) -> anyhow::Result<(String
         anyhow::bail!("bundle filename has invalid sha256 suffix: {filename}");
     }
     Ok((cycle, version, hash))
-}
-
-pub(super) fn parse_fast_bundle_filename(path: &Path) -> anyhow::Result<String> {
-    let filename = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow::anyhow!("bundle path has no filename: {}", path.display()))?;
-    let stem = filename
-        .strip_suffix(".json")
-        .ok_or_else(|| anyhow::anyhow!("bundle filename does not end in .json: {filename}"))?;
-    let hash = stem.strip_prefix("bundle_fast_").ok_or_else(|| {
-        anyhow::anyhow!("bundle filename must start with bundle_fast_: {filename}")
-    })?;
-    if hash.len() != 64 || !hash.chars().all(|ch| ch.is_ascii_hexdigit()) {
-        anyhow::bail!("bundle filename has invalid sha256 suffix: {filename}");
-    }
-    Ok(hash.to_string())
 }
 
 pub(super) fn current_artifacts_timestamp_string(as_of_utc: DateTime<Utc>) -> String {
@@ -561,32 +373,19 @@ pub(super) fn build_status_document(
     let mut products = Vec::new();
     for bundle_ref in &current.bundles {
         let bundle_path = build_root.join(&bundle_ref.filename);
-        match load_bundle_manifest_like(&bundle_path)? {
-            BundleManifestLike::Cycle(bundle) => {
-                let bundle_id = if bundle.bundle_id.is_empty() {
-                    bundle_ref.id.clone()
-                } else {
-                    bundle.bundle_id.clone()
-                };
-                for package in bundle.packages {
-                    products.push(build_status_product(
-                        "cycle",
-                        &bundle_id,
-                        Some(bundle.cycle.as_str()),
-                        package,
-                    ));
-                }
-            }
-            BundleManifestLike::Fast(bundle) => {
-                let bundle_id = if bundle.bundle_id.is_empty() {
-                    bundle_ref.id.clone()
-                } else {
-                    bundle.bundle_id.clone()
-                };
-                for package in bundle.packages {
-                    products.push(build_status_product("fast", &bundle_id, None, package));
-                }
-            }
+        let bundle = load_bundle_manifest(&bundle_path)?;
+        let bundle_id = if bundle.bundle_id.is_empty() {
+            bundle_ref.id.clone()
+        } else {
+            bundle.bundle_id.clone()
+        };
+        for package in bundle.packages {
+            products.push(build_status_product(
+                "cycle",
+                &bundle_id,
+                Some(bundle.cycle.as_str()),
+                package,
+            ));
         }
     }
     products.sort_by(|left, right| {
@@ -625,12 +424,10 @@ pub(super) fn build_status_warnings(build_root: &Path) -> anyhow::Result<Vec<Bui
         let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if !((filename.starts_with("bundle_cycle_") || filename.starts_with("bundle_fast_"))
-            && filename.ends_with(".json"))
-        {
+        if !(filename.starts_with("bundle_cycle_") && filename.ends_with(".json")) {
             continue;
         }
-        if let Err(error) = load_bundle_manifest_like(&path) {
+        if let Err(error) = load_bundle_manifest(&path) {
             warnings.push(BuildStatusWarning {
                 severity: "WARNING".to_string(),
                 code: "invalid_public_bundle_manifest".to_string(),
@@ -962,13 +759,12 @@ pub(super) fn collect_reachable_packaged_entries_for_discovery(
         let bundle_path = packaged_root.join(&bundle_ref.filename);
         ensure_public_file_exists(&bundle_path)?;
         keep.insert(bundle_ref.filename.clone());
-        let bundle = load_bundle_manifest_like(&bundle_path)?;
-        let bundle_refs = bundle.bundle_refs();
-        for artifact in bundle_refs.ancillary {
+        let bundle = load_bundle_manifest(&bundle_path)?;
+        for artifact in &bundle.ancillary {
             ensure_public_file_exists(&packaged_root.join(&artifact.filename))?;
             keep.insert(artifact.filename.clone());
         }
-        for package in bundle_refs.packages {
+        for package in &bundle.packages {
             ensure_public_file_exists(&packaged_root.join(&package.filename))?;
             keep.insert(package.filename.clone());
         }
@@ -1014,9 +810,8 @@ pub(super) fn collect_reachable_unpacked_entries_for_discovery(
         let bundle_path = unpacked_root.join(&bundle_ref.filename);
         ensure_public_file_exists(&bundle_path)?;
         keep.insert(bundle_ref.filename.clone());
-        let bundle = load_bundle_manifest_like(&bundle_path)?;
-        let bundle_refs = bundle.bundle_refs();
-        for artifact in bundle_refs.ancillary {
+        let bundle = load_bundle_manifest(&bundle_path)?;
+        for artifact in &bundle.ancillary {
             if artifact.filename.ends_with(".zip") {
                 let stem = zip_stem(&artifact.filename)?;
                 ensure_public_dir_exists(&unpacked_root.join(&stem))?;
@@ -1026,7 +821,7 @@ pub(super) fn collect_reachable_unpacked_entries_for_discovery(
                 keep.insert(artifact.filename.clone());
             }
         }
-        for package in bundle_refs.packages {
+        for package in &bundle.packages {
             let stem = zip_stem(&package.filename)?;
             ensure_public_dir_exists(&unpacked_root.join(&stem))?;
             keep.insert(stem);
@@ -1104,21 +899,14 @@ pub(super) fn load_current_artifacts_manifest(
     .with_context(|| format!("failed to parse {}", path.display()))
 }
 
-pub(super) fn load_bundle_manifest_like(path: &Path) -> anyhow::Result<BundleManifestLike> {
+pub(super) fn load_bundle_manifest(path: &Path) -> anyhow::Result<BundleManifest> {
     let filename = filename_string(path)?;
     if filename.starts_with("bundle_cycle_") {
         let bundle: BundleManifest = serde_json::from_slice(
             &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
         )
         .with_context(|| format!("failed to parse {}", path.display()))?;
-        return Ok(BundleManifestLike::Cycle(bundle));
-    }
-    if filename.starts_with("bundle_fast_") {
-        let bundle: FastBundleManifest = serde_json::from_slice(
-            &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
-        )
-        .with_context(|| format!("failed to parse {}", path.display()))?;
-        return Ok(BundleManifestLike::Fast(bundle));
+        return Ok(bundle);
     }
     bail!("unrecognized bundle filename: {filename}")
 }
@@ -1198,10 +986,6 @@ pub(super) fn validate_bundle_manifest(
     packaged_root: &Path,
     bundle_path: &Path,
 ) -> anyhow::Result<()> {
-    let filename = filename_string(bundle_path)?;
-    if filename.starts_with("bundle_fast_") {
-        return validate_fast_bundle_manifest(packaged_root, bundle_path);
-    }
     validate_no_internal_paths_in_json(bundle_path)?;
     let (_, _, filename_hash) = parse_cycle_bundle_filename(bundle_path)?;
     let bundle_hash = hash_file(bundle_path)?;
@@ -1268,53 +1052,6 @@ pub(super) fn validate_bundle_manifest(
     Ok(())
 }
 
-pub(super) fn validate_fast_bundle_manifest(
-    packaged_root: &Path,
-    bundle_path: &Path,
-) -> anyhow::Result<()> {
-    validate_no_internal_paths_in_json(bundle_path)?;
-    let filename_hash = parse_fast_bundle_filename(bundle_path)?;
-    let bundle_hash = hash_file(bundle_path)?;
-    if bundle_hash != filename_hash {
-        bail!(
-            "fast bundle filename hash mismatch for {}: filename {} != content {}",
-            bundle_path.display(),
-            filename_hash,
-            bundle_hash
-        );
-    }
-    let bundle: FastBundleManifest = serde_json::from_slice(
-        &fs::read(bundle_path)
-            .with_context(|| format!("failed to read {}", bundle_path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
-    if bundle.bundle_type != "fast" {
-        bail!(
-            "fast bundle {} has unexpected bundle_type {}",
-            bundle_path.display(),
-            bundle.bundle_type
-        );
-    }
-    for package in &bundle.packages {
-        validate_public_filename(&package.filename, "fast_bundle.packages[].filename")?;
-        validate_public_filename(
-            &package.relative_path,
-            "fast_bundle.packages[].relative_path",
-        )?;
-        validate_embedded_sha256_filename(&package.filename, &package.checksum_sha256)?;
-        if package.filename != package.relative_path {
-            bail!(
-                "fast bundle filename/relative_path mismatch in {}: {} != {}",
-                bundle_path.display(),
-                package.filename,
-                package.relative_path
-            );
-        }
-        ensure_public_file_exists(&packaged_root.join(&package.filename))?;
-    }
-    Ok(())
-}
-
 pub(super) fn validate_unpacked_contract(
     packaged_root: &Path,
     unpacked_root: &Path,
@@ -1351,16 +1088,15 @@ pub(super) fn validate_unpacked_contract_for_discovery(
         let unpacked_bundle_path = unpacked_root.join(&bundle.filename);
         ensure_public_file_exists(&unpacked_bundle_path)?;
         validate_no_internal_paths_in_json(&unpacked_bundle_path)?;
-        let bundle = load_bundle_manifest_like(&unpacked_bundle_path)?;
-        let bundle_refs = bundle.bundle_refs();
-        for artifact in bundle_refs.ancillary {
+        let bundle = load_bundle_manifest(&unpacked_bundle_path)?;
+        for artifact in &bundle.ancillary {
             if artifact.filename.ends_with(".zip") {
                 ensure_public_dir_exists(&unpacked_root.join(zip_stem(&artifact.filename)?))?;
             } else {
                 ensure_public_file_exists(&unpacked_root.join(&artifact.filename))?;
             }
         }
-        for package in bundle_refs.packages {
+        for package in &bundle.packages {
             ensure_public_dir_exists(&unpacked_root.join(zip_stem(&package.filename)?))?;
         }
     }
@@ -1622,21 +1358,6 @@ pub(super) fn write_hashed_bundle_manifest(
         "bundle_cycle_{}_{}_{sha256}.json",
         bundle_manifest.cycle, bundle_manifest.cycle_version
     ));
-    write_public_json_atomic(&bundle_manifest_path, &bytes)?;
-    Ok(bundle_manifest_path)
-}
-
-pub(super) fn write_hashed_fast_bundle_manifest(
-    build_root: &Path,
-    bundle_manifest: &FastBundleManifest,
-) -> anyhow::Result<PathBuf> {
-    let bytes = serde_json::to_vec_pretty(bundle_manifest)
-        .context("failed to encode fast bundle manifest")?;
-    let sha256 = Sha256::digest(&bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let bundle_manifest_path = build_root.join(format!("bundle_fast_{sha256}.json"));
     write_public_json_atomic(&bundle_manifest_path, &bytes)?;
     Ok(bundle_manifest_path)
 }

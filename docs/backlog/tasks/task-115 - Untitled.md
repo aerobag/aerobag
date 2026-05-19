@@ -1,7 +1,7 @@
 ---
 id: TASK-115
 title: live-feeds products blocked by cycle production lock
-state: medium
+state: done
 assignee: []
 created_date: '2026-05-13 22:11'
 labels:
@@ -37,3 +37,11 @@ ordinal: 115000
     different public contract roots. That way a cycle publish window does not block METAR updates unless they
     truly touch the same file.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Resolution
+
+<!-- SECTION:RESOLUTION:BEGIN -->
+The old `preprocessor-cli update-live-feeds` path was removed. Live feeds now
+publish under their own daemon/library path instead of sharing the cycle package
+publication lock, so cycle publication work no longer gates live-feed updates.
+<!-- SECTION:RESOLUTION:END -->

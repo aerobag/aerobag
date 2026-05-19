@@ -159,12 +159,6 @@ pub(super) fn env_usize(name: &str) -> Option<usize> {
     env::var(name).ok()?.parse().ok()
 }
 
-pub(super) fn env_flag(name: &str) -> bool {
-    env::var(name)
-        .ok()
-        .is_some_and(|value| !matches!(value.as_str(), "" | "0" | "false" | "FALSE" | "no" | "NO"))
-}
-
 pub(super) fn default_cpu_jobs() -> usize {
     std::thread::available_parallelism()
         .map(usize::from)

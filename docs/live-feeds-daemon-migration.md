@@ -132,6 +132,8 @@ Publication ordering is part of the contract:
   `/live-feeds`.
 - Done: the `preprocessor-cli update-live-feeds` operational command and its
   CLI-owned batch builder bridge have been removed.
-- Next slices: relocate the remaining CLI-hosted integration tests themselves
-  into `preprocessor-live-feeds` or a daemon harness, and add a production
-  supervision/deployment wrapper when deployment policy is chosen.
+- Done: the remaining live-feed integration tests moved out of
+  `preprocessor-cli` into `preprocessor-live-feeds`, so the CLI no longer owns
+  live-feed build/publish behavior.
+- Next slice: add a production supervision/deployment wrapper when deployment
+  policy is chosen.

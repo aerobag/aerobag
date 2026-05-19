@@ -1740,17 +1740,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             .filter(|bundle| bundle.bundle_type == "cycle")
                         {
                             let bundle_manifest_path = config.build_root.join(&bundle_ref.filename);
-                            let bundle_manifest = match load_bundle_manifest_like(
-                                &bundle_manifest_path,
-                            )? {
-                                BundleManifestLike::Cycle(bundle) => bundle,
-                                BundleManifestLike::Fast(_) => {
-                                    bail!(
-                                            "expected cycle bundle in current_artifacts, found fast bundle {}",
-                                            bundle_ref.filename
-                                        )
-                                }
-                            };
+                            let bundle_manifest = load_bundle_manifest(&bundle_manifest_path)?;
                             let cycle = bundle_manifest.cycle.clone();
                             let mut cycle_config = config.clone();
                             cycle_config.target_cycle = Some(cycle.clone());

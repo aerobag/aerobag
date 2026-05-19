@@ -4602,26 +4602,9 @@ mod tests {
             updated_at_epoch_ms: 0,
             version: 1,
         };
-        let init = crate::create_ui_session(
-            r#"{
-                "point_layers": {
-                    "airport": { "available_zooms": [9] },
-                    "fix": { "available_zooms": [9] },
-                    "nav": { "available_zooms": [9] }
-                },
-                "airspace": {
-                    "reference_tile_min_zoom": 0,
-                    "reference_tile_max_zoom": 12,
-                    "label_tile_min_zoom": 0,
-                    "label_tile_max_zoom": 12
-                }
-            }"#,
-            plan,
-            &[airport_id.to_string()],
-            Some(airport_id),
-            None,
-        )
-        .expect("create ui session");
+        let init =
+            crate::create_ui_session(plan, &[airport_id.to_string()], Some(airport_id), None)
+                .expect("create ui session");
         crate::attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
         let row_uid = init
             .snapshot

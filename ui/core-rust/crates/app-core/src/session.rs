@@ -6130,14 +6130,8 @@ mod tests {
 
     #[test]
     fn failed_live_feed_current_records_nexrad_caution_when_nexrad_layer_visible() {
-        let init = create_ui_session(
-            minimal_vector_manifest_json(),
-            FlightPlan::default(),
-            &[],
-            None,
-            None,
-        )
-        .expect("create session");
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
 
         let snapshot = report_session_resource_failure_in_session(
@@ -6160,14 +6154,8 @@ mod tests {
 
     #[test]
     fn hiding_nexrad_layer_clears_nexrad_caution() {
-        let init = create_ui_session(
-            minimal_vector_manifest_json(),
-            FlightPlan::default(),
-            &[],
-            None,
-            None,
-        )
-        .expect("create session");
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
         report_session_resource_failure_in_session(init.handle, "live_feeds/current", "404")
             .expect("report failure");
@@ -6184,14 +6172,8 @@ mod tests {
 
     #[test]
     fn visible_nexrad_without_product_state_records_caution() {
-        let init = create_ui_session(
-            minimal_vector_manifest_json(),
-            FlightPlan::default(),
-            &[],
-            None,
-            None,
-        )
-        .expect("create session");
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
         ingest_resource_in_session(init.handle, "live_feeds/current", br#"{"products":{}}"#)
             .expect("ingest empty current manifest");
@@ -6258,14 +6240,7 @@ mod tests {
             updated_at_epoch_ms: 0,
             version: 1,
         };
-        let init = create_ui_session(
-            minimal_vector_manifest_json(),
-            plan.clone(),
-            &[],
-            None,
-            None,
-        )
-        .expect("create session");
+        let init = create_ui_session(plan.clone(), &[], None, None).expect("create session");
 
         let warning = init
             .snapshot

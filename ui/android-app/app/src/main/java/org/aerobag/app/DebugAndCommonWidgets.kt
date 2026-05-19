@@ -489,6 +489,23 @@ internal fun ToolbarButton(label: String, modifier: Modifier = Modifier, onClick
     CompactSquareButton(label = label, modifier = modifier.size(ThumbSize), onClick = onClick)
 }
 
+internal fun buttonContainerColor(
+    uiTheme: UiTheme,
+    enabled: Boolean,
+    selected: Boolean,
+    backgroundColor: Color? = null,
+    selectedColor: Color? = null,
+): Color = when {
+    !enabled -> uiTheme.controls.disabledButton
+    selected -> selectedColor ?: uiTheme.controls.buttonSelectedBg
+    else -> backgroundColor ?: uiTheme.controls.buttonBg
+}
+
+internal fun buttonLabel(label: String): String = label.uppercase()
+
+@Composable
+internal fun buttonLabelStyle(): TextStyle = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+
 @Composable
 internal fun IconFrame(
     @DrawableRes iconResId: Int,
@@ -600,6 +617,7 @@ internal fun CompactSquareButton(
     enabled: Boolean = true,
     selected: Boolean = false,
     backgroundColor: Color? = null,
+    foregroundColor: Color? = null,
     selectedColor: Color? = null,
     accentColor: Color? = null,
     @DrawableRes iconResId: Int? = null,
@@ -613,6 +631,16 @@ internal fun CompactSquareButton(
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val iconShape = RoundedCornerShape(ThumbRadius)
+    val resolvedContentColor = foregroundColor ?: uiTheme.controls.buttonFg
+    val renderedLabel = buttonLabel(label)
+    val renderedLabelStyle = buttonLabelStyle()
+    val resolvedContainerColor = buttonContainerColor(
+        uiTheme = uiTheme,
+        enabled = enabled,
+        selected = selected,
+        backgroundColor = backgroundColor,
+        selectedColor = selectedColor,
+    )
     Surface(
         modifier = modifier
             .testTag(testTag ?: "parity:button:$label")
@@ -682,8 +710,8 @@ internal fun CompactSquareButton(
                 },
             ),
         shape = iconShape,
-        color = if (selected) selectedColor ?: uiTheme.controls.buttonBg.copy(alpha = 0.9f) else backgroundColor ?: uiTheme.controls.buttonBg,
-        contentColor = uiTheme.controls.buttonFg,
+        color = resolvedContainerColor,
+        contentColor = resolvedContentColor,
         shadowElevation = 2.dp,
     ) {
         Box(
@@ -717,31 +745,25 @@ internal fun CompactSquareButton(
                         .padding(4.dp + heavyFrameThickness),
                 )
                 OutlinedButtonLabel(
-                    text = label,
+                    text = renderedLabel,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
                         .padding(horizontal = if (wide) 0.dp else 1.dp, vertical = 2.dp)
                         .then(textModifier),
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 13.sp),
+                    style = renderedLabelStyle.copy(fontSize = 13.sp),
                     maxLines = maxLines,
-                    color = LocalAerobagUiTheme.current.controls.buttonFg,
+                    color = resolvedContentColor,
                 )
             } else {
                 Text(
-                    text = label,
+                    text = renderedLabel,
                     modifier = (if (centered) Modifier else Modifier.padding(start = textStartPadding, end = 8.dp)).then(textModifier),
-                    style = MaterialTheme.typography.labelSmall,
+                    style = renderedLabelStyle,
                     textAlign = if (centered) TextAlign.Center else TextAlign.Start,
                     maxLines = maxLines,
                     overflow = TextOverflow.Clip,
-                )
-            }
-            if (!enabled) {
-                Box(
-                    modifier = Modifier
-                        .matchParentSize()
-                        .background(Color(0x42000000)),
+                    color = resolvedContentColor,
                 )
             }
         }

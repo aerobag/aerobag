@@ -57,7 +57,7 @@ internal fun FlightDataBanner(
     val surfaceWidthDp = with(density) { surfaceSize.width.toDp().value }
     val surfaceHeightDp = with(density) { surfaceSize.height.toDp().value }
     val edgeLayout = surfaceSize.width > surfaceSize.height
-    val topAfterSituationDock = situationDockTopPadding + ThumbSize + ThumbGap
+    val topAfterSituationDock = situationDockTopPadding + MenuDockStyle.Situation.buttonHeight + ThumbGap
     val edgeTopPadding = maxDp(FlightDataEdgeTopNormal, topAfterSituationDock)
     val topPadding = maxDp(FlightDataTopNormal, topAfterSituationDock)
     val edgeColumnCount = remember(surfaceHeightDp, cells.size, edgeTopPadding) {

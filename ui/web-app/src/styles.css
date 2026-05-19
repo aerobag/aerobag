@@ -633,24 +633,26 @@ button {
 }
 
 .situationStatusLauncher.chartButtonWide {
-  width: auto;
-  min-width: calc(var(--thumb) * 1.55);
-  height: auto;
+  width: calc(var(--thumb) * 2);
+  min-width: calc(var(--thumb) * 2);
+  max-width: calc(var(--thumb) * 2);
+  height: calc(var(--thumb) * 0.5);
   border: 0;
-  padding: calc(var(--thumb) * 0.12) calc(var(--thumb) * 0.18);
+  padding: 0 calc(var(--thumb) * 0.18);
   border-radius: calc(var(--thumb-radius) * 0.85);
-  background: rgba(252, 248, 241, 0.9);
+  background: var(--theme-situation-status-bg);
   background-image: none;
   box-shadow: var(--shadow);
+  color: var(--theme-situation-status-fg);
 }
 
 .situationStatusLauncher.chartButtonWide.isOpen {
-  background: rgba(252, 248, 241, 0.9);
+  background: var(--theme-situation-status-bg);
   background-image: none;
 }
 
 .situationStatusLauncher .chartButtonLabelWide {
-  max-width: calc(var(--thumb) * 2.5);
+  max-width: calc(var(--thumb) * 1.8);
   font-size: calc(var(--thumb) * 0.2);
   font-weight: 800;
   letter-spacing: 0.04em;
@@ -659,15 +661,15 @@ button {
 }
 
 .situationStatusLauncher.situationStatus-ready {
-  color: #0d6f67;
+  color: var(--theme-situation-status-fg);
 }
 
 .situationStatusLauncher.situationStatus-neutral {
-  color: #111111;
+  color: var(--theme-situation-status-fg);
 }
 
 .situationStatusLauncher.situationStatus-unavailable {
-  color: #b3261e;
+  color: var(--theme-situation-status-fg);
 }
 
 .trayScrim {
@@ -1129,14 +1131,14 @@ button {
 }
 
 .chartButton.isOpen {
-  background-color: color-mix(in srgb, var(--theme-button-bg) 88%, white);
+  background-color: var(--theme-button-selected-bg);
   background-image:
     linear-gradient(
       to bottom,
       transparent 0,
       transparent 50%,
-      var(--tray-accent, color-mix(in srgb, var(--theme-button-bg) 88%, white)) 50%,
-      var(--tray-accent, color-mix(in srgb, var(--theme-button-bg) 88%, white)) 100%
+      var(--tray-accent, var(--theme-button-selected-bg)) 50%,
+      var(--tray-accent, var(--theme-button-selected-bg)) 100%
     );
 }
 
@@ -1169,6 +1171,7 @@ button {
   letter-spacing: 0.04em;
   line-height: 1.05;
   text-align: center;
+  text-transform: uppercase;
   white-space: pre-line;
   text-shadow:
     -1px -1px 0 #000,
@@ -1297,6 +1300,7 @@ button {
   font-size: var(--thumb-font-small);
   font-weight: 700;
   letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .trayButtonWithIcon {
@@ -1390,7 +1394,7 @@ button {
 
 .situationSourceRow {
   display: grid;
-  grid-template-columns: repeat(3, var(--thumb));
+  grid-template-columns: repeat(var(--situation-source-count, 4), var(--thumb));
   gap: calc(var(--thumb) * 0.05);
 }
 
@@ -1414,7 +1418,6 @@ button {
 .chartTraySituation .situationTransportButton {
   width: var(--thumb);
   min-width: var(--thumb);
-  font-size: calc(var(--thumb) * 0.34);
   text-align: center;
 }
 
@@ -1422,10 +1425,10 @@ button {
   background:
     linear-gradient(
       to bottom,
-      color-mix(in srgb, var(--theme-button-bg) 82%, white) 0,
-      color-mix(in srgb, var(--theme-button-bg) 82%, white) 50%,
-      var(--tray-accent, color-mix(in srgb, var(--theme-button-bg) 82%, white)) 50%,
-      var(--tray-accent, color-mix(in srgb, var(--theme-button-bg) 82%, white)) 100%
+      var(--theme-button-selected-bg) 0,
+      var(--theme-button-selected-bg) 50%,
+      var(--tray-accent, var(--theme-button-selected-bg)) 50%,
+      var(--tray-accent, var(--theme-button-selected-bg)) 100%
     );
   border-color: transparent;
   color: var(--theme-button-fg);
@@ -1435,10 +1438,10 @@ button {
   background:
     linear-gradient(
       to bottom,
-      color-mix(in srgb, var(--theme-button-bg) 84%, white) 0,
-      color-mix(in srgb, var(--theme-button-bg) 84%, white) 50%,
-      color-mix(in srgb, var(--tray-accent, var(--theme-button-bg)) 84%, white) 50%,
-      color-mix(in srgb, var(--tray-accent, var(--theme-button-bg)) 84%, white) 100%
+      var(--theme-button-selected-bg) 0,
+      var(--theme-button-selected-bg) 50%,
+      var(--tray-accent, var(--theme-button-selected-bg)) 50%,
+      var(--tray-accent, var(--theme-button-selected-bg)) 100%
     );
   border-color: transparent;
   color: var(--theme-button-fg);

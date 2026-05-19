@@ -1027,6 +1027,7 @@ internal data class MenuDockOption(
 
 internal enum class MenuDockStyle(
     val buttonWidth: androidx.compose.ui.unit.Dp,
+    val buttonHeight: androidx.compose.ui.unit.Dp = ThumbSize,
     val trayWidth: androidx.compose.ui.unit.Dp,
     val launcherMaxLines: Int,
 ) {
@@ -1051,7 +1052,8 @@ internal enum class MenuDockStyle(
         launcherMaxLines = 2,
     ),
     Situation(
-        buttonWidth = ThumbSize * 2.4f,
+        buttonWidth = ThumbSize * 2f,
+        buttonHeight = ThumbSize * 0.5f,
         trayWidth = (ThumbSize * 4f) + 9.dp,
         launcherMaxLines = 1,
     ),
@@ -1295,12 +1297,15 @@ internal fun SituationStatusBadge(
     onSituationControlInput: (SituationControlInput) -> Unit = {},
 ) {
     var open by remember { mutableStateOf(false) }
+    val trayColumnCount = max(controls.sources.size, controls.situationControls.size).coerceAtLeast(1)
+    val trayWidth = (ThumbSize * trayColumnCount.toFloat()) + (3.dp * (trayColumnCount - 1).toFloat()) + 6.dp
     Box(modifier = modifier.wrapContentSize(unbounded = true, align = Alignment.TopEnd)) {
         MenuDock(
             launcherLabel = controls.launcherLabel,
             open = open,
             onToggle = { open = !open },
             style = MenuDockStyle.Situation,
+            trayWidthOverride = trayWidth,
             options = emptyList(),
             body = {
                 SituationSourceRow(

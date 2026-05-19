@@ -14,7 +14,9 @@ data class UiTheme(
 
 data class ControlsTheme(
     val buttonBg: Color,
+    val buttonSelectedBg: Color,
     val headerButton: Color,
+    val disabledButton: Color,
     val buttonFg: Color,
     val panelBg: Color,
     val panelBorder: Color,
@@ -22,6 +24,8 @@ data class ControlsTheme(
     val panelMuted: Color,
     val mapSelectionDisplayBg: Color,
     val mapSelectionDisplayFg: Color,
+    val situationStatusBg: Color,
+    val situationStatusFg: Color,
     val chartSurfaceBg: Color,
     val cdiPointer: Color,
 )
@@ -57,7 +61,9 @@ private data class WireUiTheme(
 @Serializable
 private data class WireControlsTheme(
     val button_bg: String,
+    val button_selected_bg: String,
     val header_button: String,
+    val disabled_button: String,
     val button_fg: String,
     val panel_bg: String,
     val panel_border: String,
@@ -65,6 +71,8 @@ private data class WireControlsTheme(
     val panel_muted: String,
     val map_selection_display_bg: String,
     val map_selection_display_fg: String,
+    val situation_status_bg: String,
+    val situation_status_fg: String,
     val chart_surface_bg: String,
     val cdi_pointer: String,
 )
@@ -105,7 +113,9 @@ object UiThemeLoader {
         return UiTheme(
             controls = ControlsTheme(
                 buttonBg = wire.controls.button_bg.toColor(),
+                buttonSelectedBg = wire.controls.button_selected_bg.toColor(),
                 headerButton = wire.controls.header_button.toColor(),
+                disabledButton = wire.controls.disabled_button.toColor(),
                 buttonFg = wire.controls.button_fg.toColor(),
                 panelBg = wire.controls.panel_bg.toColor(),
                 panelBorder = wire.controls.panel_border.toColor(),
@@ -113,6 +123,8 @@ object UiThemeLoader {
                 panelMuted = wire.controls.panel_muted.toColor(),
                 mapSelectionDisplayBg = wire.controls.map_selection_display_bg.toColor(),
                 mapSelectionDisplayFg = wire.controls.map_selection_display_fg.toColor(),
+                situationStatusBg = wire.controls.situation_status_bg.toColor(),
+                situationStatusFg = wire.controls.situation_status_fg.toColor(),
                 chartSurfaceBg = wire.controls.chart_surface_bg.toColor(),
                 cdiPointer = wire.controls.cdi_pointer.toColor(),
             ),

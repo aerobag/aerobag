@@ -362,6 +362,7 @@ type TrayOption = {
 type UiThemeJson = {
   controls: {
     button_bg: string;
+    button_selected_bg: string;
     header_button: string;
     disabled_button: string;
     button_fg: string;
@@ -371,6 +372,8 @@ type UiThemeJson = {
     panel_muted: string;
     map_selection_display_bg: string;
     map_selection_display_fg: string;
+    situation_status_bg: string;
+    situation_status_fg: string;
     chart_surface_bg: string;
     cdi_pointer: string;
   };
@@ -2091,6 +2094,7 @@ export default function App() {
     () =>
       ({
         "--theme-button-bg": controlTheme.button_bg,
+        "--theme-button-selected-bg": controlTheme.button_selected_bg,
         "--theme-header-button": controlTheme.header_button,
         "--theme-disabled-button": controlTheme.disabled_button,
         "--theme-button-fg": controlTheme.button_fg,
@@ -2100,6 +2104,8 @@ export default function App() {
         "--theme-panel-muted": controlTheme.panel_muted,
         "--theme-map-selection-display-bg": controlTheme.map_selection_display_bg,
         "--theme-map-selection-display-fg": controlTheme.map_selection_display_fg,
+        "--theme-situation-status-bg": controlTheme.situation_status_bg,
+        "--theme-situation-status-fg": controlTheme.situation_status_fg,
         "--theme-chart-surface-bg": controlTheme.chart_surface_bg,
         "--theme-cdi-pointer": controlTheme.cdi_pointer,
         "--theme-class-b-d-blue": loadedUiTheme.aviation.class_b_d_blue,
@@ -6380,6 +6386,7 @@ function TrayDock(props: {
       });
       setTrayThemeStyle({
         ["--theme-button-bg" as string]: launcherStyle.getPropertyValue("--theme-button-bg"),
+        ["--theme-button-selected-bg" as string]: launcherStyle.getPropertyValue("--theme-button-selected-bg"),
         ["--theme-disabled-button" as string]: launcherStyle.getPropertyValue("--theme-disabled-button"),
         ["--theme-button-fg" as string]: launcherStyle.getPropertyValue("--theme-button-fg"),
       });
@@ -6422,8 +6429,17 @@ function TrayDock(props: {
               aria-label={ariaLabel}
               style={
                 trayPosition
-                  ? { ...trayThemeStyle, left: `${trayPosition.left}px`, top: `${trayPosition.top}px` }
-                  : { ...trayThemeStyle, visibility: "hidden" }
+                  ? {
+                    ...trayThemeStyle,
+                    left: `${trayPosition.left}px`,
+                    top: `${trayPosition.top}px`,
+                    ...(style === "situation" ? ({ ["--situation-source-count" as string]: String(Math.max(1, options.length)) } as CSSProperties) : null),
+                  }
+                  : {
+                    ...trayThemeStyle,
+                    visibility: "hidden",
+                    ...(style === "situation" ? ({ ["--situation-source-count" as string]: String(Math.max(1, options.length)) } as CSSProperties) : null),
+                  }
               }
               onPointerDown={stopPointer}
               onPointerUp={stopPointer}

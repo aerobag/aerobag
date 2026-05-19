@@ -108,6 +108,33 @@
         letter-spacing: 0.04em;
       }
 
+      #startup-shell.has-error .startup-spinner {
+        animation: none;
+        border-color: rgba(255, 226, 204, 0.26);
+        border-top-color: #ffb07c;
+      }
+
+      #startup-shell.has-error .startup-copy {
+        display: grid;
+        gap: 6px;
+        max-width: min(82vw, 560px);
+        text-align: center;
+        color: #ffe2cc;
+      }
+
+      .startup-errorTitle {
+        font-size: 14px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .startup-errorDetail {
+        font-size: 12px;
+        line-height: 1.45;
+        letter-spacing: normal;
+      }
+
       .startup-elapsed {
         position: fixed;
         right: 18px;
@@ -142,16 +169,61 @@
     <script>
       window.__aerobag_html_start = performance.now();
       (function () {
+        const shell = document.getElementById("startup-shell");
+        const copyNode = shell ? shell.querySelector(".startup-copy") : null;
         const elapsedNode = document.getElementById("startup-elapsed");
-        if (!elapsedNode) {
-          return;
-        }
         function renderElapsed() {
+          if (!elapsedNode) {
+            return;
+          }
           const elapsedSeconds = Math.max(0, (performance.now() - window.__aerobag_html_start) / 1000);
           elapsedNode.textContent = elapsedSeconds.toFixed(1) + "s";
         }
+
+        function showStartupShellError(message, detail) {
+          if (!shell || !copyNode || shell.classList.contains("is-hidden")) {
+            return;
+          }
+          shell.classList.add("has-error");
+          copyNode.replaceChildren();
+          const title = document.createElement("div");
+          title.className = "startup-errorTitle";
+          title.textContent = message;
+          const detailNode = document.createElement("div");
+          detailNode.className = "startup-errorDetail";
+          detailNode.textContent = detail || "The web app did not finish mounting. Check the Vite server and browser console.";
+          copyNode.append(title, detailNode);
+        }
+
+        window.__aerobag_show_startup_shell_error = showStartupShellError;
+        window.__aerobag_mark_startup_shell_managed = function () {
+          if (window.__aerobag_startup_watchdog != null) {
+            window.clearTimeout(window.__aerobag_startup_watchdog);
+            window.__aerobag_startup_watchdog = undefined;
+          }
+        };
+        window.addEventListener("error", function (event) {
+          showStartupShellError(
+            "Startup failed",
+            event.message || "The browser failed while loading Aerobag.",
+          );
+        });
+        window.addEventListener("unhandledrejection", function (event) {
+          const reason = event.reason;
+          const detail = reason && reason.message ? reason.message : String(reason || "Unhandled startup rejection");
+          showStartupShellError("Startup failed", detail);
+        });
+        window.__aerobag_startup_watchdog = window.setTimeout(function () {
+          showStartupShellError(
+            "Startup timed out",
+            "Aerobag loaded the HTML shell, but the app JavaScript did not report that it mounted.",
+          );
+        }, 45000);
+
         renderElapsed();
-        window.__aerobag_startup_elapsed_interval = window.setInterval(renderElapsed, 100);
+        if (elapsedNode) {
+          window.__aerobag_startup_elapsed_interval = window.setInterval(renderElapsed, 100);
+        }
       })();
     </script>
     <script type="module" src="/src/main.tsx"></script>

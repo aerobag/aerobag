@@ -9,6 +9,9 @@ declare global {
     __aerobag_html_start?: number;
     __aerobag_hide_startup_shell?: () => void;
     __aerobag_startup_elapsed_interval?: number;
+    __aerobag_startup_watchdog?: number;
+    __aerobag_mark_startup_shell_managed?: () => void;
+    __aerobag_show_startup_shell_error?: (message: string, detail?: string) => void;
   }
 }
 
@@ -20,6 +23,10 @@ function dismissStartupShell() {
   if (typeof window !== "undefined" && window.__aerobag_startup_elapsed_interval != null) {
     window.clearInterval(window.__aerobag_startup_elapsed_interval);
     window.__aerobag_startup_elapsed_interval = undefined;
+  }
+  if (typeof window !== "undefined" && window.__aerobag_startup_watchdog != null) {
+    window.clearTimeout(window.__aerobag_startup_watchdog);
+    window.__aerobag_startup_watchdog = undefined;
   }
   shell.remove();
 }
@@ -124,8 +131,19 @@ if (typeof window !== "undefined") {
   });
 }
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+try {
+  const rootNode = document.getElementById("root");
+  if (!rootNode) {
+    throw new Error("Missing #root element");
+  }
+  ReactDOM.createRoot(rootNode).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  );
+  window.__aerobag_mark_startup_shell_managed?.();
+} catch (error) {
+  const detail = error instanceof Error ? error.message : String(error);
+  window.__aerobag_show_startup_shell_error?.("Startup failed", detail);
+  throw error;
+}

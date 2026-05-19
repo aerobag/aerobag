@@ -706,7 +706,7 @@ fn source_menu_label(source: &OwnshipSourceStatus) -> String {
         | OwnshipSourceKind::AdsbTrackPlayback
         | OwnshipSourceKind::LiveNetworkTrack => "Replay".to_string(),
         OwnshipSourceKind::FlightPlanSimulator => "Plan\nPreview".to_string(),
-        OwnshipSourceKind::DebugOwnshipDriver => "Bad Autopilot".to_string(),
+        OwnshipSourceKind::DebugOwnshipDriver => "Bad AP".to_string(),
     }
 }
 

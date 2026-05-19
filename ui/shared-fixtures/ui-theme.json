@@ -1,6 +1,7 @@
 {
   "controls": {
     "button_bg": "#234f77",
+    "button_selected_bg": "#4b6f90",
     "header_button": "#4a6d8e",
     "disabled_button": "#8da1b3",
     "button_fg": "#f7fbff",
@@ -10,6 +11,8 @@
     "panel_muted": "#52656d",
     "map_selection_display_bg": "#fffdf8c7",
     "map_selection_display_fg": "#24333a",
+    "situation_status_bg": "#fcf8f1e6",
+    "situation_status_fg": "#111111",
     "chart_surface_bg": "#8c9dad",
     "cdi_pointer": "#d45a7a"
   },

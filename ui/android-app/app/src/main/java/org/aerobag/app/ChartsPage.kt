@@ -1197,6 +1197,7 @@ internal fun MenuDock(
     onToggle: () -> Unit,
     style: MenuDockStyle,
     buttonWidthOverride: Dp? = null,
+    trayWidthOverride: Dp? = null,
     disabled: Boolean = false,
     options: List<MenuDockOption>,
     body: (@Composable ColumnScope.() -> Unit)? = null,
@@ -1206,17 +1207,21 @@ internal fun MenuDock(
     val configuration = LocalConfiguration.current
     var anchorTopPx by remember { mutableStateOf(0f) }
     val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
-    val trayOffsetPx = with(density) { (ThumbSize + ThumbGap).toPx() }
+    val launcherAccentColor = options.firstOrNull { it.active }?.accentColor
+    val buttonWidth = buttonWidthOverride ?: style.buttonWidth
+    val buttonHeight = style.buttonHeight
+    val trayWidth = trayWidthOverride ?: style.trayWidth
+    val trayOffsetPx = with(density) { (buttonHeight + ThumbGap).toPx() }
     val trayBottomMarginPx = with(density) { ThumbGap.toPx() }
     val trayMaxHeight = with(density) {
         ((screenHeightPx - anchorTopPx - trayOffsetPx - trayBottomMarginPx).coerceAtLeast(ThumbSize.toPx())).toDp()
     }
-    val launcherAccentColor = options.firstOrNull { it.active }?.accentColor
-    val buttonWidth = buttonWidthOverride ?: style.buttonWidth
+    val uiTheme = LocalAerobagUiTheme.current
+    val situationLauncher = style == MenuDockStyle.Situation
     Box(
         modifier = modifier
             .width(buttonWidth)
-            .height(ThumbSize)
+            .height(buttonHeight)
             .wrapContentSize(unbounded = true, align = Alignment.TopStart),
     ) {
         CompactSquareButton(
@@ -1224,12 +1229,14 @@ internal fun MenuDock(
             iconResId = launcherIconResId,
             maxLines = style.launcherMaxLines,
             enabled = !disabled,
+            backgroundColor = if (situationLauncher) uiTheme.controls.situationStatusBg else null,
+            foregroundColor = if (situationLauncher) uiTheme.controls.situationStatusFg else null,
             accentColor = launcherAccentColor,
             wide = style != MenuDockStyle.Compact,
             testTag = launcherTestTag,
             modifier = Modifier
                 .width(buttonWidth)
-                .height(ThumbSize)
+                .height(buttonHeight)
                 .align(Alignment.TopStart)
                 .onGloballyPositioned { coordinates ->
                     anchorTopPx = coordinates.boundsInWindow().top
@@ -1245,7 +1252,7 @@ internal fun MenuDock(
                 MenuPanel(
                     modifier = Modifier
                         .semantics { testTagsAsResourceId = true }
-                        .width(style.trayWidth)
+                        .width(trayWidth)
                         .heightIn(max = trayMaxHeight),
                 ) {
                     if (body != null) {
@@ -1261,7 +1268,7 @@ internal fun MenuDock(
                                     toggleState = option.toggleState,
                                     iconResId = option.iconResId,
                                     testTag = optionTestTagPrefix?.let { "$it:${option.key}" },
-                                    width = style.trayWidth,
+                                    width = trayWidth,
                                     onSelect = option.onSelect,
                                 )
                             }
@@ -1316,16 +1323,15 @@ internal fun MenuPanelRow(
     val isOn = toggleState?.enabled == true && toggleState.visible
     val isOff = toggleState?.enabled == true && !toggleState.visible
     val rowBackground = when {
-        !enabled -> uiTheme.controls.panelBg
-        isOn -> lerp(uiTheme.controls.buttonBg, Color.White, 0.16f)
+        !enabled -> uiTheme.controls.disabledButton
+        isOn -> uiTheme.controls.buttonSelectedBg
         isOff -> lerp(uiTheme.controls.buttonBg, Color.Black, 0.12f)
-        active -> lerp(uiTheme.controls.buttonBg, Color.White, 0.18f)
+        active -> uiTheme.controls.buttonSelectedBg
         else -> uiTheme.controls.buttonBg
     }
-    val rowTextColor = when {
-        !enabled -> uiTheme.controls.panelMuted.copy(alpha = 0.7f)
-        else -> uiTheme.controls.buttonFg
-    }
+    val rowTextColor = uiTheme.controls.buttonFg
+    val renderedLabel = buttonLabel(label)
+    val renderedLabelStyle = buttonLabelStyle()
     Box(
         modifier = modifier
             .then(if (width != Dp.Unspecified) Modifier.width(width) else Modifier.fillMaxWidth())
@@ -1367,9 +1373,9 @@ internal fun MenuPanelRow(
                     )
                 }
                 Text(
-                    text = label,
+                    text = renderedLabel,
                     modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.labelLarge,
+                    style = renderedLabelStyle,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     color = rowTextColor,
@@ -1384,9 +1390,9 @@ internal fun MenuPanelRow(
             }
         } else {
             Text(
-                text = label,
+                text = renderedLabel,
                 modifier = Modifier.padding(horizontal = 12.dp),
-                style = MaterialTheme.typography.labelLarge,
+                style = renderedLabelStyle,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 color = rowTextColor,

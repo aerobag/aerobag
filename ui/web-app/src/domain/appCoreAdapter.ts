@@ -609,16 +609,6 @@ function sourceIdString(sourceId: { 0: string } | string): string {
   return typeof sourceId === "string" ? sourceId : sourceId[0];
 }
 
-const BOOTSTRAP_VECTOR_MANIFEST_JSON = JSON.stringify({
-  airspace: {
-    reference_tile_min_zoom: 0,
-    reference_tile_max_zoom: 0,
-    label_tile_min_zoom: 0,
-    label_tile_max_zoom: 0,
-  },
-  point_layers: {},
-});
-
 type WasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
   publication_resolver_destroy(handle: number): void;
@@ -629,8 +619,8 @@ type WasmModule = {
   publication_resolver_resolve_package_member(handle: number, packageId: string, memberPath: string): Promise<string> | string;
   situation_ring_candidates_json(): Promise<string> | string;
   empty_flight_plan_json(): Promise<string> | string;
-  create_ui_session(vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
-  create_ui_session_profiled?: (vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
+  create_ui_session(planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
+  create_ui_session_profiled?: (planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
   set_resource_policy_in_session(handle: number, policyJson: string): Promise<string> | string;
   set_situation_in_session_paged(handle: number, situationJson: string): Promise<string> | string;
   tick_debug_ownship_driver_in_session_paged(handle: number, nowEpochMs: number): Promise<string> | string;
@@ -769,7 +759,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       const selectedChartIdJson = JSON.stringify(nextSelectedChartId ?? null);
       const createUiSession = module.create_ui_session_profiled ?? module.create_ui_session;
       const createdJson = await debugTiming("startup.session.wasm_call", () => createUiSession(
-        BOOTSTRAP_VECTOR_MANIFEST_JSON,
         planJson,
         recentAirportIdsJson,
         selectedAirportIdJson,

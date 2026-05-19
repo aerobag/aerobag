@@ -349,7 +349,6 @@ data class TerrainOverlayQueryResult(
 )
 
 class NativeAppCoreAdapter(
-    private val vectorManifestJson: String,
     private val navKvStore: NavKvStore? = null,
     private val bridge: NativeBridge = NativeBindings,
     private val json: Json = Json {
@@ -371,7 +370,6 @@ class NativeAppCoreAdapter(
         selectedChartId: String?,
     ): NativeUiSession {
         val resultJson = bridge.createUiSessionJson(
-            vectorManifestJson,
             json.encodeToString(plan.toWire()),
             json.encodeToString(recentAirportIds),
             json.encodeToString(selectedAirportId),

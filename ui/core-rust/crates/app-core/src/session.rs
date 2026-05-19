@@ -26,7 +26,7 @@ use crate::{
     },
     live_feeds::{LiveFeedSseEvent, LiveFeedsState},
     map_follow::{MapFollowSessionState, MapFollowUiState},
-    map_overlay::{FlightPlanSelectionPoint, MetarTileRecord},
+    map_overlay::{FlightPlanSelectionPoint, MetarTileRecord, PointTileLayerConfig},
     map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
     planning::NavElementUiView,
     playback::PlaybackSessionState,
@@ -571,14 +571,12 @@ fn missing_active_plan_error(context: &str) -> AppError {
 }
 
 pub fn create_ui_session(
-    vector_manifest_json: &str,
     plan: FlightPlan,
     recent_airport_ids: &[String],
     selected_airport_id: Option<&str>,
     selected_chart_id: Option<&str>,
 ) -> AppResult<UiSessionInitResult> {
     create_ui_session_inner(
-        vector_manifest_json,
         plan,
         recent_airport_ids,
         selected_airport_id,
@@ -588,7 +586,6 @@ pub fn create_ui_session(
 }
 
 pub fn create_ui_session_profiled(
-    vector_manifest_json: &str,
     plan: FlightPlan,
     recent_airport_ids: &[String],
     selected_airport_id: Option<&str>,
@@ -596,7 +593,6 @@ pub fn create_ui_session_profiled(
     mark: &mut dyn FnMut(&'static str),
 ) -> AppResult<UiSessionInitResult> {
     create_ui_session_inner(
-        vector_manifest_json,
         plan,
         recent_airport_ids,
         selected_airport_id,
@@ -606,17 +602,13 @@ pub fn create_ui_session_profiled(
 }
 
 fn create_ui_session_inner(
-    vector_manifest_json: &str,
     plan: FlightPlan,
     recent_airport_ids: &[String],
     selected_airport_id: Option<&str>,
     selected_chart_id: Option<&str>,
     mut mark: Option<&mut dyn FnMut(&'static str)>,
 ) -> AppResult<UiSessionInitResult> {
-    let map_overlay_config = map_overlay_config_from_vector_manifest_json(vector_manifest_json)?;
-    if let Some(mark) = mark.as_deref_mut() {
-        mark("core_parse_vector_manifest");
-    }
+    let map_overlay_config = uninitialized_map_overlay_config();
     let app_state = state::reduce(
         &AppState::default(),
         AppEvent::ReplaceFlightPlan(plan.clone()),
@@ -720,6 +712,26 @@ fn create_ui_session_inner(
         mark("core_store_session");
     }
     Ok(UiSessionInitResult { handle, snapshot })
+}
+
+fn uninitialized_map_overlay_config() -> MapOverlayConfig {
+    let empty_point_layer = PointTileLayerConfig {
+        min_zoom: 0,
+        max_zoom: 0,
+        available_zooms: Vec::new(),
+        tile_path_template: None,
+    };
+    MapOverlayConfig {
+        airspace_reference_tile_min_zoom: 0,
+        airspace_reference_tile_max_zoom: 0,
+        airspace_label_tile_min_zoom: 0,
+        airspace_label_tile_max_zoom: 0,
+        airport_layer: empty_point_layer.clone(),
+        fix_layer: empty_point_layer.clone(),
+        nav_layer: empty_point_layer,
+        obstacle_layer: None,
+        metar_layer: None,
+    }
 }
 
 pub fn set_map_layer_visibility_in_session(
@@ -5608,8 +5620,7 @@ mod tests {
             updated_at_epoch_ms: 0,
             version: 1,
         };
-        let init = create_ui_session(minimal_vector_manifest_json(), plan, &[], None, None)
-            .expect("create session");
+        let init = create_ui_session(plan, &[], None, None).expect("create session");
         let row_uid = init
             .snapshot
             .app_ui_state
@@ -5642,14 +5653,8 @@ mod tests {
 
     #[test]
     fn missing_live_feed_products_do_not_abort_vector_overlay_resources() {
-        let init = create_ui_session(
-            minimal_vector_manifest_json(),
-            FlightPlan::default(),
-            &[],
-            None,
-            None,
-        )
-        .expect("create session");
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         ingest_resource_in_session(
             init.handle,
             "publication/current_artifacts",
@@ -5689,14 +5694,8 @@ mod tests {
 
     #[test]
     fn pending_live_feed_updates_do_not_block_vector_overlay_resources() {
-        let init = create_ui_session(
-            minimal_vector_manifest_json(),
-            FlightPlan::default(),
-            &[],
-            None,
-            None,
-        )
-        .expect("create session");
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
@@ -6725,14 +6724,7 @@ mod tests {
             ],
             256,
         );
-        let init = create_ui_session(
-            minimal_vector_manifest_json(),
-            empty_test_plan(),
-            &[],
-            None,
-            None,
-        )
-        .expect("create session");
+        let init = create_ui_session(empty_test_plan(), &[], None, None).expect("create session");
         attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
 
         let snapshot = push_situation_sample_in_session(
@@ -6765,14 +6757,7 @@ mod tests {
 
     #[test]
     fn ownship_render_omits_magnetic_variation_without_nav_kv_store() {
-        let init = create_ui_session(
-            minimal_vector_manifest_json(),
-            empty_test_plan(),
-            &[],
-            None,
-            None,
-        )
-        .expect("create session");
+        let init = create_ui_session(empty_test_plan(), &[], None, None).expect("create session");
 
         let snapshot = push_situation_sample_in_session(
             init.handle,
@@ -6805,14 +6790,7 @@ mod tests {
     #[test]
     fn ownship_render_omits_magnetic_variation_when_had_keys_are_missing() {
         let store = crate::navkv::nav_kv_store_for_test(&[], 256);
-        let init = create_ui_session(
-            minimal_vector_manifest_json(),
-            empty_test_plan(),
-            &[],
-            None,
-            None,
-        )
-        .expect("create session");
+        let init = create_ui_session(empty_test_plan(), &[], None, None).expect("create session");
         attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
 
         let snapshot = push_situation_sample_in_session(
@@ -6897,14 +6875,8 @@ mod tests {
 
     #[test]
     fn replay_source_is_selectable_and_controls_playback_panel_visibility() {
-        let init = create_ui_session(
-            minimal_vector_manifest_json(),
-            sample_guided_plan(),
-            &[],
-            None,
-            None,
-        )
-        .expect("create session");
+        let init =
+            create_ui_session(sample_guided_plan(), &[], None, None).expect("create session");
         assert!(
             init.snapshot
                 .app_ui_state
@@ -7020,14 +6992,8 @@ mod tests {
 
     #[test]
     fn session_projects_cdi_from_injected_guidance_geometry() {
-        let init = create_ui_session(
-            minimal_vector_manifest_json(),
-            sample_guided_plan(),
-            &[],
-            None,
-            None,
-        )
-        .expect("create session");
+        let init =
+            create_ui_session(sample_guided_plan(), &[], None, None).expect("create session");
         let after_geometry = set_guidance_leg_geometry_in_session(
             init.handle,
             vec![GuidanceLegGeometry {
@@ -7094,14 +7060,8 @@ mod tests {
 
     #[test]
     fn row_action_direct_to_targets_clicked_duplicate_row_uid() {
-        let init = create_ui_session(
-            minimal_vector_manifest_json(),
-            sample_duplicate_waypoint_plan(),
-            &[],
-            None,
-            None,
-        )
-        .expect("create session");
+        let init = create_ui_session(sample_duplicate_waypoint_plan(), &[], None, None)
+            .expect("create session");
         let positioned = push_situation_sample_in_session(
             init.handle,
             SituationSample {
@@ -7164,14 +7124,8 @@ mod tests {
 
     #[test]
     fn row_action_activate_leg_works_after_on_plan_direct_to() {
-        let init = create_ui_session(
-            minimal_vector_manifest_json(),
-            sample_guided_plan(),
-            &[],
-            None,
-            None,
-        )
-        .expect("create session");
+        let init =
+            create_ui_session(sample_guided_plan(), &[], None, None).expect("create session");
         push_situation_sample_in_session(
             init.handle,
             SituationSample {
@@ -7241,14 +7195,8 @@ mod tests {
 
     #[test]
     fn plan_preview_enters_at_active_leg_start() {
-        let init = create_ui_session(
-            minimal_vector_manifest_json(),
-            lat_lon_preview_plan(),
-            &[],
-            None,
-            None,
-        )
-        .expect("create session");
+        let init =
+            create_ui_session(lat_lon_preview_plan(), &[], None, None).expect("create session");
         let snapshot = select_plan_preview(init.handle);
         let position = ownship_position(&snapshot);
         assert_near(position.lat, 40.0);
@@ -7257,14 +7205,8 @@ mod tests {
 
     #[test]
     fn plan_preview_controls_stop_at_waypoints_and_plan_ends() {
-        let init = create_ui_session(
-            minimal_vector_manifest_json(),
-            lat_lon_preview_plan(),
-            &[],
-            None,
-            None,
-        )
-        .expect("create session");
+        let init =
+            create_ui_session(lat_lon_preview_plan(), &[], None, None).expect("create session");
         let selected = select_plan_preview(init.handle);
         assert_enabled_situation_controls(
             &selected,
@@ -7341,14 +7283,8 @@ mod tests {
 
     #[test]
     fn plan_preview_skip_from_off_plan_returns_to_first_waypoint() {
-        let init = create_ui_session(
-            minimal_vector_manifest_json(),
-            lat_lon_preview_plan(),
-            &[],
-            None,
-            None,
-        )
-        .expect("create session");
+        let init =
+            create_ui_session(lat_lon_preview_plan(), &[], None, None).expect("create session");
         select_plan_preview(init.handle);
         {
             let mut sessions = lock_sessions();
@@ -7374,14 +7310,8 @@ mod tests {
 
     #[test]
     fn plan_preview_recovers_after_newer_bad_autopilot_samples() {
-        let init = create_ui_session(
-            minimal_vector_manifest_json(),
-            lat_lon_preview_plan(),
-            &[],
-            None,
-            None,
-        )
-        .expect("create session");
+        let init =
+            create_ui_session(lat_lon_preview_plan(), &[], None, None).expect("create session");
         select_plan_preview(init.handle);
         select_ownship_source_in_session(
             init.handle,
@@ -7421,8 +7351,7 @@ mod tests {
     fn plan_preview_skip_forward_from_waypoint_moves_to_next_waypoint() {
         let mut plan = lat_lon_preview_plan();
         plan.guidance.as_mut().expect("guidance").active_leg_index = 0;
-        let init = create_ui_session(minimal_vector_manifest_json(), plan, &[], None, None)
-            .expect("create session");
+        let init = create_ui_session(plan, &[], None, None).expect("create session");
         select_plan_preview(init.handle);
 
         let at_intermediate_waypoint = apply_situation_control_input_in_session(
@@ -7448,14 +7377,8 @@ mod tests {
 
     #[test]
     fn plan_preview_fast_forward_from_waypoint_enters_next_leg() {
-        let init = create_ui_session(
-            minimal_vector_manifest_json(),
-            short_lat_lon_preview_plan(),
-            &[],
-            None,
-            None,
-        )
-        .expect("create session");
+        let init = create_ui_session(short_lat_lon_preview_plan(), &[], None, None)
+            .expect("create session");
         select_plan_preview(init.handle);
 
         let at_intermediate_waypoint = apply_situation_control_input_in_session(
@@ -7754,8 +7677,7 @@ mod tests {
             updated_at_epoch_ms: 0,
             version: 1,
         };
-        let init = create_ui_session(minimal_vector_manifest_json(), plan, &[], None, None)
-            .expect("create session");
+        let init = create_ui_session(plan, &[], None, None).expect("create session");
         set_guidance_leg_geometry_in_session(
             init.handle,
             vec![
@@ -7834,8 +7756,7 @@ mod tests {
             suspend_reason: None,
         });
 
-        let init = create_ui_session(minimal_vector_manifest_json(), plan, &[], None, None)
-            .expect("create session");
+        let init = create_ui_session(plan, &[], None, None).expect("create session");
         set_guidance_leg_geometry_in_session(
             init.handle,
             vec![
@@ -7972,8 +7893,7 @@ mod tests {
             updated_at_epoch_ms: 0,
             version: 1,
         };
-        let init = create_ui_session(minimal_vector_manifest_json(), plan, &[], None, None)
-            .expect("create session");
+        let init = create_ui_session(plan, &[], None, None).expect("create session");
         set_guidance_leg_geometry_in_session(
             init.handle,
             vec![
@@ -8131,8 +8051,7 @@ mod tests {
             updated_at_epoch_ms: 0,
             version: 1,
         };
-        let init = create_ui_session(minimal_vector_manifest_json(), plan, &[], None, None)
-            .expect("create session");
+        let init = create_ui_session(plan, &[], None, None).expect("create session");
         set_guidance_leg_geometry_in_session(
             init.handle,
             vec![
@@ -8313,8 +8232,7 @@ mod tests {
             updated_at_epoch_ms: 0,
             version: 1,
         };
-        let init = create_ui_session(minimal_vector_manifest_json(), plan, &[], None, None)
-            .expect("create session");
+        let init = create_ui_session(plan, &[], None, None).expect("create session");
         set_guidance_leg_geometry_in_session(
             init.handle,
             vec![GuidanceLegGeometry {
@@ -8345,8 +8263,7 @@ mod tests {
     fn plan_preview_pointer_follows_row_uid_after_reorder() {
         let mut plan = lat_lon_preview_plan();
         plan.guidance.as_mut().expect("guidance").active_leg_index = 0;
-        let init = create_ui_session(minimal_vector_manifest_json(), plan, &[], None, None)
-            .expect("create session");
+        let init = create_ui_session(plan, &[], None, None).expect("create session");
         select_plan_preview(init.handle);
         apply_situation_control_input_in_session(
             init.handle,

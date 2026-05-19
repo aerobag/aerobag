@@ -120,7 +120,6 @@ pub fn describe_load_procedure_from_plate_json(
 }
 
 pub fn create_ui_session_json(
-    vector_manifest_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
@@ -135,7 +134,6 @@ pub fn create_ui_session_json(
     let selected_chart_id: Option<String> =
         serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
     let result = app_core::create_ui_session(
-        vector_manifest_json,
         plan,
         &recent_airport_ids,
         selected_airport_id.as_deref(),
@@ -1516,20 +1514,17 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_prepareAirwayP
 pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_createUiSessionJson(
     mut env: JNIEnv,
     _class: JClass,
-    vector_manifest_json: JString,
     plan_json: JString,
     recent_airport_ids_json: JString,
     selected_airport_id_json: JString,
     selected_chart_id_json: JString,
 ) -> jstring {
     let result = (|| {
-        let vector_manifest = get_java_string(&mut env, vector_manifest_json)?;
         let plan = get_java_string(&mut env, plan_json)?;
         let recent_airport_ids = get_java_string(&mut env, recent_airport_ids_json)?;
         let selected_airport_id = get_java_string(&mut env, selected_airport_id_json)?;
         let selected_chart_id = get_java_string(&mut env, selected_chart_id_json)?;
         create_ui_session_json(
-            &vector_manifest,
             &plan,
             &recent_airport_ids,
             &selected_airport_id,

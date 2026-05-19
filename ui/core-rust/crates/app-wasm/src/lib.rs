@@ -627,14 +627,12 @@ pub fn activate_direct_to_leg_ui(
 
 #[wasm_bindgen]
 pub fn create_ui_session(
-    vector_manifest_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
     selected_chart_id_json: &str,
 ) -> Result<String, JsValue> {
     create_ui_session_json(
-        vector_manifest_json,
         plan_json,
         recent_airport_ids_json,
         selected_airport_id_json,
@@ -645,14 +643,12 @@ pub fn create_ui_session(
 
 #[wasm_bindgen]
 pub fn create_ui_session_profiled(
-    vector_manifest_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
     selected_chart_id_json: &str,
 ) -> Result<String, JsValue> {
     create_ui_session_profiled_json(
-        vector_manifest_json,
         plan_json,
         recent_airport_ids_json,
         selected_airport_id_json,
@@ -1215,7 +1211,6 @@ fn classify_procedure_identifier_json(
 }
 
 fn create_ui_session_json(
-    vector_manifest_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
@@ -1230,7 +1225,6 @@ fn create_ui_session_json(
     let selected_chart_id: Option<String> =
         serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
     let result = app_core::create_ui_session(
-        vector_manifest_json,
         plan,
         &recent_airport_ids,
         selected_airport_id.as_deref(),
@@ -1241,7 +1235,6 @@ fn create_ui_session_json(
 }
 
 fn create_ui_session_profiled_json(
-    vector_manifest_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
@@ -1260,7 +1253,6 @@ fn create_ui_session_profiled_json(
         serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
     profiler.mark("parse_selected_ids_json");
     let result = app_core::create_ui_session_profiled(
-        vector_manifest_json,
         plan,
         &recent_airport_ids,
         selected_airport_id.as_deref(),

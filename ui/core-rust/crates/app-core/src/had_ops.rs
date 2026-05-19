@@ -4378,26 +4378,8 @@ mod tests {
             version: 1,
         };
 
-        let init = crate::create_ui_session(
-            r#"{
-                "point_layers": {
-                    "airport": { "available_zooms": [9] },
-                    "fix": { "available_zooms": [9] },
-                    "nav": { "available_zooms": [9] }
-                },
-                "airspace": {
-                    "reference_tile_min_zoom": 0,
-                    "reference_tile_max_zoom": 12,
-                    "label_tile_min_zoom": 0,
-                    "label_tile_max_zoom": 12
-                }
-            }"#,
-            plan,
-            &["KPAE".to_string()],
-            Some("KPAE"),
-            None,
-        )
-        .expect("create ui session");
+        let init = crate::create_ui_session(plan, &["KPAE".to_string()], Some("KPAE"), None)
+            .expect("create ui session");
 
         let snapshot = crate::select_chart_in_session(init.handle, &vor_a.id)
             .expect("select KPAE VOR-A chart in session");

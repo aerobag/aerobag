@@ -6,8 +6,6 @@ import android.util.Log
 import java.time.Instant
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 
 data class RuntimeBootstrap(
     val packageManagementNowEpochMsOverride: Long?,
@@ -15,7 +13,6 @@ data class RuntimeBootstrap(
 
 data class RuntimeContent(
     val bootstrap: RuntimeBootstrap,
-    val vectorManifestJson: String,
     val navKvStore: NavKvStore,
 )
 
@@ -74,22 +71,14 @@ object AndroidRuntimeContent {
         navKvOpenMs: Long,
     ): RuntimeContent {
         val startMs = SystemClock.elapsedRealtime()
-        val vectorManifestStartMs = SystemClock.elapsedRealtime()
-        val vectorManifestJson = navKvStore.runCoreOperationElement(
-            buildJsonObject {
-                put("kind", "vector_manifest")
-            },
-        ).toString()
-        val vectorManifestMs = SystemClock.elapsedRealtime() - vectorManifestStartMs
         return RuntimeContent(
             bootstrap = bootstrap,
-            vectorManifestJson = vectorManifestJson,
             navKvStore = navKvStore,
         ).also {
             Log.i(
                 TAG,
                 "loadInstalledRuntime completed in ${SystemClock.elapsedRealtime() - startMs}ms " +
-                    "(navKvOpen=${navKvOpenMs}ms vectorManifest=${vectorManifestMs}ms)",
+                    "(navKvOpen=${navKvOpenMs}ms)",
             )
         }
     }

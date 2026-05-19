@@ -453,6 +453,8 @@ internal fun MapExplorerPage(
     val focusRequester = remember { FocusRequester() }
     var chartTrayOpen by remember { mutableStateOf(false) }
     var layerTrayOpen by remember { mutableStateOf(false) }
+    var dataStatusTrayOpen by remember { mutableStateOf(false) }
+    var situationTrayOpen by remember { mutableStateOf(false) }
     var chartSearchText by remember { mutableStateOf("") }
     var chartSearchOpen by remember { mutableStateOf(false) }
     var chartSearchLoading by remember { mutableStateOf(false) }
@@ -557,7 +559,7 @@ internal fun MapExplorerPage(
         }
     }
     val mapLayerState = sessionSnapshot.mapLayerState
-    val topLeftTrayOpen = chartTrayOpen || layerTrayOpen
+    val menuTrayOpen = chartTrayOpen || layerTrayOpen || dataStatusTrayOpen || situationTrayOpen
     val trayOptions = remember(mapFamilyOptions) {
         mapFamilyOptions.map { option ->
             ChartTrayOption(
@@ -1096,6 +1098,8 @@ internal fun MapExplorerPage(
     LaunchedEffect(selectedMapId) {
         chartTrayOpen = false
         layerTrayOpen = false
+        dataStatusTrayOpen = false
+        situationTrayOpen = false
         mapSelection = null
     }
     LaunchedEffect(uiSession, plan.id, plan.version, plan.guidance, plan.resolvedLegs) {
@@ -1112,8 +1116,8 @@ internal fun MapExplorerPage(
             Log.e("AerobagGuidance", "failed to project flight plan route", it)
         }
     }
-    LaunchedEffect(selectedMapId, chartTrayOpen, layerTrayOpen) {
-        if (!chartTrayOpen && !layerTrayOpen) {
+    LaunchedEffect(selectedMapId, menuTrayOpen) {
+        if (!menuTrayOpen) {
             withFrameNanos { }
             focusRequester.requestFocus()
         }
@@ -1376,7 +1380,7 @@ internal fun MapExplorerPage(
         }
     }
     fun mapInputBlockedAt(position: Offset): Boolean {
-        if (topLeftTrayOpen) {
+        if (menuTrayOpen) {
             return true
         }
         val mapBounds = mapSurfaceBounds ?: return false
@@ -1430,7 +1434,7 @@ internal fun MapExplorerPage(
                 true
             }
             .focusable()
-            .pointerInput(selectedMapId, surfaceSize, topLeftTrayOpen, mapSelection, mapSelectionTrayBounds, mapSurfaceBounds) {
+            .pointerInput(selectedMapId, surfaceSize, menuTrayOpen, mapSelection, mapSelectionTrayBounds, mapSurfaceBounds) {
                 if (surfaceWidthPx == 0f || surfaceHeightPx == 0f) {
                     return@pointerInput
                 }
@@ -1532,6 +1536,8 @@ internal fun MapExplorerPage(
                                 mapSelection = MapSelectionUiState(point = point, result = result, selectedItem = null)
                                 chartTrayOpen = false
                                 layerTrayOpen = false
+                                dataStatusTrayOpen = false
+                                situationTrayOpen = false
                             }.onFailure { error ->
                                 Log.w("AerobagSelection", "map selection failed", error)
                             }
@@ -1654,6 +1660,13 @@ internal fun MapExplorerPage(
                     top = situationDockTopPadding,
                     end = ThumbGap + MenuDockStyle.Situation.buttonWidth + ThumbGap,
                 ),
+            open = dataStatusTrayOpen,
+            onToggle = {
+                dataStatusTrayOpen = !dataStatusTrayOpen
+                situationTrayOpen = false
+                chartTrayOpen = false
+                layerTrayOpen = false
+            },
             onAction = { actionId ->
                 runCatching { uiSession.performStatusAction(actionId) }
                     .onSuccess(onSessionSnapshotChange)
@@ -1665,7 +1678,17 @@ internal fun MapExplorerPage(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(top = situationDockTopPadding, end = ThumbGap),
-            onSelectSource = onSelectOwnshipSource,
+            open = situationTrayOpen,
+            onToggle = {
+                situationTrayOpen = !situationTrayOpen
+                dataStatusTrayOpen = false
+                chartTrayOpen = false
+                layerTrayOpen = false
+            },
+            onSelectSource = { sourceId ->
+                situationTrayOpen = false
+                onSelectOwnshipSource(sourceId)
+            },
             onSituationControlInput = onSituationControlInput,
         )
 
@@ -1676,6 +1699,8 @@ internal fun MapExplorerPage(
                 onSelectPage(it)
                 chartTrayOpen = false
                 layerTrayOpen = false
+                dataStatusTrayOpen = false
+                situationTrayOpen = false
             },
             selectedLabel = selectedLauncher.launcherLabel,
             trayOptions = trayOptions,
@@ -1683,11 +1708,15 @@ internal fun MapExplorerPage(
             onToggle = {
                 chartTrayOpen = !chartTrayOpen
                 layerTrayOpen = false
+                dataStatusTrayOpen = false
+                situationTrayOpen = false
             },
             layerTrayOpen = layerTrayOpen,
             onToggleLayerTray = {
                 layerTrayOpen = !layerTrayOpen
                 chartTrayOpen = false
+                dataStatusTrayOpen = false
+                situationTrayOpen = false
             },
             layerOptions = layerTrayOptions,
             chartSearchText = chartSearchText,
@@ -1738,10 +1767,12 @@ internal fun MapExplorerPage(
             },
         )
 
-        if (topLeftTrayOpen) {
+        if (menuTrayOpen) {
             Scrim {
                 chartTrayOpen = false
                 layerTrayOpen = false
+                dataStatusTrayOpen = false
+                situationTrayOpen = false
             }
         }
 

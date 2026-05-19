@@ -1300,17 +1300,18 @@ internal fun sameMapViewport(left: MapViewportState, right: MapViewportState): B
 internal fun SituationStatusBadge(
     controls: OwnshipControlModel,
     modifier: Modifier = Modifier,
+    open: Boolean,
+    onToggle: () -> Unit,
     onSelectSource: (String) -> Unit = {},
     onSituationControlInput: (SituationControlInput) -> Unit = {},
 ) {
-    var open by remember { mutableStateOf(false) }
     val trayColumnCount = max(controls.sources.size, controls.situationControls.size).coerceAtLeast(1)
     val trayWidth = (ThumbSize * trayColumnCount.toFloat()) + (3.dp * (trayColumnCount - 1).toFloat()) + 6.dp
     Box(modifier = modifier.wrapContentSize(unbounded = true, align = Alignment.TopEnd)) {
         MenuDock(
             launcherLabel = controls.launcherLabel,
             open = open,
-            onToggle = { open = !open },
+            onToggle = onToggle,
             style = MenuDockStyle.Situation,
             trayWidthOverride = trayWidth,
             options = emptyList(),
@@ -1318,7 +1319,6 @@ internal fun SituationStatusBadge(
                 SituationSourceRow(
                     sources = controls.sources,
                     onSelectSource = { sourceId ->
-                        open = false
                         onSelectSource(sourceId)
                     },
                 )
@@ -1337,12 +1337,13 @@ internal fun SituationStatusBadge(
 internal fun DataStatusBadge(
     dataStatusState: UiDataStatusState,
     modifier: Modifier = Modifier,
+    open: Boolean,
+    onToggle: () -> Unit,
     onAction: (String) -> Unit = {},
 ) {
     val hasStatus = dataStatusState.boxes.isNotEmpty()
     if (!hasStatus) return
 
-    var open by remember { mutableStateOf(false) }
     val cautionBoxes = dataStatusState.boxes.filter { it.drivesCaution }
     val activeCautionBoxes = cautionBoxes.filter { !it.hushed }
     val unHushedCount = activeCautionBoxes.size
@@ -1357,7 +1358,7 @@ internal fun DataStatusBadge(
         MenuDock(
             launcherLabel = launcherLabel,
             open = open,
-            onToggle = { open = !open },
+            onToggle = onToggle,
             style = MenuDockStyle.DataStatus,
             options = listOf(
                 MenuDockOption(
@@ -2360,9 +2361,8 @@ internal fun AerobagApp() {
         return
     }
     val fixture = runtimeFixture!!.getOrThrow()
-    val appCore = remember(fixture.vectorManifestJson, fixture.navKvStore) {
+    val appCore = remember(fixture.navKvStore) {
         NativeAppCoreAdapter(
-            fixture.vectorManifestJson,
             navKvStore = fixture.navKvStore,
         )
     }

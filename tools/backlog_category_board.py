@@ -312,7 +312,7 @@ def render_page(tasks: list[Task]) -> bytes:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Aerobag Backlog Categories</title>
+  <title>Bugs</title>
   <style>
     :root {{
       --bg: #d9edf8;
@@ -593,7 +593,7 @@ def render_page(tasks: list[Task]) -> bytes:
 </head>
 <body>
   <header>
-    <h1>Aerobag Bugs</h1>
+    <h1>Bugs</h1>
     <div class="titleEnd">{state_count_pills}</div>
   </header>
   <main class="board">{body}</main>

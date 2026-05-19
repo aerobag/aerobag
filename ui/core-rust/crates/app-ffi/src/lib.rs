@@ -1369,7 +1369,7 @@ fn return_byte_array(env: &mut JNIEnv, value: Result<Vec<u8>, String>) -> jbyteA
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_installCoreDebugLogger(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_installCoreDebugLogger(
     _env: JNIEnv,
     _class: JClass,
 ) {
@@ -1377,7 +1377,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ins
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_situationRingCandidatesJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_situationRingCandidatesJson(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
@@ -1389,7 +1389,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sit
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_planOfflinePackagesFromBundleJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_planOfflinePackagesFromBundleJson(
     mut env: JNIEnv,
     _class: JClass,
     input_json: JString,
@@ -1402,7 +1402,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_pla
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_initializeOfflinePackagesJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_initializeOfflinePackagesJson(
     mut env: JNIEnv,
     _class: JClass,
     input_json: JString,
@@ -1415,7 +1415,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ini
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_reduceOfflinePackagesJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_reduceOfflinePackagesJson(
     mut env: JNIEnv,
     _class: JClass,
     input_json: JString,
@@ -1428,7 +1428,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_red
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_createOfflinePackagesController(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_createOfflinePackagesController(
     mut env: JNIEnv,
     _class: JClass,
     packages_state_json: JString,
@@ -1447,7 +1447,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_cre
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_dispatchOfflinePackagesControllerJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_dispatchOfflinePackagesControllerJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1461,7 +1461,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_dis
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_destroyOfflinePackagesController(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_destroyOfflinePackagesController(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1472,7 +1472,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_des
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_emptyFlightPlanJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_emptyFlightPlanJson(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
@@ -1480,7 +1480,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_emp
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_prepareAirwayPresentationJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_prepareAirwayPresentationJson(
     mut env: JNIEnv,
     _class: JClass,
     airway_name: JString,
@@ -1504,7 +1504,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_pre
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_createUiSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_createUiSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     vector_manifest_json: JString,
@@ -1531,7 +1531,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_cre
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setRasterResourceModeInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setRasterResourceModeInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1545,7 +1545,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_set
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_performFlightPlanRowActionInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performFlightPlanRowActionInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1561,7 +1561,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_per
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_loadPlateProcedureInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_loadPlateProcedureInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1575,7 +1575,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_loa
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_activateNextLegInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_activateNextLegInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1585,7 +1585,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_act
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_suspendSequencingInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_suspendSequencingInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1595,7 +1595,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sus
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_unsuspendSequencingInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_unsuspendSequencingInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1605,7 +1605,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_uns
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sequenceActiveLegInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_sequenceActiveLegInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1615,7 +1615,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_seq
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_syncGuidanceGeometryInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_syncGuidanceGeometryInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1625,7 +1625,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_syn
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_projectFlightPlanRouteInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_projectFlightPlanRouteInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1635,7 +1635,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_pro
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_performMapSelectionActionInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performMapSelectionActionInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1649,7 +1649,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_per
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_insertWaypointAtFlightPlanRowInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_insertWaypointAtFlightPlanRowInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1671,7 +1671,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ins
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_suggestWaypointIdentifiersAtFlightPlanRowInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_suggestWaypointIdentifiersAtFlightPlanRowInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1695,7 +1695,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sug
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_previewFlightPlanEntryInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_previewFlightPlanEntryInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1709,7 +1709,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_pre
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_appendFlightPlanEntryInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_appendFlightPlanEntryInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1723,7 +1723,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_app
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_insertAirwayAtFlightPlanRowInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_insertAirwayAtFlightPlanRowInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1747,7 +1747,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ins
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_selectProcedureAtFlightPlanRowInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_selectProcedureAtFlightPlanRowInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1779,7 +1779,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sel
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_selectAirportInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_selectAirportInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1793,7 +1793,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sel
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_registerOwnshipSourceInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_registerOwnshipSourceInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1807,7 +1807,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_reg
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_registerOwnshipSourceInSessionPagedJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_registerOwnshipSourceInSessionPagedJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1821,7 +1821,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_reg
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_updateOwnshipSourceStatusInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_updateOwnshipSourceStatusInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1835,7 +1835,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_upd
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_updateOwnshipSourceStatusInSessionPagedJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_updateOwnshipSourceStatusInSessionPagedJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1849,7 +1849,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_upd
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_pushSituationSampleInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_pushSituationSampleInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1863,7 +1863,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_pus
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_pushSituationSampleInSessionPagedJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_pushSituationSampleInSessionPagedJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1877,7 +1877,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_pus
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_selectOwnshipSourceInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_selectOwnshipSourceInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1891,7 +1891,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sel
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_selectOwnshipSourceInSessionPagedJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_selectOwnshipSourceInSessionPagedJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1905,7 +1905,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sel
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_applySituationControlInputInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_applySituationControlInputInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1920,7 +1920,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_app
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_engageMapFollowInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_engageMapFollowInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1934,7 +1934,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_eng
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_disengageMapFollowInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_disengageMapFollowInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1948,7 +1948,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_dis
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setMapFollowOffsetInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setMapFollowOffsetInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1969,7 +1969,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_set
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_loadPlaybackTraceInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_loadPlaybackTraceInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1985,7 +1985,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_loa
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_playPlaybackInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_playPlaybackInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -1998,7 +1998,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_pla
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_pausePlaybackInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_pausePlaybackInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2011,7 +2011,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_pau
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_seekPlaybackInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_seekPlaybackInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2025,7 +2025,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_see
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setPlaybackRateInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setPlaybackRateInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2039,7 +2039,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_set
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_tickPlaybackInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_tickPlaybackInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2052,7 +2052,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_tic
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_selectChartInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_selectChartInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2066,7 +2066,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sel
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setMapLayerVisibilityInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setMapLayerVisibilityInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2081,7 +2081,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_set
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setMapLayerEnabledInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setMapLayerEnabledInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2096,7 +2096,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_set
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setDebugFlagInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setDebugFlagInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2111,7 +2111,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_set
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_loadRasterMapCatalogInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_loadRasterMapCatalogInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2121,7 +2121,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_loa
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_selectMapFamilyInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_selectMapFamilyInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2135,7 +2135,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sel
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_selectRasterMapInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_selectRasterMapInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2149,7 +2149,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sel
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getSessionSnapshotJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getSessionSnapshotJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2158,7 +2158,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_restoreChartPageStateInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_restoreChartPageStateInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2181,7 +2181,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_res
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ingestPointTilesInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_ingestPointTilesInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2195,7 +2195,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ing
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ingestAirspaceRefTilesInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_ingestAirspaceRefTilesInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2209,7 +2209,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ing
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ingestAirspaceFeaturesInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_ingestAirspaceFeaturesInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2223,7 +2223,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ing
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ingestAirspaceLabelTilesInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_ingestAirspaceLabelTilesInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2237,7 +2237,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ing
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ingestResourceInSession(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_ingestResourceInSession(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2253,7 +2253,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ing
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getMapOverlayInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getMapOverlayInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2269,7 +2269,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getMapOverlayInSessionWithPointDisplayScaleJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getMapOverlayInSessionWithPointDisplayScaleJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2292,7 +2292,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getMapSelectionInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getMapSelectionInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2310,7 +2310,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getMapSelectionInSessionWithPointDisplayScaleJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getMapSelectionInSessionWithPointDisplayScaleJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2336,7 +2336,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getTerrainOverlayInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getTerrainOverlayInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2352,7 +2352,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getRasterTilePlanInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getRasterTilePlanInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2368,7 +2368,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getNexradOverlayInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getNexradOverlayInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2378,7 +2378,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getRasterTilePlanInSessionWithOptionsJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getRasterTilePlanInSessionWithOptionsJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2401,7 +2401,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_renderTerrainOverlayTileInSession(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_renderTerrainOverlayTileInSession(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2424,7 +2424,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ren
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_renderTerrainOverlayTileByKeyInSession(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_renderTerrainOverlayTileByKeyInSession(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2447,7 +2447,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ren
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_nexradFrameBytesInSession(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_nexradFrameBytesInSession(
     mut env: JNIEnv,
     _class: JClass,
     _handle: i64,
@@ -2458,7 +2458,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_nex
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_renderTerrainOverlayTilesInSession(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_renderTerrainOverlayTilesInSession(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2481,7 +2481,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ren
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_syncMapFollowInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_syncMapFollowInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2497,7 +2497,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_syn
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_destroySession(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_destroySession(
     _env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2506,7 +2506,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_des
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navDbOpenControllerCreate(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_navDbOpenControllerCreate(
     mut env: JNIEnv,
     _class: JClass,
     candidates_json: JString,
@@ -2523,7 +2523,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_nav
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navDbOpenControllerStep(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_navDbOpenControllerStep(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2532,7 +2532,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_nav
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navDbOpenControllerIngestResource(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_navDbOpenControllerIngestResource(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2550,7 +2550,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_nav
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navDbOpenControllerFinish(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_navDbOpenControllerFinish(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2559,7 +2559,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_nav
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navDbOpenControllerStatuses(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_navDbOpenControllerStatuses(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2571,7 +2571,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_nav
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navDbOpenControllerDestroy(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_navDbOpenControllerDestroy(
     _env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2580,7 +2580,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_nav
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navKvInsertResource(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_navKvInsertResource(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2598,7 +2598,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_nav
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navKvDestroy(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_navKvDestroy(
     _env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -2607,7 +2607,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_nav
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_attachNavKvStoreToSession(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_attachNavKvStoreToSession(
     mut env: JNIEnv,
     _class: JClass,
     nav_kv_handle: i64,
@@ -2621,7 +2621,7 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_att
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_coreHadOperation(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_coreHadOperation(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,

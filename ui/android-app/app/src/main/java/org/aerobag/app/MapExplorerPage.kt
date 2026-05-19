@@ -2406,22 +2406,29 @@ private fun RouteOverlayLayer(
     if (routeScreenSegments.isEmpty()) return
     Canvas(modifier = Modifier.fillMaxSize()) {
         routeScreenSegments.forEach { (path, segment) ->
-            path.zipWithNext().forEach { (from, to) ->
-                drawLine(
-                    color = Color(0x8C000000),
-                    start = from,
-                    end = to,
-                    strokeWidth = 7f * densityScale,
-                    cap = StrokeCap.Round,
-                )
-                drawLine(
-                    color = routeSegmentColor(uiTheme, segment.status),
-                    start = from,
-                    end = to,
-                    strokeWidth = 3.5f * densityScale,
-                    cap = StrokeCap.Round,
-                )
+            val first = path.firstOrNull() ?: return@forEach
+            val routePath = Path().apply {
+                moveTo(first.x, first.y)
+                path.drop(1).forEach { point -> lineTo(point.x, point.y) }
             }
+            drawPath(
+                path = routePath,
+                color = Color(0x8C000000),
+                style = Stroke(
+                    width = 7f * densityScale,
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round,
+                ),
+            )
+            drawPath(
+                path = routePath,
+                color = routeSegmentColor(uiTheme, segment.status),
+                style = Stroke(
+                    width = 3.5f * densityScale,
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round,
+                ),
+            )
         }
     }
 }

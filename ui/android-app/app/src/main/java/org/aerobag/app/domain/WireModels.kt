@@ -626,12 +626,6 @@ data class WireNavSymbolFeature(
 )
 
 @Serializable
-data class WireMapOverlayWarning(
-    val code: String,
-    val message: String,
-)
-
-@Serializable
 data class WireMapOverlayQueryResult(
     val visible_features: List<WireVisibleMapFeature>,
     val flight_plan_features: List<WireVisibleMapFeature> = emptyList(),
@@ -641,7 +635,6 @@ data class WireMapOverlayQueryResult(
     val tfr_paths: List<WireAirspaceDisplayPath> = emptyList(),
     val airspace_labels: List<WireAirspaceDisplayLabel> = emptyList(),
     val offline_regions: List<WireOfflineRegionDisplay> = emptyList(),
-    val warnings: List<WireMapOverlayWarning>,
 )
 
 @Serializable

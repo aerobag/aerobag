@@ -5,8 +5,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
-    core_debug_log, geometry::LatLon, great_circle_distance_nm, AppError, AppErrorKind, AppResult,
-    FlightPlan, FlightPlanRowActionId, MapViewport, NavRef, RouteComponentViewKind,
+    core_debug_log,
+    data_status::{DataStatusRecord, UiStatusSeverity},
+    geometry::LatLon,
+    great_circle_distance_nm, AppError, AppErrorKind, AppResult, FlightPlan, FlightPlanRowActionId,
+    MapViewport, NavRef, RouteComponentViewKind,
 };
 
 pub const VECTOR_DISPLAY_FEATURE_LIMIT: usize = 500;
@@ -597,12 +600,6 @@ pub struct NavSymbolFeature {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MapOverlayWarning {
-    pub code: String,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MapOverlayQueryResult {
     #[serde(skip)]
     pub needed_vector_tiles: Vec<VectorTileRequest>,
@@ -614,6 +611,8 @@ pub struct MapOverlayQueryResult {
     pub needed_metars: bool,
     #[serde(skip)]
     pub needed_tfrs: bool,
+    #[serde(skip)]
+    pub data_status_records: Vec<DataStatusRecord>,
     pub visible_features: Vec<VisibleMapFeature>,
     #[serde(default)]
     pub flight_plan_features: Vec<VisibleMapFeature>,
@@ -623,7 +622,6 @@ pub struct MapOverlayQueryResult {
     pub tfr_paths: Vec<AirspaceDisplayPath>,
     pub airspace_labels: Vec<AirspaceDisplayLabel>,
     pub offline_regions: Vec<OfflineRegionDisplay>,
-    pub warnings: Vec<MapOverlayWarning>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1379,18 +1377,6 @@ pub fn query_map_overlay_for_surface(
         }
     }
 
-    let warnings = if limit_hit {
-        vec![MapOverlayWarning {
-            code: "vector_display_feature_limit".to_string(),
-            message: format!(
-                "display capped at {} visible vector features",
-                VECTOR_DISPLAY_FEATURE_LIMIT
-            ),
-        }]
-    } else {
-        Vec::new()
-    };
-
     let airspace = if display_vectors {
         query_airspace_overlay(
             viewport,
@@ -1409,11 +1395,9 @@ pub fn query_map_overlay_for_surface(
             needed_features: Vec::new(),
             paths: Vec::new(),
             labels: Vec::new(),
-            warnings: Vec::new(),
+            data_status_records: Vec::new(),
         }
     };
-    let mut warnings = warnings;
-    warnings.extend(airspace.warnings);
     let tfrs = if display_vectors {
         query_tfr_overlay(
             viewport,
@@ -1448,10 +1432,11 @@ pub fn query_map_overlay_for_surface(
             needed_metars: false,
             visible_metars: Vec::new(),
             visible_pireps: Vec::new(),
-            warnings: Vec::new(),
+            data_status_records: Vec::new(),
         }
     };
-    warnings.extend(metars.warnings);
+    let mut data_status_records = airspace.data_status_records;
+    data_status_records.extend(metars.data_status_records);
 
     let mut airspace_labels = {
         let mut labels = airspace.labels;
@@ -1491,7 +1476,7 @@ pub fn query_map_overlay_for_surface(
             "airspace_paths": airspace.paths.len(),
             "airspace_labels": airspace_labels.len(),
             "tfr_paths": tfrs.paths.len(),
-            "warnings": warnings.iter().map(|warning| warning.code.as_str()).collect::<Vec<_>>(),
+            "data_status": data_status_records.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(),
         }),
     );
 
@@ -1501,6 +1486,7 @@ pub fn query_map_overlay_for_surface(
         needed_airspace_features: airspace.needed_features,
         needed_metars: metars.needed_metars,
         needed_tfrs: tfrs.needed_tfrs,
+        data_status_records,
         visible_features,
         flight_plan_features: Vec::new(),
         visible_metars: metars.visible_metars,
@@ -1509,7 +1495,6 @@ pub fn query_map_overlay_for_surface(
         tfr_paths: tfrs.paths,
         airspace_labels,
         offline_regions,
-        warnings,
     }
 }
 
@@ -1726,7 +1711,7 @@ struct MetarOverlayProjection {
     needed_metars: bool,
     visible_metars: Vec<VisibleMetarFeature>,
     visible_pireps: Vec<VisiblePirepFeature>,
-    warnings: Vec<MapOverlayWarning>,
+    data_status_records: Vec<DataStatusRecord>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1751,7 +1736,7 @@ fn query_metar_overlay(
             needed_metars: false,
             visible_metars: Vec::new(),
             visible_pireps: Vec::new(),
-            warnings: Vec::new(),
+            data_status_records: Vec::new(),
         };
     };
     let needed_metars = metar_payload.is_none();
@@ -1834,14 +1819,18 @@ fn query_metar_overlay(
             break;
         }
     }
-    let warnings = if limit_hit {
-        vec![MapOverlayWarning {
-            code: "metar_display_feature_limit".to_string(),
-            message: format!(
+    let data_status_records = if limit_hit {
+        vec![DataStatusRecord::new(
+            "map_overlay:metar_display_feature_limit",
+            "WX",
+            Some("LIMIT".to_string()),
+            UiStatusSeverity::Info,
+            false,
+            format!(
                 "display capped at {} visible weather features",
                 WEATHER_DISPLAY_FEATURE_LIMIT
             ),
-        }]
+        )]
     } else {
         Vec::new()
     };
@@ -1850,7 +1839,7 @@ fn query_metar_overlay(
         needed_metars,
         visible_metars,
         visible_pireps,
-        warnings,
+        data_status_records,
     }
 }
 
@@ -3765,7 +3754,7 @@ struct AirspaceOverlayProjection {
     needed_features: Vec<AirspaceFeatureRequest>,
     paths: Vec<AirspaceDisplayPath>,
     labels: Vec<AirspaceDisplayLabel>,
-    warnings: Vec<MapOverlayWarning>,
+    data_status_records: Vec<DataStatusRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -3819,7 +3808,7 @@ fn query_airspace_overlay(
             needed_features: Vec::new(),
             paths: Vec::new(),
             labels: Vec::new(),
-            warnings: Vec::new(),
+            data_status_records: Vec::new(),
         };
     }
 
@@ -3939,33 +3928,45 @@ fn query_airspace_overlay(
             .then_with(|| left.glyph.lower.cmp(&right.glyph.lower))
     });
 
-    let mut warnings = Vec::new();
+    let mut data_status_records = Vec::new();
     if limit_hit {
-        warnings.push(MapOverlayWarning {
-            code: "airspace_display_feature_limit".to_string(),
-            message: format!(
+        data_status_records.push(DataStatusRecord::new(
+            "map_overlay:airspace_display_feature_limit",
+            "AIRSPACE",
+            Some("LIMIT".to_string()),
+            UiStatusSeverity::Info,
+            false,
+            format!(
                 "display capped at {} visible airspace features",
                 AIRSPACE_DISPLAY_FEATURE_LIMIT
             ),
-        });
+        ));
     }
     if decoration_budget.limit_hit {
-        warnings.push(MapOverlayWarning {
-            code: "airspace_feather_limit".to_string(),
-            message: format!(
+        data_status_records.push(DataStatusRecord::new(
+            "map_overlay:airspace_feather_limit",
+            "AIRSPACE",
+            Some("LIMIT".to_string()),
+            UiStatusSeverity::Info,
+            false,
+            format!(
                 "display capped at {} airspace feather ticks",
                 AIRSPACE_FEATHER_LIMIT
             ),
-        });
+        ));
     }
     if decoration_budget.missing_interior_side > 0 || decoration_budget.invalid_interior_side > 0 {
-        warnings.push(MapOverlayWarning {
-            code: "airspace_interior_side_contract".to_string(),
-            message: format!(
+        data_status_records.push(DataStatusRecord::new(
+            "map_overlay:airspace_interior_side_contract",
+            "AIRSPACE",
+            Some("BAD DATA".to_string()),
+            UiStatusSeverity::Warning,
+            true,
+            format!(
                 "feathered airspace paths require interior_side; {} missing, {} invalid",
                 decoration_budget.missing_interior_side, decoration_budget.invalid_interior_side
             ),
-        });
+        ));
     }
 
     AirspaceOverlayProjection {
@@ -3973,7 +3974,7 @@ fn query_airspace_overlay(
         needed_features,
         paths,
         labels,
-        warnings,
+        data_status_records,
     }
 }
 
@@ -6218,9 +6219,9 @@ mod tests {
 
         assert!(result.airspace_paths[0].decorations.is_empty());
         assert!(result
-            .warnings
+            .data_status_records
             .iter()
-            .any(|warning| warning.code == "airspace_interior_side_contract"));
+            .any(|record| record.id == "map_overlay:airspace_interior_side_contract"));
     }
 
     #[test]
@@ -6449,7 +6450,7 @@ mod tests {
     }
 
     #[test]
-    fn caps_visible_features_and_warns() {
+    fn caps_visible_features() {
         let viewport = MapViewport {
             center: LatLon {
                 lat: 47.36,
@@ -6507,8 +6508,7 @@ mod tests {
             &HashMap::new(),
         );
         assert_eq!(result.visible_features.len(), VECTOR_DISPLAY_FEATURE_LIMIT);
-        assert_eq!(result.warnings.len(), 1);
-        assert_eq!(result.warnings[0].code, "vector_display_feature_limit");
+        assert!(result.data_status_records.is_empty());
     }
 
     #[test]

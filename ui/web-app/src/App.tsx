@@ -2554,7 +2554,6 @@ function MapPage(props: {
     tfr_paths: [],
     airspace_labels: [],
     offline_regions: [],
-    warnings: [],
   });
   const [nexradOverlay, setNexradOverlay] = useState<NexradOverlayQueryResult>({
     status: { state: "hidden" },
@@ -2602,7 +2601,6 @@ function MapPage(props: {
     detailModal: { title: string; text: string } | null;
   } | null>(null);
   const firstVisualReadyRef = useRef(false);
-  const lastOverlayWarningKeyRef = useRef("");
   const situationDockLowered = shouldLowerSituationDock(surfaceSize.width);
   const flightDataBannerEdgeLayout = surfaceSize.width > surfaceSize.height;
   const flightDataBannerEdgeColumnCount = flightDataBannerEdgeLayout
@@ -3224,30 +3222,12 @@ function MapPage(props: {
         tfr_paths: [],
         airspace_labels: [],
         offline_regions: [],
-        warnings: [],
       });
       return;
     }
     const session = uiSession;
     const controller = new AbortController();
     let cancelled = false;
-
-    function reportOverlayWarnings(overlay: MapOverlayQueryResult, phase: string) {
-      const warningKey = overlay.warnings.map((warning) => warning.code).sort().join(",");
-      if (!warningKey || warningKey === lastOverlayWarningKeyRef.current) {
-        if (!warningKey) {
-          lastOverlayWarningKeyRef.current = "";
-        }
-        return;
-      }
-      lastOverlayWarningKeyRef.current = warningKey;
-      onDebugWarning("map.overlay.warning", {
-        phase,
-        zoom: viewport.zoom,
-        visible_features: overlay.visible_features.length,
-        warnings: overlay.warnings,
-      });
-    }
 
     async function syncMapOverlay() {
       let overlay: MapOverlayQueryResult;
@@ -3276,9 +3256,7 @@ function MapPage(props: {
           visible_pireps: overlay.visible_pireps.length,
           airspace_paths: overlay.airspace_paths.length,
           airspace_labels: overlay.airspace_labels.length,
-          warnings: overlay.warnings.map((warning) => warning.code),
         });
-        reportOverlayWarnings(overlay, "initial");
         publishOverlay(overlay);
       } catch (error) {
         if (isInvalidUiSessionHandleError(error)) {
@@ -3315,7 +3293,6 @@ function MapPage(props: {
           tfr_paths: [],
           airspace_labels: [],
           offline_regions: [],
-          warnings: [],
         });
         setMapOverlayViewport(null);
       }

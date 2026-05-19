@@ -343,10 +343,6 @@ export type MapOverlayQueryResult = {
     label_x: number;
     label_y: number;
   }>;
-  warnings: Array<{
-    code: string;
-    message: string;
-  }>;
 };
 
 export type MapSelectionQueryResult = {

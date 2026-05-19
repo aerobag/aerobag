@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
         atomic::{AtomicU32, Ordering},
         Mutex, MutexGuard, OnceLock,
@@ -11,6 +11,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
     chart_ident_label_for_nav_ref_symbol,
     chart_page::airport_ids_from_plan,
+    data_status::{
+        parse_status_action_id, project_data_status_state, DataStatusRecord, UiDataStatusState,
+        UiStatusActionCommand, UiStatusSeverity,
+    },
     first_guidance_detail_index_for_leg, guidance_detail_id_for_index,
     guidance_detail_id_for_leg_element,
     had_ops::{
@@ -30,10 +34,10 @@ use crate::{
     AirspaceReferenceTilePayload, AirwayPresentationPlan, AppError, AppErrorKind, AppEvent,
     AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
     FlightPlanRowActionExecution, FlightPlanRowActionId, GuidanceState, LatLon, LegDisplayElement,
-    MapOverlayConfig, MapOverlayQueryResult, MapOverlayWarning, MapSelectionSessionAction,
-    MapSurfaceMetrics, MapViewport, MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery,
-    NavKvStore, NavRef, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity,
-    ProcedureKind, ProcedureLoadCommand, PublicationResolver, RasterMapCatalog, RasterResourceMode,
+    MapOverlayConfig, MapOverlayQueryResult, MapSelectionSessionAction, MapSurfaceMetrics,
+    MapViewport, MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore,
+    NavRef, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity, ProcedureKind,
+    ProcedureLoadCommand, PublicationResolver, RasterMapCatalog, RasterResourceMode,
     RasterTilePlan, ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode,
     SituationControlInput, SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult,
     TfrProductPayload, UiSnapshotAppState, VectorAggregateTilePayload, VectorIdentLabelStyle,
@@ -63,48 +67,6 @@ pub struct UiMapLayerState {
     pub nexrad: UiMapLayerToggleState,
     pub terrain_warning: UiMapLayerToggleState,
     pub offline_regions: UiMapLayerToggleState,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UiStatusSeverity {
-    Ok,
-    Info,
-    Caution,
-    Warning,
-    Unavailable,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UiStatusActionStyle {
-    Normal,
-    Hush,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiStatusAction {
-    pub id: String,
-    pub label: String,
-    pub enabled: bool,
-    pub style: UiStatusActionStyle,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiDataStatusBox {
-    pub id: String,
-    pub label: String,
-    pub value: Option<String>,
-    pub severity: UiStatusSeverity,
-    pub drives_caution: bool,
-    pub detail: String,
-    pub actions: Vec<UiStatusAction>,
-    pub hushed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiDataStatusState {
-    pub boxes: Vec<UiDataStatusBox>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -159,7 +121,7 @@ struct UiSession {
     nav_kv_store_id: Option<u32>,
     nav_kv_store: Option<NavKvStore>,
     map_layer_state: UiMapLayerState,
-    active_status_ids: BTreeSet<String>,
+    data_status_records: BTreeMap<String, DataStatusRecord>,
     hushed_status_ids: BTreeSet<String>,
     data_status_state: UiDataStatusState,
     debug_state: UiDebugState,
@@ -173,7 +135,6 @@ struct UiSession {
     taf_payload: Option<TafProductPayload>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<TfrProductPayload>,
-    overlay_resource_warnings: Vec<MapOverlayWarning>,
     terrain_source_tile_cache: HashMap<String, Vec<u8>>,
 }
 
@@ -269,74 +230,6 @@ const DEBUG_OWNSHIP_DRIVER_REPORTED_SPEED_SCALE: f64 = 0.1;
 const DEBUG_OWNSHIP_DRIVER_MAX_DT_SECONDS: f64 = 1.0;
 const DEBUG_OWNSHIP_DRIVER_WANDER_NM: f64 = 0.125;
 const DEBUG_OWNSHIP_DRIVER_OVERRUN_NM: f64 = 0.5;
-const VECTOR_DISPLAY_LIMIT_STATUS_ID: &str = "vector_display_feature_limit";
-const STATUS_HUSH_PREFIX: &str = "status:hush:";
-const STATUS_UNHUSH_PREFIX: &str = "status:unhush:";
-
-fn set_status_active(session: &mut UiSession, status_id: &str, active: bool) -> bool {
-    let changed = if active {
-        session.active_status_ids.insert(status_id.to_string())
-    } else {
-        session.active_status_ids.remove(status_id)
-    };
-    if changed {
-        refresh_status_projection(session);
-    }
-    changed
-}
-
-fn set_status_active_with_invalidation(
-    session: &mut UiSession,
-    status_id: &str,
-    active: bool,
-) -> Vec<UiInvalidation> {
-    if set_status_active(session, status_id, active) {
-        vec![UiInvalidation::SessionSnapshot]
-    } else {
-        Vec::new()
-    }
-}
-
-fn refresh_status_projection(session: &mut UiSession) {
-    session.data_status_state =
-        status_projection(&session.active_status_ids, &session.hushed_status_ids);
-}
-
-fn status_projection(
-    active_status_ids: &BTreeSet<String>,
-    hushed_status_ids: &BTreeSet<String>,
-) -> UiDataStatusState {
-    let mut boxes = Vec::new();
-    if active_status_ids.contains(VECTOR_DISPLAY_LIMIT_STATUS_ID) {
-        let hushed = hushed_status_ids.contains(VECTOR_DISPLAY_LIMIT_STATUS_ID);
-        let action = hush_action(VECTOR_DISPLAY_LIMIT_STATUS_ID, hushed);
-        boxes.push(UiDataStatusBox {
-            id: VECTOR_DISPLAY_LIMIT_STATUS_ID.to_string(),
-            label: "VECTORS".to_string(),
-            value: Some("LIMIT".to_string()),
-            severity: UiStatusSeverity::Caution,
-            drives_caution: true,
-            detail: "Vector display is capped; some visible vector features are hidden at this zoom or density.".to_string(),
-            actions: vec![action],
-            hushed,
-        });
-    }
-    UiDataStatusState { boxes }
-}
-
-fn hush_action(status_id: &str, hushed: bool) -> UiStatusAction {
-    let (prefix, label) = if hushed {
-        (STATUS_UNHUSH_PREFIX, "Unhush")
-    } else {
-        (STATUS_HUSH_PREFIX, "Hush")
-    };
-    UiStatusAction {
-        id: format!("{prefix}{status_id}"),
-        label: label.to_string(),
-        enabled: true,
-        style: UiStatusActionStyle::Hush,
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -389,6 +282,101 @@ fn lock_sessions() -> MutexGuard<'static, HashMap<u32, UiSession>> {
     sessions()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+const MAP_OVERLAY_STATUS_PREFIX: &str = "map_overlay:";
+const LIVE_FEED_METARS_STATUS_ID: &str = "live_feed:metars_unavailable";
+const LIVE_FEED_TFRS_STATUS_ID: &str = "live_feed:tfrs_unavailable";
+
+fn sync_data_status_projection(session: &mut UiSession) {
+    session.data_status_state =
+        project_data_status_state(&session.data_status_records, &session.hushed_status_ids);
+}
+
+fn upsert_data_status_record(session: &mut UiSession, record: DataStatusRecord) -> bool {
+    let changed = session
+        .data_status_records
+        .get(&record.id)
+        .is_none_or(|existing| existing != &record);
+    if changed {
+        session
+            .data_status_records
+            .insert(record.id.clone(), record);
+        sync_data_status_projection(session);
+    }
+    changed
+}
+
+fn clear_data_status_record(session: &mut UiSession, id: &str) -> bool {
+    let changed = session.data_status_records.remove(id).is_some();
+    if changed {
+        sync_data_status_projection(session);
+    }
+    changed
+}
+
+fn sync_map_overlay_status_records(
+    session: &mut UiSession,
+    records: Vec<DataStatusRecord>,
+) -> Vec<UiInvalidation> {
+    let mut changed = false;
+    let active_ids = records
+        .iter()
+        .map(|record| record.id.clone())
+        .collect::<BTreeSet<_>>();
+    let stale_ids = session
+        .data_status_records
+        .keys()
+        .filter(|id| id.starts_with(MAP_OVERLAY_STATUS_PREFIX) && !active_ids.contains(*id))
+        .cloned()
+        .collect::<Vec<_>>();
+    for id in stale_ids {
+        changed |= session.data_status_records.remove(&id).is_some();
+    }
+    for record in records {
+        changed |= session
+            .data_status_records
+            .get(&record.id)
+            .is_none_or(|existing| existing != &record);
+        session
+            .data_status_records
+            .insert(record.id.clone(), record);
+    }
+    if changed {
+        sync_data_status_projection(session);
+        vec![UiInvalidation::SessionSnapshot]
+    } else {
+        Vec::new()
+    }
+}
+
+fn live_feed_unavailable_status_record(product: &str, detail: String) -> DataStatusRecord {
+    match product {
+        "metars" => DataStatusRecord::new(
+            LIVE_FEED_METARS_STATUS_ID,
+            "METARS",
+            Some("UNAVAIL".to_string()),
+            UiStatusSeverity::Unavailable,
+            true,
+            detail,
+        ),
+        "tfrs" => DataStatusRecord::new(
+            LIVE_FEED_TFRS_STATUS_ID,
+            "TFRS",
+            Some("UNAVAIL".to_string()),
+            UiStatusSeverity::Unavailable,
+            true,
+            detail,
+        ),
+        _ => DataStatusRecord::new(
+            format!("live_feed:{product}_unavailable"),
+            product.to_ascii_uppercase(),
+            Some("UNAVAIL".to_string()),
+            UiStatusSeverity::Unavailable,
+            true,
+            detail,
+        ),
+    }
 }
 
 pub fn create_ui_session(
@@ -507,7 +495,7 @@ fn create_ui_session_inner(
             nav_kv_store_id: None,
             nav_kv_store: None,
             map_layer_state,
-            active_status_ids: BTreeSet::new(),
+            data_status_records: BTreeMap::new(),
             hushed_status_ids: BTreeSet::new(),
             data_status_state,
             debug_state,
@@ -521,7 +509,6 @@ fn create_ui_session_inner(
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
-            overlay_resource_warnings: Vec::new(),
             terrain_source_tile_cache: HashMap::new(),
         },
     );
@@ -1750,27 +1737,25 @@ pub fn perform_status_action_in_session(
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    if let Some(status_id) = action_id.strip_prefix(STATUS_HUSH_PREFIX) {
-        if !is_known_status_id(status_id) {
-            return Err(invalid_status_action(&action_id));
+    let command =
+        parse_status_action_id(&action_id).ok_or_else(|| invalid_status_action(&action_id))?;
+    match command {
+        UiStatusActionCommand::Hush(status_id) => {
+            if !session.data_status_records.contains_key(&status_id) {
+                return Err(invalid_status_action(&action_id));
+            }
+            session.hushed_status_ids.insert(status_id);
+            sync_data_status_projection(session);
         }
-        session.hushed_status_ids.insert(status_id.to_string());
-        refresh_status_projection(session);
-        return snapshot_for_session(session);
-    }
-    if let Some(status_id) = action_id.strip_prefix(STATUS_UNHUSH_PREFIX) {
-        if !is_known_status_id(status_id) {
-            return Err(invalid_status_action(&action_id));
+        UiStatusActionCommand::Unhush(status_id) => {
+            if !session.data_status_records.contains_key(&status_id) {
+                return Err(invalid_status_action(&action_id));
+            }
+            session.hushed_status_ids.remove(&status_id);
+            sync_data_status_projection(session);
         }
-        session.hushed_status_ids.remove(status_id);
-        refresh_status_projection(session);
-        return snapshot_for_session(session);
     }
-    Err(invalid_status_action(&action_id))
-}
-
-fn is_known_status_id(status_id: &str) -> bool {
-    matches!(status_id, VECTOR_DISPLAY_LIMIT_STATUS_ID)
+    snapshot_for_session(session)
 }
 
 fn invalid_status_action(action_id: &str) -> AppError {
@@ -2143,29 +2128,8 @@ pub fn ingest_tfrs_in_session(handle: u32, payload: &TfrProductPayload) -> AppRe
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.tfr_payload = Some(payload.clone());
-    clear_overlay_resource_warning(session, "tfr_resource_unavailable");
+    clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
     Ok(())
-}
-
-fn clear_overlay_resource_warning(session: &mut UiSession, code: &str) {
-    session
-        .overlay_resource_warnings
-        .retain(|warning| warning.code != code);
-}
-
-fn set_overlay_resource_warning(session: &mut UiSession, code: &str, message: String) {
-    if let Some(warning) = session
-        .overlay_resource_warnings
-        .iter_mut()
-        .find(|warning| warning.code == code)
-    {
-        warning.message = message;
-        return;
-    }
-    session.overlay_resource_warnings.push(MapOverlayWarning {
-        code: code.to_string(),
-        message,
-    });
 }
 
 pub fn ingest_tafs_in_session(handle: u32, payload: &TafProductPayload) -> AppResult<()> {
@@ -2233,15 +2197,17 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
                     session.map_overlay_config.metar_layer.as_ref(),
                 );
                 session.metar_payload = Some(payload);
-                clear_overlay_resource_warning(session, "live_feed_metars_unavailable");
+                clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
             }
             Err(err) => {
                 session.metar_tile_cache.clear();
                 session.metar_payload = None;
-                set_overlay_resource_warning(
+                upsert_data_status_record(
                     session,
-                    "live_feed_metars_unavailable",
-                    format!("METAR live feed unavailable: failed to parse state: {err}"),
+                    live_feed_unavailable_status_record(
+                        "metars",
+                        format!("METAR live feed unavailable: failed to parse state: {err}"),
+                    ),
                 );
             }
         }
@@ -2250,14 +2216,16 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
         match serde_json::from_value::<TfrProductPayload>(tfrs_value) {
             Ok(payload) => {
                 session.tfr_payload = Some(payload);
-                clear_overlay_resource_warning(session, "live_feed_tfrs_unavailable");
+                clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
             }
             Err(err) => {
                 session.tfr_payload = None;
-                set_overlay_resource_warning(
+                upsert_data_status_record(
                     session,
-                    "live_feed_tfrs_unavailable",
-                    format!("TFR live feed unavailable: failed to parse state: {err}"),
+                    live_feed_unavailable_status_record(
+                        "tfrs",
+                        format!("TFR live feed unavailable: failed to parse state: {err}"),
+                    ),
                 );
             }
         }
@@ -2547,8 +2515,7 @@ pub fn get_map_overlay_in_session_with_point_display_scale(
         && !session.map_layer_state.metars.visible
         && !session.map_layer_state.offline_regions.visible
     {
-        let invalidations =
-            set_status_active_with_invalidation(session, VECTOR_DISPLAY_LIMIT_STATUS_ID, false);
+        let invalidations = sync_map_overlay_status_records(session, Vec::new());
         return Ok(HadOperationOutcome::complete_with_invalidations(
             serde_json::to_value(empty_map_overlay_query()).map_err(internal_json_error)?,
             invalidations,
@@ -2599,17 +2566,8 @@ pub fn get_map_overlay_in_session_with_point_display_scale(
     if !resources.is_empty() {
         return Ok(HadOperationOutcome::NeedResources { resources });
     }
-    overlay
-        .warnings
-        .extend(session.overlay_resource_warnings.iter().cloned());
-    let invalidations = set_status_active_with_invalidation(
-        session,
-        VECTOR_DISPLAY_LIMIT_STATUS_ID,
-        overlay
-            .warnings
-            .iter()
-            .any(|warning| warning.code == VECTOR_DISPLAY_LIMIT_STATUS_ID),
-    );
+    let invalidations =
+        sync_map_overlay_status_records(session, std::mem::take(&mut overlay.data_status_records));
     Ok(HadOperationOutcome::complete_with_invalidations(
         serde_json::to_value(overlay).map_err(internal_json_error)?,
         invalidations,
@@ -3823,6 +3781,7 @@ fn empty_map_overlay_query() -> MapOverlayQueryResult {
         needed_airspace_features: Vec::new(),
         needed_metars: false,
         needed_tfrs: false,
+        data_status_records: Vec::new(),
         visible_features: Vec::new(),
         flight_plan_features: Vec::new(),
         visible_metars: Vec::new(),
@@ -3831,7 +3790,6 @@ fn empty_map_overlay_query() -> MapOverlayQueryResult {
         tfr_paths: Vec::new(),
         airspace_labels: Vec::new(),
         offline_regions: Vec::new(),
-        warnings: Vec::new(),
     }
 }
 
@@ -5294,85 +5252,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn data_status_projection_keeps_hushed_items_visible_and_marks_caution_driver() {
-        let active_status_ids = BTreeSet::from([VECTOR_DISPLAY_LIMIT_STATUS_ID.to_string()]);
-        let data_status = status_projection(&active_status_ids, &BTreeSet::new());
-
-        assert_eq!(data_status.boxes.len(), 1);
-        assert_eq!(data_status.boxes[0].id, VECTOR_DISPLAY_LIMIT_STATUS_ID);
-        assert!(!data_status.boxes[0].hushed);
-        assert!(data_status.boxes[0].drives_caution);
-
-        let hushed_data_status = status_projection(
-            &active_status_ids,
-            &BTreeSet::from([VECTOR_DISPLAY_LIMIT_STATUS_ID.to_string()]),
-        );
-
-        assert_eq!(hushed_data_status.boxes.len(), 1);
-        assert!(hushed_data_status.boxes[0].hushed);
-        assert!(hushed_data_status.boxes[0].drives_caution);
-    }
-
-    #[test]
-    fn status_activation_invalidates_session_snapshot_only_on_change() {
-        let mut session = UiSession {
-            app_state: register_default_situation_sources(AppState::default()).expect("app state"),
-            playback: PlaybackSessionState::default(),
-            plan_preview: PlanPreviewState::default(),
-            debug_ownship_driver: DebugOwnshipDriverState::default(),
-            map_follow: MapFollowSessionState::default(),
-            guidance_leg_geometry: HashMap::new(),
-            map_overlay_config: map_overlay_config_from_vector_manifest_json(
-                minimal_vector_manifest_json(),
-            )
-            .expect("bootstrap manifest"),
-            vector_manifest_loaded: false,
-            chart_page_state: derive_compact_chart_page_state(
-                &FlightPlan::default(),
-                &[],
-                None,
-                None,
-            ),
-            nav_kv_store_id: None,
-            nav_kv_store: None,
-            map_layer_state: default_map_layer_state(),
-            active_status_ids: BTreeSet::new(),
-            hushed_status_ids: BTreeSet::new(),
-            data_status_state: default_data_status_state(),
-            debug_state: default_debug_state(),
-            raster_resource_mode: RasterResourceMode::InstalledPackage,
-            publication_resolver: PublicationResolver::new("/packages"),
-            live_feeds: LiveFeedsState::default(),
-            raster_map_catalog: None,
-            vector_tile_cache: HashMap::new(),
-            metar_tile_cache: HashMap::new(),
-            metar_payload: None,
-            taf_payload: None,
-            airspace_feature_cache: HashMap::new(),
-            tfr_payload: None,
-            overlay_resource_warnings: Vec::new(),
-            terrain_source_tile_cache: HashMap::new(),
-        };
-
-        assert_eq!(
-            set_status_active_with_invalidation(&mut session, VECTOR_DISPLAY_LIMIT_STATUS_ID, true,),
-            vec![UiInvalidation::SessionSnapshot],
-        );
-        assert_eq!(
-            set_status_active_with_invalidation(&mut session, VECTOR_DISPLAY_LIMIT_STATUS_ID, true,),
-            Vec::<UiInvalidation>::new(),
-        );
-        assert_eq!(
-            set_status_active_with_invalidation(
-                &mut session,
-                VECTOR_DISPLAY_LIMIT_STATUS_ID,
-                false,
-            ),
-            vec![UiInvalidation::SessionSnapshot],
-        );
-    }
-
     fn minimal_vector_manifest_json() -> &'static str {
         r#"{
             "point_layers": {},
@@ -5595,7 +5474,7 @@ mod tests {
             nav_kv_store_id: None,
             nav_kv_store: None,
             map_layer_state: default_map_layer_state(),
-            active_status_ids: BTreeSet::new(),
+            data_status_records: BTreeMap::new(),
             hushed_status_ids: BTreeSet::new(),
             data_status_state: default_data_status_state(),
             debug_state: default_debug_state(),
@@ -5609,7 +5488,6 @@ mod tests {
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
-            overlay_resource_warnings: Vec::new(),
             terrain_source_tile_cache: HashMap::new(),
         };
         let mut metars_by_station = HashMap::new();
@@ -5718,7 +5596,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_live_tfr_state_records_warning_without_failing_overlay() {
+    fn malformed_live_tfr_state_records_data_status_without_failing_overlay() {
         let mut session = UiSession {
             app_state: register_default_situation_sources(AppState::default()).expect("app state"),
             playback: PlaybackSessionState::default(),
@@ -5740,7 +5618,7 @@ mod tests {
             nav_kv_store_id: None,
             nav_kv_store: None,
             map_layer_state: default_map_layer_state(),
-            active_status_ids: BTreeSet::new(),
+            data_status_records: BTreeMap::new(),
             hushed_status_ids: BTreeSet::new(),
             data_status_state: default_data_status_state(),
             debug_state: default_debug_state(),
@@ -5754,7 +5632,6 @@ mod tests {
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
-            overlay_resource_warnings: Vec::new(),
             terrain_source_tile_cache: HashMap::new(),
         };
         let bad_tfr_state = serde_json::json!({
@@ -5835,10 +5712,10 @@ mod tests {
 
         assert!(session.tfr_payload.is_none());
         assert!(session
-            .overlay_resource_warnings
-            .iter()
-            .any(|warning| warning.code == "live_feed_tfrs_unavailable"
-                && warning.message.contains("summary_text")));
+            .data_status_records
+            .values()
+            .any(|record| record.id == LIVE_FEED_TFRS_STATUS_ID
+                && record.detail.contains("summary_text")));
     }
 
     fn complete_session_snapshot(outcome: HadOperationOutcome) -> UiSessionSnapshot {

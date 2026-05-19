@@ -177,11 +177,6 @@ data class NavSymbolFeature(
     val longestRunwayHeadingTrueDeg: Double?,
 )
 
-data class MapOverlayWarning(
-    val code: String,
-    val message: String,
-)
-
 enum class MapLayerId {
     WorldBasemap,
     Vectors,
@@ -278,7 +273,6 @@ data class MapOverlayQueryResult(
     val tfrPaths: List<AirspaceDisplayPath>,
     val airspaceLabels: List<AirspaceDisplayLabel>,
     val offlineRegions: List<OfflineRegionDisplay>,
-    val warnings: List<MapOverlayWarning>,
 )
 
 data class MapSelectionQueryResult(
@@ -2053,7 +2047,6 @@ private fun WireMapOverlayQueryResult.toUi() = MapOverlayQueryResult(
     tfrPaths = tfr_paths.map { it.toUi() },
     airspaceLabels = airspace_labels.map { it.toUi() },
     offlineRegions = offline_regions.map { it.toUi() },
-    warnings = warnings.map { it.toUi() },
 )
 
 private fun WireAirspaceFeatureRequest.toUi() = AirspaceFeatureRequest(
@@ -2271,11 +2264,6 @@ private fun NavSymbolFeature.toWire() = WireNavSymbolFeature(
     has_water_runway = hasWaterRunway,
     runway_length_ratio = runwayLengthRatio,
     longest_runway_heading_true_deg = longestRunwayHeadingTrueDeg,
-)
-
-private fun WireMapOverlayWarning.toUi() = MapOverlayWarning(
-    code = code,
-    message = message,
 )
 
 private fun WireAirwaySuggestion.toUi() = AirwaySuggestion(

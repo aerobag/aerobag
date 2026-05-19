@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod chart_page;
 pub mod content;
+pub mod data_status;
 pub mod debug_log;
 pub mod errors;
 pub mod flight_data;
@@ -32,6 +33,10 @@ pub use chart_page::{
 pub use content::{
     AvailabilityDetail, CachedPlate, CachedTileset, ContentAvailability, ContentInventory,
     ContentPolicy, ContentReport, ContentReportItem, ContentRequirement, InstalledPackage,
+};
+pub use data_status::{
+    DataStatusRecord, UiDataStatusBox, UiDataStatusState, UiStatusAction, UiStatusActionStyle,
+    UiStatusSeverity,
 };
 pub use debug_log::{core_debug_log, core_debug_log_value, set_core_debug_logger, CoreDebugLogger};
 pub use errors::{AppError, AppErrorKind, AppResult};
@@ -64,12 +69,12 @@ pub use map_overlay::{
     AirspaceDisplayStyle, AirspaceDisplaySubpath, AirspaceFeaturePath, AirspaceFeaturePayload,
     AirspaceFeatureRequest, AirspaceLabelRecord, AirspaceLabelTilePayload,
     AirspaceReferenceTilePayload, AirspaceScreenPoint, MapOverlayConfig, MapOverlayQueryResult,
-    MapOverlayWarning, MapSelectionAction, MapSelectionCategory, MapSelectionHighlight,
-    MapSelectionItem, MapSelectionQueryResult, MapSelectionSessionAction, MapSurfaceMetrics,
-    MetarProductPayload, MetarRecord, MetarTilePayload, NavSymbolFeature, ObstacleOverlayContext,
-    OfflineRegionCatalog, OfflineRegionDisplay, OfflineRegionRecord, OverlaySurfaceDecision,
-    PirepRecord, PointTilePayload, PointVectorRecord, TafProductPayload, TafRecord,
-    TfrAltitudeLimit, TfrAreaPayload, TfrLatLonPoint, TfrProductPayload, TfrScheduleFragment,
+    MapSelectionAction, MapSelectionCategory, MapSelectionHighlight, MapSelectionItem,
+    MapSelectionQueryResult, MapSelectionSessionAction, MapSurfaceMetrics, MetarProductPayload,
+    MetarRecord, MetarTilePayload, NavSymbolFeature, ObstacleOverlayContext, OfflineRegionCatalog,
+    OfflineRegionDisplay, OfflineRegionRecord, OverlaySurfaceDecision, PirepRecord,
+    PointTilePayload, PointVectorRecord, TafProductPayload, TafRecord, TfrAltitudeLimit,
+    TfrAreaPayload, TfrLatLonPoint, TfrProductPayload, TfrScheduleFragment,
     VectorAggregateTilePayload, VectorIdentLabelStyle, VectorTileRequest, VisibleMapFeature,
     VisibleMetarFeature, VisiblePirepFeature, AIRSPACE_DISPLAY_FEATURE_LIMIT,
     VECTOR_DISPLAY_FEATURE_LIMIT,
@@ -185,8 +190,7 @@ pub use session::{
     tick_debug_ownship_driver_in_session_outcome, tick_playback_in_session,
     unsuspend_sequencing_in_session, update_ownship_source_status_in_session,
     update_ownship_source_status_in_session_outcome, GuidanceLegGeometry, UiChartPageState,
-    UiDataStatusBox, UiDataStatusState, UiDebugState, UiMapLayerState, UiMapLayerToggleState,
-    UiSessionInitResult, UiSessionSnapshot, UiStatusAction, UiStatusActionStyle, UiStatusSeverity,
+    UiDebugState, UiMapLayerState, UiMapLayerToggleState, UiSessionInitResult, UiSessionSnapshot,
 };
 pub use situation::{Situation, SituationPosition};
 pub use state::{

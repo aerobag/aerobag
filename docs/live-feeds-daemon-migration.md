@@ -110,15 +110,24 @@ Publication ordering is part of the contract:
   fixture timelines can be replayed as accelerated `UpstreamSource` events with
   phase-shifted wall-clock timing.
 - Done: `aerobag-live-feedsd` exists as the daemon package and binary. It owns
-  static live-feed file serving and an in-process SSE broker. Daemon tests use
-  shared publisher output and verify shared publish ticks announce through that
-  broker.
+  static live-feed file serving, an in-process SSE broker, the production
+  polling loop, and the accelerated simulation loop. Production pollers build
+  METARs, NEXRAD source-grid tiles, TFRs, winds aloft, and obstacles through
+  `preprocessor-live-feeds` builders, publish via the shared filesystem
+  publisher, and announce through the broker after publication.
+- Done: source adapters now cover periodic polling, queued/push-style upstream
+  events for future streaming sources, and fixture timeline replay. Future
+  SWIM/NOTAM-style long-lived upstream clients should push `UpstreamEvent`s
+  into `QueuedLiveFeedSource` and reuse the same product builder/publisher path.
+- Done: reusable live-feed product helpers moved out of the CLI layer into
+  `preprocessor-live-feeds::products`. The CLI tests that still exercise
+  product-build interactions import those helpers instead of carrying local
+  duplicate NEXRAD/winds/state-building code.
 - Done: Vite no longer synthesizes live-feed timelines or SSE frames. In dev,
   `restart-vite-dev.sh` starts `aerobag-live-feedsd` beside Vite and proxies
   `/live-feeds`.
 - Done: the `preprocessor-cli update-live-feeds` operational command and its
   CLI-owned batch builder bridge have been removed.
-- Next slices: wire production pollers/streaming upstreams into the daemon loop
-  and replace remaining test-only live-feed fixtures in
-  `preprocessor-cli/src/product_build.rs` with library-level test harnesses when
-  those tests move.
+- Next slices: relocate the remaining CLI-hosted integration tests themselves
+  into `preprocessor-live-feeds` or a daemon harness, and add a production
+  supervision/deployment wrapper when deployment policy is chosen.

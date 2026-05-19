@@ -9,6 +9,8 @@ anyhow.workspace = true
 chrono.workspace = true
 image.workspace = true
 preprocessor-core = { path = "../preprocessor-core" }
+preprocessor-fetch = { path = "../preprocessor-fetch" }
+preprocessor-vectors = { path = "../preprocessor-vectors" }
 preprocessor-zip = { path = "../preprocessor-zip" }
 quick-xml.workspace = true
 roxmltree.workspace = true

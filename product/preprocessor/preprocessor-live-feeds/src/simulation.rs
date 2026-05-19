@@ -1,7 +1,19 @@
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
 use anyhow::{bail, Context};
 use chrono::{DateTime, Duration, Utc};
 
-use crate::engine::{CompiledFixtureEvent, CompiledFixtureTimeline, UpstreamEvent, UpstreamSource};
+use crate::{
+    engine::{
+        read_json_value, BuiltLiveFeedState, CompiledFixtureEvent, CompiledFixtureTimeline,
+        CycleDataProvider, DeltaPolicy, LiveFeedVersionManifest, ProductBuilder, UpstreamEvent,
+        UpstreamSource,
+    },
+    products::{directory_live_feed_state, json_live_feed_state, live_nexrad_tile_count},
+};
 
 #[derive(Debug, Clone)]
 pub struct SimulationClockMap {
@@ -119,6 +131,220 @@ pub fn fixture_source_start(timeline: &CompiledFixtureTimeline) -> anyhow::Resul
         .map(|event| event.observed_at_utc)
         .min()
         .context("fixture timeline has no events")
+}
+
+#[derive(Debug, Clone)]
+pub struct CompiledFixtureStateBuilder {
+    fixture_root: PathBuf,
+    product_id: String,
+}
+
+impl CompiledFixtureStateBuilder {
+    pub fn new(fixture_root: impl Into<PathBuf>, product_id: impl Into<String>) -> Self {
+        Self {
+            fixture_root: fixture_root.into(),
+            product_id: product_id.into(),
+        }
+    }
+}
+
+impl ProductBuilder for CompiledFixtureStateBuilder {
+    fn product_id(&self) -> &str {
+        &self.product_id
+    }
+
+    fn build_state(
+        &self,
+        event: &UpstreamEvent,
+        _scratch_dir: &Path,
+        _cycle_data: &dyn CycleDataProvider,
+    ) -> anyhow::Result<BuiltLiveFeedState> {
+        if event.product != self.product_id {
+            bail!(
+                "fixture builder for {} received {} event",
+                self.product_id,
+                event.product
+            );
+        }
+        let version_manifest_path = self
+            .fixture_root
+            .join("versions")
+            .join(&event.product)
+            .join(format!("{}.json", event.source_id));
+        let manifest: LiveFeedVersionManifest = serde_json::from_slice(
+            &fs::read(&version_manifest_path)
+                .with_context(|| format!("failed to read {}", version_manifest_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", version_manifest_path.display()))?;
+        let state_path = self.fixture_root.join(&manifest.state.url);
+        let state_value = read_json_value(&state_path)?;
+        if state_path.file_name().and_then(|name| name.to_str()) == Some("manifest.json")
+            && state_path.parent().is_some_and(Path::is_dir)
+        {
+            let state_root = state_path
+                .parent()
+                .context("directory state manifest has no parent")?
+                .to_path_buf();
+            let count = if event.product == "nexrad" {
+                live_nexrad_tile_count(&state_value)?
+            } else {
+                1
+            };
+            return Ok(directory_live_feed_state(
+                &event.product,
+                event.source_id.clone(),
+                state_root,
+                state_path,
+                state_value,
+                count,
+            ));
+        }
+        let (delta_policy, count) = match event.product.as_str() {
+            "metars" => (
+                DeltaPolicy::KeyedRecords {
+                    records_key: "metars_by_station".to_string(),
+                    count_key: Some("metar_count".to_string()),
+                },
+                json_count(&state_value, "metar_count", "metars_by_station"),
+            ),
+            "obstacles" => (
+                DeltaPolicy::KeyedRecords {
+                    records_key: "obstacles_by_id".to_string(),
+                    count_key: Some("obstacle_count".to_string()),
+                },
+                json_count(&state_value, "obstacle_count", "obstacles_by_id"),
+            ),
+            "tfrs" => (
+                DeltaPolicy::None,
+                state_value
+                    .get("areas")
+                    .and_then(serde_json::Value::as_array)
+                    .map_or(0, Vec::len),
+            ),
+            "winds-aloft" => (
+                DeltaPolicy::None,
+                state_value
+                    .get("files")
+                    .and_then(serde_json::Value::as_array)
+                    .map_or(0, Vec::len),
+            ),
+            _ => (DeltaPolicy::None, 1),
+        };
+        Ok(json_live_feed_state(
+            &event.product,
+            event.source_id.clone(),
+            state_path,
+            state_value,
+            delta_policy,
+            count,
+        ))
+    }
+}
+
+pub fn timeline_from_live_feed_root(
+    fixture_root: &Path,
+    fixture_id: impl Into<String>,
+) -> anyhow::Result<CompiledFixtureTimeline> {
+    if fixture_root.join("timeline.json").is_file() {
+        let path = fixture_root.join("timeline.json");
+        return serde_json::from_slice(
+            &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", path.display()));
+    }
+    let versions_root = fixture_root.join("versions");
+    if !versions_root.is_dir() {
+        bail!(
+            "fixture root {} has neither timeline.json nor versions/",
+            fixture_root.display()
+        );
+    }
+    let mut events = Vec::new();
+    let mut ordinal = 0_i64;
+    for product_entry in sorted_read_dir(&versions_root)? {
+        if !product_entry.file_type()?.is_dir() {
+            continue;
+        }
+        let product = product_entry.file_name().to_string_lossy().into_owned();
+        for version_entry in sorted_read_dir(&product_entry.path())? {
+            let file_name = version_entry.file_name().to_string_lossy().into_owned();
+            if !file_name.ends_with(".json") || !version_entry.file_type()?.is_file() {
+                continue;
+            }
+            let version_manifest_path = version_entry.path();
+            let manifest: LiveFeedVersionManifest =
+                serde_json::from_slice(&fs::read(&version_manifest_path).with_context(|| {
+                    format!("failed to read {}", version_manifest_path.display())
+                })?)
+                .with_context(|| format!("failed to parse {}", version_manifest_path.display()))?;
+            let state_path = fixture_root.join(&manifest.state.url);
+            let state_value = read_json_value(&state_path)?;
+            let observed_at_utc = live_state_observed_at(&state_value)
+                .unwrap_or_else(|| fallback_fixture_time(ordinal));
+            ordinal += 1;
+            events.push(CompiledFixtureEvent {
+                product: product.clone(),
+                version: manifest.version.clone(),
+                observed_at_utc,
+                version_manifest_url: format!("versions/{product}/{file_name}"),
+                state_url: manifest.state.url,
+                state_sha256: manifest.state.state_sha256,
+            });
+        }
+    }
+    events.sort_by(|left, right| {
+        (left.observed_at_utc, &left.product, &left.version).cmp(&(
+            right.observed_at_utc,
+            &right.product,
+            &right.version,
+        ))
+    });
+    Ok(CompiledFixtureTimeline {
+        schema_version: 1,
+        fixture_id: fixture_id.into(),
+        events,
+    })
+}
+
+fn json_count(value: &serde_json::Value, count_key: &str, records_key: &str) -> usize {
+    value
+        .get(count_key)
+        .and_then(serde_json::Value::as_u64)
+        .map(|count| count as usize)
+        .or_else(|| {
+            value
+                .get(records_key)
+                .and_then(serde_json::Value::as_object)
+                .map(serde_json::Map::len)
+        })
+        .unwrap_or(0)
+}
+
+fn live_state_observed_at(value: &serde_json::Value) -> Option<DateTime<Utc>> {
+    for key in ["observed_at_utc", "generated_at_utc"] {
+        if let Some(text) = value.get(key).and_then(serde_json::Value::as_str) {
+            if let Ok(time) = DateTime::parse_from_rfc3339(text) {
+                return Some(time.with_timezone(&Utc));
+            }
+        }
+    }
+    None
+}
+
+fn fallback_fixture_time(ordinal: i64) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+        .expect("static timestamp is valid")
+        .with_timezone(&Utc)
+        + Duration::minutes(ordinal)
+}
+
+fn sorted_read_dir(path: &Path) -> anyhow::Result<Vec<fs::DirEntry>> {
+    let mut entries = fs::read_dir(path)
+        .with_context(|| format!("failed to read {}", path.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    Ok(entries)
 }
 
 #[cfg(test)]

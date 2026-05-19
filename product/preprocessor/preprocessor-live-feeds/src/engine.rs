@@ -2,6 +2,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
+    sync::{
+        mpsc::{self, Receiver, Sender, TryRecvError},
+        Arc, Mutex,
+    },
     time::{Duration as StdDuration, SystemTime},
 };
 
@@ -48,6 +52,111 @@ pub trait CycleDataProvider {
 pub trait UpstreamSource {
     fn product_id(&self) -> &str;
     fn poll_due(&mut self, now: DateTime<Utc>) -> anyhow::Result<Vec<UpstreamEvent>>;
+}
+
+#[derive(Debug, Clone)]
+pub struct IntervalLiveFeedSource {
+    product_id: String,
+    interval: StdDuration,
+    last_polled_at_utc: Option<DateTime<Utc>>,
+}
+
+impl IntervalLiveFeedSource {
+    pub fn new(product_id: impl Into<String>, interval: StdDuration) -> Self {
+        Self {
+            product_id: product_id.into(),
+            interval,
+            last_polled_at_utc: None,
+        }
+    }
+}
+
+impl UpstreamSource for IntervalLiveFeedSource {
+    fn product_id(&self) -> &str {
+        &self.product_id
+    }
+
+    fn poll_due(&mut self, now: DateTime<Utc>) -> anyhow::Result<Vec<UpstreamEvent>> {
+        let due = self
+            .last_polled_at_utc
+            .map(|last| {
+                now.signed_duration_since(last)
+                    .to_std()
+                    .map(|elapsed| elapsed >= self.interval)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(true);
+        if !due {
+            return Ok(Vec::new());
+        }
+        self.last_polled_at_utc = Some(now);
+        Ok(vec![UpstreamEvent {
+            product: self.product_id.clone(),
+            source_id: format!(
+                "{}:{}",
+                self.product_id,
+                now.to_rfc3339_opts(SecondsFormat::Secs, true)
+            ),
+            observed_at_utc: now,
+            payload_path: None,
+        }])
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct QueuedLiveFeedSource {
+    product_id: String,
+    sender: Sender<UpstreamEvent>,
+    receiver: Arc<Mutex<Receiver<UpstreamEvent>>>,
+}
+
+impl QueuedLiveFeedSource {
+    pub fn new(product_id: impl Into<String>) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        Self {
+            product_id: product_id.into(),
+            sender,
+            receiver: Arc::new(Mutex::new(receiver)),
+        }
+    }
+
+    pub fn sender(&self) -> Sender<UpstreamEvent> {
+        self.sender.clone()
+    }
+
+    pub fn push(&self, event: UpstreamEvent) -> anyhow::Result<()> {
+        if event.product != self.product_id {
+            bail!(
+                "cannot queue {} event in {} source",
+                event.product,
+                self.product_id
+            );
+        }
+        self.sender
+            .send(event)
+            .context("failed to queue live-feed upstream event")
+    }
+}
+
+impl UpstreamSource for QueuedLiveFeedSource {
+    fn product_id(&self) -> &str {
+        &self.product_id
+    }
+
+    fn poll_due(&mut self, _now: DateTime<Utc>) -> anyhow::Result<Vec<UpstreamEvent>> {
+        let receiver = self
+            .receiver
+            .lock()
+            .map_err(|_| anyhow::anyhow!("live-feed upstream queue poisoned"))?;
+        let mut events = Vec::new();
+        loop {
+            match receiver.try_recv() {
+                Ok(event) => events.push(event),
+                Err(TryRecvError::Empty) => return Ok(events),
+                Err(TryRecvError::Disconnected) => return Ok(events),
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -160,6 +269,7 @@ pub struct LiveFeedRecordDelta {
 pub struct PublishedLiveFeedUpdate {
     pub product: String,
     pub version: String,
+    pub unchanged: bool,
     pub state_path: PathBuf,
     pub version_manifest_path: PathBuf,
     pub version_manifest_url: String,
@@ -223,6 +333,28 @@ pub trait LiveFeedPollingTask {
         scratch_dir: &Path,
         cycle_data: &dyn CycleDataProvider,
     ) -> anyhow::Result<BuiltLiveFeedState>;
+}
+
+impl<T> LiveFeedPollingTask for Box<T>
+where
+    T: LiveFeedPollingTask + ?Sized,
+{
+    fn product_id(&self) -> &str {
+        (**self).product_id()
+    }
+
+    fn poll_due(&mut self, now: DateTime<Utc>) -> anyhow::Result<Vec<UpstreamEvent>> {
+        (**self).poll_due(now)
+    }
+
+    fn build_state(
+        &self,
+        event: &UpstreamEvent,
+        scratch_dir: &Path,
+        cycle_data: &dyn CycleDataProvider,
+    ) -> anyhow::Result<BuiltLiveFeedState> {
+        (**self).build_state(event, scratch_dir, cycle_data)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -388,6 +520,9 @@ where
             return None;
         }
     };
+    if update.unchanged {
+        return Some(update);
+    }
     let invalidation = live_feed_invalidation_from_update(&update);
     if let Err(error) = broker.announce(invalidation) {
         failures.push(FailedLiveFeedTask {
@@ -582,6 +717,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                 return Ok(PublishedLiveFeedUpdate {
                     product,
                     version,
+                    unchanged: true,
                     state_path,
                     version_manifest_path: self.root.join(&previous.version_manifest_url),
                     version_manifest_url: previous.version_manifest_url.clone(),
@@ -690,6 +826,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         Ok(PublishedLiveFeedUpdate {
             product,
             version,
+            unchanged: false,
             state_path,
             version_manifest_path,
             version_manifest_url,
@@ -1224,6 +1361,94 @@ mod tests {
             .expect("current")
             .products
             .contains_key("metars"));
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_version_publish_does_not_reannounce() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let live_root = temp.path().join("live-feeds");
+        let publisher = FileLiveFeedPublisher::new(
+            live_root.clone(),
+            FixedClock::new(Utc.with_ymd_and_hms(2026, 5, 18, 4, 5, 6).unwrap()),
+        );
+        let broker = RecordingBroker::default();
+        let mut products = vec![StaticProductTask::state(
+            "metars",
+            json_state(
+                temp.path(),
+                "metars",
+                "metars-v1",
+                "v1",
+                "records",
+                &[("A", 1)],
+            )?,
+        )];
+
+        let first = run_live_feed_publish_tick(&mut products, &publisher, &broker);
+        assert!(first.failures.is_empty());
+        assert_eq!(first.published.len(), 1);
+        assert!(!first.published[0].unchanged);
+        assert_eq!(broker.events().len(), 1);
+
+        let mut products = vec![StaticProductTask::state(
+            "metars",
+            json_state(
+                temp.path(),
+                "metars",
+                "metars-v1-again",
+                "v1",
+                "records",
+                &[("A", 1)],
+            )?,
+        )];
+        let second = run_live_feed_publish_tick(&mut products, &publisher, &broker);
+
+        assert!(second.failures.is_empty());
+        assert_eq!(second.published.len(), 1);
+        assert!(second.published[0].unchanged);
+        assert_eq!(
+            broker.events().len(),
+            1,
+            "unchanged states should not emit duplicate SSE invalidations"
+        );
+        assert_eq!(
+            read_live_feeds_current(&live_root)?
+                .expect("current")
+                .products["metars"]
+                .current,
+            "v1"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn interval_source_and_push_source_emit_due_events() -> anyhow::Result<()> {
+        let t0 = Utc.with_ymd_and_hms(2026, 5, 18, 12, 0, 0).unwrap();
+        let mut interval = IntervalLiveFeedSource::new("metars", StdDuration::from_secs(60));
+        assert_eq!(interval.poll_due(t0)?.len(), 1);
+        assert!(interval
+            .poll_due(t0 + chrono::Duration::seconds(59))?
+            .is_empty());
+        assert_eq!(
+            interval
+                .poll_due(t0 + chrono::Duration::seconds(60))?
+                .first()
+                .map(|event| event.product.as_str()),
+            Some("metars")
+        );
+
+        let mut queued = QueuedLiveFeedSource::new("tfrs");
+        queued.push(UpstreamEvent {
+            product: "tfrs".to_string(),
+            source_id: "event-1".to_string(),
+            observed_at_utc: t0,
+            payload_path: None,
+        })?;
+        let events = queued.poll_due(t0)?;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].source_id, "event-1");
+        assert!(queued.poll_due(t0)?.is_empty());
         Ok(())
     }
 

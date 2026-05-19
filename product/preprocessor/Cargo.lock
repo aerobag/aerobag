@@ -637,6 +637,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "preprocessor-fetch",
  "preprocessor-live-feeds",
  "serde",
  "serde_json",
@@ -813,6 +814,8 @@ dependencies = [
  "chrono",
  "image",
  "preprocessor-core",
+ "preprocessor-fetch",
+ "preprocessor-vectors",
  "preprocessor-zip",
  "quick-xml",
  "roxmltree",

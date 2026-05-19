@@ -14,12 +14,23 @@ use std::{
 
 use anyhow::{bail, Context};
 use chrono::Utc;
+use preprocessor_fetch::{FetchCacheConfig, FetchCacheMode};
 use preprocessor_live_feeds::{
     engine::{
-        CompiledFixtureCache, CycleDataProvider, FixedClock, FixtureCacheKeyPart,
-        LiveFeedInvalidation, LiveFeedVersionManifest, SseBroker, SystemClock,
+        default_poll_interval, run_upstream_live_feed_publish_tick, CompiledFixtureCache,
+        CycleDataProvider, FileLiveFeedPublisher, FixedClock, FixtureCacheKeyPart,
+        IntervalLiveFeedSource, LiveFeedInvalidation, LiveFeedPollingTask,
+        LiveFeedSourceAndBuilder, LiveFeedVersionManifest, SseBroker, SystemClock,
+    },
+    products::{
+        LiveFeedFetchConfig, MetarLiveFeedBuilder, NexradSourceGridLiveFeedBuilder,
+        ObstaclesLiveFeedBuilder, TfrLiveFeedBuilder, WindsAloftLiveFeedBuilder,
     },
     publication::PublishedCycleDataProvider,
+    simulation::{
+        fixture_source_start, timeline_from_live_feed_root, CompiledFixtureStateBuilder,
+        SimulatedLiveFeedSource, SimulationClockMap,
+    },
 };
 use serde::Serialize;
 
@@ -40,6 +51,10 @@ struct DaemonConfig {
     listen: SocketAddr,
     publication_root: Option<PathBuf>,
     scratch_root: PathBuf,
+    fetch_cache_root: PathBuf,
+    fetch_cache_mode: String,
+    fetch_jobs: usize,
+    poll_loop_interval_ms: u64,
     event_interval_ms: u64,
     simulation: Option<SimulationConfig>,
     check_config: bool,
@@ -77,6 +92,10 @@ impl DaemonConfig {
         let mut listen = None;
         let mut publication_root = None;
         let mut scratch_root = None;
+        let mut fetch_cache_root = None;
+        let mut fetch_cache_mode = "cache-first".to_string();
+        let mut fetch_jobs = 4_usize;
+        let mut poll_loop_interval_ms = 5_000_u64;
         let mut simulation = false;
         let mut fixture_root = None;
         let mut fixture_cache = None;
@@ -93,6 +112,31 @@ impl DaemonConfig {
                 "--live-root" => live_root = Some(next_path(&mut args, "--live-root")?),
                 "--publication-root" => {
                     publication_root = Some(next_path(&mut args, "--publication-root")?)
+                }
+                "--fetch-cache-root" => {
+                    fetch_cache_root = Some(next_path(&mut args, "--fetch-cache-root")?)
+                }
+                "--fetch-cache-mode" => {
+                    fetch_cache_mode = next_value(&mut args, "--fetch-cache-mode")?;
+                    FetchCacheMode::parse(&fetch_cache_mode)?;
+                }
+                "--fetch-jobs" => {
+                    let value = next_value(&mut args, "--fetch-jobs")?;
+                    fetch_jobs = value
+                        .parse::<usize>()
+                        .with_context(|| format!("invalid --fetch-jobs {value}"))?;
+                    if fetch_jobs == 0 {
+                        bail!("--fetch-jobs must be greater than zero");
+                    }
+                }
+                "--poll-loop-interval-ms" => {
+                    let value = next_value(&mut args, "--poll-loop-interval-ms")?;
+                    poll_loop_interval_ms = value
+                        .parse::<u64>()
+                        .with_context(|| format!("invalid --poll-loop-interval-ms {value}"))?;
+                    if poll_loop_interval_ms == 0 {
+                        bail!("--poll-loop-interval-ms must be greater than zero");
+                    }
                 }
                 "--listen" => {
                     let value = next_value(&mut args, "--listen")?;
@@ -132,6 +176,7 @@ impl DaemonConfig {
         let live_root = live_root.context("missing --live-root")?;
         let listen = listen.context("missing --listen")?;
         let scratch_root = scratch_root.unwrap_or_else(|| live_root.join("../private-work"));
+        let fetch_cache_root = fetch_cache_root.unwrap_or_else(|| scratch_root.join("fetch-cache"));
         let simulation = if simulation {
             let fixture_cache =
                 fixture_cache.unwrap_or_else(|| scratch_root.join("live-feeds-fixtures"));
@@ -152,6 +197,10 @@ impl DaemonConfig {
             listen,
             publication_root,
             scratch_root,
+            fetch_cache_root,
+            fetch_cache_mode,
+            fetch_jobs,
+            poll_loop_interval_ms,
             event_interval_ms,
             simulation,
             check_config,
@@ -173,6 +222,8 @@ fn main() -> anyhow::Result<()> {
 fn validate_config(config: &DaemonConfig) -> anyhow::Result<()> {
     ensure_parent(&config.live_root, "--live-root")?;
     ensure_parent(&config.scratch_root, "--scratch-root")?;
+    ensure_parent(&config.fetch_cache_root, "--fetch-cache-root")?;
+    FetchCacheMode::parse(&config.fetch_cache_mode)?;
     if let Some(publication_root) = &config.publication_root {
         if !publication_root.is_dir() {
             bail!(
@@ -222,6 +273,7 @@ fn run_server(config: DaemonConfig) -> anyhow::Result<()> {
     let listener = TcpListener::bind(config.listen)
         .with_context(|| format!("failed to bind {}", config.listen))?;
     let broker = BroadcastSseBroker::default();
+    start_live_feed_driver(&config, broker.clone())?;
     eprintln!(
         "aerobag-live-feedsd serving {} on http://{}",
         config.live_root.display(),
@@ -242,6 +294,179 @@ fn run_server(config: DaemonConfig) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn start_live_feed_driver(config: &DaemonConfig, broker: BroadcastSseBroker) -> anyhow::Result<()> {
+    if let Some(simulation) = &config.simulation {
+        return start_simulation_driver(config, simulation, broker);
+    }
+    let Some(publication_root) = config.publication_root.clone() else {
+        eprintln!("live-feed production polling disabled: no --publication-root");
+        return Ok(());
+    };
+    let live_root = config.live_root.clone();
+    let scratch_root = config.scratch_root.join("live-feed-build");
+    let poll_interval = Duration::from_millis(config.poll_loop_interval_ms);
+    let fetch = live_feed_fetch_config(config)?;
+    thread::spawn(move || {
+        let provider = PublishedCycleDataProvider::new(publication_root);
+        let publisher = FileLiveFeedPublisher::new(live_root, SystemClock);
+        let mut tasks = production_tasks(fetch);
+        loop {
+            let result = run_upstream_live_feed_publish_tick(
+                Utc::now(),
+                &mut tasks,
+                &scratch_root,
+                &provider,
+                &publisher,
+                &broker,
+            );
+            log_tick_result("production", &result);
+            thread::sleep(poll_interval);
+        }
+    });
+    Ok(())
+}
+
+fn start_simulation_driver(
+    config: &DaemonConfig,
+    simulation: &SimulationConfig,
+    broker: BroadcastSseBroker,
+) -> anyhow::Result<()> {
+    let fixture_root = simulation
+        .fixture_root
+        .clone()
+        .unwrap_or_else(|| config.live_root.clone());
+    let timeline = timeline_from_live_feed_root(&fixture_root, "daemon-simulation")?;
+    let source_start = fixture_source_start(&timeline)?;
+    let clock_map = SimulationClockMap::new(source_start, Utc::now(), simulation.speedup)?;
+    let products = timeline
+        .events
+        .iter()
+        .map(|event| event.product.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let live_root = config.live_root.clone();
+    let scratch_root = config.scratch_root.join("live-feed-simulation");
+    let poll_interval = Duration::from_millis(config.poll_loop_interval_ms.min(1_000));
+    thread::spawn(move || {
+        let provider = EmptyCycleDataProvider;
+        let publisher = FileLiveFeedPublisher::new(live_root, SystemClock);
+        let tasks = products
+            .into_iter()
+            .map(
+                |product| -> anyhow::Result<Box<dyn LiveFeedPollingTask + Send>> {
+                    let source = SimulatedLiveFeedSource::from_timeline(
+                        product.clone(),
+                        timeline.clone(),
+                        clock_map.clone(),
+                    )?;
+                    let builder = CompiledFixtureStateBuilder::new(fixture_root.clone(), product);
+                    Ok(Box::new(LiveFeedSourceAndBuilder::new(source, builder)))
+                },
+            )
+            .collect::<anyhow::Result<Vec<_>>>();
+        let mut tasks = match tasks {
+            Ok(tasks) => tasks,
+            Err(error) => {
+                eprintln!("live-feed simulation setup failed: {error:#}");
+                return;
+            }
+        };
+        loop {
+            let result = run_upstream_live_feed_publish_tick(
+                Utc::now(),
+                &mut tasks,
+                &scratch_root,
+                &provider,
+                &publisher,
+                &broker,
+            );
+            log_tick_result("simulation", &result);
+            thread::sleep(poll_interval);
+        }
+    });
+    Ok(())
+}
+
+fn production_tasks(fetch: LiveFeedFetchConfig) -> Vec<Box<dyn LiveFeedPollingTask + Send>> {
+    vec![
+        production_task(
+            "metars",
+            fetch.clone(),
+            MetarLiveFeedBuilder::new(fetch.clone()),
+        ),
+        production_task(
+            "nexrad",
+            fetch.clone(),
+            NexradSourceGridLiveFeedBuilder::new(fetch.clone(), false),
+        ),
+        production_task(
+            "tfrs",
+            fetch.clone(),
+            TfrLiveFeedBuilder::new(fetch.clone()),
+        ),
+        production_task(
+            "winds-aloft",
+            fetch.clone(),
+            WindsAloftLiveFeedBuilder::new(fetch.clone()),
+        ),
+        production_task(
+            "obstacles",
+            fetch.clone(),
+            ObstaclesLiveFeedBuilder::new(fetch),
+        ),
+    ]
+}
+
+fn production_task<B>(
+    product: &str,
+    _fetch: LiveFeedFetchConfig,
+    builder: B,
+) -> Box<dyn LiveFeedPollingTask + Send>
+where
+    B: preprocessor_live_feeds::engine::ProductBuilder + Send + 'static,
+{
+    let interval = default_poll_interval(product).unwrap_or_else(|| Duration::from_secs(5 * 60));
+    Box::new(LiveFeedSourceAndBuilder::new(
+        IntervalLiveFeedSource::new(product, interval),
+        builder,
+    ))
+}
+
+fn live_feed_fetch_config(config: &DaemonConfig) -> anyhow::Result<LiveFeedFetchConfig> {
+    Ok(LiveFeedFetchConfig::new(
+        config.fetch_jobs,
+        Some(FetchCacheConfig {
+            root: config.fetch_cache_root.clone(),
+            mode: FetchCacheMode::parse(&config.fetch_cache_mode)?,
+        }),
+    ))
+}
+
+fn log_tick_result(label: &str, result: &preprocessor_live_feeds::engine::LiveFeedTickResult) {
+    for update in &result.published {
+        eprintln!(
+            "live-feed {label} published {} {} changed={} removed={}",
+            update.product, update.version, update.changed_count, update.removed_count
+        );
+    }
+    for failure in &result.failures {
+        eprintln!(
+            "live-feed {label} {} {:?} failed: {}",
+            failure.product, failure.phase, failure.error
+        );
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EmptyCycleDataProvider;
+
+impl CycleDataProvider for EmptyCycleDataProvider {
+    fn current_towered_metar_station_ids(
+        &self,
+    ) -> anyhow::Result<std::collections::BTreeSet<String>> {
+        Ok(std::collections::BTreeSet::new())
+    }
 }
 
 fn handle_connection(
@@ -363,6 +588,7 @@ fn write_sse_headers(writer: &mut impl Write) -> anyhow::Result<()> {
     .context("failed to write SSE headers")
 }
 
+#[cfg(test)]
 fn write_sse_frame(writer: &mut impl Write, frame: &[LiveFeedSseEvent]) -> anyhow::Result<()> {
     for event in frame {
         write_sse_event(writer, event)?;
@@ -886,6 +1112,10 @@ mod tests {
             listen: addr,
             publication_root: None,
             scratch_root: root.join("../private-work"),
+            fetch_cache_root: root.join("../private-work/fetch-cache"),
+            fetch_cache_mode: "offline".to_string(),
+            fetch_jobs: 1,
+            poll_loop_interval_ms: 1,
             event_interval_ms: 1,
             simulation: None,
             check_config: false,

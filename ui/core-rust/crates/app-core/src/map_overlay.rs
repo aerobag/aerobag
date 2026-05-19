@@ -45,8 +45,58 @@ struct VectorDisplayBudgetAudit {
     no_symbol_by_layer: BTreeMap<String, usize>,
 }
 
+struct VectorDisplayBudgetBucket {
+    layer: &'static str,
+    features: Vec<VisibleMapFeature>,
+}
+
 fn bump_layer_count(counts: &mut BTreeMap<String, usize>, layer: &str) {
     *counts.entry(layer.to_string()).or_insert(0) += 1;
+}
+
+fn add_layer_count(counts: &mut BTreeMap<String, usize>, layer: &str, amount: usize) {
+    if amount > 0 {
+        *counts.entry(layer.to_string()).or_insert(0) += amount;
+    }
+}
+
+fn vector_display_budget_buckets() -> Vec<VectorDisplayBudgetBucket> {
+    vec![
+        VectorDisplayBudgetBucket {
+            layer: "obstacle",
+            features: Vec::new(),
+        },
+        VectorDisplayBudgetBucket {
+            layer: "airport",
+            features: Vec::new(),
+        },
+        VectorDisplayBudgetBucket {
+            layer: "nav",
+            features: Vec::new(),
+        },
+        VectorDisplayBudgetBucket {
+            layer: "fix",
+            features: Vec::new(),
+        },
+    ]
+}
+
+fn vector_display_budget_bucket_index(layer: &str) -> Option<usize> {
+    match layer {
+        "obstacle" => Some(0),
+        "airport" => Some(1),
+        "nav" => Some(2),
+        "fix" => Some(3),
+        _ => None,
+    }
+}
+
+fn layer_counts_summary(counts: &BTreeMap<String, usize>) -> String {
+    counts
+        .iter()
+        .map(|(layer, count)| format!("{layer}={count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -1318,8 +1368,8 @@ pub fn query_map_overlay_for_surface(
     let decision = overlay_surface_decision(*metrics, config);
     let mut needed_vector_tiles = Vec::new();
     let mut visible_features = Vec::new();
-    let mut limit_hit = false;
     let mut vector_budget = VectorDisplayBudgetAudit::default();
+    let mut vector_budget_buckets = vector_display_budget_buckets();
     let center_world = lat_lon_to_world(viewport.center);
     let scale = 2.0_f64.powf(viewport.zoom);
     let offline_regions = project_offline_regions(
@@ -1346,7 +1396,7 @@ pub fn query_map_overlay_for_surface(
             let key =
                 aggregate_vector_tile_cache_key(tile.request.z, tile.request.x, tile.request.y);
             let Some(payload) = vector_tile_cache.get(&key) else {
-                if !limit_hit && needed_seen.insert(key) {
+                if needed_seen.insert(key) {
                     needed_vector_tiles.push(aggregate_vector_tile_request(
                         tile.request.z,
                         tile.request.x,
@@ -1369,12 +1419,6 @@ pub fn query_map_overlay_for_surface(
                     continue;
                 };
                 vector_budget.displayable_records += 1;
-                if visible_features.len() >= VECTOR_DISPLAY_FEATURE_LIMIT {
-                    limit_hit = true;
-                    vector_budget.omitted_after_cap += 1;
-                    bump_layer_count(&mut vector_budget.omitted_by_layer, &tile.request.layer);
-                    continue;
-                }
                 let point = world_to_screen_with_x_offset(
                     center_world,
                     scale,
@@ -1386,17 +1430,47 @@ pub fn query_map_overlay_for_surface(
                     },
                     tile.world_x_offset,
                 );
-                visible_features.push(visible_map_feature_from_symbol(
+                let feature = visible_map_feature_from_symbol(
                     record.id.clone(),
                     symbol,
                     point,
                     VectorIdentLabelStyle::Default,
-                ));
-                bump_layer_count(&mut vector_budget.drawn_by_layer, &tile.request.layer);
+                );
+                if let Some(bucket_index) = vector_display_budget_bucket_index(&tile.request.layer)
+                {
+                    vector_budget_buckets[bucket_index].features.push(feature);
+                }
             }
         }
     }
-    let mut data_status_records = if limit_hit {
+    for bucket_index in 0..vector_budget_buckets.len() {
+        let bucket_len = vector_budget_buckets[bucket_index].features.len();
+        if bucket_len == 0 {
+            continue;
+        }
+        let remaining_budget = VECTOR_DISPLAY_FEATURE_LIMIT.saturating_sub(visible_features.len());
+        if bucket_len <= remaining_budget {
+            add_layer_count(
+                &mut vector_budget.drawn_by_layer,
+                vector_budget_buckets[bucket_index].layer,
+                bucket_len,
+            );
+            visible_features.append(&mut vector_budget_buckets[bucket_index].features);
+        } else {
+            for omitted_bucket in vector_budget_buckets.iter().skip(bucket_index) {
+                let omitted_len = omitted_bucket.features.len();
+                vector_budget.omitted_after_cap += omitted_len;
+                add_layer_count(
+                    &mut vector_budget.omitted_by_layer,
+                    omitted_bucket.layer,
+                    omitted_len,
+                );
+            }
+            break;
+        }
+    }
+    let mut data_status_records = if vector_budget.omitted_after_cap > 0 {
+        let omitted_summary = layer_counts_summary(&vector_budget.omitted_by_layer);
         vec![DataStatusRecord::new(
             "map_overlay:vector_display_feature_limit",
             "VECTORS",
@@ -1404,9 +1478,11 @@ pub fn query_map_overlay_for_surface(
             UiStatusSeverity::Warning,
             true,
             format!(
-                "display capped at {} visible vector features after zoom/tile filtering; {} additional features omitted",
+                "display budget {} drew {} of {} displayable point features; omitted lower-priority features: {}",
                 VECTOR_DISPLAY_FEATURE_LIMIT,
-                vector_budget.omitted_after_cap
+                visible_features.len(),
+                vector_budget.displayable_records,
+                omitted_summary
             ),
         )]
     } else {
@@ -4941,6 +5017,28 @@ mod tests {
         }
     }
 
+    fn test_point_record(id: String, kind: &str, style_class: &str) -> PointVectorRecord {
+        PointVectorRecord {
+            id,
+            kind: kind.to_string(),
+            lat: 47.36,
+            lon: -121.98,
+            label: kind.to_ascii_uppercase(),
+            style_class: style_class.to_string(),
+            towered: None,
+            fuel_available: None,
+            public_use: None,
+            private_use: None,
+            has_paved_runway: None,
+            heliport: None,
+            has_water_runway: None,
+            longest_runway_length_ft: None,
+            longest_runway_heading_true_deg: None,
+            elevation_msl_ft: None,
+            obstacle: None,
+        }
+    }
+
     #[test]
     fn suppresses_fix_tiles_below_threshold_zoom_but_keeps_airports_and_nav() {
         let viewport = MapViewport {
@@ -6494,7 +6592,7 @@ mod tests {
     }
 
     #[test]
-    fn caps_visible_features() {
+    fn omits_over_budget_fix_bucket_as_unit() {
         let viewport = MapViewport {
             center: LatLon {
                 lat: 47.36,
@@ -6520,25 +6618,7 @@ mod tests {
                 x: first.x,
                 y: first.y,
                 records: (0..(VECTOR_DISPLAY_FEATURE_LIMIT + 5))
-                    .map(|index| PointVectorRecord {
-                        id: format!("fix:{index}"),
-                        kind: "yrep-pt".to_string(),
-                        lat: 47.36,
-                        lon: -121.98,
-                        label: format!("FIX{index}"),
-                        style_class: "fix".to_string(),
-                        towered: None,
-                        fuel_available: None,
-                        public_use: None,
-                        private_use: None,
-                        has_paved_runway: None,
-                        heliport: None,
-                        has_water_runway: None,
-                        longest_runway_length_ft: None,
-                        longest_runway_heading_true_deg: None,
-                        elevation_msl_ft: None,
-                        obstacle: None,
-                    })
+                    .map(|index| test_point_record(format!("fix:{index}"), "yrep-pt", "fix"))
                     .collect(),
             },
         );
@@ -6551,12 +6631,84 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         );
-        assert_eq!(result.visible_features.len(), VECTOR_DISPLAY_FEATURE_LIMIT);
+        assert!(result.visible_features.is_empty());
         assert!(result.data_status_records.iter().any(|record| {
             record.id == "map_overlay:vector_display_feature_limit"
                 && record.drives_caution
                 && record.severity == UiStatusSeverity::Warning
-                && record.detail.contains("5 additional features omitted")
+                && record
+                    .detail
+                    .contains("omitted lower-priority features: fix=505")
+        }));
+    }
+
+    #[test]
+    fn prioritizes_nav_over_over_budget_fixes() {
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.36,
+                lon: -121.98,
+            },
+            zoom: 10.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let window =
+            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0, None);
+        let fix_tile = window
+            .iter()
+            .find(|tile| tile.layer == "fix")
+            .expect("expected visible fix tile");
+        let nav_tile = window
+            .iter()
+            .find(|tile| tile.layer == "nav")
+            .expect("expected visible nav tile");
+        let mut cache = HashMap::new();
+        cache.insert(
+            tile_key(&fix_tile.layer, fix_tile.z, fix_tile.x, fix_tile.y),
+            PointTilePayload {
+                schema_version: 1,
+                layer: fix_tile.layer.clone(),
+                z: fix_tile.z,
+                x: fix_tile.x,
+                y: fix_tile.y,
+                records: (0..VECTOR_DISPLAY_FEATURE_LIMIT)
+                    .map(|index| test_point_record(format!("fix:{index}"), "yrep-pt", "fix"))
+                    .collect(),
+            },
+        );
+        cache.insert(
+            tile_key(&nav_tile.layer, nav_tile.z, nav_tile.x, nav_tile.y),
+            PointTilePayload {
+                schema_version: 1,
+                layer: nav_tile.layer.clone(),
+                z: nav_tile.z,
+                x: nav_tile.x,
+                y: nav_tile.y,
+                records: (0..3)
+                    .map(|index| test_point_record(format!("nav:{index}:VOR"), "VOR", "nav"))
+                    .collect(),
+            },
+        );
+
+        let result = query_map_overlay(
+            &viewport,
+            1200.0,
+            900.0,
+            &cache,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        assert_eq!(result.visible_features.len(), 3);
+        assert!(result
+            .visible_features
+            .iter()
+            .all(|feature| feature.style_class == "nav"));
+        assert!(result.data_status_records.iter().any(|record| {
+            record.id == "map_overlay:vector_display_feature_limit"
+                && record.detail.contains("fix=500")
         }));
     }
 

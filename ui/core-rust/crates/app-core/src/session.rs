@@ -288,6 +288,7 @@ fn lock_sessions() -> MutexGuard<'static, HashMap<u32, UiSession>> {
 
 const MAP_OVERLAY_STATUS_PREFIX: &str = "map_overlay:";
 const LIVE_FEED_METARS_STATUS_ID: &str = "live_feed:metars_unavailable";
+const LIVE_FEED_NEXRAD_STATUS_ID: &str = "live_feed:nexrad_unavailable";
 const LIVE_FEED_TFRS_STATUS_ID: &str = "live_feed:tfrs_unavailable";
 
 fn sync_data_status_projection(session: &mut UiSession) {
@@ -362,6 +363,14 @@ fn live_feed_unavailable_status_record(product: &str, detail: String) -> DataSta
             true,
             detail,
         ),
+        "nexrad" => DataStatusRecord::new(
+            LIVE_FEED_NEXRAD_STATUS_ID,
+            "NEXRAD",
+            Some("UNAVAIL".to_string()),
+            UiStatusSeverity::Unavailable,
+            true,
+            detail,
+        ),
         "tfrs" => DataStatusRecord::new(
             LIVE_FEED_TFRS_STATUS_ID,
             "TFRS",
@@ -379,6 +388,96 @@ fn live_feed_unavailable_status_record(product: &str, detail: String) -> DataSta
             detail,
         ),
     }
+}
+
+fn live_feed_product_from_resource_id(resource_id: &str) -> Option<&str> {
+    for prefix in [
+        "live_feeds/version/",
+        "live_feeds/state/",
+        "live_feeds/delta/",
+    ] {
+        if let Some(rest) = resource_id.strip_prefix(prefix) {
+            return rest.split('/').next();
+        }
+    }
+    None
+}
+
+fn record_live_feed_fetch_failure(
+    session: &mut UiSession,
+    resource_id: &str,
+    message: &str,
+) -> bool {
+    if resource_id == "live_feeds/current" {
+        let detail = format!("Live feed index unavailable: {message}");
+        let mut changed = false;
+        if session.map_layer_state.metars.visible {
+            changed |= upsert_data_status_record(
+                session,
+                live_feed_unavailable_status_record("metars", detail.clone()),
+            );
+        }
+        if session.map_layer_state.nexrad.visible {
+            changed |= upsert_data_status_record(
+                session,
+                live_feed_unavailable_status_record("nexrad", detail.clone()),
+            );
+        }
+        if session.map_layer_state.vectors.visible {
+            changed |= upsert_data_status_record(
+                session,
+                live_feed_unavailable_status_record("tfrs", detail),
+            );
+        }
+        return changed;
+    }
+
+    let Some(product) = live_feed_product_from_resource_id(resource_id) else {
+        return false;
+    };
+    let label = product.to_ascii_uppercase();
+    upsert_data_status_record(
+        session,
+        live_feed_unavailable_status_record(
+            product,
+            format!("{label} live feed unavailable: {message}"),
+        ),
+    )
+}
+
+fn sync_nexrad_status_record(
+    session: &mut UiSession,
+    status: &NexradOverlayStatus,
+) -> Vec<UiInvalidation> {
+    let changed = match status {
+        NexradOverlayStatus::Hidden | NexradOverlayStatus::Ready { .. } => {
+            clear_data_status_record(session, LIVE_FEED_NEXRAD_STATUS_ID)
+        }
+        NexradOverlayStatus::Loading => false,
+        NexradOverlayStatus::Unavailable { reason } => upsert_data_status_record(
+            session,
+            live_feed_unavailable_status_record(
+                "nexrad",
+                format!("NEXRAD live feed unavailable: {reason}"),
+            ),
+        ),
+    };
+    if changed {
+        vec![UiInvalidation::SessionSnapshot]
+    } else {
+        Vec::new()
+    }
+}
+
+fn complete_nexrad_overlay_outcome(
+    session: &mut UiSession,
+    query: NexradOverlayQueryResult,
+) -> AppResult<HadOperationOutcome> {
+    let invalidations = sync_nexrad_status_record(session, &query.status);
+    Ok(HadOperationOutcome::complete_with_invalidations(
+        serde_json::to_value(query).map_err(internal_json_error)?,
+        invalidations,
+    ))
 }
 
 pub fn create_ui_session(
@@ -533,6 +632,20 @@ pub fn set_map_layer_visibility_in_session(
     let session = session_mut(&mut sessions, handle)?;
     let layer = parse_map_layer_id(layer_id)?;
     map_layer_toggle_mut(&mut session.map_layer_state, layer).visible = visible;
+    if !visible {
+        match layer {
+            MapLayerId::Metars => {
+                clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
+            }
+            MapLayerId::Nexrad => {
+                clear_data_status_record(session, LIVE_FEED_NEXRAD_STATUS_ID);
+            }
+            MapLayerId::Vectors => {
+                clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
+            }
+            MapLayerId::WorldBasemap | MapLayerId::TerrainWarning | MapLayerId::OfflineRegions => {}
+        }
+    }
     snapshot_for_session(session)
 }
 
@@ -2217,6 +2330,19 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
     })
 }
 
+pub fn report_session_resource_failure_in_session(
+    handle: u32,
+    resource_id: &str,
+    message: &str,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    if LiveFeedsState::handles_resource(resource_id) {
+        record_live_feed_fetch_failure(session, resource_id, message);
+    }
+    snapshot_for_session(session)
+}
+
 fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
     if let Some(metars_value) = session.live_feeds.product_state_manifest("metars").cloned() {
         match serde_json::from_value::<MetarProductPayload>(metars_value) {
@@ -2930,32 +3056,44 @@ pub fn get_nexrad_overlay_in_session(
     width_px: f64,
     height_px: f64,
 ) -> AppResult<HadOperationOutcome> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
     if !session.map_layer_state.nexrad.visible {
-        return Ok(HadOperationOutcome::complete(
-            serde_json::to_value(NexradOverlayQueryResult {
+        return complete_nexrad_overlay_outcome(
+            session,
+            NexradOverlayQueryResult {
                 status: NexradOverlayStatus::Hidden,
                 tiles: Vec::new(),
                 stats: NexradOverlayStats::default(),
-            })
-            .map_err(internal_json_error)?,
-        ));
+            },
+        );
     }
-    let Some(manifest) = session.live_feeds.loaded_product_state_manifest("nexrad") else {
-        return Ok(HadOperationOutcome::complete(
-            serde_json::to_value(NexradOverlayQueryResult {
-                status: NexradOverlayStatus::Loading,
+    if let HadOperationOutcome::NeedResources { resources } = session.live_feeds.sync_outcome() {
+        return Ok(HadOperationOutcome::NeedResources { resources });
+    }
+    let Some(manifest) = session.live_feeds.product_state_manifest("nexrad").cloned() else {
+        return complete_nexrad_overlay_outcome(
+            session,
+            NexradOverlayQueryResult {
+                status: NexradOverlayStatus::Unavailable {
+                    reason: "NEXRAD product is missing from the live feed index".to_string(),
+                },
                 tiles: Vec::new(),
                 stats: NexradOverlayStats::default(),
-            })
-            .map_err(internal_json_error)?,
-        ));
+            },
+        );
     };
-    let query = nexrad_overlay_query(manifest, &viewport, width_px, height_px)?;
-    Ok(HadOperationOutcome::complete(
-        serde_json::to_value(query).map_err(internal_json_error)?,
-    ))
+    let query = match nexrad_overlay_query(&manifest, &viewport, width_px, height_px) {
+        Ok(query) => query,
+        Err(err) => NexradOverlayQueryResult {
+            status: NexradOverlayStatus::Unavailable {
+                reason: err.to_string(),
+            },
+            tiles: Vec::new(),
+            stats: NexradOverlayStats::default(),
+        },
+    };
+    complete_nexrad_overlay_outcome(session, query)
 }
 
 #[derive(Debug, Deserialize)]
@@ -5883,6 +6021,107 @@ mod tests {
             .values()
             .any(|record| record.id == LIVE_FEED_TFRS_STATUS_ID
                 && record.detail.contains("summary_text")));
+    }
+
+    #[test]
+    fn failed_live_feed_current_records_nexrad_caution_when_nexrad_layer_visible() {
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            FlightPlan::default(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+        set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
+
+        let snapshot = report_session_resource_failure_in_session(
+            init.handle,
+            "live_feeds/current",
+            "failed to fetch /live-feeds/current.json: 404",
+        )
+        .expect("report failure");
+
+        let nexrad = snapshot
+            .data_status_state
+            .boxes
+            .iter()
+            .find(|box_| box_.id == LIVE_FEED_NEXRAD_STATUS_ID)
+            .expect("nexrad caution");
+        assert_eq!(nexrad.label, "NEXRAD");
+        assert!(nexrad.drives_caution);
+        assert!(nexrad.detail.contains("Live feed index unavailable"));
+    }
+
+    #[test]
+    fn hiding_nexrad_layer_clears_nexrad_caution() {
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            FlightPlan::default(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+        set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
+        report_session_resource_failure_in_session(init.handle, "live_feeds/current", "404")
+            .expect("report failure");
+
+        let snapshot =
+            set_map_layer_visibility_in_session(init.handle, "nexrad", false).expect("hide nexrad");
+
+        assert!(!snapshot
+            .data_status_state
+            .boxes
+            .iter()
+            .any(|box_| box_.id == LIVE_FEED_NEXRAD_STATUS_ID));
+    }
+
+    #[test]
+    fn visible_nexrad_without_product_state_records_caution() {
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            FlightPlan::default(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+        set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
+        ingest_resource_in_session(init.handle, "live_feeds/current", br#"{"products":{}}"#)
+            .expect("ingest empty current manifest");
+
+        let outcome = get_nexrad_overlay_in_session(
+            init.handle,
+            MapViewport {
+                center: LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                },
+                zoom: 8.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            1024.0,
+            768.0,
+        )
+        .expect("query nexrad");
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("expected complete nexrad query");
+        };
+        let query: NexradOverlayQueryResult =
+            serde_json::from_value(result).expect("nexrad result");
+        assert!(matches!(
+            query.status,
+            NexradOverlayStatus::Unavailable { .. }
+        ));
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        assert!(snapshot
+            .data_status_state
+            .boxes
+            .iter()
+            .any(|box_| box_.id == LIVE_FEED_NEXRAD_STATUS_ID
+                && box_.detail.contains("missing from the live feed index")));
     }
 
     fn complete_session_snapshot(outcome: HadOperationOutcome) -> UiSessionSnapshot {

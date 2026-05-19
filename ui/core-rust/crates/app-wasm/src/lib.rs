@@ -972,6 +972,18 @@ pub fn ingest_resource_in_session(
 }
 
 #[wasm_bindgen]
+pub fn report_session_resource_failure_in_session(
+    handle: u32,
+    resource_id: &str,
+    message: &str,
+) -> Result<String, JsValue> {
+    let snapshot =
+        app_core::report_session_resource_failure_in_session(handle, resource_id, message)
+            .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn get_map_overlay_in_session(
     handle: u32,
     viewport_json: &str,

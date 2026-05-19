@@ -105,6 +105,7 @@ describe("loadBestAvailableAdapter", () => {
       ingest_airspace_features_in_session: async () => {},
       ingest_airspace_label_tiles_in_session: async () => {},
       ingest_resource_in_session: async () => {},
+      report_session_resource_failure_in_session: async () => snapshotJson,
       get_map_overlay_in_session: async () => "{\"state\":\"complete\",\"result\":{\"visible_features\":[],\"visible_metars\":[],\"visible_pireps\":[],\"airspace_paths\":[],\"tfr_paths\":[],\"airspace_labels\":[]}}",
       get_map_selection_in_session: async () => "{\"state\":\"complete\",\"result\":{\"click_lat\":0,\"click_lon\":0,\"categories\":[]}}",
       get_terrain_overlay_in_session: async () => "{\"needed_terrain_tiles\":[],\"status\":\"hidden\"}",

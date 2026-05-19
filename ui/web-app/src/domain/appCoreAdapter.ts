@@ -687,6 +687,7 @@ type WasmModule = {
   ingest_airspace_features_in_session(handle: number, featuresJson: string): Promise<void> | void;
   ingest_airspace_label_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   ingest_resource_in_session(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
+  report_session_resource_failure_in_session(handle: number, resourceId: string, message: string): Promise<string> | string;
   get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
   get_map_selection_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, clickJson: string): Promise<string> | string;
   get_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
@@ -744,10 +745,18 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       debugLog("core.ui.invalidations", { invalidations });
       invalidationListener?.(invalidations);
     };
+    let reportSessionResourceFailure: ((resourceId: string, message: string) => Promise<void>) | null = null;
     const runSessionOperation = <T>(
       operation: (navKvHandle: number) => Promise<string> | string,
       ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
-    ) => runCoreHadSessionOperation<T>(operation, ingestSessionResource, publishInvalidations);
+    ) => runCoreHadSessionOperation<T>(
+      operation,
+      ingestSessionResource,
+      publishInvalidations,
+      async (resourceId, message) => {
+        await reportSessionResourceFailure?.(resourceId, message);
+      },
+    );
     const createSession = async (
       nextPlan: FlightPlan,
       nextRecentAirportIds: string[],
@@ -788,6 +797,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     let snapshot = init.snapshot;
     const parseSessionSnapshot = async (json: Promise<string> | string) =>
       JSON.parse(await json) as UiSessionSnapshot;
+    reportSessionResourceFailure = async (resourceId, message) => {
+      snapshot = await parseSessionSnapshot(
+        this.module.report_session_resource_failure_in_session(handle, resourceId, message),
+      );
+      publishInvalidations(["session_snapshot"]);
+    };
     const syncGuidanceGeometry = async () => {
       snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
         this.module.sync_guidance_geometry_in_session(handle),
@@ -1481,6 +1496,7 @@ async function loadBestAvailableAdapterUncached(
     "unsuspend_sequencing_in_session",
     "sequence_active_leg_in_session",
     "ingest_resource_in_session",
+    "report_session_resource_failure_in_session",
     "nav_db_open_controller_create",
     "nav_db_open_controller_destroy",
     "nav_db_open_controller_finish",

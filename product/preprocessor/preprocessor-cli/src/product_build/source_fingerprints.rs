@@ -41,19 +41,25 @@ fn hash_sources(label: &str, paths: &[PathBuf]) -> anyhow::Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-pub(super) fn nav_kv_builder_fingerprint() -> anyhow::Result<String> {
+fn nav_kv_builder_source_paths() -> Vec<PathBuf> {
     let crate_root = crate_root();
     let workspace_root = workspace_root();
     let repo_root = repo_root();
-    let source_hash = hash_sources(
-        "nav-kv-builder-v1",
-        &[
-            crate_root.join("src/product_build/nav_db.rs"),
-            workspace_root.join("preprocessor-core/src/nav_kv.rs"),
-            workspace_root.join("preprocessor-procedure-geometry/src/lib.rs"),
-            repo_root.join("crates/procedure-geometry-types/src/lib.rs"),
-        ],
-    )?;
+    vec![
+        crate_root.join("src/product_build/nav_db.rs"),
+        workspace_root.join("preprocessor-core/src/lib.rs"),
+        workspace_root.join("preprocessor-procedure-geometry/src/lib.rs"),
+        workspace_root.join("preprocessor-procedure-geometry/src/arinc_ambiguity_resolutions.rs"),
+        workspace_root.join("preprocessor-procedure-geometry/src/procedure_geometry.rs"),
+        workspace_root.join("preprocessor-procedure-geometry/src/procedure_geometry_constants.rs"),
+        workspace_root.join("preprocessor-procedure-geometry/src/procedure_legs.rs"),
+        repo_root.join("crates/procedure-geometry-types/src/lib.rs"),
+        repo_root.join("crates/had-key/src/lib.rs"),
+    ]
+}
+
+pub(super) fn nav_kv_builder_fingerprint() -> anyhow::Result<String> {
+    let source_hash = hash_sources("nav-kv-builder-v1", &nav_kv_builder_source_paths())?;
     let constants = serde_json::json!({
         "nav_db_contract_version": super::NAV_DB_CONTRACT_VERSION,
         "waypoint_prefix_max_results": super::WAYPOINT_PREFIX_MAX_RESULTS,
@@ -68,14 +74,43 @@ pub(super) fn nav_kv_builder_fingerprint() -> anyhow::Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-pub(super) fn terrain_discovery_builder_fingerprint() -> anyhow::Result<String> {
+fn terrain_discovery_builder_source_paths() -> Vec<PathBuf> {
     let crate_root = crate_root();
     let workspace_root = workspace_root();
+    vec![
+        crate_root.join("src/product_build/static_products.rs"),
+        workspace_root.join("preprocessor-fetch/src/lib.rs"),
+    ]
+}
+
+pub(super) fn terrain_discovery_builder_fingerprint() -> anyhow::Result<String> {
     hash_sources(
         "terrain-discovery-builder-v1",
-        &[
-            crate_root.join("src/product_build/static_products.rs"),
-            workspace_root.join("preprocessor-fetch/src/lib.rs"),
-        ],
+        &terrain_discovery_builder_source_paths(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builder_fingerprint_source_paths_exist() {
+        for path in nav_kv_builder_source_paths()
+            .into_iter()
+            .chain(terrain_discovery_builder_source_paths())
+        {
+            assert!(
+                path.is_file(),
+                "missing builder fingerprint source {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn builder_fingerprints_hash_successfully() {
+        assert_eq!(nav_kv_builder_fingerprint().unwrap().len(), 64);
+        assert_eq!(terrain_discovery_builder_fingerprint().unwrap().len(), 64);
+    }
 }

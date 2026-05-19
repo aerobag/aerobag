@@ -5329,7 +5329,11 @@ mod tests {
 
     fn minimal_vector_manifest_json() -> &'static str {
         r#"{
-            "point_layers": {},
+            "point_layers": {
+                "airport": { "available_zooms": [9] },
+                "fix": { "available_zooms": [9] },
+                "nav": { "available_zooms": [9] }
+            },
             "airspace": {
                 "reference_tile_min_zoom": 0,
                 "reference_tile_max_zoom": 0,
@@ -5496,6 +5500,9 @@ mod tests {
         let config = map_overlay_config_from_vector_manifest_json(
             r#"{
                 "point_layers": {
+                    "airport": { "available_zooms": [9] },
+                    "fix": { "available_zooms": [9] },
+                    "nav": { "available_zooms": [9] },
                     "metars": {
                         "min_zoom": 5,
                         "max_zoom": 7,
@@ -5633,6 +5640,12 @@ mod tests {
             "point_layers": {
                 "airport": {
                     "available_zooms": [9]
+                },
+                "fix": {
+                    "available_zooms": [9]
+                },
+                "nav": {
+                    "available_zooms": [9]
                 }
             },
             "airspace": {
@@ -5654,6 +5667,9 @@ mod tests {
         let config = map_overlay_config_from_vector_manifest_json(
             r#"{
                 "point_layers": {
+                    "airport": { "available_zooms": [9] },
+                    "fix": { "available_zooms": [9] },
+                    "nav": { "available_zooms": [9] },
                     "metars": {
                         "min_zoom": 5,
                         "max_zoom": 7,

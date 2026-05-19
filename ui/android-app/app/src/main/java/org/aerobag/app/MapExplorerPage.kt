@@ -1582,7 +1582,7 @@ internal fun MapExplorerPage(
             surfaceWidthPx = surfaceWidthPx,
             surfaceHeightPx = surfaceHeightPx,
         )
-        AirspaceOverlayLayer(displayedMapOverlay, uiTheme)
+        AirspaceOverlayLayer(displayedMapOverlay, density.density, uiTheme)
         MapFeatureOverlayLayer(
             displayedMapOverlay = displayedMapOverlay,
             uiTheme = uiTheme,
@@ -1887,6 +1887,7 @@ private fun RasterImageLayers(
 @Composable
 private fun AirspaceOverlayLayer(
     displayedMapOverlay: MapOverlayQueryResult,
+    densityScale: Float,
     uiTheme: UiTheme,
 ) {
     if (displayedMapOverlay.airspacePaths.isEmpty() && displayedMapOverlay.tfrPaths.isEmpty() && displayedMapOverlay.airspaceLabels.isEmpty()) {
@@ -1894,7 +1895,7 @@ private fun AirspaceOverlayLayer(
     }
     Canvas(modifier = Modifier.fillMaxSize()) {
         (displayedMapOverlay.airspacePaths + displayedMapOverlay.tfrPaths).forEach { feature ->
-            drawAirspaceDisplayPath(uiTheme, feature)
+            drawAirspaceDisplayPath(uiTheme, feature, densityScale)
         }
         displayedMapOverlay.airspaceLabels.forEach { label ->
             drawAirspaceLimitGlyph(
@@ -2510,8 +2511,8 @@ private fun MapSelectionHighlightLayer(
                     )
                 }
                 (displayedMapOverlay.airspacePaths + displayedMapOverlay.tfrPaths).firstOrNull { it.id == highlight.id }?.let { path ->
-                    drawAirspaceDisplayPathContrast(path)
-                    drawAirspaceDisplayPath(uiTheme, path)
+                    drawAirspaceDisplayPathContrast(path, densityScale)
+                    drawAirspaceDisplayPath(uiTheme, path, densityScale)
                 }
             }
             is MapSelectionHighlight.Metar -> {

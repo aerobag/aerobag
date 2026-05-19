@@ -356,7 +356,11 @@ internal fun strokeCapFor(lineCap: String): StrokeCap = when (lineCap) {
     else -> StrokeCap.Round
 }
 
-internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceDisplayPath(uiTheme: UiTheme, feature: AirspaceDisplayPath) {
+internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceDisplayPath(
+    uiTheme: UiTheme,
+    feature: AirspaceDisplayPath,
+    densityScale: Float = 1f,
+) {
     feature.paths.forEach { subpath ->
         val path = airspacePath(subpath)
         if (subpath.closed && feature.style.fillOpacity > 0.0) {
@@ -370,10 +374,10 @@ internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceDispla
                 path = path,
                 color = aviationColor(uiTheme, stroke.colorKey),
                 style = Stroke(
-                    width = stroke.widthPx.toFloat(),
+                    width = stroke.widthPx.toFloat() * densityScale,
                     cap = strokeCapFor(stroke.lineCap),
                     pathEffect = stroke.dashPx.takeIf { it.isNotEmpty() }?.let { dash ->
-                        PathEffect.dashPathEffect(dash.map { it.toFloat() }.toFloatArray())
+                        PathEffect.dashPathEffect(dash.map { it.toFloat() * densityScale }.toFloatArray())
                     },
                 ),
             )
@@ -384,19 +388,22 @@ internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceDispla
             drawPath(
                 path = airspacePath(subpath),
                 color = aviationColor(uiTheme, decoration.colorKey),
-                style = Stroke(width = decoration.widthPx.toFloat(), cap = strokeCapFor(decoration.lineCap)),
+                style = Stroke(width = decoration.widthPx.toFloat() * densityScale, cap = strokeCapFor(decoration.lineCap)),
             )
         }
     }
 }
 
-internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceDisplayPathContrast(feature: AirspaceDisplayPath) {
+internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceDisplayPathContrast(
+    feature: AirspaceDisplayPath,
+    densityScale: Float = 1f,
+) {
     feature.paths.forEach { subpath ->
         drawPath(
             path = airspacePath(subpath),
             color = Color.White,
             style = Stroke(
-                width = 9f,
+                width = 9f * densityScale,
                 cap = StrokeCap.Round,
                 join = StrokeJoin.Round,
             ),

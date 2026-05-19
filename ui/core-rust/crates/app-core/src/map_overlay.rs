@@ -783,6 +783,9 @@ pub struct MapOverlayConfig {
     pub airspace_reference_tile_max_zoom: u32,
     pub airspace_label_tile_min_zoom: u32,
     pub airspace_label_tile_max_zoom: u32,
+    pub airport_layer: PointTileLayerConfig,
+    pub fix_layer: PointTileLayerConfig,
+    pub nav_layer: PointTileLayerConfig,
     pub obstacle_layer: Option<ObstacleLayerConfig>,
     pub metar_layer: Option<PointTileLayerConfig>,
 }
@@ -855,6 +858,9 @@ pub fn map_overlay_config_from_vector_manifest_json(
                 .to_string(),
         });
     }
+    let airport_layer = required_point_tile_layer_config(&manifest, "airport")?;
+    let fix_layer = required_point_tile_layer_config(&manifest, "fix")?;
+    let nav_layer = required_point_tile_layer_config(&manifest, "nav")?;
     let obstacle_layer = manifest
         .point_layers
         .get("obstacle")
@@ -865,9 +871,26 @@ pub fn map_overlay_config_from_vector_manifest_json(
         airspace_reference_tile_max_zoom: manifest.airspace.reference_tile_max_zoom,
         airspace_label_tile_min_zoom: manifest.airspace.label_tile_min_zoom,
         airspace_label_tile_max_zoom: manifest.airspace.label_tile_max_zoom,
+        airport_layer,
+        fix_layer,
+        nav_layer,
         obstacle_layer,
         metar_layer: Some(live_metar_layer_config()),
     })
+}
+
+fn required_point_tile_layer_config(
+    manifest: &VectorOverlayManifest,
+    layer_name: &str,
+) -> AppResult<PointTileLayerConfig> {
+    let layer = manifest
+        .point_layers
+        .get(layer_name)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("vector overlay manifest is missing required {layer_name} layer"),
+        })?;
+    point_tile_layer_config_from_manifest(layer_name, layer)
 }
 
 fn point_tile_layer_config_from_manifest(
@@ -985,11 +1008,11 @@ fn visible_point_display_tile_window(
 ) -> Vec<DisplayVectorTile> {
     let mut tiles = Vec::new();
     let effective_zoom = effective_point_display_zoom(viewport, point_display_scale);
-    let point_tile_zoom = point_vector_tile_zoom(effective_zoom);
+    let desired_point_tile_zoom = point_vector_tile_zoom(effective_zoom);
     if effective_zoom >= AIRPORT_MIN_DISPLAY_ZOOM {
         tiles.extend(visible_layer_display_tile_window(
             "airport",
-            point_tile_zoom,
+            nearest_available_layer_zoom(&config.airport_layer, desired_point_tile_zoom),
             viewport,
             width_px,
             height_px,
@@ -998,7 +1021,7 @@ fn visible_point_display_tile_window(
     if effective_zoom >= FIX_MIN_DISPLAY_ZOOM {
         tiles.extend(visible_layer_display_tile_window(
             "fix",
-            point_tile_zoom,
+            nearest_available_layer_zoom(&config.fix_layer, desired_point_tile_zoom),
             viewport,
             width_px,
             height_px,
@@ -1007,7 +1030,7 @@ fn visible_point_display_tile_window(
     if effective_zoom >= NAV_MIN_DISPLAY_ZOOM {
         tiles.extend(visible_layer_display_tile_window(
             "nav",
-            point_tile_zoom,
+            nearest_available_layer_zoom(&config.nav_layer, desired_point_tile_zoom),
             viewport,
             width_px,
             height_px,
@@ -4890,12 +4913,24 @@ mod tests {
         }
     }
 
+    fn test_point_layer_config() -> PointTileLayerConfig {
+        PointTileLayerConfig {
+            min_zoom: 0,
+            max_zoom: 9,
+            available_zooms: (0..=9).collect(),
+            tile_path_template: None,
+        }
+    }
+
     fn test_map_overlay_config() -> MapOverlayConfig {
         MapOverlayConfig {
             airspace_reference_tile_min_zoom: 0,
             airspace_reference_tile_max_zoom: 12,
             airspace_label_tile_min_zoom: 0,
             airspace_label_tile_max_zoom: 12,
+            airport_layer: test_point_layer_config(),
+            fix_layer: test_point_layer_config(),
+            nav_layer: test_point_layer_config(),
             obstacle_layer: None,
             metar_layer: Some(PointTileLayerConfig {
                 min_zoom: 5,
@@ -5489,7 +5524,19 @@ mod tests {
     #[test]
     fn vector_manifest_config_controls_airspace_tile_zoom_ranges() {
         let config = map_overlay_config_from_vector_manifest_json(
-            r#"{"airspace":{"reference_tile_min_zoom":3,"reference_tile_max_zoom":11,"label_tile_min_zoom":2,"label_tile_max_zoom":10}}"#,
+            r#"{
+                "point_layers": {
+                    "airport": { "available_zooms": [9] },
+                    "fix": { "available_zooms": [9] },
+                    "nav": { "available_zooms": [9] }
+                },
+                "airspace": {
+                    "reference_tile_min_zoom": 3,
+                    "reference_tile_max_zoom": 11,
+                    "label_tile_min_zoom": 2,
+                    "label_tile_max_zoom": 10
+                }
+            }"#,
         )
         .expect("manifest should parse");
 
@@ -5500,10 +5547,53 @@ mod tests {
     }
 
     #[test]
+    fn vector_manifest_config_controls_point_tile_zoom_levels() {
+        let config = map_overlay_config_from_vector_manifest_json(
+            r#"{
+                "point_layers": {
+                    "airport": { "available_zooms": [9] },
+                    "fix": { "available_zooms": [9] },
+                    "nav": { "available_zooms": [9] }
+                },
+                "airspace": {
+                    "reference_tile_min_zoom": 0,
+                    "reference_tile_max_zoom": 12,
+                    "label_tile_min_zoom": 0,
+                    "label_tile_max_zoom": 12
+                }
+            }"#,
+        )
+        .expect("manifest should parse");
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.36,
+                lon: -121.98,
+            },
+            zoom: 10.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+
+        let density_scaled = visible_point_tile_window_with_display_scale(
+            &config, &viewport, 1200.0, 900.0, None, 3.0,
+        );
+
+        assert!(density_scaled
+            .iter()
+            .any(|tile| tile.layer == "airport" && tile.z == 9));
+        assert!(!density_scaled
+            .iter()
+            .any(|tile| tile.layer == "airport" && tile.z == 8));
+    }
+
+    #[test]
     fn vector_manifest_config_controls_metar_tile_zoom_levels() {
         let config = map_overlay_config_from_vector_manifest_json(
             r#"{
                 "point_layers": {
+                    "airport": { "available_zooms": [9] },
+                    "fix": { "available_zooms": [9] },
+                    "nav": { "available_zooms": [9] },
                     "metars": {
                         "min_zoom": 5,
                         "max_zoom": 7,

@@ -49,6 +49,7 @@ dependencies = [
  "airspace-geometry",
  "chrono",
  "had-key",
+ "had-nav-kv",
  "png",
  "procedure-geometry-types",
  "rusqlite",
@@ -420,6 +421,13 @@ name = "had-key"
 version = "0.1.0"
 
 [[package]]
+name = "had-nav-kv"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+]
+
+[[package]]
 name = "hash32"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -760,6 +768,7 @@ dependencies = [
 name = "preprocessor-core"
 version = "0.1.0"
 dependencies = [
+ "had-nav-kv",
  "serde",
 ]
 

@@ -6844,7 +6844,7 @@ mod tests {
                 "weather/metar-important-stations",
                 br#"{"schema_version":1,"station_ids":["KAAA"]}"#,
             )],
-            64,
+            256,
         );
         attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
         {
@@ -6983,7 +6983,7 @@ mod tests {
                 "weather/metar-important-stations",
                 br#"{"schema_version":1,"station_ids":["KAAA"]}"#,
             )],
-            64,
+            256,
         );
         attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
         {

@@ -44,6 +44,7 @@ dependencies = [
  "app-fixtures",
  "chrono",
  "had-key",
+ "had-nav-kv",
  "image",
  "png",
  "procedure-geometry-types",
@@ -535,6 +536,13 @@ dependencies = [
 [[package]]
 name = "had-key"
 version = "0.1.0"
+
+[[package]]
+name = "had-nav-kv"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "half"

@@ -7,6 +7,7 @@ version.workspace = true
 [dependencies]
 airspace-geometry = { path = "../../../../crates/airspace-geometry" }
 had-key = { path = "../../../../crates/had-key" }
+had-nav-kv = { path = "../../../../crates/had-nav-kv" }
 procedure-geometry-types = { path = "../../../../crates/procedure-geometry-types" }
 chrono.workspace = true
 serde.workspace = true

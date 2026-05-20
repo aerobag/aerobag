@@ -22,7 +22,7 @@ use crate::{
         flight_plan_ui_state, insert_waypoint_best_position,
         materialize_airway_presentation_selection, materialize_procedure, nav_kv_page_resources,
         nav_ref_position, nav_symbol_feature, suggest_waypoint_identifiers, CoreResourceRequest,
-        HadOperationOutcome, HadReadError, UiInvalidation,
+        CoreResourceSource, HadOperationOutcome, HadReadError, UiInvalidation,
     },
     live_feeds::{LiveFeedSseEvent, LiveFeedsState},
     map_follow::{MapFollowSessionState, MapFollowUiState},
@@ -304,6 +304,7 @@ const LIVE_FEED_METARS_STATUS_ID: &str = "live_feed:metars_unavailable";
 const LIVE_FEED_NEXRAD_STATUS_ID: &str = "live_feed:nexrad_unavailable";
 const LIVE_FEED_TFRS_STATUS_ID: &str = "live_feed:tfrs_unavailable";
 const METAR_STATION_IMPORTANCE_STATUS_ID: &str = "map_overlay:metar_station_importance_unavailable";
+const TERRAIN_STATUS_ID: &str = "terrain:warning_unavailable";
 
 #[derive(Debug, Deserialize)]
 struct MetarImportantStationsPayload {
@@ -403,6 +404,141 @@ pub fn drain_session_resource_effects(handle: u32) -> AppResult<Vec<UiSessionRes
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     Ok(std::mem::take(&mut session.pending_resource_effects))
+}
+
+fn sync_layer_unavailable_status_record(
+    session: &mut UiSession,
+    visible_and_unavailable: bool,
+    status_id: &str,
+    record: DataStatusRecord,
+) -> Vec<UiInvalidation> {
+    let changed = if visible_and_unavailable {
+        upsert_data_status_record(session, record)
+    } else {
+        clear_data_status_record(session, status_id)
+    };
+    if changed {
+        vec![UiInvalidation::SessionSnapshot]
+    } else {
+        Vec::new()
+    }
+}
+
+fn sync_live_feed_product_status_record(
+    session: &mut UiSession,
+    visible: bool,
+    payload_loaded: bool,
+    product: &str,
+    generic_detail: &str,
+) -> Vec<UiInvalidation> {
+    let status_id = live_feed_unavailable_status_record(product, String::new()).id;
+    if !visible || payload_loaded {
+        return sync_layer_unavailable_status_record(
+            session,
+            false,
+            &status_id,
+            live_feed_unavailable_status_record(product, String::new()),
+        );
+    }
+    if session.data_status_records.contains_key(&status_id) {
+        return Vec::new();
+    }
+    sync_layer_unavailable_status_record(
+        session,
+        true,
+        &status_id,
+        live_feed_unavailable_status_record(product, generic_detail.to_string()),
+    )
+}
+
+fn sync_live_feed_overlay_status_records(session: &mut UiSession) -> Vec<UiInvalidation> {
+    let mut invalidations = Vec::new();
+    let metars_visible = session.map_layer_state.metars.visible;
+    let metars_loaded = session.metar_payload.is_some();
+    invalidations.extend(sync_live_feed_product_status_record(
+        session,
+        metars_visible,
+        metars_loaded,
+        "metars",
+        "METAR live feed unavailable: no current METAR product is loaded",
+    ));
+
+    let tfrs_visible = session.map_layer_state.vectors.visible;
+    let tfrs_loaded = session.tfr_payload.is_some();
+    invalidations.extend(sync_live_feed_product_status_record(
+        session,
+        tfrs_visible,
+        tfrs_loaded,
+        "tfrs",
+        "TFR live feed unavailable: no current TFR product is loaded",
+    ));
+
+    dedupe_invalidations(&mut invalidations);
+    invalidations
+}
+
+fn terrain_status_record(detail: String) -> DataStatusRecord {
+    DataStatusRecord::new(
+        TERRAIN_STATUS_ID,
+        "TERRAIN",
+        Some("UNAVAIL".to_string()),
+        UiStatusSeverity::Unavailable,
+        true,
+        detail,
+    )
+}
+
+fn terrain_unavailable_detail(status: &crate::TerrainOverlayStatus) -> Option<String> {
+    match status {
+        crate::TerrainOverlayStatus::Hidden | crate::TerrainOverlayStatus::Ready { .. } => None,
+        crate::TerrainOverlayStatus::NoPosition => {
+            Some("Terrain warning unavailable: ownship position is unavailable.".to_string())
+        }
+        crate::TerrainOverlayStatus::NoAltitude => {
+            Some("Terrain warning unavailable: ownship altitude is unavailable.".to_string())
+        }
+        crate::TerrainOverlayStatus::TooManyTiles { count } => Some(format!(
+            "Terrain warning unavailable: viewport requires {count} terrain tiles."
+        )),
+        crate::TerrainOverlayStatus::Unavailable { reason } => {
+            Some(format!("Terrain warning unavailable: {reason}"))
+        }
+    }
+}
+
+fn sync_terrain_status_record(
+    session: &mut UiSession,
+    status: &crate::TerrainOverlayStatus,
+) -> Vec<UiInvalidation> {
+    let changed = if session.map_layer_state.terrain_warning.visible {
+        match terrain_unavailable_detail(status) {
+            Some(detail) => upsert_data_status_record(session, terrain_status_record(detail)),
+            None => clear_data_status_record(session, TERRAIN_STATUS_ID),
+        }
+    } else {
+        clear_data_status_record(session, TERRAIN_STATUS_ID)
+    };
+    if changed {
+        vec![UiInvalidation::SessionSnapshot]
+    } else {
+        Vec::new()
+    }
+}
+
+fn complete_terrain_overlay_outcome(
+    session: &mut UiSession,
+    query: TerrainOverlayQueryResult,
+) -> AppResult<HadOperationOutcome> {
+    let invalidations = sync_terrain_status_record(session, &query.status);
+    Ok(HadOperationOutcome::complete_with_invalidations(
+        serde_json::to_value(query).map_err(internal_json_error)?,
+        invalidations,
+    ))
+}
+
+fn dedupe_invalidations(invalidations: &mut Vec<UiInvalidation>) {
+    invalidations.sort_by_key(|invalidation| format!("{invalidation:?}"));
+    invalidations.dedup();
 }
 
 fn procedure_geometry_status_records_for_plan(plan: &FlightPlan) -> Vec<DataStatusRecord> {
@@ -807,7 +943,10 @@ pub fn set_map_layer_visibility_in_session(
             MapLayerId::Vectors => {
                 clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
             }
-            MapLayerId::WorldBasemap | MapLayerId::TerrainWarning | MapLayerId::OfflineRegions => {}
+            MapLayerId::TerrainWarning => {
+                clear_data_status_record(session, TERRAIN_STATUS_ID);
+            }
+            MapLayerId::WorldBasemap | MapLayerId::OfflineRegions => {}
         }
     }
     snapshot_for_session(session)
@@ -2505,6 +2644,15 @@ pub fn report_session_resource_failure_in_session(
     let session = session_mut(&mut sessions, handle)?;
     if LiveFeedsState::handles_resource(resource_id) {
         record_live_feed_fetch_failure(session, resource_id, message);
+    } else if resource_id.starts_with("terrain/source/")
+        && session.map_layer_state.terrain_warning.visible
+    {
+        upsert_data_status_record(
+            session,
+            terrain_status_record(format!(
+                "Terrain warning unavailable: failed to load terrain source {resource_id}: {message}"
+            )),
+        );
     }
     snapshot_for_session(session)
 }
@@ -2950,7 +3098,9 @@ pub fn get_map_overlay_in_session_with_point_display_scale(
         && !session.map_layer_state.metars.visible
         && !session.map_layer_state.offline_regions.visible
     {
-        let invalidations = sync_map_overlay_status_records(session, Vec::new());
+        let mut invalidations = sync_map_overlay_status_records(session, Vec::new());
+        invalidations.extend(sync_live_feed_overlay_status_records(session));
+        dedupe_invalidations(&mut invalidations);
         return Ok(HadOperationOutcome::complete_with_invalidations(
             serde_json::to_value(empty_map_overlay_query()).map_err(internal_json_error)?,
             invalidations,
@@ -3010,8 +3160,10 @@ pub fn get_map_overlay_in_session_with_point_display_scale(
     if !resources.is_empty() {
         return Ok(HadOperationOutcome::NeedResources { resources });
     }
-    let invalidations =
+    let mut invalidations =
         sync_map_overlay_status_records(session, std::mem::take(&mut overlay.data_status_records));
+    invalidations.extend(sync_live_feed_overlay_status_records(session));
+    dedupe_invalidations(&mut invalidations);
     Ok(HadOperationOutcome::complete_with_invalidations(
         serde_json::to_value(overlay).map_err(internal_json_error)?,
         invalidations,
@@ -3244,16 +3396,14 @@ pub fn get_terrain_overlay_in_session(
     width_px: f64,
     height_px: f64,
 ) -> AppResult<HadOperationOutcome> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
     if !session.map_layer_state.terrain_warning.visible {
         let result = TerrainOverlayQueryResult {
             status: crate::TerrainOverlayStatus::Hidden,
             tile_requests: Vec::new(),
         };
-        return Ok(HadOperationOutcome::complete(
-            serde_json::to_value(result).map_err(internal_json_error)?,
-        ));
+        return complete_terrain_overlay_outcome(session, result);
     }
     let kinematics = session.app_state.ownship.resolved.kinematics.as_ref();
     let has_position = kinematics.is_some_and(|kinematics| {
@@ -3263,12 +3413,19 @@ pub fn get_terrain_overlay_in_session(
     let query =
         crate::query_terrain_overlay(&viewport, width_px, height_px, has_position, has_altitude);
     let resources = terrain_overlay_resources(session, &query);
+    if let Some(reason) = first_unavailable_resource_message(&resources) {
+        return complete_terrain_overlay_outcome(
+            session,
+            TerrainOverlayQueryResult {
+                status: crate::TerrainOverlayStatus::Unavailable { reason },
+                tile_requests: Vec::new(),
+            },
+        );
+    }
     if !resources.is_empty() {
         return Ok(HadOperationOutcome::NeedResources { resources });
     }
-    Ok(HadOperationOutcome::complete(
-        serde_json::to_value(query).map_err(internal_json_error)?,
-    ))
+    complete_terrain_overlay_outcome(session, query)
 }
 
 pub fn get_nexrad_overlay_in_session(
@@ -3750,6 +3907,17 @@ fn terrain_overlay_resources(
     dedupe_resource_requests(resources)
 }
 
+fn first_unavailable_resource_message(resources: &[CoreResourceRequest]) -> Option<String> {
+    resources
+        .iter()
+        .find_map(|resource| match &resource.source {
+            CoreResourceSource::Unavailable { message } => {
+                Some(format!("{}: {message}", resource.id))
+            }
+            _ => None,
+        })
+}
+
 fn terrain_source_tiles(
     request: &crate::TerrainOverlayTileRequest,
 ) -> Vec<crate::TerrainOverlaySourceTile> {
@@ -4172,7 +4340,11 @@ fn default_map_layer_state() -> UiMapLayerState {
 
 #[cfg(test)]
 fn default_data_status_state() -> UiDataStatusState {
-    UiDataStatusState { boxes: Vec::new() }
+    UiDataStatusState {
+        boxes: Vec::new(),
+        launcher_count: None,
+        launcher_severity: UiStatusSeverity::Info,
+    }
 }
 
 fn default_debug_state() -> UiDebugState {
@@ -6648,6 +6820,152 @@ mod tests {
             .iter()
             .any(|box_| box_.id == LIVE_FEED_NEXRAD_STATUS_ID
                 && box_.detail.contains("missing from the live feed index")));
+    }
+
+    #[test]
+    fn visible_metars_without_product_state_records_caution() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        set_map_layer_visibility_in_session(init.handle, "vectors", false).expect("hide vectors");
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            session.map_overlay_config = map_overlay_config_from_vector_manifest_json(
+                r#"{
+                    "point_layers": {
+                        "airport": { "available_zooms": [9] },
+                        "fix": { "available_zooms": [9] },
+                        "nav": { "available_zooms": [9] },
+                        "metars": {
+                            "min_zoom": 5,
+                            "max_zoom": 7,
+                            "available_zooms": [5, 6, 7],
+                            "tile_path_template": "unused-by-live-feeds"
+                        }
+                    },
+                    "airspace": {
+                        "reference_tile_min_zoom": 0,
+                        "reference_tile_max_zoom": 0,
+                        "label_tile_min_zoom": 0,
+                        "label_tile_max_zoom": 0
+                    }
+                }"#,
+            )
+            .expect("metar layer config");
+        }
+
+        let outcome = get_map_overlay_in_session(
+            init.handle,
+            MapViewport {
+                center: LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                },
+                zoom: 8.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            1024.0,
+            768.0,
+        )
+        .expect("query map overlay");
+        let HadOperationOutcome::Complete { invalidations, .. } = outcome else {
+            panic!("expected complete map overlay query");
+        };
+        assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let metars = snapshot
+            .data_status_state
+            .boxes
+            .iter()
+            .find(|box_| box_.id == LIVE_FEED_METARS_STATUS_ID)
+            .expect("metars caution");
+        assert_eq!(metars.label, "METARS");
+        assert_eq!(metars.value.as_deref(), Some("UNAVAIL"));
+        assert!(metars.drives_caution);
+        assert!(metars.detail.contains("no current METAR product is loaded"));
+    }
+
+    #[test]
+    fn visible_vectors_without_tfr_product_state_records_caution() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let store = crate::navkv::nav_kv_store_for_test(
+            &[("vector/manifest", minimal_vector_manifest_json().as_bytes())],
+            256,
+        );
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+
+        let outcome = get_map_overlay_in_session(
+            init.handle,
+            MapViewport {
+                center: LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                },
+                zoom: 8.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            1024.0,
+            768.0,
+        )
+        .expect("query map overlay");
+        let HadOperationOutcome::Complete { invalidations, .. } = outcome else {
+            panic!("expected complete map overlay query");
+        };
+        assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let tfrs = snapshot
+            .data_status_state
+            .boxes
+            .iter()
+            .find(|box_| box_.id == LIVE_FEED_TFRS_STATUS_ID)
+            .expect("tfrs caution");
+        assert_eq!(tfrs.label, "TFRS");
+        assert_eq!(tfrs.value.as_deref(), Some("UNAVAIL"));
+        assert!(tfrs.drives_caution);
+        assert!(tfrs.detail.contains("no current TFR product is loaded"));
+    }
+
+    #[test]
+    fn terrain_overlay_without_altitude_records_caution() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+
+        let outcome = get_terrain_overlay_in_session(
+            init.handle,
+            MapViewport {
+                center: LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                },
+                zoom: 8.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            1024.0,
+            768.0,
+        )
+        .expect("query terrain overlay");
+        let HadOperationOutcome::Complete { invalidations, .. } = outcome else {
+            panic!("expected complete terrain overlay query");
+        };
+        assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let terrain = snapshot
+            .data_status_state
+            .boxes
+            .iter()
+            .find(|box_| box_.id == TERRAIN_STATUS_ID)
+            .expect("terrain caution");
+        assert_eq!(terrain.label, "TERRAIN");
+        assert_eq!(terrain.value.as_deref(), Some("UNAVAIL"));
+        assert!(terrain.drives_caution);
+        assert!(terrain.detail.contains("ownship position is unavailable"));
     }
 
     #[test]

@@ -1344,16 +1344,8 @@ internal fun DataStatusBadge(
     val hasStatus = dataStatusState.boxes.isNotEmpty()
     if (!hasStatus) return
 
-    val cautionBoxes = dataStatusState.boxes.filter { it.drivesCaution }
-    val activeCautionBoxes = cautionBoxes.filter { !it.hushed }
-    val unHushedCount = activeCautionBoxes.size
-    val launcherLabel = if (unHushedCount > 0) "\u26A0 $unHushedCount" else "STATUS"
-    val accentColor = statusSeverityColor(
-        activeCautionBoxes
-            .maxByOrNull { statusSeverityRank(it.severity) }
-            ?.severity
-            ?: UiStatusSeverity.Info,
-    )
+    val launcherLabel = dataStatusState.launcherCount?.let { "\u26A0 $it" } ?: "STATUS"
+    val accentColor = statusSeverityColor(dataStatusState.launcherSeverity)
     Box(modifier = modifier.wrapContentSize(unbounded = true, align = Alignment.TopEnd)) {
         MenuDock(
             launcherLabel = launcherLabel,
@@ -1364,7 +1356,7 @@ internal fun DataStatusBadge(
                 MenuDockOption(
                     key = "status",
                     label = launcherLabel,
-                    active = unHushedCount > 0,
+                    active = dataStatusState.launcherCount != null,
                     accentColor = accentColor,
                 ) {},
             ),
@@ -1462,14 +1454,6 @@ private fun statusSeverityColor(severity: UiStatusSeverity): Color = when (sever
     UiStatusSeverity.Caution -> Color(0xFFFFD35A)
     UiStatusSeverity.Warning -> Color(0xFFFF8B5A)
     UiStatusSeverity.Unavailable -> Color(0xFFB7BDC7)
-}
-
-private fun statusSeverityRank(severity: UiStatusSeverity): Int = when (severity) {
-    UiStatusSeverity.Ok -> 0
-    UiStatusSeverity.Info -> 1
-    UiStatusSeverity.Unavailable -> 2
-    UiStatusSeverity.Caution -> 3
-    UiStatusSeverity.Warning -> 4
 }
 
 @Composable

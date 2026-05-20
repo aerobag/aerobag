@@ -33,6 +33,7 @@ import {
   airportCircleMarkerPath,
   airportFuelMarkerPath,
   airportOpenMarkerSymbol,
+  dataStatusWarningSymbol,
   heliportHPath,
   mapSelectionSpotSymbol,
   metarBknSymbol,
@@ -72,7 +73,6 @@ import {
   type UiMapLayerToggleState,
   type UiDebugState,
   type UiDataStatusState,
-  type UiStatusSeverity,
   type UiSession,
   type UiSessionSnapshot,
   type UiInvalidation,
@@ -1020,6 +1020,8 @@ function navSymbolColor(token: string | null | undefined): string | undefined {
       return "var(--metar-color)";
     case "pirep_symbol":
       return "var(--pirep-color)";
+    case "data_status_symbol_ink":
+      return "var(--data-status-symbol-ink)";
     default:
       return undefined;
   }
@@ -1355,6 +1357,8 @@ export default function App() {
     map_layer_state: defaultUiMapLayerState(),
     data_status_state: {
       boxes: [],
+      launcher_count: null,
+      launcher_severity: "info",
     },
     debug_state: initialDebugState,
     raster_map: null,
@@ -2641,6 +2645,10 @@ function MapPage(props: {
   const pinchRef = useRef<ReturnType<typeof createPinchSnapshot> | null>(null);
   const clickCandidateRef = useRef<{ pointerId: number; start: ScreenPoint; latest: ScreenPoint } | null>(null);
   const gestureActiveRef = useRef(false);
+  const viewportGestureUntilRef = useRef(0);
+  const followSyncSerialRef = useRef(0);
+  const [followSyncPendingSerial, setFollowSyncPendingSerial] = useState(0);
+  const [followTargetRetryToken, setFollowTargetRetryToken] = useState(0);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
   const [mapSelection, setMapSelection] = useState<{
     point: ScreenPoint;
@@ -2682,14 +2690,20 @@ function MapPage(props: {
           if (task.altitudeBucket !== terrainCurrentBucketRef.current) {
             continue;
           }
+          if (task.altitudeBucket == null) {
+            continue;
+          }
           terrainTileInFlightRef.current.add(cacheKey);
           try {
             const tileStartedAt = performance.now();
             if (task.altitudeBucket !== terrainCurrentBucketRef.current) {
               continue;
             }
+            if (task.altitudeBucket == null) {
+              continue;
+            }
             const renderStartedAt = performance.now();
-            const rawBytes = await session.renderTerrainOverlayTileByKey(task.request.key, task.altitudeBucket ?? Number.NaN);
+            const rawBytes = await session.renderTerrainOverlayTileByKey(task.request.key, task.altitudeBucket);
             const renderElapsedMs = performance.now() - renderStartedAt;
             const parsed = parseTerrainRawRgba(rawBytes);
             terrainTileCacheRef.current.set(cacheKey, parsed);
@@ -3023,6 +3037,11 @@ function MapPage(props: {
       setTerrainOverlay({ query: null, images: [] });
       return;
     }
+    if (terrainAltitudeBucket == null) {
+      terrainPendingFrameRef.current = null;
+      terrainRenderQueueRef.current.clear();
+      setTerrainOverlay((current) => current.images.length === 0 ? current : { query: current.query, images: [] });
+    }
     const session = uiSession;
     terrainRenderSessionRef.current = session;
     let cancelled = false;
@@ -3043,6 +3062,17 @@ function MapPage(props: {
           zoom: viewport.zoom,
         });
         terrainPendingFrameRef.current = null;
+        setTerrainOverlay({ query, images: [] });
+        return;
+      }
+      if (terrainAltitudeBucket == null) {
+        debugLog("terrain.overlay.no_altitude_bucket", {
+          status: query.status,
+          request_count: query.tile_requests.length,
+          zoom: viewport.zoom,
+        });
+        terrainPendingFrameRef.current = null;
+        terrainRenderQueueRef.current.clear();
         setTerrainOverlay({ query, images: [] });
         return;
       }
@@ -3459,11 +3489,19 @@ function MapPage(props: {
     onViewportChange(next);
   }
 
+  function noteViewportGesture(durationMs = 300) {
+    viewportGestureUntilRef.current = Math.max(viewportGestureUntilRef.current, Date.now() + durationMs);
+  }
+
   function syncFollowStateForViewport(nextViewport: MapViewportState) {
     if (!uiSession || !mapFollowUiState.following || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return;
     }
+    const serial = followSyncSerialRef.current + 1;
+    followSyncSerialRef.current = serial;
+    setFollowSyncPendingSerial(serial);
     debugLog("map.follow.sync.request", {
+      serial,
       zoom: nextViewport.zoom,
       center_world_x: nextViewport.centerWorldX,
       center_world_y: nextViewport.centerWorldY,
@@ -3471,8 +3509,19 @@ function MapPage(props: {
     });
     void uiSession
       .syncMapFollow(nextViewport, surfaceSize.width, surfaceSize.height)
-      .then(props.onPlaybackSnapshotChange)
-      .catch(() => {});
+      .then((nextSnapshot) => {
+        if (followSyncSerialRef.current !== serial) {
+          debugLog("map.follow.sync.stale_response", { serial, latest_serial: followSyncSerialRef.current });
+          return;
+        }
+        props.onPlaybackSnapshotChange(nextSnapshot);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (followSyncSerialRef.current === serial) {
+          setFollowSyncPendingSerial(0);
+        }
+      });
   }
 
   useEffect(() => {
@@ -3494,12 +3543,21 @@ function MapPage(props: {
     if (!mapFollowUiState.following || !mapFollowTargetViewport) {
       return;
     }
-    if (gestureActiveRef.current) {
+    const remainingGestureMs = viewportGestureUntilRef.current - Date.now();
+    if (gestureActiveRef.current || followSyncPendingSerial !== 0 || remainingGestureMs > 0) {
       debugLog("map.follow.target.skip_during_gesture", {
+        pending_sync_serial: followSyncPendingSerial,
+        remaining_gesture_ms: Math.max(0, remainingGestureMs),
         zoom: mapFollowTargetViewport.zoom,
         center_lat: mapFollowTargetViewport.center.lat,
         center_lon: mapFollowTargetViewport.center.lon,
       });
+      if (!gestureActiveRef.current && followSyncPendingSerial === 0 && remainingGestureMs > 0) {
+        const timeout = window.setTimeout(() => {
+          setFollowTargetRetryToken((token) => token + 1);
+        }, remainingGestureMs + 16);
+        return () => window.clearTimeout(timeout);
+      }
       return;
     }
     const nextViewport = mapViewportFromCore(mapFollowTargetViewport);
@@ -3511,7 +3569,7 @@ function MapPage(props: {
       });
       updateViewport(nextViewport);
     }
-  }, [mapFollowTargetViewport, mapFollowUiState.following, viewport]);
+  }, [followSyncPendingSerial, followTargetRetryToken, mapFollowTargetViewport, mapFollowUiState.following, viewport]);
 
   function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
     if (trayGroup.scrimOpen || mapSelection) {
@@ -3563,6 +3621,7 @@ function MapPage(props: {
       const dx = point.x - dragRef.current.last.x;
       const dy = point.y - dragRef.current.last.y;
       const nextViewport = dragViewport(viewportRef.current, dx, dy);
+      noteViewportGesture();
       debugLog("map.drag.viewport", {
         dx,
         dy,
@@ -3598,6 +3657,7 @@ function MapPage(props: {
         surfaceSize.width,
         surfaceSize.height,
       );
+      noteViewportGesture();
       debugLog("map.pinch.viewport", {
         zoom: nextViewport.zoom,
         center_world_x: nextViewport.centerWorldX,
@@ -3674,6 +3734,7 @@ function MapPage(props: {
       surfaceSize.height,
       viewportRef.current.zoom - event.deltaY / 360,
     );
+    noteViewportGesture();
     updateViewport(nextViewport);
     syncFollowStateForViewport(nextViewport);
   }
@@ -3690,6 +3751,7 @@ function MapPage(props: {
       surfaceSize.height,
       viewportRef.current.zoom + 0.75,
     );
+    noteViewportGesture();
     updateViewport(nextViewport);
     syncFollowStateForViewport(nextViewport);
   }
@@ -3706,6 +3768,7 @@ function MapPage(props: {
       surfaceSize.height,
       nextZoom,
     );
+    noteViewportGesture();
     updateViewport(nextViewport);
     syncFollowStateForViewport(nextViewport);
   }
@@ -7812,8 +7875,8 @@ function DataStatusDock(props: {
   const launcherRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
   const [panelPosition, setPanelPosition] = useState<{ left: number; top: number } | null>(null);
-  const cautionBoxes = props.dataStatusState.boxes.filter((box) => box.drives_caution);
-  const activeCautionBoxes = cautionBoxes.filter((box) => !box.hushed);
+  const launcherCount = props.dataStatusState.launcher_count;
+  const hasLauncherCount = launcherCount != null;
   const hasStatus = props.dataStatusState.boxes.length > 0;
   useEffect(() => {
     if (!props.open) {
@@ -7850,16 +7913,14 @@ function DataStatusDock(props: {
   if (!hasStatus) {
     return null;
   }
-  const severity = activeCautionBoxes
-    .map((box) => box.severity)
-    .sort((left, right) => statusSeverityRank(right) - statusSeverityRank(left))[0] ?? "info";
+  const severity = props.dataStatusState.launcher_severity;
 
   return (
     <div className="dataStatusDock">
       <button
         ref={launcherRef}
         type="button"
-        className={`dataStatusLauncher statusSeverity-${severity}${props.open ? " isOpen" : ""}${activeCautionBoxes.length === 0 ? " isQuiet" : ""}`}
+        className={`dataStatusLauncher statusSeverity-${severity}${props.open ? " isOpen" : ""}${hasLauncherCount ? "" : " isQuiet"}`}
         aria-expanded={props.open}
         aria-label="Data status"
         onPointerDown={stopPointer}
@@ -7867,8 +7928,10 @@ function DataStatusDock(props: {
         onDoubleClick={stopDoubleClick}
         onClick={props.onToggle}
       >
-        <span className="dataStatusLauncherSymbol" aria-hidden="true">⚠</span>
-        <span className="dataStatusLauncherCount">{activeCautionBoxes.length}</span>
+        <svg className="dataStatusLauncherSymbol" viewBox="-50 -50 100 100" aria-hidden="true" focusable="false">
+          <RenderNavSymbolLayers layers={dataStatusWarningSymbol} />
+        </svg>
+        {hasLauncherCount ? <span className="dataStatusLauncherCount">{launcherCount}</span> : null}
       </button>
       {props.open && typeof document !== "undefined" ? createPortal(
         <section
@@ -7916,23 +7979,6 @@ function DataStatusDock(props: {
       ) : null}
     </div>
   );
-}
-
-function statusSeverityRank(severity: UiStatusSeverity): number {
-  switch (severity) {
-    case "ok":
-      return 0;
-    case "info":
-      return 1;
-    case "unavailable":
-      return 2;
-    case "caution":
-      return 3;
-    case "warning":
-      return 4;
-    default:
-      return 0;
-  }
 }
 
 function SituationTransportRow(props: {

@@ -42,6 +42,8 @@ pub struct UiDataStatusBox {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiDataStatusState {
     pub boxes: Vec<UiDataStatusBox>,
+    pub launcher_count: Option<String>,
+    pub launcher_severity: UiStatusSeverity,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -106,27 +108,37 @@ pub fn project_data_status_state(
             .then_with(|| left.label.cmp(&right.label))
             .then_with(|| left.id.cmp(&right.id))
     });
+    let boxes = records
+        .into_iter()
+        .map(|record| {
+            let hushed = record.hushable && hushed_ids.contains(&record.id);
+            UiDataStatusBox {
+                id: record.id.clone(),
+                label: record.label.clone(),
+                value: record.value.clone(),
+                severity: record.severity,
+                drives_caution: record.drives_caution,
+                detail: record.detail.clone(),
+                actions: if record.hushable {
+                    vec![hush_action(&record.id, hushed)]
+                } else {
+                    Vec::new()
+                },
+                hushed,
+            }
+        })
+        .collect::<Vec<_>>();
+    let active_launcher_boxes = boxes.iter().filter(|box_| !box_.hushed).collect::<Vec<_>>();
+    let launcher_severity = active_launcher_boxes
+        .iter()
+        .map(|box_| box_.severity)
+        .max_by_key(|severity| severity_rank(*severity))
+        .unwrap_or(UiStatusSeverity::Info);
+    let active_launcher_count = active_launcher_boxes.iter().count();
     UiDataStatusState {
-        boxes: records
-            .into_iter()
-            .map(|record| {
-                let hushed = record.hushable && hushed_ids.contains(&record.id);
-                UiDataStatusBox {
-                    id: record.id.clone(),
-                    label: record.label.clone(),
-                    value: record.value.clone(),
-                    severity: record.severity,
-                    drives_caution: record.drives_caution,
-                    detail: record.detail.clone(),
-                    actions: if record.hushable {
-                        vec![hush_action(&record.id, hushed)]
-                    } else {
-                        Vec::new()
-                    },
-                    hushed,
-                }
-            })
-            .collect(),
+        boxes,
+        launcher_count: (active_launcher_count > 0).then(|| active_launcher_count.to_string()),
+        launcher_severity,
     }
 }
 
@@ -151,5 +163,63 @@ fn severity_rank(severity: UiStatusSeverity) -> u8 {
         UiStatusSeverity::Caution => 3,
         UiStatusSeverity::Info => 2,
         UiStatusSeverity::Ok => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launcher_presentation_is_core_owned_and_blank_when_zero() {
+        let mut records = BTreeMap::new();
+        records.insert(
+            "metars".to_string(),
+            DataStatusRecord::new(
+                "metars",
+                "METARs",
+                None,
+                UiStatusSeverity::Unavailable,
+                true,
+                "METAR feed unavailable.",
+            ),
+        );
+        records.insert(
+            "airspace".to_string(),
+            DataStatusRecord::new(
+                "airspace",
+                "Airspace",
+                Some("LIMIT".to_string()),
+                UiStatusSeverity::Info,
+                false,
+                "If it appears in the data-status panel, the launcher counts it.",
+            ),
+        );
+        records.insert(
+            "warning_without_legacy_flag".to_string(),
+            DataStatusRecord::new(
+                "warning_without_legacy_flag",
+                "Warning",
+                None,
+                UiStatusSeverity::Warning,
+                false,
+                "Severity, not a platform-side flag, drives launcher presentation.",
+            ),
+        );
+
+        let state = project_data_status_state(&records, &BTreeSet::new());
+        assert_eq!(state.launcher_count, Some("3".to_string()));
+        assert_eq!(state.launcher_severity, UiStatusSeverity::Warning);
+
+        let hushed_state = project_data_status_state(
+            &records,
+            &BTreeSet::from([
+                "airspace".to_string(),
+                "metars".to_string(),
+                "warning_without_legacy_flag".to_string(),
+            ]),
+        );
+        assert_eq!(hushed_state.launcher_count, None);
+        assert_eq!(hushed_state.launcher_severity, UiStatusSeverity::Info);
     }
 }

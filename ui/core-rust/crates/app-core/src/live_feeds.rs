@@ -469,6 +469,7 @@ impl LiveFeedsState {
             {
                 continue;
             }
+            invalidations.push(UiInvalidation::SessionSnapshot);
             match product.as_str() {
                 "nexrad" => {
                     invalidations.push(UiInvalidation::NexradOverlay);
@@ -830,6 +831,7 @@ mod tests {
         let HadOperationOutcome::Complete { invalidations, .. } = outcome else {
             panic!("expected complete");
         };
+        assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
         assert!(invalidations.contains(&UiInvalidation::MapOverlay));
         assert!(invalidations.contains(&UiInvalidation::DebugPanel));
     }
@@ -1171,6 +1173,7 @@ mod tests {
         let HadOperationOutcome::Complete { invalidations, .. } = outcome else {
             panic!("expected complete");
         };
+        assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
         assert!(invalidations.contains(&UiInvalidation::MapOverlay));
         assert!(invalidations.contains(&UiInvalidation::DebugPanel));
     }

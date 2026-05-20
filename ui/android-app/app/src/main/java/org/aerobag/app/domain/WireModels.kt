@@ -865,6 +865,13 @@ data class WireTerrainOverlayStatusTooManyTiles(
 ) : WireTerrainOverlayStatus
 
 @Serializable
+@SerialName("unavailable")
+data class WireTerrainOverlayStatusUnavailable(
+    override val state: String = "unavailable",
+    val reason: String,
+) : WireTerrainOverlayStatus
+
+@Serializable
 @SerialName("ready")
 data class WireTerrainOverlayStatusReady(
     override val state: String = "ready",
@@ -896,6 +903,7 @@ object WireTerrainOverlayStatusSerializer : JsonContentPolymorphicSerializer<Wir
             "no_position" -> WireTerrainOverlayStatusNoPosition.serializer()
             "no_altitude" -> WireTerrainOverlayStatusNoAltitude.serializer()
             "too_many_tiles" -> WireTerrainOverlayStatusTooManyTiles.serializer()
+            "unavailable" -> WireTerrainOverlayStatusUnavailable.serializer()
             "ready" -> WireTerrainOverlayStatusReady.serializer()
             else -> WireTerrainOverlayStatusHidden.serializer()
         }

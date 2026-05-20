@@ -686,6 +686,8 @@ button {
 }
 
 .dataStatusLauncher {
+  --data-status-symbol-ink: var(--theme-data-status-warning-stroke);
+
   width: calc(var(--thumb) * 0.5);
   min-width: calc(var(--thumb) * 0.5);
   height: calc(var(--thumb) * 0.5);
@@ -704,6 +706,8 @@ button {
 }
 
 .dataStatusLauncher.isQuiet {
+  --data-status-symbol-ink: var(--theme-data-status-quiet-stroke);
+
   border-color: var(--theme-data-status-quiet-stroke);
   background: var(--theme-data-status-quiet-bg);
   color: #111;
@@ -718,17 +722,10 @@ button {
   position: absolute;
   left: 50%;
   top: 50%;
-  color: #111;
-  font-size: calc(var(--thumb) * 0.39);
-  font-weight: 950;
-  line-height: 1;
-  -webkit-text-stroke: calc(var(--thumb) * 0.018) var(--theme-data-status-warning-stroke);
-  paint-order: stroke fill;
+  width: calc(var(--thumb) * 0.414);
+  height: calc(var(--thumb) * 0.414);
+  overflow: visible;
   transform: translate(-50%, -50%);
-}
-
-.dataStatusLauncher.isQuiet .dataStatusLauncherSymbol {
-  -webkit-text-stroke-color: var(--theme-data-status-quiet-stroke);
 }
 
 .dataStatusLauncherCount {

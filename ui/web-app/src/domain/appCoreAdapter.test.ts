@@ -47,6 +47,8 @@ const snapshotJson = JSON.stringify({
   },
   data_status_state: {
     boxes: [],
+    launcher_count: null,
+    launcher_severity: "info",
   },
 });
 

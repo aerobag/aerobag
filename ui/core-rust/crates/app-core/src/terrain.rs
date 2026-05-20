@@ -109,6 +109,7 @@ pub enum TerrainOverlayStatus {
     NoPosition,
     NoAltitude,
     TooManyTiles { count: usize },
+    Unavailable { reason: String },
     Ready { count: usize },
 }
 

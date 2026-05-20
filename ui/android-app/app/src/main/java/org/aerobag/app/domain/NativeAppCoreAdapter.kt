@@ -330,6 +330,7 @@ sealed interface TerrainOverlayStatus {
     data object NoPosition : TerrainOverlayStatus
     data object NoAltitude : TerrainOverlayStatus
     data class TooManyTiles(val count: Int) : TerrainOverlayStatus
+    data class Unavailable(val reason: String) : TerrainOverlayStatus
     data class Ready(val count: Int) : TerrainOverlayStatus
 }
 
@@ -1674,6 +1675,8 @@ private data class WireUiDataStatusBox(
 @kotlinx.serialization.Serializable
 private data class WireUiDataStatusState(
     val boxes: List<WireUiDataStatusBox>,
+    val launcher_count: String? = null,
+    val launcher_severity: WireUiStatusSeverity = WireUiStatusSeverity.Info,
 )
 
 @kotlinx.serialization.Serializable
@@ -1816,6 +1819,8 @@ data class UiDataStatusBox(
 
 data class UiDataStatusState(
     val boxes: List<UiDataStatusBox>,
+    val launcherCount: String?,
+    val launcherSeverity: UiStatusSeverity,
 )
 
 data class UiDebugState(
@@ -1936,6 +1941,8 @@ private fun WireUiDataStatusBox.toUi() = UiDataStatusBox(
 
 private fun WireUiDataStatusState.toUi() = UiDataStatusState(
     boxes = boxes.map { it.toUi() },
+    launcherCount = launcher_count,
+    launcherSeverity = launcher_severity.toUi(),
 )
 
 private fun WireUiDebugState.toUi() = UiDebugState(
@@ -2057,6 +2064,7 @@ private fun WireTerrainOverlayStatus.toUi(): TerrainOverlayStatus = when (this) 
     is WireTerrainOverlayStatusNoPosition -> TerrainOverlayStatus.NoPosition
     is WireTerrainOverlayStatusNoAltitude -> TerrainOverlayStatus.NoAltitude
     is WireTerrainOverlayStatusTooManyTiles -> TerrainOverlayStatus.TooManyTiles(count)
+    is WireTerrainOverlayStatusUnavailable -> TerrainOverlayStatus.Unavailable(reason)
     is WireTerrainOverlayStatusReady -> TerrainOverlayStatus.Ready(count)
 }
 

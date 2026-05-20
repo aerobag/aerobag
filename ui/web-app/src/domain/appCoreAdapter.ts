@@ -114,6 +114,8 @@ export type UiDataStatusBox = {
 
 export type UiDataStatusState = {
   boxes: UiDataStatusBox[];
+  launcher_count: string | null;
+  launcher_severity: UiStatusSeverity;
 };
 
 export type MapLayerId =
@@ -398,6 +400,7 @@ export type TerrainOverlayStatus =
   | { state: "no_position" }
   | { state: "no_altitude" }
   | { state: "too_many_tiles"; count: number }
+  | { state: "unavailable"; reason: string }
   | { state: "ready"; count: number };
 
 export type TerrainOverlayTileRequest = {

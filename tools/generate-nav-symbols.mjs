@@ -217,6 +217,7 @@ export const obstacleTallDotY = ${JSON.stringify(spec.obstacle_dot.tall_y)};
 export const obstacleDotRadius = ${JSON.stringify(spec.obstacle_dot.radius)};
 export const mapSelectionSpotPegPath = ${JSON.stringify(spec.paths.map_selection_spot_peg)};
 export const mapSelectionSpotDotPath = ${JSON.stringify(spec.paths.map_selection_spot_dot)};
+export const dataStatusWarningSymbol = ${JSON.stringify(symbolSource("data_status_warning"), null, 2)} satisfies readonly NavSymbolLayer[];
 export const airportOpenMarkerSymbol = ${JSON.stringify(symbolSource("airport_open_marker"), null, 2)} satisfies readonly NavSymbolLayer[];
 export const mapSelectionSpotSymbol = ${JSON.stringify(symbolSource("map_selection_spot"), null, 2)} satisfies readonly NavSymbolLayer[];
 export const metarClearSymbol = ${JSON.stringify(symbolSource("metar_clear"), null, 2)} satisfies readonly NavSymbolLayer[];
@@ -405,6 +406,10 @@ fun obstacleShortPath(center: Offset, scale: Float): Path =
 
 fun obstacleTallPath(center: Offset, scale: Float): Path =
     symbolPath(obstacleTallCommands, center, scale)
+
+fun dataStatusWarningSymbol(center: Offset, scale: Float): List<NavSymbolLayer> = listOf(
+    ${ktSymbolLayers("data_status_warning")}
+)
 
 fun airportOpenMarkerSymbol(center: Offset, scale: Float): List<NavSymbolLayer> = listOf(
     ${ktSymbolLayers("airport_open_marker")}

@@ -251,9 +251,10 @@ fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, Path
             .join(&snapshot_label)
     });
     let output_dir = build_root.join("output");
-    let manifest_path = output_dir.join(format!("obstacles_{snapshot_label}.manifest"));
-    let stats_path = output_dir.join("stats.json");
-    let zip_path = output_dir.join(format!("obstacles_{snapshot_label}.zip"));
+    let had_dir = output_dir.join("had");
+    let manifest_path = had_dir.join("manifest.json");
+    let stats_path = had_dir.join("stats.json");
+    let zip_path = had_dir.join(format!("obstacles_{snapshot_label}.zip"));
     if manifest_path.is_file() && stats_path.is_file() && zip_path.is_file() {
         return Ok((manifest_path, stats_path, zip_path));
     }

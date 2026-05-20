@@ -1518,6 +1518,8 @@ mod tests {
                 path: source_path,
                 value,
             },
+            state_sha256: None,
+            state_payload_kind: None,
             delta_policy: DeltaPolicy::KeyedRecords {
                 records_key: "records".to_string(),
                 count_key: Some("record_count".to_string()),

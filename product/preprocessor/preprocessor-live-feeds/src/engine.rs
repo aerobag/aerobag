@@ -11,6 +11,10 @@ use std::{
 
 use anyhow::{bail, Context};
 use chrono::{DateTime, SecondsFormat, Utc};
+use had_nav_kv::{
+    apply_nav_kv_delta, build_nav_kv_delta, nav_kv_canonical_sha256_from_pairs, NavKvDelta,
+    NavKvPair, NavKvRoot,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -194,6 +198,8 @@ pub struct BuiltLiveFeedState {
     pub product: String,
     pub version: String,
     pub payload: LiveFeedStatePayload,
+    pub state_sha256: Option<String>,
+    pub state_payload_kind: Option<String>,
     pub delta_policy: DeltaPolicy,
     pub precomputed_delta: Option<LiveFeedRecordDelta>,
     pub changed_count_if_no_delta: usize,
@@ -205,6 +211,9 @@ pub enum DeltaPolicy {
     KeyedRecords {
         records_key: String,
         count_key: Option<String>,
+    },
+    NavKv {
+        pairs: Vec<NavKvPair>,
     },
 }
 
@@ -237,6 +246,8 @@ pub struct LiveFeedVersionManifest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LivePayloadRef {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     pub url: String,
     pub bytes: u64,
     pub blob_sha256: String,
@@ -264,6 +275,23 @@ pub struct LiveFeedRecordDelta {
     pub top_level_removed: Vec<String>,
     pub changed: BTreeMap<String, Value>,
     pub removed: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LiveFeedNavKvDelta {
+    pub schema_version: u32,
+    pub product: String,
+    pub from_version: String,
+    pub to_version: String,
+    pub from_state_sha256: String,
+    pub to_state_sha256: String,
+    pub entries: Vec<LiveFeedNavKvDeltaEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LiveFeedNavKvDeltaEntry {
+    pub key: String,
+    pub value: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -596,6 +624,8 @@ impl<C: Clock> LiveFeedPublisher for FileLiveFeedPublisher<C> {
             product,
             version,
             payload,
+            state_sha256,
+            state_payload_kind,
             delta_policy,
             precomputed_delta,
             changed_count_if_no_delta,
@@ -606,6 +636,8 @@ impl<C: Clock> LiveFeedPublisher for FileLiveFeedPublisher<C> {
                 version,
                 path,
                 value,
+                state_sha256,
+                state_payload_kind,
                 delta_policy,
                 precomputed_delta,
                 changed_count_if_no_delta,
@@ -620,6 +652,8 @@ impl<C: Clock> LiveFeedPublisher for FileLiveFeedPublisher<C> {
                 root,
                 manifest_path,
                 manifest_value,
+                state_sha256,
+                state_payload_kind,
                 delta_policy,
                 precomputed_delta,
                 changed_count_if_no_delta,
@@ -635,6 +669,8 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         version: String,
         source_path: PathBuf,
         state_value: Value,
+        state_sha256: Option<String>,
+        state_payload_kind: Option<String>,
         delta_policy: DeltaPolicy,
         precomputed_delta: Option<LiveFeedRecordDelta>,
         changed_count_if_no_delta: usize,
@@ -649,6 +685,8 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             version,
             state_path,
             state_value,
+            state_sha256,
+            state_payload_kind,
             delta_policy,
             precomputed_delta,
             changed_count_if_no_delta,
@@ -663,6 +701,8 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         source_root: PathBuf,
         manifest_path: PathBuf,
         manifest_value: Value,
+        state_sha256: Option<String>,
+        state_payload_kind: Option<String>,
         delta_policy: DeltaPolicy,
         precomputed_delta: Option<LiveFeedRecordDelta>,
         changed_count_if_no_delta: usize,
@@ -684,6 +724,8 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             version,
             state_path,
             manifest_value,
+            state_sha256,
+            state_payload_kind,
             delta_policy,
             precomputed_delta,
             changed_count_if_no_delta,
@@ -697,6 +739,8 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         version: String,
         state_path: PathBuf,
         state_value: Value,
+        state_sha256: Option<String>,
+        state_payload_kind: Option<String>,
         delta_policy: DeltaPolicy,
         precomputed_delta: Option<LiveFeedRecordDelta>,
         changed_count_if_no_delta: usize,
@@ -705,7 +749,9 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         let state_bytes = fs::read(&state_path)
             .with_context(|| format!("failed to read {}", state_path.display()))?;
         let state_blob_sha256 = sha256_hex(&state_bytes);
-        let state_sha256 = canonical_json_sha256(&state_value)?;
+        let state_sha256 = state_sha256
+            .map(Ok)
+            .unwrap_or_else(|| canonical_json_sha256(&state_value))?;
         let previous_entry = read_live_feeds_current(&self.root)?
             .and_then(|current| current.products.get(&product).cloned());
 
@@ -796,8 +842,80 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             previous_version = Some(previous.current.clone());
             delta_path = Some(path);
         }
+        if let (Some(previous), DeltaPolicy::NavKv { pairs }) =
+            (previous_entry.as_ref(), &delta_policy)
+        {
+            let previous_state_path = self.root.join(&previous.state_url);
+            let previous_state_dir = previous_state_path
+                .parent()
+                .with_context(|| format!("{} has no parent", previous_state_path.display()))?;
+            let previous_pairs = read_nav_kv_pairs_from_dir(previous_state_dir)?;
+            let previous_sha256 = nav_kv_canonical_sha256_from_pairs(&previous_pairs);
+            if previous_sha256 != previous.state_sha256 {
+                bail!(
+                    "previous {product} HAD state hash mismatch for {}: expected {}, got {}",
+                    previous.current,
+                    previous.state_sha256,
+                    previous_sha256
+                );
+            }
+            let delta = build_nav_kv_delta(&previous_pairs, pairs)
+                .map_err(|err| anyhow::anyhow!("failed to build {product} HAD delta: {err}"))?;
+            let applied = apply_nav_kv_delta(&previous_pairs, &delta)
+                .map_err(|err| anyhow::anyhow!("failed to verify {product} HAD delta: {err}"))?;
+            let applied_sha256 = nav_kv_canonical_sha256_from_pairs(&applied);
+            if applied_sha256 != state_sha256 {
+                bail!(
+                    "{product} HAD delta target hash mismatch for {version}: expected {}, got {}",
+                    state_sha256,
+                    applied_sha256
+                );
+            }
+            changed_count = delta
+                .entries
+                .iter()
+                .filter(|entry| entry.value.is_some())
+                .count();
+            removed_count = delta
+                .entries
+                .iter()
+                .filter(|entry| entry.value.is_none())
+                .count();
+            let product_delta_dir = self.root.join("deltas").join(&product);
+            fs::create_dir_all(&product_delta_dir)
+                .with_context(|| format!("failed to create {}", product_delta_dir.display()))?;
+            let path = product_delta_dir.join(format!(
+                "{}__{}.nav-kv-delta.json",
+                previous.current, version
+            ));
+            write_json_pretty_file(
+                &path,
+                &live_feed_nav_kv_delta_from_delta(
+                    &product,
+                    &previous.current,
+                    &version,
+                    &previous.state_sha256,
+                    &state_sha256,
+                    &delta,
+                ),
+            )?;
+            let bytes =
+                fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+            delta_ref = Some(LiveDeltaRef {
+                from_version: previous.current.clone(),
+                from_state_sha256: previous.state_sha256.clone(),
+                to_version: version.clone(),
+                to_state_sha256: state_sha256.clone(),
+                url: live_feeds_relative_url(&self.root, &path)?,
+                bytes: bytes.len() as u64,
+                blob_sha256: sha256_hex(&bytes),
+            });
+            previous_version = Some(previous.current.clone());
+            delta_path = Some(path);
+        }
 
         let state_ref = LivePayloadRef {
+            kind: state_payload_kind,
             url: live_feeds_relative_url(&self.root, &state_path)?,
             bytes: state_bytes.len() as u64,
             blob_sha256: state_blob_sha256,
@@ -966,6 +1084,42 @@ pub fn apply_record_delta(
         }
     }
     Ok(result)
+}
+
+fn live_feed_nav_kv_delta_from_delta(
+    product: &str,
+    from_version: &str,
+    to_version: &str,
+    from_state_sha256: &str,
+    to_state_sha256: &str,
+    delta: &NavKvDelta,
+) -> LiveFeedNavKvDelta {
+    LiveFeedNavKvDelta {
+        schema_version: 1,
+        product: product.to_string(),
+        from_version: from_version.to_string(),
+        to_version: to_version.to_string(),
+        from_state_sha256: from_state_sha256.to_string(),
+        to_state_sha256: to_state_sha256.to_string(),
+        entries: delta
+            .entries
+            .iter()
+            .map(|entry| LiveFeedNavKvDeltaEntry {
+                key: entry.key.clone(),
+                value: entry.value.clone(),
+            })
+            .collect(),
+    }
+}
+
+pub(crate) fn read_nav_kv_pairs_from_dir(state_dir: &Path) -> anyhow::Result<Vec<NavKvPair>> {
+    let root_path = state_dir.join("root");
+    let root_bytes =
+        fs::read(&root_path).with_context(|| format!("failed to read {}", root_path.display()))?;
+    let root = NavKvRoot::parse(&root_bytes)
+        .map_err(|err| anyhow::anyhow!("failed to parse {}: {err}", root_path.display()))?;
+    root.pairs(|page| fs::read(state_dir.join(format!("page_{page:04}"))).ok())
+        .ok_or_else(|| anyhow::anyhow!("failed to read HAD pages under {}", state_dir.display()))
 }
 
 fn state_object(state: &Value) -> anyhow::Result<&serde_json::Map<String, Value>> {
@@ -1433,6 +1587,8 @@ mod tests {
                 path: state_path,
                 value: state_value.clone(),
             },
+            state_sha256: None,
+            state_payload_kind: None,
             delta_policy: DeltaPolicy::None,
             precomputed_delta: None,
             changed_count_if_no_delta: 1,
@@ -1462,83 +1618,65 @@ mod tests {
     }
 
     #[test]
-    fn obstacle_delta_fixture_reconstructs_captured_trace() -> anyhow::Result<()> {
-        let states = obstacle_delta_fixture_states()?;
+    fn obstacle_had_delta_round_trips_replaces_adds_and_deletes() -> anyhow::Result<()> {
+        let from = vec![
+            nav_kv_pair("obstacle/tile/z12/x000001/y000001", "old-a"),
+            nav_kv_pair("obstacle/tile/z12/x000001/y000002", "old-b"),
+            nav_kv_pair("obstacle/tile/z12/x000001/y000003", "old-c"),
+        ];
+        let to = vec![
+            nav_kv_pair("obstacle/tile/z12/x000001/y000001", "new-a"),
+            nav_kv_pair("obstacle/tile/z12/x000001/y000003", "old-c"),
+            nav_kv_pair("obstacle/tile/z12/x000001/y000004", "new-d"),
+        ];
+        let delta = build_nav_kv_delta(&from, &to).map_err(anyhow::Error::msg)?;
+        let applied = apply_nav_kv_delta(&from, &delta).map_err(anyhow::Error::msg)?;
 
-        println!(
-            "{:<24} {:>10} {:>10} {:>8} {:>8}",
-            "to_version", "state_raw", "delta_raw", "changed", "removed"
-        );
-        let mut ratios = Vec::new();
-        for pair in states.windows(2) {
-            let from = &pair[0];
-            let to = &pair[1];
-            let delta = build_record_delta("obstacles", "obstacles_by_id", from, to)?;
-            let applied =
-                apply_record_delta("obstacles_by_id", Some("obstacle_count"), from, &delta)?;
-            assert_eq!(
-                applied, *to,
-                "delta {} -> {} did not reconstruct target state",
-                delta.from_version, delta.to_version
-            );
-
-            let state_bytes = serde_json::to_vec(to)?;
-            let delta_bytes = serde_json::to_vec(&delta)?;
-            let ratio = delta_bytes.len() as f64 / state_bytes.len() as f64;
-            ratios.push(ratio);
-            println!(
-                "{:<24} {:>10} {:>10} {:>8} {:>8}",
-                delta.to_version,
-                state_bytes.len(),
-                delta_bytes.len(),
-                delta.changed.len(),
-                delta.removed.len()
-            );
-        }
+        assert_eq!(applied, to);
         assert!(
-            ratios.iter().all(|ratio| *ratio < 0.01),
-            "expected all obstacle deltas to be less than 1% of full state: {ratios:?}"
+            applied
+                .iter()
+                .all(|pair| pair.key != "obstacle/tile/z12/x000001/y000002"),
+            "deleted HAD keys must not survive delta application"
+        );
+        assert_eq!(
+            nav_kv_canonical_sha256_from_pairs(&applied),
+            nav_kv_canonical_sha256_from_pairs(&to)
         );
         Ok(())
     }
 
     #[test]
-    fn obstacle_live_feed_publishes_delta_from_previous_state() -> anyhow::Result<()> {
+    fn obstacle_live_feed_publishes_had_delta_from_previous_state() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let live_root = temp.path().join("live-feeds");
         let publisher = FileLiveFeedPublisher::new(
-            live_root,
+            live_root.clone(),
             FixedClock::new(Utc.with_ymd_and_hms(2026, 5, 18, 1, 2, 3).unwrap()),
         );
-        let first_path = temp.path().join("obstacles-v1.json");
-        let second_path = temp.path().join("obstacles-v2.json");
-        let first = obstacle_test_state(
-            "v1",
-            &[
-                ("obs:a", serde_json::json!({"id": "obs:a", "label": "1000"})),
-                ("obs:b", serde_json::json!({"id": "obs:b", "label": "2000"})),
-            ],
-        );
-        let second = obstacle_test_state(
-            "v2",
-            &[
-                ("obs:a", serde_json::json!({"id": "obs:a", "label": "1001"})),
-                ("obs:c", serde_json::json!({"id": "obs:c", "label": "3000"})),
-            ],
-        );
-        write_json_pretty_file(&first_path, &first)?;
-        write_json_pretty_file(&second_path, &second)?;
+        let first_pairs = vec![
+            nav_kv_pair("obstacle/tile/z12/x000001/y000001", "old-a"),
+            nav_kv_pair("obstacle/tile/z12/x000001/y000002", "old-b"),
+        ];
+        let second_pairs = vec![
+            nav_kv_pair("obstacle/tile/z12/x000001/y000001", "new-a"),
+            nav_kv_pair("obstacle/tile/z12/x000001/y000003", "new-c"),
+        ];
+        let first = write_test_nav_kv_state(temp.path(), "obstacles", "v1", &first_pairs)?;
+        let second = write_test_nav_kv_state(temp.path(), "obstacles", "v2", &second_pairs)?;
 
         publisher.publish(BuiltLiveFeedState {
             product: "obstacles".to_string(),
             version: "v1".to_string(),
-            payload: LiveFeedStatePayload::JsonFile {
-                path: first_path,
-                value: first.clone(),
+            payload: LiveFeedStatePayload::Directory {
+                root: first.root,
+                manifest_path: first.manifest_path,
+                manifest_value: first.manifest_value,
             },
-            delta_policy: DeltaPolicy::KeyedRecords {
-                records_key: "obstacles_by_id".to_string(),
-                count_key: Some("obstacle_count".to_string()),
+            state_sha256: Some(first.state_sha256),
+            state_payload_kind: Some("nav_kv".to_string()),
+            delta_policy: DeltaPolicy::NavKv {
+                pairs: first_pairs.clone(),
             },
             precomputed_delta: None,
             changed_count_if_no_delta: 2,
@@ -1546,13 +1684,15 @@ mod tests {
         let result = publisher.publish(BuiltLiveFeedState {
             product: "obstacles".to_string(),
             version: "v2".to_string(),
-            payload: LiveFeedStatePayload::JsonFile {
-                path: second_path,
-                value: second.clone(),
+            payload: LiveFeedStatePayload::Directory {
+                root: second.root,
+                manifest_path: second.manifest_path,
+                manifest_value: second.manifest_value,
             },
-            delta_policy: DeltaPolicy::KeyedRecords {
-                records_key: "obstacles_by_id".to_string(),
-                count_key: Some("obstacle_count".to_string()),
+            state_sha256: Some(second.state_sha256.clone()),
+            state_payload_kind: Some("nav_kv".to_string()),
+            delta_policy: DeltaPolicy::NavKv {
+                pairs: second_pairs.clone(),
             },
             precomputed_delta: None,
             changed_count_if_no_delta: 2,
@@ -1560,17 +1700,28 @@ mod tests {
 
         let delta_path = result
             .delta_path
-            .expect("second publish should write delta");
-        let delta: LiveFeedRecordDelta = serde_json::from_slice(&fs::read(delta_path)?)?;
+            .expect("second publish should write HAD delta");
+        let delta: LiveFeedNavKvDelta = serde_json::from_slice(&fs::read(delta_path)?)?;
         assert_eq!(
-            delta.changed.keys().cloned().collect::<Vec<_>>(),
-            vec!["obs:a".to_string(), "obs:c".to_string()]
+            delta
+                .entries
+                .iter()
+                .map(|entry| (entry.key.as_str(), entry.value.is_some()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("obstacle/tile/z12/x000001/y000001", true),
+                ("obstacle/tile/z12/x000001/y000002", false),
+                ("obstacle/tile/z12/x000001/y000003", true)
+            ]
         );
-        assert_eq!(delta.removed, vec!["obs:b".to_string()]);
         assert_eq!(
-            apply_record_delta("obstacles_by_id", Some("obstacle_count"), &first, &delta)?,
-            second
+            delta.to_state_sha256,
+            nav_kv_canonical_sha256_from_pairs(&second_pairs)
         );
+        let version_manifest: LiveFeedVersionManifest =
+            serde_json::from_slice(&fs::read(live_root.join("versions/obstacles/v2.json"))?)?;
+        assert_eq!(version_manifest.state.kind.as_deref(), Some("nav_kv"));
+        assert_eq!(version_manifest.state.state_sha256, second.state_sha256);
         Ok(())
     }
 
@@ -1606,6 +1757,8 @@ mod tests {
                 path: first_path,
                 value: first,
             },
+            state_sha256: None,
+            state_payload_kind: None,
             delta_policy: DeltaPolicy::KeyedRecords {
                 records_key: "records".to_string(),
                 count_key: Some("record_count".to_string()),
@@ -1638,6 +1791,8 @@ mod tests {
                 path: second_path,
                 value: second,
             },
+            state_sha256: None,
+            state_payload_kind: None,
             delta_policy: DeltaPolicy::KeyedRecords {
                 records_key: "records".to_string(),
                 count_key: Some("record_count".to_string()),
@@ -1675,6 +1830,8 @@ mod tests {
                     path: first_path,
                     value: first,
                 },
+                state_sha256: None,
+                state_payload_kind: None,
                 delta_policy: DeltaPolicy::KeyedRecords {
                     records_key: "records".to_string(),
                     count_key: Some("record_count".to_string()),
@@ -1701,6 +1858,8 @@ mod tests {
                     path: second_path,
                     value: second,
                 },
+                state_sha256: None,
+                state_payload_kind: None,
                 delta_policy: DeltaPolicy::KeyedRecords {
                     records_key: "records".to_string(),
                     count_key: Some("record_count".to_string()),
@@ -2090,6 +2249,8 @@ mod tests {
             product: product.to_string(),
             version: version.to_string(),
             payload: LiveFeedStatePayload::JsonFile { path, value },
+            state_sha256: None,
+            state_payload_kind: None,
             delta_policy: DeltaPolicy::KeyedRecords {
                 records_key: records_key.to_string(),
                 count_key: Some("record_count".to_string()),
@@ -2145,98 +2306,54 @@ mod tests {
             .with_context(|| format!("failed to parse metars.json from {}", path.display()))
     }
 
-    fn obstacle_test_state(version: &str, records: &[(&str, Value)]) -> Value {
-        let obstacles_by_id = records
-            .iter()
-            .map(|(id, record)| ((*id).to_string(), record.clone()))
-            .collect::<serde_json::Map<_, _>>();
-        serde_json::json!({
-            "schema_version": 1,
-            "product_id": "obstacles",
-            "version_label": version,
-            "obstacle_count": obstacles_by_id.len(),
-            "obstacles_by_id": obstacles_by_id
-        })
+    struct TestNavKvState {
+        root: PathBuf,
+        manifest_path: PathBuf,
+        manifest_value: Value,
+        state_sha256: String,
     }
 
-    fn obstacle_delta_fixture_states() -> anyhow::Result<Vec<Value>> {
-        let test_artifacts_root = std::env::var_os("AEROBAG_TEST_ARTIFACTS_ROOT")
-            .or_else(|| std::env::var_os("AEROBAG_TEST_ARTIFACTS"))
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("..")
-                    .join("..")
-                    .join("..")
-                    .join("..")
-                    .join("aerobag-test-artifacts")
-            });
-        let fixture_root = test_artifacts_root.join("obstacles").join("delta-trace");
-        let mut zip_paths = fs::read_dir(&fixture_root)
-            .with_context(|| format!("failed to read {}", fixture_root.display()))?
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("zip"))
-            .filter(|path| {
-                path.file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .is_some_and(|stem| !stem.contains('_'))
-            })
-            .collect::<Vec<_>>();
-        zip_paths.sort();
-        assert!(
-            zip_paths.len() >= 4,
-            "expected several obstacle fixture states"
-        );
-        zip_paths
-            .iter()
-            .map(|path| obstacle_state_from_legacy_zip(path))
-            .collect::<anyhow::Result<Vec<_>>>()
-    }
-
-    fn obstacle_state_from_legacy_zip(path: &Path) -> anyhow::Result<Value> {
-        let file = fs::File::open(path)
-            .with_context(|| format!("failed to open obstacle fixture {}", path.display()))?;
-        let mut archive = ZipArchive::new(file)
-            .with_context(|| format!("failed to read obstacle fixture zip {}", path.display()))?;
-        let version_label = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .context("obstacle fixture zip had no utf-8 stem")?
-            .to_string();
-        let mut obstacles_by_id = serde_json::Map::new();
-        for index in 0..archive.len() {
-            let mut member = archive.by_index(index)?;
-            let name = member.name().to_string();
-            if !name.starts_with("points/obstacle/12/") || !name.ends_with(".json") {
-                continue;
-            }
-            let mut bytes = Vec::new();
-            member
-                .read_to_end(&mut bytes)
-                .with_context(|| format!("failed to read {name} from {}", path.display()))?;
-            let tile: Value = serde_json::from_slice(&bytes)
-                .with_context(|| format!("failed to parse {name} from {}", path.display()))?;
-            let records = tile
-                .get("records")
-                .and_then(Value::as_array)
-                .with_context(|| format!("{name} missing records array"))?;
-            for record in records {
-                let id = record
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .with_context(|| format!("{name} had obstacle record without id"))?;
-                obstacles_by_id.insert(id.to_string(), record.clone());
-            }
+    fn nav_kv_pair(key: &str, value: &str) -> NavKvPair {
+        NavKvPair {
+            key: key.to_string(),
+            value: value.as_bytes().to_vec(),
         }
-        Ok(serde_json::json!({
+    }
+
+    fn write_test_nav_kv_state(
+        root: &Path,
+        product: &str,
+        version: &str,
+        pairs: &[NavKvPair],
+    ) -> anyhow::Result<TestNavKvState> {
+        let state_dir = root.join(format!("{product}-{version}"));
+        fs::create_dir_all(&state_dir)?;
+        let built =
+            had_nav_kv::build_nav_kv_strict(pairs.to_vec(), 1024).map_err(anyhow::Error::msg)?;
+        fs::write(state_dir.join("root"), &built.root_bytes)?;
+        for (index, page) in built.pages.iter().enumerate() {
+            fs::write(state_dir.join(format!("page_{index:04}")), page)?;
+        }
+        let state_sha256 = nav_kv_canonical_sha256_from_pairs(pairs);
+        let manifest_value = serde_json::json!({
             "schema_version": 1,
-            "product_id": "obstacles",
-            "version_label": version_label,
-            "obstacle_count": obstacles_by_id.len(),
-            "obstacles_by_id": obstacles_by_id
-        }))
+            "product_id": product,
+            "version_label": version,
+            "encoding": format!("had-nav-kv-v{}", had_nav_kv::VERSION),
+            "root": "root",
+            "page_path_template": "page_{page:04}",
+            "page_count": built.pages.len(),
+            "page_size": built.page_size,
+            "state_sha256": state_sha256
+        });
+        let manifest_path = state_dir.join("manifest.json");
+        write_json_pretty_file(&manifest_path, &manifest_value)?;
+        Ok(TestNavKvState {
+            root: state_dir,
+            manifest_path,
+            manifest_value,
+            state_sha256,
+        })
     }
 
     fn deflated_zip_member_size(bytes: &[u8]) -> anyhow::Result<usize> {

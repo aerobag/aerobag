@@ -79,6 +79,8 @@ pub fn json_live_feed_state(
             path: state_source_path,
             value: state_value,
         },
+        state_sha256: None,
+        state_payload_kind: None,
         delta_policy,
         precomputed_delta: None,
         changed_count_if_no_delta,
@@ -101,7 +103,35 @@ pub fn directory_live_feed_state(
             manifest_path: manifest_source_path,
             manifest_value,
         },
+        state_sha256: None,
+        state_payload_kind: None,
         delta_policy: DeltaPolicy::None,
+        precomputed_delta: None,
+        changed_count_if_no_delta,
+    }
+}
+
+pub fn nav_kv_live_feed_state(
+    product: &str,
+    version: String,
+    state_source_dir: PathBuf,
+    manifest_source_path: PathBuf,
+    manifest_value: Value,
+    state_sha256: String,
+    pairs: Vec<had_nav_kv::NavKvPair>,
+    changed_count_if_no_delta: usize,
+) -> BuiltLiveFeedState {
+    BuiltLiveFeedState {
+        product: product.to_string(),
+        version,
+        payload: LiveFeedStatePayload::Directory {
+            root: state_source_dir,
+            manifest_path: manifest_source_path,
+            manifest_value,
+        },
+        state_sha256: Some(state_sha256),
+        state_payload_kind: Some("nav_kv".to_string()),
+        delta_policy: DeltaPolicy::NavKv { pairs },
         precomputed_delta: None,
         changed_count_if_no_delta,
     }
@@ -478,21 +508,21 @@ impl ProductBuilder for ObstaclesLiveFeedBuilder {
             version_label: version.clone(),
             generated_at_utc: Some(normalized_event_time(event.observed_at_utc)),
         })?;
-        let state_value = read_json_value(&result.structured_json_path)?;
-        let obstacle_count = state_value
-            .get("obstacles_by_id")
-            .and_then(Value::as_object)
-            .map_or(0, serde_json::Map::len);
-        Ok(json_live_feed_state(
+        let state_value = read_json_value(&result.manifest_path)?;
+        let state_source_dir = result
+            .manifest_path
+            .parent()
+            .context("obstacle HAD manifest has no parent")?
+            .to_path_buf();
+        Ok(nav_kv_live_feed_state(
             "obstacles",
             version,
-            result.structured_json_path,
+            state_source_dir,
+            result.manifest_path,
             state_value,
-            DeltaPolicy::KeyedRecords {
-                records_key: "obstacles_by_id".to_string(),
-                count_key: Some("obstacle_count".to_string()),
-            },
-            obstacle_count,
+            result.state_sha256,
+            result.had_pairs,
+            result.had_page_paths.len(),
         ))
     }
 }

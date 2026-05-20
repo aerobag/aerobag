@@ -822,6 +822,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "had-nav-kv",
  "image",
  "preprocessor-core",
  "preprocessor-fetch",
@@ -902,11 +903,13 @@ dependencies = [
  "chrono",
  "geo",
  "had-key",
+ "had-nav-kv",
  "preprocessor-zip",
  "quick-xml",
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "zip",
 ]
 

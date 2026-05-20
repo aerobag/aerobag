@@ -11,11 +11,14 @@ use serde_json::Value;
 
 use crate::{
     engine::{
-        read_json_value, write_json_pretty_file, BuiltLiveFeedState, CompiledFixtureEvent,
-        CompiledFixtureTimeline, DeltaPolicy, LiveFeedRecordDelta, ProductBuilder, UpstreamEvent,
-        UpstreamSource,
+        read_json_value, read_nav_kv_pairs_from_dir, write_json_pretty_file, BuiltLiveFeedState,
+        CompiledFixtureEvent, CompiledFixtureTimeline, DeltaPolicy, LiveFeedRecordDelta,
+        ProductBuilder, UpstreamEvent, UpstreamSource,
     },
-    products::{directory_live_feed_state, json_live_feed_state, live_nexrad_tile_count},
+    products::{
+        directory_live_feed_state, json_live_feed_state, live_nexrad_tile_count,
+        nav_kv_live_feed_state,
+    },
 };
 
 #[derive(Debug, Deserialize)]
@@ -29,6 +32,8 @@ struct FixtureVersionManifest {
 
 #[derive(Debug, Deserialize)]
 struct FixturePayloadRef {
+    #[serde(default)]
+    kind: Option<String>,
     url: String,
     state_sha256: String,
 }
@@ -389,6 +394,24 @@ impl ProductBuilder for CompiledFixtureStateBuilder {
             } else {
                 1
             };
+            if is_nav_kv_fixture_state(manifest.state.kind.as_deref(), &state_value) {
+                let pairs = read_nav_kv_pairs_from_dir(&state_root)?;
+                let state_sha256 = state_value
+                    .get("state_sha256")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| manifest.state.state_sha256.clone());
+                return Ok(nav_kv_live_feed_state(
+                    &event.product,
+                    event.source_id.clone(),
+                    state_root,
+                    state_path,
+                    state_value,
+                    state_sha256,
+                    pairs,
+                    count,
+                ));
+            }
             return Ok(directory_live_feed_state(
                 &event.product,
                 event.source_id.clone(),
@@ -411,13 +434,6 @@ impl ProductBuilder for CompiledFixtureStateBuilder {
                     count_key: Some("metar_count".to_string()),
                 },
                 json_count(&state_value, "metar_count", "metars_by_station"),
-            ),
-            "obstacles" => (
-                DeltaPolicy::KeyedRecords {
-                    records_key: "obstacles_by_id".to_string(),
-                    count_key: Some("obstacle_count".to_string()),
-                },
-                json_count(&state_value, "obstacle_count", "obstacles_by_id"),
             ),
             "tfrs" => (
                 DeltaPolicy::None,
@@ -456,6 +472,9 @@ fn precomputed_simulated_delta(
     event: &UpstreamEvent,
     state_value: &Value,
 ) -> anyhow::Result<Option<LiveFeedRecordDelta>> {
+    if event.product != "metars" {
+        return Ok(None);
+    }
     let Some(previous_source_id) = event.previous_source_id.as_ref() else {
         return Ok(None);
     };
@@ -508,6 +527,14 @@ fn precomputed_simulated_delta(
         }
     }
     Ok(Some(delta))
+}
+
+fn is_nav_kv_fixture_state(kind: Option<&str>, state_value: &Value) -> bool {
+    kind == Some("nav_kv")
+        || state_value
+            .get("encoding")
+            .and_then(Value::as_str)
+            .is_some_and(|encoding| encoding.starts_with("had-nav-kv-v"))
 }
 
 fn simulated_fixture_version(source_version: &str, observed_at_utc: DateTime<Utc>) -> String {

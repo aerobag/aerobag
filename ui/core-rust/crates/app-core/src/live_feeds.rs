@@ -25,6 +25,7 @@ struct LiveFeedProductState {
     version_manifest_url: Option<String>,
     state_url: Option<String>,
     expected_state_sha256: Option<String>,
+    state_kind: Option<String>,
     delta_from_previous: Option<LiveFeedDeltaRef>,
     version_manifest: Option<Value>,
     state_manifest: Option<Value>,
@@ -78,6 +79,8 @@ struct VersionManifest {
 
 #[derive(Debug, Deserialize)]
 struct VersionStateRef {
+    #[serde(default)]
+    kind: Option<String>,
     url: String,
     state_sha256: String,
 }
@@ -232,6 +235,7 @@ impl LiveFeedsState {
             }
             entry.state_url = Some(manifest.state.url);
             entry.expected_state_sha256 = Some(manifest.state.state_sha256);
+            entry.state_kind = manifest.state.kind;
             entry.delta_from_previous = manifest.delta_from_previous;
             entry.version_manifest =
                 Some(serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?);
@@ -245,7 +249,19 @@ impl LiveFeedsState {
                 return Ok(());
             }
             if let Some(expected) = &entry.expected_state_sha256 {
-                let actual = canonical_json_sha256(&parsed)?;
+                let actual = if entry.state_kind.as_deref() == Some("nav_kv") {
+                    parsed
+                        .get("state_sha256")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            invalid_live_feed(format!(
+                                "nav_kv state {resource_id} missing state_sha256"
+                            ))
+                        })?
+                        .to_string()
+                } else {
+                    canonical_json_sha256(&parsed)?
+                };
                 if &actual != expected {
                     return Err(invalid_live_feed(format!(
                         "state hash mismatch for {resource_id}: expected {expected}, got {actual}"
@@ -374,6 +390,7 @@ impl LiveFeedsState {
         entry.version_manifest_url = Some(version_manifest_url);
         entry.state_url = state_url;
         entry.expected_state_sha256 = state_sha256;
+        entry.state_kind = None;
         entry.delta_from_previous = None;
         entry.version_manifest = None;
         Ok(())
@@ -566,13 +583,12 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn supports_record_delta(product: &str) -> bool {
-    matches!(product, "metars" | "obstacles")
+    matches!(product, "metars")
 }
 
 fn record_delta_schema(product: &str) -> Option<(&'static str, &'static str)> {
     match product {
         "metars" => Some(("metars_by_station", "metar_count")),
-        "obstacles" => Some(("obstacles_by_id", "obstacle_count")),
         _ => None,
     }
 }
@@ -837,46 +853,6 @@ mod tests {
     }
 
     #[test]
-    fn obstacle_delta_applies_keyed_record_changes() {
-        let from = serde_json::json!({
-            "schema_version": 1,
-            "product_id": "obstacles",
-            "version_label": "from",
-            "obstacle_count": 2,
-            "obstacles_by_id": {
-                "obs:a": {"id": "obs:a", "label": "old"},
-                "obs:b": {"id": "obs:b", "label": "removed"}
-            }
-        });
-        let delta = LiveFeedRecordDelta {
-            product: "obstacles".to_string(),
-            from_version: "from".to_string(),
-            to_version: "to".to_string(),
-            top_level_changed: serde_json::Map::new(),
-            top_level_removed: Vec::new(),
-            changed: serde_json::Map::from_iter([
-                (
-                    "obs:a".to_string(),
-                    serde_json::json!({"id": "obs:a", "label": "new"}),
-                ),
-                (
-                    "obs:c".to_string(),
-                    serde_json::json!({"id": "obs:c", "label": "added"}),
-                ),
-            ]),
-            removed: vec!["obs:b".to_string()],
-        };
-
-        let applied = apply_live_feed_record_delta(&from, &delta).unwrap();
-
-        assert_eq!(applied["version_label"], "to");
-        assert_eq!(applied["obstacle_count"], 2);
-        assert_eq!(applied["obstacles_by_id"]["obs:a"]["label"], "new");
-        assert_eq!(applied["obstacles_by_id"]["obs:c"]["label"], "added");
-        assert!(applied["obstacles_by_id"].get("obs:b").is_none());
-    }
-
-    #[test]
     fn record_delta_round_trips_changed_top_level_metar_fields() {
         let from = serde_json::json!({
             "schema_version": 3,
@@ -912,6 +888,59 @@ mod tests {
         let applied = apply_live_feed_record_delta(&from, &delta).unwrap();
 
         assert_eq!(applied, to);
+    }
+
+    #[test]
+    fn nav_kv_state_manifest_validates_embedded_state_hash() {
+        let mut state = LiveFeedsState::default();
+        state
+            .ingest_resource(
+                "live_feeds/current",
+                br#"{
+                    "products": {
+                        "obstacles": {
+                            "current": "v1",
+                            "version_manifest_url": "versions/obstacles/v1.json",
+                            "state_url": "states/obstacles/v1/manifest.json",
+                            "state_sha256": "had-hash"
+                        }
+                    }
+                }"#,
+            )
+            .unwrap();
+        state
+            .ingest_resource(
+                "live_feeds/version/obstacles/v1",
+                br#"{
+                    "product": "obstacles",
+                    "version": "v1",
+                    "state": {
+                        "kind": "nav_kv",
+                        "url": "states/obstacles/v1/manifest.json",
+                        "state_sha256": "had-hash"
+                    }
+                }"#,
+            )
+            .unwrap();
+
+        state
+            .ingest_resource(
+                "live_feeds/state/obstacles/v1",
+                br#"{
+                    "schema_version": 1,
+                    "product_id": "obstacles",
+                    "version_label": "v1",
+                    "encoding": "had-nav-kv-v1",
+                    "root": "root",
+                    "page_path_template": "page_{page:04}",
+                    "state_sha256": "had-hash"
+                }"#,
+            )
+            .unwrap();
+        assert_eq!(
+            state.product_state_manifest("obstacles").unwrap()["state_sha256"],
+            "had-hash"
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@ use anyhow::{bail, Context};
 use chrono::{DateTime, Utc};
 use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use had_key::component as had_key_component;
+use had_nav_kv::{build_nav_kv_strict, nav_kv_canonical_sha256_from_pairs, NavKvPair};
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -135,8 +136,11 @@ pub struct BuildObstacleDatasetRequest {
 pub struct BuildObstacleDatasetResult {
     pub manifest_path: PathBuf,
     pub stats_path: PathBuf,
-    pub structured_json_path: PathBuf,
+    pub had_root_path: PathBuf,
+    pub had_page_paths: Vec<PathBuf>,
     pub zip_path: PathBuf,
+    pub state_sha256: String,
+    pub had_pairs: Vec<NavKvPair>,
 }
 
 #[derive(Debug, Clone)]
@@ -347,14 +351,23 @@ struct VectorAggregateTileFile {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ObstacleLiveState {
+struct ObstacleHadManifest {
     schema_version: u32,
     product_id: String,
     version_label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     generated_at_utc: Option<DateTime<Utc>>,
+    encoding: String,
+    root: String,
+    page_path_template: String,
+    page_count: u32,
+    page_size: u32,
+    logical_bytes_len: u32,
+    value_bytes_len: u32,
+    state_sha256: String,
     obstacle_count: usize,
-    obstacles_by_id: BTreeMap<String, PointRecord>,
+    point_layers: BTreeMap<String, PointLayerManifest>,
+    files: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1359,42 +1372,21 @@ pub fn build_obstacle_dataset(
         .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
 
     let obstacle_points = load_obstacle_points(&request.input_dir)?;
-    let stats_path = request.output_dir.join("stats.json");
-    let manifest_path = request
-        .output_dir
-        .join(format!("obstacles_{}.manifest", request.version_label));
-    let structured_json_path = request.output_dir.join("obstacles.json");
-    let zip_path = request
-        .output_dir
-        .join(format!("obstacles_{}.zip", request.version_label));
+    let had_dir = request.output_dir.join("had");
+    fs::create_dir_all(&had_dir)
+        .with_context(|| format!("failed to create {}", had_dir.display()))?;
+    let stats_path = had_dir.join("stats.json");
+    let manifest_path = had_dir.join("manifest.json");
+    let zip_filename = format!("obstacles_{}.zip", request.version_label);
+    let zip_path = had_dir.join(&zip_filename);
 
     let available_zooms = (OBSTACLE_LAYER_MIN_ZOOM..=OBSTACLE_LAYER_MAX_ZOOM).collect::<Vec<_>>();
-    let tile_path_template = "points/obstacle/{z}/{x}/{y}.json".to_string();
+    let tile_path_template = "obstacle/tile/z{z:02}/x{x:06}/y{y:06}".to_string();
 
     let mut files = BTreeMap::new();
     let mut point_layers = BTreeMap::new();
-    let mut zip_members = vec![
-        ("obstacles".to_string(), manifest_path.clone()),
-        ("obstacles.json".to_string(), structured_json_path.clone()),
-        ("stats.json".to_string(), stats_path.clone()),
-    ];
+    let mut had_pairs = Vec::new();
     let mut zoom_level_stats = Vec::new();
-
-    let obstacles_by_id = obstacle_points
-        .iter()
-        .map(|point| (point.record.id.clone(), point.record.clone()))
-        .collect::<BTreeMap<_, _>>();
-    write_json_pretty(
-        &structured_json_path,
-        &ObstacleLiveState {
-            schema_version: 1,
-            product_id: "obstacles".to_string(),
-            version_label: request.version_label.clone(),
-            generated_at_utc: request.generated_at_utc.clone(),
-            obstacle_count: obstacles_by_id.len(),
-            obstacles_by_id,
-        },
-    )?;
 
     for &(zoom, min_agl_ft) in OBSTACLE_MIN_AGL_BY_ZOOM {
         let filtered = zoom <= OBSTACLE_THINNING_MAX_ZOOM;
@@ -1405,10 +1397,9 @@ pub fn build_obstacle_dataset(
             .collect::<Vec<_>>();
         let point_tiles = build_point_tiles(&filtered_points, zoom);
         for tile in &point_tiles {
-            let relative_path = point_tile_relative_path("obstacle", tile.z, tile.x, tile.y);
-            let points_path = request.output_dir.join(&relative_path);
-            write_json_pretty(
-                &points_path,
+            push_nav_kv_json(
+                &mut had_pairs,
+                obstacle_tile_key(tile.z, tile.x, tile.y),
                 &PointTileFile {
                     schema_version: 1,
                     layer: "obstacle".to_string(),
@@ -1418,7 +1409,6 @@ pub fn build_obstacle_dataset(
                     records: tile.records.clone(),
                 },
             )?;
-            zip_members.push((relative_path, points_path));
         }
         zoom_level_stats.push(PointLayerZoomLevelStats {
             zoom,
@@ -1434,11 +1424,13 @@ pub fn build_obstacle_dataset(
         });
     }
 
+    files.insert("root".to_string(), "root".to_string());
     files.insert(
-        "point_tiles_obstacle".to_string(),
-        tile_path_template.clone(),
+        "page_path_template".to_string(),
+        "page_{page:04}".to_string(),
     );
     files.insert("stats".to_string(), "stats.json".to_string());
+    files.insert("package_zip".to_string(), zip_filename.clone());
     point_layers.insert(
         "obstacle".to_string(),
         PointLayerManifest {
@@ -1460,58 +1452,92 @@ pub fn build_obstacle_dataset(
         },
     );
 
-    write_json_pretty(
-        &stats_path,
-        &VectorStats {
-            schema_version: 1,
-            version_label: request.version_label.clone(),
-            points: PointStats {
-                total_points: obstacle_points.len(),
-                layer_counts: BTreeMap::from([("obstacle".to_string(), obstacle_points.len())]),
-                layers: BTreeMap::from([(
-                    "obstacle".to_string(),
-                    PointLayerStats {
-                        zoom: OBSTACLE_LAYER_ZOOM,
-                        tile_count: zoom_level_stats
-                            .iter()
-                            .find(|stats| stats.zoom == OBSTACLE_LAYER_ZOOM)
-                            .map(|stats| stats.tile_count)
-                            .unwrap_or(0),
-                        max_points_in_tile: zoom_level_stats
-                            .iter()
-                            .find(|stats| stats.zoom == OBSTACLE_LAYER_ZOOM)
-                            .map(|stats| stats.max_points_in_tile)
-                            .unwrap_or(0),
-                        zoom_levels: Some(zoom_level_stats),
-                    },
-                )]),
-            },
-            airspace: None,
-            diagnostic_error_count: 0,
-            warnings: vec![
-                "obstacle dataset is published separately from the cycle bundle".to_string(),
-            ],
+    let stats = VectorStats {
+        schema_version: 1,
+        version_label: request.version_label.clone(),
+        points: PointStats {
+            total_points: obstacle_points.len(),
+            layer_counts: BTreeMap::from([("obstacle".to_string(), obstacle_points.len())]),
+            layers: BTreeMap::from([(
+                "obstacle".to_string(),
+                PointLayerStats {
+                    zoom: OBSTACLE_LAYER_ZOOM,
+                    tile_count: zoom_level_stats
+                        .iter()
+                        .find(|stats| stats.zoom == OBSTACLE_LAYER_ZOOM)
+                        .map(|stats| stats.tile_count)
+                        .unwrap_or(0),
+                    max_points_in_tile: zoom_level_stats
+                        .iter()
+                        .find(|stats| stats.zoom == OBSTACLE_LAYER_ZOOM)
+                        .map(|stats| stats.max_points_in_tile)
+                        .unwrap_or(0),
+                    zoom_levels: Some(zoom_level_stats),
+                },
+            )]),
         },
-    )?;
+        airspace: None,
+        diagnostic_error_count: 0,
+        warnings: vec![
+            "obstacle dataset is published separately from the cycle bundle".to_string(),
+        ],
+    };
+    write_json_pretty(&stats_path, &stats)?;
+    push_nav_kv_json(&mut had_pairs, "obstacle/stats".to_string(), &stats)?;
+
+    had_pairs.sort_by(|left, right| left.key.cmp(&right.key));
+    let state_sha256 = nav_kv_canonical_sha256_from_pairs(&had_pairs);
+    let built = build_nav_kv_strict(had_pairs.clone(), 64 * 1024)
+        .map_err(|err| anyhow::anyhow!("failed to build obstacle HAD: {err}"))?;
+    let had_root_path = had_dir.join("root");
+    fs::write(&had_root_path, &built.root_bytes)
+        .with_context(|| format!("failed to write {}", had_root_path.display()))?;
+    let mut had_page_paths = Vec::new();
+    for (index, page) in built.pages.iter().enumerate() {
+        let path = had_dir.join(format!("page_{index:04}"));
+        fs::write(&path, page).with_context(|| format!("failed to write {}", path.display()))?;
+        had_page_paths.push(path);
+    }
 
     write_json_pretty(
         &manifest_path,
-        &VectorManifest {
+        &ObstacleHadManifest {
             schema_version: 1,
+            product_id: "obstacles".to_string(),
             version_label: request.version_label.clone(),
+            generated_at_utc: request.generated_at_utc.clone(),
+            encoding: format!("had-nav-kv-v{}", had_nav_kv::VERSION),
+            root: "root".to_string(),
+            page_path_template: "page_{page:04}".to_string(),
+            page_count: built.pages.len() as u32,
+            page_size: built.page_size,
+            logical_bytes_len: built.logical_bytes_len,
+            value_bytes_len: built.value_bytes_len,
+            state_sha256: state_sha256.clone(),
+            obstacle_count: obstacle_points.len(),
             point_layers,
-            airspace: None,
             files,
         },
     )?;
 
+    let mut zip_members = vec![
+        ("manifest.json".to_string(), manifest_path.clone()),
+        ("stats.json".to_string(), stats_path.clone()),
+        ("root".to_string(), had_root_path.clone()),
+    ];
+    for (index, path) in had_page_paths.iter().enumerate() {
+        zip_members.push((format!("page_{index:04}"), path.clone()));
+    }
     write_zip(&zip_path, &zip_members)?;
 
     Ok(BuildObstacleDatasetResult {
         manifest_path,
         stats_path,
-        structured_json_path,
+        had_root_path,
+        had_page_paths,
         zip_path,
+        state_sha256,
+        had_pairs,
     })
 }
 
@@ -2740,10 +2766,6 @@ fn build_point_tiles(points: &[PointRecord], zoom: u8) -> Vec<PointTileRecord> {
         .into_iter()
         .map(|((z, x, y), records)| PointTileRecord { z, x, y, records })
         .collect()
-}
-
-fn point_tile_relative_path(layer_name: &str, z: u8, x: u32, y: u32) -> String {
-    format!("points/{layer_name}/{z}/{x}/{y}.json")
 }
 
 fn points_by_layer(points: &[PointRecord]) -> BTreeMap<String, Vec<PointRecord>> {
@@ -4673,8 +4695,23 @@ fn push_vector_had_json<T: Serialize>(
     Ok(())
 }
 
+fn push_nav_kv_json<T: Serialize>(
+    pairs: &mut Vec<NavKvPair>,
+    key: String,
+    value: &T,
+) -> anyhow::Result<()> {
+    let value = serde_json::to_vec(value)
+        .with_context(|| format!("failed to encode obstacle HAD value {key}"))?;
+    pairs.push(NavKvPair { key, value });
+    Ok(())
+}
+
 fn vector_aggregate_tile_key(z: u8, x: u32, y: u32) -> String {
     format!("vector/tile/z{z:02}/x{x:06}/y{y:06}")
+}
+
+fn obstacle_tile_key(z: u8, x: u32, y: u32) -> String {
+    format!("obstacle/tile/z{z:02}/x{x:06}/y{y:06}")
 }
 
 fn write_vector_had_pairs(path: &Path, pairs: &[VectorHadPairLine]) -> anyhow::Result<()> {
@@ -4726,6 +4763,81 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&pairs[0].value_json).unwrap()["id"],
             "airspace:data_2604:saa:aa:a381"
         );
+    }
+
+    #[test]
+    fn obstacle_dataset_publishes_had_state_without_point_tile_tree() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let input_dir = temp.path().join("input");
+        let output_dir = temp.path().join("output");
+        fs::create_dir_all(&input_dir)?;
+        fs::write(
+            input_dir.join("DOF.DAT"),
+            format!(
+                "{}\n{}\n",
+                obstacle_dof_line(
+                    "47", "00", "00.00", "N", "122", "00", "00.00", "W", "01000", "01500"
+                ),
+                obstacle_dof_line(
+                    "46", "30", "00.00", "N", "121", "45", "00.00", "W", "00850", "02000"
+                )
+            ),
+        )?;
+
+        let result = build_obstacle_dataset(&BuildObstacleDatasetRequest {
+            input_dir,
+            output_dir: output_dir.clone(),
+            version_label: "test-obstacles".to_string(),
+        })?;
+
+        assert_eq!(
+            result.manifest_path,
+            output_dir.join("had").join("manifest.json")
+        );
+        assert!(result.had_root_path.is_file());
+        assert!(!result.had_page_paths.is_empty());
+        assert!(result.zip_path.is_file());
+        assert!(!output_dir.join("points").exists());
+
+        let root = had_nav_kv::NavKvRoot::parse(&fs::read(&result.had_root_path)?)
+            .map_err(anyhow::Error::msg)?;
+        let had_dir = result.had_root_path.parent().unwrap();
+        let pairs = root
+            .pairs(|page| fs::read(had_dir.join(format!("page_{page:04}"))).ok())
+            .expect("HAD pages should be readable");
+        assert_eq!(
+            nav_kv_canonical_sha256_from_pairs(&pairs),
+            result.state_sha256
+        );
+        assert!(pairs
+            .iter()
+            .any(|pair| pair.key.starts_with("obstacle/tile/")));
+        assert!(pairs.iter().any(|pair| pair.key == "obstacle/stats"));
+
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&result.manifest_path)?)?;
+        assert_eq!(manifest["state_sha256"], result.state_sha256);
+        assert_eq!(
+            manifest["encoding"],
+            format!("had-nav-kv-v{}", had_nav_kv::VERSION)
+        );
+
+        let zip_file = fs::File::open(&result.zip_path)?;
+        let mut archive = ZipArchive::new(zip_file)?;
+        let names = (0..archive.len())
+            .map(|index| {
+                archive
+                    .by_index(index)
+                    .map(|member| member.name().to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        assert!(names.iter().any(|name| name == "manifest.json"));
+        assert!(names.iter().any(|name| name == "root"));
+        assert!(names.iter().any(|name| name == "page_0000"));
+        assert!(!names
+            .iter()
+            .any(|name| name.starts_with("points/obstacle/")));
+        Ok(())
     }
 
     #[test]
@@ -5292,5 +5404,38 @@ mod tests {
         let filtered = filter_controlled_airspace_outline_rings(vec![tiny, large.clone()]);
 
         assert_eq!(filtered, vec![large]);
+    }
+
+    fn obstacle_dof_line(
+        lat_deg: &str,
+        lat_min: &str,
+        lat_sec: &str,
+        lat_hemi: &str,
+        lon_deg: &str,
+        lon_min: &str,
+        lon_sec: &str,
+        lon_hemi: &str,
+        height_agl: &str,
+        height_msl: &str,
+    ) -> String {
+        let mut bytes = vec![b' '; 100];
+        bytes[0] = b'A';
+        bytes[2] = b'-';
+        put_ascii_field(&mut bytes, 35, lat_deg);
+        put_ascii_field(&mut bytes, 38, lat_min);
+        put_ascii_field(&mut bytes, 41, lat_sec);
+        put_ascii_field(&mut bytes, 46, lat_hemi);
+        put_ascii_field(&mut bytes, 48, lon_deg);
+        put_ascii_field(&mut bytes, 52, lon_min);
+        put_ascii_field(&mut bytes, 55, lon_sec);
+        put_ascii_field(&mut bytes, 60, lon_hemi);
+        put_ascii_field(&mut bytes, 84, height_agl);
+        put_ascii_field(&mut bytes, 90, height_msl);
+        String::from_utf8(bytes).unwrap()
+    }
+
+    fn put_ascii_field(bytes: &mut [u8], start: usize, value: &str) {
+        let value = value.as_bytes();
+        bytes[start..start + value.len()].copy_from_slice(value);
     }
 }

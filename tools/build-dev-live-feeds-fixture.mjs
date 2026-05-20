@@ -15,11 +15,22 @@ const defaultMetarFixtureRoot = path.join(
   "metars",
   "delta-three-hour",
 );
+const defaultWindsAloftFixtureRoot = path.join(
+  repoRoot,
+  "..",
+  "aerobag-test-artifacts",
+  "winds-aloft",
+  "cycle-trace",
+);
 
 const args = parseArgs(process.argv.slice(2));
 const outputRoot = path.resolve(args.output ?? path.join(repoRoot, "..", "live-feeds-dev-fixture"));
 const liveFeedsRoot = path.join(outputRoot, "live-feeds");
 const metarFixtureRoot = path.resolve(args.metars ?? defaultMetarFixtureRoot);
+const windsAloftFixtureRoot = resolveOptionalFixtureRoot(
+  args.windsAloft,
+  defaultWindsAloftFixtureRoot,
+);
 const tfrStatePath = args.tfrState ? path.resolve(args.tfrState) : null;
 const mergeRoot = args.mergeRoot ? path.resolve(args.mergeRoot) : null;
 
@@ -38,6 +49,11 @@ if (metarStates.length === 0) {
 }
 
 publishMetarStates(liveFeedsRoot, metarStates);
+if (windsAloftFixtureRoot) {
+  const windsAloftStates = loadWindsAloftStates(windsAloftFixtureRoot);
+  publishJsonStateSequence(liveFeedsRoot, "winds-aloft", windsAloftStates);
+  console.log(`wrote ${windsAloftStates.length} winds-aloft live-feed states from ${windsAloftFixtureRoot}`);
+}
 if (tfrStatePath) {
   publishSingleStateProduct(liveFeedsRoot, "tfrs", tfrStatePath);
 }
@@ -55,6 +71,10 @@ function parseArgs(argv) {
       parsed.output = argv[++index];
     } else if (arg === "--metars") {
       parsed.metars = argv[++index];
+    } else if (arg === "--winds-aloft") {
+      parsed.windsAloft = argv[++index];
+    } else if (arg === "--no-winds-aloft") {
+      parsed.windsAloft = false;
     } else if (arg === "--tfr-state") {
       parsed.tfrState = argv[++index];
     } else if (arg === "--merge-root") {
@@ -64,6 +84,26 @@ function parseArgs(argv) {
     }
   }
   return parsed;
+}
+
+function resolveOptionalFixtureRoot(argValue, primaryRoot, fallbackRoot = null) {
+  if (argValue === false) {
+    return null;
+  }
+  if (typeof argValue === "string") {
+    const resolved = path.resolve(argValue);
+    if (!fs.existsSync(resolved)) {
+      throw new Error(`fixture root does not exist: ${resolved}`);
+    }
+    return resolved;
+  }
+  if (fs.existsSync(primaryRoot)) {
+    return primaryRoot;
+  }
+  if (fallbackRoot && fs.existsSync(fallbackRoot)) {
+    return fallbackRoot;
+  }
+  return null;
 }
 
 function publishSingleStateProduct(root, product, sourcePath) {
@@ -113,6 +153,43 @@ function publishSingleStateProduct(root, product, sourcePath) {
   fs.writeFileSync(currentPath, `${prettyJson(current)}\n`);
 }
 
+function publishJsonStateSequence(root, product, states) {
+  const stateDir = path.join(root, "states", product);
+  const versionDir = path.join(root, "versions", product);
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(versionDir, { recursive: true });
+
+  let previous = null;
+  for (const entry of states) {
+    const stateJson = canonicalJson(entry.state);
+    const stateSha256 = sha256Hex(stateJson);
+    const statePath = path.join(stateDir, `${entry.version}.json`);
+    fs.writeFileSync(statePath, `${prettyJson(entry.state)}\n`);
+
+    const versionManifest = {
+      schema_version: 1,
+      product,
+      version: entry.version,
+      previous: previous?.version ?? null,
+      state: {
+        url: relativeUrl(root, statePath),
+        bytes: fs.statSync(statePath).size,
+        blob_sha256: sha256Hex(fs.readFileSync(statePath)),
+        state_sha256: stateSha256,
+      },
+      delta_from_previous: null,
+    };
+    const versionPath = path.join(versionDir, `${entry.version}.json`);
+    fs.writeFileSync(versionPath, `${prettyJson(versionManifest)}\n`);
+    entry.stateSha256 = stateSha256;
+    entry.versionManifestPath = versionPath;
+    entry.statePath = statePath;
+    previous = entry;
+  }
+
+  setCurrentProduct(root, product, states[0]);
+}
+
 function loadMetarStates(fixtureRoot) {
   return fs.readdirSync(fixtureRoot)
     .filter((name) => name.endsWith(".zip"))
@@ -144,6 +221,30 @@ function loadImportantMetarStationIds(zipPath) {
   return [...stationIds].sort();
 }
 
+function loadWindsAloftStates(fixtureRoot) {
+  const states = fs.readdirSync(fixtureRoot)
+    .filter((name) => name.endsWith(".zip"))
+    .sort()
+    .map((name) => {
+      const zipPath = path.join(fixtureRoot, name);
+      const state = JSON.parse(readZipMember(zipPath, "manifest.json").toString("utf8"));
+      const version = state.version_label ?? name.replace(/^winds-aloft_/, "").replace(/\.zip$/, "");
+      state.schema_version ??= 1;
+      state.product_id = "winds-aloft";
+      state.version_label = version;
+      return { name, state, version };
+    })
+    .sort((left, right) => {
+      const leftTime = left.state.generated_at_utc ?? "";
+      const rightTime = right.state.generated_at_utc ?? "";
+      return leftTime.localeCompare(rightTime) || left.version.localeCompare(right.version);
+    });
+  if (states.length === 0) {
+    throw new Error(`no winds-aloft fixture zips found under ${fixtureRoot}`);
+  }
+  return states;
+}
+
 function publishMetarStates(root, states) {
   const stateDir = path.join(root, "states", "metars");
   const versionDir = path.join(root, "versions", "metars");
@@ -171,6 +272,7 @@ function publishMetarStates(root, states) {
         to_version: entry.version,
         to_state_sha256: stateSha256,
         url: relativeUrl(root, deltaPath),
+        bytes: fs.statSync(deltaPath).size,
         blob_sha256: sha256Hex(fs.readFileSync(deltaPath)),
       };
     }
@@ -238,6 +340,22 @@ function buildMetarStationDelta(fromState, toState) {
     changed,
     removed,
   };
+}
+
+function setCurrentProduct(root, product, first) {
+  const currentPath = path.join(root, "current.json");
+  const current = readJsonIfExists(currentPath) ?? {
+    schema_version: 1,
+    generated_at_utc: new Date().toISOString(),
+    products: {},
+  };
+  current.products[product] = {
+    current: first.version,
+    version_manifest_url: relativeUrl(root, first.versionManifestPath),
+    state_url: relativeUrl(root, first.statePath),
+    state_sha256: first.stateSha256,
+  };
+  fs.writeFileSync(currentPath, `${prettyJson(current)}\n`);
 }
 
 function canonicalJson(value) {

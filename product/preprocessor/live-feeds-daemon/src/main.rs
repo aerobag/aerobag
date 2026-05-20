@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeMap, VecDeque},
     env, fs,
     io::{BufRead, BufReader, Write},
     net::{SocketAddr, TcpListener, TcpStream},
@@ -18,8 +19,8 @@ use preprocessor_live_feeds::{
     engine::{
         default_poll_interval, run_upstream_live_feed_publish_tick, CompiledFixtureCache,
         FileLiveFeedPublisher, FixedClock, FixtureCacheKeyPart, IntervalLiveFeedSource,
-        LiveFeedInvalidation, LiveFeedPollingTask, LiveFeedSourceAndBuilder, SseBroker,
-        SystemClock,
+        LiveFeedInvalidation, LiveFeedPollingTask, LiveFeedSourceAndBuilder, LiveFeedTickResult,
+        PublishedLiveFeedUpdate, SseBroker, SystemClock,
     },
     products::{
         LiveFeedFetchConfig, MetarLiveFeedBuilder, NexradSourceGridLiveFeedBuilder,
@@ -31,6 +32,8 @@ use preprocessor_live_feeds::{
     },
 };
 use serde::Serialize;
+
+const STATUS_HISTORY_LIMIT: usize = 256;
 
 fn usage() -> &'static str {
     "usage:
@@ -73,6 +76,261 @@ struct LiveFeedSseEvent {
     version_manifest_url: String,
     state_url: String,
     state_sha256: String,
+}
+
+#[derive(Clone)]
+struct DaemonStatus {
+    inner: Arc<Mutex<DaemonStatusState>>,
+}
+
+struct DaemonStatusState {
+    started_at_utc: chrono::DateTime<Utc>,
+    next_client_id: u64,
+    active_clients: BTreeMap<u64, chrono::DateTime<Utc>>,
+    client_update_latency_ms: VecDeque<u64>,
+    products: BTreeMap<String, ProductStatusHistory>,
+}
+
+#[derive(Default)]
+struct ProductStatusHistory {
+    last_update_at_utc: Option<chrono::DateTime<Utc>>,
+    samples: VecDeque<ProductUpdateSample>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DaemonStatusSnapshot {
+    schema_version: u32,
+    generated_at_utc: chrono::DateTime<Utc>,
+    started_at_utc: chrono::DateTime<Utc>,
+    active_sse_clients: usize,
+    client_connection_age_cdf: CdfSummary,
+    client_update_latency_cdf: CdfSummary,
+    products: BTreeMap<String, ProductStatusSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CdfSummary {
+    sample_count: usize,
+    min_ms: Option<u64>,
+    p50_ms: Option<u64>,
+    p90_ms: Option<u64>,
+    p95_ms: Option<u64>,
+    p99_ms: Option<u64>,
+    max_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProductStatusSnapshot {
+    samples: Vec<ProductUpdateSample>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProductUpdateSample {
+    observed_at_utc: chrono::DateTime<Utc>,
+    version: String,
+    update_interval_ms: Option<u64>,
+    delta_bytes: Option<u64>,
+    state_bytes: Option<u64>,
+    changed_count: usize,
+    removed_count: usize,
+}
+
+impl Default for DaemonStatus {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(DaemonStatusState {
+                started_at_utc: Utc::now(),
+                next_client_id: 1,
+                active_clients: BTreeMap::new(),
+                client_update_latency_ms: VecDeque::new(),
+                products: BTreeMap::new(),
+            })),
+        }
+    }
+}
+
+impl DaemonStatus {
+    fn connect_client(&self) -> ClientConnectionGuard {
+        let mut state = self.inner.lock().expect("live-feed status lock");
+        let client_id = state.next_client_id;
+        state.next_client_id += 1;
+        state.active_clients.insert(client_id, Utc::now());
+        ClientConnectionGuard {
+            status: self.clone(),
+            client_id,
+        }
+    }
+
+    fn disconnect_client(&self, client_id: u64) {
+        self.inner
+            .lock()
+            .expect("live-feed status lock")
+            .active_clients
+            .remove(&client_id);
+    }
+
+    fn record_client_update_latency(&self, latency_ms: u64) {
+        let mut state = self.inner.lock().expect("live-feed status lock");
+        push_limited(&mut state.client_update_latency_ms, latency_ms);
+    }
+
+    fn record_tick_result(&self, result: &LiveFeedTickResult) {
+        for update in &result.published {
+            if !update.unchanged {
+                self.record_product_update(update);
+            }
+        }
+    }
+
+    fn record_product_update(&self, update: &PublishedLiveFeedUpdate) {
+        let observed_at_utc = Utc::now();
+        let delta_bytes = update
+            .delta_path
+            .as_ref()
+            .and_then(|path| fs::metadata(path).ok())
+            .map(|metadata| metadata.len());
+        let state_bytes = state_bytes_for_status(&update.state_path).ok();
+        let mut state = self.inner.lock().expect("live-feed status lock");
+        let history = state.products.entry(update.product.clone()).or_default();
+        let update_interval_ms = history
+            .last_update_at_utc
+            .and_then(|last| checked_duration_ms(observed_at_utc.signed_duration_since(last)));
+        history.last_update_at_utc = Some(observed_at_utc);
+        push_limited(
+            &mut history.samples,
+            ProductUpdateSample {
+                observed_at_utc,
+                version: update.version.clone(),
+                update_interval_ms,
+                delta_bytes,
+                state_bytes,
+                changed_count: update.changed_count,
+                removed_count: update.removed_count,
+            },
+        );
+    }
+
+    fn snapshot(&self) -> DaemonStatusSnapshot {
+        let now = Utc::now();
+        let state = self.inner.lock().expect("live-feed status lock");
+        let connection_ages = state
+            .active_clients
+            .values()
+            .filter_map(|started| checked_duration_ms(now.signed_duration_since(*started)))
+            .collect::<Vec<_>>();
+        let products = state
+            .products
+            .iter()
+            .map(|(product, history)| {
+                (
+                    product.clone(),
+                    ProductStatusSnapshot {
+                        samples: history.samples.iter().cloned().collect(),
+                    },
+                )
+            })
+            .collect();
+        DaemonStatusSnapshot {
+            schema_version: 1,
+            generated_at_utc: now,
+            started_at_utc: state.started_at_utc,
+            active_sse_clients: state.active_clients.len(),
+            client_connection_age_cdf: cdf_summary(connection_ages),
+            client_update_latency_cdf: cdf_summary(
+                state.client_update_latency_ms.iter().copied().collect(),
+            ),
+            products,
+        }
+    }
+}
+
+struct ClientConnectionGuard {
+    status: DaemonStatus,
+    client_id: u64,
+}
+
+impl Drop for ClientConnectionGuard {
+    fn drop(&mut self) {
+        self.status.disconnect_client(self.client_id);
+    }
+}
+
+fn push_limited<T>(values: &mut VecDeque<T>, value: T) {
+    values.push_back(value);
+    while values.len() > STATUS_HISTORY_LIMIT {
+        values.pop_front();
+    }
+}
+
+fn checked_duration_ms(duration: chrono::Duration) -> Option<u64> {
+    (duration.num_milliseconds() >= 0).then_some(duration.num_milliseconds() as u64)
+}
+
+fn path_bytes(path: &Path) -> anyhow::Result<u64> {
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("failed to stat live-feed state {}", path.display()))?;
+    if metadata.is_file() {
+        return Ok(metadata.len());
+    }
+    if !metadata.is_dir() {
+        return Ok(0);
+    }
+    let mut total = 0_u64;
+    for entry in fs::read_dir(path)
+        .with_context(|| format!("failed to read live-feed state dir {}", path.display()))?
+    {
+        let entry = entry.with_context(|| format!("failed to read {}", path.display()))?;
+        total = total.saturating_add(path_bytes(&entry.path())?);
+    }
+    Ok(total)
+}
+
+fn state_bytes_for_status(state_path: &Path) -> anyhow::Result<u64> {
+    if state_path.file_name().and_then(|name| name.to_str()) == Some("manifest.json") {
+        if let Some(parent) = state_path.parent().filter(|parent| parent.is_dir()) {
+            return path_bytes(parent);
+        }
+    }
+    let bytes = path_bytes(state_path)?;
+    let value = match serde_json::from_slice::<serde_json::Value>(
+        &fs::read(state_path)
+            .with_context(|| format!("failed to read live-feed state {}", state_path.display()))?,
+    ) {
+        Ok(value) => value,
+        Err(_) => return Ok(bytes),
+    };
+    let referenced_bytes = value
+        .get("files")
+        .and_then(serde_json::Value::as_array)
+        .map(|files| {
+            files
+                .iter()
+                .filter_map(|file| file.get("size_bytes").and_then(serde_json::Value::as_u64))
+                .sum::<u64>()
+        })
+        .unwrap_or(0);
+    Ok(bytes.saturating_add(referenced_bytes))
+}
+
+fn cdf_summary(mut samples: Vec<u64>) -> CdfSummary {
+    samples.sort_unstable();
+    CdfSummary {
+        sample_count: samples.len(),
+        min_ms: samples.first().copied(),
+        p50_ms: percentile(&samples, 0.50),
+        p90_ms: percentile(&samples, 0.90),
+        p95_ms: percentile(&samples, 0.95),
+        p99_ms: percentile(&samples, 0.99),
+        max_ms: samples.last().copied(),
+    }
+}
+
+fn percentile(samples: &[u64], fraction: f64) -> Option<u64> {
+    if samples.is_empty() {
+        return None;
+    }
+    let index = ((samples.len() - 1) as f64 * fraction).round() as usize;
+    samples.get(index).copied()
 }
 
 impl DaemonConfig {
@@ -246,7 +504,8 @@ fn run_server(config: DaemonConfig) -> anyhow::Result<()> {
     let listener = TcpListener::bind(config.listen)
         .with_context(|| format!("failed to bind {}", config.listen))?;
     let broker = BroadcastSseBroker::default();
-    start_live_feed_driver(&config, broker.clone())?;
+    let status = DaemonStatus::default();
+    start_live_feed_driver(&config, broker.clone(), status.clone())?;
     eprintln!(
         "aerobag-live-feedsd serving {} on http://{}",
         config.live_root.display(),
@@ -257,8 +516,9 @@ fn run_server(config: DaemonConfig) -> anyhow::Result<()> {
             Ok(stream) => {
                 let config = config.clone();
                 let broker = broker.clone();
+                let status = status.clone();
                 thread::spawn(move || {
-                    if let Err(error) = handle_connection(stream, &config, &broker) {
+                    if let Err(error) = handle_connection(stream, &config, &broker, &status) {
                         eprintln!("live-feed request failed: {error:#}");
                     }
                 });
@@ -269,9 +529,13 @@ fn run_server(config: DaemonConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn start_live_feed_driver(config: &DaemonConfig, broker: BroadcastSseBroker) -> anyhow::Result<()> {
+fn start_live_feed_driver(
+    config: &DaemonConfig,
+    broker: BroadcastSseBroker,
+    status: DaemonStatus,
+) -> anyhow::Result<()> {
     if let Some(simulation) = &config.simulation {
-        return start_simulation_driver(config, simulation, broker);
+        return start_simulation_driver(config, simulation, broker, status);
     }
     let live_root = config.live_root.clone();
     let scratch_root = config.scratch_root.join("live-feed-build");
@@ -288,6 +552,7 @@ fn start_live_feed_driver(config: &DaemonConfig, broker: BroadcastSseBroker) -> 
                 &publisher,
                 &broker,
             );
+            status.record_tick_result(&result);
             log_tick_result("production", &result);
             thread::sleep(poll_interval);
         }
@@ -299,6 +564,7 @@ fn start_simulation_driver(
     config: &DaemonConfig,
     simulation: &SimulationConfig,
     broker: BroadcastSseBroker,
+    status: DaemonStatus,
 ) -> anyhow::Result<()> {
     let fixture_root = simulation
         .fixture_root
@@ -354,6 +620,7 @@ fn start_simulation_driver(
                     &publisher,
                     &broker,
                 );
+                status.record_tick_result(&result);
                 log_tick_result("simulation", &result);
                 if loop_duration
                     .is_some_and(|duration| now.signed_duration_since(delivery_zero) >= duration)
@@ -455,6 +722,7 @@ fn handle_connection(
     mut stream: TcpStream,
     config: &DaemonConfig,
     broker: &BroadcastSseBroker,
+    status: &DaemonStatus,
 ) -> anyhow::Result<()> {
     let mut reader = BufReader::new(stream.try_clone().context("failed to clone TCP stream")?);
     let mut request_line = String::new();
@@ -472,6 +740,12 @@ fn handle_connection(
         return write_status(&mut stream, 405, "method not allowed");
     }
     let request_path = target.split('?').next().unwrap_or("/");
+    if request_path == "/live-feeds/status.json" {
+        return serve_status_json(&mut stream, method, status);
+    }
+    if request_path == "/live-feeds/status" || request_path == "/live-feeds/status.html" {
+        return serve_status_html(&mut stream, method);
+    }
     if request_path == "/live-feeds/events" {
         if method == "HEAD" {
             return write_sse_headers(&mut stream);
@@ -481,6 +755,7 @@ fn handle_connection(
             &config.live_root,
             Duration::from_millis(config.event_interval_ms),
             broker,
+            status,
             config.sse_event_limit,
         );
     }
@@ -507,9 +782,11 @@ fn write_sse_stream(
     live_root: &Path,
     interval: Duration,
     broker: &BroadcastSseBroker,
+    status: &DaemonStatus,
     event_limit: Option<usize>,
 ) -> anyhow::Result<()> {
     write_sse_headers(writer)?;
+    let _client = status.connect_client();
     writeln!(writer, ": aerobag live-feed root {}\n", live_root.display())
         .context("failed to write SSE banner")?;
     let receiver = broker.subscribe();
@@ -540,9 +817,13 @@ fn write_sse_stream(
     }
     loop {
         match receiver.recv_timeout(Duration::from_secs(30)) {
-            Ok(invalidation) => {
-                let event = live_feed_sse_event_from_invalidation(invalidation);
+            Ok(queued) => {
+                let latency_ms =
+                    checked_duration_ms(Utc::now().signed_duration_since(queued.announced_at_utc))
+                        .unwrap_or(0);
+                let event = live_feed_sse_event_from_invalidation(queued.invalidation);
                 write_sse_event(writer, &event)?;
+                status.record_client_update_latency(latency_ms);
                 sent_events += 1;
                 writer.flush().context("failed to flush SSE event")?;
                 if event_limit.is_some_and(|limit| sent_events >= limit) {
@@ -610,11 +891,17 @@ fn live_feed_sse_event_from_invalidation(invalidation: LiveFeedInvalidation) -> 
 
 #[derive(Clone, Default)]
 struct BroadcastSseBroker {
-    subscribers: Arc<Mutex<Vec<Sender<LiveFeedInvalidation>>>>,
+    subscribers: Arc<Mutex<Vec<Sender<BrokerSseEvent>>>>,
+}
+
+#[derive(Debug, Clone)]
+struct BrokerSseEvent {
+    invalidation: LiveFeedInvalidation,
+    announced_at_utc: chrono::DateTime<Utc>,
 }
 
 impl BroadcastSseBroker {
-    fn subscribe(&self) -> Receiver<LiveFeedInvalidation> {
+    fn subscribe(&self) -> Receiver<BrokerSseEvent> {
         let (sender, receiver) = mpsc::channel();
         self.subscribers
             .lock()
@@ -626,11 +913,15 @@ impl BroadcastSseBroker {
 
 impl SseBroker for BroadcastSseBroker {
     fn announce(&self, event: LiveFeedInvalidation) -> anyhow::Result<()> {
+        let queued = BrokerSseEvent {
+            invalidation: event,
+            announced_at_utc: Utc::now(),
+        };
         let mut subscribers = self
             .subscribers
             .lock()
             .expect("live-feed SSE subscriber lock");
-        subscribers.retain(|subscriber| subscriber.send(event.clone()).is_ok());
+        subscribers.retain(|subscriber| subscriber.send(queued.clone()).is_ok());
         Ok(())
     }
 }
@@ -682,6 +973,32 @@ fn list_live_feed_event_frames(root: &Path) -> anyhow::Result<Vec<Vec<LiveFeedSs
     Ok((!events.is_empty()).then_some(events).into_iter().collect())
 }
 
+fn serve_status_json(
+    stream: &mut TcpStream,
+    method: &str,
+    status: &DaemonStatus,
+) -> anyhow::Result<()> {
+    let body =
+        serde_json::to_string_pretty(&status.snapshot()).context("failed to encode status")?;
+    write_response(
+        stream,
+        method,
+        "application/json",
+        "no-cache, no-store",
+        body.as_bytes(),
+    )
+}
+
+fn serve_status_html(stream: &mut TcpStream, method: &str) -> anyhow::Result<()> {
+    write_response(
+        stream,
+        method,
+        "text/html; charset=utf-8",
+        "no-cache, no-store",
+        LIVE_FEEDS_STATUS_HTML.as_bytes(),
+    )
+}
+
 fn serve_live_feed_file(
     stream: &mut TcpStream,
     method: &str,
@@ -695,20 +1012,192 @@ fn serve_live_feed_file(
     }
     let bytes =
         fs::read(&file_path).with_context(|| format!("failed to read {}", file_path.display()))?;
+    write_response(stream, method, content_type(&file_path), "no-cache", &bytes)
+}
+
+fn write_response(
+    stream: &mut TcpStream,
+    method: &str,
+    content_type: &str,
+    cache_control: &str,
+    bytes: &[u8],
+) -> anyhow::Result<()> {
     write!(
         stream,
-        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-cache\r\n\r\n",
-        content_type(&file_path),
-        bytes.len()
+        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: {}\r\n\r\n",
+        content_type,
+        bytes.len(),
+        cache_control,
     )
     .context("failed to write response headers")?;
     if method != "HEAD" {
         stream
-            .write_all(&bytes)
+            .write_all(bytes)
             .context("failed to write response body")?;
     }
     Ok(())
 }
+
+const LIVE_FEEDS_STATUS_HTML: &str = r##"<!doctype html>
+<meta charset="utf-8">
+<title>Aerobag live-feed status</title>
+<style>
+body { font: 14px system-ui, sans-serif; margin: 24px; color: #111; background: #f7f7f4; }
+h1 { margin: 0 0 8px; }
+h2 { margin: 24px 0 8px; }
+.muted { color: #666; }
+.summary, .product { background: white; border: 1px solid #ddd; border-radius: 6px; padding: 12px; margin: 12px 0; }
+table { border-collapse: collapse; margin: 8px 0; }
+th, td { border-bottom: 1px solid #e3e3df; padding: 4px 8px; text-align: right; }
+th:first-child, td:first-child { text-align: left; }
+.plots { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; }
+.plot { height: 260px; background: #fbfbf8; border: 1px solid #ddd; }
+</style>
+<h1>Aerobag Live Feeds</h1>
+<div id="status" class="muted">Loading...</div>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<script>
+const statusEl = document.getElementById("status");
+const ms = (value) => value == null ? "-" : value < 1000 ? `${value} ms` : `${(value / 1000).toFixed(1)} s`;
+const seconds = (value) => value == null ? "-" : `${value.toFixed(value < 10 ? 2 : 1)} s`;
+const bytes = (value) => {
+  if (value == null) return "-";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${(value / 1024 / 1024).toFixed(2)} MiB`;
+};
+function cdfTable(title, cdf) {
+  return `<h2>${title}</h2><table><tr><th>samples</th><th>min</th><th>p50</th><th>p90</th><th>p95</th><th>p99</th><th>max</th></tr>` +
+    `<tr><td>${cdf.sample_count}</td><td>${ms(cdf.min_ms)}</td><td>${ms(cdf.p50_ms)}</td><td>${ms(cdf.p90_ms)}</td><td>${ms(cdf.p95_ms)}</td><td>${ms(cdf.p99_ms)}</td><td>${ms(cdf.max_ms)}</td></tr></table>`;
+}
+function plotId(product, field) {
+  return `plot-${product.replace(/[^a-zA-Z0-9_-]/g, "_")}-${field}`;
+}
+function basePlotLayout(title, yTitle) {
+  return {
+    title: { text: title, font: { size: 14 } },
+    margin: { l: 56, r: 18, t: 36, b: 42 },
+    paper_bgcolor: "#fbfbf8",
+    plot_bgcolor: "#fbfbf8",
+    xaxis: { title: "observed UTC", type: "date", tickfont: { size: 10 }, gridcolor: "#e1e1dc" },
+    yaxis: { title: yTitle, tickfont: { size: 10 }, gridcolor: "#e1e1dc", rangemode: "tozero" },
+  };
+}
+function renderUpdateIntervalPlot(product, data) {
+  const samples = data.samples.filter((sample) => sample.update_interval_ms != null);
+  const node = document.getElementById(plotId(product, "update_interval_ms"));
+  if (!node) return;
+  if (!window.Plotly) {
+    node.textContent = "Plotly failed to load.";
+    node.className = "plot muted";
+    return;
+  }
+  if (samples.length === 0) {
+    node.textContent = "No samples yet.";
+    node.className = "plot muted";
+    return;
+  }
+  const values = samples.map((sample) => sample.update_interval_ms / 1000);
+  Plotly.react(node, [{
+    type: "scatter",
+    mode: "lines+markers",
+    x: samples.map((sample) => sample.observed_at_utc),
+    y: values,
+    text: samples.map((sample) => `${sample.version}<br>${seconds(sample.update_interval_ms / 1000)}`),
+    hovertemplate: "%{x}<br>%{text}<extra></extra>",
+    line: { color: "#0067a8", width: 2 },
+    marker: { color: "#0067a8", size: 5 },
+  }], basePlotLayout(`${product} update interval`, "seconds"), { responsive: true, displaylogo: false });
+}
+function renderSizePlot(product, data) {
+  const deltaSamples = data.samples.filter((sample) => sample.delta_bytes != null);
+  const stateSamples = data.samples.filter((sample) => sample.state_bytes != null);
+  const node = document.getElementById(plotId(product, "delta_bytes"));
+  if (!node) return;
+  if (!window.Plotly) {
+    node.textContent = "Plotly failed to load.";
+    node.className = "plot muted";
+    return;
+  }
+  if (deltaSamples.length === 0 && stateSamples.length === 0) {
+    node.textContent = "No samples yet.";
+    node.className = "plot muted";
+    return;
+  }
+  const traces = [];
+  if (deltaSamples.length > 0) {
+    traces.push({
+      type: "scatter",
+      mode: "lines+markers",
+      name: "delta",
+      x: deltaSamples.map((sample) => sample.observed_at_utc),
+      y: deltaSamples.map((sample) => sample.delta_bytes),
+      text: deltaSamples.map((sample) => `${sample.version}<br>delta ${bytes(sample.delta_bytes)}`),
+      hovertemplate: "%{x}<br>%{text}<extra></extra>",
+      line: { color: "#0067a8", width: 2 },
+      marker: { color: "#0067a8", size: 5 },
+      yaxis: "y",
+    });
+  }
+  if (stateSamples.length > 0) {
+    traces.push({
+      type: "scatter",
+      mode: "lines+markers",
+      name: "full product",
+      x: stateSamples.map((sample) => sample.observed_at_utc),
+      y: stateSamples.map((sample) => sample.state_bytes),
+      text: stateSamples.map((sample) => `${sample.version}<br>full ${bytes(sample.state_bytes)}`),
+      hovertemplate: "%{x}<br>%{text}<extra></extra>",
+      line: { color: "#a84b00", width: 2 },
+      marker: { color: "#a84b00", size: 5 },
+      yaxis: "y2",
+    });
+  }
+  const layout = basePlotLayout(`${product} payload size`, "delta bytes");
+  layout.margin.r = 64;
+  layout.yaxis2 = {
+    title: "full product bytes",
+    overlaying: "y",
+    side: "right",
+    tickfont: { size: 10 },
+    rangemode: "tozero",
+    showgrid: false,
+  };
+  layout.legend = { orientation: "h", x: 0, y: 1.12 };
+  Plotly.react(node, traces, layout, { responsive: true, displaylogo: false });
+}
+async function render() {
+  const response = await fetch("/live-feeds/status.json", { cache: "no-store" });
+  const status = await response.json();
+  const products = Object.entries(status.products).sort(([left], [right]) => left.localeCompare(right));
+  statusEl.className = "";
+  statusEl.innerHTML = `
+    <div class="summary">
+      <div><b>Generated</b> ${status.generated_at_utc}</div>
+      <div><b>Started</b> ${status.started_at_utc}</div>
+      <div><b>SSE clients</b> ${status.active_sse_clients}</div>
+      ${cdfTable("Client Connection Age CDF", status.client_connection_age_cdf)}
+      ${cdfTable("Client Update Latency CDF", status.client_update_latency_cdf)}
+    </div>
+    ${products.map(([product, data]) => `
+      <div class="product">
+        <h2>${product}</h2>
+        <div class="plots">
+          <div id="${plotId(product, "update_interval_ms")}" class="plot"></div>
+          <div id="${plotId(product, "delta_bytes")}" class="plot"></div>
+        </div>
+      </div>
+    `).join("")}
+  `;
+  for (const [product, data] of products) {
+    renderUpdateIntervalPlot(product, data);
+    renderSizePlot(product, data);
+  }
+}
+render().catch((error) => { statusEl.textContent = String(error); });
+setInterval(() => render().catch((error) => { statusEl.textContent = String(error); }), 5000);
+</script>
+"##;
 
 fn safe_relative_path(relative: &str) -> anyhow::Result<PathBuf> {
     let path = PathBuf::from(relative.trim_start_matches('/'));
@@ -900,8 +1389,8 @@ mod tests {
         assert!(result.failures.is_empty(), "{:#?}", result.failures);
         assert_eq!(result.published.len(), 1);
         let event = receiver.recv_timeout(Duration::from_secs(1))?;
-        assert_eq!(event.product, "metars");
-        assert_eq!(event.version, "m1");
+        assert_eq!(event.invalidation.product, "metars");
+        assert_eq!(event.invalidation.version, "m1");
         Ok(())
     }
 
@@ -951,6 +1440,52 @@ mod tests {
         );
         assert!(response.contains("event: live-feed-current"), "{response}");
         assert!(response.contains("\"product\":\"metars\""), "{response}");
+        Ok(())
+    }
+
+    #[test]
+    fn server_serves_status_json_and_html() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let response = request_once(
+            temp.path(),
+            "GET /live-feeds/status.json HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        )?;
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        assert!(
+            response.contains("Content-Type: application/json"),
+            "{response}"
+        );
+        assert!(response.contains("\"active_sse_clients\""), "{response}");
+
+        let response = request_once(
+            temp.path(),
+            "GET /live-feeds/status.html HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        )?;
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        assert!(response.contains("Content-Type: text/html"), "{response}");
+        assert!(response.contains("Aerobag Live Feeds"), "{response}");
+        Ok(())
+    }
+
+    #[test]
+    fn status_state_bytes_count_directory_states_and_manifest_references() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let source_grid_state = temp.path().join("nexrad-state");
+        fs::create_dir_all(source_grid_state.join("tiles/res0"))?;
+        fs::write(source_grid_state.join("manifest.json"), b"{}")?;
+        fs::write(source_grid_state.join("tiles/res0/0_0.png"), [0_u8; 11])?;
+        fs::write(source_grid_state.join("tiles/res0/0_1.png"), [0_u8; 17])?;
+        assert_eq!(
+            state_bytes_for_status(&source_grid_state.join("manifest.json"))?,
+            30
+        );
+
+        let winds_state = temp.path().join("winds.json");
+        fs::write(
+            &winds_state,
+            r#"{"files":[{"size_bytes":1000},{"size_bytes":2000}]}"#,
+        )?;
+        assert_eq!(state_bytes_for_status(&winds_state)?, 3051);
         Ok(())
     }
 
@@ -1024,9 +1559,10 @@ mod tests {
             sse_event_limit: Some(1),
         };
         let broker = BroadcastSseBroker::default();
+        let status = DaemonStatus::default();
         let handle = thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept request");
-            handle_connection(stream, &config, &broker).expect("handle request");
+            handle_connection(stream, &config, &broker, &status).expect("handle request");
         });
         let mut stream = TcpStream::connect(addr)?;
         stream.write_all(request.as_bytes())?;

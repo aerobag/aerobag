@@ -131,7 +131,11 @@ impl LiveFeedsState {
     }
 
     pub fn sync_product_outcome(&self, product: &str) -> HadOperationOutcome {
-        let resources = self.missing_resources_for_products(std::iter::once(product));
+        let resources = if self.current_loaded {
+            self.missing_resources_for_products(std::iter::once(product))
+        } else {
+            self.missing_resources()
+        };
         if resources.is_empty() {
             HadOperationOutcome::complete(
                 serde_json::to_value(self.snapshot()).expect("live feed snapshot serializes"),
@@ -157,7 +161,11 @@ impl LiveFeedsState {
         &self,
         products: impl IntoIterator<Item = &'a str>,
     ) -> HadOperationOutcome {
-        let resources = self.missing_resources_for_products(products);
+        let resources = if self.current_loaded {
+            self.missing_resources_for_products(products)
+        } else {
+            self.missing_resources()
+        };
         if resources.is_empty() {
             HadOperationOutcome::complete_with_invalidations(
                 serde_json::to_value(self.snapshot()).expect("live feed snapshot serializes"),
@@ -208,7 +216,10 @@ impl LiveFeedsState {
             let current: CurrentManifest =
                 serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?;
             self.current_loaded = true;
-            for (product, entry) in current.products {
+            let products = current.products;
+            self.products
+                .retain(|product, _| products.contains_key(product));
+            for (product, entry) in products {
                 self.register_product(
                     product,
                     entry.current,
@@ -337,7 +348,10 @@ impl LiveFeedsState {
     }
 
     pub fn handles_resource(resource_id: &str) -> bool {
-        resource_id == CURRENT_RESOURCE_ID || resource_id.starts_with("live_feeds/")
+        resource_id == CURRENT_RESOURCE_ID
+            || resource_id.starts_with("live_feeds/version/")
+            || resource_id.starts_with("live_feeds/state/")
+            || resource_id.starts_with("live_feeds/delta/")
     }
 
     pub fn product_state_manifest(&self, product: &str) -> Option<&Value> {
@@ -356,11 +370,39 @@ impl LiveFeedsState {
         self.products.get(product)?.state_manifest.as_ref()
     }
 
+    pub fn product_loaded_version(&self, product: &str) -> Option<&str> {
+        let entry = self.products.get(product)?;
+        if !entry
+            .current_version
+            .as_deref()
+            .is_some_and(|version| entry.loaded_version.as_deref() == Some(version))
+        {
+            return None;
+        }
+        entry.loaded_version.as_deref()
+    }
+
+    pub fn product_state_url(&self, product: &str) -> Option<&str> {
+        let entry = self.products.get(product)?;
+        if !entry
+            .current_version
+            .as_deref()
+            .is_some_and(|version| entry.loaded_version.as_deref() == Some(version))
+        {
+            return None;
+        }
+        entry.state_url.as_deref()
+    }
+
     pub fn has_product_current_version(&self, product: &str) -> bool {
         self.products
             .get(product)
             .and_then(|entry| entry.current_version.as_ref())
             .is_some()
+    }
+
+    pub fn current_loaded(&self) -> bool {
+        self.current_loaded
     }
 
     fn register_product(
@@ -779,6 +821,53 @@ mod tests {
                 url: "/live-feeds/versions/nexrad/v1.json".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn current_manifest_is_authoritative_for_product_membership() {
+        let mut state = LiveFeedsState::default();
+        state
+            .ingest_resource(
+                "live_feeds/current",
+                br#"{
+                    "products": {
+                        "metars": {
+                            "current": "v1",
+                            "version_manifest_url": "versions/metars/v1.json",
+                            "state_url": "states/metars/v1.json",
+                            "state_sha256": "unused"
+                        },
+                        "obstacles": {
+                            "current": "v1",
+                            "version_manifest_url": "versions/obstacles/v1.json",
+                            "state_url": "states/obstacles/v1/manifest.json",
+                            "state_sha256": "had-hash"
+                        }
+                    }
+                }"#,
+            )
+            .unwrap();
+        assert!(state.has_product_current_version("metars"));
+        assert!(state.has_product_current_version("obstacles"));
+
+        state
+            .ingest_resource(
+                "live_feeds/current",
+                br#"{
+                    "products": {
+                        "metars": {
+                            "current": "v2",
+                            "version_manifest_url": "versions/metars/v2.json",
+                            "state_url": "states/metars/v2.json",
+                            "state_sha256": "unused"
+                        }
+                    }
+                }"#,
+            )
+            .unwrap();
+
+        assert!(state.has_product_current_version("metars"));
+        assert!(!state.has_product_current_version("obstacles"));
     }
 
     #[test]

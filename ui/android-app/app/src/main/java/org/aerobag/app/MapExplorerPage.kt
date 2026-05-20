@@ -346,7 +346,11 @@ private fun fetchCoreResource(
         is CoreResourceSource.PackageMember ->
             InstalledPackages.readZipEntryBytes(context, source.packageId, source.memberPath)
         is CoreResourceSource.PublicUrl -> {
-            require(resource.id.startsWith("publication/") || resource.id.startsWith("live_feeds/")) {
+            require(
+                resource.id.startsWith("publication/") ||
+                    resource.id.startsWith("live_feeds/") ||
+                    resource.id.startsWith("live_obstacle_had/"),
+            ) {
                 "Android received public_url for package-backed resource ${resource.id}"
             }
             val url = if (source.url.startsWith("/packages/")) {

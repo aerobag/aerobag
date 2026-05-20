@@ -7,7 +7,6 @@ export type PublicationResolverWasmModule = {
   publication_resolver_open(publicBaseUrl: string): number;
   publication_resolver_resolve_metar_manifest(handle: number): Promise<string> | string;
   publication_resolver_resolve_nav_db_artifact_candidates(handle: number): Promise<string> | string;
-  publication_resolver_resolve_obstacle_manifest(handle: number): Promise<string> | string;
   publication_resolver_resolve_package_member(handle: number, packageId: string, memberPath: string): Promise<string> | string;
 };
 
@@ -315,10 +314,6 @@ export class PublicationResolver {
 
   async resolveNavDbArtifactCandidates(): Promise<NavDbArtifactCandidate[]> {
     return this.resolveResult(() => this.wasm.publication_resolver_resolve_nav_db_artifact_candidates(this.handle));
-  }
-
-  async resolveObstacleManifest(): Promise<string> {
-    return this.resolve(() => this.wasm.publication_resolver_resolve_obstacle_manifest(this.handle));
   }
 
   async resolveMetarManifest(): Promise<string> {

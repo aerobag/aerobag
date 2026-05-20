@@ -343,8 +343,6 @@ struct VectorAggregateTileFile {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     navaids: Vec<PointRecord>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    obstacles: Vec<PointRecord>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     airspace_refs: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     airspace_labels: Vec<AirspaceTileLabel>,
@@ -1066,7 +1064,6 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
                 "airport" => aggregate.airports.extend(tile.records.clone()),
                 "fix" => aggregate.fixes.extend(tile.records.clone()),
                 "nav" => aggregate.navaids.extend(tile.records.clone()),
-                "obstacle" => aggregate.obstacles.extend(tile.records.clone()),
                 other => bail!("unsupported vector point layer {other} for aggregate tile"),
             }
         }

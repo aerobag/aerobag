@@ -68,6 +68,11 @@ pub enum NavKvQuery {
         x: u32,
         y: u32,
     },
+    ObstacleTile {
+        z: u32,
+        x: u32,
+        y: u32,
+    },
     VectorAirspaceFeature {
         id: String,
     },
@@ -134,6 +139,9 @@ pub fn nav_kv_key_for_query(query: &NavKvQuery) -> Option<String> {
         }
         NavKvQuery::VectorManifest => Some("vector/manifest".to_string()),
         NavKvQuery::VectorTile { z, x, y } => Some(format!("vector/tile/z{z:02}/x{x:06}/y{y:06}")),
+        NavKvQuery::ObstacleTile { z, x, y } => {
+            Some(format!("obstacle/tile/z{z:02}/x{x:06}/y{y:06}"))
+        }
         NavKvQuery::VectorAirspaceFeature { id } => {
             Some(format!("vector/airspace/feature/{}", component(id)))
         }

@@ -234,11 +234,6 @@ pub fn publication_resolver_resolve_nav_db_artifact_candidates(
 }
 
 #[wasm_bindgen]
-pub fn publication_resolver_resolve_obstacle_manifest(handle: u32) -> Result<String, JsValue> {
-    publication_resolver_resolve_package_resource(handle, "obstacles", "obstacles")
-}
-
-#[wasm_bindgen]
 pub fn publication_resolver_resolve_metar_manifest(handle: u32) -> Result<String, JsValue> {
     publication_resolver_resolve_package_resource(handle, "metars", "manifest.json")
 }

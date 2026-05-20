@@ -32,7 +32,8 @@ use crate::{
     live_feeds::{LiveFeedSseEvent, LiveFeedsState},
     map_follow::{MapFollowSessionState, MapFollowUiState},
     map_overlay::{
-        nearest_available_layer_zoom, FlightPlanSelectionPoint, MetarTileRecord,
+        nearest_available_layer_zoom, obstacle_layer_config_from_live_manifest_value,
+        visible_obstacle_tile_window, FlightPlanSelectionPoint, MetarTileRecord,
         PointTileLayerConfig,
     },
     map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
@@ -44,9 +45,9 @@ use crate::{
     AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
     FlightPlanRowActionExecution, FlightPlanRowActionId, GuidanceState, LatLon, LegDisplayElement,
     MapOverlayConfig, MapOverlayQueryResult, MapSelectionSessionAction, MapSurfaceMetrics,
-    MapViewport, MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvStore,
-    NavRef, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity, ProcedureKind,
-    ProcedureLoadCommand, PublicationResolver, RasterMapCatalog, RasterResourceMode,
+    MapViewport, MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvRoot,
+    NavKvStore, NavRef, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity,
+    ProcedureKind, ProcedureLoadCommand, PublicationResolver, RasterMapCatalog, RasterResourceMode,
     RasterTilePlan, ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode,
     SituationControlInput, SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult,
     TfrProductPayload, UiSnapshotAppState, VectorAggregateTilePayload, VectorIdentLabelStyle,
@@ -143,6 +144,8 @@ struct UiSession {
     metar_payload: Option<MetarProductPayload>,
     important_metar_station_ids: Option<HashSet<String>>,
     metar_station_importance_status: Option<DataStatusRecord>,
+    obstacle_had: Option<LiveObstacleHadState>,
+    obstacle_tile_cache: HashMap<String, PointTilePayload>,
     taf_payload: Option<TafProductPayload>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<TfrProductPayload>,
@@ -309,11 +312,12 @@ const PROCEDURE_GEOMETRY_STATUS_PREFIX: &str = "procedure_geometry:";
 const LIVE_FEED_METARS_STATUS_ID: &str = "live_feed:metars_unavailable";
 const LIVE_FEED_NEXRAD_STATUS_ID: &str = "live_feed:nexrad_unavailable";
 const LIVE_FEED_TFRS_STATUS_ID: &str = "live_feed:tfrs_unavailable";
-const LIVE_FEED_OBSTACLES_STATUS_ID: &str = "live_feed:obstacles_stale";
+const LIVE_FEED_OBSTACLES_STATUS_ID: &str = "live_feed:obstacles_unavailable";
 const CYCLE_SELECTED_CHART_STATUS_ID: &str = "cycle:selected_chart_expired";
 const CYCLE_NAV_DB_STATUS_ID: &str = "cycle:nav_db_expired";
 const METAR_STATION_IMPORTANCE_STATUS_ID: &str = "map_overlay:metar_station_importance_unavailable";
 const TERRAIN_STATUS_ID: &str = "terrain:warning_unavailable";
+const LIVE_OBSTACLE_HAD_RESOURCE_PREFIX: &str = "live_obstacle_had/";
 
 #[derive(Debug, Deserialize)]
 struct MetarImportantStationsPayload {
@@ -327,6 +331,29 @@ struct FreshnessPackageRecord {
     family_id: String,
     #[serde(default)]
     expiration_date: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct LiveObstacleHadState {
+    version: String,
+    state_url: String,
+    root_member_path: String,
+    page_path_template: String,
+    page_count: u32,
+    state_sha256: String,
+    store: Option<NavKvStore>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LiveObstacleHadManifest {
+    schema_version: u32,
+    product_id: String,
+    version_label: String,
+    encoding: String,
+    root: String,
+    page_path_template: String,
+    page_count: u32,
+    state_sha256: String,
 }
 
 fn sync_data_status_projection(session: &mut UiSession) {
@@ -526,17 +553,16 @@ fn sync_live_feed_overlay_status_records(session: &mut UiSession) -> Vec<UiInval
         .live_feeds
         .product_state_manifest("obstacles")
         .and_then(json_generated_at_utc);
-    if sync_live_feed_age_status_record(
+    let obstacles_loaded = session.obstacle_had.is_some();
+    invalidations.extend(sync_live_feed_product_status_record(
         session,
-        obstacles_visible && obstacles_observed_utc.is_some(),
-        LIVE_FEED_OBSTACLES_STATUS_ID,
-        "OBSTACLE",
-        "Obstacle",
+        obstacles_visible,
+        obstacles_loaded,
+        "obstacles",
+        "Obstacle live feed unavailable: no current obstacle product is loaded",
         obstacles_observed_utc,
         DATA_FRESHNESS_POLICIES.live_feeds.obstacles,
-    ) {
-        invalidations.push(UiInvalidation::SessionSnapshot);
-    }
+    ));
 
     dedupe_invalidations(&mut invalidations);
     invalidations
@@ -723,6 +749,14 @@ fn live_feed_unavailable_status_record(product: &str, detail: String) -> DataSta
             true,
             detail,
         ),
+        "obstacles" => DataStatusRecord::new(
+            LIVE_FEED_OBSTACLES_STATUS_ID,
+            "OBSTACLES",
+            Some("UNAVAIL".to_string()),
+            UiStatusSeverity::Unavailable,
+            true,
+            detail,
+        ),
         _ => DataStatusRecord::new(
             format!("live_feed:{product}_unavailable"),
             product.to_ascii_uppercase(),
@@ -770,7 +804,11 @@ fn record_live_feed_fetch_failure(
         if session.map_layer_state.vectors.visible {
             changed |= upsert_data_status_record(
                 session,
-                live_feed_unavailable_status_record("tfrs", detail),
+                live_feed_unavailable_status_record("tfrs", detail.clone()),
+            );
+            changed |= upsert_data_status_record(
+                session,
+                live_feed_unavailable_status_record("obstacles", detail),
             );
         }
         return changed;
@@ -1172,6 +1210,8 @@ fn create_ui_session_inner(
             metar_payload: None,
             important_metar_station_ids: None,
             metar_station_importance_status: None,
+            obstacle_had: None,
+            obstacle_tile_cache: HashMap::new(),
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
@@ -1225,6 +1265,7 @@ pub fn set_map_layer_visibility_in_session(
             }
             MapLayerId::Vectors => {
                 clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
+                clear_data_status_record(session, LIVE_FEED_OBSTACLES_STATUS_ID);
             }
             MapLayerId::TerrainWarning => {
                 clear_data_status_record(session, TERRAIN_STATUS_ID);
@@ -2823,7 +2864,6 @@ pub fn ingest_point_tiles_in_session(handle: u32, tiles: &[PointTilePayload]) ->
             "airport" => aggregate.airports = tile.records.clone(),
             "fix" => aggregate.fixes = tile.records.clone(),
             "nav" => aggregate.navaids = tile.records.clone(),
-            "obstacle" => aggregate.obstacles = tile.records.clone(),
             _ => {}
         }
     }
@@ -2890,7 +2930,6 @@ fn empty_vector_aggregate_tile(z: u32, x: u32, y: u32) -> VectorAggregateTilePay
         airports: Vec::new(),
         fixes: Vec::new(),
         navaids: Vec::new(),
-        obstacles: Vec::new(),
         airspace_refs: Vec::new(),
         airspace_labels: Vec::new(),
     }
@@ -2948,6 +2987,12 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
         install_live_feed_payloads(session)?;
         return Ok(());
     }
+    if resource_id.starts_with(LIVE_OBSTACLE_HAD_RESOURCE_PREFIX) {
+        let mut sessions = lock_sessions();
+        let session = session_mut(&mut sessions, handle)?;
+        ingest_live_obstacle_had_resource(session, resource_id, bytes)?;
+        return Ok(());
+    }
     if resource_id.starts_with("publication/") {
         let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, handle)?;
@@ -2992,11 +3037,103 @@ pub fn report_session_resource_failure_in_session(
                 "Terrain warning unavailable: failed to load terrain source {resource_id}: {message}"
             )),
         );
+    } else if resource_id.starts_with(LIVE_OBSTACLE_HAD_RESOURCE_PREFIX) {
+        upsert_data_status_record(
+            session,
+            live_feed_unavailable_status_record(
+                "obstacles",
+                format!("Obstacle live feed unavailable: failed to fetch HAD resource: {message}"),
+            ),
+        );
     }
     snapshot_for_session(session)
 }
 
+fn ingest_live_obstacle_had_resource(
+    session: &mut UiSession,
+    resource_id: &str,
+    bytes: &[u8],
+) -> AppResult<()> {
+    let Some((version, member)) = live_obstacle_had_resource_parts(resource_id) else {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("invalid obstacle HAD resource id: {resource_id}"),
+        });
+    };
+    let Some(had) = session.obstacle_had.as_mut() else {
+        return Ok(());
+    };
+    if had.version != version {
+        return Ok(());
+    }
+    if member == "root" {
+        let root = NavKvRoot::parse(bytes).map_err(|message| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("failed to parse obstacle HAD root: {message}"),
+        })?;
+        if root.page_count() != had.page_count {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message: format!(
+                    "obstacle HAD root page_count {} did not match manifest page_count {}",
+                    root.page_count(),
+                    had.page_count
+                ),
+            });
+        }
+        had.store = Some(NavKvStore::new(root));
+        session.obstacle_tile_cache.clear();
+        clear_data_status_record(session, LIVE_FEED_OBSTACLES_STATUS_ID);
+        return Ok(());
+    }
+    let Some(page_text) = member.strip_prefix("page/") else {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("invalid obstacle HAD resource id: {resource_id}"),
+        });
+    };
+    let page_index = page_text.parse::<u32>().map_err(|err| AppError {
+        kind: AppErrorKind::InvalidManifest,
+        message: format!("invalid obstacle HAD page resource id {resource_id}: {err}"),
+    })?;
+    if page_index >= had.page_count {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!(
+                "obstacle HAD page {page_index} exceeds page_count {}",
+                had.page_count
+            ),
+        });
+    }
+    let Some(store) = had.store.as_mut() else {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("obstacle HAD page arrived before root: {resource_id}"),
+        });
+    };
+    store.insert_page(page_index, bytes.to_vec());
+    clear_data_status_record(session, LIVE_FEED_OBSTACLES_STATUS_ID);
+    Ok(())
+}
+
 fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
+    if session.live_feeds.current_loaded() {
+        if !session.live_feeds.has_product_current_version("metars") {
+            session.metar_tile_cache.clear();
+            session.metar_payload = None;
+            clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
+        }
+        if !session.live_feeds.has_product_current_version("tfrs") {
+            session.tfr_payload = None;
+            clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
+        }
+        if !session.live_feeds.has_product_current_version("obstacles") {
+            session.obstacle_had = None;
+            session.obstacle_tile_cache.clear();
+            session.map_overlay_config.obstacle_layer = None;
+            clear_data_status_record(session, LIVE_FEED_OBSTACLES_STATUS_ID);
+        }
+    }
     if let Some(metars_value) = session.live_feeds.product_state_manifest("metars").cloned() {
         match serde_json::from_value::<MetarProductPayload>(metars_value) {
             Ok(payload) => {
@@ -3035,7 +3172,118 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
             }
         }
     }
+    if let Some(obstacles_value) = session
+        .live_feeds
+        .product_state_manifest("obstacles")
+        .cloned()
+    {
+        if let Err(err) = install_live_obstacle_had(session, obstacles_value) {
+            session.obstacle_had = None;
+            session.obstacle_tile_cache.clear();
+            session.map_overlay_config.obstacle_layer = None;
+            upsert_data_status_record(
+                session,
+                live_feed_unavailable_status_record(
+                    "obstacles",
+                    format!("Obstacle live feed unavailable: failed to parse state: {err}"),
+                ),
+            );
+        }
+    }
     sync_live_feed_overlay_status_records(session);
+    Ok(())
+}
+
+fn install_live_obstacle_had(
+    session: &mut UiSession,
+    manifest_value: serde_json::Value,
+) -> AppResult<()> {
+    let manifest: LiveObstacleHadManifest = serde_json::from_value(manifest_value.clone())
+        .map_err(|err| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("failed to parse obstacle live feed HAD manifest: {err}"),
+        })?;
+    if manifest.schema_version != 1 {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!(
+                "unsupported obstacle live feed HAD manifest schema_version {}",
+                manifest.schema_version
+            ),
+        });
+    }
+    if manifest.product_id != "obstacles" {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!(
+                "obstacle live feed HAD manifest contained product_id {}",
+                manifest.product_id
+            ),
+        });
+    }
+    if manifest.encoding != format!("had-nav-kv-v{}", had_nav_kv::VERSION) {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!(
+                "unsupported obstacle live feed HAD encoding {}",
+                manifest.encoding
+            ),
+        });
+    }
+    let Some(version) = session
+        .live_feeds
+        .product_loaded_version("obstacles")
+        .map(str::to_string)
+    else {
+        return Ok(());
+    };
+    if manifest.version_label != version {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!(
+                "obstacle live feed HAD manifest version {} did not match loaded version {version}",
+                manifest.version_label
+            ),
+        });
+    }
+    let Some(state_url) = session
+        .live_feeds
+        .product_state_url("obstacles")
+        .map(str::to_string)
+    else {
+        return Ok(());
+    };
+    let obstacle_layer = obstacle_layer_config_from_live_manifest_value(manifest_value)?;
+    let same_state = session.obstacle_had.as_ref().is_some_and(|existing| {
+        existing.version == version
+            && existing.state_url == state_url
+            && existing.root_member_path == manifest.root
+            && existing.page_path_template == manifest.page_path_template
+            && existing.page_count == manifest.page_count
+            && existing.state_sha256 == manifest.state_sha256
+    });
+    let preserve_store = if same_state {
+        session
+            .obstacle_had
+            .as_ref()
+            .and_then(|existing| existing.store.clone())
+    } else {
+        None
+    };
+    session.map_overlay_config.obstacle_layer = Some(obstacle_layer);
+    session.obstacle_had = Some(LiveObstacleHadState {
+        version,
+        state_url,
+        root_member_path: manifest.root,
+        page_path_template: manifest.page_path_template,
+        page_count: manifest.page_count,
+        state_sha256: manifest.state_sha256,
+        store: preserve_store,
+    });
+    if !same_state {
+        session.obstacle_tile_cache.clear();
+    }
+    clear_data_status_record(session, LIVE_FEED_OBSTACLES_STATUS_ID);
     Ok(())
 }
 
@@ -3228,6 +3476,66 @@ fn internal_json_error(err: serde_json::Error) -> AppError {
     }
 }
 
+fn live_feed_state_member_address(state_url: &str, member_path: &str) -> String {
+    let base = state_url
+        .rsplit_once('/')
+        .map(|(base, _)| base)
+        .unwrap_or("");
+    let member = member_path.trim_start_matches('/');
+    if base.is_empty() {
+        format!("/live-feeds/{member}")
+    } else {
+        format!("/live-feeds/{base}/{member}")
+    }
+}
+
+fn live_obstacle_had_root_resource(had: &LiveObstacleHadState) -> CoreResourceRequest {
+    CoreResourceRequest::public_url(
+        format!(
+            "{}{}{}",
+            LIVE_OBSTACLE_HAD_RESOURCE_PREFIX, had.version, "/root"
+        ),
+        live_feed_state_member_address(&had.state_url, &had.root_member_path),
+        false,
+    )
+}
+
+fn live_obstacle_had_page_member_path(had: &LiveObstacleHadState, page: u32) -> String {
+    had.page_path_template
+        .replace("{page:04}", &format!("{page:04}"))
+        .replace("{page}", &page.to_string())
+}
+
+fn live_obstacle_had_page_resource(had: &LiveObstacleHadState, page: u32) -> CoreResourceRequest {
+    let member_path = live_obstacle_had_page_member_path(had, page);
+    CoreResourceRequest::public_url(
+        format!(
+            "{}{}/page/{page:04}",
+            LIVE_OBSTACLE_HAD_RESOURCE_PREFIX, had.version
+        ),
+        live_feed_state_member_address(&had.state_url, &member_path),
+        false,
+    )
+}
+
+fn live_obstacle_had_page_resources(
+    had: &LiveObstacleHadState,
+    pages: Vec<u32>,
+) -> Vec<CoreResourceRequest> {
+    let mut pages = pages;
+    pages.sort_unstable();
+    pages.dedup();
+    pages
+        .into_iter()
+        .map(|page| live_obstacle_had_page_resource(had, page))
+        .collect()
+}
+
+fn live_obstacle_had_resource_parts(resource_id: &str) -> Option<(&str, &str)> {
+    let rest = resource_id.strip_prefix(LIVE_OBSTACLE_HAD_RESOURCE_PREFIX)?;
+    rest.split_once('/')
+}
+
 fn had_read_error_to_overlay_outcome(err: HadReadError) -> AppResult<HadOperationOutcome> {
     match err {
         HadReadError::NeedPages(pages) => Ok(HadOperationOutcome::NeedResources {
@@ -3291,8 +3599,11 @@ fn install_vector_manifest_config(
     session: &mut UiSession,
     manifest_json: &str,
 ) -> Result<(), String> {
-    session.map_overlay_config = map_overlay_config_from_vector_manifest_json(&manifest_json)
+    let obstacle_layer = session.map_overlay_config.obstacle_layer.clone();
+    let mut config = map_overlay_config_from_vector_manifest_json(&manifest_json)
         .map_err(|err| err.to_string())?;
+    config.obstacle_layer = obstacle_layer;
+    session.map_overlay_config = config;
     rebuild_metar_tile_cache(session);
     session.vector_manifest_loaded = true;
     Ok(())
@@ -3312,6 +3623,7 @@ fn ensure_vector_inputs_loaded(
             &[],
             ownship_overlay_context(session).as_ref(),
             &session.vector_tile_cache,
+            &session.obstacle_tile_cache,
             &session.metar_tile_cache,
             session.metar_payload.as_ref(),
             &session.airspace_feature_cache,
@@ -3352,7 +3664,6 @@ fn ensure_vector_inputs_loaded(
                 airports: Vec::new(),
                 fixes: Vec::new(),
                 navaids: Vec::new(),
-                obstacles: Vec::new(),
                 airspace_refs: Vec::new(),
                 airspace_labels: Vec::new(),
             });
@@ -3413,6 +3724,130 @@ fn vector_input_keys(overlay: &MapOverlayQueryResult) -> Vec<String> {
                 }),
         )
         .collect()
+}
+
+fn ensure_live_obstacle_inputs_loaded(
+    session: &mut UiSession,
+    metrics: &MapSurfaceMetrics,
+) -> Vec<DataStatusRecord> {
+    if let HadOperationOutcome::NeedResources { resources } =
+        session.live_feeds.sync_product_outcome("obstacles")
+    {
+        for resource in resources {
+            enqueue_session_resource_effect(session, resource, [UiInvalidation::MapOverlay]);
+        }
+        return Vec::new();
+    }
+    let Some(layer) = session.map_overlay_config.obstacle_layer.clone() else {
+        return Vec::new();
+    };
+    let Some(had) = session.obstacle_had.clone() else {
+        return Vec::new();
+    };
+    if had.store.is_none() {
+        enqueue_session_resource_effect(
+            session,
+            live_obstacle_had_root_resource(&had),
+            [UiInvalidation::MapOverlay],
+        );
+        return vec![live_feed_unavailable_status_record(
+            "obstacles",
+            "Obstacle live feed is waiting for the current HAD root".to_string(),
+        )];
+    }
+    let obstacle_context = ownship_overlay_context(session);
+    let tiles = visible_obstacle_tile_window(
+        &layer,
+        &metrics.viewport,
+        metrics.width_px,
+        metrics.height_px,
+        obstacle_context.as_ref(),
+        metrics.display_scale,
+    );
+    if tiles.is_empty() {
+        return Vec::new();
+    }
+    let keys = tiles
+        .iter()
+        .filter_map(|tile| {
+            nav_kv_key_for_query(&NavKvQuery::ObstacleTile {
+                z: tile.z,
+                x: tile.x,
+                y: tile.y,
+            })
+        })
+        .collect::<Vec<_>>();
+    let Some(store) = had.store.as_ref() else {
+        return Vec::new();
+    };
+    let missing_pages = match store.missing_pages_for_keys(&keys) {
+        Ok(pages) => pages,
+        Err(message) => {
+            return vec![live_feed_unavailable_status_record(
+                "obstacles",
+                format!("Obstacle live feed unavailable: failed to query HAD pages: {message}"),
+            )];
+        }
+    };
+    if !missing_pages.is_empty() {
+        for resource in live_obstacle_had_page_resources(&had, missing_pages) {
+            enqueue_session_resource_effect(session, resource, [UiInvalidation::MapOverlay]);
+        }
+        return vec![live_feed_unavailable_status_record(
+            "obstacles",
+            "Obstacle live feed is waiting for visible HAD pages".to_string(),
+        )];
+    }
+
+    let mut loaded_any = false;
+    for tile in tiles {
+        let cache_key = crate::tile_key("obstacle", tile.z, tile.x, tile.y);
+        if session.obstacle_tile_cache.contains_key(&cache_key) {
+            continue;
+        }
+        let Some(key) = nav_kv_key_for_query(&NavKvQuery::ObstacleTile {
+            z: tile.z,
+            x: tile.x,
+            y: tile.y,
+        }) else {
+            continue;
+        };
+        match store.get_bytes(&key) {
+            Ok(NavKvLookup::Hit(bytes)) => match serde_json::from_slice::<PointTilePayload>(&bytes)
+            {
+                Ok(payload) => {
+                    session.obstacle_tile_cache.insert(cache_key, payload);
+                    loaded_any = true;
+                }
+                Err(err) => {
+                    return vec![live_feed_unavailable_status_record(
+                        "obstacles",
+                        format!("Obstacle live feed unavailable: failed to parse tile: {err}"),
+                    )];
+                }
+            },
+            Ok(NavKvLookup::MissingKey) => {}
+            Ok(NavKvLookup::MissingPages(pages)) => {
+                for resource in live_obstacle_had_page_resources(&had, pages) {
+                    enqueue_session_resource_effect(
+                        session,
+                        resource,
+                        [UiInvalidation::MapOverlay],
+                    );
+                }
+            }
+            Err(message) => {
+                return vec![live_feed_unavailable_status_record(
+                    "obstacles",
+                    format!("Obstacle live feed unavailable: failed to read tile: {message}"),
+                )];
+            }
+        }
+    }
+    if loaded_any {
+        clear_data_status_record(session, LIVE_FEED_OBSTACLES_STATUS_ID);
+    }
+    Vec::new()
 }
 
 pub fn get_map_overlay_in_session(
@@ -3484,6 +3919,9 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
         }
     }
     let mut supplemental_status_records = Vec::new();
+    if session.map_layer_state.vectors.visible {
+        supplemental_status_records.extend(ensure_live_obstacle_inputs_loaded(session, &metrics));
+    }
     if metar_importance_required_for_viewport(session, &viewport) {
         if let Some(record) = try_ensure_metar_station_importance_loaded(session) {
             supplemental_status_records.push(record);
@@ -3513,6 +3951,7 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
         &offline_region_records,
         ownship_overlay_context(session).as_ref(),
         &session.vector_tile_cache,
+        &session.obstacle_tile_cache,
         &session.metar_tile_cache,
         session.metar_payload.as_ref(),
         &session.airspace_feature_cache,
@@ -6597,6 +7036,7 @@ mod tests {
             &[],
             None,
             &HashMap::new(),
+            &HashMap::new(),
             &metar_tile_cache,
             Some(&payload),
             &HashMap::new(),
@@ -6647,6 +7087,8 @@ mod tests {
             metar_payload: None,
             important_metar_station_ids: None,
             metar_station_importance_status: None,
+            obstacle_had: None,
+            obstacle_tile_cache: HashMap::new(),
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
@@ -6819,6 +7261,8 @@ mod tests {
             metar_payload: None,
             important_metar_station_ids: None,
             metar_station_importance_status: None,
+            obstacle_had: None,
+            obstacle_tile_cache: HashMap::new(),
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
@@ -6903,7 +7347,6 @@ mod tests {
                     }],
                     fixes: Vec::new(),
                     navaids: Vec::new(),
-                    obstacles: Vec::new(),
                     airspace_refs: Vec::new(),
                     airspace_labels: Vec::new(),
                 },
@@ -7165,6 +7608,8 @@ mod tests {
             metar_payload: None,
             important_metar_station_ids: None,
             metar_station_importance_status: None,
+            obstacle_had: None,
+            obstacle_tile_cache: HashMap::new(),
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
@@ -7254,6 +7699,210 @@ mod tests {
             .values()
             .any(|record| record.id == LIVE_FEED_TFRS_STATUS_ID
                 && record.detail.contains("summary_text")));
+    }
+
+    #[test]
+    fn live_obstacle_had_pages_fault_into_map_overlay() {
+        let viewport = MapViewport {
+            center: LatLon { lat: 0.0, lon: 0.0 },
+            zoom: 8.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let obstacle_manifest_base = serde_json::json!({
+            "schema_version": 1,
+            "product_id": "obstacles",
+            "version_label": "v1",
+            "encoding": format!("had-nav-kv-v{}", had_nav_kv::VERSION),
+            "root": "root",
+            "page_path_template": "page_{page:04}",
+            "point_layers": {
+                "obstacle": {
+                    "min_zoom": 8,
+                    "max_zoom": 8,
+                    "available_zooms": [8],
+                    "zoom_levels": [{
+                        "zoom": 8,
+                        "filtered": false,
+                        "min_agl_ft": 0
+                    }]
+                }
+            }
+        });
+        let obstacle_layer =
+            obstacle_layer_config_from_live_manifest_value(obstacle_manifest_base.clone())
+                .expect("obstacle layer config");
+        let obstacle_tile =
+            visible_obstacle_tile_window(&obstacle_layer, &viewport, 240.0, 240.0, None, 1.0)
+                .into_iter()
+                .next()
+                .expect("visible obstacle tile");
+        let tile_payload = PointTilePayload {
+            schema_version: 1,
+            layer: "obstacle".to_string(),
+            z: obstacle_tile.z,
+            x: obstacle_tile.x,
+            y: obstacle_tile.y,
+            records: vec![PointVectorRecord {
+                id: "obstacle:test".to_string(),
+                kind: "obstacle".to_string(),
+                lat: 0.0,
+                lon: 0.0,
+                label: "".to_string(),
+                style_class: "obstacle".to_string(),
+                towered: None,
+                fuel_available: None,
+                public_use: None,
+                private_use: None,
+                has_paved_runway: None,
+                heliport: None,
+                has_water_runway: None,
+                longest_runway_length_ft: None,
+                longest_runway_heading_true_deg: None,
+                elevation_msl_ft: None,
+                obstacle: Some(crate::map_overlay::ObstaclePointSemantics {
+                    height_agl_ft: 300.0,
+                    elevation_msl_ft: 500.0,
+                    top_msl_ft: 800.0,
+                    is_tall: false,
+                }),
+            }],
+        };
+        let obstacle_key = nav_kv_key_for_query(&NavKvQuery::ObstacleTile {
+            z: obstacle_tile.z,
+            x: obstacle_tile.x,
+            y: obstacle_tile.y,
+        })
+        .expect("obstacle tile key");
+        let pairs = vec![had_nav_kv::NavKvPair {
+            key: obstacle_key,
+            value: serde_json::to_vec(&tile_payload).expect("tile json"),
+        }];
+        let built =
+            had_nav_kv::build_nav_kv_sorted(pairs.clone(), 1024).expect("build obstacle HAD");
+        let state_sha256 = had_nav_kv::nav_kv_canonical_sha256_from_pairs(&pairs);
+        let mut obstacle_manifest = obstacle_manifest_base;
+        obstacle_manifest["page_count"] = serde_json::json!(built.pages.len());
+        obstacle_manifest["state_sha256"] = serde_json::json!(state_sha256);
+
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            install_vector_manifest_config(session, minimal_vector_manifest_json())
+                .expect("vector manifest");
+            session.map_layer_state.vectors.visible = true;
+        }
+        ingest_resource_in_session(
+            init.handle,
+            "live_feeds/current",
+            format!(
+                r#"{{
+                    "products": {{
+                        "obstacles": {{
+                            "current": "v1",
+                            "version_manifest_url": "versions/obstacles/v1.json",
+                            "state_url": "states/obstacles/v1/manifest.json",
+                            "state_sha256": "{state_sha256}"
+                        }}
+                    }}
+                }}"#
+            )
+            .as_bytes(),
+        )
+        .expect("current manifest");
+        ingest_resource_in_session(
+            init.handle,
+            "live_feeds/version/obstacles/v1",
+            format!(
+                r#"{{
+                    "product": "obstacles",
+                    "version": "v1",
+                    "state": {{
+                        "kind": "nav_kv",
+                        "url": "states/obstacles/v1/manifest.json",
+                        "state_sha256": "{state_sha256}"
+                    }}
+                }}"#
+            )
+            .as_bytes(),
+        )
+        .expect("version manifest");
+        ingest_resource_in_session(
+            init.handle,
+            "live_feeds/state/obstacles/v1",
+            &serde_json::to_vec(&obstacle_manifest).expect("manifest json"),
+        )
+        .expect("state manifest");
+
+        let metrics = MapSurfaceMetrics::new(viewport, 240.0, 240.0, 1.0);
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let statuses = ensure_live_obstacle_inputs_loaded(session, &metrics);
+            assert_eq!(statuses.len(), 1);
+        }
+        let effects = drain_session_resource_effects(init.handle).expect("root effects");
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].resource.id, "live_obstacle_had/v1/root");
+        assert_eq!(
+            effects[0].resource.source,
+            crate::CoreResourceSource::PublicUrl {
+                url: "/live-feeds/states/obstacles/v1/root".to_string(),
+            }
+        );
+        ingest_resource_in_session(init.handle, "live_obstacle_had/v1/root", &built.root_bytes)
+            .expect("ingest root");
+
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let statuses = ensure_live_obstacle_inputs_loaded(session, &metrics);
+            assert_eq!(statuses.len(), 1);
+        }
+        let page_effects = drain_session_resource_effects(init.handle).expect("page effects");
+        assert!(!page_effects.is_empty());
+        for effect in &page_effects {
+            let page_text = effect
+                .resource
+                .id
+                .strip_prefix("live_obstacle_had/v1/page/")
+                .expect("page resource id");
+            let page_index = page_text.parse::<usize>().expect("page index");
+            ingest_resource_in_session(init.handle, &effect.resource.id, &built.pages[page_index])
+                .expect("ingest page");
+        }
+
+        let (config, obstacle_cache) = {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let statuses = ensure_live_obstacle_inputs_loaded(session, &metrics);
+            assert!(statuses.is_empty());
+            (
+                session.map_overlay_config.clone(),
+                session.obstacle_tile_cache.clone(),
+            )
+        };
+        let overlay = query_map_overlay_for_surface(
+            &metrics,
+            &config,
+            true,
+            false,
+            &[],
+            None,
+            &HashMap::new(),
+            &obstacle_cache,
+            &HashMap::new(),
+            None,
+            &HashMap::new(),
+            None,
+        );
+
+        assert!(overlay
+            .visible_features
+            .iter()
+            .any(|feature| feature.id == "obstacle:test"));
     }
 
     #[test]

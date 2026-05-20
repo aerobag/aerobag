@@ -274,8 +274,6 @@ pub struct VectorAggregateTilePayload {
     #[serde(default)]
     pub navaids: Vec<PointVectorRecord>,
     #[serde(default)]
-    pub obstacles: Vec<PointVectorRecord>,
-    #[serde(default)]
     pub airspace_refs: Vec<String>,
     #[serde(default)]
     pub airspace_labels: Vec<AirspaceLabelRecord>,
@@ -822,6 +820,12 @@ struct VectorOverlayManifest {
 }
 
 #[derive(Debug, Deserialize)]
+struct ObstacleOverlayManifest {
+    #[serde(default)]
+    point_layers: HashMap<String, VectorPointLayerManifest>,
+}
+
+#[derive(Debug, Deserialize)]
 struct VectorPointLayerManifest {
     #[serde(default)]
     min_zoom: Option<u32>,
@@ -868,11 +872,6 @@ pub fn map_overlay_config_from_vector_manifest_json(
     let airport_layer = required_point_tile_layer_config(&manifest, "airport")?;
     let fix_layer = required_point_tile_layer_config(&manifest, "fix")?;
     let nav_layer = required_point_tile_layer_config(&manifest, "nav")?;
-    let obstacle_layer = manifest
-        .point_layers
-        .get("obstacle")
-        .map(obstacle_layer_config_from_manifest)
-        .transpose()?;
     Ok(MapOverlayConfig {
         airspace_reference_tile_min_zoom: manifest.airspace.reference_tile_min_zoom,
         airspace_reference_tile_max_zoom: manifest.airspace.reference_tile_max_zoom,
@@ -881,9 +880,27 @@ pub fn map_overlay_config_from_vector_manifest_json(
         airport_layer,
         fix_layer,
         nav_layer,
-        obstacle_layer,
+        obstacle_layer: None,
         metar_layer: Some(live_metar_layer_config()),
     })
+}
+
+pub fn obstacle_layer_config_from_live_manifest_value(
+    value: serde_json::Value,
+) -> AppResult<ObstacleLayerConfig> {
+    let manifest: ObstacleOverlayManifest =
+        serde_json::from_value(value).map_err(|err| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("failed to parse obstacle overlay manifest: {err}"),
+        })?;
+    let obstacle = manifest
+        .point_layers
+        .get("obstacle")
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: "obstacle overlay manifest is missing obstacle layer".to_string(),
+        })?;
+    obstacle_layer_config_from_manifest(obstacle)
 }
 
 fn required_point_tile_layer_config(
@@ -971,16 +988,8 @@ pub fn visible_point_tile_window(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
-    obstacle_context: Option<&ObstacleOverlayContext>,
 ) -> Vec<VectorTileRequest> {
-    visible_point_tile_window_with_display_scale(
-        config,
-        viewport,
-        width_px,
-        height_px,
-        obstacle_context,
-        1.0,
-    )
+    visible_point_tile_window_with_display_scale(config, viewport, width_px, height_px, 1.0)
 }
 
 pub fn visible_point_tile_window_with_display_scale(
@@ -988,7 +997,6 @@ pub fn visible_point_tile_window_with_display_scale(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
-    obstacle_context: Option<&ObstacleOverlayContext>,
     point_display_scale: f64,
 ) -> Vec<VectorTileRequest> {
     dedupe_vector_tile_requests(
@@ -997,7 +1005,6 @@ pub fn visible_point_tile_window_with_display_scale(
             viewport,
             width_px,
             height_px,
-            obstacle_context,
             point_display_scale,
         )
         .into_iter()
@@ -1010,7 +1017,6 @@ fn visible_point_display_tile_window(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
-    obstacle_context: Option<&ObstacleOverlayContext>,
     point_display_scale: f64,
 ) -> Vec<DisplayVectorTile> {
     let mut tiles = Vec::new();
@@ -1043,27 +1049,10 @@ fn visible_point_display_tile_window(
             height_px,
         ));
     }
-    if let Some(obstacle_layer) = config.obstacle_layer.as_ref() {
-        tiles.extend(
-            visible_obstacle_tile_window(
-                obstacle_layer,
-                viewport,
-                width_px,
-                height_px,
-                obstacle_context,
-                point_display_scale,
-            )
-            .into_iter()
-            .map(|request| DisplayVectorTile {
-                request,
-                world_x_offset: 0.0,
-            }),
-        );
-    }
     tiles
 }
 
-fn visible_obstacle_tile_window(
+pub(crate) fn visible_obstacle_tile_window(
     config: &ObstacleLayerConfig,
     viewport: &MapViewport,
     width_px: f64,
@@ -1325,6 +1314,7 @@ pub fn query_map_overlay(
     offline_region_records: &[OfflineRegionRecord],
     obstacle_context: Option<&ObstacleOverlayContext>,
     vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
+    obstacle_tile_cache: &HashMap<String, PointTilePayload>,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
@@ -1340,6 +1330,7 @@ pub fn query_map_overlay(
         offline_region_records,
         obstacle_context,
         vector_tile_cache,
+        obstacle_tile_cache,
         metar_tile_cache,
         metar_payload,
         airspace_feature_cache,
@@ -1358,6 +1349,7 @@ pub fn query_map_overlay_with_point_display_scale(
     offline_region_records: &[OfflineRegionRecord],
     obstacle_context: Option<&ObstacleOverlayContext>,
     vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
+    obstacle_tile_cache: &HashMap<String, PointTilePayload>,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
@@ -1373,6 +1365,7 @@ pub fn query_map_overlay_with_point_display_scale(
         offline_region_records,
         obstacle_context,
         vector_tile_cache,
+        obstacle_tile_cache,
         metar_tile_cache,
         metar_payload,
         airspace_feature_cache,
@@ -1388,6 +1381,7 @@ pub fn query_map_overlay_for_surface(
     offline_region_records: &[OfflineRegionRecord],
     obstacle_context: Option<&ObstacleOverlayContext>,
     vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
+    obstacle_tile_cache: &HashMap<String, PointTilePayload>,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
@@ -1419,7 +1413,6 @@ pub fn query_map_overlay_for_surface(
             viewport,
             width_px,
             height_px,
-            obstacle_context,
             point_display_scale,
         );
         point_tile_count = tile_window.len();
@@ -1471,6 +1464,57 @@ pub fn query_map_overlay_for_surface(
                 if let Some(bucket_index) = vector_display_budget_bucket_index(&tile.request.layer)
                 {
                     vector_budget_buckets[bucket_index].features.push(feature);
+                }
+            }
+        }
+        if let Some(obstacle_layer) = config.obstacle_layer.as_ref() {
+            let obstacle_tiles = visible_obstacle_tile_window(
+                obstacle_layer,
+                viewport,
+                width_px,
+                height_px,
+                obstacle_context,
+                point_display_scale,
+            );
+            point_tile_count += obstacle_tiles.len();
+            for tile in obstacle_tiles {
+                let key = tile_key(&tile.layer, tile.z, tile.x, tile.y);
+                let Some(payload) = obstacle_tile_cache.get(&key) else {
+                    continue;
+                };
+                for record in &payload.records {
+                    vector_budget.scanned_records += 1;
+                    if !should_display_record(record) {
+                        bump_layer_count(&mut vector_budget.hidden_by_layer, &tile.layer);
+                        continue;
+                    }
+                    let Some(symbol) = point_vector_record_to_symbol_feature(
+                        record,
+                        obstacle_context.and_then(|context| context.altitude_ft),
+                    ) else {
+                        bump_layer_count(&mut vector_budget.no_symbol_by_layer, &tile.layer);
+                        continue;
+                    };
+                    vector_budget.displayable_records += 1;
+                    let point = nearest_wrapped_screen_point(
+                        center_world,
+                        scale,
+                        width_px,
+                        height_px,
+                        LatLon {
+                            lat: record.lat,
+                            lon: record.lon,
+                        },
+                    );
+                    let feature = visible_map_feature_from_symbol(
+                        record.id.clone(),
+                        symbol,
+                        point,
+                        VectorIdentLabelStyle::Default,
+                    );
+                    if let Some(bucket_index) = vector_display_budget_bucket_index(&tile.layer) {
+                        vector_budget_buckets[bucket_index].features.push(feature);
+                    }
                 }
             }
         }
@@ -2231,7 +2275,6 @@ pub fn query_map_selection_for_surface(
         viewport,
         width_px,
         height_px,
-        None,
         point_display_scale,
     ) {
         let Some(payload) = vector_tile_cache.get(&aggregate_vector_tile_cache_key(
@@ -4621,7 +4664,6 @@ fn vector_tile_point_records<'a>(
         "airport" => &tile.airports,
         "fix" => &tile.fixes,
         "nav" => &tile.navaids,
-        "obstacle" => &tile.obstacles,
         _ => &[],
     }
 }
@@ -4965,6 +5007,7 @@ mod tests {
             airspace_ref_tile_cache,
             airspace_label_tile_cache,
         );
+        let obstacle_tile_cache = obstacle_test_tiles(point_tile_cache);
         super::query_map_overlay(
             viewport,
             width_px,
@@ -4975,6 +5018,7 @@ mod tests {
             &[],
             None,
             &vector_tile_cache,
+            &obstacle_tile_cache,
             &HashMap::new(),
             None,
             airspace_feature_cache,
@@ -4997,6 +5041,7 @@ mod tests {
             airspace_ref_tile_cache,
             airspace_label_tile_cache,
         );
+        let obstacle_tile_cache = obstacle_test_tiles(point_tile_cache);
         super::query_map_overlay_with_point_display_scale(
             viewport,
             width_px,
@@ -5007,6 +5052,7 @@ mod tests {
             &[],
             None,
             &vector_tile_cache,
+            &obstacle_tile_cache,
             &HashMap::new(),
             None,
             airspace_feature_cache,
@@ -5029,7 +5075,6 @@ mod tests {
                 "airport" => aggregate.airports = tile.records.clone(),
                 "fix" => aggregate.fixes = tile.records.clone(),
                 "nav" => aggregate.navaids = tile.records.clone(),
-                "obstacle" => aggregate.obstacles = tile.records.clone(),
                 _ => {}
             }
         }
@@ -5055,10 +5100,19 @@ mod tests {
             airports: Vec::new(),
             fixes: Vec::new(),
             navaids: Vec::new(),
-            obstacles: Vec::new(),
             airspace_refs: Vec::new(),
             airspace_labels: Vec::new(),
         }
+    }
+
+    fn obstacle_test_tiles(
+        point_tile_cache: &HashMap<String, PointTilePayload>,
+    ) -> HashMap<String, PointTilePayload> {
+        point_tile_cache
+            .iter()
+            .filter(|(_, tile)| tile.layer == "obstacle")
+            .map(|(key, tile)| (key.clone(), tile.clone()))
+            .collect()
     }
 
     fn test_point_record(id: String, kind: &str, style_class: &str) -> PointVectorRecord {
@@ -5094,8 +5148,7 @@ mod tests {
             rotation_deg: 0.0,
             pitch_deg: 0.0,
         };
-        let tiles =
-            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0, None);
+        let tiles = visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0);
         assert!(tiles.iter().any(|tile| tile.layer == "airport"));
         assert!(!tiles.iter().any(|tile| tile.layer == "fix"));
         assert!(tiles.iter().any(|tile| tile.layer == "nav"));
@@ -5114,7 +5167,7 @@ mod tests {
         };
 
         let unscaled =
-            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0, None);
+            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0);
         assert!(unscaled
             .iter()
             .any(|tile| tile.layer == "airport" && tile.z == 9));
@@ -5124,7 +5177,6 @@ mod tests {
             &viewport,
             1200.0,
             900.0,
-            None,
             3.0,
         );
         assert!(density_scaled
@@ -5584,9 +5636,8 @@ mod tests {
             pitch_deg: 0.0,
         };
 
-        let density_scaled = visible_point_tile_window_with_display_scale(
-            &config, &viewport, 1200.0, 900.0, None, 3.0,
-        );
+        let density_scaled =
+            visible_point_tile_window_with_display_scale(&config, &viewport, 1200.0, 900.0, 3.0);
 
         assert!(density_scaled
             .iter()
@@ -5637,6 +5688,7 @@ mod tests {
             None,
             &HashMap::new(),
             &HashMap::new(),
+            &HashMap::new(),
             None,
             &HashMap::new(),
             None,
@@ -5655,6 +5707,7 @@ mod tests {
             true,
             &[],
             None,
+            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             None,
@@ -5838,6 +5891,7 @@ mod tests {
             &[],
             None,
             &HashMap::new(),
+            &HashMap::new(),
             &metar_tile_cache,
             Some(&metars),
             &HashMap::new(),
@@ -5892,16 +5946,11 @@ mod tests {
         };
         let width_px = 1200.0;
         let height_px = 900.0;
-        let point_tile = visible_point_tile_window(
-            &test_map_overlay_config(),
-            &viewport,
-            width_px,
-            height_px,
-            None,
-        )
-        .into_iter()
-        .find(|tile| tile.layer == "airport")
-        .expect("expected airport tile");
+        let point_tile =
+            visible_point_tile_window(&test_map_overlay_config(), &viewport, width_px, height_px)
+                .into_iter()
+                .find(|tile| tile.layer == "airport")
+                .expect("expected airport tile");
         let airspace_tile = visible_layer_tile_window(
             "airspace",
             airspace_reference_zoom(viewport.zoom, &test_map_overlay_config()),
@@ -5959,7 +6008,6 @@ mod tests {
                         }],
                         fixes: Vec::new(),
                         navaids: Vec::new(),
-                        obstacles: Vec::new(),
                         airspace_refs: Vec::new(),
                         airspace_labels: Vec::new(),
                     },
@@ -6161,6 +6209,7 @@ mod tests {
                 &offline_regions,
                 None,
                 &vector_tile_cache,
+                &HashMap::new(),
                 &metar_tile_cache,
                 metar_product.as_ref(),
                 &airspace_feature_cache,
@@ -7093,7 +7142,7 @@ mod tests {
             pitch_deg: 0.0,
         };
         let window =
-            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0, None);
+            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0);
         let first = window
             .iter()
             .find(|tile| tile.layer == "fix")
@@ -7144,7 +7193,7 @@ mod tests {
             pitch_deg: 0.0,
         };
         let window =
-            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0, None);
+            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0);
         let fix_tile = window
             .iter()
             .find(|tile| tile.layer == "fix")
@@ -7335,7 +7384,7 @@ mod tests {
             pitch_deg: 0.0,
         };
         let airport_tile =
-            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0, None)
+            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0)
                 .into_iter()
                 .find(|tile| tile.layer == "airport")
                 .expect("expected airport tile");
@@ -7996,7 +8045,7 @@ mod tests {
             pitch_deg: 0.0,
         };
         let airport_tile =
-            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0, None)
+            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0)
                 .into_iter()
                 .find(|tile| tile.layer == "airport")
                 .expect("expected airport tile");

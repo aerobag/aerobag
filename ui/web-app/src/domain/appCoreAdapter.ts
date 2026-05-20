@@ -618,7 +618,6 @@ type WasmModule = {
   publication_resolver_ingest_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
   publication_resolver_open(publicBaseUrl: string): number;
   publication_resolver_resolve_metar_manifest(handle: number): Promise<string> | string;
-  publication_resolver_resolve_obstacle_manifest(handle: number): Promise<string> | string;
   publication_resolver_resolve_package_member(handle: number, packageId: string, memberPath: string): Promise<string> | string;
   situation_ring_candidates_json(): Promise<string> | string;
   empty_flight_plan_json(): Promise<string> | string;

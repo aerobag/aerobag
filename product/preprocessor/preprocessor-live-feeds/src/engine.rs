@@ -93,6 +93,7 @@ impl UpstreamSource for IntervalLiveFeedSource {
                 self.product_id,
                 now.to_rfc3339_opts(SecondsFormat::Secs, true)
             ),
+            previous_source_id: None,
             observed_at_utc: now,
             payload_path: None,
         }])
@@ -159,6 +160,8 @@ impl UpstreamSource for QueuedLiveFeedSource {
 pub struct UpstreamEvent {
     pub product: String,
     pub source_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_source_id: Option<String>,
     pub observed_at_utc: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload_path: Option<PathBuf>,
@@ -192,6 +195,7 @@ pub struct BuiltLiveFeedState {
     pub version: String,
     pub payload: LiveFeedStatePayload,
     pub delta_policy: DeltaPolicy,
+    pub precomputed_delta: Option<LiveFeedRecordDelta>,
     pub changed_count_if_no_delta: usize,
 }
 
@@ -593,6 +597,7 @@ impl<C: Clock> LiveFeedPublisher for FileLiveFeedPublisher<C> {
             version,
             payload,
             delta_policy,
+            precomputed_delta,
             changed_count_if_no_delta,
         } = built;
         match payload {
@@ -602,6 +607,7 @@ impl<C: Clock> LiveFeedPublisher for FileLiveFeedPublisher<C> {
                 path,
                 value,
                 delta_policy,
+                precomputed_delta,
                 changed_count_if_no_delta,
             ),
             LiveFeedStatePayload::Directory {
@@ -615,6 +621,7 @@ impl<C: Clock> LiveFeedPublisher for FileLiveFeedPublisher<C> {
                 manifest_path,
                 manifest_value,
                 delta_policy,
+                precomputed_delta,
                 changed_count_if_no_delta,
             ),
         }
@@ -629,6 +636,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         source_path: PathBuf,
         state_value: Value,
         delta_policy: DeltaPolicy,
+        precomputed_delta: Option<LiveFeedRecordDelta>,
         changed_count_if_no_delta: usize,
     ) -> anyhow::Result<PublishedLiveFeedUpdate> {
         let state_dir = self.root.join("states").join(&product);
@@ -642,6 +650,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             state_path,
             state_value,
             delta_policy,
+            precomputed_delta,
             changed_count_if_no_delta,
             None,
         )
@@ -655,6 +664,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         manifest_path: PathBuf,
         manifest_value: Value,
         delta_policy: DeltaPolicy,
+        precomputed_delta: Option<LiveFeedRecordDelta>,
         changed_count_if_no_delta: usize,
     ) -> anyhow::Result<PublishedLiveFeedUpdate> {
         let state_dir = self.root.join("states").join(&product).join(&version);
@@ -675,6 +685,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             state_path,
             manifest_value,
             delta_policy,
+            precomputed_delta,
             changed_count_if_no_delta,
             Some(state_dir),
         )
@@ -687,6 +698,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         state_path: PathBuf,
         state_value: Value,
         delta_policy: DeltaPolicy,
+        precomputed_delta: Option<LiveFeedRecordDelta>,
         changed_count_if_no_delta: usize,
         state_root: Option<PathBuf>,
     ) -> anyhow::Result<PublishedLiveFeedUpdate> {
@@ -732,18 +744,37 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         if let (Some(previous), DeltaPolicy::KeyedRecords { records_key, .. }) =
             (previous_entry.as_ref(), &delta_policy)
         {
-            let previous_state_path = self.root.join(&previous.state_url);
-            let previous_state = read_json_value(&previous_state_path)?;
-            let previous_sha256 = canonical_json_sha256(&previous_state)?;
-            if previous_sha256 != previous.state_sha256 {
-                bail!(
-                    "previous {product} state hash mismatch for {}: expected {}, got {}",
-                    previous.current,
-                    previous.state_sha256,
-                    previous_sha256
-                );
-            }
-            let delta = build_record_delta(&product, records_key, &previous_state, &state_value)?;
+            let delta = if let Some(delta) = precomputed_delta {
+                if delta.product != product {
+                    bail!(
+                        "precomputed delta is for {}, expected {product}",
+                        delta.product
+                    );
+                }
+                if delta.from_version != previous.current || delta.to_version != version {
+                    bail!(
+                        "precomputed {product} delta is {}->{}, expected {}->{}",
+                        delta.from_version,
+                        delta.to_version,
+                        previous.current,
+                        version
+                    );
+                }
+                delta
+            } else {
+                let previous_state_path = self.root.join(&previous.state_url);
+                let previous_state = read_json_value(&previous_state_path)?;
+                let previous_sha256 = canonical_json_sha256(&previous_state)?;
+                if previous_sha256 != previous.state_sha256 {
+                    bail!(
+                        "previous {product} state hash mismatch for {}: expected {}, got {}",
+                        previous.current,
+                        previous.state_sha256,
+                        previous_sha256
+                    );
+                }
+                build_record_delta(&product, records_key, &previous_state, &state_value)?
+            };
             changed_count = delta.changed.len();
             removed_count = delta.removed.len();
             let product_delta_dir = self.root.join("deltas").join(&product);
@@ -1171,9 +1202,42 @@ fn hardlink_or_copy_dir_recursive(source_dir: &Path, output_dir: &Path) -> anyho
             hardlink_or_copy_dir_recursive(&source, &output)?;
         } else if file_type.is_file() {
             copy_file_if_missing(&source, &output)?;
+        } else if file_type.is_symlink() {
+            copy_symlink_or_target(&source, &output)?;
         }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn copy_symlink_or_target(source: &Path, output: &Path) -> anyhow::Result<()> {
+    if output.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let target = fs::read_link(source)
+        .with_context(|| format!("failed to read link {}", source.display()))?;
+    std::os::unix::fs::symlink(&target, output).with_context(|| {
+        format!(
+            "failed to symlink {} to {}",
+            output.display(),
+            target.display()
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn copy_symlink_or_target(source: &Path, output: &Path) -> anyhow::Result<()> {
+    let metadata =
+        fs::metadata(source).with_context(|| format!("failed to stat {}", source.display()))?;
+    if metadata.is_dir() {
+        hardlink_or_copy_dir_recursive(source, output)
+    } else {
+        copy_file_if_missing(source, output)
+    }
 }
 
 #[allow(dead_code)]
@@ -1370,6 +1434,7 @@ mod tests {
                 value: state_value.clone(),
             },
             delta_policy: DeltaPolicy::None,
+            precomputed_delta: None,
             changed_count_if_no_delta: 1,
         })?;
 
@@ -1475,6 +1540,7 @@ mod tests {
                 records_key: "obstacles_by_id".to_string(),
                 count_key: Some("obstacle_count".to_string()),
             },
+            precomputed_delta: None,
             changed_count_if_no_delta: 2,
         })?;
         let result = publisher.publish(BuiltLiveFeedState {
@@ -1488,6 +1554,7 @@ mod tests {
                 records_key: "obstacles_by_id".to_string(),
                 count_key: Some("obstacle_count".to_string()),
             },
+            precomputed_delta: None,
             changed_count_if_no_delta: 2,
         })?;
 
@@ -1504,6 +1571,85 @@ mod tests {
             apply_record_delta("obstacles_by_id", Some("obstacle_count"), &first, &delta)?,
             second
         );
+        Ok(())
+    }
+
+    #[test]
+    fn file_publisher_uses_precomputed_record_delta() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let live_root = temp.path().join("live-feeds");
+        let publisher = FileLiveFeedPublisher::new(
+            live_root,
+            FixedClock::new(Utc.with_ymd_and_hms(2026, 5, 18, 1, 2, 3).unwrap()),
+        );
+        let first_path = temp.path().join("metars-v1.json");
+        let second_path = temp.path().join("metars-v2.json");
+        let first = serde_json::json!({
+            "version_label": "v1",
+            "generated_at_utc": "2026-05-18T01:00:00Z",
+            "record_count": 1,
+            "records": {"A": {"value": 1}}
+        });
+        let second = serde_json::json!({
+            "version_label": "v2",
+            "generated_at_utc": "2026-05-18T01:05:00Z",
+            "record_count": 2,
+            "records": {"A": {"value": 1}, "B": {"value": 2}}
+        });
+        write_json_pretty_file(&first_path, &first)?;
+        write_json_pretty_file(&second_path, &second)?;
+
+        let first_update = publisher.publish(BuiltLiveFeedState {
+            product: "metars".to_string(),
+            version: "v1".to_string(),
+            payload: LiveFeedStatePayload::JsonFile {
+                path: first_path,
+                value: first,
+            },
+            delta_policy: DeltaPolicy::KeyedRecords {
+                records_key: "records".to_string(),
+                count_key: Some("record_count".to_string()),
+            },
+            precomputed_delta: None,
+            changed_count_if_no_delta: 1,
+        })?;
+        fs::remove_file(first_update.state_path)?;
+
+        let precomputed_delta = LiveFeedRecordDelta {
+            schema_version: 1,
+            product: "metars".to_string(),
+            from_version: "v1".to_string(),
+            to_version: "v2".to_string(),
+            top_level_changed: BTreeMap::from([
+                (
+                    "generated_at_utc".to_string(),
+                    serde_json::json!("2026-05-18T01:05:00Z"),
+                ),
+                ("record_count".to_string(), serde_json::json!(2)),
+            ]),
+            top_level_removed: Vec::new(),
+            changed: BTreeMap::from([("B".to_string(), serde_json::json!({"value": 2}))]),
+            removed: Vec::new(),
+        };
+        let result = publisher.publish(BuiltLiveFeedState {
+            product: "metars".to_string(),
+            version: "v2".to_string(),
+            payload: LiveFeedStatePayload::JsonFile {
+                path: second_path,
+                value: second,
+            },
+            delta_policy: DeltaPolicy::KeyedRecords {
+                records_key: "records".to_string(),
+                count_key: Some("record_count".to_string()),
+            },
+            precomputed_delta: Some(precomputed_delta),
+            changed_count_if_no_delta: 2,
+        })?;
+
+        let delta_path = result.delta_path.expect("precomputed delta path");
+        let delta: LiveFeedRecordDelta = serde_json::from_slice(&fs::read(delta_path)?)?;
+        assert_eq!(delta.changed.keys().cloned().collect::<Vec<_>>(), vec!["B"]);
+        assert_eq!(result.changed_count, 1);
         Ok(())
     }
 
@@ -1533,6 +1679,7 @@ mod tests {
                     records_key: "records".to_string(),
                     count_key: Some("record_count".to_string()),
                 },
+                precomputed_delta: None,
                 changed_count_if_no_delta: 1,
             })?;
         assert_eq!(first_update.changed_count, 1);
@@ -1558,6 +1705,7 @@ mod tests {
                     records_key: "records".to_string(),
                     count_key: Some("record_count".to_string()),
                 },
+                precomputed_delta: None,
                 changed_count_if_no_delta: 2,
             })?;
         assert_eq!(second_update.changed_count, 2);
@@ -1649,6 +1797,7 @@ mod tests {
                 events: vec![UpstreamEvent {
                     product: "metars".to_string(),
                     source_id: "m1".to_string(),
+                    previous_source_id: None,
                     observed_at_utc: Utc.with_ymd_and_hms(2026, 5, 18, 4, 0, 0).unwrap(),
                     payload_path: None,
                 }],
@@ -1757,6 +1906,7 @@ mod tests {
         queued.push(UpstreamEvent {
             product: "tfrs".to_string(),
             source_id: "event-1".to_string(),
+            previous_source_id: None,
             observed_at_utc: t0,
             payload_path: None,
         })?;
@@ -1944,6 +2094,7 @@ mod tests {
                 records_key: records_key.to_string(),
                 count_key: Some("record_count".to_string()),
             },
+            precomputed_delta: None,
             changed_count_if_no_delta: records.len(),
         })
     }

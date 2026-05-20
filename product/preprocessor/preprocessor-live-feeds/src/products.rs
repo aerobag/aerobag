@@ -80,6 +80,7 @@ pub fn json_live_feed_state(
             value: state_value,
         },
         delta_policy,
+        precomputed_delta: None,
         changed_count_if_no_delta,
     }
 }
@@ -101,6 +102,7 @@ pub fn directory_live_feed_state(
             manifest_value,
         },
         delta_policy: DeltaPolicy::None,
+        precomputed_delta: None,
         changed_count_if_no_delta,
     }
 }

@@ -987,6 +987,7 @@ mod tests {
                 records_key: "records".to_string(),
                 count_key: Some("record_count".to_string()),
             },
+            precomputed_delta: None,
             changed_count_if_no_delta: 1,
         })
     }

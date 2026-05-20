@@ -182,7 +182,7 @@ case "$LIVE_FEEDS_MODE" in
     LIVE_FEEDS_ARGS+=(
       --simulation
       --fixture-root "$AEROBAG_LIVE_FEEDS_FIXTURE_ROOT"
-      --speedup "${AEROBAG_LIVE_FEEDS_SPEEDUP:-180}"
+      --speedup "${AEROBAG_LIVE_FEEDS_SPEEDUP:-45}"
     )
     ;;
   *)

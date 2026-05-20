@@ -12,7 +12,8 @@ use serde_json::Value;
 use crate::{
     engine::{
         read_json_value, write_json_pretty_file, BuiltLiveFeedState, CompiledFixtureEvent,
-        CompiledFixtureTimeline, DeltaPolicy, ProductBuilder, UpstreamEvent, UpstreamSource,
+        CompiledFixtureTimeline, DeltaPolicy, LiveFeedRecordDelta, ProductBuilder, UpstreamEvent,
+        UpstreamSource,
     },
     products::{directory_live_feed_state, json_live_feed_state, live_nexrad_tile_count},
 };
@@ -22,12 +23,31 @@ struct FixtureVersionManifest {
     product: String,
     version: String,
     state: FixturePayloadRef,
+    #[serde(default)]
+    delta_from_previous: Option<FixtureDeltaRef>,
 }
 
 #[derive(Debug, Deserialize)]
 struct FixturePayloadRef {
     url: String,
     state_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FixtureDeltaRef {
+    from_version: String,
+    to_version: String,
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FixtureRecordDelta {
+    schema_version: u32,
+    product: String,
+    from_version: String,
+    to_version: String,
+    changed: BTreeMap<String, Value>,
+    removed: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +119,7 @@ struct ScheduledFixtureEvent {
     simulation_time_utc: DateTime<Utc>,
     virtual_time_utc: DateTime<Utc>,
     source_id: String,
+    previous_source_id: Option<String>,
     version_manifest_url: String,
     event: CompiledFixtureEvent,
 }
@@ -154,12 +175,18 @@ impl SimulatedLiveFeedSource {
                     simulation_time_utc,
                     virtual_time_utc,
                     source_id,
+                    previous_source_id: None,
                     version_manifest_url: event.version_manifest_url.clone(),
                     event,
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
         events.sort_by_key(|event| (event.simulation_time_utc, event.event.version.clone()));
+        let mut previous_source_id = None;
+        for event in &mut events {
+            event.previous_source_id = previous_source_id.clone();
+            previous_source_id = Some(event.source_id.clone());
+        }
         Ok(Self {
             product_id,
             events,
@@ -191,6 +218,7 @@ impl UpstreamSource for SimulatedLiveFeedSource {
             .map(|scheduled| UpstreamEvent {
                 product: scheduled.event.product.clone(),
                 source_id: scheduled.source_id.clone(),
+                previous_source_id: scheduled.previous_source_id.clone(),
                 observed_at_utc: scheduled.virtual_time_utc,
                 payload_path: Some(PathBuf::from(&scheduled.version_manifest_url)),
             })
@@ -407,15 +435,79 @@ impl ProductBuilder for CompiledFixtureStateBuilder {
             ),
             _ => (DeltaPolicy::None, 1),
         };
-        Ok(json_live_feed_state(
+        let precomputed_delta =
+            precomputed_simulated_delta(&self.fixture_root, &manifest, event, &state_value)?;
+        let mut built = json_live_feed_state(
             &event.product,
             event.source_id.clone(),
             state_path,
             state_value,
             delta_policy,
             count,
-        ))
+        );
+        built.precomputed_delta = precomputed_delta;
+        Ok(built)
     }
+}
+
+fn precomputed_simulated_delta(
+    fixture_root: &Path,
+    manifest: &FixtureVersionManifest,
+    event: &UpstreamEvent,
+    state_value: &Value,
+) -> anyhow::Result<Option<LiveFeedRecordDelta>> {
+    let Some(previous_source_id) = event.previous_source_id.as_ref() else {
+        return Ok(None);
+    };
+    let Some(delta_ref) = manifest.delta_from_previous.as_ref() else {
+        return Ok(None);
+    };
+    let delta_path = fixture_root.join(&delta_ref.url);
+    let fixture_delta: FixtureRecordDelta = serde_json::from_slice(
+        &fs::read(&delta_path)
+            .with_context(|| format!("failed to read {}", delta_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", delta_path.display()))?;
+    if fixture_delta.product != event.product {
+        bail!(
+            "fixture delta {} is for product {}, expected {}",
+            delta_path.display(),
+            fixture_delta.product,
+            event.product
+        );
+    }
+    if fixture_delta.from_version != delta_ref.from_version
+        || fixture_delta.to_version != delta_ref.to_version
+    {
+        bail!(
+            "fixture delta {} is {}->{}, version manifest expected {}->{}",
+            delta_path.display(),
+            fixture_delta.from_version,
+            fixture_delta.to_version,
+            delta_ref.from_version,
+            delta_ref.to_version
+        );
+    }
+    let mut delta = LiveFeedRecordDelta {
+        schema_version: fixture_delta.schema_version,
+        product: fixture_delta.product,
+        from_version: previous_source_id.clone(),
+        to_version: event.source_id.clone(),
+        top_level_changed: BTreeMap::new(),
+        top_level_removed: Vec::new(),
+        changed: fixture_delta.changed,
+        removed: fixture_delta.removed,
+    };
+    if let Some(object) = state_value.as_object() {
+        for key in ["generated_at_utc", "observed_at_utc"] {
+            if let Some(value) = object.get(key) {
+                delta
+                    .top_level_changed
+                    .insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    Ok(Some(delta))
 }
 
 fn simulated_fixture_version(source_version: &str, observed_at_utc: DateTime<Utc>) -> String {
@@ -512,9 +604,47 @@ fn copy_fixture_directory_state(
             .with_context(|| format!("failed to stat {}", source_path.display()))?
             .is_dir()
         {
-            copy_fixture_directory_state(&source_path, &dest_path, manifest_path, manifest_value)?;
+            symlink_or_copy_dir(&source_path, &dest_path)?;
         } else if source_path == manifest_path {
             write_json_pretty_file(&dest_path, manifest_value)?;
+        } else {
+            hardlink_or_copy(&source_path, &dest_path)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn symlink_or_copy_dir(source: &Path, dest: &Path) -> anyhow::Result<()> {
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    match std::os::unix::fs::symlink(source, dest) {
+        Ok(()) => Ok(()),
+        Err(_) => copy_dir_recursive(source, dest),
+    }
+}
+
+#[cfg(not(unix))]
+fn symlink_or_copy_dir(source: &Path, dest: &Path) -> anyhow::Result<()> {
+    copy_dir_recursive(source, dest)
+}
+
+fn copy_dir_recursive(source: &Path, dest: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(dest).with_context(|| format!("failed to create {}", dest.display()))?;
+    for entry in
+        fs::read_dir(source).with_context(|| format!("failed to read {}", source.display()))?
+    {
+        let entry = entry.with_context(|| format!("failed to read {}", source.display()))?;
+        let source_path = entry.path();
+        let dest_path = dest.join(entry.file_name());
+        if entry
+            .file_type()
+            .with_context(|| format!("failed to stat {}", source_path.display()))?
+            .is_dir()
+        {
+            copy_dir_recursive(&source_path, &dest_path)?;
         } else {
             hardlink_or_copy(&source_path, &dest_path)?;
         }
@@ -924,6 +1054,7 @@ mod tests {
         let event = UpstreamEvent {
             product: "metars".to_string(),
             source_id: "20260518T201200_000Z_m0".to_string(),
+            previous_source_id: None,
             observed_at_utc: event_time,
             payload_path: Some(PathBuf::from("versions/metars/m0.json")),
         };
@@ -981,6 +1112,7 @@ mod tests {
         let event = UpstreamEvent {
             product: "nexrad".to_string(),
             source_id: "20260518T201200_000Z_n0".to_string(),
+            previous_source_id: None,
             observed_at_utc: Utc.with_ymd_and_hms(2026, 5, 18, 20, 12, 0).unwrap(),
             payload_path: Some(PathBuf::from("versions/nexrad/n0.json")),
         };

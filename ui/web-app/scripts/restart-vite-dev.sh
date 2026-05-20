@@ -34,7 +34,7 @@ if [ -z "${WEB_PORT:-}" ]; then
 fi
 
 PORT="$WEB_PORT"
-LIVE_FEEDS_PORT="${AEROBAG_LIVE_FEEDS_PORT:-$((PORT + 1))}"
+LIVE_FEEDS_PORT="${AEROBAG_LIVE_FEEDS_PORT:-$((PORT + 1000))}"
 TARGET_ROOT_FILE="$REPO_ROOT/ui/target-root.txt"
 DEFAULT_UI_TARGET_ROOT="$(python3 - <<'PY' "$REPO_ROOT" "$TARGET_ROOT_FILE"
 from pathlib import Path
@@ -170,6 +170,8 @@ LIVE_FEEDS_ARGS=(
   --event-interval-ms "${AEROBAG_LIVE_FEED_EVENT_INTERVAL_MS:-5000}"
 )
 case "$LIVE_FEEDS_MODE" in
+  disabled)
+    ;;
   production)
     ;;
   simulation)
@@ -184,24 +186,31 @@ case "$LIVE_FEEDS_MODE" in
     )
     ;;
   *)
-    echo "AEROBAG_LIVE_FEEDS_MODE must be production or simulation" >&2
+    echo "AEROBAG_LIVE_FEEDS_MODE must be disabled, production, or simulation" >&2
     exit 1
     ;;
 esac
 
-cargo run \
-  --manifest-path "$REPO_ROOT/product/preprocessor/Cargo.toml" \
-  -p live-feeds-daemon \
-  --bin aerobag-live-feedsd \
-  -- \
-  "${LIVE_FEEDS_ARGS[@]}" \
-  >"$LIVE_FEEDS_LOG" 2>&1 &
+if [ "$LIVE_FEEDS_MODE" != "disabled" ]; then
+  cargo run \
+    --manifest-path "$REPO_ROOT/product/preprocessor/Cargo.toml" \
+    -p live-feeds-daemon \
+    --bin aerobag-live-feedsd \
+    -- \
+    "${LIVE_FEEDS_ARGS[@]}" \
+    >"$LIVE_FEEDS_LOG" 2>&1 &
+fi
+
+LIVE_FEEDS_ENV=()
+if [ "$LIVE_FEEDS_MODE" != "disabled" ]; then
+  LIVE_FEEDS_ENV+=(AEROBAG_LIVE_FEEDS_ORIGIN="http://127.0.0.1:$LIVE_FEEDS_PORT")
+fi
 
 exec env \
   AEROBAG_REPO_ROOT="$REPO_ROOT" \
   AEROBAG_UI_TARGET_ROOT="$UI_TARGET_ROOT" \
   AEROBAG_ARTIFACT_READ_PATH="$ARTIFACT_READ_ROOT" \
-  AEROBAG_LIVE_FEEDS_ORIGIN="http://127.0.0.1:$LIVE_FEEDS_PORT" \
+  "${LIVE_FEEDS_ENV[@]}" \
   "$WEB_SOURCE_DIR/scripts/run-target-workspace.sh" \
   "$DEV_SCRIPT" \
   --host "$HOST" \

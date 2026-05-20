@@ -13,6 +13,10 @@
     "map_selection_display_fg": "#24333a",
     "situation_status_bg": "#fcf8f1e6",
     "situation_status_fg": "#111111",
+    "data_status_warning_bg": "#f8d85b",
+    "data_status_warning_stroke": "#d37b12",
+    "data_status_quiet_bg": "#d9dee1",
+    "data_status_quiet_stroke": "#4e5960",
     "chart_surface_bg": "#8c9dad",
     "cdi_pointer": "#d45a7a"
   },

@@ -18,7 +18,6 @@ Run a local live-feed daemon:
 cargo build -p live-feeds-daemon
 ../../aerobag-artifacts/target/debug/aerobag-live-feedsd \
   --live-root ../../aerobag-artifacts/live-feeds \
-  --publication-root ../../aerobag-artifacts \
   --scratch-root ../../aerobag-artifacts/private-work/live-feeds \
   --listen 127.0.0.1:8095
 ```

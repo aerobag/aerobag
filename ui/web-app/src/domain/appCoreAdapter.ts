@@ -698,6 +698,7 @@ type WasmModule = {
   nav_kv_destroy(handle: number): Promise<void> | void;
   attach_nav_kv_store_to_session(navKvHandle: number, sessionHandle: number): Promise<void> | void;
   core_had_operation(handle: number, operationJson: string): Promise<string> | string;
+  drain_session_resource_effects(handle: number): Promise<string> | string;
   sync_live_feeds_in_session(handle: number): Promise<string> | string;
   ingest_live_feed_sse_event_in_session(handle: number, eventJson: string): Promise<string> | string;
   ingest_live_feed_sse_events_in_session(handle: number, eventsJson: string): Promise<string> | string;
@@ -736,16 +737,19 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       invalidationListener?.(invalidations);
     };
     let reportSessionResourceFailure: ((resourceId: string, message: string) => Promise<void>) | null = null;
-    const runSessionOperation = <T>(
+    const runSessionOperationForHandle = <T>(
+      sessionHandle: number,
       operation: (navKvHandle: number) => Promise<string> | string,
       ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
     ) => runCoreHadSessionOperation<T>(
       operation,
-      ingestSessionResource,
+      ingestSessionResource ?? ((resourceId, resourceBytes) =>
+        this.module.ingest_resource_in_session(sessionHandle, resourceId, resourceBytes)),
       publishInvalidations,
       async (resourceId, message) => {
         await reportSessionResourceFailure?.(resourceId, message);
       },
+      () => this.module.drain_session_resource_effects(sessionHandle),
     );
     const createSession = async (
       nextPlan: FlightPlan,
@@ -772,7 +776,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       await attachNavKvStoreToSession(created.handle);
       await module.set_resource_policy_in_session(created.handle, JSON.stringify("public_unpacked"));
       const catalogedSnapshot = await debugTiming("startup.session.load_raster_catalog", () =>
-        runSessionOperation<UiSessionSnapshot>(() =>
+        runSessionOperationForHandle<UiSessionSnapshot>(created.handle, () =>
           module.load_raster_map_catalog_in_session(created.handle),
         ),
       );
@@ -784,6 +788,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     const init = await createSession(plan, recentAirportIds, selectedAirportId, selectedChartId);
     let handle = init.handle;
     let snapshot = init.snapshot;
+    const runSessionOperation = <T>(
+      operation: (navKvHandle: number) => Promise<string> | string,
+      ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
+    ) => runSessionOperationForHandle<T>(handle, operation, ingestSessionResource);
     const parseSessionSnapshot = async (json: Promise<string> | string) =>
       JSON.parse(await json) as UiSessionSnapshot;
     reportSessionResourceFailure = async (resourceId, message) => {

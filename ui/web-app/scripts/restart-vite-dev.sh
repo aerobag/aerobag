@@ -171,7 +171,6 @@ LIVE_FEEDS_ARGS=(
 )
 case "$LIVE_FEEDS_MODE" in
   production)
-    LIVE_FEEDS_ARGS+=(--publication-root "$ARTIFACT_READ_ROOT")
     ;;
   simulation)
     if [ -z "${AEROBAG_LIVE_FEEDS_FIXTURE_ROOT:-}" ]; then

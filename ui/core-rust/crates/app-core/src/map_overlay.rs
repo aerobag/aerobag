@@ -1131,7 +1131,10 @@ fn nearest_available_zoom(config: &ObstacleLayerConfig, desired_zoom: u32) -> u3
     )
 }
 
-fn nearest_available_layer_zoom(config: &PointTileLayerConfig, desired_zoom: u32) -> u32 {
+pub(crate) fn nearest_available_layer_zoom(
+    config: &PointTileLayerConfig,
+    desired_zoom: u32,
+) -> u32 {
     nearest_available_zoom_in(
         config.min_zoom,
         config.max_zoom,

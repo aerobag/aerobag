@@ -86,6 +86,7 @@ pub enum NavKvQuery {
     NavDbContract,
     ChartCatalog,
     OfflineRegionCatalog,
+    MetarImportantStations,
     PackageById {
         package_id: String,
     },
@@ -557,6 +558,7 @@ pub fn nav_kv_key_for_query(query: &NavKvQuery) -> Option<String> {
         NavKvQuery::NavDbContract => Some(NAV_DB_CONTRACT_KEY.to_string()),
         NavKvQuery::ChartCatalog => Some("chart/catalog".to_string()),
         NavKvQuery::OfflineRegionCatalog => Some("offline-region/catalog".to_string()),
+        NavKvQuery::MetarImportantStations => Some("weather/metar-important-stations".to_string()),
         NavKvQuery::PackageById { package_id } => {
             Some(format!("package/by-id/{}", component(package_id)))
         }
@@ -754,6 +756,15 @@ pub(crate) fn nav_kv_store_without_pages_for_test(
 }
 
 #[cfg(test)]
+pub(crate) fn nav_kv_store_without_pages_and_pages_for_test(
+    entries: &[(&str, &[u8])],
+    page_size: u32,
+) -> (NavKvStore, Vec<Vec<u8>>) {
+    let (root, pages) = test_build_root(entries, page_size);
+    (NavKvStore::new(NavKvRoot::parse(&root).unwrap()), pages)
+}
+
+#[cfg(test)]
 fn test_build_root(entries: &[(&str, &[u8])], page_size: u32) -> (Vec<u8>, Vec<Vec<u8>>) {
     let mut entries = entries.to_vec();
     entries.sort_by(|left, right| left.0.cmp(right.0));
@@ -866,6 +877,10 @@ mod tests {
         assert_eq!(
             nav_kv_key_for_query(&NavKvQuery::NavDbContract),
             Some("contract/nav-db".to_string())
+        );
+        assert_eq!(
+            nav_kv_key_for_query(&NavKvQuery::MetarImportantStations),
+            Some("weather/metar-important-stations".to_string())
         );
         assert_eq!(
             nav_kv_key_for_query(&NavKvQuery::PackageById {

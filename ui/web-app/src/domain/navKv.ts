@@ -26,6 +26,7 @@ export type ResourceFailureReporter = (resourceId: string, message: string) => P
 type NavKvWasmModule = PublicationResolverWasmModule & {
   attach_nav_kv_store_to_session(handle: number, sessionHandle: number): void;
   core_had_operation(handle: number, operationJson: string): string;
+  drain_session_resource_effects(sessionHandle: number): Promise<string> | string;
   ingest_resource_in_session(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
   install_rust_debug_logger(): void;
   nav_db_open_controller_create(candidatesJson: string): number;
@@ -144,13 +145,23 @@ export class NavKvStore {
     ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
     onInvalidations?: UiInvalidationListener,
     reportResourceFailure?: ResourceFailureReporter,
+    drainSessionEffects?: () => Promise<string> | string,
   ): Promise<T> {
-    return this.runPagedOperation<T>(
+    const result = await this.runPagedOperation<T>(
       () => operation(this.handle),
       ingestSessionResource,
       onInvalidations,
       reportResourceFailure,
     );
+    if (drainSessionEffects) {
+      this.launchSessionEffectPump(
+        drainSessionEffects,
+        ingestSessionResource,
+        onInvalidations,
+        reportResourceFailure,
+      );
+    }
+    return result;
   }
 
   attachToSession(sessionHandle: number): void {
@@ -204,6 +215,63 @@ export class NavKvStore {
       throw new Error(`core requested unsupported resource outside a session operation: ${resource.id}`);
     }
     await fetchAndIngestResource(resource, ingestSessionResource, "core.resource.fetch", reportResourceFailure);
+  }
+
+  private launchSessionEffectPump(
+    drainSessionEffects: () => Promise<string> | string,
+    ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
+    onInvalidations?: UiInvalidationListener,
+    reportResourceFailure?: ResourceFailureReporter,
+  ): void {
+    void this.pumpSessionEffects(
+      drainSessionEffects,
+      ingestSessionResource,
+      onInvalidations,
+      reportResourceFailure,
+    ).catch((error: unknown) => {
+      debugLog("core.session_effect.pump.error", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+
+  private async pumpSessionEffects(
+    drainSessionEffects: () => Promise<string> | string,
+    ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
+    onInvalidations?: UiInvalidationListener,
+    reportResourceFailure?: ResourceFailureReporter,
+  ): Promise<void> {
+    for (;;) {
+      const effects = JSON.parse(await drainSessionEffects()) as CoreSessionResourceEffect[];
+      if (effects.length === 0) {
+        return;
+      }
+      const invalidations = new Set<UiInvalidation>();
+      const settled = await Promise.allSettled(
+        effects.map(async (effect) => {
+          await this.ensureResource(effect.resource, ingestSessionResource, reportResourceFailure);
+          for (const invalidation of effect.after_success_invalidations ?? []) {
+            invalidations.add(invalidation);
+          }
+        }),
+      );
+      const failures = settled
+        .map((result, index) => ({ result, effect: effects[index] }))
+        .filter((entry): entry is { result: PromiseRejectedResult; effect: CoreSessionResourceEffect } =>
+          entry.result.status === "rejected",
+        );
+      if (failures.length > 0) {
+        debugLog("core.session_effect.resource_failures", {
+          failures: failures.map(({ result, effect }) => ({
+            resource: effect.resource.id,
+            error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+          })),
+        });
+      }
+      if (invalidations.size > 0) {
+        onInvalidations?.([...invalidations]);
+      }
+    }
   }
 
   private ensureNavKvResource(resource: CoreResourceRequest): Promise<void> {
@@ -317,6 +385,11 @@ type CoreResourceRequest = {
   optional?: boolean;
 };
 
+type CoreSessionResourceEffect = {
+  resource: CoreResourceRequest;
+  after_success_invalidations?: UiInvalidation[];
+};
+
 type CoreResourceSource =
   | { kind: "public_url"; url: string }
   | { kind: "package_member"; package_id: string; filename: string; member_path: string }
@@ -360,7 +433,7 @@ async function fetchAndIngestResource(
     url,
   });
   if (!response.ok) {
-    const message = `failed to fetch core resource ${resource.id} at ${resource.address}: ${response.status}`;
+    const message = `failed to fetch core resource ${resource.id} at ${url}: ${response.status}`;
     if (resource.optional) {
       await ingestResource(resource.id, new Uint8Array());
       return;
@@ -420,6 +493,7 @@ export async function runCoreHadSessionOperation<T>(
   ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
   onInvalidations?: UiInvalidationListener,
   reportResourceFailure?: ResourceFailureReporter,
+  drainSessionEffects?: () => Promise<string> | string,
 ): Promise<T> {
   const store = await getNavKvStore();
   if (!store) {
@@ -430,6 +504,7 @@ export async function runCoreHadSessionOperation<T>(
     ingestSessionResource,
     onInvalidations,
     reportResourceFailure,
+    drainSessionEffects,
   );
 }
 

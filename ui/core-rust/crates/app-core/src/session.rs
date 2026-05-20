@@ -26,7 +26,10 @@ use crate::{
     },
     live_feeds::{LiveFeedSseEvent, LiveFeedsState},
     map_follow::{MapFollowSessionState, MapFollowUiState},
-    map_overlay::{FlightPlanSelectionPoint, MetarTileRecord, PointTileLayerConfig},
+    map_overlay::{
+        nearest_available_layer_zoom, FlightPlanSelectionPoint, MetarTileRecord,
+        PointTileLayerConfig,
+    },
     map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
     planning::NavElementUiView,
     playback::PlaybackSessionState,
@@ -133,11 +136,20 @@ struct UiSession {
     vector_tile_cache: HashMap<String, VectorAggregateTilePayload>,
     metar_tile_cache: HashMap<String, MetarTilePayload>,
     metar_payload: Option<MetarProductPayload>,
-    towered_metar_station_ids: Option<HashSet<String>>,
+    important_metar_station_ids: Option<HashSet<String>>,
+    metar_station_importance_status: Option<DataStatusRecord>,
     taf_payload: Option<TafProductPayload>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<TfrProductPayload>,
     terrain_source_tile_cache: HashMap<String, Vec<u8>>,
+    pending_resource_effects: Vec<UiSessionResourceEffect>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiSessionResourceEffect {
+    pub resource: CoreResourceRequest,
+    #[serde(default)]
+    pub after_success_invalidations: Vec<UiInvalidation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -291,6 +303,13 @@ const PROCEDURE_GEOMETRY_STATUS_PREFIX: &str = "procedure_geometry:";
 const LIVE_FEED_METARS_STATUS_ID: &str = "live_feed:metars_unavailable";
 const LIVE_FEED_NEXRAD_STATUS_ID: &str = "live_feed:nexrad_unavailable";
 const LIVE_FEED_TFRS_STATUS_ID: &str = "live_feed:tfrs_unavailable";
+const METAR_STATION_IMPORTANCE_STATUS_ID: &str = "map_overlay:metar_station_importance_unavailable";
+
+#[derive(Debug, Deserialize)]
+struct MetarImportantStationsPayload {
+    schema_version: u32,
+    station_ids: Vec<String>,
+}
 
 fn sync_data_status_projection(session: &mut UiSession) {
     session.data_status_state =
@@ -352,6 +371,38 @@ fn sync_map_overlay_status_records(
     } else {
         Vec::new()
     }
+}
+
+fn enqueue_session_resource_effect(
+    session: &mut UiSession,
+    resource: CoreResourceRequest,
+    after_success_invalidations: impl IntoIterator<Item = UiInvalidation>,
+) {
+    let mut invalidations = after_success_invalidations.into_iter().collect::<Vec<_>>();
+    if let Some(existing) = session
+        .pending_resource_effects
+        .iter_mut()
+        .find(|effect| effect.resource.id == resource.id)
+    {
+        for invalidation in invalidations.drain(..) {
+            if !existing.after_success_invalidations.contains(&invalidation) {
+                existing.after_success_invalidations.push(invalidation);
+            }
+        }
+        return;
+    }
+    session
+        .pending_resource_effects
+        .push(UiSessionResourceEffect {
+            resource,
+            after_success_invalidations: invalidations,
+        });
+}
+
+pub fn drain_session_resource_effects(handle: u32) -> AppResult<Vec<UiSessionResourceEffect>> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    Ok(std::mem::take(&mut session.pending_resource_effects))
 }
 
 fn procedure_geometry_status_records_for_plan(plan: &FlightPlan) -> Vec<DataStatusRecord> {
@@ -701,11 +752,13 @@ fn create_ui_session_inner(
             vector_tile_cache: HashMap::new(),
             metar_tile_cache: HashMap::new(),
             metar_payload: None,
-            towered_metar_station_ids: None,
+            important_metar_station_ids: None,
+            metar_station_importance_status: None,
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
             terrain_source_tile_cache: HashMap::new(),
+            pending_resource_effects: Vec::new(),
         },
     );
     if let Some(mark) = mark.as_deref_mut() {
@@ -2162,7 +2215,9 @@ pub fn attach_nav_kv_store_to_session(
     let session = session_mut(&mut sessions, handle)?;
     session.nav_kv_store_id = Some(store_id);
     session.nav_kv_store = Some(store.clone());
-    session.towered_metar_station_ids = None;
+    session.important_metar_station_ids = None;
+    session.metar_station_importance_status = None;
+    rebuild_metar_tile_cache(session);
     Ok(())
 }
 
@@ -2537,7 +2592,10 @@ fn metar_tile_cache_for_live_feed(
 fn rebuild_metar_tile_cache(session: &mut UiSession) {
     if let Some(payload) = session.metar_payload.as_ref() {
         let empty = HashSet::new();
-        let important_station_ids = session.towered_metar_station_ids.as_ref().unwrap_or(&empty);
+        let important_station_ids = session
+            .important_metar_station_ids
+            .as_ref()
+            .unwrap_or(&empty);
         session.metar_tile_cache = metar_tile_cache_for_live_feed(
             payload,
             session.map_overlay_config.metar_layer.as_ref(),
@@ -2549,61 +2607,109 @@ fn rebuild_metar_tile_cache(session: &mut UiSession) {
 }
 
 fn ensure_metar_station_importance_loaded(session: &mut UiSession) -> Result<(), HadReadError> {
-    if session.towered_metar_station_ids.is_some() {
+    if session.important_metar_station_ids.is_some() {
         return Ok(());
     }
     let Some(store) = session.nav_kv_store.as_ref() else {
-        session.towered_metar_station_ids = Some(HashSet::new());
+        session.important_metar_station_ids = Some(HashSet::new());
+        session.metar_station_importance_status = Some(metar_station_importance_status_record(
+            "Station importance unavailable",
+            UiStatusSeverity::Caution,
+            "METAR low-zoom station filtering could not load because no nav-db store is attached.",
+        ));
+        rebuild_metar_tile_cache(session);
         return Ok(());
     };
-    let station_ids = towered_metar_station_ids_from_nav_db(store)?;
-    session.towered_metar_station_ids = Some(station_ids);
+    let Some(payload) = read_attached_json_optional::<MetarImportantStationsPayload>(
+        store,
+        NavKvQuery::MetarImportantStations,
+    )?
+    else {
+        session.important_metar_station_ids = Some(HashSet::new());
+        session.metar_station_importance_status = Some(metar_station_importance_status_record(
+            "Station importance missing",
+            UiStatusSeverity::Caution,
+            "METAR low-zoom station filtering could not find weather/metar-important-stations in nav-db. Low-zoom METARs are hidden until the current nav-db provides that record.",
+        ));
+        rebuild_metar_tile_cache(session);
+        return Ok(());
+    };
+    if payload.schema_version != 1 {
+        return Err(HadReadError::Fatal(format!(
+            "unsupported METAR important station schema version {}",
+            payload.schema_version
+        )));
+    }
+    let station_ids = payload
+        .station_ids
+        .into_iter()
+        .map(|station_id| station_id.trim().to_ascii_uppercase())
+        .filter(|station_id| !station_id.is_empty())
+        .collect::<HashSet<_>>();
+    session.important_metar_station_ids = Some(station_ids);
+    session.metar_station_importance_status = None;
     rebuild_metar_tile_cache(session);
     Ok(())
 }
 
-fn towered_metar_station_ids_from_nav_db(
-    store: &NavKvStore,
-) -> Result<HashSet<String>, HadReadError> {
-    let bytes = match store
-        .keys_with_prefix_lookup("navref/symbol/airport/")
-        .map_err(HadReadError::Fatal)?
-    {
-        NavKvLookup::Hit(bytes) => bytes,
-        NavKvLookup::MissingKey => return Ok(HashSet::new()),
-        NavKvLookup::MissingPages(pages) => return Err(HadReadError::NeedPages(pages)),
-    };
-    let keys = String::from_utf8(bytes).map_err(|err| {
-        HadReadError::Fatal(format!("HAD navref airport key list decode failed: {err}"))
-    })?;
-    let keys = keys.lines().map(str::to_string).collect::<Vec<_>>();
-    let needed_pages = store
-        .missing_pages_for_keys(&keys)
-        .map_err(HadReadError::Fatal)?;
-    if !needed_pages.is_empty() {
-        return Err(HadReadError::NeedPages(needed_pages));
+fn metar_importance_required_for_viewport(session: &UiSession, viewport: &MapViewport) -> bool {
+    if !session.map_layer_state.metars.visible || session.metar_payload.is_none() {
+        return false;
     }
-    let mut station_ids = HashSet::new();
-    for key in keys {
-        let bytes = match store.get_bytes(&key).map_err(HadReadError::Fatal)? {
-            NavKvLookup::Hit(bytes) => bytes,
-            NavKvLookup::MissingKey => continue,
-            NavKvLookup::MissingPages(pages) => return Err(HadReadError::NeedPages(pages)),
-        };
-        let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|err| {
-            HadReadError::Fatal(format!("HAD JSON decode failed for {key}: {err}"))
-        })?;
-        if value
-            .get("towered")
-            .and_then(|towered| towered.as_bool())
-            .unwrap_or(false)
-        {
-            if let Some(station_id) = key.strip_prefix("navref/symbol/airport/") {
-                station_ids.insert(station_id.trim().to_ascii_uppercase());
+    let Some(layer) = session.map_overlay_config.metar_layer.as_ref() else {
+        return false;
+    };
+    let desired_zoom = if viewport.zoom.is_finite() && viewport.zoom > 0.0 {
+        viewport.zoom.floor() as u32
+    } else {
+        0
+    };
+    nearest_available_layer_zoom(layer, desired_zoom) == layer.min_zoom
+}
+
+fn metar_station_importance_status_record(
+    value: impl Into<String>,
+    severity: UiStatusSeverity,
+    detail: impl Into<String>,
+) -> DataStatusRecord {
+    DataStatusRecord::new(
+        METAR_STATION_IMPORTANCE_STATUS_ID,
+        "METAR",
+        Some(value.into()),
+        severity,
+        false,
+        detail.into(),
+    )
+}
+
+fn try_ensure_metar_station_importance_loaded(session: &mut UiSession) -> Option<DataStatusRecord> {
+    if session.important_metar_station_ids.is_some() {
+        return session.metar_station_importance_status.clone();
+    }
+    match ensure_metar_station_importance_loaded(session) {
+        Ok(()) => session.metar_station_importance_status.clone(),
+        Err(HadReadError::NeedPages(pages)) => {
+            for resource in nav_kv_page_resources(pages) {
+                enqueue_session_resource_effect(session, resource, [UiInvalidation::MapOverlay]);
             }
+            rebuild_metar_tile_cache(session);
+            Some(metar_station_importance_status_record(
+                "Station importance loading",
+                UiStatusSeverity::Info,
+                "METAR low-zoom station filtering is waiting for weather/metar-important-stations. Low-zoom METARs are hidden until that record is available; map vectors and high-zoom METARs remain available.",
+            ))
+        }
+        Err(HadReadError::Fatal(message)) => {
+            session.important_metar_station_ids = Some(HashSet::new());
+            session.metar_station_importance_status = Some(metar_station_importance_status_record(
+                "Station importance failed",
+                UiStatusSeverity::Caution,
+                format!("METAR low-zoom station filtering failed: {message}"),
+            ));
+            rebuild_metar_tile_cache(session);
+            session.metar_station_importance_status.clone()
         }
     }
-    Ok(station_ids)
 }
 
 fn metar_tile_xy(lat: f64, lon: f64, zoom: u32) -> Option<(u32, u32)> {
@@ -2855,9 +2961,10 @@ pub fn get_map_overlay_in_session_with_point_display_scale(
             return had_read_error_to_overlay_outcome(err);
         }
     }
-    if session.map_layer_state.metars.visible && session.metar_payload.is_some() {
-        if let Err(err) = ensure_metar_station_importance_loaded(session) {
-            return had_read_error_to_overlay_outcome(err);
+    let mut supplemental_status_records = Vec::new();
+    if metar_importance_required_for_viewport(session, &viewport) {
+        if let Some(record) = try_ensure_metar_station_importance_loaded(session) {
+            supplemental_status_records.push(record);
         }
     }
     let offline_region_records = if session.map_layer_state.offline_regions.visible {
@@ -2896,6 +3003,9 @@ pub fn get_map_overlay_in_session_with_point_display_scale(
                 Err(err) => return had_read_error_to_overlay_outcome(err),
             };
     }
+    overlay
+        .data_status_records
+        .extend(supplemental_status_records);
     let resources = weather_overlay_resources(session, &overlay);
     if !resources.is_empty() {
         return Ok(HadOperationOutcome::NeedResources { resources });
@@ -5568,8 +5678,9 @@ mod tests {
     use crate::{
         AirportId, FlightPlan, GuidanceState, LegDisplayElement, LegDisplayPath,
         LegDisplayPathStyle, NavRef, OwnshipSourceId, OwnshipSourceKind, PathTermination,
-        ProcedureLegProvenance, ProcedureSegmentRole, ResolvedLeg, ResolvedLegSource,
-        RouteComponent, SequencingMode, Situation, SituationPosition, SituationSample,
+        PointVectorRecord, ProcedureLegProvenance, ProcedureSegmentRole, ResolvedLeg,
+        ResolvedLegSource, RouteComponent, SequencingMode, Situation, SituationPosition,
+        SituationSample,
     };
 
     #[test]
@@ -5852,11 +5963,13 @@ mod tests {
             vector_tile_cache: HashMap::new(),
             metar_tile_cache: HashMap::new(),
             metar_payload: None,
-            towered_metar_station_ids: None,
+            important_metar_station_ids: None,
+            metar_station_importance_status: None,
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
             terrain_source_tile_cache: HashMap::new(),
+            pending_resource_effects: Vec::new(),
         };
         let mut metars_by_station = HashMap::new();
         metars_by_station.insert(
@@ -5878,7 +5991,7 @@ mod tests {
             metars_by_station,
             pireps: Vec::new(),
         });
-        session.towered_metar_station_ids = Some(HashSet::from(["KAAA".to_string()]));
+        session.important_metar_station_ids = Some(HashSet::from(["KAAA".to_string()]));
         let manifest = serde_json::json!({
             "point_layers": {
                 "airport": {
@@ -5976,29 +6089,353 @@ mod tests {
     }
 
     #[test]
-    fn metar_station_importance_comes_from_nav_db_towered_airports() {
+    fn metar_station_importance_comes_from_dense_nav_db_record() {
         let store = crate::navkv::nav_kv_store_for_test(
-            &[
-                (
-                    "navref/symbol/airport/KAAA",
-                    br#"{"kind":"airport","id":"KAAA","towered":true}"#,
-                ),
-                (
-                    "navref/symbol/airport/KBBB",
-                    br#"{"kind":"airport","id":"KBBB","towered":false}"#,
-                ),
-                (
-                    "navref/symbol/airport/KCCC",
-                    br#"{"kind":"airport","id":"KCCC"}"#,
-                ),
-            ],
+            &[(
+                "weather/metar-important-stations",
+                br#"{"schema_version":1,"station_ids":["kaaa","KBBB",""]}"#,
+            )],
             256,
         );
+        let mut session = UiSession {
+            app_state: register_default_situation_sources(AppState::default()).expect("app state"),
+            playback: PlaybackSessionState::default(),
+            plan_preview: PlanPreviewState::default(),
+            debug_ownship_driver: DebugOwnshipDriverState::default(),
+            map_follow: MapFollowSessionState::default(),
+            guidance_leg_geometry: HashMap::new(),
+            map_overlay_config: map_overlay_config_from_vector_manifest_json(
+                minimal_vector_manifest_json(),
+            )
+            .expect("bootstrap manifest"),
+            vector_manifest_loaded: false,
+            chart_page_state: derive_compact_chart_page_state(
+                &FlightPlan::default(),
+                &[],
+                None,
+                None,
+            ),
+            nav_kv_store_id: Some(1),
+            nav_kv_store: Some(store),
+            map_layer_state: default_map_layer_state(),
+            data_status_records: BTreeMap::new(),
+            hushed_status_ids: BTreeSet::new(),
+            data_status_state: default_data_status_state(),
+            debug_state: default_debug_state(),
+            resource_policy: CoreResourcePolicy::InstalledPackage,
+            publication_resolver: PublicationResolver::with_resource_policy(
+                "/packages",
+                CoreResourcePolicy::InstalledPackage,
+            ),
+            live_feeds: LiveFeedsState::default(),
+            raster_map_catalog: None,
+            vector_tile_cache: HashMap::new(),
+            metar_tile_cache: HashMap::new(),
+            metar_payload: None,
+            important_metar_station_ids: None,
+            metar_station_importance_status: None,
+            taf_payload: None,
+            airspace_feature_cache: HashMap::new(),
+            tfr_payload: None,
+            terrain_source_tile_cache: HashMap::new(),
+            pending_resource_effects: Vec::new(),
+        };
 
-        let station_ids =
-            towered_metar_station_ids_from_nav_db(&store).expect("towered station ids");
+        ensure_metar_station_importance_loaded(&mut session).expect("important station ids");
 
-        assert_eq!(station_ids, HashSet::from(["KAAA".to_string()]));
+        assert_eq!(
+            session.important_metar_station_ids,
+            Some(HashSet::from(["KAAA".to_string(), "KBBB".to_string()]))
+        );
+    }
+
+    #[test]
+    fn unresolved_metar_station_importance_does_not_block_vector_overlay() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let store = crate::navkv::nav_kv_store_without_pages_for_test(
+            &[(
+                "weather/metar-important-stations",
+                br#"{"schema_version":1,"station_ids":["KAAA"]}"#,
+            )],
+            64,
+        );
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            session.map_overlay_config = map_overlay_config_from_vector_manifest_json(
+                r#"{
+                    "point_layers": {
+                        "airport": { "available_zooms": [9] },
+                        "fix": { "available_zooms": [9] },
+                        "nav": { "available_zooms": [9] },
+                        "metars": {
+                            "min_zoom": 5,
+                            "max_zoom": 7,
+                            "available_zooms": [5, 6, 7],
+                            "tile_path_template": "unused-by-live-feeds"
+                        }
+                    },
+                    "airspace": {
+                        "reference_tile_min_zoom": 0,
+                        "reference_tile_max_zoom": 0,
+                        "label_tile_min_zoom": 0,
+                        "label_tile_max_zoom": 0
+                    }
+                }"#,
+            )
+            .expect("overlay config");
+            session.vector_manifest_loaded = true;
+            session.map_layer_state.vectors.visible = true;
+            session.map_layer_state.metars.visible = true;
+            session.vector_tile_cache.insert(
+                crate::aggregate_vector_tile_cache_key(9, 256, 256),
+                VectorAggregateTilePayload {
+                    schema_version: 1,
+                    z: 9,
+                    x: 256,
+                    y: 256,
+                    airports: vec![PointVectorRecord {
+                        id: "airport:KAAA".to_string(),
+                        kind: "airport".to_string(),
+                        lat: 0.0,
+                        lon: 0.0,
+                        label: "KAAA".to_string(),
+                        style_class: "public".to_string(),
+                        towered: Some(true),
+                        fuel_available: None,
+                        public_use: Some(true),
+                        private_use: None,
+                        has_paved_runway: None,
+                        heliport: None,
+                        has_water_runway: None,
+                        longest_runway_length_ft: None,
+                        longest_runway_heading_true_deg: None,
+                        elevation_msl_ft: None,
+                        obstacle: None,
+                    }],
+                    fixes: Vec::new(),
+                    navaids: Vec::new(),
+                    obstacles: Vec::new(),
+                    airspace_refs: Vec::new(),
+                    airspace_labels: Vec::new(),
+                },
+            );
+            for x in 255..=256 {
+                for y in 255..=256 {
+                    session
+                        .vector_tile_cache
+                        .entry(crate::aggregate_vector_tile_cache_key(9, x, y))
+                        .or_insert_with(|| empty_vector_aggregate_tile(9, x, y));
+                }
+            }
+            session.vector_tile_cache.insert(
+                crate::aggregate_vector_tile_cache_key(0, 0, 0),
+                empty_vector_aggregate_tile(0, 0, 0),
+            );
+            session.metar_payload = Some(MetarProductPayload {
+                schema_version: 3,
+                version_label: "v1".to_string(),
+                metar_count: Some(1),
+                metars_by_station: HashMap::from([(
+                    "KAAA".to_string(),
+                    crate::MetarRecord {
+                        raw_text: "METAR KAAA 010000Z 00000KT 10SM SCT020 10/08 A3000".to_string(),
+                        observed_at_utc: Some("2026-05-03T00:00:00.000Z".to_string()),
+                        station_id: "KAAA".to_string(),
+                        flight_category: Some("VFR".to_string()),
+                        clouds: None,
+                        longitude: 0.0,
+                        latitude: 0.0,
+                    },
+                )]),
+                pireps: Vec::new(),
+            });
+            rebuild_metar_tile_cache(session);
+        }
+
+        let outcome = get_map_overlay_in_session(
+            init.handle,
+            MapViewport {
+                center: LatLon { lat: 0.0, lon: 0.0 },
+                zoom: 9.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            1.0,
+            1.0,
+        )
+        .expect("overlay outcome");
+
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("unresolved METAR importance must not block vectors: {outcome:?}");
+        };
+        let overlay: MapOverlayQueryResult =
+            serde_json::from_value(result).expect("decode overlay result");
+        assert_eq!(overlay.visible_features.len(), 1);
+        assert_eq!(overlay.visible_features[0].label, "KAAA");
+        assert_eq!(overlay.visible_metars.len(), 1);
+        {
+            let sessions = lock_sessions();
+            let session = sessions.get(&init.handle).expect("session");
+            assert!(
+                session.important_metar_station_ids.is_none(),
+                "high-zoom METAR rendering must not request the low-zoom importance table"
+            );
+            assert!(session.metar_station_importance_status.is_none());
+        }
+    }
+
+    #[test]
+    fn low_zoom_metars_disappear_while_station_importance_is_unresolved() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let (store, pages) = crate::navkv::nav_kv_store_without_pages_and_pages_for_test(
+            &[(
+                "weather/metar-important-stations",
+                br#"{"schema_version":1,"station_ids":["KAAA"]}"#,
+            )],
+            64,
+        );
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            session.map_overlay_config = map_overlay_config_from_vector_manifest_json(
+                r#"{
+                    "point_layers": {
+                        "airport": { "available_zooms": [5] },
+                        "fix": { "available_zooms": [5] },
+                        "nav": { "available_zooms": [5] },
+                        "metars": {
+                            "min_zoom": 5,
+                            "max_zoom": 7,
+                            "available_zooms": [5, 6, 7],
+                            "tile_path_template": "unused-by-live-feeds"
+                        }
+                    },
+                    "airspace": {
+                        "reference_tile_min_zoom": 0,
+                        "reference_tile_max_zoom": 0,
+                        "label_tile_min_zoom": 0,
+                        "label_tile_max_zoom": 0
+                    }
+                }"#,
+            )
+            .expect("overlay config");
+            session.vector_manifest_loaded = true;
+            session.map_layer_state.vectors.visible = false;
+            session.map_layer_state.metars.visible = true;
+            session.metar_payload = Some(MetarProductPayload {
+                schema_version: 3,
+                version_label: "v1".to_string(),
+                metar_count: Some(1),
+                metars_by_station: HashMap::from([(
+                    "KAAA".to_string(),
+                    crate::MetarRecord {
+                        raw_text: "METAR KAAA 010000Z 00000KT 10SM SCT020 10/08 A3000".to_string(),
+                        observed_at_utc: Some("2026-05-03T00:00:00.000Z".to_string()),
+                        station_id: "KAAA".to_string(),
+                        flight_category: Some("VFR".to_string()),
+                        clouds: None,
+                        longitude: 0.0,
+                        latitude: 0.0,
+                    },
+                )]),
+                pireps: Vec::new(),
+            });
+            rebuild_metar_tile_cache(session);
+        }
+
+        let outcome = get_map_overlay_in_session(
+            init.handle,
+            MapViewport {
+                center: LatLon { lat: 0.0, lon: 0.0 },
+                zoom: 5.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            240.0,
+            240.0,
+        )
+        .expect("overlay outcome");
+
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("unresolved METAR importance must not block low-zoom overlay: {outcome:?}");
+        };
+        let overlay: MapOverlayQueryResult =
+            serde_json::from_value(result).expect("decode overlay result");
+        assert!(overlay.visible_metars.is_empty());
+        {
+            let sessions = lock_sessions();
+            let session = sessions.get(&init.handle).expect("session");
+            assert!(session.important_metar_station_ids.is_none());
+            assert!(session
+                .data_status_records
+                .contains_key(METAR_STATION_IMPORTANCE_STATUS_ID));
+        }
+
+        let mut resolved_overlay = None;
+        for _ in 0..=pages.len() {
+            let effects = drain_session_resource_effects(init.handle).expect("drain effects");
+            assert!(
+                !effects.is_empty(),
+                "low-zoom METAR importance should enqueue nav-kv page effects until it loads"
+            );
+            for effect in effects {
+                assert_eq!(
+                    effect.after_success_invalidations,
+                    vec![UiInvalidation::MapOverlay]
+                );
+                let page_index = crate::nav_kv_page_index_from_resource_id(&effect.resource.id)
+                    .expect("nav kv page resource id");
+                insert_nav_kv_page_for_attached_sessions(
+                    1,
+                    page_index,
+                    &pages[page_index as usize],
+                );
+            }
+
+            let retry_outcome = get_map_overlay_in_session(
+                init.handle,
+                MapViewport {
+                    center: LatLon { lat: 0.0, lon: 0.0 },
+                    zoom: 5.0,
+                    rotation_deg: 0.0,
+                    pitch_deg: 0.0,
+                },
+                240.0,
+                240.0,
+            )
+            .expect("retry overlay outcome");
+            let HadOperationOutcome::Complete { result, .. } = retry_outcome else {
+                panic!(
+                    "METAR importance page effects must not block low-zoom overlay: {retry_outcome:?}"
+                );
+            };
+            let overlay: MapOverlayQueryResult =
+                serde_json::from_value(result).expect("decode retry overlay result");
+            if !overlay.visible_metars.is_empty() {
+                resolved_overlay = Some(overlay);
+                break;
+            }
+        }
+
+        let overlay = resolved_overlay.expect("METAR importance should load after queued pages");
+        assert_eq!(overlay.visible_metars.len(), 1);
+        assert_eq!(overlay.visible_metars[0].station_id, "KAAA");
+        {
+            let sessions = lock_sessions();
+            let session = sessions.get(&init.handle).expect("session");
+            assert_eq!(
+                session.important_metar_station_ids,
+                Some(HashSet::from(["KAAA".to_string()]))
+            );
+            assert!(!session
+                .data_status_records
+                .contains_key(METAR_STATION_IMPORTANCE_STATUS_ID));
+        }
     }
 
     #[test]
@@ -6038,11 +6475,13 @@ mod tests {
             vector_tile_cache: HashMap::new(),
             metar_tile_cache: HashMap::new(),
             metar_payload: None,
-            towered_metar_station_ids: None,
+            important_metar_station_ids: None,
+            metar_station_importance_status: None,
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
             terrain_source_tile_cache: HashMap::new(),
+            pending_resource_effects: Vec::new(),
         };
         let bad_tfr_state = serde_json::json!({
             "schema_version": 1,

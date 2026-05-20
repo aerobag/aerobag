@@ -159,7 +159,7 @@ pub use session::{
     activate_next_leg_in_session, append_flight_plan_entry_in_session,
     apply_situation_control_input_in_session, attach_nav_kv_store_to_session, create_ui_session,
     create_ui_session_profiled, destroy_session, disengage_map_follow_in_session,
-    engage_map_follow_in_session, get_map_overlay_in_session,
+    drain_session_resource_effects, engage_map_follow_in_session, get_map_overlay_in_session,
     get_map_overlay_in_session_with_point_display_scale, get_map_selection_in_session,
     get_map_selection_in_session_with_point_display_scale, get_nexrad_overlay_in_session,
     get_raster_tile_plan_in_session, get_raster_tile_plan_in_session_with_display_scale,
@@ -192,7 +192,8 @@ pub use session::{
     tick_debug_ownship_driver_in_session_outcome, tick_playback_in_session,
     unsuspend_sequencing_in_session, update_ownship_source_status_in_session,
     update_ownship_source_status_in_session_outcome, GuidanceLegGeometry, UiChartPageState,
-    UiDebugState, UiMapLayerState, UiMapLayerToggleState, UiSessionInitResult, UiSessionSnapshot,
+    UiDebugState, UiMapLayerState, UiMapLayerToggleState, UiSessionInitResult,
+    UiSessionResourceEffect, UiSessionSnapshot,
 };
 pub use situation::{Situation, SituationPosition};
 pub use state::{

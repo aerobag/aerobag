@@ -827,6 +827,12 @@ pub mod nav_kv {
         if !trace_extract_value(root, pages, &mut touched, "chart/catalog")? {
             return Ok(Vec::new());
         }
+        trace_extract_value(
+            root,
+            pages,
+            &mut touched,
+            "weather/metar-important-stations",
+        )?;
         let package_keys = trace_prefix_keys(root, pages, &mut touched, "package/by-id/")?;
         for key in package_keys {
             trace_extract_value(root, pages, &mut touched, &key)?;
@@ -1108,6 +1114,7 @@ pub mod nav_kv {
                     pair("chart/catalog", "catalog-value"),
                     pair("package/by-id/a", "package-a"),
                     pair("package/by-id/b", "package-b"),
+                    pair("weather/metar-important-stations", "metar-importance"),
                     pair("vector/manifest", "vector-manifest"),
                     pair("waypoint/id/KRDD", "unrelated"),
                 ],
@@ -1146,6 +1153,13 @@ pub mod nav_kv {
                 root.extract_value("vector/manifest", |page| cache.get(&page).cloned())
                     .as_deref(),
                 Some(b"vector-manifest".as_slice())
+            );
+            assert_eq!(
+                root.extract_value("weather/metar-important-stations", |page| cache
+                    .get(&page)
+                    .cloned())
+                    .as_deref(),
+                Some(b"metar-importance".as_slice())
             );
         }
     }

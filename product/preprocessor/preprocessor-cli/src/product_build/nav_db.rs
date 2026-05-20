@@ -2620,9 +2620,14 @@ pub(super) fn build_nav_kv_airport_navref_pairs(
     })?;
     let runway_info = airport_runway_symbol_info_by_airport(connection)?;
     let mut pairs = Vec::new();
+    let mut important_metar_station_ids = BTreeSet::new();
     for row in rows {
         let (id, lat, lon, facility_name, kind, atct, fuel_types, elevation) = row?;
         let key_id = had_upper_key_component(&id);
+        let station_id = id.trim().to_ascii_uppercase();
+        if atct.trim().eq_ignore_ascii_case("Y") {
+            important_metar_station_ids.insert(station_id);
+        }
         pairs.push(json_pair(
             format!("navref/position/airport/{key_id}"),
             &serde_json::json!({ "lat": lat, "lon": lon }),
@@ -2650,7 +2655,21 @@ pub(super) fn build_nav_kv_airport_navref_pairs(
         )?);
         let _ = facility_name;
     }
+    pairs.push(metar_important_stations_pair(&important_metar_station_ids)?);
     Ok(pairs)
+}
+
+pub(super) fn metar_important_stations_pair(
+    station_ids: &BTreeSet<String>,
+) -> anyhow::Result<NavKvPair> {
+    json_pair(
+        "weather/metar-important-stations".to_string(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "station_ids": station_ids.iter().collect::<Vec<_>>(),
+        }),
+        "METAR important station ids",
+    )
 }
 
 pub(super) fn build_nav_kv_navaid_navref_pairs(
@@ -4652,4 +4671,60 @@ pub(super) fn max_zoom_for_levels(
     _collection: &preprocessor_resource_index::ChartCollectionRecord,
 ) -> f64 {
     RASTER_BASEMAP_MAX_DISPLAY_ZOOM
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn airport_navref_pairs_emit_dense_metar_importance_record() {
+        let connection = rusqlite::Connection::open_in_memory().expect("sqlite");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE airports (
+                    LocationID TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL,
+                    FacilityName TEXT,
+                    Type TEXT,
+                    ATCT TEXT,
+                    FuelTypes TEXT,
+                    ARPElevation TEXT
+                );
+                CREATE TABLE airportrunways (
+                    LocationID TEXT,
+                    Length TEXT,
+                    Surface TEXT,
+                    LEHeadingT TEXT,
+                    LELatitude TEXT,
+                    LELongitude TEXT,
+                    HELatitude TEXT,
+                    HELongitude TEXT
+                );
+                INSERT INTO airports VALUES
+                    ('kaaa', 1.0, 2.0, 'A Airport', 'AIRPORT', 'Y', '', '100'),
+                    ('KBBB', 3.0, 4.0, 'B Airport', 'AIRPORT', 'N', '', '200'),
+                    (' kccc ', 5.0, 6.0, 'C Airport', 'AIRPORT', ' y ', '', '300');
+                "#,
+            )
+            .expect("schema");
+
+        let pairs = build_nav_kv_airport_navref_pairs(&connection).expect("pairs");
+        let importance_pair = pairs
+            .iter()
+            .find(|pair| pair.key == "weather/metar-important-stations")
+            .expect("importance pair");
+        let value: serde_json::Value =
+            serde_json::from_slice(&importance_pair.value).expect("importance json");
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "schema_version": 1,
+                "station_ids": ["KAAA", "KCCC"],
+            })
+        );
+    }
 }

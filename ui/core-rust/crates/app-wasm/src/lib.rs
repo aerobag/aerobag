@@ -352,6 +352,13 @@ pub fn sync_live_feeds_in_session(session_handle: u32) -> Result<String, JsValue
 }
 
 #[wasm_bindgen]
+pub fn drain_session_resource_effects(session_handle: u32) -> Result<String, JsValue> {
+    let effects = app_core::drain_session_resource_effects(session_handle)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&effects).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn ingest_live_feed_sse_event_in_session(
     session_handle: u32,
     event_json: &str,

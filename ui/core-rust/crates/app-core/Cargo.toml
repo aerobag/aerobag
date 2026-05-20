@@ -8,6 +8,7 @@ version.workspace = true
 airspace-geometry = { path = "../../../../crates/airspace-geometry" }
 had-key = { path = "../../../../crates/had-key" }
 procedure-geometry-types = { path = "../../../../crates/procedure-geometry-types" }
+chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

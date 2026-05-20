@@ -448,7 +448,7 @@ impl ProductBuilder for ObstaclesLiveFeedBuilder {
 
     fn build_state(
         &self,
-        _event: &UpstreamEvent,
+        event: &UpstreamEvent,
         scratch_dir: &Path,
     ) -> anyhow::Result<BuiltLiveFeedState> {
         let input_dir = fresh_dir(&scratch_dir.join("input"))?;
@@ -474,6 +474,7 @@ impl ProductBuilder for ObstaclesLiveFeedBuilder {
             input_dir,
             output_dir,
             version_label: version.clone(),
+            generated_at_utc: Some(normalized_event_time(event.observed_at_utc)),
         })?;
         let state_value = read_json_value(&result.structured_json_path)?;
         let obstacle_count = state_value

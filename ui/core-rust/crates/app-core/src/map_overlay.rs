@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use airspace_geometry::{expand_airspace_path, AirspaceSegment};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -346,6 +347,8 @@ pub struct TafProductPayload {
     pub schema_version: u32,
     pub version_label: String,
     #[serde(default)]
+    pub generated_at_utc: Option<DateTime<Utc>>,
+    #[serde(default)]
     pub taf_count: Option<u32>,
     pub tafs_by_station: HashMap<String, TafRecord>,
 }
@@ -354,6 +357,8 @@ pub struct TafProductPayload {
 pub struct MetarProductPayload {
     pub schema_version: u32,
     pub version_label: String,
+    #[serde(default)]
+    pub generated_at_utc: Option<DateTime<Utc>>,
     #[serde(default)]
     pub metar_count: Option<u32>,
     pub metars_by_station: HashMap<String, MetarRecord>,
@@ -448,6 +453,8 @@ pub enum AirspaceFeaturePathSegment {
 pub struct TfrProductPayload {
     pub schema_version: u32,
     pub version_label: String,
+    #[serde(default)]
+    pub generated_at_utc: Option<DateTime<Utc>>,
     pub notam_count: u32,
     pub area_group_count: u32,
     pub areas: Vec<TfrAreaPayload>,
@@ -5816,6 +5823,7 @@ mod tests {
         let metars = MetarProductPayload {
             schema_version: 3,
             version_label: "test".to_string(),
+            generated_at_utc: None,
             metar_count: Some(1),
             metars_by_station,
             pireps: Vec::new(),
@@ -6045,6 +6053,7 @@ mod tests {
                 Some(MetarProductPayload {
                     schema_version: 3,
                     version_label: "test".to_string(),
+                    generated_at_utc: None,
                     metar_count: Some(1),
                     metars_by_station: HashMap::from([(
                         "KMT1".to_string(),
@@ -6068,6 +6077,7 @@ mod tests {
                 Some(TfrProductPayload {
                     schema_version: 1,
                     version_label: "test".to_string(),
+                    generated_at_utc: None,
                     notam_count: 1,
                     area_group_count: 1,
                     areas: vec![TfrAreaPayload {
@@ -6274,6 +6284,7 @@ mod tests {
         let metars = MetarProductPayload {
             schema_version: 3,
             version_label: "test".to_string(),
+            generated_at_utc: None,
             metar_count: Some(1),
             metars_by_station,
             pireps: Vec::new(),
@@ -6282,6 +6293,7 @@ mod tests {
         let tafs = TafProductPayload {
             schema_version: 1,
             version_label: "test".to_string(),
+            generated_at_utc: None,
             taf_count: Some(1),
             tafs_by_station: HashMap::from([(
                 "KAAA".to_string(),
@@ -6398,6 +6410,7 @@ mod tests {
         let metars = MetarProductPayload {
             schema_version: 3,
             version_label: "test".to_string(),
+            generated_at_utc: None,
             metar_count: Some(1),
             metars_by_station,
             pireps: Vec::new(),
@@ -6943,6 +6956,7 @@ mod tests {
         let payload = TfrProductPayload {
             schema_version: 1,
             version_label: "test".to_string(),
+            generated_at_utc: None,
             notam_count: 1,
             area_group_count: 1,
             areas: vec![TfrAreaPayload {
@@ -7016,6 +7030,7 @@ mod tests {
         let payload = TfrProductPayload {
             schema_version: 1,
             version_label: "test".to_string(),
+            generated_at_utc: None,
             notam_count: 1,
             area_group_count: 1,
             areas: vec![TfrAreaPayload {

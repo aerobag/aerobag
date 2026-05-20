@@ -884,6 +884,8 @@ struct MapViewRecord {
     package_name: Option<String>,
     #[serde(default)]
     package_relative_path: Option<String>,
+    #[serde(default)]
+    package_expiration_date: Option<String>,
     full_coverage_zoom: Option<f64>,
     #[serde(default)]
     wide_angle: Option<WideAngleMapViewRecord>,
@@ -898,6 +900,8 @@ struct WideAngleMapViewRecord {
     package_name: String,
     #[serde(default)]
     package_relative_path: Option<String>,
+    #[serde(default)]
+    package_expiration_date: Option<String>,
     tile_url_root: String,
     tile_path_template: String,
     levels: Vec<MapViewLevelRecord>,
@@ -910,6 +914,8 @@ struct PackageRecord {
     region_id: Option<String>,
     #[serde(default)]
     relative_path: Option<String>,
+    #[serde(default)]
+    expiration_date: Option<String>,
     #[serde(default)]
     metadata: Option<PackageMetadataRecord>,
 }
@@ -1384,6 +1390,7 @@ fn enrich_map_view_with_package_metadata(
     };
     let package = package_record_for_raster_source(store, package_id, map_view_id)?;
     map_view.package_relative_path = Some(package_zip_relative_path(&package)?.to_string());
+    map_view.package_expiration_date = package.expiration_date.clone();
     map_view.full_coverage_zoom = package
         .metadata
         .and_then(|metadata| metadata.full_coverage_zoom);
@@ -1397,6 +1404,7 @@ fn enrich_wide_angle_map_view_with_package_metadata(
 ) -> Result<(), HadReadError> {
     let package = package_record_for_raster_source(store, &wide_angle.package_name, map_view_id)?;
     wide_angle.package_relative_path = Some(package_zip_relative_path(&package)?.to_string());
+    wide_angle.package_expiration_date = package.expiration_date.clone();
     Ok(())
 }
 

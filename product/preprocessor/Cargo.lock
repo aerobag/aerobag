@@ -47,6 +47,7 @@ name = "app-core"
 version = "0.1.0"
 dependencies = [
  "airspace-geometry",
+ "chrono",
  "had-key",
  "png",
  "procedure-geometry-types",
@@ -889,6 +890,7 @@ version = "0.1.0"
 dependencies = [
  "airspace-geometry",
  "anyhow",
+ "chrono",
  "geo",
  "had-key",
  "preprocessor-zip",

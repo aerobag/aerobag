@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use airspace_geometry::{expand_airspace_path, AirspaceSegment};
 use anyhow::{bail, Context};
+use chrono::{DateTime, Utc};
 use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use had_key::component as had_key_component;
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
@@ -127,6 +128,7 @@ pub struct BuildObstacleDatasetRequest {
     pub input_dir: PathBuf,
     pub output_dir: PathBuf,
     pub version_label: String,
+    pub generated_at_utc: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone)]
@@ -349,6 +351,8 @@ struct ObstacleLiveState {
     schema_version: u32,
     product_id: String,
     version_label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generated_at_utc: Option<DateTime<Utc>>,
     obstacle_count: usize,
     obstacles_by_id: BTreeMap<String, PointRecord>,
 }
@@ -1386,6 +1390,7 @@ pub fn build_obstacle_dataset(
             schema_version: 1,
             product_id: "obstacles".to_string(),
             version_label: request.version_label.clone(),
+            generated_at_utc: request.generated_at_utc.clone(),
             obstacle_count: obstacles_by_id.len(),
             obstacles_by_id,
         },

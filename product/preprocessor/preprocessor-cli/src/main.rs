@@ -309,6 +309,7 @@ fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, Path
         input_dir: work_dir,
         output_dir,
         version_label: snapshot_label,
+        generated_at_utc: None,
     })?;
     Ok((result.manifest_path, result.stats_path, result.zip_path))
 }

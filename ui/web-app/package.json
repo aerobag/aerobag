@@ -8,6 +8,7 @@
     "generate:symbols": "node ${AEROBAG_REPO_ROOT:-../..}/tools/generate-nav-symbols.mjs",
     "prepare:dev-assets": "./scripts/stage-dev-assets.sh",
     "build:wasm": "./scripts/build-wasm.sh",
+    "smoke:wasm-startup": "npm run build:wasm && node ./scripts/wasm-startup-smoke.mjs",
     "build:wasm:release": "./scripts/build-wasm.sh release",
     "inner:dev": "npm run generate:symbols && npm run prepare:dev-assets && npm run build:wasm && vite",
     "inner:dev:fast": "npm run generate:symbols && npm run build:wasm && vite",

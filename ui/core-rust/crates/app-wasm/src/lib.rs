@@ -588,6 +588,36 @@ pub fn attach_nav_kv_store_to_session(
         .map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
+#[cfg(debug_assertions)]
+#[wasm_bindgen]
+pub fn startup_smoke_test() -> Result<(), JsValue> {
+    let init = app_core::create_ui_session_at_epoch_ms(
+        app_core::FlightPlan::default(),
+        &[],
+        None,
+        None,
+        now_ms() as i64,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let store = app_core::nav_kv_store_for_smoke_test(
+        &[(
+            "package/by-id/NAV_DB_SMOKE",
+            br#"{
+                "id": "NAV_DB_SMOKE",
+                "family_id": "nav-db",
+                "expiration_date": "2020-01-01"
+            }"#,
+        )],
+        256,
+    );
+    app_core::attach_nav_kv_store_to_session(init.handle, 1, &store)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    app_core::get_session_snapshot(init.handle)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    app_core::destroy_session(init.handle);
+    Ok(())
+}
+
 #[wasm_bindgen]
 pub fn situation_ring_candidates_json() -> Result<String, JsValue> {
     serde_json::to_string(&app_core::situation_ring_candidates())
@@ -992,8 +1022,9 @@ pub fn get_map_overlay_in_session(
     viewport_json: &str,
     width_px: f64,
     height_px: f64,
+    now_epoch_ms: f64,
 ) -> Result<String, JsValue> {
-    get_map_overlay_in_session_json(handle, viewport_json, width_px, height_px)
+    get_map_overlay_in_session_json(handle, viewport_json, width_px, height_px, now_epoch_ms)
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -1004,9 +1035,17 @@ pub fn get_map_selection_in_session(
     width_px: f64,
     height_px: f64,
     click_json: &str,
+    now_epoch_ms: f64,
 ) -> Result<String, JsValue> {
-    get_map_selection_in_session_json(handle, viewport_json, width_px, height_px, click_json)
-        .map_err(|err| JsValue::from_str(&err))
+    get_map_selection_in_session_json(
+        handle,
+        viewport_json,
+        width_px,
+        height_px,
+        click_json,
+        now_epoch_ms,
+    )
+    .map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -1015,8 +1054,9 @@ pub fn get_terrain_overlay_in_session(
     viewport_json: &str,
     width_px: f64,
     height_px: f64,
+    now_epoch_ms: f64,
 ) -> Result<String, JsValue> {
-    get_terrain_overlay_in_session_json(handle, viewport_json, width_px, height_px)
+    get_terrain_overlay_in_session_json(handle, viewport_json, width_px, height_px, now_epoch_ms)
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -1026,8 +1066,9 @@ pub fn get_nexrad_overlay_in_session(
     viewport_json: &str,
     width_px: f64,
     height_px: f64,
+    now_epoch_ms: f64,
 ) -> Result<String, JsValue> {
-    get_nexrad_overlay_in_session_json(handle, viewport_json, width_px, height_px)
+    get_nexrad_overlay_in_session_json(handle, viewport_json, width_px, height_px, now_epoch_ms)
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -1037,8 +1078,9 @@ pub fn get_raster_tile_plan_in_session(
     viewport_json: &str,
     width_px: f64,
     height_px: f64,
+    now_epoch_ms: f64,
 ) -> Result<String, JsValue> {
-    get_raster_tile_plan_in_session_json(handle, viewport_json, width_px, height_px)
+    get_raster_tile_plan_in_session_json(handle, viewport_json, width_px, height_px, now_epoch_ms)
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -1049,6 +1091,7 @@ pub fn get_raster_tile_plan_in_session_with_display_scale(
     width_px: f64,
     height_px: f64,
     device_pixel_ratio: f64,
+    now_epoch_ms: f64,
 ) -> Result<String, JsValue> {
     get_raster_tile_plan_in_session_with_display_scale_json(
         handle,
@@ -1056,6 +1099,7 @@ pub fn get_raster_tile_plan_in_session_with_display_scale(
         width_px,
         height_px,
         device_pixel_ratio,
+        now_epoch_ms,
     )
     .map_err(|err| JsValue::from_str(&err))
 }
@@ -1231,11 +1275,12 @@ fn create_ui_session_json(
         serde_json::from_str(selected_airport_id_json).map_err(|err| err.to_string())?;
     let selected_chart_id: Option<String> =
         serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
-    let result = app_core::create_ui_session(
+    let result = app_core::create_ui_session_at_epoch_ms(
         plan,
         &recent_airport_ids,
         selected_airport_id.as_deref(),
         selected_chart_id.as_deref(),
+        now_ms() as i64,
     )
     .map_err(|err| err.to_string())?;
     serde_json::to_string(&result).map_err(|err| err.to_string())
@@ -1259,11 +1304,12 @@ fn create_ui_session_profiled_json(
     let selected_chart_id: Option<String> =
         serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
     profiler.mark("parse_selected_ids_json");
-    let result = app_core::create_ui_session_profiled(
+    let result = app_core::create_ui_session_profiled_at_epoch_ms(
         plan,
         &recent_airport_ids,
         selected_airport_id.as_deref(),
         selected_chart_id.as_deref(),
+        now_ms() as i64,
         &mut |label| profiler.mark(label),
     )
     .map_err(|err| err.to_string())?;
@@ -1645,11 +1691,18 @@ fn get_map_overlay_in_session_json(
     viewport_json: &str,
     width_px: f64,
     height_px: f64,
+    now_epoch_ms: f64,
 ) -> Result<String, String> {
     let viewport: app_core::MapViewport =
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
-    let overlay = app_core::get_map_overlay_in_session(handle, viewport, width_px, height_px)
-        .map_err(|err| err.to_string())?;
+    let overlay = app_core::get_map_overlay_in_session_at_epoch_ms(
+        handle,
+        viewport,
+        width_px,
+        height_px,
+        now_epoch_ms as i64,
+    )
+    .map_err(|err| err.to_string())?;
     serde_json::to_string(&overlay).map_err(|err| err.to_string())
 }
 
@@ -1659,14 +1712,21 @@ fn get_map_selection_in_session_json(
     width_px: f64,
     height_px: f64,
     click_json: &str,
+    now_epoch_ms: f64,
 ) -> Result<String, String> {
     let viewport: app_core::MapViewport =
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
     let click: app_core::LatLon =
         serde_json::from_str(click_json).map_err(|err| err.to_string())?;
-    let selection =
-        app_core::get_map_selection_in_session(handle, viewport, width_px, height_px, click)
-            .map_err(|err| err.to_string())?;
+    let selection = app_core::get_map_selection_in_session_at_epoch_ms(
+        handle,
+        viewport,
+        width_px,
+        height_px,
+        click,
+        now_epoch_ms as i64,
+    )
+    .map_err(|err| err.to_string())?;
     serde_json::to_string(&selection).map_err(|err| err.to_string())
 }
 
@@ -1675,11 +1735,18 @@ fn get_terrain_overlay_in_session_json(
     viewport_json: &str,
     width_px: f64,
     height_px: f64,
+    now_epoch_ms: f64,
 ) -> Result<String, String> {
     let viewport: app_core::MapViewport =
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
-    let overlay = app_core::get_terrain_overlay_in_session(handle, viewport, width_px, height_px)
-        .map_err(|err| err.to_string())?;
+    let overlay = app_core::get_terrain_overlay_in_session_at_epoch_ms(
+        handle,
+        viewport,
+        width_px,
+        height_px,
+        now_epoch_ms as i64,
+    )
+    .map_err(|err| err.to_string())?;
     serde_json::to_string(&overlay).map_err(|err| err.to_string())
 }
 
@@ -1688,11 +1755,18 @@ fn get_raster_tile_plan_in_session_json(
     viewport_json: &str,
     width_px: f64,
     height_px: f64,
+    now_epoch_ms: f64,
 ) -> Result<String, String> {
     let viewport: app_core::MapViewport =
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
-    let plan = app_core::get_raster_tile_plan_in_session(handle, viewport, width_px, height_px)
-        .map_err(|err| err.to_string())?;
+    let plan = app_core::get_raster_tile_plan_in_session_at_epoch_ms(
+        handle,
+        viewport,
+        width_px,
+        height_px,
+        now_epoch_ms as i64,
+    )
+    .map_err(|err| err.to_string())?;
     serde_json::to_string(&plan).map_err(|err| err.to_string())
 }
 
@@ -1701,11 +1775,18 @@ fn get_nexrad_overlay_in_session_json(
     viewport_json: &str,
     width_px: f64,
     height_px: f64,
+    now_epoch_ms: f64,
 ) -> Result<String, String> {
     let viewport: app_core::MapViewport =
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
-    let overlay = app_core::get_nexrad_overlay_in_session(handle, viewport, width_px, height_px)
-        .map_err(|err| err.to_string())?;
+    let overlay = app_core::get_nexrad_overlay_in_session_at_epoch_ms(
+        handle,
+        viewport,
+        width_px,
+        height_px,
+        now_epoch_ms as i64,
+    )
+    .map_err(|err| err.to_string())?;
     serde_json::to_string(&overlay).map_err(|err| err.to_string())
 }
 
@@ -1715,15 +1796,17 @@ fn get_raster_tile_plan_in_session_with_display_scale_json(
     width_px: f64,
     height_px: f64,
     device_pixel_ratio: f64,
+    now_epoch_ms: f64,
 ) -> Result<String, String> {
     let viewport: app_core::MapViewport =
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
-    let plan = app_core::get_raster_tile_plan_in_session_with_display_scale(
+    let plan = app_core::get_raster_tile_plan_in_session_with_display_scale_at_epoch_ms(
         handle,
         viewport,
         width_px,
         height_px,
         device_pixel_ratio,
+        now_epoch_ms as i64,
     )
     .map_err(|err| err.to_string())?;
     serde_json::to_string(&plan).map_err(|err| err.to_string())

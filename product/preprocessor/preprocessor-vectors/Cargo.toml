@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 airspace-geometry = { path = "../../../crates/airspace-geometry" }
 anyhow.workspace = true
+chrono.workspace = true
 geo.workspace = true
 had-key = { path = "../../../crates/had-key" }
 preprocessor-zip = { path = "../preprocessor-zip" }

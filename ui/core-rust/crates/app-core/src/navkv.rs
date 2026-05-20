@@ -736,7 +736,7 @@ fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, String> {
     Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
 }
 
-#[cfg(test)]
+#[cfg(any(test, debug_assertions))]
 pub(crate) fn nav_kv_store_for_test(entries: &[(&str, &[u8])], page_size: u32) -> NavKvStore {
     let (root, pages) = test_build_root(entries, page_size);
     let mut store = NavKvStore::new(NavKvRoot::parse(&root).unwrap());
@@ -744,6 +744,11 @@ pub(crate) fn nav_kv_store_for_test(entries: &[(&str, &[u8])], page_size: u32) -
         store.insert_page(index as u32, page);
     }
     store
+}
+
+#[cfg(debug_assertions)]
+pub fn nav_kv_store_for_smoke_test(entries: &[(&str, &[u8])], page_size: u32) -> NavKvStore {
+    nav_kv_store_for_test(entries, page_size)
 }
 
 #[cfg(test)]
@@ -764,7 +769,7 @@ pub(crate) fn nav_kv_store_without_pages_and_pages_for_test(
     (NavKvStore::new(NavKvRoot::parse(&root).unwrap()), pages)
 }
 
-#[cfg(test)]
+#[cfg(any(test, debug_assertions))]
 fn test_build_root(entries: &[(&str, &[u8])], page_size: u32) -> (Vec<u8>, Vec<Vec<u8>>) {
     let mut entries = entries.to_vec();
     entries.sort_by(|left, right| left.0.cmp(right.0));
@@ -813,7 +818,7 @@ fn test_build_root(entries: &[(&str, &[u8])], page_size: u32) -> (Vec<u8>, Vec<V
     (root, pages)
 }
 
-#[cfg(test)]
+#[cfg(any(test, debug_assertions))]
 fn test_write_u32(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }

@@ -6,6 +6,7 @@ use std::{
     },
 };
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::CoreResourcePolicy;
@@ -16,8 +17,12 @@ use crate::{
         parse_status_action_id, project_data_status_state, DataStatusRecord, UiDataStatusState,
         UiStatusActionCommand, UiStatusSeverity,
     },
-    first_guidance_detail_index_for_leg, guidance_detail_id_for_index,
-    guidance_detail_id_for_leg_element,
+    first_guidance_detail_index_for_leg,
+    freshness::{
+        cycle_product_is_expired, evaluate_age, format_age, parse_utc_instant, FreshnessSeverity,
+        FreshnessViolation, DATA_FRESHNESS_POLICIES,
+    },
+    guidance_detail_id_for_index, guidance_detail_id_for_leg_element,
     had_ops::{
         flight_plan_ui_state, insert_waypoint_best_position,
         materialize_airway_presentation_selection, materialize_procedure, nav_kv_page_resources,
@@ -143,6 +148,7 @@ struct UiSession {
     tfr_payload: Option<TfrProductPayload>,
     terrain_source_tile_cache: HashMap<String, Vec<u8>>,
     pending_resource_effects: Vec<UiSessionResourceEffect>,
+    wall_clock_epoch_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,7 +177,7 @@ pub struct NexradOverlayStats {
     pub max_level_pixel_stretch_px: f64,
     pub max_stack_depth: usize,
     pub res: Option<u32>,
-    pub observed_at_utc: Option<String>,
+    pub observed_at_utc: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -303,6 +309,9 @@ const PROCEDURE_GEOMETRY_STATUS_PREFIX: &str = "procedure_geometry:";
 const LIVE_FEED_METARS_STATUS_ID: &str = "live_feed:metars_unavailable";
 const LIVE_FEED_NEXRAD_STATUS_ID: &str = "live_feed:nexrad_unavailable";
 const LIVE_FEED_TFRS_STATUS_ID: &str = "live_feed:tfrs_unavailable";
+const LIVE_FEED_OBSTACLES_STATUS_ID: &str = "live_feed:obstacles_stale";
+const CYCLE_SELECTED_CHART_STATUS_ID: &str = "cycle:selected_chart_expired";
+const CYCLE_NAV_DB_STATUS_ID: &str = "cycle:nav_db_expired";
 const METAR_STATION_IMPORTANCE_STATUS_ID: &str = "map_overlay:metar_station_importance_unavailable";
 const TERRAIN_STATUS_ID: &str = "terrain:warning_unavailable";
 
@@ -310,6 +319,14 @@ const TERRAIN_STATUS_ID: &str = "terrain:warning_unavailable";
 struct MetarImportantStationsPayload {
     schema_version: u32,
     station_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FreshnessPackageRecord {
+    id: String,
+    family_id: String,
+    #[serde(default)]
+    expiration_date: Option<String>,
 }
 
 fn sync_data_status_projection(session: &mut UiSession) {
@@ -430,15 +447,34 @@ fn sync_live_feed_product_status_record(
     payload_loaded: bool,
     product: &str,
     generic_detail: &str,
+    observed_utc: Option<DateTime<Utc>>,
+    freshness_policy: crate::freshness::AgeFreshnessPolicy,
 ) -> Vec<UiInvalidation> {
     let status_id = live_feed_unavailable_status_record(product, String::new()).id;
-    if !visible || payload_loaded {
-        return sync_layer_unavailable_status_record(
+    if !visible {
+        let changed = clear_data_status_record(session, &status_id);
+        return if changed {
+            vec![UiInvalidation::SessionSnapshot]
+        } else {
+            Vec::new()
+        };
+    }
+    if payload_loaded {
+        let label = live_feed_unavailable_status_record(product, String::new()).label;
+        let changed = sync_live_feed_age_status_record(
             session,
-            false,
+            true,
             &status_id,
-            live_feed_unavailable_status_record(product, String::new()),
+            &label,
+            &label,
+            observed_utc,
+            freshness_policy,
         );
+        return if changed {
+            vec![UiInvalidation::SessionSnapshot]
+        } else {
+            Vec::new()
+        };
     }
     if session.data_status_records.contains_key(&status_id) {
         return Vec::new();
@@ -454,6 +490,10 @@ fn sync_live_feed_product_status_record(
 fn sync_live_feed_overlay_status_records(session: &mut UiSession) -> Vec<UiInvalidation> {
     let mut invalidations = Vec::new();
     let metars_visible = session.map_layer_state.metars.visible;
+    let metars_observed_utc = session
+        .metar_payload
+        .as_ref()
+        .and_then(|payload| payload.generated_at_utc);
     let metars_loaded = session.metar_payload.is_some();
     invalidations.extend(sync_live_feed_product_status_record(
         session,
@@ -461,9 +501,15 @@ fn sync_live_feed_overlay_status_records(session: &mut UiSession) -> Vec<UiInval
         metars_loaded,
         "metars",
         "METAR live feed unavailable: no current METAR product is loaded",
+        metars_observed_utc,
+        DATA_FRESHNESS_POLICIES.live_feeds.metars,
     ));
 
     let tfrs_visible = session.map_layer_state.vectors.visible;
+    let tfrs_observed_utc = session
+        .tfr_payload
+        .as_ref()
+        .and_then(|payload| payload.generated_at_utc);
     let tfrs_loaded = session.tfr_payload.is_some();
     invalidations.extend(sync_live_feed_product_status_record(
         session,
@@ -471,10 +517,36 @@ fn sync_live_feed_overlay_status_records(session: &mut UiSession) -> Vec<UiInval
         tfrs_loaded,
         "tfrs",
         "TFR live feed unavailable: no current TFR product is loaded",
+        tfrs_observed_utc,
+        DATA_FRESHNESS_POLICIES.live_feeds.tfrs,
     ));
+
+    let obstacles_visible = session.map_layer_state.vectors.visible;
+    let obstacles_observed_utc = session
+        .live_feeds
+        .product_state_manifest("obstacles")
+        .and_then(json_generated_at_utc);
+    if sync_live_feed_age_status_record(
+        session,
+        obstacles_visible && obstacles_observed_utc.is_some(),
+        LIVE_FEED_OBSTACLES_STATUS_ID,
+        "OBSTACLE",
+        "Obstacle",
+        obstacles_observed_utc,
+        DATA_FRESHNESS_POLICIES.live_feeds.obstacles,
+    ) {
+        invalidations.push(UiInvalidation::SessionSnapshot);
+    }
 
     dedupe_invalidations(&mut invalidations);
     invalidations
+}
+
+fn json_generated_at_utc(value: &serde_json::Value) -> Option<DateTime<Utc>> {
+    value
+        .get("generated_at_utc")
+        .and_then(serde_json::Value::as_str)
+        .and_then(parse_utc_instant)
 }
 
 fn terrain_status_record(detail: String) -> DataStatusRecord {
@@ -525,11 +597,13 @@ fn sync_terrain_status_record(
     }
 }
 
-fn complete_terrain_overlay_outcome(
+fn complete_terrain_overlay_outcome_with_invalidations(
     session: &mut UiSession,
     query: TerrainOverlayQueryResult,
+    mut invalidations: Vec<UiInvalidation>,
 ) -> AppResult<HadOperationOutcome> {
-    let invalidations = sync_terrain_status_record(session, &query.status);
+    invalidations.extend(sync_terrain_status_record(session, &query.status));
+    dedupe_invalidations(&mut invalidations);
     Ok(HadOperationOutcome::complete_with_invalidations(
         serde_json::to_value(query).map_err(internal_json_error)?,
         invalidations,
@@ -717,12 +791,22 @@ fn record_live_feed_fetch_failure(
 
 fn sync_nexrad_status_record(
     session: &mut UiSession,
-    status: &NexradOverlayStatus,
+    query: &NexradOverlayQueryResult,
 ) -> Vec<UiInvalidation> {
-    let changed = match status {
-        NexradOverlayStatus::Hidden | NexradOverlayStatus::Ready { .. } => {
+    let nexrad_visible = session.map_layer_state.nexrad.visible;
+    let changed = match &query.status {
+        NexradOverlayStatus::Hidden => {
             clear_data_status_record(session, LIVE_FEED_NEXRAD_STATUS_ID)
         }
+        NexradOverlayStatus::Ready { .. } => sync_live_feed_age_status_record(
+            session,
+            nexrad_visible,
+            LIVE_FEED_NEXRAD_STATUS_ID,
+            "NEXRAD",
+            "NEXRAD",
+            query.stats.observed_at_utc,
+            DATA_FRESHNESS_POLICIES.live_feeds.nexrad,
+        ),
         NexradOverlayStatus::Loading => false,
         NexradOverlayStatus::Unavailable { reason } => upsert_data_status_record(
             session,
@@ -739,15 +823,176 @@ fn sync_nexrad_status_record(
     }
 }
 
-fn complete_nexrad_overlay_outcome(
+fn complete_nexrad_overlay_outcome_with_invalidations(
     session: &mut UiSession,
     query: NexradOverlayQueryResult,
+    mut invalidations: Vec<UiInvalidation>,
 ) -> AppResult<HadOperationOutcome> {
-    let invalidations = sync_nexrad_status_record(session, &query.status);
+    invalidations.extend(sync_nexrad_status_record(session, &query));
+    dedupe_invalidations(&mut invalidations);
     Ok(HadOperationOutcome::complete_with_invalidations(
         serde_json::to_value(query).map_err(internal_json_error)?,
         invalidations,
     ))
+}
+
+fn utc_from_epoch_ms(epoch_ms: i64) -> DateTime<Utc> {
+    DateTime::<Utc>::from_timestamp_millis(epoch_ms)
+        .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).expect("valid unix epoch"))
+}
+
+fn session_wall_clock_utc(session: &UiSession) -> DateTime<Utc> {
+    utc_from_epoch_ms(session.wall_clock_epoch_ms)
+}
+
+fn advance_session_wall_clock(session: &mut UiSession, epoch_ms: i64) {
+    session.wall_clock_epoch_ms = session.wall_clock_epoch_ms.max(epoch_ms);
+}
+
+fn freshness_status_severity(violation: FreshnessViolation) -> UiStatusSeverity {
+    match violation.severity {
+        FreshnessSeverity::Info => UiStatusSeverity::Info,
+        FreshnessSeverity::Warning => UiStatusSeverity::Warning,
+    }
+}
+
+fn live_feed_stale_status_record(
+    status_id: &str,
+    label: &str,
+    product_name: &str,
+    observed_utc: DateTime<Utc>,
+    violation: FreshnessViolation,
+) -> DataStatusRecord {
+    DataStatusRecord::new(
+        status_id,
+        label,
+        Some("OLD".to_string()),
+        freshness_status_severity(violation),
+        true,
+        format!(
+            "{product_name} data is {} old; source timestamp {observed_utc}.",
+            format_age(violation.age_ms)
+        ),
+    )
+}
+
+fn sync_live_feed_age_status_record(
+    session: &mut UiSession,
+    visible: bool,
+    status_id: &str,
+    label: &str,
+    product_name: &str,
+    observed_utc: Option<DateTime<Utc>>,
+    policy: crate::freshness::AgeFreshnessPolicy,
+) -> bool {
+    if !visible {
+        return clear_data_status_record(session, status_id);
+    }
+    let Some(observed_utc) = observed_utc else {
+        return clear_data_status_record(session, status_id);
+    };
+    let now_utc = session_wall_clock_utc(session);
+    if let Some(violation) = evaluate_age(policy, observed_utc, now_utc) {
+        upsert_data_status_record(
+            session,
+            live_feed_stale_status_record(status_id, label, product_name, observed_utc, violation),
+        )
+    } else {
+        clear_data_status_record(session, status_id)
+    }
+}
+
+fn sync_selected_chart_expiration_status_record(session: &mut UiSession) -> bool {
+    let Some(selected_map) = session
+        .raster_map_catalog
+        .as_ref()
+        .and_then(|catalog| catalog.selected_map.as_ref())
+    else {
+        return clear_data_status_record(session, CYCLE_SELECTED_CHART_STATUS_ID);
+    };
+    let Some(expiration_date) = selected_map.map_view.package_expiration_date.as_deref() else {
+        return clear_data_status_record(session, CYCLE_SELECTED_CHART_STATUS_ID);
+    };
+    let Some(expiration_utc) = parse_utc_instant(expiration_date) else {
+        return clear_data_status_record(session, CYCLE_SELECTED_CHART_STATUS_ID);
+    };
+    if cycle_product_is_expired(expiration_utc, session_wall_clock_utc(session)) {
+        upsert_data_status_record(
+            session,
+            DataStatusRecord::new(
+                CYCLE_SELECTED_CHART_STATUS_ID,
+                "CHART",
+                Some("EXPIRED".to_string()),
+                UiStatusSeverity::Warning,
+                true,
+                format!(
+                    "Selected chart {} expired at {expiration_date} UTC.",
+                    selected_map.label
+                ),
+            ),
+        )
+    } else {
+        clear_data_status_record(session, CYCLE_SELECTED_CHART_STATUS_ID)
+    }
+}
+
+fn sync_nav_db_expiration_status_record(session: &mut UiSession) -> bool {
+    let Some(store) = session.nav_kv_store.as_ref() else {
+        return clear_data_status_record(session, CYCLE_NAV_DB_STATUS_ID);
+    };
+    let mut nav_db_packages = Vec::new();
+    for key in store.keys_with_prefix("package/by-id/") {
+        let Ok(NavKvLookup::Hit(bytes)) = store.get_bytes(&key) else {
+            continue;
+        };
+        let Ok(package) = serde_json::from_slice::<FreshnessPackageRecord>(&bytes) else {
+            continue;
+        };
+        if package.family_id == "nav-db" {
+            nav_db_packages.push(package);
+        }
+    }
+    let now_utc = session_wall_clock_utc(session);
+    let Some(package) = nav_db_packages
+        .iter()
+        .filter_map(|package| {
+            package
+                .expiration_date
+                .as_deref()
+                .map(|date| (package, date))
+        })
+        .find(|(_, expiration_date)| {
+            parse_utc_instant(expiration_date)
+                .is_some_and(|expiration_utc| cycle_product_is_expired(expiration_utc, now_utc))
+        })
+    else {
+        return clear_data_status_record(session, CYCLE_NAV_DB_STATUS_ID);
+    };
+    let (package, expiration_date) = package;
+    upsert_data_status_record(
+        session,
+        DataStatusRecord::new(
+            CYCLE_NAV_DB_STATUS_ID,
+            "NAV DB",
+            Some("EXPIRED".to_string()),
+            UiStatusSeverity::Warning,
+            true,
+            format!(
+                "Currently attached nav-db/vector package {} expired at {expiration_date} UTC.",
+                package.id
+            ),
+        ),
+    )
+}
+
+fn sync_cycle_product_freshness_status_records(session: &mut UiSession) -> Vec<UiInvalidation> {
+    let changed = sync_selected_chart_expiration_status_record(session)
+        | sync_nav_db_expiration_status_record(session);
+    if changed {
+        vec![UiInvalidation::SessionSnapshot]
+    } else {
+        Vec::new()
+    }
 }
 
 fn missing_active_plan_error(context: &str) -> AppError {
@@ -763,11 +1008,28 @@ pub fn create_ui_session(
     selected_airport_id: Option<&str>,
     selected_chart_id: Option<&str>,
 ) -> AppResult<UiSessionInitResult> {
+    create_ui_session_at_epoch_ms(
+        plan,
+        recent_airport_ids,
+        selected_airport_id,
+        selected_chart_id,
+        0,
+    )
+}
+
+pub fn create_ui_session_at_epoch_ms(
+    plan: FlightPlan,
+    recent_airport_ids: &[String],
+    selected_airport_id: Option<&str>,
+    selected_chart_id: Option<&str>,
+    wall_clock_epoch_ms: i64,
+) -> AppResult<UiSessionInitResult> {
     create_ui_session_inner(
         plan,
         recent_airport_ids,
         selected_airport_id,
         selected_chart_id,
+        wall_clock_epoch_ms,
         None,
     )
 }
@@ -779,11 +1041,30 @@ pub fn create_ui_session_profiled(
     selected_chart_id: Option<&str>,
     mark: &mut dyn FnMut(&'static str),
 ) -> AppResult<UiSessionInitResult> {
+    create_ui_session_profiled_at_epoch_ms(
+        plan,
+        recent_airport_ids,
+        selected_airport_id,
+        selected_chart_id,
+        0,
+        mark,
+    )
+}
+
+pub fn create_ui_session_profiled_at_epoch_ms(
+    plan: FlightPlan,
+    recent_airport_ids: &[String],
+    selected_airport_id: Option<&str>,
+    selected_chart_id: Option<&str>,
+    wall_clock_epoch_ms: i64,
+    mark: &mut dyn FnMut(&'static str),
+) -> AppResult<UiSessionInitResult> {
     create_ui_session_inner(
         plan,
         recent_airport_ids,
         selected_airport_id,
         selected_chart_id,
+        wall_clock_epoch_ms,
         Some(mark),
     )
 }
@@ -793,6 +1074,7 @@ fn create_ui_session_inner(
     recent_airport_ids: &[String],
     selected_airport_id: Option<&str>,
     selected_chart_id: Option<&str>,
+    wall_clock_epoch_ms: i64,
     mut mark: Option<&mut dyn FnMut(&'static str)>,
 ) -> AppResult<UiSessionInitResult> {
     let map_overlay_config = uninitialized_map_overlay_config();
@@ -895,6 +1177,7 @@ fn create_ui_session_inner(
             tfr_payload: None,
             terrain_source_tile_cache: HashMap::new(),
             pending_resource_effects: Vec::new(),
+            wall_clock_epoch_ms,
         },
     );
     if let Some(mark) = mark.as_deref_mut() {
@@ -968,6 +1251,7 @@ pub fn load_raster_map_catalog_in_session(handle: u32) -> AppResult<HadOperation
         Err(err) => return had_read_error_to_overlay_outcome(err),
     };
     session.raster_map_catalog = Some(catalog);
+    sync_cycle_product_freshness_status_records(session);
     session_snapshot_outcome(session)
 }
 
@@ -1008,9 +1292,11 @@ pub fn select_map_family_in_session(
             Err(err) => return had_read_error_to_overlay_outcome(err),
         };
         session.raster_map_catalog = Some(catalog);
+        sync_cycle_product_freshness_status_records(session);
         return session_snapshot_outcome(session);
     };
     crate::select_map_family_in_catalog(catalog, family_id);
+    sync_cycle_product_freshness_status_records(session);
     session_snapshot_outcome(session)
 }
 
@@ -1027,6 +1313,7 @@ pub fn select_raster_map_in_session(
         });
     };
     crate::select_map_in_catalog(catalog, selected_map_id);
+    sync_cycle_product_freshness_status_records(session);
     snapshot_for_session(session)
 }
 
@@ -1036,8 +1323,20 @@ pub fn get_raster_tile_plan_in_session(
     width_px: f64,
     height_px: f64,
 ) -> AppResult<RasterTilePlan> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    get_raster_tile_plan_in_session_at_epoch_ms(handle, viewport, width_px, height_px, 0)
+}
+
+pub fn get_raster_tile_plan_in_session_at_epoch_ms(
+    handle: u32,
+    viewport: MapViewport,
+    width_px: f64,
+    height_px: f64,
+    epoch_ms: i64,
+) -> AppResult<RasterTilePlan> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    advance_session_wall_clock(session, epoch_ms);
+    sync_cycle_product_freshness_status_records(session);
     let Some(catalog) = session.raster_map_catalog.as_ref() else {
         return Err(AppError {
             kind: AppErrorKind::Internal,
@@ -1066,8 +1365,23 @@ pub fn get_raster_tile_plan_in_session_with_options(
     height_px: f64,
     options: crate::RasterTilePlanOptions,
 ) -> AppResult<RasterTilePlan> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    get_raster_tile_plan_in_session_with_options_at_epoch_ms(
+        handle, viewport, width_px, height_px, options, 0,
+    )
+}
+
+pub fn get_raster_tile_plan_in_session_with_options_at_epoch_ms(
+    handle: u32,
+    viewport: MapViewport,
+    width_px: f64,
+    height_px: f64,
+    options: crate::RasterTilePlanOptions,
+    epoch_ms: i64,
+) -> AppResult<RasterTilePlan> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    advance_session_wall_clock(session, epoch_ms);
+    sync_cycle_product_freshness_status_records(session);
     let Some(catalog) = session.raster_map_catalog.as_ref() else {
         return Err(AppError {
             kind: AppErrorKind::Internal,
@@ -1087,8 +1401,28 @@ pub fn get_raster_tile_plan_in_session_with_display_scale(
     height_px: f64,
     device_pixel_ratio: f64,
 ) -> AppResult<RasterTilePlan> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    get_raster_tile_plan_in_session_with_display_scale_at_epoch_ms(
+        handle,
+        viewport,
+        width_px,
+        height_px,
+        device_pixel_ratio,
+        0,
+    )
+}
+
+pub fn get_raster_tile_plan_in_session_with_display_scale_at_epoch_ms(
+    handle: u32,
+    viewport: MapViewport,
+    width_px: f64,
+    height_px: f64,
+    device_pixel_ratio: f64,
+    epoch_ms: i64,
+) -> AppResult<RasterTilePlan> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    advance_session_wall_clock(session, epoch_ms);
+    sync_cycle_product_freshness_status_records(session);
     let Some(catalog) = session.raster_map_catalog.as_ref() else {
         return Err(AppError {
             kind: AppErrorKind::Internal,
@@ -2357,6 +2691,7 @@ pub fn attach_nav_kv_store_to_session(
     session.important_metar_station_ids = None;
     session.metar_station_importance_status = None;
     rebuild_metar_tile_cache(session);
+    sync_cycle_product_freshness_status_records(session);
     Ok(())
 }
 
@@ -2367,6 +2702,7 @@ pub fn insert_nav_kv_page_for_attached_sessions(store_id: u32, page_index: u32, 
             if let Some(store) = session.nav_kv_store.as_mut() {
                 store.insert_page(page_index, page_bytes.to_vec());
             }
+            sync_cycle_product_freshness_status_records(session);
         }
     }
 }
@@ -2466,8 +2802,10 @@ pub fn set_debug_flag_in_session(
 }
 
 pub fn get_session_snapshot(handle: u32) -> AppResult<UiSessionSnapshot> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    sync_cycle_product_freshness_status_records(session);
+    sync_live_feed_overlay_status_records(session);
     snapshot_for_session(session)
 }
 
@@ -2489,6 +2827,7 @@ pub fn ingest_point_tiles_in_session(handle: u32, tiles: &[PointTilePayload]) ->
             _ => {}
         }
     }
+    sync_live_feed_overlay_status_records(session);
     Ok(())
 }
 
@@ -2561,7 +2900,7 @@ pub fn ingest_tfrs_in_session(handle: u32, payload: &TfrProductPayload) -> AppRe
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.tfr_payload = Some(payload.clone());
-    clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
+    sync_live_feed_overlay_status_records(session);
     Ok(())
 }
 
@@ -2696,6 +3035,7 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
             }
         }
     }
+    sync_live_feed_overlay_status_records(session);
     Ok(())
 }
 
@@ -3081,7 +3421,19 @@ pub fn get_map_overlay_in_session(
     width_px: f64,
     height_px: f64,
 ) -> AppResult<HadOperationOutcome> {
-    get_map_overlay_in_session_with_point_display_scale(handle, viewport, width_px, height_px, 1.0)
+    get_map_overlay_in_session_at_epoch_ms(handle, viewport, width_px, height_px, 0)
+}
+
+pub fn get_map_overlay_in_session_at_epoch_ms(
+    handle: u32,
+    viewport: MapViewport,
+    width_px: f64,
+    height_px: f64,
+    epoch_ms: i64,
+) -> AppResult<HadOperationOutcome> {
+    get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
+        handle, viewport, width_px, height_px, 1.0, epoch_ms,
+    )
 }
 
 pub fn get_map_overlay_in_session_with_point_display_scale(
@@ -3091,14 +3443,34 @@ pub fn get_map_overlay_in_session_with_point_display_scale(
     height_px: f64,
     point_display_scale: f64,
 ) -> AppResult<HadOperationOutcome> {
+    get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
+        handle,
+        viewport,
+        width_px,
+        height_px,
+        point_display_scale,
+        0,
+    )
+}
+
+pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
+    handle: u32,
+    viewport: MapViewport,
+    width_px: f64,
+    height_px: f64,
+    point_display_scale: f64,
+    epoch_ms: i64,
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    advance_session_wall_clock(session, epoch_ms);
+    let mut invalidations = sync_cycle_product_freshness_status_records(session);
     let metrics = MapSurfaceMetrics::new(viewport, width_px, height_px, point_display_scale);
     if !session.map_layer_state.vectors.visible
         && !session.map_layer_state.metars.visible
         && !session.map_layer_state.offline_regions.visible
     {
-        let mut invalidations = sync_map_overlay_status_records(session, Vec::new());
+        invalidations.extend(sync_map_overlay_status_records(session, Vec::new()));
         invalidations.extend(sync_live_feed_overlay_status_records(session));
         dedupe_invalidations(&mut invalidations);
         return Ok(HadOperationOutcome::complete_with_invalidations(
@@ -3160,8 +3532,10 @@ pub fn get_map_overlay_in_session_with_point_display_scale(
     if !resources.is_empty() {
         return Ok(HadOperationOutcome::NeedResources { resources });
     }
-    let mut invalidations =
-        sync_map_overlay_status_records(session, std::mem::take(&mut overlay.data_status_records));
+    invalidations.extend(sync_map_overlay_status_records(
+        session,
+        std::mem::take(&mut overlay.data_status_records),
+    ));
     invalidations.extend(sync_live_feed_overlay_status_records(session));
     dedupe_invalidations(&mut invalidations);
     Ok(HadOperationOutcome::complete_with_invalidations(
@@ -3316,8 +3690,19 @@ pub fn get_map_selection_in_session(
     height_px: f64,
     click: LatLon,
 ) -> AppResult<HadOperationOutcome> {
-    get_map_selection_in_session_with_point_display_scale(
-        handle, viewport, width_px, height_px, click, 1.0,
+    get_map_selection_in_session_at_epoch_ms(handle, viewport, width_px, height_px, click, 0)
+}
+
+pub fn get_map_selection_in_session_at_epoch_ms(
+    handle: u32,
+    viewport: MapViewport,
+    width_px: f64,
+    height_px: f64,
+    click: LatLon,
+    epoch_ms: i64,
+) -> AppResult<HadOperationOutcome> {
+    get_map_selection_in_session_with_point_display_scale_at_epoch_ms(
+        handle, viewport, width_px, height_px, click, 1.0, epoch_ms,
     )
 }
 
@@ -3329,8 +3714,32 @@ pub fn get_map_selection_in_session_with_point_display_scale(
     click: LatLon,
     point_display_scale: f64,
 ) -> AppResult<HadOperationOutcome> {
+    get_map_selection_in_session_with_point_display_scale_at_epoch_ms(
+        handle,
+        viewport,
+        width_px,
+        height_px,
+        click,
+        point_display_scale,
+        0,
+    )
+}
+
+pub fn get_map_selection_in_session_with_point_display_scale_at_epoch_ms(
+    handle: u32,
+    viewport: MapViewport,
+    width_px: f64,
+    height_px: f64,
+    click: LatLon,
+    point_display_scale: f64,
+    epoch_ms: i64,
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    advance_session_wall_clock(session, epoch_ms);
+    let mut invalidations = sync_cycle_product_freshness_status_records(session);
+    invalidations.extend(sync_live_feed_overlay_status_records(session));
+    dedupe_invalidations(&mut invalidations);
     let metrics = MapSurfaceMetrics::new(viewport, width_px, height_px, point_display_scale);
     if let Err(err) = ensure_vector_inputs_loaded(session, &metrics) {
         return had_read_error_to_overlay_outcome(err);
@@ -3382,11 +3791,12 @@ pub fn get_map_selection_in_session_with_point_display_scale(
             resources: nav_kv_page_resources(missing_pages),
         });
     }
-    Ok(HadOperationOutcome::complete(
+    Ok(HadOperationOutcome::complete_with_invalidations(
         serde_json::to_value(selection).map_err(|err| AppError {
             kind: AppErrorKind::Internal,
             message: err.to_string(),
         })?,
+        invalidations,
     ))
 }
 
@@ -3396,14 +3806,30 @@ pub fn get_terrain_overlay_in_session(
     width_px: f64,
     height_px: f64,
 ) -> AppResult<HadOperationOutcome> {
+    get_terrain_overlay_in_session_at_epoch_ms(handle, viewport, width_px, height_px, 0)
+}
+
+pub fn get_terrain_overlay_in_session_at_epoch_ms(
+    handle: u32,
+    viewport: MapViewport,
+    width_px: f64,
+    height_px: f64,
+    epoch_ms: i64,
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    advance_session_wall_clock(session, epoch_ms);
+    let freshness_invalidations = sync_cycle_product_freshness_status_records(session);
     if !session.map_layer_state.terrain_warning.visible {
         let result = TerrainOverlayQueryResult {
             status: crate::TerrainOverlayStatus::Hidden,
             tile_requests: Vec::new(),
         };
-        return complete_terrain_overlay_outcome(session, result);
+        return complete_terrain_overlay_outcome_with_invalidations(
+            session,
+            result,
+            freshness_invalidations,
+        );
     }
     let kinematics = session.app_state.ownship.resolved.kinematics.as_ref();
     let has_position = kinematics.is_some_and(|kinematics| {
@@ -3414,18 +3840,19 @@ pub fn get_terrain_overlay_in_session(
         crate::query_terrain_overlay(&viewport, width_px, height_px, has_position, has_altitude);
     let resources = terrain_overlay_resources(session, &query);
     if let Some(reason) = first_unavailable_resource_message(&resources) {
-        return complete_terrain_overlay_outcome(
+        return complete_terrain_overlay_outcome_with_invalidations(
             session,
             TerrainOverlayQueryResult {
                 status: crate::TerrainOverlayStatus::Unavailable { reason },
                 tile_requests: Vec::new(),
             },
+            freshness_invalidations,
         );
     }
     if !resources.is_empty() {
         return Ok(HadOperationOutcome::NeedResources { resources });
     }
-    complete_terrain_overlay_outcome(session, query)
+    complete_terrain_overlay_outcome_with_invalidations(session, query, freshness_invalidations)
 }
 
 pub fn get_nexrad_overlay_in_session(
@@ -3434,23 +3861,36 @@ pub fn get_nexrad_overlay_in_session(
     width_px: f64,
     height_px: f64,
 ) -> AppResult<HadOperationOutcome> {
+    get_nexrad_overlay_in_session_at_epoch_ms(handle, viewport, width_px, height_px, 0)
+}
+
+pub fn get_nexrad_overlay_in_session_at_epoch_ms(
+    handle: u32,
+    viewport: MapViewport,
+    width_px: f64,
+    height_px: f64,
+    epoch_ms: i64,
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    advance_session_wall_clock(session, epoch_ms);
+    let freshness_invalidations = sync_cycle_product_freshness_status_records(session);
     if !session.map_layer_state.nexrad.visible {
-        return complete_nexrad_overlay_outcome(
+        return complete_nexrad_overlay_outcome_with_invalidations(
             session,
             NexradOverlayQueryResult {
                 status: NexradOverlayStatus::Hidden,
                 tiles: Vec::new(),
                 stats: NexradOverlayStats::default(),
             },
+            freshness_invalidations,
         );
     }
     if let HadOperationOutcome::NeedResources { resources } = session.live_feeds.sync_outcome() {
         return Ok(HadOperationOutcome::NeedResources { resources });
     }
     let Some(manifest) = session.live_feeds.product_state_manifest("nexrad").cloned() else {
-        return complete_nexrad_overlay_outcome(
+        return complete_nexrad_overlay_outcome_with_invalidations(
             session,
             NexradOverlayQueryResult {
                 status: NexradOverlayStatus::Unavailable {
@@ -3459,6 +3899,7 @@ pub fn get_nexrad_overlay_in_session(
                 tiles: Vec::new(),
                 stats: NexradOverlayStats::default(),
             },
+            freshness_invalidations,
         );
     };
     let query = match nexrad_overlay_query(&manifest, &viewport, width_px, height_px) {
@@ -3471,13 +3912,13 @@ pub fn get_nexrad_overlay_in_session(
             stats: NexradOverlayStats::default(),
         },
     };
-    complete_nexrad_overlay_outcome(session, query)
+    complete_nexrad_overlay_outcome_with_invalidations(session, query, freshness_invalidations)
 }
 
 #[derive(Debug, Deserialize)]
 struct NexradSourceGridManifest {
     state_id: String,
-    observed_at_utc: Option<String>,
+    observed_at_utc: Option<DateTime<Utc>>,
     source_grid: NexradSourceGrid,
     levels: Vec<NexradSourceGridLevel>,
     tile_size: u32,
@@ -5882,6 +6323,74 @@ mod tests {
         }"#
     }
 
+    fn utc(value: &str) -> DateTime<Utc> {
+        parse_utc_instant(value).expect("UTC timestamp")
+    }
+
+    fn create_current_test_session() -> UiSessionInitResult {
+        create_ui_session_at_epoch_ms(
+            FlightPlan::default(),
+            &[],
+            None,
+            None,
+            utc("2026-05-20T12:00:00Z").timestamp_millis(),
+        )
+        .expect("create session")
+    }
+
+    fn data_status_box<'a>(
+        snapshot: &'a UiSessionSnapshot,
+        id: &str,
+    ) -> &'a crate::data_status::UiDataStatusBox {
+        snapshot
+            .data_status_state
+            .boxes
+            .iter()
+            .find(|box_| box_.id == id)
+            .unwrap_or_else(|| panic!("missing status box {id}"))
+    }
+
+    fn expired_raster_catalog(expiration_date: &str) -> RasterMapCatalog {
+        let option = crate::RasterMapViewOption {
+            id: "sectional:nw".to_string(),
+            label: "NW Charts".to_string(),
+            region_id: "nw".to_string(),
+            map_view: crate::RasterMapView {
+                chart_family: "sectional".to_string(),
+                chart_name: "NW Charts".to_string(),
+                chart_index: 0,
+                tile_root: "tiles".to_string(),
+                tile_url_root: "/package/tiles".to_string(),
+                tile_path_template: "{z}/{x}/{y}.webp".to_string(),
+                tile_size: 512,
+                min_zoom: 0.0,
+                max_zoom: 12.0,
+                max_source_zoom: 12,
+                max_display_zoom: 12.0,
+                storage_kind: "sectional_package".to_string(),
+                package_name: Some("chart_pkg".to_string()),
+                package_relative_path: Some("chart_pkg.zip".to_string()),
+                package_expiration_date: Some(expiration_date.to_string()),
+                full_coverage_zoom: None,
+                wide_angle: None,
+                initial_viewport: crate::RasterInitialViewport {
+                    lat: 47.0,
+                    lon: -122.0,
+                    zoom: 7.0,
+                },
+                levels: Vec::new(),
+            },
+        };
+        RasterMapCatalog {
+            selected_map_id: option.id.clone(),
+            selected_map: Some(option.clone()),
+            available_maps: vec![option.clone()],
+            displayed_maps: vec![option],
+            geometry: crate::RasterDisplayGeometry::default(),
+            family_options: Vec::new(),
+        }
+    }
+
     #[test]
     fn selecting_procedure_for_initial_airport_reaches_nav_lookup_without_predecessor_error() {
         let plan = FlightPlan {
@@ -6063,6 +6572,7 @@ mod tests {
         let payload = MetarProductPayload {
             schema_version: 3,
             version_label: "v1".to_string(),
+            generated_at_utc: None,
             metar_count: Some(1),
             metars_by_station,
             pireps: Vec::new(),
@@ -6142,6 +6652,7 @@ mod tests {
             tfr_payload: None,
             terrain_source_tile_cache: HashMap::new(),
             pending_resource_effects: Vec::new(),
+            wall_clock_epoch_ms: 0,
         };
         let mut metars_by_station = HashMap::new();
         metars_by_station.insert(
@@ -6159,6 +6670,7 @@ mod tests {
         session.metar_payload = Some(MetarProductPayload {
             schema_version: 3,
             version_label: "v1".to_string(),
+            generated_at_utc: None,
             metar_count: Some(1),
             metars_by_station,
             pireps: Vec::new(),
@@ -6232,6 +6744,7 @@ mod tests {
         let payload = MetarProductPayload {
             schema_version: 3,
             version_label: "v1".to_string(),
+            generated_at_utc: None,
             metar_count: Some(2),
             metars_by_station,
             pireps: Vec::new(),
@@ -6311,6 +6824,7 @@ mod tests {
             tfr_payload: None,
             terrain_source_tile_cache: HashMap::new(),
             pending_resource_effects: Vec::new(),
+            wall_clock_epoch_ms: 0,
         };
 
         ensure_metar_station_importance_loaded(&mut session).expect("important station ids");
@@ -6409,6 +6923,7 @@ mod tests {
             session.metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "v1".to_string(),
+                generated_at_utc: None,
                 metar_count: Some(1),
                 metars_by_station: HashMap::from([(
                     "KAAA".to_string(),
@@ -6502,6 +7017,7 @@ mod tests {
             session.metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "v1".to_string(),
+                generated_at_utc: None,
                 metar_count: Some(1),
                 metars_by_station: HashMap::from([(
                     "KAAA".to_string(),
@@ -6654,6 +7170,7 @@ mod tests {
             tfr_payload: None,
             terrain_source_tile_cache: HashMap::new(),
             pending_resource_effects: Vec::new(),
+            wall_clock_epoch_ms: 0,
         };
         let bad_tfr_state = serde_json::json!({
             "schema_version": 1,
@@ -6928,6 +7445,227 @@ mod tests {
         assert_eq!(tfrs.value.as_deref(), Some("UNAVAIL"));
         assert!(tfrs.drives_caution);
         assert!(tfrs.detail.contains("no current TFR product is loaded"));
+    }
+
+    #[test]
+    fn loaded_metar_feed_older_than_policy_records_warning() {
+        let init = create_current_test_session();
+        set_map_layer_visibility_in_session(init.handle, "metars", true).expect("show metars");
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            session.metar_payload = Some(MetarProductPayload {
+                schema_version: 3,
+                version_label: "old-metars".to_string(),
+                generated_at_utc: Some(utc("2020-01-01T00:00:00Z")),
+                metar_count: Some(0),
+                metars_by_station: HashMap::new(),
+                pireps: Vec::new(),
+            });
+        }
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let metars = data_status_box(&snapshot, LIVE_FEED_METARS_STATUS_ID);
+        assert_eq!(metars.label, "METARS");
+        assert_eq!(metars.value.as_deref(), Some("OLD"));
+        assert_eq!(metars.severity, UiStatusSeverity::Warning);
+        assert!(metars.detail.contains("METARS data is"));
+    }
+
+    #[test]
+    fn viewport_query_advances_session_clock_for_freshness_checks() {
+        let init = create_ui_session_at_epoch_ms(
+            FlightPlan::default(),
+            &[],
+            None,
+            None,
+            utc("2026-05-20T12:00:00Z").timestamp_millis(),
+        )
+        .expect("create session");
+        set_map_layer_visibility_in_session(init.handle, "metars", true).expect("show metars");
+        set_map_layer_visibility_in_session(init.handle, "vectors", false).expect("hide vectors");
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            session.metar_payload = Some(MetarProductPayload {
+                schema_version: 3,
+                version_label: "fresh-then-old-metars".to_string(),
+                generated_at_utc: Some(utc("2026-05-20T11:45:00Z")),
+                metar_count: Some(0),
+                metars_by_station: HashMap::new(),
+                pireps: Vec::new(),
+            });
+        }
+
+        let fresh_snapshot = get_session_snapshot(init.handle).expect("fresh snapshot");
+        assert!(!fresh_snapshot
+            .data_status_state
+            .boxes
+            .iter()
+            .any(|box_| box_.id == LIVE_FEED_METARS_STATUS_ID));
+
+        let outcome = get_map_overlay_in_session_at_epoch_ms(
+            init.handle,
+            MapViewport {
+                center: LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                },
+                zoom: 8.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            800.0,
+            600.0,
+            utc("2026-05-20T12:20:01Z").timestamp_millis(),
+        )
+        .expect("map overlay");
+        match outcome {
+            HadOperationOutcome::Complete { invalidations, .. } => {
+                assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
+            }
+            HadOperationOutcome::NeedResources { .. } => panic!("unexpected resource request"),
+        }
+
+        let stale_snapshot = get_session_snapshot(init.handle).expect("stale snapshot");
+        let metars = data_status_box(&stale_snapshot, LIVE_FEED_METARS_STATUS_ID);
+        assert_eq!(metars.value.as_deref(), Some("OLD"));
+        assert_eq!(metars.severity, UiStatusSeverity::Warning);
+    }
+
+    #[test]
+    fn loaded_tfr_feed_older_than_policy_records_warning() {
+        let init = create_current_test_session();
+        set_map_layer_visibility_in_session(init.handle, "vectors", true).expect("show vectors");
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            session.tfr_payload = Some(TfrProductPayload {
+                schema_version: 1,
+                version_label: "old-tfrs".to_string(),
+                generated_at_utc: Some(utc("2020-01-01T00:00:00Z")),
+                notam_count: 0,
+                area_group_count: 0,
+                areas: Vec::new(),
+            });
+        }
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let tfrs = data_status_box(&snapshot, LIVE_FEED_TFRS_STATUS_ID);
+        assert_eq!(tfrs.label, "TFRS");
+        assert_eq!(tfrs.value.as_deref(), Some("OLD"));
+        assert_eq!(tfrs.severity, UiStatusSeverity::Warning);
+        assert!(tfrs.detail.contains("TFRS data is"));
+    }
+
+    #[test]
+    fn loaded_obstacle_feed_older_than_policy_records_warning() {
+        let init = create_current_test_session();
+        set_map_layer_visibility_in_session(init.handle, "vectors", true).expect("show vectors");
+        ingest_resource_in_session(
+            init.handle,
+            "live_feeds/current",
+            br#"{
+                "products": {
+                    "obstacles": {
+                        "current": "v1",
+                        "version_manifest_url": "versions/obstacles/v1.json",
+                        "state_url": "states/obstacles/v1.json"
+                    }
+                }
+            }"#,
+        )
+        .expect("ingest current");
+        ingest_resource_in_session(
+            init.handle,
+            "live_feeds/state/obstacles/v1",
+            br#"{
+                "schema_version": 1,
+                "product_id": "obstacles",
+                "version_label": "v1",
+                "generated_at_utc": "2020-01-01T00:00:00Z",
+                "obstacle_count": 0,
+                "obstacles_by_id": {}
+            }"#,
+        )
+        .expect("ingest obstacle state");
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let obstacles = data_status_box(&snapshot, LIVE_FEED_OBSTACLES_STATUS_ID);
+        assert_eq!(obstacles.label, "OBSTACLE");
+        assert_eq!(obstacles.value.as_deref(), Some("OLD"));
+        assert_eq!(obstacles.severity, UiStatusSeverity::Warning);
+        assert!(obstacles.detail.contains("Obstacle data is"));
+    }
+
+    #[test]
+    fn loaded_nexrad_feed_older_than_policy_records_warning() {
+        let init = create_current_test_session();
+        set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let invalidations = sync_nexrad_status_record(
+                session,
+                &NexradOverlayQueryResult {
+                    status: NexradOverlayStatus::Ready { count: 0 },
+                    tiles: Vec::new(),
+                    stats: NexradOverlayStats {
+                        observed_at_utc: Some(utc("2020-01-01T00:00:00Z")),
+                        ..NexradOverlayStats::default()
+                    },
+                },
+            );
+            assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
+        }
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let nexrad = data_status_box(&snapshot, LIVE_FEED_NEXRAD_STATUS_ID);
+        assert_eq!(nexrad.label, "NEXRAD");
+        assert_eq!(nexrad.value.as_deref(), Some("OLD"));
+        assert_eq!(nexrad.severity, UiStatusSeverity::Warning);
+        assert!(nexrad.detail.contains("NEXRAD data is"));
+    }
+
+    #[test]
+    fn expired_selected_chart_records_warning() {
+        let init = create_current_test_session();
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            session.raster_map_catalog = Some(expired_raster_catalog("2020-01-01"));
+        }
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let chart = data_status_box(&snapshot, CYCLE_SELECTED_CHART_STATUS_ID);
+        assert_eq!(chart.label, "CHART");
+        assert_eq!(chart.value.as_deref(), Some("EXPIRED"));
+        assert_eq!(chart.severity, UiStatusSeverity::Warning);
+        assert!(chart.detail.contains("NW Charts expired"));
+    }
+
+    #[test]
+    fn expired_nav_db_package_records_warning() {
+        let init = create_current_test_session();
+        let store = crate::navkv::nav_kv_store_for_test(
+            &[(
+                "package/by-id/NAV_DB_TEST",
+                br#"{
+                    "id": "NAV_DB_TEST",
+                    "family_id": "nav-db",
+                    "expiration_date": "2020-01-01"
+                }"#,
+            )],
+            256,
+        );
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let nav_db = data_status_box(&snapshot, CYCLE_NAV_DB_STATUS_ID);
+        assert_eq!(nav_db.label, "NAV DB");
+        assert_eq!(nav_db.value.as_deref(), Some("EXPIRED"));
+        assert_eq!(nav_db.severity, UiStatusSeverity::Warning);
+        assert!(nav_db.detail.contains("NAV_DB_TEST expired"));
     }
 
     #[test]

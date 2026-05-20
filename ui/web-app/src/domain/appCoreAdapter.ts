@@ -681,11 +681,11 @@ type WasmModule = {
   ingest_airspace_label_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   ingest_resource_in_session(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
   report_session_resource_failure_in_session(handle: number, resourceId: string, message: string): Promise<string> | string;
-  get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
-  get_map_selection_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, clickJson: string): Promise<string> | string;
-  get_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
-  get_nexrad_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
-  get_raster_tile_plan_in_session_with_display_scale(handle: number, viewportJson: string, widthPx: number, heightPx: number, devicePixelRatio: number): Promise<string> | string;
+  get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, nowEpochMs: number): Promise<string> | string;
+  get_map_selection_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, clickJson: string, nowEpochMs: number): Promise<string> | string;
+  get_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, nowEpochMs: number): Promise<string> | string;
+  get_nexrad_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, nowEpochMs: number): Promise<string> | string;
+  get_raster_tile_plan_in_session_with_display_scale(handle: number, viewportJson: string, widthPx: number, heightPx: number, devicePixelRatio: number, nowEpochMs: number): Promise<string> | string;
   render_terrain_overlay_tile_by_key_in_session(handle: number, terrainTileKey: string, aircraftAltitudeFt: number): Promise<Uint8Array> | Uint8Array;
   get_session_snapshot(handle: number): Promise<string> | string;
   restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
@@ -1215,6 +1215,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
                 JSON.stringify(coreViewportForMap(viewport)),
                 widthPx,
                 heightPx,
+                Date.now(),
               ),
             (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
           ),
@@ -1228,6 +1229,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
               widthPx,
               heightPx,
               JSON.stringify(click),
+              Date.now(),
             ),
           ),
         ),
@@ -1240,6 +1242,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
                 JSON.stringify(coreViewportForMap(viewport)),
                 widthPx,
                 heightPx,
+                Date.now(),
               ),
             (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
           ),
@@ -1253,6 +1256,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
                 JSON.stringify(coreViewportForMap(viewport)),
                 widthPx,
                 heightPx,
+                Date.now(),
               ),
             (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
           ),
@@ -1266,6 +1270,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
               widthPx,
               heightPx,
               devicePixelRatio,
+              Date.now(),
             ),
           ) as RasterTilePlan,
         ),

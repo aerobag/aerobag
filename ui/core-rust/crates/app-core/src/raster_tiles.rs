@@ -87,6 +87,8 @@ pub struct RasterMapView {
     pub package_name: Option<String>,
     #[serde(default)]
     pub package_relative_path: Option<String>,
+    #[serde(default)]
+    pub package_expiration_date: Option<String>,
     pub full_coverage_zoom: Option<f64>,
     #[serde(default)]
     pub wide_angle: Option<RasterWideAngleMapView>,
@@ -101,6 +103,8 @@ pub struct RasterWideAngleMapView {
     pub package_name: String,
     #[serde(default)]
     pub package_relative_path: Option<String>,
+    #[serde(default)]
+    pub package_expiration_date: Option<String>,
     pub tile_url_root: String,
     pub tile_path_template: String,
     pub levels: Vec<RasterTileLevel>,
@@ -1044,6 +1048,7 @@ mod tests {
                 storage_kind: "sectional_package".to_string(),
                 package_name: Some(package.to_string()),
                 package_relative_path: Some(format!("{package}.zip")),
+                package_expiration_date: None,
                 full_coverage_zoom: Some(7.0),
                 wide_angle: None,
                 initial_viewport: RasterInitialViewport {
@@ -1347,6 +1352,7 @@ mod tests {
             max_zoom: 7.0,
             package_name: "SEC_WIDE_2604".to_string(),
             package_relative_path: Some("sec_wide_2604_sample.zip".to_string()),
+            package_expiration_date: None,
             tile_url_root: "tiles".to_string(),
             tile_path_template: "{z}/{x}/{y}.webp".to_string(),
             levels: vec![
@@ -1470,6 +1476,7 @@ mod tests {
             max_zoom: 7.0,
             package_name: "SEC_WIDE_2604".to_string(),
             package_relative_path: Some("sec_wide_2604_sample.zip".to_string()),
+            package_expiration_date: None,
             tile_url_root: "tiles".to_string(),
             tile_path_template: "{z}/{x}/{y}.webp".to_string(),
             levels: vec![level(0, 0, 0, 0, 0), level(7, 0, 127, 0, 127)],

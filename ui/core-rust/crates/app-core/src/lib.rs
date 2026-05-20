@@ -6,6 +6,7 @@ pub mod data_status;
 pub mod debug_log;
 pub mod errors;
 pub mod flight_data;
+pub mod freshness;
 pub mod geodesy;
 pub mod geometry;
 pub mod had_ops;
@@ -86,6 +87,8 @@ pub use navdb_types::{
     MaterializedProcedure, ProcedureOptions, ProcedureSpecChoice, ProcedureSummary,
     WaypointIdentifierRecord, WaypointIdentifierSuggestion,
 };
+#[cfg(debug_assertions)]
+pub use navkv::nav_kv_store_for_smoke_test;
 pub use navkv::{
     nav_kv_key_for_query, NavKvLookup, NavKvLookupDiagnostic, NavKvQuery, NavKvRoot, NavKvStore,
     NAV_DB_CONTRACT_KEY, REQUIRED_NAV_DB_CONTRACT_VERSION,
@@ -158,20 +161,28 @@ pub use raster_tiles::{
 pub use session::{
     activate_next_leg_in_session, append_flight_plan_entry_in_session,
     apply_situation_control_input_in_session, attach_nav_kv_store_to_session, create_ui_session,
-    create_ui_session_profiled, destroy_session, disengage_map_follow_in_session,
+    create_ui_session_at_epoch_ms, create_ui_session_profiled,
+    create_ui_session_profiled_at_epoch_ms, destroy_session, disengage_map_follow_in_session,
     drain_session_resource_effects, engage_map_follow_in_session, get_map_overlay_in_session,
-    get_map_overlay_in_session_with_point_display_scale, get_map_selection_in_session,
-    get_map_selection_in_session_with_point_display_scale, get_nexrad_overlay_in_session,
-    get_raster_tile_plan_in_session, get_raster_tile_plan_in_session_with_display_scale,
-    get_raster_tile_plan_in_session_with_options, get_session_snapshot,
-    get_terrain_overlay_in_session, ingest_airspace_features_in_session,
-    ingest_airspace_label_tiles_in_session, ingest_airspace_ref_tiles_in_session,
-    ingest_live_feed_sse_event_in_session, ingest_live_feed_sse_events_in_session,
-    ingest_point_tiles_in_session, ingest_resource_in_session, ingest_tafs_in_session,
-    ingest_tfrs_in_session, insert_airway_at_flight_plan_row_in_session,
-    insert_nav_kv_page_for_attached_sessions, insert_waypoint_at_flight_plan_row_in_session,
-    load_plate_procedure_in_session, load_playback_trace_in_session,
-    load_raster_map_catalog_in_session, pause_playback_in_session,
+    get_map_overlay_in_session_at_epoch_ms, get_map_overlay_in_session_with_point_display_scale,
+    get_map_overlay_in_session_with_point_display_scale_at_epoch_ms, get_map_selection_in_session,
+    get_map_selection_in_session_at_epoch_ms,
+    get_map_selection_in_session_with_point_display_scale,
+    get_map_selection_in_session_with_point_display_scale_at_epoch_ms,
+    get_nexrad_overlay_in_session, get_nexrad_overlay_in_session_at_epoch_ms,
+    get_raster_tile_plan_in_session, get_raster_tile_plan_in_session_at_epoch_ms,
+    get_raster_tile_plan_in_session_with_display_scale,
+    get_raster_tile_plan_in_session_with_display_scale_at_epoch_ms,
+    get_raster_tile_plan_in_session_with_options,
+    get_raster_tile_plan_in_session_with_options_at_epoch_ms, get_session_snapshot,
+    get_terrain_overlay_in_session, get_terrain_overlay_in_session_at_epoch_ms,
+    ingest_airspace_features_in_session, ingest_airspace_label_tiles_in_session,
+    ingest_airspace_ref_tiles_in_session, ingest_live_feed_sse_event_in_session,
+    ingest_live_feed_sse_events_in_session, ingest_point_tiles_in_session,
+    ingest_resource_in_session, ingest_tafs_in_session, ingest_tfrs_in_session,
+    insert_airway_at_flight_plan_row_in_session, insert_nav_kv_page_for_attached_sessions,
+    insert_waypoint_at_flight_plan_row_in_session, load_plate_procedure_in_session,
+    load_playback_trace_in_session, load_raster_map_catalog_in_session, pause_playback_in_session,
     perform_flight_plan_row_action_in_session, perform_map_selection_action_in_session,
     perform_status_action_in_session, play_playback_in_session,
     preview_flight_plan_entry_in_session, project_flight_plan_route_in_session,

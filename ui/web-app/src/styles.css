@@ -625,14 +625,18 @@ button {
   stroke-linecap: round;
 }
 
-.situationDock {
+.statusControlDock {
   position: absolute;
   top: var(--thumb-gap);
   right: var(--thumb-gap);
   z-index: var(--z-page-controls);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--thumb-gap);
+  pointer-events: none;
 }
 
-.situationDock.isLowered {
+.statusControlDock.isLowered {
   top: calc(var(--thumb) + (var(--thumb-gap) * 2));
 }
 
@@ -677,26 +681,21 @@ button {
 }
 
 .dataStatusDock {
-  position: absolute;
-  top: var(--thumb-gap);
-  right: calc(var(--thumb-gap) + (var(--thumb) * 1.86));
-  z-index: var(--z-page-controls);
-}
-
-.dataStatusDock.isLowered {
-  top: calc(var(--thumb) + (var(--thumb-gap) * 2));
+  position: relative;
+  pointer-events: auto;
 }
 
 .dataStatusLauncher {
-  min-width: calc(var(--thumb) * 1.16);
-  height: calc(var(--thumb) * 0.72);
-  padding: 0 calc(var(--thumb) * 0.14);
+  width: calc(var(--thumb) * 0.5);
+  min-width: calc(var(--thumb) * 0.5);
+  height: calc(var(--thumb) * 0.5);
+  padding: 0;
   border: 1px solid rgba(72, 45, 8, 0.32);
   border-radius: calc(var(--thumb-radius) * 0.78);
   background: rgba(252, 220, 99, 0.92);
   box-shadow: var(--shadow);
   color: #402b00;
-  font-size: calc(var(--thumb) * 0.19);
+  font-size: calc(var(--thumb) * 0.16);
   font-weight: 900;
   letter-spacing: 0.04em;
 }
@@ -716,9 +715,8 @@ button {
 }
 
 .dataStatusPanel {
-  position: absolute;
-  top: calc(100% + (var(--thumb-gap) * 0.55));
-  right: 0;
+  position: fixed;
+  z-index: var(--z-modal-content);
   width: calc(var(--thumb) * 4.25);
   max-width: calc(100vw - (var(--thumb-gap) * 2));
   padding: calc(var(--thumb) * 0.14);

@@ -777,8 +777,12 @@ function thumbPixels(multiplier = 1) {
   return parsed * multiplier;
 }
 
-function shouldLowerSituationDock(surfaceWidthPx: number) {
-  return surfaceWidthPx > 0 && surfaceWidthPx < thumbPixels(10);
+function shouldLowerStatusControlDock(surfaceWidthPx: number, includesDataStatus: boolean) {
+  const leftControlWidthThumbs = 6.4;
+  const ownshipPillWidthThumbs = 2;
+  const dataStatusWidthThumbs = includesDataStatus ? 0.6 : 0;
+  const outerGutterThumbs = 1;
+  return surfaceWidthPx > 0 && surfaceWidthPx < thumbPixels(leftControlWidthThumbs + ownshipPillWidthThumbs + dataStatusWidthThumbs + outerGutterThumbs);
 }
 
 function flightDataEdgeColumnCount(
@@ -2637,10 +2641,10 @@ function MapPage(props: {
     detailModal: { title: string; text: string } | null;
   } | null>(null);
   const firstVisualReadyRef = useRef(false);
-  const situationDockLowered = shouldLowerSituationDock(surfaceSize.width);
+  const statusControlDockLowered = shouldLowerStatusControlDock(surfaceSize.width, dataStatusState.boxes.length > 0);
   const flightDataBannerEdgeLayout = surfaceSize.width > surfaceSize.height;
   const flightDataBannerEdgeColumnCount = flightDataBannerEdgeLayout
-    ? flightDataEdgeColumnCount(surfaceSize, flightDataBanner.cells.length, situationDockLowered)
+    ? flightDataEdgeColumnCount(surfaceSize, flightDataBanner.cells.length, statusControlDockLowered)
     : 1;
 
   function pumpTerrainRenderQueue() {
@@ -3926,7 +3930,7 @@ function MapPage(props: {
           edge={flightDataBannerEdge}
           edgeColumnCount={flightDataBannerEdgeColumnCount}
           edgeLayout={flightDataBannerEdgeLayout}
-          lowered={situationDockLowered}
+          lowered={statusControlDockLowered}
         />
         {trayGroup.scrimOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
         {mapSelection ? (
@@ -4370,20 +4374,17 @@ function MapPage(props: {
             )}
           </svg>
         ) : null}
-        <SituationStatusBadge
+        <StatusControlDock
           controls={ownshipControls}
-          lowered={situationDockLowered}
-          open={trayGroup.isOpen("ownship")}
-          onToggle={() => trayGroup.toggle("ownship")}
+          dataStatusState={dataStatusState}
+          lowered={statusControlDockLowered}
+          ownshipOpen={trayGroup.isOpen("ownship")}
+          statusOpen={trayGroup.isOpen("status")}
+          onOwnshipToggle={() => trayGroup.toggle("ownship")}
+          onStatusToggle={() => trayGroup.toggle("status")}
+          onAction={onStatusAction}
           options={ownshipSourceOptions}
           transportControls={<SituationTransportRow controls={ownshipControls.situation_controls} onInput={onSituationControlInput} />}
-        />
-        <DataStatusDock
-          dataStatusState={dataStatusState}
-          lowered={situationDockLowered}
-          open={trayGroup.isOpen("status")}
-          onToggle={() => trayGroup.toggle("status")}
-          onAction={onStatusAction}
         />
         {mapIsVisible && situationOverlay ? (
           <>
@@ -6850,10 +6851,10 @@ function ChartsPage(props: {
   const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
   const pinchRef = useRef<{ viewport: ImageViewportState; distance: number; midpoint: ScreenPoint } | null>(null);
-  const situationDockLowered = shouldLowerSituationDock(surfaceSize.width);
+  const statusControlDockLowered = shouldLowerStatusControlDock(surfaceSize.width, false);
   const flightDataBannerEdgeLayout = surfaceSize.width > surfaceSize.height;
   const flightDataBannerEdgeColumnCount = flightDataBannerEdgeLayout
-    ? flightDataEdgeColumnCount(surfaceSize, flightDataBanner.cells.length, situationDockLowered)
+    ? flightDataEdgeColumnCount(surfaceSize, flightDataBanner.cells.length, statusControlDockLowered)
     : 1;
   const lastChartLayoutKeyRef = useRef("");
   const firstVisualReadyRef = useRef(false);
@@ -7322,13 +7323,13 @@ function ChartsPage(props: {
           edge={flightDataBannerEdge}
           edgeColumnCount={flightDataBannerEdgeColumnCount}
           edgeLayout={flightDataBannerEdgeLayout}
-          lowered={situationDockLowered}
+          lowered={statusControlDockLowered}
         />
-        <SituationStatusBadge
+        <StatusControlDock
           controls={ownshipControls}
-          lowered={situationDockLowered}
-          open={trayGroup.isOpen("ownship")}
-          onToggle={() => trayGroup.toggle("ownship")}
+          lowered={statusControlDockLowered}
+          ownshipOpen={trayGroup.isOpen("ownship")}
+          onOwnshipToggle={() => trayGroup.toggle("ownship")}
           options={ownshipSourceOptions}
           transportControls={<SituationTransportRow controls={ownshipControls.situation_controls} onInput={props.onSituationControlInput} />}
         />
@@ -7741,23 +7742,53 @@ function airportIdFromNavRef(navRef: NavRef | null | undefined): string | null {
 
 function SituationStatusBadge(props: {
   controls: OwnshipControlModel;
-  lowered?: boolean;
   open: boolean;
   onToggle: () => void;
   options: TrayOption[];
   transportControls?: ReactNode;
 }) {
   return (
-    <div className={`situationDock${props.lowered ? " isLowered" : ""}`}>
-      <TrayDock
-        launcherLabel={props.controls.launcher_label}
-        launcherClassName={`situationStatusLauncher situationStatus-${props.controls.launcher_tone}`}
-        open={props.open}
-        onToggle={props.onToggle}
-        ariaLabel="Ownship source"
-        style="situation"
+    <TrayDock
+      launcherLabel={props.controls.launcher_label}
+      launcherClassName={`situationStatusLauncher situationStatus-${props.controls.launcher_tone}`}
+      open={props.open}
+      onToggle={props.onToggle}
+      ariaLabel="Ownship source"
+      style="situation"
+      options={props.options}
+      footer={props.transportControls}
+    />
+  );
+}
+
+function StatusControlDock(props: {
+  controls: OwnshipControlModel;
+  dataStatusState?: UiDataStatusState | null;
+  lowered?: boolean;
+  ownshipOpen: boolean;
+  statusOpen?: boolean;
+  onOwnshipToggle: () => void;
+  onStatusToggle?: () => void;
+  onAction?: (actionId: string) => void | Promise<void>;
+  options: TrayOption[];
+  transportControls?: ReactNode;
+}) {
+  return (
+    <div className={`statusControlDock${props.lowered ? " isLowered" : ""}`}>
+      {props.dataStatusState && props.onStatusToggle && props.onAction ? (
+        <DataStatusDock
+          dataStatusState={props.dataStatusState}
+          open={props.statusOpen ?? false}
+          onToggle={props.onStatusToggle}
+          onAction={props.onAction}
+        />
+      ) : null}
+      <SituationStatusBadge
+        controls={props.controls}
+        open={props.ownshipOpen}
+        onToggle={props.onOwnshipToggle}
         options={props.options}
-        footer={props.transportControls}
+        transportControls={props.transportControls}
       />
     </div>
   );
@@ -7770,9 +7801,44 @@ function DataStatusDock(props: {
   onToggle: () => void;
   onAction: (actionId: string) => void | Promise<void>;
 }) {
+  const launcherRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLElement | null>(null);
+  const [panelPosition, setPanelPosition] = useState<{ left: number; top: number } | null>(null);
   const cautionBoxes = props.dataStatusState.boxes.filter((box) => box.drives_caution);
   const activeCautionBoxes = cautionBoxes.filter((box) => !box.hushed);
   const hasStatus = props.dataStatusState.boxes.length > 0;
+  useEffect(() => {
+    if (!props.open) {
+      setPanelPosition(null);
+      return;
+    }
+
+    function updatePosition() {
+      const launcher = launcherRef.current;
+      const panel = panelRef.current;
+      if (!launcher || !panel) {
+        return;
+      }
+      const launcherRect = launcher.getBoundingClientRect();
+      const gap = thumbPixels(0.1);
+      const minInset = thumbPixels(0.1);
+      const maxLeft = Math.max(minInset, window.innerWidth - panel.offsetWidth - minInset);
+      const maxTop = Math.max(minInset, window.innerHeight - panel.offsetHeight - minInset);
+      setPanelPosition({
+        left: Math.min(Math.max(minInset, launcherRect.right - panel.offsetWidth), maxLeft),
+        top: Math.min(Math.max(minInset, launcherRect.bottom + gap), maxTop),
+      });
+    }
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [props.open, props.dataStatusState.boxes.length]);
+
   if (!hasStatus) {
     return null;
   }
@@ -7782,8 +7848,9 @@ function DataStatusDock(props: {
     .sort((left, right) => statusSeverityRank(right) - statusSeverityRank(left))[0] ?? "info";
 
   return (
-    <div className={`dataStatusDock${props.lowered ? " isLowered" : ""}`}>
+    <div className="dataStatusDock">
       <button
+        ref={launcherRef}
         type="button"
         className={`dataStatusLauncher statusSeverity-${severity}${props.open ? " isOpen" : ""}${activeCautionBoxes.length === 0 ? " isQuiet" : ""}`}
         aria-expanded={props.open}
@@ -7795,8 +7862,20 @@ function DataStatusDock(props: {
       >
         {launcherLabel}
       </button>
-      {props.open ? (
-        <section className="dataStatusPanel" aria-label="Active data status">
+      {props.open && typeof document !== "undefined" ? createPortal(
+        <section
+          ref={panelRef}
+          className="dataStatusPanel"
+          aria-label="Active data status"
+          style={panelPosition ? {
+            left: `${panelPosition.left}px`,
+            top: `${panelPosition.top}px`,
+          } : {
+            visibility: "hidden",
+          }}
+          onPointerDown={stopPointer}
+          onPointerUp={stopPointer}
+        >
           {props.dataStatusState.boxes.map((box) => (
             <div key={box.id} className={`dataStatusBox statusSeverity-${box.severity}${box.hushed ? " isHushed" : ""}`}>
               <div className="dataStatusBoxHeader">
@@ -7824,7 +7903,8 @@ function DataStatusDock(props: {
               ) : null}
             </div>
           ))}
-        </section>
+        </section>,
+        document.body,
       ) : null}
     </div>
   );

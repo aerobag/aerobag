@@ -2475,7 +2475,6 @@ export default function App() {
           }}
           ownship={appUiState.ownship.render}
           ownshipControls={appUiState.ownship.controls}
-          flightDataBanner={appUiState.flight_data_banner}
           playbackUiState={playbackUiState}
           playbackSourcePath={playbackSourcePath}
           onPlaybackSourcePathChange={setPlaybackSourcePath}
@@ -6907,11 +6906,10 @@ function ChartsPage(props: {
   uiSession: UiSession | null;
   ownship: OwnshipRenderState;
   ownshipControls: OwnshipControlModel;
-  flightDataBanner: FlightDataBannerModel;
   debugWarningActive: boolean;
   onFirstVisualReady: () => void;
 }) {
-  const { appCoreAdapter, page, plan, planUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, ownship, ownshipControls, flightDataBanner, onFirstVisualReady } = props;
+  const { appCoreAdapter, page, plan, planUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, ownship, ownshipControls, onFirstVisualReady } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -6923,10 +6921,6 @@ function ChartsPage(props: {
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
   const pinchRef = useRef<{ viewport: ImageViewportState; distance: number; midpoint: ScreenPoint } | null>(null);
   const statusControlDockLowered = shouldLowerStatusControlDock(surfaceSize.width, false);
-  const flightDataBannerEdgeLayout = surfaceSize.width > surfaceSize.height;
-  const flightDataBannerEdgeColumnCount = flightDataBannerEdgeLayout
-    ? flightDataEdgeColumnCount(surfaceSize, flightDataBanner.cells.length, statusControlDockLowered)
-    : 1;
   const lastChartLayoutKeyRef = useRef("");
   const firstVisualReadyRef = useRef(false);
   const trayGroup = useModalTrayGroup(["airport", "chart", "load", "ownship"] as const);
@@ -7389,13 +7383,6 @@ function ChartsPage(props: {
         onDoubleClick={handleDoubleClick}
       >
         <div className="mapBackdrop" />
-        <FlightDataBanner
-          banner={flightDataBanner}
-          edge={flightDataBannerEdge}
-          edgeColumnCount={flightDataBannerEdgeColumnCount}
-          edgeLayout={flightDataBannerEdgeLayout}
-          lowered={statusControlDockLowered}
-        />
         <StatusControlDock
           controls={ownshipControls}
           lowered={statusControlDockLowered}

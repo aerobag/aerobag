@@ -1,5 +1,6 @@
 package org.aerobag.app.domain
 
+import kotlinx.serialization.Serializable
 import kotlin.math.PI
 import kotlin.math.asinh
 import kotlin.math.atan
@@ -22,6 +23,7 @@ data class MapViewportState(
     val zoom: Double,
 )
 
+@Serializable
 data class ScreenPoint(
     val x: Float,
     val y: Float,

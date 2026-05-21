@@ -697,6 +697,23 @@ pub fn ingest_resource_in_session_bytes(
     Ok("null".to_string())
 }
 
+pub fn sync_live_feeds_in_session_json(handle: u64) -> Result<String, String> {
+    let outcome =
+        app_core::sync_live_feeds_in_session(handle as u32).map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
+pub fn ingest_live_feed_sse_events_in_session_json(
+    handle: u64,
+    events_json: &str,
+) -> Result<String, String> {
+    let events: Vec<app_core::LiveFeedSseEvent> =
+        serde_json::from_str(events_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::ingest_live_feed_sse_events_in_session(handle as u32, &events)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 pub fn get_map_overlay_in_session_json(
     handle: u64,
     viewport_json: &str,
@@ -794,21 +811,27 @@ pub fn get_terrain_overlay_in_session_json(
     serde_json::to_string(&overlay).map_err(|err| err.to_string())
 }
 
-pub fn get_nexrad_overlay_in_session_json(handle: u64) -> Result<String, String> {
+pub fn get_nexrad_overlay_in_session_json(
+    handle: u64,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
     let overlay = app_core::get_nexrad_overlay_in_session_at_epoch_ms(
         handle as u32,
-        app_core::MapViewport {
-            center: app_core::LatLon { lat: 0.0, lon: 0.0 },
-            zoom: 0.0,
-            rotation_deg: 0.0,
-            pitch_deg: 0.0,
-        },
-        0.0,
-        0.0,
+        viewport,
+        width_px,
+        height_px,
         now_epoch_ms(),
     )
     .map_err(|err| err.to_string())?;
     serde_json::to_string(&overlay).map_err(|err| err.to_string())
+}
+
+pub fn nexrad_tile_bytes_in_session(handle: u64, src: &str) -> Result<Vec<u8>, String> {
+    app_core::nexrad_tile_bytes_in_session(handle as u32, src).map_err(|err| err.to_string())
 }
 
 pub fn get_raster_tile_plan_in_session_json(
@@ -1017,6 +1040,26 @@ pub fn live_feed_cache_install_fetched_bytes_json(
         .map_err(|err| err.to_string())?
         .map(|state| state.summary());
     serde_json::to_string(&installed).map_err(|err| err.to_string())
+}
+
+pub fn live_feed_cache_ingest_sse_event_json(
+    handle: u64,
+    event_json: &str,
+) -> Result<String, String> {
+    let event: app_core::LiveFeedSseEvent =
+        serde_json::from_str(event_json).map_err(|err| err.to_string())?;
+    let mut caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    let cache = caches
+        .get_mut(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    serde_json::to_string(
+        &cache
+            .ingest_sse_event(&event)
+            .map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())
 }
 
 pub fn live_feed_cache_installed_summary_json(
@@ -1685,6 +1728,18 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheI
         let bytes = get_java_byte_array(&mut env, payload_bytes)?;
         live_feed_cache_install_fetched_bytes_json(handle as u64, &request, &bytes)
     })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheIngestSseEventJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    event_json: JString,
+) -> jstring {
+    let result = get_java_string(&mut env, event_json)
+        .and_then(|event| live_feed_cache_ingest_sse_event_json(handle as u64, &event));
     return_string(&mut env, result)
 }
 
@@ -2552,6 +2607,28 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_ingestResource
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_syncLiveFeedsInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    let result = sync_live_feeds_in_session_json(handle as u64);
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_ingestLiveFeedSseEventsInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    events_json: JString,
+) -> jstring {
+    let result = get_java_string(&mut env, events_json)
+        .and_then(|events| ingest_live_feed_sse_events_in_session_json(handle as u64, &events));
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getMapOverlayInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -2671,8 +2748,14 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getNexradOverl
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
+    viewport_json: JString,
+    width_px: f64,
+    height_px: f64,
 ) -> jstring {
-    let result = get_nexrad_overlay_in_session_json(handle as u64);
+    let result = (|| {
+        let viewport = get_java_string(&mut env, viewport_json)?;
+        get_nexrad_overlay_in_session_json(handle as u64, &viewport, width_px, height_px)
+    })();
     return_string(&mut env, result)
 }
 
@@ -2746,13 +2829,14 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_renderTerrainO
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_nexradFrameBytesInSession(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_nexradTileBytesInSession(
     mut env: JNIEnv,
     _class: JClass,
-    _handle: i64,
-    _frame_key: JString,
+    handle: i64,
+    src: JString,
 ) -> jbyteArray {
-    let result = Err("obsolete NEXRAD frame-byte API removed".to_string());
+    let result = get_java_string(&mut env, src)
+        .and_then(|src| nexrad_tile_bytes_in_session(handle as u64, &src));
     return_byte_array(&mut env, result)
 }
 

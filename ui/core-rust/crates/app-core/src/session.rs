@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    io::Read,
     sync::{
         atomic::{AtomicU32, Ordering},
         Mutex, MutexGuard, OnceLock,
@@ -8,6 +9,7 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::CoreResourcePolicy;
 use crate::{
@@ -149,9 +151,17 @@ struct UiSession {
     taf_payload: Option<TafProductPayload>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<TfrProductPayload>,
+    nexrad_installed: Option<LiveNexradInstalledState>,
     terrain_source_tile_cache: HashMap<String, Vec<u8>>,
     pending_resource_effects: Vec<UiSessionResourceEffect>,
     wall_clock_epoch_ms: i64,
+}
+
+#[derive(Clone)]
+struct LiveNexradInstalledState {
+    version: String,
+    manifest: serde_json::Value,
+    members: HashMap<String, Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1212,6 +1222,7 @@ fn create_ui_session_inner(
             metar_station_importance_status: None,
             obstacle_had: None,
             obstacle_tile_cache: HashMap::new(),
+            nexrad_installed: None,
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
@@ -3084,8 +3095,15 @@ fn install_live_feed_installed_state(
                 Some(store),
             )?;
         }
-        ("winds-aloft", crate::LiveFeedInstalledPayload::Json { .. })
-        | ("nexrad", crate::LiveFeedInstalledPayload::Opaque { .. }) => {}
+        ("nexrad", crate::LiveFeedInstalledPayload::Opaque { bytes }) => {
+            session.nexrad_installed = Some(read_installed_nexrad_package(
+                &installed.version,
+                &installed.state_sha256,
+                bytes,
+            )?);
+            clear_data_status_record(session, LIVE_FEED_NEXRAD_STATUS_ID);
+        }
+        ("winds-aloft", crate::LiveFeedInstalledPayload::Json { .. }) => {}
         (product, payload) => {
             return Err(AppError {
                 kind: AppErrorKind::InvalidManifest,
@@ -3097,6 +3115,80 @@ fn install_live_feed_installed_state(
         }
     }
     Ok(())
+}
+
+fn read_installed_nexrad_package(
+    version: &str,
+    state_sha256: &str,
+    bytes: &[u8],
+) -> AppResult<LiveNexradInstalledState> {
+    let cursor = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(cursor).map_err(|err| AppError {
+        kind: AppErrorKind::InvalidManifest,
+        message: format!("failed to read installed NEXRAD package: {err}"),
+    })?;
+    let mut members = HashMap::new();
+    for index in 0..archive.len() {
+        let mut member = archive.by_index(index).map_err(|err| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("failed to read installed NEXRAD package member {index}: {err}"),
+        })?;
+        if member.is_dir() {
+            continue;
+        }
+        let Some(name) = member
+            .enclosed_name()
+            .map(|path| path.to_string_lossy().to_string())
+        else {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message: "installed NEXRAD package contains unsafe member path".to_string(),
+            });
+        };
+        let mut member_bytes = Vec::new();
+        member
+            .read_to_end(&mut member_bytes)
+            .map_err(|err| AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message: format!("failed to read installed NEXRAD package member {name}: {err}"),
+            })?;
+        members.insert(name, member_bytes);
+    }
+    let manifest_bytes = members.get("manifest.json").ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidManifest,
+        message: "installed NEXRAD package is missing manifest.json".to_string(),
+    })?;
+    let manifest: serde_json::Value =
+        serde_json::from_slice(manifest_bytes).map_err(|err| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("failed to parse installed NEXRAD manifest: {err}"),
+        })?;
+    let state_id = manifest
+        .get("state_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(version);
+    if state_id != version {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!(
+                "installed NEXRAD manifest state_id {state_id} did not match {version}"
+            ),
+        });
+    }
+    let actual_state_sha256 = canonical_json_sha256_value(&manifest)?;
+    if actual_state_sha256 != state_sha256 {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!(
+                "installed NEXRAD state hash mismatch: expected {state_sha256}, got {actual_state_sha256}"
+            ),
+        });
+    }
+    Ok(LiveNexradInstalledState {
+        version: version.to_string(),
+        manifest,
+        members,
+    })
 }
 
 pub fn report_session_resource_failure_in_session(
@@ -3638,6 +3730,11 @@ fn internal_json_error(err: serde_json::Error) -> AppError {
         kind: AppErrorKind::Internal,
         message: err.to_string(),
     }
+}
+
+fn canonical_json_sha256_value(value: &serde_json::Value) -> AppResult<String> {
+    let bytes = serde_json::to_vec(value).map_err(internal_json_error)?;
+    Ok(format!("{:x}", Sha256::digest(&bytes)))
 }
 
 fn live_feed_state_member_address(state_url: &str, member_path: &str) -> String {
@@ -4491,21 +4588,27 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
             freshness_invalidations,
         );
     }
-    if let HadOperationOutcome::NeedResources { resources } = session.live_feeds.sync_outcome() {
-        return Ok(HadOperationOutcome::NeedResources { resources });
-    }
-    let Some(manifest) = session.live_feeds.product_state_manifest("nexrad").cloned() else {
-        return complete_nexrad_overlay_outcome_with_invalidations(
-            session,
-            NexradOverlayQueryResult {
-                status: NexradOverlayStatus::Unavailable {
-                    reason: "NEXRAD product is missing from the live feed index".to_string(),
+    let manifest = if let Some(installed) = &session.nexrad_installed {
+        installed.manifest.clone()
+    } else {
+        if let HadOperationOutcome::NeedResources { resources } = session.live_feeds.sync_outcome()
+        {
+            return Ok(HadOperationOutcome::NeedResources { resources });
+        }
+        let Some(manifest) = session.live_feeds.product_state_manifest("nexrad").cloned() else {
+            return complete_nexrad_overlay_outcome_with_invalidations(
+                session,
+                NexradOverlayQueryResult {
+                    status: NexradOverlayStatus::Unavailable {
+                        reason: "NEXRAD product is missing from the live feed index".to_string(),
+                    },
+                    tiles: Vec::new(),
+                    stats: NexradOverlayStats::default(),
                 },
-                tiles: Vec::new(),
-                stats: NexradOverlayStats::default(),
-            },
-            freshness_invalidations,
-        );
+                freshness_invalidations,
+            );
+        };
+        manifest
     };
     let query = match nexrad_overlay_query(&manifest, &viewport, width_px, height_px) {
         Ok(query) => query,
@@ -4518,6 +4621,38 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
         },
     };
     complete_nexrad_overlay_outcome_with_invalidations(session, query, freshness_invalidations)
+}
+
+pub fn nexrad_tile_bytes_in_session(handle: u32, src: &str) -> AppResult<Vec<u8>> {
+    let sessions = lock_sessions();
+    let session = session_ref(&sessions, handle)?;
+    let installed = session.nexrad_installed.as_ref().ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidManifest,
+        message: "no installed NEXRAD package is available in this session".to_string(),
+    })?;
+    let member_path = nexrad_installed_member_path(src).ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidManifest,
+        message: format!(
+            "NEXRAD tile URL {src} is not inside installed package {}",
+            installed.version
+        ),
+    })?;
+    installed
+        .members
+        .get(&member_path)
+        .cloned()
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("installed NEXRAD package missing {member_path}"),
+        })
+}
+
+fn nexrad_installed_member_path(src: &str) -> Option<String> {
+    let src = src.trim_start_matches('/');
+    let (_, rest) = src.split_once("/tiles/")?;
+    // The installed package is rooted at the state directory, while web URLs include
+    // live-feeds/states/nexrad/<state-id>/.
+    Some(format!("tiles/{rest}"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -7255,6 +7390,7 @@ mod tests {
             metar_station_importance_status: None,
             obstacle_had: None,
             obstacle_tile_cache: HashMap::new(),
+            nexrad_installed: None,
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
@@ -7429,6 +7565,7 @@ mod tests {
             metar_station_importance_status: None,
             obstacle_had: None,
             obstacle_tile_cache: HashMap::new(),
+            nexrad_installed: None,
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
@@ -7776,6 +7913,7 @@ mod tests {
             metar_station_importance_status: None,
             obstacle_had: None,
             obstacle_tile_cache: HashMap::new(),
+            nexrad_installed: None,
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
@@ -8258,6 +8396,77 @@ mod tests {
     }
 
     #[test]
+    fn installed_nexrad_package_drives_overlay_and_tile_lookup() {
+        let manifest = serde_json::json!({
+            "state_id": "nexrad-installed-v1",
+            "observed_at_utc": "2026-05-21T12:00:00Z",
+            "source_grid": {
+                "geo_transform": [-123.0, 0.01, 0.0, 48.0, 0.0, -0.01],
+            },
+            "levels": [{
+                "res": 0,
+                "width": 256,
+                "height": 256,
+                "tile_cols": 1,
+                "tile_rows": 1,
+            }],
+            "tile_size": 256,
+            "tile_path_template": "tiles/res{res}/{x}/{y}.png",
+        });
+        let state_sha256 = canonical_json_sha256_value(&manifest).expect("manifest hash");
+        let package = nexrad_test_zip(
+            &serde_json::to_vec(&manifest).expect("manifest json"),
+            &[("tiles/res0/0/0.png", b"tile-png".as_slice())],
+        );
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
+        install_live_feed_installed_state_in_session(
+            init.handle,
+            &crate::LiveFeedInstalledState {
+                product: "nexrad".to_string(),
+                version: "nexrad-installed-v1".to_string(),
+                state_sha256,
+                payload: crate::LiveFeedInstalledPayload::Opaque { bytes: package },
+            },
+        )
+        .expect("install nexrad");
+
+        let outcome = get_nexrad_overlay_in_session(
+            init.handle,
+            MapViewport {
+                center: LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                },
+                zoom: 8.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            512.0,
+            512.0,
+        )
+        .expect("query nexrad");
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("expected installed nexrad query to complete without page faults");
+        };
+        let query: NexradOverlayQueryResult =
+            serde_json::from_value(result).expect("nexrad result");
+        assert!(matches!(
+            query.status,
+            NexradOverlayStatus::Ready { count } if count > 0
+        ));
+        assert_eq!(query.stats.res, Some(0));
+        assert_eq!(
+            query.stats.observed_at_utc,
+            Some(utc("2026-05-21T12:00:00Z"))
+        );
+        let bytes =
+            nexrad_tile_bytes_in_session(init.handle, &query.tiles[0].src).expect("tile bytes");
+        assert_eq!(bytes, b"tile-png");
+    }
+
+    #[test]
     fn visible_nexrad_without_product_state_records_caution() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
@@ -8296,6 +8505,25 @@ mod tests {
             .iter()
             .any(|box_| box_.id == LIVE_FEED_NEXRAD_STATUS_ID
                 && box_.detail.contains("missing from the live feed index")));
+    }
+
+    fn nexrad_test_zip(manifest: &[u8], members: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write as _;
+
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored)
+            .last_modified_time(zip::DateTime::default());
+        writer
+            .start_file("manifest.json", options)
+            .expect("start manifest");
+        writer.write_all(manifest).expect("write manifest");
+        for (name, bytes) in members {
+            writer.start_file(*name, options).expect("start member");
+            writer.write_all(bytes).expect("write member");
+        }
+        writer.finish().expect("finish zip").into_inner()
     }
 
     #[test]

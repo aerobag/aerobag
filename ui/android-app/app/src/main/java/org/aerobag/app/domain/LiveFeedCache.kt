@@ -1,7 +1,18 @@
 package org.aerobag.app.domain
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.SystemClock
+import android.util.Log
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -28,6 +39,13 @@ data class LiveFeedInstalledSummary(
     val payloadKind: String,
 )
 
+@Serializable
+data class LiveFeedSseEvent(
+    val id: String? = null,
+    val event: String? = null,
+    val data: String,
+)
+
 class LiveFeedCache(
     installedStatesJson: String = "[]",
     private val bridge: NativeBridge = NativeBindings,
@@ -51,6 +69,11 @@ class LiveFeedCache(
                 json.encodeToString(request),
                 bytes,
             ),
+        )
+
+    fun ingestSseEvent(event: LiveFeedSseEvent): Boolean =
+        json.decodeFromString(
+            bridge.liveFeedCacheIngestSseEventJson(handle, json.encodeToString(event)),
         )
 
     fun installedSummary(product: String): LiveFeedInstalledSummary? =
@@ -89,6 +112,166 @@ class LiveFeedCache(
         bridge.destroyLiveFeedCache(handle)
     }
 }
+
+class AndroidLiveFeedClient(
+    private val context: Context,
+    private val cache: LiveFeedCache,
+    private val sourceRootUrl: String,
+    private val policy: LiveFeedFetchPolicy = LiveFeedFetchPolicy.AllowAll,
+    private val json: Json = Json {
+        encodeDefaults = true
+        ignoreUnknownKeys = true
+    },
+) {
+    suspend fun bootstrapAndRun(
+        promote: suspend (LiveFeedInstalledSummary) -> Unit,
+        onChanged: suspend () -> Unit,
+    ) {
+        pumpUntilSettled(promote, onChanged)
+        while (kotlin.coroutines.coroutineContext.isActive) {
+            runCatching {
+                readSseLoop(promote, onChanged)
+            }.onFailure { error ->
+                if (error is CancellationException) throw error
+                Log.w(TAG, "live-feed SSE loop failed: ${error.message}", error)
+                delay(5_000)
+                pumpUntilSettled(promote, onChanged)
+            }
+        }
+    }
+
+    suspend fun pumpUntilSettled(
+        promote: suspend (LiveFeedInstalledSummary) -> Unit,
+        onChanged: suspend () -> Unit,
+    ): Int {
+        var installs = 0
+        while (kotlin.coroutines.coroutineContext.isActive) {
+            val requests = cache.missingRequests()
+            if (requests.isEmpty()) {
+                return installs
+            }
+            var madeProgress = false
+            for (request in requests) {
+                val bytes = withContext(Dispatchers.IO) { fetchBytes(request.url) }
+                val summary = cache.installFetchedBytes(request, bytes)
+                if (summary == null) {
+                    madeProgress = true
+                    continue
+                }
+                val payloadBytes = cache.installedPayloadBytes(summary.product)
+                withContext(Dispatchers.IO) {
+                    LiveFeedCacheStore.persist(context, summary, payloadBytes)
+                }
+                promote(summary)
+                onChanged()
+                installs += 1
+                madeProgress = true
+            }
+            if (!madeProgress) {
+                return installs
+            }
+        }
+        return installs
+    }
+
+    private suspend fun readSseLoop(
+        promote: suspend (LiveFeedInstalledSummary) -> Unit,
+        onChanged: suspend () -> Unit,
+    ) = withContext(Dispatchers.IO) {
+        val url = resolveLiveFeedUrl("/live-feeds/events", sourceRootUrl)
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 5_000
+            readTimeout = 0
+            setRequestProperty("Accept", "text/event-stream")
+        }
+        try {
+            connection.inputStream.bufferedReader().use { reader ->
+                var eventName: String? = null
+                var eventId: String? = null
+                val dataLines = mutableListOf<String>()
+                suspend fun flushEvent() {
+                    if (dataLines.isEmpty()) return
+                    val event = LiveFeedSseEvent(
+                        id = eventId,
+                        event = eventName ?: "message",
+                        data = dataLines.joinToString("\n"),
+                    )
+                    dataLines.clear()
+                    eventName = null
+                    eventId = null
+                    if (!cache.ingestSseEvent(event)) return
+                    pumpUntilSettled(promote, onChanged)
+                }
+                while (kotlin.coroutines.coroutineContext.isActive) {
+                    val line = reader.readLine() ?: break
+                    when {
+                        line.isEmpty() -> flushEvent()
+                        line.startsWith(":") -> Unit
+                        line.startsWith("event:") -> eventName = line.removePrefix("event:").trimStart()
+                        line.startsWith("id:") -> eventId = line.removePrefix("id:").trimStart()
+                        line.startsWith("data:") -> dataLines += line.removePrefix("data:").trimStart()
+                    }
+                }
+                flushEvent()
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun fetchBytes(url: String): ByteArray {
+        val resolved = resolveLiveFeedUrl(url, sourceRootUrl)
+        policy.checkMayFetch(context, resolved)
+        val startMs = SystemClock.elapsedRealtime()
+        val connection = (URL(resolved).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 5_000
+            readTimeout = 20_000
+        }
+        return try {
+            connection.inputStream.buffered().use { it.readBytes() }.also {
+                Log.i(TAG, "fetched live-feed bytes=${it.size} elapsedMs=${SystemClock.elapsedRealtime() - startMs} url=$resolved")
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    companion object {
+        private const val TAG = "AndroidLiveFeeds"
+    }
+}
+
+sealed interface LiveFeedFetchPolicy {
+    fun checkMayFetch(context: Context, url: String)
+
+    data object AllowAll : LiveFeedFetchPolicy {
+        override fun checkMayFetch(context: Context, url: String) = Unit
+    }
+
+    data object UnmeteredOrLocal : LiveFeedFetchPolicy {
+        override fun checkMayFetch(context: Context, url: String) {
+            val host = runCatching { URL(url).host }.getOrNull().orEmpty()
+            if (host == "10.0.2.2" || host == "localhost" || host == "127.0.0.1") {
+                return
+            }
+            val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                ?: return
+            val network = connectivity.activeNetwork ?: error("live-feed fetch blocked: no active network")
+            val capabilities = connectivity.getNetworkCapabilities(network)
+                ?: error("live-feed fetch blocked: network capabilities unavailable")
+            if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)) {
+                error("live-feed fetch blocked on metered network")
+            }
+        }
+    }
+}
+
+fun resolveLiveFeedUrl(url: String, sourceRootUrl: String): String =
+    when {
+        url.startsWith("http://") || url.startsWith("https://") -> url
+        url.startsWith("/") -> "${sourceRootUrl.trimEnd('/')}$url"
+        else -> "${sourceRootUrl.trimEnd('/')}/live-feeds/${url.trimStart('/')}"
+    }
 
 object LiveFeedCacheStore {
     private val json = Json {

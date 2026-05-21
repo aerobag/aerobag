@@ -20,9 +20,11 @@ ordinal: 4000
   - Some CLI-hosted integration tests still live under preprocessor-cli; helpers
     are moved, tests are not fully relocated.
   - Real future streaming adapters like SWIM/NOTAMs are not implemented yet.
-  - Production serving details remain: supervisor, reverse proxy, SSE scaling,
-    health/status reporting.
-  - Android live-feed consumption still trails web.
+  - Production serving details remain: supervisor, reverse proxy, and SSE
+    scaling.
+  - Android now consumes live-feed packages through its cache/SSE path. Remaining
+    Android gaps are product UI-specific, currently winds-aloft display and
+    debug tile labels.
   - NEXRAD PNG delta encoding remains deferred under TASK-121.
 <!-- SECTION:DESCRIPTION:END -->
 
@@ -33,4 +35,3 @@ ordinal: 4000
 - [ ] #3 Compute a target data volume for continuous refresh.
 - [ ] #4 Propose whether current-artifacts, watch-like discovery, or hanging-get invalidations should be the durable contract.
 <!-- AC:END -->
-

@@ -203,7 +203,8 @@ data class UiMapLayerState(
 @Serializable
 data class NexradOverlayQueryResult(
     val status: NexradOverlayStatus,
-    val frames: List<NexradFrame>,
+    val tiles: List<NexradOverlayTile> = emptyList(),
+    val stats: NexradOverlayStats = NexradOverlayStats(),
 )
 
 @Serializable
@@ -222,26 +223,58 @@ sealed class NexradOverlayStatus {
 
     @Serializable
     @SerialName("ready")
-    data class Ready(@SerialName("frame_count") val frameCount: Int) : NexradOverlayStatus()
+    data class Ready(val count: Int) : NexradOverlayStatus()
 }
 
 @Serializable
-data class NexradFrame(
-    val key: String,
-    val filename: String,
+data class NexradOverlayStats(
+    @SerialName("source_tile_count")
+    val sourceTileCount: Int = 0,
+    @SerialName("render_piece_count")
+    val renderPieceCount: Int = 0,
+    @SerialName("split_count")
+    val splitCount: Int = 0,
+    @SerialName("max_affine_error_px")
+    val maxAffineErrorPx: Double = 0.0,
+    @SerialName("level_pixel_span_px")
+    val levelPixelSpanPx: Double = 0.0,
+    @SerialName("max_level_pixel_stretch_px")
+    val maxLevelPixelStretchPx: Double = 0.0,
+    @SerialName("max_stack_depth")
+    val maxStackDepth: Int = 0,
+    val res: Int? = null,
     @SerialName("observed_at_utc")
-    val observedAtUtc: String,
-    val width: Int,
-    val height: Int,
-    val bounds: NexradBounds,
+    val observedAtUtc: String? = null,
 )
 
 @Serializable
-data class NexradBounds(
-    val west: Double,
-    val south: Double,
-    val east: Double,
-    val north: Double,
+data class NexradOverlayTile(
+    val key: String,
+    val src: String,
+    val res: Int,
+    val x: Int,
+    val y: Int,
+    @SerialName("source_x")
+    val sourceX: Int,
+    @SerialName("source_y")
+    val sourceY: Int,
+    @SerialName("source_width")
+    val sourceWidth: Int,
+    @SerialName("source_height")
+    val sourceHeight: Int,
+    @SerialName("image_width")
+    val imageWidth: Int,
+    @SerialName("image_height")
+    val imageHeight: Int,
+    val corners: NexradOverlayTileCorners,
+)
+
+@Serializable
+data class NexradOverlayTileCorners(
+    val nw: ScreenPoint,
+    val ne: ScreenPoint,
+    val se: ScreenPoint,
+    val sw: ScreenPoint,
 )
 
 data class RasterMapUiState(
@@ -1003,6 +1036,33 @@ class NativeUiSession internal constructor(
         bridge.ingestAirspaceLabelTilesInSessionJson(handle, tilesJson)
     }
 
+    fun syncLiveFeeds(fetchResource: (CoreResourceRequest) -> ByteArray): List<String> {
+        val store = navKvStore ?: error("session missing nav_db for live-feed sync")
+        return store.runPagedSessionOperation(
+            operation = { bridge.syncLiveFeedsInSessionJson(handle) },
+            fetchSessionResource = fetchResource,
+            ingestSessionResource = { resource, bytes ->
+                bridge.ingestResourceInSession(handle, resource.id, bytes)
+            },
+        ).invalidations
+    }
+
+    fun ingestLiveFeedSseEvents(
+        events: List<LiveFeedSseEvent>,
+        fetchResource: (CoreResourceRequest) -> ByteArray,
+    ): List<String> {
+        val store = navKvStore ?: error("session missing nav_db for live-feed SSE")
+        return store.runPagedSessionOperation(
+            operation = {
+                bridge.ingestLiveFeedSseEventsInSessionJson(handle, json.encodeToString(events))
+            },
+            fetchSessionResource = fetchResource,
+            ingestSessionResource = { resource, bytes ->
+                bridge.ingestResourceInSession(handle, resource.id, bytes)
+            },
+        ).invalidations
+    }
+
     fun queryMapOverlay(
         viewport: MapViewportState,
         widthPx: Double,
@@ -1078,11 +1138,17 @@ class NativeUiSession internal constructor(
         ).toUi()
     }
 
-    fun queryNexradOverlay(fetchResource: (CoreResourceRequest) -> ByteArray): NexradOverlayQueryResult {
+    fun queryNexradOverlay(
+        viewport: MapViewportState,
+        widthPx: Double,
+        heightPx: Double,
+        fetchResource: (CoreResourceRequest) -> ByteArray,
+    ): NexradOverlayQueryResult {
+        val viewportJson = json.encodeToString(viewport.toWire())
         return json.decodeFromJsonElement(
             navKvStore?.runPagedSessionOperationElement(
                 operation = {
-                    bridge.getNexradOverlayInSessionJson(handle)
+                    bridge.getNexradOverlayInSessionJson(handle, viewportJson, widthPx, heightPx)
                 },
                 fetchSessionResource = fetchResource,
                 ingestSessionResource = { resource, bytes ->
@@ -1092,8 +1158,8 @@ class NativeUiSession internal constructor(
         )
     }
 
-    fun nexradFrameBytes(frameKey: String): ByteArray =
-        bridge.nexradFrameBytesInSession(handle, frameKey)
+    fun nexradTileBytes(src: String): ByteArray =
+        bridge.nexradTileBytesInSession(handle, src)
 
     fun queryRasterTilePlanJson(
         viewport: MapViewportState,

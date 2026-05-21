@@ -356,6 +356,17 @@ internal fun resolvePlaybackTraceUrl(sourcePath: String, devServerBaseUrl: Strin
         else -> "$devServerBaseUrl/$sourcePath"
     }
 
+internal fun resolveLiveFeedSourceRootUrl(
+    context: Context,
+    prefs: android.content.SharedPreferences,
+    devServerBaseUrl: String,
+): String {
+    val configuredRoot = runCatching {
+        resolvePublicationRootUrl(readPackageSourceBaseUrl(context, prefs))
+    }.getOrNull() ?: devServerBaseUrl
+    return configuredRoot.trimEnd('/').removeSuffix("/$PublicationPackageRootPath")
+}
+
 internal fun fetchJsonOrNull(url: String): String? =
     runCatching {
         val connection = URL(url).openConnection() as HttpURLConnection

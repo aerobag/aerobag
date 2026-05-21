@@ -252,6 +252,10 @@ import org.aerobag.app.domain.RouteComponent
 import org.aerobag.app.domain.ScreenPoint
 import org.aerobag.app.domain.SectionalPackages
 import org.aerobag.app.domain.AndroidRuntimeContent
+import org.aerobag.app.domain.AndroidLiveFeedClient
+import org.aerobag.app.domain.LiveFeedCacheStore
+import org.aerobag.app.domain.LiveFeedFetchPolicy
+import org.aerobag.app.domain.LiveFeedInstalledSummary
 import org.aerobag.app.domain.SequencingMode
 import org.aerobag.app.domain.SituationControlInput
 import org.aerobag.app.domain.SituationRingCandidate
@@ -350,7 +354,6 @@ internal const val CurrentArtifactsDiscoveryFilename = "current_artifacts.json"
 internal const val PublicationPackageRootPath = "packages"
 internal const val WebMercatorWorldSize = 256.0
 internal const val WebMercatorHalfWorldM = 20037508.342789244
-internal const val NexradFrameIntervalMs = 900L
 internal const val TerrainAltitudeBucketFt = 200
 internal const val MapLayerLogTag = "MapLayers"
 internal const val TileBudgetLogTag = "AerobagTileBudget"
@@ -403,11 +406,6 @@ internal data class WireRasterTileResource(
 )
 
 internal data class LatLon(val lat: Double, val lon: Double)
-
-internal data class NexradOverlayFrame(
-    val frame: org.aerobag.app.domain.NexradFrame,
-    val bitmap: androidx.compose.ui.graphics.ImageBitmap,
-)
 
 internal data class TerrainOverlayImage(
     val key: String,
@@ -2386,6 +2384,51 @@ internal fun AerobagApp() {
         onDispose { uiSession.destroy() }
     }
     var sessionSnapshot by remember(uiSession) { mutableStateOf(uiSession.snapshot) }
+    val liveFeedCache = remember(uiSession, context) {
+        LiveFeedCacheStore.open(context.applicationContext)
+    }
+    DisposableEffect(liveFeedCache) {
+        onDispose { liveFeedCache.close() }
+    }
+    var liveFeedGeneration by remember(uiSession) { mutableIntStateOf(0) }
+    fun promoteLiveFeed(summary: LiveFeedInstalledSummary) {
+        runCatching {
+            uiSession.installLiveFeedCacheProduct(liveFeedCache, summary.product)
+        }.onSuccess {
+            sessionSnapshot = it
+            liveFeedGeneration += 1
+            Log.i(
+                "AndroidLiveFeeds",
+                "promoted product=${summary.product} version=${summary.version} generation=$liveFeedGeneration",
+            )
+        }.onFailure { error ->
+            Log.w("AndroidLiveFeeds", "failed to promote ${summary.product}/${summary.version}", error)
+        }
+    }
+    LaunchedEffect(uiSession, liveFeedCache, context, prefs) {
+        val appContext = context.applicationContext
+        withContext(Dispatchers.IO) {
+            LiveFeedCacheStore.listInstalled(appContext).map { it.summary }
+        }.forEach { promoteLiveFeed(it) }
+        val sourceRootUrl = resolveLiveFeedSourceRootUrl(
+            appContext,
+            prefs,
+            androidDevServerBaseUrl(),
+        )
+        AndroidLiveFeedClient(
+            context = appContext,
+            cache = liveFeedCache,
+            sourceRootUrl = sourceRootUrl,
+            policy = LiveFeedFetchPolicy.UnmeteredOrLocal,
+        ).bootstrapAndRun(
+            promote = { summary ->
+                withContext(Dispatchers.Main) {
+                    promoteLiveFeed(summary)
+                }
+            },
+            onChanged = {},
+        )
+    }
     DisposableEffect(uiSession, context) {
         val activity = context as? MainActivity
         activity?.onSituationControlInput = { input ->
@@ -2601,6 +2644,7 @@ internal fun AerobagApp() {
                         uptimeLabel = uptimeLabel,
                         uiSession = uiSession,
                         sessionSnapshot = sessionSnapshot,
+                        liveFeedGeneration = liveFeedGeneration,
                         uiTheme = uiTheme,
                         ownship = appUiState.ownship.render,
                         flightDataBanner = appUiState.flightDataBanner,

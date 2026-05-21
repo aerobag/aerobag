@@ -17,6 +17,8 @@ interface NativeBridge {
         payloadBytes: ByteArray,
     ): String
 
+    fun liveFeedCacheIngestSseEventJson(handle: Long, eventJson: String): String
+
     fun liveFeedCacheInstalledSummaryJson(handle: Long, product: String): String
 
     fun liveFeedCacheIngestInstalledPayloadBytes(
@@ -322,6 +324,10 @@ interface NativeBridge {
         resourceBytes: ByteArray,
     ): String
 
+    fun syncLiveFeedsInSessionJson(handle: Long): String
+
+    fun ingestLiveFeedSseEventsInSessionJson(handle: Long, eventsJson: String): String
+
     fun getMapOverlayInSessionJson(
         handle: Long,
         viewportJson: String,
@@ -361,7 +367,12 @@ interface NativeBridge {
         heightPx: Double,
     ): String
 
-    fun getNexradOverlayInSessionJson(handle: Long): String
+    fun getNexradOverlayInSessionJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+    ): String
 
     fun getRasterTilePlanInSessionJson(
         handle: Long,
@@ -382,9 +393,9 @@ interface NativeBridge {
         aircraftAltitudeFt: Double,
     ): ByteArray
 
-    fun nexradFrameBytesInSession(
+    fun nexradTileBytesInSession(
         handle: Long,
-        frameKey: String,
+        src: String,
     ): ByteArray
 
     fun renderTerrainOverlayTilesInSession(
@@ -426,6 +437,8 @@ object NativeBindings : NativeBridge {
         requestJson: String,
         payloadBytes: ByteArray,
     ): String
+
+    external override fun liveFeedCacheIngestSseEventJson(handle: Long, eventJson: String): String
 
     external override fun liveFeedCacheInstalledSummaryJson(handle: Long, product: String): String
 
@@ -732,6 +745,10 @@ object NativeBindings : NativeBridge {
         resourceBytes: ByteArray,
     ): String
 
+    external override fun syncLiveFeedsInSessionJson(handle: Long): String
+
+    external override fun ingestLiveFeedSseEventsInSessionJson(handle: Long, eventsJson: String): String
+
     external override fun getMapOverlayInSessionJson(
         handle: Long,
         viewportJson: String,
@@ -771,7 +788,12 @@ object NativeBindings : NativeBridge {
         heightPx: Double,
     ): String
 
-    external override fun getNexradOverlayInSessionJson(handle: Long): String
+    external override fun getNexradOverlayInSessionJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+    ): String
 
     external override fun getRasterTilePlanInSessionJson(
         handle: Long,
@@ -792,9 +814,9 @@ object NativeBindings : NativeBridge {
         aircraftAltitudeFt: Double,
     ): ByteArray
 
-    external override fun nexradFrameBytesInSession(
+    external override fun nexradTileBytesInSession(
         handle: Long,
-        frameKey: String,
+        src: String,
     ): ByteArray
 
     external override fun renderTerrainOverlayTilesInSession(

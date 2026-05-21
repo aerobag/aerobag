@@ -167,6 +167,17 @@ struct CurrentManifest {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+struct LiveFeedCurrentEvent {
+    product: String,
+    version: String,
+    version_manifest_url: String,
+    #[serde(default)]
+    state_url: Option<String>,
+    #[serde(default)]
+    state_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 struct LiveFeedRecordDelta {
     product: String,
     from_version: String,
@@ -265,6 +276,38 @@ impl LiveFeedCache {
                 .is_some_and(|entry| entry.current == version.version)
         });
         Ok(())
+    }
+
+    pub fn ingest_sse_event(&mut self, event: &crate::LiveFeedSseEvent) -> AppResult<bool> {
+        let event_name = event.event.as_deref().unwrap_or("message");
+        if !matches!(event_name, "live-feed-current" | "message") {
+            return Ok(false);
+        }
+        let payload: LiveFeedCurrentEvent =
+            serde_json::from_str(&event.data).map_err(cache_json_error)?;
+        validate_live_feed_relative_url(&payload.version_manifest_url)?;
+        let state_url = payload.state_url.unwrap_or_default();
+        if !state_url.is_empty() {
+            validate_live_feed_relative_url(&state_url)?;
+        }
+        let state_sha256 = payload.state_sha256.unwrap_or_default();
+        let entry = LiveFeedCacheCurrentEntry {
+            current: payload.version,
+            version_manifest_url: payload.version_manifest_url,
+            state_url,
+            state_sha256,
+        };
+        let changed = self.current.get(&payload.product) != Some(&entry);
+        self.current_loaded = true;
+        self.current.insert(payload.product.clone(), entry);
+        self.versions.retain(|product, version| {
+            product != &payload.product || {
+                self.current
+                    .get(product)
+                    .is_some_and(|entry| entry.current == version.version)
+            }
+        });
+        Ok(changed)
     }
 
     pub fn ingest_version_manifest(

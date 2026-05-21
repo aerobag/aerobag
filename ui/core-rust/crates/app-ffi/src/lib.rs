@@ -920,6 +920,8 @@ static NEXT_OFFLINE_PACKAGES_CONTROLLER_HANDLE: AtomicU32 = AtomicU32::new(1);
 static OFFLINE_PACKAGES_CONTROLLERS: OnceLock<
     Mutex<HashMap<u32, app_core::OfflinePackagesControllerState>>,
 > = OnceLock::new();
+static NEXT_LIVE_FEED_CACHE_HANDLE: AtomicU32 = AtomicU32::new(1);
+static LIVE_FEED_CACHES: OnceLock<Mutex<HashMap<u32, app_core::LiveFeedCache>>> = OnceLock::new();
 
 fn nav_kv_stores() -> &'static Mutex<HashMap<u32, app_core::NavKvStore>> {
     NAV_KV_STORES.get_or_init(|| Mutex::new(HashMap::new()))
@@ -932,6 +934,10 @@ fn nav_db_open_controllers() -> &'static Mutex<HashMap<u32, app_core::NavDbOpenC
 fn offline_packages_controllers(
 ) -> &'static Mutex<HashMap<u32, app_core::OfflinePackagesControllerState>> {
     OFFLINE_PACKAGES_CONTROLLERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn live_feed_caches() -> &'static Mutex<HashMap<u32, app_core::LiveFeedCache>> {
+    LIVE_FEED_CACHES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub fn create_offline_packages_controller_json(
@@ -956,6 +962,142 @@ pub fn create_offline_packages_controller_json(
             },
         );
     Ok(handle as u64)
+}
+
+pub fn create_live_feed_cache_json(installed_states_json: Option<&str>) -> Result<u64, String> {
+    let installed_states = installed_states_json
+        .filter(|json| !json.trim().is_empty())
+        .map(|json| {
+            serde_json::from_str::<Vec<app_core::LiveFeedInstalledState>>(json)
+                .map_err(|err| err.to_string())
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let handle = NEXT_LIVE_FEED_CACHE_HANDLE.fetch_add(1, Ordering::Relaxed);
+    live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?
+        .insert(
+            handle,
+            app_core::LiveFeedCache::with_installed(installed_states),
+        );
+    Ok(handle as u64)
+}
+
+pub fn live_feed_cache_missing_requests_json(handle: u64) -> Result<String, String> {
+    let caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    let cache = caches
+        .get(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    serde_json::to_string(&cache.missing_requests(&app_core::android_live_feed_product_registry()))
+        .map_err(|err| err.to_string())
+}
+
+pub fn live_feed_cache_install_fetched_bytes_json(
+    handle: u64,
+    request_json: &str,
+    bytes: &[u8],
+) -> Result<String, String> {
+    let request: app_core::LiveFeedCacheRequest =
+        serde_json::from_str(request_json).map_err(|err| err.to_string())?;
+    let mut caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    let cache = caches
+        .get_mut(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    let installed = cache
+        .install_fetched_payload(
+            &app_core::android_live_feed_product_registry(),
+            &request,
+            app_core::LiveFeedFetchedPayload::Bytes(bytes.to_vec()),
+        )
+        .map_err(|err| err.to_string())?
+        .map(|state| state.summary());
+    serde_json::to_string(&installed).map_err(|err| err.to_string())
+}
+
+pub fn live_feed_cache_installed_summary_json(
+    handle: u64,
+    product: &str,
+) -> Result<String, String> {
+    let caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    let cache = caches
+        .get(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    serde_json::to_string(&cache.installed_summary(product)).map_err(|err| err.to_string())
+}
+
+pub fn live_feed_cache_ingest_installed_payload_bytes(
+    handle: u64,
+    summary_json: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let summary: app_core::LiveFeedInstalledSummary =
+        serde_json::from_str(summary_json).map_err(|err| err.to_string())?;
+    let mut caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    let cache = caches
+        .get_mut(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    cache
+        .ingest_installed_payload_bytes(
+            &app_core::android_live_feed_product_registry(),
+            &summary,
+            bytes,
+        )
+        .map_err(|err| err.to_string())
+}
+
+pub fn live_feed_cache_installed_payload_bytes(
+    handle: u64,
+    product: &str,
+) -> Result<Vec<u8>, String> {
+    let caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    let cache = caches
+        .get(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    cache
+        .installed_payload_bytes(product)
+        .map_err(|err| err.to_string())
+}
+
+pub fn live_feed_cache_install_product_in_session_json(
+    handle: u64,
+    session_handle: u64,
+    product: &str,
+) -> Result<String, String> {
+    let installed = {
+        let caches = live_feed_caches()
+            .lock()
+            .map_err(|_| "live feed cache store poisoned".to_string())?;
+        caches
+            .get(&(handle as u32))
+            .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?
+            .installed(product)
+            .cloned()
+            .ok_or_else(|| format!("{product} is not installed"))?
+    };
+    let snapshot =
+        app_core::install_live_feed_installed_state_in_session(session_handle as u32, &installed)
+            .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn destroy_live_feed_cache_json(handle: u64) -> Result<(), String> {
+    live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?
+        .remove(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    Ok(())
 }
 
 pub fn destroy_offline_packages_controller_json(handle: u64) -> Result<(), String> {
@@ -1497,6 +1639,122 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_destroyOffline
     handle: i64,
 ) {
     if let Err(message) = destroy_offline_packages_controller_json(handle as u64) {
+        let _ = env.throw_new("java/lang/RuntimeException", message);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_createLiveFeedCache(
+    mut env: JNIEnv,
+    _class: JClass,
+    installed_states_json: JString,
+) -> i64 {
+    match get_java_string(&mut env, installed_states_json)
+        .and_then(|installed_states| create_live_feed_cache_json(Some(&installed_states)))
+    {
+        Ok(handle) => handle as i64,
+        Err(message) => {
+            let _ = env.throw_new("java/lang/RuntimeException", message);
+            0
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheMissingRequestsJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    return_string(
+        &mut env,
+        live_feed_cache_missing_requests_json(handle as u64),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheInstallFetchedBytesJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    request_json: JString,
+    payload_bytes: JByteArray,
+) -> jstring {
+    let result = (|| {
+        let request = get_java_string(&mut env, request_json)?;
+        let bytes = get_java_byte_array(&mut env, payload_bytes)?;
+        live_feed_cache_install_fetched_bytes_json(handle as u64, &request, &bytes)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheInstalledSummaryJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    product: JString,
+) -> jstring {
+    let result = get_java_string(&mut env, product)
+        .and_then(|product| live_feed_cache_installed_summary_json(handle as u64, &product));
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheIngestInstalledPayloadBytes(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    summary_json: JString,
+    payload_bytes: JByteArray,
+) {
+    let result = (|| {
+        let summary = get_java_string(&mut env, summary_json)?;
+        let bytes = get_java_byte_array(&mut env, payload_bytes)?;
+        live_feed_cache_ingest_installed_payload_bytes(handle as u64, &summary, &bytes)
+    })();
+    if let Err(message) = result {
+        let _ = env.throw_new("java/lang/RuntimeException", message);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheInstalledPayloadBytes(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    product: JString,
+) -> jbyteArray {
+    let result = get_java_string(&mut env, product)
+        .and_then(|product| live_feed_cache_installed_payload_bytes(handle as u64, &product));
+    return_byte_array(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheInstallProductInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    session_handle: i64,
+    product: JString,
+) -> jstring {
+    let result = get_java_string(&mut env, product).and_then(|product| {
+        live_feed_cache_install_product_in_session_json(
+            handle as u64,
+            session_handle as u64,
+            &product,
+        )
+    });
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_destroyLiveFeedCache(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) {
+    if let Err(message) = destroy_live_feed_cache_json(handle as u64) {
         let _ = env.throw_new("java/lang/RuntimeException", message);
     }
 }

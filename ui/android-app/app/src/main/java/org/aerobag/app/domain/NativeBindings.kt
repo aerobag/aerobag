@@ -7,6 +7,30 @@ interface NativeBridge {
 
     fun destroyOfflinePackagesController(handle: Long)
 
+    fun createLiveFeedCache(installedStatesJson: String): Long
+
+    fun liveFeedCacheMissingRequestsJson(handle: Long): String
+
+    fun liveFeedCacheInstallFetchedBytesJson(
+        handle: Long,
+        requestJson: String,
+        payloadBytes: ByteArray,
+    ): String
+
+    fun liveFeedCacheInstalledSummaryJson(handle: Long, product: String): String
+
+    fun liveFeedCacheIngestInstalledPayloadBytes(
+        handle: Long,
+        summaryJson: String,
+        payloadBytes: ByteArray,
+    )
+
+    fun liveFeedCacheInstalledPayloadBytes(handle: Long, product: String): ByteArray
+
+    fun liveFeedCacheInstallProductInSessionJson(handle: Long, sessionHandle: Long, product: String): String
+
+    fun destroyLiveFeedCache(handle: Long)
+
     fun initializeOfflinePackagesJson(inputJson: String): String
 
     fun reduceOfflinePackagesJson(inputJson: String): String
@@ -392,6 +416,30 @@ object NativeBindings : NativeBridge {
     external override fun dispatchOfflinePackagesControllerJson(handle: Long, inputJson: String): String
 
     external override fun destroyOfflinePackagesController(handle: Long)
+
+    external override fun createLiveFeedCache(installedStatesJson: String): Long
+
+    external override fun liveFeedCacheMissingRequestsJson(handle: Long): String
+
+    external override fun liveFeedCacheInstallFetchedBytesJson(
+        handle: Long,
+        requestJson: String,
+        payloadBytes: ByteArray,
+    ): String
+
+    external override fun liveFeedCacheInstalledSummaryJson(handle: Long, product: String): String
+
+    external override fun liveFeedCacheIngestInstalledPayloadBytes(
+        handle: Long,
+        summaryJson: String,
+        payloadBytes: ByteArray,
+    )
+
+    external override fun liveFeedCacheInstalledPayloadBytes(handle: Long, product: String): ByteArray
+
+    external override fun liveFeedCacheInstallProductInSessionJson(handle: Long, sessionHandle: Long, product: String): String
+
+    external override fun destroyLiveFeedCache(handle: Long)
 
     external override fun initializeOfflinePackagesJson(inputJson: String): String
 

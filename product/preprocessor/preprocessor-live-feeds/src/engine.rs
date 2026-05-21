@@ -15,6 +15,7 @@ use had_nav_kv::{
     apply_nav_kv_delta, build_nav_kv_delta, nav_kv_canonical_sha256_from_pairs, NavKvDelta,
     NavKvPair, NavKvRoot,
 };
+use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -240,6 +241,8 @@ pub struct LiveFeedVersionManifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous: Option<String>,
     pub state: LivePayloadRef,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_state: Option<LivePayloadRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delta_from_previous: Option<LiveDeltaRef>,
 }
@@ -921,6 +924,21 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             blob_sha256: state_blob_sha256,
             state_sha256: state_sha256.clone(),
         };
+        let install_state_ref = if let Some(state_root) = state_root.as_ref() {
+            let install_kind = match state_ref.kind.as_deref() {
+                Some("nav_kv") => "nav_kv_package",
+                _ => "directory_package",
+            };
+            Some(self.write_install_state_package(
+                &product,
+                &version,
+                state_root,
+                install_kind,
+                &state_sha256,
+            )?)
+        } else {
+            None
+        };
         let version_dir = self.root.join("versions").join(&product);
         fs::create_dir_all(&version_dir)
             .with_context(|| format!("failed to create {}", version_dir.display()))?;
@@ -938,6 +956,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                 version: version.clone(),
                 previous: previous_version,
                 state: state_ref,
+                install_state: install_state_ref,
                 delta_from_previous: delta_ref,
             },
         )?;
@@ -977,6 +996,32 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             delta_path,
             changed_count,
             removed_count,
+        })
+    }
+
+    fn write_install_state_package(
+        &self,
+        product: &str,
+        version: &str,
+        state_root: &Path,
+        kind: &str,
+        state_sha256: &str,
+    ) -> anyhow::Result<LivePayloadRef> {
+        let package_dir = self.root.join("packages").join(product);
+        let package_path = package_dir.join(format!("{version}.zip"));
+        if !package_path.is_file() {
+            let members = zip_members_for_dir(state_root)?;
+            write_deterministic_zip(&package_path, &members)
+                .with_context(|| format!("failed to write {}", package_path.display()))?;
+        }
+        let bytes = fs::read(&package_path)
+            .with_context(|| format!("failed to read {}", package_path.display()))?;
+        Ok(LivePayloadRef {
+            kind: Some(kind.to_string()),
+            url: live_feeds_relative_url(&self.root, &package_path)?,
+            bytes: bytes.len() as u64,
+            blob_sha256: sha256_hex(&bytes),
+            state_sha256: state_sha256.to_string(),
         })
     }
 }
@@ -1358,6 +1403,40 @@ fn hardlink_or_copy_dir_recursive(source_dir: &Path, output_dir: &Path) -> anyho
             copy_file_if_missing(&source, &output)?;
         } else if file_type.is_symlink() {
             copy_symlink_or_target(&source, &output)?;
+        }
+    }
+    Ok(())
+}
+
+fn zip_members_for_dir(source_dir: &Path) -> anyhow::Result<Vec<ZipSource>> {
+    let mut members = Vec::new();
+    collect_zip_members_for_dir(source_dir, source_dir, &mut members)?;
+    Ok(members)
+}
+
+fn collect_zip_members_for_dir(
+    root: &Path,
+    source_dir: &Path,
+    members: &mut Vec<ZipSource>,
+) -> anyhow::Result<()> {
+    let mut entries = fs::read_dir(source_dir)
+        .with_context(|| format!("failed to read {}", source_dir.display()))?
+        .collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let source = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to stat {}", source.display()))?;
+        if file_type.is_dir() {
+            collect_zip_members_for_dir(root, &source, members)?;
+        } else if file_type.is_file() {
+            let member_name = source
+                .strip_prefix(root)
+                .with_context(|| format!("{} is not under {}", source.display(), root.display()))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            members.push(ZipSource::new(member_name, source));
         }
     }
     Ok(())

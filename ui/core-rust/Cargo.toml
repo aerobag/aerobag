@@ -21,3 +21,4 @@ sha2 = "0.10"
 thiserror = "1"
 wasm-bindgen = "0.2"
 png = "0.18"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }

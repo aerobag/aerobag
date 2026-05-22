@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -373,6 +373,12 @@ impl ProductBuilder for CompiledFixtureStateBuilder {
         let state_path = self.fixture_root.join(&manifest.state.url);
         let mut state_value = read_json_value(&state_path)?;
         rewrite_simulated_state_metadata(&mut state_value, &event.source_id, event.observed_at_utc);
+        normalize_simulated_state_schema(
+            &event.product,
+            &mut state_value,
+            &event.source_id,
+            event.observed_at_utc,
+        );
         if state_path.file_name().and_then(|name| name.to_str()) == Some("manifest.json")
             && state_path.parent().is_some_and(Path::is_dir)
         {
@@ -576,6 +582,66 @@ fn rewrite_simulated_state_metadata(
             object.insert(key.to_string(), Value::String(timestamp.clone()));
         }
     }
+}
+
+fn normalize_simulated_state_schema(
+    product: &str,
+    value: &mut Value,
+    version: &str,
+    observed_at_utc: DateTime<Utc>,
+) {
+    if product == "metars" {
+        if let Some(object) = value.as_object_mut() {
+            object.remove("important_station_ids");
+        }
+        return;
+    }
+    if product != "tfrs" {
+        return;
+    }
+    let timestamp = observed_at_utc.to_rfc3339_opts(SecondsFormat::Secs, true);
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    object
+        .entry("schema_version".to_string())
+        .or_insert_with(|| serde_json::json!(1));
+    object.insert(
+        "version_label".to_string(),
+        Value::String(version.to_string()),
+    );
+    object.insert("generated_at_utc".to_string(), Value::String(timestamp));
+
+    let area_count = object
+        .get("areas")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    object
+        .entry("area_group_count".to_string())
+        .or_insert_with(|| serde_json::json!(area_count));
+
+    let mut notam_ids = BTreeSet::new();
+    if let Some(areas) = object.get_mut("areas").and_then(Value::as_array_mut) {
+        for area in areas {
+            let Some(area_object) = area.as_object_mut() else {
+                continue;
+            };
+            if let Some(notam_id) = area_object.get("notam_id").and_then(Value::as_str) {
+                notam_ids.insert(notam_id.to_string());
+            }
+            if !area_object.contains_key("summary_text") {
+                let summary = area_object
+                    .remove("avare_text")
+                    .unwrap_or_else(|| Value::String(String::new()));
+                area_object.insert("summary_text".to_string(), summary);
+            } else {
+                area_object.remove("avare_text");
+            }
+        }
+    }
+    object
+        .entry("notam_count".to_string())
+        .or_insert_with(|| serde_json::json!(notam_ids.len()));
 }
 
 fn write_simulated_json_state(
@@ -809,7 +875,7 @@ fn sorted_read_dir(path: &Path) -> anyhow::Result<Vec<fs::DirEntry>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::LiveFeedStatePayload;
+    use crate::engine::{apply_record_delta, canonical_json_sha256, LiveFeedStatePayload};
     use chrono::TimeZone;
     use serde_json::json;
     use tempfile::tempdir;
@@ -1095,6 +1161,217 @@ mod tests {
         assert_eq!(value["generated_at_utc"], "2026-05-18T20:12:00Z");
         let written = read_json_value(&path)?;
         assert_eq!(written, value);
+        Ok(())
+    }
+
+    #[test]
+    fn compiled_fixture_builder_normalizes_legacy_metar_importance_for_precomputed_delta(
+    ) -> anyhow::Result<()> {
+        let fixture = tempdir()?;
+        let scratch = tempdir()?;
+        let metars_root = fixture.path().join("states").join("metars");
+        fs::create_dir_all(&metars_root)?;
+        let a_metar = json!({
+            "station_id": "KAAA",
+            "latitude": 40.0,
+            "longitude": -100.0,
+            "raw_text": "METAR KAAA 181200Z",
+            "observed_at_utc": "2026-05-18T12:00:00Z"
+        });
+        let b_metar = json!({
+            "station_id": "KBBB",
+            "latitude": 41.0,
+            "longitude": -101.0,
+            "raw_text": "METAR KBBB 181206Z",
+            "observed_at_utc": "2026-05-18T12:06:00Z"
+        });
+        write_json_pretty_file(
+            &metars_root.join("m0.json"),
+            &json!({
+                "schema_version": 1,
+                "version_label": "m0",
+                "important_station_ids": ["KAAA"],
+                "metar_count": 1,
+                "metars_by_station": {
+                    "KAAA": a_metar.clone()
+                }
+            }),
+        )?;
+        write_json_pretty_file(
+            &metars_root.join("m1.json"),
+            &json!({
+                "schema_version": 1,
+                "version_label": "m1",
+                "important_station_ids": ["KBBB"],
+                "metar_count": 2,
+                "metars_by_station": {
+                    "KAAA": a_metar,
+                    "KBBB": b_metar.clone()
+                }
+            }),
+        )?;
+        let versions_root = fixture.path().join("versions").join("metars");
+        fs::create_dir_all(&versions_root)?;
+        write_json_pretty_file(
+            &versions_root.join("m0.json"),
+            &json!({
+                "schema_version": 1,
+                "product": "metars",
+                "version": "m0",
+                "state": {
+                    "url": "states/metars/m0.json",
+                    "bytes": 0,
+                    "blob_sha256": "0".repeat(64),
+                    "state_sha256": "0".repeat(64)
+                }
+            }),
+        )?;
+        write_json_pretty_file(
+            &versions_root.join("m1.json"),
+            &json!({
+                "schema_version": 1,
+                "product": "metars",
+                "version": "m1",
+                "previous": "m0",
+                "state": {
+                    "url": "states/metars/m1.json",
+                    "bytes": 0,
+                    "blob_sha256": "0".repeat(64),
+                    "state_sha256": "0".repeat(64)
+                },
+                "delta_from_previous": {
+                    "from_version": "m0",
+                    "to_version": "m1",
+                    "url": "deltas/metars/m0__m1.json"
+                }
+            }),
+        )?;
+        let delta_root = fixture.path().join("deltas").join("metars");
+        fs::create_dir_all(&delta_root)?;
+        write_json_pretty_file(
+            &delta_root.join("m0__m1.json"),
+            &json!({
+                "schema_version": 1,
+                "product": "metars",
+                "from_version": "m0",
+                "to_version": "m1",
+                "changed": {
+                    "KBBB": b_metar
+                },
+                "removed": []
+            }),
+        )?;
+        let builder = CompiledFixtureStateBuilder::new(fixture.path(), "metars");
+        let first_event = UpstreamEvent {
+            product: "metars".to_string(),
+            source_id: "20260518T201200_000Z_m0".to_string(),
+            previous_source_id: None,
+            observed_at_utc: Utc.with_ymd_and_hms(2026, 5, 18, 20, 12, 0).unwrap(),
+            payload_path: Some(PathBuf::from("versions/metars/m0.json")),
+        };
+        let second_event = UpstreamEvent {
+            product: "metars".to_string(),
+            source_id: "20260518T201206_000Z_m1".to_string(),
+            previous_source_id: Some(first_event.source_id.clone()),
+            observed_at_utc: Utc.with_ymd_and_hms(2026, 5, 18, 20, 12, 6).unwrap(),
+            payload_path: Some(PathBuf::from("versions/metars/m1.json")),
+        };
+
+        let first = builder.build_state(&first_event, scratch.path())?;
+        let second = builder.build_state(&second_event, scratch.path())?;
+        let LiveFeedStatePayload::JsonFile {
+            value: from_value, ..
+        } = first.payload
+        else {
+            panic!("expected json payload");
+        };
+        let LiveFeedStatePayload::JsonFile {
+            value: to_value, ..
+        } = second.payload
+        else {
+            panic!("expected json payload");
+        };
+        assert!(to_value.get("important_station_ids").is_none());
+        let delta = second.precomputed_delta.expect("precomputed METAR delta");
+        let applied = apply_record_delta(
+            "metars_by_station",
+            Some("metar_count"),
+            &from_value,
+            &delta,
+        )?;
+
+        assert_eq!(
+            canonical_json_sha256(&applied)?,
+            canonical_json_sha256(&to_value)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn compiled_fixture_builder_normalizes_legacy_tfr_state_shape() -> anyhow::Result<()> {
+        let fixture = tempdir()?;
+        let scratch = tempdir()?;
+        let state_path = fixture.path().join("states").join("tfrs").join("t0.json");
+        fs::create_dir_all(state_path.parent().unwrap())?;
+        write_json_pretty_file(
+            &state_path,
+            &json!({
+                "area_group_count": 1,
+                "areas": [{
+                    "notam_id": "6/0092",
+                    "area_index": 0,
+                    "schedule_fragments": [],
+                    "upper_limit": { "value_text": "", "unit": "" },
+                    "lower_limit": { "value_text": "", "unit": "" },
+                    "polygon": [
+                        { "lat": 32.68138889, "lon": -115.27944444 },
+                        { "lat": 32.715, "lon": -114.79444444 }
+                    ],
+                    "avare_text": "TFR:: legacy summary text"
+                }]
+            }),
+        )?;
+        let version_path = fixture.path().join("versions").join("tfrs").join("t0.json");
+        fs::create_dir_all(version_path.parent().unwrap())?;
+        write_json_pretty_file(
+            &version_path,
+            &json!({
+                "schema_version": 1,
+                "product": "tfrs",
+                "version": "t0",
+                "state": {
+                    "url": "states/tfrs/t0.json",
+                    "bytes": 0,
+                    "blob_sha256": "0".repeat(64),
+                    "state_sha256": "0".repeat(64)
+                }
+            }),
+        )?;
+        let builder = CompiledFixtureStateBuilder::new(fixture.path(), "tfrs");
+        let event_time = Utc.with_ymd_and_hms(2026, 5, 18, 20, 12, 0).unwrap();
+        let event = UpstreamEvent {
+            product: "tfrs".to_string(),
+            source_id: "20260518T201200_000Z_t0".to_string(),
+            previous_source_id: None,
+            observed_at_utc: event_time,
+            payload_path: Some(PathBuf::from("versions/tfrs/t0.json")),
+        };
+
+        let built = builder.build_state(&event, scratch.path())?;
+        let LiveFeedStatePayload::JsonFile { path, value } = built.payload else {
+            panic!("expected json payload");
+        };
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["version_label"], "20260518T201200_000Z_t0");
+        assert_eq!(value["generated_at_utc"], "2026-05-18T20:12:00Z");
+        assert_eq!(value["notam_count"], 1);
+        assert_eq!(value["area_group_count"], 1);
+        assert_eq!(
+            value["areas"][0]["summary_text"],
+            "TFR:: legacy summary text"
+        );
+        assert!(value["areas"][0].get("avare_text").is_none());
+        assert_eq!(read_json_value(&path)?, value);
         Ok(())
     }
 

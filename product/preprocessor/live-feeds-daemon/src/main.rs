@@ -17,9 +17,10 @@ use chrono::Utc;
 use preprocessor_fetch::{FetchCacheConfig, FetchCacheMode};
 use preprocessor_live_feeds::{
     engine::{
-        default_poll_interval, run_upstream_live_feed_publish_tick, CompiledFixtureCache,
-        FileLiveFeedPublisher, FixedClock, FixtureCacheKeyPart, IntervalLiveFeedSource,
-        LiveFeedInvalidation, LiveFeedPollingTask, LiveFeedSourceAndBuilder, LiveFeedTickResult,
+        default_poll_interval, run_upstream_live_feed_publish_tick,
+        write_live_feeds_current_manifest, CompiledFixtureCache, FileLiveFeedPublisher, FixedClock,
+        FixtureCacheKeyPart, IntervalLiveFeedSource, LiveFeedInvalidation, LiveFeedPollingTask,
+        LiveFeedSourceAndBuilder, LiveFeedTickResult, LiveFeedsCurrentManifest,
         PublishedLiveFeedUpdate, SseBroker, SystemClock,
     },
     products::{
@@ -581,6 +582,7 @@ fn start_simulation_driver(
     let scratch_root = config.scratch_root.join("live-feed-simulation");
     let poll_interval = Duration::from_millis(config.poll_loop_interval_ms.min(1_000));
     let speedup = simulation.speedup;
+    reset_simulation_current_manifest(&live_root)?;
     thread::spawn(move || {
         let publisher = FileLiveFeedPublisher::new(live_root, SystemClock);
         let mut virtual_zero = None;
@@ -646,6 +648,20 @@ fn start_simulation_driver(
         }
     });
     Ok(())
+}
+
+fn reset_simulation_current_manifest(live_root: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(live_root)
+        .with_context(|| format!("failed to create {}", live_root.display()))?;
+    write_live_feeds_current_manifest(
+        live_root,
+        &LiveFeedsCurrentManifest {
+            schema_version: 1,
+            generated_at_utc: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            products: BTreeMap::new(),
+        },
+    )
+    .map(|_| ())
 }
 
 fn production_tasks(fetch: LiveFeedFetchConfig) -> Vec<Box<dyn LiveFeedPollingTask + Send>> {

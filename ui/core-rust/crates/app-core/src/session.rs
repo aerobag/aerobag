@@ -325,6 +325,7 @@ const LIVE_FEED_TFRS_STATUS_ID: &str = "live_feed:tfrs_unavailable";
 const LIVE_FEED_OBSTACLES_STATUS_ID: &str = "live_feed:obstacles_unavailable";
 const CYCLE_SELECTED_CHART_STATUS_ID: &str = "cycle:selected_chart_expired";
 const CYCLE_NAV_DB_STATUS_ID: &str = "cycle:nav_db_expired";
+const VECTOR_INPUTS_STATUS_ID: &str = "map_overlay:vector_inputs_loading";
 const METAR_STATION_IMPORTANCE_STATUS_ID: &str = "map_overlay:metar_station_importance_unavailable";
 const TERRAIN_STATUS_ID: &str = "terrain:warning_unavailable";
 const LIVE_OBSTACLE_HAD_RESOURCE_PREFIX: &str = "live_obstacle_had/";
@@ -2754,7 +2755,6 @@ pub fn insert_nav_kv_page_for_attached_sessions(store_id: u32, page_index: u32, 
             if let Some(store) = session.nav_kv_store.as_mut() {
                 store.insert_page(page_index, page_bytes.to_vec());
             }
-            sync_cycle_product_freshness_status_records(session);
         }
     }
 }
@@ -3306,60 +3306,84 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
             clear_data_status_record(session, LIVE_FEED_OBSTACLES_STATUS_ID);
         }
     }
-    if let Some(metars_value) = session.live_feeds.product_state_manifest("metars").cloned() {
-        match serde_json::from_value::<MetarProductPayload>(metars_value) {
-            Ok(payload) => {
-                session.metar_payload = Some(payload);
-                rebuild_metar_tile_cache(session);
-                clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
-            }
-            Err(err) => {
-                session.metar_tile_cache.clear();
-                session.metar_payload = None;
-                upsert_data_status_record(
-                    session,
-                    live_feed_unavailable_status_record(
-                        "metars",
-                        format!("METAR live feed unavailable: failed to parse state: {err}"),
-                    ),
-                );
-            }
-        }
-    }
-    if let Some(tfrs_value) = session.live_feeds.product_state_manifest("tfrs").cloned() {
-        match serde_json::from_value::<TfrProductPayload>(tfrs_value) {
-            Ok(payload) => {
-                session.tfr_payload = Some(payload);
-                clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
-            }
-            Err(err) => {
-                session.tfr_payload = None;
-                upsert_data_status_record(
-                    session,
-                    live_feed_unavailable_status_record(
-                        "tfrs",
-                        format!("TFR live feed unavailable: failed to parse state: {err}"),
-                    ),
-                );
+    let loaded_metars_version = session.live_feeds.product_loaded_version("metars");
+    let metars_installed = session
+        .metar_payload
+        .as_ref()
+        .and_then(|payload| loaded_metars_version.map(|version| payload.version_label == version))
+        .unwrap_or(false);
+    if !metars_installed {
+        if let Some(metars_value) = session.live_feeds.product_state_manifest("metars").cloned() {
+            match serde_json::from_value::<MetarProductPayload>(metars_value) {
+                Ok(payload) => {
+                    session.metar_payload = Some(payload);
+                    rebuild_metar_tile_cache(session);
+                    clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
+                }
+                Err(err) => {
+                    session.metar_tile_cache.clear();
+                    session.metar_payload = None;
+                    upsert_data_status_record(
+                        session,
+                        live_feed_unavailable_status_record(
+                            "metars",
+                            format!("METAR live feed unavailable: failed to parse state: {err}"),
+                        ),
+                    );
+                }
             }
         }
     }
-    if let Some(obstacles_value) = session
-        .live_feeds
-        .product_state_manifest("obstacles")
-        .cloned()
-    {
-        if let Err(err) = install_live_obstacle_had(session, obstacles_value) {
-            session.obstacle_had = None;
-            session.obstacle_tile_cache.clear();
-            session.map_overlay_config.obstacle_layer = None;
-            upsert_data_status_record(
-                session,
-                live_feed_unavailable_status_record(
-                    "obstacles",
-                    format!("Obstacle live feed unavailable: failed to parse state: {err}"),
-                ),
-            );
+    let loaded_tfrs_version = session.live_feeds.product_loaded_version("tfrs");
+    let tfrs_installed = session
+        .tfr_payload
+        .as_ref()
+        .and_then(|payload| loaded_tfrs_version.map(|version| payload.version_label == version))
+        .unwrap_or(false);
+    if !tfrs_installed {
+        if let Some(tfrs_value) = session.live_feeds.product_state_manifest("tfrs").cloned() {
+            match serde_json::from_value::<TfrProductPayload>(tfrs_value) {
+                Ok(payload) => {
+                    session.tfr_payload = Some(payload);
+                    clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
+                }
+                Err(err) => {
+                    session.tfr_payload = None;
+                    upsert_data_status_record(
+                        session,
+                        live_feed_unavailable_status_record(
+                            "tfrs",
+                            format!("TFR live feed unavailable: failed to parse state: {err}"),
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    let loaded_obstacles_version = session.live_feeds.product_loaded_version("obstacles");
+    let obstacles_installed = session
+        .obstacle_had
+        .as_ref()
+        .and_then(|had| loaded_obstacles_version.map(|version| had.version == version))
+        .unwrap_or(false);
+    if !obstacles_installed {
+        if let Some(obstacles_value) = session
+            .live_feeds
+            .product_state_manifest("obstacles")
+            .cloned()
+        {
+            if let Err(err) = install_live_obstacle_had(session, obstacles_value) {
+                session.obstacle_had = None;
+                session.obstacle_tile_cache.clear();
+                session.map_overlay_config.obstacle_layer = None;
+                upsert_data_status_record(
+                    session,
+                    live_feed_unavailable_status_record(
+                        "obstacles",
+                        format!("Obstacle live feed unavailable: failed to parse state: {err}"),
+                    ),
+                );
+            }
         }
     }
     sync_live_feed_overlay_status_records(session);
@@ -3963,6 +3987,49 @@ fn ensure_vector_inputs_loaded(
     ))
 }
 
+fn queue_nav_kv_pages_for_map_overlay(session: &mut UiSession, pages: Vec<u32>) {
+    for resource in nav_kv_page_resources(pages) {
+        enqueue_session_resource_effect(session, resource, [UiInvalidation::MapOverlay]);
+    }
+}
+
+fn vector_inputs_status_record(
+    value: impl Into<String>,
+    severity: UiStatusSeverity,
+    detail: impl Into<String>,
+) -> DataStatusRecord {
+    DataStatusRecord::new(
+        VECTOR_INPUTS_STATUS_ID,
+        "Map overlay",
+        Some(value.into()),
+        severity,
+        false,
+        detail.into(),
+    )
+}
+
+fn ensure_vector_inputs_loaded_for_map_overlay(
+    session: &mut UiSession,
+    metrics: &MapSurfaceMetrics,
+) -> Vec<DataStatusRecord> {
+    match ensure_vector_inputs_loaded(session, metrics) {
+        Ok(()) => Vec::new(),
+        Err(HadReadError::NeedPages(pages)) => {
+            queue_nav_kv_pages_for_map_overlay(session, pages);
+            vec![vector_inputs_status_record(
+                "Loading vectors",
+                UiStatusSeverity::Info,
+                "Visible vector data is waiting for nav-db pages. The map is rendering the resident overlay data and will redraw when the pages arrive.",
+            )]
+        }
+        Err(HadReadError::Fatal(message)) => vec![vector_inputs_status_record(
+            "Vector overlay failed",
+            UiStatusSeverity::Caution,
+            format!("Vector overlay data could not be loaded: {message}"),
+        )],
+    }
+}
+
 fn vector_input_keys(overlay: &MapOverlayQueryResult) -> Vec<String> {
     overlay
         .needed_vector_tiles
@@ -4176,13 +4243,14 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
             invalidations,
         ));
     }
-    if session.map_layer_state.vectors.visible {
-        if let Err(err) = ensure_vector_inputs_loaded(session, &metrics) {
-            return had_read_error_to_overlay_outcome(err);
-        }
-    }
     let mut supplemental_status_records = Vec::new();
     if session.map_layer_state.vectors.visible {
+        supplemental_status_records.extend(ensure_vector_inputs_loaded_for_map_overlay(
+            session, &metrics,
+        ));
+    }
+    let display_vectors = session.map_layer_state.vectors.visible && session.vector_manifest_loaded;
+    if display_vectors {
         supplemental_status_records.extend(ensure_live_obstacle_inputs_loaded(session, &metrics));
     }
     if metar_importance_required_for_viewport(session, &viewport) {
@@ -4201,6 +4269,10 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
         ) {
             Ok(Some(catalog)) => catalog.regions,
             Ok(None) => Vec::new(),
+            Err(HadReadError::NeedPages(pages)) => {
+                queue_nav_kv_pages_for_map_overlay(session, pages);
+                Vec::new()
+            }
             Err(err) => return had_read_error_to_overlay_outcome(err),
         }
     } else {
@@ -4209,7 +4281,7 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
     let mut overlay = query_map_overlay_for_surface(
         &metrics,
         &session.map_overlay_config,
-        session.map_layer_state.vectors.visible,
+        display_vectors,
         session.map_layer_state.metars.visible,
         &offline_region_records,
         ownship_overlay_context(session).as_ref(),
@@ -4220,10 +4292,14 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
         &session.airspace_feature_cache,
         session.tfr_payload.as_ref(),
     );
-    if session.map_layer_state.vectors.visible {
+    if display_vectors {
         overlay.flight_plan_features =
             match flight_plan_overlay_features(session, &viewport, width_px, height_px) {
                 Ok(features) => features,
+                Err(HadReadError::NeedPages(pages)) => {
+                    queue_nav_kv_pages_for_map_overlay(session, pages);
+                    Vec::new()
+                }
                 Err(err) => return had_read_error_to_overlay_outcome(err),
             };
     }
@@ -7718,6 +7794,75 @@ mod tests {
             );
             assert!(session.metar_station_importance_status.is_none());
         }
+    }
+
+    #[test]
+    fn missing_vector_pages_are_background_effects_for_map_overlay() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let (store, pages) = crate::navkv::nav_kv_store_without_pages_and_pages_for_test(
+            &[("vector/manifest", minimal_vector_manifest_json().as_bytes())],
+            1024,
+        );
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+
+        let outcome = get_map_overlay_in_session(
+            init.handle,
+            MapViewport {
+                center: LatLon { lat: 0.0, lon: 0.0 },
+                zoom: 9.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            240.0,
+            240.0,
+        )
+        .expect("overlay outcome");
+
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("missing vector pages should not block map overlay: {outcome:?}");
+        };
+        let overlay: MapOverlayQueryResult =
+            serde_json::from_value(result).expect("decode overlay result");
+        assert!(overlay.visible_features.is_empty());
+        {
+            let sessions = lock_sessions();
+            let session = sessions.get(&init.handle).expect("session");
+            assert!(session
+                .data_status_records
+                .contains_key(VECTOR_INPUTS_STATUS_ID));
+        }
+
+        let effects = drain_session_resource_effects(init.handle).expect("drain effects");
+        assert!(
+            !effects.is_empty(),
+            "missing vector pages should be queued as background effects"
+        );
+        for effect in effects {
+            assert_eq!(
+                effect.after_success_invalidations,
+                vec![UiInvalidation::MapOverlay]
+            );
+            let page_index = crate::nav_kv_page_index_from_resource_id(&effect.resource.id)
+                .expect("nav kv page resource id");
+            insert_nav_kv_page_for_attached_sessions(1, page_index, &pages[page_index as usize]);
+        }
+
+        let retry_outcome = get_map_overlay_in_session(
+            init.handle,
+            MapViewport {
+                center: LatLon { lat: 0.0, lon: 0.0 },
+                zoom: 9.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            240.0,
+            240.0,
+        )
+        .expect("retry overlay outcome");
+        let HadOperationOutcome::Complete { .. } = retry_outcome else {
+            panic!("loaded vector pages should complete map overlay: {retry_outcome:?}");
+        };
     }
 
     #[test]

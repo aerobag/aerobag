@@ -61,6 +61,7 @@ ARTIFACT_READ_ROOT="${AEROBAG_ARTIFACT_READ_PATH:-$DEFAULT_ARTIFACT_READ_ROOT}"
 LIVE_FEEDS_ROOT="${AEROBAG_LIVE_FEEDS_ROOT:-$REPO_ROOT/../live-feeds}"
 LIVE_FEEDS_LOG="${AEROBAG_LIVE_FEEDS_LOG:-/tmp/aerobag-live-feedsd-$PORT.log}"
 LIVE_FEEDS_MODE="${AEROBAG_LIVE_FEEDS_MODE:-production}"
+LIVE_FEEDS_HOST="${AEROBAG_LIVE_FEEDS_HOST:-127.0.0.1}"
 mkdir -p "$LIVE_FEEDS_ROOT"
 
 list_dev_roots() {
@@ -87,8 +88,8 @@ list_live_feed_port_listener_pids() {
 
 list_live_feed_daemon_pids() {
   ps -eo pid=,args= | awk -v port="$LIVE_FEEDS_PORT" '
-    index($0, "aerobag-live-feedsd") && index($0, "--listen 127.0.0.1:" port) { print $1 }
-    index($0, "cargo run") && index($0, "aerobag-live-feedsd") && index($0, "--listen 127.0.0.1:" port) { print $1 }
+    index($0, "aerobag-live-feedsd") && index($0, "--listen ") && index($0, ":" port) { print $1 }
+    index($0, "cargo run") && index($0, "aerobag-live-feedsd") && index($0, "--listen ") && index($0, ":" port) { print $1 }
   '
 }
 
@@ -166,7 +167,7 @@ fi
 
 LIVE_FEEDS_ARGS=(
   --live-root "$LIVE_FEEDS_ROOT"
-  --listen "127.0.0.1:$LIVE_FEEDS_PORT"
+  --listen "$LIVE_FEEDS_HOST:$LIVE_FEEDS_PORT"
   --event-interval-ms "${AEROBAG_LIVE_FEED_EVENT_INTERVAL_MS:-5000}"
 )
 case "$LIVE_FEEDS_MODE" in

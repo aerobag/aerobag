@@ -76,7 +76,6 @@ import {
   type UiSession,
   type UiSessionSnapshot,
   type UiInvalidation,
-  type LiveFeedSseEvent,
 } from "./domain/appCoreAdapter";
 import {
   applyPinchGesture,
@@ -1822,66 +1821,16 @@ export default function App() {
       return;
     }
     let cancelled = false;
-    void uiSession.syncLiveFeeds().catch((error) => {
-      debugLog("live_feeds.bootstrap.failed", { message: error instanceof Error ? error.message : String(error) });
+    void uiSession.startLiveFeedSubscription().catch((error) => {
+      debugLog("live_feeds.subscription.failed", { message: error instanceof Error ? error.message : String(error) });
     });
-    const events = new EventSource("/live-feeds/events");
-    const queuedEvents: LiveFeedSseEvent[] = [];
-    let flushTimer: number | null = null;
-    let flushInFlight = false;
-    let flushAgain = false;
-    const scheduleFlush = () => {
-      if (flushTimer !== null || cancelled) {
-        return;
-      }
-      flushTimer = window.setTimeout(flushQueuedEvents, 100);
-    };
-    const flushQueuedEvents = () => {
-      flushTimer = null;
-      if (cancelled || queuedEvents.length === 0) {
-        return;
-      }
-      if (flushInFlight) {
-        flushAgain = true;
-        return;
-      }
-      const batch = queuedEvents.splice(0, queuedEvents.length);
-      flushInFlight = true;
-      void uiSession.ingestLiveFeedSseEvents(batch).catch((error) => {
-        debugLog("live_feeds.sse_events.failed", { message: error instanceof Error ? error.message : String(error) });
-      }).finally(() => {
-        flushInFlight = false;
-        if (cancelled) {
-          return;
-        }
-        if (flushAgain || queuedEvents.length > 0) {
-          flushAgain = false;
-          scheduleFlush();
-        }
-      });
-    };
-    events.addEventListener("live-feed-current", (event) => {
-      if (cancelled) {
-        return;
-      }
-      const message = event as MessageEvent<string>;
-      const liveFeedEvent: LiveFeedSseEvent = {
-        id: message.lastEventId || null,
-        event: "live-feed-current",
-        data: message.data,
-      };
-      queuedEvents.push(liveFeedEvent);
-      scheduleFlush();
-    });
-    events.onerror = () => {
-      debugLog("live_feeds.sse.error", {});
-    };
     return () => {
       cancelled = true;
-      if (flushTimer !== null) {
-        window.clearTimeout(flushTimer);
-      }
-      events.close();
+      void uiSession.stopLiveFeedSubscription().catch((error) => {
+        if (!cancelled) {
+          debugLog("live_feeds.subscription_stop.failed", { message: error instanceof Error ? error.message : String(error) });
+        }
+      });
     };
   }, [uiSession]);
 
@@ -2638,6 +2587,17 @@ function MapPage(props: {
   const lastTerrainRenderPlanKeyRef = useRef("");
   const [flightPlanRoute, setFlightPlanRoute] = useState<FlightPlanRouteSegment[]>([]);
   const [mapOverlayViewport, setMapOverlayViewport] = useState<MapViewportState | null>(null);
+  const mapOverlayQueryRequestRef = useRef<{
+    id: number;
+    session: UiSession;
+    viewport: MapViewportState;
+    center: LatLon;
+    width: number;
+    height: number;
+  } | null>(null);
+  const mapOverlayQueryRequestIdRef = useRef(0);
+  const mapOverlayQueryPendingRef = useRef(false);
+  const mapOverlayQueryPumpActiveRef = useRef(false);
   const viewportRef = useRef<MapViewportState>(viewport);
   const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
@@ -2819,6 +2779,95 @@ function MapPage(props: {
     })();
   }
 
+  function pumpMapOverlayQueryQueue() {
+    if (mapOverlayQueryPumpActiveRef.current || activePointersRef.current.size > 0) {
+      return;
+    }
+    mapOverlayQueryPumpActiveRef.current = true;
+    void (async () => {
+      try {
+        while (mapOverlayQueryPendingRef.current && activePointersRef.current.size === 0) {
+          mapOverlayQueryPendingRef.current = false;
+          const request = mapOverlayQueryRequestRef.current;
+          if (!request) {
+            continue;
+          }
+          const startedAt = performance.now();
+          try {
+            debugLog("map.overlay.query.start", {
+              zoom: request.viewport.zoom,
+              center: request.center,
+              width: request.width,
+              height: request.height,
+            });
+            const overlay = await request.session.queryMapOverlay(
+              request.viewport,
+              request.width,
+              request.height,
+            );
+            if (mapOverlayQueryRequestRef.current?.id !== request.id) {
+              debugLog("map.overlay.query.stale_result", {
+                zoom: request.viewport.zoom,
+                elapsed_ms: Math.round(performance.now() - startedAt),
+              });
+              continue;
+            }
+            setMapOverlay(overlay);
+            setMapOverlayViewport(request.viewport);
+            debugLog("map.overlay.query.done", {
+              zoom: request.viewport.zoom,
+              center: request.center,
+              elapsed_ms: Math.round(performance.now() - startedAt),
+              visible_features: overlay.visible_features.length,
+              visible_metars: overlay.visible_metars.length,
+              visible_pireps: overlay.visible_pireps.length,
+              airspace_paths: overlay.airspace_paths.length,
+              airspace_labels: overlay.airspace_labels.length,
+            });
+          } catch (error) {
+            if (mapOverlayQueryRequestRef.current?.id !== request.id) {
+              debugLog("map.overlay.query.stale_error", {
+                zoom: request.viewport.zoom,
+                elapsed_ms: Math.round(performance.now() - startedAt),
+                error: errorMessage(error),
+              });
+              continue;
+            }
+            if (isInvalidUiSessionHandleError(error)) {
+              debugLog("map.overlay.query.stale_session", {
+                zoom: request.viewport.zoom,
+                elapsed_ms: Math.round(performance.now() - startedAt),
+                error: errorMessage(error),
+              });
+              continue;
+            }
+            debugLog("map.overlay.query.error", {
+              zoom: request.viewport.zoom,
+              elapsed_ms: Math.round(performance.now() - startedAt),
+              error: errorMessage(error),
+            });
+            setMapOverlay({
+              visible_features: [],
+              visible_metars: [],
+              visible_pireps: [],
+              airspace_paths: [],
+              tfr_paths: [],
+              airspace_labels: [],
+              offline_regions: [],
+            });
+            setMapOverlayViewport(null);
+            console.error(error);
+          }
+        }
+      } finally {
+        mapOverlayQueryPumpActiveRef.current = false;
+        if (mapOverlayQueryPendingRef.current && activePointersRef.current.size === 0) {
+          pumpMapOverlayQueryQueue();
+        }
+      }
+    })();
+  }
+
   useEffect(() => {
     if (activePointersRef.current.size > 0) {
       return;
@@ -2879,6 +2928,19 @@ function MapPage(props: {
   const [failedRasterTileKeys, setFailedRasterTileKeys] = useState<Set<string>>(() => new Set());
   const loadedRasterTileKeysRef = useRef<Set<string>>(new Set());
   const completedPageTilePaintTimingIdsRef = useRef<Set<number>>(new Set());
+  const rasterTilePlanRequestRef = useRef<{
+    id: number;
+    session: UiSession;
+    viewport: MapViewportState;
+    width: number;
+    height: number;
+    devicePixelRatio: number;
+    selectedMapId: string;
+    pageTilePaintTiming: WebPageTilePaintTiming | null;
+  } | null>(null);
+  const rasterTilePlanRequestIdRef = useRef(0);
+  const rasterTilePlanPendingRef = useRef(false);
+  const rasterTilePlanPumpActiveRef = useRef(false);
   const rasterTileKey = useCallback((tile: RasterRenderTile) =>
     `${tile.chartFamily}-${tile.packageName ?? tile.mapViewId}-${tile.drawKey}`,
   []);
@@ -2898,57 +2960,124 @@ function MapPage(props: {
       onPageTilePaintTimingComplete(timing.id);
     });
   }, [onPageTilePaintTimingComplete, tiles.length]);
+
+  function pumpRasterTilePlanQueue() {
+    if (rasterTilePlanPumpActiveRef.current) {
+      return;
+    }
+    rasterTilePlanPumpActiveRef.current = true;
+    void (async () => {
+      try {
+        while (rasterTilePlanPendingRef.current) {
+          rasterTilePlanPendingRef.current = false;
+          const request = rasterTilePlanRequestRef.current;
+          if (!request) {
+            continue;
+          }
+          const startedAt = performance.now();
+          try {
+            debugLog("map.raster.plan.start", {
+              id: request.id,
+              selected_map_id: request.selectedMapId,
+              zoom: request.viewport.zoom,
+              width: request.width,
+              height: request.height,
+              device_pixel_ratio: request.devicePixelRatio,
+            });
+            const plan = await request.session.queryRasterTilePlan(
+              request.viewport,
+              request.width,
+              request.height,
+              request.devicePixelRatio,
+            );
+            if (rasterTilePlanRequestRef.current?.id !== request.id) {
+              debugLog("map.raster.plan.stale_result", {
+                id: request.id,
+                elapsed_ms: Math.round(performance.now() - startedAt),
+                tiles: plan.tiles.length,
+              });
+              continue;
+            }
+            request.pageTilePaintTiming && debugLog("web.page-to-map.plan", {
+              id: request.pageTilePaintTiming.id,
+              from_page: request.pageTilePaintTiming.fromPage,
+              elapsed_ms: Math.round(performance.now() - request.pageTilePaintTiming.startedAt),
+              tiles: plan.tiles.length,
+              device_pixel_ratio: request.devicePixelRatio,
+            });
+            debugLog("map.raster.plan.done", {
+              id: request.id,
+              elapsed_ms: Math.round(performance.now() - startedAt),
+              tiles: plan.tiles.length,
+            });
+            const resolveStartedAt = performance.now();
+            const nextTiles = await Promise.all(plan.tiles.map((tile) => renderTileFromCore(tile, 1 / request.devicePixelRatio)));
+            if (rasterTilePlanRequestRef.current?.id !== request.id) {
+              debugLog("map.raster.urls.stale_result", {
+                id: request.id,
+                elapsed_ms: Math.round(performance.now() - resolveStartedAt),
+                tiles: nextTiles.length,
+              });
+              continue;
+            }
+            debugLog("map.raster.urls.done", {
+              id: request.id,
+              elapsed_ms: Math.round(performance.now() - resolveStartedAt),
+              tiles: nextTiles.length,
+            });
+            loadedRasterTileKeysRef.current = new Set();
+            setFailedRasterTileKeys(new Set());
+            setTiles(nextTiles);
+            setRasterTileViewport(request.viewport);
+          } catch (error) {
+            if (rasterTilePlanRequestRef.current?.id !== request.id) {
+              debugLog("map.raster.plan.stale_error", {
+                id: request.id,
+                elapsed_ms: Math.round(performance.now() - startedAt),
+                error: errorMessage(error),
+              });
+              continue;
+            }
+            debugLog("map.raster.plan.error", {
+              id: request.id,
+              elapsed_ms: Math.round(performance.now() - startedAt),
+              error: errorMessage(error),
+            });
+            console.error("failed to query raster tile plan", error);
+            setTiles([]);
+            setRasterTileViewport(null);
+          }
+        }
+      } finally {
+        rasterTilePlanPumpActiveRef.current = false;
+        if (rasterTilePlanPendingRef.current) {
+          pumpRasterTilePlanQueue();
+        }
+      }
+    })();
+  }
+
   useEffect(() => {
-    let cancelled = false;
     if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+      rasterTilePlanRequestRef.current = null;
+      rasterTilePlanPendingRef.current = false;
       setTiles([]);
       setRasterTileViewport(null);
       return;
     }
     const devicePixelRatio = window.devicePixelRatio || 1;
-    uiSession.queryRasterTilePlan(
+    rasterTilePlanRequestRef.current = {
+      id: ++rasterTilePlanRequestIdRef.current,
+      session: uiSession,
       viewport,
-      surfaceSize.width,
-      surfaceSize.height,
+      width: surfaceSize.width,
+      height: surfaceSize.height,
       devicePixelRatio,
-    )
-      .then((plan) => {
-        if (!cancelled) {
-          pageTilePaintTiming && debugLog("web.page-to-map.plan", {
-            id: pageTilePaintTiming.id,
-            from_page: pageTilePaintTiming.fromPage,
-            elapsed_ms: Math.round(performance.now() - pageTilePaintTiming.startedAt),
-            tiles: plan.tiles.length,
-            device_pixel_ratio: devicePixelRatio,
-          });
-          loadedRasterTileKeysRef.current = new Set();
-          setFailedRasterTileKeys(new Set());
-          Promise.all(plan.tiles.map((tile) => renderTileFromCore(tile, 1 / devicePixelRatio)))
-            .then((nextTiles) => {
-              if (!cancelled) {
-                setTiles(nextTiles);
-                setRasterTileViewport(viewport);
-              }
-            })
-            .catch((error) => {
-              if (!cancelled) {
-                console.error("failed to resolve raster tile urls", error);
-                setTiles([]);
-                setRasterTileViewport(null);
-              }
-            });
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          console.error("failed to query raster tile plan", error);
-          setTiles([]);
-          setRasterTileViewport(null);
-        }
-      });
-    return () => {
-      cancelled = true;
+      selectedMapId: selectedMap.selected_map_id,
+      pageTilePaintTiming,
     };
+    rasterTilePlanPendingRef.current = true;
+    pumpRasterTilePlanQueue();
   }, [pageTilePaintTiming, selectedMap.selected_map_id, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
   useEffect(() => {
     if (page !== "map" || !pageTilePaintTiming || tiles.length === 0) {
@@ -3288,9 +3417,13 @@ function MapPage(props: {
 
   useEffect(() => {
     if (!mapIsVisible) {
+      mapOverlayQueryRequestRef.current = null;
+      mapOverlayQueryPendingRef.current = false;
       return;
     }
     if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+      mapOverlayQueryRequestRef.current = null;
+      mapOverlayQueryPendingRef.current = false;
       setMapOverlay({
         visible_features: [],
         visible_metars: [],
@@ -3302,84 +3435,23 @@ function MapPage(props: {
       });
       return;
     }
-    const session = uiSession;
-    const controller = new AbortController();
-    let cancelled = false;
-
-    async function syncMapOverlay() {
-      let overlay: MapOverlayQueryResult;
-      const startedAt = performance.now();
-      function publishOverlay(nextOverlay: MapOverlayQueryResult) {
-        if (cancelled) {
-          return;
-        }
-        setMapOverlay(nextOverlay);
-        setMapOverlayViewport(viewport);
-      }
-      try {
-        debugLog("map.overlay.query.start", {
-          zoom: viewport.zoom,
-          center,
-          width: surfaceSize.width,
-          height: surfaceSize.height,
-        });
-        overlay = await session.queryMapOverlay(viewport, surfaceSize.width, surfaceSize.height);
-        debugLog("map.overlay.query.done", {
-          zoom: viewport.zoom,
-          center,
-          elapsed_ms: Math.round(performance.now() - startedAt),
-          visible_features: overlay.visible_features.length,
-          visible_metars: overlay.visible_metars.length,
-          visible_pireps: overlay.visible_pireps.length,
-          airspace_paths: overlay.airspace_paths.length,
-          airspace_labels: overlay.airspace_labels.length,
-        });
-        publishOverlay(overlay);
-      } catch (error) {
-        if (isInvalidUiSessionHandleError(error)) {
-          debugLog("map.overlay.query.stale_session", {
-            zoom: viewport.zoom,
-            elapsed_ms: Math.round(performance.now() - startedAt),
-            error: errorMessage(error),
-          });
-          return;
-        }
-        debugLog("map.overlay.query.error", {
-          zoom: viewport.zoom,
-          elapsed_ms: Math.round(performance.now() - startedAt),
-          error: errorMessage(error),
-        });
-        throw error;
-      }
-    }
-
-    syncMapOverlay().catch((error: unknown) => {
-      if ((error as { name?: string } | null)?.name === "AbortError") {
-        return;
-      }
-      debugLog("map.overlay.sync.error", {
-        zoom: viewport.zoom,
-        error: errorMessage(error),
-      });
-      if (!cancelled) {
-        setMapOverlay({
-          visible_features: [],
-          visible_metars: [],
-          visible_pireps: [],
-          airspace_paths: [],
-          tfr_paths: [],
-          airspace_labels: [],
-          offline_regions: [],
-        });
-        setMapOverlayViewport(null);
-      }
-      console.error(error);
-    });
-
-    return () => {
-      cancelled = true;
-      controller.abort();
+    mapOverlayQueryRequestRef.current = {
+      id: ++mapOverlayQueryRequestIdRef.current,
+      session: uiSession,
+      viewport,
+      center,
+      width: surfaceSize.width,
+      height: surfaceSize.height,
     };
+    mapOverlayQueryPendingRef.current = true;
+    if (activePointersRef.current.size > 0) {
+      debugLog("map.overlay.query.deferred_for_gesture", {
+        zoom: viewport.zoom,
+        center,
+      });
+      return;
+    }
+    pumpMapOverlayQueryQueue();
   }, [
     mapLayerState.metars.visible,
     mapLayerState.offline_regions.visible,
@@ -3672,6 +3744,10 @@ function MapPage(props: {
     const clickCandidate = clickCandidateRef.current;
     activePointersRef.current.delete(event.pointerId);
     gestureActiveRef.current = activePointersRef.current.size > 0;
+    if (activePointersRef.current.size === 0) {
+      pumpRasterTilePlanQueue();
+      pumpMapOverlayQueryQueue();
+    }
     pinchRef.current = null;
     const remaining = Array.from(activePointersRef.current.entries());
     if (remaining.length === 1) {
@@ -3714,6 +3790,9 @@ function MapPage(props: {
       clickCandidateRef.current = null;
     }
     gestureActiveRef.current = activePointersRef.current.size > 0;
+    if (activePointersRef.current.size === 0) {
+      pumpMapOverlayQueryQueue();
+    }
     pinchRef.current = null;
     const remaining = Array.from(activePointersRef.current.entries());
     dragRef.current = remaining.length === 1 ? { id: remaining[0][0], last: remaining[0][1] } : null;

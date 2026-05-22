@@ -22,6 +22,15 @@ export type UiInvalidation =
 export type UiInvalidationListener = (invalidations: UiInvalidation[]) => void;
 export type ResourceFailureReporter = (resourceId: string, message: string) => Promise<void> | void;
 
+type PendingNavKvPageInsert = {
+  resourceId: string;
+  pageIndex: number;
+  bytes: Uint8Array;
+  priority: number;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+};
+
 type NavKvWasmModule = PublicationResolverWasmModule & {
   attach_nav_kv_store_to_session(handle: number, sessionHandle: number): void;
   core_had_operation(handle: number, operationJson: string): string;
@@ -56,6 +65,10 @@ async function ensureWasmReady(): Promise<NavKvWasmModule> {
 
 export class NavKvStore {
   private readonly inFlightPageFetches = new Map<number, Promise<void>>();
+  private readonly pendingPageInserts = new Map<number, PendingNavKvPageInsert>();
+  private readonly pageRequestPriorities = new Map<number, number>();
+  private pageInsertPumpActive = false;
+  private pageRequestSequence = 0;
 
   private constructor(
     private readonly wasm: NavKvWasmModule,
@@ -282,6 +295,12 @@ export class NavKvStore {
   }
 
   private ensureNavKvPage(pageIndex: number): Promise<void> {
+    const priority = ++this.pageRequestSequence;
+    this.pageRequestPriorities.set(pageIndex, priority);
+    const pendingInsert = this.pendingPageInserts.get(pageIndex);
+    if (pendingInsert) {
+      pendingInsert.priority = priority;
+    }
     const cached = this.inFlightPageFetches.get(pageIndex);
     if (cached) {
       return cached;
@@ -295,15 +314,85 @@ export class NavKvStore {
         if (!response.ok) {
           throw new Error(`failed to fetch nav_kv page ${pageIndex}: ${response.status}`);
         }
-        const bytes = new Uint8Array(
-          await debugTiming("nav_kv.page.array_buffer", () => response.arrayBuffer(), { page: pageIndex }),
-        );
-        await this.wasm.nav_kv_insert_resource(this.handle, resourceId, bytes);
+        const buffer = await debugTiming("nav_kv.page.array_buffer", () => response.arrayBuffer(), { page: pageIndex });
+        const bytes = debugTiming("nav_kv.page.uint8_array", () => new Uint8Array(buffer), {
+          page: pageIndex,
+          byte_length: buffer.byteLength,
+        });
+        await this.insertNavKvPage(resourceId, pageIndex, bytes, priority);
       });
     this.inFlightPageFetches.set(pageIndex, fetched);
     return fetched;
   }
 
+  private insertNavKvPage(resourceId: string, pageIndex: number, bytes: Uint8Array, priority: number): Promise<void> {
+    const updatedPriority = Math.max(priority, this.pageRequestPriorities.get(pageIndex) ?? priority);
+    return new Promise<void>((resolve, reject) => {
+      this.pendingPageInserts.set(pageIndex, {
+        resourceId,
+        pageIndex,
+        bytes,
+        priority: updatedPriority,
+        resolve,
+        reject,
+      });
+      this.pumpPageInsertQueue();
+    });
+  }
+
+  private pumpPageInsertQueue(): void {
+    if (this.pageInsertPumpActive) {
+      return;
+    }
+    this.pageInsertPumpActive = true;
+    void this.runPageInsertQueue();
+  }
+
+  private async runPageInsertQueue(): Promise<void> {
+    try {
+      for (;;) {
+        const entry = this.takeHighestPriorityPageInsert();
+        if (!entry) {
+          return;
+        }
+        await yieldToWorkerEventLoop();
+        try {
+          await debugTiming("nav_kv.page.wasm_insert", () =>
+            this.wasm.nav_kv_insert_resource(this.handle, entry.resourceId, entry.bytes), {
+              page: entry.pageIndex,
+              byte_length: entry.bytes.byteLength,
+            });
+          this.pageRequestPriorities.delete(entry.pageIndex);
+          entry.resolve();
+        } catch (error) {
+          entry.reject(error);
+        }
+      }
+    } finally {
+      this.pageInsertPumpActive = false;
+      if (this.pendingPageInserts.size > 0) {
+        this.pumpPageInsertQueue();
+      }
+    }
+  }
+
+  private takeHighestPriorityPageInsert(): PendingNavKvPageInsert | null {
+    let selected: PendingNavKvPageInsert | null = null;
+    for (const entry of this.pendingPageInserts.values()) {
+      if (!selected || entry.priority > selected.priority) {
+        selected = entry;
+      }
+    }
+    if (selected) {
+      this.pendingPageInserts.delete(selected.pageIndex);
+    }
+    return selected;
+  }
+
+}
+
+function yieldToWorkerEventLoop(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 export class PublicationResolver {
@@ -436,8 +525,18 @@ async function fetchAndIngestResource(
     await reportResourceFailure?.(resource.id, message);
     throw new Error(message);
   }
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  await ingestResource(resource.id, bytes);
+  const buffer = await debugTiming(`${timingLabel}.array_buffer`, () => response.arrayBuffer(), {
+    id: resource.id,
+    url,
+  });
+  const bytes = debugTiming(`${timingLabel}.uint8_array`, () => new Uint8Array(buffer), {
+    id: resource.id,
+    byte_length: buffer.byteLength,
+  });
+  await debugTiming(`${timingLabel}.ingest`, () => ingestResource(resource.id, bytes), {
+    id: resource.id,
+    byte_length: bytes.byteLength,
+  });
 }
 
 function publicResourceUrl(resource: CoreResourceRequest): string {

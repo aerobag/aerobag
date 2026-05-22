@@ -68,6 +68,48 @@ function installPaintObservers() {
   }
 }
 
+function installLongTaskObserver() {
+  if (typeof PerformanceObserver === "undefined") {
+    return;
+  }
+  if (!PerformanceObserver.supportedEntryTypes?.includes("longtask")) {
+    return;
+  }
+  try {
+    const observer = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        debugLog("PERF_LONG_TASK", {
+          name: entry.name,
+          start_time_ms: Math.round(entry.startTime),
+          duration_ms: Math.round(entry.duration),
+        });
+      }
+    });
+    observer.observe({ type: "longtask", buffered: true });
+  } catch {
+    // Long task entries are not available in all browsers.
+  }
+}
+
+function installEventLoopLagMonitor() {
+  if (typeof window === "undefined") {
+    return;
+  }
+  let expectedAt = performance.now() + 500;
+  window.setInterval(() => {
+    const now = performance.now();
+    const lagMs = now - expectedAt;
+    expectedAt = now + 500;
+    if (lagMs < 250) {
+      return;
+    }
+    debugLog("PERF_EVENT_LOOP_LAG", {
+      lag_ms: Math.round(lagMs),
+      now_ms: Math.round(now),
+    });
+  }, 500);
+}
+
 function logStartupResources() {
   window.setTimeout(() => {
     const resources = performance
@@ -100,6 +142,8 @@ function logStartupResources() {
 
 logStartupTiming();
 installPaintObservers();
+installLongTaskObserver();
+installEventLoopLagMonitor();
 logStartupResources();
 
 if (typeof window !== "undefined") {

@@ -544,6 +544,8 @@ export interface UiSession {
   renderTerrainOverlayTileByKey(tileKey: string, aircraftAltitudeFt: number): Promise<Uint8Array>;
   projectFlightPlanRoute(): Promise<FlightPlanRouteSegment[]>;
   syncLiveFeeds(): Promise<void>;
+  startLiveFeedSubscription(): Promise<void>;
+  stopLiveFeedSubscription(): Promise<void>;
   ingestLiveFeedSseEvent(event: LiveFeedSseEvent): Promise<void>;
   ingestLiveFeedSseEvents(events: LiveFeedSseEvent[]): Promise<void>;
   restoreChartPageState(recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<UiSessionSnapshot>;
@@ -556,7 +558,7 @@ export type LiveFeedSseEvent = {
   data: string;
 };
 
-export type { UiInvalidation };
+export type { UiInvalidation, UiInvalidationListener };
 
 export interface AppCoreAdapter {
   prewarm(): Promise<void>;
@@ -589,7 +591,7 @@ export interface AppCoreAdapter {
   describePlateProcedureLoads(plan: FlightPlan, plateId: string): Promise<ProcedureLoadOption[]>;
 }
 
-export type AdapterBackendKind = "wasm";
+export type AdapterBackendKind = "wasm" | "wasm-worker";
 
 export type LoadedAdapter = {
   adapter: AppCoreAdapter;
@@ -796,6 +798,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     ) => runSessionOperationForHandle<T>(handle, operation, ingestSessionResource);
     const parseSessionSnapshot = async (json: Promise<string> | string) =>
       JSON.parse(await json) as UiSessionSnapshot;
+    let liveFeedSubscription: LiveFeedSubscription | null = null;
     reportSessionResourceFailure = async (resourceId, message) => {
       snapshot = await parseSessionSnapshot(
         this.module.report_session_resource_failure_in_session(handle, resourceId, message),
@@ -1291,6 +1294,32 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           ),
         );
       },
+      startLiveFeedSubscription: async () => {
+        await withSessionRetry(async () =>
+          runSessionOperation<unknown>(
+            () => this.module.sync_live_feeds_in_session(handle),
+            (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
+          ),
+        );
+        if (liveFeedSubscription) {
+          return;
+        }
+        liveFeedSubscription = createLiveFeedSubscription(
+          async (events) => {
+            await withSessionRetry(async () =>
+              runSessionOperation<unknown>(
+                () => this.module.ingest_live_feed_sse_events_in_session(handle, JSON.stringify(events)),
+                (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
+              ),
+            );
+          },
+          (tag, data) => debugLog(tag, data),
+        );
+      },
+      stopLiveFeedSubscription: async () => {
+        liveFeedSubscription?.close();
+        liveFeedSubscription = null;
+      },
       ingestLiveFeedSseEvent: async (event) => {
         await withSessionRetry(async () =>
           runSessionOperation<unknown>(
@@ -1321,6 +1350,8 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return snapshot;
       },
       destroy: async () => {
+        liveFeedSubscription?.close();
+        liveFeedSubscription = null;
         this.module.destroy_session(handle);
       },
     };
@@ -1420,12 +1451,45 @@ export async function loadBestAvailableAdapter(
   importer: () => Promise<unknown> = defaultWasmImporter,
 ): Promise<LoadedAdapter> {
   if (importer === defaultWasmImporter) {
-    defaultAdapterLoadPromise ??= loadBestAvailableAdapterUncached(importer).catch((error) => {
+    defaultAdapterLoadPromise ??= loadDefaultAdapter().catch((error) => {
       defaultAdapterLoadPromise = null;
       throw error;
     });
     return defaultAdapterLoadPromise;
   }
+  return loadBestAvailableAdapterUncached(importer);
+}
+
+async function loadDefaultAdapter(): Promise<LoadedAdapter> {
+  if (shouldUseWorkerAppCore()) {
+    try {
+      const { loadWorkerBackedAdapter } = await import("./workerAppCoreAdapter");
+      return await loadWorkerBackedAdapter();
+    } catch (error) {
+      debugLog("app_core.worker.load.failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return loadWasmAdapterOnThisThread();
+}
+
+function shouldUseWorkerAppCore(): boolean {
+  if (typeof Worker === "undefined" || typeof URL === "undefined") {
+    return false;
+  }
+  if (typeof window !== "undefined") {
+    const setting = new URLSearchParams(window.location.search).get("appCoreWorker");
+    if (setting === "0" || setting === "false") {
+      return false;
+    }
+  }
+  return true;
+}
+
+export async function loadWasmAdapterOnThisThread(
+  importer: () => Promise<unknown> = defaultWasmImporter,
+): Promise<LoadedAdapter> {
   return loadBestAvailableAdapterUncached(importer);
 }
 
@@ -1539,5 +1603,79 @@ function coreViewportForMap(viewport: MapViewportState) {
     zoom: viewport.zoom,
     rotation_deg: 0,
     pitch_deg: 0,
+  };
+}
+
+type LiveFeedSubscription = {
+  close(): void;
+};
+
+function createLiveFeedSubscription(
+  ingestEvents: (events: LiveFeedSseEvent[]) => Promise<void>,
+  log: (tag: string, data?: unknown) => void,
+): LiveFeedSubscription {
+  if (typeof EventSource === "undefined") {
+    throw new Error("EventSource is unavailable in this app-core runtime");
+  }
+  const events = new EventSource("/live-feeds/events");
+  const queuedEvents: LiveFeedSseEvent[] = [];
+  let closed = false;
+  let flushTimer: number | null = null;
+  let flushInFlight = false;
+  let flushAgain = false;
+  const scheduleFlush = () => {
+    if (flushTimer !== null || closed) {
+      return;
+    }
+    flushTimer = globalThis.setTimeout(flushQueuedEvents, 100) as unknown as number;
+  };
+  const flushQueuedEvents = () => {
+    flushTimer = null;
+    if (closed || queuedEvents.length === 0) {
+      return;
+    }
+    if (flushInFlight) {
+      flushAgain = true;
+      return;
+    }
+    const batch = queuedEvents.splice(0, queuedEvents.length);
+    flushInFlight = true;
+    void ingestEvents(batch).catch((error: unknown) => {
+      log("live_feeds.sse_events.failed", { message: error instanceof Error ? error.message : String(error) });
+    }).finally(() => {
+      flushInFlight = false;
+      if (closed) {
+        return;
+      }
+      if (flushAgain || queuedEvents.length > 0) {
+        flushAgain = false;
+        scheduleFlush();
+      }
+    });
+  };
+  events.addEventListener("live-feed-current", (event) => {
+    if (closed) {
+      return;
+    }
+    const message = event as MessageEvent<string>;
+    queuedEvents.push({
+      id: message.lastEventId || null,
+      event: "live-feed-current",
+      data: message.data,
+    });
+    scheduleFlush();
+  });
+  events.onerror = () => {
+    log("live_feeds.sse.error", {});
+  };
+  return {
+    close: () => {
+      closed = true;
+      if (flushTimer !== null) {
+        globalThis.clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      events.close();
+    },
   };
 }

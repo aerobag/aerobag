@@ -12,11 +12,17 @@ const queue: DebugLogRecord[] = [];
 let flushScheduled = false;
 
 function scheduleFlush() {
-  if (flushScheduled || typeof window === "undefined") {
+  if (
+    flushScheduled
+    || typeof fetch !== "function"
+    || typeof location === "undefined"
+    || !/^https?:$/.test(location.protocol)
+    || typeof globalThis.setTimeout !== "function"
+  ) {
     return;
   }
   flushScheduled = true;
-  window.setTimeout(() => {
+  globalThis.setTimeout(() => {
     flushScheduled = false;
     void flushQueue();
   }, 0);
@@ -41,7 +47,12 @@ async function flushQueue() {
 }
 
 export function debugLog(tag: string, data?: unknown) {
-  if (typeof window === "undefined") {
+  if (
+    typeof fetch !== "function"
+    || typeof location === "undefined"
+    || !/^https?:$/.test(location.protocol)
+    || typeof performance === "undefined"
+  ) {
     return;
   }
   queue.push({

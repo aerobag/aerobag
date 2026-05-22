@@ -24,6 +24,7 @@ preprocessor-tpp = { path = "../preprocessor-tpp" }
 preprocessor-tools = { path = "../preprocessor-tools" }
 preprocessor-vectors = { path = "../preprocessor-vectors" }
 preprocessor-zip = { path = "../preprocessor-zip" }
+product-contracts = { path = "../../../crates/product-contracts" }
 procedure-geometry-types = { path = "../../../crates/procedure-geometry-types" }
 geo.workspace = true
 serde.workspace = true

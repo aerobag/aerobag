@@ -49,6 +49,7 @@ dependencies = [
  "png",
  "postcard",
  "procedure-geometry-types",
+ "product-contracts",
  "rusqlite",
  "serde",
  "serde_json",
@@ -1037,6 +1038,10 @@ dependencies = [
  "had-key",
  "serde",
 ]
+
+[[package]]
+name = "product-contracts"
+version = "0.1.0"
 
 [[package]]
 name = "profiling"

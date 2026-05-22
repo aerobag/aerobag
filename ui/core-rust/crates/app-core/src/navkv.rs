@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{NavRef, ProcedureKind};
 
-pub const REQUIRED_NAV_DB_CONTRACT_VERSION: u32 = 1;
+pub use product_contracts::NAV_DB_CONTRACT_ID as REQUIRED_NAV_DB_CONTRACT_ID;
 pub const NAV_DB_CONTRACT_KEY: &str = "contract/nav-db";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -315,6 +315,14 @@ fn test_build_root(entries: &[(&str, &[u8])], page_size: u32) -> (NavKvRoot, Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nav_db_contract_tracks_storage_format() {
+        assert_eq!(
+            REQUIRED_NAV_DB_CONTRACT_ID,
+            format!("NAV{}", had_nav_kv::NAVKV_STORAGE_FORMAT)
+        );
+    }
 
     #[test]
     fn builds_plate_and_procedure_keys_in_core() {

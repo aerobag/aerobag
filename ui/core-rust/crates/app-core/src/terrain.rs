@@ -7,14 +7,14 @@ const HEADER_BYTES: usize = 20;
 const MIN_TERRAIN_ZOOM: u32 = 0;
 const MAX_TERRAIN_ZOOM: u32 = 10;
 const TERRAIN_FULL_COVERAGE_ZOOM: u32 = 7;
-const TERRAIN_WIDE_PACKAGE_ID: &str = "terrain-wide";
+const TERRAIN_WIDE_BASE_ID: &str = "terrain-wide";
 const WORLD_SIZE: f64 = 256.0;
 const MAX_LATITUDE: f64 = 85.051_128_78;
 const MAX_TERRAIN_TILES: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TerrainProductCoverage {
-    product_id: &'static str,
+    base_id: &'static str,
     x_min: u32,
     x_max: u32,
     y_tms_min: u32,
@@ -23,63 +23,63 @@ struct TerrainProductCoverage {
 
 const TERRAIN_PRODUCTS: &[TerrainProductCoverage] = &[
     TerrainProductCoverage {
-        product_id: "terrain-ak",
+        base_id: "terrain-ak",
         x_min: 0,
         x_max: 153,
         y_tms_min: 681,
         y_tms_max: 803,
     },
     TerrainProductCoverage {
-        product_id: "terrain-pac",
+        base_id: "terrain-pac",
         x_min: 51,
         x_max: 79,
         y_tms_min: 564,
         y_tms_max: 582,
     },
     TerrainProductCoverage {
-        product_id: "terrain-sw",
+        base_id: "terrain-sw",
         x_min: 156,
         x_max: 219,
         y_tms_min: 555,
         y_tms_max: 636,
     },
     TerrainProductCoverage {
-        product_id: "terrain-nw",
+        base_id: "terrain-nw",
         x_min: 156,
         x_max: 219,
         y_tms_min: 637,
         y_tms_max: 676,
     },
     TerrainProductCoverage {
-        product_id: "terrain-sc",
+        base_id: "terrain-sc",
         x_min: 199,
         x_max: 256,
         y_tms_min: 555,
         y_tms_max: 625,
     },
     TerrainProductCoverage {
-        product_id: "terrain-nc",
+        base_id: "terrain-nc",
         x_min: 213,
         x_max: 256,
         y_tms_min: 626,
         y_tms_max: 676,
     },
     TerrainProductCoverage {
-        product_id: "terrain-se",
+        base_id: "terrain-se",
         x_min: 257,
         x_max: 341,
         y_tms_min: 555,
         y_tms_max: 625,
     },
     TerrainProductCoverage {
-        product_id: "terrain-ec",
+        base_id: "terrain-ec",
         x_min: 257,
         x_max: 284,
         y_tms_min: 626,
         y_tms_max: 676,
     },
     TerrainProductCoverage {
-        product_id: "terrain-ne",
+        base_id: "terrain-ne",
         x_min: 285,
         x_max: 341,
         y_tms_min: 626,
@@ -464,12 +464,12 @@ fn terrain_tile_requests_with_available_packages(
                 let path = format!("tiles/{terrain_zoom}/{x}/{y_tms}.terrain");
                 requests.push(TerrainOverlayTileRequest {
                     key: format!("terrain/{path}"),
-                    product_id: (*product_id).to_string(),
+                    product_id: product_id.clone(),
                     path: path.clone(),
                     source_tiles: product_ids
                         .iter()
                         .map(|source_product_id| TerrainOverlaySourceTile {
-                            product_id: (*source_product_id).to_string(),
+                            product_id: source_product_id.clone(),
                             path: path.clone(),
                             resource: None,
                         })
@@ -495,7 +495,7 @@ fn terrain_zoom_for_viewport(view_zoom: f64) -> u32 {
 }
 
 #[cfg(test)]
-fn terrain_product_ids_for_tile(zoom: u32, x: u32, y_tms: u32) -> Vec<&'static str> {
+fn terrain_product_ids_for_tile(zoom: u32, x: u32, y_tms: u32) -> Vec<String> {
     let available = all_terrain_package_ids();
     terrain_product_ids_for_tile_with_available_packages(zoom, x, y_tms, &available)
 }
@@ -505,10 +505,11 @@ fn terrain_product_ids_for_tile_with_available_packages(
     x: u32,
     y_tms: u32,
     available_package_ids: &BTreeSet<String>,
-) -> Vec<&'static str> {
+) -> Vec<String> {
     if zoom <= TERRAIN_FULL_COVERAGE_ZOOM {
-        if available_package_ids.contains(TERRAIN_WIDE_PACKAGE_ID) {
-            return vec![TERRAIN_WIDE_PACKAGE_ID];
+        let wide_package_id = terrain_package_id(TERRAIN_WIDE_BASE_ID);
+        if available_package_ids.contains(&wide_package_id) {
+            return vec![wide_package_id];
         }
         return Vec::new();
     }
@@ -522,6 +523,7 @@ fn terrain_product_ids_for_tile_with_available_packages(
     let mut products = TERRAIN_PRODUCTS
         .iter()
         .filter_map(|coverage| {
+            let product_id = terrain_package_id(coverage.base_id);
             let overlap_x_min = coverage.x_min.max(x_min);
             let overlap_x_max = coverage.x_max.min(x_max);
             let overlap_y_min = coverage.y_tms_min.max(y_tms_min);
@@ -529,15 +531,12 @@ fn terrain_product_ids_for_tile_with_available_packages(
             if overlap_x_min > overlap_x_max || overlap_y_min > overlap_y_max {
                 return None;
             }
-            if !available_package_ids.contains(coverage.product_id) {
+            if !available_package_ids.contains(&product_id) {
                 return None;
             }
             let overlap_x = overlap_x_max - overlap_x_min + 1;
             let overlap_y = overlap_y_max - overlap_y_min + 1;
-            Some((
-                u64::from(overlap_x) * u64::from(overlap_y),
-                coverage.product_id,
-            ))
+            Some((u64::from(overlap_x) * u64::from(overlap_y), product_id))
         })
         .collect::<Vec<_>>();
     products.sort_by(|(left_area, left_id), (right_area, right_id)| {
@@ -552,13 +551,17 @@ fn terrain_product_ids_for_tile_with_available_packages(
 }
 
 fn all_terrain_package_ids() -> BTreeSet<String> {
-    std::iter::once(TERRAIN_WIDE_PACKAGE_ID.to_string())
+    std::iter::once(terrain_package_id(TERRAIN_WIDE_BASE_ID))
         .chain(
             TERRAIN_PRODUCTS
                 .iter()
-                .map(|coverage| coverage.product_id.to_string()),
+                .map(|coverage| terrain_package_id(coverage.base_id)),
         )
         .collect()
+}
+
+fn terrain_package_id(base_id: &str) -> String {
+    format!("{base_id}_{}", product_contracts::TERRAIN_CONTRACT_ID)
 }
 
 fn scale_for_zoom(zoom: f64) -> f64 {
@@ -577,6 +580,17 @@ fn lat_lon_to_world(lat: f64, lon: f64) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn package_ids(base_ids: &[&str]) -> Vec<String> {
+        base_ids
+            .iter()
+            .map(|base_id| terrain_package_id(base_id))
+            .collect()
+    }
+
+    fn package_id_set(base_ids: &[&str]) -> BTreeSet<String> {
+        package_ids(base_ids).into_iter().collect()
+    }
 
     #[test]
     fn classifies_abt1_tile_against_aircraft_altitude() {
@@ -619,7 +633,7 @@ mod tests {
     fn selects_southwest_terrain_for_palo_alto_tile() {
         assert_eq!(
             terrain_product_ids_for_tile(10, 164, 627),
-            vec!["terrain-sw"]
+            package_ids(&["terrain-sw"])
         );
     }
 
@@ -633,24 +647,27 @@ mod tests {
 
     #[test]
     fn selects_southwest_terrain_for_palo_alto_parent_tile() {
-        assert_eq!(terrain_product_ids_for_tile(8, 41, 156), vec!["terrain-sw"]);
+        assert_eq!(
+            terrain_product_ids_for_tile(8, 41, 156),
+            package_ids(&["terrain-sw"])
+        );
     }
 
     #[test]
     fn low_zoom_terrain_uses_family_wide_package() {
         assert_eq!(
             terrain_product_ids_for_tile(7, 27, 78),
-            vec!["terrain-wide"]
+            package_ids(&["terrain-wide"])
         );
         assert_eq!(
             terrain_product_ids_for_tile(6, 13, 39),
-            vec!["terrain-wide"]
+            package_ids(&["terrain-wide"])
         );
     }
 
     #[test]
     fn low_zoom_terrain_requires_wide_package_even_when_regions_exist() {
-        let available = BTreeSet::from(["terrain-nw".to_string()]);
+        let available = package_id_set(&["terrain-nw"]);
         assert!(
             terrain_product_ids_for_tile_with_available_packages(6, 13, 39, &available).is_empty()
         );
@@ -658,23 +675,23 @@ mod tests {
 
     #[test]
     fn available_wide_package_covers_distant_regions_at_low_zoom() {
-        let available = BTreeSet::from(["terrain-wide".to_string(), "terrain-nw".to_string()]);
+        let available = package_id_set(&["terrain-wide", "terrain-nw"]);
         assert_eq!(
             terrain_product_ids_for_tile_with_available_packages(6, 13, 39, &available),
-            vec!["terrain-wide"]
+            package_ids(&["terrain-wide"])
         );
         assert_eq!(
             terrain_product_ids_for_tile_with_available_packages(6, 19, 39, &available),
-            vec!["terrain-wide"]
+            package_ids(&["terrain-wide"])
         );
     }
 
     #[test]
     fn high_zoom_terrain_uses_only_available_regional_packages() {
-        let available = BTreeSet::from(["terrain-wide".to_string(), "terrain-nw".to_string()]);
+        let available = package_id_set(&["terrain-wide", "terrain-nw"]);
         assert_eq!(
             terrain_product_ids_for_tile_with_available_packages(8, 41, 164, &available),
-            vec!["terrain-nw"]
+            package_ids(&["terrain-nw"])
         );
         assert!(
             terrain_product_ids_for_tile_with_available_packages(8, 76, 164, &available).is_empty()
@@ -685,7 +702,7 @@ mod tests {
     fn orders_overlapping_high_zoom_parent_tile_by_dominant_product() {
         assert_eq!(
             terrain_product_ids_for_tile(8, 54, 156),
-            vec!["terrain-sw", "terrain-nc", "terrain-sc"]
+            package_ids(&["terrain-sw", "terrain-nc", "terrain-sc"])
         );
     }
 

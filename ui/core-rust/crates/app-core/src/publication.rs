@@ -2,10 +2,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::package_management::package_contract_is_supported;
 use crate::{
     BundleManifest, BundlePackageArtifact, CoreResourceRequest, CoreResourceSource,
     CurrentArtifactsManifest, HadOperationOutcome, NavDbArtifactCandidate,
-    REQUIRED_NAV_DB_CONTRACT_VERSION,
 };
 
 const CURRENT_ARTIFACTS_RESOURCE_ID: &str = "publication/current_artifacts";
@@ -124,13 +124,7 @@ impl PublicationResolver {
             .values()
             .flat_map(|bundle| bundle.packages.iter())
             .filter(|package| package.family_id == "nav-db")
-            .filter(|package| {
-                package
-                    .metadata
-                    .as_ref()
-                    .and_then(|metadata| metadata.nav_db_contract_version)
-                    == Some(REQUIRED_NAV_DB_CONTRACT_VERSION)
-            })
+            .filter(|package| package_contract_is_supported(package))
             .map(|package| {
                 Ok(NavDbArtifactCandidate {
                     package_id: package.id.clone(),
@@ -235,7 +229,7 @@ impl PublicationResolver {
         self.bundle_manifests_by_filename
             .values()
             .flat_map(|bundle| bundle.packages.iter())
-            .find(|package| matches_package(package))
+            .find(|package| package_contract_is_supported(package) && matches_package(package))
             .ok_or_else(|| "package not found in active publication bundles".to_string())
     }
 
@@ -364,6 +358,7 @@ mod tests {
             packages: vec![BundlePackageArtifact {
                 id: "nav-db".to_string(),
                 family_id: "nav-db".to_string(),
+                contract_id: crate::REQUIRED_NAV_DB_CONTRACT_ID.to_string(),
                 region_id: None,
                 filename: "nav_db_hash.zip".to_string(),
                 relative_path: "nav_db_hash.zip".to_string(),
@@ -373,8 +368,8 @@ mod tests {
                 size_bytes: None,
                 effective_date: None,
                 expiration_date: None,
+                ui_warning: None,
                 metadata: Some(crate::package_management::BundlePackageMetadata {
-                    nav_db_contract_version: Some(REQUIRED_NAV_DB_CONTRACT_VERSION),
                     full_coverage_zoom: None,
                     wide_angle_region_id: None,
                     wide_angle_max_zoom: None,

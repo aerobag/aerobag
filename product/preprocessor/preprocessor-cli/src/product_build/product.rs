@@ -1498,17 +1498,18 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             ),
                             _ => bail!("missing world basemap build output"),
                         };
+                        let product_id = stable_product_id_with_contract("world-basemap")?;
                         let (published_zip, sha256, size_bytes) = publish_content_addressed_zip(
                             &config.build_root,
                             &built.0,
-                            "world-basemap",
+                            &product_id,
                             built.2.as_deref(),
                             built.3,
                         )?;
                         Ok(ProductTaskCompletion {
                             node_records: vec![],
                             value: ProductTaskValue::PublishedStandaloneProduct {
-                                id: "world-basemap".to_string(),
+                                id: product_id,
                                 unpack_source_root: built.1,
                                 published_zip,
                                 sha256,
@@ -1541,7 +1542,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             ),
                             _ => bail!("missing terrain build output for {}", region.code()),
                         };
-                        let product_id = format!("terrain-{region_id}");
+                        let product_id =
+                            stable_product_id_with_contract(&format!("terrain-{region_id}"))?;
                         let (published_zip, sha256, size_bytes) = publish_content_addressed_zip(
                             &config.build_root,
                             &built.0,
@@ -1584,7 +1586,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             ),
                             _ => bail!("missing terrain wide-angle build output"),
                         };
-                        let product_id = format!("terrain-{WIDE_ANGLE_REGION_ID}");
+                        let product_id = stable_product_id_with_contract(&format!(
+                            "terrain-{WIDE_ANGLE_REGION_ID}"
+                        ))?;
                         let (published_zip, sha256, size_bytes) = publish_content_addressed_zip(
                             &config.build_root,
                             &built.0,
@@ -1628,7 +1632,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             ),
                             _ => bail!("missing shaded relief build output for {}", region.code()),
                         };
-                        let product_id = format!("shaded-relief-{region_id}");
+                        let product_id =
+                            stable_product_id_with_contract(&format!("shaded-relief-{region_id}"))?;
                         let (published_zip, sha256, size_bytes) = publish_content_addressed_zip(
                             &config.build_root,
                             &built.0,
@@ -1671,7 +1676,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             ),
                             _ => bail!("missing shaded relief wide-angle build output"),
                         };
-                        let product_id = format!("shaded-relief-{WIDE_ANGLE_REGION_ID}");
+                        let product_id = stable_product_id_with_contract(&format!(
+                            "shaded-relief-{WIDE_ANGLE_REGION_ID}"
+                        ))?;
                         let (published_zip, sha256, size_bytes) = publish_content_addressed_zip(
                             &config.build_root,
                             &built.0,

@@ -61,7 +61,7 @@ fn nav_kv_builder_source_paths() -> Vec<PathBuf> {
 pub(super) fn nav_kv_builder_fingerprint() -> anyhow::Result<String> {
     let source_hash = hash_sources("nav-kv-builder-v1", &nav_kv_builder_source_paths())?;
     let constants = serde_json::json!({
-        "nav_db_contract_version": super::NAV_DB_CONTRACT_VERSION,
+        "nav_db_contract_id": super::NAV_DB_CONTRACT_ID,
         "waypoint_prefix_max_results": super::WAYPOINT_PREFIX_MAX_RESULTS,
         "offline_chart_region_simplify_tolerance_degrees": super::OFFLINE_CHART_REGION_SIMPLIFY_TOLERANCE_DEGREES,
         "offline_chart_region_union_snap_grid_degrees": super::OFFLINE_CHART_REGION_UNION_SNAP_GRID_DEGREES,

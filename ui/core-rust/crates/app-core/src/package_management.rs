@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::data_status::UiStatusSeverity;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Ord, PartialOrd)]
 #[serde(rename_all = "snake_case")]
 pub enum OfflinePackageSelection {
@@ -26,6 +28,7 @@ pub struct OfflinePackagePreferences {
 pub struct BundlePackageArtifact {
     pub id: String,
     pub family_id: String,
+    pub contract_id: String,
     pub region_id: Option<String>,
     pub filename: String,
     pub relative_path: String,
@@ -35,12 +38,20 @@ pub struct BundlePackageArtifact {
     pub size_bytes: Option<u64>,
     pub effective_date: Option<String>,
     pub expiration_date: Option<String>,
+    pub ui_warning: Option<BundlePackageUiWarning>,
     pub metadata: Option<BundlePackageMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundlePackageUiWarning {
+    pub severity: UiStatusSeverity,
+    pub label: String,
+    pub value: Option<String>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundlePackageMetadata {
-    pub nav_db_contract_version: Option<u32>,
     pub full_coverage_zoom: Option<u32>,
     pub wide_angle_region_id: Option<String>,
     pub wide_angle_max_zoom: Option<u32>,
@@ -48,6 +59,14 @@ pub struct BundlePackageMetadata {
     pub min_source_zoom: Option<u32>,
     pub max_source_zoom: Option<u32>,
     pub tile_count: Option<u64>,
+}
+
+pub(crate) fn required_package_contract_id(family_id: &str) -> Option<&'static str> {
+    product_contracts::contract_id_for_family(family_id)
+}
+
+pub(crate) fn package_contract_is_supported(pkg: &BundlePackageArtifact) -> bool {
+    required_package_contract_id(&pkg.family_id) == Some(pkg.contract_id.as_str())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1746,13 +1765,7 @@ fn cycle_selection(selections: &mut BTreeMap<String, OfflinePackageSelection>, i
 }
 
 fn bundle_package_to_artifact(pkg: &BundlePackageArtifact) -> Option<AvailablePackageArtifact> {
-    if pkg.family_id == "nav-db"
-        && pkg
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.nav_db_contract_version)
-            != Some(crate::REQUIRED_NAV_DB_CONTRACT_VERSION)
-    {
+    if !package_contract_is_supported(pkg) {
         return None;
     }
     match pkg.family_id.as_str() {
@@ -1968,6 +1981,9 @@ mod tests {
         BundlePackageArtifact {
             id: id.to_string(),
             family_id: product.to_string(),
+            contract_id: required_package_contract_id(product)
+                .unwrap_or("UNSUPPORTED")
+                .to_string(),
             region_id: region.map(str::to_string),
             filename: format!("{id}.zip"),
             relative_path: format!("{id}.zip"),
@@ -1977,13 +1993,13 @@ mod tests {
             size_bytes: None,
             effective_date: effective.map(str::to_string),
             expiration_date: expires.map(str::to_string),
+            ui_warning: None,
             metadata: (product == "nav-db").then(nav_db_metadata),
         }
     }
 
     fn nav_db_metadata() -> BundlePackageMetadata {
         BundlePackageMetadata {
-            nav_db_contract_version: Some(crate::REQUIRED_NAV_DB_CONTRACT_VERSION),
             full_coverage_zoom: None,
             wide_angle_region_id: None,
             wide_angle_max_zoom: None,
@@ -2002,7 +2018,6 @@ mod tests {
     ) -> BundlePackageArtifact {
         let mut pkg = pkg(id, product, Some(region), None, expires);
         pkg.metadata = Some(BundlePackageMetadata {
-            nav_db_contract_version: None,
             full_coverage_zoom: None,
             wide_angle_region_id: Some(region.to_string()),
             wide_angle_max_zoom: Some(7),
@@ -2666,6 +2681,7 @@ mod tests {
             packages: vec![BundlePackageArtifact {
                 id: "NAV_DB_2603_01".to_string(),
                 family_id: "nav-db".to_string(),
+                contract_id: crate::REQUIRED_NAV_DB_CONTRACT_ID.to_string(),
                 region_id: None,
                 filename: "nav_db_2603.zip".to_string(),
                 relative_path: "nav_db_2603.zip".to_string(),
@@ -2675,6 +2691,7 @@ mod tests {
                 size_bytes: None,
                 effective_date: Some("2026-03-20".to_string()),
                 expiration_date: Some("2026-04-16".to_string()),
+                ui_warning: None,
                 metadata: Some(nav_db_metadata()),
             }],
         };
@@ -2682,6 +2699,7 @@ mod tests {
             packages: vec![BundlePackageArtifact {
                 id: "NAV_DB_2604_01".to_string(),
                 family_id: "nav-db".to_string(),
+                contract_id: crate::REQUIRED_NAV_DB_CONTRACT_ID.to_string(),
                 region_id: None,
                 filename: "nav_db_2604.zip".to_string(),
                 relative_path: "nav_db_2604.zip".to_string(),
@@ -2691,6 +2709,7 @@ mod tests {
                 size_bytes: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
+                ui_warning: None,
                 metadata: Some(nav_db_metadata()),
             }],
         };
@@ -2771,6 +2790,7 @@ mod tests {
             packages: vec![BundlePackageArtifact {
                 id: "NAV_DB_2604_01".to_string(),
                 family_id: "nav-db".to_string(),
+                contract_id: crate::REQUIRED_NAV_DB_CONTRACT_ID.to_string(),
                 region_id: None,
                 filename: "nav_db_2604_01_good.zip".to_string(),
                 relative_path: "nav_db_2604_01_good.zip".to_string(),
@@ -2780,6 +2800,7 @@ mod tests {
                 size_bytes: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
+                ui_warning: None,
                 metadata: Some(nav_db_metadata()),
             }],
         };

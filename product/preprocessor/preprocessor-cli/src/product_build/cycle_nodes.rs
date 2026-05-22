@@ -182,6 +182,8 @@ pub(super) fn build_chart_package_nodes(
     version_label: &str,
 ) -> anyhow::Result<(Vec<NodeRecord>, ChartSource)> {
     let family_id = family_slug(family).to_string();
+    let contract_id = product_contract_id_for_family(&family_id)?;
+    let artifact_version = contract_artifact_version(contract_id, version_label);
     let source_urls_path = source_urls_dir.join(format!("charts-{family_id}/source_urls.jsonl"));
     let render_node_name = format!("charts-{family_id}-render");
     let render_inputs = chart_render_inputs(
@@ -209,6 +211,7 @@ pub(super) fn build_chart_package_nodes(
             "unpack-source-root-v1".to_string(),
         ),
         ("version_label".to_string(), version_label.to_string()),
+        ("contract_id".to_string(), contract_id.to_string()),
         (
             "chart_package_lib".to_string(),
             hash_file(
@@ -230,12 +233,12 @@ pub(super) fn build_chart_package_nodes(
     let wide_manifest_path = package_root.join(format!(
         "WIDE_{}_{}.manifest",
         manifest_chart_name(family),
-        version_label
+        artifact_version
     ));
     let wide_zip_path = package_root.join(format!(
         "WIDE_{}_{}.zip",
         manifest_chart_name(family),
-        version_label
+        artifact_version
     ));
     let mut expected_outputs = Vec::from([
         aggregate_path.clone(),
@@ -248,13 +251,13 @@ pub(super) fn build_chart_package_nodes(
             "{}_{}_{}.zip",
             region.code(),
             manifest_chart_name(family),
-            version_label
+            artifact_version
         )));
         expected_outputs.push(package_root.join(format!(
             "{}_{}_{}.manifest",
             region.code(),
             manifest_chart_name(family),
-            version_label
+            artifact_version
         )));
     }
     let record = match claim_or_wait_for_node(&prepared, &expected_outputs)? {
@@ -281,7 +284,7 @@ pub(super) fn build_chart_package_nodes(
                     &package_root,
                     region,
                     version_label,
-                    version_label,
+                    &artifact_version,
                 )?;
                 if chart_package_record_has_tiles(&record, &package_root)? {
                     package_records.push(record);
@@ -292,7 +295,7 @@ pub(super) fn build_chart_package_nodes(
                 &work_dir,
                 &package_root,
                 version_label,
-                version_label,
+                &artifact_version,
             )?);
             write_package_outputs_jsonl(&package_root, &package_records)?;
             let zip_paths = package_records
@@ -524,6 +527,8 @@ pub(super) fn build_csup_package_nodes(
     source_urls_dir: &Path,
     version_label: &str,
 ) -> anyhow::Result<(Vec<NodeRecord>, AssetSource)> {
+    let contract_id = product_contract_id_for_family("csup")?;
+    let artifact_version = contract_artifact_version(contract_id, version_label);
     let source_urls_path = source_urls_dir.join("csup/source_urls.jsonl");
     let stage_inputs = csup_stage_inputs(&source_urls_path, config.fetch_jobs)?;
     let stage_prepared = prepare_node_at(
@@ -543,6 +548,7 @@ pub(super) fn build_csup_package_nodes(
             "unpack-source-root-v1".to_string(),
         ),
         ("version_label".to_string(), version_label.to_string()),
+        ("contract_id".to_string(), contract_id.to_string()),
         (
             "csup_package".to_string(),
             hash_file(
@@ -595,12 +601,12 @@ pub(super) fn build_csup_package_nodes(
         expected_outputs.push(package_root.join(format!(
             "{}_CSUP_{}.zip",
             region.code(),
-            version_label
+            artifact_version
         )));
         expected_outputs.push(package_root.join(format!(
             "{}_CSUP_{}.manifest",
             region.code(),
-            version_label
+            artifact_version
         )));
     }
     let record = match claim_or_wait_for_node(&prepared, &expected_outputs)? {
@@ -626,7 +632,7 @@ pub(super) fn build_csup_package_nodes(
                     &package_root,
                     region,
                     version_label,
-                    version_label,
+                    &artifact_version,
                 )?);
             }
             write_package_outputs_jsonl(&package_root, &package_records)?;
@@ -734,6 +740,8 @@ pub(super) fn build_tpp_package_node(
     source_urls_path: &Path,
     version_label: &str,
 ) -> anyhow::Result<(NodeRecord, AssetSource)> {
+    let contract_id = product_contract_id_for_family("tpp")?;
+    let artifact_version = contract_artifact_version(contract_id, version_label);
     let region_id = region.code().to_ascii_lowercase();
     let render_request = NativeTppRunRequest {
         region,
@@ -764,6 +772,7 @@ pub(super) fn build_tpp_package_node(
         ),
         ("region".to_string(), region.code().to_string()),
         ("version_label".to_string(), version_label.to_string()),
+        ("contract_id".to_string(), contract_id.to_string()),
         (
             "cache_layout_version".to_string(),
             TPP_CACHE_LAYOUT_VERSION.to_string(),
@@ -801,9 +810,12 @@ pub(super) fn build_tpp_package_node(
         .join("provenance")
         .join(format!("tpp-{region_id}"));
     let package_outputs_path = provenance_dir.join("package_outputs.jsonl");
-    let zip_path = package_root.join(format!("{}_TPP_{}.zip", region.code(), version_label));
-    let manifest_path =
-        package_root.join(format!("{}_TPP_{}.manifest", region.code(), version_label));
+    let zip_path = package_root.join(format!("{}_TPP_{}.zip", region.code(), artifact_version));
+    let manifest_path = package_root.join(format!(
+        "{}_TPP_{}.manifest",
+        region.code(),
+        artifact_version
+    ));
     let _build_lock = match claim_or_wait_for_node(
         &prepared,
         &[
@@ -839,7 +851,7 @@ pub(super) fn build_tpp_package_node(
         &provenance_dir,
         region,
         version_label,
-        version_label,
+        &artifact_version,
     )?;
     prepare_package_unpack_source_root(
         std::slice::from_ref(&zip_path),

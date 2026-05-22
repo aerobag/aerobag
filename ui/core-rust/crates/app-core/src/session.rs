@@ -336,6 +336,7 @@ const LIVE_FEED_OBSTACLES_STATUS_ID: &str = "live_feed:obstacles_unavailable";
 const CYCLE_SELECTED_CHART_STATUS_ID: &str = "cycle:selected_chart_expired";
 const CYCLE_NAV_DB_STATUS_ID: &str = "cycle:nav_db_expired";
 const VECTOR_INPUTS_STATUS_ID: &str = "map_overlay:vector_inputs_loading";
+const PACKAGE_UI_WARNING_STATUS_PREFIX: &str = "package_ui_warning:";
 const METAR_STATION_IMPORTANCE_STATUS_ID: &str = "map_overlay:metar_station_importance_unavailable";
 const TERRAIN_STATUS_ID: &str = "terrain:warning_unavailable";
 const LIVE_OBSTACLE_HAD_RESOURCE_PREFIX: &str = "live_obstacle_had/";
@@ -352,6 +353,17 @@ struct FreshnessPackageRecord {
     family_id: String,
     #[serde(default)]
     expiration_date: Option<String>,
+    #[serde(default)]
+    ui_warning: Option<PackageUiWarningRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PackageUiWarningRecord {
+    severity: UiStatusSeverity,
+    label: String,
+    #[serde(default)]
+    value: Option<String>,
+    detail: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1052,6 +1064,83 @@ fn sync_cycle_product_freshness_status_records_if_needed(
     sync_cycle_product_freshness_status_records(session)
 }
 
+fn package_ui_warning_status_record(package: &FreshnessPackageRecord) -> Option<DataStatusRecord> {
+    let warning = package.ui_warning.as_ref()?;
+    Some(DataStatusRecord::new(
+        format!("{PACKAGE_UI_WARNING_STATUS_PREFIX}{}", package.id),
+        warning.label.clone(),
+        warning.value.clone(),
+        warning.severity,
+        matches!(
+            warning.severity,
+            UiStatusSeverity::Caution | UiStatusSeverity::Warning | UiStatusSeverity::Unavailable
+        ),
+        warning.detail.clone(),
+    ))
+}
+
+fn clear_package_ui_warning_status_records(session: &mut UiSession) -> bool {
+    let stale_ids = session
+        .data_status_records
+        .keys()
+        .filter(|id| id.starts_with(PACKAGE_UI_WARNING_STATUS_PREFIX))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut changed = false;
+    for id in stale_ids {
+        changed |= session.data_status_records.remove(&id).is_some();
+    }
+    if changed {
+        sync_data_status_projection(session);
+    }
+    changed
+}
+
+fn sync_package_ui_warning_status_records(session: &mut UiSession) -> bool {
+    let Some(store) = session.nav_kv_store.as_ref() else {
+        return clear_package_ui_warning_status_records(session);
+    };
+    let mut records = Vec::new();
+    for key in store.keys_with_prefix("package/by-id/") {
+        let Ok(NavKvLookup::Hit(bytes)) = store.get_bytes(&key) else {
+            continue;
+        };
+        let Ok(package) = serde_json::from_slice::<FreshnessPackageRecord>(&bytes) else {
+            continue;
+        };
+        if let Some(record) = package_ui_warning_status_record(&package) {
+            records.push(record);
+        }
+    }
+    let active_ids = records
+        .iter()
+        .map(|record| record.id.clone())
+        .collect::<BTreeSet<_>>();
+    let stale_ids = session
+        .data_status_records
+        .keys()
+        .filter(|id| id.starts_with(PACKAGE_UI_WARNING_STATUS_PREFIX) && !active_ids.contains(*id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut changed = false;
+    for id in stale_ids {
+        changed |= session.data_status_records.remove(&id).is_some();
+    }
+    for record in records {
+        changed |= session
+            .data_status_records
+            .get(&record.id)
+            .is_none_or(|existing| existing != &record);
+        session
+            .data_status_records
+            .insert(record.id.clone(), record);
+    }
+    if changed {
+        sync_data_status_projection(session);
+    }
+    changed
+}
+
 fn sync_cycle_product_freshness_status_records(session: &mut UiSession) -> Vec<UiInvalidation> {
     let selected = sync_selected_chart_expiration_freshness(session);
     let nav_db = sync_nav_db_expiration_freshness(session);
@@ -1059,7 +1148,8 @@ fn sync_cycle_product_freshness_status_records(session: &mut UiSession) -> Vec<U
         dirty: false,
         missing_nav_kv_pages: nav_db.missing_nav_kv_pages,
     };
-    let changed = selected.changed | nav_db.changed;
+    let changed =
+        selected.changed | nav_db.changed | sync_package_ui_warning_status_records(session);
     if changed {
         vec![UiInvalidation::SessionSnapshot]
     } else {
@@ -8192,7 +8282,7 @@ mod tests {
                 "weather/metar-important-stations",
                 br#"{"schema_version":1,"station_ids":["kaaa","KBBB",""]}"#,
             )],
-            256,
+            1024,
         );
         let mut session = UiSession {
             app_state: register_default_situation_sources(AppState::default()).expect("app state"),
@@ -9661,6 +9751,36 @@ mod tests {
         assert_eq!(nav_db.value.as_deref(), Some("EXPIRED"));
         assert_eq!(nav_db.severity, UiStatusSeverity::Warning);
         assert!(nav_db.detail.contains("NAV_DB_TEST expired"));
+    }
+
+    #[test]
+    fn package_ui_warning_records_warning() {
+        let init = create_current_test_session();
+        let store = crate::navkv::nav_kv_store_for_test(
+            &[(
+                "package/by-id/SEC_SUNSET",
+                br#"{
+                    "id": "SEC_SUNSET",
+                    "family_id": "sec",
+                    "ui_warning": {
+                        "severity": "warning",
+                        "label": "SECTIONAL",
+                        "value": "SUNSET",
+                        "detail": "This sectional package format is being sunsetted."
+                    }
+                }"#,
+            )],
+            1024,
+        );
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let warning = data_status_box(&snapshot, "package_ui_warning:SEC_SUNSET");
+        assert_eq!(warning.label, "SECTIONAL");
+        assert_eq!(warning.value.as_deref(), Some("SUNSET"));
+        assert_eq!(warning.severity, UiStatusSeverity::Warning);
+        assert!(warning.drives_caution);
+        assert!(warning.detail.contains("sunsetted"));
     }
 
     #[test]

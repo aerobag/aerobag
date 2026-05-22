@@ -106,7 +106,7 @@ pub use navdb_types::{
 pub use navkv::nav_kv_store_for_smoke_test;
 pub use navkv::{
     nav_kv_key_for_query, NavKvLookup, NavKvPageProbeStats, NavKvQuery, NavKvRoot, NavKvStore,
-    NAV_DB_CONTRACT_KEY, REQUIRED_NAV_DB_CONTRACT_VERSION,
+    NAV_DB_CONTRACT_KEY, REQUIRED_NAV_DB_CONTRACT_ID,
 };
 pub use ownship::{
     push_sample, register_source, set_policy, situation_ring_candidates, update_source_status,

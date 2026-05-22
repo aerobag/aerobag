@@ -21,7 +21,9 @@ use preprocessor_charts::{
     package_family_wide_angle_versioned_to, stage_work_dir, FULL_COVERAGE_ZOOM,
     WIDE_ANGLE_REGION_ID,
 };
-use preprocessor_core::nav_kv::{build_nav_kv_sorted, NavKvPair, VERSION as NAV_KV_VERSION};
+use preprocessor_core::nav_kv::{
+    build_nav_kv_sorted, NavKvPair, NAVKV_STORAGE_FORMAT as NAV_KV_STORAGE_FORMAT,
+};
 use preprocessor_core::{ChartFamily, Region, RegionBounds};
 use preprocessor_csup::{
     package_csup_region_versioned_to, prepare_csup_inputs, render_csup_region,
@@ -50,6 +52,9 @@ use preprocessor_vectors::{
 };
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use procedure_geometry_types as pgt;
+use product_contracts::{
+    NAV_DB_CONTRACT_ID, SHADED_RELIEF_CONTRACT_ID, TERRAIN_CONTRACT_ID, WORLD_BASEMAP_CONTRACT_ID,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zip::ZipArchive;
@@ -61,7 +66,6 @@ use paths::*;
 mod source_fingerprints;
 
 const PACKAGE_CYCLE_VERSION: &str = "01";
-const NAV_DB_CONTRACT_VERSION: u32 = 1;
 const WAYPOINT_PREFIX_MAX_RESULTS: usize = 100;
 // Offline chart region polygons are only visual guides in the package picker.
 // Grow chart cutlines coarsely before unioning to collapse tiny source-boundary
@@ -328,6 +332,7 @@ struct BundleArtifact {
 struct BundlePackageArtifact {
     id: String,
     family_id: String,
+    contract_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     region_id: Option<String>,
     filename: String,
@@ -348,8 +353,19 @@ struct BundlePackageArtifact {
     source_fetched_at_utc: Option<String>,
     effective_date: Option<String>,
     expiration_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ui_warning: Option<BundlePackageUiWarning>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     metadata: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BundlePackageUiWarning {
+    severity: String,
+    label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    value: Option<String>,
+    detail: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -490,6 +506,7 @@ fn static_product_task_ids(config: &ProductBuildConfig) -> Vec<String> {
 }
 
 fn stable_product_family_region(id: &str) -> anyhow::Result<(String, Option<String>)> {
+    let id = stable_product_base_id(id);
     if id == "world-basemap" {
         return Ok(("world-basemap".to_string(), None));
     }
@@ -500,6 +517,52 @@ fn stable_product_family_region(id: &str) -> anyhow::Result<(String, Option<Stri
         return Ok(("shaded-relief".to_string(), Some(region_id.to_string())));
     }
     bail!("unrecognized stable product id: {id}")
+}
+
+fn product_contract_id_for_family(family_id: &str) -> anyhow::Result<&'static str> {
+    product_contracts::contract_id_for_family(family_id)
+        .with_context(|| format!("unrecognized product family for contract id: {family_id}"))
+}
+
+fn stable_product_contract_id(id: &str) -> anyhow::Result<&'static str> {
+    let (family_id, _) = stable_product_family_region(id)?;
+    product_contract_id_for_family(&family_id)
+}
+
+fn contract_artifact_version(contract_id: &str, version_label: &str) -> String {
+    format!("{contract_id}_{version_label}")
+}
+
+fn stable_product_id_with_contract(id: &str) -> anyhow::Result<String> {
+    Ok(format!(
+        "{}_{}",
+        stable_product_base_id(id),
+        stable_product_contract_id(id)?
+    ))
+}
+
+fn stable_product_base_id(id: &str) -> &str {
+    for contract_id in [
+        TERRAIN_CONTRACT_ID,
+        SHADED_RELIEF_CONTRACT_ID,
+        WORLD_BASEMAP_CONTRACT_ID,
+    ] {
+        if let Some(base) = id.strip_suffix(&format!("_{contract_id}")) {
+            return base;
+        }
+    }
+    id
+}
+
+fn package_metadata_with_contract_id(
+    mut metadata: BTreeMap<String, serde_json::Value>,
+    contract_id: &str,
+) -> BTreeMap<String, serde_json::Value> {
+    metadata.insert(
+        "contract_id".to_string(),
+        serde_json::Value::String(contract_id.to_string()),
+    );
+    metadata
 }
 
 fn stable_effective_date_from_published_file(path: &Path) -> anyhow::Result<(String, String)> {
@@ -523,12 +586,14 @@ fn build_stable_bundle_package_artifact(
     source_fetched_at_utc: Option<String>,
 ) -> anyhow::Result<BundlePackageArtifact> {
     let (family_id, region_id) = stable_product_family_region(id)?;
+    let contract_id = product_contract_id_for_family(&family_id)?;
     let filename = filename_string(published_zip)?;
     let (effective_date, published_at_utc) =
         stable_effective_date_from_published_file(published_zip)?;
     Ok(BundlePackageArtifact {
         id: id.to_string(),
         family_id,
+        contract_id: contract_id.to_string(),
         region_id,
         filename: filename.clone(),
         relative_path: filename,
@@ -542,11 +607,16 @@ fn build_stable_bundle_package_artifact(
         source_fetched_at_utc,
         effective_date: Some(effective_date),
         expiration_date: None,
-        metadata: stable_product_package_metadata(id),
+        ui_warning: None,
+        metadata: package_metadata_with_contract_id(
+            stable_product_package_metadata(id),
+            contract_id,
+        ),
     })
 }
 
 fn stable_product_package_metadata(id: &str) -> BTreeMap<String, serde_json::Value> {
+    let id = stable_product_base_id(id);
     if id == "world-basemap" {
         return BTreeMap::from([
             ("tile_format".to_string(), serde_json::json!("png")),
@@ -1898,7 +1968,13 @@ mod tests {
         DefaultView, NavDbRef, PlateRecord, ResourceFamily, ResourcePackage, ResourceRegion,
         TemporalSummary, TileLevelRecord,
     };
+    use product_contracts::{CSUP_CONTRACT_ID, ENR_L_CONTRACT_ID, SEC_CONTRACT_ID};
     use tempfile::tempdir;
+
+    #[test]
+    fn nav_db_contract_tracks_navkv_storage_format() {
+        assert_eq!(NAV_DB_CONTRACT_ID, format!("NAV{NAV_KV_STORAGE_FORMAT}"));
+    }
 
     fn write_source_urls(root: &Path, relative: &str, lines: &[&str]) {
         let path = root.join(relative);
@@ -1912,6 +1988,9 @@ mod tests {
         BundlePackageArtifact {
             id: format!("{}_2605_01", family_id.to_ascii_uppercase()),
             family_id: family_id.to_string(),
+            contract_id: product_contract_id_for_family(family_id)
+                .unwrap()
+                .to_string(),
             region_id: region_id.map(str::to_string),
             filename: format!("{family_id}_2605_01_deadbeef.zip"),
             relative_path: format!("{family_id}_2605_01_deadbeef.zip"),
@@ -1925,6 +2004,7 @@ mod tests {
             source_fetched_at_utc: None,
             effective_date: Some("2026-05-14".to_string()),
             expiration_date: Some("2026-06-11".to_string()),
+            ui_warning: None,
             metadata: BTreeMap::new(),
         }
     }
@@ -2548,7 +2628,7 @@ mod tests {
     fn nav_kv_chart_catalog_includes_shaded_relief_static_products() {
         let static_raster_entries = vec![
             StaticRasterCatalogEntry {
-                product_id: "world-basemap".to_string(),
+                product_id: "world-basemap_WBM1".to_string(),
                 label: "World Basemap".to_string(),
                 chart_family: "world-basemap".to_string(),
                 tile_url_root: "tiles".to_string(),
@@ -2573,7 +2653,7 @@ mod tests {
                 }],
             },
             StaticRasterCatalogEntry {
-                product_id: "shaded-relief-nw".to_string(),
+                product_id: "shaded-relief-nw_SHD1".to_string(),
                 label: String::new(),
                 chart_family: "shaded-relief".to_string(),
                 tile_url_root: String::new(),
@@ -2604,7 +2684,7 @@ mod tests {
             .expect("chart catalog should be an array");
         let world = entries
             .iter()
-            .find(|entry| entry["id"] == "world-basemap")
+            .find(|entry| entry["id"] == "world-basemap_WBM1")
             .expect("world basemap entry");
         assert_eq!(world["region_id"], "world");
         assert_eq!(world["map_view"]["chart_family"], "world-basemap");
@@ -2614,7 +2694,7 @@ mod tests {
 
         let shaded = entries
             .iter()
-            .find(|entry| entry["id"] == "shaded-relief-nw")
+            .find(|entry| entry["id"] == "shaded-relief-nw_SHD1")
             .expect("shaded relief entry");
 
         assert_eq!(shaded["label"], "Northwest Shaded Relief");
@@ -2766,11 +2846,12 @@ mod tests {
     fn nav_kv_package_pairs_publish_bundle_package_rows() {
         let pairs = build_nav_kv_package_pairs(&[
             BundlePackageArtifact {
-                id: "NW_SEC_2604_01".to_string(),
+                id: "NW_SEC_SEC1_2604_01".to_string(),
                 family_id: "sec".to_string(),
+                contract_id: SEC_CONTRACT_ID.to_string(),
                 region_id: Some("nw".to_string()),
-                filename: "sec_nw_2604_01_deadbeef.zip".to_string(),
-                relative_path: "sec_nw_2604_01_deadbeef.zip".to_string(),
+                filename: "sec_nw_SEC1_2604_01_deadbeef.zip".to_string(),
+                relative_path: "sec_nw_SEC1_2604_01_deadbeef.zip".to_string(),
                 cycle: Some("2604".to_string()),
                 cycle_version: Some("01".to_string()),
                 checksum_sha256: "deadbeef".to_string(),
@@ -2781,14 +2862,19 @@ mod tests {
                 source_fetched_at_utc: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
-                metadata: chart_wide_angle_package_metadata(false, Some(1)),
+                ui_warning: None,
+                metadata: package_metadata_with_contract_id(
+                    chart_wide_angle_package_metadata(false, Some(1)),
+                    SEC_CONTRACT_ID,
+                ),
             },
             BundlePackageArtifact {
-                id: "NAV_DB_2604_01".to_string(),
+                id: "NAV_DB_NAV4_2604_01".to_string(),
                 family_id: "nav-db".to_string(),
+                contract_id: NAV_DB_CONTRACT_ID.to_string(),
                 region_id: None,
-                filename: "nav_db_2604_01_cafebabe.zip".to_string(),
-                relative_path: "nav_db_2604_01_cafebabe.zip".to_string(),
+                filename: "nav_db_NAV4_2604_01_cafebabe.zip".to_string(),
+                relative_path: "nav_db_NAV4_2604_01_cafebabe.zip".to_string(),
                 cycle: Some("2604".to_string()),
                 cycle_version: Some("01".to_string()),
                 checksum_sha256: "cafebabe".to_string(),
@@ -2799,9 +2885,10 @@ mod tests {
                 source_fetched_at_utc: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
+                ui_warning: None,
                 metadata: BTreeMap::from([(
-                    "nav_db_contract_version".to_string(),
-                    serde_json::json!(NAV_DB_CONTRACT_VERSION),
+                    "contract_id".to_string(),
+                    serde_json::json!(NAV_DB_CONTRACT_ID),
                 )]),
             },
         ])
@@ -2817,29 +2904,31 @@ mod tests {
 
         let index = pair_value("package/index");
         assert_eq!(index.as_array().unwrap().len(), 2);
-        assert_eq!(index[0]["id"], "NW_SEC_2604_01");
+        assert_eq!(index[0]["id"], "NW_SEC_SEC1_2604_01");
+        assert_eq!(index[0]["contract_id"], SEC_CONTRACT_ID);
         assert_eq!(index[0]["metadata"]["wide_angle_max_zoom"], 7);
         assert_eq!(index[0]["metadata"]["wide_angle_region_id"], "wide");
         assert_eq!(index[0]["metadata"]["min_source_zoom"], 8);
-        assert_eq!(index[1]["id"], "NAV_DB_2604_01");
+        assert_eq!(index[1]["id"], "NAV_DB_NAV4_2604_01");
+        assert_eq!(index[1]["contract_id"], NAV_DB_CONTRACT_ID);
 
-        let sectional = pair_value("package/by-id/NW_SEC_2604_01");
+        let sectional = pair_value("package/by-id/NW_SEC_SEC1_2604_01");
+        assert_eq!(sectional["contract_id"], SEC_CONTRACT_ID);
         assert_eq!(sectional["metadata"]["wide_angle_max_zoom"], 7);
 
-        let nav_db = pair_value("package/by-id/NAV_DB_2604_01");
+        let nav_db = pair_value("package/by-id/NAV_DB_NAV4_2604_01");
         assert_eq!(nav_db["family_id"], "nav-db");
+        assert_eq!(nav_db["contract_id"], NAV_DB_CONTRACT_ID);
         assert_eq!(nav_db["region_id"], serde_json::Value::Null);
-        assert_eq!(nav_db["relative_path"], "nav_db_2604_01_cafebabe.zip");
+        assert_eq!(nav_db["relative_path"], "nav_db_NAV4_2604_01_cafebabe.zip");
         assert_eq!(nav_db["size_bytes"], 456);
         assert_eq!(nav_db["checksum_sha256"], "cafebabe");
         assert_eq!(nav_db["cycle"], "2604");
         assert_eq!(nav_db["cycle_version"], "01");
-        assert_eq!(
-            nav_db["metadata"]["nav_db_contract_version"],
-            NAV_DB_CONTRACT_VERSION
-        );
-        let sec = pair_value("package/by-id/NW_SEC_2604_01");
+        assert_eq!(nav_db["metadata"]["contract_id"], NAV_DB_CONTRACT_ID);
+        let sec = pair_value("package/by-id/NW_SEC_SEC1_2604_01");
         assert_eq!(sec["metadata"]["wide_angle_region_id"], "wide");
+        assert_eq!(sec["metadata"]["contract_id"], SEC_CONTRACT_ID);
     }
 
     #[test]
@@ -3034,7 +3123,7 @@ mod tests {
     #[test]
     fn nav_kv_package_inputs_include_resource_index_chart_metadata() {
         let mut resource_index = minimal_resource_index();
-        resource_index.packages[0].id = "NW_SEC_2604_01".to_string();
+        resource_index.packages[0].id = "NW_SEC_SEC1_2604_01".to_string();
         resource_index.packages[0].artifact_path = Some("products/sec_nw_2604.zip".to_string());
         resource_index.packages[0].size_bytes = 123;
         resource_index.packages[0].checksum_sha256 = "deadbeef".to_string();
@@ -3047,14 +3136,15 @@ mod tests {
         let pairs = build_nav_kv_package_pairs(&artifacts).expect("package pairs");
         let pair = pairs
             .iter()
-            .find(|pair| pair.key == "package/by-id/NW_SEC_2604_01")
+            .find(|pair| pair.key == "package/by-id/NW_SEC_SEC1_2604_01")
             .expect("sectional package by-id row");
         let value: serde_json::Value = serde_json::from_slice(&pair.value).unwrap();
 
         assert_eq!(artifacts.len(), 1);
         assert_eq!(value["metadata"]["wide_angle_max_zoom"], 7);
         assert_eq!(value["metadata"]["min_source_zoom"], 8);
-        assert_eq!(value["relative_path"], "sec_nw_2604_01_deadbeef.zip");
+        assert_eq!(value["contract_id"], SEC_CONTRACT_ID);
+        assert_eq!(value["relative_path"], "sec_nw_SEC1_2604_01_deadbeef.zip");
         assert_eq!(value["size_bytes"], 123);
     }
 
@@ -3425,11 +3515,12 @@ mod tests {
             start_valid: "2026-04-16".to_string(),
             end_valid: "2026-05-14".to_string(),
             packages: vec![BundlePackageArtifact {
-                id: "NAV_DB_2604_01".to_string(),
+                id: "NAV_DB_NAV4_2604_01".to_string(),
                 family_id: "nav-db".to_string(),
+                contract_id: NAV_DB_CONTRACT_ID.to_string(),
                 region_id: None,
-                filename: "nav_db_2604_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip".to_string(),
-                relative_path: "nav_db_2604_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip".to_string(),
+                filename: "nav_db_NAV4_2604_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip".to_string(),
+                relative_path: "nav_db_NAV4_2604_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip".to_string(),
                 cycle: Some("2604".to_string()),
                 cycle_version: Some("01".to_string()),
                 checksum_sha256: "a".repeat(64),
@@ -3440,6 +3531,7 @@ mod tests {
                 source_fetched_at_utc: Some("2026-04-15T23:00:00Z".to_string()),
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
+                ui_warning: None,
                 metadata: BTreeMap::new(),
             }],
             ancillary: vec![],
@@ -3558,11 +3650,12 @@ mod tests {
             start_valid: "2026-04-16".to_string(),
             end_valid: "2026-05-14".to_string(),
             packages: vec![BundlePackageArtifact {
-                id: "enr_l_ec_2603_01".to_string(),
-                family_id: "enr_l".to_string(),
+                id: "EC_ENR_L_ENL1_2603_01".to_string(),
+                family_id: "enr-l".to_string(),
+                contract_id: ENR_L_CONTRACT_ID.to_string(),
                 region_id: Some("ec".to_string()),
-                filename: "enr_l_ec_2603_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip".to_string(),
-                relative_path: "enr_l_ec_2603_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip".to_string(),
+                filename: "enr_l_ec_ENL1_2603_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip".to_string(),
+                relative_path: "enr_l_ec_ENL1_2603_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip".to_string(),
                 cycle: Some("2603".to_string()),
                 cycle_version: Some("01".to_string()),
                 checksum_sha256: "a".repeat(64),
@@ -3573,6 +3666,7 @@ mod tests {
                 source_fetched_at_utc: None,
                 effective_date: Some("2026-03-19".to_string()),
                 expiration_date: Some("2026-04-16".to_string()),
+                ui_warning: None,
                 metadata: BTreeMap::new(),
             }],
             ancillary: vec![],
@@ -3606,7 +3700,7 @@ mod tests {
         fs::create_dir_all(&packaged_root).unwrap();
         fs::create_dir_all(&unpacked_root).unwrap();
         let package_filename =
-            "csup_ak_2604_01_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.zip";
+            "csup_ak_CSUP1_2604_01_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.zip";
         let package_stem = zip_stem(package_filename).unwrap();
         let package_dir = unpacked_root.join(&package_stem);
         fs::create_dir_all(&package_dir).unwrap();
@@ -3623,8 +3717,9 @@ mod tests {
             start_valid: "2026-04-16".to_string(),
             end_valid: "2026-05-14".to_string(),
             packages: vec![BundlePackageArtifact {
-                id: "csup_ak_2604_01".to_string(),
+                id: "AK_CSUP_CSUP1_2604_01".to_string(),
                 family_id: "csup".to_string(),
+                contract_id: CSUP_CONTRACT_ID.to_string(),
                 region_id: Some("ak".to_string()),
                 filename: package_filename.to_string(),
                 relative_path: package_filename.to_string(),
@@ -3638,6 +3733,7 @@ mod tests {
                 source_fetched_at_utc: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
+                ui_warning: None,
                 metadata: BTreeMap::new(),
             }],
             ancillary: vec![],

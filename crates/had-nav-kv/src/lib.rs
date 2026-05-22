@@ -3,7 +3,11 @@ use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};
 
 pub const MAGIC: &[u8; 16] = b"AEROBAGNAVKV0001";
-pub const VERSION: u32 = 4;
+// Low-level binary root/page storage format. This is part of the public nav-db
+// product contract: changing it must also bump product_contracts::NAV_DB_CONTRACT_ID
+// to NAV{NAVKV_STORAGE_FORMAT}, because clients use that token before fetch.
+pub const NAVKV_STORAGE_FORMAT: u32 = 4;
+pub const VERSION: u32 = NAVKV_STORAGE_FORMAT;
 pub const HEADER_LEN: usize = 64;
 const PREFETCH_COUNT_OFFSET: usize = 56;
 const NODE_KIND_LEAF: u32 = 1;
@@ -360,7 +364,7 @@ impl NavKvRoot {
             return Err("nav_kv root has invalid magic".to_string());
         }
         let version = read_u32(root_bytes, 16)?;
-        if version != VERSION {
+        if version != NAVKV_STORAGE_FORMAT {
             return Err(format!("unsupported nav_kv version {version}"));
         }
         let entry_count = read_u32(root_bytes, 20)?;
@@ -1530,7 +1534,7 @@ fn build_root_bytes(
         .map_err(|_| "nav_kv prefetch page count exceeds u32".to_string())?;
     let mut root_bytes = Vec::with_capacity(HEADER_LEN + prefetch_pages.len() * 4);
     root_bytes.extend_from_slice(MAGIC);
-    push_u32(&mut root_bytes, VERSION);
+    push_u32(&mut root_bytes, NAVKV_STORAGE_FORMAT);
     push_u32(&mut root_bytes, entry_count);
     push_u32(&mut root_bytes, page_size);
     push_u32(&mut root_bytes, root_page);

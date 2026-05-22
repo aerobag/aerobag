@@ -25,7 +25,7 @@ pub(super) fn collect_static_raster_tile_levels(
         _ => bail!("missing world basemap build output"),
     };
     entries.push(StaticRasterCatalogEntry {
-        product_id: "world-basemap".to_string(),
+        product_id: stable_product_id_with_contract("world-basemap")?,
         label: "World Basemap".to_string(),
         chart_family: "world-basemap".to_string(),
         tile_url_root: "tiles".to_string(),
@@ -50,7 +50,9 @@ pub(super) fn collect_static_raster_tile_levels(
             _ => bail!("missing shaded relief wide-angle build output"),
         };
         entries.push(StaticRasterCatalogEntry {
-            product_id: format!("shaded-relief-{WIDE_ANGLE_REGION_ID}"),
+            product_id: stable_product_id_with_contract(&format!(
+                "shaded-relief-{WIDE_ANGLE_REGION_ID}"
+            ))?,
             label: "Wide Shaded Relief".to_string(),
             chart_family: "shaded-relief".to_string(),
             tile_url_root: String::new(),
@@ -76,7 +78,7 @@ pub(super) fn collect_static_raster_tile_levels(
                 _ => bail!("missing shaded relief build output for {}", region.code()),
             };
             entries.push(StaticRasterCatalogEntry {
-                product_id: format!("shaded-relief-{region_id}"),
+                product_id: stable_product_id_with_contract(&format!("shaded-relief-{region_id}"))?,
                 label: String::new(),
                 chart_family: "shaded-relief".to_string(),
                 tile_url_root: String::new(),
@@ -135,6 +137,7 @@ pub(super) fn build_bundle_manifest(
         .packages
         .iter()
         .map(|package| {
+            let contract_id = product_contract_id_for_family(&package.family_id)?;
             let package_path = resolve_bundle_package_source_path(config, build_manifest, package)?;
             let filename = canonical_package_filename_hashed(
                 &package.family_id,
@@ -149,6 +152,7 @@ pub(super) fn build_bundle_manifest(
             Ok(BundlePackageArtifact {
                 id: package.id.clone(),
                 family_id: package.family_id.clone(),
+                contract_id: contract_id.to_string(),
                 region_id: Some(package.region_id.clone()),
                 filename: filename.clone(),
                 relative_path: filename,
@@ -170,7 +174,8 @@ pub(super) fn build_bundle_manifest(
                 source_fetched_at_utc: None,
                 effective_date: package.effective_date.clone(),
                 expiration_date: package.expiration_date.clone(),
-                metadata: package.metadata.clone(),
+                ui_warning: None,
+                metadata: package_metadata_with_contract_id(package.metadata.clone(), contract_id),
             })
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -992,12 +997,12 @@ pub(super) fn build_nav_kv_artifact(
         ),
         ("nav_kv_page_bytes".to_string(), (64 * 1024).to_string()),
         (
-            "nav_kv_layout_version".to_string(),
-            NAV_KV_VERSION.to_string(),
+            "nav_kv_storage_format".to_string(),
+            NAV_KV_STORAGE_FORMAT.to_string(),
         ),
         (
-            "nav_db_contract_version".to_string(),
-            NAV_DB_CONTRACT_VERSION.to_string(),
+            "nav_db_contract_id".to_string(),
+            NAV_DB_CONTRACT_ID.to_string(),
         ),
         (
             "nav_kv_builder".to_string(),
@@ -1031,7 +1036,7 @@ pub(super) fn build_nav_kv_artifact(
                     NavKvPair {
                         key: "contract/nav-db".to_string(),
                         value: serde_json::to_vec(&serde_json::json!({
-                            "nav_db_contract_version": NAV_DB_CONTRACT_VERSION,
+                            "contract_id": NAV_DB_CONTRACT_ID,
                         }))
                         .context("failed to encode nav_kv contract/nav-db value")?,
                     },
@@ -1104,14 +1109,15 @@ pub(super) fn build_nav_kv_artifact(
         };
     let nav_db_sha256 = output_sha_or_hash(&record, "nav_db_zip", &nav_db_zip_source_path)?;
     let nav_db_published_filename =
-        format!("nav_db_{cycle}_{PACKAGE_CYCLE_VERSION}_{nav_db_sha256}.zip");
+        format!("nav_db_{NAV_DB_CONTRACT_ID}_{cycle}_{PACKAGE_CYCLE_VERSION}_{nav_db_sha256}.zip");
     let nav_db_package_artifact =
         publish_bundle_artifact(config, &nav_db_zip_source_path, &nav_db_published_filename)?;
     Ok(BuiltNavDbArtifacts {
         node_record: record,
         package: BundlePackageArtifact {
-            id: format!("NAV_DB_{cycle}_{PACKAGE_CYCLE_VERSION}"),
+            id: format!("NAV_DB_{NAV_DB_CONTRACT_ID}_{cycle}_{PACKAGE_CYCLE_VERSION}"),
             family_id: "nav-db".to_string(),
+            contract_id: NAV_DB_CONTRACT_ID.to_string(),
             region_id: None,
             filename: nav_db_package_artifact.filename.clone(),
             relative_path: nav_db_package_artifact.relative_path.clone(),
@@ -1144,9 +1150,10 @@ pub(super) fn build_nav_kv_artifact(
                         .first()
                         .cloned()
                 }),
+            ui_warning: None,
             metadata: BTreeMap::from([(
-                "nav_db_contract_version".to_string(),
-                serde_json::json!(NAV_DB_CONTRACT_VERSION),
+                "contract_id".to_string(),
+                serde_json::json!(NAV_DB_CONTRACT_ID),
             )]),
         },
     })
@@ -1165,6 +1172,7 @@ pub(super) fn bundle_package_artifacts_from_resource_index(
 pub(super) fn bundle_package_artifact_from_resource_package(
     package: &preprocessor_resource_index::ResourcePackage,
 ) -> anyhow::Result<BundlePackageArtifact> {
+    let contract_id = product_contract_id_for_family(&package.family_id)?;
     let artifact_path = package
         .artifact_path
         .as_deref()
@@ -1182,6 +1190,7 @@ pub(super) fn bundle_package_artifact_from_resource_package(
     Ok(BundlePackageArtifact {
         id: package.id.clone(),
         family_id: package.family_id.clone(),
+        contract_id: contract_id.to_string(),
         region_id: Some(package.region_id.clone()),
         filename: filename.clone(),
         relative_path: filename,
@@ -1195,7 +1204,8 @@ pub(super) fn bundle_package_artifact_from_resource_package(
         source_fetched_at_utc: None,
         effective_date: package.effective_date.clone(),
         expiration_date: package.expiration_date.clone(),
-        metadata: package.metadata.clone(),
+        ui_warning: None,
+        metadata: package_metadata_with_contract_id(package.metadata.clone(), contract_id),
     })
 }
 
@@ -1871,15 +1881,18 @@ pub(super) fn build_nav_kv_static_raster_catalog_entries(
     resource_index: &ResourceIndex,
     static_raster_tile_levels: &[StaticRasterCatalogEntry],
 ) -> Vec<serde_json::Value> {
+    let shaded_relief_wide_id =
+        format!("shaded-relief-{WIDE_ANGLE_REGION_ID}_{SHADED_RELIEF_CONTRACT_ID}");
     let shaded_relief_wide = static_raster_tile_levels
         .iter()
-        .find(|entry| entry.product_id == format!("shaded-relief-{WIDE_ANGLE_REGION_ID}"));
+        .find(|entry| entry.product_id == shaded_relief_wide_id);
     static_raster_tile_levels
         .iter()
-        .filter(|entry| entry.product_id != format!("shaded-relief-{WIDE_ANGLE_REGION_ID}"))
+        .filter(|entry| entry.product_id != shaded_relief_wide_id)
         .map(|entry| {
+            let base_product_id = stable_product_base_id(&entry.product_id);
             let (label, region_id, initial_viewport, tile_url_root) =
-                if let Some(region_id) = entry.product_id.strip_prefix("shaded-relief-") {
+                if let Some(region_id) = base_product_id.strip_prefix("shaded-relief-") {
                     let region_display_name = region_display_name(resource_index, region_id);
                     let region = Region::ALL
                         .iter()
@@ -1901,7 +1914,7 @@ pub(super) fn build_nav_kv_static_raster_catalog_entries(
                     )
                 };
             let levels = tile_levels_json(&entry.levels);
-            let wide_angle = if entry.product_id.starts_with("shaded-relief-") {
+            let wide_angle = if base_product_id.starts_with("shaded-relief-") {
                 shaded_relief_wide
                     .map(|wide_entry| {
                         let wide_levels = tile_levels_json(&wide_entry.levels);
@@ -2297,9 +2310,10 @@ pub(super) fn build_nav_kv_package_pairs(
     let mut package_index = Vec::with_capacity(package_artifacts.len());
     let mut pairs = Vec::with_capacity(package_artifacts.len());
     for package in package_artifacts {
-        let value = serde_json::json!({
+        let mut value = serde_json::json!({
             "id": package.id,
             "family_id": package.family_id,
+            "contract_id": package.contract_id,
             "region_id": package.region_id,
             "relative_path": package.relative_path,
             "size_bytes": package.size_bytes,
@@ -2310,12 +2324,20 @@ pub(super) fn build_nav_kv_package_pairs(
             "expiration_date": package.expiration_date,
             "metadata": package.metadata,
         });
-        package_index.push(serde_json::json!({
+        if let Some(ui_warning) = &package.ui_warning {
+            value["ui_warning"] = serde_json::json!(ui_warning);
+        }
+        let mut index_entry = serde_json::json!({
             "id": package.id,
             "family_id": package.family_id,
+            "contract_id": package.contract_id,
             "region_id": package.region_id,
             "metadata": &package.metadata,
-        }));
+        });
+        if let Some(ui_warning) = &package.ui_warning {
+            index_entry["ui_warning"] = serde_json::json!(ui_warning);
+        }
+        package_index.push(index_entry);
         pairs.push(json_pair(
             format!("package/by-id/{}", had_key_component(&package.id)),
             &value,

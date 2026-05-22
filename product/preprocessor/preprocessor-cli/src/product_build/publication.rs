@@ -1409,10 +1409,12 @@ pub(super) fn canonical_package_filename(
     original_filename: &str,
 ) -> anyhow::Result<String> {
     let cycle = package_version_from_filename(original_filename)?;
+    let contract_id = product_contract_id_for_family(family_id)?;
     Ok(format!(
-        "{}_{}_{}.zip",
+        "{}_{}_{}_{}.zip",
         family_id.replace('-', "_"),
         region_id.to_ascii_lowercase(),
+        contract_id,
         cycle
     ))
 }
@@ -1424,10 +1426,12 @@ pub(super) fn canonical_package_filename_hashed(
     checksum_sha256: &str,
 ) -> anyhow::Result<String> {
     let cycle = package_version_from_filename(original_filename)?;
+    let contract_id = product_contract_id_for_family(family_id)?;
     Ok(format!(
-        "{}_{}_{}_{}_{}.zip",
+        "{}_{}_{}_{}_{}_{}.zip",
         family_id.replace('-', "_"),
         region_id.to_ascii_lowercase(),
+        contract_id,
         cycle,
         PACKAGE_CYCLE_VERSION,
         checksum_sha256

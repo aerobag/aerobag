@@ -22,7 +22,7 @@ use crate::{
     PolygonRecord, ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance,
     ProcedureLoadOption, ProcedureOptions, ProcedureSegment, ProcedureSegmentRole,
     ProcedureSummary, ResolvedLeg, ResolvedLegSource, RouteComponent, WaypointIdentifierRecord,
-    WaypointIdentifierSuggestion, REQUIRED_NAV_DB_CONTRACT_VERSION,
+    WaypointIdentifierSuggestion, REQUIRED_NAV_DB_CONTRACT_ID,
 };
 
 const NAV_DB_ROOT_MEMBER_PATH: &str = "root";
@@ -452,7 +452,7 @@ fn nav_db_artifact_resource_index(resource_id: &str) -> Option<NavDbArtifactReso
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct NavDbContractRecord {
-    nav_db_contract_version: u32,
+    contract_id: String,
 }
 
 enum NavDbContractValidation {
@@ -464,21 +464,21 @@ enum NavDbContractValidation {
 fn validate_nav_db_contract(store: &NavKvStore) -> Result<NavDbContractValidation, String> {
     match store.get_bytes(crate::NAV_DB_CONTRACT_KEY)? {
         NavKvLookup::Hit(bytes) => match serde_json::from_slice::<NavDbContractRecord>(&bytes) {
-            Ok(record) if record.nav_db_contract_version == REQUIRED_NAV_DB_CONTRACT_VERSION => {
+            Ok(record) if record.contract_id == REQUIRED_NAV_DB_CONTRACT_ID => {
                 Ok(NavDbContractValidation::Valid)
             }
             Ok(record) => Ok(NavDbContractValidation::Invalid(format!(
-                "unsupported nav_db_contract_version {}; required {}",
-                record.nav_db_contract_version, REQUIRED_NAV_DB_CONTRACT_VERSION
+                "unsupported nav-db contract {}; required {}",
+                record.contract_id, REQUIRED_NAV_DB_CONTRACT_ID
             ))),
             Err(err) => Ok(NavDbContractValidation::Invalid(format!(
                 "invalid nav_db contract record: {err}"
             ))),
         },
         NavKvLookup::MissingKey => Ok(NavDbContractValidation::Invalid(format!(
-            "missing nav_db_contract_version {}; required {}",
+            "missing nav-db contract {}; required {}",
             crate::NAV_DB_CONTRACT_KEY,
-            REQUIRED_NAV_DB_CONTRACT_VERSION
+            REQUIRED_NAV_DB_CONTRACT_ID
         ))),
         NavKvLookup::MissingPages(pages) => Ok(NavDbContractValidation::NeedPages(pages)),
     }
@@ -3308,8 +3308,8 @@ mod tests {
 
     #[test]
     fn nav_db_open_controller_skips_bad_candidate_and_selects_readable_root() {
-        let contract = br#"{"nav_db_contract_version":1}"#;
-        let (root_bytes, pages) = build_root(&[("contract/nav-db", contract.as_slice())], 256);
+        let contract = format!(r#"{{"contract_id":"{REQUIRED_NAV_DB_CONTRACT_ID}"}}"#);
+        let (root_bytes, pages) = build_root(&[("contract/nav-db", contract.as_bytes())], 256);
         let mut controller = NavDbOpenController::new(vec![
             NavDbArtifactCandidate {
                 package_id: "NAV_DB_BAD".to_string(),
@@ -3387,7 +3387,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_db_open_controller_rejects_missing_contract_version() {
+    fn nav_db_open_controller_rejects_missing_contract_id() {
         let (root_bytes, pages) = build_root(&[("vector/manifest", b"{}")], 256);
         let mut controller = NavDbOpenController::new(vec![NavDbArtifactCandidate {
             package_id: "NAV_DB_OLD".to_string(),
@@ -3420,7 +3420,7 @@ mod tests {
             statuses[0]
                 .message
                 .as_deref()
-                .is_some_and(|message| message.contains("missing nav_db_contract_version")),
+                .is_some_and(|message| message.contains("missing nav-db contract")),
             "{statuses:?}"
         );
     }

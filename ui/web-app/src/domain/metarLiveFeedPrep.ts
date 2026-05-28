@@ -1,13 +1,17 @@
+import { getBrowserInstanceId } from "./debugLog";
+
 type MetarLiveFeedPrepRequest =
   | {
       kind: "prepare";
       id: number;
+      browserInstanceId: string;
       resourceId: string;
       resourceBytes: Uint8Array;
     }
   | {
       kind: "reset";
       id: number;
+      browserInstanceId: string;
     };
 
 type MetarLiveFeedPrepResponse =
@@ -54,6 +58,7 @@ class MetarLiveFeedPrepClient {
     const request: MetarLiveFeedPrepRequest = {
       kind: "prepare",
       id,
+      browserInstanceId: getBrowserInstanceId(),
       resourceId,
       resourceBytes,
     };
@@ -71,7 +76,11 @@ class MetarLiveFeedPrepClient {
 
   reset(): Promise<void> {
     const id = this.nextId++;
-    const request: MetarLiveFeedPrepRequest = { kind: "reset", id };
+    const request: MetarLiveFeedPrepRequest = {
+      kind: "reset",
+      id,
+      browserInstanceId: getBrowserInstanceId(),
+    };
     const result = new Promise<Uint8Array | null>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
     });

@@ -1,5 +1,5 @@
 import { loadWasmAdapterOnThisThread, type AppCoreAdapter, type UiInvalidation, type UiSession } from "./appCoreAdapter";
-import { debugLog } from "./debugLog";
+import { debugLog, setBrowserInstanceId } from "./debugLog";
 
 type WorkerCallTarget =
   | { kind: "adapter" }
@@ -9,6 +9,7 @@ type WorkerCallRequest = {
   kind: "call";
   id: number;
   sentAtEpochMs: number;
+  browserInstanceId: string;
   debugRunId?: string;
   target: WorkerCallTarget;
   method: string;
@@ -54,6 +55,7 @@ ctx.addEventListener("message", (event: MessageEvent<WorkerCallRequest>) => {
 });
 
 async function handleCall(message: WorkerCallRequest): Promise<void> {
+  setBrowserInstanceId(message.browserInstanceId);
   if (message.debugRunId) {
     (globalThis as unknown as { __aerobagPerfRunId?: string }).__aerobagPerfRunId = message.debugRunId;
   }

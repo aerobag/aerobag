@@ -5,12 +5,14 @@ type DebugLogRecord = {
   seq: number;
   ts_ms: number;
   tag: string;
+  browser_instance_id: string;
   run_id?: string;
   data?: unknown;
 };
 
 const queue: DebugLogRecord[] = [];
 let flushScheduled = false;
+let browserInstanceId = resolveBrowserInstanceId();
 
 function scheduleFlush() {
   if (
@@ -61,15 +63,48 @@ export function debugLog(tag: string, data?: unknown) {
     seq: ++seq,
     ts_ms: Math.round(performance.now()),
     tag,
+    browser_instance_id: browserInstanceId,
     ...(runId ? { run_id: runId } : {}),
     data,
   });
   scheduleFlush();
 }
 
+export function getBrowserInstanceId(): string {
+  return browserInstanceId;
+}
+
+export function setBrowserInstanceId(nextId: string): void {
+  if (nextId.length === 0) {
+    return;
+  }
+  browserInstanceId = nextId;
+  (globalThis as unknown as { __aerobagBrowserInstanceId?: string }).__aerobagBrowserInstanceId = nextId;
+}
+
 function currentDebugRunId(): string | null {
   const candidate = (globalThis as unknown as { __aerobagPerfRunId?: unknown }).__aerobagPerfRunId;
   return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
+}
+
+function resolveBrowserInstanceId(): string {
+  const global = globalThis as unknown as { __aerobagBrowserInstanceId?: unknown };
+  if (typeof global.__aerobagBrowserInstanceId === "string" && global.__aerobagBrowserInstanceId.length > 0) {
+    return global.__aerobagBrowserInstanceId;
+  }
+  const generated = createBrowserInstanceId();
+  global.__aerobagBrowserInstanceId = generated;
+  return generated;
+}
+
+function createBrowserInstanceId(): string {
+  const randomUUID = (globalThis as unknown as {
+    crypto?: { randomUUID?: () => string };
+  }).crypto?.randomUUID;
+  if (randomUUID) {
+    return randomUUID();
+  }
+  return `browser-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 export function installRustDebugLogBridge() {

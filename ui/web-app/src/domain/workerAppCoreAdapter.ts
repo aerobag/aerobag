@@ -5,7 +5,7 @@ import type {
   UiInvalidationListener,
   UiSession,
 } from "./appCoreAdapter";
-import { debugLog } from "./debugLog";
+import { debugLog, getBrowserInstanceId } from "./debugLog";
 
 type WorkerCallTarget =
   | { kind: "adapter" }
@@ -15,6 +15,7 @@ type WorkerCallRequest = {
   kind: "call";
   id: number;
   sentAtEpochMs: number;
+  browserInstanceId: string;
   debugRunId?: string;
   target: WorkerCallTarget;
   method: string;
@@ -93,6 +94,7 @@ class AppCoreWorkerClient {
       kind: "call",
       id,
       sentAtEpochMs: Date.now(),
+      browserInstanceId: getBrowserInstanceId(),
       ...(currentDebugRunId() ? { debugRunId: currentDebugRunId() ?? undefined } : {}),
       target,
       method,

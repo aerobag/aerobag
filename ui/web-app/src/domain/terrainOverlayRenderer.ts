@@ -1,4 +1,5 @@
 import type { TerrainOverlaySourceTile } from "./appCoreAdapter";
+import { getBrowserInstanceId } from "./debugLog";
 
 type TerrainRenderRequest = {
   generation: number;
@@ -18,6 +19,7 @@ export type TerrainRenderResult = {
 type TerrainWorkerRenderRequest = TerrainRenderRequest & {
   kind: "render";
   id: number;
+  browserInstanceId: string;
 };
 
 type TerrainWorkerRenderResponse =
@@ -68,6 +70,7 @@ export class TerrainOverlayRenderer {
     const message: TerrainWorkerRenderRequest = {
       kind: "render",
       id,
+      browserInstanceId: getBrowserInstanceId(),
       ...request,
     };
     return new Promise((resolve, reject) => {

@@ -4,11 +4,12 @@ import init, {
   render_terrain_warning_raw_rgba_from_packed_tiles,
 } from "@generated/app_wasm.js";
 import type { TerrainOverlaySourceTile } from "./appCoreAdapter";
-import { debugLog, installRustDebugLogBridge } from "./debugLog";
+import { debugLog, installRustDebugLogBridge, setBrowserInstanceId } from "./debugLog";
 
 type TerrainWorkerRenderRequest = {
   kind: "render";
   id: number;
+  browserInstanceId: string;
   generation: number;
   cacheKey: string;
   tileKey: string;
@@ -54,6 +55,7 @@ ctx.addEventListener("message", (event) => {
 });
 
 async function renderTerrainTile(message: TerrainWorkerRenderRequest): Promise<void> {
+  setBrowserInstanceId(message.browserInstanceId);
   const startedAt = performance.now();
   try {
     await ensureWasmReady();

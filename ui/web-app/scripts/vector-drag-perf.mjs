@@ -333,6 +333,7 @@ async function emitToken(page, tag, data) {
       seq: 0,
       ts_ms: Math.round(performance.now()),
       tag: ${JSON.stringify(tag)},
+      browser_instance_id: String(globalThis.__aerobagBrowserInstanceId ?? ''),
       run_id: ${JSON.stringify(runId)},
       data: ${JSON.stringify(data)}
     }])

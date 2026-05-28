@@ -3,18 +3,20 @@ import init, {
   prepare_metar_live_feed_resource,
   reset_metar_live_feed_preparer,
 } from "@generated/app_wasm.js";
-import { debugLog, installRustDebugLogBridge } from "./debugLog";
+import { debugLog, installRustDebugLogBridge, setBrowserInstanceId } from "./debugLog";
 
 type MetarLiveFeedPrepRequest =
   | {
       kind: "prepare";
       id: number;
+      browserInstanceId: string;
       resourceId: string;
       resourceBytes: Uint8Array;
     }
   | {
       kind: "reset";
       id: number;
+      browserInstanceId: string;
     };
 
 type MetarLiveFeedPrepResponse =
@@ -46,6 +48,7 @@ ctx.addEventListener("message", (event) => {
 });
 
 async function handleMessage(message: MetarLiveFeedPrepRequest): Promise<void> {
+  setBrowserInstanceId(message.browserInstanceId);
   const startedAt = performance.now();
   try {
     await ensureWasmReady();

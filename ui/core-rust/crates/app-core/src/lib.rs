@@ -40,7 +40,10 @@ pub use data_status::{
     DataStatusRecord, UiDataStatusBox, UiDataStatusState, UiStatusAction, UiStatusActionStyle,
     UiStatusSeverity,
 };
-pub use debug_log::{core_debug_log, core_debug_log_value, set_core_debug_logger, CoreDebugLogger};
+pub use debug_log::{
+    core_clock_ms, core_debug_log, core_debug_log_value, set_core_clock_ms, set_core_debug_logger,
+    CoreClockMs, CoreDebugLogger,
+};
 pub use errors::{AppError, AppErrorKind, AppResult};
 pub use flight_data::{
     FlightDataBannerInput, FlightDataBannerModel, FlightDataCell, FlightDataColumn,

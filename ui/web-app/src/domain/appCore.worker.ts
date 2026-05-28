@@ -8,6 +8,7 @@ type WorkerCallTarget =
 type WorkerCallRequest = {
   kind: "call";
   id: number;
+  sentAtEpochMs: number;
   target: WorkerCallTarget;
   method: string;
   args: unknown[];
@@ -52,10 +53,13 @@ ctx.addEventListener("message", (event: MessageEvent<WorkerCallRequest>) => {
 });
 
 async function handleCall(message: WorkerCallRequest): Promise<void> {
+  const startedAt = performance.now();
   try {
     const result = await dispatchCall(message);
+    logWorkerCallDone(message, startedAt);
     postResponse({ kind: "response", id: message.id, ok: true, result });
   } catch (error) {
+    logWorkerCallDone(message, startedAt, error);
     debugLog("app_core.worker.call.error", {
       target: message.target,
       method: message.method,
@@ -68,6 +72,30 @@ async function handleCall(message: WorkerCallRequest): Promise<void> {
       error: serializeError(error),
     });
   }
+}
+
+function logWorkerCallDone(message: WorkerCallRequest, startedAt: number, error?: unknown): void {
+  const elapsedMs = performance.now() - startedAt;
+  const queueWaitMs = Date.now() - message.sentAtEpochMs - elapsedMs;
+  const important =
+    message.method === "queryRasterTilePlan"
+    || message.method === "queryMapOverlay"
+    || message.method === "ingestLiveFeedSseEvents"
+    || message.method === "ingestLiveFeedSseEvent"
+    || elapsedMs >= 100
+    || queueWaitMs >= 100
+    || error !== undefined;
+  if (!important) {
+    return;
+  }
+  debugLog("app_core.worker.call.done", {
+    id: message.id,
+    target: message.target.kind,
+    method: message.method,
+    queue_wait_ms: Math.round(queueWaitMs),
+    elapsed_ms: Math.round(elapsedMs),
+    error: error instanceof Error ? error.message : error === undefined ? null : String(error),
+  });
 }
 
 async function dispatchCall(message: WorkerCallRequest): Promise<unknown> {

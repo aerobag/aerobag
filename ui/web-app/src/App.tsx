@@ -114,6 +114,7 @@ import type {
 import { airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
 import { debugLog, debugTiming, installGlobalErrorLogging } from "./domain/debugLog";
 import { resolvePackageMemberUrl } from "./domain/navKv";
+import { TerrainOverlayRenderer } from "./domain/terrainOverlayRenderer";
 
 type SurfaceSize = {
   width: number;
@@ -475,7 +476,8 @@ type TerrainTileCacheEntry = {
 
 type TerrainTileRenderTask = {
   request: TerrainOverlayTileRequest;
-  altitudeBucket: number | null;
+  altitudeBucket: number;
+  generation: number;
 };
 
 const TERRAIN_ALTITUDE_BUCKET_FT = 200;
@@ -1308,6 +1310,9 @@ export default function App() {
   const [uiInvalidationRevisions, setUiInvalidationRevisions] = useState<UiInvalidationRevisions>(
     initialUiInvalidationRevisions,
   );
+  const mapViewportGestureActiveRef = useRef(false);
+  const deferredSessionSnapshotRefreshRef = useRef<string | null>(null);
+  const sessionSnapshotRefreshInFlightRef = useRef(false);
   const [sessionSnapshot, setSessionSnapshot] = useState<UiSessionSnapshot>({
     app_state: {
       active_plan: null,
@@ -1465,11 +1470,53 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, []);
 
+  const requestSessionSnapshotRefresh = useCallback((reason: string) => {
+    if (!uiSession) {
+      return;
+    }
+    if (mapViewportGestureActiveRef.current) {
+      deferredSessionSnapshotRefreshRef.current = reason;
+      debugLog("session.snapshot.refresh.deferred_for_gesture", { reason });
+      return;
+    }
+    if (sessionSnapshotRefreshInFlightRef.current) {
+      deferredSessionSnapshotRefreshRef.current = reason;
+      debugLog("session.snapshot.refresh.coalesced", { reason });
+      return;
+    }
+    sessionSnapshotRefreshInFlightRef.current = true;
+    debugLog("session.snapshot.refresh.start", { reason });
+    void uiSession.snapshot().then((nextSnapshot) => {
+      setSessionSnapshot(nextSnapshot);
+    }).catch((error: unknown) => {
+      debugLog("session.snapshot.refresh.error", { reason, error: errorMessage(error) });
+    }).finally(() => {
+      sessionSnapshotRefreshInFlightRef.current = false;
+      const deferredReason = deferredSessionSnapshotRefreshRef.current;
+      if (deferredReason && !mapViewportGestureActiveRef.current) {
+        deferredSessionSnapshotRefreshRef.current = null;
+        requestSessionSnapshotRefresh(`coalesced:${deferredReason}`);
+      }
+    });
+  }, [uiSession]);
+
+  const handleMapViewportGestureActiveChange = useCallback((active: boolean) => {
+    mapViewportGestureActiveRef.current = active;
+    if (active) {
+      return;
+    }
+    const deferredReason = deferredSessionSnapshotRefreshRef.current;
+    if (!deferredReason) {
+      return;
+    }
+    deferredSessionSnapshotRefreshRef.current = null;
+    requestSessionSnapshotRefresh(`gesture_end:${deferredReason}`);
+  }, [requestSessionSnapshotRefresh]);
+
   useEffect(() => {
     if (!uiSession) {
       return;
     }
-    let cancelled = false;
     uiSession.setInvalidationListener((invalidations) => {
       setUiInvalidationRevisions((current) => {
         const next = { ...current };
@@ -1479,20 +1526,13 @@ export default function App() {
         return next;
       });
       if (invalidations.includes("session_snapshot")) {
-        void uiSession.snapshot().then((nextSnapshot) => {
-          if (!cancelled) {
-            setSessionSnapshot(nextSnapshot);
-          }
-        }).catch((error: unknown) => {
-          debugLog("session.snapshot.refresh.error", { error: errorMessage(error) });
-        });
+        requestSessionSnapshotRefresh("invalidation");
       }
     });
     return () => {
-      cancelled = true;
       uiSession.setInvalidationListener(null);
     };
-  }, [uiSession]);
+  }, [requestSessionSnapshotRefresh, uiSession]);
 
   useEffect(() => {
     if (!uiSession || playbackUiState.status !== "playing") {
@@ -1678,6 +1718,26 @@ export default function App() {
     };
   }, [uiSession]);
   const currentPlan = appState.active_plan;
+  const chartPageStateRequest = useMemo(() => {
+    if (!currentPlan) {
+      return null;
+    }
+    const recentAirportIds = sessionSnapshot.chart_page_state.recent_airport_ids;
+    const selectedAirportId = sessionSnapshot.chart_page_state.selected_airport_id || undefined;
+    const selectedChartId = sessionSnapshot.chart_page_state.selected_chart_id || undefined;
+    return {
+      key: JSON.stringify([currentPlan, recentAirportIds, selectedAirportId ?? null, selectedChartId ?? null]),
+      plan: currentPlan,
+      recentAirportIds,
+      selectedAirportId,
+      selectedChartId,
+    };
+  }, [
+    currentPlan,
+    sessionSnapshot.chart_page_state.recent_airport_ids,
+    sessionSnapshot.chart_page_state.selected_airport_id,
+    sessionSnapshot.chart_page_state.selected_chart_id,
+  ]);
   const planUiState = appUiState.active_plan;
   const recentAirportIds = derivedChartPageState.recent_airport_ids;
   const selectedAirportId = derivedChartPageState.selected_airport_id;
@@ -1844,16 +1904,16 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    if (!appCoreAdapter || !currentPlan) {
+    if (!appCoreAdapter || !chartPageStateRequest) {
       return;
     }
     debugTiming(
       "charts.page_state.load",
       () => appCoreAdapter.deriveChartPageState(
-        currentPlan,
-        sessionSnapshot.chart_page_state.recent_airport_ids,
-        sessionSnapshot.chart_page_state.selected_airport_id || undefined,
-        sessionSnapshot.chart_page_state.selected_chart_id || undefined,
+        chartPageStateRequest.plan,
+        chartPageStateRequest.recentAirportIds,
+        chartPageStateRequest.selectedAirportId,
+        chartPageStateRequest.selectedChartId,
       ),
     ).then((state) => {
       if (cancelled) {
@@ -1871,10 +1931,7 @@ export default function App() {
     };
   }, [
     appCoreAdapter,
-    currentPlan,
-    sessionSnapshot.chart_page_state.recent_airport_ids,
-    sessionSnapshot.chart_page_state.selected_airport_id,
-    sessionSnapshot.chart_page_state.selected_chart_id,
+    chartPageStateRequest?.key,
   ]);
 
   useEffect(() => {
@@ -2197,6 +2254,7 @@ export default function App() {
             }
           }}
           onViewportChange={setMapViewport}
+          onViewportGestureActiveChange={handleMapViewportGestureActiveChange}
           onSelectMapFamily={(familyId) => {
             if (!uiSession) {
               return;
@@ -2465,6 +2523,7 @@ function MapPage(props: {
   uiInvalidationRevisions: UiInvalidationRevisions;
   onPageTilePaintTimingComplete: (id: number) => void;
   onViewportChange: (next: MapViewportState) => void;
+  onViewportGestureActiveChange: (active: boolean) => void;
   onSelectMapFamily: (familyId: ChartFamilyId) => void;
   onSelectPage: (page: AppPage) => void;
   onOpenPlan: () => void;
@@ -2506,6 +2565,7 @@ function MapPage(props: {
     uiInvalidationRevisions,
     onPageTilePaintTimingComplete,
     onViewportChange,
+    onViewportGestureActiveChange,
     onSelectMapFamily,
     onSelectPage,
     onOpenPlan,
@@ -2580,7 +2640,8 @@ function MapPage(props: {
   const terrainTileInFlightRef = useRef<Set<string>>(new Set());
   const terrainRenderQueueRef = useRef<Map<string, TerrainTileRenderTask>>(new Map());
   const terrainRenderPumpActiveRef = useRef(false);
-  const terrainRenderSessionRef = useRef<UiSession | null>(null);
+  const terrainRendererRef = useRef<TerrainOverlayRenderer | null>(null);
+  const terrainRenderGenerationRef = useRef(0);
   const terrainCurrentBucketRef = useRef<number | null>(null);
   const terrainPendingFrameRef = useRef<TerrainPendingFrame | null>(null);
   const terrainFrameStartRef = useRef<Map<string, number>>(new Map());
@@ -2589,6 +2650,7 @@ function MapPage(props: {
   const [mapOverlayViewport, setMapOverlayViewport] = useState<MapViewportState | null>(null);
   const mapOverlayQueryRequestRef = useRef<{
     id: number;
+    requestedAt: number;
     session: UiSession;
     viewport: MapViewportState;
     center: LatLon;
@@ -2606,6 +2668,7 @@ function MapPage(props: {
   const gestureActiveRef = useRef(false);
   const viewportGestureUntilRef = useRef(0);
   const followSyncSerialRef = useRef(0);
+  const deferredFollowSyncViewportRef = useRef<MapViewportState | null>(null);
   const [followSyncPendingSerial, setFollowSyncPendingSerial] = useState(0);
   const [followTargetRetryToken, setFollowTargetRetryToken] = useState(0);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -2630,8 +2693,8 @@ function MapPage(props: {
     void (async () => {
       try {
         while (terrainRenderQueueRef.current.size > 0) {
-          const session = terrainRenderSessionRef.current;
-          if (!session) {
+          const renderer = terrainRendererRef.current;
+          if (!renderer) {
             terrainRenderQueueRef.current.clear();
             return;
           }
@@ -2649,26 +2712,28 @@ function MapPage(props: {
           if (task.altitudeBucket !== terrainCurrentBucketRef.current) {
             continue;
           }
-          if (task.altitudeBucket == null) {
-            continue;
-          }
           terrainTileInFlightRef.current.add(cacheKey);
           try {
             const tileStartedAt = performance.now();
             if (task.altitudeBucket !== terrainCurrentBucketRef.current) {
               continue;
             }
-            if (task.altitudeBucket == null) {
-              continue;
-            }
             const renderStartedAt = performance.now();
-            const rawBytes = await session.renderTerrainOverlayTileByKey(task.request.key, task.altitudeBucket);
+            const result = await renderer.renderTile({
+              generation: task.generation,
+              cacheKey,
+              tileKey: task.request.key,
+              altitudeBucketFt: task.altitudeBucket,
+              sourceTiles: task.request.source_tiles,
+            });
             const renderElapsedMs = performance.now() - renderStartedAt;
+            const rawBytes = result.rawBytes;
             const parsed = parseTerrainRawRgba(rawBytes);
             terrainTileCacheRef.current.set(cacheKey, parsed);
             debugLog("terrain.overlay.tile.done", {
               key: task.request.key,
               altitude_bucket: task.altitudeBucket,
+              generation: result.generation,
               raw_bytes: rawBytes.byteLength,
               image_width: parsed.imageWidth,
               image_height: parsed.imageHeight,
@@ -2780,13 +2845,20 @@ function MapPage(props: {
   }
 
   function pumpMapOverlayQueryQueue() {
-    if (mapOverlayQueryPumpActiveRef.current || activePointersRef.current.size > 0) {
+    if (mapOverlayQueryPumpActiveRef.current) {
+      return;
+    }
+    if (rasterTilePlanPumpActiveRef.current || rasterTilePlanPendingRef.current) {
+      debugLog("map.overlay.query.deferred_for_raster", {
+        raster_active: rasterTilePlanPumpActiveRef.current,
+        raster_pending: rasterTilePlanPendingRef.current,
+      });
       return;
     }
     mapOverlayQueryPumpActiveRef.current = true;
     void (async () => {
       try {
-        while (mapOverlayQueryPendingRef.current && activePointersRef.current.size === 0) {
+        while (mapOverlayQueryPendingRef.current) {
           mapOverlayQueryPendingRef.current = false;
           const request = mapOverlayQueryRequestRef.current;
           if (!request) {
@@ -2799,6 +2871,7 @@ function MapPage(props: {
               center: request.center,
               width: request.width,
               height: request.height,
+              queue_wait_ms: Math.round(startedAt - request.requestedAt),
             });
             const overlay = await request.session.queryMapOverlay(
               request.viewport,
@@ -2861,7 +2934,11 @@ function MapPage(props: {
         }
       } finally {
         mapOverlayQueryPumpActiveRef.current = false;
-        if (mapOverlayQueryPendingRef.current && activePointersRef.current.size === 0) {
+        if (
+          mapOverlayQueryPendingRef.current
+          && !rasterTilePlanPumpActiveRef.current
+          && !rasterTilePlanPendingRef.current
+        ) {
           pumpMapOverlayQueryQueue();
         }
       }
@@ -2930,6 +3007,8 @@ function MapPage(props: {
   const completedPageTilePaintTimingIdsRef = useRef<Set<number>>(new Set());
   const rasterTilePlanRequestRef = useRef<{
     id: number;
+    key: string;
+    requestedAt: number;
     session: UiSession;
     viewport: MapViewportState;
     width: number;
@@ -2939,11 +3018,51 @@ function MapPage(props: {
     pageTilePaintTiming: WebPageTilePaintTiming | null;
   } | null>(null);
   const rasterTilePlanRequestIdRef = useRef(0);
+  const rasterTilePlanRequestKeyRef = useRef<string | null>(null);
   const rasterTilePlanPendingRef = useRef(false);
   const rasterTilePlanPumpActiveRef = useRef(false);
+  const landedRasterTilePlanRequestIdRef = useRef(0);
+  const rasterTileImageLoadStartedAtRef = useRef<number | null>(null);
+  const knownLoadedRasterTileKeysRef = useRef<Set<string>>(new Set());
   const rasterTileKey = useCallback((tile: RasterRenderTile) =>
     `${tile.chartFamily}-${tile.packageName ?? tile.mapViewId}-${tile.drawKey}`,
   []);
+  const rasterTilePlanKey = useCallback((
+    nextViewport: MapViewportState,
+    width: number,
+    height: number,
+    devicePixelRatio: number,
+    selectedMapId: string,
+  ) => [
+    selectedMapId,
+    width,
+    height,
+    devicePixelRatio,
+    nextViewport.zoom.toFixed(6),
+    nextViewport.centerWorldX.toFixed(3),
+    nextViewport.centerWorldY.toFixed(3),
+  ].join("|"), []);
+  const reportRasterTilesReadyIfComplete = useCallback((tileList: RasterRenderTile[]) => {
+    if (page !== "map" || tileList.length === 0) {
+      return false;
+    }
+    const loadedKeys = loadedRasterTileKeysRef.current;
+    const allLoaded = tileList.every((entry) => loadedKeys.has(rasterTileKey(entry)));
+    if (!allLoaded) {
+      return false;
+    }
+    const imageLoadStartedAt = rasterTileImageLoadStartedAtRef.current;
+    if (imageLoadStartedAt !== null) {
+      requestAnimationFrame(() => {
+        debugLog("map.raster.images.done", {
+          elapsed_ms: Math.round(performance.now() - imageLoadStartedAt),
+          tiles: tileList.length,
+        });
+      });
+      rasterTileImageLoadStartedAtRef.current = null;
+    }
+    return true;
+  }, [page, rasterTileKey]);
   const completePageTilePaintTiming = useCallback((timing: WebPageTilePaintTiming, phase: "frame" | "images") => {
     if (completedPageTilePaintTimingIdsRef.current.has(timing.id)) {
       return;
@@ -2960,6 +3079,38 @@ function MapPage(props: {
       onPageTilePaintTimingComplete(timing.id);
     });
   }, [onPageTilePaintTimingComplete, tiles.length]);
+
+  function supersededRasterPlanCanLand(request: NonNullable<typeof rasterTilePlanRequestRef.current>) {
+    const current = rasterTilePlanRequestRef.current;
+    return (
+      current !== null
+      && request.id > landedRasterTilePlanRequestIdRef.current
+      && current.session === request.session
+      && current.selectedMapId === request.selectedMapId
+      && current.width === request.width
+      && current.height === request.height
+      && current.devicePixelRatio === request.devicePixelRatio
+    );
+  }
+
+  function landRasterTilePlan(request: NonNullable<typeof rasterTilePlanRequestRef.current>, nextTiles: RasterRenderTile[], superseded: boolean) {
+    landedRasterTilePlanRequestIdRef.current = request.id;
+    const nextTileKeys = nextTiles.map(rasterTileKey);
+    loadedRasterTileKeysRef.current = new Set(
+      nextTileKeys.filter((key) => knownLoadedRasterTileKeysRef.current.has(key)),
+    );
+    rasterTileImageLoadStartedAtRef.current = performance.now();
+    setFailedRasterTileKeys(new Set());
+    setTiles(nextTiles);
+    setRasterTileViewport(request.viewport);
+    debugLog("map.raster.plan.landed", {
+      id: request.id,
+      key: request.key,
+      superseded,
+      tiles: nextTiles.length,
+    });
+    reportRasterTilesReadyIfComplete(nextTiles);
+  }
 
   function pumpRasterTilePlanQueue() {
     if (rasterTilePlanPumpActiveRef.current) {
@@ -2978,11 +3129,15 @@ function MapPage(props: {
           try {
             debugLog("map.raster.plan.start", {
               id: request.id,
+              key: request.key,
               selected_map_id: request.selectedMapId,
               zoom: request.viewport.zoom,
+              center_world_x: request.viewport.centerWorldX,
+              center_world_y: request.viewport.centerWorldY,
               width: request.width,
               height: request.height,
               device_pixel_ratio: request.devicePixelRatio,
+              queue_wait_ms: Math.round(startedAt - request.requestedAt),
             });
             const plan = await request.session.queryRasterTilePlan(
               request.viewport,
@@ -2990,7 +3145,8 @@ function MapPage(props: {
               request.height,
               request.devicePixelRatio,
             );
-            if (rasterTilePlanRequestRef.current?.id !== request.id) {
+            const planSuperseded = rasterTilePlanRequestRef.current?.id !== request.id;
+            if (planSuperseded && !supersededRasterPlanCanLand(request)) {
               debugLog("map.raster.plan.stale_result", {
                 id: request.id,
                 elapsed_ms: Math.round(performance.now() - startedAt),
@@ -2998,21 +3154,34 @@ function MapPage(props: {
               });
               continue;
             }
-            request.pageTilePaintTiming && debugLog("web.page-to-map.plan", {
+            if (planSuperseded) {
+              debugLog("map.raster.plan.superseded_result", {
+                id: request.id,
+                latest_id: rasterTilePlanRequestRef.current?.id ?? null,
+                elapsed_ms: Math.round(performance.now() - startedAt),
+                tiles: plan.tiles.length,
+              });
+            }
+            if (!planSuperseded && request.pageTilePaintTiming) {
+              debugLog("web.page-to-map.plan", {
               id: request.pageTilePaintTiming.id,
               from_page: request.pageTilePaintTiming.fromPage,
               elapsed_ms: Math.round(performance.now() - request.pageTilePaintTiming.startedAt),
               tiles: plan.tiles.length,
               device_pixel_ratio: request.devicePixelRatio,
-            });
+              });
+            }
             debugLog("map.raster.plan.done", {
               id: request.id,
+              key: request.key,
+              superseded: planSuperseded,
               elapsed_ms: Math.round(performance.now() - startedAt),
               tiles: plan.tiles.length,
             });
             const resolveStartedAt = performance.now();
             const nextTiles = await Promise.all(plan.tiles.map((tile) => renderTileFromCore(tile, 1 / request.devicePixelRatio)));
-            if (rasterTilePlanRequestRef.current?.id !== request.id) {
+            const urlsSuperseded = rasterTilePlanRequestRef.current?.id !== request.id;
+            if (urlsSuperseded && !supersededRasterPlanCanLand(request)) {
               debugLog("map.raster.urls.stale_result", {
                 id: request.id,
                 elapsed_ms: Math.round(performance.now() - resolveStartedAt),
@@ -3020,15 +3189,22 @@ function MapPage(props: {
               });
               continue;
             }
+            if (urlsSuperseded && !planSuperseded) {
+              debugLog("map.raster.urls.superseded_result", {
+                id: request.id,
+                latest_id: rasterTilePlanRequestRef.current?.id ?? null,
+                elapsed_ms: Math.round(performance.now() - resolveStartedAt),
+                tiles: nextTiles.length,
+              });
+            }
             debugLog("map.raster.urls.done", {
               id: request.id,
+              key: request.key,
+              superseded: urlsSuperseded,
               elapsed_ms: Math.round(performance.now() - resolveStartedAt),
               tiles: nextTiles.length,
             });
-            loadedRasterTileKeysRef.current = new Set();
-            setFailedRasterTileKeys(new Set());
-            setTiles(nextTiles);
-            setRasterTileViewport(request.viewport);
+            landRasterTilePlan(request, nextTiles, urlsSuperseded);
           } catch (error) {
             if (rasterTilePlanRequestRef.current?.id !== request.id) {
               debugLog("map.raster.plan.stale_error", {
@@ -3052,6 +3228,8 @@ function MapPage(props: {
         rasterTilePlanPumpActiveRef.current = false;
         if (rasterTilePlanPendingRef.current) {
           pumpRasterTilePlanQueue();
+        } else if (mapOverlayQueryPendingRef.current) {
+          pumpMapOverlayQueryQueue();
         }
       }
     })();
@@ -3066,8 +3244,21 @@ function MapPage(props: {
       return;
     }
     const devicePixelRatio = window.devicePixelRatio || 1;
+    const key = rasterTilePlanKey(
+      viewport,
+      surfaceSize.width,
+      surfaceSize.height,
+      devicePixelRatio,
+      selectedMap.selected_map_id,
+    );
+    if (rasterTilePlanRequestKeyRef.current === key) {
+      return;
+    }
+    rasterTilePlanRequestKeyRef.current = key;
     rasterTilePlanRequestRef.current = {
       id: ++rasterTilePlanRequestIdRef.current,
+      key,
+      requestedAt: performance.now(),
       session: uiSession,
       viewport,
       width: surfaceSize.width,
@@ -3078,7 +3269,7 @@ function MapPage(props: {
     };
     rasterTilePlanPendingRef.current = true;
     pumpRasterTilePlanQueue();
-  }, [pageTilePaintTiming, selectedMap.selected_map_id, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
+  }, [rasterTilePlanKey, selectedMap.selected_map_id, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
   useEffect(() => {
     if (page !== "map" || !pageTilePaintTiming || tiles.length === 0) {
       return;
@@ -3103,6 +3294,10 @@ function MapPage(props: {
     ownship.orientation_deg?.toFixed(0) ?? "none",
     ownship.speed_kt?.toFixed(0) ?? "none",
   ].join(":");
+  const mapOverlayLayersVisible =
+    mapLayerState.vectors.visible
+    || mapLayerState.metars.visible
+    || mapLayerState.offline_regions.visible;
   const setMapLayerVisible = useCallback(async (layerId: MapLayerId, visible: boolean) => {
     if (!uiSession || layerToggleBusyId !== null) {
       return;
@@ -3134,14 +3329,17 @@ function MapPage(props: {
   }, [flightPlanRoute, surfaceSize.height, surfaceSize.width, viewport]);
 
   useEffect(() => {
+    terrainRendererRef.current = new TerrainOverlayRenderer();
     const cache = terrainTileCacheRef.current;
     return () => {
+      terrainRendererRef.current?.destroy();
+      terrainRendererRef.current = null;
       cache.clear();
       terrainPendingFrameRef.current = null;
       terrainFrameStartRef.current.clear();
       terrainTileInFlightRef.current.clear();
       terrainRenderQueueRef.current.clear();
-      terrainRenderSessionRef.current = null;
+      terrainRenderGenerationRef.current += 1;
     };
   }, []);
 
@@ -3150,28 +3348,28 @@ function MapPage(props: {
 
   useEffect(() => {
     if (!mapIsVisible || !uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
-      terrainRenderSessionRef.current = null;
       terrainCurrentBucketRef.current = null;
       terrainPendingFrameRef.current = null;
       terrainRenderQueueRef.current.clear();
+      terrainRenderGenerationRef.current += 1;
       setTerrainOverlay({ query: null, images: [] });
       return;
     }
     if (!mapLayerState.terrain_warning.visible) {
-      terrainRenderSessionRef.current = null;
       terrainCurrentBucketRef.current = null;
       terrainPendingFrameRef.current = null;
       terrainRenderQueueRef.current.clear();
+      terrainRenderGenerationRef.current += 1;
       setTerrainOverlay({ query: null, images: [] });
       return;
     }
     if (terrainAltitudeBucket == null) {
       terrainPendingFrameRef.current = null;
       terrainRenderQueueRef.current.clear();
+      terrainRenderGenerationRef.current += 1;
       setTerrainOverlay((current) => current.images.length === 0 ? current : { query: current.query, images: [] });
     }
     const session = uiSession;
-    terrainRenderSessionRef.current = session;
     let cancelled = false;
 
     async function syncTerrainOverlay() {
@@ -3190,6 +3388,7 @@ function MapPage(props: {
           zoom: viewport.zoom,
         });
         terrainPendingFrameRef.current = null;
+        terrainRenderGenerationRef.current += 1;
         setTerrainOverlay({ query, images: [] });
         return;
       }
@@ -3201,9 +3400,12 @@ function MapPage(props: {
         });
         terrainPendingFrameRef.current = null;
         terrainRenderQueueRef.current.clear();
+        terrainRenderGenerationRef.current += 1;
         setTerrainOverlay({ query, images: [] });
         return;
       }
+      const generation = terrainRenderGenerationRef.current + 1;
+      terrainRenderGenerationRef.current = generation;
       terrainPendingFrameRef.current = { query, altitudeBucket: terrainAltitudeBucket };
       const cache = terrainTileCacheRef.current;
       const inFlight = terrainTileInFlightRef.current;
@@ -3228,7 +3430,7 @@ function MapPage(props: {
       for (const request of missingRequests) {
         const key = terrainCacheKey(request, terrainAltitudeBucket);
         if (!cache.has(key) && !inFlight.has(key)) {
-          terrainRenderQueueRef.current.set(key, { request, altitudeBucket: terrainAltitudeBucket });
+          terrainRenderQueueRef.current.set(key, { request, altitudeBucket: terrainAltitudeBucket, generation });
         }
       }
       const renderPlanKey = `${terrainAltitudeBucket}:${readyImages?.length ?? 0}:${missingRequests.length}:${missingRequests.map((request) => request.key).join("|")}`;
@@ -3416,9 +3618,18 @@ function MapPage(props: {
   }, [onHighLatencyWarning, plan.id, plan.version, plan.guidance, plan.resolved_legs, uiInvalidationRevisions.flight_plan_route, uiSession]);
 
   useEffect(() => {
-    if (!mapIsVisible) {
+    if (!mapIsVisible || !mapOverlayLayersVisible) {
       mapOverlayQueryRequestRef.current = null;
       mapOverlayQueryPendingRef.current = false;
+      setMapOverlay({
+        visible_features: [],
+        visible_metars: [],
+        visible_pireps: [],
+        airspace_paths: [],
+        tfr_paths: [],
+        airspace_labels: [],
+        offline_regions: [],
+      });
       return;
     }
     if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
@@ -3437,6 +3648,7 @@ function MapPage(props: {
     }
     mapOverlayQueryRequestRef.current = {
       id: ++mapOverlayQueryRequestIdRef.current,
+      requestedAt: performance.now(),
       session: uiSession,
       viewport,
       center,
@@ -3444,18 +3656,12 @@ function MapPage(props: {
       height: surfaceSize.height,
     };
     mapOverlayQueryPendingRef.current = true;
-    if (activePointersRef.current.size > 0) {
-      debugLog("map.overlay.query.deferred_for_gesture", {
-        zoom: viewport.zoom,
-        center,
-      });
-      return;
-    }
     pumpMapOverlayQueryQueue();
   }, [
     mapLayerState.metars.visible,
     mapLayerState.offline_regions.visible,
     mapLayerState.vectors.visible,
+    mapOverlayLayersVisible,
     mapIsVisible,
     mapOverlayOwnshipKey,
     onDebugWarning,
@@ -3564,10 +3770,28 @@ function MapPage(props: {
     viewportGestureUntilRef.current = Math.max(viewportGestureUntilRef.current, Date.now() + durationMs);
   }
 
+  function setViewportGestureActive(active: boolean) {
+    if (gestureActiveRef.current === active) {
+      return;
+    }
+    gestureActiveRef.current = active;
+    onViewportGestureActiveChange(active);
+  }
+
   function syncFollowStateForViewport(nextViewport: MapViewportState) {
     if (!uiSession || !mapFollowUiState.following || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return;
     }
+    if (gestureActiveRef.current) {
+      deferredFollowSyncViewportRef.current = nextViewport;
+      debugLog("map.follow.sync.deferred_for_gesture", {
+        zoom: nextViewport.zoom,
+        center_world_x: nextViewport.centerWorldX,
+        center_world_y: nextViewport.centerWorldY,
+      });
+      return;
+    }
+    deferredFollowSyncViewportRef.current = null;
     const serial = followSyncSerialRef.current + 1;
     followSyncSerialRef.current = serial;
     setFollowSyncPendingSerial(serial);
@@ -3593,6 +3817,15 @@ function MapPage(props: {
           setFollowSyncPendingSerial(0);
         }
       });
+  }
+
+  function flushDeferredFollowSync() {
+    const nextViewport = deferredFollowSyncViewportRef.current;
+    if (!nextViewport) {
+      return;
+    }
+    deferredFollowSyncViewportRef.current = null;
+    syncFollowStateForViewport(nextViewport);
   }
 
   useEffect(() => {
@@ -3654,7 +3887,7 @@ function MapPage(props: {
     const rect = event.currentTarget.getBoundingClientRect();
     const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
     activePointersRef.current.set(event.pointerId, point);
-    gestureActiveRef.current = activePointersRef.current.size > 0;
+    setViewportGestureActive(activePointersRef.current.size > 0);
     event.currentTarget.setPointerCapture(event.pointerId);
     if (activePointersRef.current.size === 1) {
       dragRef.current = { id: event.pointerId, last: point };
@@ -3743,8 +3976,9 @@ function MapPage(props: {
   function handlePointerRelease(event: React.PointerEvent<HTMLDivElement>) {
     const clickCandidate = clickCandidateRef.current;
     activePointersRef.current.delete(event.pointerId);
-    gestureActiveRef.current = activePointersRef.current.size > 0;
+    setViewportGestureActive(activePointersRef.current.size > 0);
     if (activePointersRef.current.size === 0) {
+      flushDeferredFollowSync();
       pumpRasterTilePlanQueue();
       pumpMapOverlayQueryQueue();
     }
@@ -3789,8 +4023,10 @@ function MapPage(props: {
     if (clickCandidateRef.current?.pointerId === event.pointerId) {
       clickCandidateRef.current = null;
     }
-    gestureActiveRef.current = activePointersRef.current.size > 0;
+    setViewportGestureActive(activePointersRef.current.size > 0);
     if (activePointersRef.current.size === 0) {
+      flushDeferredFollowSync();
+      pumpRasterTilePlanQueue();
       pumpMapOverlayQueryQueue();
     }
     pinchRef.current = null;
@@ -3944,13 +4180,15 @@ function MapPage(props: {
     reportFirstVisualReady();
     const key = rasterTileKey(tile);
     loadedRasterTileKeysRef.current.add(key);
-    const timing = pageTilePaintTiming;
-    if (!timing || page !== "map" || tiles.length === 0) {
+    knownLoadedRasterTileKeysRef.current.add(key);
+    if (page !== "map" || tiles.length === 0) {
       return;
     }
-    const loadedKeys = loadedRasterTileKeysRef.current;
-    const allLoaded = tiles.every((entry) => loadedKeys.has(rasterTileKey(entry)));
-    if (!allLoaded) {
+    if (!reportRasterTilesReadyIfComplete(tiles)) {
+      return;
+    }
+    const timing = pageTilePaintTiming;
+    if (!timing) {
       return;
     }
     debugLog("web.page-to-map.images", {
@@ -3964,6 +4202,8 @@ function MapPage(props: {
 
   function reportRasterTileError(tile: RasterRenderTile) {
     const key = rasterTileKey(tile);
+    loadedRasterTileKeysRef.current.add(key);
+    knownLoadedRasterTileKeysRef.current.add(key);
     setFailedRasterTileKeys((current) => {
       if (current.has(key)) {
         return current;

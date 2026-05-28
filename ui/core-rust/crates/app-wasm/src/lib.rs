@@ -15,6 +15,13 @@ use js_sys::{Function, Reflect};
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 extern "C" {
+    #[wasm_bindgen(js_namespace = performance, js_name = now)]
+    fn performance_now() -> f64;
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
     #[wasm_bindgen(js_namespace = Date, js_name = now)]
     fn date_now() -> f64;
 }
@@ -298,6 +305,17 @@ pub fn nav_kv_destroy(handle: u32) {
 #[wasm_bindgen]
 pub fn install_rust_debug_logger() {
     app_core::set_core_debug_logger(Some(log_core_debug_to_js));
+    app_core::set_core_clock_ms(Some(core_clock_ms_to_js));
+}
+
+#[cfg(target_arch = "wasm32")]
+fn core_clock_ms_to_js() -> f64 {
+    performance_now()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn core_clock_ms_to_js() -> f64 {
+    0.0
 }
 
 fn log_core_debug_to_js(tag: &str, data: &serde_json::Value) {

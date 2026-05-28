@@ -116,11 +116,8 @@ pub enum TerrainOverlayStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TerrainOverlayTileRequest {
     pub key: String,
-    #[serde(skip)]
     pub product_id: String,
-    #[serde(skip)]
     pub path: String,
-    #[serde(skip)]
     pub source_tiles: Vec<TerrainOverlaySourceTile>,
     pub z: u32,
     pub x: u32,
@@ -134,6 +131,8 @@ pub struct TerrainOverlayTileRequest {
 pub struct TerrainOverlaySourceTile {
     pub product_id: String,
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<crate::CoreResourceRequest>,
 }
 
 pub fn query_terrain_overlay(
@@ -472,6 +471,7 @@ fn terrain_tile_requests_with_available_packages(
                         .map(|source_product_id| TerrainOverlaySourceTile {
                             product_id: (*source_product_id).to_string(),
                             path: path.clone(),
+                            resource: None,
                         })
                         .collect(),
                     z: terrain_zoom,

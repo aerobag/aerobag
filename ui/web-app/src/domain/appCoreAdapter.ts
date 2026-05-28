@@ -403,8 +403,30 @@ export type TerrainOverlayStatus =
   | { state: "unavailable"; reason: string }
   | { state: "ready"; count: number };
 
+export type CoreResourceSource =
+  | { kind: "public_url"; url: string }
+  | { kind: "package_member"; package_id: string; filename: string; member_path: string }
+  | { kind: "installed_artifact_member"; filename: string; member_path: string }
+  | { kind: "nav_kv_member"; member_path: string }
+  | { kind: "unavailable"; message: string };
+
+export type CoreResourceRequest = {
+  id: string;
+  source: CoreResourceSource;
+  optional?: boolean;
+};
+
+export type TerrainOverlaySourceTile = {
+  product_id: string;
+  path: string;
+  resource?: CoreResourceRequest | null;
+};
+
 export type TerrainOverlayTileRequest = {
   key: string;
+  product_id: string;
+  path: string;
+  source_tiles: TerrainOverlaySourceTile[];
   z: number;
   x: number;
   y_tms: number;
@@ -487,6 +509,27 @@ export type RasterTileDraw = {
 export type RasterTilePlan = {
   selected_map_id: string;
   tiles: RasterTileDraw[];
+  debug_timing?: {
+    planner_total_ms: number;
+    planner_group_ms: number;
+    planner_render_ms: number;
+    planner_dedupe_ms: number;
+    planner_draw_ms: number;
+    planner_sort_ms: number;
+    planner_families: number;
+    planner_displayed_maps: number;
+    planner_planned_tiles: number;
+    planner_deduped_tiles: number;
+    planner_tiles: number;
+    session_total_ms?: number;
+    session_lock_ms?: number;
+    session_advance_ms?: number;
+    session_freshness_ms?: number;
+    session_catalog_filter_ms?: number;
+    session_source_displayed_maps?: number;
+    session_source_available_maps?: number;
+    session_displayed_maps?: number;
+  };
 };
 
 export interface UiSession {
@@ -1264,18 +1307,40 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           ),
         ),
       queryRasterTilePlan: async (viewport, widthPx, heightPx, devicePixelRatio = 1) =>
-        withSessionRetry(async () =>
-          JSON.parse(
-            await this.module.get_raster_tile_plan_in_session_with_display_scale(
-              handle,
-              JSON.stringify(coreViewportForMap(viewport)),
-              widthPx,
-              heightPx,
-              devicePixelRatio,
-              Date.now(),
-            ),
-          ) as RasterTilePlan,
-        ),
+        withSessionRetry(async () => {
+          const totalStartedAt = performance.now();
+          const stringifyStartedAt = performance.now();
+          const viewportJson = JSON.stringify(coreViewportForMap(viewport));
+          const stringifyMs = performance.now() - stringifyStartedAt;
+          const wasmStartedAt = performance.now();
+          const planJson = await this.module.get_raster_tile_plan_in_session_with_display_scale(
+            handle,
+            viewportJson,
+            widthPx,
+            heightPx,
+            devicePixelRatio,
+            Date.now(),
+          );
+          const wasmMs = performance.now() - wasmStartedAt;
+          const parseStartedAt = performance.now();
+          const plan = JSON.parse(planJson) as RasterTilePlan;
+          const parseMs = performance.now() - parseStartedAt;
+          const totalMs = performance.now() - totalStartedAt;
+          debugLog("raster.tile_plan.adapter_timing", {
+            total_ms: Math.round(totalMs),
+            stringify_ms: Math.round(stringifyMs),
+            wasm_ms: Math.round(wasmMs),
+            parse_ms: Math.round(parseMs),
+            json_bytes: planJson.length,
+            tiles: plan.tiles.length,
+            core_timing: plan.debug_timing ?? null,
+            width_px: widthPx,
+            height_px: heightPx,
+            device_pixel_ratio: devicePixelRatio,
+            zoom: viewport.zoom,
+          });
+          return plan;
+        }),
       renderTerrainOverlayTileByKey: async (tileKey, aircraftAltitudeFt) =>
         withSessionRetry(async () =>
           new Uint8Array(await this.module.render_terrain_overlay_tile_by_key_in_session(handle, tileKey, aircraftAltitudeFt)),

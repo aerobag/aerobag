@@ -13,6 +13,7 @@ type WorkerCallTarget =
 type WorkerCallRequest = {
   kind: "call";
   id: number;
+  sentAtEpochMs: number;
   target: WorkerCallTarget;
   method: string;
   args: unknown[];
@@ -86,6 +87,7 @@ class AppCoreWorkerClient {
     const message: WorkerCallRequest = {
       kind: "call",
       id,
+      sentAtEpochMs: Date.now(),
       target,
       method,
       args,

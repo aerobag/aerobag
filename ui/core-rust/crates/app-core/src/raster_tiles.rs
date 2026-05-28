@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{LatLon, MapViewport};
+use crate::{core_clock_ms, LatLon, MapViewport};
 
 const WORLD_SIZE: f64 = 256.0;
 const MAX_LATITUDE: f64 = 85.05112878;
@@ -135,6 +135,39 @@ pub struct RasterTileBounds {
 pub struct RasterTilePlan {
     pub selected_map_id: String,
     pub tiles: Vec<RasterTileDraw>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debug_timing: Option<RasterTilePlanDebugTiming>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RasterTilePlanDebugTiming {
+    pub planner_total_ms: u64,
+    pub planner_group_ms: u64,
+    pub planner_render_ms: u64,
+    pub planner_dedupe_ms: u64,
+    pub planner_draw_ms: u64,
+    pub planner_sort_ms: u64,
+    pub planner_families: usize,
+    pub planner_displayed_maps: usize,
+    pub planner_planned_tiles: usize,
+    pub planner_deduped_tiles: usize,
+    pub planner_tiles: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_total_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_lock_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_advance_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_freshness_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_catalog_filter_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_source_displayed_maps: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_source_available_maps: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_displayed_maps: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -362,10 +395,12 @@ pub fn raster_tile_plan_with_options(
     height_px: f64,
     options: RasterTilePlanOptions,
 ) -> RasterTilePlan {
+    let total_started_at = core_clock_ms();
     if width_px <= 0.0 || height_px <= 0.0 {
         return RasterTilePlan {
             selected_map_id: catalog.selected_map_id.clone(),
             tiles: Vec::new(),
+            debug_timing: None,
         };
     }
     let device_pixel_ratio =
@@ -386,6 +421,7 @@ pub fn raster_tile_plan_with_options(
     };
     let planning_width_px = width_px * device_pixel_ratio;
     let planning_height_px = height_px * device_pixel_ratio;
+    let group_started_at = core_clock_ms();
     let mut by_family: HashMap<String, Vec<(String, RasterMapViewOption)>> = HashMap::new();
     for view in &catalog.displayed_maps {
         by_family
@@ -393,12 +429,14 @@ pub fn raster_tile_plan_with_options(
             .or_default()
             .push((view.id.clone(), view.clone()));
     }
+    let group_ms = elapsed_ms(group_started_at);
     let mut planned = Vec::new();
     let selected_region_id = catalog
         .displayed_maps
         .iter()
         .find(|view| view.id == catalog.selected_map_id)
         .map(|view| view.region_id.as_str());
+    let render_started_at = core_clock_ms();
     for family_views in by_family.values() {
         planned.extend(render_tiles_for_family(
             family_views,
@@ -409,10 +447,19 @@ pub fn raster_tile_plan_with_options(
             options,
         ));
     }
-    let mut tiles = dedupe_tiles(planned)
+    let render_ms = elapsed_ms(render_started_at);
+    let planned_count = planned.len();
+    let dedupe_started_at = core_clock_ms();
+    let deduped = dedupe_tiles(planned);
+    let deduped_count = deduped.len();
+    let dedupe_ms = elapsed_ms(dedupe_started_at);
+    let draw_started_at = core_clock_ms();
+    let mut tiles = deduped
         .into_iter()
         .map(|tile| planned_tile_to_draw(tile, options))
         .collect::<Vec<_>>();
+    let draw_ms = elapsed_ms(draw_started_at);
+    let sort_started_at = core_clock_ms();
     tiles.sort_by(|left, right| {
         left.z_order
             .cmp(&right.z_order)
@@ -420,10 +467,43 @@ pub fn raster_tile_plan_with_options(
             .then(left.x.cmp(&right.x))
             .then(left.draw_key.cmp(&right.draw_key))
     });
+    let sort_ms = elapsed_ms(sort_started_at);
+    let debug_timing = total_started_at.map(|started_at| RasterTilePlanDebugTiming {
+        planner_total_ms: elapsed_ms(Some(started_at)),
+        planner_group_ms: group_ms,
+        planner_render_ms: render_ms,
+        planner_dedupe_ms: dedupe_ms,
+        planner_draw_ms: draw_ms,
+        planner_sort_ms: sort_ms,
+        planner_families: by_family.len(),
+        planner_displayed_maps: catalog.displayed_maps.len(),
+        planner_planned_tiles: planned_count,
+        planner_deduped_tiles: deduped_count,
+        planner_tiles: tiles.len(),
+        session_total_ms: None,
+        session_lock_ms: None,
+        session_advance_ms: None,
+        session_freshness_ms: None,
+        session_catalog_filter_ms: None,
+        session_source_displayed_maps: None,
+        session_source_available_maps: None,
+        session_displayed_maps: None,
+    });
     RasterTilePlan {
         selected_map_id: catalog.selected_map_id.clone(),
         tiles,
+        debug_timing,
     }
+}
+
+fn elapsed_ms(started_at: Option<f64>) -> u64 {
+    let Some(started_at) = started_at else {
+        return 0;
+    };
+    let Some(now_ms) = core_clock_ms() else {
+        return 0;
+    };
+    (now_ms - started_at).max(0.0).round() as u64
 }
 
 fn render_tiles_for_family(

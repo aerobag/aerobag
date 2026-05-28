@@ -1389,7 +1389,6 @@ pub fn get_raster_tile_plan_in_session_at_epoch_ms(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     advance_session_wall_clock(session, epoch_ms);
-    sync_cycle_product_freshness_status_records(session);
     let Some(catalog) = session.raster_map_catalog.as_ref() else {
         return Err(AppError {
             kind: AppErrorKind::Internal,
@@ -1434,7 +1433,6 @@ pub fn get_raster_tile_plan_in_session_with_options_at_epoch_ms(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     advance_session_wall_clock(session, epoch_ms);
-    sync_cycle_product_freshness_status_records(session);
     let Some(catalog) = session.raster_map_catalog.as_ref() else {
         return Err(AppError {
             kind: AppErrorKind::Internal,
@@ -1472,16 +1470,23 @@ pub fn get_raster_tile_plan_in_session_with_display_scale_at_epoch_ms(
     device_pixel_ratio: f64,
     epoch_ms: i64,
 ) -> AppResult<RasterTilePlan> {
+    let total_started_at = crate::core_clock_ms();
+    let lock_started_at = crate::core_clock_ms();
     let mut sessions = lock_sessions();
+    let lock_ms = elapsed_ms(lock_started_at);
     let session = session_mut(&mut sessions, handle)?;
+    let advance_started_at = crate::core_clock_ms();
     advance_session_wall_clock(session, epoch_ms);
-    sync_cycle_product_freshness_status_records(session);
+    let advance_ms = elapsed_ms(advance_started_at);
+    let freshness_ms = 0;
     let Some(catalog) = session.raster_map_catalog.as_ref() else {
         return Err(AppError {
             kind: AppErrorKind::Internal,
             message: "session missing raster map catalog".to_string(),
         });
     };
+    let source_displayed_maps = catalog.displayed_maps.len();
+    let source_available_maps = catalog.available_maps.len();
     let options = crate::RasterTilePlanOptions {
         max_tile_display_multiplier: if session.debug_state.fast_tiles {
             2.0
@@ -1491,10 +1496,34 @@ pub fn get_raster_tile_plan_in_session_with_display_scale_at_epoch_ms(
         device_pixel_ratio,
         resource_mode: raster_resource_mode_for_policy(session.resource_policy),
     };
+    let catalog_started_at = crate::core_clock_ms();
     let catalog = raster_catalog_for_layer_state(catalog, &session.map_layer_state);
-    Ok(crate::raster_tile_plan_with_options(
-        &catalog, &viewport, width_px, height_px, options,
-    ))
+    let catalog_filter_ms = elapsed_ms(catalog_started_at);
+    let displayed_maps = catalog.displayed_maps.len();
+    let mut plan =
+        crate::raster_tile_plan_with_options(&catalog, &viewport, width_px, height_px, options);
+    let session_total_ms = elapsed_ms(total_started_at);
+    if let Some(timing) = plan.debug_timing.as_mut() {
+        timing.session_total_ms = Some(session_total_ms);
+        timing.session_lock_ms = Some(lock_ms);
+        timing.session_advance_ms = Some(advance_ms);
+        timing.session_freshness_ms = Some(freshness_ms);
+        timing.session_catalog_filter_ms = Some(catalog_filter_ms);
+        timing.session_source_displayed_maps = Some(source_displayed_maps);
+        timing.session_source_available_maps = Some(source_available_maps);
+        timing.session_displayed_maps = Some(displayed_maps);
+    }
+    Ok(plan)
+}
+
+fn elapsed_ms(started_at: Option<f64>) -> u64 {
+    let Some(started_at) = started_at else {
+        return 0;
+    };
+    let Some(now_ms) = crate::core_clock_ms() else {
+        return 0;
+    };
+    (now_ms - started_at).max(0.0).round() as u64
 }
 
 pub fn set_map_layer_enabled_in_session(
@@ -4429,30 +4458,6 @@ fn weather_overlay_resources(
     Vec::new()
 }
 
-fn extend_package_resource_requests(
-    session: &UiSession,
-    resources: &mut Vec<CoreResourceRequest>,
-    target_resource_id: &str,
-    package_id: &str,
-    member_path: &str,
-    optional: bool,
-) {
-    match session.publication_resolver.package_resource_requests(
-        target_resource_id,
-        package_id,
-        member_path,
-        optional,
-    ) {
-        Ok(mut requested) => resources.append(&mut requested),
-        Err(_) if optional => {}
-        Err(message) => resources.push(CoreResourceRequest::unavailable(
-            target_resource_id,
-            message,
-            optional,
-        )),
-    }
-}
-
 fn dedupe_resource_requests(resources: Vec<CoreResourceRequest>) -> Vec<CoreResourceRequest> {
     let mut by_id = HashMap::new();
     for resource in resources {
@@ -4614,23 +4619,86 @@ pub fn get_terrain_overlay_in_session_at_epoch_ms(
         kinematics.position.lat.is_finite() && kinematics.position.lon.is_finite()
     });
     let has_altitude = ownship_terrain_altitude_ft(session).is_some();
-    let query =
+    let mut query =
         crate::query_terrain_overlay(&viewport, width_px, height_px, has_position, has_altitude);
-    let resources = terrain_overlay_resources(session, &query);
-    if let Some(reason) = first_unavailable_resource_message(&resources) {
-        return complete_terrain_overlay_outcome_with_invalidations(
-            session,
-            TerrainOverlayQueryResult {
-                status: crate::TerrainOverlayStatus::Unavailable { reason },
-                tile_requests: Vec::new(),
-            },
-            freshness_invalidations,
-        );
-    }
-    if !resources.is_empty() {
-        return Ok(HadOperationOutcome::NeedResources { resources });
+    match resolve_terrain_overlay_source_resources(session, &mut query) {
+        TerrainSourceResolution::NeedResources(resources) => {
+            return Ok(HadOperationOutcome::NeedResources { resources });
+        }
+        TerrainSourceResolution::Unavailable { reason } => {
+            return complete_terrain_overlay_outcome_with_invalidations(
+                session,
+                TerrainOverlayQueryResult {
+                    status: crate::TerrainOverlayStatus::Unavailable { reason },
+                    tile_requests: Vec::new(),
+                },
+                freshness_invalidations,
+            );
+        }
+        TerrainSourceResolution::Resolved => {}
     }
     complete_terrain_overlay_outcome_with_invalidations(session, query, freshness_invalidations)
+}
+
+enum TerrainSourceResolution {
+    Resolved,
+    NeedResources(Vec<CoreResourceRequest>),
+    Unavailable { reason: String },
+}
+
+fn resolve_terrain_overlay_source_resources(
+    session: &UiSession,
+    query: &mut TerrainOverlayQueryResult,
+) -> TerrainSourceResolution {
+    let mut metadata_resources = Vec::new();
+    for request in &mut query.tile_requests {
+        if request.source_tiles.is_empty() {
+            request.source_tiles = terrain_source_tiles(request);
+        }
+        for source_tile in &mut request.source_tiles {
+            let key = terrain_source_tile_cache_key(&source_tile.product_id, &source_tile.path);
+            let target_resource_id = format!("terrain/source/{key}");
+            let requested = match session.publication_resolver.package_resource_requests(
+                &target_resource_id,
+                &source_tile.product_id,
+                &source_tile.path,
+                false,
+            ) {
+                Ok(requested) => requested,
+                Err(message) => {
+                    return TerrainSourceResolution::Unavailable {
+                        reason: format!("{target_resource_id}: {message}"),
+                    };
+                }
+            };
+            let mut resolved_source = false;
+            let mut requested_metadata = false;
+            for resource in requested {
+                if resource.id == target_resource_id {
+                    if let CoreResourceSource::Unavailable { message } = &resource.source {
+                        return TerrainSourceResolution::Unavailable {
+                            reason: format!("{}: {message}", resource.id),
+                        };
+                    }
+                    source_tile.resource = Some(resource);
+                    resolved_source = true;
+                } else {
+                    requested_metadata = true;
+                    metadata_resources.push(resource);
+                }
+            }
+            if !resolved_source && !requested_metadata {
+                return TerrainSourceResolution::Unavailable {
+                    reason: format!("{target_resource_id}: package resolver returned no source"),
+                };
+            }
+        }
+    }
+    if !metadata_resources.is_empty() {
+        TerrainSourceResolution::NeedResources(dedupe_resource_requests(metadata_resources))
+    } else {
+        TerrainSourceResolution::Resolved
+    }
 }
 
 pub fn get_nexrad_overlay_in_session(
@@ -5140,41 +5208,6 @@ fn world_to_lat_lon(world_x: f64, world_y: f64) -> LatLon {
     LatLon { lat, lon }
 }
 
-fn terrain_overlay_resources(
-    session: &UiSession,
-    query: &TerrainOverlayQueryResult,
-) -> Vec<CoreResourceRequest> {
-    let mut resources = Vec::new();
-    for request in &query.tile_requests {
-        for source_tile in terrain_source_tiles(request) {
-            let key = terrain_source_tile_cache_key(&source_tile.product_id, &source_tile.path);
-            if session.terrain_source_tile_cache.contains_key(&key) {
-                continue;
-            }
-            extend_package_resource_requests(
-                session,
-                &mut resources,
-                &format!("terrain/source/{key}"),
-                &source_tile.product_id,
-                &source_tile.path,
-                false,
-            );
-        }
-    }
-    dedupe_resource_requests(resources)
-}
-
-fn first_unavailable_resource_message(resources: &[CoreResourceRequest]) -> Option<String> {
-    resources
-        .iter()
-        .find_map(|resource| match &resource.source {
-            CoreResourceSource::Unavailable { message } => {
-                Some(format!("{}: {message}", resource.id))
-            }
-            _ => None,
-        })
-}
-
 fn terrain_source_tiles(
     request: &crate::TerrainOverlayTileRequest,
 ) -> Vec<crate::TerrainOverlaySourceTile> {
@@ -5182,6 +5215,7 @@ fn terrain_source_tiles(
         vec![crate::TerrainOverlaySourceTile {
             product_id: request.product_id.clone(),
             path: request.path.clone(),
+            resource: None,
         }]
     } else {
         request.source_tiles.clone()

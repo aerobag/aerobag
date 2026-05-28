@@ -66,7 +66,11 @@ pub use live_feed_cache::{
     LiveFeedFetchedPayload, LiveFeedInstalledPayload, LiveFeedInstalledState,
     LiveFeedInstalledSummary, LiveFeedPayloadRef, LiveFeedProductDriver, LiveFeedProductRegistry,
 };
-pub use live_feeds::{LiveFeedSseEvent, LiveFeedsSnapshot, LiveFeedsState};
+pub use live_feeds::{
+    decode_prepared_metar_live_feed, prepare_metar_live_feed_delta_resource,
+    prepare_metar_live_feed_state_resource, LiveFeedSseEvent, LiveFeedsSnapshot, LiveFeedsState,
+    PreparedMetarLiveFeed, PreparedMetarLiveFeedEnvelope, PreparedMetarTile,
+};
 pub use map_follow::MapFollowUiState;
 pub use map_overlay::{
     aggregate_vector_tile_cache_key, airspace_feature_path, airspace_label_tile_key,
@@ -189,11 +193,12 @@ pub use session::{
     ingest_airspace_features_in_session, ingest_airspace_label_tiles_in_session,
     ingest_airspace_ref_tiles_in_session, ingest_live_feed_sse_event_in_session,
     ingest_live_feed_sse_events_in_session, ingest_point_tiles_in_session,
-    ingest_resource_in_session, ingest_tafs_in_session, ingest_tfrs_in_session,
-    insert_airway_at_flight_plan_row_in_session, insert_nav_kv_page_for_attached_sessions,
-    insert_waypoint_at_flight_plan_row_in_session, install_live_feed_installed_state_in_session,
-    load_plate_procedure_in_session, load_playback_trace_in_session,
-    load_raster_map_catalog_in_session, nexrad_tile_bytes_in_session, pause_playback_in_session,
+    ingest_prepared_metar_live_feed_resource_in_session, ingest_resource_in_session,
+    ingest_tafs_in_session, ingest_tfrs_in_session, insert_airway_at_flight_plan_row_in_session,
+    insert_nav_kv_page_for_attached_sessions, insert_waypoint_at_flight_plan_row_in_session,
+    install_live_feed_installed_state_in_session, load_plate_procedure_in_session,
+    load_playback_trace_in_session, load_raster_map_catalog_in_session,
+    nexrad_tile_bytes_in_session, pause_playback_in_session,
     perform_flight_plan_row_action_in_session, perform_map_selection_action_in_session,
     perform_status_action_in_session, play_playback_in_session,
     preview_flight_plan_entry_in_session, project_flight_plan_route_in_session,

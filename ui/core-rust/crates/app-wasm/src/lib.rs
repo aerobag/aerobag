@@ -98,6 +98,7 @@ static NAV_DB_OPEN_CONTROLLERS: OnceLock<Mutex<HashMap<u32, app_core::NavDbOpenC
 static NEXT_PUBLICATION_RESOLVER_HANDLE: AtomicU32 = AtomicU32::new(1);
 static PUBLICATION_RESOLVERS: OnceLock<Mutex<HashMap<u32, app_core::PublicationResolver>>> =
     OnceLock::new();
+static METAR_LIVE_FEED_PREP_STATE: OnceLock<Mutex<Option<serde_json::Value>>> = OnceLock::new();
 
 fn nav_kv_stores() -> &'static Mutex<HashMap<u32, app_core::NavKvStore>> {
     NAV_KV_STORES.get_or_init(|| Mutex::new(HashMap::new()))
@@ -105,6 +106,13 @@ fn nav_kv_stores() -> &'static Mutex<HashMap<u32, app_core::NavKvStore>> {
 
 fn lock_nav_kv_stores() -> MutexGuard<'static, HashMap<u32, app_core::NavKvStore>> {
     nav_kv_stores()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn lock_metar_live_feed_prep_state() -> MutexGuard<'static, Option<serde_json::Value>> {
+    METAR_LIVE_FEED_PREP_STATE
+        .get_or_init(|| Mutex::new(None))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -1201,6 +1209,34 @@ pub fn ingest_live_feed_sse_events_in_session(
 }
 
 #[wasm_bindgen]
+pub fn prepare_metar_live_feed_resource(
+    resource_id: &str,
+    resource_bytes: &[u8],
+) -> Result<Vec<u8>, JsValue> {
+    let mut current_state = lock_metar_live_feed_prep_state();
+    let (next_state, prepared) = if resource_id.starts_with("live_feeds/state/metars/") {
+        app_core::prepare_metar_live_feed_state_resource(resource_id, resource_bytes)
+    } else if resource_id.starts_with("live_feeds/delta/metars/") {
+        let state = current_state.as_ref().ok_or_else(|| {
+            JsValue::from_str("METAR live-feed preparer has no current state for delta")
+        })?;
+        app_core::prepare_metar_live_feed_delta_resource(resource_id, state, resource_bytes)
+    } else {
+        return Err(JsValue::from_str(&format!(
+            "unsupported METAR live-feed prep resource: {resource_id}"
+        )));
+    }
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    *current_state = Some(next_state);
+    Ok(prepared)
+}
+
+#[wasm_bindgen]
+pub fn reset_metar_live_feed_preparer() {
+    *lock_metar_live_feed_prep_state() = None;
+}
+
+#[wasm_bindgen]
 pub fn perform_map_selection_action_in_session(
     session_handle: u32,
     action_json: &str,
@@ -1820,6 +1856,20 @@ pub fn ingest_resource_in_session(
 ) -> Result<(), JsValue> {
     app_core::ingest_resource_in_session(handle, resource_id, resource_bytes)
         .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn ingest_prepared_metar_live_feed_resource_in_session(
+    handle: u32,
+    resource_id: &str,
+    prepared_resource_bytes: &[u8],
+) -> Result<(), JsValue> {
+    app_core::ingest_prepared_metar_live_feed_resource_in_session(
+        handle,
+        resource_id,
+        prepared_resource_bytes,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[wasm_bindgen]

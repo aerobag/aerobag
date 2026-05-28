@@ -5,6 +5,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::{
+    map_overlay::{MetarProductPayload, MetarRecord},
     AppError, AppErrorKind, AppResult, CoreResourceRequest, HadOperationOutcome, UiInvalidation,
 };
 
@@ -105,6 +106,39 @@ struct LiveFeedRecordDelta {
     top_level_removed: Vec<String>,
     changed: serde_json::Map<String, Value>,
     removed: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PreparedMetarLiveFeedEnvelope {
+    pub schema_version: u32,
+    pub resource_id: String,
+    pub version: String,
+    pub state_sha256: String,
+    #[serde(default)]
+    pub from_version: Option<String>,
+    #[serde(default)]
+    pub from_state_sha256: Option<String>,
+    #[serde(default)]
+    pub delta_blob_sha256: Option<String>,
+    pub feed: PreparedMetarLiveFeed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PreparedMetarLiveFeed {
+    pub schema_version: u32,
+    pub version_label: String,
+    #[serde(default)]
+    pub generated_at_utc: Option<String>,
+    pub records: Vec<MetarRecord>,
+    pub tiles: Vec<PreparedMetarTile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PreparedMetarTile {
+    pub z: u32,
+    pub x: u32,
+    pub y: u32,
+    pub record_indexes: Vec<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -347,6 +381,115 @@ impl LiveFeedsState {
         )))
     }
 
+    pub fn ingest_prepared_metar_live_feed(
+        &mut self,
+        resource_id: &str,
+        envelope: &PreparedMetarLiveFeedEnvelope,
+    ) -> AppResult<()> {
+        if envelope.schema_version != 1 || envelope.feed.schema_version != 1 {
+            return Err(invalid_live_feed(format!(
+                "unsupported prepared METAR schema {}/{}",
+                envelope.schema_version, envelope.feed.schema_version
+            )));
+        }
+        if envelope.resource_id != resource_id {
+            return Err(invalid_live_feed(format!(
+                "prepared METAR envelope for {} cannot satisfy {resource_id}",
+                envelope.resource_id
+            )));
+        }
+        if let Some(rest) = resource_id.strip_prefix("live_feeds/state/") {
+            let (product, version) = split_product_version(resource_id, rest)?;
+            if product != "metars" {
+                return Err(invalid_live_feed(format!(
+                    "prepared METAR full resource used for {product}"
+                )));
+            }
+            let entry = self.products.entry(product).or_default();
+            if entry.current_version.as_deref() != Some(version.as_str()) {
+                return Ok(());
+            }
+            if envelope.version != version || envelope.feed.version_label != version {
+                return Err(invalid_live_feed(format!(
+                    "prepared METAR full resource {resource_id} contained {} / {}",
+                    envelope.version, envelope.feed.version_label
+                )));
+            }
+            if let Some(expected) = &entry.expected_state_sha256 {
+                if &envelope.state_sha256 != expected {
+                    return Err(invalid_live_feed(format!(
+                        "prepared METAR state hash mismatch for {resource_id}: expected {expected}, got {}",
+                        envelope.state_sha256
+                    )));
+                }
+            }
+            entry.state_manifest = None;
+            entry.loaded_version = Some(version);
+            return Ok(());
+        }
+        if let Some(rest) = resource_id.strip_prefix("live_feeds/delta/") {
+            let (product, from_version, to_version) = split_product_from_to(resource_id, rest)?;
+            if product != "metars" {
+                return Err(invalid_live_feed(format!(
+                    "prepared METAR delta resource used for {product}"
+                )));
+            }
+            let entry = self.products.entry(product).or_default();
+            if entry.current_version.as_deref() != Some(to_version.as_str()) {
+                return Ok(());
+            }
+            if entry.loaded_version.as_deref() != Some(from_version.as_str()) {
+                return Err(invalid_live_feed(format!(
+                    "cannot install prepared {resource_id}: local version is {:?}",
+                    entry.loaded_version
+                )));
+            }
+            let delta_ref = entry.delta_from_previous.as_ref().ok_or_else(|| {
+                invalid_live_feed(format!("prepared delta {resource_id} was not expected"))
+            })?;
+            if delta_ref.from_version != from_version || delta_ref.to_version != to_version {
+                return Err(invalid_live_feed(format!(
+                    "prepared delta {resource_id} does not match version manifest"
+                )));
+            }
+            if envelope.from_version.as_deref() != Some(from_version.as_str())
+                || envelope.version != to_version
+                || envelope.feed.version_label != to_version
+            {
+                return Err(invalid_live_feed(format!(
+                    "prepared delta {resource_id} contained {:?} -> {} / {}",
+                    envelope.from_version, envelope.version, envelope.feed.version_label
+                )));
+            }
+            if envelope.from_state_sha256.as_deref() != Some(delta_ref.from_state_sha256.as_str()) {
+                return Err(invalid_live_feed(format!(
+                    "prepared delta {resource_id} source hash mismatch: expected {}, got {:?}",
+                    delta_ref.from_state_sha256, envelope.from_state_sha256
+                )));
+            }
+            if envelope.state_sha256 != delta_ref.to_state_sha256 {
+                return Err(invalid_live_feed(format!(
+                    "prepared delta {resource_id} target hash mismatch: expected {}, got {}",
+                    delta_ref.to_state_sha256, envelope.state_sha256
+                )));
+            }
+            if let Some(expected_blob_sha256) = &delta_ref.blob_sha256 {
+                if envelope.delta_blob_sha256.as_deref() != Some(expected_blob_sha256.as_str()) {
+                    return Err(invalid_live_feed(format!(
+                        "prepared delta {resource_id} blob hash mismatch: expected {expected_blob_sha256}, got {:?}",
+                        envelope.delta_blob_sha256
+                    )));
+                }
+            }
+            entry.state_manifest = None;
+            entry.loaded_version = Some(to_version);
+            return Ok(());
+        }
+        Err(invalid_live_feed(format!(
+            "unsupported prepared METAR resource id: {resource_id}"
+        )))
+    }
+
     pub fn handles_resource(resource_id: &str) -> bool {
         resource_id == CURRENT_RESOURCE_ID
             || resource_id.starts_with("live_feeds/version/")
@@ -557,7 +700,7 @@ impl LiveFeedProductState {
         let delta = self.delta_from_previous.as_ref()?;
         if self.loaded_version.as_deref() == Some(delta.from_version.as_str())
             && self.current_version.as_deref() == Some(delta.to_version.as_str())
-            && self.state_manifest.is_some()
+            && (product == "metars" || self.state_manifest.is_some())
         {
             Some(delta)
         } else {
@@ -624,6 +767,144 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+pub fn prepare_metar_live_feed_state_resource(
+    resource_id: &str,
+    bytes: &[u8],
+) -> AppResult<(Value, Vec<u8>)> {
+    let Some(rest) = resource_id.strip_prefix("live_feeds/state/") else {
+        return Err(invalid_live_feed(format!(
+            "not a live-feed state resource: {resource_id}"
+        )));
+    };
+    let (product, version) = split_product_version(resource_id, rest)?;
+    if product != "metars" {
+        return Err(invalid_live_feed(format!(
+            "cannot prepare METAR state from {product}"
+        )));
+    }
+    let state: Value = serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?;
+    let state_sha256 = canonical_json_sha256(&state)?;
+    let payload: MetarProductPayload =
+        serde_json::from_value(state.clone()).map_err(invalid_live_feed_json)?;
+    if payload.version_label != version {
+        return Err(invalid_live_feed(format!(
+            "METAR state {resource_id} contained version {}",
+            payload.version_label
+        )));
+    }
+    let envelope = PreparedMetarLiveFeedEnvelope {
+        schema_version: 1,
+        resource_id: resource_id.to_string(),
+        version,
+        state_sha256,
+        from_version: None,
+        from_state_sha256: None,
+        delta_blob_sha256: None,
+        feed: prepare_metar_live_feed(&payload),
+    };
+    let envelope_bytes = postcard::to_allocvec(&envelope).map_err(|err| {
+        invalid_live_feed(format!("failed to encode prepared METAR state: {err}"))
+    })?;
+    Ok((state, envelope_bytes))
+}
+
+pub fn prepare_metar_live_feed_delta_resource(
+    resource_id: &str,
+    current_state: &Value,
+    bytes: &[u8],
+) -> AppResult<(Value, Vec<u8>)> {
+    let Some(rest) = resource_id.strip_prefix("live_feeds/delta/") else {
+        return Err(invalid_live_feed(format!(
+            "not a live-feed delta resource: {resource_id}"
+        )));
+    };
+    let (product, from_version, to_version) = split_product_from_to(resource_id, rest)?;
+    if product != "metars" {
+        return Err(invalid_live_feed(format!(
+            "cannot prepare METAR delta from {product}"
+        )));
+    }
+    let from_state_sha256 = canonical_json_sha256(current_state)?;
+    let delta_blob_sha256 = sha256_hex(bytes);
+    let delta: LiveFeedRecordDelta =
+        serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?;
+    if delta.product != "metars"
+        || delta.from_version != from_version
+        || delta.to_version != to_version
+    {
+        return Err(invalid_live_feed(format!(
+            "METAR delta {resource_id} contained {} {} -> {}",
+            delta.product, delta.from_version, delta.to_version
+        )));
+    }
+    let next_state = apply_live_feed_record_delta(current_state, &delta)?;
+    let state_sha256 = canonical_json_sha256(&next_state)?;
+    let payload: MetarProductPayload =
+        serde_json::from_value(next_state.clone()).map_err(invalid_live_feed_json)?;
+    if payload.version_label != to_version {
+        return Err(invalid_live_feed(format!(
+            "prepared METAR delta {resource_id} produced version {}",
+            payload.version_label
+        )));
+    }
+    let envelope = PreparedMetarLiveFeedEnvelope {
+        schema_version: 1,
+        resource_id: resource_id.to_string(),
+        version: to_version,
+        state_sha256,
+        from_version: Some(from_version),
+        from_state_sha256: Some(from_state_sha256),
+        delta_blob_sha256: Some(delta_blob_sha256),
+        feed: prepare_metar_live_feed(&payload),
+    };
+    let envelope_bytes = postcard::to_allocvec(&envelope).map_err(|err| {
+        invalid_live_feed(format!("failed to encode prepared METAR delta: {err}"))
+    })?;
+    Ok((next_state, envelope_bytes))
+}
+
+pub fn decode_prepared_metar_live_feed(bytes: &[u8]) -> AppResult<PreparedMetarLiveFeedEnvelope> {
+    postcard::from_bytes(bytes)
+        .map_err(|err| invalid_live_feed(format!("failed to decode prepared METAR feed: {err}")))
+}
+
+fn prepare_metar_live_feed(payload: &MetarProductPayload) -> PreparedMetarLiveFeed {
+    let mut records = payload
+        .metars_by_station
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    records.sort_by(|left, right| left.station_id.cmp(&right.station_id));
+    let mut tiles = std::collections::BTreeMap::<(u32, u32, u32), Vec<u32>>::new();
+    for zoom in [5_u32, 6, 7] {
+        for (record_index, record) in records.iter().enumerate() {
+            let Some((x, y)) = live_feed_metar_tile_xy(record.latitude, record.longitude, zoom)
+            else {
+                continue;
+            };
+            tiles
+                .entry((zoom, x, y))
+                .or_default()
+                .push(record_index as u32);
+        }
+    }
+    PreparedMetarLiveFeed {
+        schema_version: 1,
+        version_label: payload.version_label.clone(),
+        generated_at_utc: payload.generated_at_utc.map(|value| value.to_rfc3339()),
+        records,
+        tiles: tiles
+            .into_iter()
+            .map(|((z, x, y), record_indexes)| PreparedMetarTile {
+                z,
+                x,
+                y,
+                record_indexes,
+            })
+            .collect(),
+    }
+}
+
 fn supports_record_delta(product: &str) -> bool {
     matches!(product, "metars")
 }
@@ -688,6 +969,27 @@ fn apply_live_feed_record_delta(
         *count = serde_json::json!(record_count);
     }
     Ok(result)
+}
+
+fn live_feed_metar_tile_xy(lat: f64, lon: f64, zoom: u32) -> Option<(u32, u32)> {
+    if !lat.is_finite() || !lon.is_finite() {
+        return None;
+    }
+    let scale = 2_u32.checked_pow(zoom)?;
+    let scale_f64 = scale as f64;
+    let x = (((lon + 180.0) / 360.0) * scale_f64).floor();
+    let clamped_lat = lat.clamp(-85.0511287798066, 85.0511287798066);
+    let y = ((1.0 - clamped_lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0
+        * scale_f64)
+        .floor();
+    Some((
+        live_feed_positive_mod_i64(x as i64, scale as i64) as u32,
+        (y as i64).clamp(0, scale as i64 - 1) as u32,
+    ))
+}
+
+fn live_feed_positive_mod_i64(value: i64, modulus: i64) -> i64 {
+    ((value % modulus) + modulus) % modulus
 }
 
 fn invalid_live_feed_json(err: impl std::fmt::Display) -> AppError {

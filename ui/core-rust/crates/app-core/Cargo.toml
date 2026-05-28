@@ -13,6 +13,7 @@ chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+postcard = { version = "1", features = ["alloc"] }
 thiserror.workspace = true
 png.workspace = true
 zip.workspace = true

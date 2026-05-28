@@ -144,6 +144,7 @@ struct UiSession {
     vector_tile_cache: HashMap<String, VectorAggregateTilePayload>,
     metar_tile_cache: HashMap<String, MetarTilePayload>,
     metar_payload: Option<MetarProductPayload>,
+    prepared_metar_feed: Option<crate::PreparedMetarLiveFeed>,
     important_metar_station_ids: Option<HashSet<String>>,
     metar_station_importance_status: Option<DataStatusRecord>,
     obstacle_had: Option<LiveObstacleHadState>,
@@ -1219,6 +1220,7 @@ fn create_ui_session_inner(
             vector_tile_cache: HashMap::new(),
             metar_tile_cache: HashMap::new(),
             metar_payload: None,
+            prepared_metar_feed: None,
             important_metar_station_ids: None,
             metar_station_importance_status: None,
             obstacle_had: None,
@@ -3059,6 +3061,22 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
     })
 }
 
+pub fn ingest_prepared_metar_live_feed_resource_in_session(
+    handle: u32,
+    resource_id: &str,
+    bytes: &[u8],
+) -> AppResult<()> {
+    let envelope = crate::decode_prepared_metar_live_feed(bytes)?;
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    session
+        .live_feeds
+        .ingest_prepared_metar_live_feed(resource_id, &envelope)?;
+    install_prepared_metar_live_feed(session, envelope)?;
+    clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
+    Ok(())
+}
+
 pub fn install_live_feed_installed_state_in_session(
     handle: u32,
     installed: &crate::LiveFeedInstalledState,
@@ -3081,6 +3099,7 @@ fn install_live_feed_installed_state(
                     message: format!("failed to parse installed METAR live feed: {err}"),
                 })?;
             session.metar_payload = Some(payload);
+            session.prepared_metar_feed = None;
             rebuild_metar_tile_cache(session);
             clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
         }
@@ -3143,6 +3162,43 @@ fn install_live_feed_installed_state(
             });
         }
     }
+    Ok(())
+}
+
+fn install_prepared_metar_live_feed(
+    session: &mut UiSession,
+    envelope: crate::PreparedMetarLiveFeedEnvelope,
+) -> AppResult<()> {
+    let generated_at_utc = envelope
+        .feed
+        .generated_at_utc
+        .as_deref()
+        .map(|value| {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .map(|value| value.with_timezone(&chrono::Utc))
+                .map_err(|err| AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message: format!("failed to parse prepared METAR generated_at_utc: {err}"),
+                })
+        })
+        .transpose()?;
+    let metars_by_station = envelope
+        .feed
+        .records
+        .iter()
+        .cloned()
+        .map(|record| (record.station_id.clone(), record))
+        .collect::<HashMap<_, _>>();
+    session.metar_payload = Some(MetarProductPayload {
+        schema_version: 3,
+        version_label: envelope.feed.version_label.clone(),
+        generated_at_utc,
+        metar_count: Some(envelope.feed.records.len() as u32),
+        metars_by_station,
+        pireps: Vec::new(),
+    });
+    session.prepared_metar_feed = Some(envelope.feed);
+    rebuild_metar_tile_cache(session);
     Ok(())
 }
 
@@ -3322,6 +3378,7 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
         if !session.live_feeds.has_product_current_version("metars") {
             session.metar_tile_cache.clear();
             session.metar_payload = None;
+            session.prepared_metar_feed = None;
             clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
         }
         if !session.live_feeds.has_product_current_version("tfrs") {
@@ -3346,12 +3403,14 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
             match serde_json::from_value::<MetarProductPayload>(metars_value) {
                 Ok(payload) => {
                     session.metar_payload = Some(payload);
+                    session.prepared_metar_feed = None;
                     rebuild_metar_tile_cache(session);
                     clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
                 }
                 Err(err) => {
                     session.metar_tile_cache.clear();
                     session.metar_payload = None;
+                    session.prepared_metar_feed = None;
                     upsert_data_status_record(
                         session,
                         live_feed_unavailable_status_record(
@@ -3634,7 +3693,76 @@ fn metar_tile_cache_for_live_feed(
     cache
 }
 
+fn metar_tile_cache_for_prepared_live_feed(
+    feed: &crate::PreparedMetarLiveFeed,
+    layer: Option<&crate::map_overlay::PointTileLayerConfig>,
+    important_station_ids: &HashSet<String>,
+) -> Option<HashMap<String, MetarTilePayload>> {
+    let Some(layer) = layer else {
+        return Some(HashMap::new());
+    };
+    let available_zooms = layer
+        .available_zooms
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let feed_zooms = feed.tiles.iter().map(|tile| tile.z).collect::<HashSet<_>>();
+    if !available_zooms.is_subset(&feed_zooms) {
+        return None;
+    }
+    let mut cache = HashMap::new();
+    for tile in &feed.tiles {
+        if !available_zooms.contains(&tile.z) {
+            continue;
+        }
+        let mut records = Vec::new();
+        for index in &tile.record_indexes {
+            let Some(record) = feed.records.get(*index as usize) else {
+                continue;
+            };
+            if tile.z == layer.min_zoom && !important_station_ids.contains(&record.station_id) {
+                continue;
+            }
+            records.push(MetarTileRecord {
+                kind: "metar".to_string(),
+                id: record.station_id.clone(),
+            });
+        }
+        if records.is_empty() {
+            continue;
+        }
+        let key = crate::tile_key("metars", tile.z, tile.x, tile.y);
+        cache.insert(
+            key,
+            MetarTilePayload {
+                schema_version: 1,
+                layer: "metars".to_string(),
+                z: tile.z,
+                x: tile.x,
+                y: tile.y,
+                records,
+            },
+        );
+    }
+    Some(cache)
+}
+
 fn rebuild_metar_tile_cache(session: &mut UiSession) {
+    if let Some(feed) = session.prepared_metar_feed.as_ref() {
+        let empty = HashSet::new();
+        let important_station_ids = session
+            .important_metar_station_ids
+            .as_ref()
+            .unwrap_or(&empty);
+        if let Some(cache) = metar_tile_cache_for_prepared_live_feed(
+            feed,
+            session.map_overlay_config.metar_layer.as_ref(),
+            important_station_ids,
+        ) {
+            session.metar_tile_cache = cache;
+            return;
+        }
+    }
     if let Some(payload) = session.metar_payload.as_ref() {
         let empty = HashSet::new();
         let important_station_ids = session
@@ -7500,6 +7628,113 @@ mod tests {
     }
 
     #[test]
+    fn prepared_live_feed_metars_install_postcard_tile_index() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let state = serde_json::json!({
+            "schema_version": 3,
+            "version_label": "v1",
+            "metar_count": 1,
+            "metars_by_station": {
+                "KAAA": {
+                    "raw_text": "METAR KAAA 010000Z 00000KT 10SM SCT020 10/08 A3000",
+                    "observed_at_utc": "2026-05-03T00:00:00.000Z",
+                    "station_id": "KAAA",
+                    "flight_category": "MVFR",
+                    "clouds": { "symbol": "SCT" },
+                    "longitude": 0.0,
+                    "latitude": 0.0
+                }
+            },
+            "pireps": []
+        });
+        let state_bytes = serde_json::to_vec(&state).expect("state bytes");
+        let resource_id = "live_feeds/state/metars/v1";
+        let (_raw_state, prepared_bytes) =
+            crate::prepare_metar_live_feed_state_resource(resource_id, &state_bytes)
+                .expect("prepared metars");
+        let prepared_envelope = crate::decode_prepared_metar_live_feed(&prepared_bytes)
+            .expect("decode prepared metars");
+
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            session.map_overlay_config = map_overlay_config_from_vector_manifest_json(
+                r#"{
+                    "point_layers": {
+                        "airport": { "available_zooms": [9] },
+                        "fix": { "available_zooms": [9] },
+                        "nav": { "available_zooms": [9] },
+                        "metars": {
+                            "min_zoom": 5,
+                            "max_zoom": 7,
+                            "available_zooms": [5, 6, 7],
+                            "tile_path_template": "unused-by-live-feeds"
+                        }
+                    },
+                    "airspace": {
+                        "reference_tile_min_zoom": 0,
+                        "reference_tile_max_zoom": 0,
+                        "label_tile_min_zoom": 0,
+                        "label_tile_max_zoom": 0
+                    }
+                }"#,
+            )
+            .expect("metar layer config");
+            session.important_metar_station_ids = Some(HashSet::from(["KAAA".to_string()]));
+            session
+                .live_feeds
+                .ingest_resource(
+                    "live_feeds/current",
+                    format!(
+                        r#"{{
+                            "products": {{
+                                "metars": {{
+                                    "current": "v1",
+                                    "version_manifest_url": "versions/metars/v1.json",
+                                    "state_url": "states/metars/v1.json",
+                                    "state_sha256": "{}"
+                                }}
+                            }}
+                        }}"#,
+                        prepared_envelope.state_sha256
+                    )
+                    .as_bytes(),
+                )
+                .expect("current manifest");
+            session
+                .live_feeds
+                .ingest_prepared_metar_live_feed(resource_id, &prepared_envelope)
+                .expect("prepared live-feed state");
+            install_prepared_metar_live_feed(session, prepared_envelope)
+                .expect("install prepared metars");
+            assert!(session.prepared_metar_feed.is_some());
+            assert!(!session.metar_tile_cache.is_empty());
+        }
+
+        let outcome = get_map_overlay_in_session(
+            init.handle,
+            MapViewport {
+                center: LatLon { lat: 0.0, lon: 0.0 },
+                zoom: 8.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            240.0,
+            240.0,
+        )
+        .expect("overlay");
+        let crate::HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("overlay unexpectedly needed resources");
+        };
+        let overlay: MapOverlayQueryResult =
+            serde_json::from_value(result).expect("overlay result");
+        assert_eq!(overlay.visible_metars.len(), 1);
+        assert_eq!(overlay.visible_metars[0].station_id, "KAAA");
+        assert_eq!(overlay.visible_metars[0].flight_category, "mvfr");
+    }
+
+    #[test]
     fn live_metar_layer_survives_vector_manifest_without_weather_layers() {
         let mut session = UiSession {
             app_state: register_default_situation_sources(AppState::default()).expect("app state"),
@@ -7536,6 +7771,7 @@ mod tests {
             vector_tile_cache: HashMap::new(),
             metar_tile_cache: HashMap::new(),
             metar_payload: None,
+            prepared_metar_feed: None,
             important_metar_station_ids: None,
             metar_station_importance_status: None,
             obstacle_had: None,
@@ -7711,6 +7947,7 @@ mod tests {
             vector_tile_cache: HashMap::new(),
             metar_tile_cache: HashMap::new(),
             metar_payload: None,
+            prepared_metar_feed: None,
             important_metar_station_ids: None,
             metar_station_importance_status: None,
             obstacle_had: None,
@@ -8128,6 +8365,7 @@ mod tests {
             vector_tile_cache: HashMap::new(),
             metar_tile_cache: HashMap::new(),
             metar_payload: None,
+            prepared_metar_feed: None,
             important_metar_station_ids: None,
             metar_station_importance_status: None,
             obstacle_had: None,

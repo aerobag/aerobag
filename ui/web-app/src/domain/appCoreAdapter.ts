@@ -31,6 +31,7 @@ import type {
 import { viewportCenterLatLon, type MapViewportState, type ScreenPoint } from "./mapViewport";
 import { attachNavKvStoreToSession, runCoreHadOperation, runCoreHadSessionOperation, type UiInvalidation, type UiInvalidationListener } from "./navKv";
 import { debugLog, debugTiming, installRustDebugLogBridge } from "./debugLog";
+import { isMetarLiveFeedPayloadResource, prepareMetarLiveFeedResource, resetMetarLiveFeedPrep } from "./metarLiveFeedPrep";
 
 export type DerivedChartPageState = {
   airports: ChartPageData["airports"];
@@ -725,6 +726,7 @@ type WasmModule = {
   ingest_airspace_features_in_session(handle: number, featuresJson: string): Promise<void> | void;
   ingest_airspace_label_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   ingest_resource_in_session(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
+  ingest_prepared_metar_live_feed_resource_in_session(handle: number, resourceId: string, preparedResourceBytes: Uint8Array): Promise<void> | void;
   report_session_resource_failure_in_session(handle: number, resourceId: string, message: string): Promise<string> | string;
   get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, nowEpochMs: number): Promise<string> | string;
   get_map_selection_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, clickJson: string, nowEpochMs: number): Promise<string> | string;
@@ -785,6 +787,22 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       invalidationListener?.(invalidations);
     };
     let reportSessionResourceFailure: ((resourceId: string, message: string) => Promise<void>) | null = null;
+    const ingestResourceForHandle = async (
+      sessionHandle: number,
+      resourceId: string,
+      resourceBytes: Uint8Array,
+    ) => {
+      if (isMetarLiveFeedPayloadResource(resourceId)) {
+        const preparedBytes = await prepareMetarLiveFeedResource(resourceId, resourceBytes);
+        await this.module.ingest_prepared_metar_live_feed_resource_in_session(
+          sessionHandle,
+          resourceId,
+          preparedBytes,
+        );
+        return;
+      }
+      await this.module.ingest_resource_in_session(sessionHandle, resourceId, resourceBytes);
+    };
     const runSessionOperationForHandle = <T>(
       sessionHandle: number,
       operation: (navKvHandle: number) => Promise<string> | string,
@@ -792,7 +810,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     ) => runCoreHadSessionOperation<T>(
       operation,
       ingestSessionResource ?? ((resourceId, resourceBytes) =>
-        this.module.ingest_resource_in_session(sessionHandle, resourceId, resourceBytes)),
+        ingestResourceForHandle(sessionHandle, resourceId, resourceBytes)),
       publishInvalidations,
       async (resourceId, message) => {
         await reportSessionResourceFailure?.(resourceId, message);
@@ -821,6 +839,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         debugLog("startup.session.core_profile", { timings: createdEnvelope.timings });
       }
       const created = createdEnvelope.result ?? createdEnvelope;
+      await resetMetarLiveFeedPrep();
       await attachNavKvStoreToSession(created.handle);
       await module.set_resource_policy_in_session(created.handle, JSON.stringify("public_unpacked"));
       const catalogedSnapshot = await debugTiming("startup.session.load_raster_catalog", () =>
@@ -1263,7 +1282,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
                 heightPx,
                 Date.now(),
               ),
-            (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
+            (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
           ),
         ),
       queryMapSelection: async (viewport, widthPx, heightPx, click) =>
@@ -1290,7 +1309,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
                 heightPx,
                 Date.now(),
               ),
-            (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
+            (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
           ),
         ),
       queryNexradOverlay: async (viewport, widthPx, heightPx) =>
@@ -1304,7 +1323,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
                 heightPx,
                 Date.now(),
               ),
-            (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
+            (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
           ),
         ),
       queryRasterTilePlan: async (viewport, widthPx, heightPx, devicePixelRatio = 1) =>
@@ -1356,7 +1375,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         await withSessionRetry(async () =>
           runSessionOperation<unknown>(
             () => this.module.sync_live_feeds_in_session(handle),
-            (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
+            (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
           ),
         );
       },
@@ -1364,7 +1383,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         await withSessionRetry(async () =>
           runSessionOperation<unknown>(
             () => this.module.sync_live_feeds_in_session(handle),
-            (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
+            (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
           ),
         );
         if (liveFeedSubscription) {
@@ -1375,7 +1394,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             await withSessionRetry(async () =>
               runSessionOperation<unknown>(
                 () => this.module.ingest_live_feed_sse_events_in_session(handle, JSON.stringify(events)),
-                (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
+                (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
               ),
             );
           },
@@ -1390,7 +1409,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         await withSessionRetry(async () =>
           runSessionOperation<unknown>(
             () => this.module.ingest_live_feed_sse_event_in_session(handle, JSON.stringify(event)),
-            (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
+            (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
           ),
         );
       },
@@ -1398,7 +1417,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         await withSessionRetry(async () =>
           runSessionOperation<unknown>(
             () => this.module.ingest_live_feed_sse_events_in_session(handle, JSON.stringify(events)),
-            (resourceId, resourceBytes) => this.module.ingest_resource_in_session(handle, resourceId, resourceBytes),
+            (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
           ),
         );
       },

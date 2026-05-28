@@ -298,10 +298,11 @@ export type AirspaceDisplayPath = {
     color_key: string;
     width_px: number;
     line_cap: "butt" | "round" | "square" | string;
-    paths: Array<{
+    paths?: Array<{
       closed: boolean;
       points: Array<{ x: number; y: number }>;
     }>;
+    segments?: Array<[number, number, number, number]>;
   }>;
 };
 

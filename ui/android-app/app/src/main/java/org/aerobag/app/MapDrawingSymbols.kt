@@ -391,6 +391,15 @@ internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAirspaceDispla
                 style = Stroke(width = decoration.widthPx.toFloat() * densityScale, cap = strokeCapFor(decoration.lineCap)),
             )
         }
+        decoration.segments.forEach { segment ->
+            drawLine(
+                color = aviationColor(uiTheme, decoration.colorKey),
+                start = Offset(segment.x1.toFloat(), segment.y1.toFloat()),
+                end = Offset(segment.x2.toFloat(), segment.y2.toFloat()),
+                strokeWidth = decoration.widthPx.toFloat() * densityScale,
+                cap = strokeCapFor(decoration.lineCap),
+            )
+        }
     }
 }
 

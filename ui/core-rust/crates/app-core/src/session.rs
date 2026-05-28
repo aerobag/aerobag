@@ -35,8 +35,8 @@ use crate::{
     map_follow::{MapFollowSessionState, MapFollowUiState},
     map_overlay::{
         nearest_available_layer_zoom, obstacle_layer_config_from_live_manifest_value,
-        visible_obstacle_tile_window, FlightPlanSelectionPoint, MetarTileRecord,
-        PointTileLayerConfig,
+        vector_overlay_input_requests, visible_obstacle_tile_window, FlightPlanSelectionPoint,
+        MetarTileRecord, PointTileLayerConfig, VectorOverlayInputRequests,
     },
     map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
     planning::NavElementUiView,
@@ -3929,22 +3929,14 @@ fn ensure_vector_inputs_loaded(
 ) -> Result<(), HadReadError> {
     ensure_vector_manifest_loaded(session)?;
     for _ in 0..8 {
-        let overlay = query_map_overlay_for_surface(
+        let inputs = vector_overlay_input_requests(
             metrics,
             &session.map_overlay_config,
-            true,
-            false,
-            &[],
-            ownship_overlay_context(session).as_ref(),
             &session.vector_tile_cache,
-            &session.obstacle_tile_cache,
-            &session.metar_tile_cache,
-            session.metar_payload.as_ref(),
             &session.airspace_feature_cache,
-            session.tfr_payload.as_ref(),
         );
         let needed_vector_inputs =
-            overlay.needed_vector_tiles.len() + overlay.needed_airspace_features.len();
+            inputs.needed_vector_tiles.len() + inputs.needed_airspace_features.len();
         if needed_vector_inputs == 0 {
             return Ok(());
         }
@@ -3954,14 +3946,14 @@ fn ensure_vector_inputs_loaded(
             HadReadError::Fatal("session missing nav kv store for vector overlay".to_string())
         })?;
         let needed_pages = store
-            .missing_pages_for_keys(&vector_input_keys(&overlay))
+            .missing_pages_for_keys(&vector_input_keys(&inputs))
             .map_err(HadReadError::Fatal)?;
         if !needed_pages.is_empty() {
             return Err(HadReadError::NeedPages(needed_pages));
         }
 
         let mut vector_tiles = Vec::new();
-        for tile in overlay.needed_vector_tiles {
+        for tile in inputs.needed_vector_tiles {
             let payload = read_attached_json_optional::<VectorAggregateTilePayload>(
                 store,
                 NavKvQuery::VectorTile {
@@ -3985,7 +3977,7 @@ fn ensure_vector_inputs_loaded(
         }
 
         let mut features = Vec::new();
-        for feature in overlay.needed_airspace_features {
+        for feature in inputs.needed_airspace_features {
             let payload = read_attached_json_required::<AirspaceFeaturePayload>(
                 store,
                 NavKvQuery::VectorAirspaceFeature { id: feature.id },
@@ -4059,8 +4051,8 @@ fn ensure_vector_inputs_loaded_for_map_overlay(
     }
 }
 
-fn vector_input_keys(overlay: &MapOverlayQueryResult) -> Vec<String> {
-    overlay
+fn vector_input_keys(inputs: &VectorOverlayInputRequests) -> Vec<String> {
+    inputs
         .needed_vector_tiles
         .iter()
         .filter_map(|tile| {
@@ -4071,7 +4063,7 @@ fn vector_input_keys(overlay: &MapOverlayQueryResult) -> Vec<String> {
             })
         })
         .chain(
-            overlay
+            inputs
                 .needed_airspace_features
                 .iter()
                 .filter_map(|feature| {
@@ -4255,10 +4247,16 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
     point_display_scale: f64,
     epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
+    let total_started_at = crate::core_clock_ms();
+    let lock_started_at = crate::core_clock_ms();
     let mut sessions = lock_sessions();
+    let lock_ms = elapsed_ms(lock_started_at);
     let session = session_mut(&mut sessions, handle)?;
+    let advance_started_at = crate::core_clock_ms();
     advance_session_wall_clock(session, epoch_ms);
-    let mut invalidations = sync_cycle_product_freshness_status_records(session);
+    let advance_ms = elapsed_ms(advance_started_at);
+    let freshness_ms = 0;
+    let mut invalidations = Vec::new();
     let metrics = MapSurfaceMetrics::new(viewport, width_px, height_px, point_display_scale);
     if !session.map_layer_state.vectors.visible
         && !session.map_layer_state.metars.visible
@@ -4273,20 +4271,27 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
         ));
     }
     let mut supplemental_status_records = Vec::new();
+    let vector_inputs_started_at = crate::core_clock_ms();
     if session.map_layer_state.vectors.visible {
         supplemental_status_records.extend(ensure_vector_inputs_loaded_for_map_overlay(
             session, &metrics,
         ));
     }
+    let vector_inputs_ms = elapsed_ms(vector_inputs_started_at);
     let display_vectors = session.map_layer_state.vectors.visible && session.vector_manifest_loaded;
+    let obstacle_inputs_started_at = crate::core_clock_ms();
     if display_vectors {
         supplemental_status_records.extend(ensure_live_obstacle_inputs_loaded(session, &metrics));
     }
+    let obstacle_inputs_ms = elapsed_ms(obstacle_inputs_started_at);
+    let metar_importance_started_at = crate::core_clock_ms();
     if metar_importance_required_for_viewport(session, &viewport) {
         if let Some(record) = try_ensure_metar_station_importance_loaded(session) {
             supplemental_status_records.push(record);
         }
     }
+    let metar_importance_ms = elapsed_ms(metar_importance_started_at);
+    let offline_started_at = crate::core_clock_ms();
     let offline_region_records = if session.map_layer_state.offline_regions.visible {
         let store = session.nav_kv_store.as_ref().ok_or_else(|| AppError {
             kind: AppErrorKind::Internal,
@@ -4307,6 +4312,8 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
     } else {
         Vec::new()
     };
+    let offline_ms = elapsed_ms(offline_started_at);
+    let overlay_started_at = crate::core_clock_ms();
     let mut overlay = query_map_overlay_for_surface(
         &metrics,
         &session.map_overlay_config,
@@ -4321,6 +4328,8 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
         &session.airspace_feature_cache,
         session.tfr_payload.as_ref(),
     );
+    let overlay_ms = elapsed_ms(overlay_started_at);
+    let flight_plan_started_at = crate::core_clock_ms();
     if display_vectors {
         overlay.flight_plan_features =
             match flight_plan_overlay_features(session, &viewport, width_px, height_px) {
@@ -4332,21 +4341,52 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
                 Err(err) => return had_read_error_to_overlay_outcome(err),
             };
     }
+    let flight_plan_ms = elapsed_ms(flight_plan_started_at);
+    let supplemental_started_at = crate::core_clock_ms();
     overlay
         .data_status_records
         .extend(supplemental_status_records);
+    let supplemental_ms = elapsed_ms(supplemental_started_at);
+    let resources_started_at = crate::core_clock_ms();
     let resources = weather_overlay_resources(session, &overlay);
+    let resources_ms = elapsed_ms(resources_started_at);
     if !resources.is_empty() {
         return Ok(HadOperationOutcome::NeedResources { resources });
     }
+    let status_started_at = crate::core_clock_ms();
     invalidations.extend(sync_map_overlay_status_records(
         session,
         std::mem::take(&mut overlay.data_status_records),
     ));
     invalidations.extend(sync_live_feed_overlay_status_records(session));
     dedupe_invalidations(&mut invalidations);
+    let status_ms = elapsed_ms(status_started_at);
+    let to_value_started_at = crate::core_clock_ms();
+    let overlay_value = serde_json::to_value(overlay).map_err(internal_json_error)?;
+    let to_value_ms = elapsed_ms(to_value_started_at);
+    let total_ms = elapsed_ms(total_started_at);
+    crate::core_debug_log(
+        "map.overlay.session",
+        &serde_json::json!({
+            "total_ms": total_ms,
+            "lock_ms": lock_ms,
+            "advance_ms": advance_ms,
+            "freshness_ms": freshness_ms,
+            "vector_inputs_ms": vector_inputs_ms,
+            "obstacle_inputs_ms": obstacle_inputs_ms,
+            "metar_importance_ms": metar_importance_ms,
+            "offline_ms": offline_ms,
+            "overlay_ms": overlay_ms,
+            "flight_plan_ms": flight_plan_ms,
+            "supplemental_ms": supplemental_ms,
+            "resources_ms": resources_ms,
+            "status_ms": status_ms,
+            "to_value_ms": to_value_ms,
+            "invalidations": invalidations,
+        }),
+    );
     Ok(HadOperationOutcome::complete_with_invalidations(
-        serde_json::to_value(overlay).map_err(internal_json_error)?,
+        overlay_value,
         invalidations,
     ))
 }
@@ -4520,7 +4560,7 @@ pub fn get_map_selection_in_session_with_point_display_scale_at_epoch_ms(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     advance_session_wall_clock(session, epoch_ms);
-    let mut invalidations = sync_cycle_product_freshness_status_records(session);
+    let mut invalidations = Vec::new();
     invalidations.extend(sync_live_feed_overlay_status_records(session));
     dedupe_invalidations(&mut invalidations);
     let metrics = MapSurfaceMetrics::new(viewport, width_px, height_px, point_display_scale);
@@ -4602,7 +4642,7 @@ pub fn get_terrain_overlay_in_session_at_epoch_ms(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     advance_session_wall_clock(session, epoch_ms);
-    let freshness_invalidations = sync_cycle_product_freshness_status_records(session);
+    let freshness_invalidations = Vec::new();
     if !session.map_layer_state.terrain_warning.visible {
         let result = TerrainOverlayQueryResult {
             status: crate::TerrainOverlayStatus::Hidden,
@@ -4720,7 +4760,7 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     advance_session_wall_clock(session, epoch_ms);
-    let freshness_invalidations = sync_cycle_product_freshness_status_records(session);
+    let freshness_invalidations = Vec::new();
     if !session.map_layer_state.nexrad.visible {
         return complete_nexrad_overlay_outcome_with_invalidations(
             session,

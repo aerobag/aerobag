@@ -239,6 +239,17 @@ function airspaceSvgPathListD(paths: AirspaceDisplayPath["paths"]): string {
   return paths.map(airspaceSvgPathD).filter(Boolean).join(" ");
 }
 
+function airspaceSegmentListD(segments: NonNullable<AirspaceDisplayPath["decorations"][number]["segments"]>): string {
+  return segments.map(([x1, y1, x2, y2]) => `M ${x1} ${y1} L ${x2} ${y2}`).join(" ");
+}
+
+function airspaceDecorationD(decoration: AirspaceDisplayPath["decorations"][number]): string {
+  return [
+    airspaceSvgPathListD(decoration.paths ?? []),
+    airspaceSegmentListD(decoration.segments ?? []),
+  ].filter(Boolean).join(" ");
+}
+
 function airspaceDashArray(dashPx: number[]): string | undefined {
   return dashPx.length > 0 ? dashPx.join(" ") : undefined;
 }
@@ -292,7 +303,7 @@ function AirspaceDisplayPathGroup(props: { feature: AirspaceDisplayPath }) {
       {feature.decorations.map((decoration, index) => (
         <path
           key={`${feature.id}:decoration:${index}`}
-          d={airspaceSvgPathListD(decoration.paths)}
+          d={airspaceDecorationD(decoration)}
           fill="none"
           stroke={aviationThemeColor(decoration.color_key)}
           strokeWidth={decoration.width_px}

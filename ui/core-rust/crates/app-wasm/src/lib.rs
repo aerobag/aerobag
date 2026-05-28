@@ -1706,8 +1706,12 @@ fn get_map_overlay_in_session_json(
     height_px: f64,
     now_epoch_ms: f64,
 ) -> Result<String, String> {
+    let total_started_at = now_ms();
+    let parse_started_at = now_ms();
     let viewport: app_core::MapViewport =
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let parse_ms = now_ms() - parse_started_at;
+    let core_started_at = now_ms();
     let overlay = app_core::get_map_overlay_in_session_at_epoch_ms(
         handle,
         viewport,
@@ -1716,7 +1720,21 @@ fn get_map_overlay_in_session_json(
         now_epoch_ms as i64,
     )
     .map_err(|err| err.to_string())?;
-    serde_json::to_string(&overlay).map_err(|err| err.to_string())
+    let core_ms = now_ms() - core_started_at;
+    let serialize_started_at = now_ms();
+    let serialized = serde_json::to_string(&overlay).map_err(|err| err.to_string())?;
+    let serialize_ms = now_ms() - serialize_started_at;
+    app_core::core_debug_log(
+        "map.overlay.wasm",
+        &serde_json::json!({
+            "total_ms": (now_ms() - total_started_at).round() as u64,
+            "parse_ms": parse_ms.round() as u64,
+            "core_ms": core_ms.round() as u64,
+            "serialize_ms": serialize_ms.round() as u64,
+            "json_bytes": serialized.len(),
+        }),
+    );
+    Ok(serialized)
 }
 
 fn get_map_selection_in_session_json(

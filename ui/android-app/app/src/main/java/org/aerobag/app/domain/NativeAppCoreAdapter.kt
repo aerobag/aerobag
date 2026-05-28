@@ -122,11 +122,19 @@ data class AirspaceDisplaySubpath(
     val points: List<AirspaceScreenPoint>,
 )
 
+data class AirspaceDisplayDecorationSegment(
+    val x1: Double,
+    val y1: Double,
+    val x2: Double,
+    val y2: Double,
+)
+
 data class AirspaceDisplayDecoration(
     val colorKey: String,
     val widthPx: Double,
     val lineCap: String,
     val paths: List<AirspaceDisplaySubpath>,
+    val segments: List<AirspaceDisplayDecorationSegment>,
 )
 
 data class AirspaceDisplayPath(
@@ -2221,7 +2229,20 @@ private fun WireAirspaceDisplayDecoration.toUi() = AirspaceDisplayDecoration(
     widthPx = width_px,
     lineCap = line_cap,
     paths = paths.map { it.toUi() },
+    segments = segments.mapNotNull { it.toAirspaceDisplayDecorationSegmentOrNull() },
 )
+
+private fun List<Double>.toAirspaceDisplayDecorationSegmentOrNull(): AirspaceDisplayDecorationSegment? =
+    if (size >= 4) {
+        AirspaceDisplayDecorationSegment(
+            x1 = this[0],
+            y1 = this[1],
+            x2 = this[2],
+            y2 = this[3],
+        )
+    } else {
+        null
+    }
 
 private fun WireAirspaceDisplayPath.toUi() = AirspaceDisplayPath(
     id = id,

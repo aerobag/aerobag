@@ -689,6 +689,7 @@ data class WireAirspaceDisplayDecoration(
     val width_px: Double,
     val line_cap: String = "round",
     val paths: List<WireAirspaceDisplaySubpath> = emptyList(),
+    val segments: List<List<Double>> = emptyList(),
 )
 
 @Serializable

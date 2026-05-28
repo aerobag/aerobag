@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
-    core_debug_log,
+    core_clock_ms, core_debug_log,
     data_status::{DataStatusRecord, UiStatusSeverity},
     geometry::LatLon,
     great_circle_distance_nm, AppError, AppErrorKind, AppResult, FlightPlan, FlightPlanRowActionId,
@@ -16,6 +16,7 @@ use crate::{
 pub const VECTOR_DISPLAY_FEATURE_LIMIT: usize = 500;
 pub const AIRSPACE_DISPLAY_FEATURE_LIMIT: usize = 700;
 pub const AIRSPACE_FEATHER_LIMIT: usize = 5_000;
+const AIRSPACE_DECORATION_SCREEN_MARGIN_PX: f64 = 256.0;
 const LABEL_COLLISION_PADDING_PX: f64 = 3.0;
 const POINT_TILE_ZOOM: u32 = 9;
 const AIRSPACE_MIN_DISPLAY_ZOOM: f64 = 6.0;
@@ -493,6 +494,22 @@ pub struct AirspaceFeatureRequest {
     pub path: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct VectorOverlayInputRequests {
+    pub needed_vector_tiles: Vec<VectorTileRequest>,
+    pub needed_airspace_features: Vec<AirspaceFeatureRequest>,
+}
+
+struct PointVectorTileScan {
+    tile_count: usize,
+    needed_tiles: Vec<VectorTileRequest>,
+}
+
+struct AirspaceInputScan {
+    needed_tiles: Vec<VectorTileRequest>,
+    feature_ids: BTreeSet<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VectorIdentLabelStyle {
@@ -620,7 +637,10 @@ pub struct AirspaceDecorationPath {
     pub color_key: String,
     pub width_px: f64,
     pub line_cap: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<AirspaceDisplaySubpath>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub segments: Vec<[f64; 4]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1373,6 +1393,87 @@ pub fn query_map_overlay_with_point_display_scale(
     )
 }
 
+pub fn vector_overlay_input_requests(
+    metrics: &MapSurfaceMetrics,
+    config: &MapOverlayConfig,
+    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
+    airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
+) -> VectorOverlayInputRequests {
+    let viewport = &metrics.viewport;
+    let width_px = metrics.width_px;
+    let height_px = metrics.height_px;
+    let point_display_scale = metrics.display_scale;
+    let point_scan = visit_point_vector_tiles(
+        config,
+        viewport,
+        width_px,
+        height_px,
+        point_display_scale,
+        vector_tile_cache,
+        |_tile, _payload| {},
+    );
+
+    let airspace = airspace_overlay_input_requests(
+        viewport,
+        width_px,
+        height_px,
+        config,
+        vector_tile_cache,
+        airspace_feature_cache,
+        point_display_scale,
+    );
+
+    VectorOverlayInputRequests {
+        needed_vector_tiles: merge_aggregate_vector_tile_requests(
+            point_scan.needed_tiles,
+            airspace.needed_vector_tiles,
+        ),
+        needed_airspace_features: airspace.needed_airspace_features,
+    }
+}
+
+fn visit_point_vector_tiles<F>(
+    config: &MapOverlayConfig,
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    point_display_scale: f64,
+    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
+    mut on_loaded: F,
+) -> PointVectorTileScan
+where
+    F: FnMut(&DisplayVectorTile, &VectorAggregateTilePayload),
+{
+    let tile_window = visible_point_display_tile_window(
+        config,
+        viewport,
+        width_px,
+        height_px,
+        point_display_scale,
+    );
+    let tile_count = tile_window.len();
+    let mut needed_tiles = Vec::new();
+    let mut needed_seen = BTreeSet::new();
+    for tile in &tile_window {
+        let key = aggregate_vector_tile_cache_key(tile.request.z, tile.request.x, tile.request.y);
+        let Some(payload) = vector_tile_cache.get(&key) else {
+            if needed_seen.insert(key) {
+                needed_tiles.push(aggregate_vector_tile_request(
+                    tile.request.z,
+                    tile.request.x,
+                    tile.request.y,
+                ));
+            }
+            continue;
+        };
+        on_loaded(tile, payload);
+    }
+    PointVectorTileScan {
+        tile_count,
+        needed_tiles,
+    }
+}
+
 pub fn query_map_overlay_for_surface(
     metrics: &MapSurfaceMetrics,
     config: &MapOverlayConfig,
@@ -1387,6 +1488,7 @@ pub fn query_map_overlay_for_surface(
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
 ) -> MapOverlayQueryResult {
+    let total_started_at = core_clock_ms();
     let viewport = &metrics.viewport;
     let width_px = metrics.width_px;
     let height_px = metrics.height_px;
@@ -1398,6 +1500,7 @@ pub fn query_map_overlay_for_surface(
     let mut vector_budget_buckets = vector_display_budget_buckets();
     let center_world = lat_lon_to_world(viewport.center);
     let scale = 2.0_f64.powf(viewport.zoom);
+    let offline_started_at = core_clock_ms();
     let offline_regions = project_offline_regions(
         offline_region_records,
         center_world,
@@ -1405,68 +1508,67 @@ pub fn query_map_overlay_for_surface(
         width_px,
         height_px,
     );
+    let offline_ms = overlay_elapsed_ms(offline_started_at);
     let mut point_tile_count = 0_usize;
+    let mut point_vector_ms = 0_u64;
+    let mut obstacle_ms = 0_u64;
 
     if display_vectors {
-        let tile_window = visible_point_display_tile_window(
+        let point_vector_started_at = core_clock_ms();
+        let point_scan = visit_point_vector_tiles(
             config,
             viewport,
             width_px,
             height_px,
             point_display_scale,
+            vector_tile_cache,
+            |tile, payload| {
+                for record in vector_tile_point_records(payload, &tile.request.layer) {
+                    vector_budget.scanned_records += 1;
+                    if !should_display_record(record) {
+                        bump_layer_count(&mut vector_budget.hidden_by_layer, &tile.request.layer);
+                        continue;
+                    }
+                    let Some(symbol) = point_vector_record_to_symbol_feature(
+                        record,
+                        obstacle_context.and_then(|context| context.altitude_ft),
+                    ) else {
+                        bump_layer_count(
+                            &mut vector_budget.no_symbol_by_layer,
+                            &tile.request.layer,
+                        );
+                        continue;
+                    };
+                    vector_budget.displayable_records += 1;
+                    let point = world_to_screen_with_x_offset(
+                        center_world,
+                        scale,
+                        width_px,
+                        height_px,
+                        LatLon {
+                            lat: record.lat,
+                            lon: record.lon,
+                        },
+                        tile.world_x_offset,
+                    );
+                    let feature = visible_map_feature_from_symbol(
+                        record.id.clone(),
+                        symbol,
+                        point,
+                        VectorIdentLabelStyle::Default,
+                    );
+                    if let Some(bucket_index) =
+                        vector_display_budget_bucket_index(&tile.request.layer)
+                    {
+                        vector_budget_buckets[bucket_index].features.push(feature);
+                    }
+                }
+            },
         );
-        point_tile_count = tile_window.len();
-        let mut needed_seen = BTreeSet::new();
-        for tile in tile_window {
-            let key =
-                aggregate_vector_tile_cache_key(tile.request.z, tile.request.x, tile.request.y);
-            let Some(payload) = vector_tile_cache.get(&key) else {
-                if needed_seen.insert(key) {
-                    needed_vector_tiles.push(aggregate_vector_tile_request(
-                        tile.request.z,
-                        tile.request.x,
-                        tile.request.y,
-                    ));
-                }
-                continue;
-            };
-            for record in vector_tile_point_records(payload, &tile.request.layer) {
-                vector_budget.scanned_records += 1;
-                if !should_display_record(record) {
-                    bump_layer_count(&mut vector_budget.hidden_by_layer, &tile.request.layer);
-                    continue;
-                }
-                let Some(symbol) = point_vector_record_to_symbol_feature(
-                    record,
-                    obstacle_context.and_then(|context| context.altitude_ft),
-                ) else {
-                    bump_layer_count(&mut vector_budget.no_symbol_by_layer, &tile.request.layer);
-                    continue;
-                };
-                vector_budget.displayable_records += 1;
-                let point = world_to_screen_with_x_offset(
-                    center_world,
-                    scale,
-                    width_px,
-                    height_px,
-                    LatLon {
-                        lat: record.lat,
-                        lon: record.lon,
-                    },
-                    tile.world_x_offset,
-                );
-                let feature = visible_map_feature_from_symbol(
-                    record.id.clone(),
-                    symbol,
-                    point,
-                    VectorIdentLabelStyle::Default,
-                );
-                if let Some(bucket_index) = vector_display_budget_bucket_index(&tile.request.layer)
-                {
-                    vector_budget_buckets[bucket_index].features.push(feature);
-                }
-            }
-        }
+        point_tile_count = point_scan.tile_count;
+        needed_vector_tiles = point_scan.needed_tiles;
+        point_vector_ms = overlay_elapsed_ms(point_vector_started_at);
+        let obstacle_started_at = core_clock_ms();
         if let Some(obstacle_layer) = config.obstacle_layer.as_ref() {
             let obstacle_tiles = visible_obstacle_tile_window(
                 obstacle_layer,
@@ -1518,7 +1620,9 @@ pub fn query_map_overlay_for_surface(
                 }
             }
         }
+        obstacle_ms = overlay_elapsed_ms(obstacle_started_at);
     }
+    let budget_started_at = core_clock_ms();
     for bucket_index in 0..vector_budget_buckets.len() {
         let bucket_len = vector_budget_buckets[bucket_index].features.len();
         if bucket_len == 0 {
@@ -1545,6 +1649,7 @@ pub fn query_map_overlay_for_surface(
             break;
         }
     }
+    let budget_ms = overlay_elapsed_ms(budget_started_at);
     let mut data_status_records = if vector_budget.omitted_after_cap > 0 {
         let omitted_summary = layer_counts_summary(&vector_budget.omitted_by_layer);
         vec![DataStatusRecord::new(
@@ -1565,6 +1670,7 @@ pub fn query_map_overlay_for_surface(
         Vec::new()
     };
 
+    let airspace_started_at = core_clock_ms();
     let airspace = if display_vectors {
         query_airspace_overlay(
             viewport,
@@ -1586,6 +1692,8 @@ pub fn query_map_overlay_for_surface(
             data_status_records: Vec::new(),
         }
     };
+    let airspace_ms = overlay_elapsed_ms(airspace_started_at);
+    let tfr_started_at = core_clock_ms();
     let tfrs = if display_vectors {
         query_tfr_overlay(
             viewport,
@@ -1603,6 +1711,8 @@ pub fn query_map_overlay_for_surface(
             labels: Vec::new(),
         }
     };
+    let tfr_ms = overlay_elapsed_ms(tfr_started_at);
+    let metar_started_at = core_clock_ms();
     let metars = if display_metars {
         query_metar_overlay(
             viewport,
@@ -1623,9 +1733,13 @@ pub fn query_map_overlay_for_surface(
             data_status_records: Vec::new(),
         }
     };
+    let metar_ms = overlay_elapsed_ms(metar_started_at);
+    let status_started_at = core_clock_ms();
     data_status_records.extend(airspace.data_status_records);
     data_status_records.extend(metars.data_status_records);
+    let status_ms = overlay_elapsed_ms(status_started_at);
 
+    let labels_started_at = core_clock_ms();
     let mut airspace_labels = {
         let mut labels = airspace.labels;
         labels.extend(tfrs.labels);
@@ -1636,9 +1750,34 @@ pub fn query_map_overlay_for_surface(
         &mut airspace_labels,
         point_display_scale,
     );
+    let labels_ms = overlay_elapsed_ms(labels_started_at);
 
+    let merge_started_at = core_clock_ms();
     let needed_vector_tiles =
         merge_aggregate_vector_tile_requests(needed_vector_tiles, airspace.needed_tiles);
+    let merge_ms = overlay_elapsed_ms(merge_started_at);
+    let total_ms = overlay_elapsed_ms(total_started_at);
+    let airspace_path_points = airspace_display_path_point_count(&airspace.paths);
+    let airspace_decoration_points = airspace_display_path_decoration_point_count(&airspace.paths);
+    let airspace_decoration_segments =
+        airspace_display_path_decoration_segment_count(&airspace.paths);
+    let tfr_path_points = airspace_display_path_point_count(&tfrs.paths);
+    let tfr_decoration_points = airspace_display_path_decoration_point_count(&tfrs.paths);
+    let tfr_decoration_segments = airspace_display_path_decoration_segment_count(&tfrs.paths);
+    let offline_region_points = offline_region_point_count(&offline_regions);
+    let timing = json!({
+        "total_ms": total_ms,
+        "offline_ms": offline_ms,
+        "point_vector_ms": point_vector_ms,
+        "obstacle_ms": obstacle_ms,
+        "budget_ms": budget_ms,
+        "airspace_ms": airspace_ms,
+        "tfr_ms": tfr_ms,
+        "metar_ms": metar_ms,
+        "status_ms": status_ms,
+        "labels_ms": labels_ms,
+        "merge_ms": merge_ms,
+    });
     core_debug_log(
         "map.overlay.core",
         &json!({
@@ -1671,7 +1810,16 @@ pub fn query_map_overlay_for_surface(
             "visible_pireps": metars.visible_pireps.len(),
             "airspace_paths": airspace.paths.len(),
             "airspace_labels": airspace_labels.len(),
+            "airspace_path_points": airspace_path_points,
+            "airspace_decoration_points": airspace_decoration_points,
+            "airspace_decoration_segments": airspace_decoration_segments,
             "tfr_paths": tfrs.paths.len(),
+            "tfr_path_points": tfr_path_points,
+            "tfr_decoration_points": tfr_decoration_points,
+            "tfr_decoration_segments": tfr_decoration_segments,
+            "offline_regions": offline_regions.len(),
+            "offline_region_points": offline_region_points,
+            "timing": timing,
             "data_status": data_status_records.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(),
         }),
     );
@@ -3206,7 +3354,7 @@ fn airspace_icon_paths_from_lon_lat_paths(
         name: name.to_string(),
         style_key: style_key.to_string(),
         style,
-        decorations: airspace_decorations(style_key, &paths, &mut decoration_budget),
+        decorations: airspace_decorations(style_key, &paths, &mut decoration_budget, None),
         paths,
     })
 }
@@ -3952,6 +4100,95 @@ struct AirspaceOverlayProjection {
     data_status_records: Vec<DataStatusRecord>,
 }
 
+fn airspace_overlay_input_requests(
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    config: &MapOverlayConfig,
+    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
+    feature_cache: &HashMap<String, AirspaceFeaturePayload>,
+    point_display_scale: f64,
+) -> VectorOverlayInputRequests {
+    let scan = scan_airspace_inputs(
+        viewport,
+        width_px,
+        height_px,
+        config,
+        vector_tile_cache,
+        point_display_scale,
+        |_payload| {},
+    );
+    let needed_airspace_features = scan
+        .feature_ids
+        .into_iter()
+        .filter(|feature_id| !feature_cache.contains_key(feature_id))
+        .map(|feature_id| AirspaceFeatureRequest {
+            path: airspace_feature_path(&feature_id),
+            id: feature_id,
+        })
+        .collect();
+
+    VectorOverlayInputRequests {
+        needed_vector_tiles: scan.needed_tiles,
+        needed_airspace_features,
+    }
+}
+
+fn scan_airspace_inputs<F>(
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    config: &MapOverlayConfig,
+    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
+    point_display_scale: f64,
+    mut on_label_tile: F,
+) -> AirspaceInputScan
+where
+    F: FnMut(&VectorAggregateTilePayload),
+{
+    let effective_zoom = effective_point_display_zoom(viewport, point_display_scale);
+    if effective_zoom < AIRSPACE_MIN_DISPLAY_ZOOM || width_px <= 0.0 || height_px <= 0.0 {
+        return AirspaceInputScan {
+            needed_tiles: Vec::new(),
+            feature_ids: BTreeSet::new(),
+        };
+    }
+
+    let mut needed_tiles = Vec::new();
+    let mut needed_seen = BTreeSet::new();
+    let mut feature_ids = BTreeSet::new();
+    let ref_zoom = airspace_reference_zoom(effective_zoom, config);
+    for tile in visible_layer_tile_window("airspace", ref_zoom, viewport, width_px, height_px) {
+        let key = aggregate_vector_tile_cache_key(tile.z, tile.x, tile.y);
+        let Some(payload) = vector_tile_cache.get(&key) else {
+            if needed_seen.insert(key) {
+                needed_tiles.push(aggregate_vector_tile_request(tile.z, tile.x, tile.y));
+            }
+            continue;
+        };
+        feature_ids.extend(payload.airspace_refs.iter().cloned());
+    }
+
+    let label_zoom = airspace_label_zoom(effective_zoom, config);
+    for tile in
+        visible_layer_tile_window("airspace-labels", label_zoom, viewport, width_px, height_px)
+    {
+        let key = aggregate_vector_tile_cache_key(tile.z, tile.x, tile.y);
+        let Some(payload) = vector_tile_cache.get(&key) else {
+            if needed_seen.insert(key) {
+                needed_tiles.push(aggregate_vector_tile_request(tile.z, tile.x, tile.y));
+            }
+            continue;
+        };
+        on_label_tile(payload);
+    }
+
+    AirspaceInputScan {
+        needed_tiles,
+        feature_ids,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct AirspaceLabelCandidate {
     rank: u32,
@@ -3971,6 +4208,14 @@ struct AirspaceDecorationBudget {
     limit_hit: bool,
     missing_interior_side: usize,
     invalid_interior_side: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AirspaceDecorationScreenBounds {
+    min_x: f64,
+    min_y: f64,
+    max_x: f64,
+    max_y: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4007,27 +4252,58 @@ fn query_airspace_overlay(
         };
     }
 
-    let ref_zoom = airspace_reference_zoom(effective_zoom, config);
-    let ref_tiles = visible_layer_tile_window("airspace", ref_zoom, viewport, width_px, height_px);
-    let mut needed_tiles = Vec::new();
-    let mut needed_seen = BTreeSet::new();
-    let mut feature_ids = BTreeSet::new();
-    for tile in ref_tiles {
-        let key = aggregate_vector_tile_cache_key(tile.z, tile.x, tile.y);
-        let Some(payload) = vector_tile_cache.get(&key) else {
-            if needed_seen.insert(key) {
-                needed_tiles.push(aggregate_vector_tile_request(tile.z, tile.x, tile.y));
+    let mut label_by_feature = HashMap::<String, AirspaceLabelCandidate>::new();
+    let scan = scan_airspace_inputs(
+        viewport,
+        width_px,
+        height_px,
+        config,
+        vector_tile_cache,
+        point_display_scale,
+        |payload| {
+            for label in &payload.airspace_labels {
+                let point = world_to_screen(
+                    center_world,
+                    scale,
+                    width_px,
+                    height_px,
+                    LatLon {
+                        lat: label.lat,
+                        lon: label.lon,
+                    },
+                );
+                if point.x < 0.0 || point.x > width_px || point.y < 0.0 || point.y > height_px {
+                    continue;
+                }
+                let style_key = airspace_style_key(&label.style_hint);
+                let Some(glyph) = airspace_limit_glyph_from_label(label.text.trim(), &style_key)
+                else {
+                    continue;
+                };
+                let candidate = AirspaceLabelCandidate {
+                    rank: label.rank,
+                    label: AirspaceDisplayLabel {
+                        feature_id: label.feature_id.clone(),
+                        glyph,
+                        screen_x: point.x,
+                        screen_y: point.y,
+                    },
+                };
+                let entry = label_by_feature
+                    .entry(candidate.label.feature_id.clone())
+                    .or_insert_with(|| candidate.clone());
+                if airspace_label_candidate_is_better(&candidate, entry) {
+                    *entry = candidate;
+                }
             }
-            continue;
-        };
-        feature_ids.extend(payload.airspace_refs.iter().cloned());
-    }
+        },
+    );
 
     let mut needed_features = Vec::new();
     let mut paths = Vec::new();
     let mut limit_hit = false;
     let mut decoration_budget = AirspaceDecorationBudget::default();
-    for feature_id in feature_ids {
+    for feature_id in scan.feature_ids {
         if paths.len() >= AIRSPACE_DISPLAY_FEATURE_LIMIT {
             limit_hit = true;
             break;
@@ -4061,57 +4337,6 @@ fn query_airspace_overlay(
         }
     }
 
-    let label_zoom = airspace_label_zoom(effective_zoom, config);
-    let label_tiles =
-        visible_layer_tile_window("airspace-labels", label_zoom, viewport, width_px, height_px);
-    let mut label_by_feature = HashMap::<String, AirspaceLabelCandidate>::new();
-    for tile in label_tiles {
-        let key = aggregate_vector_tile_cache_key(tile.z, tile.x, tile.y);
-        let Some(payload) = vector_tile_cache.get(&key) else {
-            if needed_seen.insert(key) {
-                needed_tiles.push(aggregate_vector_tile_request(tile.z, tile.x, tile.y));
-            }
-            continue;
-        };
-        for label in &payload.airspace_labels {
-            let point = world_to_screen(
-                center_world,
-                scale,
-                width_px,
-                height_px,
-                LatLon {
-                    lat: label.lat,
-                    lon: label.lon,
-                },
-            );
-            if point.x < 0.0 || point.x > width_px || point.y < 0.0 || point.y > height_px {
-                continue;
-            }
-            let candidate = AirspaceLabelCandidate {
-                rank: label.rank,
-                label: {
-                    let style_key = airspace_style_key(&label.style_hint);
-                    let Some(glyph) =
-                        airspace_limit_glyph_from_label(label.text.trim(), &style_key)
-                    else {
-                        continue;
-                    };
-                    AirspaceDisplayLabel {
-                        feature_id: label.feature_id.clone(),
-                        glyph,
-                        screen_x: point.x,
-                        screen_y: point.y,
-                    }
-                },
-            };
-            let entry = label_by_feature
-                .entry(candidate.label.feature_id.clone())
-                .or_insert_with(|| candidate.clone());
-            if airspace_label_candidate_is_better(&candidate, entry) {
-                *entry = candidate;
-            }
-        }
-    }
     let mut labels = label_by_feature
         .into_values()
         .map(|candidate| candidate.label)
@@ -4165,7 +4390,7 @@ fn query_airspace_overlay(
     }
 
     AirspaceOverlayProjection {
-        needed_tiles,
+        needed_tiles: scan.needed_tiles,
         needed_features,
         paths,
         labels,
@@ -4258,7 +4483,12 @@ fn project_airspace_feature(
         id: feature.id.clone(),
         name: feature.name.clone(),
         style: airspace_display_style(&style_key),
-        decorations: airspace_decorations(&style_key, &paths, decoration_budget),
+        decorations: airspace_decorations(
+            &style_key,
+            &paths,
+            decoration_budget,
+            Some(airspace_decoration_screen_bounds(width_px, height_px)),
+        ),
         style_key,
         paths,
     }
@@ -4289,11 +4519,12 @@ fn airspace_decorations(
     style_key: &str,
     paths: &[AirspaceDisplaySubpath],
     budget: &mut AirspaceDecorationBudget,
+    screen_bounds: Option<AirspaceDecorationScreenBounds>,
 ) -> Vec<AirspaceDecorationPath> {
     let Some((color_key, width_px)) = airspace_feather_style(style_key) else {
         return Vec::new();
     };
-    let mut feather_paths = Vec::new();
+    let mut feather_segments = Vec::new();
     for path in paths {
         if !path.closed || path.points.len() < 3 {
             continue;
@@ -4309,20 +4540,48 @@ fn airspace_decorations(
                 continue;
             }
         };
-        feather_paths.extend(airspace_feathers_for_path(path, interior_side, budget));
+        feather_segments.extend(airspace_feathers_for_path(
+            path,
+            interior_side,
+            budget,
+            screen_bounds,
+        ));
         if budget.limit_hit {
             break;
         }
     }
-    if feather_paths.is_empty() {
+    if feather_segments.is_empty() {
         return Vec::new();
     }
     vec![AirspaceDecorationPath {
         color_key,
         width_px,
         line_cap: "butt".to_string(),
-        paths: feather_paths,
+        paths: Vec::new(),
+        segments: feather_segments,
     }]
+}
+
+fn airspace_decoration_screen_bounds(
+    width_px: f64,
+    height_px: f64,
+) -> AirspaceDecorationScreenBounds {
+    AirspaceDecorationScreenBounds {
+        min_x: -AIRSPACE_DECORATION_SCREEN_MARGIN_PX,
+        min_y: -AIRSPACE_DECORATION_SCREEN_MARGIN_PX,
+        max_x: width_px + AIRSPACE_DECORATION_SCREEN_MARGIN_PX,
+        max_y: height_px + AIRSPACE_DECORATION_SCREEN_MARGIN_PX,
+    }
+}
+
+impl AirspaceDecorationScreenBounds {
+    fn intersects_segment(self, segment: [f64; 4]) -> bool {
+        let min_x = segment[0].min(segment[2]);
+        let max_x = segment[0].max(segment[2]);
+        let min_y = segment[1].min(segment[3]);
+        let max_y = segment[1].max(segment[3]);
+        max_x >= self.min_x && min_x <= self.max_x && max_y >= self.min_y && min_y <= self.max_y
+    }
 }
 
 fn parse_airspace_interior_side(
@@ -4356,7 +4615,8 @@ fn airspace_feathers_for_path(
     path: &AirspaceDisplaySubpath,
     interior_side: AirspaceInteriorSide,
     budget: &mut AirspaceDecorationBudget,
-) -> Vec<AirspaceDisplaySubpath> {
+    screen_bounds: Option<AirspaceDecorationScreenBounds>,
+) -> Vec<[f64; 4]> {
     const FEATHER_SPACING_PX: f64 = 8.0;
     const FEATHER_LENGTH_PX: f64 = 8.0;
     let signed_area = polygon_signed_area(&path.points);
@@ -4390,20 +4650,17 @@ fn airspace_feathers_for_path(
             let t = (next_feather_distance - path_distance) / length;
             let base_x = start.x + dx * t;
             let base_y = start.y + dy * t;
-            feathers.push(AirspaceDisplaySubpath {
-                closed: false,
-                interior_side: None,
-                points: vec![
-                    AirspaceScreenPoint {
-                        x: round_screen_coordinate(base_x),
-                        y: round_screen_coordinate(base_y),
-                    },
-                    AirspaceScreenPoint {
-                        x: round_screen_coordinate(base_x + nx * FEATHER_LENGTH_PX),
-                        y: round_screen_coordinate(base_y + ny * FEATHER_LENGTH_PX),
-                    },
-                ],
-            });
+            let segment = [
+                round_screen_coordinate(base_x),
+                round_screen_coordinate(base_y),
+                round_screen_coordinate(base_x + nx * FEATHER_LENGTH_PX),
+                round_screen_coordinate(base_y + ny * FEATHER_LENGTH_PX),
+            ];
+            if !screen_bounds.map_or(true, |bounds| bounds.intersects_segment(segment)) {
+                next_feather_distance += FEATHER_SPACING_PX;
+                continue;
+            }
+            feathers.push(segment);
             budget.used += 1;
             next_feather_distance += FEATHER_SPACING_PX;
         }
@@ -4691,6 +4948,62 @@ fn tile_counts_by_zoom(tiles: &[VectorTileRequest]) -> BTreeMap<u32, usize> {
         *counts.entry(tile.z).or_insert(0) += 1;
     }
     counts
+}
+
+fn airspace_display_path_point_count(paths: &[AirspaceDisplayPath]) -> usize {
+    paths
+        .iter()
+        .map(|path| {
+            path.paths
+                .iter()
+                .map(|subpath| subpath.points.len())
+                .sum::<usize>()
+        })
+        .sum()
+}
+
+fn airspace_display_path_decoration_point_count(paths: &[AirspaceDisplayPath]) -> usize {
+    paths
+        .iter()
+        .map(|path| {
+            path.decorations
+                .iter()
+                .flat_map(|decoration| &decoration.paths)
+                .map(|subpath| subpath.points.len())
+                .sum::<usize>()
+                + path
+                    .decorations
+                    .iter()
+                    .map(|decoration| decoration.segments.len() * 2)
+                    .sum::<usize>()
+        })
+        .sum()
+}
+
+fn airspace_display_path_decoration_segment_count(paths: &[AirspaceDisplayPath]) -> usize {
+    paths
+        .iter()
+        .map(|path| {
+            path.decorations
+                .iter()
+                .map(|decoration| decoration.segments.len())
+                .sum::<usize>()
+        })
+        .sum()
+}
+
+fn offline_region_point_count(regions: &[OfflineRegionDisplay]) -> usize {
+    regions.iter().map(|region| region.points.len()).sum()
+}
+
+fn overlay_elapsed_ms(started_at: Option<f64>) -> u64 {
+    let Some(started_at) = started_at else {
+        return 0;
+    };
+    let Some(now_ms) = core_clock_ms() else {
+        return 0;
+    };
+    (now_ms - started_at).max(0.0).round() as u64
 }
 
 pub fn chart_ident_label_for_nav_ref_symbol(nav_ref: &NavRef, symbol: &NavSymbolFeature) -> String {
@@ -6839,6 +7152,11 @@ mod tests {
             !result.airspace_paths[0].decorations.is_empty(),
             "MOA should include feather decorations"
         );
+        assert!(
+            !result.airspace_paths[0].decorations[0].segments.is_empty(),
+            "feathers should be encoded as compact screen segments"
+        );
+        assert!(result.airspace_paths[0].decorations[0].paths.is_empty());
         assert_eq!(
             result.airspace_paths[0].decorations[0].color_key,
             "class_c_magenta"
@@ -6920,7 +7238,8 @@ mod tests {
             points,
         };
         let mut budget = AirspaceDecorationBudget::default();
-        let feathers = airspace_feathers_for_path(&path, AirspaceInteriorSide::Left, &mut budget);
+        let feathers =
+            airspace_feathers_for_path(&path, AirspaceInteriorSide::Left, &mut budget, None);
 
         assert!(
             feathers.len() > 20,
@@ -6942,18 +7261,18 @@ mod tests {
         };
 
         let mut left_budget = AirspaceDecorationBudget::default();
-        let left = airspace_feathers_for_path(&path, AirspaceInteriorSide::Left, &mut left_budget);
+        let left =
+            airspace_feathers_for_path(&path, AirspaceInteriorSide::Left, &mut left_budget, None);
         let mut right_budget = AirspaceDecorationBudget::default();
         let right =
-            airspace_feathers_for_path(&path, AirspaceInteriorSide::Right, &mut right_budget);
+            airspace_feathers_for_path(&path, AirspaceInteriorSide::Right, &mut right_budget, None);
 
         assert!(!left.is_empty());
         assert_eq!(left.len(), right.len());
-        assert_eq!(left[0].points[0], right[0].points[0]);
+        assert_eq!(left[0][0], right[0][0]);
+        assert_eq!(left[0][1], right[0][1]);
         assert!(
-            (left[0].points[1].y - left[0].points[0].y)
-                * (right[0].points[1].y - right[0].points[0].y)
-                < 0.0,
+            (left[0][3] - left[0][1]) * (right[0][3] - right[0][1]) < 0.0,
             "right-side feathers should point opposite left-side feathers"
         );
     }

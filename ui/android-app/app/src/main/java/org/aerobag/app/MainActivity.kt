@@ -209,6 +209,7 @@ import org.aerobag.app.domain.FlightPlanUiState
 import org.aerobag.app.domain.GuidanceState
 import org.aerobag.app.domain.InstalledPackages
 import org.aerobag.app.domain.AirspaceDisplayDecoration
+import org.aerobag.app.domain.AirspaceDisplayDecorationSegment
 import org.aerobag.app.domain.AirspaceDisplayLabel
 import org.aerobag.app.domain.AirspaceDisplayPath
 import org.aerobag.app.domain.AirspaceDisplaySubpath
@@ -2079,7 +2080,42 @@ internal fun transformAirspaceDisplayDecoration(
         paths = decoration.paths.map { subpath ->
             transformAirspaceDisplaySubpath(subpath, fromViewport, fromSurface, toViewport, toSurface)
         },
+        segments = decoration.segments.map { segment ->
+            transformAirspaceDisplayDecorationSegment(
+                segment,
+                fromViewport,
+                fromSurface,
+                toViewport,
+                toSurface,
+            )
+        },
     )
+
+internal fun transformAirspaceDisplayDecorationSegment(
+    segment: AirspaceDisplayDecorationSegment,
+    fromViewport: MapViewportState,
+    fromSurface: OverlaySurfaceUnits,
+    toViewport: MapViewportState,
+    toSurface: OverlaySurfaceUnits,
+): AirspaceDisplayDecorationSegment {
+    val start = transformScreenPoint(
+        x = segment.x1,
+        y = segment.y1,
+        fromViewport = fromViewport,
+        fromSurface = fromSurface,
+        toViewport = toViewport,
+        toSurface = toSurface,
+    )
+    val end = transformScreenPoint(
+        x = segment.x2,
+        y = segment.y2,
+        fromViewport = fromViewport,
+        fromSurface = fromSurface,
+        toViewport = toViewport,
+        toSurface = toSurface,
+    )
+    return segment.copy(x1 = start.x, y1 = start.y, x2 = end.x, y2 = end.y)
+}
 
 internal fun transformAirspaceDisplaySubpath(
     subpath: AirspaceDisplaySubpath,

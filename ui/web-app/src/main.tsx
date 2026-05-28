@@ -180,11 +180,15 @@ try {
   if (!rootNode) {
     throw new Error("Missing #root element");
   }
-  ReactDOM.createRoot(rootNode).render(
-    <React.StrictMode>
-      <App />
-    </React.StrictMode>,
-  );
+  if (window.location.pathname === "/metar-bakeoff") {
+    void import("./metarBakeoff").then(({ runMetarBakeoff }) => runMetarBakeoff(rootNode));
+  } else {
+    ReactDOM.createRoot(rootNode).render(
+      <React.StrictMode>
+        <App />
+      </React.StrictMode>,
+    );
+  }
   window.__aerobag_mark_startup_shell_managed?.();
 } catch (error) {
   const detail = error instanceof Error ? error.message : String(error);

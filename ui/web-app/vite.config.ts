@@ -19,6 +19,12 @@ const generatedRoot = path.join(webTargetRoot, "generated");
 const iconsRoot = path.join(repoRoot, "ui", "icons");
 const adsbTraceRoot = path.resolve(repoRoot, "..", "adsb-traces");
 const liveFeedsOrigin = process.env.AEROBAG_LIVE_FEEDS_ORIGIN ?? null;
+const liveFeedsFixtureRoot = process.env.AEROBAG_LIVE_FEEDS_FIXTURE_ROOT
+  ? path.resolve(process.env.AEROBAG_LIVE_FEEDS_FIXTURE_ROOT)
+  : path.resolve(repoRoot, "..", "live-feeds-dev-fixture", "live-feeds");
+const metarBakeoffState = process.env.AEROBAG_METAR_BAKEOFF_STATE ?? "e91c842b86246281";
+const metarBakeoffDeltaFrom = process.env.AEROBAG_METAR_BAKEOFF_DELTA_FROM ?? "f7cfb829c95fa022";
+const metarBakeoffDeltaTo = process.env.AEROBAG_METAR_BAKEOFF_DELTA_TO ?? "1bd77ad5a9393345";
 const sharedRoot = path.join(repoRoot, "ui", "shared");
 const sharedFixturesRoot = path.join(repoRoot, "ui", "shared-fixtures");
 const debugLogPath = path.join("/tmp", "aerobag-web-debug.log");
@@ -155,6 +161,43 @@ function aerobagStaticPlugin(): Plugin {
       appendRequestLog({ kind: "ping", url: req.url ?? "" });
       res.statusCode = 204;
       res.end();
+    });
+    server.middlewares.use("/__metar_bakeoff_fixture", (req, res, next) => {
+      const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
+      const fixtureFile =
+        requestPath === "/metars-state.json"
+          ? path.join(liveFeedsFixtureRoot, "states", "metars", `${metarBakeoffState}.json`)
+          : requestPath === "/metars-delta-from-state.json"
+            ? path.join(liveFeedsFixtureRoot, "states", "metars", `${metarBakeoffDeltaFrom}.json`)
+            : requestPath === "/metars-delta.json"
+              ? path.join(liveFeedsFixtureRoot, "deltas", "metars", `${metarBakeoffDeltaFrom}__${metarBakeoffDeltaTo}.json`)
+              : null;
+      if (!fixtureFile) {
+        next();
+        return;
+      }
+      const filePath = fixtureFile;
+      if (!filePath.startsWith(liveFeedsFixtureRoot) || !fs.existsSync(filePath)) {
+        res.statusCode = 404;
+        appendRequestLog({
+          kind: "metar_bakeoff_fixture.missing",
+          file_path: filePath,
+          state: metarBakeoffState,
+          delta_from: metarBakeoffDeltaFrom,
+          delta_to: metarBakeoffDeltaTo,
+        });
+        res.end("not found");
+        return;
+      }
+      appendRequestLog({
+        kind: "metar_bakeoff_fixture.hit",
+        file_path: filePath,
+        state: metarBakeoffState,
+        delta_from: metarBakeoffDeltaFrom,
+        delta_to: metarBakeoffDeltaTo,
+      });
+      res.setHeader("Content-Type", "application/json");
+      fs.createReadStream(filePath).pipe(res);
     });
     server.middlewares.use("/packages", mountStaticTree(artifactReadRoot, { missingStatus: 404, logPrefix: "packages" }));
     server.middlewares.use("/icons", mountStaticTree(iconsRoot, { missingStatus: 404, logPrefix: "icons" }));

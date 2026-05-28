@@ -135,5 +135,35 @@ Publication ordering is part of the contract:
 - Done: the remaining live-feed integration tests moved out of
   `preprocessor-cli` into `preprocessor-live-feeds`, so the CLI no longer owns
   live-feed build/publish behavior.
+- Done: METAR app-side handoff was measured in a browser/WASM bakeoff using a
+  real 5,044-record METAR fixture. The bakeoff separated serializer choice from
+  indexing strategy. The useful result is that the indexing strategy dominates:
+  moving tile-index construction off the latency-sensitive core worker cuts
+  install time from milliseconds to below 1 ms. `serde-postcard` with
+  early-indexed data matches the custom binary format while being smaller and
+  avoiding a bespoke production wire format.
+
+  ```text
+  serializer          indexing         payload      encode   avg install    min     max
+  -----------------   --------------   ----------   ------   -----------   -----   -----
+  serde-json-delta    late-indexed      714.66 KiB   0.0ms    18.72ms       17.1    41.0
+  serde-json          late-indexed      1.63 MiB     0.0ms     6.21ms        6.0     6.6
+  serde-json-typed    late-indexed      1.63 MiB     0.0ms     3.65ms        3.5     3.9
+  serde-bincode       late-indexed      891.30 KiB   0.7ms     2.61ms        2.4     3.5
+  serde-postcard      late-indexed      690.16 KiB   0.6ms     2.54ms        2.4     3.0
+  custom-bin          late-indexed      732.00 KiB   0.3ms     2.24ms        2.1     2.6
+
+  serde-json          early-indexed     1.32 MiB     1.5ms     4.58ms        4.3     5.9
+  serde-json-typed    early-indexed     1.32 MiB     1.5ms     1.72ms        1.5     2.6
+  serde-bincode       early-indexed     931.97 KiB   0.4ms     0.73ms        0.6     1.0
+  serde-postcard      early-indexed     699.00 KiB   0.6ms     0.69ms        0.5     1.0
+  custom-bin          early-indexed     827.58 KiB   0.3ms     0.69ms        0.5     0.8
+  ```
+
+  Production direction: use `serde-postcard + early-indexed` for the METAR
+  worker-to-core handoff. The METAR worker should receive/update the product,
+  build the query-shaped record table plus tile index, serialize that prepared
+  structure with postcard, and hand compact bytes to the latency-sensitive core
+  worker for installation.
 - Next slice: add a production supervision/deployment wrapper when deployment
   policy is chosen.

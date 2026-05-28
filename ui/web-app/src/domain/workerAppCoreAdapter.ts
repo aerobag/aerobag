@@ -5,6 +5,7 @@ import type {
   UiInvalidationListener,
   UiSession,
 } from "./appCoreAdapter";
+import { debugLog } from "./debugLog";
 
 type WorkerCallTarget =
   | { kind: "adapter" }
@@ -14,14 +15,15 @@ type WorkerCallRequest = {
   kind: "call";
   id: number;
   sentAtEpochMs: number;
+  debugRunId?: string;
   target: WorkerCallTarget;
   method: string;
   args: unknown[];
 };
 
 type WorkerCallResponse =
-  | { kind: "response"; id: number; ok: true; result: unknown }
-  | { kind: "response"; id: number; ok: false; error: WorkerErrorPayload };
+  | { kind: "response"; id: number; ok: true; result: unknown; workerPostedAtEpochMs?: number }
+  | { kind: "response"; id: number; ok: false; error: WorkerErrorPayload; workerPostedAtEpochMs?: number };
 
 type WorkerSessionInvalidation = {
   kind: "sessionInvalidation";
@@ -44,6 +46,9 @@ type WorkerSessionMarker = {
 class AppCoreWorkerClient {
   private nextId = 1;
   private readonly pending = new Map<number, {
+    target: WorkerCallTarget;
+    method: string;
+    startedAt: number;
     resolve: (result: unknown) => void;
     reject: (error: Error) => void;
   }>();
@@ -88,12 +93,16 @@ class AppCoreWorkerClient {
       kind: "call",
       id,
       sentAtEpochMs: Date.now(),
+      ...(currentDebugRunId() ? { debugRunId: currentDebugRunId() ?? undefined } : {}),
       target,
       method,
       args,
     };
     return new Promise((resolve, reject) => {
       this.pending.set(id, {
+        target,
+        method,
+        startedAt: performance.now(),
         resolve: (result) => resolve(result as T),
         reject,
       });
@@ -111,6 +120,7 @@ class AppCoreWorkerClient {
       return;
     }
     this.pending.delete(message.id);
+    logWorkerResponseReceived(message, pending);
     if (message.ok) {
       pending.resolve(message.result);
     } else {
@@ -124,6 +134,68 @@ class AppCoreWorkerClient {
     }
     this.pending.clear();
   }
+}
+
+function currentDebugRunId(): string | null {
+  const candidate = (globalThis as unknown as { __aerobagPerfRunId?: unknown }).__aerobagPerfRunId;
+  return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
+}
+
+function logWorkerResponseReceived(
+  message: WorkerCallResponse,
+  pending: {
+    target: WorkerCallTarget;
+    method: string;
+    startedAt: number;
+  },
+): void {
+  const roundTripMs = performance.now() - pending.startedAt;
+  const postToReceiveMs = message.workerPostedAtEpochMs === undefined
+    ? null
+    : Date.now() - message.workerPostedAtEpochMs;
+  const summary = message.ok ? summarizeWorkerResponseResult(message.result) : {};
+  const important =
+    pending.method === "queryMapOverlay"
+    || pending.method === "snapshot"
+    || roundTripMs >= 100
+    || (postToReceiveMs ?? 0) >= 20
+    || !message.ok;
+  if (!important) {
+    return;
+  }
+  debugLog("app_core.worker.response.received", {
+    id: message.id,
+    target: pending.target.kind,
+    method: pending.method,
+    round_trip_ms: Math.round(roundTripMs),
+    post_to_receive_ms: postToReceiveMs,
+    ok: message.ok,
+    ...summary,
+  });
+}
+
+function summarizeWorkerResponseResult(result: unknown): Record<string, unknown> {
+  if (result instanceof Uint8Array) {
+    return { result_kind: "bytes", byte_length: result.byteLength };
+  }
+  if (!result || typeof result !== "object") {
+    return { result_kind: typeof result };
+  }
+  const record = result as Record<string, unknown>;
+  if (Array.isArray(record.visible_features) || Array.isArray(record.visible_metars)) {
+    return {
+      result_kind: "map_overlay",
+      visible_features: Array.isArray(record.visible_features) ? record.visible_features.length : null,
+      visible_metars: Array.isArray(record.visible_metars) ? record.visible_metars.length : null,
+      visible_pireps: Array.isArray(record.visible_pireps) ? record.visible_pireps.length : null,
+      airspace_paths: Array.isArray(record.airspace_paths) ? record.airspace_paths.length : null,
+      airspace_labels: Array.isArray(record.airspace_labels) ? record.airspace_labels.length : null,
+    };
+  }
+  if ("app_state" in record && "debug_state" in record) {
+    return { result_kind: "session_snapshot" };
+  }
+  return { result_kind: "object" };
 }
 
 export async function loadWorkerBackedAdapter(): Promise<LoadedAdapter> {

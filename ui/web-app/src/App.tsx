@@ -2667,8 +2667,10 @@ function MapPage(props: {
     center: LatLon;
     width: number;
     height: number;
+    layerKey: string;
   } | null>(null);
   const mapOverlayQueryRequestIdRef = useRef(0);
+  const landedMapOverlayQueryRequestIdRef = useRef(0);
   const mapOverlayQueryPendingRef = useRef(false);
   const mapOverlayQueryPumpActiveRef = useRef(false);
   const viewportRef = useRef<MapViewportState>(viewport);
@@ -2889,25 +2891,15 @@ function MapPage(props: {
               request.width,
               request.height,
             );
-            if (mapOverlayQueryRequestRef.current?.id !== request.id) {
+            const superseded = mapOverlayQueryRequestRef.current?.id !== request.id;
+            if (superseded && !supersededMapOverlayCanLand(request)) {
               debugLog("map.overlay.query.stale_result", {
                 zoom: request.viewport.zoom,
                 elapsed_ms: Math.round(performance.now() - startedAt),
               });
               continue;
             }
-            setMapOverlay(overlay);
-            setMapOverlayViewport(request.viewport);
-            debugLog("map.overlay.query.done", {
-              zoom: request.viewport.zoom,
-              center: request.center,
-              elapsed_ms: Math.round(performance.now() - startedAt),
-              visible_features: overlay.visible_features.length,
-              visible_metars: overlay.visible_metars.length,
-              visible_pireps: overlay.visible_pireps.length,
-              airspace_paths: overlay.airspace_paths.length,
-              airspace_labels: overlay.airspace_labels.length,
-            });
+            landMapOverlayQuery(request, overlay, startedAt, superseded);
           } catch (error) {
             if (mapOverlayQueryRequestRef.current?.id !== request.id) {
               debugLog("map.overlay.query.stale_error", {
@@ -2954,6 +2946,39 @@ function MapPage(props: {
         }
       }
     })();
+  }
+
+  function supersededMapOverlayCanLand(request: NonNullable<typeof mapOverlayQueryRequestRef.current>) {
+    const current = mapOverlayQueryRequestRef.current;
+    return (
+      current !== null
+      && request.id > landedMapOverlayQueryRequestIdRef.current
+      && current.session === request.session
+      && current.width === request.width
+      && current.height === request.height
+      && current.layerKey === request.layerKey
+    );
+  }
+
+  function landMapOverlayQuery(
+    request: NonNullable<typeof mapOverlayQueryRequestRef.current>,
+    overlay: MapOverlayQueryResult,
+    startedAt: number,
+    superseded: boolean,
+  ) {
+    landedMapOverlayQueryRequestIdRef.current = request.id;
+    setMapOverlay(overlay);
+    setMapOverlayViewport(request.viewport);
+    debugLog(superseded ? "map.overlay.query.superseded_result" : "map.overlay.query.done", {
+      zoom: request.viewport.zoom,
+      center: request.center,
+      elapsed_ms: Math.round(performance.now() - startedAt),
+      visible_features: overlay.visible_features.length,
+      visible_metars: overlay.visible_metars.length,
+      visible_pireps: overlay.visible_pireps.length,
+      airspace_paths: overlay.airspace_paths.length,
+      airspace_labels: overlay.airspace_labels.length,
+    });
   }
 
   useEffect(() => {
@@ -3665,6 +3690,12 @@ function MapPage(props: {
       center,
       width: surfaceSize.width,
       height: surfaceSize.height,
+      layerKey: [
+        mapOverlayLayersVisible,
+        mapLayerState.metars.visible,
+        mapLayerState.offline_regions.visible,
+        mapLayerState.vectors.visible,
+      ].join("|"),
     };
     mapOverlayQueryPendingRef.current = true;
     pumpMapOverlayQueryQueue();

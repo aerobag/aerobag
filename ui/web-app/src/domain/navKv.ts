@@ -158,12 +158,14 @@ export class NavKvStore {
     onInvalidations?: UiInvalidationListener,
     reportResourceFailure?: ResourceFailureReporter,
     drainSessionEffects?: () => Promise<string> | string,
+    operationLabel?: string,
   ): Promise<T> {
     const result = await this.runPagedOperation<T>(
       () => operation(this.handle),
       ingestSessionResource,
       onInvalidations,
       reportResourceFailure,
+      operationLabel,
     );
     if (drainSessionEffects) {
       this.launchSessionEffectPump(
@@ -196,11 +198,32 @@ export class NavKvStore {
     ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
     onInvalidations?: UiInvalidationListener,
     reportResourceFailure?: ResourceFailureReporter,
+    operationLabel?: string,
   ): Promise<T> {
+    let iteration = 0;
     for (;;) {
-      const response = JSON.parse(await operation()) as
+      iteration += 1;
+      const operationStartedAt = performance.now();
+      const responseJson = await operation();
+      const operationMs = performance.now() - operationStartedAt;
+      const parseStartedAt = performance.now();
+      const response = JSON.parse(responseJson) as
         | { state: "complete"; result: T; invalidations?: UiInvalidation[] }
         | { state: "need_resources"; resources: CoreResourceRequest[] };
+      const parseMs = performance.now() - parseStartedAt;
+      if (operationLabel) {
+        debugLog(`${operationLabel}.core_had.step`, {
+          iteration,
+          state: response.state,
+          operation_ms: Math.round(operationMs),
+          parse_ms: Math.round(parseMs),
+          json_bytes: responseJson.length,
+          resource_count: response.state === "need_resources" ? response.resources.length : 0,
+          resources: response.state === "need_resources"
+            ? response.resources.map((resource) => resource.id)
+            : undefined,
+        });
+      }
       if (response.state === "complete") {
         if (response.invalidations && response.invalidations.length > 0) {
           onInvalidations?.(response.invalidations);
@@ -588,6 +611,7 @@ export async function runCoreHadSessionOperation<T>(
   onInvalidations?: UiInvalidationListener,
   reportResourceFailure?: ResourceFailureReporter,
   drainSessionEffects?: () => Promise<string> | string,
+  operationLabel?: string,
 ): Promise<T> {
   const store = await getNavKvStore();
   if (!store) {
@@ -599,6 +623,7 @@ export async function runCoreHadSessionOperation<T>(
     onInvalidations,
     reportResourceFailure,
     drainSessionEffects,
+    operationLabel,
   );
 }
 

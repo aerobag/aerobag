@@ -5,6 +5,7 @@ type DebugLogRecord = {
   seq: number;
   ts_ms: number;
   tag: string;
+  run_id?: string;
   data?: unknown;
 };
 
@@ -55,13 +56,20 @@ export function debugLog(tag: string, data?: unknown) {
   ) {
     return;
   }
+  const runId = currentDebugRunId();
   queue.push({
     seq: ++seq,
     ts_ms: Math.round(performance.now()),
     tag,
+    ...(runId ? { run_id: runId } : {}),
     data,
   });
   scheduleFlush();
+}
+
+function currentDebugRunId(): string | null {
+  const candidate = (globalThis as unknown as { __aerobagPerfRunId?: unknown }).__aerobagPerfRunId;
+  return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
 }
 
 export function installRustDebugLogBridge() {

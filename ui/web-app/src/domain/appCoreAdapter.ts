@@ -807,6 +807,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       sessionHandle: number,
       operation: (navKvHandle: number) => Promise<string> | string,
       ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
+      operationLabel?: string,
     ) => runCoreHadSessionOperation<T>(
       operation,
       ingestSessionResource ?? ((resourceId, resourceBytes) =>
@@ -816,6 +817,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         await reportSessionResourceFailure?.(resourceId, message);
       },
       () => this.module.drain_session_resource_effects(sessionHandle),
+      operationLabel,
     );
     const createSession = async (
       nextPlan: FlightPlan,
@@ -858,7 +860,8 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     const runSessionOperation = <T>(
       operation: (navKvHandle: number) => Promise<string> | string,
       ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
-    ) => runSessionOperationForHandle<T>(handle, operation, ingestSessionResource);
+      operationLabel?: string,
+    ) => runSessionOperationForHandle<T>(handle, operation, ingestSessionResource, operationLabel);
     const parseSessionSnapshot = async (json: Promise<string> | string) =>
       JSON.parse(await json) as UiSessionSnapshot;
     let liveFeedSubscription: LiveFeedSubscription | null = null;
@@ -1283,6 +1286,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
                 Date.now(),
               ),
             (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
+            "map.overlay",
           ),
         ),
       queryMapSelection: async (viewport, widthPx, heightPx, click) =>

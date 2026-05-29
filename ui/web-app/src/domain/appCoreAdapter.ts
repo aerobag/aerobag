@@ -29,7 +29,7 @@ import type {
   WaypointIdentifierSuggestion,
 } from "./types";
 import { viewportCenterLatLon, type MapViewportState, type ScreenPoint } from "./mapViewport";
-import { attachNavKvStoreToSession, runCoreHadOperation, runCoreHadSessionOperation, type UiInvalidation, type UiInvalidationListener } from "./navKv";
+import { attachNavKvStoreToSession, resolvePackageMemberUrl, runCoreHadOperation, runCoreHadSessionOperation, type UiInvalidation, type UiInvalidationListener } from "./navKv";
 import { debugLog, debugTiming, installRustDebugLogBridge } from "./debugLog";
 import { isMetarLiveFeedPayloadResource, prepareMetarLiveFeedResource, resetMetarLiveFeedPrep } from "./metarLiveFeedPrep";
 
@@ -534,9 +534,21 @@ export type RasterTilePlan = {
   };
 };
 
+export type SessionSnapshotRefreshPriority = "timely" | "low_priority";
+
+export type SessionSnapshotRefreshDecision =
+  | { kind: "idle" }
+  | { kind: "schedule"; delay_ms: number; reason: string }
+  | { kind: "start"; reason: string };
+
 export interface UiSession {
   setInvalidationListener(listener: UiInvalidationListener | null): void;
   snapshot(): Promise<UiSessionSnapshot>;
+  requestSessionSnapshotRefresh(priority: SessionSnapshotRefreshPriority, reason: string): Promise<SessionSnapshotRefreshDecision>;
+  sessionSnapshotViewportGestureActiveChanged(active: boolean): Promise<SessionSnapshotRefreshDecision>;
+  sessionSnapshotViewportActivity(): Promise<SessionSnapshotRefreshDecision>;
+  sessionSnapshotRefreshCompleted(): Promise<SessionSnapshotRefreshDecision>;
+  pollSessionSnapshotRefresh(): Promise<SessionSnapshotRefreshDecision>;
   insertWaypointAtFlightPlanRow(rowUid: string, before: boolean, waypoint: NavRef): Promise<UiSessionSnapshot>;
   suggestWaypointIdentifiersAtFlightPlanRow(rowUid: string, before: boolean, prefix: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
   previewFlightPlanEntry(input: string): Promise<FlightPlanEntryPreview>;
@@ -573,6 +585,7 @@ export interface UiSession {
   setMapLayerEnabled(layerId: MapLayerId, enabled: boolean): Promise<UiSessionSnapshot>;
   setDebugFlag(flagId: DebugFlagId, enabled: boolean): Promise<UiSessionSnapshot>;
   loadRasterMapCatalog(): Promise<UiSessionSnapshot>;
+  resolvePackageMemberUrl(packageId: string, memberPath: string): Promise<string>;
   selectMapFamily(familyId: ChartFamilyId): Promise<UiSessionSnapshot>;
   selectRasterMap(selectedMapId: string): Promise<UiSessionSnapshot>;
   selectAirport(airportId: string): Promise<UiSessionSnapshot>;
@@ -661,11 +674,9 @@ function sourceIdString(sourceId: { 0: string } | string): string {
 
 type WasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
-  publication_resolver_destroy(handle: number): void;
-  publication_resolver_ingest_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
-  publication_resolver_open(publicBaseUrl: string): number;
-  publication_resolver_resolve_metar_manifest(handle: number): Promise<string> | string;
-  publication_resolver_resolve_package_member(handle: number, packageId: string, memberPath: string): Promise<string> | string;
+  resolve_metar_manifest_in_session(handle: number): Promise<string> | string;
+  resolve_nav_db_artifact_candidates_in_session(handle: number): Promise<string> | string;
+  resolve_package_member_in_session(handle: number, packageId: string, memberPath: string): Promise<string> | string;
   situation_ring_candidates_json(): Promise<string> | string;
   empty_flight_plan_json(): Promise<string> | string;
   create_ui_session(planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
@@ -735,6 +746,13 @@ type WasmModule = {
   get_raster_tile_plan_in_session_with_display_scale(handle: number, viewportJson: string, widthPx: number, heightPx: number, devicePixelRatio: number, nowEpochMs: number): Promise<string> | string;
   render_terrain_overlay_tile_by_key_in_session(handle: number, terrainTileKey: string, aircraftAltitudeFt: number): Promise<Uint8Array> | Uint8Array;
   get_session_snapshot(handle: number): Promise<string> | string;
+  create_session_snapshot_refresh_scheduler(): Promise<number> | number;
+  destroy_session_snapshot_refresh_scheduler(handle: number): Promise<void> | void;
+  session_snapshot_refresh_scheduler_request(handle: number, priorityJson: string, reason: string): Promise<string> | string;
+  session_snapshot_refresh_scheduler_viewport_gesture_active_changed(handle: number, active: boolean): Promise<string> | string;
+  session_snapshot_refresh_scheduler_viewport_activity(handle: number): Promise<string> | string;
+  session_snapshot_refresh_scheduler_refresh_completed(handle: number): Promise<string> | string;
+  session_snapshot_refresh_scheduler_poll(handle: number): Promise<string> | string;
   restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   destroy_session(handle: number): void;
   install_rust_debug_logger(): Promise<void> | void;
@@ -809,6 +827,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
       operationLabel?: string,
     ) => runCoreHadSessionOperation<T>(
+      sessionHandle,
       operation,
       ingestSessionResource ?? ((resourceId, resourceBytes) =>
         ingestResourceForHandle(sessionHandle, resourceId, resourceBytes)),
@@ -842,8 +861,8 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       }
       const created = createdEnvelope.result ?? createdEnvelope;
       await resetMetarLiveFeedPrep();
-      await attachNavKvStoreToSession(created.handle);
       await module.set_resource_policy_in_session(created.handle, JSON.stringify("public_unpacked"));
+      await attachNavKvStoreToSession(created.handle);
       const catalogedSnapshot = await debugTiming("startup.session.load_raster_catalog", () =>
         runSessionOperationForHandle<UiSessionSnapshot>(created.handle, () =>
           module.load_raster_map_catalog_in_session(created.handle),
@@ -857,18 +876,37 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     const init = await createSession(plan, recentAirportIds, selectedAirportId, selectedChartId);
     let handle = init.handle;
     let snapshot = init.snapshot;
+    const snapshotRefreshSchedulerHandle = await this.module.create_session_snapshot_refresh_scheduler();
     const runSessionOperation = <T>(
       operation: (navKvHandle: number) => Promise<string> | string,
       ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
       operationLabel?: string,
     ) => runSessionOperationForHandle<T>(handle, operation, ingestSessionResource, operationLabel);
-    const parseSessionSnapshot = async (json: Promise<string> | string) =>
-      JSON.parse(await json) as UiSessionSnapshot;
+    const parseSessionSnapshot = async (json: Promise<string> | string) => {
+      const snapshotJson = await json;
+      const parseStartedAt = typeof performance === "undefined" ? 0 : performance.now();
+      const parsed = JSON.parse(snapshotJson) as UiSessionSnapshot;
+      if (typeof performance !== "undefined") {
+        debugLog("session.snapshot.adapter_parse", {
+          parse_ms: Math.round(performance.now() - parseStartedAt),
+          json_bytes: snapshotJson.length,
+        });
+      }
+      return parsed;
+    };
+    const parseSessionSnapshotRefreshDecision = async (json: Promise<string> | string) =>
+      JSON.parse(await json) as SessionSnapshotRefreshDecision;
     let liveFeedSubscription: LiveFeedSubscription | null = null;
     reportSessionResourceFailure = async (resourceId, message) => {
       snapshot = await parseSessionSnapshot(
         this.module.report_session_resource_failure_in_session(handle, resourceId, message),
       );
+      debugLog("core.ui.invalidations.source", {
+        source: "resource_failure",
+        resource_id: resourceId,
+        message,
+        invalidations: ["session_snapshot"],
+      });
       publishInvalidations(["session_snapshot"]);
     };
     const syncGuidanceGeometry = async () => {
@@ -916,6 +954,37 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         return snapshot;
       },
+      requestSessionSnapshotRefresh: (priority, reason) =>
+        parseSessionSnapshotRefreshDecision(
+          this.module.session_snapshot_refresh_scheduler_request(
+            snapshotRefreshSchedulerHandle,
+            JSON.stringify(priority),
+            reason,
+          ),
+        ),
+      sessionSnapshotViewportGestureActiveChanged: (active) =>
+        parseSessionSnapshotRefreshDecision(
+          this.module.session_snapshot_refresh_scheduler_viewport_gesture_active_changed(
+            snapshotRefreshSchedulerHandle,
+            active,
+          ),
+        ),
+      sessionSnapshotViewportActivity: () =>
+        parseSessionSnapshotRefreshDecision(
+          this.module.session_snapshot_refresh_scheduler_viewport_activity(
+            snapshotRefreshSchedulerHandle,
+          ),
+        ),
+      sessionSnapshotRefreshCompleted: () =>
+        parseSessionSnapshotRefreshDecision(
+          this.module.session_snapshot_refresh_scheduler_refresh_completed(
+            snapshotRefreshSchedulerHandle,
+          ),
+        ),
+      pollSessionSnapshotRefresh: () =>
+        parseSessionSnapshotRefreshDecision(
+          this.module.session_snapshot_refresh_scheduler_poll(snapshotRefreshSchedulerHandle),
+        ),
       performMapSelectionAction: async (action) => {
         snapshot = await withSessionRetry(async () =>
           runSessionOperation<UiSessionSnapshot>(() =>
@@ -1144,6 +1213,8 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         return snapshot;
       },
+      resolvePackageMemberUrl: (packageId, memberPath) =>
+        resolvePackageMemberUrl(handle, packageId, memberPath),
       selectMapFamily: async (familyId) => {
         snapshot = await withSessionRetry(async () =>
           runSessionOperation<UiSessionSnapshot>(() =>
@@ -1442,6 +1513,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         liveFeedSubscription?.close();
         liveFeedSubscription = null;
         this.module.destroy_session(handle);
+        await this.module.destroy_session_snapshot_refresh_scheduler(snapshotRefreshSchedulerHandle);
       },
     };
   }
@@ -1638,6 +1710,13 @@ async function loadBestAvailableAdapterUncached(
     "get_raster_tile_plan_in_session_with_display_scale",
     "render_terrain_overlay_tile_by_key_in_session",
     "get_session_snapshot",
+    "create_session_snapshot_refresh_scheduler",
+    "destroy_session_snapshot_refresh_scheduler",
+    "session_snapshot_refresh_scheduler_request",
+    "session_snapshot_refresh_scheduler_viewport_gesture_active_changed",
+    "session_snapshot_refresh_scheduler_viewport_activity",
+    "session_snapshot_refresh_scheduler_refresh_completed",
+    "session_snapshot_refresh_scheduler_poll",
     "restore_chart_page_state_in_session",
     "destroy_session",
     "install_rust_debug_logger",

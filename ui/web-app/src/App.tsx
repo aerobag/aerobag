@@ -69,6 +69,7 @@ import {
   type MapSelectionQueryResult,
   type RasterMapUiState,
   type RasterTileDraw,
+  type SessionSnapshotRefreshDecision,
   type UiMapLayerState,
   type UiMapLayerToggleState,
   type UiDebugState,
@@ -113,7 +114,6 @@ import type {
 } from "./domain/appCoreAdapter";
 import { airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
 import { debugLog, debugTiming, installGlobalErrorLogging } from "./domain/debugLog";
-import { resolvePackageMemberUrl } from "./domain/navKv";
 import { TerrainOverlayRenderer } from "./domain/terrainOverlayRenderer";
 
 type SurfaceSize = {
@@ -164,6 +164,119 @@ type StartupFatalError = {
 
 const startupStalledWarningMs = 15_000;
 const startupFatalStalledMs = 45_000;
+const mainThreadLagProbeIntervalMs = 50;
+const mainThreadLagWarnMs = 75;
+const animationFrameGapWarnMs = 120;
+
+function installMainThreadResponsivenessInstrumentation(): () => void {
+  if (typeof window === "undefined" || typeof performance === "undefined") {
+    return () => {};
+  }
+
+  let cancelled = false;
+  let lagTimer: number | null = null;
+  let rafHandle: number | null = null;
+  let nextExpectedProbe = performance.now() + mainThreadLagProbeIntervalMs;
+  let previousFrameAt = performance.now();
+
+  const longTaskObserver = installLongTaskObserver();
+
+  function probeLag() {
+    if (cancelled) {
+      return;
+    }
+    const now = performance.now();
+    const lagMs = now - nextExpectedProbe;
+    if (lagMs >= mainThreadLagWarnMs) {
+      debugLog("main_thread.event_loop_lag", {
+        lag_ms: Math.round(lagMs),
+        probe_interval_ms: mainThreadLagProbeIntervalMs,
+      });
+    }
+    nextExpectedProbe = now + mainThreadLagProbeIntervalMs;
+    lagTimer = window.setTimeout(probeLag, mainThreadLagProbeIntervalMs);
+  }
+
+  function probeFrame(frameAt: number) {
+    if (cancelled) {
+      return;
+    }
+    const gapMs = frameAt - previousFrameAt;
+    if (gapMs >= animationFrameGapWarnMs) {
+      debugLog("main_thread.raf_gap", {
+        gap_ms: Math.round(gapMs),
+      });
+    }
+    previousFrameAt = frameAt;
+    rafHandle = window.requestAnimationFrame(probeFrame);
+  }
+
+  lagTimer = window.setTimeout(probeLag, mainThreadLagProbeIntervalMs);
+  rafHandle = window.requestAnimationFrame(probeFrame);
+
+  return () => {
+    cancelled = true;
+    if (lagTimer !== null) {
+      window.clearTimeout(lagTimer);
+    }
+    if (rafHandle !== null) {
+      window.cancelAnimationFrame(rafHandle);
+    }
+    longTaskObserver?.disconnect();
+  };
+}
+
+function installLongTaskObserver(): PerformanceObserver | null {
+  if (typeof PerformanceObserver === "undefined") {
+    debugLog("main_thread.longtask.support", { supported: false, reason: "missing_performance_observer" });
+    return null;
+  }
+  const supportedEntryTypes = PerformanceObserver.supportedEntryTypes ?? [];
+  if (!supportedEntryTypes.includes("longtask")) {
+    debugLog("main_thread.longtask.support", { supported: false, reason: "unsupported_entry_type" });
+    return null;
+  }
+  const observer = new PerformanceObserver((list) => {
+    for (const entry of list.getEntries()) {
+      debugLog("main_thread.longtask", {
+        name: entry.name,
+        start_time_ms: Math.round(entry.startTime),
+        duration_ms: Math.round(entry.duration),
+      });
+    }
+  });
+  observer.observe({ entryTypes: ["longtask"] });
+  debugLog("main_thread.longtask.support", { supported: true });
+  return observer;
+}
+
+function logAfterNextPaint(tag: string, startedAt: number, data: Record<string, unknown>) {
+  if (typeof window === "undefined" || typeof performance === "undefined") {
+    return;
+  }
+  const landedAt = performance.now();
+  window.requestAnimationFrame(() => {
+    const firstFrameAt = performance.now();
+    window.requestAnimationFrame(() => {
+      const afterPaintAt = performance.now();
+      debugLog(tag, {
+        ...data,
+        first_frame_ms: Math.round(firstFrameAt - landedAt),
+        after_paint_ms: Math.round(afterPaintAt - landedAt),
+        elapsed_ms: Math.round(afterPaintAt - startedAt),
+      });
+    });
+  });
+}
+
+function sleepMs(delayMs: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, delayMs));
+}
+
+function createLiveDragPerfRunId(): string {
+  const suffix = Math.random().toString(36).slice(2, 10);
+  return `live-drag-${Date.now().toString(36)}-${suffix}`;
+}
 
 function initialStartupProgress(): StartupProgress {
   return {
@@ -748,7 +861,11 @@ type RasterRenderTile = {
   fallbacks: RasterTileDraw["fallbacks"];
 };
 
-async function renderTileFromCore(tile: RasterTileDraw, cssScale = 1): Promise<RasterRenderTile> {
+async function renderTileFromCore(
+  tile: RasterTileDraw,
+  resolvePackageMemberUrl: (packageId: string, memberPath: string) => Promise<string>,
+  cssScale = 1,
+): Promise<RasterRenderTile> {
   const packageName = tile.primary.package_name;
   if (!packageName) {
     throw new Error(`raster tile ${tile.draw_key} missing package_name`);
@@ -1321,9 +1438,8 @@ export default function App() {
   const [uiInvalidationRevisions, setUiInvalidationRevisions] = useState<UiInvalidationRevisions>(
     initialUiInvalidationRevisions,
   );
-  const mapViewportGestureActiveRef = useRef(false);
-  const deferredSessionSnapshotRefreshRef = useRef<string | null>(null);
   const sessionSnapshotRefreshInFlightRef = useRef(false);
+  const sessionSnapshotRefreshTimerRef = useRef<number | null>(null);
   const [sessionSnapshot, setSessionSnapshot] = useState<UiSessionSnapshot>({
     app_state: {
       active_plan: null,
@@ -1456,6 +1572,8 @@ export default function App() {
     [derivedChartPageState.airports],
   );
 
+  useEffect(() => installMainThreadResponsivenessInstrumentation(), []);
+
   useEffect(() => {
     if (playbackUiState.source_path) {
       setPlaybackSourcePath(playbackUiState.source_path);
@@ -1481,18 +1599,58 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, []);
 
-  const requestSessionSnapshotRefresh = useCallback((reason: string) => {
+  const clearSessionSnapshotRefreshTimer = useCallback(() => {
+    if (sessionSnapshotRefreshTimerRef.current === null) {
+      return;
+    }
+    window.clearTimeout(sessionSnapshotRefreshTimerRef.current);
+    sessionSnapshotRefreshTimerRef.current = null;
+  }, []);
+
+  const handleSessionSnapshotRefreshDecisionRef = useRef<(
+    decision: SessionSnapshotRefreshDecision,
+    source: string,
+  ) => void>(() => {});
+
+  const armSessionSnapshotRefreshTimer = useCallback((delayMs: number, reason: string, source: string) => {
+    clearSessionSnapshotRefreshTimer();
+    const roundedDelayMs = Math.max(0, Math.round(delayMs));
+    sessionSnapshotRefreshTimerRef.current = window.setTimeout(() => {
+      sessionSnapshotRefreshTimerRef.current = null;
+      if (!uiSession) {
+        return;
+      }
+      void uiSession.pollSessionSnapshotRefresh().then((decision) => {
+        handleSessionSnapshotRefreshDecisionRef.current(decision, "timer");
+      }).catch((error: unknown) => {
+        debugLog("session.snapshot.refresh.scheduler_error", {
+          source: "timer",
+          error: errorMessage(error),
+        });
+      });
+    }, roundedDelayMs);
+    debugLog("session.snapshot.refresh.scheduled", {
+      reason,
+      source,
+      delay_ms: roundedDelayMs,
+      in_flight: sessionSnapshotRefreshInFlightRef.current,
+    });
+  }, [clearSessionSnapshotRefreshTimer, uiSession]);
+
+  const startSessionSnapshotRefresh = useCallback((reason: string) => {
     if (!uiSession) {
       return;
     }
-    if (mapViewportGestureActiveRef.current) {
-      deferredSessionSnapshotRefreshRef.current = reason;
-      debugLog("session.snapshot.refresh.deferred_for_gesture", { reason });
-      return;
-    }
     if (sessionSnapshotRefreshInFlightRef.current) {
-      deferredSessionSnapshotRefreshRef.current = reason;
-      debugLog("session.snapshot.refresh.coalesced", { reason });
+      debugLog("session.snapshot.refresh.start_while_in_flight", { reason });
+      void uiSession.requestSessionSnapshotRefresh("timely", reason).then((decision) => {
+        handleSessionSnapshotRefreshDecisionRef.current(decision, "start_while_in_flight");
+      }).catch((error: unknown) => {
+        debugLog("session.snapshot.refresh.scheduler_error", {
+          source: "start_while_in_flight",
+          error: errorMessage(error),
+        });
+      });
       return;
     }
     sessionSnapshotRefreshInFlightRef.current = true;
@@ -1503,26 +1661,80 @@ export default function App() {
       debugLog("session.snapshot.refresh.error", { reason, error: errorMessage(error) });
     }).finally(() => {
       sessionSnapshotRefreshInFlightRef.current = false;
-      const deferredReason = deferredSessionSnapshotRefreshRef.current;
-      if (deferredReason && !mapViewportGestureActiveRef.current) {
-        deferredSessionSnapshotRefreshRef.current = null;
-        requestSessionSnapshotRefresh(`coalesced:${deferredReason}`);
-      }
+      void uiSession.sessionSnapshotRefreshCompleted().then((decision) => {
+        handleSessionSnapshotRefreshDecisionRef.current(decision, "after_in_flight");
+      }).catch((error: unknown) => {
+        debugLog("session.snapshot.refresh.scheduler_error", {
+          source: "after_in_flight",
+          error: errorMessage(error),
+        });
+      });
+    });
+  }, [uiSession]);
+
+  const handleSessionSnapshotRefreshDecision = useCallback((
+    decision: SessionSnapshotRefreshDecision,
+    source: string,
+  ) => {
+    if (decision.kind === "idle") {
+      clearSessionSnapshotRefreshTimer();
+      return;
+    }
+    if (decision.kind === "schedule") {
+      armSessionSnapshotRefreshTimer(decision.delay_ms, decision.reason, source);
+      return;
+    }
+    clearSessionSnapshotRefreshTimer();
+    startSessionSnapshotRefresh(`${source}:${decision.reason}`);
+  }, [armSessionSnapshotRefreshTimer, clearSessionSnapshotRefreshTimer, startSessionSnapshotRefresh, uiSession]);
+
+  useEffect(() => {
+    handleSessionSnapshotRefreshDecisionRef.current = handleSessionSnapshotRefreshDecision;
+  }, [handleSessionSnapshotRefreshDecision]);
+
+  useEffect(() => clearSessionSnapshotRefreshTimer, [clearSessionSnapshotRefreshTimer]);
+
+  const requestSessionSnapshotRefresh = useCallback((reason: string) => {
+    if (!uiSession) {
+      return;
+    }
+    void uiSession.requestSessionSnapshotRefresh("low_priority", reason).then((decision) => {
+      handleSessionSnapshotRefreshDecisionRef.current(decision, "request");
+    }).catch((error: unknown) => {
+      debugLog("session.snapshot.refresh.scheduler_error", {
+        source: "request",
+        error: errorMessage(error),
+      });
     });
   }, [uiSession]);
 
   const handleMapViewportGestureActiveChange = useCallback((active: boolean) => {
-    mapViewportGestureActiveRef.current = active;
-    if (active) {
+    if (!uiSession) {
       return;
     }
-    const deferredReason = deferredSessionSnapshotRefreshRef.current;
-    if (!deferredReason) {
+    void uiSession.sessionSnapshotViewportGestureActiveChanged(active).then((decision) => {
+      handleSessionSnapshotRefreshDecisionRef.current(decision, active ? "gesture_active" : "gesture_end");
+    }).catch((error: unknown) => {
+      debugLog("session.snapshot.refresh.scheduler_error", {
+        source: active ? "gesture_active" : "gesture_end",
+        error: errorMessage(error),
+      });
+    });
+  }, [uiSession]);
+
+  const handleMapViewportGestureActivity = useCallback(() => {
+    if (!uiSession) {
       return;
     }
-    deferredSessionSnapshotRefreshRef.current = null;
-    requestSessionSnapshotRefresh(`gesture_end:${deferredReason}`);
-  }, [requestSessionSnapshotRefresh]);
+    void uiSession.sessionSnapshotViewportActivity().then((decision) => {
+      handleSessionSnapshotRefreshDecisionRef.current(decision, "viewport_activity");
+    }).catch((error: unknown) => {
+      debugLog("session.snapshot.refresh.scheduler_error", {
+        source: "viewport_activity",
+        error: errorMessage(error),
+      });
+    });
+  }, [uiSession]);
 
   useEffect(() => {
     if (!uiSession) {
@@ -1915,7 +2127,7 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    if (!appCoreAdapter || !chartPageStateRequest) {
+    if (!appCoreAdapter || !chartPageStateRequest || !uiSession) {
       return;
     }
     debugTiming(
@@ -1943,6 +2155,7 @@ export default function App() {
   }, [
     appCoreAdapter,
     chartPageStateRequest?.key,
+    uiSession,
   ]);
 
   useEffect(() => {
@@ -2266,6 +2479,7 @@ export default function App() {
           }}
           onViewportChange={setMapViewport}
           onViewportGestureActiveChange={handleMapViewportGestureActiveChange}
+          onViewportGestureActivity={handleMapViewportGestureActivity}
           onSelectMapFamily={(familyId) => {
             if (!uiSession) {
               return;
@@ -2535,6 +2749,7 @@ function MapPage(props: {
   onPageTilePaintTimingComplete: (id: number) => void;
   onViewportChange: (next: MapViewportState) => void;
   onViewportGestureActiveChange: (active: boolean) => void;
+  onViewportGestureActivity: () => void;
   onSelectMapFamily: (familyId: ChartFamilyId) => void;
   onSelectPage: (page: AppPage) => void;
   onOpenPlan: () => void;
@@ -2577,6 +2792,7 @@ function MapPage(props: {
     onPageTilePaintTimingComplete,
     onViewportChange,
     onViewportGestureActiveChange,
+    onViewportGestureActivity,
     onSelectMapFamily,
     onSelectPage,
     onOpenPlan,
@@ -2685,6 +2901,8 @@ function MapPage(props: {
   const [followSyncPendingSerial, setFollowSyncPendingSerial] = useState(0);
   const [followTargetRetryToken, setFollowTargetRetryToken] = useState(0);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
+  const [liveDragPerfRunning, setLiveDragPerfRunning] = useState(false);
+  const [lastLiveDragPerfRunId, setLastLiveDragPerfRunId] = useState<string | null>(null);
   const [mapSelection, setMapSelection] = useState<{
     point: ScreenPoint;
     result: MapSelectionQueryResult;
@@ -2861,13 +3079,6 @@ function MapPage(props: {
     if (mapOverlayQueryPumpActiveRef.current) {
       return;
     }
-    if (rasterTilePlanPumpActiveRef.current || rasterTilePlanPendingRef.current) {
-      debugLog("map.overlay.query.deferred_for_raster", {
-        raster_active: rasterTilePlanPumpActiveRef.current,
-        raster_pending: rasterTilePlanPendingRef.current,
-      });
-      return;
-    }
     mapOverlayQueryPumpActiveRef.current = true;
     void (async () => {
       try {
@@ -2937,11 +3148,7 @@ function MapPage(props: {
         }
       } finally {
         mapOverlayQueryPumpActiveRef.current = false;
-        if (
-          mapOverlayQueryPendingRef.current
-          && !rasterTilePlanPumpActiveRef.current
-          && !rasterTilePlanPendingRef.current
-        ) {
+        if (mapOverlayQueryPendingRef.current) {
           pumpMapOverlayQueryQueue();
         }
       }
@@ -2973,6 +3180,14 @@ function MapPage(props: {
       zoom: request.viewport.zoom,
       center: request.center,
       elapsed_ms: Math.round(performance.now() - startedAt),
+      visible_features: overlay.visible_features.length,
+      visible_metars: overlay.visible_metars.length,
+      visible_pireps: overlay.visible_pireps.length,
+      airspace_paths: overlay.airspace_paths.length,
+      airspace_labels: overlay.airspace_labels.length,
+    });
+    logAfterNextPaint("map.overlay.query.after_paint", startedAt, {
+      superseded,
       visible_features: overlay.visible_features.length,
       visible_metars: overlay.visible_metars.length,
       visible_pireps: overlay.visible_pireps.length,
@@ -3129,7 +3344,12 @@ function MapPage(props: {
     );
   }
 
-  function landRasterTilePlan(request: NonNullable<typeof rasterTilePlanRequestRef.current>, nextTiles: RasterRenderTile[], superseded: boolean) {
+  function landRasterTilePlan(
+    request: NonNullable<typeof rasterTilePlanRequestRef.current>,
+    nextTiles: RasterRenderTile[],
+    superseded: boolean,
+    startedAt: number,
+  ) {
     landedRasterTilePlanRequestIdRef.current = request.id;
     const nextTileKeys = nextTiles.map(rasterTileKey);
     loadedRasterTileKeysRef.current = new Set(
@@ -3140,6 +3360,12 @@ function MapPage(props: {
     setTiles(nextTiles);
     setRasterTileViewport(request.viewport);
     debugLog("map.raster.plan.landed", {
+      id: request.id,
+      key: request.key,
+      superseded,
+      tiles: nextTiles.length,
+    });
+    logAfterNextPaint("map.raster.plan.after_paint", startedAt, {
       id: request.id,
       key: request.key,
       superseded,
@@ -3215,7 +3441,9 @@ function MapPage(props: {
               tiles: plan.tiles.length,
             });
             const resolveStartedAt = performance.now();
-            const nextTiles = await Promise.all(plan.tiles.map((tile) => renderTileFromCore(tile, 1 / request.devicePixelRatio)));
+            const nextTiles = await Promise.all(plan.tiles.map((tile) =>
+              renderTileFromCore(tile, request.session.resolvePackageMemberUrl, 1 / request.devicePixelRatio),
+            ));
             const urlsSuperseded = rasterTilePlanRequestRef.current?.id !== request.id;
             if (urlsSuperseded && !supersededRasterPlanCanLand(request)) {
               debugLog("map.raster.urls.stale_result", {
@@ -3240,7 +3468,7 @@ function MapPage(props: {
               elapsed_ms: Math.round(performance.now() - resolveStartedAt),
               tiles: nextTiles.length,
             });
-            landRasterTilePlan(request, nextTiles, urlsSuperseded);
+            landRasterTilePlan(request, nextTiles, urlsSuperseded, startedAt);
           } catch (error) {
             if (rasterTilePlanRequestRef.current?.id !== request.id) {
               debugLog("map.raster.plan.stale_error", {
@@ -3264,8 +3492,6 @@ function MapPage(props: {
         rasterTilePlanPumpActiveRef.current = false;
         if (rasterTilePlanPendingRef.current) {
           pumpRasterTilePlanQueue();
-        } else if (mapOverlayQueryPendingRef.current) {
-          pumpMapOverlayQueryQueue();
         }
       }
     })();
@@ -3404,6 +3630,7 @@ function MapPage(props: {
       terrainRenderQueueRef.current.clear();
       terrainRenderGenerationRef.current += 1;
       setTerrainOverlay((current) => current.images.length === 0 ? current : { query: current.query, images: [] });
+      return;
     }
     const session = uiSession;
     let cancelled = false;
@@ -3810,6 +4037,9 @@ function MapPage(props: {
 
   function noteViewportGesture(durationMs = 300) {
     viewportGestureUntilRef.current = Math.max(viewportGestureUntilRef.current, Date.now() + durationMs);
+    if (!gestureActiveRef.current) {
+      onViewportGestureActivity();
+    }
   }
 
   function setViewportGestureActive(active: boolean) {
@@ -3869,6 +4099,104 @@ function MapPage(props: {
     deferredFollowSyncViewportRef.current = null;
     syncFollowStateForViewport(nextViewport);
   }
+
+  const runLiveDragPerf = useCallback(async () => {
+    if (liveDragPerfRunning || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+      return;
+    }
+    const runId = createLiveDragPerfRunId();
+    const globalWithRunId = globalThis as typeof globalThis & { __aerobagPerfRunId?: unknown };
+    const priorRunId = globalWithRunId.__aerobagPerfRunId;
+    const hadPriorRunId = Object.prototype.hasOwnProperty.call(globalWithRunId, "__aerobagPerfRunId");
+    const dragCount = 20;
+    const stepsPerDrag = 8;
+    const stepDelayMs = 12;
+    const dragIntervalMs = 500;
+    const settleMs = 4000;
+    globalWithRunId.__aerobagPerfRunId = runId;
+    activePointersRef.current.clear();
+    dragRef.current = null;
+    pinchRef.current = null;
+    clickCandidateRef.current = null;
+    setMapSelection(null);
+    setLiveDragPerfRunning(true);
+    setLastLiveDragPerfRunId(runId);
+    debugLog("automated-test-begin", {
+      run_id: runId,
+      mode: "live_browser",
+      drag_count: dragCount,
+      steps_per_drag: stepsPerDrag,
+      step_delay_ms: stepDelayMs,
+      interval_ms: dragIntervalMs,
+      start_zoom: viewportRef.current.zoom,
+      width: surfaceSize.width,
+      height: surfaceSize.height,
+    });
+    try {
+      for (let dragIndex = 0; dragIndex < dragCount; dragIndex += 1) {
+        const dx = surfaceSize.width * 0.66 / stepsPerDrag;
+        const dy = surfaceSize.height * 0.66 / stepsPerDrag;
+        setViewportGestureActive(true);
+        for (let stepIndex = 0; stepIndex < stepsPerDrag; stepIndex += 1) {
+          const nextViewport = dragViewport(viewportRef.current, dx, dy);
+          noteViewportGesture();
+          debugLog("map.drag.viewport", {
+            automated: true,
+            run_id: runId,
+            drag_index: dragIndex,
+            step_index: stepIndex,
+            dx,
+            dy,
+            zoom: nextViewport.zoom,
+            center_world_x: nextViewport.centerWorldX,
+            center_world_y: nextViewport.centerWorldY,
+            following: mapFollowUiState.following,
+          });
+          updateViewport(nextViewport);
+          syncFollowStateForViewport(nextViewport);
+          await sleepMs(stepDelayMs);
+        }
+        setViewportGestureActive(false);
+        flushDeferredFollowSync();
+        pumpRasterTilePlanQueue();
+        pumpMapOverlayQueryQueue();
+        debugLog("automated-test-drag", {
+          run_id: runId,
+          index: dragIndex,
+          zoom: viewportRef.current.zoom,
+          center_world_x: viewportRef.current.centerWorldX,
+          center_world_y: viewportRef.current.centerWorldY,
+        });
+        await sleepMs(dragIntervalMs);
+      }
+      await sleepMs(settleMs);
+      debugLog("automated-test-end", {
+        run_id: runId,
+        settle_ms: settleMs,
+      });
+    } finally {
+      setViewportGestureActive(false);
+      flushDeferredFollowSync();
+      pumpRasterTilePlanQueue();
+      pumpMapOverlayQueryQueue();
+      setLiveDragPerfRunning(false);
+      if (hadPriorRunId) {
+        globalWithRunId.__aerobagPerfRunId = priorRunId;
+      } else {
+        delete globalWithRunId.__aerobagPerfRunId;
+      }
+    }
+  }, [liveDragPerfRunning, mapFollowUiState.following, surfaceSize.height, surfaceSize.width]);
+
+  useEffect(() => {
+    const globalWithAutomation = globalThis as typeof globalThis & { __aerobagRunLiveDragPerf?: () => Promise<void> };
+    globalWithAutomation.__aerobagRunLiveDragPerf = runLiveDragPerf;
+    return () => {
+      if (globalWithAutomation.__aerobagRunLiveDragPerf === runLiveDragPerf) {
+        delete globalWithAutomation.__aerobagRunLiveDragPerf;
+      }
+    };
+  }, [runLiveDragPerf]);
 
   useEffect(() => {
     if (!uiSession || !mapFollowUiState.following || mapFollowTargetViewport) {
@@ -5069,6 +5397,9 @@ function MapPage(props: {
                 debugState={debugState}
                 onDebugFlagChange={onDebugFlagChange}
                 extraLines={nexradDebugLines}
+                onRunDragPerf={runLiveDragPerf}
+                dragPerfRunning={liveDragPerfRunning}
+                lastDragPerfRunId={lastLiveDragPerfRunId}
               />
             </DebugDock>
           </div>
@@ -7270,7 +7601,7 @@ function ChartsPage(props: {
   debugWarningActive: boolean;
   onFirstVisualReady: () => void;
 }) {
-  const { appCoreAdapter, page, plan, planUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, ownship, ownshipControls, onFirstVisualReady } = props;
+  const { appCoreAdapter, page, plan, planUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, uiSession, ownship, ownshipControls, onFirstVisualReady } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -7341,11 +7672,11 @@ function ChartsPage(props: {
   }, [selectedChart?.id]);
 
   useEffect(() => {
-    if (!selectedChart) {
+    if (!selectedChart || !uiSession) {
       return;
     }
     let cancelled = false;
-    void resolvePackageMemberUrl(selectedChart.package_id, selectedChart.asset_path)
+    void uiSession.resolvePackageMemberUrl(selectedChart.package_id, selectedChart.asset_path)
       .then((assetUrl) => {
         if (cancelled) {
           return;
@@ -7378,10 +7709,10 @@ function ChartsPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [selectedChart?.id, selectedChart?.package_id, selectedChart?.asset_path]);
+  }, [selectedChart?.id, selectedChart?.package_id, selectedChart?.asset_path, uiSession]);
 
   useEffect(() => {
-    if (!folderOpen) {
+    if (!folderOpen || !uiSession) {
       return;
     }
     let cancelled = false;
@@ -7396,7 +7727,7 @@ function ChartsPage(props: {
         return {
           chart,
           thumbnailUrl: chart.thumbnail_path
-            ? await resolvePackageMemberUrl(chart.package_id, chart.thumbnail_path)
+            ? await uiSession.resolvePackageMemberUrl(chart.package_id, chart.thumbnail_path)
             : null,
         };
       } catch (error) {
@@ -7426,7 +7757,7 @@ function ChartsPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [folderOpen, resolvedChartUrls, sortedCharts]);
+  }, [folderOpen, resolvedChartUrls, sortedCharts, uiSession]);
 
   useEffect(() => {
     const img = imageRef.current;
@@ -7976,6 +8307,9 @@ function CommonDebugPanel(props: {
   debugState: UiDebugState;
   onDebugFlagChange: (flagId: DebugFlagId, enabled: boolean) => void;
   extraLines?: string[];
+  onRunDragPerf?: () => void;
+  dragPerfRunning?: boolean;
+  lastDragPerfRunId?: string | null;
 }) {
   const flags: Array<{ id: DebugFlagId; label: string }> = [
     { id: "tile_labels", label: "tile labels" },
@@ -7991,6 +8325,22 @@ function CommonDebugPanel(props: {
       {(props.extraLines ?? []).map((line) => (
         <div key={line} className="debugLine">{line}</div>
       ))}
+      {props.lastDragPerfRunId ? (
+        <div className="debugLine">drag run: {props.lastDragPerfRunId}</div>
+      ) : null}
+      {props.onRunDragPerf ? (
+        <button
+          type="button"
+          className="debugActionButton"
+          disabled={props.dragPerfRunning}
+          onPointerDown={stopPointer}
+          onPointerUp={stopPointer}
+          onDoubleClick={stopDoubleClick}
+          onClick={props.onRunDragPerf}
+        >
+          {props.dragPerfRunning ? "drag perf running" : "run drag perf"}
+        </button>
+      ) : null}
       {flags.map((flag) => (
         <label key={flag.id} className="debugToggle">
           <input

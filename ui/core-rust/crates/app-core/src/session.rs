@@ -41,18 +41,20 @@ use crate::{
     map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
     planning::NavElementUiView,
     playback::PlaybackSessionState,
-    project_nav_symbol_feature, query_map_overlay_for_surface, query_map_selection_for_surface,
-    state, AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
+    project_nav_symbol_feature,
+    publication::PublicationResolver,
+    query_map_overlay_for_surface, query_map_selection_for_surface, state,
+    AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
     AirspaceReferenceTilePayload, AirwayPresentationPlan, AppError, AppErrorKind, AppEvent,
     AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
     FlightPlanRowActionExecution, FlightPlanRowActionId, GuidanceState, LatLon, LegDisplayElement,
     MapOverlayConfig, MapOverlayQueryResult, MapSelectionSessionAction, MapSurfaceMetrics,
     MapViewport, MetarProductPayload, MetarTilePayload, NavKvLookup, NavKvQuery, NavKvRoot,
     NavKvStore, NavRef, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity,
-    ProcedureKind, ProcedureLoadCommand, PublicationResolver, RasterMapCatalog, RasterResourceMode,
-    RasterTilePlan, ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode,
-    SituationControlInput, SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult,
-    TfrProductPayload, UiSnapshotAppState, VectorAggregateTilePayload, VectorIdentLabelStyle,
+    ProcedureKind, ProcedureLoadCommand, RasterMapCatalog, RasterResourceMode, RasterTilePlan,
+    ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode, SituationControlInput,
+    SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload,
+    UiSnapshotAppState, VectorAggregateTilePayload, VectorIdentLabelStyle,
 };
 
 const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
@@ -139,6 +141,7 @@ struct UiSession {
     debug_state: UiDebugState,
     resource_policy: CoreResourcePolicy,
     publication_resolver: PublicationResolver,
+    cycle_product_freshness: CycleProductFreshnessState,
     live_feeds: LiveFeedsState,
     raster_map_catalog: Option<RasterMapCatalog>,
     vector_tile_cache: HashMap<String, VectorAggregateTilePayload>,
@@ -156,6 +159,12 @@ struct UiSession {
     terrain_source_tile_cache: HashMap<String, Vec<u8>>,
     pending_resource_effects: Vec<UiSessionResourceEffect>,
     wall_clock_epoch_ms: i64,
+}
+
+#[derive(Clone, Default)]
+struct CycleProductFreshnessState {
+    dirty: bool,
+    missing_nav_kv_pages: BTreeSet<u32>,
 }
 
 #[derive(Clone)]
@@ -952,21 +961,32 @@ fn sync_live_feed_age_status_record(
     }
 }
 
-fn sync_selected_chart_expiration_status_record(session: &mut UiSession) -> bool {
+#[derive(Default)]
+struct CycleProductFreshnessSync {
+    changed: bool,
+    missing_nav_kv_pages: BTreeSet<u32>,
+}
+
+fn sync_selected_chart_expiration_freshness(session: &mut UiSession) -> CycleProductFreshnessSync {
+    let mut sync = CycleProductFreshnessSync::default();
     let Some(selected_map) = session
         .raster_map_catalog
         .as_ref()
         .and_then(|catalog| catalog.selected_map.as_ref())
     else {
-        return clear_data_status_record(session, CYCLE_SELECTED_CHART_STATUS_ID);
+        sync.changed = clear_data_status_record(session, CYCLE_SELECTED_CHART_STATUS_ID);
+        return sync;
     };
     let Some(expiration_date) = selected_map.map_view.package_expiration_date.as_deref() else {
-        return clear_data_status_record(session, CYCLE_SELECTED_CHART_STATUS_ID);
+        sync.changed = clear_data_status_record(session, CYCLE_SELECTED_CHART_STATUS_ID);
+        return sync;
     };
     let Some(expiration_utc) = parse_utc_instant(expiration_date) else {
-        return clear_data_status_record(session, CYCLE_SELECTED_CHART_STATUS_ID);
+        sync.changed = clear_data_status_record(session, CYCLE_SELECTED_CHART_STATUS_ID);
+        return sync;
     };
-    if cycle_product_is_expired(expiration_utc, session_wall_clock_utc(session)) {
+    let now_utc = session_wall_clock_utc(session);
+    sync.changed = if cycle_product_is_expired(expiration_utc, now_utc) {
         upsert_data_status_record(
             session,
             DataStatusRecord::new(
@@ -983,15 +1003,33 @@ fn sync_selected_chart_expiration_status_record(session: &mut UiSession) -> bool
         )
     } else {
         clear_data_status_record(session, CYCLE_SELECTED_CHART_STATUS_ID)
-    }
+    };
+    sync
 }
 
-fn sync_nav_db_expiration_status_record(session: &mut UiSession) -> bool {
+fn sync_nav_db_expiration_freshness(session: &mut UiSession) -> CycleProductFreshnessSync {
+    let mut sync = CycleProductFreshnessSync::default();
     let Some(store) = session.nav_kv_store.as_ref() else {
-        return clear_data_status_record(session, CYCLE_NAV_DB_STATUS_ID);
+        sync.changed = clear_data_status_record(session, CYCLE_NAV_DB_STATUS_ID);
+        return sync;
+    };
+    let keys = match store.keys_with_prefix_lookup("package/by-id/") {
+        Ok(NavKvLookup::Hit(bytes)) => String::from_utf8_lossy(&bytes)
+            .lines()
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        Ok(NavKvLookup::MissingPages(pages)) => {
+            sync.missing_nav_kv_pages = pages.into_iter().collect();
+            sync.changed = clear_data_status_record(session, CYCLE_NAV_DB_STATUS_ID);
+            return sync;
+        }
+        Ok(NavKvLookup::MissingKey) | Err(_) => {
+            sync.changed = clear_data_status_record(session, CYCLE_NAV_DB_STATUS_ID);
+            return sync;
+        }
     };
     let mut nav_db_packages = Vec::new();
-    for key in store.keys_with_prefix("package/by-id/") {
+    for key in keys {
         let Ok(NavKvLookup::Hit(bytes)) = store.get_bytes(&key) else {
             continue;
         };
@@ -1003,23 +1041,23 @@ fn sync_nav_db_expiration_status_record(session: &mut UiSession) -> bool {
         }
     }
     let now_utc = session_wall_clock_utc(session);
-    let Some(package) = nav_db_packages
-        .iter()
-        .filter_map(|package| {
-            package
-                .expiration_date
-                .as_deref()
-                .map(|date| (package, date))
-        })
-        .find(|(_, expiration_date)| {
-            parse_utc_instant(expiration_date)
-                .is_some_and(|expiration_utc| cycle_product_is_expired(expiration_utc, now_utc))
-        })
-    else {
-        return clear_data_status_record(session, CYCLE_NAV_DB_STATUS_ID);
+    let mut expired_package: Option<(&FreshnessPackageRecord, &str)> = None;
+    for package in &nav_db_packages {
+        let Some(expiration_date) = package.expiration_date.as_deref() else {
+            continue;
+        };
+        let Some(expiration_utc) = parse_utc_instant(expiration_date) else {
+            continue;
+        };
+        if expired_package.is_none() && cycle_product_is_expired(expiration_utc, now_utc) {
+            expired_package = Some((package, expiration_date));
+        }
+    }
+    let Some((package, expiration_date)) = expired_package else {
+        sync.changed = clear_data_status_record(session, CYCLE_NAV_DB_STATUS_ID);
+        return sync;
     };
-    let (package, expiration_date) = package;
-    upsert_data_status_record(
+    sync.changed = upsert_data_status_record(
         session,
         DataStatusRecord::new(
             CYCLE_NAV_DB_STATUS_ID,
@@ -1032,12 +1070,32 @@ fn sync_nav_db_expiration_status_record(session: &mut UiSession) -> bool {
                 package.id
             ),
         ),
-    )
+    );
+    sync
+}
+
+fn mark_cycle_product_freshness_dirty(session: &mut UiSession) {
+    session.cycle_product_freshness.dirty = true;
+    session.cycle_product_freshness.missing_nav_kv_pages.clear();
+}
+
+fn sync_cycle_product_freshness_status_records_if_needed(
+    session: &mut UiSession,
+) -> Vec<UiInvalidation> {
+    if !session.cycle_product_freshness.dirty {
+        return Vec::new();
+    }
+    sync_cycle_product_freshness_status_records(session)
 }
 
 fn sync_cycle_product_freshness_status_records(session: &mut UiSession) -> Vec<UiInvalidation> {
-    let changed = sync_selected_chart_expiration_status_record(session)
-        | sync_nav_db_expiration_status_record(session);
+    let selected = sync_selected_chart_expiration_freshness(session);
+    let nav_db = sync_nav_db_expiration_freshness(session);
+    session.cycle_product_freshness = CycleProductFreshnessState {
+        dirty: false,
+        missing_nav_kv_pages: nav_db.missing_nav_kv_pages,
+    };
+    let changed = selected.changed | nav_db.changed;
     if changed {
         vec![UiInvalidation::SessionSnapshot]
     } else {
@@ -1215,6 +1273,10 @@ fn create_ui_session_inner(
                 "/packages",
                 CoreResourcePolicy::InstalledPackage,
             ),
+            cycle_product_freshness: CycleProductFreshnessState {
+                dirty: true,
+                ..CycleProductFreshnessState::default()
+            },
             live_feeds: LiveFeedsState::default(),
             raster_map_catalog: None,
             vector_tile_cache: HashMap::new(),
@@ -1308,6 +1370,40 @@ pub fn load_raster_map_catalog_in_session(handle: u32) -> AppResult<HadOperation
     session.raster_map_catalog = Some(catalog);
     sync_cycle_product_freshness_status_records(session);
     session_snapshot_outcome(session)
+}
+
+pub fn resolve_nav_db_artifact_candidates_in_session(
+    handle: u32,
+) -> AppResult<HadOperationOutcome> {
+    let sessions = lock_sessions();
+    let session = session_ref(&sessions, handle)?;
+    session
+        .publication_resolver
+        .resolve_nav_db_artifact_candidates()
+        .map_err(|message| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message,
+        })
+}
+
+pub fn resolve_package_member_in_session(
+    handle: u32,
+    package_id: &str,
+    member_path: &str,
+) -> AppResult<HadOperationOutcome> {
+    let sessions = lock_sessions();
+    let session = session_ref(&sessions, handle)?;
+    session
+        .publication_resolver
+        .resolve_package_resource(package_id, member_path)
+        .map_err(|message| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message,
+        })
+}
+
+pub fn resolve_metar_manifest_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+    resolve_package_member_in_session(handle, "metars", "manifest.json")
 }
 
 pub fn set_resource_policy_in_session(
@@ -2786,6 +2882,13 @@ pub fn insert_nav_kv_page_for_attached_sessions(store_id: u32, page_index: u32, 
             if let Some(store) = session.nav_kv_store.as_mut() {
                 store.insert_page(page_index, page_bytes.to_vec());
             }
+            if session
+                .cycle_product_freshness
+                .missing_nav_kv_pages
+                .remove(&page_index)
+            {
+                session.cycle_product_freshness.dirty = true;
+            }
         }
     }
 }
@@ -2885,11 +2988,39 @@ pub fn set_debug_flag_in_session(
 }
 
 pub fn get_session_snapshot(handle: u32) -> AppResult<UiSessionSnapshot> {
+    let total_started_at = crate::core_clock_ms();
+    let lock_started_at = crate::core_clock_ms();
     let mut sessions = lock_sessions();
+    let lock_ms = elapsed_ms(lock_started_at);
+    let lookup_started_at = crate::core_clock_ms();
     let session = session_mut(&mut sessions, handle)?;
-    sync_cycle_product_freshness_status_records(session);
+    let lookup_ms = elapsed_ms(lookup_started_at);
+    let cycle_freshness_started_at = crate::core_clock_ms();
+    sync_cycle_product_freshness_status_records_if_needed(session);
+    let cycle_freshness_ms = elapsed_ms(cycle_freshness_started_at);
+    let live_feed_status_started_at = crate::core_clock_ms();
     sync_live_feed_overlay_status_records(session);
-    snapshot_for_session(session)
+    let live_feed_status_ms = elapsed_ms(live_feed_status_started_at);
+    let status_record_count = session.data_status_records.len();
+    let pending_resource_effect_count = session.pending_resource_effects.len();
+    let snapshot_started_at = crate::core_clock_ms();
+    let result = snapshot_for_session(session);
+    let snapshot_ms = elapsed_ms(snapshot_started_at);
+    crate::core_debug_log(
+        "session.snapshot.total",
+        &serde_json::json!({
+            "total_ms": elapsed_ms(total_started_at),
+            "lock_ms": lock_ms,
+            "lookup_ms": lookup_ms,
+            "cycle_freshness_ms": cycle_freshness_ms,
+            "live_feed_status_ms": live_feed_status_ms,
+            "snapshot_ms": snapshot_ms,
+            "status_record_count": status_record_count,
+            "pending_resource_effect_count": pending_resource_effect_count,
+            "status": if result.is_ok() { "ok" } else { "error" },
+        }),
+    );
+    result
 }
 
 pub fn ingest_point_tiles_in_session(handle: u32, tiles: &[PointTilePayload]) -> AppResult<()> {
@@ -3045,6 +3176,7 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
                 kind: AppErrorKind::InvalidManifest,
                 message,
             })?;
+        mark_cycle_product_freshness_dirty(session);
         return Ok(());
     }
     if let Some(rest) = resource_id.strip_prefix("terrain/source/") {
@@ -5683,26 +5815,65 @@ fn session_snapshot_outcome(session: &UiSession) -> AppResult<HadOperationOutcom
 }
 
 fn try_snapshot_for_session(session: &UiSession) -> Result<UiSessionSnapshot, HadReadError> {
+    let total_started_at = crate::core_clock_ms();
+    let app_ui_started_at = crate::core_clock_ms();
     let app_ui_state = project_session_app_ui_state(session)?;
+    let app_ui_ms = elapsed_ms(app_ui_started_at);
+    let debug_started_at = crate::core_clock_ms();
     let debug_state = debug_state_for_app_state(&session.debug_state, &session.app_state);
+    let debug_ms = elapsed_ms(debug_started_at);
+    let app_state_started_at = crate::core_clock_ms();
+    let app_state = state::project_ui_snapshot_app_state(&session.app_state);
+    let app_state_ms = elapsed_ms(app_state_started_at);
+    let playback_started_at = crate::core_clock_ms();
+    let playback_ui_state = session.playback.ui_state();
+    let playback_ms = elapsed_ms(playback_started_at);
+    let map_follow_started_at = crate::core_clock_ms();
+    let map_follow_ui_state = session
+        .map_follow
+        .ui_state(&session.app_state.ownship.render);
+    let map_follow_target_viewport = session
+        .map_follow
+        .target_viewport(&session.app_state.ownship.render);
+    let map_follow_ms = elapsed_ms(map_follow_started_at);
+    let clone_started_at = crate::core_clock_ms();
+    let chart_page_state = session.chart_page_state.clone();
+    let map_layer_state = session.map_layer_state.clone();
+    let data_status_state = session.data_status_state.clone();
+    let clone_ms = elapsed_ms(clone_started_at);
+    let raster_started_at = crate::core_clock_ms();
+    let raster_map = session
+        .raster_map_catalog
+        .as_ref()
+        .and_then(crate::raster_map_ui_state);
+    let raster_ms = elapsed_ms(raster_started_at);
+    let total_ms = elapsed_ms(total_started_at);
+    crate::core_debug_log(
+        "session.snapshot.core",
+        &serde_json::json!({
+            "total_ms": total_ms,
+            "app_ui_ms": app_ui_ms,
+            "debug_ms": debug_ms,
+            "app_state_ms": app_state_ms,
+            "playback_ms": playback_ms,
+            "map_follow_ms": map_follow_ms,
+            "clone_ms": clone_ms,
+            "raster_ms": raster_ms,
+            "status_boxes": data_status_state.boxes.len(),
+            "map_families": raster_map.as_ref().map(|state| state.family_options.len()).unwrap_or(0),
+        }),
+    );
     Ok(UiSessionSnapshot {
-        app_state: state::project_ui_snapshot_app_state(&session.app_state),
+        app_state,
         app_ui_state,
-        playback_ui_state: session.playback.ui_state(),
-        map_follow_ui_state: session
-            .map_follow
-            .ui_state(&session.app_state.ownship.render),
-        map_follow_target_viewport: session
-            .map_follow
-            .target_viewport(&session.app_state.ownship.render),
-        chart_page_state: session.chart_page_state.clone(),
-        map_layer_state: session.map_layer_state.clone(),
-        data_status_state: session.data_status_state.clone(),
+        playback_ui_state,
+        map_follow_ui_state,
+        map_follow_target_viewport,
+        chart_page_state,
+        map_layer_state,
+        data_status_state,
         debug_state,
-        raster_map: session
-            .raster_map_catalog
-            .as_ref()
-            .and_then(crate::raster_map_ui_state),
+        raster_map,
     })
 }
 
@@ -7368,6 +7539,14 @@ mod tests {
             .unwrap_or_else(|| panic!("missing status box {id}"))
     }
 
+    fn has_data_status_box(snapshot: &UiSessionSnapshot, id: &str) -> bool {
+        snapshot
+            .data_status_state
+            .boxes
+            .iter()
+            .any(|box_| box_.id == id)
+    }
+
     fn expired_raster_catalog(expiration_date: &str) -> RasterMapCatalog {
         let option = crate::RasterMapViewOption {
             id: "sectional:nw".to_string(),
@@ -7766,6 +7945,7 @@ mod tests {
                 "/packages",
                 CoreResourcePolicy::InstalledPackage,
             ),
+            cycle_product_freshness: CycleProductFreshnessState::default(),
             live_feeds: LiveFeedsState::default(),
             raster_map_catalog: None,
             vector_tile_cache: HashMap::new(),
@@ -7942,6 +8122,7 @@ mod tests {
                 "/packages",
                 CoreResourcePolicy::InstalledPackage,
             ),
+            cycle_product_freshness: CycleProductFreshnessState::default(),
             live_feeds: LiveFeedsState::default(),
             raster_map_catalog: None,
             vector_tile_cache: HashMap::new(),
@@ -8360,6 +8541,7 @@ mod tests {
                 "/packages",
                 CoreResourcePolicy::InstalledPackage,
             ),
+            cycle_product_freshness: CycleProductFreshnessState::default(),
             live_feeds: LiveFeedsState::default(),
             raster_map_catalog: None,
             vector_tile_cache: HashMap::new(),
@@ -9310,6 +9492,74 @@ mod tests {
         assert_eq!(nav_db.value.as_deref(), Some("EXPIRED"));
         assert_eq!(nav_db.severity, UiStatusSeverity::Warning);
         assert!(nav_db.detail.contains("NAV_DB_TEST expired"));
+    }
+
+    #[test]
+    fn cycle_product_freshness_snapshot_skips_clean_recompute() {
+        let init = create_current_test_session();
+        let store = crate::navkv::nav_kv_store_for_test(
+            &[(
+                "package/by-id/NAV_DB_TEST",
+                br#"{
+                    "id": "NAV_DB_TEST",
+                    "family_id": "nav-db",
+                    "expiration_date": "2020-01-01"
+                }"#,
+            )],
+            256,
+        );
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            assert!(!session.cycle_product_freshness.dirty);
+            assert!(session
+                .data_status_records
+                .remove(CYCLE_NAV_DB_STATUS_ID)
+                .is_some());
+            sync_data_status_projection(session);
+        }
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        assert!(!has_data_status_box(&snapshot, CYCLE_NAV_DB_STATUS_ID));
+    }
+
+    #[test]
+    fn cycle_product_freshness_ignores_clean_expiration_boundary() {
+        let init = create_current_test_session();
+        let store = crate::navkv::nav_kv_store_for_test(
+            &[(
+                "package/by-id/NAV_DB_TEST",
+                br#"{
+                    "id": "NAV_DB_TEST",
+                    "family_id": "nav-db",
+                    "expiration_date": "2026-05-21T00:00:00Z"
+                }"#,
+            )],
+            256,
+        );
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        let snapshot = get_session_snapshot(init.handle).expect("fresh snapshot");
+        assert!(!has_data_status_box(&snapshot, CYCLE_NAV_DB_STATUS_ID));
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            assert!(!session.cycle_product_freshness.dirty);
+            session.wall_clock_epoch_ms = utc("2026-05-21T00:00:01Z").timestamp_millis();
+        }
+
+        let snapshot = get_session_snapshot(init.handle).expect("expired snapshot");
+        assert!(!has_data_status_box(&snapshot, CYCLE_NAV_DB_STATUS_ID));
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            mark_cycle_product_freshness_dirty(session);
+        }
+
+        let snapshot = get_session_snapshot(init.handle).expect("dirty expired snapshot");
+        let nav_db = data_status_box(&snapshot, CYCLE_NAV_DB_STATUS_ID);
+        assert_eq!(nav_db.label, "NAV DB");
+        assert_eq!(nav_db.value.as_deref(), Some("EXPIRED"));
     }
 
     #[test]

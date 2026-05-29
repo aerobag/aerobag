@@ -27,6 +27,7 @@ pub mod session;
 pub mod situation;
 pub mod state;
 pub mod terrain;
+pub mod ui_work_scheduler;
 
 pub use chart_page::{
     airport_ids_from_plan, derive_chart_page_state_from_airports, DerivedChartAirport,
@@ -162,7 +163,6 @@ pub use planning::{
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use publication::{
     serialize_publication_outcome, CoreResourcePolicy, PublicationResolvedResource,
-    PublicationResolver,
 };
 pub use raster_tiles::{
     preferred_family_map, raster_map_ui_state, raster_tile_plan, raster_tile_plan_with_options,
@@ -206,21 +206,22 @@ pub use session::{
     register_ownship_source_in_session, register_ownship_source_in_session_outcome,
     render_terrain_overlay_tile_by_key_in_session, render_terrain_overlay_tile_in_session,
     render_terrain_overlay_tiles_in_session, report_session_resource_failure_in_session,
-    restore_chart_page_state_in_session, restore_direct_to_in_session, seek_playback_in_session,
-    select_airport_in_session, select_chart_in_session, select_map_family_in_session,
-    select_ownship_source_in_session, select_ownship_source_in_session_outcome,
-    select_procedure_at_flight_plan_row_in_session, select_raster_map_in_session,
-    sequence_active_leg_in_session, set_debug_flag_in_session, set_map_follow_offset_in_session,
-    set_map_layer_enabled_in_session, set_map_layer_visibility_in_session,
-    set_playback_rate_in_session, set_resource_policy_in_session, set_situation_in_session,
-    set_situation_in_session_outcome, suggest_waypoint_identifiers_at_flight_plan_row_in_session,
-    suspend_sequencing_in_session, sync_guidance_geometry_in_session, sync_live_feeds_in_session,
-    sync_map_follow_in_session, tick_debug_ownship_driver_in_session,
-    tick_debug_ownship_driver_in_session_outcome, tick_playback_in_session,
-    unsuspend_sequencing_in_session, update_ownship_source_status_in_session,
-    update_ownship_source_status_in_session_outcome, GuidanceLegGeometry, UiChartPageState,
-    UiDebugState, UiMapLayerState, UiMapLayerToggleState, UiSessionInitResult,
-    UiSessionResourceEffect, UiSessionSnapshot,
+    resolve_metar_manifest_in_session, resolve_nav_db_artifact_candidates_in_session,
+    resolve_package_member_in_session, restore_chart_page_state_in_session,
+    restore_direct_to_in_session, seek_playback_in_session, select_airport_in_session,
+    select_chart_in_session, select_map_family_in_session, select_ownship_source_in_session,
+    select_ownship_source_in_session_outcome, select_procedure_at_flight_plan_row_in_session,
+    select_raster_map_in_session, sequence_active_leg_in_session, set_debug_flag_in_session,
+    set_map_follow_offset_in_session, set_map_layer_enabled_in_session,
+    set_map_layer_visibility_in_session, set_playback_rate_in_session,
+    set_resource_policy_in_session, set_situation_in_session, set_situation_in_session_outcome,
+    suggest_waypoint_identifiers_at_flight_plan_row_in_session, suspend_sequencing_in_session,
+    sync_guidance_geometry_in_session, sync_live_feeds_in_session, sync_map_follow_in_session,
+    tick_debug_ownship_driver_in_session, tick_debug_ownship_driver_in_session_outcome,
+    tick_playback_in_session, unsuspend_sequencing_in_session,
+    update_ownship_source_status_in_session, update_ownship_source_status_in_session_outcome,
+    GuidanceLegGeometry, UiChartPageState, UiDebugState, UiMapLayerState, UiMapLayerToggleState,
+    UiSessionInitResult, UiSessionResourceEffect, UiSessionSnapshot,
 };
 pub use situation::{Situation, SituationPosition};
 pub use state::{
@@ -232,6 +233,10 @@ pub use terrain::{
     render_terrain_warning_png_from_tiles, render_terrain_warning_raw_rgba_from_tiles,
     render_terrain_warning_rgba, TerrainOverlayQueryResult, TerrainOverlaySourceTile,
     TerrainOverlayStatus, TerrainOverlayTileRequest, TerrainTileInfo,
+};
+pub use ui_work_scheduler::{
+    SessionSnapshotRefreshDecision, SessionSnapshotRefreshPriority,
+    SessionSnapshotRefreshScheduler, SessionSnapshotRefreshSchedulerConfig,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

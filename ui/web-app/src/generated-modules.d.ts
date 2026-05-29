@@ -69,6 +69,13 @@ declare module "@generated/app_wasm.js" {
   export const render_terrain_warning_raw_rgba: (...args: unknown[]) => Uint8Array;
   export const render_terrain_warning_raw_rgba_from_packed_tiles: (...args: unknown[]) => Uint8Array;
   export const get_session_snapshot: (...args: unknown[]) => string;
+  export const create_session_snapshot_refresh_scheduler: (...args: unknown[]) => number;
+  export const destroy_session_snapshot_refresh_scheduler: (...args: unknown[]) => void;
+  export const session_snapshot_refresh_scheduler_request: (...args: unknown[]) => string;
+  export const session_snapshot_refresh_scheduler_viewport_gesture_active_changed: (...args: unknown[]) => string;
+  export const session_snapshot_refresh_scheduler_viewport_activity: (...args: unknown[]) => string;
+  export const session_snapshot_refresh_scheduler_refresh_completed: (...args: unknown[]) => string;
+  export const session_snapshot_refresh_scheduler_poll: (...args: unknown[]) => string;
   export const restore_chart_page_state_in_session: (...args: unknown[]) => string;
   export const destroy_session: (...args: unknown[]) => void;
   export const install_rust_debug_logger: (...args: unknown[]) => void;
@@ -82,6 +89,9 @@ declare module "@generated/app_wasm.js" {
   export const nav_kv_destroy: (...args: unknown[]) => void;
   export const attach_nav_kv_store_to_session: (...args: unknown[]) => void;
   export const core_had_operation: (...args: unknown[]) => string;
+  export const resolve_metar_manifest_in_session: (...args: unknown[]) => string;
+  export const resolve_nav_db_artifact_candidates_in_session: (...args: unknown[]) => string;
+  export const resolve_package_member_in_session: (...args: unknown[]) => string;
   export const metar_bakeoff_run: (...args: unknown[]) => string;
 }
 

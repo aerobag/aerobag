@@ -1,13 +1,23 @@
 import { debugLog, debugTiming, installRustDebugLogBridge } from "./debugLog";
 
-export type PublicationResolverWasmModule = {
+type NavKvWasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
-  publication_resolver_destroy(handle: number): void;
-  publication_resolver_ingest_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
-  publication_resolver_open(publicBaseUrl: string): number;
-  publication_resolver_resolve_metar_manifest(handle: number): Promise<string> | string;
-  publication_resolver_resolve_nav_db_artifact_candidates(handle: number): Promise<string> | string;
-  publication_resolver_resolve_package_member(handle: number, packageId: string, memberPath: string): Promise<string> | string;
+  attach_nav_kv_store_to_session(handle: number, sessionHandle: number): void;
+  core_had_operation(handle: number, operationJson: string): string;
+  drain_session_resource_effects(sessionHandle: number): Promise<string> | string;
+  ingest_resource_in_session(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
+  install_rust_debug_logger(): void;
+  nav_db_open_controller_create(candidatesJson: string): number;
+  nav_db_open_controller_destroy(handle: number): void;
+  nav_db_open_controller_finish(handle: number): Promise<string> | string;
+  nav_db_open_controller_ingest_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
+  nav_db_open_controller_step(handle: number): Promise<string> | string;
+  nav_kv_destroy(handle: number): void;
+  nav_kv_insert_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
+  nav_kv_prefetch_pages(handle: number): Promise<string> | string;
+  resolve_metar_manifest_in_session(handle: number): Promise<string> | string;
+  resolve_nav_db_artifact_candidates_in_session(handle: number): Promise<string> | string;
+  resolve_package_member_in_session(handle: number, packageId: string, memberPath: string): Promise<string> | string;
 };
 
 export type UiInvalidation =
@@ -29,22 +39,6 @@ type PendingNavKvPageInsert = {
   priority: number;
   resolve: () => void;
   reject: (error: unknown) => void;
-};
-
-type NavKvWasmModule = PublicationResolverWasmModule & {
-  attach_nav_kv_store_to_session(handle: number, sessionHandle: number): void;
-  core_had_operation(handle: number, operationJson: string): string;
-  drain_session_resource_effects(sessionHandle: number): Promise<string> | string;
-  ingest_resource_in_session(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
-  install_rust_debug_logger(): void;
-  nav_db_open_controller_create(candidatesJson: string): number;
-  nav_db_open_controller_destroy(handle: number): void;
-  nav_db_open_controller_finish(handle: number): Promise<string> | string;
-  nav_db_open_controller_ingest_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
-  nav_db_open_controller_step(handle: number): Promise<string> | string;
-  nav_kv_destroy(handle: number): void;
-  nav_kv_insert_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
-  nav_kv_prefetch_pages(handle: number): Promise<string> | string;
 };
 
 let wasmReady: Promise<NavKvWasmModule> | null = null;
@@ -78,15 +72,13 @@ export class NavKvStore {
     this.navKvPackageRoot = navKvRootUrl.replace(/\/root(?:[?#].*)?$/, "");
   }
 
-  static async open(): Promise<NavKvStore | null> {
+  static async open(sessionHandle: number): Promise<NavKvStore | null> {
     const wasm = await debugTiming("nav_kv.wasm.init", () => ensureWasmReady());
-    const publicationResolver = new PublicationResolver(wasm, wasm.publication_resolver_open("/packages"));
-    let candidates: NavDbArtifactCandidate[];
-    try {
-      candidates = await publicationResolver.resolveNavDbArtifactCandidates();
-    } finally {
-      publicationResolver.destroy();
-    }
+    const candidates = await resolveSessionPublicationResult<NavDbArtifactCandidate[]>(
+      wasm,
+      sessionHandle,
+      () => wasm.resolve_nav_db_artifact_candidates_in_session(sessionHandle),
+    );
     if (candidates.length === 0) {
       debugLog("nav_kv.root.missing", { reason: "publication has no nav-db candidates" });
       return null;
@@ -226,6 +218,11 @@ export class NavKvStore {
       }
       if (response.state === "complete") {
         if (response.invalidations && response.invalidations.length > 0) {
+          debugLog("core.ui.invalidations.source", {
+            source: "paged_operation_complete",
+            operation_label: operationLabel ?? null,
+            invalidations: response.invalidations,
+          });
           onInvalidations?.(response.invalidations);
         }
         return response.result;
@@ -304,6 +301,15 @@ export class NavKvStore {
         });
       }
       if (invalidations.size > 0) {
+        debugLog("core.ui.invalidations.source", {
+          source: "session_effect",
+          invalidations: [...invalidations],
+          resources: effects.map((effect) => effect.resource.id),
+          effect_invalidations: effects.map((effect) => ({
+            resource: effect.resource.id,
+            invalidations: effect.after_success_invalidations ?? [],
+          })),
+        });
         onInvalidations?.([...invalidations]);
       }
     }
@@ -418,72 +424,40 @@ function yieldToWorkerEventLoop(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-export class PublicationResolver {
-  constructor(
-    private readonly wasm: PublicationResolverWasmModule,
-    private readonly handle: number,
-  ) {}
-
-  async resolveNavDbArtifactCandidates(): Promise<NavDbArtifactCandidate[]> {
-    return this.resolveResult(() => this.wasm.publication_resolver_resolve_nav_db_artifact_candidates(this.handle));
-  }
-
-  async resolveMetarManifest(): Promise<string> {
-    return this.resolve(() => this.wasm.publication_resolver_resolve_metar_manifest(this.handle));
-  }
-
-  async resolvePackageMember(packageId: string, memberPath: string): Promise<string> {
-    return this.resolve(() => this.wasm.publication_resolver_resolve_package_member(this.handle, packageId, memberPath));
-  }
-
-  private async resolve(operation: () => Promise<string> | string): Promise<string> {
-    const result = await this.resolveResult<{ source: CoreResourceSource }>(operation);
-    return publicResourceUrl({ id: "publication/resolved_package_member", source: result.source });
-  }
-
-  private async resolveResult<T>(operation: () => Promise<string> | string): Promise<T> {
-    for (;;) {
-      const response = JSON.parse(await operation()) as
-        | { state: "complete"; result: T }
-        | { state: "need_resources"; resources: CoreResourceRequest[] };
-      if (response.state === "complete") {
-        return response.result;
-      }
-      await Promise.all(response.resources.map((resource) => this.fetchAndIngest(resource)));
+async function resolveSessionPublicationResult<T>(
+  wasm: NavKvWasmModule,
+  sessionHandle: number,
+  operation: () => Promise<string> | string,
+): Promise<T> {
+  for (;;) {
+    const response = JSON.parse(await operation()) as
+      | { state: "complete"; result: T }
+      | { state: "need_resources"; resources: CoreResourceRequest[] };
+    if (response.state === "complete") {
+      return response.result;
     }
-  }
-
-  destroy(): void {
-    this.wasm.publication_resolver_destroy(this.handle);
-  }
-
-  private async fetchAndIngest(resource: CoreResourceRequest): Promise<void> {
-    const url = publicResourceUrl(resource);
-    const response = await debugTiming("publication.resource.fetch", () => fetch(url, { cache: "no-cache" }), {
-      id: resource.id,
-      url,
-    });
-    if (!response.ok) {
-      throw new Error(`failed to fetch publication resource ${resource.id} at ${url}: ${response.status}`);
-    }
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    await this.wasm.publication_resolver_ingest_resource(this.handle, resource.id, bytes);
+    await Promise.all(response.resources.map((resource) =>
+      fetchAndIngestResource(
+        resource,
+        (resourceId, bytes) => wasm.ingest_resource_in_session(sessionHandle, resourceId, bytes),
+        "publication.resource.fetch",
+      ),
+    ));
   }
 }
 
-let sharedPublicationResolverPromise: Promise<PublicationResolver> | null = null;
-
-export async function getPublicationResolver(): Promise<PublicationResolver> {
-  if (!sharedPublicationResolverPromise) {
-    sharedPublicationResolverPromise = ensureWasmReady().then((wasm) =>
-      new PublicationResolver(wasm, wasm.publication_resolver_open("/packages")),
-    );
-  }
-  return sharedPublicationResolverPromise;
-}
-
-export async function resolvePackageMemberUrl(packageId: string, memberPath: string): Promise<string> {
-  return (await getPublicationResolver()).resolvePackageMember(packageId, memberPath);
+export async function resolvePackageMemberUrl(
+  sessionHandle: number,
+  packageId: string,
+  memberPath: string,
+): Promise<string> {
+  const wasm = await ensureWasmReady();
+  const result = await resolveSessionPublicationResult<{ source: CoreResourceSource }>(
+    wasm,
+    sessionHandle,
+    () => wasm.resolve_package_member_in_session(sessionHandle, packageId, memberPath),
+  );
+  return publicResourceUrl({ id: "publication/resolved_package_member", source: result.source });
 }
 
 type CoreResourceRequest = {
@@ -590,9 +564,12 @@ function withNavKvCacheKey(address: string): string {
   return `${address}${separator}v=${encodeURIComponent(address)}`;
 }
 
-export async function getNavKvStore(): Promise<NavKvStore | null> {
+export async function getNavKvStore(sessionHandle?: number): Promise<NavKvStore | null> {
   if (!sharedNavKvStorePromise) {
-    sharedNavKvStorePromise = NavKvStore.open();
+    if (sessionHandle === undefined) {
+      throw new Error("nav_kv root must be opened through a ui session publication resolver");
+    }
+    sharedNavKvStorePromise = NavKvStore.open(sessionHandle);
   }
   return sharedNavKvStorePromise;
 }
@@ -606,6 +583,7 @@ export async function runCoreHadOperation<T>(operation: unknown): Promise<T> {
 }
 
 export async function runCoreHadSessionOperation<T>(
+  sessionHandle: number,
   operation: (navKvHandle: number) => Promise<string> | string,
   ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
   onInvalidations?: UiInvalidationListener,
@@ -613,7 +591,7 @@ export async function runCoreHadSessionOperation<T>(
   drainSessionEffects?: () => Promise<string> | string,
   operationLabel?: string,
 ): Promise<T> {
-  const store = await getNavKvStore();
+  const store = await getNavKvStore(sessionHandle);
   if (!store) {
     throw new Error("nav_kv root is unavailable");
   }
@@ -628,7 +606,7 @@ export async function runCoreHadSessionOperation<T>(
 }
 
 export async function attachNavKvStoreToSession(sessionHandle: number): Promise<void> {
-  const store = await getNavKvStore();
+  const store = await getNavKvStore(sessionHandle);
   if (!store) {
     throw new Error("nav_kv root is unavailable");
   }

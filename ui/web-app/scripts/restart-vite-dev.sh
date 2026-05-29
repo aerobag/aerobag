@@ -62,6 +62,7 @@ LIVE_FEEDS_ROOT="${AEROBAG_LIVE_FEEDS_ROOT:-$REPO_ROOT/../live-feeds}"
 LIVE_FEEDS_LOG="${AEROBAG_LIVE_FEEDS_LOG:-/tmp/aerobag-live-feedsd-$PORT.log}"
 LIVE_FEEDS_MODE="${AEROBAG_LIVE_FEEDS_MODE:-production}"
 LIVE_FEEDS_HOST="${AEROBAG_LIVE_FEEDS_HOST:-127.0.0.1}"
+DEFAULT_LIVE_FEEDS_FIXTURE_ROOT="$REPO_ROOT/../live-feeds-dev-fixture/live-feeds"
 mkdir -p "$LIVE_FEEDS_ROOT"
 
 list_dev_roots() {
@@ -176,8 +177,11 @@ case "$LIVE_FEEDS_MODE" in
   production)
     ;;
   simulation)
+    if [ -z "${AEROBAG_LIVE_FEEDS_FIXTURE_ROOT:-}" ] && [ -d "$DEFAULT_LIVE_FEEDS_FIXTURE_ROOT" ]; then
+      AEROBAG_LIVE_FEEDS_FIXTURE_ROOT="$DEFAULT_LIVE_FEEDS_FIXTURE_ROOT"
+    fi
     if [ -z "${AEROBAG_LIVE_FEEDS_FIXTURE_ROOT:-}" ]; then
-      echo "AEROBAG_LIVE_FEEDS_FIXTURE_ROOT must be set for simulation mode" >&2
+      echo "AEROBAG_LIVE_FEEDS_FIXTURE_ROOT must be set for simulation mode; expected $DEFAULT_LIVE_FEEDS_FIXTURE_ROOT" >&2
       exit 1
     fi
     LIVE_FEEDS_ARGS+=(

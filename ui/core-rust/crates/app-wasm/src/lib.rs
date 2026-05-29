@@ -95,10 +95,11 @@ static NAV_KV_STORES: OnceLock<Mutex<HashMap<u32, app_core::NavKvStore>>> = Once
 static NEXT_NAV_DB_OPEN_HANDLE: AtomicU32 = AtomicU32::new(1);
 static NAV_DB_OPEN_CONTROLLERS: OnceLock<Mutex<HashMap<u32, app_core::NavDbOpenController>>> =
     OnceLock::new();
-static NEXT_PUBLICATION_RESOLVER_HANDLE: AtomicU32 = AtomicU32::new(1);
-static PUBLICATION_RESOLVERS: OnceLock<Mutex<HashMap<u32, app_core::PublicationResolver>>> =
-    OnceLock::new();
 static METAR_LIVE_FEED_PREP_STATE: OnceLock<Mutex<Option<serde_json::Value>>> = OnceLock::new();
+static NEXT_SESSION_SNAPSHOT_REFRESH_SCHEDULER_HANDLE: AtomicU32 = AtomicU32::new(1);
+static SESSION_SNAPSHOT_REFRESH_SCHEDULERS: OnceLock<
+    Mutex<HashMap<u32, app_core::SessionSnapshotRefreshScheduler>>,
+> = OnceLock::new();
 
 fn nav_kv_stores() -> &'static Mutex<HashMap<u32, app_core::NavKvStore>> {
     NAV_KV_STORES.get_or_init(|| Mutex::new(HashMap::new()))
@@ -117,6 +118,18 @@ fn lock_metar_live_feed_prep_state() -> MutexGuard<'static, Option<serde_json::V
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn session_snapshot_refresh_schedulers(
+) -> &'static Mutex<HashMap<u32, app_core::SessionSnapshotRefreshScheduler>> {
+    SESSION_SNAPSHOT_REFRESH_SCHEDULERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn lock_session_snapshot_refresh_schedulers(
+) -> MutexGuard<'static, HashMap<u32, app_core::SessionSnapshotRefreshScheduler>> {
+    session_snapshot_refresh_schedulers()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn nav_db_open_controllers() -> &'static Mutex<HashMap<u32, app_core::NavDbOpenController>> {
     NAV_DB_OPEN_CONTROLLERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -124,17 +137,6 @@ fn nav_db_open_controllers() -> &'static Mutex<HashMap<u32, app_core::NavDbOpenC
 fn lock_nav_db_open_controllers() -> MutexGuard<'static, HashMap<u32, app_core::NavDbOpenController>>
 {
     nav_db_open_controllers()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-fn publication_resolvers() -> &'static Mutex<HashMap<u32, app_core::PublicationResolver>> {
-    PUBLICATION_RESOLVERS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn lock_publication_resolvers() -> MutexGuard<'static, HashMap<u32, app_core::PublicationResolver>>
-{
-    publication_resolvers()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -226,74 +228,28 @@ pub fn nav_kv_prefetch_pages(handle: u32) -> Result<String, JsValue> {
 }
 
 #[wasm_bindgen]
-pub fn publication_resolver_open(public_base_url: &str) -> u32 {
-    let handle = NEXT_PUBLICATION_RESOLVER_HANDLE.fetch_add(1, Ordering::Relaxed);
-    lock_publication_resolvers()
-        .insert(handle, app_core::PublicationResolver::new(public_base_url));
-    handle
-}
-
-#[wasm_bindgen]
-pub fn publication_resolver_ingest_resource(
-    handle: u32,
-    resource_id: &str,
-    resource_bytes: &[u8],
-) -> Result<(), JsValue> {
-    let mut resolvers = lock_publication_resolvers();
-    let resolver = resolvers.get_mut(&handle).ok_or_else(|| {
-        JsValue::from_str(&format!("invalid publication resolver handle: {handle}"))
-    })?;
-    resolver
-        .ingest_resource(resource_id, resource_bytes)
-        .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn publication_resolver_resolve_nav_db_artifact_candidates(
-    handle: u32,
-) -> Result<String, JsValue> {
-    let resolvers = lock_publication_resolvers();
-    let resolver = resolvers.get(&handle).ok_or_else(|| {
-        JsValue::from_str(&format!("invalid publication resolver handle: {handle}"))
-    })?;
-    let outcome = resolver
-        .resolve_nav_db_artifact_candidates()
-        .map_err(|err| JsValue::from_str(&err))?;
+pub fn resolve_nav_db_artifact_candidates_in_session(handle: u32) -> Result<String, JsValue> {
+    let outcome = app_core::resolve_nav_db_artifact_candidates_in_session(handle)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
     app_core::serialize_publication_outcome(outcome).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
-pub fn publication_resolver_resolve_metar_manifest(handle: u32) -> Result<String, JsValue> {
-    publication_resolver_resolve_package_resource(handle, "metars", "manifest.json")
-}
-
-#[wasm_bindgen]
-pub fn publication_resolver_resolve_package_member(
-    handle: u32,
-    package_id: &str,
-    member_path: &str,
-) -> Result<String, JsValue> {
-    publication_resolver_resolve_package_resource(handle, package_id, member_path)
-}
-
-fn publication_resolver_resolve_package_resource(
-    handle: u32,
-    package_id: &str,
-    member_path: &str,
-) -> Result<String, JsValue> {
-    let resolvers = lock_publication_resolvers();
-    let resolver = resolvers.get(&handle).ok_or_else(|| {
-        JsValue::from_str(&format!("invalid publication resolver handle: {handle}"))
-    })?;
-    let outcome = resolver
-        .resolve_package_resource(package_id, member_path)
-        .map_err(|err| JsValue::from_str(&err))?;
+pub fn resolve_metar_manifest_in_session(handle: u32) -> Result<String, JsValue> {
+    let outcome = app_core::resolve_metar_manifest_in_session(handle)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
     app_core::serialize_publication_outcome(outcome).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
-pub fn publication_resolver_destroy(handle: u32) {
-    let _ = lock_publication_resolvers().remove(&handle);
+pub fn resolve_package_member_in_session(
+    handle: u32,
+    package_id: &str,
+    member_path: &str,
+) -> Result<String, JsValue> {
+    let outcome = app_core::resolve_package_member_in_session(handle, package_id, member_path)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    app_core::serialize_publication_outcome(outcome).map_err(|err| JsValue::from_str(&err))
 }
 
 fn nav_kv_insert_page(handle: u32, page_index: u32, page_bytes: &[u8]) -> Result<(), JsValue> {
@@ -328,6 +284,82 @@ pub fn nav_kv_destroy(handle: u32) {
 pub fn install_rust_debug_logger() {
     app_core::set_core_debug_logger(Some(log_core_debug_to_js));
     app_core::set_core_clock_ms(Some(core_clock_ms_to_js));
+}
+
+#[wasm_bindgen]
+pub fn create_session_snapshot_refresh_scheduler() -> u32 {
+    let handle = NEXT_SESSION_SNAPSHOT_REFRESH_SCHEDULER_HANDLE.fetch_add(1, Ordering::Relaxed);
+    lock_session_snapshot_refresh_schedulers()
+        .insert(handle, app_core::SessionSnapshotRefreshScheduler::default());
+    handle
+}
+
+#[wasm_bindgen]
+pub fn destroy_session_snapshot_refresh_scheduler(handle: u32) {
+    let _ = lock_session_snapshot_refresh_schedulers().remove(&handle);
+}
+
+#[wasm_bindgen]
+pub fn session_snapshot_refresh_scheduler_request(
+    handle: u32,
+    priority_json: &str,
+    reason: &str,
+) -> Result<String, JsValue> {
+    let priority: app_core::SessionSnapshotRefreshPriority =
+        serde_json::from_str(priority_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    session_snapshot_refresh_scheduler_decision(handle, |scheduler| {
+        scheduler.request(now_ms().max(0.0).round() as u64, priority, reason)
+    })
+}
+
+#[wasm_bindgen]
+pub fn session_snapshot_refresh_scheduler_viewport_gesture_active_changed(
+    handle: u32,
+    active: bool,
+) -> Result<String, JsValue> {
+    session_snapshot_refresh_scheduler_decision(handle, |scheduler| {
+        scheduler.viewport_gesture_active_changed(now_ms().max(0.0).round() as u64, active)
+    })
+}
+
+#[wasm_bindgen]
+pub fn session_snapshot_refresh_scheduler_viewport_activity(
+    handle: u32,
+) -> Result<String, JsValue> {
+    session_snapshot_refresh_scheduler_decision(handle, |scheduler| {
+        scheduler.viewport_activity(now_ms().max(0.0).round() as u64)
+    })
+}
+
+#[wasm_bindgen]
+pub fn session_snapshot_refresh_scheduler_refresh_completed(
+    handle: u32,
+) -> Result<String, JsValue> {
+    session_snapshot_refresh_scheduler_decision(handle, |scheduler| {
+        scheduler.refresh_completed(now_ms().max(0.0).round() as u64)
+    })
+}
+
+#[wasm_bindgen]
+pub fn session_snapshot_refresh_scheduler_poll(handle: u32) -> Result<String, JsValue> {
+    session_snapshot_refresh_scheduler_decision(handle, |scheduler| {
+        scheduler.poll(now_ms().max(0.0).round() as u64)
+    })
+}
+
+fn session_snapshot_refresh_scheduler_decision(
+    handle: u32,
+    work: impl FnOnce(
+        &mut app_core::SessionSnapshotRefreshScheduler,
+    ) -> app_core::SessionSnapshotRefreshDecision,
+) -> Result<String, JsValue> {
+    let mut schedulers = lock_session_snapshot_refresh_schedulers();
+    let scheduler = schedulers.get_mut(&handle).ok_or_else(|| {
+        JsValue::from_str(&format!(
+            "invalid session snapshot refresh scheduler handle: {handle}"
+        ))
+    })?;
+    serde_json::to_string(&work(scheduler)).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2520,8 +2552,23 @@ fn select_raster_map_in_session_json(
 }
 
 fn get_session_snapshot_json(handle: u32) -> Result<String, String> {
+    let total_started_at = now_ms();
+    let core_started_at = now_ms();
     let snapshot = app_core::get_session_snapshot(handle).map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+    let core_ms = now_ms() - core_started_at;
+    let serialize_started_at = now_ms();
+    let serialized = serde_json::to_string(&snapshot).map_err(|err| err.to_string())?;
+    let serialize_ms = now_ms() - serialize_started_at;
+    app_core::core_debug_log(
+        "session.snapshot.wasm",
+        &serde_json::json!({
+            "total_ms": (now_ms() - total_started_at).round() as u64,
+            "core_ms": core_ms.round() as u64,
+            "serialize_ms": serialize_ms.round() as u64,
+            "json_bytes": serialized.len(),
+        }),
+    );
+    Ok(serialized)
 }
 
 fn ingest_point_tiles_in_session_json(handle: u32, tiles_json: &str) -> Result<(), String> {

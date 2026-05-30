@@ -1,4 +1,5 @@
 export type ChartFamilyId =
+  | "none"
   | "sec"
   | "tac"
   | "wac"

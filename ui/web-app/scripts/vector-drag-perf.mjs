@@ -29,6 +29,7 @@ async function main() {
     const page = await createPage(browser);
     await page.send("Page.enable");
     await page.send("Runtime.enable");
+    await page.send("Log.enable");
     await page.send("Page.addScriptToEvaluateOnNewDocument", {
       source: `globalThis.__aerobagPerfRunId = ${JSON.stringify(runId)};`,
     });
@@ -192,12 +193,33 @@ class CdpPage {
   constructor(client, sessionId) {
     this.client = client;
     this.sessionId = sessionId;
+    this.diagnostics = [];
     this.loadPromise = new Promise((resolve) => {
       this.resolveLoad = resolve;
     });
     this.client.onEvent((message) => {
       if (message.sessionId === this.sessionId && message.method === "Page.loadEventFired") {
         this.resolveLoad();
+      }
+      if (message.sessionId !== this.sessionId) {
+        return;
+      }
+      if (message.method === "Runtime.exceptionThrown") {
+        this.diagnostics.push({
+          method: message.method,
+          exception: message.params?.exceptionDetails,
+        });
+      } else if (message.method === "Runtime.consoleAPICalled") {
+        this.diagnostics.push({
+          method: message.method,
+          type: message.params?.type,
+          args: (message.params?.args ?? []).map((arg) => arg.value ?? arg.description ?? arg.unserializableValue ?? ""),
+        });
+      } else if (message.method === "Log.entryAdded") {
+        this.diagnostics.push({
+          method: message.method,
+          entry: message.params?.entry,
+        });
       }
     });
   }
@@ -293,16 +315,50 @@ async function waitForMapReady(page) {
       if (!surface) return false;
       const rect = surface.getBoundingClientRect();
       const images = Array.from(document.querySelectorAll('.mapTileImage'));
+      const loadedImages = images.filter((image) => image.complete && image.naturalWidth > 0);
       return rect.width >= 600
         && rect.height >= 500
         && images.length > 0
-        && images.every((image) => image.complete && image.naturalWidth > 0);
+        && loadedImages.length > 0;
     })()`);
     if (ready) {
       return;
     }
     if (Date.now() > deadline) {
-      throw new Error("timed out waiting for map surface and initial raster images");
+      const state = await page.evaluate(`(() => {
+        const surface = document.querySelector('[data-testid="map-surface"]');
+        const rect = surface ? surface.getBoundingClientRect() : null;
+        const images = Array.from(document.querySelectorAll('.mapTileImage'));
+        const loadedImages = images.filter((image) => image.complete && image.naturalWidth > 0);
+        const failedImages = images.filter((image) => image.complete && image.naturalWidth === 0);
+        const viteError = document.querySelector('vite-error-overlay')?.shadowRoot?.textContent
+          ?? document.querySelector('vite-error-overlay')?.textContent
+          ?? null;
+        return {
+          url: location.href,
+          title: document.title,
+          bodyText: document.body?.innerText?.slice(0, 500) ?? "",
+          surface: surface ? {
+            width: rect.width,
+            height: rect.height,
+            className: surface.className,
+          } : null,
+          imageCount: images.length,
+          loadedImageCount: loadedImages.length,
+          failedImageCount: failedImages.length,
+          firstImages: images.slice(0, 5).map((image) => ({
+            complete: image.complete,
+            naturalWidth: image.naturalWidth,
+            naturalHeight: image.naturalHeight,
+            src: image.currentSrc || image.src,
+          })),
+          viteError: viteError ? viteError.slice(0, 1000) : null,
+        };
+      })()`);
+      throw new Error(`timed out waiting for map surface and initial raster images: ${JSON.stringify({
+        state,
+        diagnostics: page.diagnostics.slice(-20),
+      })}`);
     }
     await sleep(250);
   }

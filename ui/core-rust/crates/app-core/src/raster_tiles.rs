@@ -6,6 +6,8 @@ use crate::{core_clock_ms, LatLon, MapViewport};
 
 const WORLD_SIZE: f64 = 256.0;
 const MAX_LATITUDE: f64 = 85.05112878;
+const NO_RASTER_FAMILY_ID: &str = "none";
+const NO_RASTER_SELECTED_MAP_ID: &str = "none";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RasterMapCatalog {
@@ -228,6 +230,9 @@ pub enum RasterTileResource {
         package_name: String,
         member_path: String,
     },
+    ResolvedPublicUrl {
+        url: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -258,6 +263,14 @@ pub fn select_map_in_catalog(catalog: &mut RasterMapCatalog, selected_map_id: &s
 }
 
 pub fn select_map_family_in_catalog(catalog: &mut RasterMapCatalog, family_id: &str) {
+    if family_id == NO_RASTER_FAMILY_ID {
+        catalog.selected_map_id = NO_RASTER_SELECTED_MAP_ID.to_string();
+        for option in &mut catalog.family_options {
+            option.active = option.id == NO_RASTER_FAMILY_ID;
+        }
+        catalog.displayed_maps.clear();
+        return;
+    }
     let selected_region_id = catalog
         .selected_map
         .as_ref()
@@ -281,6 +294,14 @@ fn update_displayed_maps_for_family(catalog: &mut RasterMapCatalog) {
         .as_ref()
         .map(|view| view.map_view.chart_family.as_str())
         .unwrap_or("sec");
+    if catalog
+        .family_options
+        .iter()
+        .any(|option| option.id == NO_RASTER_FAMILY_ID && option.active)
+    {
+        catalog.displayed_maps.clear();
+        return;
+    }
     let mut displayed_maps = displayed_family_maps(&catalog.available_maps, selected_family_id)
         .into_iter()
         .cloned()
@@ -1139,6 +1160,69 @@ mod tests {
                 levels,
             },
         }
+    }
+
+    #[test]
+    fn none_family_displays_no_raster_tiles_or_basemap() {
+        let mut catalog = RasterMapCatalog {
+            selected_map_id: "sec:nw".to_string(),
+            selected_map: Some(option(
+                "sec:nw",
+                "sec",
+                "NW_SEC_2604",
+                vec![level(4, 0, 15, 0, 15)],
+            )),
+            available_maps: vec![
+                option("sec:nw", "sec", "NW_SEC_2604", vec![level(4, 0, 15, 0, 15)]),
+                option(
+                    "world",
+                    "world-basemap",
+                    "WORLD_BASEMAP",
+                    vec![level(0, 0, 0, 0, 0)],
+                ),
+            ],
+            displayed_maps: Vec::new(),
+            geometry: RasterDisplayGeometry::default(),
+            family_options: vec![
+                RasterMapFamilyOption {
+                    id: "none".to_string(),
+                    label: "NONE".to_string(),
+                    launcher_label: "NONE".to_string(),
+                    enabled: true,
+                    active: false,
+                },
+                RasterMapFamilyOption {
+                    id: "sec".to_string(),
+                    label: "SECTIONAL".to_string(),
+                    launcher_label: "SEC".to_string(),
+                    enabled: true,
+                    active: true,
+                },
+            ],
+        };
+        select_map_family_in_catalog(&mut catalog, "none");
+
+        let plan = raster_tile_plan_with_options(
+            &catalog,
+            &MapViewport {
+                center: LatLon {
+                    lat: 45.0,
+                    lon: -122.0,
+                },
+                zoom: 4.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            512.0,
+            512.0,
+            RasterTilePlanOptions::default(),
+        );
+
+        assert_eq!(catalog.selected_map_id, "none");
+        assert!(catalog.displayed_maps.is_empty());
+        assert!(catalog.family_options[0].active);
+        assert_eq!(plan.selected_map_id, "none");
+        assert!(plan.tiles.is_empty());
     }
 
     #[test]

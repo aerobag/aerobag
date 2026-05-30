@@ -61,6 +61,18 @@ pub enum NavKvLookup {
     MissingPages(Vec<u32>),
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct NavKvPageProbeStats {
+    pub keys: usize,
+    pub node_page_hits: usize,
+    pub node_page_misses: usize,
+    pub leaf_entries_scanned: usize,
+    pub inline_values: usize,
+    pub external_values: usize,
+    pub value_page_hits: usize,
+    pub value_page_misses: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NavKvDeltaEntry {
     pub key: String,
@@ -117,6 +129,11 @@ struct InternalNode {
 enum Node {
     Leaf(LeafNode),
     Internal(InternalNode),
+}
+
+enum LeafEntryValueRef<'a> {
+    Inline(&'a [u8]),
+    External { offset: u32, len: u32 },
 }
 
 pub fn build_nav_kv_sorted(
@@ -720,11 +737,9 @@ impl NavKvStore {
     }
 
     pub fn get_bytes(&self, key: &str) -> Result<NavKvLookup, String> {
+        let mut stats = NavKvPageProbeStats::default();
         let mut missing_pages = BTreeSet::new();
-        let entry = {
-            let mut provider = |page| self.page_bytes_or_record_missing(page, &mut missing_pages);
-            self.root.find_leaf_entry(key.as_bytes(), &mut provider)
-        };
+        let entry = self.find_leaf_entry_ref(key.as_bytes(), &mut missing_pages, &mut stats)?;
         let Some(entry) = entry else {
             let pages = missing_pages.into_iter().collect::<Vec<_>>();
             return if pages.is_empty() {
@@ -733,13 +748,12 @@ impl NavKvStore {
                 Ok(NavKvLookup::MissingPages(pages))
             };
         };
-        match entry.value {
-            LeafEntryValue::Inline(bytes) => Ok(NavKvLookup::Hit(bytes)),
-            LeafEntryValue::External { offset, len } => {
+        match entry {
+            LeafEntryValueRef::Inline(bytes) => Ok(NavKvLookup::Hit(bytes.to_vec())),
+            LeafEntryValueRef::External { offset, len } => {
                 let mut missing_pages = BTreeSet::new();
-                let mut provider =
-                    |page| self.page_bytes_or_record_missing(page, &mut missing_pages);
-                match self.root.read_external_value(offset, len, &mut provider) {
+                match self.read_external_value_borrowed(offset, len, &mut missing_pages, &mut stats)
+                {
                     Some(bytes) => Ok(NavKvLookup::Hit(bytes)),
                     None => {
                         let pages = missing_pages.into_iter().collect::<Vec<_>>();
@@ -755,13 +769,21 @@ impl NavKvStore {
     }
 
     pub fn missing_pages_for_keys(&self, keys: &[String]) -> Result<Vec<u32>, String> {
+        self.missing_pages_for_keys_with_stats(keys)
+            .map(|(pages, _stats)| pages)
+    }
+
+    pub fn missing_pages_for_keys_with_stats(
+        &self,
+        keys: &[String],
+    ) -> Result<(Vec<u32>, NavKvPageProbeStats), String> {
+        let mut stats = NavKvPageProbeStats::default();
         let mut pages = BTreeSet::new();
         for key in keys {
-            if let NavKvLookup::MissingPages(missing) = self.get_bytes(key)? {
-                pages.extend(missing);
-            }
+            stats.keys += 1;
+            pages.extend(self.missing_pages_for_key(key, &mut stats)?);
         }
-        Ok(pages.into_iter().collect())
+        Ok((pages.into_iter().collect(), stats))
     }
 
     pub fn keys_with_prefix(&self, prefix: &str) -> Vec<String> {
@@ -793,6 +815,178 @@ impl NavKvStore {
         }
     }
 
+    fn missing_pages_for_key(
+        &self,
+        key: &str,
+        stats: &mut NavKvPageProbeStats,
+    ) -> Result<Vec<u32>, String> {
+        let mut missing_pages = BTreeSet::new();
+        let entry = self.find_leaf_entry_ref(key.as_bytes(), &mut missing_pages, stats)?;
+        let Some(entry) = entry else {
+            return Ok(missing_pages.into_iter().collect());
+        };
+        if let LeafEntryValueRef::External { offset, len } = entry {
+            self.record_missing_external_value_pages(offset, len, &mut missing_pages, stats)?;
+        }
+        Ok(missing_pages.into_iter().collect())
+    }
+
+    fn find_leaf_entry_ref<'a>(
+        &'a self,
+        key: &[u8],
+        missing_pages: &mut BTreeSet<u32>,
+        stats: &mut NavKvPageProbeStats,
+    ) -> Result<Option<LeafEntryValueRef<'a>>, String> {
+        let Some(leaf_page) = self.find_leaf_page_for_key_ref(key, missing_pages, stats)? else {
+            return Ok(None);
+        };
+        let Some(leaf_bytes) =
+            self.node_page_bytes_or_record_missing(leaf_page, missing_pages, stats)
+        else {
+            return Ok(None);
+        };
+        leaf_entry_value_ref_for_key(leaf_bytes, key, stats)
+    }
+
+    fn find_leaf_page_for_key_ref(
+        &self,
+        key: &[u8],
+        missing_pages: &mut BTreeSet<u32>,
+        stats: &mut NavKvPageProbeStats,
+    ) -> Result<Option<u32>, String> {
+        let mut page_index = self.root.root_page;
+        loop {
+            let Some(bytes) =
+                self.node_page_bytes_or_record_missing(page_index, missing_pages, stats)
+            else {
+                return Ok(None);
+            };
+            match read_u32(bytes, 0)? {
+                NODE_KIND_LEAF => return Ok(Some(page_index)),
+                NODE_KIND_INTERNAL => {
+                    page_index = internal_child_for_key_ref(bytes, key)?;
+                }
+                _ => return Err("nav_kv node has invalid kind".to_string()),
+            }
+        }
+    }
+
+    fn read_external_value_borrowed(
+        &self,
+        start: u32,
+        len: u32,
+        missing_pages: &mut BTreeSet<u32>,
+        stats: &mut NavKvPageProbeStats,
+    ) -> Option<Vec<u8>> {
+        if len == 0 {
+            return Some(Vec::new());
+        }
+        let end = start.checked_add(len)?;
+        if end > self.root.value_bytes_len {
+            return None;
+        }
+        let start_page = start / self.root.page_size;
+        let end_page = (end - 1) / self.root.page_size;
+        let mut out = Vec::with_capacity(len as usize);
+        for value_page in start_page..=end_page {
+            let page_index = self.root.value_page_start + value_page;
+            let page = self.value_page_bytes_or_record_missing(page_index, missing_pages, stats)?;
+            let page_start = value_page * self.root.page_size;
+            let slice_start = start.saturating_sub(page_start) as usize;
+            let slice_end = (end.min(page_start + self.root.page_size) - page_start) as usize;
+            if slice_end > page.len() || slice_start > slice_end {
+                return None;
+            }
+            out.extend_from_slice(&page[slice_start..slice_end]);
+        }
+        Some(out)
+    }
+
+    fn record_missing_external_value_pages(
+        &self,
+        start: u32,
+        len: u32,
+        missing_pages: &mut BTreeSet<u32>,
+        stats: &mut NavKvPageProbeStats,
+    ) -> Result<(), String> {
+        if len == 0 {
+            return Ok(());
+        }
+        let end = start
+            .checked_add(len)
+            .ok_or_else(|| "nav_kv external value range overflows".to_string())?;
+        if end > self.root.value_bytes_len {
+            return Err("nav_kv external value extends past value bytes".to_string());
+        }
+        let start_page = start / self.root.page_size;
+        let end_page = (end - 1) / self.root.page_size;
+        for value_page in start_page..=end_page {
+            let page_index = self.root.value_page_start + value_page;
+            self.value_page_present_or_record_missing(page_index, missing_pages, stats);
+        }
+        Ok(())
+    }
+
+    fn node_page_bytes_or_record_missing<'a>(
+        &'a self,
+        page: u32,
+        missing_pages: &mut BTreeSet<u32>,
+        stats: &mut NavKvPageProbeStats,
+    ) -> Option<&'a [u8]> {
+        if page >= self.root.value_page_start {
+            return None;
+        }
+        match self.pages.get(&page) {
+            Some(bytes) => {
+                stats.node_page_hits += 1;
+                Some(bytes.as_slice())
+            }
+            None => {
+                stats.node_page_misses += 1;
+                missing_pages.insert(page);
+                None
+            }
+        }
+    }
+
+    fn value_page_bytes_or_record_missing<'a>(
+        &'a self,
+        page: u32,
+        missing_pages: &mut BTreeSet<u32>,
+        stats: &mut NavKvPageProbeStats,
+    ) -> Option<&'a [u8]> {
+        match self.pages.get(&page) {
+            Some(bytes) => {
+                stats.value_page_hits += 1;
+                Some(bytes.as_slice())
+            }
+            None => {
+                stats.value_page_misses += 1;
+                missing_pages.insert(page);
+                None
+            }
+        }
+    }
+
+    fn value_page_present_or_record_missing(
+        &self,
+        page: u32,
+        missing_pages: &mut BTreeSet<u32>,
+        stats: &mut NavKvPageProbeStats,
+    ) -> bool {
+        match self.pages.contains_key(&page) {
+            true => {
+                stats.value_page_hits += 1;
+                true
+            }
+            false => {
+                stats.value_page_misses += 1;
+                missing_pages.insert(page);
+                false
+            }
+        }
+    }
+
     fn page_bytes_or_record_missing(
         &self,
         page: u32,
@@ -806,6 +1000,108 @@ impl NavKvStore {
             }
         }
     }
+}
+
+fn internal_child_for_key_ref(bytes: &[u8], key: &[u8]) -> Result<u32, String> {
+    let pivot_count = read_u32(bytes, 4)? as usize;
+    let child_count = read_u32(bytes, 8)? as usize;
+    if child_count != pivot_count + 1 {
+        return Err("nav_kv internal child/pivot count mismatch".to_string());
+    }
+    let children_offset = INTERNAL_HEADER_LEN;
+    let pivots_offset = children_offset
+        .checked_add(
+            child_count
+                .checked_mul(4)
+                .ok_or_else(|| "nav_kv internal child table overflows".to_string())?,
+        )
+        .ok_or_else(|| "nav_kv internal child table overflows".to_string())?;
+    let mut child_index = 0usize;
+    let mut offset = pivots_offset;
+    for pivot_index in 0..pivot_count {
+        let key_len = read_u32(bytes, offset)? as usize;
+        offset += 4;
+        let key_end = offset
+            .checked_add(key_len)
+            .ok_or_else(|| "nav_kv internal pivot length overflows".to_string())?;
+        let pivot = bytes
+            .get(offset..key_end)
+            .ok_or_else(|| "nav_kv internal pivot extends past page".to_string())?;
+        if pivot <= key {
+            child_index = pivot_index + 1;
+        } else {
+            break;
+        }
+        offset = key_end;
+    }
+    read_u32(bytes, children_offset + child_index * 4)
+}
+
+fn leaf_entry_value_ref_for_key<'a>(
+    bytes: &'a [u8],
+    key: &[u8],
+    stats: &mut NavKvPageProbeStats,
+) -> Result<Option<LeafEntryValueRef<'a>>, String> {
+    let count = read_u32(bytes, 4)? as usize;
+    let mut offset = LEAF_HEADER_LEN;
+    for _ in 0..count {
+        stats.leaf_entries_scanned += 1;
+        let key_len = read_u32(bytes, offset)? as usize;
+        offset += 4;
+        let value_kind = read_u32(bytes, offset)?;
+        offset += 4;
+        let value_a = read_u32(bytes, offset)?;
+        offset += 4;
+        let value_b = read_u32(bytes, offset)?;
+        offset += 4;
+
+        let key_end = offset
+            .checked_add(key_len)
+            .ok_or_else(|| "nav_kv leaf key length overflows".to_string())?;
+        let entry_key = bytes
+            .get(offset..key_end)
+            .ok_or_else(|| "nav_kv leaf key extends past page".to_string())?;
+        offset = key_end;
+
+        match entry_key.cmp(key) {
+            Ordering::Equal => match value_kind {
+                VALUE_KIND_INLINE => {
+                    stats.inline_values += 1;
+                    let value_len = value_a as usize;
+                    let value_end = offset
+                        .checked_add(value_len)
+                        .ok_or_else(|| "nav_kv inline value length overflows".to_string())?;
+                    let value = bytes
+                        .get(offset..value_end)
+                        .ok_or_else(|| "nav_kv inline value extends past page".to_string())?;
+                    return Ok(Some(LeafEntryValueRef::Inline(value)));
+                }
+                VALUE_KIND_EXTERNAL => {
+                    stats.external_values += 1;
+                    return Ok(Some(LeafEntryValueRef::External {
+                        offset: value_a,
+                        len: value_b,
+                    }));
+                }
+                _ => return Err("nav_kv leaf entry has invalid value kind".to_string()),
+            },
+            Ordering::Greater => return Ok(None),
+            Ordering::Less => match value_kind {
+                VALUE_KIND_INLINE => {
+                    let value_len = value_a as usize;
+                    offset = offset
+                        .checked_add(value_len)
+                        .ok_or_else(|| "nav_kv inline value length overflows".to_string())?;
+                    if offset > bytes.len() {
+                        return Err("nav_kv inline value extends past page".to_string());
+                    }
+                }
+                VALUE_KIND_EXTERNAL => {}
+                _ => return Err("nav_kv leaf entry has invalid value kind".to_string()),
+            },
+        }
+    }
+    Ok(None)
 }
 
 fn validate_pairs(pairs: &[NavKvPair], page_size: u32) -> Result<(), String> {
@@ -1384,6 +1680,77 @@ mod tests {
             .extract_value("k", |page| built.pages.get(page as usize).cloned())
             .expect("value");
         assert_eq!(value, "x".repeat(INLINE_VALUE_MAX_LEN + 200).as_bytes());
+    }
+
+    #[test]
+    fn store_probe_collects_missing_pages_without_materializing_values() {
+        let external_value = "x".repeat(INLINE_VALUE_MAX_LEN + 200);
+        let built = build_nav_kv_sorted(
+            vec![
+                pair("a", "inline"),
+                NavKvPair {
+                    key: "b".to_string(),
+                    value: external_value.into_bytes(),
+                },
+                pair("c", "inline"),
+            ],
+            TEST_PAGE_SIZE,
+        )
+        .expect("build nav kv");
+        let root = NavKvRoot::parse(&built.root_bytes).expect("parse root");
+        let value_page_start = root.value_page_start;
+        let mut store = NavKvStore::new(root);
+        for page in 0..value_page_start {
+            store.insert_page(page, built.pages[page as usize].clone());
+        }
+
+        let keys = vec!["a".to_string(), "b".to_string(), "missing".to_string()];
+        let (missing_pages, stats) = store
+            .missing_pages_for_keys_with_stats(&keys)
+            .expect("probe pages");
+
+        assert!(!missing_pages.is_empty());
+        assert_eq!(stats.keys, 3);
+        assert!(stats.inline_values >= 1);
+        assert!(stats.external_values >= 1);
+        assert_eq!(stats.value_page_hits, 0);
+        assert_eq!(stats.value_page_misses, missing_pages.len());
+        assert!(matches!(
+            store.get_bytes("b").expect("lookup b"),
+            NavKvLookup::MissingPages(_)
+        ));
+    }
+
+    #[test]
+    fn store_probe_reports_no_missing_pages_when_external_value_pages_are_loaded() {
+        let external_value = "x".repeat(INLINE_VALUE_MAX_LEN + 200);
+        let built = build_nav_kv_sorted(
+            vec![NavKvPair {
+                key: "b".to_string(),
+                value: external_value.as_bytes().to_vec(),
+            }],
+            TEST_PAGE_SIZE,
+        )
+        .expect("build nav kv");
+        let root = NavKvRoot::parse(&built.root_bytes).expect("parse root");
+        let mut store = NavKvStore::new(root);
+        for (index, page) in built.pages.iter().enumerate() {
+            store.insert_page(index as u32, page.clone());
+        }
+
+        let keys = vec!["b".to_string()];
+        let (missing_pages, stats) = store
+            .missing_pages_for_keys_with_stats(&keys)
+            .expect("probe pages");
+
+        assert!(missing_pages.is_empty());
+        assert_eq!(stats.keys, 1);
+        assert_eq!(stats.external_values, 1);
+        assert!(stats.value_page_hits > 0);
+        assert_eq!(
+            store.get_bytes("b").expect("lookup b"),
+            NavKvLookup::Hit(external_value.into_bytes())
+        );
     }
 
     #[test]

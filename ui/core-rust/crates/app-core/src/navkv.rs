@@ -1,5 +1,5 @@
 use had_key::{component, upper_component};
-pub use had_nav_kv::{NavKvLookup, NavKvRoot, NavKvStore};
+pub use had_nav_kv::{NavKvLookup, NavKvPageProbeStats, NavKvRoot, NavKvStore};
 use serde::{Deserialize, Serialize};
 
 use crate::{NavRef, ProcedureKind};

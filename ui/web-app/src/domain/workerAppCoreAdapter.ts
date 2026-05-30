@@ -23,8 +23,16 @@ type WorkerCallRequest = {
 };
 
 type WorkerCallResponse =
-  | { kind: "response"; id: number; ok: true; result: unknown; workerPostedAtEpochMs?: number }
-  | { kind: "response"; id: number; ok: false; error: WorkerErrorPayload; workerPostedAtEpochMs?: number };
+  | { kind: "response"; id: number; ok: true; result: unknown; workerPostedAtEpochMs?: number; workerPostedAtMs?: number }
+  | { kind: "response"; id: number; ok: false; error: WorkerErrorPayload; workerPostedAtEpochMs?: number; workerPostedAtMs?: number };
+
+type WorkerResponseReady = {
+  kind: "responseReady";
+  id: number;
+  target: WorkerCallTarget;
+  method: string;
+  workerReadyAtMs: number;
+};
 
 type WorkerSessionInvalidation = {
   kind: "sessionInvalidation";
@@ -32,7 +40,7 @@ type WorkerSessionInvalidation = {
   invalidations: UiInvalidation[];
 };
 
-type WorkerMessage = WorkerCallResponse | WorkerSessionInvalidation;
+type WorkerMessage = WorkerCallResponse | WorkerResponseReady | WorkerSessionInvalidation;
 
 type WorkerErrorPayload = {
   name?: string;
@@ -44,15 +52,19 @@ type WorkerSessionMarker = {
   __aerobagWorkerSessionId: number;
 };
 
+type PendingWorkerCall = {
+  target: WorkerCallTarget;
+  method: string;
+  startedAt: number;
+  readyMarkerReceivedAt?: number;
+  readyMarkerDelayMs?: number;
+  resolve: (result: unknown) => void;
+  reject: (error: Error) => void;
+};
+
 class AppCoreWorkerClient {
   private nextId = 1;
-  private readonly pending = new Map<number, {
-    target: WorkerCallTarget;
-    method: string;
-    startedAt: number;
-    resolve: (result: unknown) => void;
-    reject: (error: Error) => void;
-  }>();
+  private readonly pending = new Map<number, PendingWorkerCall>();
   private readonly sessionInvalidationListeners = new Map<number, UiInvalidationListener>();
 
   constructor(private readonly worker: Worker) {
@@ -117,6 +129,10 @@ class AppCoreWorkerClient {
       this.sessionInvalidationListeners.get(message.sessionId)?.(message.invalidations);
       return;
     }
+    if (message.kind === "responseReady") {
+      this.handleResponseReady(message);
+      return;
+    }
     const pending = this.pending.get(message.id);
     if (!pending) {
       return;
@@ -128,6 +144,32 @@ class AppCoreWorkerClient {
     } else {
       pending.reject(workerError(message.error));
     }
+  }
+
+  private handleResponseReady(message: WorkerResponseReady): void {
+    const pending = this.pending.get(message.id);
+    if (!pending) {
+      return;
+    }
+    const receivedAt = performance.now();
+    const delayMs = nowEpochishMs() - message.workerReadyAtMs;
+    pending.readyMarkerReceivedAt = receivedAt;
+    pending.readyMarkerDelayMs = delayMs;
+    const important =
+      pending.method === "queryMapOverlay"
+      || pending.method === "snapshot"
+      || delayMs >= 20;
+    if (!important) {
+      return;
+    }
+    debugLog("app_core.worker.response.ready_received", {
+      id: message.id,
+      target: pending.target.kind,
+      method: pending.method,
+      ready_to_receive_ms: Math.round(delayMs),
+      target_matches: pending.target.kind === message.target.kind,
+      method_matches: pending.method === message.method,
+    });
   }
 
   private rejectAll(error: Error): void {
@@ -145,16 +187,17 @@ function currentDebugRunId(): string | null {
 
 function logWorkerResponseReceived(
   message: WorkerCallResponse,
-  pending: {
-    target: WorkerCallTarget;
-    method: string;
-    startedAt: number;
-  },
+  pending: PendingWorkerCall,
 ): void {
   const roundTripMs = performance.now() - pending.startedAt;
-  const postToReceiveMs = message.workerPostedAtEpochMs === undefined
+  const postToReceiveMs = message.workerPostedAtMs === undefined
+    ? message.workerPostedAtEpochMs === undefined
+      ? null
+      : Date.now() - message.workerPostedAtEpochMs
+    : nowEpochishMs() - message.workerPostedAtMs;
+  const markerToPayloadMs = pending.readyMarkerReceivedAt === undefined
     ? null
-    : Date.now() - message.workerPostedAtEpochMs;
+    : performance.now() - pending.readyMarkerReceivedAt;
   const summary = message.ok ? summarizeWorkerResponseResult(message.result) : {};
   const important =
     pending.method === "queryMapOverlay"
@@ -170,10 +213,16 @@ function logWorkerResponseReceived(
     target: pending.target.kind,
     method: pending.method,
     round_trip_ms: Math.round(roundTripMs),
-    post_to_receive_ms: postToReceiveMs,
+    post_to_receive_ms: postToReceiveMs === null ? null : Math.round(postToReceiveMs),
+    ready_to_receive_ms: pending.readyMarkerDelayMs === undefined ? null : Math.round(pending.readyMarkerDelayMs),
+    marker_to_payload_ms: markerToPayloadMs === null ? null : Math.round(markerToPayloadMs),
     ok: message.ok,
     ...summary,
   });
+}
+
+function nowEpochishMs(): number {
+  return performance.timeOrigin + performance.now();
 }
 
 function summarizeWorkerResponseResult(result: unknown): Record<string, unknown> {

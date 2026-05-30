@@ -1273,6 +1273,9 @@ fn chart_page_airport_candidates(
     unique_airport_ids
 }
 
+const NO_RASTER_FAMILY_ID: &str = "none";
+const NO_RASTER_SELECTED_MAP_ID: &str = "none";
+
 fn map_selector_state(
     store: &NavKvStore,
     selected_map_id: Option<&str>,
@@ -1280,35 +1283,53 @@ fn map_selector_state(
 ) -> Result<MapSelectorState, HadReadError> {
     let mut map_views = chart_catalog(store)?;
     normalize_map_views(&mut map_views);
+    let no_raster_selected = selected_family_id == Some(NO_RASTER_FAMILY_ID)
+        || selected_map_id == Some(NO_RASTER_SELECTED_MAP_ID);
     let seed_map = map_views
         .iter()
         .find(|view| Some(view.id.as_str()) == selected_map_id);
     let seed_region_id = seed_map.map(|view| view.region_id.as_str()).or(Some("nw"));
-    let selected_map = selected_family_id
-        .and_then(|family_id| preferred_family_map(&map_views, family_id, seed_region_id))
-        .or(seed_map)
-        .or_else(|| preferred_family_map(&map_views, "tac", Some("nw")))
-        .or_else(|| map_views.first())
-        .cloned();
-    let selected_family_id = selected_map
-        .as_ref()
-        .map(|view| view.map_view.chart_family.as_str())
-        .unwrap_or("sec");
-    let mut displayed_maps: Vec<MapViewOptionRecord> =
+    let selected_map = if no_raster_selected {
+        seed_map
+            .or_else(|| preferred_family_map(&map_views, "tac", Some("nw")))
+            .or_else(|| map_views.first())
+            .cloned()
+    } else {
+        selected_family_id
+            .and_then(|family_id| preferred_family_map(&map_views, family_id, seed_region_id))
+            .or(seed_map)
+            .or_else(|| preferred_family_map(&map_views, "tac", Some("nw")))
+            .or_else(|| map_views.first())
+            .cloned()
+    };
+    let selected_family_id = if no_raster_selected {
+        NO_RASTER_FAMILY_ID
+    } else {
+        selected_map
+            .as_ref()
+            .map(|view| view.map_view.chart_family.as_str())
+            .unwrap_or("sec")
+    };
+    let mut displayed_maps: Vec<MapViewOptionRecord> = if no_raster_selected {
+        Vec::new()
+    } else {
         displayed_family_maps(&map_views, selected_family_id)
             .into_iter()
             .cloned()
-            .collect();
-    let mut displayed_map_ids = displayed_maps
-        .iter()
-        .map(|view| view.id.clone())
-        .collect::<HashSet<_>>();
-    displayed_maps.extend(
-        background_maps(&map_views)
-            .into_iter()
-            .filter(|view| displayed_map_ids.insert(view.id.clone()))
-            .cloned(),
-    );
+            .collect()
+    };
+    if !no_raster_selected {
+        let mut displayed_map_ids = displayed_maps
+            .iter()
+            .map(|view| view.id.clone())
+            .collect::<HashSet<_>>();
+        displayed_maps.extend(
+            background_maps(&map_views)
+                .into_iter()
+                .filter(|view| displayed_map_ids.insert(view.id.clone()))
+                .cloned(),
+        );
+    }
     let geometry = displayed_geometry();
     let family_options = supported_chart_families()
         .into_iter()
@@ -1316,17 +1337,22 @@ fn map_selector_state(
             id: id.to_string(),
             label: label.to_string(),
             launcher_label: launcher_label.to_string(),
-            enabled: map_views
-                .iter()
-                .any(|view| view.map_view.chart_family == id),
+            enabled: id == NO_RASTER_FAMILY_ID
+                || map_views
+                    .iter()
+                    .any(|view| view.map_view.chart_family == id),
             active: selected_family_id == id,
         })
         .collect();
     Ok(MapSelectorState {
-        selected_map_id: selected_map
-            .as_ref()
-            .map(|view| view.id.clone())
-            .unwrap_or_default(),
+        selected_map_id: if no_raster_selected {
+            NO_RASTER_SELECTED_MAP_ID.to_string()
+        } else {
+            selected_map
+                .as_ref()
+                .map(|view| view.id.clone())
+                .unwrap_or_default()
+        },
         selected_map,
         available_maps: map_views,
         displayed_maps,
@@ -1450,8 +1476,9 @@ fn displayed_geometry() -> DisplayGeometryRecord {
     }
 }
 
-fn supported_chart_families() -> [(&'static str, &'static str, &'static str); 5] {
+fn supported_chart_families() -> [(&'static str, &'static str, &'static str); 6] {
     [
+        (NO_RASTER_FAMILY_ID, "NONE", "NONE"),
         ("sec", "SECTIONAL", "SEC"),
         ("tac", "TAC", "TAC"),
         ("enr-l", "IFR-LOW", "IFR L"),

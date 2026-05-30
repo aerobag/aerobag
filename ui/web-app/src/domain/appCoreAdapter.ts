@@ -491,7 +491,8 @@ export type RasterTileSource = {
   relative_path: string;
   resource:
     | { kind: "public_unpacked"; package_name: string; member_path: string }
-    | { kind: "installed_package"; package_name: string; member_path: string };
+    | { kind: "installed_package"; package_name: string; member_path: string }
+    | { kind: "resolved_public_url"; url: string };
 };
 
 export type RasterTileDraw = {

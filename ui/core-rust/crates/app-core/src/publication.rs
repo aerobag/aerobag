@@ -83,6 +83,30 @@ impl PublicationResolver {
         self.resolve_resource(|package| package.id == package_id, member_path)
     }
 
+    pub fn package_member_public_url(
+        &self,
+        package_id: &str,
+        member_path: &str,
+    ) -> Result<String, String> {
+        if self.resource_policy != CoreResourcePolicy::PublicUnpacked {
+            return Err(
+                "publication URL resolution requires public_unpacked resource policy".to_string(),
+            );
+        }
+        if let Some(resources) = self.missing_manifest_resources()? {
+            let resource_ids = resources
+                .into_iter()
+                .map(|resource| resource.id)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "publication metadata missing for package URL resolution: {resource_ids}"
+            ));
+        }
+        let package = self.matching_package(|package| package.id == package_id)?;
+        self.package_member_address(package, member_path)
+    }
+
     pub fn resolve_family_resource(
         &self,
         family_id: &str,
@@ -437,6 +461,31 @@ mod tests {
             CoreResourceSource::PublicUrl {
                 url: "/packages/published_unpacked/nav_db_hash/page_0007".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn resolver_exposes_direct_package_member_public_url() {
+        let mut resolver = PublicationResolver::new("/packages");
+        resolver
+            .ingest_resource(
+                "publication/current_artifacts",
+                serde_json::to_string(&current_artifacts())
+                    .unwrap()
+                    .as_bytes(),
+            )
+            .unwrap();
+        resolver
+            .ingest_resource(
+                "publication/bundle/bundle_cycle.json",
+                serde_json::to_string(&bundle()).unwrap().as_bytes(),
+            )
+            .unwrap();
+        assert_eq!(
+            resolver
+                .package_member_public_url("nav-db", "page_0007")
+                .unwrap(),
+            "/packages/published_unpacked/nav_db_hash/page_0007"
         );
     }
 

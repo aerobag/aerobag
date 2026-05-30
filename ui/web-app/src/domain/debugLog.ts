@@ -11,7 +11,10 @@ type DebugLogRecord = {
 };
 
 const queue: DebugLogRecord[] = [];
+const flushDelayMs = 250;
+const maxFlushBatchSize = 1000;
 let flushScheduled = false;
+let flushInFlight = false;
 let browserInstanceId = resolveBrowserInstanceId();
 
 function scheduleFlush() {
@@ -28,14 +31,19 @@ function scheduleFlush() {
   globalThis.setTimeout(() => {
     flushScheduled = false;
     void flushQueue();
-  }, 0);
+  }, flushDelayMs);
 }
 
 async function flushQueue() {
   if (queue.length === 0) {
     return;
   }
-  const batch = queue.splice(0, queue.length);
+  if (flushInFlight) {
+    scheduleFlush();
+    return;
+  }
+  flushInFlight = true;
+  const batch = queue.splice(0, Math.min(queue.length, maxFlushBatchSize));
   try {
     await fetch("/__debug_log", {
       method: "POST",
@@ -46,6 +54,11 @@ async function flushQueue() {
     });
   } catch {
     queue.unshift(...batch);
+  } finally {
+    flushInFlight = false;
+    if (queue.length > 0) {
+      scheduleFlush();
+    }
   }
 }
 
@@ -98,11 +111,11 @@ function resolveBrowserInstanceId(): string {
 }
 
 function createBrowserInstanceId(): string {
-  const randomUUID = (globalThis as unknown as {
+  const cryptoApi = (globalThis as unknown as {
     crypto?: { randomUUID?: () => string };
-  }).crypto?.randomUUID;
-  if (randomUUID) {
-    return randomUUID();
+  }).crypto;
+  if (cryptoApi?.randomUUID) {
+    return cryptoApi.randomUUID();
   }
   return `browser-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }

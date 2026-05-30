@@ -17,8 +17,16 @@ type WorkerCallRequest = {
 };
 
 type WorkerCallResponse =
-  | { kind: "response"; id: number; ok: true; result: unknown; workerPostedAtEpochMs: number }
-  | { kind: "response"; id: number; ok: false; error: WorkerErrorPayload; workerPostedAtEpochMs: number };
+  | { kind: "response"; id: number; ok: true; result: unknown; workerPostedAtEpochMs: number; workerPostedAtMs: number }
+  | { kind: "response"; id: number; ok: false; error: WorkerErrorPayload; workerPostedAtEpochMs: number; workerPostedAtMs: number };
+
+type WorkerResponseReady = {
+  kind: "responseReady";
+  id: number;
+  target: WorkerCallTarget;
+  method: string;
+  workerReadyAtMs: number;
+};
 
 type WorkerSessionInvalidation = {
   kind: "sessionInvalidation";
@@ -38,13 +46,14 @@ type WorkerSessionMarker = {
 
 type WorkerRuntime = {
   addEventListener(type: "message", listener: (event: MessageEvent<WorkerCallRequest>) => void): void;
-  postMessage(message: WorkerCallResponse | WorkerSessionInvalidation, transfer?: Transferable[]): void;
+  postMessage(message: WorkerCallResponse | WorkerResponseReady | WorkerSessionInvalidation, transfer?: Transferable[]): void;
 };
 
 const ctx = self as unknown as WorkerRuntime;
 let adapterPromise: Promise<AppCoreAdapter> | null = null;
 let nextSessionId = 1;
 const sessions = new Map<number, UiSession>();
+const pendingCalls = new Map<number, PendingWorkerCall>();
 
 ctx.addEventListener("message", (event: MessageEvent<WorkerCallRequest>) => {
   const message = event.data;
@@ -59,11 +68,19 @@ async function handleCall(message: WorkerCallRequest): Promise<void> {
   if (message.debugRunId) {
     (globalThis as unknown as { __aerobagPerfRunId?: string }).__aerobagPerfRunId = message.debugRunId;
   }
+  pendingCalls.set(message.id, { target: message.target, method: message.method });
   const startedAt = performance.now();
   try {
     const result = await dispatchCall(message);
     logWorkerCallDone(message, startedAt);
-    postResponse({ kind: "response", id: message.id, ok: true, result, workerPostedAtEpochMs: Date.now() });
+    postResponse({
+      kind: "response",
+      id: message.id,
+      ok: true,
+      result,
+      workerPostedAtEpochMs: Date.now(),
+      workerPostedAtMs: nowEpochishMs(),
+    });
   } catch (error) {
     logWorkerCallDone(message, startedAt, error);
     debugLog("app_core.worker.call.error", {
@@ -77,7 +94,10 @@ async function handleCall(message: WorkerCallRequest): Promise<void> {
       ok: false,
       error: serializeError(error),
       workerPostedAtEpochMs: Date.now(),
+      workerPostedAtMs: nowEpochishMs(),
     });
+  } finally {
+    pendingCalls.delete(message.id);
   }
 }
 
@@ -166,6 +186,16 @@ async function callMethod<T>(target: unknown, method: string, args: unknown[]): 
 
 function postResponse(response: WorkerCallResponse): void {
   const startedAt = performance.now();
+  const pending = pendingCalls.get(response.id);
+  if (pending) {
+    ctx.postMessage({
+      kind: "responseReady",
+      id: response.id,
+      target: pending.target,
+      method: pending.method,
+      workerReadyAtMs: nowEpochishMs(),
+    });
+  }
   if (response.ok && response.result instanceof Uint8Array) {
     ctx.postMessage(response, [response.result.buffer]);
     logWorkerResponsePosted(response, startedAt);
@@ -230,4 +260,13 @@ function serializeError(error: unknown): WorkerErrorPayload {
     };
   }
   return { message: String(error) };
+}
+
+type PendingWorkerCall = {
+  target: WorkerCallTarget;
+  method: string;
+};
+
+function nowEpochishMs(): number {
+  return performance.timeOrigin + performance.now();
 }

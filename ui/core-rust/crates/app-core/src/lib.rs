@@ -105,8 +105,8 @@ pub use navdb_types::{
 #[cfg(debug_assertions)]
 pub use navkv::nav_kv_store_for_smoke_test;
 pub use navkv::{
-    nav_kv_key_for_query, NavKvLookup, NavKvQuery, NavKvRoot, NavKvStore, NAV_DB_CONTRACT_KEY,
-    REQUIRED_NAV_DB_CONTRACT_VERSION,
+    nav_kv_key_for_query, NavKvLookup, NavKvPageProbeStats, NavKvQuery, NavKvRoot, NavKvStore,
+    NAV_DB_CONTRACT_KEY, REQUIRED_NAV_DB_CONTRACT_VERSION,
 };
 pub use ownship::{
     push_sample, register_source, set_policy, situation_ring_candidates, update_source_status,
@@ -170,7 +170,7 @@ pub use raster_tiles::{
     RasterDisplayPolygonSet, RasterInitialViewport, RasterMapCatalog, RasterMapFamilyOption,
     RasterMapUiState, RasterMapView, RasterMapViewOption, RasterPolygon, RasterResourceMode,
     RasterTileBounds, RasterTileDraw, RasterTileLevel, RasterTilePlan, RasterTilePlanOptions,
-    RasterTileSource,
+    RasterTileResource, RasterTileSource,
 };
 pub use session::{
     activate_next_leg_in_session, append_flight_plan_entry_in_session,

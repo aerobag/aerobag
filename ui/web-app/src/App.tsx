@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type Dispatch, type MouseEvent, type PointerEvent, type ReactNode, type SetStateAction } from "react";
+import { Fragment, Profiler, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type MouseEvent, type PointerEvent, type ProfilerOnRenderCallback, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import type {
   AirwayPresentationPlan,
@@ -164,9 +164,10 @@ type StartupFatalError = {
 
 const startupStalledWarningMs = 15_000;
 const startupFatalStalledMs = 45_000;
-const mainThreadLagProbeIntervalMs = 50;
-const mainThreadLagWarnMs = 75;
-const animationFrameGapWarnMs = 120;
+const mainThreadLagProbeIntervalMs = 25;
+const mainThreadLagWarnMs = 50;
+const animationFrameGapWarnMs = 50;
+const dragViewportReactCommitThrottleMs = 90;
 
 function installMainThreadResponsivenessInstrumentation(): () => void {
   if (typeof window === "undefined" || typeof performance === "undefined") {
@@ -257,17 +258,54 @@ function logAfterNextPaint(tag: string, startedAt: number, data: Record<string, 
   const landedAt = performance.now();
   window.requestAnimationFrame(() => {
     const firstFrameAt = performance.now();
+    debugLog(`${tag}.first_frame`, {
+      ...data,
+      first_frame_ms: Math.round(firstFrameAt - landedAt),
+      elapsed_ms: Math.round(firstFrameAt - startedAt),
+    });
     window.requestAnimationFrame(() => {
       const afterPaintAt = performance.now();
       debugLog(tag, {
         ...data,
         first_frame_ms: Math.round(firstFrameAt - landedAt),
+        frame_gap_ms: Math.round(afterPaintAt - firstFrameAt),
         after_paint_ms: Math.round(afterPaintAt - landedAt),
         elapsed_ms: Math.round(afterPaintAt - startedAt),
       });
     });
   });
 }
+
+const reactProfilerActualDurationLogMs = 1;
+const reactProfilerCommitDelayLogMs = 8;
+const reactProfilerCommitDelayIds = new Set(["MapSurface", "RasterLayer", "VectorLayer"]);
+
+const logReactProfilerRender: ProfilerOnRenderCallback = (
+  id,
+  phase,
+  actualDuration,
+  baseDuration,
+  startTime,
+  commitTime,
+) => {
+  const commitDelayMs = commitTime - startTime;
+  const shouldLogActual = phase === "mount" || actualDuration >= reactProfilerActualDurationLogMs;
+  const shouldLogCommitDelay = reactProfilerCommitDelayIds.has(id) && commitDelayMs >= reactProfilerCommitDelayLogMs;
+  if (
+    shouldLogActual
+    || shouldLogCommitDelay
+  ) {
+    debugLog("react.profiler.render", {
+      id,
+      phase,
+      actual_duration_ms: Math.round(actualDuration),
+      base_duration_ms: Math.round(baseDuration),
+      commit_delay_ms: Math.round(commitDelayMs),
+      start_time_ms: Math.round(startTime),
+      commit_time_ms: Math.round(commitTime),
+    });
+  }
+};
 
 function sleepMs(delayMs: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, delayMs));
@@ -861,22 +899,18 @@ type RasterRenderTile = {
   fallbacks: RasterTileDraw["fallbacks"];
 };
 
-async function renderTileFromCore(
+function renderTileFromCore(
   tile: RasterTileDraw,
-  resolvePackageMemberUrl: (packageId: string, memberPath: string) => Promise<string>,
   cssScale = 1,
-): Promise<RasterRenderTile> {
+): RasterRenderTile {
   const packageName = tile.primary.package_name;
   if (!packageName) {
     throw new Error(`raster tile ${tile.draw_key} missing package_name`);
   }
-  if (tile.primary.resource.kind !== "public_unpacked") {
+  if (tile.primary.resource.kind !== "resolved_public_url") {
     throw new Error(`raster tile ${tile.draw_key} is not a public unpacked web resource`);
   }
-  const src = await resolvePackageMemberUrl(
-    tile.primary.resource.package_name,
-    tile.primary.resource.member_path,
-  );
+  const src = tile.primary.resource.url;
   return {
     drawKey: tile.draw_key,
     x: tile.x,
@@ -2818,6 +2852,7 @@ function MapPage(props: {
     onFirstVisualReady,
   } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const mapContentTransformRef = useRef<HTMLDivElement | null>(null);
   const trayGroup = useModalTrayGroup(["family", "layers", "status", "ownship"] as const);
   const [layerToggleBusyId, setLayerToggleBusyId] = useState<MapLayerId | null>(null);
   const [chartSearch, setChartSearch] = useState<{
@@ -2889,7 +2924,26 @@ function MapPage(props: {
   const landedMapOverlayQueryRequestIdRef = useRef(0);
   const mapOverlayQueryPendingRef = useRef(false);
   const mapOverlayQueryPumpActiveRef = useRef(false);
+  const mapOverlayLandingTimingRef = useRef<{
+    id: number;
+    requestedAt: number;
+    queryStartedAt: number;
+    landStartedAt: number;
+    landEndedAt: number;
+    visibleFeatures: number;
+    visibleMetars: number;
+    visiblePireps: number;
+    airspacePaths: number;
+    tfrPaths: number;
+    airspaceLabels: number;
+    offlineRegions: number;
+    flightPlanFeatures: number;
+    committed: boolean;
+  } | null>(null);
   const viewportRef = useRef<MapViewportState>(viewport);
+  const committedViewportRef = useRef<MapViewportState>(viewport);
+  const pendingReactViewportRef = useRef<MapViewportState | null>(null);
+  const pendingReactViewportTimerRef = useRef<number | null>(null);
   const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
   const pinchRef = useRef<ReturnType<typeof createPinchSnapshot> | null>(null);
@@ -3105,6 +3159,9 @@ function MapPage(props: {
             const superseded = mapOverlayQueryRequestRef.current?.id !== request.id;
             if (superseded && !supersededMapOverlayCanLand(request)) {
               debugLog("map.overlay.query.stale_result", {
+                request_id: request.id,
+                current_request_id: mapOverlayQueryRequestRef.current?.id ?? null,
+                newer_pending: mapOverlayQueryPendingRef.current,
                 zoom: request.viewport.zoom,
                 elapsed_ms: Math.round(performance.now() - startedAt),
               });
@@ -3159,6 +3216,7 @@ function MapPage(props: {
     const current = mapOverlayQueryRequestRef.current;
     return (
       current !== null
+      && !mapOverlayQueryPendingRef.current
       && request.id > landedMapOverlayQueryRequestIdRef.current
       && current.session === request.session
       && current.width === request.width
@@ -3173,35 +3231,96 @@ function MapPage(props: {
     startedAt: number,
     superseded: boolean,
   ) {
+    const landStartedAt = performance.now();
     landedMapOverlayQueryRequestIdRef.current = request.id;
     setMapOverlay(overlay);
+    const overlayStateQueuedAt = performance.now();
     setMapOverlayViewport(request.viewport);
+    const landEndedAt = performance.now();
+    const overlayCounts = {
+      visible_features: overlay.visible_features.length,
+      visible_metars: overlay.visible_metars.length,
+      visible_pireps: overlay.visible_pireps.length,
+      airspace_paths: overlay.airspace_paths.length,
+      tfr_paths: overlay.tfr_paths.length,
+      airspace_labels: overlay.airspace_labels.length,
+      offline_regions: overlay.offline_regions.length,
+      flight_plan_features: overlay.flight_plan_features?.length ?? 0,
+    };
+    mapOverlayLandingTimingRef.current = {
+      id: request.id,
+      requestedAt: request.requestedAt,
+      queryStartedAt: startedAt,
+      landStartedAt,
+      landEndedAt,
+      visibleFeatures: overlayCounts.visible_features,
+      visibleMetars: overlayCounts.visible_metars,
+      visiblePireps: overlayCounts.visible_pireps,
+      airspacePaths: overlayCounts.airspace_paths,
+      tfrPaths: overlayCounts.tfr_paths,
+      airspaceLabels: overlayCounts.airspace_labels,
+      offlineRegions: overlayCounts.offline_regions,
+      flightPlanFeatures: overlayCounts.flight_plan_features,
+      committed: false,
+    };
+    debugLog("map.overlay.query.land_steps", {
+      id: request.id,
+      superseded,
+      ...overlayCounts,
+      overlay_state_queue_ms: Math.round(overlayStateQueuedAt - landStartedAt),
+      viewport_state_queue_ms: Math.round(landEndedAt - overlayStateQueuedAt),
+      land_sync_ms: Math.round(landEndedAt - landStartedAt),
+      elapsed_ms: Math.round(landEndedAt - startedAt),
+    });
     debugLog(superseded ? "map.overlay.query.superseded_result" : "map.overlay.query.done", {
+      id: request.id,
       zoom: request.viewport.zoom,
       center: request.center,
       elapsed_ms: Math.round(performance.now() - startedAt),
-      visible_features: overlay.visible_features.length,
-      visible_metars: overlay.visible_metars.length,
-      visible_pireps: overlay.visible_pireps.length,
-      airspace_paths: overlay.airspace_paths.length,
-      airspace_labels: overlay.airspace_labels.length,
+      ...overlayCounts,
     });
     logAfterNextPaint("map.overlay.query.after_paint", startedAt, {
+      id: request.id,
       superseded,
-      visible_features: overlay.visible_features.length,
-      visible_metars: overlay.visible_metars.length,
-      visible_pireps: overlay.visible_pireps.length,
-      airspace_paths: overlay.airspace_paths.length,
-      airspace_labels: overlay.airspace_labels.length,
+      ...overlayCounts,
     });
   }
 
-  useEffect(() => {
-    if (activePointersRef.current.size > 0) {
+  useLayoutEffect(() => {
+    const timing = mapOverlayLandingTimingRef.current;
+    if (!timing || timing.committed) {
       return;
     }
-    viewportRef.current = viewport;
+    timing.committed = true;
+    const committedAt = performance.now();
+    debugLog("map.overlay.query.commit", {
+      id: timing.id,
+      visible_features: timing.visibleFeatures,
+      visible_metars: timing.visibleMetars,
+      visible_pireps: timing.visiblePireps,
+      airspace_paths: timing.airspacePaths,
+      tfr_paths: timing.tfrPaths,
+      airspace_labels: timing.airspaceLabels,
+      offline_regions: timing.offlineRegions,
+      flight_plan_features: timing.flightPlanFeatures,
+      land_sync_ms: Math.round(timing.landEndedAt - timing.landStartedAt),
+      land_to_commit_ms: Math.round(committedAt - timing.landStartedAt),
+      request_to_commit_ms: Math.round(committedAt - timing.queryStartedAt),
+      queue_to_commit_ms: Math.round(committedAt - timing.requestedAt),
+    });
+  }, [mapOverlay, mapOverlayViewport]);
+
+  useLayoutEffect(() => {
+    committedViewportRef.current = viewport;
+    if (activePointersRef.current.size === 0 && !pendingReactViewportRef.current) {
+      viewportRef.current = viewport;
+    }
+    applyImperativeMapContentTransform();
   }, [viewport]);
+
+  useEffect(() => () => {
+    clearPendingReactViewportCommit();
+  }, []);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -3275,6 +3394,19 @@ function MapPage(props: {
   const landedRasterTilePlanRequestIdRef = useRef(0);
   const rasterTileImageLoadStartedAtRef = useRef<number | null>(null);
   const knownLoadedRasterTileKeysRef = useRef<Set<string>>(new Set());
+  const rasterTilePlanLandingTimingRef = useRef<{
+    id: number;
+    key: string;
+    requestedAt: number;
+    queryStartedAt: number;
+    landStartedAt: number;
+    landEndedAt: number;
+    tiles: number;
+    previousTiles: number;
+    sameTileKeys: boolean;
+    sameViewport: boolean;
+    committed: boolean;
+  } | null>(null);
   const rasterTileKey = useCallback((tile: RasterRenderTile) =>
     `${tile.chartFamily}-${tile.packageName ?? tile.mapViewId}-${tile.drawKey}`,
   []);
@@ -3350,29 +3482,102 @@ function MapPage(props: {
     superseded: boolean,
     startedAt: number,
   ) {
+    const landStartedAt = performance.now();
     landedRasterTilePlanRequestIdRef.current = request.id;
     const nextTileKeys = nextTiles.map(rasterTileKey);
+    const previousTileKeys = tiles.map(rasterTileKey);
+    const sameTileKeys = nextTileKeys.length === previousTileKeys.length
+      && nextTileKeys.every((key, index) => key === previousTileKeys[index]);
+    const sameViewport = rasterTileViewport !== null
+      && rasterTileViewport.zoom === request.viewport.zoom
+      && rasterTileViewport.centerWorldX === request.viewport.centerWorldX
+      && rasterTileViewport.centerWorldY === request.viewport.centerWorldY;
+    const keyingEndedAt = performance.now();
     loadedRasterTileKeysRef.current = new Set(
       nextTileKeys.filter((key) => knownLoadedRasterTileKeysRef.current.has(key)),
     );
+    const loadedKeyResetEndedAt = performance.now();
     rasterTileImageLoadStartedAtRef.current = performance.now();
+    const imageTimingResetEndedAt = performance.now();
     setFailedRasterTileKeys(new Set());
+    const failedStateQueuedAt = performance.now();
     setTiles(nextTiles);
+    const tilesStateQueuedAt = performance.now();
     setRasterTileViewport(request.viewport);
+    const landEndedAt = performance.now();
+    rasterTilePlanLandingTimingRef.current = {
+      id: request.id,
+      key: request.key,
+      requestedAt: request.requestedAt,
+      queryStartedAt: startedAt,
+      landStartedAt,
+      landEndedAt,
+      tiles: nextTiles.length,
+      previousTiles: tiles.length,
+      sameTileKeys,
+      sameViewport,
+      committed: false,
+    };
     debugLog("map.raster.plan.landed", {
       id: request.id,
       key: request.key,
       superseded,
       tiles: nextTiles.length,
+      previous_tiles: tiles.length,
+      same_tile_keys: sameTileKeys,
+      same_viewport: sameViewport,
+      land_sync_ms: Math.round(landEndedAt - landStartedAt),
+      elapsed_ms: Math.round(landEndedAt - startedAt),
+    });
+    debugLog("map.raster.plan.land_steps", {
+      id: request.id,
+      key: request.key,
+      superseded,
+      tiles: nextTiles.length,
+      previous_tiles: tiles.length,
+      same_tile_keys: sameTileKeys,
+      same_viewport: sameViewport,
+      keying_ms: Math.round(keyingEndedAt - landStartedAt),
+      loaded_key_reset_ms: Math.round(loadedKeyResetEndedAt - keyingEndedAt),
+      image_timing_reset_ms: Math.round(imageTimingResetEndedAt - loadedKeyResetEndedAt),
+      failed_state_queue_ms: Math.round(failedStateQueuedAt - imageTimingResetEndedAt),
+      tiles_state_queue_ms: Math.round(tilesStateQueuedAt - failedStateQueuedAt),
+      viewport_state_queue_ms: Math.round(landEndedAt - tilesStateQueuedAt),
+      land_sync_ms: Math.round(landEndedAt - landStartedAt),
+      elapsed_ms: Math.round(landEndedAt - startedAt),
     });
     logAfterNextPaint("map.raster.plan.after_paint", startedAt, {
       id: request.id,
       key: request.key,
       superseded,
       tiles: nextTiles.length,
+      previous_tiles: tiles.length,
+      same_tile_keys: sameTileKeys,
+      same_viewport: sameViewport,
     });
     reportRasterTilesReadyIfComplete(nextTiles);
   }
+
+  useLayoutEffect(() => {
+    const timing = rasterTilePlanLandingTimingRef.current;
+    if (!timing || timing.committed) {
+      return;
+    }
+    timing.committed = true;
+    const committedAt = performance.now();
+    debugLog("map.raster.plan.commit", {
+      id: timing.id,
+      key: timing.key,
+      tiles: timing.tiles,
+      previous_tiles: timing.previousTiles,
+      same_tile_keys: timing.sameTileKeys,
+      same_viewport: timing.sameViewport,
+      land_sync_ms: Math.round(timing.landEndedAt - timing.landStartedAt),
+      land_to_commit_ms: Math.round(committedAt - timing.landStartedAt),
+      request_to_commit_ms: Math.round(committedAt - timing.queryStartedAt),
+      queue_to_commit_ms: Math.round(committedAt - timing.requestedAt),
+    });
+  }, [rasterTileViewport, tiles]);
 
   function pumpRasterTilePlanQueue() {
     if (rasterTilePlanPumpActiveRef.current) {
@@ -3441,12 +3646,12 @@ function MapPage(props: {
               tiles: plan.tiles.length,
             });
             const resolveStartedAt = performance.now();
-            const nextTiles = await Promise.all(plan.tiles.map((tile) =>
-              renderTileFromCore(tile, request.session.resolvePackageMemberUrl, 1 / request.devicePixelRatio),
-            ));
+            const nextTiles = plan.tiles.map((tile) =>
+              renderTileFromCore(tile, 1 / request.devicePixelRatio),
+            );
             const urlsSuperseded = rasterTilePlanRequestRef.current?.id !== request.id;
             if (urlsSuperseded && !supersededRasterPlanCanLand(request)) {
-              debugLog("map.raster.urls.stale_result", {
+              debugLog("map.raster.tiles.stale_result", {
                 id: request.id,
                 elapsed_ms: Math.round(performance.now() - resolveStartedAt),
                 tiles: nextTiles.length,
@@ -3454,14 +3659,14 @@ function MapPage(props: {
               continue;
             }
             if (urlsSuperseded && !planSuperseded) {
-              debugLog("map.raster.urls.superseded_result", {
+              debugLog("map.raster.tiles.superseded_result", {
                 id: request.id,
                 latest_id: rasterTilePlanRequestRef.current?.id ?? null,
                 elapsed_ms: Math.round(performance.now() - resolveStartedAt),
                 tiles: nextTiles.length,
               });
             }
-            debugLog("map.raster.urls.done", {
+            debugLog("map.raster.tiles.done", {
               id: request.id,
               key: request.key,
               superseded: urlsSuperseded,
@@ -4030,8 +4235,78 @@ function MapPage(props: {
     return `translate(${dx}px, ${dy}px) scale(${scaleRatio})`;
   }, [nexradOverlayViewport, viewport]);
 
-  function updateViewport(next: MapViewportState) {
+  function transientViewportTransform(renderedViewport: MapViewportState, nextViewport: MapViewportState) {
+    if (sameMapViewport(renderedViewport, nextViewport)) {
+      return "";
+    }
+    const currentScale = scaleForZoom(nextViewport.zoom);
+    const renderedScale = scaleForZoom(renderedViewport.zoom);
+    const scaleRatio = currentScale / renderedScale;
+    const dx = (renderedViewport.centerWorldX - nextViewport.centerWorldX) * currentScale;
+    const dy = (renderedViewport.centerWorldY - nextViewport.centerWorldY) * currentScale;
+    return `translate(${dx}px, ${dy}px) scale(${scaleRatio})`;
+  }
+
+  function applyImperativeMapContentTransform() {
+    const element = mapContentTransformRef.current;
+    if (!element) {
+      return;
+    }
+    const transform = transientViewportTransform(committedViewportRef.current, viewportRef.current);
+    element.style.transform = transform;
+    element.style.transformOrigin = "center center";
+  }
+
+  function clearPendingReactViewportCommit() {
+    if (pendingReactViewportTimerRef.current !== null) {
+      window.clearTimeout(pendingReactViewportTimerRef.current);
+      pendingReactViewportTimerRef.current = null;
+    }
+  }
+
+  function flushPendingReactViewportCommit() {
+    clearPendingReactViewportCommit();
+    const next = pendingReactViewportRef.current;
+    pendingReactViewportRef.current = null;
+    if (next && !sameMapViewport(next, committedViewportRef.current)) {
+      debugLog("map.viewport.react_commit.flush", {
+        zoom: next.zoom,
+        center_world_x: next.centerWorldX,
+        center_world_y: next.centerWorldY,
+      });
+      onViewportChange(next);
+    }
+  }
+
+  function scheduleReactViewportCommit(next: MapViewportState) {
+    pendingReactViewportRef.current = next;
+    if (pendingReactViewportTimerRef.current !== null) {
+      return;
+    }
+    pendingReactViewportTimerRef.current = window.setTimeout(() => {
+      pendingReactViewportTimerRef.current = null;
+      const pending = pendingReactViewportRef.current;
+      pendingReactViewportRef.current = null;
+      if (pending && !sameMapViewport(pending, committedViewportRef.current)) {
+        debugLog("map.viewport.react_commit.throttled", {
+          zoom: pending.zoom,
+          center_world_x: pending.centerWorldX,
+          center_world_y: pending.centerWorldY,
+        });
+        onViewportChange(pending);
+      }
+    }, dragViewportReactCommitThrottleMs);
+  }
+
+  function updateViewport(next: MapViewportState, options: { deferReactCommit?: boolean } = {}) {
     viewportRef.current = next;
+    applyImperativeMapContentTransform();
+    if (options.deferReactCommit) {
+      scheduleReactViewportCommit(next);
+      return;
+    }
+    pendingReactViewportRef.current = null;
+    clearPendingReactViewportCommit();
     onViewportChange(next);
   }
 
@@ -4043,6 +4318,9 @@ function MapPage(props: {
   }
 
   function setViewportGestureActive(active: boolean) {
+    if (!active) {
+      flushPendingReactViewportCommit();
+    }
     if (gestureActiveRef.current === active) {
       return;
     }
@@ -4101,7 +4379,7 @@ function MapPage(props: {
   }
 
   const runLiveDragPerf = useCallback(async () => {
-    if (liveDragPerfRunning || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+    if (!uiSession || liveDragPerfRunning || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return;
     }
     const runId = createLiveDragPerfRunId();
@@ -4121,6 +4399,19 @@ function MapPage(props: {
     setMapSelection(null);
     setLiveDragPerfRunning(true);
     setLastLiveDragPerfRunId(runId);
+    let followDisabledForRun = false;
+    if (mapFollowUiState.following) {
+      try {
+        const nextSnapshot = await uiSession.disengageMapFollow(viewportRef.current);
+        onPlaybackSnapshotChange(nextSnapshot);
+        followDisabledForRun = true;
+      } catch (error) {
+        debugLog("automated-test-disable-follow.failed", {
+          run_id: runId,
+          error: errorMessage(error),
+        });
+      }
+    }
     debugLog("automated-test-begin", {
       run_id: runId,
       mode: "live_browser",
@@ -4128,6 +4419,9 @@ function MapPage(props: {
       steps_per_drag: stepsPerDrag,
       step_delay_ms: stepDelayMs,
       interval_ms: dragIntervalMs,
+      following: mapFollowUiState.following && !followDisabledForRun,
+      following_before_disable: mapFollowUiState.following,
+      follow_disabled_for_run: followDisabledForRun,
       start_zoom: viewportRef.current.zoom,
       width: surfaceSize.width,
       height: surfaceSize.height,
@@ -4152,12 +4446,16 @@ function MapPage(props: {
             center_world_y: nextViewport.centerWorldY,
             following: mapFollowUiState.following,
           });
-          updateViewport(nextViewport);
-          syncFollowStateForViewport(nextViewport);
+          updateViewport(nextViewport, { deferReactCommit: true });
+          if (!followDisabledForRun) {
+            syncFollowStateForViewport(nextViewport);
+          }
           await sleepMs(stepDelayMs);
         }
         setViewportGestureActive(false);
-        flushDeferredFollowSync();
+        if (!followDisabledForRun) {
+          flushDeferredFollowSync();
+        }
         pumpRasterTilePlanQueue();
         pumpMapOverlayQueryQueue();
         debugLog("automated-test-drag", {
@@ -4176,7 +4474,9 @@ function MapPage(props: {
       });
     } finally {
       setViewportGestureActive(false);
-      flushDeferredFollowSync();
+      if (!followDisabledForRun) {
+        flushDeferredFollowSync();
+      }
       pumpRasterTilePlanQueue();
       pumpMapOverlayQueryQueue();
       setLiveDragPerfRunning(false);
@@ -4186,7 +4486,7 @@ function MapPage(props: {
         delete globalWithRunId.__aerobagPerfRunId;
       }
     }
-  }, [liveDragPerfRunning, mapFollowUiState.following, surfaceSize.height, surfaceSize.width]);
+  }, [liveDragPerfRunning, mapFollowUiState.following, onPlaybackSnapshotChange, surfaceSize.height, surfaceSize.width, uiSession]);
 
   useEffect(() => {
     const globalWithAutomation = globalThis as typeof globalThis & { __aerobagRunLiveDragPerf?: () => Promise<void> };
@@ -4241,7 +4541,7 @@ function MapPage(props: {
         center_world_x: nextViewport.centerWorldX,
         center_world_y: nextViewport.centerWorldY,
       });
-      updateViewport(nextViewport);
+      updateViewport(nextViewport, { deferReactCommit: true });
     }
   }, [followSyncPendingSerial, followTargetRetryToken, mapFollowTargetViewport, mapFollowUiState.following, viewport]);
 
@@ -4304,7 +4604,7 @@ function MapPage(props: {
         center_world_y: nextViewport.centerWorldY,
         following: mapFollowUiState.following,
       });
-      updateViewport(nextViewport);
+      updateViewport(nextViewport, { deferReactCommit: true });
       syncFollowStateForViewport(nextViewport);
       dragRef.current = { id: event.pointerId, last: point };
       if (clickCandidateRef.current && distanceBetween(clickCandidateRef.current.start, point) > 8) {
@@ -4670,19 +4970,20 @@ function MapPage(props: {
 
   return (
     <section className="pageSurface">
-      <div
-        ref={containerRef}
-        className="mapSurface chartSurface"
-        data-testid="map-surface"
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerRelease}
-        onPointerCancel={handlePointerRelease}
-        onPointerLeave={handlePointerRelease}
-        onLostPointerCapture={handleLostPointerCapture}
-        onWheel={handleWheel}
-        onDoubleClick={handleDoubleClick}
-      >
+      <Profiler id="MapSurface" onRender={logReactProfilerRender}>
+        <div
+          ref={containerRef}
+          className="mapSurface chartSurface"
+          data-testid="map-surface"
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerRelease}
+          onPointerCancel={handlePointerRelease}
+          onPointerLeave={handlePointerRelease}
+          onLostPointerCapture={handleLostPointerCapture}
+          onWheel={handleWheel}
+          onDoubleClick={handleDoubleClick}
+        >
         <div className="mapBackdrop" />
         <FlightDataBanner
           banner={flightDataBanner}
@@ -4785,354 +5086,378 @@ function MapPage(props: {
             )}
           </>
         ) : null}
-        <div
-          className="rasterTileLayer"
-          aria-hidden="true"
-          style={rasterTileTransform ? { transform: rasterTileTransform, transformOrigin: "center center" } : undefined}
-        >
-          {tiles.map((tile) => (
+        <div ref={mapContentTransformRef} className="mapContentTransform">
+          <Profiler id="RasterLayer" onRender={logReactProfilerRender}>
             <div
-              key={rasterTileKey(tile)}
-              className="mapTile"
-              style={{
-                left: `${tile.left}px`,
-                top: `${tile.top}px`,
-                // Fractional overzoomed tile sizes can expose subpixel seams between rasters.
-                width: `${tile.size + RASTER_TILE_OVERDRAW_PX}px`,
-                height: `${tile.size + RASTER_TILE_OVERDRAW_PX}px`,
-                zIndex: tile.zIndex,
-              }}
+              className="rasterTileLayer"
+              aria-hidden="true"
+              style={rasterTileTransform ? { transform: rasterTileTransform, transformOrigin: "center center" } : undefined}
             >
-              {failedRasterTileKeys.has(rasterTileKey(tile)) ? null : (
-                <img
-                  className="mapTileImage"
-                  src={tile.src}
-                  alt=""
-                  draggable={false}
-                  onLoad={() => reportRasterTileLoaded(tile)}
-                  onError={() => reportRasterTileError(tile)}
-                />
-              )}
-              {debugState.tile_labels ? (
-                <div className="tileLabel">
-                  z{tile.zoom} x{tile.x} y{tile.yTms}
-                </div>
-              ) : null}
-            </div>
-          ))}
-        </div>
-        {visibleTerrainImages.length > 0 ? (
-          <div className="terrainOverlay" aria-hidden="true">
-            {visibleTerrainImages.map((tile) => (
-              <TerrainOverlayCanvasTile
-                key={tile.key}
-                tile={tile}
-              />
-            ))}
-          </div>
-        ) : null}
-        {nexradOverlay.tiles.length > 0 ? (
-          <svg
-            className="nexradOverlay"
-            viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
-            preserveAspectRatio="none"
-            aria-hidden="true"
-            style={nexradOverlayTransform ? { transform: nexradOverlayTransform, transformOrigin: "center center" } : undefined}
-          >
-            {nexradOverlay.tiles.map((tile) => {
-              const bounds = nexradTileBounds(tile);
-              const label = `res${tile.res} x${tile.x} y${tile.y}`;
-              const labelTone = (tile.res + tile.x + tile.y) % 2 === 0 ? " isBlue" : " isOrange";
-              return (
-                <g key={tile.key}>
-                  <svg
-                    x={bounds.left}
-                    y={bounds.top}
-                    width={bounds.width}
-                    height={bounds.height}
-                    viewBox={`${tile.source_x} ${tile.source_y} ${tile.source_width} ${tile.source_height}`}
-                    preserveAspectRatio="none"
-                    overflow="hidden"
-                  >
-                    <image
-                      href={tile.src}
-                      x={0}
-                      y={0}
-                      width={tile.image_width}
-                      height={tile.image_height}
-                      preserveAspectRatio="none"
+              {tiles.map((tile) => (
+                <div
+                  key={rasterTileKey(tile)}
+                  className="mapTile"
+                  style={{
+                    left: `${tile.left}px`,
+                    top: `${tile.top}px`,
+                    // Fractional overzoomed tile sizes can expose subpixel seams between rasters.
+                    width: `${tile.size + RASTER_TILE_OVERDRAW_PX}px`,
+                    height: `${tile.size + RASTER_TILE_OVERDRAW_PX}px`,
+                    zIndex: tile.zIndex,
+                  }}
+                >
+                  {failedRasterTileKeys.has(rasterTileKey(tile)) ? null : (
+                    <img
+                      className="mapTileImage"
+                      src={tile.src}
+                      alt=""
+                      draggable={false}
+                      onLoad={() => reportRasterTileLoaded(tile)}
+                      onError={() => reportRasterTileError(tile)}
                     />
-                  </svg>
-                  {debugState.nexrad_tile_labels ? (
-                    <g className={`nexradTileLabel${labelTone}`} transform={`translate(${bounds.left + 4} ${bounds.top + 15})`}>
-                      <rect x={-3} y={-12} width={label.length * 7 + 6} height={16} rx={4} />
-                      <text x={0} y={0}>{label}</text>
-                    </g>
+                  )}
+                  {debugState.tile_labels ? (
+                    <div className="tileLabel">
+                      z{tile.zoom} x{tile.x} y{tile.yTms}
+                    </div>
                   ) : null}
-                </g>
-              );
-            })}
-          </svg>
-        ) : null}
-        {mapIsVisible && (mapOverlay.airspace_paths.length > 0 || mapOverlay.tfr_paths.length > 0 || mapOverlay.airspace_labels.length > 0) ? (
-          <svg
-            className="airspaceOverlay"
-            viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
-            preserveAspectRatio="none"
-            style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
-          >
-            {mapOverlay.airspace_paths.map((feature) => (
-              <AirspaceDisplayPathGroup key={feature.id} feature={feature} />
-            ))}
-            {mapOverlay.tfr_paths.map((feature) => (
-              <AirspaceDisplayPathGroup key={feature.id} feature={feature} />
-            ))}
-            {mapOverlay.airspace_labels.map((label) => {
-              return (
-                <g
-                  key={`${label.feature_id}:${label.glyph.upper}:${label.glyph.lower}:${label.screen_x}:${label.screen_y}`}
-                  className={`airspaceFractionLabel airspaceLabel-${label.glyph.style_key}`}
-                  transform={`translate(${label.screen_x} ${label.screen_y})`}
-                >
-                  <AirspaceLimitGlyph glyph={label.glyph} />
-                </g>
-              );
-            })}
-          </svg>
-        ) : null}
-        {mapIsVisible && mapOverlay.offline_regions.length > 0 ? (
-          <svg
-            className="offlineRegionsOverlay"
-            viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
-            preserveAspectRatio="none"
-            style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
-          >
-            {mapOverlay.offline_regions.map((region) => {
-              const color = aviationThemeColor(region.color_key);
-              const summaryLines = offlineRegionSummaryLines(region);
-              return (
-                <g key={region.id}>
-                  <polygon
-                    points={offlineRegionPoints(region.points)}
-                    fill="none"
-                    stroke="rgba(255,255,255,0.8)"
-                    strokeWidth="5"
-                    strokeLinejoin="round"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                  <polygon
-                    points={offlineRegionPoints(region.points)}
-                    fill="none"
-                    stroke={color}
-                    strokeWidth="2.5"
-                    strokeLinejoin="round"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                  <text
-                    x={region.label_x}
-                    y={region.label_y}
-                    textAnchor="middle"
-                    dominantBaseline="middle"
-                    fill="white"
-                    stroke="rgba(0,0,0,0.7)"
-                    strokeWidth="4"
-                    paintOrder="stroke"
-                  >
-                    <tspan x={region.label_x} dy={summaryLines.length ? "-0.72em" : "0"}>{region.label}</tspan>
-                    {summaryLines.map((summary, index) => (
-                      <tspan key={`${region.id}:summary:${index}`} x={region.label_x} dy="1.35em">{summary}</tspan>
-                    ))}
-                  </text>
-                  <text
-                    x={region.label_x}
-                    y={region.label_y}
-                    textAnchor="middle"
-                    dominantBaseline="middle"
-                    fill={color}
-                  >
-                    <tspan x={region.label_x} dy={summaryLines.length ? "-0.72em" : "0"}>{region.label}</tspan>
-                    {summaryLines.map((summary, index) => (
-                      <tspan key={`${region.id}:summary:${index}`} x={region.label_x} dy="1.35em">{summary}</tspan>
-                    ))}
-                  </text>
-                </g>
-              );
-            })}
-          </svg>
-        ) : null}
-        {mapIsVisible && routeScreenSegments.length > 0 ? (
-          <svg className="flightPlanOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
-            {routeScreenSegments.map((segment) => (
-              <Fragment key={segment.id}>
-                {debugState.sequencing_finish_lines && segment.status === "active"
-                  ? segment.finishLinePaths.map((finishLinePath, index) => (
-                      <line
-                        key={`finish-${index}`}
-                        x1={finishLinePath[0].x}
-                        y1={finishLinePath[0].y}
-                        x2={finishLinePath[1].x}
-                        y2={finishLinePath[1].y}
-                        stroke="#b100ff"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        opacity="0.9"
+                </div>
+              ))}
+            </div>
+          </Profiler>
+          {visibleTerrainImages.length > 0 ? (
+            <div className="terrainOverlay" aria-hidden="true">
+              {visibleTerrainImages.map((tile) => (
+                <TerrainOverlayCanvasTile
+                  key={tile.key}
+                  tile={tile}
+                />
+              ))}
+            </div>
+          ) : null}
+          {nexradOverlay.tiles.length > 0 ? (
+            <svg
+              className="nexradOverlay"
+              viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
+              preserveAspectRatio="none"
+              aria-hidden="true"
+              style={nexradOverlayTransform ? { transform: nexradOverlayTransform, transformOrigin: "center center" } : undefined}
+            >
+              {nexradOverlay.tiles.map((tile) => {
+                const bounds = nexradTileBounds(tile);
+                const label = `res${tile.res} x${tile.x} y${tile.y}`;
+                const labelTone = (tile.res + tile.x + tile.y) % 2 === 0 ? " isBlue" : " isOrange";
+                return (
+                  <g key={tile.key}>
+                    <svg
+                      x={bounds.left}
+                      y={bounds.top}
+                      width={bounds.width}
+                      height={bounds.height}
+                      viewBox={`${tile.source_x} ${tile.source_y} ${tile.source_width} ${tile.source_height}`}
+                      preserveAspectRatio="none"
+                      overflow="hidden"
+                    >
+                      <image
+                        href={tile.src}
+                        x={0}
+                        y={0}
+                        width={tile.image_width}
+                        height={tile.image_height}
+                        preserveAspectRatio="none"
                       />
-                    ))
-                  : null}
-                <polyline
-                  points={segment.path.map((point) => `${point.x},${point.y}`).join(" ")}
-                  fill="none"
-                  stroke="rgba(0, 0, 0, 0.55)"
-                  strokeWidth="7"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-                <polyline
-                  points={segment.path.map((point) => `${point.x},${point.y}`).join(" ")}
-                  fill="none"
-                  stroke={routeSegmentColor(segment.status)}
-                  strokeWidth="3.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </Fragment>
-            ))}
-          </svg>
-        ) : null}
-        {mapIsVisible && mapOverlay.visible_features.length > 0 ? (
-          <svg
-            className="vectorOverlay"
-            viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
-            preserveAspectRatio="none"
-            style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
-          >
-            {mapOverlay.visible_features.map((feature) => {
-              return (
-                <g
-                  key={feature.id}
-                  transform={`translate(${feature.screen_x} ${feature.screen_y})`}
-                  data-testid={feature.label ? `parity:map-feature:${feature.kind}:${feature.label}:${feature.id}` : undefined}
-                >
-                  <VectorPointSymbol feature={feature} />
-                </g>
-              );
-            })}
-          </svg>
-        ) : null}
-        {mapIsVisible && mapOverlay.visible_metars.length > 0 ? (
-          <svg
-            className="metarOverlay"
-            viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
-            preserveAspectRatio="none"
-            style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
-          >
-            {mapOverlay.visible_metars.map((feature) => (
-              <g
-                key={wrappedFeatureRenderKey(feature.station_id, feature.screen_x, feature.screen_y)}
-                transform={`translate(${feature.screen_x} ${feature.screen_y})`}
-              >
-                <MetarSymbol feature={feature} />
-              </g>
-            ))}
-          </svg>
-        ) : null}
-        {mapIsVisible && mapOverlay.visible_pireps.length > 0 ? (
-          <svg
-            className="metarOverlay"
-            viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
-            preserveAspectRatio="none"
-            style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
-          >
-            {mapOverlay.visible_pireps.map((feature) => (
-              <g
-                key={wrappedFeatureRenderKey(feature.id, feature.screen_x, feature.screen_y)}
-                transform={`translate(${feature.screen_x} ${feature.screen_y})`}
-              >
-                <PirepSymbol feature={feature} scale={0.32} />
-              </g>
-            ))}
-          </svg>
-        ) : null}
-        {mapIsVisible && (mapOverlay.flight_plan_features ?? []).length > 0 ? (
-          <svg
-            className="vectorOverlay flightPlanVectorOverlay"
-            viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
-            preserveAspectRatio="none"
-            style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
-          >
-            {(mapOverlay.flight_plan_features ?? []).map((feature) => {
-              return (
-                <g
-                  key={feature.id}
-                  transform={`translate(${feature.screen_x} ${feature.screen_y})`}
-                  data-testid={feature.label ? `parity:map-fp-feature:${feature.kind}:${feature.label}:${feature.id}` : undefined}
-                >
-                  <VectorPointSymbol feature={feature} />
-                </g>
-              );
-            })}
-          </svg>
-        ) : null}
-        {mapIsVisible && selectedMapHighlight ? (
-          <svg
-            className="mapSelectionHighlightOverlay"
-            viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
-            preserveAspectRatio="none"
-            style={selectedMapHighlight.kind === "spot" ? undefined : overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
-          >
-            {selectedMapHighlight.kind === "point" ? (
-              <g transform={`translate(${selectedMapHighlight.feature.screen_x} ${selectedMapHighlight.feature.screen_y})`}>
-                <g className="mapSelectionFeatureContrast">
-                  <VectorPointSymbol feature={selectedMapHighlight.feature} />
-                </g>
-                <VectorPointSymbol feature={selectedMapHighlight.feature} />
-              </g>
-            ) : selectedMapHighlight.kind === "metar" ? (
-              <g transform={`translate(${selectedMapHighlight.feature.screen_x} ${selectedMapHighlight.feature.screen_y})`}>
-                <g className="mapSelectionFeatureContrast">
-                  <MetarSymbol feature={selectedMapHighlight.feature} />
-                </g>
-                <MetarSymbol feature={selectedMapHighlight.feature} />
-              </g>
-            ) : selectedMapHighlight.kind === "pirep" ? (
-              <g transform={`translate(${selectedMapHighlight.feature.screen_x} ${selectedMapHighlight.feature.screen_y})`}>
-                <g className="mapSelectionFeatureContrast">
-                  <PirepSymbol feature={selectedMapHighlight.feature} scale={0.32} />
-                </g>
-                <PirepSymbol feature={selectedMapHighlight.feature} scale={0.32} />
-              </g>
-            ) : selectedMapHighlight.kind === "path" ? (
-              <g>
-                {selectedMapHighlight.feature.paths.map((path, index) => (
-                  <path
-                    key={`${selectedMapHighlight.feature.id}:highlight:${index}`}
-                    d={airspaceSvgPathD(path)}
-                    fill="none"
-                    stroke="white"
-                    strokeWidth="9"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                ))}
-                <AirspaceDisplayPathGroup feature={selectedMapHighlight.feature} />
-              </g>
-            ) : selectedMapHighlight.kind === "offline_region" ? (
-              <polygon
-                points={offlineRegionPoints(selectedMapHighlight.feature.points)}
-                fill="rgba(255,255,255,0.08)"
-                stroke="white"
-                strokeWidth="6"
-                strokeLinejoin="round"
-                vectorEffect="non-scaling-stroke"
-              />
-            ) : (
-              <g transform={`translate(${selectedMapHighlight.point.x} ${selectedMapHighlight.point.y})`}>
-                <MapSelectionSpotSymbol />
-              </g>
-            )}
-          </svg>
-        ) : null}
+                    </svg>
+                    {debugState.nexrad_tile_labels ? (
+                      <g className={`nexradTileLabel${labelTone}`} transform={`translate(${bounds.left + 4} ${bounds.top + 15})`}>
+                        <rect x={-3} y={-12} width={label.length * 7 + 6} height={16} rx={4} />
+                        <text x={0} y={0}>{label}</text>
+                      </g>
+                    ) : null}
+                  </g>
+                );
+              })}
+            </svg>
+          ) : null}
+          <Profiler id="VectorLayer" onRender={logReactProfilerRender}>
+            <>
+              <>
+                {mapIsVisible && (mapOverlay.airspace_paths.length > 0 || mapOverlay.tfr_paths.length > 0 || mapOverlay.airspace_labels.length > 0) ? (
+                  <svg
+                    className="airspaceOverlay"
+                    viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
+                    preserveAspectRatio="none"
+                    style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+                  >
+                    {mapOverlay.airspace_paths.map((feature) => (
+                      <AirspaceDisplayPathGroup key={feature.id} feature={feature} />
+                    ))}
+                    {mapOverlay.tfr_paths.map((feature) => (
+                      <AirspaceDisplayPathGroup key={feature.id} feature={feature} />
+                    ))}
+                    {mapOverlay.airspace_labels.map((label) => {
+                      return (
+                        <g
+                          key={`${label.feature_id}:${label.glyph.upper}:${label.glyph.lower}:${label.screen_x}:${label.screen_y}`}
+                          className={`airspaceFractionLabel airspaceLabel-${label.glyph.style_key}`}
+                          transform={`translate(${label.screen_x} ${label.screen_y})`}
+                        >
+                          <AirspaceLimitGlyph glyph={label.glyph} />
+                        </g>
+                      );
+                    })}
+                  </svg>
+                ) : null}
+              </>
+              <>
+                {mapIsVisible && mapOverlay.offline_regions.length > 0 ? (
+                  <svg
+                    className="offlineRegionsOverlay"
+                    viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
+                    preserveAspectRatio="none"
+                    style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+                  >
+                    {mapOverlay.offline_regions.map((region) => {
+                      const color = aviationThemeColor(region.color_key);
+                      const summaryLines = offlineRegionSummaryLines(region);
+                      return (
+                        <g key={region.id}>
+                          <polygon
+                            points={offlineRegionPoints(region.points)}
+                            fill="none"
+                            stroke="rgba(255,255,255,0.8)"
+                            strokeWidth="5"
+                            strokeLinejoin="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                          <polygon
+                            points={offlineRegionPoints(region.points)}
+                            fill="none"
+                            stroke={color}
+                            strokeWidth="2.5"
+                            strokeLinejoin="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                          <text
+                            x={region.label_x}
+                            y={region.label_y}
+                            textAnchor="middle"
+                            dominantBaseline="middle"
+                            fill="white"
+                            stroke="rgba(0,0,0,0.7)"
+                            strokeWidth="4"
+                            paintOrder="stroke"
+                          >
+                            <tspan x={region.label_x} dy={summaryLines.length ? "-0.72em" : "0"}>{region.label}</tspan>
+                            {summaryLines.map((summary, index) => (
+                              <tspan key={`${region.id}:summary:${index}`} x={region.label_x} dy="1.35em">{summary}</tspan>
+                            ))}
+                          </text>
+                          <text
+                            x={region.label_x}
+                            y={region.label_y}
+                            textAnchor="middle"
+                            dominantBaseline="middle"
+                            fill={color}
+                          >
+                            <tspan x={region.label_x} dy={summaryLines.length ? "-0.72em" : "0"}>{region.label}</tspan>
+                            {summaryLines.map((summary, index) => (
+                              <tspan key={`${region.id}:summary:${index}`} x={region.label_x} dy="1.35em">{summary}</tspan>
+                            ))}
+                          </text>
+                        </g>
+                      );
+                    })}
+                  </svg>
+                ) : null}
+              </>
+              <>
+                {mapIsVisible && routeScreenSegments.length > 0 ? (
+                  <svg className="flightPlanOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
+                    {routeScreenSegments.map((segment) => (
+                      <Fragment key={segment.id}>
+                        {debugState.sequencing_finish_lines && segment.status === "active"
+                          ? segment.finishLinePaths.map((finishLinePath, index) => (
+                              <line
+                                key={`finish-${index}`}
+                                x1={finishLinePath[0].x}
+                                y1={finishLinePath[0].y}
+                                x2={finishLinePath[1].x}
+                                y2={finishLinePath[1].y}
+                                stroke="#b100ff"
+                                strokeWidth="1.5"
+                                strokeLinecap="round"
+                                opacity="0.9"
+                              />
+                            ))
+                          : null}
+                        <polyline
+                          points={segment.path.map((point) => `${point.x},${point.y}`).join(" ")}
+                          fill="none"
+                          stroke="rgba(0, 0, 0, 0.55)"
+                          strokeWidth="7"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                        <polyline
+                          points={segment.path.map((point) => `${point.x},${point.y}`).join(" ")}
+                          fill="none"
+                          stroke={routeSegmentColor(segment.status)}
+                          strokeWidth="3.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </Fragment>
+                    ))}
+                  </svg>
+                ) : null}
+              </>
+              <>
+                {mapIsVisible && mapOverlay.visible_features.length > 0 ? (
+                  <svg
+                    className="vectorOverlay"
+                    viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
+                    preserveAspectRatio="none"
+                    style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+                  >
+                    {mapOverlay.visible_features.map((feature) => {
+                      return (
+                        <g
+                          key={feature.id}
+                          transform={`translate(${feature.screen_x} ${feature.screen_y})`}
+                          data-testid={feature.label ? `parity:map-feature:${feature.kind}:${feature.label}:${feature.id}` : undefined}
+                        >
+                          <VectorPointSymbol feature={feature} />
+                        </g>
+                      );
+                    })}
+                  </svg>
+                ) : null}
+              </>
+              <>
+                {mapIsVisible && mapOverlay.visible_metars.length > 0 ? (
+                  <svg
+                    className="metarOverlay"
+                    viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
+                    preserveAspectRatio="none"
+                    style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+                  >
+                    {mapOverlay.visible_metars.map((feature) => (
+                      <g
+                        key={wrappedFeatureRenderKey(feature.station_id, feature.screen_x, feature.screen_y)}
+                        transform={`translate(${feature.screen_x} ${feature.screen_y})`}
+                      >
+                        <MetarSymbol feature={feature} />
+                      </g>
+                    ))}
+                  </svg>
+                ) : null}
+              </>
+              <>
+                {mapIsVisible && mapOverlay.visible_pireps.length > 0 ? (
+                  <svg
+                    className="metarOverlay"
+                    viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
+                    preserveAspectRatio="none"
+                    style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+                  >
+                    {mapOverlay.visible_pireps.map((feature) => (
+                      <g
+                        key={wrappedFeatureRenderKey(feature.id, feature.screen_x, feature.screen_y)}
+                        transform={`translate(${feature.screen_x} ${feature.screen_y})`}
+                      >
+                        <PirepSymbol feature={feature} scale={0.32} />
+                      </g>
+                    ))}
+                  </svg>
+                ) : null}
+              </>
+              <>
+                {mapIsVisible && (mapOverlay.flight_plan_features ?? []).length > 0 ? (
+                  <svg
+                    className="vectorOverlay flightPlanVectorOverlay"
+                    viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
+                    preserveAspectRatio="none"
+                    style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+                  >
+                    {(mapOverlay.flight_plan_features ?? []).map((feature) => {
+                      return (
+                        <g
+                          key={feature.id}
+                          transform={`translate(${feature.screen_x} ${feature.screen_y})`}
+                          data-testid={feature.label ? `parity:map-fp-feature:${feature.kind}:${feature.label}:${feature.id}` : undefined}
+                        >
+                          <VectorPointSymbol feature={feature} />
+                        </g>
+                      );
+                    })}
+                  </svg>
+                ) : null}
+              </>
+              <>
+                {mapIsVisible && selectedMapHighlight ? (
+                  <svg
+                    className="mapSelectionHighlightOverlay"
+                    viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
+                    preserveAspectRatio="none"
+                    style={selectedMapHighlight.kind === "spot" ? undefined : overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+                  >
+                    {selectedMapHighlight.kind === "point" ? (
+                      <g transform={`translate(${selectedMapHighlight.feature.screen_x} ${selectedMapHighlight.feature.screen_y})`}>
+                        <g className="mapSelectionFeatureContrast">
+                          <VectorPointSymbol feature={selectedMapHighlight.feature} />
+                        </g>
+                        <VectorPointSymbol feature={selectedMapHighlight.feature} />
+                      </g>
+                    ) : selectedMapHighlight.kind === "metar" ? (
+                      <g transform={`translate(${selectedMapHighlight.feature.screen_x} ${selectedMapHighlight.feature.screen_y})`}>
+                        <g className="mapSelectionFeatureContrast">
+                          <MetarSymbol feature={selectedMapHighlight.feature} />
+                        </g>
+                        <MetarSymbol feature={selectedMapHighlight.feature} />
+                      </g>
+                    ) : selectedMapHighlight.kind === "pirep" ? (
+                      <g transform={`translate(${selectedMapHighlight.feature.screen_x} ${selectedMapHighlight.feature.screen_y})`}>
+                        <g className="mapSelectionFeatureContrast">
+                          <PirepSymbol feature={selectedMapHighlight.feature} scale={0.32} />
+                        </g>
+                        <PirepSymbol feature={selectedMapHighlight.feature} scale={0.32} />
+                      </g>
+                    ) : selectedMapHighlight.kind === "path" ? (
+                      <g>
+                        {selectedMapHighlight.feature.paths.map((path, index) => (
+                          <path
+                            key={`${selectedMapHighlight.feature.id}:highlight:${index}`}
+                            d={airspaceSvgPathD(path)}
+                            fill="none"
+                            stroke="white"
+                            strokeWidth="9"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        ))}
+                        <AirspaceDisplayPathGroup feature={selectedMapHighlight.feature} />
+                      </g>
+                    ) : selectedMapHighlight.kind === "offline_region" ? (
+                      <polygon
+                        points={offlineRegionPoints(selectedMapHighlight.feature.points)}
+                        fill="rgba(255,255,255,0.08)"
+                        stroke="white"
+                        strokeWidth="6"
+                        strokeLinejoin="round"
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    ) : (
+                      <g transform={`translate(${selectedMapHighlight.point.x} ${selectedMapHighlight.point.y})`}>
+                        <MapSelectionSpotSymbol />
+                      </g>
+                    )}
+                  </svg>
+                ) : null}
+              </>
+            </>
+          </Profiler>
+        </div>
         <StatusControlDock
           controls={ownshipControls}
           dataStatusState={dataStatusState}
@@ -5420,7 +5745,8 @@ function MapPage(props: {
             CTR
           </button>
         </div>
-      </div>
+        </div>
+      </Profiler>
     </section>
   );
 }

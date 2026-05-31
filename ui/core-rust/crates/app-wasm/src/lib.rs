@@ -1496,10 +1496,12 @@ pub fn startup_smoke_test() -> Result<(), JsValue> {
         )],
         256,
     );
-    app_core::attach_nav_kv_store_to_session(init.handle, 1, &store)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    app_core::get_session_snapshot(init.handle)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let nav_kv_handle = NEXT_NAV_KV_HANDLE.fetch_add(1, Ordering::Relaxed);
+    lock_nav_kv_stores().insert(nav_kv_handle, store);
+    attach_nav_kv_store_to_session(nav_kv_handle, init.handle)?;
+    sync_guidance_geometry_in_session(init.handle)?;
+    get_session_snapshot(init.handle)?;
+    lock_nav_kv_stores().remove(&nav_kv_handle);
     app_core::destroy_session(init.handle);
     Ok(())
 }

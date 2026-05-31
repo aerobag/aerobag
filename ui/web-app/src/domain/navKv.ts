@@ -376,10 +376,13 @@ export class NavKvStore {
     }
     const resourceId = `nav_kv/page/${pageIndex.toString().padStart(4, "0")}`;
     const address = `${this.navKvPackageRoot}/page_${pageIndex.toString().padStart(4, "0")}`;
-    const fetched = debugTiming("nav_kv.page.fetch", () => fetch(withNavKvCacheKey(address)), {
+    const requestUrl = withNavKvCacheKey(address);
+    const startedAt = performance.now();
+    const fetched = debugTiming("nav_kv.page.fetch", () => fetch(requestUrl), {
       page: pageIndex,
     })
       .then(async (response) => {
+        const headersAt = performance.now();
         if (!response.ok) {
           throw new Error(`failed to fetch nav_kv page ${pageIndex}: ${response.status}`);
         }
@@ -388,6 +391,7 @@ export class NavKvStore {
           page: pageIndex,
           byte_length: buffer.byteLength,
         });
+        logNavKvPageFetchDetail(pageIndex, requestUrl, startedAt, headersAt, performance.now(), bytes.byteLength);
         await this.insertNavKvPage(resourceId, pageIndex, bytes, priority);
       });
     this.inFlightPageFetches.set(pageIndex, fetched);
@@ -604,6 +608,41 @@ function withNavKvCacheKey(address: string): string {
   return `${address}${separator}v=${encodeURIComponent(address)}`;
 }
 
+function logNavKvPageFetchDetail(
+  pageIndex: number,
+  requestUrl: string,
+  startedAt: number,
+  headersAt: number,
+  completedAt: number,
+  byteLength: number,
+) {
+  const timing = lastResourceTimingForUrl(requestUrl);
+  const responseEnd = timing?.responseEnd;
+  debugLog("nav_kv.page.fetch_detail", {
+    page: pageIndex,
+    byte_length: byteLength,
+    fetch_header_ms: Math.round(headersAt - startedAt),
+    array_buffer_done_ms: Math.round(completedAt - headersAt),
+    total_ms: Math.round(completedAt - startedAt),
+    resource_duration_ms: timing ? Math.round(timing.duration) : null,
+    resource_response_start_ms: timing ? Math.round(timing.responseStart - timing.startTime) : null,
+    resource_response_end_ms: timing ? Math.round(timing.responseEnd - timing.startTime) : null,
+    response_end_to_array_done_ms: responseEnd !== undefined ? Math.round(completedAt - responseEnd) : null,
+    transfer_size: timing?.transferSize ?? null,
+    encoded_body_size: timing?.encodedBodySize ?? null,
+    decoded_body_size: timing?.decodedBodySize ?? null,
+  });
+}
+
+function lastResourceTimingForUrl(requestUrl: string): PerformanceResourceTiming | null {
+  if (typeof performance === "undefined" || typeof window === "undefined") {
+    return null;
+  }
+  const absoluteUrl = new URL(requestUrl, window.location.href).href;
+  const entries = performance.getEntriesByName(absoluteUrl, "resource") as PerformanceResourceTiming[];
+  return entries.at(-1) ?? null;
+}
+
 export async function getNavKvStore(sessionHandle?: number): Promise<NavKvStore | null> {
   if (!sharedNavKvStorePromise) {
     if (sessionHandle === undefined) {
@@ -615,11 +654,14 @@ export async function getNavKvStore(sessionHandle?: number): Promise<NavKvStore 
 }
 
 export async function runCoreHadOperation<T>(operation: unknown): Promise<T> {
-  const store = await getNavKvStore();
-  if (!store) {
-    throw new Error("nav_kv root is unavailable");
-  }
-  return store.runCoreOperation<T>(operation);
+  const trace = coreHadOperationTrace(operation);
+  return debugTiming("core.had_operation.total", async () => {
+    const store = await debugTiming("core.had_operation.store", () => getNavKvStore(), trace);
+    if (!store) {
+      throw new Error("nav_kv root is unavailable");
+    }
+    return store.runCoreOperation<T>(operation);
+  }, trace);
 }
 
 export async function runCoreHadSessionOperation<T>(
@@ -651,4 +693,18 @@ export async function attachNavKvStoreToSession(sessionHandle: number): Promise<
     throw new Error("nav_kv root is unavailable");
   }
   store.attachToSession(sessionHandle);
+}
+
+function coreHadOperationTrace(operation: unknown): Record<string, unknown> {
+  if (!operation || typeof operation !== "object" || !("kind" in operation)) {
+    return { kind: "unknown" };
+  }
+  const record = operation as Record<string, unknown>;
+  const trace: Record<string, unknown> = { kind: record.kind };
+  for (const key of ["airport_id", "procedure_id", "procedure_kind", "airway_name", "prefix"]) {
+    if (record[key] !== undefined) {
+      trace[key] = record[key];
+    }
+  }
+  return trace;
 }

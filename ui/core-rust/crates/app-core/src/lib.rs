@@ -43,7 +43,7 @@ pub use data_status::{
 };
 pub use debug_log::{
     core_clock_ms, core_debug_log, core_debug_log_value, set_core_clock_ms, set_core_debug_logger,
-    CoreClockMs, CoreDebugLogger,
+    CoreClockMs, CoreDebugLogger, CoreDebugTimer,
 };
 pub use errors::{AppError, AppErrorKind, AppResult};
 pub use flight_data::{
@@ -681,8 +681,6 @@ where
         let procedure_airport_id = leg.procedure_provenance.as_ref().and_then(|provenance| {
             (!provenance.airport_id.is_empty()).then_some(provenance.airport_id.as_str())
         });
-        let fallback_from = resolve_position(&leg.from, procedure_airport_id)?;
-        let fallback_to = resolve_position(&leg.to, procedure_airport_id)?;
         if let Some(display_path) = leg
             .procedure_provenance
             .as_ref()
@@ -706,6 +704,8 @@ where
                 });
             }
         } else {
+            let fallback_from = resolve_position(&leg.from, procedure_airport_id)?;
+            let fallback_to = resolve_position(&leg.to, procedure_airport_id)?;
             let geometry = GuidanceRouteGeometry::Segment {
                 start: fallback_from,
                 end: fallback_to,
@@ -1479,4 +1479,57 @@ pub fn resolve_content_status(
         fully_satisfied,
         items,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn route_projection_uses_procedure_display_path_without_navref_lookup() {
+        let start = LatLon {
+            lat: 48.0,
+            lon: -109.0,
+        };
+        let end = LatLon {
+            lat: 48.1,
+            lon: -109.2,
+        };
+        let plan = FlightPlan {
+            resolved_legs: vec![ResolvedLeg {
+                id: "procedure-leg".to_string(),
+                from: NavRef::Fix("ISITE".to_string()),
+                to: NavRef::Fix("JEPAL".to_string()),
+                source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                procedure_provenance: Some(ProcedureLegProvenance {
+                    airport_id: "KHVR".to_string(),
+                    procedure_id: "R26".to_string(),
+                    kind: ProcedureKind::Approach,
+                    role: ProcedureSegmentRole::EnrouteTransition,
+                    path_termination: PathTermination::TrackToFix,
+                    leg_sequence: 20,
+                    display_path: Some(LegDisplayPath {
+                        style: LegDisplayPathStyle::Solid,
+                        elements: vec![LegDisplayElement::Segment { start, end }],
+                        effective_terminal_course_deg: None,
+                        debug_element_sources: Vec::new(),
+                        debug_element_roles: Vec::new(),
+                    }),
+                }),
+            }],
+            ..FlightPlan::default()
+        };
+        let mut resolver_calls = 0;
+
+        let route = project_flight_plan_route_with_resolver(&plan, |_, _| {
+            resolver_calls += 1;
+            Err("procedure display path should not need navref resolution")
+        })
+        .expect("project route from procedure display path");
+
+        assert_eq!(resolver_calls, 0);
+        assert_eq!(route.len(), 1);
+        assert_eq!(route[0].from, start);
+        assert_eq!(route[0].to, end);
+    }
 }

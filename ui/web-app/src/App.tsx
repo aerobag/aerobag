@@ -6555,6 +6555,11 @@ function FlightPlanPage(props: {
             if (!selectedRow.chartAirportId) {
               return;
             }
+            const trace = {
+              row_uid: selectedRow.rowUid,
+              airport_id: selectedRow.chartAirportId,
+            };
+            debugLog("plan.procedure_picker.open.start", trace);
             setProcedurePicker({
               loading: true,
               error: null,
@@ -6565,13 +6570,19 @@ function FlightPlanPage(props: {
               options: null,
             });
             window.requestAnimationFrame(() => {
-              void props.appCoreAdapter!.listProcedures(selectedRow.chartAirportId!, "approach").then((procedures) => {
+              void debugTiming(
+                "plan.procedure_picker.list_procedures",
+                () => props.appCoreAdapter!.listProcedures(selectedRow.chartAirportId!, "approach"),
+                trace,
+              ).then((procedures) => {
+                debugLog("plan.procedure_picker.open.done", { ...trace, procedure_count: procedures.length });
                 setProcedurePicker((current) => current ? {
                   ...current,
                   loading: false,
                   procedures,
                 } : current);
               }).catch((error) => {
+                debugLog("plan.procedure_picker.open.error", { ...trace, message: errorMessage(error) });
                 setProcedurePicker((current) => current ? {
                   ...current,
                   loading: false,
@@ -7143,16 +7154,25 @@ function FlightPlanPage(props: {
                         onPointerDown={stopPointer}
                         onPointerUp={stopPointer}
                         onClick={async () => {
+                          const trace = {
+                            row_uid: procedurePicker.rowUid,
+                            airport_id: procedurePicker.airportId,
+                            procedure_id: procedure.procedure_id,
+                          };
                           setProcedurePicker((current) => current ? {
                             ...current,
                             loading: true,
                             error: null,
                           } : current);
                           try {
-                            const options = await props.appCoreAdapter!.describeProcedureOptions(
-                              procedurePicker.airportId,
-                              procedure.procedure_id,
-                              "approach",
+                            const options = await debugTiming(
+                              "plan.procedure_picker.describe_options",
+                              () => props.appCoreAdapter!.describeProcedureOptions(
+                                procedurePicker.airportId,
+                                procedure.procedure_id,
+                                "approach",
+                              ),
+                              trace,
                             );
                             setProcedurePicker((current) => current ? {
                               ...current,
@@ -7161,6 +7181,7 @@ function FlightPlanPage(props: {
                               options,
                             } : current);
                           } catch (error) {
+                            debugLog("plan.procedure_picker.describe_options.error", { ...trace, message: errorMessage(error) });
                             setProcedurePicker((current) => current ? {
                               ...current,
                               loading: false,
@@ -7183,21 +7204,32 @@ function FlightPlanPage(props: {
                         onPointerDown={stopPointer}
                         onPointerUp={stopPointer}
                         onClick={async () => {
+                          const trace = {
+                            row_uid: procedurePicker.rowUid,
+                            airport_id: procedurePicker.airportId,
+                            procedure_id: procedurePicker.selectedProcedureId,
+                            enroute_transition: choice.enroute_transition,
+                          };
                           setProcedurePicker((current) => current ? {
                             ...current,
                             loading: true,
                             error: null,
                           } : current);
                           try {
-                            await props.onSelectProcedureAtRow(
-                              procedurePicker.rowUid,
-                              procedurePicker.airportId,
-                              procedurePicker.selectedProcedureId!,
-                              choice.enroute_transition,
+                            await debugTiming(
+                              "plan.procedure_picker.select_choice",
+                              () => props.onSelectProcedureAtRow(
+                                procedurePicker.rowUid,
+                                procedurePicker.airportId,
+                                procedurePicker.selectedProcedureId!,
+                                choice.enroute_transition,
+                              ),
+                              trace,
                             );
                             setProcedurePicker(null);
                             setSelectedWaypointUid(null);
                           } catch (error) {
+                            debugLog("plan.procedure_picker.select_choice.error", { ...trace, message: errorMessage(error) });
                             setProcedurePicker((current) => current ? {
                               ...current,
                               loading: false,

@@ -24,6 +24,7 @@ unsafe extern "C" {
 
 pub fn install_core_debug_logger() {
     app_core::set_core_debug_logger(Some(log_core_debug));
+    app_core::set_core_clock_ms(Some(now_epoch_ms_f64));
 }
 
 fn now_epoch_ms() -> i64 {
@@ -31,6 +32,10 @@ fn now_epoch_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
         .unwrap_or(0)
+}
+
+fn now_epoch_ms_f64() -> f64 {
+    now_epoch_ms() as f64
 }
 
 #[cfg(target_os = "android")]

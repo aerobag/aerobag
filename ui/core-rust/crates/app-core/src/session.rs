@@ -1762,16 +1762,43 @@ pub(crate) fn set_guidance_leg_geometry_in_session(
 }
 
 pub fn sync_guidance_geometry_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+    let started = crate::CoreDebugTimer::start();
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let Some(plan) = session.app_state.active_plan.clone() else {
         session.guidance_leg_geometry.clear();
+        crate::core_debug_log(
+            "plan.guidance.sync.core_phase",
+            &serde_json::json!({
+                "phase": "empty_plan",
+                "elapsed_ms": started.elapsed_ms(),
+            }),
+        );
         return session_snapshot_outcome(session);
     };
+    crate::core_debug_log(
+        "plan.guidance.sync.core_phase",
+        &serde_json::json!({
+            "phase": "start",
+            "resolved_leg_count": plan.resolved_legs.len(),
+            "component_count": plan.route_components.len(),
+        }),
+    );
+    let route_started = crate::CoreDebugTimer::start();
     let route =
         match crate::had_ops::project_flight_plan_route(session_nav_kv_store(session)?, &plan) {
             Ok(route) => route,
             Err(HadReadError::NeedPages(pages)) => {
+                crate::core_debug_log(
+                    "plan.guidance.sync.core_phase",
+                    &serde_json::json!({
+                        "phase": "route_need_pages",
+                        "resource_count": pages.len(),
+                        "pages": pages,
+                        "elapsed_ms": route_started.elapsed_ms(),
+                        "total_ms": started.elapsed_ms(),
+                    }),
+                );
                 return Ok(HadOperationOutcome::NeedResources {
                     resources: nav_kv_page_resources(pages),
                 });
@@ -1783,6 +1810,15 @@ pub fn sync_guidance_geometry_in_session(handle: u32) -> AppResult<HadOperationO
                 });
             }
         };
+    crate::core_debug_log(
+        "plan.guidance.sync.core_phase",
+        &serde_json::json!({
+            "phase": "route_done",
+            "route_segment_count": route.len(),
+            "elapsed_ms": route_started.elapsed_ms(),
+            "total_ms": started.elapsed_ms(),
+        }),
+    );
     session.guidance_leg_geometry = route
         .into_iter()
         .map(|segment| {
@@ -1801,6 +1837,13 @@ pub fn sync_guidance_geometry_in_session(handle: u32) -> AppResult<HadOperationO
     {
         sync_plan_preview_to_active_leg(session)?;
     }
+    crate::core_debug_log(
+        "plan.guidance.sync.core_phase",
+        &serde_json::json!({
+            "phase": "snapshot_start",
+            "total_ms": started.elapsed_ms(),
+        }),
+    );
     session_snapshot_outcome(session)
 }
 
@@ -2524,10 +2567,33 @@ pub fn select_procedure_at_flight_plan_row_in_session(
     runway_transition: Option<String>,
     enroute_transition: Option<String>,
 ) -> AppResult<HadOperationOutcome> {
+    let started = crate::CoreDebugTimer::start();
+    let trace = serde_json::json!({
+        "row_uid": &row_uid,
+        "airport_id": &airport_id,
+        "procedure_id": &procedure_id,
+        "kind": &kind,
+        "runway_transition": runway_transition.as_ref(),
+        "enroute_transition": enroute_transition.as_ref(),
+    });
+    crate::core_debug_log(
+        "plan.procedure.select.core_phase",
+        &serde_json::json!({
+            "phase": "start",
+            "trace": trace,
+        }),
+    );
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let mut plan = session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
+    crate::core_debug_log(
+        "plan.procedure.select.core_phase",
+        &serde_json::json!({
+            "phase": "project_ui_state",
+            "elapsed_ms": started.elapsed_ms(),
+        }),
+    );
     let row = ui
         .display_rows
         .iter()
@@ -2578,11 +2644,21 @@ pub fn select_procedure_at_flight_plan_row_in_session(
         plan = repaired.0;
         airport_component_index = repaired.1;
     }
+    crate::core_debug_log(
+        "plan.procedure.select.core_phase",
+        &serde_json::json!({
+            "phase": "target_resolved",
+            "airport_component_index": airport_component_index,
+            "replace_component_index": replace_component_index,
+            "elapsed_ms": started.elapsed_ms(),
+        }),
+    );
     let start_component_index = airport_component_index.checked_sub(1);
     let store = session_nav_kv_store(session)?;
     let procedure_component_index = replace_component_index
         .or(start_component_index)
         .unwrap_or(airport_component_index);
+    let materialize_started = crate::CoreDebugTimer::start();
     let built = match materialize_procedure(
         store,
         &airport_id,
@@ -2592,11 +2668,31 @@ pub fn select_procedure_at_flight_plan_row_in_session(
         enroute_transition.as_deref(),
         procedure_component_index,
     ) {
-        Ok(built) => built,
+        Ok(built) => {
+            crate::core_debug_log(
+                "plan.procedure.select.core_phase",
+                &serde_json::json!({
+                    "phase": "materialize_done",
+                    "elapsed_ms": materialize_started.elapsed_ms(),
+                    "total_ms": started.elapsed_ms(),
+                }),
+            );
+            built
+        }
         Err(HadReadError::NeedPages(pages)) => {
+            crate::core_debug_log(
+                "plan.procedure.select.core_phase",
+                &serde_json::json!({
+                    "phase": "materialize_need_pages",
+                    "resource_count": pages.len(),
+                    "pages": pages,
+                    "elapsed_ms": materialize_started.elapsed_ms(),
+                    "total_ms": started.elapsed_ms(),
+                }),
+            );
             return Ok(HadOperationOutcome::NeedResources {
                 resources: nav_kv_page_resources(pages),
-            })
+            });
         }
         Err(HadReadError::Fatal(message)) => {
             return Err(AppError {
@@ -2605,6 +2701,7 @@ pub fn select_procedure_at_flight_plan_row_in_session(
             });
         }
     };
+    let mutation_started = crate::CoreDebugTimer::start();
     let mutation = if let Some(replace_component_index) = replace_component_index {
         crate::replace_procedure_materialized_ui(&plan, replace_component_index, built)?
     } else if let Some(start_component_index) = start_component_index {
@@ -2617,7 +2714,26 @@ pub fn select_procedure_at_flight_plan_row_in_session(
     } else {
         crate::insert_initial_procedure_materialized_ui(&plan, airport_component_index, built)?
     };
-    commit_session_flight_plan_with_snapshot_outcome(session, mutation.mutation.plan)
+    crate::core_debug_log(
+        "plan.procedure.select.core_phase",
+        &serde_json::json!({
+            "phase": "mutation_done",
+            "elapsed_ms": mutation_started.elapsed_ms(),
+            "total_ms": started.elapsed_ms(),
+        }),
+    );
+    let commit_started = crate::CoreDebugTimer::start();
+    let outcome = commit_session_flight_plan_with_snapshot_outcome(session, mutation.mutation.plan);
+    crate::core_debug_log(
+        "plan.procedure.select.core_phase",
+        &serde_json::json!({
+            "phase": "commit_done",
+            "ok": outcome.is_ok(),
+            "elapsed_ms": commit_started.elapsed_ms(),
+            "total_ms": started.elapsed_ms(),
+        }),
+    );
+    outcome
 }
 
 pub fn load_plate_procedure_in_session(
@@ -4235,7 +4351,17 @@ fn read_attached_json_optional<T: for<'de> Deserialize<'de>>(
             .map(Some)
             .map_err(|err| HadReadError::Fatal(format!("HAD JSON decode failed for {key}: {err}"))),
         NavKvLookup::MissingKey => Ok(None),
-        NavKvLookup::MissingPages(pages) => Err(HadReadError::NeedPages(pages)),
+        NavKvLookup::MissingPages(pages) => {
+            crate::core_debug_log(
+                "core.had.key_page_fault",
+                &serde_json::json!({
+                    "key": key,
+                    "pages": pages,
+                    "page_count": pages.len(),
+                }),
+            );
+            Err(HadReadError::NeedPages(pages))
+        }
     }
 }
 

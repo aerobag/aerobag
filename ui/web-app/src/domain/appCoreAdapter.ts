@@ -920,10 +920,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       });
       publishInvalidations(["session_snapshot"]);
     };
-    const syncGuidanceGeometry = async () => {
-      snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
-        this.module.sync_guidance_geometry_in_session(handle),
-      );
+    const syncGuidanceGeometry = async (reason = "unspecified") => {
+      snapshot = await debugTiming("plan.guidance.sync", () =>
+        runSessionOperation<UiSessionSnapshot>(() =>
+          this.module.sync_guidance_geometry_in_session(handle),
+        ),
+      { reason });
       return snapshot;
     };
     const isInvalidSessionHandleError = (error: unknown) =>
@@ -1065,20 +1067,23 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return snapshot;
       },
       selectProcedureAtFlightPlanRow: async (rowUid, airportId, procedureId, kind, runwayTransition, enrouteTransition) => {
-        snapshot = await withSessionRetry(async () =>
-          runSessionOperation<UiSessionSnapshot>(() =>
-            this.module.select_procedure_at_flight_plan_row_in_session(
-              handle,
-              rowUid,
-              airportId,
-              procedureId,
-              JSON.stringify(kind),
-              JSON.stringify(runwayTransition),
-              JSON.stringify(enrouteTransition),
+        const trace = { row_uid: rowUid, airport_id: airportId, procedure_id: procedureId, kind, runway_transition: runwayTransition, enroute_transition: enrouteTransition };
+        snapshot = await debugTiming("plan.procedure.select.session_mutation", () =>
+          withSessionRetry(async () =>
+            runSessionOperation<UiSessionSnapshot>(() =>
+              this.module.select_procedure_at_flight_plan_row_in_session(
+                handle,
+                rowUid,
+                airportId,
+                procedureId,
+                JSON.stringify(kind),
+                JSON.stringify(runwayTransition),
+                JSON.stringify(enrouteTransition),
+              ),
             ),
           ),
-        );
-        await syncGuidanceGeometry();
+        trace);
+        await syncGuidanceGeometry("select_procedure");
         return snapshot;
       },
       loadPlateProcedure: async (loadId) => {

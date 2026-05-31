@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -9,6 +12,22 @@ fn repo_root() -> PathBuf {
 
 fn read_repo_file(path: &str) -> String {
     std::fs::read_to_string(repo_root().join(path)).expect(path)
+}
+
+fn read_repo_path(path: &Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_else(|err| panic!("{}: {err}", path.display()))
+}
+
+fn collect_rust_files(root: &Path, out: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(root).unwrap_or_else(|err| panic!("{}: {err}", root.display())) {
+        let entry = entry.expect("read dir entry");
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rust_files(&path, out);
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            out.push(path);
+        }
+    }
 }
 
 fn strip_rust_tests(source: &str) -> &str {
@@ -291,6 +310,45 @@ fn exported_boundary_modules_do_not_panic_on_poisoned_stores() {
     assert!(
         violations.is_empty(),
         "boundary modules must return errors instead of panicking:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn app_core_runtime_code_does_not_use_host_clock_apis() {
+    let root = repo_root().join("ui/core-rust/crates/app-core/src");
+    let mut files = Vec::new();
+    collect_rust_files(&root, &mut files);
+
+    let forbidden = [
+        "Instant::now(",
+        "SystemTime::now(",
+        "use std::time::Instant",
+        "std::time::Instant",
+        "time::Instant",
+    ];
+    let mut violations = Vec::new();
+    for file in files {
+        let source_text = read_repo_path(&file);
+        let source = strip_rust_tests(&source_text);
+        for (line_index, line) in source.lines().enumerate() {
+            for needle in forbidden {
+                if line.contains(needle) {
+                    let relative = file.strip_prefix(repo_root()).unwrap_or(&file);
+                    violations.push(format!(
+                        "{}:{}: {}",
+                        relative.display(),
+                        line_index + 1,
+                        line.trim()
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "app-core must not call host clock APIs directly; inject platform time through app_core::set_core_clock_ms or explicit inputs:\n{}",
         violations.join("\n")
     );
 }

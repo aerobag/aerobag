@@ -613,6 +613,30 @@ pub(crate) enum HadReadError {
     Fatal(String),
 }
 
+#[derive(Debug, Default)]
+struct HadReadPageCollector {
+    pages: Vec<u32>,
+}
+
+impl HadReadPageCollector {
+    fn collect<T>(&mut self, result: Result<T, HadReadError>) -> Result<Option<T>, HadReadError> {
+        match result {
+            Ok(value) => Ok(Some(value)),
+            Err(HadReadError::NeedPages(pages)) => {
+                self.pages.extend(pages);
+                Ok(None)
+            }
+            Err(HadReadError::Fatal(message)) => Err(HadReadError::Fatal(message)),
+        }
+    }
+
+    fn into_pages(mut self) -> Vec<u32> {
+        self.pages.sort_unstable();
+        self.pages.dedup();
+        self.pages
+    }
+}
+
 impl From<AppError> for HadReadError {
     fn from(err: AppError) -> Self {
         Self::Fatal(err.to_string())
@@ -620,14 +644,83 @@ impl From<AppError> for HadReadError {
 }
 
 pub fn run_had_operation(store: &NavKvStore, op: HadOperation) -> AppResult<HadOperationOutcome> {
+    let operation = had_operation_trace(&op);
+    let started = crate::CoreDebugTimer::start();
     match run_had_operation_value(store, op) {
-        Ok(result) => Ok(HadOperationOutcome::complete(result)),
-        Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
-            resources: nav_kv_page_resources(pages),
-        }),
+        Ok(result) => {
+            crate::core_debug_log(
+                "core.had_operation.core_done",
+                &serde_json::json!({
+                    "operation": operation,
+                    "state": "complete",
+                    "elapsed_ms": started.elapsed_ms(),
+                }),
+            );
+            Ok(HadOperationOutcome::complete(result))
+        }
+        Err(HadReadError::NeedPages(pages)) => {
+            crate::core_debug_log(
+                "core.had_operation.core_done",
+                &serde_json::json!({
+                    "operation": operation,
+                    "state": "need_resources",
+                    "resource_count": pages.len(),
+                    "pages": pages,
+                    "elapsed_ms": started.elapsed_ms(),
+                }),
+            );
+            Ok(HadOperationOutcome::NeedResources {
+                resources: nav_kv_page_resources(pages),
+            })
+        }
         Err(HadReadError::Fatal(message)) => Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message,
+        }),
+    }
+}
+
+fn had_operation_trace(op: &HadOperation) -> serde_json::Value {
+    match op {
+        HadOperation::ListProcedures {
+            airport_id,
+            procedure_kind,
+        } => serde_json::json!({
+            "kind": "list_procedures",
+            "airport_id": airport_id,
+            "procedure_kind": procedure_kind,
+        }),
+        HadOperation::DescribeProcedureOptions {
+            airport_id,
+            procedure_id,
+            procedure_kind,
+        } => serde_json::json!({
+            "kind": "describe_procedure_options",
+            "airport_id": airport_id,
+            "procedure_id": procedure_id,
+            "procedure_kind": procedure_kind,
+        }),
+        HadOperation::MaterializeProcedure {
+            airport_id,
+            procedure_id,
+            procedure_kind,
+            runway_transition,
+            enroute_transition,
+            component_index,
+        } => serde_json::json!({
+            "kind": "materialize_procedure",
+            "airport_id": airport_id,
+            "procedure_id": procedure_id,
+            "procedure_kind": procedure_kind,
+            "runway_transition": runway_transition,
+            "enroute_transition": enroute_transition,
+            "component_index": component_index,
+        }),
+        HadOperation::ProjectFlightPlanRoute { .. } => serde_json::json!({
+            "kind": "project_flight_plan_route",
+        }),
+        _ => serde_json::json!({
+            "kind": "other",
         }),
     }
 }
@@ -982,7 +1075,10 @@ fn read_required_key<T: DeserializeOwned>(
         NavKvLookup::MissingKey => Err(HadReadError::Fatal(format!(
             "HAD missing required {family} key: {key}"
         ))),
-        NavKvLookup::MissingPages(pages) => Err(HadReadError::NeedPages(pages)),
+        NavKvLookup::MissingPages(pages) => {
+            log_had_key_page_fault(key, &pages);
+            Err(HadReadError::NeedPages(pages))
+        }
     }
 }
 
@@ -998,8 +1094,22 @@ fn read_optional<T: DeserializeOwned>(
             .map(Some)
             .map_err(|err| HadReadError::Fatal(format!("HAD JSON decode failed for {key}: {err}"))),
         NavKvLookup::MissingKey => Ok(None),
-        NavKvLookup::MissingPages(pages) => Err(HadReadError::NeedPages(pages)),
+        NavKvLookup::MissingPages(pages) => {
+            log_had_key_page_fault(&key, &pages);
+            Err(HadReadError::NeedPages(pages))
+        }
     }
+}
+
+fn log_had_key_page_fault(key: &str, pages: &[u32]) {
+    crate::core_debug_log(
+        "core.had.key_page_fault",
+        &serde_json::json!({
+            "key": key,
+            "pages": pages,
+            "page_count": pages.len(),
+        }),
+    );
 }
 
 pub(crate) fn nav_ref_position(
@@ -1113,12 +1223,17 @@ pub(crate) fn flight_plan_ui_state(
 ) -> Result<FlightPlanUiState, HadReadError> {
     let plan = crate::build_flight_plan(plan)?;
     let mut ui_state = current_ui_state;
-    let route = project_flight_plan_route(store, &plan)?;
+    let mut missing_pages = HadReadPageCollector::default();
+    let route = missing_pages
+        .collect(project_flight_plan_route(store, &plan))?
+        .unwrap_or_default();
     for row in &mut ui_state.display_rows {
         let mut distance_nm = None;
         let mut course_deg = None;
         row.symbol_feature = match &row.nav_ref {
-            Some(nav_ref) => nav_symbol_feature(store, nav_ref)?,
+            Some(nav_ref) => missing_pages
+                .collect(nav_symbol_feature(store, nav_ref))?
+                .flatten(),
             None => None,
         };
         if let Some(leg_index) = row.leg_index {
@@ -1131,11 +1246,17 @@ pub(crate) fn flight_plan_ui_state(
                                 .map(|segment| segment.distance_nm)
                                 .sum::<f64>(),
                     );
-                    course_deg = true_to_magnetic_course_deg_optional(
-                        store,
-                        first_segment.course_deg,
-                        crate::great_circle_intermediate(first_segment.from, first_segment.to, 0.5),
-                    )?;
+                    course_deg = missing_pages
+                        .collect(true_to_magnetic_course_deg_optional(
+                            store,
+                            first_segment.course_deg,
+                            crate::great_circle_intermediate(
+                                first_segment.from,
+                                first_segment.to,
+                                0.5,
+                            ),
+                        ))?
+                        .flatten();
                 }
             }
         }
@@ -1149,13 +1270,15 @@ pub(crate) fn flight_plan_ui_state(
             .any(|action| action.id == FlightPlanRowActionId::ShowPlate)
         {
             let match_rows = match (&row.chart_airport_id, &row.procedure_id) {
-                (Some(airport_id), Some(procedure_id)) => read_optional::<Vec<CifpTppMatchRow>>(
-                    store,
-                    NavKvQuery::PlateCifpMatch {
-                        airport_id: airport_id.clone(),
-                        cifp_id: procedure_id.clone(),
-                    },
-                )?,
+                (Some(airport_id), Some(procedure_id)) => missing_pages
+                    .collect(read_optional::<Vec<CifpTppMatchRow>>(
+                        store,
+                        NavKvQuery::PlateCifpMatch {
+                            airport_id: airport_id.clone(),
+                            cifp_id: procedure_id.clone(),
+                        },
+                    ))?
+                    .flatten(),
                 _ => None,
             };
             let plate_match = match_rows.and_then(describe_show_plate_for_procedure);
@@ -1168,6 +1291,10 @@ pub(crate) fn flight_plan_ui_state(
         }
     }
     ui_state.data_columns = crate::flight_data::flight_plan_columns();
+    let pages = missing_pages.into_pages();
+    if !pages.is_empty() {
+        return Err(HadReadError::NeedPages(pages));
+    }
     Ok(ui_state)
 }
 
@@ -4042,6 +4169,67 @@ mod tests {
             row_course,
             crate::flight_data::format_course_degrees(true_course - 14.0)
         );
+    }
+
+    #[test]
+    fn flight_plan_ui_state_batches_enrichment_page_faults() {
+        let large_symbol = format!("null{}", " ".repeat(4996)).into_bytes();
+        let large_magvar = format!("14.0{}", " ".repeat(4996)).into_bytes();
+        let mut entries = vec![
+            ("magvar/48/-111", large_magvar.as_slice()),
+            (
+                "navref/position/airport/KAAA",
+                br#"{"lat":48.0,"lon":-110.0}"#.as_slice(),
+            ),
+            (
+                "navref/position/airport/KBBB",
+                br#"{"lat":48.0,"lon":-111.0}"#.as_slice(),
+            ),
+            ("navref/symbol/airport/KAAA", large_symbol.as_slice()),
+            ("navref/symbol/airport/KBBB", large_symbol.as_slice()),
+        ];
+        entries.sort_by(|left, right| left.0.cmp(right.0));
+        let (root, pages) = fixture(&entries, 5000);
+        let mut store = NavKvStore::new(root);
+        store.insert_page(0, pages[0].clone());
+        let plan = crate::build_flight_plan(FlightPlan {
+            id: "plan-batched-page-faults".to_string(),
+            name: "KAAA KBBB".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KAAA".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KBBB".to_string()),
+                },
+            ],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: Some(AirportId("KAAA".to_string())),
+            destination: Some(AirportId("KBBB".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        })
+        .expect("build plan");
+
+        match flight_plan_ui_state(
+            &store,
+            plan.clone(),
+            crate::planning::project_ui_state(&plan),
+            crate::FlightDataComputer::default(),
+        ) {
+            Ok(_) => panic!("expected batched page fault"),
+            Err(HadReadError::NeedPages(pages)) => {
+                assert_eq!(pages, vec![1, 2, 3]);
+            }
+            Err(HadReadError::Fatal(message)) => panic!("unexpected fatal error: {message}"),
+        }
     }
 
     #[test]

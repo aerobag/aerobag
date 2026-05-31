@@ -13,7 +13,7 @@ pub fn set_core_debug_logger(logger: Option<CoreDebugLogger>) {
     *CORE_DEBUG_LOGGER
         .get_or_init(|| Mutex::new(None))
         .lock()
-        .expect("core debug logger poisoned") = logger;
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = logger;
 }
 
 pub fn set_core_clock_ms(clock: Option<CoreClockMs>) {
@@ -42,8 +42,30 @@ pub fn core_debug_log_value(tag: &str, data: &Value) {
     if let Some(logger) = *CORE_DEBUG_LOGGER
         .get_or_init(|| Mutex::new(None))
         .lock()
-        .expect("core debug logger poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
     {
         logger(tag, data);
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CoreDebugTimer {
+    started_ms: Option<f64>,
+}
+
+impl CoreDebugTimer {
+    pub fn start() -> Self {
+        Self {
+            started_ms: core_clock_ms(),
+        }
+    }
+
+    pub fn elapsed_ms(self) -> Option<f64> {
+        core_debug_elapsed_ms_since(self.started_ms)
+    }
+}
+
+pub fn core_debug_elapsed_ms_since(started_ms: Option<f64>) -> Option<f64> {
+    let started_ms = started_ms?;
+    Some((core_clock_ms()? - started_ms).max(0.0).round())
 }

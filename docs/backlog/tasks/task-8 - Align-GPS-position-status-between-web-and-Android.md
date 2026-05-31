@@ -1,7 +1,7 @@
 ---
 id: TASK-8
 title: Align GPS position status between web and Android
-state: medium
+state: done
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:

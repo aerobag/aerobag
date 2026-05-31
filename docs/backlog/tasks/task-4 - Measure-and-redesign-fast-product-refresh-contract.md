@@ -17,8 +17,6 @@ ordinal: 4000
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
 - Some stale docs/backlog text still mentions fast-products and old commands.
-  - Some CLI-hosted integration tests still live under preprocessor-cli; helpers
-    are moved, tests are not fully relocated.
   - Real future streaming adapters like SWIM/NOTAMs are not implemented yet.
   - Production serving details remain: supervisor, reverse proxy, and SSE
     scaling.

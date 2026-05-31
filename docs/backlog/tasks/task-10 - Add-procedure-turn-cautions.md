@@ -1,7 +1,7 @@
 ---
 id: TASK-10
 title: Approach decoding quality warning
-state: high
+state: done
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:

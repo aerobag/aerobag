@@ -168,6 +168,90 @@
     <div id="root"></div>
     <script>
       window.__aerobag_html_start = performance.now();
+      window.__aerobag_startup_cache_warm = (function () {
+        const startedAtMs = performance.now();
+        const packagesRoot = new URL("/packages/", window.location.origin);
+        const state = {
+          started_at_ms: Math.round(startedAtMs),
+          status: "running",
+          resource_count: 0,
+          resource_urls: [],
+          fetches: [],
+        };
+        function finish(status, extra) {
+          state.status = status;
+          state.done_at_ms = Math.round(performance.now());
+          state.elapsed_ms = Math.round(performance.now() - startedAtMs);
+          if (extra) {
+            Object.assign(state, extra);
+          }
+          return state;
+        }
+        state.promise = fetch(new URL("current_artifacts.json", packagesRoot), { cache: "no-cache" })
+          .then(function (response) {
+            if (!response.ok) {
+              return finish("current_artifacts_http_error", { status_code: response.status });
+            }
+            return response.json();
+          })
+          .then(function (manifest) {
+            if (!manifest || manifest.status) {
+              return manifest;
+            }
+            const resources = manifest.startup_prefetch && Array.isArray(manifest.startup_prefetch.resources)
+              ? manifest.startup_prefetch.resources
+              : [];
+            const urls = resources
+              .map(function (resource) {
+                return resource && typeof resource.url === "string"
+                  ? new URL(resource.url, packagesRoot).toString()
+                  : null;
+              })
+              .filter(Boolean);
+            state.resource_count = urls.length;
+            state.resource_urls = urls;
+            if (urls.length === 0) {
+              return finish("empty");
+            }
+            return Promise.allSettled(urls.map(function (url) {
+              const fetchStartedAtMs = performance.now();
+              return fetch(url, { cache: "force-cache" }).then(function (response) {
+                return {
+                  url: url,
+                  ok: response.ok,
+                  status: response.status,
+                  elapsed_ms: Math.round(performance.now() - fetchStartedAtMs),
+                };
+              });
+            })).then(function (results) {
+              const fetches = results.map(function (result, index) {
+                if (result.status === "fulfilled") {
+                  return result.value;
+                }
+                return {
+                  url: urls[index],
+                  ok: false,
+                  status: 0,
+                  elapsed_ms: null,
+                  error: result.reason && result.reason.message ? result.reason.message : String(result.reason),
+                };
+              });
+              const failed = fetches.filter(function (fetchResult) {
+                return !fetchResult.ok;
+              }).length;
+              return finish(failed === 0 ? "done" : "resource_errors", {
+                fetches: fetches,
+                failed_count: failed,
+              });
+            });
+          })
+          .catch(function (error) {
+            return finish("error", {
+              error: error && error.message ? error.message : String(error),
+            });
+          });
+        return state;
+      })();
       (function () {
         const shell = document.getElementById("startup-shell");
         const copyNode = shell ? shell.querySelector(".startup-copy") : null;

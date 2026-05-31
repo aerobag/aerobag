@@ -1112,6 +1112,7 @@ pub(super) fn build_nav_kv_artifact(
         format!("nav_db_{NAV_DB_CONTRACT_ID}_{cycle}_{PACKAGE_CYCLE_VERSION}_{nav_db_sha256}.zip");
     let nav_db_package_artifact =
         publish_bundle_artifact(config, &nav_db_zip_source_path, &nav_db_published_filename)?;
+    let startup_prefetch_members = nav_db_startup_prefetch_members(&nav_db_zip_source_path)?;
     Ok(BuiltNavDbArtifacts {
         node_record: record,
         package: BundlePackageArtifact {
@@ -1151,12 +1152,45 @@ pub(super) fn build_nav_kv_artifact(
                         .cloned()
                 }),
             ui_warning: None,
-            metadata: BTreeMap::from([(
-                "contract_id".to_string(),
-                serde_json::json!(NAV_DB_CONTRACT_ID),
-            )]),
+            metadata: BTreeMap::from([
+                (
+                    "contract_id".to_string(),
+                    serde_json::json!(NAV_DB_CONTRACT_ID),
+                ),
+                (
+                    NAV_DB_STARTUP_PREFETCH_MEMBERS_METADATA_KEY.to_string(),
+                    serde_json::json!(startup_prefetch_members),
+                ),
+            ]),
         },
     })
+}
+
+fn nav_db_startup_prefetch_members(nav_db_zip_path: &Path) -> anyhow::Result<Vec<String>> {
+    let file = File::open(nav_db_zip_path)
+        .with_context(|| format!("failed to open {}", nav_db_zip_path.display()))?;
+    let mut zip = ZipArchive::new(file)
+        .with_context(|| format!("failed to open zip {}", nav_db_zip_path.display()))?;
+    let mut root_bytes = Vec::new();
+    zip.by_name("root")
+        .with_context(|| format!("{} is missing nav-kv root", nav_db_zip_path.display()))?
+        .read_to_end(&mut root_bytes)
+        .with_context(|| {
+            format!(
+                "failed to read nav-kv root from {}",
+                nav_db_zip_path.display()
+            )
+        })?;
+    let root = NavKvRoot::parse(&root_bytes)
+        .map_err(|err| anyhow::anyhow!("invalid nav-kv root: {err}"))?;
+    let mut members = Vec::with_capacity(root.prefetch_pages().len() + 1);
+    members.push("root".to_string());
+    members.extend(
+        root.prefetch_pages()
+            .iter()
+            .map(|page_index| format!("page_{page_index:04}")),
+    );
+    Ok(members)
 }
 
 pub(super) fn bundle_package_artifacts_from_resource_index(

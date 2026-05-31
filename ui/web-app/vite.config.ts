@@ -105,6 +105,11 @@ function mountStaticTree(sourceRoot: string, options: { missingStatus?: number; 
     const supportsGzip = typeof acceptEncoding === "string" && /\bgzip\b/.test(acceptEncoding);
     res.setHeader("Content-Type", contentType);
     res.setHeader("Vary", "Accept-Encoding");
+    if (/^published_(packaged|unpacked)\//.test(relativePath)) {
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    } else if (/^current_artifacts(_\d{8}T\d{6}Z)?\.json$/.test(relativePath)) {
+      res.setHeader("Cache-Control", "no-cache");
+    }
     const stream = fs.createReadStream(filePath);
     if (extension === ".terrain") {
       res.setHeader("Content-Encoding", "gzip");

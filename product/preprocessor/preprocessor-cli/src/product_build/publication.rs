@@ -25,12 +25,16 @@ pub fn publish_discovery_manifest(
         .iter()
         .map(|filename| current_bundle_entry_from_path(&config.build_root.join(filename)))
         .collect::<anyhow::Result<Vec<_>>>()?;
+    let artifact_roots = default_current_artifact_roots();
+    let startup_prefetch =
+        current_startup_prefetch_manifest(&config.build_root, &artifact_roots, &bundles)?;
     let manifest = CurrentArtifactsManifest {
         schema_version: 1,
-        artifact_roots: default_current_artifact_roots(),
+        artifact_roots,
         as_of_date: as_of_utc.date_naive().format("%Y-%m-%d").to_string(),
         as_of_utc: as_of_utc.to_rfc3339_opts(SecondsFormat::Secs, true),
         bundles,
+        startup_prefetch,
         diagnostics: None,
     };
     write_current_artifacts_aliases(&config.build_root, as_of_utc, &manifest)?;
@@ -336,15 +340,82 @@ pub(super) fn write_current_artifacts_manifest(
 ) -> anyhow::Result<PathBuf> {
     let as_of_date = as_of_utc.date_naive();
     let bundles = build_current_bundle_entries(build_root, as_of_date)?;
+    let artifact_roots = default_current_artifact_roots();
+    let startup_prefetch =
+        current_startup_prefetch_manifest(build_root, &artifact_roots, &bundles)?;
     let manifest = CurrentArtifactsManifest {
         schema_version: 1,
-        artifact_roots: default_current_artifact_roots(),
+        artifact_roots,
         as_of_date: as_of_date.format("%Y-%m-%d").to_string(),
         as_of_utc: as_of_utc.to_rfc3339_opts(SecondsFormat::Secs, true),
         bundles,
+        startup_prefetch,
         diagnostics,
     };
     write_current_artifacts_aliases(build_root, as_of_utc, &manifest)
+}
+
+pub(super) fn current_startup_prefetch_manifest(
+    build_root: &Path,
+    artifact_roots: &CurrentArtifactRoots,
+    bundles: &[CurrentBundleEntry],
+) -> anyhow::Result<Option<CurrentStartupPrefetchManifest>> {
+    let mut resources = Vec::new();
+    let mut seen_urls = BTreeSet::new();
+    for bundle_ref in bundles {
+        let bundle = load_bundle_manifest(&build_root.join(&bundle_ref.filename))?;
+        for package in bundle
+            .packages
+            .iter()
+            .filter(|package| package.family_id == "nav-db")
+        {
+            let Some(members_value) = package
+                .metadata
+                .get(NAV_DB_STARTUP_PREFETCH_MEMBERS_METADATA_KEY)
+            else {
+                continue;
+            };
+            let members = serde_json::from_value::<Vec<String>>(members_value.clone())
+                .with_context(|| {
+                    format!(
+                        "package {} metadata.{} must be a string array",
+                        package.id, NAV_DB_STARTUP_PREFETCH_MEMBERS_METADATA_KEY
+                    )
+                })?;
+            let package_dir = zip_stem(&package.filename)?;
+            for member in members {
+                validate_public_package_member(
+                    &member,
+                    "bundle.packages[].metadata.startup_prefetch_members[]",
+                )?;
+                let url = join_publication_url(&[
+                    artifact_roots.unpacked.as_str(),
+                    package_dir.as_str(),
+                    member.as_str(),
+                ]);
+                if seen_urls.insert(url.clone()) {
+                    resources.push(CurrentStartupPrefetchResource { url });
+                }
+            }
+        }
+    }
+    Ok(
+        (!resources.is_empty()).then_some(CurrentStartupPrefetchManifest {
+            schema_version: 1,
+            resources,
+        }),
+    )
+}
+
+fn join_publication_url(parts: &[&str]) -> String {
+    parts
+        .iter()
+        .filter_map(|part| {
+            let trimmed = part.trim_matches('/');
+            (!trimmed.is_empty()).then_some(trimmed)
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 pub(super) fn write_build_status_html(
@@ -979,6 +1050,43 @@ pub(super) fn validate_current_artifacts_manifest(
             current.artifact_roots.unpacked
         );
     }
+    if let Some(prefetch) = &current.startup_prefetch {
+        if prefetch.schema_version != 1 {
+            bail!(
+                "{} has unexpected startup_prefetch.schema_version {}",
+                path.display(),
+                prefetch.schema_version
+            );
+        }
+        for resource in &prefetch.resources {
+            validate_publication_resource_url(
+                &resource.url,
+                "current_artifacts.startup_prefetch.resources[].url",
+            )?;
+            if !resource.url.starts_with(&current.artifact_roots.unpacked) {
+                bail!(
+                    "{} startup prefetch URL is not under artifact_roots.unpacked: {}",
+                    path.display(),
+                    resource.url
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn validate_publication_resource_url(value: &str, field: &str) -> anyhow::Result<()> {
+    if value.is_empty() {
+        bail!("{field} must not be empty");
+    }
+    if value.starts_with('/') || value.contains('\\') || value.contains("://") {
+        bail!("{field} must be a relative publication URL, got {value}");
+    }
+    for component in value.split('/') {
+        if component.is_empty() || component == "." || component == ".." {
+            bail!("{field} has invalid path component in {value}");
+        }
+    }
     Ok(())
 }
 
@@ -1083,6 +1191,13 @@ pub(super) fn validate_unpacked_contract_for_discovery(
     // only the unpacked artifact root referenced by `artifact_roots.unpacked`.
     validate_no_internal_paths_in_json(discovery_path)?;
     let current = load_current_artifacts_manifest(discovery_path)?;
+    validate_current_artifacts_manifest(&current, discovery_path)?;
+    if let Some(prefetch) = &current.startup_prefetch {
+        let publication_root = unpacked_root.parent().unwrap_or(unpacked_root);
+        for resource in &prefetch.resources {
+            ensure_public_file_exists(&publication_root.join(&resource.url))?;
+        }
+    }
 
     for bundle in &current.bundles {
         let unpacked_bundle_path = unpacked_root.join(&bundle.filename);
@@ -1238,6 +1353,21 @@ pub(super) fn validate_public_filename(value: &str, field: &str) -> anyhow::Resu
     }
     if value.contains('/') || value.contains('\\') {
         bail!("{field} must not contain path separators: {value}");
+    }
+    Ok(())
+}
+
+pub(super) fn validate_public_package_member(value: &str, field: &str) -> anyhow::Result<()> {
+    if value.is_empty() {
+        bail!("{field} must not be empty");
+    }
+    if value.starts_with('/') || value.contains('\\') {
+        bail!("{field} must be a relative public member path, got {value}");
+    }
+    for component in value.split('/') {
+        if component.is_empty() || component == "." || component == ".." {
+            bail!("{field} has invalid path component in {value}");
+        }
     }
     Ok(())
 }

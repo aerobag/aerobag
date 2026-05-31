@@ -7,8 +7,31 @@ import { installStartupReloadHarness } from "./startupReloadHarness";
 import "./styles.css";
 
 declare global {
+  interface AerobagStartupCacheWarmFetch {
+    url: string;
+    ok: boolean;
+    status: number;
+    elapsed_ms: number | null;
+    error?: string;
+  }
+
+  interface AerobagStartupCacheWarmState {
+    started_at_ms: number;
+    done_at_ms?: number;
+    elapsed_ms?: number;
+    status: string;
+    status_code?: number;
+    resource_count: number;
+    resource_urls: string[];
+    fetches: AerobagStartupCacheWarmFetch[];
+    failed_count?: number;
+    error?: string;
+    promise?: Promise<AerobagStartupCacheWarmState>;
+  }
+
   interface Window {
     __aerobag_html_start?: number;
+    __aerobag_startup_cache_warm?: AerobagStartupCacheWarmState;
     __aerobag_hide_startup_shell?: (reason?: string) => void;
     __aerobag_startup_elapsed_interval?: number;
     __aerobag_startup_watchdog?: number;
@@ -58,6 +81,39 @@ function logStartupTiming() {
     navigation: navigationEntry && "toJSON" in navigationEntry
       ? (navigationEntry as PerformanceNavigationTiming).toJSON()
       : null,
+  });
+}
+
+function startupCacheWarmSummary(state: AerobagStartupCacheWarmState) {
+  const successfulFetches = state.fetches.filter((fetchResult) => fetchResult.ok);
+  const elapsedValues = successfulFetches
+    .map((fetchResult) => fetchResult.elapsed_ms)
+    .filter((elapsedMs): elapsedMs is number => elapsedMs !== null);
+  return {
+    started_at_ms: state.started_at_ms,
+    done_at_ms: state.done_at_ms ?? null,
+    elapsed_ms: state.elapsed_ms ?? null,
+    status: state.status,
+    resource_count: state.resource_count,
+    fetched_count: successfulFetches.length,
+    failed_count: state.failed_count ?? state.fetches.length - successfulFetches.length,
+    max_fetch_elapsed_ms: elapsedValues.length > 0 ? Math.max(...elapsedValues) : null,
+    resource_urls: state.resource_urls,
+    fetches: state.fetches,
+    error: state.error ?? null,
+    status_code: state.status_code ?? null,
+  };
+}
+
+function logStartupCacheWarm() {
+  const cacheWarm = window.__aerobag_startup_cache_warm;
+  if (!cacheWarm) {
+    debugLog("startup.cache_warm.missing");
+    return;
+  }
+  debugLog("startup.cache_warm.started", startupCacheWarmSummary(cacheWarm));
+  void cacheWarm.promise?.then((state) => {
+    debugLog("startup.cache_warm.done", startupCacheWarmSummary(state));
   });
 }
 
@@ -155,6 +211,7 @@ function logStartupResources() {
 
 const startupReloadHarness = installStartupReloadHarness();
 logStartupTiming();
+logStartupCacheWarm();
 if (startupReloadHarness?.active) {
   debugLog("startup.reload_harness.installed", {
     run_id: startupReloadHarness.runId,

@@ -350,6 +350,7 @@ mod tests {
                 checksum_sha256: None,
                 size_bytes: None,
             }],
+            startup_prefetch: None,
         }
     }
 

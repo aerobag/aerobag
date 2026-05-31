@@ -22,7 +22,7 @@ use preprocessor_charts::{
     WIDE_ANGLE_REGION_ID,
 };
 use preprocessor_core::nav_kv::{
-    build_nav_kv_sorted, NavKvPair, NAVKV_STORAGE_FORMAT as NAV_KV_STORAGE_FORMAT,
+    build_nav_kv_sorted, NavKvPair, NavKvRoot, NAVKV_STORAGE_FORMAT as NAV_KV_STORAGE_FORMAT,
 };
 use preprocessor_core::{ChartFamily, Region, RegionBounds};
 use preprocessor_csup::{
@@ -68,6 +68,7 @@ use paths::*;
 mod source_fingerprints;
 
 const PACKAGE_CYCLE_VERSION: &str = "01";
+const NAV_DB_STARTUP_PREFETCH_MEMBERS_METADATA_KEY: &str = "startup_prefetch_members";
 const WAYPOINT_PREFIX_MAX_RESULTS: usize = 100;
 // Offline chart region polygons are only visual guides in the package picker.
 // Grow chart cutlines coarsely before unioning to collapse tiny source-boundary
@@ -258,6 +259,8 @@ struct CurrentArtifactsManifest {
     as_of_utc: String,
     bundles: Vec<CurrentBundleEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    startup_prefetch: Option<CurrentStartupPrefetchManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     diagnostics: Option<CurrentDiagnosticsEntry>,
 }
 
@@ -265,6 +268,17 @@ struct CurrentArtifactsManifest {
 struct CurrentArtifactRoots {
     packaged: String,
     unpacked: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CurrentStartupPrefetchManifest {
+    schema_version: u32,
+    resources: Vec<CurrentStartupPrefetchResource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CurrentStartupPrefetchResource {
+    url: String,
 }
 
 fn default_current_artifact_roots() -> CurrentArtifactRoots {
@@ -3630,6 +3644,7 @@ mod tests {
                 checksum_sha256: "c".repeat(64),
                 size_bytes: 1,
             }],
+            startup_prefetch: None,
             diagnostics: None,
         };
         let current_path = root.join("current_artifacts.json");
@@ -3680,6 +3695,80 @@ mod tests {
     }
 
     #[test]
+    fn current_artifacts_manifest_embeds_nav_db_startup_prefetch_urls() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        let nav_db_sha = "a".repeat(64);
+        let nav_db_filename = format!("nav_db_{NAV_DB_CONTRACT_ID}_2605_01_{nav_db_sha}.zip");
+        let bundle = BundleManifest {
+            schema_version: 2,
+            bundle_id: "cycle_2605_01".to_string(),
+            bundle_type: "cycle".to_string(),
+            cycle: "2605".to_string(),
+            cycle_version: "01".to_string(),
+            generated_at_utc: "2026-05-14T00:00:00Z".to_string(),
+            effective_date: "2026-05-14".to_string(),
+            expiration_date: "2026-06-11".to_string(),
+            start_valid: "2026-05-14".to_string(),
+            end_valid: "2026-06-11".to_string(),
+            packages: vec![BundlePackageArtifact {
+                id: format!("NAV_DB_{NAV_DB_CONTRACT_ID}_2605_01"),
+                family_id: "nav-db".to_string(),
+                contract_id: NAV_DB_CONTRACT_ID.to_string(),
+                region_id: None,
+                filename: nav_db_filename.clone(),
+                relative_path: nav_db_filename.clone(),
+                cycle: Some("2605".to_string()),
+                cycle_version: Some("01".to_string()),
+                checksum_sha256: nav_db_sha,
+                size_bytes: 123,
+                published_at_utc: None,
+                source_generated_at_utc: None,
+                source_version: None,
+                source_fetched_at_utc: None,
+                effective_date: Some("2026-05-14".to_string()),
+                expiration_date: Some("2026-06-11".to_string()),
+                ui_warning: None,
+                metadata: BTreeMap::from([(
+                    NAV_DB_STARTUP_PREFETCH_MEMBERS_METADATA_KEY.to_string(),
+                    serde_json::json!(["root", "page_0046", "page_0570"]),
+                )]),
+            }],
+            ancillary: vec![],
+        };
+        write_hashed_bundle_manifest(root, &bundle).unwrap();
+
+        let current_path = write_current_artifacts_manifest(
+            root,
+            Utc.with_ymd_and_hms(2026, 5, 31, 1, 2, 3).unwrap(),
+            None,
+        )
+        .unwrap();
+        let current = load_current_artifacts_manifest(&current_path).unwrap();
+        let resources = current.startup_prefetch.unwrap().resources;
+        assert_eq!(
+            resources
+                .into_iter()
+                .map(|resource| resource.url)
+                .collect::<Vec<_>>(),
+            vec![
+                format!(
+                    "published_unpacked/{}/root",
+                    zip_stem(&nav_db_filename).unwrap()
+                ),
+                format!(
+                    "published_unpacked/{}/page_0046",
+                    zip_stem(&nav_db_filename).unwrap()
+                ),
+                format!(
+                    "published_unpacked/{}/page_0570",
+                    zip_stem(&nav_db_filename).unwrap()
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn packaged_cleanup_prunes_historical_discovery_with_missing_package() {
         let temp = tempdir().unwrap();
         let root = temp.path();
@@ -3705,6 +3794,7 @@ mod tests {
             as_of_date: "2026-05-04".to_string(),
             as_of_utc: "2026-05-04T00:00:00Z".to_string(),
             bundles: vec![current_bundle_entry_from_path(&current_cycle_bundle_path).unwrap()],
+            startup_prefetch: None,
             diagnostics: None,
         };
         let current_path = root.join("current_artifacts.json");
@@ -3751,6 +3841,7 @@ mod tests {
             as_of_date: "2026-05-03".to_string(),
             as_of_utc: "2026-05-03T00:00:00Z".to_string(),
             bundles: vec![current_bundle_entry_from_path(&stale_cycle_bundle_path).unwrap()],
+            startup_prefetch: None,
             diagnostics: None,
         };
         let stale_path = root.join("current_artifacts_20260503T000000Z.json");
@@ -3818,6 +3909,7 @@ mod tests {
             as_of_date: "2026-05-04".to_string(),
             as_of_utc: "2026-05-04T00:00:00Z".to_string(),
             bundles: vec![current_bundle_entry_from_path(&bundle_path).unwrap()],
+            startup_prefetch: None,
             diagnostics: None,
         };
         let current_path = packaged_root.join("current_artifacts.json");

@@ -81,6 +81,8 @@ pub struct CurrentArtifactsManifest {
     pub as_of_date: Option<String>,
     pub as_of_utc: Option<String>,
     pub bundles: Vec<CurrentArtifactsBundleRef>,
+    #[serde(default)]
+    pub startup_prefetch: Option<CurrentStartupPrefetchManifest>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +103,17 @@ pub struct CurrentArtifactsBundleRef {
     pub end_valid: Option<String>,
     pub checksum_sha256: Option<String>,
     pub size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurrentStartupPrefetchManifest {
+    pub schema_version: u32,
+    pub resources: Vec<CurrentStartupPrefetchResource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurrentStartupPrefetchResource {
+    pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2676,6 +2689,7 @@ mod tests {
                 checksum_sha256: None,
                 size_bytes: None,
             }],
+            startup_prefetch: None,
         };
         let bundle_2603 = BundleManifest {
             packages: vec![BundlePackageArtifact {
@@ -2785,6 +2799,7 @@ mod tests {
                 checksum_sha256: None,
                 size_bytes: None,
             }],
+            startup_prefetch: None,
         };
         let bundle_2604 = BundleManifest {
             packages: vec![BundlePackageArtifact {
@@ -2889,6 +2904,7 @@ mod tests {
                 checksum_sha256: None,
                 size_bytes: None,
             }],
+            startup_prefetch: None,
         };
         let bundles = BTreeMap::from([(
             "bundle_cycle_2604.json".to_string(),
@@ -2958,6 +2974,7 @@ mod tests {
                 checksum_sha256: None,
                 size_bytes: None,
             }],
+            startup_prefetch: None,
         };
         let overlap = CurrentArtifactsManifest {
             schema_version: Some(1),
@@ -2990,6 +3007,7 @@ mod tests {
                     size_bytes: None,
                 },
             ],
+            startup_prefetch: None,
         };
         let bundles = BTreeMap::from([
             (

@@ -3422,10 +3422,10 @@ mod tests {
 
     #[test]
     fn nav_db_open_controller_prefetches_root_pages_before_contract_validation() {
-        let contract = br#"{"nav_db_contract_version":1}"#;
+        let contract = format!(r#"{{"contract_id":"{REQUIRED_NAV_DB_CONTRACT_ID}"}}"#);
         let mut pairs = vec![
             nav_kv_pair("chart/catalog", b"catalog"),
-            nav_kv_pair("contract/nav-db", contract.as_slice()),
+            nav_kv_pair("contract/nav-db", contract.as_bytes()),
             nav_kv_pair("vector/manifest", b"{}"),
             nav_kv_pair("weather/metar-important-stations", b"KAAA\nKBBB\n"),
         ];

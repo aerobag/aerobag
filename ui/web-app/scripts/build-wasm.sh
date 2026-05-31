@@ -3,10 +3,10 @@ set -euo pipefail
 
 PROFILE="${1:-debug}"
 case "$PROFILE" in
-  debug|release)
+  debug|release|optimized)
     ;;
   *)
-    echo "usage: $0 [debug|release]" >&2
+    echo "usage: $0 [debug|release|optimized]" >&2
     exit 1
     ;;
 esac
@@ -37,20 +37,73 @@ fi
 
 mkdir -p "$OUT_DIR"
 mkdir -p "$RUST_TARGET_DIR"
+STAGE_DIR="$(mktemp -d)"
+cleanup_stage_dir() {
+  rm -rf "$STAGE_DIR"
+}
+trap cleanup_stage_dir EXIT
+
+case "$PROFILE" in
+  debug)
+    CARGO_PROFILE_ARGS=()
+    CARGO_OUTPUT_PROFILE="debug"
+    RUN_WASM_OPT=0
+    ;;
+  release)
+    CARGO_PROFILE_ARGS=(--release)
+    CARGO_OUTPUT_PROFILE="release"
+    RUN_WASM_OPT="${AEROBAG_WASM_OPT:-1}"
+    ;;
+  optimized)
+    CARGO_PROFILE_ARGS=(--profile wasm-perf)
+    CARGO_OUTPUT_PROFILE="wasm-perf"
+    RUN_WASM_OPT="${AEROBAG_WASM_OPT:-1}"
+    ;;
+esac
 
 (
   cd "$CORE_DIR"
-  if [ "$PROFILE" = "release" ]; then
-    CARGO_TARGET_DIR="$RUST_TARGET_DIR" cargo build --release -p app-wasm --target wasm32-unknown-unknown
-  else
-    CARGO_TARGET_DIR="$RUST_TARGET_DIR" cargo build -p app-wasm --target wasm32-unknown-unknown
-  fi
+  CARGO_TARGET_DIR="$RUST_TARGET_DIR" cargo build "${CARGO_PROFILE_ARGS[@]}" -p app-wasm --target wasm32-unknown-unknown
 )
 
-WASM_INPUT="$RUST_TARGET_DIR/wasm32-unknown-unknown/$PROFILE/app_wasm.wasm"
+WASM_INPUT="$RUST_TARGET_DIR/wasm32-unknown-unknown/$CARGO_OUTPUT_PROFILE/app_wasm.wasm"
 
 "$WASM_BINDGEN_BIN" \
   "$WASM_INPUT" \
   --target web \
-  --out-dir "$OUT_DIR" \
+  --out-dir "$STAGE_DIR" \
   --out-name app_wasm
+
+if [ "$RUN_WASM_OPT" != "0" ]; then
+  if [ -n "${AEROBAG_WASM_OPT_BIN:-}" ]; then
+    read -r -a WASM_OPT_CMD <<< "$AEROBAG_WASM_OPT_BIN"
+  elif [ -f "$UI_TARGET_ROOT/tools/binaryen-version_129/wasm-opt.js" ]; then
+    WASM_OPT_CMD=(node "$UI_TARGET_ROOT/tools/binaryen-version_129/wasm-opt.js")
+  elif command -v wasm-opt >/dev/null 2>&1; then
+    WASM_OPT_CMD=(wasm-opt)
+  else
+    echo "wasm-opt not found; run ui/web-app/scripts/install-binaryen-wasm-opt.sh, install Binaryen version 129+, or set AEROBAG_WASM_OPT=0" >&2
+    exit 1
+  fi
+
+  WASM_OPT_VERSION="$("${WASM_OPT_CMD[@]}" --version)"
+  WASM_OPT_MAJOR="$(printf '%s\n' "$WASM_OPT_VERSION" | sed -n 's/.*version[_ ]\([0-9][0-9]*\).*/\1/p' | head -1)"
+  if [ -z "$WASM_OPT_MAJOR" ] || [ "$WASM_OPT_MAJOR" -lt 129 ]; then
+    echo "wasm-opt version 129+ is required; found: $WASM_OPT_VERSION" >&2
+    exit 1
+  fi
+
+  "${WASM_OPT_CMD[@]}" -O2 "$STAGE_DIR/app_wasm_bg.wasm" -o "$STAGE_DIR/app_wasm_bg.wasm.opt"
+  mv "$STAGE_DIR/app_wasm_bg.wasm.opt" "$STAGE_DIR/app_wasm_bg.wasm"
+fi
+
+case "$PROFILE" in
+  release|optimized)
+    AEROBAG_REPO_ROOT="$ROOT_DIR" AEROBAG_WASM_GENERATED_DIR="$STAGE_DIR" node "$ROOT_DIR/ui/web-app/scripts/wasm-startup-smoke.mjs"
+    ;;
+esac
+
+cp "$STAGE_DIR/app_wasm.js" "$OUT_DIR/app_wasm.js"
+cp "$STAGE_DIR/app_wasm_bg.wasm" "$OUT_DIR/app_wasm_bg.wasm"
+cp "$STAGE_DIR/app_wasm.d.ts" "$OUT_DIR/app_wasm.d.ts"
+cp "$STAGE_DIR/app_wasm_bg.wasm.d.ts" "$OUT_DIR/app_wasm_bg.wasm.d.ts"

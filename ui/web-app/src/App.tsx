@@ -2090,7 +2090,9 @@ export default function App() {
     }
     debugTiming("startup.session.create", async () => {
       markStartupProgress("session.empty_plan", "Creating empty flight plan");
-      const initialPlan = await appCoreAdapter.emptyFlightPlan();
+      const initialPlan = await debugTiming("startup.session.empty_plan.core", () =>
+        appCoreAdapter.emptyFlightPlan(),
+      );
       markStartupProgress("session.create", "Creating core UI session");
       const created = await debugTiming("startup.session.create.core", () => appCoreAdapter.createUiSession(
         initialPlan,
@@ -2098,8 +2100,8 @@ export default function App() {
         initialChartPageState.selected_airport_id,
         initialChartPageState.selected_chart_id,
       ));
-      markStartupProgress("session.snapshot", "Reading initial session snapshot");
-      let createdSnapshot = await created.snapshot();
+      markStartupProgress("session.initial_snapshot", "Using initial session snapshot");
+      let createdSnapshot = debugTiming("startup.session.initial_snapshot", () => created.initialSnapshot());
       markStartupProgress("session.ownship_start", "Starting ownship source");
       createdSnapshot = await debugTiming("startup.session.ownship_start", () => created.setSituation({
         position: { kind: "lat_lon", lat: MATLK_POSITION.lat, lon: MATLK_POSITION.lon },
@@ -2461,7 +2463,16 @@ export default function App() {
         currentPlan !== null &&
         planUiState !== null);
     if (shouldHideStartupShell) {
-      window.__aerobag_hide_startup_shell?.();
+      const reason = startupFatalError !== null
+        ? "startup_fatal_error"
+        : sessionInitError !== null
+          ? "session_init_error"
+          : mapSelectorLoadError !== null
+            ? "map_selector_load_error"
+            : chartPageStateLoadError !== null
+              ? "chart_page_state_load_error"
+              : "app_ready";
+      window.__aerobag_hide_startup_shell?.(reason);
     }
   }, [appReady, chartPageStateLoadError, currentPlan, mapSelectorLoadError, planUiState, sessionInitError, startupFatalError]);
 
@@ -3749,7 +3760,23 @@ function MapPage(props: {
     }
   }, [completePageTilePaintTiming, page, pageTilePaintTiming, rasterTileKey, tiles]);
   const mapIsVisible = page === "map";
-  const situationRingCandidates = useMemo(() => appCoreAdapter.situationRingCandidates(), [appCoreAdapter]);
+  const [situationRingCandidates, setSituationRingCandidates] = useState<SituationRingCandidate[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    setSituationRingCandidates(appCoreAdapter.situationRingCandidates());
+    void appCoreAdapter.loadSituationRingCandidates().then((candidates) => {
+      if (!cancelled) {
+        setSituationRingCandidates(candidates);
+      }
+    }).catch((error) => {
+      debugLog("situation_ring_candidates.load.failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [appCoreAdapter]);
   const situationOverlay = useMemo(
     () => resolveSituationOverlay(ownship, viewport, surfaceSize.width, surfaceSize.height, situationRingCandidates),
     [ownship, viewport, surfaceSize.height, surfaceSize.width, situationRingCandidates],
@@ -9271,6 +9298,9 @@ function selectSituationRing(
   ringCandidates: SituationRingCandidate[],
   magneticVariationDeg: number | null,
 ) {
+  if (ringCandidates.length === 0) {
+    return null;
+  }
   const center = latLonToScreen(lat, lon, viewport, width, height);
   const smaller = Math.min(width, height);
   const minDiameter = smaller * 0.5;

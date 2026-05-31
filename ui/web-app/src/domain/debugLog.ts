@@ -1,7 +1,7 @@
 let seq = 0;
 let globalErrorLoggingInstalled = false;
 
-type DebugLogRecord = {
+export type DebugLogRecord = {
   seq: number;
   ts_ms: number;
   tag: string;
@@ -11,6 +11,7 @@ type DebugLogRecord = {
 };
 
 const queue: DebugLogRecord[] = [];
+const observers = new Set<(record: DebugLogRecord) => void>();
 const flushDelayMs = 250;
 const maxFlushBatchSize = 1000;
 let flushScheduled = false;
@@ -72,15 +73,34 @@ export function debugLog(tag: string, data?: unknown) {
     return;
   }
   const runId = currentDebugRunId();
-  queue.push({
+  const record = {
     seq: ++seq,
     ts_ms: Math.round(performance.now()),
     tag,
     browser_instance_id: browserInstanceId,
     ...(runId ? { run_id: runId } : {}),
     data,
-  });
+  };
+  queue.push(record);
+  for (const observer of observers) {
+    try {
+      observer(record);
+    } catch {
+      // Diagnostics must never perturb the code path being measured.
+    }
+  }
   scheduleFlush();
+}
+
+export function observeDebugLog(observer: (record: DebugLogRecord) => void): () => void {
+  observers.add(observer);
+  return () => {
+    observers.delete(observer);
+  };
+}
+
+export async function flushDebugLogNow(): Promise<void> {
+  await flushQueue();
 }
 
 export function getBrowserInstanceId(): string {

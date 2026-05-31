@@ -42,6 +42,7 @@ type WorkerErrorPayload = {
 
 type WorkerSessionMarker = {
   __aerobagWorkerSessionId: number;
+  initialSnapshot: ReturnType<UiSession["initialSnapshot"]>;
 };
 
 type WorkerRuntime = {
@@ -145,7 +146,10 @@ async function callAdapterMethod(method: string, args: unknown[]): Promise<unkno
     session.setInvalidationListener((invalidations) => {
       postMessage({ kind: "sessionInvalidation", sessionId, invalidations });
     });
-    return { __aerobagWorkerSessionId: sessionId } satisfies WorkerSessionMarker;
+    return {
+      __aerobagWorkerSessionId: sessionId,
+      initialSnapshot: session.initialSnapshot(),
+    } satisfies WorkerSessionMarker;
   }
   return callMethod(adapter, method, args);
 }

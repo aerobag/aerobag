@@ -544,6 +544,7 @@ export type SessionSnapshotRefreshDecision =
 
 export interface UiSession {
   setInvalidationListener(listener: UiInvalidationListener | null): void;
+  initialSnapshot(): UiSessionSnapshot;
   snapshot(): Promise<UiSessionSnapshot>;
   requestSessionSnapshotRefresh(priority: SessionSnapshotRefreshPriority, reason: string): Promise<SessionSnapshotRefreshDecision>;
   sessionSnapshotViewportGestureActiveChanged(active: boolean): Promise<SessionSnapshotRefreshDecision>;
@@ -622,6 +623,7 @@ export type { UiInvalidation, UiInvalidationListener };
 export interface AppCoreAdapter {
   prewarm(): Promise<void>;
   situationRingCandidates(): SituationRingCandidate[];
+  loadSituationRingCandidates(): Promise<SituationRingCandidate[]>;
   emptyFlightPlan(): Promise<FlightPlan>;
   createUiSession(
     plan: FlightPlan,
@@ -786,6 +788,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     return JSON.parse(candidatesJson) as SituationRingCandidate[];
   }
 
+  async loadSituationRingCandidates(): Promise<SituationRingCandidate[]> {
+    return this.situationRingCandidates();
+  }
+
   async emptyFlightPlan(): Promise<FlightPlan> {
     return JSON.parse(await this.module.empty_flight_plan_json()) as FlightPlan;
   }
@@ -861,9 +867,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         debugLog("startup.session.core_profile", { timings: createdEnvelope.timings });
       }
       const created = createdEnvelope.result ?? createdEnvelope;
-      await resetMetarLiveFeedPrep();
-      await module.set_resource_policy_in_session(created.handle, JSON.stringify("public_unpacked"));
-      await attachNavKvStoreToSession(created.handle);
+      await debugTiming("startup.session.reset_metar_prep", () => resetMetarLiveFeedPrep());
+      await debugTiming("startup.session.set_resource_policy", () =>
+        module.set_resource_policy_in_session(created.handle, JSON.stringify("public_unpacked")),
+      );
+      await debugTiming("startup.session.attach_nav_kv", () => attachNavKvStoreToSession(created.handle));
       const catalogedSnapshot = await debugTiming("startup.session.load_raster_catalog", () =>
         runSessionOperationForHandle<UiSessionSnapshot>(created.handle, () =>
           module.load_raster_map_catalog_in_session(created.handle),
@@ -877,7 +885,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     const init = await createSession(plan, recentAirportIds, selectedAirportId, selectedChartId);
     let handle = init.handle;
     let snapshot = init.snapshot;
-    const snapshotRefreshSchedulerHandle = await this.module.create_session_snapshot_refresh_scheduler();
+    const snapshotRefreshSchedulerHandle = await debugTiming("startup.session.create_snapshot_scheduler", () =>
+      this.module.create_session_snapshot_refresh_scheduler(),
+    );
     const runSessionOperation = <T>(
       operation: (navKvHandle: number) => Promise<string> | string,
       ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
@@ -944,11 +954,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return operation();
       }
     };
-    await syncGuidanceGeometry();
+    await debugTiming("startup.session.sync_guidance_geometry.initial", () => syncGuidanceGeometry());
     return {
       setInvalidationListener: (listener) => {
         invalidationListener = listener;
       },
+      initialSnapshot: () => snapshot,
       snapshot: async () => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.get_session_snapshot(handle)),

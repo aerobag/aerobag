@@ -1,13 +1,15 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { loadBestAvailableAdapter } from "./domain/appCoreAdapter";
 import { debugLog } from "./domain/debugLog";
+import { installStartupReloadHarness } from "./startupReloadHarness";
 import "./styles.css";
 
 declare global {
   interface Window {
     __aerobag_html_start?: number;
-    __aerobag_hide_startup_shell?: () => void;
+    __aerobag_hide_startup_shell?: (reason?: string) => void;
     __aerobag_startup_elapsed_interval?: number;
     __aerobag_startup_watchdog?: number;
     __aerobag_mark_startup_shell_managed?: () => void;
@@ -15,8 +17,19 @@ declare global {
   }
 }
 
-function dismissStartupShell() {
+let startupShellHideLogged = false;
+
+function dismissStartupShell(reason = "unspecified") {
   const shell = document.getElementById("startup-shell");
+  if (!startupShellHideLogged) {
+    startupShellHideLogged = true;
+    debugLog("startup.shell.hide", {
+      reason,
+      had_shell: shell !== null,
+      html_start_ms: typeof window !== "undefined" ? window.__aerobag_html_start ?? null : null,
+      elapsed_ms: Math.round(performance.now()),
+    });
+  }
   if (!shell) {
     return;
   }
@@ -140,11 +153,35 @@ function logStartupResources() {
   }, 0);
 }
 
+const startupReloadHarness = installStartupReloadHarness();
 logStartupTiming();
+if (startupReloadHarness?.active) {
+  debugLog("startup.reload_harness.installed", {
+    run_id: startupReloadHarness.runId,
+    sample_index: startupReloadHarness.sampleIndex + 1,
+    samples: startupReloadHarness.samples,
+  });
+}
 installPaintObservers();
 installLongTaskObserver();
 installEventLoopLagMonitor();
 logStartupResources();
+
+function preloadAppCoreAdapter() {
+  const startedAt = performance.now();
+  debugLog("app_core.adapter.preload.start");
+  void loadBestAvailableAdapter().then((loaded) => {
+    debugLog("app_core.adapter.preload.done", {
+      backend: loaded.backend,
+      elapsed_ms: Math.round(performance.now() - startedAt),
+    });
+  }).catch((error) => {
+    debugLog("app_core.adapter.preload.failed", {
+      elapsed_ms: Math.round(performance.now() - startedAt),
+      message: error instanceof Error ? error.message : String(error),
+    });
+  });
+}
 
 if (typeof window !== "undefined") {
   window.addEventListener("error", (event) => {
@@ -183,6 +220,7 @@ try {
   if (window.location.pathname === "/metar-bakeoff") {
     void import("./metarBakeoff").then(({ runMetarBakeoff }) => runMetarBakeoff(rootNode));
   } else {
+    preloadAppCoreAdapter();
     ReactDOM.createRoot(rootNode).render(
       <React.StrictMode>
         <App />

@@ -51,6 +51,19 @@ rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli
 ```
 
+Release-like web WASM builds run Binaryen `wasm-opt` by default and require
+Binaryen `version_129` or newer. Point `AEROBAG_WASM_OPT_BIN` at that
+`wasm-opt` command if it is not first on `PATH`. Debian's `binaryen` package on
+this machine installed `wasm-opt version 108`, which rewrites the wasm-bindgen
+`__wbindgen_externrefs` export to the fixed `funcref` table and fails startup
+with `WebAssembly.Table.grow()`. The checked-in installer puts the pinned Node
+build under the UI target root:
+
+```bash
+cd ui/web-app
+npm run install:wasm-opt
+```
+
 For native tests:
 - `cargo test`
 
@@ -59,6 +72,7 @@ For web WASM output:
 - JS binding generation tooling:
   - `wasm-bindgen` CLI or
   - `wasm-pack`
+- Binaryen `wasm-opt` version 129+ for release-like web WASM builds
 
 Validated web WASM generation path:
 

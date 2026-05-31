@@ -43,6 +43,20 @@ rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli
 ```
 
+Release-like WASM builds use Binaryen `wasm-opt` by default and require
+Binaryen `version_129` or newer. Install that from the upstream Binaryen release
+assets, not from an older distro package. The web app has a pinned installer:
+
+```bash
+cd "$SOURCE_ROOT/ui/web-app"
+npm run install:wasm-opt
+```
+
+That installs Binaryen under `$AEROBAG_UI_TARGET_ROOT/tools/`, where the WASM
+build script finds it automatically. Set `AEROBAG_WASM_OPT_BIN` only if using a
+different install location. Release-like builds fail loudly if `wasm-opt` is
+missing, too old, or produces a module that fails startup.
+
 ## Define paths
 
 Set these somewhere you can source before running the commands below.

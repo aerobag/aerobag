@@ -1,11 +1,13 @@
 import type {
   AppCoreAdapter,
   LoadedAdapter,
+  UiSessionSnapshot,
   UiInvalidation,
   UiInvalidationListener,
   UiSession,
 } from "./appCoreAdapter";
 import { debugLog, getBrowserInstanceId } from "./debugLog";
+import type { SituationRingCandidate } from "./types";
 
 type WorkerCallTarget =
   | { kind: "adapter" }
@@ -50,7 +52,10 @@ type WorkerErrorPayload = {
 
 type WorkerSessionMarker = {
   __aerobagWorkerSessionId: number;
+  initialSnapshot: UiSessionSnapshot;
 };
+
+type SituationRingCandidateCache = SituationRingCandidate[];
 
 type PendingWorkerCall = {
   target: WorkerCallTarget;
@@ -255,27 +260,34 @@ export async function loadWorkerBackedAdapter(): Promise<LoadedAdapter> {
     type: "module",
   });
   const client = new AppCoreWorkerClient(worker);
-  const situationRingCandidates = await client.callAdapter<ReturnType<AppCoreAdapter["situationRingCandidates"]>>(
-    "situationRingCandidates",
-  );
+  await client.callAdapter("prewarm");
   return {
-    adapter: workerBackedAdapter(client, situationRingCandidates),
+    adapter: workerBackedAdapter(client),
     backend: "wasm-worker",
     detail: "Using generated Rust WASM bindings in an app-core worker.",
   };
 }
 
-function workerBackedAdapter(
-  client: AppCoreWorkerClient,
-  situationRingCandidates: ReturnType<AppCoreAdapter["situationRingCandidates"]>,
-): AppCoreAdapter {
+function workerBackedAdapter(client: AppCoreWorkerClient): AppCoreAdapter {
+  let cachedSituationRingCandidates: SituationRingCandidateCache = [];
+  let situationRingCandidatesPromise: Promise<SituationRingCandidateCache> | null = null;
+  const loadSituationRingCandidates = () => {
+    situationRingCandidatesPromise ??= client
+      .callAdapter<SituationRingCandidateCache>("situationRingCandidates")
+      .then((candidates) => {
+        cachedSituationRingCandidates = candidates;
+        return candidates;
+      });
+    return situationRingCandidatesPromise;
+  };
   return {
     prewarm: () => client.callAdapter("prewarm"),
-    situationRingCandidates: () => situationRingCandidates,
+    situationRingCandidates: () => cachedSituationRingCandidates,
+    loadSituationRingCandidates,
     emptyFlightPlan: () => client.callAdapter("emptyFlightPlan"),
     createUiSession: async (...args) => {
       const marker = await client.callAdapter<WorkerSessionMarker>("createUiSession", args);
-      return workerBackedSession(client, marker.__aerobagWorkerSessionId);
+      return workerBackedSession(client, marker.__aerobagWorkerSessionId, marker.initialSnapshot);
     },
     deriveChartPageState: (...args) => client.callAdapter("deriveChartPageState", args),
     resolveWaypointIdentifier: (...args) => client.callAdapter("resolveWaypointIdentifier", args),
@@ -290,57 +302,63 @@ function workerBackedAdapter(
   };
 }
 
-function workerBackedSession(client: AppCoreWorkerClient, sessionId: number): UiSession {
+function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, initialSnapshot: UiSessionSnapshot): UiSession {
   const call = <T>(method: string, args: unknown[] = []) => client.callSession<T>(sessionId, method, args);
+  let latestSnapshot = initialSnapshot;
+  const updateSnapshot = async (promise: Promise<UiSessionSnapshot>) => {
+    latestSnapshot = await promise;
+    return latestSnapshot;
+  };
   return {
     setInvalidationListener: (listener) => client.setSessionInvalidationListener(sessionId, listener),
-    snapshot: () => call("snapshot"),
+    initialSnapshot: () => latestSnapshot,
+    snapshot: () => updateSnapshot(call("snapshot")),
     requestSessionSnapshotRefresh: (...args) => call("requestSessionSnapshotRefresh", args),
     sessionSnapshotViewportGestureActiveChanged: (...args) => call("sessionSnapshotViewportGestureActiveChanged", args),
     sessionSnapshotViewportActivity: () => call("sessionSnapshotViewportActivity"),
     sessionSnapshotRefreshCompleted: () => call("sessionSnapshotRefreshCompleted"),
     pollSessionSnapshotRefresh: () => call("pollSessionSnapshotRefresh"),
-    insertWaypointAtFlightPlanRow: (...args) => call("insertWaypointAtFlightPlanRow", args),
+    insertWaypointAtFlightPlanRow: (...args) => updateSnapshot(call("insertWaypointAtFlightPlanRow", args)),
     suggestWaypointIdentifiersAtFlightPlanRow: (...args) => call("suggestWaypointIdentifiersAtFlightPlanRow", args),
     previewFlightPlanEntry: (...args) => call("previewFlightPlanEntry", args),
-    appendFlightPlanEntry: (...args) => call("appendFlightPlanEntry", args),
-    insertAirwayAtFlightPlanRow: (...args) => call("insertAirwayAtFlightPlanRow", args),
-    selectProcedureAtFlightPlanRow: (...args) => call("selectProcedureAtFlightPlanRow", args),
-    loadPlateProcedure: (...args) => call("loadPlateProcedure", args),
-    restoreDirectTo: () => call("restoreDirectTo"),
-    performFlightPlanRowAction: (...args) => call("performFlightPlanRowAction", args),
-    performStatusAction: (...args) => call("performStatusAction", args),
-    performMapSelectionAction: (...args) => call("performMapSelectionAction", args),
-    activateNextLeg: () => call("activateNextLeg"),
-    suspendSequencing: () => call("suspendSequencing"),
-    unsuspendSequencing: () => call("unsuspendSequencing"),
-    sequenceActiveLeg: () => call("sequenceActiveLeg"),
-    setSituation: (...args) => call("setSituation", args),
-    tickDebugOwnshipDriver: (...args) => call("tickDebugOwnshipDriver", args),
-    loadPlaybackTrace: (...args) => call("loadPlaybackTrace", args),
-    playPlayback: (...args) => call("playPlayback", args),
-    pausePlayback: (...args) => call("pausePlayback", args),
-    seekPlayback: (...args) => call("seekPlayback", args),
-    setPlaybackRate: (...args) => call("setPlaybackRate", args),
-    tickPlayback: (...args) => call("tickPlayback", args),
-    engageMapFollow: (...args) => call("engageMapFollow", args),
-    disengageMapFollow: (...args) => call("disengageMapFollow", args),
-    setMapFollowOffset: (...args) => call("setMapFollowOffset", args),
-    syncMapFollow: (...args) => call("syncMapFollow", args),
-    registerOwnshipSource: (...args) => call("registerOwnshipSource", args),
-    updateOwnshipSourceStatus: (...args) => call("updateOwnshipSourceStatus", args),
-    pushSituationSample: (...args) => call("pushSituationSample", args),
-    selectOwnshipSource: (...args) => call("selectOwnshipSource", args),
-    applySituationControlInput: (...args) => call("applySituationControlInput", args),
-    setMapLayerVisibility: (...args) => call("setMapLayerVisibility", args),
-    setMapLayerEnabled: (...args) => call("setMapLayerEnabled", args),
-    setDebugFlag: (...args) => call("setDebugFlag", args),
-    loadRasterMapCatalog: () => call("loadRasterMapCatalog"),
+    appendFlightPlanEntry: (...args) => updateSnapshot(call("appendFlightPlanEntry", args)),
+    insertAirwayAtFlightPlanRow: (...args) => updateSnapshot(call("insertAirwayAtFlightPlanRow", args)),
+    selectProcedureAtFlightPlanRow: (...args) => updateSnapshot(call("selectProcedureAtFlightPlanRow", args)),
+    loadPlateProcedure: (...args) => updateSnapshot(call("loadPlateProcedure", args)),
+    restoreDirectTo: () => updateSnapshot(call("restoreDirectTo")),
+    performFlightPlanRowAction: (...args) => updateSnapshot(call("performFlightPlanRowAction", args)),
+    performStatusAction: (...args) => updateSnapshot(call("performStatusAction", args)),
+    performMapSelectionAction: (...args) => updateSnapshot(call("performMapSelectionAction", args)),
+    activateNextLeg: () => updateSnapshot(call("activateNextLeg")),
+    suspendSequencing: () => updateSnapshot(call("suspendSequencing")),
+    unsuspendSequencing: () => updateSnapshot(call("unsuspendSequencing")),
+    sequenceActiveLeg: () => updateSnapshot(call("sequenceActiveLeg")),
+    setSituation: (...args) => updateSnapshot(call("setSituation", args)),
+    tickDebugOwnshipDriver: (...args) => updateSnapshot(call("tickDebugOwnshipDriver", args)),
+    loadPlaybackTrace: (...args) => updateSnapshot(call("loadPlaybackTrace", args)),
+    playPlayback: (...args) => updateSnapshot(call("playPlayback", args)),
+    pausePlayback: (...args) => updateSnapshot(call("pausePlayback", args)),
+    seekPlayback: (...args) => updateSnapshot(call("seekPlayback", args)),
+    setPlaybackRate: (...args) => updateSnapshot(call("setPlaybackRate", args)),
+    tickPlayback: (...args) => updateSnapshot(call("tickPlayback", args)),
+    engageMapFollow: (...args) => updateSnapshot(call("engageMapFollow", args)),
+    disengageMapFollow: (...args) => updateSnapshot(call("disengageMapFollow", args)),
+    setMapFollowOffset: (...args) => updateSnapshot(call("setMapFollowOffset", args)),
+    syncMapFollow: (...args) => updateSnapshot(call("syncMapFollow", args)),
+    registerOwnshipSource: (...args) => updateSnapshot(call("registerOwnshipSource", args)),
+    updateOwnshipSourceStatus: (...args) => updateSnapshot(call("updateOwnshipSourceStatus", args)),
+    pushSituationSample: (...args) => updateSnapshot(call("pushSituationSample", args)),
+    selectOwnshipSource: (...args) => updateSnapshot(call("selectOwnshipSource", args)),
+    applySituationControlInput: (...args) => updateSnapshot(call("applySituationControlInput", args)),
+    setMapLayerVisibility: (...args) => updateSnapshot(call("setMapLayerVisibility", args)),
+    setMapLayerEnabled: (...args) => updateSnapshot(call("setMapLayerEnabled", args)),
+    setDebugFlag: (...args) => updateSnapshot(call("setDebugFlag", args)),
+    loadRasterMapCatalog: () => updateSnapshot(call("loadRasterMapCatalog")),
     resolvePackageMemberUrl: (...args) => call("resolvePackageMemberUrl", args),
-    selectMapFamily: (...args) => call("selectMapFamily", args),
-    selectRasterMap: (...args) => call("selectRasterMap", args),
-    selectAirport: (...args) => call("selectAirport", args),
-    selectChart: (...args) => call("selectChart", args),
+    selectMapFamily: (...args) => updateSnapshot(call("selectMapFamily", args)),
+    selectRasterMap: (...args) => updateSnapshot(call("selectRasterMap", args)),
+    selectAirport: (...args) => updateSnapshot(call("selectAirport", args)),
+    selectChart: (...args) => updateSnapshot(call("selectChart", args)),
     ingestPointTiles: (...args) => call("ingestPointTiles", args),
     ingestAirspaceRefTiles: (...args) => call("ingestAirspaceRefTiles", args),
     ingestAirspaceFeatures: (...args) => call("ingestAirspaceFeatures", args),
@@ -357,7 +375,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number): Ui
     stopLiveFeedSubscription: () => call("stopLiveFeedSubscription"),
     ingestLiveFeedSseEvent: (...args) => call("ingestLiveFeedSseEvent", args),
     ingestLiveFeedSseEvents: (...args) => call("ingestLiveFeedSseEvents", args),
-    restoreChartPageState: (...args) => call("restoreChartPageState", args),
+    restoreChartPageState: (...args) => updateSnapshot(call("restoreChartPageState", args)),
     destroy: async () => {
       client.setSessionInvalidationListener(sessionId, null);
       await call("destroy");

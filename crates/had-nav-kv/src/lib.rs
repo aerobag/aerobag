@@ -740,6 +740,15 @@ impl NavKvStore {
         self.pages.insert(page_index, bytes);
     }
 
+    pub fn missing_prefetch_pages(&self) -> Vec<u32> {
+        self.root
+            .prefetch_pages()
+            .iter()
+            .copied()
+            .filter(|page| !self.pages.contains_key(page))
+            .collect()
+    }
+
     pub fn get_bytes(&self, key: &str) -> Result<NavKvLookup, String> {
         let mut stats = NavKvPageProbeStats::default();
         let mut missing_pages = BTreeSet::new();
@@ -1886,6 +1895,39 @@ mod tests {
                 .as_deref(),
             Some(b"metar-importance".as_slice())
         );
+    }
+
+    #[test]
+    fn missing_prefetch_pages_excludes_pages_already_loaded() {
+        let built = build_nav_kv_sorted(
+            vec![
+                pair("chart/catalog", "catalog-value"),
+                pair("package/by-id/a", "package-a"),
+                pair("package/by-id/b", "package-b"),
+                pair("weather/metar-important-stations", "metar-importance"),
+                pair("vector/manifest", "vector-manifest"),
+            ],
+            TEST_PAGE_SIZE,
+        )
+        .expect("build nav kv");
+        let root = NavKvRoot::parse(&built.root_bytes).expect("parse root");
+        assert_eq!(root.prefetch_pages(), built.prefetch_pages);
+        assert!(!root.prefetch_pages().is_empty());
+
+        let mut store = NavKvStore::new(root.clone());
+        assert_eq!(store.missing_prefetch_pages(), root.prefetch_pages());
+
+        let first_page = root.prefetch_pages()[0];
+        store.insert_page(first_page, built.pages[first_page as usize].clone());
+        assert_eq!(
+            store.missing_prefetch_pages(),
+            root.prefetch_pages()[1..].to_vec()
+        );
+
+        for page in root.prefetch_pages()[1..].iter().copied() {
+            store.insert_page(page, built.pages[page as usize].clone());
+        }
+        assert!(store.missing_prefetch_pages().is_empty());
     }
 
     #[test]

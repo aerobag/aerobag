@@ -74,35 +74,67 @@ export class NavKvStore {
 
   static async open(sessionHandle: number): Promise<NavKvStore | null> {
     const wasm = await debugTiming("nav_kv.wasm.init", () => ensureWasmReady());
-    const candidates = await resolveSessionPublicationResult<NavDbArtifactCandidate[]>(
-      wasm,
-      sessionHandle,
-      () => wasm.resolve_nav_db_artifact_candidates_in_session(sessionHandle),
+    const candidates = await debugTiming(
+      "nav_kv.open.resolve_candidates",
+      () => resolveSessionPublicationResult<NavDbArtifactCandidate[]>(
+        wasm,
+        sessionHandle,
+        () => wasm.resolve_nav_db_artifact_candidates_in_session(sessionHandle),
+      ),
     );
     if (candidates.length === 0) {
       debugLog("nav_kv.root.missing", { reason: "publication has no nav-db candidates" });
       return null;
     }
     const byFilename = new Map(candidates.map((candidate) => [candidate.filename, candidate]));
-    const controllerHandle = wasm.nav_db_open_controller_create(JSON.stringify(candidates));
+    const controllerHandle = debugTiming("nav_kv.open.controller_create", () =>
+      wasm.nav_db_open_controller_create(JSON.stringify(candidates)), {
+        candidate_count: candidates.length,
+      });
     let finished = false;
     let finish: NavDbOpenFinish | null = null;
+    let iteration = 0;
     try {
       for (;;) {
-        const response = JSON.parse(await wasm.nav_db_open_controller_step(controllerHandle)) as
+        iteration += 1;
+        const stepStartedAt = performance.now();
+        const responseJson = await wasm.nav_db_open_controller_step(controllerHandle);
+        const operationMs = performance.now() - stepStartedAt;
+        const parseStartedAt = performance.now();
+        const response = JSON.parse(responseJson) as
           | { state: "complete"; result: NavDbOpenResult }
           | { state: "need_resources"; resources: CoreResourceRequest[] };
+        const parseMs = performance.now() - parseStartedAt;
+        debugLog("nav_kv.open.controller_step", {
+          iteration,
+          state: response.state,
+          operation_ms: Math.round(operationMs),
+          parse_ms: Math.round(parseMs),
+          resource_count: response.state === "need_resources" ? response.resources.length : 0,
+          resources: response.state === "need_resources" ? response.resources.map((resource) => resource.id) : undefined,
+        });
         if (response.state === "complete") {
-          finish = JSON.parse(await wasm.nav_db_open_controller_finish(controllerHandle)) as NavDbOpenFinish;
+          finish = JSON.parse(await debugTiming("nav_kv.open.controller_finish", () =>
+            wasm.nav_db_open_controller_finish(controllerHandle), {
+              iteration,
+            })) as NavDbOpenFinish;
           finished = true;
           break;
         }
-        await Promise.all(
-          response.resources.map((resource) => fetchAndIngestResource(
-            resource,
-            (resourceId, bytes) => wasm.nav_db_open_controller_ingest_resource(controllerHandle, resourceId, bytes),
-            "nav_kv.open_resource.fetch",
-          )),
+        await debugTiming(
+          "nav_kv.open.resource_batch",
+          () => Promise.all(
+            response.resources.map((resource) => fetchAndIngestResource(
+              resource,
+              (resourceId, bytes) => wasm.nav_db_open_controller_ingest_resource(controllerHandle, resourceId, bytes),
+              "nav_kv.open_resource.fetch",
+            )),
+          ),
+          {
+            iteration,
+            resource_count: response.resources.length,
+            resources: response.resources.map((resource) => resource.id),
+          },
         );
       }
     } catch (error) {
@@ -130,7 +162,7 @@ export class NavKvStore {
       return null;
     }
     const store = new NavKvStore(wasm, finish.nav_kv_handle, rootUrl);
-    await store.prefetchRootPages();
+    await debugTiming("nav_kv.open.prefetch_root_pages", () => store.prefetchRootPages());
     return store;
   }
 
@@ -171,11 +203,19 @@ export class NavKvStore {
   }
 
   attachToSession(sessionHandle: number): void {
-    this.wasm.attach_nav_kv_store_to_session(this.handle, sessionHandle);
+    debugTiming("nav_kv.attach_to_session", () =>
+      this.wasm.attach_nav_kv_store_to_session(this.handle, sessionHandle));
   }
 
   private async prefetchRootPages(): Promise<void> {
-    const pages = JSON.parse(await this.wasm.nav_kv_prefetch_pages(this.handle)) as number[];
+    const pagesJson = await debugTiming("nav_kv.prefetch_pages.list", () =>
+      this.wasm.nav_kv_prefetch_pages(this.handle));
+    const pages = JSON.parse(pagesJson) as number[];
+    debugLog("nav_kv.prefetch_pages.list_result", {
+      page_count: pages.length,
+      pages,
+      json_bytes: pagesJson.length,
+    });
     if (pages.length === 0) {
       return;
     }

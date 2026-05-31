@@ -199,6 +199,7 @@ pub struct NavDbOpenController {
     candidates: Vec<NavDbArtifactCandidate>,
     statuses: Vec<Option<NavDbArtifactOpenStatus>>,
     stores: Vec<Option<NavKvStore>>,
+    root_prefetch_attempted: Vec<bool>,
 }
 
 impl NavDbOpenController {
@@ -208,6 +209,7 @@ impl NavDbOpenController {
             candidates,
             statuses: vec![None; len],
             stores: vec![None; len],
+            root_prefetch_attempted: vec![false; len],
         }
     }
 
@@ -227,6 +229,17 @@ impl NavDbOpenController {
                 Some(_) => continue,
                 None => {
                     if let Some(store) = self.stores.get(index).and_then(Option::as_ref) {
+                        if !self.root_prefetch_attempted[index] {
+                            self.root_prefetch_attempted[index] = true;
+                            let pages = store.root().prefetch_pages().to_vec();
+                            if !pages.is_empty() {
+                                return Ok(HadOperationOutcome::NeedResources {
+                                    resources: nav_db_artifact_page_resources(
+                                        index, candidate, pages,
+                                    ),
+                                });
+                            }
+                        }
                         match validate_nav_db_contract(store)? {
                             NavDbContractValidation::Valid => {
                                 self.statuses[index] = Some(NavDbArtifactOpenStatus {
@@ -311,6 +324,7 @@ impl NavDbOpenController {
         match NavKvRoot::parse(resource_bytes) {
             Ok(root) => {
                 self.stores[index] = Some(NavKvStore::new(root));
+                self.root_prefetch_attempted[index] = false;
             }
             Err(message) => {
                 self.statuses[index] = Some(NavDbArtifactOpenStatus {
@@ -3259,6 +3273,26 @@ mod tests {
             .collect()
     }
 
+    fn nav_db_open_page_indexes(resources: &[CoreResourceRequest]) -> Vec<u32> {
+        resources
+            .iter()
+            .map(|resource| {
+                nav_db_artifact_resource_index(&resource.id)
+                    .and_then(|resource| resource.page_index)
+                    .unwrap_or_else(|| {
+                        panic!("unexpected nav_db open resource id: {}", resource.id)
+                    })
+            })
+            .collect()
+    }
+
+    fn nav_kv_pair(key: &str, value: &[u8]) -> had_nav_kv::NavKvPair {
+        had_nav_kv::NavKvPair {
+            key: key.to_string(),
+            value: value.to_vec(),
+        }
+    }
+
     #[test]
     fn operation_reports_page_faults_instead_of_exposing_query_keys() {
         let (root, _pages) = fixture(&[("vector/manifest", br#"{"layers":[]}"#.as_slice())], 64);
@@ -3384,6 +3418,77 @@ mod tests {
             other => panic!("expected complete open result, got {other:?}"),
         }
         assert!(controller.selected_store().is_some());
+    }
+
+    #[test]
+    fn nav_db_open_controller_prefetches_root_pages_before_contract_validation() {
+        let contract = br#"{"nav_db_contract_version":1}"#;
+        let mut pairs = vec![
+            nav_kv_pair("chart/catalog", b"catalog"),
+            nav_kv_pair("contract/nav-db", contract.as_slice()),
+            nav_kv_pair("vector/manifest", b"{}"),
+            nav_kv_pair("weather/metar-important-stations", b"KAAA\nKBBB\n"),
+        ];
+        for index in 0..24 {
+            pairs.push(nav_kv_pair(
+                &format!("package/by-id/package-{index:02}"),
+                format!("package payload {index:02}").as_bytes(),
+            ));
+        }
+        let built = had_nav_kv::build_nav_kv_sorted(pairs, 128).expect("build nav kv");
+        let root = NavKvRoot::parse(&built.root_bytes).expect("parse root");
+        assert!(
+            root.prefetch_pages().len() > 1,
+            "test fixture should exercise batched prefetch, got {:?}",
+            root.prefetch_pages()
+        );
+        let mut controller = NavDbOpenController::new(vec![NavDbArtifactCandidate {
+            package_id: "NAV_DB_GOOD".to_string(),
+            filename: "nav_db_good.zip".to_string(),
+            root_source: Some(CoreResourceSource::PublicUrl {
+                url: "https://example.test/nav_db/root".to_string(),
+            }),
+        }]);
+
+        match controller.step().expect("request root") {
+            HadOperationOutcome::NeedResources { resources } => {
+                assert_eq!(resources[0].id, "nav_db/artifact/0/root");
+            }
+            other => panic!("expected root resource, got {other:?}"),
+        }
+        controller
+            .ingest_resource("nav_db/artifact/0/root", &built.root_bytes)
+            .expect("ingest root");
+
+        match controller.step().expect("request root prefetch pages") {
+            HadOperationOutcome::NeedResources { resources } => {
+                assert_eq!(nav_db_open_page_indexes(&resources), root.prefetch_pages());
+                assert!(
+                    resources.len() > 1,
+                    "prefetch should batch more than one page"
+                );
+            }
+            other => panic!("expected batched prefetch resources, got {other:?}"),
+        }
+        for page in root.prefetch_pages() {
+            controller
+                .ingest_resource(
+                    &format!("nav_db/artifact/0/page/{page:04}"),
+                    &built.pages[*page as usize],
+                )
+                .expect("ingest prefetch page");
+        }
+
+        match controller.step().expect("complete after prefetch") {
+            HadOperationOutcome::Complete { result, .. } => {
+                let result: NavDbOpenResult =
+                    serde_json::from_value(result).expect("decode result");
+                assert_eq!(result.selected_package_id, "NAV_DB_GOOD");
+                assert_eq!(result.statuses.len(), 1);
+                assert!(result.statuses[0].readable);
+            }
+            other => panic!("expected complete open result, got {other:?}"),
+        }
     }
 
     #[test]

@@ -223,7 +223,7 @@ pub fn nav_kv_prefetch_pages(handle: u32) -> Result<String, JsValue> {
     let store = stores
         .get(&handle)
         .ok_or_else(|| JsValue::from_str(&format!("invalid nav kv handle: {handle}")))?;
-    serde_json::to_string(store.root().prefetch_pages())
+    serde_json::to_string(&store.missing_prefetch_pages())
         .map_err(|err| JsValue::from_str(&err.to_string()))
 }
 

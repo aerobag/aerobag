@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     env, fs,
     io::{BufRead, BufReader, Write},
     net::{SocketAddr, TcpListener, TcpStream},
@@ -20,8 +20,8 @@ use preprocessor_live_feeds::{
         default_poll_interval, run_upstream_live_feed_publish_tick,
         write_live_feeds_current_manifest, CompiledFixtureCache, FileLiveFeedPublisher, FixedClock,
         FixtureCacheKeyPart, IntervalLiveFeedSource, LiveFeedInvalidation, LiveFeedPollingTask,
-        LiveFeedSourceAndBuilder, LiveFeedTickResult, LiveFeedsCurrentManifest,
-        PublishedLiveFeedUpdate, SseBroker, SystemClock,
+        LiveFeedSourceAndBuilder, LiveFeedTickResult, LiveFeedVersionManifest,
+        LiveFeedsCurrentManifest, PublishedLiveFeedUpdate, SseBroker, SystemClock,
     },
     products::{
         LiveFeedFetchConfig, MetarLiveFeedBuilder, NexradSourceGridLiveFeedBuilder,
@@ -35,6 +35,8 @@ use preprocessor_live_feeds::{
 use serde::Serialize;
 
 const STATUS_HISTORY_LIMIT: usize = 256;
+const SIMULATION_RETAIN_VERSIONS_PER_PRODUCT: usize = 8;
+const SIMULATION_PUBLICATION_DIRS: &[&str] = &["states", "versions", "deltas", "packages"];
 
 fn usage() -> &'static str {
     "usage:
@@ -571,6 +573,11 @@ fn start_simulation_driver(
         .fixture_root
         .clone()
         .unwrap_or_else(|| config.live_root.clone());
+    if fixture_root == config.live_root {
+        bail!(
+            "simulation --fixture-root must be separate from --live-root so generated output can be reset safely"
+        );
+    }
     let timeline = timeline_from_live_feed_root(&fixture_root, "daemon-simulation")?;
     let products = timeline
         .events
@@ -582,7 +589,8 @@ fn start_simulation_driver(
     let scratch_root = config.scratch_root.join("live-feed-simulation");
     let poll_interval = Duration::from_millis(config.poll_loop_interval_ms.min(1_000));
     let speedup = simulation.speedup;
-    reset_simulation_current_manifest(&live_root)?;
+    reset_simulation_publication(&live_root)?;
+    reset_simulation_scratch(&scratch_root)?;
     thread::spawn(move || {
         let publisher = FileLiveFeedPublisher::new(live_root, SystemClock);
         let mut virtual_zero = None;
@@ -624,6 +632,15 @@ fn start_simulation_driver(
                 );
                 status.record_tick_result(&result);
                 log_tick_result("simulation", &result);
+                if let Err(error) = prune_simulation_publication(
+                    &publisher.root(),
+                    SIMULATION_RETAIN_VERSIONS_PER_PRODUCT,
+                ) {
+                    eprintln!("live-feed simulation prune failed: {error:#}");
+                }
+                if let Err(error) = reset_simulation_scratch(&scratch_root) {
+                    eprintln!("live-feed simulation scratch cleanup failed: {error:#}");
+                }
                 if loop_duration
                     .is_some_and(|duration| now.signed_duration_since(delivery_zero) >= duration)
                 {
@@ -650,6 +667,35 @@ fn start_simulation_driver(
     Ok(())
 }
 
+fn reset_simulation_publication(live_root: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(live_root)
+        .with_context(|| format!("failed to create {}", live_root.display()))?;
+    for child in SIMULATION_PUBLICATION_DIRS {
+        remove_path_if_exists(&live_root.join(child))?;
+    }
+    remove_path_if_exists(&live_root.join("current.json"))?;
+    reset_simulation_current_manifest(live_root)
+}
+
+fn reset_simulation_scratch(scratch_root: &Path) -> anyhow::Result<()> {
+    remove_path_if_exists(scratch_root)?;
+    fs::create_dir_all(scratch_root)
+        .with_context(|| format!("failed to create {}", scratch_root.display()))
+}
+
+fn remove_path_if_exists(path: &Path) -> anyhow::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => {
+            fs::remove_dir_all(path).with_context(|| format!("failed to remove {}", path.display()))
+        }
+        Ok(_) => {
+            fs::remove_file(path).with_context(|| format!("failed to remove {}", path.display()))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("failed to stat {}", path.display())),
+    }
+}
+
 fn reset_simulation_current_manifest(live_root: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(live_root)
         .with_context(|| format!("failed to create {}", live_root.display()))?;
@@ -662,6 +708,165 @@ fn reset_simulation_current_manifest(live_root: &Path) -> anyhow::Result<()> {
         },
     )
     .map(|_| ())
+}
+
+fn prune_simulation_publication(live_root: &Path, retain_per_product: usize) -> anyhow::Result<()> {
+    if retain_per_product == 0 {
+        bail!("simulation retention must keep at least one version per product");
+    }
+    let mut retained = BTreeSet::new();
+    retained.insert(live_root.join("current.json"));
+    retain_current_manifest_refs(live_root, &mut retained)?;
+
+    let versions_root = live_root.join("versions");
+    if versions_root.is_dir() {
+        for product_entry in fs::read_dir(&versions_root)
+            .with_context(|| format!("failed to read {}", versions_root.display()))?
+        {
+            let product_entry = product_entry
+                .with_context(|| format!("failed to read {}", versions_root.display()))?;
+            if !product_entry
+                .file_type()
+                .with_context(|| format!("failed to stat {}", product_entry.path().display()))?
+                .is_dir()
+            {
+                continue;
+            }
+            let product_dir = product_entry.path();
+            let mut version_manifests = Vec::new();
+            for version_entry in fs::read_dir(&product_dir)
+                .with_context(|| format!("failed to read {}", product_dir.display()))?
+            {
+                let version_entry = version_entry
+                    .with_context(|| format!("failed to read {}", product_dir.display()))?;
+                let path = version_entry.path();
+                if version_entry
+                    .file_type()
+                    .with_context(|| format!("failed to stat {}", path.display()))?
+                    .is_file()
+                    && path.extension().and_then(|extension| extension.to_str()) == Some("json")
+                {
+                    version_manifests.push(path);
+                }
+            }
+            version_manifests.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+            for path in version_manifests
+                .iter()
+                .skip(version_manifests.len().saturating_sub(retain_per_product))
+            {
+                retain_version_manifest(live_root, path, &mut retained)?;
+            }
+        }
+    }
+
+    for child in SIMULATION_PUBLICATION_DIRS {
+        prune_product_children(&live_root.join(child), &retained)?;
+    }
+    Ok(())
+}
+
+fn retain_current_manifest_refs(
+    live_root: &Path,
+    retained: &mut BTreeSet<PathBuf>,
+) -> anyhow::Result<()> {
+    let current_path = live_root.join("current.json");
+    if !current_path.is_file() {
+        return Ok(());
+    }
+    let current: LiveFeedsCurrentManifest = serde_json::from_slice(
+        &fs::read(&current_path)
+            .with_context(|| format!("failed to read {}", current_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", current_path.display()))?;
+    for entry in current.products.values() {
+        let version_manifest_path =
+            retain_live_relative_path(live_root, retained, &entry.version_manifest_url)?;
+        retain_live_relative_path(live_root, retained, &entry.state_url)?;
+        if version_manifest_path.is_file() {
+            retain_version_manifest(live_root, &version_manifest_path, retained)?;
+        }
+    }
+    Ok(())
+}
+
+fn retain_version_manifest(
+    live_root: &Path,
+    version_manifest_path: &Path,
+    retained: &mut BTreeSet<PathBuf>,
+) -> anyhow::Result<()> {
+    retained.insert(version_manifest_path.to_path_buf());
+    let manifest: LiveFeedVersionManifest = serde_json::from_slice(
+        &fs::read(version_manifest_path)
+            .with_context(|| format!("failed to read {}", version_manifest_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", version_manifest_path.display()))?;
+    retain_live_relative_path(live_root, retained, &manifest.state.url)?;
+    if let Some(install_state) = manifest.install_state.as_ref() {
+        retain_live_relative_path(live_root, retained, &install_state.url)?;
+    }
+    if let Some(delta) = manifest.delta_from_previous.as_ref() {
+        retain_live_relative_path(live_root, retained, &delta.url)?;
+    }
+    Ok(())
+}
+
+fn retain_live_relative_path(
+    live_root: &Path,
+    retained: &mut BTreeSet<PathBuf>,
+    relative: &str,
+) -> anyhow::Result<PathBuf> {
+    let path = live_root.join(safe_relative_path(relative)?);
+    retained.insert(path.clone());
+    Ok(path)
+}
+
+fn prune_product_children(root: &Path, retained: &BTreeSet<PathBuf>) -> anyhow::Result<()> {
+    if !root.is_dir() {
+        return Ok(());
+    }
+    for product_entry in
+        fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))?
+    {
+        let product_entry =
+            product_entry.with_context(|| format!("failed to read {}", root.display()))?;
+        let product_path = product_entry.path();
+        if product_entry
+            .file_type()
+            .with_context(|| format!("failed to stat {}", product_path.display()))?
+            .is_dir()
+        {
+            prune_version_children(&product_path, retained)?;
+            if fs::read_dir(&product_path)
+                .with_context(|| format!("failed to read {}", product_path.display()))?
+                .next()
+                .is_none()
+            {
+                fs::remove_dir(&product_path)
+                    .with_context(|| format!("failed to remove {}", product_path.display()))?;
+            }
+        } else if !path_is_retained(&product_path, retained) {
+            remove_path_if_exists(&product_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn prune_version_children(root: &Path, retained: &BTreeSet<PathBuf>) -> anyhow::Result<()> {
+    for child_entry in
+        fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))?
+    {
+        let child_entry =
+            child_entry.with_context(|| format!("failed to read {}", root.display()))?;
+        let child_path = child_entry.path();
+        if !path_is_retained(&child_path, retained) {
+            remove_path_if_exists(&child_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn path_is_retained(path: &Path, retained: &BTreeSet<PathBuf>) -> bool {
+    retained.contains(path) || retained.iter().any(|retained| retained.starts_with(path))
 }
 
 fn production_tasks(fetch: LiveFeedFetchConfig) -> Vec<Box<dyn LiveFeedPollingTask + Send>> {
@@ -1415,6 +1620,69 @@ mod tests {
         assert!(safe_relative_path("states/metars/v1.json").is_ok());
         assert!(safe_relative_path("../current.json").is_err());
         assert!(safe_relative_path("states/../current.json").is_err());
+    }
+
+    #[test]
+    fn simulation_reset_removes_generated_publication_and_rewrites_current() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        for child in SIMULATION_PUBLICATION_DIRS {
+            let path = temp.path().join(child).join("metars");
+            fs::create_dir_all(&path)?;
+            fs::write(path.join("stale.json"), b"{}")?;
+        }
+        fs::write(temp.path().join("current.json"), b"{\"stale\":true}")?;
+
+        reset_simulation_publication(temp.path())?;
+
+        for child in SIMULATION_PUBLICATION_DIRS {
+            assert!(
+                !temp.path().join(child).exists(),
+                "{child} should be removed"
+            );
+        }
+        let current: LiveFeedsCurrentManifest =
+            serde_json::from_slice(&fs::read(temp.path().join("current.json"))?)?;
+        assert!(current.products.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn simulation_prune_keeps_recent_versions_and_referenced_payloads() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        for index in 1..=10 {
+            publish_json_version(temp.path(), "metars", &format!("v{index:03}"))?;
+        }
+        publish_json_version(temp.path(), "nexrad", "v001")?;
+
+        prune_simulation_publication(temp.path(), 3)?;
+
+        for version in ["v008", "v009", "v010"] {
+            assert!(
+                temp.path()
+                    .join("versions")
+                    .join("metars")
+                    .join(format!("{version}.json"))
+                    .is_file(),
+                "{version} manifest should be retained"
+            );
+            assert!(
+                temp.path()
+                    .join("states")
+                    .join("metars")
+                    .join(format!("{version}.json"))
+                    .is_file(),
+                "{version} state should be retained"
+            );
+        }
+        assert!(!temp.path().join("versions/metars/v007.json").exists());
+        assert!(!temp.path().join("states/metars/v007.json").exists());
+        assert!(!temp.path().join("deltas/metars/v001__v002.json").exists());
+        assert!(temp.path().join("deltas/metars/v009__v010.json").is_file());
+        assert!(temp.path().join("versions/nexrad/v001.json").is_file());
+        let current: LiveFeedsCurrentManifest =
+            serde_json::from_slice(&fs::read(temp.path().join("current.json"))?)?;
+        assert_eq!(current.products["metars"].current, "v010");
+        Ok(())
     }
 
     #[test]

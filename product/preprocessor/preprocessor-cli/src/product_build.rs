@@ -45,7 +45,9 @@ use preprocessor_resource_index::{
     write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource, DefaultView,
     ResourceIndex, TileBoundsRecord, TileLevelRecord,
 };
-use preprocessor_tpp::{package_native_tpp_versioned, render_native_tpp, NativeTppRunRequest};
+use preprocessor_tpp::{
+    package_native_tpp_versioned, render_native_tpp, tpp_prefetch_requests, NativeTppRunRequest,
+};
 use preprocessor_vectors::{
     build_vectors_dataset, expanded_union_polygon_from_closed_ring, simplify_closed_ring,
     BuildVectorsRequest,
@@ -764,9 +766,12 @@ enum NodeCacheState {
 
 #[derive(Debug, Clone)]
 enum ScheduledTaskKind {
-    ChartRender { family: ChartFamily },
-    CsupStage,
+    ChartFetch { family: ChartFamily },
+    ChartProcess { family: ChartFamily },
+    CsupFetch,
+    CsupProcess,
     CsupRender { region: Region },
+    TppFetch,
     TppRender { region: Region },
     DataBase,
     DataMatch,
@@ -784,9 +789,18 @@ enum ScheduledTaskKind {
 #[derive(Debug, Clone)]
 enum TaskValue {
     None,
-    CsupStage {
+    ChartFetch {
+        record: NodeRecord,
+    },
+    CsupFetch {
+        record: NodeRecord,
+    },
+    CsupProcess {
         record: NodeRecord,
         work_dir: PathBuf,
+    },
+    TppFetch {
+        record: NodeRecord,
     },
     ChartSource(ChartSource),
     CsupSource(AssetSource),
@@ -813,9 +827,18 @@ enum ProductTaskValue {
         data_version: String,
         bundle_cycle: String,
     },
-    CsupStage {
+    ChartFetch {
+        record: NodeRecord,
+    },
+    CsupFetch {
+        record: NodeRecord,
+    },
+    CsupProcess {
         record: NodeRecord,
         work_dir: PathBuf,
+    },
+    TppFetch {
+        record: NodeRecord,
     },
     ChartSource(ChartSource),
     CsupSource(AssetSource),
@@ -911,6 +934,7 @@ const DEFAULT_PRODUCT_BUILD_MEMORY_MAX: &str = "80G";
 const TPP_RENDER_JOBS_PER_RUN: usize = 8;
 const TPP_RENDER_WEIGHT: usize = 2;
 const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
+const STATIC_SOURCE_FETCH_NODE_VERSION: &str = "v1";
 const TERRAIN_PIPELINE_VERSION: &str = "v5-tile-boxes";
 const SHADED_RELIEF_PIPELINE_VERSION: &str = "v8-wide-angle-split-tile-boxes";
 const SHADED_RELIEF_OVERLAY_STYLE_VERSION: &str = "v1-gray-borders-bluegray-primary-roads";
@@ -1759,6 +1783,54 @@ fn copy_dir_recursive(from: &Path, to: &Path) -> anyhow::Result<()> {
             fs::copy(&source, &dest).with_context(|| {
                 format!("failed to copy {} to {}", source.display(), dest.display())
             })?;
+        }
+    }
+    Ok(())
+}
+
+fn hard_link_or_copy_file(from: &Path, to: &Path) -> anyhow::Result<()> {
+    match fs::hard_link(from, to) {
+        Ok(()) => Ok(()),
+        Err(link_error) => {
+            fs::copy(from, to).with_context(|| {
+                format!(
+                    "failed to hardlink {} to {} ({link_error}); copy fallback also failed",
+                    from.display(),
+                    to.display()
+                )
+            })?;
+            Ok(())
+        }
+    }
+}
+
+fn hard_link_or_copy_dir_recursive(from: &Path, to: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(to).with_context(|| format!("failed to create {}", to.display()))?;
+    let mut entries = fs::read_dir(from)
+        .with_context(|| format!("failed to read {}", from.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to iterate {}", from.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let source = entry.path();
+        let dest = to.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to stat {}", source.display()))?;
+        if file_type.is_dir() {
+            if dest.is_file() {
+                fs::remove_file(&dest)
+                    .with_context(|| format!("failed to remove {}", dest.display()))?;
+            }
+            hard_link_or_copy_dir_recursive(&source, &dest)?;
+        } else if file_type.is_file() {
+            if dest.is_dir() {
+                fs::remove_dir_all(&dest)
+                    .with_context(|| format!("failed to remove {}", dest.display()))?;
+            } else {
+                let _ = fs::remove_file(&dest);
+            }
+            hard_link_or_copy_file(&source, &dest)?;
         }
     }
     Ok(())

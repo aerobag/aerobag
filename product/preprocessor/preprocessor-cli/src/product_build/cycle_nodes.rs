@@ -124,17 +124,41 @@ pub(super) fn build_overridden_source_urls_node(
     Ok((output_dir, record))
 }
 
-pub(super) fn build_chart_render_node(
+pub(super) fn build_chart_fetch_node(
+    config: &ProductBuildConfig,
+    family: ChartFamily,
+    source_urls: &Path,
+    fetch_jobs: usize,
+) -> anyhow::Result<NodeRecord> {
+    let family_id = family_slug(family).to_string();
+    build_single_source_fetch_node(
+        config,
+        &format!("charts-{family_id}-fetch"),
+        source_urls,
+        fetch_jobs,
+        family.capture_label(),
+    )
+}
+
+pub(super) fn build_chart_process_node(
     config: &ProductBuildConfig,
     family: ChartFamily,
     source_repo: &Path,
     source_urls: &Path,
-    fetch_jobs: usize,
+    source_fetch_record: &NodeRecord,
     cpu_jobs: usize,
 ) -> anyhow::Result<NodeRecord> {
     let family_id = family_slug(family).to_string();
-    let node_name = format!("charts-{family_id}-render");
-    let inputs = chart_render_inputs(family, source_repo, source_urls, fetch_jobs, cpu_jobs)?;
+    let node_name = format!("charts-{family_id}-process");
+    let source_fetch_root =
+        resolve_artifact_path(config, output_path(source_fetch_record, "source_root")?);
+    let inputs = chart_process_inputs(
+        family,
+        source_repo,
+        source_urls,
+        source_fetch_record.fingerprint.as_str(),
+        cpu_jobs,
+    )?;
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, &node_name)?,
         &node_name,
@@ -144,22 +168,7 @@ pub(super) fn build_chart_render_node(
     let tiles_root = work_dir.join("tiles");
     run_cached_node(prepared, inputs, &[tiles_root.clone()], |prepared| {
         let work_dir = stage_work_dir(family, source_repo, &prepared.dir)?;
-        let provenance_dir = prepared
-            .dir
-            .join("meta")
-            .join("provenance")
-            .join(format!("charts-{family_id}"));
-        fs::create_dir_all(&provenance_dir)?;
-        copy_source_urls_provenance(source_urls, &provenance_dir)?;
-        let requests = read_source_prefetch_requests_jsonl(source_urls)?;
-        prefetch_archives_with_provenance(
-            &requests,
-            &work_dir,
-            fetch_jobs,
-            Some(&static_source_fetch_cache_config(config)?),
-            &provenance_dir,
-            family.capture_label(),
-        )?;
+        seed_prefetched_source_tree(&source_fetch_root, &work_dir)?;
         build_family_vrts(family, &work_dir, cpu_jobs)?;
         build_family_tiles(family, &work_dir, cpu_jobs)?;
         Ok(BTreeMap::from([
@@ -175,36 +184,129 @@ pub(super) fn build_chart_render_node(
     })
 }
 
+fn build_single_source_fetch_node(
+    config: &ProductBuildConfig,
+    node_name: &str,
+    source_urls: &Path,
+    fetch_jobs: usize,
+    label: &str,
+) -> anyhow::Result<NodeRecord> {
+    let (inputs, requests) = single_source_fetch_inputs(source_urls, fetch_jobs)?;
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, node_name)?,
+        node_name,
+        &inputs,
+    )?;
+    let source_root = prepared.dir.join("source");
+    let provenance_dir = prepared.dir.join("meta").join("provenance").join(node_name);
+    let marker = prepared.dir.join(".fetch-complete");
+    let mut expected = vec![marker.clone()];
+    for request in &requests {
+        expected.push(source_root.join(prefetch_request_file_name(request)?));
+    }
+    run_cached_node(prepared, inputs, &expected, |_prepared| {
+        fs::create_dir_all(&source_root)
+            .with_context(|| format!("failed to create {}", source_root.display()))?;
+        fs::create_dir_all(&provenance_dir)
+            .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
+        copy_source_urls_provenance(source_urls, &provenance_dir)?;
+        prefetch_archives_with_provenance(
+            &requests,
+            &source_root,
+            fetch_jobs,
+            Some(&static_source_fetch_cache_config(config)?),
+            &provenance_dir,
+            label,
+        )?;
+        fs::write(&marker, b"ok")
+            .with_context(|| format!("failed to write {}", marker.display()))?;
+        Ok(BTreeMap::from([
+            (
+                "source_root".to_string(),
+                relative_artifact_path(&source_root, &config.build_root),
+            ),
+            (
+                "provenance_dir".to_string(),
+                relative_artifact_path(&provenance_dir, &config.build_root),
+            ),
+            (
+                "marker".to_string(),
+                relative_artifact_path(&marker, &config.build_root),
+            ),
+        ]))
+    })
+}
+
+fn single_source_fetch_inputs(
+    source_urls: &Path,
+    fetch_jobs: usize,
+) -> anyhow::Result<(BTreeMap<String, String>, Vec<PrefetchRequest>)> {
+    let requests = dedup_prefetch_requests(read_source_prefetch_requests_jsonl(source_urls)?);
+    let request_fingerprint = hash_text(
+        &serde_json::to_string(&prefetch_request_manifest(&requests)?)
+            .context("source prefetch request manifest json")?,
+    );
+    let inputs = BTreeMap::from([
+        ("source_urls".to_string(), hash_file(source_urls)?),
+        ("requests".to_string(), request_fingerprint),
+        ("fetch_jobs".to_string(), fetch_jobs.to_string()),
+        (
+            "source_fetch_node_version".to_string(),
+            STATIC_SOURCE_FETCH_NODE_VERSION.to_string(),
+        ),
+        (
+            "fetch_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-fetch/src/lib.rs"),
+            )?,
+        ),
+    ]);
+    Ok((inputs, requests))
+}
+
+fn seed_prefetched_source_tree(source_root: &Path, work_dir: &Path) -> anyhow::Result<()> {
+    if !source_root.is_dir() {
+        anyhow::bail!("fetch node missing source root {}", source_root.display());
+    }
+    hard_link_or_copy_dir_recursive(source_root, work_dir)
+        .with_context(|| format!("failed to seed source tree from {}", source_root.display()))
+}
+
 pub(super) fn build_chart_package_nodes(
     config: &ProductBuildConfig,
     family: ChartFamily,
     source_urls_dir: &Path,
     version_label: &str,
+    source_fetch_record: &NodeRecord,
 ) -> anyhow::Result<(Vec<NodeRecord>, ChartSource)> {
     let family_id = family_slug(family).to_string();
     let contract_id = product_contract_id_for_family(&family_id)?;
     let artifact_version = contract_artifact_version(contract_id, version_label);
     let source_urls_path = source_urls_dir.join(format!("charts-{family_id}/source_urls.jsonl"));
-    let render_node_name = format!("charts-{family_id}-render");
-    let render_inputs = chart_render_inputs(
+    let process_node_name = format!("charts-{family_id}-process");
+    let process_inputs = chart_process_inputs(
         family,
         &config.chart_cutline_root,
         &source_urls_path,
-        config.fetch_jobs,
+        source_fetch_record.fingerprint.as_str(),
         config.cpu_jobs.min(8).max(1),
     )?;
-    let render_prepared = prepare_node_at(
-        &build_shared_node_dir(config, &render_node_name)?,
-        &render_node_name,
-        &render_inputs,
+    let process_prepared = prepare_node_at(
+        &build_shared_node_dir(config, &process_node_name)?,
+        &process_node_name,
+        &process_inputs,
     )?;
-    let render_record = load_existing_node_record(&render_prepared.record_path, &render_node_name)?;
-    let work_dir = resolve_artifact_path(config, output_path(&render_record, "work_dir")?);
+    let process_record =
+        load_existing_node_record(&process_prepared.record_path, &process_node_name)?;
+    let work_dir = resolve_artifact_path(config, output_path(&process_record, "work_dir")?);
     let node_name = format!("charts-{family_id}-package");
     let inputs = BTreeMap::from([
         (
-            "render_fingerprint".to_string(),
-            render_record.fingerprint.clone(),
+            "process_fingerprint".to_string(),
+            process_record.fingerprint.clone(),
         ),
         (
             "package_node_contract".to_string(),
@@ -432,12 +534,12 @@ pub(super) fn build_csup_render_node(
     config: &ProductBuildConfig,
     region: Region,
     work_dir: &Path,
-    stage_fingerprint: &str,
+    process_fingerprint: &str,
     version_label: &str,
     render_jobs: usize,
 ) -> anyhow::Result<NodeRecord> {
     let node_name = format!("csup-render-{}", region.code().to_ascii_lowercase());
-    let inputs = csup_render_inputs(stage_fingerprint, region, render_jobs, version_label)?;
+    let inputs = csup_render_inputs(process_fingerprint, region, render_jobs, version_label)?;
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, &node_name)?,
         &node_name,
@@ -469,38 +571,37 @@ pub(super) fn build_csup_render_node(
     )
 }
 
-pub(super) fn build_csup_stage_node(
+pub(super) fn build_csup_fetch_node(
     config: &ProductBuildConfig,
-    source_repo: &Path,
     source_urls: &Path,
     fetch_jobs: usize,
 ) -> anyhow::Result<NodeRecord> {
-    let inputs = csup_stage_inputs(source_urls, fetch_jobs)?;
+    build_single_source_fetch_node(config, "csup-fetch", source_urls, fetch_jobs, "csup")
+}
+
+pub(super) fn build_csup_process_node(
+    config: &ProductBuildConfig,
+    source_repo: &Path,
+    source_urls: &Path,
+    source_fetch_record: &NodeRecord,
+) -> anyhow::Result<NodeRecord> {
+    let source_fetch_root =
+        resolve_artifact_path(config, output_path(source_fetch_record, "source_root")?);
+    let inputs = csup_process_inputs(source_urls, source_fetch_record.fingerprint.as_str())?;
     let prepared = prepare_node_at(
-        &build_shared_node_dir(config, "csup-stage")?,
-        "csup-stage",
+        &build_shared_node_dir(config, "csup-process")?,
+        "csup-process",
         &inputs,
     )?;
     let work_root = prepared.dir.clone();
-    let marker = work_root.join(".stage-complete");
+    let marker = work_root.join(".process-complete");
     run_cached_node(
         prepared,
         inputs,
         std::slice::from_ref(&marker),
         |_prepared| {
             let work_dir = stage_work_dir_for_product(source_repo, &work_root)?;
-            let provenance_dir = work_root.join("meta").join("provenance").join("csup");
-            fs::create_dir_all(&provenance_dir)?;
-            copy_source_urls_provenance(source_urls, &provenance_dir)?;
-            let requests = read_source_prefetch_requests_jsonl(source_urls)?;
-            prefetch_archives_with_provenance(
-                &requests,
-                &work_dir,
-                fetch_jobs,
-                Some(&static_source_fetch_cache_config(config)?),
-                &provenance_dir,
-                "csup",
-            )?;
+            seed_prefetched_source_tree(&source_fetch_root, &work_dir)?;
             prepare_csup_inputs(&work_dir)?;
             fs::write(&marker, b"ok")
                 .with_context(|| format!("failed to write {}", marker.display()))?;
@@ -508,10 +609,6 @@ pub(super) fn build_csup_stage_node(
                 (
                     "work_dir".to_string(),
                     relative_artifact_path(&work_dir, &config.build_root),
-                ),
-                (
-                    "provenance_dir".to_string(),
-                    relative_artifact_path(&provenance_dir, &config.build_root),
                 ),
                 (
                     "marker".to_string(),
@@ -526,22 +623,24 @@ pub(super) fn build_csup_package_nodes(
     config: &ProductBuildConfig,
     source_urls_dir: &Path,
     version_label: &str,
+    source_fetch_record: &NodeRecord,
 ) -> anyhow::Result<(Vec<NodeRecord>, AssetSource)> {
     let contract_id = product_contract_id_for_family("csup")?;
     let artifact_version = contract_artifact_version(contract_id, version_label);
     let source_urls_path = source_urls_dir.join("csup/source_urls.jsonl");
-    let stage_inputs = csup_stage_inputs(&source_urls_path, config.fetch_jobs)?;
-    let stage_prepared = prepare_node_at(
-        &build_shared_node_dir(config, "csup-stage")?,
-        "csup-stage",
-        &stage_inputs,
+    let process_inputs =
+        csup_process_inputs(&source_urls_path, source_fetch_record.fingerprint.as_str())?;
+    let process_prepared = prepare_node_at(
+        &build_shared_node_dir(config, "csup-process")?,
+        "csup-process",
+        &process_inputs,
     )?;
-    let stage_record = load_existing_node_record(&stage_prepared.record_path, "csup-stage")?;
-    let work_dir = resolve_artifact_path(config, output_path(&stage_record, "work_dir")?);
+    let process_record = load_existing_node_record(&process_prepared.record_path, "csup-process")?;
+    let work_dir = resolve_artifact_path(config, output_path(&process_record, "work_dir")?);
     let mut inputs = BTreeMap::from([
         (
-            "stage_fingerprint".to_string(),
-            stage_record.fingerprint.clone(),
+            "process_fingerprint".to_string(),
+            process_record.fingerprint.clone(),
         ),
         (
             "package_node_contract".to_string(),
@@ -571,7 +670,7 @@ pub(super) fn build_csup_package_nodes(
     for region in Region::ALL {
         let render_node_name = format!("csup-render-{}", region.code().to_ascii_lowercase());
         let render_inputs = csup_render_inputs(
-            &stage_record.fingerprint,
+            &process_record.fingerprint,
             region,
             config.cpu_jobs.max(1),
             version_label,
@@ -693,6 +792,7 @@ pub(super) fn build_csup_package_nodes(
 pub(super) fn build_tpp_render_node(
     config: &ProductBuildConfig,
     request: &NativeTppRunRequest,
+    source_fetch_record: Option<&NodeRecord>,
 ) -> anyhow::Result<NodeRecord> {
     let region_id = request.region.code().to_ascii_lowercase();
     let source_urls = request
@@ -700,7 +800,13 @@ pub(super) fn build_tpp_render_node(
         .as_ref()
         .context("tpp build requires source urls")?;
     let node_name = format!("tpp-{region_id}-render");
-    let inputs = tpp_render_inputs(request, source_urls, &region_id)?;
+    let source_fetch_root = source_fetch_record
+        .map(|record| {
+            output_path(record, "source_root").map(|path| resolve_artifact_path(config, path))
+        })
+        .transpose()?;
+    let source_fetch_fingerprint = source_fetch_record.map(|record| record.fingerprint.as_str());
+    let inputs = tpp_render_inputs(request, source_urls, &region_id, source_fetch_fingerprint)?;
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, &node_name)?,
         &node_name,
@@ -715,6 +821,14 @@ pub(super) fn build_tpp_render_node(
         |_prepared| {
             let mut request = request.clone();
             request.run_root = run_root;
+            if let Some(source_root) = &source_fetch_root {
+                let work_dir = request
+                    .run_root
+                    .join("work")
+                    .join(format!("tpp-{region_id}"));
+                seed_prefetched_source_tree(source_root, &work_dir)?;
+                request.prefetch_source_urls = None;
+            }
             let result = render_native_tpp(&request)?;
             Ok(BTreeMap::from([
                 (
@@ -734,11 +848,180 @@ pub(super) fn build_tpp_render_node(
     )
 }
 
+pub(super) fn build_tpp_fetch_node(
+    config: &ProductBuildConfig,
+    source_urls_dir: &Path,
+) -> anyhow::Result<NodeRecord> {
+    let (inputs, requests) = tpp_fetch_inputs(config, source_urls_dir)?;
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, "tpp-fetch")?,
+        "tpp-fetch",
+        &inputs,
+    )?;
+    let source_root = prepared.dir.join("source");
+    let provenance_dir = prepared
+        .dir
+        .join("meta")
+        .join("provenance")
+        .join("tpp-fetch");
+    let marker = prepared.dir.join(".fetch-complete");
+    let mut expected = vec![marker.clone()];
+    for request in &requests {
+        expected.push(source_root.join(prefetch_request_file_name(request)?));
+    }
+    run_cached_node(prepared, inputs, &expected, |_prepared| {
+        fs::create_dir_all(&source_root)
+            .with_context(|| format!("failed to create {}", source_root.display()))?;
+        fs::create_dir_all(&provenance_dir)
+            .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
+        for region in config.profile.tpp_regions() {
+            let region_id = region.code().to_ascii_lowercase();
+            let source_urls_path =
+                source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl"));
+            fs::copy(
+                &source_urls_path,
+                provenance_dir.join(format!("source_urls-{region_id}.jsonl")),
+            )
+            .with_context(|| {
+                format!(
+                    "failed to copy {} into {}",
+                    source_urls_path.display(),
+                    provenance_dir.display()
+                )
+            })?;
+        }
+        prefetch_archives_with_provenance(
+            &requests,
+            &source_root,
+            config.fetch_jobs,
+            Some(&static_source_fetch_cache_config(config)?),
+            &provenance_dir,
+            "tpp-fetch",
+        )?;
+        fs::write(&marker, b"ok")
+            .with_context(|| format!("failed to write {}", marker.display()))?;
+        Ok(BTreeMap::from([
+            (
+                "source_root".to_string(),
+                relative_artifact_path(&source_root, &config.build_root),
+            ),
+            (
+                "provenance_dir".to_string(),
+                relative_artifact_path(&provenance_dir, &config.build_root),
+            ),
+            (
+                "marker".to_string(),
+                relative_artifact_path(&marker, &config.build_root),
+            ),
+        ]))
+    })
+}
+
+fn tpp_fetch_inputs(
+    config: &ProductBuildConfig,
+    source_urls_dir: &Path,
+) -> anyhow::Result<(BTreeMap<String, String>, Vec<PrefetchRequest>)> {
+    let mut source_url_hashes = BTreeMap::new();
+    let mut requests = Vec::new();
+    for region in config.profile.tpp_regions() {
+        let region_id = region.code().to_ascii_lowercase();
+        let source_urls_path = source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl"));
+        source_url_hashes.insert(region_id, hash_file(&source_urls_path)?);
+        requests.extend(tpp_prefetch_requests(&source_urls_path)?);
+    }
+    let requests = dedup_prefetch_requests(requests);
+    let request_fingerprint = hash_text(
+        &serde_json::to_string(&prefetch_request_manifest(&requests)?)
+            .context("tpp prefetch request manifest json")?,
+    );
+    let inputs = BTreeMap::from([
+        (
+            "source_urls".to_string(),
+            hash_text(
+                &serde_json::to_string(&source_url_hashes).context("tpp source url hashes json")?,
+            ),
+        ),
+        ("requests".to_string(), request_fingerprint),
+        ("fetch_jobs".to_string(), config.fetch_jobs.to_string()),
+        (
+            "cache_layout_version".to_string(),
+            TPP_CACHE_LAYOUT_VERSION.to_string(),
+        ),
+        (
+            "tpp_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-tpp/src/lib.rs"),
+            )?,
+        ),
+        (
+            "fetch_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-fetch/src/lib.rs"),
+            )?,
+        ),
+    ]);
+    Ok((inputs, requests))
+}
+
+fn dedup_prefetch_requests(mut requests: Vec<PrefetchRequest>) -> Vec<PrefetchRequest> {
+    requests.sort_by_key(prefetch_request_key);
+    requests.dedup_by_key(|request| prefetch_request_key(request));
+    requests
+}
+
+fn prefetch_request_key(request: &PrefetchRequest) -> (String, String, Option<String>, bool, bool) {
+    (
+        request.cache_key.clone(),
+        request.url.clone(),
+        request.logical_file_name.clone(),
+        request.force_http1,
+        request.allow_html,
+    )
+}
+
+fn prefetch_request_manifest(
+    requests: &[PrefetchRequest],
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    requests
+        .iter()
+        .map(|request| {
+            Ok(serde_json::json!({
+                "allow_html": request.allow_html,
+                "cache_key": &request.cache_key,
+                "file_name": prefetch_request_file_name(request)?,
+                "force_http1": request.force_http1,
+                "logical_file_name": &request.logical_file_name,
+                "url": &request.url,
+            }))
+        })
+        .collect()
+}
+
+fn prefetch_request_file_name(request: &PrefetchRequest) -> anyhow::Result<String> {
+    if let Some(file_name) = &request.logical_file_name {
+        return Ok(file_name.clone());
+    }
+    request
+        .url
+        .rsplit('/')
+        .next()
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .with_context(|| format!("prefetch request URL has no file name: {}", request.url))
+}
+
 pub(super) fn build_tpp_package_node(
     config: &ProductBuildConfig,
     region: Region,
     source_urls_path: &Path,
     version_label: &str,
+    source_fetch_record: Option<&NodeRecord>,
 ) -> anyhow::Result<(NodeRecord, AssetSource)> {
     let contract_id = product_contract_id_for_family("tpp")?;
     let artifact_version = contract_artifact_version(contract_id, version_label);
@@ -753,7 +1036,13 @@ pub(super) fn build_tpp_package_node(
         fetch_cache: Some(static_source_fetch_cache_config(config)?),
     };
     let render_node_name = format!("tpp-{region_id}-render");
-    let render_inputs = tpp_render_inputs(&render_request, source_urls_path, &region_id)?;
+    let source_fetch_fingerprint = source_fetch_record.map(|record| record.fingerprint.as_str());
+    let render_inputs = tpp_render_inputs(
+        &render_request,
+        source_urls_path,
+        &region_id,
+        source_fetch_fingerprint,
+    )?;
     let render_prepared = prepare_node_at(
         &build_shared_node_dir(config, &render_node_name)?,
         &render_node_name,
@@ -911,11 +1200,11 @@ pub(super) fn build_tpp_package_node(
     ))
 }
 
-pub(super) fn chart_render_inputs(
+pub(super) fn chart_process_inputs(
     family: ChartFamily,
     source_repo: &Path,
     source_urls: &Path,
-    fetch_jobs: usize,
+    source_fetch_fingerprint: &str,
     cpu_jobs: usize,
 ) -> anyhow::Result<BTreeMap<String, String>> {
     Ok(BTreeMap::from([
@@ -923,7 +1212,10 @@ pub(super) fn chart_render_inputs(
         ("source_repo".to_string(), hash_tree(source_repo)?),
         ("source_urls".to_string(), hash_file(source_urls)?),
         ("cpu_jobs".to_string(), cpu_jobs.to_string()),
-        ("fetch_jobs".to_string(), fetch_jobs.to_string()),
+        (
+            "source_fetch_fingerprint".to_string(),
+            source_fetch_fingerprint.to_string(),
+        ),
         (
             "chart_render_lib".to_string(),
             hash_file(
@@ -936,13 +1228,16 @@ pub(super) fn chart_render_inputs(
     ]))
 }
 
-pub(super) fn csup_stage_inputs(
+pub(super) fn csup_process_inputs(
     source_urls: &Path,
-    fetch_jobs: usize,
+    source_fetch_fingerprint: &str,
 ) -> anyhow::Result<BTreeMap<String, String>> {
     Ok(BTreeMap::from([
         ("source_urls".to_string(), hash_file(source_urls)?),
-        ("fetch_jobs".to_string(), fetch_jobs.to_string()),
+        (
+            "source_fetch_fingerprint".to_string(),
+            source_fetch_fingerprint.to_string(),
+        ),
         (
             "csup_lib".to_string(),
             hash_file(
@@ -965,15 +1260,15 @@ pub(super) fn csup_stage_inputs(
 }
 
 pub(super) fn csup_render_inputs(
-    stage_fingerprint: &str,
+    process_fingerprint: &str,
     region: Region,
     render_jobs: usize,
     version_label: &str,
 ) -> anyhow::Result<BTreeMap<String, String>> {
     Ok(BTreeMap::from([
         (
-            "stage_fingerprint".to_string(),
-            stage_fingerprint.to_string(),
+            "process_fingerprint".to_string(),
+            process_fingerprint.to_string(),
         ),
         ("region".to_string(), region.code().to_string()),
         ("render_jobs".to_string(), render_jobs.to_string()),
@@ -1003,8 +1298,9 @@ pub(super) fn tpp_render_inputs(
     request: &NativeTppRunRequest,
     source_urls: &Path,
     region_id: &str,
+    source_fetch_fingerprint: Option<&str>,
 ) -> anyhow::Result<BTreeMap<String, String>> {
-    Ok(BTreeMap::from([
+    let mut inputs = BTreeMap::from([
         ("region".to_string(), region_id.to_string()),
         ("source_urls".to_string(), hash_file(source_urls)?),
         ("fetch_jobs".to_string(), request.fetch_jobs.to_string()),
@@ -1030,7 +1326,14 @@ pub(super) fn tpp_render_inputs(
                     .join("preprocessor-tools/src/lib.rs"),
             )?,
         ),
-    ]))
+    ]);
+    if let Some(fingerprint) = source_fetch_fingerprint {
+        inputs.insert(
+            "source_fetch_fingerprint".to_string(),
+            fingerprint.to_string(),
+        );
+    }
+    Ok(inputs)
 }
 
 pub(super) fn build_data_nodes(

@@ -121,6 +121,17 @@ pub fn run_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<NativeTpp
     })
 }
 
+pub fn tpp_prefetch_requests(source_urls_path: &Path) -> anyhow::Result<Vec<PrefetchRequest>> {
+    let mut requests = read_source_prefetch_requests_jsonl(source_urls_path)?;
+    if !requests
+        .iter()
+        .any(|request| request.url == TPP_AIRPORT_DIAGRAMS_URL)
+    {
+        requests.push(PrefetchRequest::new(TPP_AIRPORT_DIAGRAMS_URL));
+    }
+    Ok(requests)
+}
+
 pub fn render_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<NativeTppRenderResult> {
     let paths = RunPaths::new(&request.run_root);
     fs::create_dir_all(&paths.logs).context("failed to create logs dir")?;
@@ -138,13 +149,7 @@ pub fn render_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<Native
     if let Some(source_urls_path) = &request.prefetch_source_urls {
         let start = Instant::now();
         copy_source_urls_provenance(source_urls_path, &provenance_dir)?;
-        let mut requests = read_source_prefetch_requests_jsonl(source_urls_path)?;
-        if !requests
-            .iter()
-            .any(|request| request.url == TPP_AIRPORT_DIAGRAMS_URL)
-        {
-            requests.push(PrefetchRequest::new(TPP_AIRPORT_DIAGRAMS_URL));
-        }
+        let requests = tpp_prefetch_requests(source_urls_path)?;
         prefetch_archives_with_provenance(
             &requests,
             &work_dir,

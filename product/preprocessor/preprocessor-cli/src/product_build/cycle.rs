@@ -102,15 +102,23 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         let mut pending_tasks = Vec::new();
         for family in chart_families {
             let family_id = family_slug(family).to_string();
+            let fetch_id = format!("charts-{family_id}-fetch");
+            let process_id = format!("charts-{family_id}-process");
             pending_tasks.push(GraphScheduledTask {
-                id: format!("charts-{family_id}-render"),
+                id: fetch_id.clone(),
                 deps: vec![],
+                weight: 1,
+                kind: ScheduledTaskKind::ChartFetch { family },
+            });
+            pending_tasks.push(GraphScheduledTask {
+                id: process_id.clone(),
+                deps: vec![fetch_id],
                 weight: 4,
-                kind: ScheduledTaskKind::ChartRender { family },
+                kind: ScheduledTaskKind::ChartProcess { family },
             });
             pending_tasks.push(GraphScheduledTask {
                 id: format!("charts-{family_id}-package"),
-                deps: vec![format!("charts-{family_id}-render")],
+                deps: vec![process_id, format!("charts-{family_id}-fetch")],
                 weight: 1,
                 kind: ScheduledTaskKind::ChartPackage { family },
             });
@@ -128,10 +136,16 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             }
         }
         pending_tasks.push(GraphScheduledTask {
-            id: "csup-stage".to_string(),
+            id: "csup-fetch".to_string(),
             deps: vec![],
             weight: 1,
-            kind: ScheduledTaskKind::CsupStage,
+            kind: ScheduledTaskKind::CsupFetch,
+        });
+        pending_tasks.push(GraphScheduledTask {
+            id: "csup-process".to_string(),
+            deps: vec!["csup-fetch".to_string()],
+            weight: 1,
+            kind: ScheduledTaskKind::CsupProcess,
         });
         let mut csup_render_ids = Vec::new();
         for region in Region::ALL {
@@ -140,14 +154,18 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             csup_render_ids.push(task_id.clone());
             pending_tasks.push(GraphScheduledTask {
                 id: task_id,
-                deps: vec!["csup-stage".to_string()],
+                deps: vec!["csup-process".to_string()],
                 weight: 2,
                 kind: ScheduledTaskKind::CsupRender { region },
             });
         }
         pending_tasks.push(GraphScheduledTask {
             id: "csup-package".to_string(),
-            deps: csup_render_ids.clone(),
+            deps: csup_render_ids
+                .iter()
+                .cloned()
+                .chain(std::iter::once("csup-fetch".to_string()))
+                .collect(),
             weight: 1,
             kind: ScheduledTaskKind::CsupPackage,
         });
@@ -159,6 +177,12 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 kind: ScheduledTaskKind::CsupUnpack { region },
             });
         }
+        pending_tasks.push(GraphScheduledTask {
+            id: "tpp-fetch".to_string(),
+            deps: vec![],
+            weight: TPP_RENDER_WEIGHT,
+            kind: ScheduledTaskKind::TppFetch,
+        });
         let mut tpp_package_ids = Vec::new();
         for region in config.profile.tpp_regions() {
             let region_id = region.code().to_ascii_lowercase();
@@ -166,13 +190,13 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             let package_id = format!("tpp-{region_id}-package");
             pending_tasks.push(GraphScheduledTask {
                 id: render_id.clone(),
-                deps: vec![],
+                deps: vec!["tpp-fetch".to_string()],
                 weight: TPP_RENDER_WEIGHT,
                 kind: ScheduledTaskKind::TppRender { region: *region },
             });
             pending_tasks.push(GraphScheduledTask {
                 id: package_id.clone(),
-                deps: vec![render_id],
+                deps: vec![render_id, "tpp-fetch".to_string()],
                 weight: 1,
                 kind: ScheduledTaskKind::TppPackage { region: *region },
             });
@@ -252,14 +276,34 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 let data_version = data_version_for_tasks.clone();
                 let bundle_cycle = bundle_cycle_for_tasks.clone();
                 match kind {
-                    ScheduledTaskKind::ChartRender { family } => {
+                    ScheduledTaskKind::ChartFetch { family } => {
                         let family_id = family_slug(family).to_string();
-                        let record = build_chart_render_node(
+                        let record = build_chart_fetch_node(
+                            &config,
+                            family,
+                            &source_urls_dir.join(format!("charts-{family_id}/source_urls.jsonl")),
+                            config.fetch_jobs,
+                        )
+                        .map(|record| TaskCompletion {
+                            node_records: vec![record.clone()],
+                            value: TaskValue::ChartFetch { record },
+                            completion_detail: "cache_or_rebuild".to_string(),
+                        });
+                        record
+                    }
+                    ScheduledTaskKind::ChartProcess { family } => {
+                        let family_id = family_slug(family).to_string();
+                        let source_fetch =
+                            match task_values_snapshot.get(&format!("charts-{family_id}-fetch")) {
+                                Some(TaskValue::ChartFetch { record }) => record,
+                                _ => unreachable!("chart fetch dependency should have completed"),
+                            };
+                        let record = build_chart_process_node(
                             &config,
                             family,
                             &config.chart_cutline_root,
                             &source_urls_dir.join(format!("charts-{family_id}/source_urls.jsonl")),
-                            config.fetch_jobs,
+                            source_fetch,
                             config.cpu_jobs.min(8).max(1),
                         )
                         .map(|record| TaskCompletion {
@@ -269,34 +313,51 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         });
                         record
                     }
-                    ScheduledTaskKind::CsupStage => {
-                        let record = build_csup_stage_node(
+                    ScheduledTaskKind::CsupFetch => {
+                        let record = build_csup_fetch_node(
+                            &config,
+                            &source_urls_dir.join("csup/source_urls.jsonl"),
+                            config.fetch_jobs,
+                        )
+                        .map(|record| TaskCompletion {
+                            node_records: vec![record.clone()],
+                            value: TaskValue::CsupFetch { record },
+                            completion_detail: "cache_or_rebuild".to_string(),
+                        });
+                        record
+                    }
+                    ScheduledTaskKind::CsupProcess => {
+                        let source_fetch = match task_values_snapshot.get("csup-fetch") {
+                            Some(TaskValue::CsupFetch { record }) => record,
+                            _ => unreachable!("csup-fetch dependency should have completed"),
+                        };
+                        let record = build_csup_process_node(
                             &config,
                             Path::new(""),
                             &source_urls_dir.join("csup/source_urls.jsonl"),
-                            config.fetch_jobs,
+                            source_fetch,
                         )
                         .and_then(|record| {
                             let work_dir =
                                 resolve_artifact_path(&config, output_path(&record, "work_dir")?);
                             Ok(TaskCompletion {
                                 node_records: vec![record.clone()],
-                                value: TaskValue::CsupStage { record, work_dir },
+                                value: TaskValue::CsupProcess { record, work_dir },
                                 completion_detail: "cache_or_rebuild".to_string(),
                             })
                         });
                         record
                     }
                     ScheduledTaskKind::CsupRender { region } => {
-                        let stage = match task_values_snapshot.get("csup-stage") {
-                            Some(TaskValue::CsupStage { record, work_dir }) => (record, work_dir),
-                            _ => unreachable!("csup-stage dependency should have completed"),
+                        let process = match task_values_snapshot.get("csup-process") {
+                            Some(TaskValue::CsupProcess { record, work_dir }) => (record, work_dir),
+                            _ => unreachable!("csup-process dependency should have completed"),
                         };
                         build_csup_render_node(
                             &config,
                             region,
-                            stage.1,
-                            &stage.0.fingerprint,
+                            process.1,
+                            &process.0.fingerprint,
                             &csup_version,
                             config.cpu_jobs.max(1),
                         )
@@ -306,7 +367,19 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             completion_detail: "cache_or_rebuild".to_string(),
                         })
                     }
+                    ScheduledTaskKind::TppFetch => {
+                        let record = build_tpp_fetch_node(&config, &source_urls_dir)?;
+                        Ok(TaskCompletion {
+                            node_records: vec![record.clone()],
+                            value: TaskValue::TppFetch { record },
+                            completion_detail: "cache_or_rebuild".to_string(),
+                        })
+                    }
                     ScheduledTaskKind::TppRender { region } => {
+                        let source_fetch = match task_values_snapshot.get("tpp-fetch") {
+                            Some(TaskValue::TppFetch { record }) => record,
+                            _ => unreachable!("tpp-fetch dependency should have completed"),
+                        };
                         let region_id = region.code().to_ascii_lowercase();
                         let request = NativeTppRunRequest {
                             region,
@@ -319,10 +392,12 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             render_jobs: TPP_RENDER_JOBS_PER_RUN,
                             fetch_cache: Some(static_source_fetch_cache_config(&config)?),
                         };
-                        build_tpp_render_node(&config, &request).map(|record| TaskCompletion {
-                            node_records: vec![record],
-                            value: TaskValue::None,
-                            completion_detail: "cache_or_rebuild".to_string(),
+                        build_tpp_render_node(&config, &request, Some(source_fetch)).map(|record| {
+                            TaskCompletion {
+                                node_records: vec![record],
+                                value: TaskValue::None,
+                                completion_detail: "cache_or_rebuild".to_string(),
+                            }
                         })
                     }
                     ScheduledTaskKind::DataBase => build_data_nodes(
@@ -416,6 +491,11 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                     }
                     ScheduledTaskKind::ChartPackage { family } => {
                         let family_id = family_slug(family).to_string();
+                        let source_fetch =
+                            match task_values_snapshot.get(&format!("charts-{family_id}-fetch")) {
+                                Some(TaskValue::ChartFetch { record }) => record,
+                                _ => unreachable!("chart fetch dependency should have completed"),
+                            };
                         let started = Instant::now();
                         let (records, source) = build_chart_package_nodes(
                             &config,
@@ -424,6 +504,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             chart_versions
                                 .get(&family_id)
                                 .expect("chart family version should exist"),
+                            source_fetch,
                         )?;
                         let summary = summarize_package_records(&records);
                         Ok(TaskCompletion {
@@ -439,9 +520,17 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         })
                     }
                     ScheduledTaskKind::CsupPackage => {
+                        let source_fetch = match task_values_snapshot.get("csup-fetch") {
+                            Some(TaskValue::CsupFetch { record }) => record,
+                            _ => unreachable!("csup-fetch dependency should have completed"),
+                        };
                         let started = Instant::now();
-                        let (records, source) =
-                            build_csup_package_nodes(&config, &source_urls_dir, &csup_version)?;
+                        let (records, source) = build_csup_package_nodes(
+                            &config,
+                            &source_urls_dir,
+                            &csup_version,
+                            source_fetch,
+                        )?;
                         let summary = summarize_package_records(&records);
                         Ok(TaskCompletion {
                             node_records: records,
@@ -456,6 +545,10 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         })
                     }
                     ScheduledTaskKind::TppPackage { region } => {
+                        let source_fetch = match task_values_snapshot.get("tpp-fetch") {
+                            Some(TaskValue::TppFetch { record }) => record,
+                            _ => unreachable!("tpp-fetch dependency should have completed"),
+                        };
                         let region_id = region.code().to_ascii_lowercase();
                         let started = Instant::now();
                         let (record, source) = build_tpp_package_node(
@@ -465,6 +558,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             tpp_versions
                                 .get(&region_id)
                                 .expect("tpp region version should exist"),
+                            Some(source_fetch),
                         )?;
                         let cache_hit = record.cache_hit;
                         let fingerprint = record.fingerprint.clone();

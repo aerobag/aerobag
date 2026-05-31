@@ -27,11 +27,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
     #[derive(Debug, Clone)]
     enum ProductScheduledTaskKind {
         SourceUrls { cycle: String },
-        ChartRender { cycle: String, family: ChartFamily },
+        ChartFetch { cycle: String, family: ChartFamily },
+        ChartProcess { cycle: String, family: ChartFamily },
         ChartPackage { cycle: String, family: ChartFamily },
-        CsupStage { cycle: String },
+        CsupFetch { cycle: String },
+        CsupProcess { cycle: String },
         CsupRender { cycle: String, region: Region },
         CsupPackage { cycle: String },
+        TppFetch { cycle: String },
         TppRender { cycle: String, region: Region },
         TppPackage { cycle: String, region: Region },
         DataBase { cycle: String },
@@ -107,20 +110,30 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             });
             for family in chart_families {
                 let family_id = family_slug(family);
-                let render_id = cycle_task_id(cycle, &format!("charts-{family_id}-render"));
+                let fetch_id = cycle_task_id(cycle, &format!("charts-{family_id}-fetch"));
+                let process_id = cycle_task_id(cycle, &format!("charts-{family_id}-process"));
                 let package_id = cycle_task_id(cycle, &format!("charts-{family_id}-package"));
                 pending_tasks.push(GraphScheduledTask {
-                    id: render_id.clone(),
+                    id: fetch_id.clone(),
                     deps: vec![cycle_task_id(cycle, "source-urls")],
+                    weight: 1,
+                    kind: ProductScheduledTaskKind::ChartFetch {
+                        cycle: cycle.clone(),
+                        family,
+                    },
+                });
+                pending_tasks.push(GraphScheduledTask {
+                    id: process_id.clone(),
+                    deps: vec![fetch_id.clone()],
                     weight: 4,
-                    kind: ProductScheduledTaskKind::ChartRender {
+                    kind: ProductScheduledTaskKind::ChartProcess {
                         cycle: cycle.clone(),
                         family,
                     },
                 });
                 pending_tasks.push(GraphScheduledTask {
                     id: package_id.clone(),
-                    deps: vec![render_id],
+                    deps: vec![process_id, fetch_id],
                     weight: 1,
                     kind: ProductScheduledTaskKind::ChartPackage {
                         cycle: cycle.clone(),
@@ -130,10 +143,18 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             }
 
             pending_tasks.push(GraphScheduledTask {
-                id: cycle_task_id(cycle, "csup-stage"),
+                id: cycle_task_id(cycle, "csup-fetch"),
                 deps: vec![cycle_task_id(cycle, "source-urls")],
                 weight: 1,
-                kind: ProductScheduledTaskKind::CsupStage {
+                kind: ProductScheduledTaskKind::CsupFetch {
+                    cycle: cycle.clone(),
+                },
+            });
+            pending_tasks.push(GraphScheduledTask {
+                id: cycle_task_id(cycle, "csup-process"),
+                deps: vec![cycle_task_id(cycle, "csup-fetch")],
+                weight: 1,
+                kind: ProductScheduledTaskKind::CsupProcess {
                     cycle: cycle.clone(),
                 },
             });
@@ -146,7 +167,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 csup_render_ids.push(task_id.clone());
                 pending_tasks.push(GraphScheduledTask {
                     id: task_id,
-                    deps: vec![cycle_task_id(cycle, "csup-stage")],
+                    deps: vec![cycle_task_id(cycle, "csup-process")],
                     weight: 2,
                     kind: ProductScheduledTaskKind::CsupRender {
                         cycle: cycle.clone(),
@@ -156,13 +177,25 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             }
             pending_tasks.push(GraphScheduledTask {
                 id: cycle_task_id(cycle, "csup-package"),
-                deps: csup_render_ids.clone(),
+                deps: csup_render_ids
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(cycle_task_id(cycle, "csup-fetch")))
+                    .collect(),
                 weight: 1,
                 kind: ProductScheduledTaskKind::CsupPackage {
                     cycle: cycle.clone(),
                 },
             });
 
+            pending_tasks.push(GraphScheduledTask {
+                id: cycle_task_id(cycle, "tpp-fetch"),
+                deps: vec![cycle_task_id(cycle, "source-urls")],
+                weight: TPP_RENDER_WEIGHT,
+                kind: ProductScheduledTaskKind::TppFetch {
+                    cycle: cycle.clone(),
+                },
+            });
             let mut tpp_package_ids = Vec::new();
             for region in config.profile.tpp_regions() {
                 let region_id = region.code().to_ascii_lowercase();
@@ -170,7 +203,10 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 let package_id = cycle_task_id(cycle, &format!("tpp-{region_id}-package"));
                 pending_tasks.push(GraphScheduledTask {
                     id: render_id.clone(),
-                    deps: vec![cycle_task_id(cycle, "source-urls")],
+                    deps: vec![
+                        cycle_task_id(cycle, "source-urls"),
+                        cycle_task_id(cycle, "tpp-fetch"),
+                    ],
                     weight: TPP_RENDER_WEIGHT,
                     kind: ProductScheduledTaskKind::TppRender {
                         cycle: cycle.clone(),
@@ -179,7 +215,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 });
                 pending_tasks.push(GraphScheduledTask {
                     id: package_id.clone(),
-                    deps: vec![render_id],
+                    deps: vec![render_id, cycle_task_id(cycle, "tpp-fetch")],
                     weight: 1,
                     kind: ProductScheduledTaskKind::TppPackage {
                         cycle: cycle.clone(),
@@ -522,7 +558,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             completion_detail,
                         })
                     }
-                    ProductScheduledTaskKind::ChartRender { cycle, family } => {
+                    ProductScheduledTaskKind::ChartFetch { cycle, family } => {
                         let source_urls =
                             match task_values_snapshot.get(&cycle_task_id(&cycle, "source-urls")) {
                                 Some(ProductTaskValue::SourceUrls { dir, .. }) => dir.clone(),
@@ -531,12 +567,42 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let mut cycle_config = config.clone();
                         cycle_config.target_cycle = Some(cycle);
                         let family_id = family_slug(family).to_string();
-                        let record = build_chart_render_node(
+                        let record = build_chart_fetch_node(
+                            &cycle_config,
+                            family,
+                            &source_urls.join(format!("charts-{family_id}/source_urls.jsonl")),
+                            cycle_config.fetch_jobs,
+                        )?;
+                        Ok(ProductTaskCompletion {
+                            node_records: vec![normalize_node_record_paths(
+                                record.clone(),
+                                &cycle_config.build_root,
+                            )],
+                            value: ProductTaskValue::ChartFetch { record },
+                            completion_detail: "cache_or_rebuild".to_string(),
+                        })
+                    }
+                    ProductScheduledTaskKind::ChartProcess { cycle, family } => {
+                        let source_urls =
+                            match task_values_snapshot.get(&cycle_task_id(&cycle, "source-urls")) {
+                                Some(ProductTaskValue::SourceUrls { dir, .. }) => dir.clone(),
+                                _ => bail!("missing source urls for cycle {cycle}"),
+                            };
+                        let mut cycle_config = config.clone();
+                        cycle_config.target_cycle = Some(cycle.clone());
+                        let family_id = family_slug(family).to_string();
+                        let source_fetch = match task_values_snapshot
+                            .get(&cycle_task_id(&cycle, &format!("charts-{family_id}-fetch")))
+                        {
+                            Some(ProductTaskValue::ChartFetch { record }) => record,
+                            _ => bail!("missing chart fetch for cycle {cycle} family {family_id}"),
+                        };
+                        let record = build_chart_process_node(
                             &cycle_config,
                             family,
                             &cycle_config.chart_cutline_root,
                             &source_urls.join(format!("charts-{family_id}/source_urls.jsonl")),
-                            cycle_config.fetch_jobs,
+                            source_fetch,
                             cycle_config.cpu_jobs.min(8).max(1),
                         )?;
                         Ok(ProductTaskCompletion {
@@ -548,7 +614,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             completion_detail: "cache_or_rebuild".to_string(),
                         })
                     }
-                    ProductScheduledTaskKind::CsupStage { cycle } => {
+                    ProductScheduledTaskKind::CsupFetch { cycle } => {
                         let source_urls =
                             match task_values_snapshot.get(&cycle_task_id(&cycle, "source-urls")) {
                                 Some(ProductTaskValue::SourceUrls { dir, .. }) => dir.clone(),
@@ -556,11 +622,38 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             };
                         let mut cycle_config = config.clone();
                         cycle_config.target_cycle = Some(cycle);
-                        let record = build_csup_stage_node(
+                        let record = build_csup_fetch_node(
+                            &cycle_config,
+                            &source_urls.join("csup/source_urls.jsonl"),
+                            cycle_config.fetch_jobs,
+                        )?;
+                        Ok(ProductTaskCompletion {
+                            node_records: vec![normalize_node_record_paths(
+                                record.clone(),
+                                &cycle_config.build_root,
+                            )],
+                            value: ProductTaskValue::CsupFetch { record },
+                            completion_detail: "cache_or_rebuild".to_string(),
+                        })
+                    }
+                    ProductScheduledTaskKind::CsupProcess { cycle } => {
+                        let source_urls =
+                            match task_values_snapshot.get(&cycle_task_id(&cycle, "source-urls")) {
+                                Some(ProductTaskValue::SourceUrls { dir, .. }) => dir.clone(),
+                                _ => bail!("missing source urls for cycle {cycle}"),
+                            };
+                        let source_fetch =
+                            match task_values_snapshot.get(&cycle_task_id(&cycle, "csup-fetch")) {
+                                Some(ProductTaskValue::CsupFetch { record }) => record,
+                                _ => bail!("missing csup-fetch for cycle {cycle}"),
+                            };
+                        let mut cycle_config = config.clone();
+                        cycle_config.target_cycle = Some(cycle);
+                        let record = build_csup_process_node(
                             &cycle_config,
                             Path::new(""),
                             &source_urls.join("csup/source_urls.jsonl"),
-                            cycle_config.fetch_jobs,
+                            source_fetch,
                         )?;
                         let work_dir =
                             resolve_artifact_path(&cycle_config, output_path(&record, "work_dir")?);
@@ -569,7 +662,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 record.clone(),
                                 &cycle_config.build_root,
                             )],
-                            value: ProductTaskValue::CsupStage { record, work_dir },
+                            value: ProductTaskValue::CsupProcess { record, work_dir },
                             completion_detail: "cache_or_rebuild".to_string(),
                         })
                     }
@@ -581,20 +674,21 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             }
                             _ => bail!("missing source urls for cycle {cycle}"),
                         };
-                        let stage =
-                            match task_values_snapshot.get(&cycle_task_id(&cycle, "csup-stage")) {
-                                Some(ProductTaskValue::CsupStage { record, work_dir }) => {
-                                    (record.clone(), work_dir.clone())
-                                }
-                                _ => bail!("missing csup stage for cycle {cycle}"),
-                            };
+                        let process = match task_values_snapshot
+                            .get(&cycle_task_id(&cycle, "csup-process"))
+                        {
+                            Some(ProductTaskValue::CsupProcess { record, work_dir }) => {
+                                (record.clone(), work_dir.clone())
+                            }
+                            _ => bail!("missing csup process for cycle {cycle}"),
+                        };
                         let mut cycle_config = config.clone();
                         cycle_config.target_cycle = Some(cycle);
                         let record = build_csup_render_node(
                             &cycle_config,
                             region,
-                            &stage.1,
-                            &stage.0.fingerprint,
+                            &process.1,
+                            &process.0.fingerprint,
                             &source_urls,
                             cycle_config.cpu_jobs.max(1),
                         )?;
@@ -613,6 +707,11 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 Some(ProductTaskValue::SourceUrls { dir, .. }) => dir.clone(),
                                 _ => bail!("missing source urls for cycle {cycle}"),
                             };
+                        let source_fetch =
+                            match task_values_snapshot.get(&cycle_task_id(&cycle, "tpp-fetch")) {
+                                Some(ProductTaskValue::TppFetch { record }) => record,
+                                _ => bail!("missing tpp-fetch output for cycle {cycle}"),
+                            };
                         let mut cycle_config = config.clone();
                         cycle_config.target_cycle = Some(cycle);
                         let region_id = region.code().to_ascii_lowercase();
@@ -627,13 +726,32 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             render_jobs: TPP_RENDER_JOBS_PER_RUN,
                             fetch_cache: Some(static_source_fetch_cache_config(&cycle_config)?),
                         };
-                        let record = build_tpp_render_node(&cycle_config, &request)?;
+                        let record =
+                            build_tpp_render_node(&cycle_config, &request, Some(source_fetch))?;
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 record,
                                 &cycle_config.build_root,
                             )],
                             value: ProductTaskValue::None,
+                            completion_detail: "cache_or_rebuild".to_string(),
+                        })
+                    }
+                    ProductScheduledTaskKind::TppFetch { cycle } => {
+                        let source_urls =
+                            match task_values_snapshot.get(&cycle_task_id(&cycle, "source-urls")) {
+                                Some(ProductTaskValue::SourceUrls { dir, .. }) => dir.clone(),
+                                _ => bail!("missing source urls for cycle {cycle}"),
+                            };
+                        let mut cycle_config = config.clone();
+                        cycle_config.target_cycle = Some(cycle);
+                        let record = build_tpp_fetch_node(&cycle_config, &source_urls)?;
+                        Ok(ProductTaskCompletion {
+                            node_records: vec![normalize_node_record_paths(
+                                record.clone(),
+                                &cycle_config.build_root,
+                            )],
+                            value: ProductTaskValue::TppFetch { record },
                             completion_detail: "cache_or_rebuild".to_string(),
                         })
                     }
@@ -691,8 +809,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 _ => bail!("missing source urls for cycle {cycle}"),
                             };
                         let mut cycle_config = config.clone();
-                        cycle_config.target_cycle = Some(cycle);
+                        cycle_config.target_cycle = Some(cycle.clone());
                         let family_id = family_slug(family).to_string();
+                        let source_fetch = match task_values_snapshot
+                            .get(&cycle_task_id(&cycle, &format!("charts-{family_id}-fetch")))
+                        {
+                            Some(ProductTaskValue::ChartFetch { record }) => record,
+                            _ => bail!("missing chart fetch for cycle {cycle} family {family_id}"),
+                        };
                         let started = Instant::now();
                         let (records, source) = build_chart_package_nodes(
                             &cycle_config,
@@ -702,6 +826,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 .1
                                 .get(&family_id)
                                 .expect("chart family version should exist"),
+                            source_fetch,
                         )?;
                         let summary = summarize_package_records(&records);
                         Ok(ProductTaskCompletion {
@@ -730,12 +855,18 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 _ => bail!("missing source urls for cycle {cycle}"),
                             };
                         let mut cycle_config = config.clone();
-                        cycle_config.target_cycle = Some(cycle);
+                        cycle_config.target_cycle = Some(cycle.clone());
+                        let source_fetch =
+                            match task_values_snapshot.get(&cycle_task_id(&cycle, "csup-fetch")) {
+                                Some(ProductTaskValue::CsupFetch { record }) => record,
+                                _ => bail!("missing csup-fetch for cycle {cycle}"),
+                            };
                         let started = Instant::now();
                         let (records, source) = build_csup_package_nodes(
                             &cycle_config,
                             &source_urls.0,
                             &source_urls.1,
+                            source_fetch,
                         )?;
                         let summary = summarize_package_records(&records);
                         Ok(ProductTaskCompletion {
@@ -763,6 +894,11 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 }) => (dir.clone(), tpp_versions.clone()),
                                 _ => bail!("missing source urls for cycle {cycle}"),
                             };
+                        let source_fetch =
+                            match task_values_snapshot.get(&cycle_task_id(&cycle, "tpp-fetch")) {
+                                Some(ProductTaskValue::TppFetch { record }) => record,
+                                _ => bail!("missing tpp-fetch output for cycle {cycle}"),
+                            };
                         let mut cycle_config = config.clone();
                         cycle_config.target_cycle = Some(cycle);
                         let region_id = region.code().to_ascii_lowercase();
@@ -777,6 +913,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 .1
                                 .get(&region_id)
                                 .expect("tpp region version should exist"),
+                            Some(source_fetch),
                         )?;
                         let cache_hit = record.cache_hit;
                         let fingerprint = record.fingerprint.clone();

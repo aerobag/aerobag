@@ -271,9 +271,20 @@ export default defineConfig({
   },
   preview: {
     allowedHosts: ["aerobag-dev.iac.jonh.net"],
+    proxy: liveFeedsOrigin
+      ? {
+          "/live-feeds": {
+            target: liveFeedsOrigin,
+            changeOrigin: true,
+          },
+        }
+      : undefined,
   },
   build: {
     outDir: path.join(webTargetRoot, "dist"),
     emptyOutDir: true,
+  },
+  worker: {
+    format: "es",
   },
 });

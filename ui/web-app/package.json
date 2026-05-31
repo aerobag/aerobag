@@ -15,11 +15,13 @@
     "inner:dev": "npm run generate:symbols && npm run prepare:dev-assets && npm run build:wasm && vite",
     "inner:dev:fast": "npm run generate:symbols && npm run build:wasm && vite",
     "inner:dev:optimized-wasm": "npm run generate:symbols && npm run prepare:dev-assets && npm run build:wasm:optimized && vite",
+    "inner:preview:optimized-wasm": "npm run generate:symbols && npm run prepare:dev-assets && npm run build:wasm:optimized && tsc --noEmit && vite build && vite preview",
     "inner:build": "npm run generate:symbols && npm run prepare:dev-assets && npm run build:wasm && tsc --noEmit && vite build",
     "inner:build:release": "npm run generate:symbols && npm run prepare:dev-assets && npm run build:wasm:release && tsc --noEmit && vite build",
     "inner:test": "npm run generate:symbols && vitest run",
     "dev": "./scripts/run-target-workspace.sh inner:dev",
     "dev:optimized-wasm": "./scripts/run-target-workspace.sh inner:dev:optimized-wasm",
+    "preview:optimized-wasm": "./scripts/run-target-workspace.sh inner:preview:optimized-wasm",
     "build": "./scripts/run-target-workspace.sh inner:build",
     "build:release": "./scripts/run-target-workspace.sh inner:build:release",
     "test": "./scripts/run-target-workspace.sh inner:test"

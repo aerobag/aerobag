@@ -68,6 +68,9 @@ val webPort = System.getenv("WEB_PORT")
 val androidPackageSourceBaseUrl = System.getenv("ANDROID_PACKAGE_SOURCE_BASE_URL")
     ?: readInstanceConfigValue("ANDROID_PACKAGE_SOURCE_BASE_URL")
     ?: "http://10.0.2.2:$webPort/packages/"
+val androidLiveFeedSourceBaseUrl = System.getenv("ANDROID_LIVE_FEED_SOURCE_BASE_URL")?.takeIf { it.isNotBlank() }
+    ?: readInstanceConfigValue("ANDROID_LIVE_FEED_SOURCE_BASE_URL")
+    ?: ""
 val artifactReadPathConfigFile = repoRoot.resolve(".aerobag-artifact-read-path")
 val configuredArtifactRoot = artifactReadPathConfigFile.readText().trim()
 val defaultArtifactRoot =
@@ -133,6 +136,7 @@ val stageCanonicalAndroidAssets by tasks.registering {
         linkOrCopy(uiThemeFile, fixturesDir.resolve("ui-theme.json"))
         linkOrCopy(devBootstrapFile, fixturesDir.resolve("dev-bootstrap.json"))
         fixturesDir.resolve("android-package-source-base-url.txt").writeText(androidPackageSourceBaseUrl)
+        fixturesDir.resolve("android-live-feed-source-base-url.txt").writeText(androidLiveFeedSourceBaseUrl)
     }
 }
 

@@ -4,11 +4,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$APP_DIR/../.." && pwd)"
+INSTANCE_CONFIG="$REPO_ROOT/../INSTANCE_CONFIG"
+if [[ -f "$INSTANCE_CONFIG" ]]; then
+  # shellcheck source=/dev/null
+  source "$INSTANCE_CONFIG"
+fi
 DEFAULT_UI_TARGET_ROOT="$(cd "$REPO_ROOT/.." && pwd)/ui-target"
 
 ANDROID_SERIAL="${ANDROID_SERIAL:-emulator-5560}"
 ANDROID_DEV_SERVER_BASE_URL="${ANDROID_DEV_SERVER_BASE_URL:-http://10.0.2.2:8083}"
 ANDROID_PACKAGE_SOURCE_BASE_URL="${ANDROID_PACKAGE_SOURCE_BASE_URL:-${ANDROID_DEV_SERVER_BASE_URL}/packages/}"
+ANDROID_LIVE_FEED_SOURCE_BASE_URL="${ANDROID_LIVE_FEED_SOURCE_BASE_URL:-}"
 AEROBAG_UI_TARGET_ROOT="${AEROBAG_UI_TARGET_ROOT:-$DEFAULT_UI_TARGET_ROOT}"
 APK="$AEROBAG_UI_TARGET_ROOT/android/build/app/outputs/apk/debug/app-debug.apk"
 APP_ID="org.aerobag.app"
@@ -16,13 +22,14 @@ APP_ID="org.aerobag.app"
 echo "target=$ANDROID_SERIAL"
 echo "dev_server=$ANDROID_DEV_SERVER_BASE_URL"
 echo "package_source=$ANDROID_PACKAGE_SOURCE_BASE_URL"
+echo "live_feed_source=${ANDROID_LIVE_FEED_SOURCE_BASE_URL:-<package-source-root>}"
 
 env \
   AEROBAG_UI_TARGET_ROOT="$AEROBAG_UI_TARGET_ROOT" \
   ANDROID_DEV_SERVER_BASE_URL="$ANDROID_DEV_SERVER_BASE_URL" \
   ANDROID_PACKAGE_SOURCE_BASE_URL="$ANDROID_PACKAGE_SOURCE_BASE_URL" \
+  ANDROID_LIVE_FEED_SOURCE_BASE_URL="$ANDROID_LIVE_FEED_SOURCE_BASE_URL" \
   "$APP_DIR/gradlew" -p "$APP_DIR" assembleDebug
 
 adb -s "$ANDROID_SERIAL" install -r "$APK"
 adb -s "$ANDROID_SERIAL" shell monkey -p "$APP_ID" 1 >/dev/null
-

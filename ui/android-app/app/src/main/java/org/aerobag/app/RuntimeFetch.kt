@@ -342,6 +342,15 @@ internal fun loadAndroidPackageSourceBaseUrl(context: Context): String =
             .takeIf { it.isNotBlank() }
     }.getOrNull() ?: DefaultAndroidPackageSourceBaseUrl
 
+internal fun loadAndroidLiveFeedSourceBaseUrl(context: Context): String? =
+    runCatching {
+        context.assets.open("fixtures/android-live-feed-source-base-url.txt")
+            .bufferedReader()
+            .use { it.readText().trim() }
+            .trimEnd('/')
+            .takeIf { it.isNotBlank() }
+    }.getOrNull()
+
 internal fun readOfflinePackagesStateJson(
     prefs: android.content.SharedPreferences,
 ): String =
@@ -361,11 +370,23 @@ internal fun resolveLiveFeedSourceRootUrl(
     prefs: android.content.SharedPreferences,
     devServerBaseUrl: String,
 ): String {
+    loadAndroidLiveFeedSourceBaseUrl(context)?.let { configured ->
+        return normalizeLiveFeedSourceRootUrl(configured)
+    }
     val configuredRoot = runCatching {
         resolvePublicationRootUrl(readPackageSourceBaseUrl(context, prefs))
     }.getOrNull() ?: devServerBaseUrl
-    return configuredRoot.trimEnd('/').removeSuffix("/$PublicationPackageRootPath")
+    return normalizeLiveFeedSourceRootUrl(
+        configuredRoot.trimEnd('/').removeSuffix("/$PublicationPackageRootPath"),
+    )
 }
+
+internal fun normalizeLiveFeedSourceRootUrl(configured: String): String =
+    configured
+        .trim()
+        .trimEnd('/')
+        .removeSuffix("/live-feeds/events")
+        .removeSuffix("/live-feeds")
 
 internal fun fetchJsonOrNull(url: String): String? =
     runCatching {

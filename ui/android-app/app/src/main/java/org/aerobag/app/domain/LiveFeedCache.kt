@@ -7,6 +7,7 @@ import android.os.SystemClock
 import android.util.Log
 import java.io.File
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -21,6 +22,9 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 
 private const val LiveFeedCacheDirectoryName = "live-feeds"
+private const val LiveFeedSseConnectTimeoutMs = 5_000
+private const val LiveFeedSseIdleTimeoutMs = 65_000
+private const val LiveFeedFailedRequestRetryDelayMs = 5 * 60_000L
 
 @Serializable
 data class LiveFeedCacheRequest(
@@ -123,6 +127,8 @@ class AndroidLiveFeedClient(
         ignoreUnknownKeys = true
     },
 ) {
+    private val retryGate = LiveFeedRequestRetryGate(LiveFeedFailedRequestRetryDelayMs)
+
     suspend fun bootstrapAndRun(
         promote: suspend (LiveFeedInstalledSummary) -> Unit,
         onChanged: suspend () -> Unit,
@@ -133,8 +139,12 @@ class AndroidLiveFeedClient(
                 readSseLoop(promote, onChanged)
             }.onFailure { error ->
                 if (error is CancellationException) throw error
-                Log.w(TAG, "live-feed SSE loop failed: ${error.message}", error)
-                delay(5_000)
+                if (error is SocketTimeoutException) {
+                    Log.i(TAG, "live-feed SSE idle for ${LiveFeedSseIdleTimeoutMs}ms; reconnecting")
+                } else {
+                    Log.w(TAG, "live-feed SSE loop failed: ${error.message}", error)
+                    delay(5_000)
+                }
                 pumpUntilSettled(promote, onChanged)
             }
         }
@@ -146,26 +156,43 @@ class AndroidLiveFeedClient(
     ): Int {
         var installs = 0
         while (kotlin.coroutines.coroutineContext.isActive) {
+            val nowMs = SystemClock.elapsedRealtime()
             val requests = cache.missingRequests()
             if (requests.isEmpty()) {
                 return installs
             }
+            val readyRequests = requests.filter { retryGate.shouldAttempt(it.id, nowMs) }
+            if (readyRequests.isEmpty()) {
+                return installs
+            }
             var madeProgress = false
-            for (request in requests) {
-                val bytes = withContext(Dispatchers.IO) { fetchBytes(request.url) }
-                val summary = cache.installFetchedBytes(request, bytes)
-                if (summary == null) {
+            for (request in readyRequests) {
+                try {
+                    val bytes = withContext(Dispatchers.IO) { fetchBytes(request.url) }
+                    val summary = cache.installFetchedBytes(request, bytes)
+                    retryGate.recordSuccess(request.id)
+                    if (summary == null) {
+                        madeProgress = true
+                        continue
+                    }
+                    val payloadBytes = cache.installedPayloadBytes(summary.product)
+                    withContext(Dispatchers.IO) {
+                        LiveFeedCacheStore.persist(context, summary, payloadBytes)
+                    }
+                    promote(summary)
+                    onChanged()
+                    installs += 1
                     madeProgress = true
-                    continue
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    retryGate.recordFailure(request.id, SystemClock.elapsedRealtime())
+                    Log.w(
+                        TAG,
+                        "failed to install live-feed request id=${request.id} url=${request.url}; " +
+                            "retrying in ${LiveFeedFailedRequestRetryDelayMs / 1000}s: ${error.message}",
+                        error,
+                    )
                 }
-                val payloadBytes = cache.installedPayloadBytes(summary.product)
-                withContext(Dispatchers.IO) {
-                    LiveFeedCacheStore.persist(context, summary, payloadBytes)
-                }
-                promote(summary)
-                onChanged()
-                installs += 1
-                madeProgress = true
             }
             if (!madeProgress) {
                 return installs
@@ -180,8 +207,8 @@ class AndroidLiveFeedClient(
     ) = withContext(Dispatchers.IO) {
         val url = resolveLiveFeedUrl("/live-feeds/events", sourceRootUrl)
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 5_000
-            readTimeout = 0
+            connectTimeout = LiveFeedSseConnectTimeoutMs
+            readTimeout = LiveFeedSseIdleTimeoutMs
             setRequestProperty("Accept", "text/event-stream")
         }
         try {
@@ -238,6 +265,23 @@ class AndroidLiveFeedClient(
 
     companion object {
         private const val TAG = "AndroidLiveFeeds"
+    }
+}
+
+internal class LiveFeedRequestRetryGate(
+    private val retryDelayMs: Long,
+) {
+    private val retryNotBeforeMsByRequestId = mutableMapOf<String, Long>()
+
+    fun shouldAttempt(requestId: String, nowMs: Long): Boolean =
+        nowMs >= (retryNotBeforeMsByRequestId[requestId] ?: Long.MIN_VALUE)
+
+    fun recordSuccess(requestId: String) {
+        retryNotBeforeMsByRequestId.remove(requestId)
+    }
+
+    fun recordFailure(requestId: String, nowMs: Long) {
+        retryNotBeforeMsByRequestId[requestId] = nowMs + retryDelayMs
     }
 }
 

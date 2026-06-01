@@ -36,6 +36,7 @@ export function installStartupReloadHarness(): StartupReloadHarness | null {
   const samples = positiveInt(params.get("startupSamples"), defaultSamples);
   const sampleIndex = nonNegativeInt(params.get("startupSampleIndex"), 0);
   const timeoutMs = positiveInt(params.get("startupTimeoutMs"), defaultTimeoutMs);
+  const noAutoReload = params.has("startupNoAutoReload");
   const browserInstanceId = `startup-${runId}-${sampleIndex + 1}`;
   setBrowserInstanceId(browserInstanceId);
   (globalThis as unknown as { __aerobagPerfRunId?: string }).__aerobagPerfRunId = runId;
@@ -95,6 +96,9 @@ export function installStartupReloadHarness(): StartupReloadHarness | null {
       milestones,
     });
     await flushDebugLogNow();
+    if (noAutoReload) {
+      return;
+    }
     if (sampleIndex + 1 >= samples) {
       debugLog("startup.reload_harness.done", {
         run_id: runId,
@@ -226,6 +230,7 @@ function withoutHarnessParams(href: string): string {
     "startupSamples",
     "startupSampleIndex",
     "startupTimeoutMs",
+    "startupNoAutoReload",
     "startupCacheBust",
   ]) {
     url.searchParams.delete(key);

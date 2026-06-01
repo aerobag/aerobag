@@ -333,7 +333,7 @@ const LIVE_FEED_METARS_STATUS_ID: &str = "live_feed:metars_unavailable";
 const LIVE_FEED_NEXRAD_STATUS_ID: &str = "live_feed:nexrad_unavailable";
 const LIVE_FEED_TFRS_STATUS_ID: &str = "live_feed:tfrs_unavailable";
 const LIVE_FEED_OBSTACLES_STATUS_ID: &str = "live_feed:obstacles_unavailable";
-const CYCLE_SELECTED_CHART_STATUS_ID: &str = "cycle:selected_chart_expired";
+const CYCLE_DISPLAYED_CHART_STATUS_ID: &str = "cycle:displayed_chart_invalid";
 const CYCLE_NAV_DB_STATUS_ID: &str = "cycle:nav_db_expired";
 const VECTOR_INPUTS_STATUS_ID: &str = "map_overlay:vector_inputs_loading";
 const PACKAGE_UI_WARNING_STATUS_PREFIX: &str = "package_ui_warning:";
@@ -943,44 +943,160 @@ struct CycleProductFreshnessSync {
     missing_nav_kv_pages: BTreeSet<u32>,
 }
 
-fn sync_selected_chart_expiration_freshness(session: &mut UiSession) -> CycleProductFreshnessSync {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ChartValidityViolationKind {
+    NotYetEffective,
+    Expired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChartValidityViolation {
+    label: String,
+    kind: ChartValidityViolationKind,
+    boundary: String,
+}
+
+fn sync_displayed_chart_validity_freshness(session: &mut UiSession) -> CycleProductFreshnessSync {
     let mut sync = CycleProductFreshnessSync::default();
-    let Some(selected_map) = session
-        .raster_map_catalog
-        .as_ref()
-        .and_then(|catalog| catalog.selected_map.as_ref())
-    else {
-        sync.changed = clear_data_status_record(session, CYCLE_SELECTED_CHART_STATUS_ID);
+    let Some(catalog) = session.raster_map_catalog.as_ref() else {
+        sync.changed = clear_data_status_record(session, CYCLE_DISPLAYED_CHART_STATUS_ID);
         return sync;
     };
-    let Some(expiration_date) = selected_map.map_view.package_expiration_date.as_deref() else {
-        sync.changed = clear_data_status_record(session, CYCLE_SELECTED_CHART_STATUS_ID);
-        return sync;
-    };
-    let Some(expiration_utc) = parse_utc_instant(expiration_date) else {
-        sync.changed = clear_data_status_record(session, CYCLE_SELECTED_CHART_STATUS_ID);
-        return sync;
-    };
+    let catalog = raster_catalog_for_layer_state(catalog, &session.map_layer_state);
     let now_utc = session_wall_clock_utc(session);
-    sync.changed = if cycle_product_is_expired(expiration_utc, now_utc) {
-        upsert_data_status_record(
-            session,
-            DataStatusRecord::new(
-                CYCLE_SELECTED_CHART_STATUS_ID,
-                "CHART",
-                Some("EXPIRED".to_string()),
-                UiStatusSeverity::Warning,
-                true,
-                format!(
-                    "Selected chart {} expired at {expiration_date} UTC.",
-                    selected_map.label
-                ),
-            ),
-        )
-    } else {
-        clear_data_status_record(session, CYCLE_SELECTED_CHART_STATUS_ID)
-    };
+    let mut seen = BTreeSet::new();
+    let mut violations = Vec::new();
+    for option in &catalog.displayed_maps {
+        collect_chart_validity_violations(
+            &mut violations,
+            &mut seen,
+            &option.label,
+            option.map_view.package_effective_date.as_deref(),
+            option.map_view.package_expiration_date.as_deref(),
+            now_utc,
+        );
+        if let Some(wide_angle) = option.map_view.wide_angle.as_ref() {
+            collect_chart_validity_violations(
+                &mut violations,
+                &mut seen,
+                &format!("{} wide-angle", option.label),
+                wide_angle.package_effective_date.as_deref(),
+                wide_angle.package_expiration_date.as_deref(),
+                now_utc,
+            );
+        }
+    }
+    if violations.is_empty() {
+        sync.changed = clear_data_status_record(session, CYCLE_DISPLAYED_CHART_STATUS_ID);
+        return sync;
+    }
+    sync.changed = upsert_data_status_record(
+        session,
+        DataStatusRecord::new(
+            CYCLE_DISPLAYED_CHART_STATUS_ID,
+            "CHART",
+            Some(chart_validity_value(&violations).to_string()),
+            UiStatusSeverity::Warning,
+            true,
+            chart_validity_detail(&violations),
+        ),
+    );
     sync
+}
+
+fn collect_chart_validity_violations(
+    violations: &mut Vec<ChartValidityViolation>,
+    seen: &mut BTreeSet<(String, ChartValidityViolationKind, String)>,
+    label: &str,
+    effective_date: Option<&str>,
+    expiration_date: Option<&str>,
+    now_utc: DateTime<Utc>,
+) {
+    if let Some(effective_date) = effective_date {
+        if let Some(effective_utc) = parse_utc_instant(effective_date) {
+            if now_utc < effective_utc {
+                push_chart_validity_violation(
+                    violations,
+                    seen,
+                    label,
+                    ChartValidityViolationKind::NotYetEffective,
+                    effective_date,
+                );
+            }
+        }
+    }
+    if let Some(expiration_date) = expiration_date {
+        if let Some(expiration_utc) = parse_utc_instant(expiration_date) {
+            if cycle_product_is_expired(expiration_utc, now_utc) {
+                push_chart_validity_violation(
+                    violations,
+                    seen,
+                    label,
+                    ChartValidityViolationKind::Expired,
+                    expiration_date,
+                );
+            }
+        }
+    }
+}
+
+fn push_chart_validity_violation(
+    violations: &mut Vec<ChartValidityViolation>,
+    seen: &mut BTreeSet<(String, ChartValidityViolationKind, String)>,
+    label: &str,
+    kind: ChartValidityViolationKind,
+    boundary: &str,
+) {
+    let key = (label.to_string(), kind, boundary.to_string());
+    if seen.insert(key) {
+        violations.push(ChartValidityViolation {
+            label: label.to_string(),
+            kind,
+            boundary: boundary.to_string(),
+        });
+    }
+}
+
+fn chart_validity_value(violations: &[ChartValidityViolation]) -> &'static str {
+    let kinds = violations
+        .iter()
+        .map(|violation| violation.kind)
+        .collect::<BTreeSet<_>>();
+    if kinds.len() > 1 {
+        return "INVALID";
+    }
+    match kinds.first() {
+        Some(ChartValidityViolationKind::Expired) => "EXPIRED",
+        Some(ChartValidityViolationKind::NotYetEffective) => "EARLY",
+        None => "INVALID",
+    }
+}
+
+fn chart_validity_detail(violations: &[ChartValidityViolation]) -> String {
+    let fragments = violations
+        .iter()
+        .map(|violation| match violation.kind {
+            ChartValidityViolationKind::Expired => format!(
+                "displayed chart {} expired at {} UTC",
+                violation.label, violation.boundary
+            ),
+            ChartValidityViolationKind::NotYetEffective => format!(
+                "displayed chart {} is not effective until {} UTC",
+                violation.label, violation.boundary
+            ),
+        })
+        .collect::<Vec<_>>();
+    if fragments.len() == 1 {
+        let mut detail = fragments.into_iter().next().unwrap_or_default();
+        detail.replace_range(0..1, "D");
+        detail.push('.');
+        detail
+    } else {
+        format!(
+            "Displayed charts outside validity interval: {}.",
+            fragments.join("; ")
+        )
+    }
 }
 
 fn sync_nav_db_expiration_freshness(session: &mut UiSession) -> CycleProductFreshnessSync {
@@ -1142,7 +1258,7 @@ fn sync_package_ui_warning_status_records(session: &mut UiSession) -> bool {
 }
 
 fn sync_cycle_product_freshness_status_records(session: &mut UiSession) -> Vec<UiInvalidation> {
-    let selected = sync_selected_chart_expiration_freshness(session);
+    let selected = sync_displayed_chart_validity_freshness(session);
     let nav_db = sync_nav_db_expiration_freshness(session);
     session.cycle_product_freshness = CycleProductFreshnessState {
         dirty: false,
@@ -7894,14 +8010,19 @@ mod tests {
         );
     }
 
-    fn expired_raster_catalog(expiration_date: &str) -> RasterMapCatalog {
-        let option = crate::RasterMapViewOption {
-            id: "sectional:nw".to_string(),
-            label: "NW Charts".to_string(),
+    fn raster_map_option(
+        id: &str,
+        label: &str,
+        effective_date: Option<&str>,
+        expiration_date: Option<&str>,
+    ) -> crate::RasterMapViewOption {
+        crate::RasterMapViewOption {
+            id: id.to_string(),
+            label: label.to_string(),
             region_id: "nw".to_string(),
             map_view: crate::RasterMapView {
-                chart_family: "sectional".to_string(),
-                chart_name: "NW Charts".to_string(),
+                chart_family: id.split(':').next().unwrap_or("sec").to_string(),
+                chart_name: label.to_string(),
                 chart_index: 0,
                 tile_root: "tiles".to_string(),
                 tile_url_root: "/package/tiles".to_string(),
@@ -7914,7 +8035,8 @@ mod tests {
                 storage_kind: "sectional_package".to_string(),
                 package_name: Some("chart_pkg".to_string()),
                 package_relative_path: Some("chart_pkg.zip".to_string()),
-                package_expiration_date: Some(expiration_date.to_string()),
+                package_effective_date: effective_date.map(str::to_string),
+                package_expiration_date: expiration_date.map(str::to_string),
                 full_coverage_zoom: None,
                 wide_angle: None,
                 initial_viewport: crate::RasterInitialViewport {
@@ -7924,15 +8046,26 @@ mod tests {
                 },
                 levels: Vec::new(),
             },
-        };
+        }
+    }
+
+    fn raster_catalog_with_displayed_maps(
+        selected_map: crate::RasterMapViewOption,
+        displayed_maps: Vec<crate::RasterMapViewOption>,
+    ) -> RasterMapCatalog {
         RasterMapCatalog {
-            selected_map_id: option.id.clone(),
-            selected_map: Some(option.clone()),
-            available_maps: vec![option.clone()],
-            displayed_maps: vec![option],
+            selected_map_id: selected_map.id.clone(),
+            selected_map: Some(selected_map.clone()),
+            available_maps: displayed_maps.clone(),
+            displayed_maps,
             geometry: crate::RasterDisplayGeometry::default(),
             family_options: Vec::new(),
         }
+    }
+
+    fn expired_raster_catalog(expiration_date: &str) -> RasterMapCatalog {
+        let option = raster_map_option("sec:nw", "NW Charts", None, Some(expiration_date));
+        raster_catalog_with_displayed_maps(option.clone(), vec![option])
     }
 
     #[test]
@@ -9868,7 +10001,7 @@ mod tests {
     }
 
     #[test]
-    fn expired_selected_chart_records_warning() {
+    fn expired_displayed_chart_records_warning() {
         let init = create_current_test_session();
         {
             let mut sessions = lock_sessions();
@@ -9877,11 +10010,60 @@ mod tests {
         }
 
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");
-        let chart = data_status_box(&snapshot, CYCLE_SELECTED_CHART_STATUS_ID);
+        let chart = data_status_box(&snapshot, CYCLE_DISPLAYED_CHART_STATUS_ID);
         assert_eq!(chart.label, "CHART");
         assert_eq!(chart.value.as_deref(), Some("EXPIRED"));
         assert_eq!(chart.severity, UiStatusSeverity::Warning);
         assert!(chart.detail.contains("NW Charts expired"));
+    }
+
+    #[test]
+    fn expired_background_chart_records_warning_when_selected_chart_is_current() {
+        let init = create_current_test_session();
+        let sectional = raster_map_option("sec:nw", "NW Sectional", None, Some("2020-01-01"));
+        let tac = raster_map_option("tac:nw", "NW TAC", Some("2026-05-14"), Some("2026-07-09"));
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            session.raster_map_catalog = Some(raster_catalog_with_displayed_maps(
+                tac.clone(),
+                vec![sectional, tac],
+            ));
+        }
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let chart = data_status_box(&snapshot, CYCLE_DISPLAYED_CHART_STATUS_ID);
+        assert_eq!(chart.value.as_deref(), Some("EXPIRED"));
+        assert!(chart.detail.contains("NW Sectional expired"));
+        assert!(!chart.detail.contains("NW TAC expired"));
+    }
+
+    #[test]
+    fn not_yet_effective_displayed_chart_records_warning() {
+        let init = create_current_test_session();
+        let option = raster_map_option(
+            "sec:nw",
+            "NW Charts",
+            Some("2026-06-11"),
+            Some("2026-07-09"),
+        );
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            session.raster_map_catalog = Some(raster_catalog_with_displayed_maps(
+                option.clone(),
+                vec![option],
+            ));
+        }
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let chart = data_status_box(&snapshot, CYCLE_DISPLAYED_CHART_STATUS_ID);
+        assert_eq!(chart.label, "CHART");
+        assert_eq!(chart.value.as_deref(), Some("EARLY"));
+        assert_eq!(chart.severity, UiStatusSeverity::Warning);
+        assert!(chart
+            .detail
+            .contains("NW Charts is not effective until 2026-06-11"));
     }
 
     #[test]

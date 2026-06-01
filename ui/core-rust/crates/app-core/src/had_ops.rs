@@ -992,6 +992,8 @@ struct MapViewRecord {
     #[serde(default)]
     package_relative_path: Option<String>,
     #[serde(default)]
+    package_effective_date: Option<String>,
+    #[serde(default)]
     package_expiration_date: Option<String>,
     full_coverage_zoom: Option<f64>,
     #[serde(default)]
@@ -1008,6 +1010,8 @@ struct WideAngleMapViewRecord {
     #[serde(default)]
     package_relative_path: Option<String>,
     #[serde(default)]
+    package_effective_date: Option<String>,
+    #[serde(default)]
     package_expiration_date: Option<String>,
     tile_url_root: String,
     tile_path_template: String,
@@ -1021,6 +1025,8 @@ struct PackageRecord {
     region_id: Option<String>,
     #[serde(default)]
     relative_path: Option<String>,
+    #[serde(default)]
+    effective_date: Option<String>,
     #[serde(default)]
     expiration_date: Option<String>,
     #[serde(default)]
@@ -1557,6 +1563,7 @@ fn enrich_map_view_with_package_metadata(
     };
     let package = package_record_for_raster_source(store, package_id, map_view_id)?;
     map_view.package_relative_path = Some(package_zip_relative_path(&package)?.to_string());
+    map_view.package_effective_date = package.effective_date.clone();
     map_view.package_expiration_date = package.expiration_date.clone();
     map_view.full_coverage_zoom = package
         .metadata
@@ -1571,6 +1578,7 @@ fn enrich_wide_angle_map_view_with_package_metadata(
 ) -> Result<(), HadReadError> {
     let package = package_record_for_raster_source(store, &wide_angle.package_name, map_view_id)?;
     wide_angle.package_relative_path = Some(package_zip_relative_path(&package)?.to_string());
+    wide_angle.package_effective_date = package.effective_date.clone();
     wide_angle.package_expiration_date = package.expiration_date.clone();
     Ok(())
 }
@@ -3814,6 +3822,8 @@ mod tests {
           "family_id":"sec",
           "region_id":"nw",
           "relative_path":"nw_sec_2604_hash.zip",
+          "effective_date":"2026-05-14",
+          "expiration_date":"2026-07-09",
           "metadata":{"full_coverage_zoom":7}
         }"#;
         let (root, pages) = fixture(
@@ -3846,6 +3856,20 @@ mod tests {
                 .package_relative_path
                 .as_deref(),
             Some("nw_sec_2604_hash.zip")
+        );
+        assert_eq!(
+            state.displayed_maps[0]
+                .map_view
+                .package_effective_date
+                .as_deref(),
+            Some("2026-05-14")
+        );
+        assert_eq!(
+            state.displayed_maps[0]
+                .map_view
+                .package_expiration_date
+                .as_deref(),
+            Some("2026-07-09")
         );
         assert_eq!(state.displayed_maps[0].map_view.tile_url_root, "tiles");
     }
@@ -5123,8 +5147,8 @@ mod tests {
         let HadOperationOutcome::Complete { result, .. } = outcome else {
             panic!("expected complete outcome, got missing resources: {outcome:?}");
         };
-        let snapshot: crate::UiSessionSnapshot =
-            serde_json::from_value(result).expect("decode session snapshot");
+        assert_eq!(result, serde_json::Value::Null);
+        let snapshot = crate::get_session_snapshot(init.handle).expect("session snapshot");
         let warning = snapshot
             .data_status_state
             .boxes

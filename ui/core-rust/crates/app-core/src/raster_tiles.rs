@@ -90,6 +90,8 @@ pub struct RasterMapView {
     #[serde(default)]
     pub package_relative_path: Option<String>,
     #[serde(default)]
+    pub package_effective_date: Option<String>,
+    #[serde(default)]
     pub package_expiration_date: Option<String>,
     pub full_coverage_zoom: Option<f64>,
     #[serde(default)]
@@ -105,6 +107,8 @@ pub struct RasterWideAngleMapView {
     pub package_name: String,
     #[serde(default)]
     pub package_relative_path: Option<String>,
+    #[serde(default)]
+    pub package_effective_date: Option<String>,
     #[serde(default)]
     pub package_expiration_date: Option<String>,
     pub tile_url_root: String,
@@ -1149,6 +1153,7 @@ mod tests {
                 storage_kind: "sectional_package".to_string(),
                 package_name: Some(package.to_string()),
                 package_relative_path: Some(format!("{package}.zip")),
+                package_effective_date: None,
                 package_expiration_date: None,
                 full_coverage_zoom: Some(7.0),
                 wide_angle: None,
@@ -1516,6 +1521,7 @@ mod tests {
             max_zoom: 7.0,
             package_name: "SEC_WIDE_2604".to_string(),
             package_relative_path: Some("sec_wide_2604_sample.zip".to_string()),
+            package_effective_date: None,
             package_expiration_date: None,
             tile_url_root: "tiles".to_string(),
             tile_path_template: "{z}/{x}/{y}.webp".to_string(),
@@ -1640,6 +1646,7 @@ mod tests {
             max_zoom: 7.0,
             package_name: "SEC_WIDE_2604".to_string(),
             package_relative_path: Some("sec_wide_2604_sample.zip".to_string()),
+            package_effective_date: None,
             package_expiration_date: None,
             tile_url_root: "tiles".to_string(),
             tile_path_template: "{z}/{x}/{y}.webp".to_string(),

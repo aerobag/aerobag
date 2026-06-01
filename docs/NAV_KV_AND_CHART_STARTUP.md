@@ -423,3 +423,65 @@ variant.
 
 The one-blob `chart/page/catalog` experiment proved the wire format but kept the
 wrong query shape; sharding by actual lookup key is now required.
+
+## Measured Startup Notes
+
+### 2026-06-01 NAV5 Unpacked Page Gzip
+
+`NAV5` keeps the nav-db root raw and gzip-compresses unpacked `page_*` files at
+publication time. The browser/platform layer explicitly decompresses those
+pages before handing bytes to core. This keeps the browser cache-warming path
+static-file-only while cutting WAN transfer for page faults and startup
+prefetches.
+
+Snapshot validation from `/root/aerobag-artifacts-snapshot/current_artifacts.json`
+at `2026-06-01T04:25:12Z`:
+
+```text
+cycle  nav-db contract  root encoding  page encoding  page_0046 bytes
+2605   NAV5             raw            gzip           7,824
+2606   NAV5             raw            gzip           7,824
+```
+
+WASM size baseline after the NAV5 gzip work, before trying any in-core
+decompressor bake-off:
+
+```text
+artifact             bytes
+app_wasm_bg.wasm     3,217,955
+app_wasm_bg.wasm.gz  1,099,848
+app_wasm.js             87,136
+```
+
+Cold-cache network matrix against `http://127.0.0.1:8085/` with optimized WASM
+under Vite dev. These full startup numbers are not production-preview numbers:
+Vite dev module loading dominates the throttled `start` phase. The
+`cache_warm_p50_ms` column is still the useful comparison for the NAV5 change,
+because it measures the root plus startup-prefetch page fetches.
+
+```text
+profile     throttle              cache_warm_p50_ms  no_metar_p50_ms  full_p50_ms
+none        local/no throttle                      41              274          349
+wifi-okay   40ms / 12000 kbps                     307            2,653        4,276
+wifi-bad    100ms / 3000 kbps                     976            9,609       15,702
+cell-4g     150ms / 1500 kbps                   1,785           18,788       30,663
+cell-bad    300ms / 600 kbps                    4,260           46,322       47,114
+```
+
+Earlier cold-cache production-lab cache-warm medians before this page-gzip
+change were roughly:
+
+```text
+profile     old_cache_warm_p50_ms  NAV5_cache_warm_p50_ms
+none                            24                       41
+wifi-okay                      524                      307
+wifi-bad                     1,963                      976
+cell-4g                      3,800                    1,785
+cell-bad                     9,559                    4,260
+```
+
+The measured effect is therefore about a 2x improvement in the nav-db startup
+prefetch segment on bandwidth-constrained profiles. The no-METAR/full Vite-dev
+startup rows should not be used to judge production user-visible startup until
+the production startup lab can run again without the unrelated TypeScript
+blocker.

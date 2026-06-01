@@ -951,9 +951,9 @@ enum ChartValidityViolationKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ChartValidityViolation {
-    label: String,
+    family_label: &'static str,
+    family_sort_key: u8,
     kind: ChartValidityViolationKind,
-    boundary: String,
 }
 
 fn sync_displayed_chart_validity_freshness(session: &mut UiSession) -> CycleProductFreshnessSync {
@@ -967,10 +967,13 @@ fn sync_displayed_chart_validity_freshness(session: &mut UiSession) -> CycleProd
     let mut seen = BTreeSet::new();
     let mut violations = Vec::new();
     for option in &catalog.displayed_maps {
+        let (family_label, family_sort_key) =
+            chart_family_status_label(&option.map_view.chart_family);
         collect_chart_validity_violations(
             &mut violations,
             &mut seen,
-            &option.label,
+            family_label,
+            family_sort_key,
             option.map_view.package_effective_date.as_deref(),
             option.map_view.package_expiration_date.as_deref(),
             now_utc,
@@ -979,7 +982,8 @@ fn sync_displayed_chart_validity_freshness(session: &mut UiSession) -> CycleProd
             collect_chart_validity_violations(
                 &mut violations,
                 &mut seen,
-                &format!("{} wide-angle", option.label),
+                family_label,
+                family_sort_key,
                 wide_angle.package_effective_date.as_deref(),
                 wide_angle.package_expiration_date.as_deref(),
                 now_utc,
@@ -1006,8 +1010,9 @@ fn sync_displayed_chart_validity_freshness(session: &mut UiSession) -> CycleProd
 
 fn collect_chart_validity_violations(
     violations: &mut Vec<ChartValidityViolation>,
-    seen: &mut BTreeSet<(String, ChartValidityViolationKind, String)>,
-    label: &str,
+    seen: &mut BTreeSet<(u8, ChartValidityViolationKind)>,
+    family_label: &'static str,
+    family_sort_key: u8,
     effective_date: Option<&str>,
     expiration_date: Option<&str>,
     now_utc: DateTime<Utc>,
@@ -1018,9 +1023,9 @@ fn collect_chart_validity_violations(
                 push_chart_validity_violation(
                     violations,
                     seen,
-                    label,
+                    family_label,
+                    family_sort_key,
                     ChartValidityViolationKind::NotYetEffective,
-                    effective_date,
                 );
             }
         }
@@ -1031,9 +1036,9 @@ fn collect_chart_validity_violations(
                 push_chart_validity_violation(
                     violations,
                     seen,
-                    label,
+                    family_label,
+                    family_sort_key,
                     ChartValidityViolationKind::Expired,
-                    expiration_date,
                 );
             }
         }
@@ -1042,18 +1047,30 @@ fn collect_chart_validity_violations(
 
 fn push_chart_validity_violation(
     violations: &mut Vec<ChartValidityViolation>,
-    seen: &mut BTreeSet<(String, ChartValidityViolationKind, String)>,
-    label: &str,
+    seen: &mut BTreeSet<(u8, ChartValidityViolationKind)>,
+    family_label: &'static str,
+    family_sort_key: u8,
     kind: ChartValidityViolationKind,
-    boundary: &str,
 ) {
-    let key = (label.to_string(), kind, boundary.to_string());
+    let key = (family_sort_key, kind);
     if seen.insert(key) {
         violations.push(ChartValidityViolation {
-            label: label.to_string(),
+            family_label,
+            family_sort_key,
             kind,
-            boundary: boundary.to_string(),
         });
+    }
+}
+
+fn chart_family_status_label(chart_family: &str) -> (&'static str, u8) {
+    match chart_family {
+        "tac" => ("TAC", 10),
+        "sec" => ("Sectional", 20),
+        "enr-l" => ("IFR-Low", 30),
+        "enr-h" => ("IFR-High", 40),
+        "world-basemap" => ("World basemap", 50),
+        "shaded-relief" => ("Shaded relief", 60),
+        _ => ("Chart", 250),
     }
 }
 
@@ -1073,29 +1090,36 @@ fn chart_validity_value(violations: &[ChartValidityViolation]) -> &'static str {
 }
 
 fn chart_validity_detail(violations: &[ChartValidityViolation]) -> String {
-    let fragments = violations
+    let mut families = violations
         .iter()
-        .map(|violation| match violation.kind {
-            ChartValidityViolationKind::Expired => format!(
-                "displayed chart {} expired at {} UTC",
-                violation.label, violation.boundary
-            ),
-            ChartValidityViolationKind::NotYetEffective => format!(
-                "displayed chart {} is not effective until {} UTC",
-                violation.label, violation.boundary
-            ),
-        })
+        .map(|violation| (violation.family_sort_key, violation.family_label))
         .collect::<Vec<_>>();
-    if fragments.len() == 1 {
-        let mut detail = fragments.into_iter().next().unwrap_or_default();
-        detail.replace_range(0..1, "D");
-        detail.push('.');
-        detail
-    } else {
-        format!(
-            "Displayed charts outside validity interval: {}.",
-            fragments.join("; ")
-        )
+    families.sort_unstable();
+    families.dedup();
+    let family_list = families
+        .into_iter()
+        .map(|(_, label)| label)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{} charts {}.",
+        family_list,
+        chart_validity_condition(violations)
+    )
+}
+
+fn chart_validity_condition(violations: &[ChartValidityViolation]) -> &'static str {
+    let kinds = violations
+        .iter()
+        .map(|violation| violation.kind)
+        .collect::<BTreeSet<_>>();
+    if kinds.len() > 1 {
+        return "not valid";
+    }
+    match kinds.first() {
+        Some(ChartValidityViolationKind::Expired) => "expired",
+        Some(ChartValidityViolationKind::NotYetEffective) => "not valid yet",
+        None => "not valid",
     }
 }
 
@@ -10014,7 +10038,7 @@ mod tests {
         assert_eq!(chart.label, "CHART");
         assert_eq!(chart.value.as_deref(), Some("EXPIRED"));
         assert_eq!(chart.severity, UiStatusSeverity::Warning);
-        assert!(chart.detail.contains("NW Charts expired"));
+        assert_eq!(chart.detail, "Sectional charts expired.");
     }
 
     #[test]
@@ -10034,8 +10058,7 @@ mod tests {
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");
         let chart = data_status_box(&snapshot, CYCLE_DISPLAYED_CHART_STATUS_ID);
         assert_eq!(chart.value.as_deref(), Some("EXPIRED"));
-        assert!(chart.detail.contains("NW Sectional expired"));
-        assert!(!chart.detail.contains("NW TAC expired"));
+        assert_eq!(chart.detail, "Sectional charts expired.");
     }
 
     #[test]
@@ -10061,9 +10084,32 @@ mod tests {
         assert_eq!(chart.label, "CHART");
         assert_eq!(chart.value.as_deref(), Some("EARLY"));
         assert_eq!(chart.severity, UiStatusSeverity::Warning);
-        assert!(chart
-            .detail
-            .contains("NW Charts is not effective until 2026-06-11"));
+        assert_eq!(chart.detail, "Sectional charts not valid yet.");
+    }
+
+    #[test]
+    fn mixed_displayed_chart_validity_records_family_summary() {
+        let init = create_current_test_session();
+        let sectional = raster_map_option(
+            "sec:nw",
+            "NW Sectional",
+            Some("2026-06-11"),
+            Some("2026-07-09"),
+        );
+        let tac = raster_map_option("tac:nw", "NW TAC", None, Some("2020-01-01"));
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            session.raster_map_catalog = Some(raster_catalog_with_displayed_maps(
+                tac.clone(),
+                vec![sectional, tac],
+            ));
+        }
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let chart = data_status_box(&snapshot, CYCLE_DISPLAYED_CHART_STATUS_ID);
+        assert_eq!(chart.value.as_deref(), Some("INVALID"));
+        assert_eq!(chart.detail, "TAC, Sectional charts not valid.");
     }
 
     #[test]

@@ -26,7 +26,6 @@ use crate::{
 };
 
 const NAV_DB_ROOT_MEMBER_PATH: &str = "root";
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum HadOperationOutcome {

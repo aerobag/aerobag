@@ -805,8 +805,10 @@ pub(super) fn build_tpp_render_node(
             output_path(record, "source_root").map(|path| resolve_artifact_path(config, path))
         })
         .transpose()?;
-    let source_fetch_fingerprint = source_fetch_record.map(|record| record.fingerprint.as_str());
-    let inputs = tpp_render_inputs(request, source_urls, &region_id, source_fetch_fingerprint)?;
+    let source_content_fingerprint = source_fetch_record
+        .map(tpp_source_content_fingerprint)
+        .transpose()?;
+    let inputs = tpp_render_inputs(request, source_urls, &region_id, source_content_fingerprint)?;
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, &node_name)?,
         &node_name,
@@ -900,10 +902,15 @@ pub(super) fn build_tpp_fetch_node(
         )?;
         fs::write(&marker, b"ok")
             .with_context(|| format!("failed to write {}", marker.display()))?;
+        let source_content_fingerprint = hash_tree(&source_root)?;
         Ok(BTreeMap::from([
             (
                 "source_root".to_string(),
                 relative_artifact_path(&source_root, &config.build_root),
+            ),
+            (
+                "source_content_fingerprint".to_string(),
+                source_content_fingerprint,
             ),
             (
                 "provenance_dir".to_string(),
@@ -944,17 +951,12 @@ fn tpp_fetch_inputs(
         ("requests".to_string(), request_fingerprint),
         ("fetch_jobs".to_string(), config.fetch_jobs.to_string()),
         (
-            "cache_layout_version".to_string(),
-            TPP_CACHE_LAYOUT_VERSION.to_string(),
+            "tpp_fetch_node_version".to_string(),
+            TPP_FETCH_NODE_VERSION.to_string(),
         ),
         (
-            "tpp_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-tpp/src/lib.rs"),
-            )?,
+            "cache_layout_version".to_string(),
+            TPP_CACHE_LAYOUT_VERSION.to_string(),
         ),
         (
             "fetch_lib".to_string(),
@@ -1016,6 +1018,19 @@ fn prefetch_request_file_name(request: &PrefetchRequest) -> anyhow::Result<Strin
         .with_context(|| format!("prefetch request URL has no file name: {}", request.url))
 }
 
+fn tpp_source_content_fingerprint(record: &NodeRecord) -> anyhow::Result<&str> {
+    record
+        .outputs
+        .get("source_content_fingerprint")
+        .map(String::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "node {} missing outputs.source_content_fingerprint",
+                record.name
+            )
+        })
+}
+
 pub(super) fn build_tpp_package_node(
     config: &ProductBuildConfig,
     region: Region,
@@ -1036,12 +1051,14 @@ pub(super) fn build_tpp_package_node(
         fetch_cache: Some(static_source_fetch_cache_config(config)?),
     };
     let render_node_name = format!("tpp-{region_id}-render");
-    let source_fetch_fingerprint = source_fetch_record.map(|record| record.fingerprint.as_str());
+    let source_content_fingerprint = source_fetch_record
+        .map(tpp_source_content_fingerprint)
+        .transpose()?;
     let render_inputs = tpp_render_inputs(
         &render_request,
         source_urls_path,
         &region_id,
-        source_fetch_fingerprint,
+        source_content_fingerprint,
     )?;
     let render_prepared = prepare_node_at(
         &build_shared_node_dir(config, &render_node_name)?,
@@ -1298,7 +1315,7 @@ pub(super) fn tpp_render_inputs(
     request: &NativeTppRunRequest,
     source_urls: &Path,
     region_id: &str,
-    source_fetch_fingerprint: Option<&str>,
+    source_content_fingerprint: Option<&str>,
 ) -> anyhow::Result<BTreeMap<String, String>> {
     let mut inputs = BTreeMap::from([
         ("region".to_string(), region_id.to_string()),
@@ -1327,9 +1344,9 @@ pub(super) fn tpp_render_inputs(
             )?,
         ),
     ]);
-    if let Some(fingerprint) = source_fetch_fingerprint {
+    if let Some(fingerprint) = source_content_fingerprint {
         inputs.insert(
-            "source_fetch_fingerprint".to_string(),
+            "source_content_fingerprint".to_string(),
             fingerprint.to_string(),
         );
     }
@@ -1911,4 +1928,73 @@ pub(super) fn package_record_for_region(
     read_package_outputs_by_region(path)?
         .remove(&region.code().to_ascii_lowercase())
         .ok_or_else(|| anyhow::anyhow!("missing package output for region {}", region.code()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn test_config(root: &Path) -> ProductBuildConfig {
+        ProductBuildConfig {
+            chart_cutline_root: root.join("cutlines"),
+            build_root: root.join("build"),
+            profile: ProductBuildProfile::Validation,
+            target_cycle: Some("2605".to_string()),
+            fetch_jobs: 4,
+            cpu_jobs: 4,
+            max_heavy_jobs: 1,
+            fetch_cache_root: root.join("fetch-cache"),
+            fetch_cache_mode: "cache-first".to_string(),
+        }
+    }
+
+    fn write_tpp_source_urls(root: &Path) {
+        for region in ProductBuildProfile::Validation.tpp_regions() {
+            let region_id = region.code().to_ascii_lowercase();
+            let dir = root.join(format!("tpp-{region_id}"));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("source_urls.jsonl"), b"").unwrap();
+        }
+    }
+
+    #[test]
+    fn tpp_fetch_inputs_do_not_depend_on_tpp_render_library() {
+        let temp = tempdir().unwrap();
+        let config = test_config(temp.path());
+        let source_urls_root = temp.path().join("source-urls");
+        write_tpp_source_urls(&source_urls_root);
+
+        let (inputs, _requests) = tpp_fetch_inputs(&config, &source_urls_root).unwrap();
+
+        assert!(inputs.contains_key("requests"));
+        assert!(inputs.contains_key("fetch_lib"));
+        assert!(inputs.contains_key("tpp_fetch_node_version"));
+        assert!(!inputs.contains_key("tpp_lib"));
+    }
+
+    #[test]
+    fn tpp_render_inputs_use_source_content_fingerprint() {
+        let temp = tempdir().unwrap();
+        let source_urls = temp.path().join("source_urls.jsonl");
+        fs::write(&source_urls, b"").unwrap();
+        let request = NativeTppRunRequest {
+            region: Region::Nw,
+            source_repo: PathBuf::new(),
+            run_root: PathBuf::new(),
+            prefetch_source_urls: Some(source_urls.clone()),
+            fetch_jobs: 4,
+            render_jobs: 8,
+            fetch_cache: None,
+        };
+
+        let inputs =
+            tpp_render_inputs(&request, &source_urls, "nw", Some("source-content")).unwrap();
+
+        assert_eq!(
+            inputs.get("source_content_fingerprint").map(String::as_str),
+            Some("source-content")
+        );
+        assert!(!inputs.contains_key("source_fetch_fingerprint"));
+    }
 }

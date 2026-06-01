@@ -32,6 +32,7 @@ const TPP_CONTINUED_PIPELINE_VERSION: &str = "continued-v6-hotspot-shared-path";
 const TPP_GEOTAGGED_PIPELINE_VERSION: &str = "geotagged-v2-dstalpha";
 const TPP_MINIMUM_PIPELINE_VERSION: &str = "minimum-v1";
 const TPP_RENDER_DPI: &str = "225";
+const TPP_DELETED_JOB_PDF_NAME: &str = "DELETED_JOB.PDF";
 
 #[derive(Debug, Clone)]
 pub struct NativeTppRunRequest {
@@ -464,6 +465,9 @@ fn parse_region_plates(xml_path: &Path, region: Region) -> anyhow::Result<Vec<Pl
                         .trim()
                         .to_uppercase();
                     if chart_name.is_empty() || chart_code.is_empty() || pdf_name.is_empty() {
+                        continue;
+                    }
+                    if pdf_name == TPP_DELETED_JOB_PDF_NAME {
                         continue;
                     }
                     plates.push(PlateRecord {
@@ -1538,9 +1542,11 @@ fn remove_dir_if_exists(path: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_plate_tasks, geotag_comment_from_gdalinfo, parse_dms_coordinate, PlateRecord,
-        PlateTask,
+        build_plate_tasks, geotag_comment_from_gdalinfo, parse_dms_coordinate, parse_region_plates,
+        PlateRecord, PlateTask,
     };
+    use preprocessor_core::Region;
+    use std::fs;
 
     #[test]
     fn parse_west_coordinate() {
@@ -1559,6 +1565,41 @@ Lower Right (-8246604.366, 4994848.615) ( 74d 4'49.83\"W, 40d52'52.67\"N)
             geotag_comment_from_gdalinfo(info).unwrap(),
             "985.4524589057144|-1312.8446437761886|-74.90348055555556|41.825811111111115"
         );
+    }
+
+    #[test]
+    fn parse_region_plates_skips_deleted_job_tombstones() {
+        let dir = tempfile::tempdir().unwrap();
+        let xml_path = dir.path().join("d-TPP_Metafile.xml");
+        fs::write(
+            &xml_path,
+            r#"
+<digital_tpp>
+  <state_code ID="WA">
+    <city_name ID="SEATTLE">
+      <airport_name apt_ident="SEA">
+        <record>
+          <chart_code>IAP</chart_code>
+          <chart_name>RNAV (GPS) RWY 16C</chart_name>
+          <pdf_name>SEA-RNAV16C.PDF</pdf_name>
+        </record>
+        <record>
+          <chart_code>IAP</chart_code>
+          <chart_name>DELETED PROCEDURE</chart_name>
+          <pdf_name>DELETED_JOB.PDF</pdf_name>
+        </record>
+      </airport_name>
+    </city_name>
+  </state_code>
+</digital_tpp>
+"#,
+        )
+        .unwrap();
+
+        let plates = parse_region_plates(&xml_path, Region::Nw).unwrap();
+
+        assert_eq!(plates.len(), 1);
+        assert_eq!(plates[0].pdf_name, "SEA-RNAV16C.PDF");
     }
 
     #[test]

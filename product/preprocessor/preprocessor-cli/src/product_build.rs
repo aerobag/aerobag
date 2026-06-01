@@ -273,6 +273,16 @@ struct CurrentArtifactRoots {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct CurrentStartupPrefetchManifest {
     schema_version: u32,
+    cycle_resources: Vec<CurrentStartupPrefetchCycleResources>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CurrentStartupPrefetchCycleResources {
+    bundle_id: String,
+    cycle: String,
+    cycle_version: String,
+    start_valid: String,
+    end_valid: String,
     resources: Vec<CurrentStartupPrefetchResource>,
 }
 
@@ -3746,11 +3756,18 @@ mod tests {
         )
         .unwrap();
         let current = load_current_artifacts_manifest(&current_path).unwrap();
-        let resources = current.startup_prefetch.unwrap().resources;
+        let cycle_resources = current.startup_prefetch.unwrap().cycle_resources;
+        assert_eq!(cycle_resources.len(), 1);
+        assert_eq!(cycle_resources[0].bundle_id, "cycle_2605_01");
+        assert_eq!(cycle_resources[0].cycle, "2605");
+        assert_eq!(cycle_resources[0].cycle_version, "01");
+        assert_eq!(cycle_resources[0].start_valid, "2026-05-14");
+        assert_eq!(cycle_resources[0].end_valid, "2026-06-11");
         assert_eq!(
-            resources
-                .into_iter()
-                .map(|resource| resource.url)
+            cycle_resources[0]
+                .resources
+                .iter()
+                .map(|resource| resource.url.clone())
                 .collect::<Vec<_>>(),
             vec![
                 format!(

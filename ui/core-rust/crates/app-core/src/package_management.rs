@@ -108,6 +108,16 @@ pub struct CurrentArtifactsBundleRef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurrentStartupPrefetchManifest {
     pub schema_version: u32,
+    pub cycle_resources: Vec<CurrentStartupPrefetchCycleResources>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurrentStartupPrefetchCycleResources {
+    pub bundle_id: String,
+    pub cycle: String,
+    pub cycle_version: String,
+    pub start_valid: String,
+    pub end_valid: String,
     pub resources: Vec<CurrentStartupPrefetchResource>,
 }
 

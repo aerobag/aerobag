@@ -360,10 +360,11 @@ pub(super) fn current_startup_prefetch_manifest(
     artifact_roots: &CurrentArtifactRoots,
     bundles: &[CurrentBundleEntry],
 ) -> anyhow::Result<Option<CurrentStartupPrefetchManifest>> {
-    let mut resources = Vec::new();
-    let mut seen_urls = BTreeSet::new();
+    let mut cycle_resources = Vec::new();
     for bundle_ref in bundles {
         let bundle = load_bundle_manifest(&build_root.join(&bundle_ref.filename))?;
+        let mut resources = Vec::new();
+        let mut seen_urls = BTreeSet::new();
         for package in bundle
             .packages
             .iter()
@@ -398,11 +399,21 @@ pub(super) fn current_startup_prefetch_manifest(
                 }
             }
         }
+        if !resources.is_empty() {
+            cycle_resources.push(CurrentStartupPrefetchCycleResources {
+                bundle_id: bundle.bundle_id,
+                cycle: bundle.cycle,
+                cycle_version: bundle.cycle_version,
+                start_valid: bundle.start_valid,
+                end_valid: bundle.end_valid,
+                resources,
+            });
+        }
     }
     Ok(
-        (!resources.is_empty()).then_some(CurrentStartupPrefetchManifest {
+        (!cycle_resources.is_empty()).then_some(CurrentStartupPrefetchManifest {
             schema_version: 1,
-            resources,
+            cycle_resources,
         }),
     )
 }
@@ -1058,19 +1069,55 @@ pub(super) fn validate_current_artifacts_manifest(
                 prefetch.schema_version
             );
         }
-        for resource in &prefetch.resources {
-            validate_publication_resource_url(
-                &resource.url,
-                "current_artifacts.startup_prefetch.resources[].url",
+        for cycle in &prefetch.cycle_resources {
+            validate_required_manifest_string(
+                &cycle.bundle_id,
+                "current_artifacts.startup_prefetch.cycle_resources[].bundle_id",
             )?;
-            if !resource.url.starts_with(&current.artifact_roots.unpacked) {
+            validate_required_manifest_string(
+                &cycle.cycle,
+                "current_artifacts.startup_prefetch.cycle_resources[].cycle",
+            )?;
+            validate_required_manifest_string(
+                &cycle.cycle_version,
+                "current_artifacts.startup_prefetch.cycle_resources[].cycle_version",
+            )?;
+            validate_required_manifest_string(
+                &cycle.start_valid,
+                "current_artifacts.startup_prefetch.cycle_resources[].start_valid",
+            )?;
+            validate_required_manifest_string(
+                &cycle.end_valid,
+                "current_artifacts.startup_prefetch.cycle_resources[].end_valid",
+            )?;
+            for resource in &cycle.resources {
+                validate_publication_resource_url(
+                    &resource.url,
+                    "current_artifacts.startup_prefetch.cycle_resources[].resources[].url",
+                )?;
+                if !resource.url.starts_with(&current.artifact_roots.unpacked) {
+                    bail!(
+                        "{} startup prefetch URL is not under artifact_roots.unpacked: {}",
+                        path.display(),
+                        resource.url
+                    );
+                }
+            }
+            if cycle.resources.is_empty() {
                 bail!(
-                    "{} startup prefetch URL is not under artifact_roots.unpacked: {}",
+                    "{} startup prefetch cycle {} has no resources",
                     path.display(),
-                    resource.url
+                    cycle.bundle_id
                 );
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_required_manifest_string(value: &str, field: &str) -> anyhow::Result<()> {
+    if value.is_empty() {
+        bail!("{field} must not be empty");
     }
     Ok(())
 }
@@ -1194,8 +1241,10 @@ pub(super) fn validate_unpacked_contract_for_discovery(
     validate_current_artifacts_manifest(&current, discovery_path)?;
     if let Some(prefetch) = &current.startup_prefetch {
         let publication_root = unpacked_root.parent().unwrap_or(unpacked_root);
-        for resource in &prefetch.resources {
-            ensure_public_file_exists(&publication_root.join(&resource.url))?;
+        for cycle in &prefetch.cycle_resources {
+            for resource in &cycle.resources {
+                ensure_public_file_exists(&publication_root.join(&resource.url))?;
+            }
         }
     }
 

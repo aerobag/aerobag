@@ -187,6 +187,29 @@
           }
           return state;
         }
+        function selectStartupPrefetchCycle(prefetch) {
+          const cycles = prefetch && Array.isArray(prefetch.cycle_resources)
+            ? prefetch.cycle_resources
+            : [];
+          const today = new Date().toISOString().slice(0, 10);
+          const active = cycles.find(function (cycle) {
+            return typeof cycle.start_valid === "string"
+              && typeof cycle.end_valid === "string"
+              && cycle.start_valid <= today
+              && today < cycle.end_valid;
+          });
+          if (active) {
+            return active;
+          }
+          const past = cycles
+            .filter(function (cycle) {
+              return typeof cycle.start_valid === "string" && cycle.start_valid <= today;
+            })
+            .sort(function (left, right) {
+              return String(left.start_valid).localeCompare(String(right.start_valid));
+            });
+          return past[past.length - 1] || cycles[0] || null;
+        }
         state.promise = fetch(new URL("current_artifacts.json", packagesRoot), { cache: "no-cache" })
           .then(function (response) {
             if (!response.ok) {
@@ -198,9 +221,17 @@
             if (!manifest || manifest.status) {
               return manifest;
             }
-            const resources = manifest.startup_prefetch && Array.isArray(manifest.startup_prefetch.resources)
-              ? manifest.startup_prefetch.resources
+            const selectedCycle = selectStartupPrefetchCycle(manifest.startup_prefetch);
+            const resources = selectedCycle && Array.isArray(selectedCycle.resources)
+              ? selectedCycle.resources
               : [];
+            state.selected_cycle = selectedCycle ? {
+              bundle_id: selectedCycle.bundle_id,
+              cycle: selectedCycle.cycle,
+              cycle_version: selectedCycle.cycle_version,
+              start_valid: selectedCycle.start_valid,
+              end_valid: selectedCycle.end_valid,
+            } : null;
             const urls = resources
               .map(function (resource) {
                 return resource && typeof resource.url === "string"

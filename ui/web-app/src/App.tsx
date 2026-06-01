@@ -70,6 +70,7 @@ import {
   type RasterMapUiState,
   type RasterTileDraw,
   type SessionSnapshotRefreshDecision,
+  type SessionSnapshotRefreshPriority,
   type UiMapLayerState,
   type UiMapLayerToggleState,
   type UiDebugState,
@@ -1728,11 +1729,11 @@ export default function App() {
 
   useEffect(() => clearSessionSnapshotRefreshTimer, [clearSessionSnapshotRefreshTimer]);
 
-  const requestSessionSnapshotRefresh = useCallback((reason: string) => {
+  const requestSessionSnapshotRefresh = useCallback((priority: SessionSnapshotRefreshPriority, reason: string) => {
     if (!uiSession) {
       return;
     }
-    void uiSession.requestSessionSnapshotRefresh("low_priority", reason).then((decision) => {
+    void uiSession.requestSessionSnapshotRefresh(priority, reason).then((decision) => {
       handleSessionSnapshotRefreshDecisionRef.current(decision, "request");
     }).catch((error: unknown) => {
       debugLog("session.snapshot.refresh.scheduler_error", {
@@ -1783,7 +1784,8 @@ export default function App() {
         return next;
       });
       if (invalidations.includes("session_snapshot")) {
-        requestSessionSnapshotRefresh("invalidation");
+        const priority = invalidations.includes("flight_plan_route") ? "timely" : "low_priority";
+        requestSessionSnapshotRefresh(priority, "invalidation");
       }
     });
     return () => {
@@ -2624,8 +2626,7 @@ export default function App() {
             if (!waypoint) {
               throw new Error(`Unknown waypoint ${airportId}`);
             }
-            const nextSnapshot = await uiSession.insertWaypointAtFlightPlanRow(rowUid, before, waypoint);
-            setSessionSnapshot(nextSnapshot);
+            await uiSession.insertWaypointAtFlightPlanRow(rowUid, before, waypoint);
           }}
           onPreviewFlightPlanEntry={async (input) => {
             if (!uiSession) throw new Error("flight plan preview requires live core session");
@@ -2633,8 +2634,7 @@ export default function App() {
           }}
           onAppendFlightPlanEntry={async (input) => {
             if (!uiSession) return;
-            const nextSnapshot = await uiSession.appendFlightPlanEntry(input);
-            setSessionSnapshot(nextSnapshot);
+            await uiSession.appendFlightPlanEntry(input);
           }}
           onActivateNextLeg={async () => {
             if (!uiSession) return;
@@ -2663,17 +2663,15 @@ export default function App() {
           }}
           onPerformFlightPlanRowAction={async (rowUid, actionUid) => {
             if (!uiSession) return;
-            const nextSnapshot = await uiSession.performFlightPlanRowAction(rowUid, actionUid);
-            setSessionSnapshot(nextSnapshot);
+            await uiSession.performFlightPlanRowAction(rowUid, actionUid);
           }}
           onInsertAirwayAtRow={async (rowUid, entryIndex, exitIndex, presentation) => {
             if (!uiSession) return;
-            const nextSnapshot = await uiSession.insertAirwayAtFlightPlanRow(rowUid, presentation, entryIndex, exitIndex);
-            setSessionSnapshot(nextSnapshot);
+            await uiSession.insertAirwayAtFlightPlanRow(rowUid, presentation, entryIndex, exitIndex);
           }}
           onSelectProcedureAtRow={async (rowUid, airportId, procedureId, enrouteTransition) => {
             if (!uiSession) return;
-            const nextSnapshot = await uiSession.selectProcedureAtFlightPlanRow(
+            await uiSession.selectProcedureAtFlightPlanRow(
               rowUid,
               airportId,
               procedureId,
@@ -2681,7 +2679,6 @@ export default function App() {
               null,
               enrouteTransition,
             );
-            setSessionSnapshot(nextSnapshot);
           }}
           debugWarningActive={debugWarningActive}
         />
@@ -5073,11 +5070,10 @@ function MapPage(props: {
                       if (!uiSession) {
                         throw new Error("map selection row action requires live core session");
                       }
-                      const nextSnapshot = await uiSession.performFlightPlanRowAction(
+                      await uiSession.performFlightPlanRowAction(
                         action.flight_plan_row_action.row_uid,
                         action.flight_plan_row_action.action_uid,
                       );
-                      onPlaybackSnapshotChange(nextSnapshot);
                       setMapSelection(null);
                     } catch (error) {
                       debugLog("map.selection.row_action.failed", {
@@ -5093,8 +5089,7 @@ function MapPage(props: {
                       if (!uiSession) {
                         throw new Error("map selection session action requires live core session");
                       }
-                      const nextSnapshot = await uiSession.performMapSelectionAction(action.session_action);
-                      onPlaybackSnapshotChange(nextSnapshot);
+                      await uiSession.performMapSelectionAction(action.session_action);
                       setMapSelection(null);
                     } catch (error) {
                       debugLog("map.selection.session_action.failed", {
@@ -8260,8 +8255,7 @@ function ChartsPage(props: {
           if (!props.uiSession) {
             return;
           }
-          void props.uiSession.loadPlateProcedure(load.load_id).then((nextSnapshot) => {
-            props.onPlaybackSnapshotChange(nextSnapshot);
+          void props.uiSession.loadPlateProcedure(load.load_id).then(() => {
             trayGroup.close("load");
           }).catch(() => {});
         },

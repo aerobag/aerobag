@@ -551,17 +551,17 @@ export interface UiSession {
   sessionSnapshotViewportActivity(): Promise<SessionSnapshotRefreshDecision>;
   sessionSnapshotRefreshCompleted(): Promise<SessionSnapshotRefreshDecision>;
   pollSessionSnapshotRefresh(): Promise<SessionSnapshotRefreshDecision>;
-  insertWaypointAtFlightPlanRow(rowUid: string, before: boolean, waypoint: NavRef): Promise<UiSessionSnapshot>;
+  insertWaypointAtFlightPlanRow(rowUid: string, before: boolean, waypoint: NavRef): Promise<void>;
   suggestWaypointIdentifiersAtFlightPlanRow(rowUid: string, before: boolean, prefix: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
   previewFlightPlanEntry(input: string): Promise<FlightPlanEntryPreview>;
-  appendFlightPlanEntry(input: string): Promise<UiSessionSnapshot>;
-  insertAirwayAtFlightPlanRow(rowUid: string, presentation: AirwayPresentationPlan, entryIndex: number, exitIndex: number): Promise<UiSessionSnapshot>;
-  selectProcedureAtFlightPlanRow(rowUid: string, airportId: string, procedureId: string, kind: ProcedureKind, runwayTransition: string | null, enrouteTransition: string | null): Promise<UiSessionSnapshot>;
-  loadPlateProcedure(loadId: string): Promise<UiSessionSnapshot>;
+  appendFlightPlanEntry(input: string): Promise<void>;
+  insertAirwayAtFlightPlanRow(rowUid: string, presentation: AirwayPresentationPlan, entryIndex: number, exitIndex: number): Promise<void>;
+  selectProcedureAtFlightPlanRow(rowUid: string, airportId: string, procedureId: string, kind: ProcedureKind, runwayTransition: string | null, enrouteTransition: string | null): Promise<void>;
+  loadPlateProcedure(loadId: string): Promise<void>;
   restoreDirectTo(): Promise<UiSessionSnapshot>;
-  performFlightPlanRowAction(rowUid: string, actionUid: string): Promise<UiSessionSnapshot>;
+  performFlightPlanRowAction(rowUid: string, actionUid: string): Promise<void>;
   performStatusAction(actionId: string): Promise<UiSessionSnapshot>;
-  performMapSelectionAction(action: string): Promise<UiSessionSnapshot>;
+  performMapSelectionAction(action: string): Promise<void>;
   activateNextLeg(): Promise<UiSessionSnapshot>;
   suspendSequencing(): Promise<UiSessionSnapshot>;
   unsuspendSequencing(): Promise<UiSessionSnapshot>;
@@ -1000,17 +1000,15 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           this.module.session_snapshot_refresh_scheduler_poll(snapshotRefreshSchedulerHandle),
         ),
       performMapSelectionAction: async (action) => {
-        snapshot = await withSessionRetry(async () =>
-          runSessionOperation<UiSessionSnapshot>(() =>
+        await withSessionRetry(async () =>
+          runSessionOperation<void>(() =>
             this.module.perform_map_selection_action_in_session(handle, action),
           ),
         );
-        await syncGuidanceGeometry();
-        return snapshot;
       },
       insertWaypointAtFlightPlanRow: async (rowUid, before, waypoint) => {
-        snapshot = await withSessionRetry(async () =>
-          runSessionOperation<UiSessionSnapshot>(() =>
+        await withSessionRetry(async () =>
+          runSessionOperation<void>(() =>
             this.module.insert_waypoint_at_flight_plan_row_in_session(
               handle,
               rowUid,
@@ -1019,8 +1017,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             ),
           ),
         );
-        await syncGuidanceGeometry();
-        return snapshot;
       },
       suggestWaypointIdentifiersAtFlightPlanRow: async (rowUid, before, prefix, limit = 8) => {
         return withSessionRetry(async () =>
@@ -1043,17 +1039,15 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
       },
       appendFlightPlanEntry: async (input) => {
-        snapshot = await withSessionRetry(async () =>
-          runSessionOperation<UiSessionSnapshot>(() =>
+        await withSessionRetry(async () =>
+          runSessionOperation<void>(() =>
             this.module.append_flight_plan_entry_in_session(handle, input),
           ),
         );
-        await syncGuidanceGeometry();
-        return snapshot;
       },
       insertAirwayAtFlightPlanRow: async (rowUid, presentation, entryIndex, exitIndex) => {
-        snapshot = await withSessionRetry(async () =>
-          runSessionOperation<UiSessionSnapshot>(() =>
+        await withSessionRetry(async () =>
+          runSessionOperation<void>(() =>
             this.module.insert_airway_at_flight_plan_row_in_session(
               handle,
               rowUid,
@@ -1063,14 +1057,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             ),
           ),
         );
-        await syncGuidanceGeometry();
-        return snapshot;
       },
       selectProcedureAtFlightPlanRow: async (rowUid, airportId, procedureId, kind, runwayTransition, enrouteTransition) => {
         const trace = { row_uid: rowUid, airport_id: airportId, procedure_id: procedureId, kind, runway_transition: runwayTransition, enroute_transition: enrouteTransition };
-        snapshot = await debugTiming("plan.procedure.select.session_mutation", () =>
+        await debugTiming("plan.procedure.select.session_mutation", () =>
           withSessionRetry(async () =>
-            runSessionOperation<UiSessionSnapshot>(() =>
+            runSessionOperation<void>(() =>
               this.module.select_procedure_at_flight_plan_row_in_session(
                 handle,
                 rowUid,
@@ -1083,17 +1075,13 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             ),
           ),
         trace);
-        await syncGuidanceGeometry("select_procedure");
-        return snapshot;
       },
       loadPlateProcedure: async (loadId) => {
-        snapshot = await withSessionRetry(async () =>
-          runSessionOperation<UiSessionSnapshot>(() =>
+        await withSessionRetry(async () =>
+          runSessionOperation<void>(() =>
             this.module.load_plate_procedure_in_session(handle, loadId),
           ),
         );
-        await syncGuidanceGeometry();
-        return snapshot;
       },
       restoreDirectTo: async () => {
         snapshot = await withSessionRetry(async () =>
@@ -1103,13 +1091,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return snapshot;
       },
       performFlightPlanRowAction: async (rowUid, actionUid) => {
-        snapshot = await withSessionRetry(async () =>
-          runSessionOperation<UiSessionSnapshot>(() =>
+        await withSessionRetry(async () =>
+          runSessionOperation<void>(() =>
             this.module.perform_flight_plan_row_action_in_session(handle, rowUid, actionUid),
           ),
         );
-        await syncGuidanceGeometry();
-        return snapshot;
       },
       performStatusAction: async (actionId) => {
         snapshot = await withSessionRetry(async () =>

@@ -1765,6 +1765,31 @@ pub fn sync_guidance_geometry_in_session(handle: u32) -> AppResult<HadOperationO
     let started = crate::CoreDebugTimer::start();
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    match sync_guidance_geometry_for_session(session, &started) {
+        Ok(()) => {
+            crate::core_debug_log(
+                "plan.guidance.sync.core_phase",
+                &serde_json::json!({
+                    "phase": "snapshot_start",
+                    "total_ms": started.elapsed_ms(),
+                }),
+            );
+            session_snapshot_outcome(session)
+        }
+        Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
+            resources: nav_kv_page_resources(pages),
+        }),
+        Err(HadReadError::Fatal(message)) => Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message,
+        }),
+    }
+}
+
+fn sync_guidance_geometry_for_session(
+    session: &mut UiSession,
+    started: &crate::CoreDebugTimer,
+) -> Result<(), HadReadError> {
     let Some(plan) = session.app_state.active_plan.clone() else {
         session.guidance_leg_geometry.clear();
         crate::core_debug_log(
@@ -1774,7 +1799,7 @@ pub fn sync_guidance_geometry_in_session(handle: u32) -> AppResult<HadOperationO
                 "elapsed_ms": started.elapsed_ms(),
             }),
         );
-        return session_snapshot_outcome(session);
+        return Ok(());
     };
     crate::core_debug_log(
         "plan.guidance.sync.core_phase",
@@ -1785,31 +1810,36 @@ pub fn sync_guidance_geometry_in_session(handle: u32) -> AppResult<HadOperationO
         }),
     );
     let route_started = crate::CoreDebugTimer::start();
-    let route =
-        match crate::had_ops::project_flight_plan_route(session_nav_kv_store(session)?, &plan) {
-            Ok(route) => route,
-            Err(HadReadError::NeedPages(pages)) => {
-                crate::core_debug_log(
-                    "plan.guidance.sync.core_phase",
-                    &serde_json::json!({
-                        "phase": "route_need_pages",
-                        "resource_count": pages.len(),
-                        "pages": pages,
-                        "elapsed_ms": route_started.elapsed_ms(),
-                        "total_ms": started.elapsed_ms(),
-                    }),
-                );
-                return Ok(HadOperationOutcome::NeedResources {
-                    resources: nav_kv_page_resources(pages),
-                });
-            }
-            Err(HadReadError::Fatal(message)) => {
-                return Err(AppError {
-                    kind: AppErrorKind::InvalidFlightPlan,
-                    message,
-                });
-            }
-        };
+    let Some(store) = session.nav_kv_store.as_ref() else {
+        session.guidance_leg_geometry.clear();
+        crate::core_debug_log(
+            "plan.guidance.sync.core_phase",
+            &serde_json::json!({
+                "phase": "missing_nav_kv_store",
+                "total_ms": started.elapsed_ms(),
+            }),
+        );
+        return Ok(());
+    };
+    let route = match crate::had_ops::project_flight_plan_route(store, &plan) {
+        Ok(route) => route,
+        Err(HadReadError::NeedPages(pages)) => {
+            crate::core_debug_log(
+                "plan.guidance.sync.core_phase",
+                &serde_json::json!({
+                    "phase": "route_need_pages",
+                    "resource_count": pages.len(),
+                    "pages": pages,
+                    "elapsed_ms": route_started.elapsed_ms(),
+                    "total_ms": started.elapsed_ms(),
+                }),
+            );
+            return Err(HadReadError::NeedPages(pages));
+        }
+        Err(HadReadError::Fatal(message)) => {
+            return Err(HadReadError::Fatal(message));
+        }
+    };
     crate::core_debug_log(
         "plan.guidance.sync.core_phase",
         &serde_json::json!({
@@ -1835,16 +1865,9 @@ pub fn sync_guidance_geometry_in_session(handle: u32) -> AppResult<HadOperationO
         == Some(crate::OwnshipSourceKind::FlightPlanSimulator)
         && session.plan_preview.pointer.is_none()
     {
-        sync_plan_preview_to_active_leg(session)?;
+        sync_plan_preview_to_active_leg(session).map_err(|err| HadReadError::Fatal(err.message))?;
     }
-    crate::core_debug_log(
-        "plan.guidance.sync.core_phase",
-        &serde_json::json!({
-            "phase": "snapshot_start",
-            "total_ms": started.elapsed_ms(),
-        }),
-    );
-    session_snapshot_outcome(session)
+    Ok(())
 }
 
 pub fn project_flight_plan_route_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
@@ -2307,13 +2330,7 @@ pub fn perform_map_selection_action_in_session(
             insert_waypoint_best_position_for_session(handle, nav_ref)
         }
         MapSelectionSessionAction::ActivateDirectToNavRef { nav_ref } => {
-            let snapshot = activate_direct_to_nav_ref_in_session(handle, nav_ref)?;
-            Ok(HadOperationOutcome::complete(
-                serde_json::to_value(snapshot).map_err(|err| AppError {
-                    kind: AppErrorKind::Internal,
-                    message: err.to_string(),
-                })?,
-            ))
+            activate_direct_to_nav_ref_in_session_outcome(handle, nav_ref)
         }
     }
 }
@@ -2340,7 +2357,7 @@ fn insert_waypoint_best_position_for_session(
             });
         }
     };
-    commit_session_flight_plan_with_snapshot_outcome(session, mutation.plan)
+    commit_session_flight_plan_with_invalidations_outcome(session, mutation.plan)
 }
 
 pub fn insert_waypoint_at_flight_plan_row_in_session(
@@ -2374,7 +2391,7 @@ pub fn insert_waypoint_at_flight_plan_row_in_session(
             message: format!("flight-plan insert target component is stale: {component_uid}"),
         })?;
     let next_plan = crate::insert_waypoint(&plan, component_index, before, waypoint)?;
-    commit_session_flight_plan_with_snapshot_outcome(session, next_plan)
+    commit_session_flight_plan_with_invalidations_outcome(session, next_plan)
 }
 
 pub fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
@@ -2481,7 +2498,7 @@ pub fn append_flight_plan_entry_in_session(
             }
         }
     };
-    commit_session_flight_plan_with_snapshot_outcome(session, mutation.plan)
+    commit_session_flight_plan_with_invalidations_outcome(session, mutation.plan)
 }
 
 pub fn insert_airway_at_flight_plan_row_in_session(
@@ -2555,7 +2572,7 @@ pub fn insert_airway_at_flight_plan_row_in_session(
         materialized.airway,
         materialized.resolved_legs,
     )?;
-    commit_session_flight_plan_with_snapshot_outcome(session, mutation.mutation.plan)
+    commit_session_flight_plan_with_invalidations_outcome(session, mutation.mutation.plan)
 }
 
 pub fn select_procedure_at_flight_plan_row_in_session(
@@ -2723,7 +2740,8 @@ pub fn select_procedure_at_flight_plan_row_in_session(
         }),
     );
     let commit_started = crate::CoreDebugTimer::start();
-    let outcome = commit_session_flight_plan_with_snapshot_outcome(session, mutation.mutation.plan);
+    let outcome =
+        commit_session_flight_plan_with_invalidations_outcome(session, mutation.mutation.plan);
     crate::core_debug_log(
         "plan.procedure.select.core_phase",
         &serde_json::json!({
@@ -2839,13 +2857,13 @@ pub fn load_plate_procedure_in_session(
     } else {
         crate::insert_initial_procedure_materialized_ui(&plan, airport_component_index, built)?
     };
-    commit_session_flight_plan_with_snapshot_outcome(session, mutation.mutation.plan)
+    commit_session_flight_plan_with_invalidations_outcome(session, mutation.mutation.plan)
 }
 
-fn activate_direct_to_nav_ref_in_session(
+fn activate_direct_to_nav_ref_in_session_outcome(
     handle: u32,
     target: NavRef,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
@@ -2859,8 +2877,7 @@ fn activate_direct_to_nav_ref_in_session(
             message: "cannot activate direct-to without ownship position".to_string(),
         })?;
     let next_plan = crate::activate_direct_to(&plan, from_position, target)?;
-    replace_session_flight_plan(session, next_plan)?;
-    snapshot_for_session(session)
+    commit_session_flight_plan_with_invalidations_outcome(session, next_plan)
 }
 
 pub fn activate_direct_to_leg_in_session(
@@ -3064,7 +3081,7 @@ pub fn perform_flight_plan_row_action_in_session(
             });
         }
     };
-    commit_session_flight_plan_with_snapshot_outcome(session, next_plan)
+    commit_session_flight_plan_with_invalidations_outcome(session, next_plan)
 }
 
 pub fn restore_direct_to_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
@@ -6065,22 +6082,34 @@ fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> App
     Ok(())
 }
 
-fn commit_session_flight_plan_with_snapshot_outcome(
+fn commit_session_flight_plan_with_invalidations_outcome(
     session: &mut UiSession,
     plan: FlightPlan,
 ) -> AppResult<HadOperationOutcome> {
+    let started = crate::CoreDebugTimer::start();
     let mut candidate = session.clone();
     replace_session_flight_plan(&mut candidate, plan)?;
-    match try_snapshot_for_session(&candidate) {
-        Ok(snapshot) => {
-            *session = candidate;
-            serde_json::to_value(snapshot)
-                .map(HadOperationOutcome::complete)
-                .map_err(|err| AppError {
-                    kind: AppErrorKind::Internal,
-                    message: err.to_string(),
-                })
-        }
+    match sync_guidance_geometry_for_session(&mut candidate, &started) {
+        Ok(()) => match try_snapshot_for_session(&candidate) {
+            Ok(_) => {
+                *session = candidate;
+                Ok(HadOperationOutcome::complete_with_invalidations(
+                    serde_json::Value::Null,
+                    vec![
+                        UiInvalidation::SessionSnapshot,
+                        UiInvalidation::FlightPlanRoute,
+                        UiInvalidation::MapOverlay,
+                    ],
+                ))
+            }
+            Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
+                resources: nav_kv_page_resources(pages),
+            }),
+            Err(HadReadError::Fatal(message)) => Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message,
+            }),
+        },
         Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
             resources: nav_kv_page_resources(pages),
         }),
@@ -10071,10 +10100,10 @@ mod tests {
             .any(|box_| box_.id.starts_with(PROCEDURE_GEOMETRY_STATUS_PREFIX)));
     }
 
-    fn complete_session_snapshot(outcome: HadOperationOutcome) -> UiSessionSnapshot {
+    fn assert_session_snapshot_invalidated(outcome: HadOperationOutcome) {
         match outcome {
-            HadOperationOutcome::Complete { result, .. } => {
-                serde_json::from_value(result).expect("session snapshot outcome")
+            HadOperationOutcome::Complete { invalidations, .. } => {
+                assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
             }
             HadOperationOutcome::NeedResources { resources } => {
                 panic!("unexpected session snapshot resource request: {resources:?}")
@@ -10882,7 +10911,8 @@ mod tests {
             direct_to_action.uid.clone(),
         )
         .expect("direct-to row action");
-        let after_direct_to = complete_session_snapshot(after_direct_to);
+        assert_session_snapshot_invalidated(after_direct_to);
+        let after_direct_to = get_session_snapshot(init.handle).expect("direct-to snapshot");
         let guidance = after_direct_to
             .app_ui_state
             .active_plan
@@ -10927,9 +10957,12 @@ mod tests {
         )
         .expect("push sample");
 
-        let after_direct_to =
-            activate_direct_to_nav_ref_in_session(init.handle, NavRef::Fix("VPDUB".to_string()))
-                .expect("direct-to on-plan fix");
+        let after_direct_to = activate_direct_to_nav_ref_in_session_outcome(
+            init.handle,
+            NavRef::Fix("VPDUB".to_string()),
+        );
+        assert_session_snapshot_invalidated(after_direct_to.expect("direct-to on-plan fix"));
+        let after_direct_to = get_session_snapshot(init.handle).expect("direct-to snapshot");
         let target_row = after_direct_to
             .app_ui_state
             .active_plan
@@ -10959,7 +10992,8 @@ mod tests {
             activate_leg.uid.clone(),
         )
         .expect("activate leg after direct-to");
-        let after_activate_leg = complete_session_snapshot(after_activate_leg);
+        assert_session_snapshot_invalidated(after_activate_leg);
+        let after_activate_leg = get_session_snapshot(init.handle).expect("activate-leg snapshot");
         let guidance = after_activate_leg
             .app_state
             .active_plan

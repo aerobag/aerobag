@@ -58,6 +58,28 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
     panic!("unterminated function {name}");
 }
 
+fn balanced_block_after_marker<'a>(source: &'a str, marker: &str) -> &'a str {
+    let start = source
+        .find(marker)
+        .unwrap_or_else(|| panic!("missing marker {marker}"));
+    let rest = &source[start..];
+    let body_start = rest.find('{').expect("block start");
+    let mut depth = 0_i32;
+    for (offset, ch) in rest[body_start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &rest[..body_start + offset + 1];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unterminated block {marker}");
+}
+
 #[test]
 fn exported_plain_snapshot_session_apis_are_allowlisted() {
     let source_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
@@ -122,7 +144,7 @@ fn exported_plain_snapshot_session_apis_are_allowlisted() {
 }
 
 #[test]
-fn paged_flight_plan_mutations_commit_only_after_snapshot_projection() {
+fn paged_flight_plan_mutations_commit_only_after_guidance_projection() {
     let source_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
     let source = strip_rust_tests(&source_text);
     let functions = [
@@ -136,7 +158,7 @@ fn paged_flight_plan_mutations_commit_only_after_snapshot_projection() {
     let mut violations = Vec::new();
     for function in functions {
         let body = function_body(source, function);
-        if !body.contains("commit_session_flight_plan_with_snapshot_outcome") {
+        if !body.contains("commit_session_flight_plan_with_invalidations_outcome") {
             violations.push(format!("{function}: missing staged paged commit helper"));
         }
         if body.contains("replace_session_flight_plan(session") {
@@ -147,7 +169,56 @@ fn paged_flight_plan_mutations_commit_only_after_snapshot_projection() {
     }
     assert!(
         violations.is_empty(),
-        "paged flight-plan mutations must be side-effect-free on NeedResources:\n{}",
+        "paged flight-plan mutations must be side-effect-free on NeedResources and return invalidations instead of snapshots:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn platform_flight_plan_mutations_do_not_resync_guidance_after_core_mutation() {
+    let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
+    let android = read_repo_file(
+        "ui/android-app/app/src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt",
+    );
+    let mut violations = Vec::new();
+
+    for method in [
+        "performMapSelectionAction",
+        "insertWaypointAtFlightPlanRow",
+        "appendFlightPlanEntry",
+        "insertAirwayAtFlightPlanRow",
+        "selectProcedureAtFlightPlanRow",
+        "loadPlateProcedure",
+        "performFlightPlanRowAction",
+    ] {
+        let body = balanced_block_after_marker(&web, &format!("{method}: async"));
+        if body.contains("syncGuidanceGeometry") {
+            violations.push(format!(
+                "web {method} resyncs guidance outside core mutation"
+            ));
+        }
+    }
+
+    for method in [
+        "performMapSelectionAction",
+        "insertWaypointAtFlightPlanRow",
+        "appendFlightPlanEntry",
+        "insertAirwayAtFlightPlanRow",
+        "selectProcedureAtFlightPlanRow",
+        "loadPlateProcedure",
+        "performFlightPlanRowAction",
+    ] {
+        let body = balanced_block_after_marker(&android, &format!("fun {method}"));
+        if body.contains("syncGuidanceGeometry") {
+            violations.push(format!(
+                "android {method} resyncs guidance outside core mutation"
+            ));
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "flight-plan mutations must let core update guidance and surface one invalidation-driven refresh:\n{}",
         violations.join("\n")
     );
 }
@@ -213,7 +284,9 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
             continue;
         };
         let window = &android[index.saturating_sub(220)..android.len().min(index + 420)];
-        if !window.contains("runPagedSessionOperationElement") {
+        if !window.contains("runPagedSessionOperationElement")
+            && !window.contains("runPagedMutationAndRefresh")
+        {
             violations.push(format!(
                 "android calls {export} without runPagedSessionOperationElement"
             ));

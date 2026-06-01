@@ -665,6 +665,13 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
+    private fun runPagedMutationAndRefresh(operation: () -> String): UiSessionSnapshot {
+        val store = navKvStore ?: error("nav_kv store is required for paged session mutation")
+        store.runPagedSessionOperationElement(operation = operation)
+        snapshot = decodeSnapshot(bridge.getSessionSnapshotJson(handle))
+        return snapshot
+    }
+
     fun syncGuidanceGeometry(): UiSessionSnapshot {
         val store = navKvStore ?: return snapshot
         snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(
@@ -692,13 +699,9 @@ class NativeUiSession internal constructor(
     }
 
     fun performMapSelectionAction(action: String): UiSessionSnapshot {
-        val store = navKvStore ?: error("nav_kv store is required to perform map selection action")
-        val result =
-            store.runPagedSessionOperationElement {
-                bridge.performMapSelectionActionInSessionJson(handle, action)
-            }
-        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi()
-        return syncGuidanceGeometry()
+        return runPagedMutationAndRefresh {
+            bridge.performMapSelectionActionInSessionJson(handle, action)
+        }
     }
 
     fun describePlateProcedureLoads(plan: FlightPlan, plateId: String): List<ProcedureLoadOption> {
@@ -714,28 +717,20 @@ class NativeUiSession internal constructor(
     }
 
     fun loadPlateProcedure(loadId: String): UiSessionSnapshot {
-        val store = navKvStore ?: error("nav_kv store is required to load a plate procedure")
-        val result =
-            store.runPagedSessionOperationElement {
-                bridge.loadPlateProcedureInSessionJson(handle, loadId)
-            }
-        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi()
-        return syncGuidanceGeometry()
+        return runPagedMutationAndRefresh {
+            bridge.loadPlateProcedureInSessionJson(handle, loadId)
+        }
     }
 
     fun insertWaypointAtFlightPlanRow(rowUid: String, before: Boolean, waypoint: NavRef): UiSessionSnapshot {
-        val store = navKvStore ?: error("nav_kv store is required to insert waypoint at flight plan row")
-        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(
-            store.runPagedSessionOperationElement {
-                bridge.insertWaypointAtFlightPlanRowInSessionJson(
-                    handle,
-                    rowUid,
-                    before,
-                    json.encodeToString(waypoint.toWire()),
-                )
-            },
-        ).toUi()
-        return syncGuidanceGeometry()
+        return runPagedMutationAndRefresh {
+            bridge.insertWaypointAtFlightPlanRowInSessionJson(
+                handle,
+                rowUid,
+                before,
+                json.encodeToString(waypoint.toWire()),
+            )
+        }
     }
 
     fun suggestWaypointIdentifiersAtFlightPlanRow(
@@ -768,13 +763,9 @@ class NativeUiSession internal constructor(
     }
 
     fun appendFlightPlanEntry(input: String): UiSessionSnapshot {
-        val store = navKvStore ?: error("nav_kv store is required to append a flight plan entry")
-        val result =
-            store.runPagedSessionOperationElement {
-                bridge.appendFlightPlanEntryInSessionJson(handle, input)
-            }
-        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi()
-        return syncGuidanceGeometry()
+        return runPagedMutationAndRefresh {
+            bridge.appendFlightPlanEntryInSessionJson(handle, input)
+        }
     }
 
     fun insertAirwayAtFlightPlanRow(
@@ -783,19 +774,15 @@ class NativeUiSession internal constructor(
         entryIndex: Int,
         exitIndex: Int,
     ): UiSessionSnapshot {
-        val store = navKvStore ?: error("nav_kv store is required to insert airway")
-        val result =
-            store.runPagedSessionOperationElement {
-                bridge.insertAirwayAtFlightPlanRowInSessionJson(
-                    handle,
-                    rowUid,
-                    json.encodeToString(presentation.toWire()),
-                    entryIndex,
-                    exitIndex,
-                )
-            }
-        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi()
-        return syncGuidanceGeometry()
+        return runPagedMutationAndRefresh {
+            bridge.insertAirwayAtFlightPlanRowInSessionJson(
+                handle,
+                rowUid,
+                json.encodeToString(presentation.toWire()),
+                entryIndex,
+                exitIndex,
+            )
+        }
     }
 
     fun selectProcedureAtFlightPlanRow(
@@ -806,21 +793,17 @@ class NativeUiSession internal constructor(
         runwayTransition: String?,
         enrouteTransition: String?,
     ): UiSessionSnapshot {
-        val store = navKvStore ?: error("nav_kv store is required to select procedure")
-        val result =
-            store.runPagedSessionOperationElement {
-                bridge.selectProcedureAtFlightPlanRowInSessionJson(
-                    handle,
-                    rowUid,
-                    airportId,
-                    procedureId,
-                    json.encodeToString(kind.toWire()),
-                    json.encodeToString(runwayTransition),
-                    json.encodeToString(enrouteTransition),
-                )
-            }
-        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi()
-        return syncGuidanceGeometry()
+        return runPagedMutationAndRefresh {
+            bridge.selectProcedureAtFlightPlanRowInSessionJson(
+                handle,
+                rowUid,
+                airportId,
+                procedureId,
+                json.encodeToString(kind.toWire()),
+                json.encodeToString(runwayTransition),
+                json.encodeToString(enrouteTransition),
+            )
+        }
     }
 
     fun registerOwnshipSource(registration: OwnshipSourceRegistration): UiSessionSnapshot {
@@ -977,13 +960,9 @@ class NativeUiSession internal constructor(
     }
 
     fun performFlightPlanRowAction(rowUid: String, actionUid: String): UiSessionSnapshot {
-        val store = navKvStore ?: error("nav_kv store is required to perform flight plan row action")
-        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(
-            store.runPagedSessionOperationElement {
-                bridge.performFlightPlanRowActionInSessionJson(handle, rowUid, actionUid)
-            },
-        ).toUi()
-        return syncGuidanceGeometry()
+        return runPagedMutationAndRefresh {
+            bridge.performFlightPlanRowActionInSessionJson(handle, rowUid, actionUid)
+        }
     }
 
     fun performStatusAction(actionId: String): UiSessionSnapshot {

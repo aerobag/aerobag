@@ -14,7 +14,6 @@ use std::{
 use anyhow::{bail, Context};
 use chrono::{DateTime, Datelike, NaiveDate, SecondsFormat, Utc};
 use crossbeam_channel::{self, RecvTimeoutError};
-use flate2::{Compression, GzBuilder};
 use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use had_key::{component as had_key_component, upper_component as had_upper_key_component};
 use preprocessor_charts::{
@@ -70,7 +69,7 @@ mod source_fingerprints;
 
 const PACKAGE_CYCLE_VERSION: &str = "01";
 const NAV_DB_STARTUP_PREFETCH_MEMBERS_METADATA_KEY: &str = "startup_prefetch_members";
-const NAV_DB_UNPACKED_PAGE_ENCODING_MARKER: &str = "nav-db-page-gzip-v1";
+const NAV_DB_UNPACKED_PAGE_ENCODING_MARKER: &str = "nav-db-page-xz-v1";
 const WAYPOINT_PREFIX_MAX_RESULTS: usize = 100;
 // Offline chart region polygons are only visual guides in the package picker.
 // Grow chart cutlines coarsely before unioning to collapse tiny source-boundary
@@ -1341,7 +1340,7 @@ fn hardlink_nav_db_zip_members_from_source_root(
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.starts_with("page_"))
         {
-            write_gzip_file_deterministic(source, target)
+            write_xz_file_deterministic(source, target)
         } else {
             fs::hard_link(source, target).with_context(|| {
                 format!(
@@ -1396,18 +1395,25 @@ fn sync_zip_members_from_source_root(
     Ok(())
 }
 
-fn write_gzip_file_deterministic(source: &Path, target: &Path) -> anyhow::Result<()> {
-    let raw = fs::read(source).with_context(|| format!("failed to read {}", source.display()))?;
-    let mut encoder = GzBuilder::new()
-        .mtime(0)
-        .write(Vec::new(), Compression::best());
-    encoder
-        .write_all(&raw)
-        .with_context(|| format!("failed to gzip {}", source.display()))?;
-    let compressed = encoder
-        .finish()
-        .with_context(|| format!("failed to finish gzip {}", source.display()))?;
-    fs::write(target, compressed).with_context(|| format!("failed to write {}", target.display()))
+fn write_xz_file_deterministic(source: &Path, target: &Path) -> anyhow::Result<()> {
+    let output = Command::new("xz")
+        .arg("--format=xz")
+        .arg("--check=crc64")
+        .arg("-6")
+        .arg("--stdout")
+        .arg("--threads=1")
+        .arg(source)
+        .output()
+        .with_context(|| format!("failed to run xz for {}", source.display()))?;
+    if !output.status.success() {
+        bail!(
+            "xz failed for {}: {}",
+            source.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    fs::write(target, output.stdout)
+        .with_context(|| format!("failed to write {}", target.display()))
 }
 
 fn prepare_package_unpack_source_root(
@@ -3887,7 +3893,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_db_unpacked_sync_gzips_pages_but_leaves_root_raw() {
+    fn nav_db_unpacked_sync_xzs_pages_but_leaves_root_raw() {
         let temp = tempdir().unwrap();
         let source_root = temp.path().join("source");
         let unpacked_root = temp.path().join("published_unpacked");
@@ -3909,11 +3915,19 @@ mod tests {
 
         assert_eq!(fs::read(unpack_dir.join("root")).unwrap(), b"raw-root");
         let page = fs::read(unpack_dir.join("page_0001")).unwrap();
-        assert_eq!(&page[..2], &[0x1f, 0x8b]);
-        let mut decoder = flate2::read::GzDecoder::new(page.as_slice());
-        let mut decoded = Vec::new();
-        decoder.read_to_end(&mut decoded).unwrap();
-        assert_eq!(decoded, b"raw-page-one");
+        assert_eq!(&page[..6], &[0xfd, b'7', b'z', b'X', b'Z', 0x00]);
+        let output = Command::new("xz")
+            .arg("--decompress")
+            .arg("--stdout")
+            .arg(unpack_dir.join("page_0001"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"raw-page-one");
     }
 
     #[test]

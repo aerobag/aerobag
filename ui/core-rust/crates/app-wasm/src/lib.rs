@@ -1,5 +1,7 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
+    io::Cursor,
     sync::{
         atomic::{AtomicU32, Ordering},
         Mutex, MutexGuard, OnceLock,
@@ -172,12 +174,13 @@ pub fn nav_db_open_controller_ingest_resource(
     resource_id: &str,
     resource_bytes: &[u8],
 ) -> Result<(), JsValue> {
+    let decoded_bytes = decode_nav_db_page_resource_bytes(resource_id, resource_bytes)?;
     let mut controllers = lock_nav_db_open_controllers();
     let controller = controllers.get_mut(&handle).ok_or_else(|| {
         JsValue::from_str(&format!("invalid nav db open controller handle: {handle}"))
     })?;
     controller
-        .ingest_resource(resource_id, resource_bytes)
+        .ingest_resource(resource_id, decoded_bytes.as_ref())
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -272,7 +275,42 @@ pub fn nav_kv_insert_resource(
         app_core::nav_kv_page_index_from_resource_id(resource_id).ok_or_else(|| {
             JsValue::from_str(&format!("unsupported nav kv resource id: {resource_id}"))
         })?;
-    nav_kv_insert_page(handle, page_index, resource_bytes)
+    let decoded_bytes = decode_nav_db_page_resource_bytes(resource_id, resource_bytes)?;
+    nav_kv_insert_page(handle, page_index, decoded_bytes.as_ref())
+}
+
+fn decode_nav_db_page_resource_bytes<'a>(
+    resource_id: &str,
+    resource_bytes: &'a [u8],
+) -> Result<Cow<'a, [u8]>, JsValue> {
+    if !is_xz_nav_db_page_resource_id(resource_id) {
+        return Ok(Cow::Borrowed(resource_bytes));
+    }
+    let mut input = Cursor::new(resource_bytes);
+    let mut decoded = Vec::new();
+    lzma_rs::xz_decompress(&mut input, &mut decoded).map_err(|err| {
+        JsValue::from_str(&format!(
+            "failed to xz-decode nav-db page {resource_id}: {err}"
+        ))
+    })?;
+    Ok(Cow::Owned(decoded))
+}
+
+fn is_xz_nav_db_page_resource_id(resource_id: &str) -> bool {
+    app_core::nav_kv_page_index_from_resource_id(resource_id).is_some()
+        || nav_db_artifact_page_resource_id(resource_id)
+}
+
+fn nav_db_artifact_page_resource_id(resource_id: &str) -> bool {
+    let Some(rest) = resource_id.strip_prefix("nav_db/artifact/") else {
+        return false;
+    };
+    let Some((index, page)) = rest.split_once("/page/") else {
+        return false;
+    };
+    index.parse::<usize>().is_ok()
+        && page.len() == 4
+        && page.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 #[wasm_bindgen]

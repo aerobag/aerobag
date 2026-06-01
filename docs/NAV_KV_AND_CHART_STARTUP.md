@@ -485,3 +485,57 @@ prefetch segment on bandwidth-constrained profiles. The no-METAR/full Vite-dev
 startup rows should not be used to judge production user-visible startup until
 the production startup lab can run again without the unrelated TypeScript
 blocker.
+
+### 2026-06-01 NAV6 Unpacked Page XZ Trial
+
+The next trial switches unpacked nav-db pages from gzip to xz while keeping the
+root raw. The packaged zip remains unchanged; this only changes the unpacked
+publication view used by web dynamic page faults and startup cache warming.
+
+The browser-side gzip hook was removed. Web now fetches encoded bytes and hands
+them to the WASM boundary; `app-wasm` xz-decodes nav-db page resources before
+inserting them into the `NavKvStore`. The decoder is `lzma-rs`, because its pure
+Rust decoder builds cleanly for `wasm32-unknown-unknown`.
+
+Contract change:
+
+```text
+NAV5  root raw, unpacked page_* gzip, JS/browser DecompressionStream
+NAV6  root raw, unpacked page_* xz, app-wasm lzma-rs decode
+```
+
+Payload bake-off on the 13 raw cycle `2606` startup-prefetch pages:
+
+```text
+codec        compressed_B  vs_gzip
+gzip-9             98,471     1.00
+brotli-q11         69,478     0.71
+xz-6               72,680     0.74
+zstd-19            82,763     0.84
+bz2-9              85,552     0.87
+lz4-flex          164,978     1.68
+```
+
+Decoder cost measured by temporarily forcing each decoder into optimized
+`app-wasm`:
+
+```text
+decoder              raw_wasm_delta_B  gz_wasm_delta_B
+lz4_flex                         3,380              607
+lzma-rs xz                      67,257           23,579
+flate2 gzip                     47,325           29,671
+zstd                           104,131           37,245
+brotli-decompressor            182,128           85,715
+```
+
+For the startup-prefetch corpus, xz saves `25,791` bytes versus gzip while adding
+`23,579` bytes to gzipped WASM, so it breaks even within the first startup
+prefetch set. Brotli saves slightly more bytes on pages but adds much more WASM,
+so its break-even point is about three startup-prefetch-equivalent batches.
+
+Representative page size:
+
+```text
+page_0046 gzip  7,824 B
+page_0046 xz    6,092 B
+```

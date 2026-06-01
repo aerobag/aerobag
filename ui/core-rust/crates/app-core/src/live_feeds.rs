@@ -663,6 +663,12 @@ impl LiveFeedsState {
 
     fn invalidations(&self) -> Vec<UiInvalidation> {
         let mut invalidations = Vec::new();
+        if self.current_loaded {
+            invalidations.push(UiInvalidation::SessionSnapshot);
+            invalidations.push(UiInvalidation::MapOverlay);
+            invalidations.push(UiInvalidation::NexradOverlay);
+            invalidations.push(UiInvalidation::DebugPanel);
+        }
         for (product, entry) in &self.products {
             if !entry
                 .current_version
@@ -1170,6 +1176,24 @@ mod tests {
 
         assert!(state.has_product_current_version("metars"));
         assert!(!state.has_product_current_version("obstacles"));
+    }
+
+    #[test]
+    fn loaded_current_without_overlay_products_still_invalidates_overlays() {
+        let mut state = LiveFeedsState::default();
+        state
+            .ingest_resource("live_feeds/current", br#"{"products": {}}"#)
+            .unwrap();
+
+        let HadOperationOutcome::Complete { invalidations, .. } =
+            state.sync_outcome_with_invalidations()
+        else {
+            panic!("expected complete live-feed sync");
+        };
+        assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
+        assert!(invalidations.contains(&UiInvalidation::MapOverlay));
+        assert!(invalidations.contains(&UiInvalidation::NexradOverlay));
+        assert!(invalidations.contains(&UiInvalidation::DebugPanel));
     }
 
     #[test]

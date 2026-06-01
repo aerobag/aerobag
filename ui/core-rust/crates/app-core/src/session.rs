@@ -588,18 +588,14 @@ fn sync_live_feed_product_status_record(
 fn sync_live_feed_overlay_status_records(session: &mut UiSession) -> Vec<UiInvalidation> {
     let mut invalidations = Vec::new();
     let metars_visible = session.map_layer_state.metars.visible;
-    let metars_observed_utc = session
-        .metar_payload
-        .as_ref()
-        .and_then(|payload| payload.generated_at_utc);
-    let metars_loaded = session.metar_payload.is_some();
+    let metars_status = metar_live_feed_status_source(session);
     invalidations.extend(sync_live_feed_product_status_record(
         session,
         metars_visible,
-        metars_loaded,
+        metars_status.loaded,
         "metars",
         "METAR live feed unavailable: no current METAR product is loaded",
-        metars_observed_utc,
+        metars_status.observed_utc,
         DATA_FRESHNESS_POLICIES.live_feeds.metars,
     ));
 
@@ -644,6 +640,31 @@ fn json_generated_at_utc(value: &serde_json::Value) -> Option<DateTime<Utc>> {
         .get("generated_at_utc")
         .and_then(serde_json::Value::as_str)
         .and_then(parse_utc_instant)
+}
+
+#[derive(Debug, Clone)]
+struct LiveFeedProductStatusSource {
+    loaded: bool,
+    observed_utc: Option<DateTime<Utc>>,
+    loaded_version: Option<String>,
+}
+
+fn metar_live_feed_status_source(session: &UiSession) -> LiveFeedProductStatusSource {
+    if let Some(payload) = session.metar_payload.as_ref() {
+        return LiveFeedProductStatusSource {
+            loaded: true,
+            observed_utc: payload.generated_at_utc,
+            loaded_version: Some(payload.version_label.clone()),
+        };
+    }
+    LiveFeedProductStatusSource {
+        loaded: false,
+        observed_utc: None,
+        loaded_version: session
+            .live_feeds
+            .product_loaded_version("metars")
+            .map(str::to_string),
+    }
 }
 
 fn terrain_status_record(detail: String) -> DataStatusRecord {
@@ -1333,6 +1354,7 @@ fn sync_cycle_product_freshness_status_records(session: &mut UiSession) -> Vec<U
 }
 
 fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState {
+    let metars_status = metar_live_feed_status_source(session);
     let rows = vec![
         cycle_package_group_status_page_row(
             session,
@@ -1371,16 +1393,10 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
             session,
             "metars",
             "METARs",
-            session.metar_payload.is_some(),
-            session
-                .metar_payload
-                .as_ref()
-                .and_then(|payload| payload.generated_at_utc),
+            metars_status.loaded,
+            metars_status.observed_utc,
             DATA_FRESHNESS_POLICIES.live_feeds.metars,
-            session
-                .live_feeds
-                .product_loaded_version("metars")
-                .map(str::to_string),
+            metars_status.loaded_version,
         ),
         live_feed_product_status_page_row(
             session,
@@ -4529,11 +4545,15 @@ pub fn ingest_prepared_metar_live_feed_resource_in_session(
     bytes: &[u8],
 ) -> AppResult<()> {
     let envelope = crate::decode_prepared_metar_live_feed(bytes)?;
+    let envelope_version = envelope.version.clone();
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session
         .live_feeds
         .ingest_prepared_metar_live_feed(resource_id, &envelope)?;
+    if session.live_feeds.product_loaded_version("metars") != Some(envelope_version.as_str()) {
+        return Ok(());
+    }
     install_prepared_metar_live_feed(session, envelope)?;
     clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
     Ok(())
@@ -4747,6 +4767,7 @@ pub fn report_session_resource_failure_in_session(
     let session = session_mut(&mut sessions, handle)?;
     if LiveFeedsState::handles_resource(resource_id) {
         record_live_feed_fetch_failure(session, resource_id, message);
+        sync_live_feed_overlay_status_records(session);
     } else if resource_id.starts_with("terrain/source/")
         && session.map_layer_state.terrain_warning.visible
     {
@@ -10865,6 +10886,44 @@ mod tests {
         assert_eq!(metars.value.as_deref(), Some("OLD"));
         assert_eq!(metars.severity, UiStatusSeverity::Warning);
         assert!(metars.detail.contains("METARS data is"));
+    }
+
+    #[test]
+    fn metar_fetch_failure_does_not_override_loaded_payload_status() {
+        let init = create_current_test_session();
+        set_map_layer_visibility_in_session(init.handle, "metars", true).expect("show metars");
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            session.metar_payload = Some(MetarProductPayload {
+                schema_version: 3,
+                version_label: "loaded-metars".to_string(),
+                generated_at_utc: Some(utc("2026-05-20T11:55:00Z")),
+                metar_count: Some(0),
+                metars_by_station: HashMap::new(),
+                pireps: Vec::new(),
+            });
+        }
+
+        let snapshot = report_session_resource_failure_in_session(
+            init.handle,
+            "live_feeds/state/metars/newer-metars",
+            "diagnostic fetch failure",
+        )
+        .expect("report failure");
+
+        assert!(
+            !has_data_status_box(&snapshot, LIVE_FEED_METARS_STATUS_ID),
+            "loaded fresh METAR data should not be replaced by an unavailable warning"
+        );
+        let data_status = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "live_feed:metars")
+            .expect("METAR data-status row");
+        assert_eq!(data_status.value, "OK");
+        assert_eq!(data_status.severity, UiStatusSeverity::Ok);
     }
 
     #[test]

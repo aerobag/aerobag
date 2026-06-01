@@ -21,8 +21,8 @@ use crate::{
     NavKvStore, NavRef, NavSymbolFeature, PathTermination, PlateProcedureLoadCandidateInput,
     PolygonRecord, ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance,
     ProcedureLoadOption, ProcedureOptions, ProcedureSegment, ProcedureSegmentRole,
-    ProcedureSummary, ResolvedLeg, ResolvedLegSource, RouteComponent, WaypointIdentifierRecord,
-    WaypointIdentifierSuggestion, REQUIRED_NAV_DB_CONTRACT_ID,
+    ProcedureSummary, ResolvedLeg, ResolvedLegSource, RouteComponent, SequencingMode,
+    WaypointIdentifierRecord, WaypointIdentifierSuggestion, REQUIRED_NAV_DB_CONTRACT_ID,
 };
 
 const NAV_DB_ROOT_MEMBER_PATH: &str = "root";
@@ -1675,9 +1675,79 @@ pub(crate) fn project_flight_plan_route(
     plan: &FlightPlan,
 ) -> Result<Vec<FlightPlanRouteSegment>, HadReadError> {
     let plan = crate::build_flight_plan(plan.clone())?;
+    ensure_route_position_pages_loaded(store, &plan)?;
     project_flight_plan_route_with_resolver(&plan, |nav_ref, procedure_airport_id| {
         nav_ref_position(store, nav_ref, procedure_airport_id)
     })
+}
+
+fn ensure_route_position_pages_loaded(
+    store: &NavKvStore,
+    plan: &FlightPlan,
+) -> Result<(), HadReadError> {
+    let keys = route_position_keys(plan);
+    if keys.is_empty() {
+        return Ok(());
+    }
+    let pages = store
+        .missing_pages_for_keys(&keys)
+        .map_err(HadReadError::Fatal)?;
+    if pages.is_empty() {
+        return Ok(());
+    }
+    crate::core_debug_log(
+        "core.had.route_position_page_fault",
+        &serde_json::json!({
+            "key_count": keys.len(),
+            "page_count": pages.len(),
+            "pages": pages,
+        }),
+    );
+    Err(HadReadError::NeedPages(pages))
+}
+
+fn route_position_keys(plan: &FlightPlan) -> Vec<String> {
+    let mut keys = Vec::new();
+    for leg in &plan.resolved_legs {
+        let procedure_airport_id = leg.procedure_provenance.as_ref().and_then(|provenance| {
+            (!provenance.airport_id.is_empty()).then_some(provenance.airport_id.as_str())
+        });
+        if leg
+            .procedure_provenance
+            .as_ref()
+            .and_then(|provenance| provenance.display_path.as_ref())
+            .is_some()
+        {
+            continue;
+        }
+        push_nav_ref_position_key(&mut keys, &leg.from, procedure_airport_id);
+        push_nav_ref_position_key(&mut keys, &leg.to, procedure_airport_id);
+    }
+    if let Some(direct_to) = plan
+        .guidance
+        .as_ref()
+        .filter(|guidance| guidance.sequencing_mode == SequencingMode::DirectTo)
+        .and_then(|guidance| guidance.direct_to.as_ref())
+    {
+        push_nav_ref_position_key(&mut keys, &direct_to.start, None);
+        push_nav_ref_position_key(&mut keys, &direct_to.target, None);
+    }
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+fn push_nav_ref_position_key(
+    keys: &mut Vec<String>,
+    nav_ref: &NavRef,
+    procedure_airport_id: Option<&str>,
+) {
+    if let Some(key) = crate::nav_kv_key_for_query(&NavKvQuery::NavRefPosition {
+        nav_ref: nav_ref.clone(),
+        procedure_airport_id: procedure_airport_id.map(str::to_string),
+    }) {
+        keys.push(key);
+    }
 }
 
 fn component_insert_anchor(
@@ -4173,7 +4243,20 @@ mod tests {
 
     #[test]
     fn flight_plan_ui_state_batches_enrichment_page_faults() {
-        let large_symbol = format!("null{}", " ".repeat(4996)).into_bytes();
+        let large_symbol = format!(
+            r#"{{
+                "kind":"airport",
+                "label":"KAAA",
+                "style_class":"airport",
+                "towered":false,
+                "fuel_available":false,
+                "runway_length_ratio":0.0,
+                "longest_runway_heading_true_deg":null,
+                "padding":"{}"
+            }}"#,
+            "x".repeat(5000)
+        )
+        .into_bytes();
         let large_magvar = format!("14.0{}", " ".repeat(4996)).into_bytes();
         let mut entries = vec![
             ("magvar/48/-111", large_magvar.as_slice()),
@@ -4189,7 +4272,7 @@ mod tests {
             ("navref/symbol/airport/KBBB", large_symbol.as_slice()),
         ];
         entries.sort_by(|left, right| left.0.cmp(right.0));
-        let (root, pages) = fixture(&entries, 5000);
+        let (root, pages) = fixture(&entries, 8192);
         let mut store = NavKvStore::new(root);
         store.insert_page(0, pages[0].clone());
         let plan = crate::build_flight_plan(FlightPlan {
@@ -4218,7 +4301,7 @@ mod tests {
         })
         .expect("build plan");
 
-        match flight_plan_ui_state(
+        let missing_pages = match flight_plan_ui_state(
             &store,
             plan.clone(),
             crate::planning::project_ui_state(&plan),
@@ -4226,10 +4309,89 @@ mod tests {
         ) {
             Ok(_) => panic!("expected batched page fault"),
             Err(HadReadError::NeedPages(pages)) => {
-                assert_eq!(pages, vec![1, 2, 3]);
+                assert!(
+                    pages.len() > 1,
+                    "expected batched enrichment pages, got {pages:?}"
+                );
+                pages
             }
             Err(HadReadError::Fatal(message)) => panic!("unexpected fatal error: {message}"),
+        };
+        for page in missing_pages {
+            store.insert_page(page, pages[page as usize].clone());
         }
+        flight_plan_ui_state(
+            &store,
+            plan.clone(),
+            crate::planning::project_ui_state(&plan),
+            crate::FlightDataComputer::default(),
+        )
+        .expect("project flight plan ui state after batch");
+    }
+
+    #[test]
+    fn project_flight_plan_route_batches_position_page_faults() {
+        let large_position = |lat: f64, lon: f64| {
+            format!(
+                r#"{{"lat":{lat},"lon":{lon},"padding":"{}"}}"#,
+                "x".repeat(5000)
+            )
+            .into_bytes()
+        };
+        let aaa = large_position(48.0, -110.0);
+        let bbb = large_position(48.0, -111.0);
+        let ccc = large_position(48.5, -111.5);
+        let mut entries = vec![
+            ("navref/position/airport/KAAA", aaa.as_slice()),
+            ("navref/position/airport/KBBB", bbb.as_slice()),
+            ("navref/position/airport/KCCC", ccc.as_slice()),
+        ];
+        entries.sort_by(|left, right| left.0.cmp(right.0));
+        let (root, pages) = fixture(&entries, 8192);
+        let mut store = NavKvStore::new(root);
+        store.insert_page(0, pages[0].clone());
+        let plan = crate::build_flight_plan(FlightPlan {
+            id: "plan-route-page-faults".to_string(),
+            name: "KAAA KBBB KCCC".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KAAA".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KBBB".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KCCC".to_string()),
+                },
+            ],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: Some(AirportId("KAAA".to_string())),
+            destination: Some(AirportId("KCCC".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        })
+        .expect("build plan");
+
+        let missing_pages = match project_flight_plan_route(&store, &plan) {
+            Ok(_) => panic!("expected batched page fault"),
+            Err(HadReadError::NeedPages(pages)) => {
+                assert!(pages.len() > 1, "expected batched pages, got {pages:?}");
+                pages
+            }
+            Err(HadReadError::Fatal(message)) => panic!("unexpected fatal error: {message}"),
+        };
+        for page in missing_pages {
+            store.insert_page(page, pages[page as usize].clone());
+        }
+        let route = project_flight_plan_route(&store, &plan).expect("project route after batch");
+        assert_eq!(route.len(), 2);
     }
 
     #[test]

@@ -76,6 +76,7 @@ export type UiSessionSnapshot = {
   chart_page_state: UiChartPageState;
   map_layer_state: UiMapLayerState;
   data_status_state: UiDataStatusState;
+  data_status_page_state: UiDataStatusPageState;
   debug_state: UiDebugState;
   raster_map?: RasterMapUiState | null;
 };
@@ -117,6 +118,26 @@ export type UiDataStatusState = {
   boxes: UiDataStatusBox[];
   launcher_count: string | null;
   launcher_severity: UiStatusSeverity;
+};
+
+export type UiDataStatusPageFact = {
+  label: string;
+  value: string;
+};
+
+export type UiDataStatusPageRow = {
+  id: string;
+  label: string;
+  value: string;
+  severity: UiStatusSeverity;
+  detail: string;
+  facts: UiDataStatusPageFact[];
+};
+
+export type UiDataStatusPageState = {
+  title: string;
+  summary: string;
+  rows: UiDataStatusPageRow[];
 };
 
 export type MapLayerId =
@@ -773,6 +794,7 @@ type WasmModule = {
   sync_live_feeds_in_session(handle: number): Promise<string> | string;
   ingest_live_feed_sse_event_in_session(handle: number, eventJson: string): Promise<string> | string;
   ingest_live_feed_sse_events_in_session(handle: number, eventsJson: string): Promise<string> | string;
+  report_live_feed_connection_event_in_session(handle: number, eventJson: string): Promise<string> | string;
 };
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
@@ -1467,6 +1489,15 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         if (liveFeedSubscription) {
           return;
         }
+        const reportConnectionEvent = async (kind: "connecting" | "connected" | "message" | "error" | "closed", message?: string) => {
+          snapshot = await parseSessionSnapshot(
+            this.module.report_live_feed_connection_event_in_session(
+              handle,
+              JSON.stringify({ kind, message: message ?? null }),
+            ),
+          );
+          publishInvalidations(["session_snapshot"]);
+        };
         liveFeedSubscription = createLiveFeedSubscription(
           async (events) => {
             await withSessionRetry(async () =>
@@ -1476,11 +1507,24 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
               ),
             );
           },
+          reportConnectionEvent,
           (tag, data) => debugLog(tag, data),
         );
       },
       stopLiveFeedSubscription: async () => {
-        liveFeedSubscription?.close();
+        if (liveFeedSubscription) {
+          const closing = liveFeedSubscription;
+          liveFeedSubscription = null;
+          closing.close();
+          snapshot = await parseSessionSnapshot(
+            this.module.report_live_feed_connection_event_in_session(
+              handle,
+              JSON.stringify({ kind: "closed", message: null }),
+            ),
+          );
+          publishInvalidations(["session_snapshot"]);
+          return;
+        }
         liveFeedSubscription = null;
       },
       ingestLiveFeedSseEvent: async (event) => {
@@ -1749,6 +1793,7 @@ async function loadBestAvailableAdapterUncached(
     "sync_live_feeds_in_session",
     "ingest_live_feed_sse_event_in_session",
     "ingest_live_feed_sse_events_in_session",
+    "report_live_feed_connection_event_in_session",
   ] as const;
   const missingExports = requiredExports.filter((name) => typeof mod[name] !== "function");
   if (missingExports.length > 0) {
@@ -1783,11 +1828,15 @@ type LiveFeedSubscription = {
 
 function createLiveFeedSubscription(
   ingestEvents: (events: LiveFeedSseEvent[]) => Promise<void>,
+  reportConnectionEvent: (kind: "connecting" | "connected" | "message" | "error" | "closed", message?: string) => Promise<void>,
   log: (tag: string, data?: unknown) => void,
 ): LiveFeedSubscription {
   if (typeof EventSource === "undefined") {
     throw new Error("EventSource is unavailable in this app-core runtime");
   }
+  void reportConnectionEvent("connecting").catch((error: unknown) => {
+    log("live_feeds.connection_event.failed", { message: error instanceof Error ? error.message : String(error) });
+  });
   const events = new EventSource("/live-feeds/events");
   const queuedEvents: LiveFeedSseEvent[] = [];
   let closed = false;
@@ -1829,6 +1878,9 @@ function createLiveFeedSubscription(
       return;
     }
     const message = event as MessageEvent<string>;
+    void reportConnectionEvent("message").catch((error: unknown) => {
+      log("live_feeds.connection_event.failed", { message: error instanceof Error ? error.message : String(error) });
+    });
     queuedEvents.push({
       id: message.lastEventId || null,
       event: "live-feed-current",
@@ -1836,8 +1888,19 @@ function createLiveFeedSubscription(
     });
     scheduleFlush();
   });
+  events.onopen = () => {
+    if (closed) {
+      return;
+    }
+    void reportConnectionEvent("connected").catch((error: unknown) => {
+      log("live_feeds.connection_event.failed", { message: error instanceof Error ? error.message : String(error) });
+    });
+  };
   events.onerror = () => {
     log("live_feeds.sse.error", {});
+    void reportConnectionEvent("error", "EventSource error").catch((error: unknown) => {
+      log("live_feeds.connection_event.failed", { message: error instanceof Error ? error.message : String(error) });
+    });
   };
   return {
     close: () => {

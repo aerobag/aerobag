@@ -41,14 +41,22 @@ const snapshotJson = JSON.stringify({
     selected_chart_id: "",
   },
   map_layer_state: {
+    world_basemap: { visible: true, enabled: true },
     vectors: { visible: true, enabled: true },
+    metars: { visible: true, enabled: true },
     nexrad: { visible: false, enabled: true },
     terrain_warning: { visible: true, enabled: true },
+    offline_regions: { visible: false, enabled: true },
   },
   data_status_state: {
     boxes: [],
     launcher_count: null,
     launcher_severity: "info",
+  },
+  data_status_page_state: {
+    title: "Data status",
+    summary: "All tracked data is usable.",
+    rows: [],
   },
 });
 
@@ -132,6 +140,7 @@ describe("loadBestAvailableAdapter", () => {
       sync_live_feeds_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
       ingest_live_feed_sse_event_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
       ingest_live_feed_sse_events_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
+      report_live_feed_connection_event_in_session: async () => snapshotJson,
       suggest_waypoint_identifiers_at_flight_plan_row_in_session: async () => JSON.stringify({ state: "complete", result: [] }),
       preview_flight_plan_entry_in_session: async () => JSON.stringify({ state: "complete", result: { can_commit: false, tokens: [], issues: [] } }),
       append_flight_plan_entry_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),

@@ -2312,6 +2312,138 @@ button {
   background: var(--theme-chart-surface-bg);
 }
 
+.dataStatusPage {
+  display: flex;
+  flex-direction: column;
+  padding: calc(var(--thumb) * 1.25) var(--thumb-gap) calc(var(--thumb) * 0.45);
+  background:
+    radial-gradient(circle at 12% 14%, rgba(255, 255, 255, 0.52), transparent 28%),
+    var(--theme-chart-surface-bg);
+  color: var(--theme-button-normal-fg);
+}
+
+.dataStatusPagePanel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  border-radius: calc(var(--thumb-radius) * 0.85);
+  padding: calc(var(--thumb) * 0.24);
+  background: color-mix(in srgb, var(--theme-button-normal-bg) 76%, black);
+  box-shadow: var(--shadow);
+}
+
+.dataStatusPageHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: calc(var(--thumb) * 0.3);
+  margin-bottom: calc(var(--thumb) * 0.18);
+}
+
+.dataStatusPageHeader h1 {
+  margin: 0;
+  color: var(--theme-button-normal-fg);
+  font-size: calc(var(--thumb) * 0.34);
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.dataStatusPageHeader p {
+  margin: 0;
+  color: color-mix(in srgb, var(--theme-button-normal-fg) 72%, transparent);
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 800;
+  text-align: right;
+  text-transform: uppercase;
+}
+
+.dataStatusPageRows {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(calc(var(--thumb) * 3.2), 1fr));
+  gap: calc(var(--thumb) * 0.16);
+}
+
+.dataStatusPageRow {
+  border-radius: calc(var(--thumb-radius) * 0.65);
+  padding: calc(var(--thumb) * 0.16);
+  background: rgba(255, 255, 255, 0.9);
+  color: #101820;
+  box-shadow: inset 0 0 0 2px rgba(16, 24, 32, 0.22);
+}
+
+.dataStatusPageRow.statusSeverity-ok {
+  box-shadow: inset 0 0 0 2px rgba(92, 166, 106, 0.78);
+}
+
+.dataStatusPageRow.statusSeverity-info {
+  box-shadow: inset 0 0 0 2px rgba(79, 142, 189, 0.75);
+}
+
+.dataStatusPageRow.statusSeverity-caution {
+  box-shadow: inset 0 0 0 3px rgba(210, 146, 16, 0.82);
+}
+
+.dataStatusPageRow.statusSeverity-warning,
+.dataStatusPageRow.statusSeverity-unavailable {
+  box-shadow: inset 0 0 0 3px rgba(179, 38, 30, 0.84);
+}
+
+.dataStatusPageRowHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: calc(var(--thumb) * 0.16);
+}
+
+.dataStatusPageRowLabel {
+  font-size: calc(var(--thumb) * 0.22);
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.dataStatusPageRowValue {
+  font-size: calc(var(--thumb) * 0.22);
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.dataStatusPageRowDetail {
+  margin-top: calc(var(--thumb) * 0.08);
+  font-size: calc(var(--thumb) * 0.16);
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.dataStatusPageFacts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: calc(var(--thumb) * 0.07) calc(var(--thumb) * 0.14);
+  margin: calc(var(--thumb) * 0.14) 0 0;
+}
+
+.dataStatusPageFact {
+  min-width: 0;
+}
+
+.dataStatusPageFact dt {
+  color: rgba(16, 24, 32, 0.64);
+  font-size: calc(var(--thumb) * 0.115);
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.dataStatusPageFact dd {
+  margin: 0;
+  overflow: hidden;
+  color: #101820;
+  font-size: calc(var(--thumb) * 0.145);
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .planScrollViewport {
   position: relative;
   flex: 1 1 auto;

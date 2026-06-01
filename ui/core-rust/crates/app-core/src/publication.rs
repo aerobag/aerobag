@@ -51,6 +51,14 @@ impl PublicationResolver {
         self.resource_policy = resource_policy;
     }
 
+    pub fn current_artifacts(&self) -> Option<&CurrentArtifactsManifest> {
+        self.current_artifacts.as_ref()
+    }
+
+    pub fn loaded_bundle_manifest_count(&self) -> usize {
+        self.bundle_manifests_by_filename.len()
+    }
+
     pub fn ingest_resource(
         &mut self,
         resource_id: &str,
@@ -129,6 +137,11 @@ impl PublicationResolver {
                 Ok(NavDbArtifactCandidate {
                     package_id: package.id.clone(),
                     filename: package.filename.clone(),
+                    contract_id: Some(package.contract_id.clone()),
+                    cycle: package.cycle.clone(),
+                    cycle_version: package.cycle_version.clone(),
+                    effective_date: package.effective_date.clone(),
+                    expiration_date: package.expiration_date.clone(),
                     root_source: Some(self.package_member_source(package, "root")?),
                 })
             })

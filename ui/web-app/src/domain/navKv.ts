@@ -538,6 +538,11 @@ type NavDbArtifactOpenStatus = {
 type NavDbOpenResult = {
   selected_package_id: string;
   selected_filename: string;
+  selected_contract_id?: string;
+  selected_cycle?: string;
+  selected_cycle_version?: string;
+  selected_effective_date?: string;
+  selected_expiration_date?: string;
   statuses: NavDbArtifactOpenStatus[];
 };
 

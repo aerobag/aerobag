@@ -60,6 +60,7 @@ declare module "@generated/app_wasm.js" {
   export const prepare_metar_live_feed_resource: (...args: unknown[]) => Uint8Array;
   export const reset_metar_live_feed_preparer: (...args: unknown[]) => void;
   export const report_session_resource_failure_in_session: (...args: unknown[]) => string;
+  export const report_live_feed_connection_event_in_session: (...args: unknown[]) => string;
   export const get_map_overlay_in_session: (...args: unknown[]) => string;
   export const get_map_selection_in_session: (...args: unknown[]) => string;
   export const get_terrain_overlay_in_session: (...args: unknown[]) => string;

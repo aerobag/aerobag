@@ -93,7 +93,7 @@ fn benchmark_now_ms() -> f64 {
 }
 
 static NEXT_NAV_KV_HANDLE: AtomicU32 = AtomicU32::new(1);
-static NAV_KV_STORES: OnceLock<Mutex<HashMap<u32, app_core::NavKvStore>>> = OnceLock::new();
+static NAV_KV_STORES: OnceLock<Mutex<HashMap<u32, StoredNavKvStore>>> = OnceLock::new();
 static NEXT_NAV_DB_OPEN_HANDLE: AtomicU32 = AtomicU32::new(1);
 static NAV_DB_OPEN_CONTROLLERS: OnceLock<Mutex<HashMap<u32, app_core::NavDbOpenController>>> =
     OnceLock::new();
@@ -103,11 +103,16 @@ static SESSION_SNAPSHOT_REFRESH_SCHEDULERS: OnceLock<
     Mutex<HashMap<u32, app_core::SessionSnapshotRefreshScheduler>>,
 > = OnceLock::new();
 
-fn nav_kv_stores() -> &'static Mutex<HashMap<u32, app_core::NavKvStore>> {
+struct StoredNavKvStore {
+    store: app_core::NavKvStore,
+    open_result: Option<app_core::NavDbOpenResult>,
+}
+
+fn nav_kv_stores() -> &'static Mutex<HashMap<u32, StoredNavKvStore>> {
     NAV_KV_STORES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn lock_nav_kv_stores() -> MutexGuard<'static, HashMap<u32, app_core::NavKvStore>> {
+fn lock_nav_kv_stores() -> MutexGuard<'static, HashMap<u32, StoredNavKvStore>> {
     nav_kv_stores()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -207,7 +212,13 @@ pub fn nav_db_open_controller_finish(handle: u32) -> Result<String, JsValue> {
         .ok_or_else(|| JsValue::from_str("nav db open controller has no selected store"))?
         .clone();
     let nav_kv_handle = NEXT_NAV_KV_HANDLE.fetch_add(1, Ordering::Relaxed);
-    lock_nav_kv_stores().insert(nav_kv_handle, store);
+    lock_nav_kv_stores().insert(
+        nav_kv_handle,
+        StoredNavKvStore {
+            store,
+            open_result: Some(open_result.clone()),
+        },
+    );
     serde_json::to_string(&FinishResult {
         nav_kv_handle,
         open_result,
@@ -226,7 +237,7 @@ pub fn nav_kv_prefetch_pages(handle: u32) -> Result<String, JsValue> {
     let store = stores
         .get(&handle)
         .ok_or_else(|| JsValue::from_str(&format!("invalid nav kv handle: {handle}")))?;
-    serde_json::to_string(&store.missing_prefetch_pages())
+    serde_json::to_string(&store.store.missing_prefetch_pages())
         .map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
@@ -260,7 +271,7 @@ fn nav_kv_insert_page(handle: u32, page_index: u32, page_bytes: &[u8]) -> Result
     let store = stores
         .get_mut(&handle)
         .ok_or_else(|| JsValue::from_str(&format!("invalid nav kv handle: {handle}")))?;
-    store.insert_page(page_index, page_bytes.to_vec());
+    store.store.insert_page(page_index, page_bytes.to_vec());
     app_core::insert_nav_kv_page_for_attached_sessions(handle, page_index, page_bytes);
     Ok(())
 }
@@ -1235,7 +1246,7 @@ pub fn core_had_operation(nav_kv_handle: u32, operation_json: &str) -> Result<St
     let store = stores
         .get(&nav_kv_handle)
         .ok_or_else(|| JsValue::from_str(&format!("invalid nav kv handle: {nav_kv_handle}")))?;
-    let outcome = app_core::run_had_operation(store, operation)
+    let outcome = app_core::run_had_operation(&store.store, operation)
         .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }
@@ -1261,8 +1272,12 @@ pub fn ingest_live_feed_sse_event_in_session(
 ) -> Result<String, JsValue> {
     let event: app_core::LiveFeedSseEvent =
         serde_json::from_str(event_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let outcome = app_core::ingest_live_feed_sse_event_in_session(session_handle, &event)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome = app_core::ingest_live_feed_sse_event_in_session_at_epoch_ms(
+        session_handle,
+        &event,
+        now_ms() as i64,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
@@ -1273,9 +1288,29 @@ pub fn ingest_live_feed_sse_events_in_session(
 ) -> Result<String, JsValue> {
     let events: Vec<app_core::LiveFeedSseEvent> =
         serde_json::from_str(events_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let outcome = app_core::ingest_live_feed_sse_events_in_session(session_handle, &events)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome = app_core::ingest_live_feed_sse_events_in_session_at_epoch_ms(
+        session_handle,
+        &events,
+        now_ms() as i64,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn report_live_feed_connection_event_in_session(
+    session_handle: u32,
+    event_json: &str,
+) -> Result<String, JsValue> {
+    let event: app_core::LiveFeedConnectionEvent =
+        serde_json::from_str(event_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let snapshot = app_core::report_live_feed_connection_event_in_session(
+        session_handle,
+        event,
+        now_ms() as i64,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[wasm_bindgen]
@@ -1508,8 +1543,13 @@ pub fn attach_nav_kv_store_to_session(
     let store = stores
         .get(&nav_kv_handle)
         .ok_or_else(|| JsValue::from_str(&format!("invalid nav kv handle: {nav_kv_handle}")))?;
-    app_core::attach_nav_kv_store_to_session(session_handle, nav_kv_handle, store)
-        .map_err(|err| JsValue::from_str(&err.to_string()))
+    app_core::attach_nav_kv_store_to_session_with_open_result(
+        session_handle,
+        nav_kv_handle,
+        &store.store,
+        store.open_result.as_ref(),
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[cfg(debug_assertions)]
@@ -1535,7 +1575,13 @@ pub fn startup_smoke_test() -> Result<(), JsValue> {
         256,
     );
     let nav_kv_handle = NEXT_NAV_KV_HANDLE.fetch_add(1, Ordering::Relaxed);
-    lock_nav_kv_stores().insert(nav_kv_handle, store);
+    lock_nav_kv_stores().insert(
+        nav_kv_handle,
+        StoredNavKvStore {
+            store,
+            open_result: None,
+        },
+    );
     attach_nav_kv_store_to_session(nav_kv_handle, init.handle)?;
     sync_guidance_geometry_in_session(init.handle)?;
     get_session_snapshot(init.handle)?;
@@ -1926,8 +1972,13 @@ pub fn ingest_resource_in_session(
     resource_id: &str,
     resource_bytes: &[u8],
 ) -> Result<(), JsValue> {
-    app_core::ingest_resource_in_session(handle, resource_id, resource_bytes)
-        .map_err(|err| JsValue::from_str(&err.to_string()))
+    app_core::ingest_resource_in_session_at_epoch_ms(
+        handle,
+        resource_id,
+        resource_bytes,
+        now_ms() as i64,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[wasm_bindgen]

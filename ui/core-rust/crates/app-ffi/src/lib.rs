@@ -697,8 +697,13 @@ pub fn ingest_resource_in_session_bytes(
     resource_id: &str,
     resource_bytes: &[u8],
 ) -> Result<String, String> {
-    app_core::ingest_resource_in_session(handle as u32, resource_id, resource_bytes)
-        .map_err(|err| err.to_string())?;
+    app_core::ingest_resource_in_session_at_epoch_ms(
+        handle as u32,
+        resource_id,
+        resource_bytes,
+        now_epoch_ms(),
+    )
+    .map_err(|err| err.to_string())?;
     Ok("null".to_string())
 }
 
@@ -940,7 +945,7 @@ pub fn destroy_session_json(handle: u64) {
 }
 
 static NEXT_NAV_KV_HANDLE: AtomicU32 = AtomicU32::new(1);
-static NAV_KV_STORES: OnceLock<Mutex<HashMap<u32, app_core::NavKvStore>>> = OnceLock::new();
+static NAV_KV_STORES: OnceLock<Mutex<HashMap<u32, StoredNavKvStore>>> = OnceLock::new();
 static NEXT_NAV_DB_OPEN_HANDLE: AtomicU32 = AtomicU32::new(1);
 static NAV_DB_OPEN_CONTROLLERS: OnceLock<Mutex<HashMap<u32, app_core::NavDbOpenController>>> =
     OnceLock::new();
@@ -951,7 +956,12 @@ static OFFLINE_PACKAGES_CONTROLLERS: OnceLock<
 static NEXT_LIVE_FEED_CACHE_HANDLE: AtomicU32 = AtomicU32::new(1);
 static LIVE_FEED_CACHES: OnceLock<Mutex<HashMap<u32, app_core::LiveFeedCache>>> = OnceLock::new();
 
-fn nav_kv_stores() -> &'static Mutex<HashMap<u32, app_core::NavKvStore>> {
+struct StoredNavKvStore {
+    store: app_core::NavKvStore,
+    open_result: Option<app_core::NavDbOpenResult>,
+}
+
+fn nav_kv_stores() -> &'static Mutex<HashMap<u32, StoredNavKvStore>> {
     NAV_KV_STORES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -1219,7 +1229,13 @@ pub fn nav_db_open_controller_finish_json(handle: u64) -> Result<String, String>
     nav_kv_stores()
         .lock()
         .map_err(|_| "nav kv store poisoned".to_string())?
-        .insert(nav_kv_handle, store);
+        .insert(
+            nav_kv_handle,
+            StoredNavKvStore {
+                store,
+                open_result: Some(open_result.clone()),
+            },
+        );
     serde_json::to_string(&FinishResult {
         nav_kv_handle: nav_kv_handle as u64,
         open_result,
@@ -1250,7 +1266,7 @@ fn nav_kv_insert_page_bytes(handle: u64, page_index: u32, page_bytes: &[u8]) -> 
     let store = stores
         .get_mut(&(handle as u32))
         .ok_or_else(|| format!("invalid nav kv handle: {handle}"))?;
-    store.insert_page(page_index, page_bytes.to_vec());
+    store.store.insert_page(page_index, page_bytes.to_vec());
     app_core::insert_nav_kv_page_for_attached_sessions(handle as u32, page_index, page_bytes);
     Ok(())
 }
@@ -1275,8 +1291,13 @@ pub fn attach_nav_kv_store_to_session_json(
     let store = stores
         .get(&(nav_kv_handle as u32))
         .ok_or_else(|| format!("invalid nav kv handle: {nav_kv_handle}"))?;
-    app_core::attach_nav_kv_store_to_session(session_handle as u32, nav_kv_handle as u32, store)
-        .map_err(|err| err.to_string())
+    app_core::attach_nav_kv_store_to_session_with_open_result(
+        session_handle as u32,
+        nav_kv_handle as u32,
+        &store.store,
+        store.open_result.as_ref(),
+    )
+    .map_err(|err| err.to_string())
 }
 
 pub fn nav_kv_destroy_handle(handle: u64) {
@@ -1294,7 +1315,8 @@ pub fn core_had_operation_json(handle: u64, operation_json: &str) -> Result<Stri
     let store = stores
         .get(&(handle as u32))
         .ok_or_else(|| format!("invalid nav kv handle: {handle}"))?;
-    let outcome = app_core::run_had_operation(store, operation).map_err(|err| err.to_string())?;
+    let outcome =
+        app_core::run_had_operation(&store.store, operation).map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 

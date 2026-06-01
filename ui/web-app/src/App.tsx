@@ -74,6 +74,7 @@ import {
   type UiMapLayerState,
   type UiMapLayerToggleState,
   type UiDebugState,
+  type UiDataStatusPageState,
   type UiDataStatusState,
   type UiSession,
   type UiSessionSnapshot,
@@ -500,7 +501,7 @@ function offlineRegionSummaryIcon(action: string): string {
   }
 }
 
-type AppPage = "map" | "plan" | "charts" | "home";
+type AppPage = "map" | "plan" | "charts" | "home" | "data";
 
 type WebPageTilePaintTiming = {
   id: number;
@@ -841,6 +842,7 @@ const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string; ic
   { id: "map", label: "CHART", launcherLabel: "CHART", iconSrc: PAGE_CHART_ICON_SRC },
   { id: "charts", label: "PLATE", launcherLabel: "PLATE", iconSrc: PAGE_PLATE_ICON_SRC },
   { id: "plan", label: "FLIGHT PLAN", launcherLabel: "PLAN", iconSrc: PAGE_PLAN_ICON_SRC },
+  { id: "data", label: "DATA STATUS", launcherLabel: "DATA" },
   { id: "home", label: "HOME", launcherLabel: "HOME" },
 ];
 
@@ -1525,6 +1527,11 @@ export default function App() {
       boxes: [],
       launcher_count: null,
       launcher_severity: "info",
+    },
+    data_status_page_state: {
+      title: "Data status",
+      summary: "Status will appear after core session data loads.",
+      rows: [],
     },
     debug_state: initialDebugState,
     raster_map: null,
@@ -2770,6 +2777,16 @@ export default function App() {
           onSelectPage={navigateToPage}
           onOpenPlan={() => navigateToPage("plan")}
           debugWarningActive={debugWarningActive}
+        />
+      </div>
+
+      <div className={`pageLayer${page === "data" ? " isActive" : ""}`} aria-hidden={page !== "data"}>
+        <DataStatusPage
+          page={page}
+          state={sessionSnapshot.data_status_page_state}
+          mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
+          onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
+          onSelectPage={navigateToPage}
         />
       </div>
     </main>
@@ -8635,8 +8652,9 @@ function HomePage(props: {
     { id: "chart", label: "CHART", page: "map", iconSrc: PAGE_CHART_ICON_SRC },
     { id: "plate", label: "PLATE", page: "charts", iconSrc: PAGE_PLATE_ICON_SRC },
     { id: "flight-plan", label: "FLIGHT\nPLAN", page: "plan" },
+    { id: "data-status", label: "DATA\nSTATUS", page: "data" },
   ];
-  const placeholderLabels = ["S4", "S5", "S6", "S7", "S8", "S9"];
+  const placeholderLabels = ["S5", "S6", "S7", "S8", "S9"];
 
   return (
     <section className="appPage planPage">
@@ -8677,6 +8695,54 @@ function HomePage(props: {
         onDoubleClick={stopDoubleClick}
         onClick={onOpenPlan}
       />
+    </section>
+  );
+}
+
+function DataStatusPage(props: {
+  page: AppPage;
+  state: UiDataStatusPageState;
+  mostRecentChartOrPlatePage: AppPage;
+  onOpenRecentChartOrPlate: () => void;
+  onSelectPage: (page: AppPage) => void;
+}) {
+  return (
+    <section className="appPage dataStatusPage">
+      <div className="chartDock">
+        <HomeNavButton active={props.page === "home"} onClick={() => props.onSelectPage("home")} />
+        <ChartPlateReturnButton
+          targetPage={props.mostRecentChartOrPlatePage}
+          onClick={props.onOpenRecentChartOrPlate}
+        />
+      </div>
+
+      <div className="dataStatusPagePanel" aria-label={props.state.title}>
+        <header className="dataStatusPageHeader">
+          <h1>{props.state.title}</h1>
+          <p>{props.state.summary}</p>
+        </header>
+        <div className="dataStatusPageRows">
+          {props.state.rows.map((row) => (
+            <article key={row.id} className={`dataStatusPageRow statusSeverity-${row.severity}`}>
+              <div className="dataStatusPageRowHeader">
+                <span className="dataStatusPageRowLabel">{row.label}</span>
+                <span className="dataStatusPageRowValue">{row.value}</span>
+              </div>
+              <div className="dataStatusPageRowDetail">{row.detail}</div>
+              {row.facts.length > 0 ? (
+                <dl className="dataStatusPageFacts">
+                  {row.facts.map((fact) => (
+                    <div key={`${row.id}:${fact.label}`} className="dataStatusPageFact">
+                      <dt>{fact.label}</dt>
+                      <dd>{fact.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : null}
+            </article>
+          ))}
+        </div>
+      </div>
     </section>
   );
 }
@@ -8816,7 +8882,7 @@ function readPersistedWebUiState(): PersistedWebUiState {
     const rawPage = (parsed as { page?: string }).page;
     const page = rawPage === "settings" ? "home" : rawPage;
     return {
-      page: page === "map" || page === "plan" || page === "charts" || page === "home" ? page : undefined,
+      page: page === "map" || page === "plan" || page === "charts" || page === "home" || page === "data" ? page : undefined,
       selectedAirportId: parsed.selectedAirportId,
       selectedChartId: parsed.selectedChartId,
       recentAirportIds: Array.isArray(parsed.recentAirportIds) ? parsed.recentAirportIds.filter((value): value is string => typeof value === "string") : [],

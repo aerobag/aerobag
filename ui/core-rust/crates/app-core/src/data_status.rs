@@ -46,6 +46,30 @@ pub struct UiDataStatusState {
     pub launcher_severity: UiStatusSeverity,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiDataStatusPageFact {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiDataStatusPageRow {
+    pub id: String,
+    pub label: String,
+    pub value: String,
+    pub severity: UiStatusSeverity,
+    pub detail: String,
+    #[serde(default)]
+    pub facts: Vec<UiDataStatusPageFact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiDataStatusPageState {
+    pub title: String,
+    pub summary: String,
+    pub rows: Vec<UiDataStatusPageRow>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataStatusRecord {
     pub id: String,

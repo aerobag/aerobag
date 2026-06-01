@@ -174,6 +174,16 @@ pub struct NavDbArtifactCandidate {
     pub package_id: String,
     pub filename: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiration_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_source: Option<CoreResourceSource>,
 }
 
@@ -190,6 +200,16 @@ pub struct NavDbArtifactOpenStatus {
 pub struct NavDbOpenResult {
     pub selected_package_id: String,
     pub selected_filename: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_contract_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_cycle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_cycle_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_effective_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_expiration_date: Option<String>,
     pub statuses: Vec<NavDbArtifactOpenStatus>,
 }
 
@@ -217,12 +237,8 @@ impl NavDbOpenController {
             match &self.statuses[index] {
                 Some(status) if status.readable => {
                     return Ok(HadOperationOutcome::complete(
-                        serde_json::to_value(NavDbOpenResult {
-                            selected_package_id: candidate.package_id.clone(),
-                            selected_filename: candidate.filename.clone(),
-                            statuses: self.statuses.iter().filter_map(Clone::clone).collect(),
-                        })
-                        .map_err(|err| err.to_string())?,
+                        serde_json::to_value(self.open_result(candidate))
+                            .map_err(|err| err.to_string())?,
                     ));
                 }
                 Some(_) => continue,
@@ -248,16 +264,8 @@ impl NavDbOpenController {
                                     message: None,
                                 });
                                 return Ok(HadOperationOutcome::complete(
-                                    serde_json::to_value(NavDbOpenResult {
-                                        selected_package_id: candidate.package_id.clone(),
-                                        selected_filename: candidate.filename.clone(),
-                                        statuses: self
-                                            .statuses
-                                            .iter()
-                                            .filter_map(Clone::clone)
-                                            .collect(),
-                                    })
-                                    .map_err(|err| err.to_string())?,
+                                    serde_json::to_value(self.open_result(candidate))
+                                        .map_err(|err| err.to_string())?,
                                 ));
                             }
                             NavDbContractValidation::NeedPages(pages) => {
@@ -347,6 +355,19 @@ impl NavDbOpenController {
 
     pub fn statuses(&self) -> Vec<NavDbArtifactOpenStatus> {
         self.statuses.iter().filter_map(Clone::clone).collect()
+    }
+
+    fn open_result(&self, candidate: &NavDbArtifactCandidate) -> NavDbOpenResult {
+        NavDbOpenResult {
+            selected_package_id: candidate.package_id.clone(),
+            selected_filename: candidate.filename.clone(),
+            selected_contract_id: candidate.contract_id.clone(),
+            selected_cycle: candidate.cycle.clone(),
+            selected_cycle_version: candidate.cycle_version.clone(),
+            selected_effective_date: candidate.effective_date.clone(),
+            selected_expiration_date: candidate.expiration_date.clone(),
+            statuses: self.statuses.iter().filter_map(Clone::clone).collect(),
+        }
     }
 }
 
@@ -3552,11 +3573,21 @@ mod tests {
             NavDbArtifactCandidate {
                 package_id: "NAV_DB_BAD".to_string(),
                 filename: "nav_db_bad.zip".to_string(),
+                contract_id: None,
+                cycle: None,
+                cycle_version: None,
+                effective_date: None,
+                expiration_date: None,
                 root_source: None,
             },
             NavDbArtifactCandidate {
                 package_id: "NAV_DB_GOOD".to_string(),
                 filename: "nav_db_good.zip".to_string(),
+                contract_id: None,
+                cycle: None,
+                cycle_version: None,
+                effective_date: None,
+                expiration_date: None,
                 root_source: Some(CoreResourceSource::PublicUrl {
                     url: "https://example.test/nav_db/root".to_string(),
                 }),
@@ -3649,6 +3680,11 @@ mod tests {
         let mut controller = NavDbOpenController::new(vec![NavDbArtifactCandidate {
             package_id: "NAV_DB_GOOD".to_string(),
             filename: "nav_db_good.zip".to_string(),
+            contract_id: None,
+            cycle: None,
+            cycle_version: None,
+            effective_date: None,
+            expiration_date: None,
             root_source: Some(CoreResourceSource::PublicUrl {
                 url: "https://example.test/nav_db/root".to_string(),
             }),
@@ -3701,6 +3737,11 @@ mod tests {
         let mut controller = NavDbOpenController::new(vec![NavDbArtifactCandidate {
             package_id: "NAV_DB_OLD".to_string(),
             filename: "nav_db_old.zip".to_string(),
+            contract_id: None,
+            cycle: None,
+            cycle_version: None,
+            effective_date: None,
+            expiration_date: None,
             root_source: None,
         }]);
         controller

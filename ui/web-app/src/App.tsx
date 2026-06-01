@@ -86,6 +86,7 @@ import {
   dragViewport,
   latLonToWorld,
   preserveViewportForMap,
+  sameMapViewport,
   scaleForZoom,
   screenToWorld,
   viewportCenterLatLon,
@@ -95,6 +96,7 @@ import {
   type MapViewportState,
   type ScreenPoint,
 } from "./domain/mapViewport";
+import { MapFollowTargetGate } from "./domain/mapFollowTargetGate";
 import {
   clampImageViewport,
   clampImageZoom,
@@ -2977,6 +2979,7 @@ function MapPage(props: {
   const viewportGestureUntilRef = useRef(0);
   const followSyncSerialRef = useRef(0);
   const deferredFollowSyncViewportRef = useRef<MapViewportState | null>(null);
+  const followTargetGateRef = useRef(new MapFollowTargetGate());
   const [followSyncPendingSerial, setFollowSyncPendingSerial] = useState(0);
   const [followTargetRetryToken, setFollowTargetRetryToken] = useState(0);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -4385,6 +4388,7 @@ function MapPage(props: {
     deferredFollowSyncViewportRef.current = null;
     const serial = followSyncSerialRef.current + 1;
     followSyncSerialRef.current = serial;
+    followTargetGateRef.current.beginSync(nextViewport);
     setFollowSyncPendingSerial(serial);
     debugLog("map.follow.sync.request", {
       serial,
@@ -4400,6 +4404,13 @@ function MapPage(props: {
           debugLog("map.follow.sync.stale_response", { serial, latest_serial: followSyncSerialRef.current });
           return;
         }
+        const syncedTarget = nextSnapshot.map_follow_target_viewport
+          ? mapViewportFromCore(nextSnapshot.map_follow_target_viewport)
+          : null;
+        followTargetGateRef.current.acknowledgeSyncSnapshot({
+          following: nextSnapshot.map_follow_ui_state.following,
+          targetViewport: syncedTarget,
+        });
         props.onPlaybackSnapshotChange(nextSnapshot);
       })
       .catch(() => {})
@@ -4556,6 +4567,7 @@ function MapPage(props: {
 
   useEffect(() => {
     if (!mapFollowUiState.following || !mapFollowTargetViewport) {
+      followTargetGateRef.current.clear();
       return;
     }
     const remainingGestureMs = viewportGestureUntilRef.current - Date.now();
@@ -4576,6 +4588,18 @@ function MapPage(props: {
       return;
     }
     const nextViewport = mapViewportFromCore(mapFollowTargetViewport);
+    const awaitedViewport = followTargetGateRef.current.awaitedViewport();
+    if (!followTargetGateRef.current.shouldApplyTarget(nextViewport)) {
+      debugLog("map.follow.target.skip_stale_sync_target", {
+        target_zoom: nextViewport.zoom,
+        target_center_world_x: nextViewport.centerWorldX,
+        target_center_world_y: nextViewport.centerWorldY,
+        awaited_zoom: awaitedViewport?.zoom,
+        awaited_center_world_x: awaitedViewport?.centerWorldX,
+        awaited_center_world_y: awaitedViewport?.centerWorldY,
+      });
+      return;
+    }
     if (!sameMapViewport(nextViewport, viewport)) {
       debugLog("map.follow.target.apply", {
         zoom: nextViewport.zoom,
@@ -9388,14 +9412,6 @@ function mapViewportFromCore(viewport: {
     centerWorldY: centerWorld.y,
     zoom: viewport.zoom,
   } satisfies MapViewportState;
-}
-
-function sameMapViewport(left: MapViewportState, right: MapViewportState) {
-  return (
-    Math.abs(left.centerWorldX - right.centerWorldX) < 1e-9 &&
-    Math.abs(left.centerWorldY - right.centerWorldY) < 1e-9 &&
-    Math.abs(left.zoom - right.zoom) < 1e-9
-  );
 }
 
 function projectAhead(lat: number, lon: number, bearingDeg: number, distanceNm: number) {

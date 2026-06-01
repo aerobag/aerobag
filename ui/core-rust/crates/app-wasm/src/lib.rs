@@ -22,13 +22,6 @@ extern "C" {
     fn performance_now() -> f64;
 }
 
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_namespace = Date, js_name = now)]
-    fn date_now() -> f64;
-}
-
 #[derive(Serialize)]
 struct ProfileTiming {
     label: &'static str,
@@ -67,15 +60,11 @@ impl Profiler {
 fn now_ms() -> f64 {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_secs_f64() * 1000.0)
-            .unwrap_or(0.0)
+        benchmark_now_ms()
     }
     #[cfg(target_arch = "wasm32")]
     {
-        date_now()
+        performance_now()
     }
 }
 
@@ -1560,7 +1549,7 @@ pub fn startup_smoke_test() -> Result<(), JsValue> {
         &[],
         None,
         None,
-        now_ms() as i64,
+        0,
     )
     .map_err(|err| JsValue::from_str(&err.to_string()))?;
     let store = app_core::nav_kv_store_for_smoke_test(
@@ -1640,12 +1629,14 @@ pub fn create_ui_session(
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
     selected_chart_id_json: &str,
+    now_epoch_ms: f64,
 ) -> Result<String, JsValue> {
     create_ui_session_json(
         plan_json,
         recent_airport_ids_json,
         selected_airport_id_json,
         selected_chart_id_json,
+        now_epoch_ms,
     )
     .map_err(|err| JsValue::from_str(&err))
 }
@@ -1656,12 +1647,14 @@ pub fn create_ui_session_profiled(
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
     selected_chart_id_json: &str,
+    now_epoch_ms: f64,
 ) -> Result<String, JsValue> {
     create_ui_session_profiled_json(
         plan_json,
         recent_airport_ids_json,
         selected_airport_id_json,
         selected_chart_id_json,
+        now_epoch_ms,
     )
     .map_err(|err| JsValue::from_str(&err))
 }
@@ -2262,6 +2255,7 @@ fn create_ui_session_json(
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
     selected_chart_id_json: &str,
+    now_epoch_ms: f64,
 ) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
@@ -2276,7 +2270,7 @@ fn create_ui_session_json(
         &recent_airport_ids,
         selected_airport_id.as_deref(),
         selected_chart_id.as_deref(),
-        now_ms() as i64,
+        now_epoch_ms as i64,
     )
     .map_err(|err| err.to_string())?;
     serde_json::to_string(&result).map_err(|err| err.to_string())
@@ -2287,6 +2281,7 @@ fn create_ui_session_profiled_json(
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
     selected_chart_id_json: &str,
+    now_epoch_ms: f64,
 ) -> Result<String, String> {
     let mut profiler = Profiler::new();
     let plan: app_core::FlightPlan =
@@ -2305,7 +2300,7 @@ fn create_ui_session_profiled_json(
         &recent_airport_ids,
         selected_airport_id.as_deref(),
         selected_chart_id.as_deref(),
-        now_ms() as i64,
+        now_epoch_ms as i64,
         &mut |label| profiler.mark(label),
     )
     .map_err(|err| err.to_string())?;

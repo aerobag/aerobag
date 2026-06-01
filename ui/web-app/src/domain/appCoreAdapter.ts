@@ -705,8 +705,8 @@ type WasmModule = {
   resolve_package_member_in_session(handle: number, packageId: string, memberPath: string): Promise<string> | string;
   situation_ring_candidates_json(): Promise<string> | string;
   empty_flight_plan_json(): Promise<string> | string;
-  create_ui_session(planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
-  create_ui_session_profiled?: (planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
+  create_ui_session(planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string, nowEpochMs: number): Promise<string> | string;
+  create_ui_session_profiled?: (planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string, nowEpochMs: number) => Promise<string> | string;
   set_resource_policy_in_session(handle: number, policyJson: string): Promise<string> | string;
   set_situation_in_session_paged(handle: number, situationJson: string): Promise<string> | string;
   tick_debug_ownship_driver_in_session_paged(handle: number, nowEpochMs: number): Promise<string> | string;
@@ -881,11 +881,13 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       const selectedAirportIdJson = JSON.stringify(nextSelectedAirportId ?? null);
       const selectedChartIdJson = JSON.stringify(nextSelectedChartId ?? null);
       const createUiSession = module.create_ui_session_profiled ?? module.create_ui_session;
+      const nowEpochMs = Date.now();
       const createdJson = await debugTiming("startup.session.wasm_call", () => createUiSession(
         planJson,
         recentAirportIdsJson,
         selectedAirportIdJson,
         selectedChartIdJson,
+        nowEpochMs,
       ), { profiled: Boolean(module.create_ui_session_profiled) });
       const createdEnvelope = debugTiming("startup.session.parse_result", () => JSON.parse(createdJson)) as { result?: { handle: number; snapshot: UiSessionSnapshot }; timings?: Array<{ label: string; elapsed_ms: number }>; handle: number; snapshot: UiSessionSnapshot };
       if (createdEnvelope.timings) {
@@ -1806,6 +1808,14 @@ async function loadBestAvailableAdapterUncached(
       available: Object.keys(mod).sort(),
     });
     throw new Error(`generated wasm module is missing required exports: ${missingExports.join(", ")}`);
+  }
+  const createUiSessionExport = mod.create_ui_session;
+  if (typeof createUiSessionExport !== "function" || createUiSessionExport.length < 5) {
+    throw new Error("generated wasm create_ui_session export is missing the explicit now_epoch_ms argument");
+  }
+  const createUiSessionProfiledExport = mod.create_ui_session_profiled;
+  if (createUiSessionProfiledExport && createUiSessionProfiledExport.length < 5) {
+    throw new Error("generated wasm create_ui_session_profiled export is missing the explicit now_epoch_ms argument");
   }
   debugLog("wasm.exports.check.done");
 

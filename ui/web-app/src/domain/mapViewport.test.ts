@@ -4,7 +4,9 @@ import {
   applyPinchGesture,
   createInitialViewport,
   createPinchSnapshot,
+  isStaleMapFollowTargetViewport,
   preserveViewportForMap,
+  sameMapViewport,
   screenToWorld,
   viewportCenterLatLon,
   zoomAroundPoint,
@@ -99,5 +101,28 @@ describe("mapViewport", () => {
     );
 
     expect(capped.zoom).toBe(12.5);
+  });
+
+  it("treats tiny viewport differences as the same viewport", () => {
+    const viewport = createInitialViewport(mapView);
+    const nearlySame = {
+      centerWorldX: viewport.centerWorldX + 1e-10,
+      centerWorldY: viewport.centerWorldY - 1e-10,
+      zoom: viewport.zoom + 1e-10,
+    };
+
+    expect(sameMapViewport(viewport, nearlySame)).toBe(true);
+  });
+
+  it("rejects stale map-follow targets while waiting for a follow-sync acknowledgement", () => {
+    const awaited = createInitialViewport(mapView);
+    const stale = {
+      ...awaited,
+      centerWorldX: awaited.centerWorldX + 0.25,
+    };
+
+    expect(isStaleMapFollowTargetViewport(stale, awaited)).toBe(true);
+    expect(isStaleMapFollowTargetViewport(awaited, awaited)).toBe(false);
+    expect(isStaleMapFollowTargetViewport(stale, null)).toBe(false);
   });
 });

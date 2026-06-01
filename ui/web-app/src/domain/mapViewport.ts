@@ -13,6 +13,7 @@ export type ScreenPoint = {
   y: number;
 };
 
+const VIEWPORT_EPSILON = 1e-9;
 const WORLD_SIZE = 256;
 const MAX_LATITUDE = 85.05112878;
 
@@ -70,6 +71,21 @@ export function dragViewport(
     centerWorldX: viewport.centerWorldX - dx / scale,
     centerWorldY: viewport.centerWorldY - dy / scale,
   };
+}
+
+export function sameMapViewport(left: MapViewportState, right: MapViewportState): boolean {
+  return (
+    Math.abs(left.centerWorldX - right.centerWorldX) < VIEWPORT_EPSILON &&
+    Math.abs(left.centerWorldY - right.centerWorldY) < VIEWPORT_EPSILON &&
+    Math.abs(left.zoom - right.zoom) < VIEWPORT_EPSILON
+  );
+}
+
+export function isStaleMapFollowTargetViewport(
+  targetViewport: MapViewportState,
+  awaitedTargetViewport: MapViewportState | null,
+): boolean {
+  return awaitedTargetViewport !== null && !sameMapViewport(targetViewport, awaitedTargetViewport);
 }
 
 export function screenToWorld(

@@ -74,6 +74,11 @@ WASM_INPUT="$RUST_TARGET_DIR/wasm32-unknown-unknown/$CARGO_OUTPUT_PROFILE/app_wa
   --out-dir "$STAGE_DIR" \
   --out-name app_wasm
 
+if grep -q 'Date\.now' "$STAGE_DIR/app_wasm.js"; then
+  echo "generated app_wasm.js imports Date.now; pass wall-clock time explicitly through appCoreAdapter instead" >&2
+  exit 1
+fi
+
 if [ "$RUN_WASM_OPT" != "0" ]; then
   if [ -n "${AEROBAG_WASM_OPT_BIN:-}" ]; then
     read -r -a WASM_OPT_CMD <<< "$AEROBAG_WASM_OPT_BIN"

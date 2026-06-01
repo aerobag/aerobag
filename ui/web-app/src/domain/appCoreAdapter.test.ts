@@ -71,7 +71,9 @@ describe("loadBestAvailableAdapter", () => {
     const loaded = await loadBestAvailableAdapter(async () => ({
       situation_ring_candidates_json: () => "[]",
       empty_flight_plan_json: () => JSON.stringify({ id: "plan-empty", name: "Flight Plan", legs: [], route_components: [], route_component_uids: [], route_component_uid_counter: 0, resolved_legs: [], guidance: null, departure: null, destination: null, alternate: null, cruise_altitude_ft: null, notes: null, updated_at_epoch_ms: 0, version: 1 }),
-      create_ui_session: async () => JSON.stringify({ handle: 1, snapshot: JSON.parse(snapshotJson) }),
+      create_ui_session: async (_planJson: string, _recentAirportIdsJson: string, _selectedAirportIdJson: string, _selectedChartIdJson: string, _nowEpochMs: number) => {
+        return JSON.stringify({ handle: 1, snapshot: JSON.parse(snapshotJson) });
+      },
       perform_map_selection_action_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       set_situation_in_session: async () => snapshotJson,
       set_situation_in_session_paged: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
@@ -124,6 +126,13 @@ describe("loadBestAvailableAdapter", () => {
       get_raster_tile_plan_in_session_with_display_scale: async () => "{\"background_color\":\"#000000\",\"layers\":[]}",
       render_terrain_overlay_tile_by_key_in_session: async () => new Uint8Array(),
       get_session_snapshot: async () => snapshotJson,
+      create_session_snapshot_refresh_scheduler: async () => 1,
+      destroy_session_snapshot_refresh_scheduler: async () => {},
+      session_snapshot_refresh_scheduler_request: async () => JSON.stringify({ kind: "idle" }),
+      session_snapshot_refresh_scheduler_viewport_gesture_active_changed: async () => JSON.stringify({ kind: "idle" }),
+      session_snapshot_refresh_scheduler_viewport_activity: async () => JSON.stringify({ kind: "idle" }),
+      session_snapshot_refresh_scheduler_refresh_completed: async () => JSON.stringify({ kind: "idle" }),
+      session_snapshot_refresh_scheduler_poll: async () => JSON.stringify({ kind: "idle" }),
       restore_chart_page_state_in_session: async () => snapshotJson,
       destroy_session: () => {},
       install_rust_debug_logger: () => {},

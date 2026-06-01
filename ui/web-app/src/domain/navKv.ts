@@ -391,8 +391,9 @@ export class NavKvStore {
           page: pageIndex,
           byte_length: buffer.byteLength,
         });
-        logNavKvPageFetchDetail(pageIndex, requestUrl, startedAt, headersAt, performance.now(), bytes.byteLength);
-        await this.insertNavKvPage(resourceId, pageIndex, bytes, priority);
+        const decodedBytes = await decodeNavDbPageResourceBytes(resourceId, bytes, "nav_kv.page.gzip_decode");
+        logNavKvPageFetchDetail(pageIndex, requestUrl, startedAt, headersAt, performance.now(), decodedBytes.byteLength);
+        await this.insertNavKvPage(resourceId, pageIndex, decodedBytes, priority);
       });
     this.inFlightPageFetches.set(pageIndex, fetched);
     return fetched;
@@ -574,9 +575,11 @@ async function fetchAndIngestResource(
     id: resource.id,
     byte_length: buffer.byteLength,
   });
-  await debugTiming(`${timingLabel}.ingest`, () => ingestResource(resource.id, bytes), {
+  const decodedBytes = await decodeNavDbPageResourceBytes(resource.id, bytes, `${timingLabel}.gzip_decode`);
+  await debugTiming(`${timingLabel}.ingest`, () => ingestResource(resource.id, decodedBytes), {
     id: resource.id,
-    byte_length: bytes.byteLength,
+    byte_length: decodedBytes.byteLength,
+    encoded_byte_length: bytes.byteLength,
   });
 }
 
@@ -606,6 +609,40 @@ function withNavKvCacheKey(address: string): string {
   }
   const separator = address.includes("?") ? "&" : "?";
   return `${address}${separator}v=${encodeURIComponent(address)}`;
+}
+
+async function decodeNavDbPageResourceBytes(
+  resourceId: string,
+  bytes: Uint8Array,
+  timingLabel: string,
+): Promise<Uint8Array> {
+  if (!isCompressedNavDbPageResourceId(resourceId)) {
+    return bytes;
+  }
+  // NAV5 publishes unpacked nav-db pages as gzip bytes. This is deliberately
+  // platform-side for now; delete this hook if page decompression moves into core.
+  return debugTiming(timingLabel, () => decompressGzip(bytes), {
+    id: resourceId,
+    encoded_byte_length: bytes.byteLength,
+  });
+}
+
+function isCompressedNavDbPageResourceId(resourceId: string): boolean {
+  return /^nav_kv\/page\/\d{4}$/.test(resourceId)
+    || /^nav_db\/artifact\/\d+\/page\/\d{4}$/.test(resourceId);
+}
+
+async function decompressGzip(bytes: Uint8Array): Promise<Uint8Array> {
+  if (typeof DecompressionStream === "undefined") {
+    throw new Error("NAV5 nav-db pages require browser gzip DecompressionStream support");
+  }
+  const compressed = new Response(bytes.slice().buffer as ArrayBuffer).body;
+  if (!compressed) {
+    throw new Error("failed to create gzip input stream for nav-db page");
+  }
+  const decompressed = compressed.pipeThrough(new DecompressionStream("gzip"));
+  const buffer = await new Response(decompressed).arrayBuffer();
+  return new Uint8Array(buffer);
 }
 
 function logNavKvPageFetchDetail(

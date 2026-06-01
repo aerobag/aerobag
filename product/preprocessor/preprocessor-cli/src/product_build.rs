@@ -14,6 +14,7 @@ use std::{
 use anyhow::{bail, Context};
 use chrono::{DateTime, Datelike, NaiveDate, SecondsFormat, Utc};
 use crossbeam_channel::{self, RecvTimeoutError};
+use flate2::{Compression, GzBuilder};
 use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use had_key::{component as had_key_component, upper_component as had_upper_key_component};
 use preprocessor_charts::{
@@ -69,6 +70,7 @@ mod source_fingerprints;
 
 const PACKAGE_CYCLE_VERSION: &str = "01";
 const NAV_DB_STARTUP_PREFETCH_MEMBERS_METADATA_KEY: &str = "startup_prefetch_members";
+const NAV_DB_UNPACKED_PAGE_ENCODING_MARKER: &str = "nav-db-page-gzip-v1";
 const WAYPOINT_PREFIX_MAX_RESULTS: usize = 100;
 // Offline chart region polygons are only visual guides in the package picker.
 // Grow chart cutlines coarsely before unioning to collapse tiny source-boundary
@@ -1165,19 +1167,58 @@ fn sync_unpacked_zip_from_source(
     published_filename: &str,
     known_sha256: Option<&str>,
 ) -> anyhow::Result<(bool, PathBuf)> {
+    sync_unpacked_zip_from_source_with_marker(
+        zip_path,
+        source_root,
+        unpacked_root,
+        published_filename,
+        known_sha256,
+        None,
+        hardlink_zip_members_from_source_root,
+    )
+}
+
+fn sync_nav_db_unpacked_zip_from_source(
+    zip_path: &Path,
+    source_root: &Path,
+    unpacked_root: &Path,
+    published_filename: &str,
+    known_sha256: Option<&str>,
+) -> anyhow::Result<(bool, PathBuf)> {
+    sync_unpacked_zip_from_source_with_marker(
+        zip_path,
+        source_root,
+        unpacked_root,
+        published_filename,
+        known_sha256,
+        Some(NAV_DB_UNPACKED_PAGE_ENCODING_MARKER),
+        hardlink_nav_db_zip_members_from_source_root,
+    )
+}
+
+fn sync_unpacked_zip_from_source_with_marker(
+    zip_path: &Path,
+    source_root: &Path,
+    unpacked_root: &Path,
+    published_filename: &str,
+    known_sha256: Option<&str>,
+    marker_suffix: Option<&str>,
+    sync_members: fn(&Path, &Path, &Path) -> anyhow::Result<()>,
+) -> anyhow::Result<(bool, PathBuf)> {
     let unpack_dir = unpacked_target_dir(unpacked_root, published_filename)?;
     let marker_path = unpacked_marker_path(unpacked_root, published_filename)?;
     let zip_sha256 = match known_sha256 {
         Some(value) => value.to_string(),
         None => hash_file(zip_path)?,
     };
+    let marker_value = unpacked_marker_value(&zip_sha256, marker_suffix);
     if unpack_dir.is_dir()
         && unpacked_dir_has_files(&unpack_dir)?
         && fs::read_to_string(&marker_path)
             .ok()
             .as_deref()
             .map(str::trim)
-            == Some(zip_sha256.as_str())
+            == Some(marker_value.as_str())
     {
         return Ok((true, unpack_dir));
     }
@@ -1187,10 +1228,17 @@ fn sync_unpacked_zip_from_source(
     }
     fs::create_dir_all(&unpack_dir)
         .with_context(|| format!("failed to create {}", unpack_dir.display()))?;
-    hardlink_zip_members_from_source_root(zip_path, source_root, &unpack_dir)?;
-    fs::write(&marker_path, format!("{zip_sha256}\n"))
+    sync_members(zip_path, source_root, &unpack_dir)?;
+    fs::write(&marker_path, format!("{marker_value}\n"))
         .with_context(|| format!("failed to write {}", marker_path.display()))?;
     Ok((false, unpack_dir))
+}
+
+fn unpacked_marker_value(zip_sha256: &str, marker_suffix: Option<&str>) -> String {
+    match marker_suffix {
+        Some(suffix) => format!("{zip_sha256} {suffix}"),
+        None => zip_sha256.to_string(),
+    }
 }
 
 fn sync_unpacked_dir_from_existing(
@@ -1271,6 +1319,47 @@ fn hardlink_zip_members_from_source_root(
     source_root: &Path,
     output_dir: &Path,
 ) -> anyhow::Result<()> {
+    sync_zip_members_from_source_root(zip_path, source_root, output_dir, |source, target| {
+        fs::hard_link(source, target).with_context(|| {
+            format!(
+                "failed to hardlink {} to {}",
+                source.display(),
+                target.display()
+            )
+        })
+    })
+}
+
+fn hardlink_nav_db_zip_members_from_source_root(
+    zip_path: &Path,
+    source_root: &Path,
+    output_dir: &Path,
+) -> anyhow::Result<()> {
+    sync_zip_members_from_source_root(zip_path, source_root, output_dir, |source, target| {
+        if source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("page_"))
+        {
+            write_gzip_file_deterministic(source, target)
+        } else {
+            fs::hard_link(source, target).with_context(|| {
+                format!(
+                    "failed to hardlink {} to {}",
+                    source.display(),
+                    target.display()
+                )
+            })
+        }
+    })
+}
+
+fn sync_zip_members_from_source_root(
+    zip_path: &Path,
+    source_root: &Path,
+    output_dir: &Path,
+    sync_file: impl Fn(&Path, &Path) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     let file =
         File::open(zip_path).with_context(|| format!("failed to open {}", zip_path.display()))?;
     let mut archive = ZipArchive::new(file)
@@ -1302,15 +1391,23 @@ fn hardlink_zip_members_from_source_root(
                 source_root.display()
             );
         }
-        fs::hard_link(&source, &outpath).with_context(|| {
-            format!(
-                "failed to hardlink {} to {}",
-                source.display(),
-                outpath.display()
-            )
-        })?;
+        sync_file(&source, &outpath)?;
     }
     Ok(())
+}
+
+fn write_gzip_file_deterministic(source: &Path, target: &Path) -> anyhow::Result<()> {
+    let raw = fs::read(source).with_context(|| format!("failed to read {}", source.display()))?;
+    let mut encoder = GzBuilder::new()
+        .mtime(0)
+        .write(Vec::new(), Compression::best());
+    encoder
+        .write_all(&raw)
+        .with_context(|| format!("failed to gzip {}", source.display()))?;
+    let compressed = encoder
+        .finish()
+        .with_context(|| format!("failed to finish gzip {}", source.display()))?;
+    fs::write(target, compressed).with_context(|| format!("failed to write {}", target.display()))
 }
 
 fn prepare_package_unpack_source_root(
@@ -1462,7 +1559,7 @@ fn sync_cycle_bundle_unpacked_zips(
                 .join("nav-kv")
                 .join(config.profile.as_str())
                 .join(cycle);
-            sync_unpacked_zip_from_source(
+            sync_nav_db_unpacked_zip_from_source(
                 &config.build_root.join(&package.filename),
                 &source_dir,
                 unpacked_root,
@@ -2067,11 +2164,6 @@ mod tests {
     };
     use product_contracts::{CSUP_CONTRACT_ID, ENR_L_CONTRACT_ID, SEC_CONTRACT_ID};
     use tempfile::tempdir;
-
-    #[test]
-    fn nav_db_contract_tracks_navkv_storage_format() {
-        assert_eq!(NAV_DB_CONTRACT_ID, format!("NAV{NAV_KV_STORAGE_FORMAT}"));
-    }
 
     fn write_source_urls(root: &Path, relative: &str, lines: &[&str]) {
         let path = root.join(relative);
@@ -2966,12 +3058,12 @@ mod tests {
                 ),
             },
             BundlePackageArtifact {
-                id: "NAV_DB_NAV4_2604_01".to_string(),
+                id: format!("NAV_DB_{NAV_DB_CONTRACT_ID}_2604_01"),
                 family_id: "nav-db".to_string(),
                 contract_id: NAV_DB_CONTRACT_ID.to_string(),
                 region_id: None,
-                filename: "nav_db_NAV4_2604_01_cafebabe.zip".to_string(),
-                relative_path: "nav_db_NAV4_2604_01_cafebabe.zip".to_string(),
+                filename: format!("nav_db_{NAV_DB_CONTRACT_ID}_2604_01_cafebabe.zip"),
+                relative_path: format!("nav_db_{NAV_DB_CONTRACT_ID}_2604_01_cafebabe.zip"),
                 cycle: Some("2604".to_string()),
                 cycle_version: Some("01".to_string()),
                 checksum_sha256: "cafebabe".to_string(),
@@ -3006,18 +3098,26 @@ mod tests {
         assert_eq!(index[0]["metadata"]["wide_angle_max_zoom"], 7);
         assert_eq!(index[0]["metadata"]["wide_angle_region_id"], "wide");
         assert_eq!(index[0]["metadata"]["min_source_zoom"], 8);
-        assert_eq!(index[1]["id"], "NAV_DB_NAV4_2604_01");
+        assert_eq!(
+            index[1]["id"],
+            format!("NAV_DB_{NAV_DB_CONTRACT_ID}_2604_01")
+        );
         assert_eq!(index[1]["contract_id"], NAV_DB_CONTRACT_ID);
 
         let sectional = pair_value("package/by-id/NW_SEC_SEC1_2604_01");
         assert_eq!(sectional["contract_id"], SEC_CONTRACT_ID);
         assert_eq!(sectional["metadata"]["wide_angle_max_zoom"], 7);
 
-        let nav_db = pair_value("package/by-id/NAV_DB_NAV4_2604_01");
+        let nav_db = pair_value(&format!(
+            "package/by-id/NAV_DB_{NAV_DB_CONTRACT_ID}_2604_01"
+        ));
         assert_eq!(nav_db["family_id"], "nav-db");
         assert_eq!(nav_db["contract_id"], NAV_DB_CONTRACT_ID);
         assert_eq!(nav_db["region_id"], serde_json::Value::Null);
-        assert_eq!(nav_db["relative_path"], "nav_db_NAV4_2604_01_cafebabe.zip");
+        assert_eq!(
+            nav_db["relative_path"],
+            format!("nav_db_{NAV_DB_CONTRACT_ID}_2604_01_cafebabe.zip")
+        );
         assert_eq!(nav_db["size_bytes"], 456);
         assert_eq!(nav_db["checksum_sha256"], "cafebabe");
         assert_eq!(nav_db["cycle"], "2604");
@@ -3612,12 +3712,12 @@ mod tests {
             start_valid: "2026-04-16".to_string(),
             end_valid: "2026-05-14".to_string(),
             packages: vec![BundlePackageArtifact {
-                id: "NAV_DB_NAV4_2604_01".to_string(),
+                id: format!("NAV_DB_{NAV_DB_CONTRACT_ID}_2604_01"),
                 family_id: "nav-db".to_string(),
                 contract_id: NAV_DB_CONTRACT_ID.to_string(),
                 region_id: None,
-                filename: "nav_db_NAV4_2604_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip".to_string(),
-                relative_path: "nav_db_NAV4_2604_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip".to_string(),
+                filename: format!("nav_db_{NAV_DB_CONTRACT_ID}_2604_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip"),
+                relative_path: format!("nav_db_{NAV_DB_CONTRACT_ID}_2604_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip"),
                 cycle: Some("2604".to_string()),
                 cycle_version: Some("01".to_string()),
                 checksum_sha256: "a".repeat(64),
@@ -3784,6 +3884,36 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn nav_db_unpacked_sync_gzips_pages_but_leaves_root_raw() {
+        let temp = tempdir().unwrap();
+        let source_root = temp.path().join("source");
+        let unpacked_root = temp.path().join("published_unpacked");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&unpacked_root).unwrap();
+        fs::write(source_root.join("root"), b"raw-root").unwrap();
+        fs::write(source_root.join("page_0001"), b"raw-page-one").unwrap();
+        let zip_path = temp.path().join("nav_db_test.zip");
+        zip_directory_deterministic(&zip_path, &source_root, &["root", "page_0001"]).unwrap();
+
+        let (_, unpack_dir) = sync_nav_db_unpacked_zip_from_source(
+            &zip_path,
+            &source_root,
+            &unpacked_root,
+            "nav_db_test.zip",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(unpack_dir.join("root")).unwrap(), b"raw-root");
+        let page = fs::read(unpack_dir.join("page_0001")).unwrap();
+        assert_eq!(&page[..2], &[0x1f, 0x8b]);
+        let mut decoder = flate2::read::GzDecoder::new(page.as_slice());
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded).unwrap();
+        assert_eq!(decoded, b"raw-page-one");
     }
 
     #[test]

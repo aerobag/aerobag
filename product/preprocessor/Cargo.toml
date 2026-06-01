@@ -25,6 +25,7 @@ version = "0.1.0"
 anyhow = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 crossbeam-channel = "0.5"
+flate2 = "1.1"
 geo = "0.29"
 image = { version = "0.25", default-features = false, features = ["png"] }
 metar = { version = "0.9", features = ["serde"] }

@@ -10,6 +10,7 @@ license.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 crossbeam-channel.workspace = true
+flate2.workspace = true
 had-key = { path = "../../../crates/had-key" }
 libc = "0.2"
 preprocessor-charts = { path = "../preprocessor-charts" }

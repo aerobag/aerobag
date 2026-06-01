@@ -317,14 +317,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nav_db_contract_tracks_storage_format() {
-        assert_eq!(
-            REQUIRED_NAV_DB_CONTRACT_ID,
-            format!("NAV{}", had_nav_kv::NAVKV_STORAGE_FORMAT)
-        );
-    }
-
-    #[test]
     fn builds_plate_and_procedure_keys_in_core() {
         assert_eq!(
             nav_kv_key_for_query(&NavKvQuery::NavDbContract),

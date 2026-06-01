@@ -210,6 +210,12 @@
             });
           return past[past.length - 1] || cycles[0] || null;
         }
+        function withNavKvCacheKey(url) {
+          if (url.indexOf("/nav_db_") === -1) {
+            return url;
+          }
+          return url + (url.indexOf("?") === -1 ? "?" : "&") + "v=" + encodeURIComponent(url);
+        }
         state.promise = fetch(new URL("current_artifacts.json", packagesRoot), { cache: "no-cache" })
           .then(function (response) {
             if (!response.ok) {
@@ -235,7 +241,7 @@
             const urls = resources
               .map(function (resource) {
                 return resource && typeof resource.url === "string"
-                  ? new URL(resource.url, packagesRoot).toString()
+                  ? withNavKvCacheKey(new URL(resource.url, packagesRoot).toString())
                   : null;
               })
               .filter(Boolean);

@@ -4,8 +4,10 @@ use std::collections::{BTreeSet, HashMap};
 
 pub const MAGIC: &[u8; 16] = b"AEROBAGNAVKV0001";
 // Low-level binary root/page storage format. This is part of the public nav-db
-// product contract: changing it must also bump product_contracts::NAV_DB_CONTRACT_ID
-// to NAV{NAVKV_STORAGE_FORMAT}, because clients use that token before fetch.
+// product contract: changing it must also bump product_contracts::NAV_DB_CONTRACT_ID,
+// because clients use that token before fetch. The product contract may also
+// change for publication-layer transport changes while this storage format stays
+// fixed.
 pub const NAVKV_STORAGE_FORMAT: u32 = 4;
 pub const VERSION: u32 = NAVKV_STORAGE_FORMAT;
 pub const HEADER_LEN: usize = 64;

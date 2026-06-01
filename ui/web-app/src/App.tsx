@@ -8706,6 +8706,16 @@ function DataStatusPage(props: {
   onOpenRecentChartOrPlate: () => void;
   onSelectPage: (page: AppPage) => void;
 }) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (props.page !== "data") {
+      return;
+    }
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => setNowMs(Date.now()), 10_000);
+    return () => window.clearInterval(timer);
+  }, [props.page]);
+
   return (
     <section className="appPage dataStatusPage">
       <div className="chartDock">
@@ -8734,7 +8744,7 @@ function DataStatusPage(props: {
                   {row.facts.map((fact) => (
                     <div key={`${row.id}:${fact.label}`} className="dataStatusPageFact">
                       <dt>{fact.label}</dt>
-                      <dd>{fact.value}</dd>
+                      <dd>{formatDataStatusFactValue(fact, nowMs)}</dd>
                     </div>
                   ))}
                 </dl>
@@ -8745,6 +8755,57 @@ function DataStatusPage(props: {
       </div>
     </section>
   );
+}
+
+function formatDataStatusFactValue(
+  fact: UiDataStatusPageState["rows"][number]["facts"][number],
+  nowMs: number,
+) {
+  if (!fact.time_utc || !fact.time_display) {
+    return fact.value;
+  }
+  const instantMs = Date.parse(fact.time_utc);
+  if (!Number.isFinite(instantMs)) {
+    return fact.value;
+  }
+  const suffix = dataStatusRelativeTimeSuffix(instantMs, nowMs, fact.time_display);
+  return suffix ? `${fact.value} (${suffix})` : fact.value;
+}
+
+function dataStatusRelativeTimeSuffix(
+  instantMs: number,
+  nowMs: number,
+  display: NonNullable<UiDataStatusPageState["rows"][number]["facts"][number]["time_display"]>,
+) {
+  const deltaMs = instantMs - nowMs;
+  const magnitude = formatDataStatusDuration(Math.abs(deltaMs));
+  if (display === "old") {
+    return `${magnitude} old`;
+  }
+  if (display === "until") {
+    return deltaMs >= 0 ? `in ${magnitude}` : `${magnitude} ago`;
+  }
+  return deltaMs >= 0 ? `in ${magnitude}` : `${magnitude} ago`;
+}
+
+function formatDataStatusDuration(durationMs: number) {
+  const minutes = Math.floor(durationMs / 60_000);
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) {
+    return `${hours}h`;
+  }
+  const days = Math.floor(hours / 24);
+  if (days < 60) {
+    return `${days}d`;
+  }
+  const months = Math.floor(days / 30);
+  if (months < 24) {
+    return `${months}mo`;
+  }
+  return `${Math.floor(days / 365)}y`;
 }
 
 function CommonDebugPanel(props: {

@@ -123,6 +123,8 @@ export type UiDataStatusState = {
 export type UiDataStatusPageFact = {
   label: string;
   value: string;
+  time_utc?: string | null;
+  time_display?: "ago" | "old" | "until" | null;
 };
 
 export type UiDataStatusPageRow = {
@@ -770,6 +772,7 @@ type WasmModule = {
   get_raster_tile_plan_in_session_with_display_scale(handle: number, viewportJson: string, widthPx: number, heightPx: number, devicePixelRatio: number, nowEpochMs: number): Promise<string> | string;
   render_terrain_overlay_tile_by_key_in_session(handle: number, terrainTileKey: string, aircraftAltitudeFt: number): Promise<Uint8Array> | Uint8Array;
   get_session_snapshot(handle: number): Promise<string> | string;
+  get_session_snapshot_at_epoch_ms(handle: number, nowEpochMs: number): Promise<string> | string;
   create_session_snapshot_refresh_scheduler(): Promise<number> | number;
   destroy_session_snapshot_refresh_scheduler(handle: number): Promise<void> | void;
   session_snapshot_refresh_scheduler_request(handle: number, priorityJson: string, reason: string): Promise<string> | string;
@@ -986,7 +989,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       initialSnapshot: () => snapshot,
       snapshot: async () => {
         snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.get_session_snapshot(handle)),
+          parseSessionSnapshot(this.module.get_session_snapshot_at_epoch_ms(handle, Date.now())),
         );
         return snapshot;
       },
@@ -1757,6 +1760,7 @@ async function loadBestAvailableAdapterUncached(
     "get_raster_tile_plan_in_session_with_display_scale",
     "render_terrain_overlay_tile_by_key_in_session",
     "get_session_snapshot",
+    "get_session_snapshot_at_epoch_ms",
     "create_session_snapshot_refresh_scheduler",
     "destroy_session_snapshot_refresh_scheduler",
     "session_snapshot_refresh_scheduler_request",

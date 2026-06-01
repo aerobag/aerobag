@@ -47,9 +47,21 @@ pub struct UiDataStatusState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UiDataStatusPageTimeDisplay {
+    Ago,
+    Old,
+    Until,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiDataStatusPageFact {
     pub label: String,
     pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_utc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_display: Option<UiDataStatusPageTimeDisplay>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

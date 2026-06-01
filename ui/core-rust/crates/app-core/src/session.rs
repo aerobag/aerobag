@@ -7,7 +7,7 @@ use std::{
     },
 };
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -17,8 +17,8 @@ use crate::{
     chart_page::airport_ids_from_plan,
     data_status::{
         parse_status_action_id, project_data_status_state, DataStatusRecord, UiDataStatusPageFact,
-        UiDataStatusPageRow, UiDataStatusPageState, UiDataStatusState, UiStatusActionCommand,
-        UiStatusSeverity,
+        UiDataStatusPageRow, UiDataStatusPageState, UiDataStatusPageTimeDisplay, UiDataStatusState,
+        UiStatusActionCommand, UiStatusSeverity,
     },
     first_guidance_detail_index_for_leg,
     freshness::{
@@ -418,14 +418,19 @@ struct MetarImportantStationsPayload {
     station_ids: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct FreshnessPackageRecord {
+#[derive(Debug, Clone, Deserialize)]
+struct NavDbPackageRecord {
     id: String,
+    family_id: String,
+    #[serde(default)]
+    effective_date: Option<String>,
+    #[serde(default)]
+    expiration_date: Option<String>,
     #[serde(default)]
     ui_warning: Option<PackageUiWarningRecord>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct PackageUiWarningRecord {
     severity: UiStatusSeverity,
     label: String,
@@ -1241,7 +1246,7 @@ fn sync_cycle_product_freshness_status_records_if_needed(
     sync_cycle_product_freshness_status_records(session)
 }
 
-fn package_ui_warning_status_record(package: &FreshnessPackageRecord) -> Option<DataStatusRecord> {
+fn package_ui_warning_status_record(package: &NavDbPackageRecord) -> Option<DataStatusRecord> {
     let warning = package.ui_warning.as_ref()?;
     Some(DataStatusRecord::new(
         format!("{PACKAGE_UI_WARNING_STATUS_PREFIX}{}", package.id),
@@ -1256,35 +1261,28 @@ fn package_ui_warning_status_record(package: &FreshnessPackageRecord) -> Option<
     ))
 }
 
-fn clear_package_ui_warning_status_records(session: &mut UiSession) -> bool {
-    let stale_ids = session
-        .data_status_records
-        .keys()
-        .filter(|id| id.starts_with(PACKAGE_UI_WARNING_STATUS_PREFIX))
-        .cloned()
+fn nav_db_package_records(session: &UiSession) -> Vec<NavDbPackageRecord> {
+    let Some(store) = session.nav_kv_store.as_ref() else {
+        return Vec::new();
+    };
+    let mut records = store
+        .keys_with_prefix("package/by-id/")
+        .into_iter()
+        .filter_map(|key| {
+            let Ok(NavKvLookup::Hit(bytes)) = store.get_bytes(&key) else {
+                return None;
+            };
+            serde_json::from_slice::<NavDbPackageRecord>(&bytes).ok()
+        })
         .collect::<Vec<_>>();
-    let mut changed = false;
-    for id in stale_ids {
-        changed |= session.data_status_records.remove(&id).is_some();
-    }
-    if changed {
-        sync_data_status_projection(session);
-    }
-    changed
+    records.sort_by(|left, right| left.id.cmp(&right.id));
+    records.dedup_by(|left, right| left.id == right.id);
+    records
 }
 
 fn sync_package_ui_warning_status_records(session: &mut UiSession) -> bool {
-    let Some(store) = session.nav_kv_store.as_ref() else {
-        return clear_package_ui_warning_status_records(session);
-    };
     let mut records = Vec::new();
-    for key in store.keys_with_prefix("package/by-id/") {
-        let Ok(NavKvLookup::Hit(bytes)) = store.get_bytes(&key) else {
-            continue;
-        };
-        let Ok(package) = serde_json::from_slice::<FreshnessPackageRecord>(&bytes) else {
-            continue;
-        };
+    for package in nav_db_package_records(session) {
         if let Some(record) = package_ui_warning_status_record(&package) {
             records.push(record);
         }
@@ -1336,7 +1334,36 @@ fn sync_cycle_product_freshness_status_records(session: &mut UiSession) -> Vec<U
 
 fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState {
     let rows = vec![
-        displayed_charts_status_page_row(session),
+        cycle_package_group_status_page_row(
+            session,
+            "cycle:charts",
+            "Charts",
+            "charts",
+            &[
+                ("sec", "Sectional", 10),
+                ("tac", "TAC", 20),
+                ("enr-l", "IFR-L", 30),
+                ("enr-h", "IFR-H", 40),
+            ],
+        ),
+        cycle_package_group_status_page_row(
+            session,
+            "cycle:airport_docs",
+            "Airport docs",
+            "airport docs",
+            &[("tpp", "TPP", 10), ("csup", "CSup", 20)],
+        ),
+        static_package_group_status_page_row(
+            session,
+            "static:base_data",
+            "Static data",
+            &[
+                ("terrain", "Terrain", 10),
+                ("shaded-relief", "Shaded relief", 20),
+                ("world-basemap", "World basemap", 30),
+                ("geo", "Geodesy", 40),
+            ],
+        ),
         nav_db_status_page_row(session),
         publication_status_page_row(session),
         live_feed_connection_status_page_row(session),
@@ -1453,137 +1480,253 @@ fn data_status_page_summary(rows: &[UiDataStatusPageRow]) -> String {
     parts.join(", ")
 }
 
-fn displayed_charts_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
-    let Some(catalog) = session.raster_map_catalog.as_ref() else {
+fn cycle_package_group_status_page_row(
+    session: &UiSession,
+    id: &str,
+    label: &str,
+    noun: &str,
+    families: &[(&'static str, &'static str, u8)],
+) -> UiDataStatusPageRow {
+    let packages = package_group_packages(session, families);
+    if packages.is_empty() {
+        let severity = if session.nav_kv_store.is_none() {
+            UiStatusSeverity::Unavailable
+        } else {
+            UiStatusSeverity::Info
+        };
         return status_page_row(
-            "charts:displayed",
-            "Displayed charts",
+            id,
+            label,
             "MISSING",
-            UiStatusSeverity::Unavailable,
-            "Chart catalog has not loaded.",
-            Vec::new(),
-        );
-    };
-    let catalog = raster_catalog_for_layer_state(catalog, &session.map_layer_state);
-    if catalog.displayed_maps.is_empty() {
-        return status_page_row(
-            "charts:displayed",
-            "Displayed charts",
-            "NONE",
-            UiStatusSeverity::Info,
-            "No chart layers are currently selected.",
+            severity,
+            format!("No {noun} package rows are present in the attached nav-db."),
             Vec::new(),
         );
     }
+
     let now_utc = session_wall_clock_utc(session);
     let mut seen_violations = BTreeSet::new();
     let mut violations = Vec::new();
-    let mut families = BTreeSet::new();
+    let mut family_set = BTreeSet::new();
     let mut earliest_expiration: Option<DateTime<Utc>> = None;
     let mut latest_effective: Option<DateTime<Utc>> = None;
-    for option in &catalog.displayed_maps {
-        let (family_label, family_sort_key) =
-            chart_family_status_label(&option.map_view.chart_family);
-        families.insert((family_sort_key, family_label));
-        collect_chart_status_page_dates(
+    let mut missing_expiration_families = BTreeSet::new();
+
+    for package in &packages {
+        let Some((_, family_label, family_sort_key)) = family_spec_for_package(families, package)
+        else {
+            continue;
+        };
+        family_set.insert((family_sort_key, family_label));
+        collect_chart_validity_violations(
             &mut violations,
             &mut seen_violations,
-            &mut earliest_expiration,
-            &mut latest_effective,
             family_label,
             family_sort_key,
-            option.map_view.package_effective_date.as_deref(),
-            option.map_view.package_expiration_date.as_deref(),
+            package.effective_date.as_deref(),
+            package.expiration_date.as_deref(),
             now_utc,
         );
-        if let Some(wide_angle) = option.map_view.wide_angle.as_ref() {
-            collect_chart_status_page_dates(
-                &mut violations,
-                &mut seen_violations,
-                &mut earliest_expiration,
-                &mut latest_effective,
-                family_label,
-                family_sort_key,
-                wide_angle.package_effective_date.as_deref(),
-                wide_angle.package_expiration_date.as_deref(),
-                now_utc,
+        if let Some(effective_utc) = package
+            .effective_date
+            .as_deref()
+            .and_then(parse_utc_instant)
+        {
+            latest_effective = Some(
+                latest_effective
+                    .map(|current| current.max(effective_utc))
+                    .unwrap_or(effective_utc),
             );
         }
+        if let Some(expiration_utc) = package
+            .expiration_date
+            .as_deref()
+            .and_then(parse_utc_instant)
+        {
+            earliest_expiration = Some(
+                earliest_expiration
+                    .map(|current| current.min(expiration_utc))
+                    .unwrap_or(expiration_utc),
+            );
+        } else {
+            missing_expiration_families.insert((family_sort_key, family_label));
+        }
     }
-    let family_list = status_family_list(families.iter().copied());
+
+    let family_list = status_family_list(family_set.iter().copied());
     if !violations.is_empty() {
         return status_page_row(
-            "charts:displayed",
-            "Displayed charts",
+            id,
+            label,
             chart_validity_value(&violations),
             UiStatusSeverity::Warning,
-            chart_validity_detail(&violations),
-            vec![status_fact("Families", family_list)],
+            package_validity_detail(&family_list, noun, &violations),
+            vec![status_fact("Products", family_list)],
         );
     }
-    let mut facts = vec![status_fact("Families", family_list.clone())];
+
+    let mut facts = vec![
+        status_fact("Products", family_list.clone()),
+        status_fact("Packages", packages.len().to_string()),
+    ];
     if let Some(effective) = latest_effective {
-        facts.push(status_fact("Effective", format_status_utc(effective)));
+        facts.push(status_time_fact(
+            "Effective",
+            effective,
+            UiDataStatusPageTimeDisplay::Ago,
+        ));
     }
     if let Some(expiration) = earliest_expiration {
-        facts.push(status_fact("Expires", format_status_utc(expiration)));
+        facts.push(status_time_fact(
+            "Expires",
+            expiration,
+            UiDataStatusPageTimeDisplay::Until,
+        ));
         return status_page_row(
-            "charts:displayed",
-            "Displayed charts",
+            id,
+            label,
             "OK",
             UiStatusSeverity::Ok,
             format!(
-                "{family_list} charts valid for another {}; earliest expiration {}.",
-                format_age_between(now_utc, expiration),
+                "{family_list} {noun} valid until {}.",
                 format_status_utc(expiration)
             ),
             facts,
         );
     }
+    if !missing_expiration_families.is_empty() {
+        facts.push(status_fact(
+            "Missing dates",
+            status_family_list(missing_expiration_families.iter().copied()),
+        ));
+    }
     status_page_row(
-        "charts:displayed",
-        "Displayed charts",
+        id,
+        label,
         "UNKNOWN",
         UiStatusSeverity::Info,
-        format!("{family_list} chart validity metadata is not available."),
+        format!("{family_list} {noun} validity metadata is not available."),
         facts,
     )
 }
 
-fn collect_chart_status_page_dates(
-    violations: &mut Vec<ChartValidityViolation>,
-    seen_violations: &mut BTreeSet<(u8, ChartValidityViolationKind)>,
-    earliest_expiration: &mut Option<DateTime<Utc>>,
-    latest_effective: &mut Option<DateTime<Utc>>,
-    family_label: &'static str,
-    family_sort_key: u8,
-    effective_date: Option<&str>,
-    expiration_date: Option<&str>,
-    now_utc: DateTime<Utc>,
-) {
-    collect_chart_validity_violations(
-        violations,
-        seen_violations,
-        family_label,
-        family_sort_key,
-        effective_date,
-        expiration_date,
-        now_utc,
-    );
-    if let Some(effective_utc) = effective_date.and_then(parse_utc_instant) {
-        *latest_effective = Some(
-            latest_effective
-                .map(|current| current.max(effective_utc))
-                .unwrap_or(effective_utc),
+fn static_package_group_status_page_row(
+    session: &UiSession,
+    id: &str,
+    label: &str,
+    families: &[(&'static str, &'static str, u8)],
+) -> UiDataStatusPageRow {
+    let packages = package_group_packages(session, families);
+    if packages.is_empty() {
+        let severity = if session.nav_kv_store.is_none() {
+            UiStatusSeverity::Unavailable
+        } else {
+            UiStatusSeverity::Info
+        };
+        return status_page_row(
+            id,
+            label,
+            "MISSING",
+            severity,
+            "No static package rows are present in the attached nav-db.",
+            Vec::new(),
         );
     }
-    if let Some(expiration_utc) = expiration_date.and_then(parse_utc_instant) {
-        *earliest_expiration = Some(
-            earliest_expiration
-                .map(|current| current.min(expiration_utc))
-                .unwrap_or(expiration_utc),
+
+    let now_utc = session_wall_clock_utc(session);
+    let mut newest_by_family: BTreeMap<u8, (&'static str, DateTime<Utc>)> = BTreeMap::new();
+    let mut family_set = BTreeSet::new();
+    for package in &packages {
+        let Some((_, family_label, family_sort_key)) = family_spec_for_package(families, package)
+        else {
+            continue;
+        };
+        family_set.insert((family_sort_key, family_label));
+        if let Some(effective_utc) = package
+            .effective_date
+            .as_deref()
+            .and_then(parse_utc_instant)
+        {
+            newest_by_family
+                .entry(family_sort_key)
+                .and_modify(|(_, current)| *current = (*current).max(effective_utc))
+                .or_insert((family_label, effective_utc));
+        }
+    }
+
+    let family_list = status_family_list(family_set.iter().copied());
+    let mut facts = vec![
+        status_fact("Products", family_list.clone()),
+        status_fact("Packages", packages.len().to_string()),
+    ];
+    for (_, (family_label, effective_utc)) in &newest_by_family {
+        facts.push(status_time_fact(
+            *family_label,
+            *effective_utc,
+            UiDataStatusPageTimeDisplay::Old,
+        ));
+    }
+    if newest_by_family.is_empty() {
+        return status_page_row(
+            id,
+            label,
+            "LOADED",
+            UiStatusSeverity::Info,
+            format!("{family_list} packages are loaded, but source age metadata is not available."),
+            facts,
         );
     }
+    let oldest = newest_by_family
+        .values()
+        .map(|(_, effective)| *effective)
+        .min()
+        .unwrap_or(now_utc);
+    status_page_row(
+        id,
+        label,
+        "OK",
+        UiStatusSeverity::Ok,
+        format!(
+            "{family_list} source data dates back to {}.",
+            format_status_utc(oldest)
+        ),
+        facts,
+    )
+}
+
+fn package_group_packages(
+    session: &UiSession,
+    families: &[(&'static str, &'static str, u8)],
+) -> Vec<NavDbPackageRecord> {
+    let family_ids = families
+        .iter()
+        .map(|(family_id, _, _)| *family_id)
+        .collect::<BTreeSet<_>>();
+    nav_db_package_records(session)
+        .into_iter()
+        .filter(|package| family_ids.contains(package.family_id.as_str()))
+        .collect()
+}
+
+fn family_spec_for_package<'a>(
+    families: &'a [(&'static str, &'static str, u8)],
+    package: &NavDbPackageRecord,
+) -> Option<(&'static str, &'static str, u8)> {
+    families
+        .iter()
+        .find(|(family_id, _, _)| *family_id == package.family_id.as_str())
+        .copied()
+}
+
+fn package_validity_detail(
+    family_list: &str,
+    noun: &str,
+    violations: &[ChartValidityViolation],
+) -> String {
+    format!(
+        "{family_list} {noun} {}.",
+        chart_validity_condition(violations)
+    )
 }
 
 fn nav_db_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
@@ -1632,10 +1775,18 @@ fn nav_db_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
         facts.push(status_fact("Contract", contract_id));
     }
     if let Some(effective) = latest_effective {
-        facts.push(status_fact("Effective", format_status_utc(effective)));
+        facts.push(status_time_fact(
+            "Effective",
+            effective,
+            UiDataStatusPageTimeDisplay::Ago,
+        ));
     }
     if let Some(expiration) = earliest_expiration {
-        facts.push(status_fact("Expires", format_status_utc(expiration)));
+        facts.push(status_time_fact(
+            "Expires",
+            expiration,
+            UiDataStatusPageTimeDisplay::Until,
+        ));
     }
     if expired || not_yet_effective {
         let value = match (expired, not_yet_effective) {
@@ -1668,11 +1819,7 @@ fn nav_db_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
             "NAV DB",
             "OK",
             UiStatusSeverity::Ok,
-            format!(
-                "NAV DB valid for another {}; earliest expiration {}.",
-                format_age_between(now_utc, expiration),
-                format_status_utc(expiration)
-            ),
+            format!("NAV DB valid until {}.", format_status_utc(expiration)),
             facts,
         );
     }
@@ -1697,7 +1844,6 @@ fn publication_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
             Vec::new(),
         );
     };
-    let now_utc = session_wall_clock_utc(session);
     let mut facts = Vec::new();
     facts.push(status_fact(
         "Bundles",
@@ -1710,20 +1856,32 @@ fn publication_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
             .loaded_bundle_manifest_count()
             .to_string(),
     ));
-    if let Some(as_of) = current_artifacts.as_of_utc.as_deref() {
-        facts.push(status_fact("Published", as_of.to_string()));
+    if let Some(as_of) = current_artifacts
+        .as_of_utc
+        .as_deref()
+        .and_then(parse_utc_instant)
+    {
+        facts.push(status_time_fact(
+            "Published",
+            as_of,
+            UiDataStatusPageTimeDisplay::Ago,
+        ));
     }
     if let Some(checked_at) = session.current_artifacts_checked_epoch_ms {
         let checked_utc = utc_from_epoch_ms(checked_at);
-        facts.push(status_fact("Checked", format_status_utc(checked_utc)));
+        facts.push(status_time_fact(
+            "Checked",
+            checked_utc,
+            UiDataStatusPageTimeDisplay::Ago,
+        ));
         return status_page_row(
             "publication:current_artifacts",
             "Package library",
             "OK",
             UiStatusSeverity::Ok,
             format!(
-                "current_artifacts.json checked {} ago.",
-                format_age_between(checked_utc, now_utc)
+                "current_artifacts.json checked at {}.",
+                format_status_utc(checked_utc)
             ),
             facts,
         );
@@ -1740,24 +1898,19 @@ fn publication_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
 
 fn live_feed_connection_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
     let connection = &session.live_feed_connection;
-    let now_utc = session_wall_clock_utc(session);
     let mut facts = Vec::new();
     if let Some(last_heard) = connection.last_heard_epoch_ms {
-        facts.push(status_fact(
+        facts.push(status_time_fact(
             "Last server event",
-            format!(
-                "{} ago",
-                format_age_between(utc_from_epoch_ms(last_heard), now_utc)
-            ),
+            utc_from_epoch_ms(last_heard),
+            UiDataStatusPageTimeDisplay::Ago,
         ));
     }
     if let Some(last_error) = connection.last_error_epoch_ms {
-        facts.push(status_fact(
+        facts.push(status_time_fact(
             "Last error",
-            format!(
-                "{} ago",
-                format_age_between(utc_from_epoch_ms(last_error), now_utc)
-            ),
+            utc_from_epoch_ms(last_error),
+            UiDataStatusPageTimeDisplay::Ago,
         ));
     }
     if let Some(message) = connection.last_error_message.as_deref() {
@@ -1779,8 +1932,8 @@ fn live_feed_connection_status_page_row(session: &UiSession) -> UiDataStatusPage
                 .last_heard_epoch_ms
                 .map(|epoch| {
                     format!(
-                        " Last server event was {} ago.",
-                        format_age_between(utc_from_epoch_ms(epoch), now_utc)
+                        " Last server event was at {}.",
+                        format_status_utc(utc_from_epoch_ms(epoch))
                     )
                 })
                 .unwrap_or_default();
@@ -1830,10 +1983,10 @@ fn live_feed_product_status_page_row(
         facts.push(status_fact("Version", version));
     }
     if let Some(observed) = observed_utc {
-        facts.push(status_fact("Source time", format_status_utc(observed)));
-        facts.push(status_fact(
-            "Age",
-            format!("{} old", format_age_between(observed, now_utc)),
+        facts.push(status_time_fact(
+            "Observed",
+            observed,
+            UiDataStatusPageTimeDisplay::Old,
         ));
     }
     if !loaded {
@@ -1872,8 +2025,7 @@ fn live_feed_product_status_page_row(
             "OLD",
             freshness_status_severity(violation),
             format!(
-                "{label} data is {} old; source timestamp {}.",
-                format_age(violation.age_ms),
+                "{label} data timestamp is {}.",
                 format_status_utc(observed_utc)
             ),
             facts,
@@ -1885,8 +2037,7 @@ fn live_feed_product_status_page_row(
         "OK",
         UiStatusSeverity::Ok,
         format!(
-            "{label} data is {} old; source timestamp {}.",
-            format_age_between(observed_utc, now_utc),
+            "{label} data timestamp is {}.",
             format_status_utc(observed_utc)
         ),
         facts,
@@ -1930,6 +2081,21 @@ fn status_fact(label: impl Into<String>, value: impl Into<String>) -> UiDataStat
     UiDataStatusPageFact {
         label: label.into(),
         value: value.into(),
+        time_utc: None,
+        time_display: None,
+    }
+}
+
+fn status_time_fact(
+    label: impl Into<String>,
+    instant: DateTime<Utc>,
+    display: UiDataStatusPageTimeDisplay,
+) -> UiDataStatusPageFact {
+    UiDataStatusPageFact {
+        label: label.into(),
+        value: format_status_utc(instant),
+        time_utc: Some(format_status_rfc3339(instant)),
+        time_display: Some(display),
     }
 }
 
@@ -1945,12 +2111,8 @@ fn format_status_utc(instant: DateTime<Utc>) -> String {
     instant.format("%Y-%m-%d %H:%M UTC").to_string()
 }
 
-fn format_age_between(earlier: DateTime<Utc>, later: DateTime<Utc>) -> String {
-    format_age(
-        later
-            .timestamp_millis()
-            .saturating_sub(earlier.timestamp_millis()),
-    )
+fn format_status_rfc3339(instant: DateTime<Utc>) -> String {
+    instant.to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
 fn plural_s(count: usize) -> &'static str {
@@ -4041,12 +4203,20 @@ pub fn set_debug_flag_in_session(
 }
 
 pub fn get_session_snapshot(handle: u32) -> AppResult<UiSessionSnapshot> {
+    get_session_snapshot_at_epoch_ms(handle, 0)
+}
+
+pub fn get_session_snapshot_at_epoch_ms(
+    handle: u32,
+    epoch_ms: i64,
+) -> AppResult<UiSessionSnapshot> {
     let total_started_at = crate::core_clock_ms();
     let lock_started_at = crate::core_clock_ms();
     let mut sessions = lock_sessions();
     let lock_ms = elapsed_ms(lock_started_at);
     let lookup_started_at = crate::core_clock_ms();
     let session = session_mut(&mut sessions, handle)?;
+    advance_session_wall_clock(session, epoch_ms);
     let lookup_ms = elapsed_ms(lookup_started_at);
     let cycle_freshness_started_at = crate::core_clock_ms();
     sync_cycle_product_freshness_status_records_if_needed(session);
@@ -8840,6 +9010,57 @@ mod tests {
         }
     }
 
+    fn attach_nav_db_package_records_for_test(handle: u32, packages: Vec<serde_json::Value>) {
+        let entries = packages
+            .iter()
+            .map(|package| {
+                let package_id = package["id"].as_str().expect("package id");
+                let key = nav_kv_key_for_query(&NavKvQuery::PackageById {
+                    package_id: package_id.to_string(),
+                })
+                .expect("package key");
+                let bytes = serde_json::to_vec(package).expect("package json");
+                (key, bytes)
+            })
+            .collect::<Vec<_>>();
+        let entry_refs = entries
+            .iter()
+            .map(|(key, bytes)| (key.as_str(), bytes.as_slice()))
+            .collect::<Vec<_>>();
+        let store = crate::navkv::nav_kv_store_for_test(&entry_refs, 2048);
+        attach_nav_kv_store_to_session(handle, 1, &store).expect("attach nav kv store");
+    }
+
+    fn ingest_bundle_packages_for_test(handle: u32, packages: Vec<serde_json::Value>) {
+        let bundle = serde_json::json!({ "packages": packages });
+        let bytes = serde_json::to_vec(&bundle).expect("bundle json");
+        let mut sessions = lock_sessions();
+        let session = session_mut(&mut sessions, handle).expect("session");
+        session
+            .publication_resolver
+            .ingest_resource("publication/bundle/test.json", &bytes)
+            .expect("ingest bundle");
+    }
+
+    fn package_record_json(
+        id: &str,
+        family_id: &str,
+        effective_date: Option<&str>,
+        expiration_date: Option<&str>,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "family_id": family_id,
+            "contract_id": product_contracts::contract_id_for_family(family_id).unwrap_or("test"),
+            "filename": format!("{id}.zip"),
+            "relative_path": format!("{id}.zip"),
+            "cycle": "2605",
+            "cycle_version": "01",
+            "effective_date": effective_date,
+            "expiration_date": expiration_date
+        })
+    }
+
     fn assert_no_session_snapshot_invalidation(invalidations: &[UiInvalidation]) {
         assert!(
             !invalidations.contains(&UiInvalidation::SessionSnapshot),
@@ -10935,64 +11156,185 @@ mod tests {
     }
 
     #[test]
-    fn data_status_page_reports_valid_displayed_chart_lifetime() {
+    fn data_status_page_reports_valid_chart_package_lifetime() {
         let init = create_current_test_session();
-        let sectional = raster_map_option(
-            "sec:nw",
-            "NW Sectional",
-            Some("2026-05-14"),
-            Some("2026-05-26"),
+        attach_nav_db_package_records_for_test(
+            init.handle,
+            vec![
+                package_record_json("SEC_NW_2605", "sec", Some("2026-05-14"), Some("2026-05-26")),
+                package_record_json(
+                    "TAC_NW_2605",
+                    "tac",
+                    Some("2026-05-14"),
+                    Some("2026-05-24T12:00:00Z"),
+                ),
+            ],
         );
-        let tac = raster_map_option(
-            "tac:nw",
-            "NW TAC",
-            Some("2026-05-14"),
-            Some("2026-05-24T12:00:00Z"),
-        );
-        {
-            let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
-            session.raster_map_catalog = Some(raster_catalog_with_displayed_maps(
-                tac.clone(),
-                vec![sectional, tac],
-            ));
-        }
 
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");
         let row = snapshot
             .data_status_page_state
             .rows
             .iter()
-            .find(|row| row.id == "charts:displayed")
-            .expect("displayed charts row");
+            .find(|row| row.id == "cycle:charts")
+            .expect("charts row");
         assert_eq!(row.value, "OK");
         assert_eq!(row.severity, UiStatusSeverity::Ok);
-        assert!(row.detail.contains("valid for another 4d"));
+        assert!(row.detail.contains("valid until 2026-05-24 12:00 UTC"));
         assert!(row
             .facts
             .iter()
-            .any(|fact| fact.label == "Families" && fact.value == "TAC, Sectional"));
+            .any(|fact| fact.label == "Products" && fact.value == "Sectional, TAC"));
+        assert!(row.facts.iter().any(|fact| {
+            fact.label == "Expires"
+                && fact.value == "2026-05-24 12:00 UTC"
+                && fact.time_utc.as_deref() == Some("2026-05-24T12:00:00Z")
+                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+        }));
     }
 
     #[test]
-    fn data_status_page_reports_invalid_displayed_chart_summary() {
+    fn data_status_page_reports_invalid_chart_package_summary() {
         let init = create_current_test_session();
-        {
-            let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
-            session.raster_map_catalog = Some(expired_raster_catalog("2020-01-01"));
-        }
+        attach_nav_db_package_records_for_test(
+            init.handle,
+            vec![package_record_json(
+                "SEC_NW_2605",
+                "sec",
+                Some("2020-01-01"),
+                Some("2020-02-01"),
+            )],
+        );
 
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");
         let row = snapshot
             .data_status_page_state
             .rows
             .iter()
-            .find(|row| row.id == "charts:displayed")
-            .expect("displayed charts row");
+            .find(|row| row.id == "cycle:charts")
+            .expect("charts row");
         assert_eq!(row.value, "EXPIRED");
         assert_eq!(row.severity, UiStatusSeverity::Warning);
         assert_eq!(row.detail, "Sectional charts expired.");
+    }
+
+    #[test]
+    fn data_status_page_reports_docs_and_static_package_rows() {
+        let init = create_current_test_session();
+        attach_nav_db_package_records_for_test(
+            init.handle,
+            vec![
+                package_record_json("TPP_2605", "tpp", Some("2026-05-14"), Some("2026-06-11")),
+                package_record_json("CSUP_2605", "csup", Some("2026-05-14"), Some("2026-06-11")),
+                package_record_json("TERRAIN_2025", "terrain", Some("2025-01-01"), None),
+                package_record_json(
+                    "SHADED_RELIEF_2025",
+                    "shaded-relief",
+                    Some("2025-02-01"),
+                    None,
+                ),
+                package_record_json(
+                    "WORLD_BASEMAP_2025",
+                    "world-basemap",
+                    Some("2025-03-01"),
+                    None,
+                ),
+            ],
+        );
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let docs = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "cycle:airport_docs")
+            .expect("airport docs row");
+        assert_eq!(docs.value, "OK");
+        assert!(docs.detail.contains("TPP, CSup airport docs valid"));
+        let static_data = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "static:base_data")
+            .expect("static data row");
+        assert_eq!(static_data.value, "OK");
+        assert!(static_data
+            .detail
+            .contains("source data dates back to 2025-01-01 00:00 UTC"));
+    }
+
+    #[test]
+    fn data_status_page_reports_docs_from_attached_nav_db_not_future_publication_bundle() {
+        let init = create_current_test_session();
+        attach_nav_db_package_records_for_test(
+            init.handle,
+            vec![
+                package_record_json("TPP_2605", "tpp", Some("2026-05-14"), Some("2026-06-11")),
+                package_record_json("CSUP_2605", "csup", Some("2026-05-14"), Some("2026-07-09")),
+            ],
+        );
+        ingest_bundle_packages_for_test(
+            init.handle,
+            vec![package_record_json(
+                "TPP_2606",
+                "tpp",
+                Some("2026-06-11"),
+                Some("2026-07-09"),
+            )],
+        );
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let docs = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "cycle:airport_docs")
+            .expect("airport docs row");
+        assert_eq!(docs.value, "OK");
+        assert!(docs.detail.contains("TPP, CSup airport docs valid"));
+        assert!(!docs.detail.contains("not valid yet"));
+    }
+
+    #[test]
+    fn data_status_page_delivers_absolute_times_for_web_relative_rendering() {
+        let checked_at = utc("2026-05-20T12:00:00Z").timestamp_millis();
+        let init =
+            create_ui_session_at_epoch_ms(FlightPlan::default(), &[], None, None, checked_at)
+                .expect("create session");
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            session
+                .publication_resolver
+                .ingest_resource(
+                    "publication/current_artifacts",
+                    br#"{"schema_version":1,"as_of_utc":"2026-05-20T12:00:00Z","artifact_roots":{"packaged":"published_packaged","unpacked":"published_unpacked"},"bundles":[]}"#,
+                )
+                .expect("ingest current artifacts");
+            session.current_artifacts_checked_epoch_ms = Some(checked_at);
+        }
+
+        let snapshot = get_session_snapshot_at_epoch_ms(
+            init.handle,
+            utc("2026-05-20T12:07:00Z").timestamp_millis(),
+        )
+        .expect("snapshot");
+        let row = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "publication:current_artifacts")
+            .expect("package library row");
+        assert_eq!(
+            row.detail,
+            "current_artifacts.json checked at 2026-05-20 12:00 UTC."
+        );
+        assert!(row.facts.iter().any(|fact| {
+            fact.label == "Checked"
+                && fact.value == "2026-05-20 12:00 UTC"
+                && fact.time_utc.as_deref() == Some("2026-05-20T12:00:00Z")
+                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Ago)
+        }));
     }
 
     #[test]
@@ -11024,7 +11366,9 @@ mod tests {
             .expect("connection row");
         assert_eq!(row.value, "CONNECTED");
         assert_eq!(row.severity, UiStatusSeverity::Ok);
-        assert!(row.detail.contains("Last server event was 0m ago"));
+        assert!(row
+            .detail
+            .contains("Last server event was at 2026-05-20 12:03 UTC"));
     }
 
     #[test]
@@ -11044,7 +11388,9 @@ mod tests {
             .expect("nav-db page row");
         assert_eq!(row.value, "OK");
         assert_eq!(row.severity, UiStatusSeverity::Ok);
-        assert!(row.detail.contains("NAV DB valid for another"));
+        assert!(row
+            .detail
+            .contains("NAV DB valid until 2026-06-18 00:00 UTC"));
         assert!(!row.detail.contains("contains no nav-db package rows"));
     }
 

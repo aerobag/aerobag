@@ -1938,6 +1938,11 @@ pub fn get_session_snapshot(handle: u32) -> Result<String, JsValue> {
 }
 
 #[wasm_bindgen]
+pub fn get_session_snapshot_at_epoch_ms(handle: u32, epoch_ms: i64) -> Result<String, JsValue> {
+    get_session_snapshot_at_epoch_ms_json(handle, epoch_ms).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn ingest_point_tiles_in_session(handle: u32, tiles_json: &str) -> Result<(), JsValue> {
     ingest_point_tiles_in_session_json(handle, tiles_json).map_err(|err| JsValue::from_str(&err))
 }
@@ -2643,9 +2648,14 @@ fn select_raster_map_in_session_json(
 }
 
 fn get_session_snapshot_json(handle: u32) -> Result<String, String> {
+    get_session_snapshot_at_epoch_ms_json(handle, 0)
+}
+
+fn get_session_snapshot_at_epoch_ms_json(handle: u32, epoch_ms: i64) -> Result<String, String> {
     let total_started_at = now_ms();
     let core_started_at = now_ms();
-    let snapshot = app_core::get_session_snapshot(handle).map_err(|err| err.to_string())?;
+    let snapshot = app_core::get_session_snapshot_at_epoch_ms(handle, epoch_ms)
+        .map_err(|err| err.to_string())?;
     let core_ms = now_ms() - core_started_at;
     let serialize_started_at = now_ms();
     let serialized = serde_json::to_string(&snapshot).map_err(|err| err.to_string())?;

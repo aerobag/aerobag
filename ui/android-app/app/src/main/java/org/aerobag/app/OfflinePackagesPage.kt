@@ -1329,20 +1329,26 @@ internal suspend fun refreshOfflinePackageLibrary(
     val discoveryUrls = buildList {
         add(resolvePackageSourceUrl(CurrentArtifactsDiscoveryFilename, publicationRootUrl))
     }.distinct()
-    val discoveryJsons = discoveryUrls.map { discoveryUrl ->
+    val currentArtifactsJsons = discoveryUrls.map { discoveryUrl ->
         currentCoroutineContext().ensureActive()
         readPackageSourceText(
             discoveryUrl,
             activeConnections,
         )
     }
-    val discoveryManifests = discoveryJsons
-        .map { PackageManagementJson.decodeFromString<CurrentArtifactsManifestWire>(it) }
-    val bundleRefsByFilename = discoveryManifests
-        .flatMap { manifest ->
-            val packagedRootUrl = packagedArtifactRootUrl(publicationRootUrl, manifest)
-            manifest.bundles
-                .map { bundle -> bundle.filename to resolvePackageSourceUrl(bundle.relativePath ?: bundle.filename, packagedRootUrl) }
+    val discoveryPlans = currentArtifactsJsons.map { currentArtifactsJson ->
+        val input = CurrentArtifactsDiscoveryInputWire(
+            publicationRootUrl = publicationRootUrl,
+            currentArtifactsJson = currentArtifactsJson,
+        )
+        PackageManagementJson.decodeFromString<CurrentArtifactsDiscoveryPlanWire>(
+            NativeBindings.planCurrentArtifactsDiscoveryJson(PackageManagementJson.encodeToString(input)),
+        )
+    }
+    val discoveryJsons = discoveryPlans.flatMap { it.discoveryJsons }
+    val bundleRefsByFilename = discoveryPlans
+        .flatMap { plan ->
+            plan.bundleRequests.map { request -> request.filename to request.url }
         }
         .distinctBy { it.first }
         .sortedBy { it.first }
@@ -1447,12 +1453,6 @@ internal fun resolvePublicationRootUrl(configuredPackageSourceBaseUrl: String): 
         "package source host must not contain a path without a scheme: $configuredPackageSourceBaseUrl"
     }
     return "https://$configured/$PublicationPackageRootPath"
-}
-
-internal fun packagedArtifactRootUrl(publicationRootUrl: String, manifest: CurrentArtifactsManifestWire): String {
-    val packagedRoot = manifest.artifactRoots.packaged.trim()
-    check(packagedRoot.isNotBlank()) { "current artifacts manifest missing artifact_roots.packaged" }
-    return resolvePackageSourceUrl(packagedRoot, publicationRootUrl)
 }
 
 internal suspend fun downloadPackageToTempFile(

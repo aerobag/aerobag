@@ -42,18 +42,23 @@ function latestCurrentArtifacts(root: string): string | null {
   return fs.existsSync(current) ? current : null;
 }
 const currentArtifactsPath = latestCurrentArtifacts(artifactReadRoot) ?? path.join(artifactReadRoot, "current_artifacts_missing.json");
-const currentArtifacts = JSON.parse(fs.readFileSync(currentArtifactsPath, "utf8")) as {
+const currentArtifacts = JSON.parse(fs.readFileSync(currentArtifactsPath, "utf8")) as Array<{
   artifact_roots?: { packaged?: string; unpacked?: string };
-};
+}>;
 const expectedArtifactRoots = {
   packaged: "published_packaged/",
   unpacked: "published_unpacked/",
 };
-if (
-  currentArtifacts.artifact_roots?.packaged !== expectedArtifactRoots.packaged
-  || currentArtifacts.artifact_roots?.unpacked !== expectedArtifactRoots.unpacked
-) {
-  throw new Error(`${currentArtifactsPath} has artifact_roots=${JSON.stringify(currentArtifacts.artifact_roots)}; expected ${JSON.stringify(expectedArtifactRoots)}`);
+if (!Array.isArray(currentArtifacts) || currentArtifacts.length === 0) {
+  throw new Error(`${currentArtifactsPath} must be a non-empty current_artifacts list`);
+}
+for (const manifest of currentArtifacts) {
+  if (
+    manifest.artifact_roots?.packaged !== expectedArtifactRoots.packaged
+    || manifest.artifact_roots?.unpacked !== expectedArtifactRoots.unpacked
+  ) {
+    throw new Error(`${currentArtifactsPath} has artifact_roots=${JSON.stringify(manifest.artifact_roots)}; expected ${JSON.stringify(expectedArtifactRoots)}`);
+  }
 }
 function appendRequestLog(entry: Record<string, unknown>) {
   fs.appendFileSync(requestLogPath, `${JSON.stringify({ ts: Date.now(), ...entry })}\n`);

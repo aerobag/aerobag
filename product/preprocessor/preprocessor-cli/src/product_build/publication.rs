@@ -14,13 +14,6 @@ pub fn publish_discovery_manifest(
     if bundle_filenames.is_empty() {
         bail!("publish-discovery-manifest requires at least one --bundle");
     }
-    let latest_alias_path = publication_current_artifacts_path(&config.build_root);
-    if !latest_alias_path.is_file() {
-        bail!(
-            "missing current artifacts alias {}; build-product first",
-            latest_alias_path.display()
-        );
-    }
     let bundles = bundle_filenames
         .iter()
         .map(|filename| current_bundle_entry_from_path(&config.build_root.join(filename)))
@@ -28,8 +21,10 @@ pub fn publish_discovery_manifest(
     let artifact_roots = default_current_artifact_roots();
     let startup_prefetch =
         current_startup_prefetch_manifest(&config.build_root, &artifact_roots, &bundles)?;
+    let contracts = current_artifacts_contracts(&config.build_root, &bundles)?;
     let manifest = CurrentArtifactsManifest {
         schema_version: 1,
+        contracts,
         artifact_roots,
         as_of_date: as_of_utc.date_naive().format("%Y-%m-%d").to_string(),
         as_of_utc: as_of_utc.to_rfc3339_opts(SecondsFormat::Secs, true),
@@ -37,17 +32,18 @@ pub fn publish_discovery_manifest(
         startup_prefetch,
         diagnostics: None,
     };
-    write_current_artifacts_aliases(&config.build_root, as_of_utc, &manifest)?;
+    let version_manifest_path =
+        write_version_artifacts_manifest_json(&config.build_root, as_of_utc, &manifest)?;
     let immutable_path = publication_root_for_packaged_root(&config.build_root)
-        .join(current_artifacts_immutable_filename(as_of_utc));
+        .join(version_artifacts_immutable_filename(as_of_utc));
     let unpacked_root = published_unpacked_root(config)?;
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
-    sync_unpacked_discovery_manifests(&config.build_root, &latest_alias_path, &unpacked_root)?;
-    cleanup_published_packaged_root(&config.build_root, &latest_alias_path)?;
-    cleanup_published_unpacked_root(&unpacked_root, &latest_alias_path)?;
-    validate_packaged_contract(&config.build_root, &latest_alias_path)?;
-    validate_unpacked_contract(&config.build_root, &unpacked_root, &latest_alias_path)?;
+    sync_unpacked_discovery_manifests(&config.build_root, &version_manifest_path, &unpacked_root)?;
+    cleanup_published_packaged_root(&config.build_root, &version_manifest_path)?;
+    cleanup_published_unpacked_root(&unpacked_root, &version_manifest_path)?;
+    validate_packaged_contract(&config.build_root, &version_manifest_path)?;
+    validate_unpacked_contract(&config.build_root, &unpacked_root, &version_manifest_path)?;
     Ok(immutable_path)
 }
 
@@ -286,16 +282,32 @@ pub(super) fn current_artifacts_immutable_filename(as_of_utc: DateTime<Utc>) -> 
     )
 }
 
+pub(super) fn version_artifacts_immutable_filename(as_of_utc: DateTime<Utc>) -> String {
+    format!(
+        "version_artifacts_{}.json",
+        current_artifacts_timestamp_string(as_of_utc)
+    )
+}
+
 pub(super) fn current_artifacts_latest_alias_filename() -> &'static str {
     "current_artifacts.json"
 }
 
 pub(super) fn write_current_artifacts_json(
     path: &Path,
+    manifests: &[CurrentArtifactsManifest],
+) -> anyhow::Result<()> {
+    let bytes = serde_json::to_vec_pretty(manifests)
+        .context("failed to encode current artifacts manifest")?;
+    write_public_json_atomic(path, &bytes)
+}
+
+pub(super) fn write_version_artifacts_json(
+    path: &Path,
     manifest: &CurrentArtifactsManifest,
 ) -> anyhow::Result<()> {
     let bytes = serde_json::to_vec_pretty(manifest)
-        .context("failed to encode current artifacts manifest")?;
+        .context("failed to encode version artifacts manifest")?;
     write_public_json_atomic(path, &bytes)
 }
 
@@ -309,15 +321,10 @@ pub(super) fn publication_root_for_packaged_root(packaged_root: &Path) -> PathBu
     }
 }
 
-pub(super) fn publication_current_artifacts_path(packaged_root: &Path) -> PathBuf {
-    publication_root_for_packaged_root(packaged_root)
-        .join(current_artifacts_latest_alias_filename())
-}
-
 pub(super) fn write_current_artifacts_aliases(
     packaged_root: &Path,
     as_of_utc: DateTime<Utc>,
-    manifest: &CurrentArtifactsManifest,
+    manifests: &[CurrentArtifactsManifest],
 ) -> anyhow::Result<PathBuf> {
     let publication_root = publication_root_for_packaged_root(packaged_root);
     fs::create_dir_all(&publication_root)
@@ -327,10 +334,23 @@ pub(super) fn write_current_artifacts_aliases(
     let latest_filename = current_artifacts_latest_alias_filename();
     let publication_immutable_path = publication_root.join(&immutable_filename);
     let publication_latest_path = publication_root.join(latest_filename);
-    write_current_artifacts_json(&publication_immutable_path, manifest)?;
-    write_current_artifacts_json(&publication_latest_path, manifest)?;
+    write_current_artifacts_json(&publication_immutable_path, manifests)?;
+    write_current_artifacts_json(&publication_latest_path, manifests)?;
 
     Ok(publication_latest_path)
+}
+
+pub(super) fn write_version_artifacts_manifest_json(
+    packaged_root: &Path,
+    as_of_utc: DateTime<Utc>,
+    manifest: &CurrentArtifactsManifest,
+) -> anyhow::Result<PathBuf> {
+    let publication_root = publication_root_for_packaged_root(packaged_root);
+    fs::create_dir_all(&publication_root)
+        .with_context(|| format!("failed to create {}", publication_root.display()))?;
+    let publication_path = publication_root.join(version_artifacts_immutable_filename(as_of_utc));
+    write_version_artifacts_json(&publication_path, manifest)?;
+    Ok(publication_path)
 }
 
 pub(super) fn write_current_artifacts_manifest(
@@ -343,8 +363,10 @@ pub(super) fn write_current_artifacts_manifest(
     let artifact_roots = default_current_artifact_roots();
     let startup_prefetch =
         current_startup_prefetch_manifest(build_root, &artifact_roots, &bundles)?;
+    let contracts = current_artifacts_contracts(build_root, &bundles)?;
     let manifest = CurrentArtifactsManifest {
         schema_version: 1,
+        contracts,
         artifact_roots,
         as_of_date: as_of_date.format("%Y-%m-%d").to_string(),
         as_of_utc: as_of_utc.to_rfc3339_opts(SecondsFormat::Secs, true),
@@ -352,7 +374,56 @@ pub(super) fn write_current_artifacts_manifest(
         startup_prefetch,
         diagnostics,
     };
-    write_current_artifacts_aliases(build_root, as_of_utc, &manifest)
+    write_version_artifacts_manifest_json(build_root, as_of_utc, &manifest)
+}
+
+pub(super) fn current_artifacts_contracts(
+    build_root: &Path,
+    bundles: &[CurrentBundleEntry],
+) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut contracts = BTreeMap::new();
+    for bundle_ref in bundles {
+        let bundle_path = build_root.join(&bundle_ref.filename);
+        let bundle = load_bundle_manifest(&bundle_path)?;
+        for package in bundle.packages {
+            match contracts.entry(package.family_id.clone()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(package.contract_id.clone());
+                }
+                std::collections::btree_map::Entry::Occupied(entry)
+                    if entry.get() == &package.contract_id => {}
+                std::collections::btree_map::Entry::Occupied(entry) => {
+                    bail!(
+                        "conflicting contracts for family {} in current artifacts: {} vs {}",
+                        package.family_id,
+                        entry.get(),
+                        package.contract_id
+                    );
+                }
+            }
+        }
+    }
+    Ok(contracts)
+}
+
+pub fn merge_current_artifacts_manifests(
+    packaged_root: &Path,
+    as_of_utc: DateTime<Utc>,
+    manifest_paths: &[PathBuf],
+) -> anyhow::Result<PathBuf> {
+    if manifest_paths.is_empty() {
+        bail!("merge-current-artifacts requires at least one --manifest");
+    }
+    let manifests = manifest_paths
+        .iter()
+        .map(|path| {
+            let manifest = load_current_artifacts_manifest(path)?;
+            validate_current_artifacts_manifest(&manifest, path)?;
+            Ok(manifest)
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    validate_merged_current_artifacts(packaged_root, &manifests)?;
+    write_current_artifacts_aliases(packaged_root, as_of_utc, &manifests)
 }
 
 pub(super) fn current_startup_prefetch_manifest(
@@ -930,10 +1001,8 @@ pub(super) fn discovery_manifest_paths(
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        let is_discovery = name == current_artifacts_latest_alias_filename()
-            || (name.starts_with("current_artifacts_")
-                && name.contains('T')
-                && name.ends_with(".json"));
+        let is_discovery =
+            name.starts_with("version_artifacts_") && name.contains('T') && name.ends_with(".json");
         if is_discovery && seen.insert(path.clone()) {
             paths.push(path);
         }
@@ -1027,7 +1096,8 @@ pub(super) fn validate_packaged_contract(
             let bundle_path = packaged_root.join(&bundle.filename);
             ensure_public_file_exists(&bundle_path)?;
             validate_embedded_sha256_filename(&bundle.filename, &bundle.checksum_sha256)?;
-            validate_bundle_manifest(packaged_root, &bundle_path)?;
+            let bundle_manifest = validate_bundle_manifest(packaged_root, &bundle_path)?;
+            validate_bundle_contracts_match_current(&bundle_manifest, &current)?;
         }
         if let Some(diagnostics) = &current.diagnostics {
             validate_public_filename(
@@ -1047,6 +1117,17 @@ pub(super) fn validate_current_artifacts_manifest(
     current: &CurrentArtifactsManifest,
     path: &Path,
 ) -> anyhow::Result<()> {
+    if current.schema_version != 1 {
+        bail!(
+            "{} has unexpected schema_version {}",
+            path.display(),
+            current.schema_version
+        );
+    }
+    for (family_id, contract_id) in &current.contracts {
+        validate_required_manifest_string(family_id, "current_artifacts.contracts key")?;
+        validate_required_manifest_string(contract_id, "current_artifacts.contracts value")?;
+    }
     if current.artifact_roots.packaged != "published_packaged/" {
         bail!(
             "{} has unexpected artifact_roots.packaged {:?}",
@@ -1140,7 +1221,7 @@ pub(super) fn validate_publication_resource_url(value: &str, field: &str) -> any
 pub(super) fn validate_bundle_manifest(
     packaged_root: &Path,
     bundle_path: &Path,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<BundleManifest> {
     validate_no_internal_paths_in_json(bundle_path)?;
     let (_, _, filename_hash) = parse_cycle_bundle_filename(bundle_path)?;
     let bundle_hash = hash_file(bundle_path)?;
@@ -1204,6 +1285,69 @@ pub(super) fn validate_bundle_manifest(
         validate_bundle_artifact_ref(packaged_root, artifact)?;
     }
     validate_bundle_contract_split(&bundle, bundle_path)?;
+    Ok(bundle)
+}
+
+pub(super) fn validate_bundle_contracts_match_current(
+    bundle: &BundleManifest,
+    current: &CurrentArtifactsManifest,
+) -> anyhow::Result<()> {
+    for package in &bundle.packages {
+        match current.contracts.get(&package.family_id) {
+            Some(contract_id) if contract_id == &package.contract_id => {}
+            Some(contract_id) => bail!(
+                "package {} contract {} does not match current_artifacts.contracts[{}] {}",
+                package.id,
+                package.contract_id,
+                package.family_id,
+                contract_id
+            ),
+            None => bail!(
+                "package {} family {} missing from current_artifacts.contracts",
+                package.id,
+                package.family_id
+            ),
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn validate_merged_current_artifacts(
+    packaged_root: &Path,
+    manifests: &[CurrentArtifactsManifest],
+) -> anyhow::Result<()> {
+    let mut seen_contract_sets = BTreeSet::new();
+    for manifest in manifests {
+        let contract_set_key = manifest
+            .contracts
+            .iter()
+            .map(|(family_id, contract_id)| format!("{family_id}={contract_id}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        if !seen_contract_sets.insert(contract_set_key) {
+            bail!(
+                "merge-current-artifacts contains duplicate contract set {:?}",
+                manifest.contracts
+            );
+        }
+        for bundle_ref in &manifest.bundles {
+            validate_public_filename(
+                &bundle_ref.filename,
+                "current_artifacts[].bundles[].filename",
+            )?;
+            let bundle_path = packaged_root.join(&bundle_ref.filename);
+            ensure_public_file_exists(&bundle_path)?;
+            let bundle = validate_bundle_manifest(packaged_root, &bundle_path)?;
+            validate_bundle_contracts_match_current(&bundle, manifest)?;
+        }
+        if let Some(diagnostics) = &manifest.diagnostics {
+            validate_public_filename(
+                &diagnostics.filename,
+                "current_artifacts[].diagnostics.filename",
+            )?;
+            ensure_public_file_exists(&packaged_root.join(&diagnostics.filename))?;
+        }
+    }
     Ok(())
 }
 
@@ -1253,6 +1397,7 @@ pub(super) fn validate_unpacked_contract_for_discovery(
         ensure_public_file_exists(&unpacked_bundle_path)?;
         validate_no_internal_paths_in_json(&unpacked_bundle_path)?;
         let bundle = load_bundle_manifest(&unpacked_bundle_path)?;
+        validate_bundle_contracts_match_current(&bundle, &current)?;
         for artifact in &bundle.ancillary {
             if artifact.filename.ends_with(".zip") {
                 ensure_public_dir_exists(&unpacked_root.join(zip_stem(&artifact.filename)?))?;

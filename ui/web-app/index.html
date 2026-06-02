@@ -223,9 +223,13 @@
             }
             return response.json();
           })
-          .then(function (manifest) {
+          .then(function (manifests) {
+            if (!Array.isArray(manifests)) {
+              return finish("current_artifacts_not_list", {});
+            }
+            const manifest = manifests[0];
             if (!manifest || manifest.status) {
-              return manifest;
+              return manifest || finish("current_artifacts_empty", {});
             }
             const selectedCycle = selectStartupPrefetchCycle(manifest.startup_prefetch);
             const resources = selectedCycle && Array.isArray(selectedCycle.resources)

@@ -253,6 +253,7 @@ struct BundleManifest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CurrentArtifactsManifest {
     schema_version: u32,
+    contracts: BTreeMap<String, String>,
     #[serde(default = "default_current_artifact_roots")]
     artifact_roots: CurrentArtifactRoots,
     as_of_date: String,
@@ -1873,8 +1874,8 @@ mod static_products;
 use static_products::*;
 
 mod publication;
-pub use publication::publish_discovery_manifest;
 use publication::*;
+pub use publication::{merge_current_artifacts_manifests, publish_discovery_manifest};
 
 mod gc;
 pub use gc::gc_build_cache;
@@ -2211,6 +2212,13 @@ fn first_cycle_day(year: i32) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_contracts(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
+        entries
+            .iter()
+            .map(|(family_id, contract_id)| ((*family_id).to_string(), (*contract_id).to_string()))
+            .collect()
+    }
     use chrono::TimeZone;
     use preprocessor_resource_index::{
         AirportRecord, AirportResourcesRecord, ChartCollectionRecord, CoverageBounds, CsupRecord,
@@ -2254,15 +2262,9 @@ mod tests {
     }
 
     #[test]
-    fn sample_warning_texts_are_product_specific() {
-        assert_eq!(
-            nav_db::nav_db_warning_text(),
-            "This NAV-DB is getting moldy."
-        );
-        assert_eq!(
-            nav_db::nav_kv_family_warning_text("enr-h").as_deref(),
-            Some("This IFR-high chart has a sample warning.")
-        );
+    fn product_warning_texts_are_disabled_by_default() {
+        assert_eq!(nav_db::nav_db_warning_text(), None);
+        assert_eq!(nav_db::nav_kv_family_warning_text("enr-h"), None);
         assert_eq!(nav_db::nav_kv_family_warning_text("sec"), None);
     }
 
@@ -3442,10 +3444,7 @@ mod tests {
             .iter()
             .find(|value| value["id"] == "enr-h")
             .expect("ifr high family");
-        assert_eq!(
-            ifr_high["warning_text"],
-            "This IFR-high chart has a sample warning."
-        );
+        assert!(ifr_high.get("warning_text").is_none());
 
         let regions = pair_value("resource/regions");
         assert_eq!(regions.as_array().unwrap()[0]["id"], "nw");
@@ -3823,6 +3822,7 @@ mod tests {
         .unwrap();
         let current = CurrentArtifactsManifest {
             schema_version: 1,
+            contracts: test_contracts(&[("nav-db", NAV_DB_CONTRACT_ID)]),
             artifact_roots: default_current_artifact_roots(),
             as_of_date: "2026-05-03".to_string(),
             as_of_utc: "2026-05-03T18:01:00Z".to_string(),
@@ -3841,7 +3841,7 @@ mod tests {
             startup_prefetch: None,
             diagnostics: None,
         };
-        let current_path = root.join("current_artifacts.json");
+        let current_path = root.join("version_artifacts_20260503T180100Z.json");
         fs::write(&current_path, serde_json::to_vec_pretty(&current).unwrap()).unwrap();
         fs::write(root.join("bundle_cycle_stale_empty.json"), []).unwrap();
 
@@ -3872,10 +3872,13 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(current_path, temp.path().join("current_artifacts.json"));
+        assert_eq!(
+            current_path,
+            temp.path().join("version_artifacts_20260504T010203Z.json")
+        );
         assert!(temp
             .path()
-            .join("current_artifacts_20260504T010203Z.json")
+            .join("version_artifacts_20260504T010203Z.json")
             .is_file());
         assert!(!packaged_root.join("current_artifacts.json").exists());
         fs::write(packaged_root.join("current_artifacts.json"), "{}").unwrap();
@@ -3970,6 +3973,86 @@ mod tests {
     }
 
     #[test]
+    fn merge_current_artifacts_writes_list_alias() {
+        let temp = tempdir().unwrap();
+        let packaged_root = temp.path().join("published_packaged");
+        fs::create_dir_all(&packaged_root).unwrap();
+        let nav_db_sha = "a".repeat(64);
+        let nav_db_filename = format!("nav_db_{NAV_DB_CONTRACT_ID}_2605_01_{nav_db_sha}.zip");
+        fs::write(packaged_root.join(&nav_db_filename), []).unwrap();
+        let bundle = BundleManifest {
+            schema_version: 2,
+            bundle_id: "cycle_2605_01".to_string(),
+            bundle_type: "cycle".to_string(),
+            cycle: "2605".to_string(),
+            cycle_version: "01".to_string(),
+            generated_at_utc: "2026-05-14T00:00:00Z".to_string(),
+            effective_date: "2026-05-14".to_string(),
+            expiration_date: "2026-06-11".to_string(),
+            start_valid: "2026-05-14".to_string(),
+            end_valid: "2026-06-11".to_string(),
+            packages: vec![BundlePackageArtifact {
+                id: format!("NAV_DB_{NAV_DB_CONTRACT_ID}_2605_01"),
+                family_id: "nav-db".to_string(),
+                contract_id: NAV_DB_CONTRACT_ID.to_string(),
+                region_id: None,
+                filename: nav_db_filename.clone(),
+                relative_path: nav_db_filename,
+                cycle: Some("2605".to_string()),
+                cycle_version: Some("01".to_string()),
+                checksum_sha256: nav_db_sha,
+                size_bytes: 0,
+                published_at_utc: None,
+                source_generated_at_utc: None,
+                source_version: None,
+                source_fetched_at_utc: None,
+                effective_date: Some("2026-05-14".to_string()),
+                expiration_date: Some("2026-06-11".to_string()),
+                warning_text: None,
+                metadata: BTreeMap::new(),
+            }],
+            ancillary: vec![],
+        };
+        let bundle_path = write_hashed_bundle_manifest(&packaged_root, &bundle).unwrap();
+        let version_manifest = CurrentArtifactsManifest {
+            schema_version: 1,
+            contracts: test_contracts(&[("nav-db", NAV_DB_CONTRACT_ID)]),
+            artifact_roots: default_current_artifact_roots(),
+            as_of_date: "2026-05-14".to_string(),
+            as_of_utc: "2026-05-14T00:00:00Z".to_string(),
+            bundles: vec![current_bundle_entry_from_path(&bundle_path).unwrap()],
+            startup_prefetch: None,
+            diagnostics: None,
+        };
+        let version_path = temp.path().join("version_artifacts_20260514T000000Z.json");
+        fs::write(
+            &version_path,
+            serde_json::to_vec_pretty(&version_manifest).unwrap(),
+        )
+        .unwrap();
+
+        let current_path = merge_current_artifacts_manifests(
+            &packaged_root,
+            Utc.with_ymd_and_hms(2026, 5, 14, 0, 1, 2).unwrap(),
+            &[version_path],
+        )
+        .unwrap();
+
+        assert_eq!(current_path, temp.path().join("current_artifacts.json"));
+        assert!(temp
+            .path()
+            .join("current_artifacts_20260514T000102Z.json")
+            .is_file());
+        let manifests: Vec<CurrentArtifactsManifest> =
+            serde_json::from_slice(&fs::read(current_path).unwrap()).unwrap();
+        assert_eq!(manifests.len(), 1);
+        assert_eq!(
+            manifests[0].contracts.get("nav-db").map(String::as_str),
+            Some(NAV_DB_CONTRACT_ID)
+        );
+    }
+
+    #[test]
     fn nav_db_unpacked_sync_xzs_pages_but_leaves_root_raw() {
         let temp = tempdir().unwrap();
         let source_root = temp.path().join("source");
@@ -4038,6 +4121,7 @@ mod tests {
             write_hashed_bundle_manifest(root, &current_cycle_bundle).unwrap();
         let current = CurrentArtifactsManifest {
             schema_version: 1,
+            contracts: test_contracts(&[]),
             artifact_roots: default_current_artifact_roots(),
             as_of_date: "2026-05-04".to_string(),
             as_of_utc: "2026-05-04T00:00:00Z".to_string(),
@@ -4045,7 +4129,7 @@ mod tests {
             startup_prefetch: None,
             diagnostics: None,
         };
-        let current_path = root.join("current_artifacts.json");
+        let current_path = root.join("version_artifacts_20260504T000000Z.json");
         fs::write(&current_path, serde_json::to_vec_pretty(&current).unwrap()).unwrap();
 
         let stale_cycle_bundle = BundleManifest {
@@ -4085,6 +4169,7 @@ mod tests {
             write_hashed_bundle_manifest(root, &stale_cycle_bundle).unwrap();
         let stale = CurrentArtifactsManifest {
             schema_version: 1,
+            contracts: test_contracts(&[("enr-l", ENR_L_CONTRACT_ID)]),
             artifact_roots: default_current_artifact_roots(),
             as_of_date: "2026-05-03".to_string(),
             as_of_utc: "2026-05-03T00:00:00Z".to_string(),
@@ -4092,7 +4177,7 @@ mod tests {
             startup_prefetch: None,
             diagnostics: None,
         };
-        let stale_path = root.join("current_artifacts_20260503T000000Z.json");
+        let stale_path = root.join("version_artifacts_20260503T000000Z.json");
         fs::write(&stale_path, serde_json::to_vec_pretty(&stale).unwrap()).unwrap();
 
         cleanup_published_packaged_root(root, &current_path).unwrap();
@@ -4153,6 +4238,7 @@ mod tests {
         sync_unpacked_file(&bundle_path, &unpacked_root).unwrap();
         let current = CurrentArtifactsManifest {
             schema_version: 1,
+            contracts: test_contracts(&[("csup", CSUP_CONTRACT_ID)]),
             artifact_roots: default_current_artifact_roots(),
             as_of_date: "2026-05-04".to_string(),
             as_of_utc: "2026-05-04T00:00:00Z".to_string(),
@@ -4160,7 +4246,7 @@ mod tests {
             startup_prefetch: None,
             diagnostics: None,
         };
-        let current_path = packaged_root.join("current_artifacts.json");
+        let current_path = packaged_root.join("version_artifacts_20260504T000000Z.json");
         fs::write(&current_path, serde_json::to_vec_pretty(&current).unwrap()).unwrap();
         sync_unpacked_file(&current_path, &unpacked_root).unwrap();
 

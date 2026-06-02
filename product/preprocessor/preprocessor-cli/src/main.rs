@@ -41,14 +41,15 @@ use preprocessor_vectors::{
 use product_build::{
     audit_procedure_geometry_from_sqlite, build_cycle, build_product, default_artifact_write_path,
     explain_product_build, gc_build_cache, maybe_reexec_build_cycle_under_cgroup,
-    publish_discovery_manifest, BuildCacheGcConfig, BuildCacheGcMode, ProcedureGeometryAuditFilter,
-    ProductBuildConfig, ProductBuildProfile,
+    merge_current_artifacts_manifests, publish_discovery_manifest, BuildCacheGcConfig,
+    BuildCacheGcMode, ProcedureGeometryAuditFilter, ProductBuildConfig, ProductBuildProfile,
 };
 use sha2::{Digest, Sha256};
 
 fn usage() -> &'static str {
     "usage:
   preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli merge-current-artifacts [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--as-of-utc <RFC3339 UTC>] --manifest <path> [--manifest <path>]...
   preprocessor-cli publish-discovery-manifest [--profile <validation|production>] [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
   preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
   preprocessor-cli normalize-swim-notams --input-jsonl <path> --output-dir <path> --version-label <label>
@@ -2399,9 +2400,48 @@ fn main() -> anyhow::Result<()> {
                 println!("cycle_manifest {}", cycle_manifest_path.display());
             }
             println!(
-                "current_artifacts {}",
+                "version_artifacts {}",
                 result.current_artifacts_path.display()
             );
+        }
+        Some("merge-current-artifacts") => {
+            let mut passthrough = Vec::new();
+            let mut as_of_utc = None;
+            let mut manifests = Vec::new();
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--as-of-utc" => {
+                        as_of_utc = Some(
+                            DateTime::parse_from_rfc3339(
+                                args.get(index + 1)
+                                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                            )
+                            .context("invalid --as-of-utc")?
+                            .with_timezone(&Utc),
+                        );
+                        index += 2;
+                    }
+                    "--manifest" => {
+                        manifests.push(PathBuf::from(
+                            args.get(index + 1)
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        ));
+                        index += 2;
+                    }
+                    _ => {
+                        passthrough.push(args[index].clone());
+                        index += 1;
+                    }
+                }
+            }
+            let config = ProductBuildConfig::from_env_and_args(&passthrough)?;
+            let path = merge_current_artifacts_manifests(
+                &config.build_root,
+                as_of_utc.unwrap_or_else(Utc::now),
+                &manifests,
+            )?;
+            println!("{}", path.display());
         }
         Some("audit-procedure-geometry") => {
             let mut main_db = None;

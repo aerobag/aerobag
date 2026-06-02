@@ -39,6 +39,8 @@ interface NativeBridge {
 
     fun planOfflinePackagesFromBundleJson(inputJson: String): String
 
+    fun planCurrentArtifactsDiscoveryJson(inputJson: String): String
+
     fun navDbOpenControllerCreate(candidatesJson: String): Long
 
     fun navDbOpenControllerStep(handle: Long): String
@@ -459,6 +461,8 @@ object NativeBindings : NativeBridge {
     external override fun reduceOfflinePackagesJson(inputJson: String): String
 
     external override fun planOfflinePackagesFromBundleJson(inputJson: String): String
+
+    external override fun planCurrentArtifactsDiscoveryJson(inputJson: String): String
 
     external override fun navDbOpenControllerCreate(candidatesJson: String): Long
 

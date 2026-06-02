@@ -801,27 +801,25 @@ internal data class OfflinePackagesReduceResultWire(
 )
 
 @Serializable
-internal data class CurrentArtifactsManifestWire(
-    @SerialName("artifact_roots")
-    val artifactRoots: CurrentArtifactsArtifactRootsWire,
-    @SerialName("as_of_utc")
-    val asOfUtc: String? = null,
-    val bundles: List<CurrentArtifactsBundleRefWire> = emptyList(),
+internal data class CurrentArtifactsDiscoveryInputWire(
+    @SerialName("publication_root_url")
+    val publicationRootUrl: String,
+    @SerialName("current_artifacts_json")
+    val currentArtifactsJson: String,
 )
 
 @Serializable
-internal data class CurrentArtifactsArtifactRootsWire(
-    val packaged: String,
-    val unpacked: String,
+internal data class CurrentArtifactsDiscoveryPlanWire(
+    @SerialName("discovery_jsons")
+    val discoveryJsons: List<String>,
+    @SerialName("bundle_requests")
+    val bundleRequests: List<CurrentArtifactsBundleRequestWire>,
 )
 
 @Serializable
-internal data class CurrentArtifactsBundleRefWire(
+internal data class CurrentArtifactsBundleRequestWire(
     val filename: String,
-    @SerialName("relative_path")
-    val relativePath: String? = null,
-    @SerialName("bundle_type")
-    val bundleType: String,
+    val url: String,
 )
 
 @Serializable

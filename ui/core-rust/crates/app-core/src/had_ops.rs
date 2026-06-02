@@ -4009,24 +4009,30 @@ mod tests {
 
     fn current_nav_db_dir() -> PathBuf {
         let artifact_root = artifact_read_root();
-        let current: serde_json::Value = serde_json::from_slice(
-            &fs::read(artifact_root.join("current_artifacts.json"))
-                .expect("read current_artifacts.json"),
+        let current_artifacts_json =
+            fs::read_to_string(artifact_root.join("current_artifacts.json"))
+                .expect("read current_artifacts.json");
+        let current = crate::package_management::select_supported_current_artifacts_manifests(
+            crate::package_management::decode_current_artifacts_manifest_list(
+                &current_artifacts_json,
+            )
+            .expect("decode current_artifacts.json"),
         )
-        .expect("decode current_artifacts.json");
-        let unpacked_root = current["artifact_roots"]["unpacked"]
-            .as_str()
-            .expect("current_artifacts artifact_roots.unpacked");
-        let cycle_bundle = current["bundles"]
-            .as_array()
-            .expect("current_artifacts bundles")
+        .expect("select supported current_artifacts")
+        .into_iter()
+        .next()
+        .expect("supported current_artifacts");
+        let unpacked_root = current.artifact_roots.unpacked.as_str();
+        let cycle_bundle = current
+            .bundles
             .iter()
-            .find(|bundle| bundle["bundle_type"].as_str() == Some("cycle"))
+            .find(|bundle| bundle.bundle_type == "cycle")
             .expect("cycle bundle in current_artifacts");
-        let bundle_relative_path = cycle_bundle["relative_path"]
-            .as_str()
-            .or_else(|| cycle_bundle["filename"].as_str())
-            .expect("cycle bundle relative_path");
+        let bundle_relative_path = if cycle_bundle.relative_path.is_empty() {
+            cycle_bundle.filename.as_str()
+        } else {
+            cycle_bundle.relative_path.as_str()
+        };
         let bundle: serde_json::Value = serde_json::from_slice(
             &fs::read(artifact_root.join(unpacked_root).join(bundle_relative_path))
                 .expect("read cycle bundle manifest"),

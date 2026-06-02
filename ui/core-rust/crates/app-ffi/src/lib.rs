@@ -1403,6 +1403,12 @@ struct OfflinePackagesControllerResultWire {
     command: Option<app_core::OfflinePackagesControllerCommand>,
 }
 
+#[derive(Deserialize)]
+struct CurrentArtifactsDiscoveryInputWire {
+    publication_root_url: String,
+    current_artifacts_json: String,
+}
+
 pub fn plan_offline_packages_from_bundle_json(input_json: &str) -> Result<String, String> {
     let input: BundlePackageManagementInputWire =
         serde_json::from_str(input_json).map_err(|err| err.to_string())?;
@@ -1416,6 +1422,16 @@ pub fn plan_offline_packages_from_bundle_json(input_json: &str) -> Result<String
         forced_gc_installed_filenames: Vec::new(),
         suppressed_fetch_filenames: Vec::new(),
     });
+    serde_json::to_string(&plan).map_err(|err| err.to_string())
+}
+
+pub fn plan_current_artifacts_discovery_json(input_json: &str) -> Result<String, String> {
+    let input: CurrentArtifactsDiscoveryInputWire =
+        serde_json::from_str(input_json).map_err(|err| err.to_string())?;
+    let plan = app_core::plan_current_artifacts_discovery(
+        &input.publication_root_url,
+        &input.current_artifacts_json,
+    )?;
     serde_json::to_string(&plan).map_err(|err| err.to_string())
 }
 
@@ -1639,6 +1655,19 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_planOfflinePac
     let result = (|| {
         let input = get_java_string(&mut env, input_json)?;
         plan_offline_packages_from_bundle_json(&input)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_planCurrentArtifactsDiscoveryJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    input_json: JString,
+) -> jstring {
+    let result = (|| {
+        let input = get_java_string(&mut env, input_json)?;
+        plan_current_artifacts_discovery_json(&input)
     })();
     return_string(&mut env, result)
 }

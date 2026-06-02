@@ -60,6 +60,13 @@ pub(crate) fn package_contract_is_supported(pkg: &BundlePackageArtifact) -> bool
     required_package_contract_id(&pkg.family_id) == Some(pkg.contract_id.as_str())
 }
 
+pub fn current_artifacts_manifest_is_supported(manifest: &CurrentArtifactsManifest) -> bool {
+    !manifest.contracts.is_empty()
+        && manifest.contracts.iter().all(|(family_id, contract_id)| {
+            required_package_contract_id(family_id) == Some(contract_id.as_str())
+        })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleManifest {
     pub packages: Vec<BundlePackageArtifact>,
@@ -68,6 +75,7 @@ pub struct BundleManifest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurrentArtifactsManifest {
     pub schema_version: Option<u32>,
+    pub contracts: BTreeMap<String, String>,
     pub artifact_roots: CurrentArtifactsArtifactRoots,
     pub as_of_date: Option<String>,
     pub as_of_utc: Option<String>,
@@ -115,6 +123,97 @@ pub struct CurrentStartupPrefetchCycleResources {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurrentStartupPrefetchResource {
     pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurrentArtifactsBundleRequest {
+    pub filename: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurrentArtifactsDiscoveryPlan {
+    pub discovery_jsons: Vec<String>,
+    pub bundle_requests: Vec<CurrentArtifactsBundleRequest>,
+}
+
+pub fn decode_current_artifacts_manifest_list(
+    payload: &str,
+) -> Result<Vec<CurrentArtifactsManifest>, String> {
+    let manifests = serde_json::from_str::<Vec<CurrentArtifactsManifest>>(payload)
+        .map_err(|err| format!("failed to decode current_artifacts.json list: {err}"))?;
+    if manifests.is_empty() {
+        return Err("current_artifacts.json list is empty".to_string());
+    }
+    Ok(manifests)
+}
+
+pub fn select_supported_current_artifacts_manifests(
+    manifests: Vec<CurrentArtifactsManifest>,
+) -> Result<Vec<CurrentArtifactsManifest>, String> {
+    let selected = manifests
+        .into_iter()
+        .filter(current_artifacts_manifest_is_supported)
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return Err("current_artifacts.json has no manifest with supported contracts".to_string());
+    }
+    Ok(selected)
+}
+
+pub fn plan_current_artifacts_discovery(
+    publication_root_url: &str,
+    current_artifacts_json: &str,
+) -> Result<CurrentArtifactsDiscoveryPlan, String> {
+    let selected = select_supported_current_artifacts_manifests(
+        decode_current_artifacts_manifest_list(current_artifacts_json)?,
+    )?;
+    let discovery_jsons = selected
+        .iter()
+        .map(|manifest| serde_json::to_string(manifest).map_err(|err| err.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut seen_filenames = BTreeSet::new();
+    let mut bundle_requests = Vec::new();
+    for manifest in &selected {
+        let packaged_root = join_package_url([
+            publication_root_url,
+            manifest.artifact_roots.packaged.as_str(),
+        ]);
+        for bundle in &manifest.bundles {
+            if !seen_filenames.insert(bundle.filename.clone()) {
+                continue;
+            }
+            let relative_path = if bundle.relative_path.trim().is_empty() {
+                bundle.filename.as_str()
+            } else {
+                bundle.relative_path.as_str()
+            };
+            bundle_requests.push(CurrentArtifactsBundleRequest {
+                filename: bundle.filename.clone(),
+                url: join_package_url([packaged_root.as_str(), relative_path]),
+            });
+        }
+    }
+    Ok(CurrentArtifactsDiscoveryPlan {
+        discovery_jsons,
+        bundle_requests,
+    })
+}
+
+fn join_package_url<const N: usize>(parts: [&str; N]) -> String {
+    parts
+        .into_iter()
+        .enumerate()
+        .map(|(index, part)| {
+            if index == 0 {
+                part.trim().trim_end_matches('/').to_string()
+            } else {
+                part.trim().trim_matches('/').to_string()
+            }
+        })
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2671,10 +2770,83 @@ mod tests {
         }
     }
 
+    fn test_contracts() -> BTreeMap<String, String> {
+        BTreeMap::from([
+            (
+                "nav-db".to_string(),
+                crate::REQUIRED_NAV_DB_CONTRACT_ID.to_string(),
+            ),
+            (
+                "sec".to_string(),
+                product_contracts::SEC_CONTRACT_ID.to_string(),
+            ),
+        ])
+    }
+
+    fn discovery_manifest_with_nav_contract(contract_id: &str) -> CurrentArtifactsManifest {
+        CurrentArtifactsManifest {
+            schema_version: Some(1),
+            contracts: BTreeMap::from([("nav-db".to_string(), contract_id.to_string())]),
+            artifact_roots: test_artifact_roots(),
+            as_of_date: Some("2026-05-20".to_string()),
+            as_of_utc: Some("2026-05-20T12:00:00Z".to_string()),
+            bundles: vec![CurrentArtifactsBundleRef {
+                filename: "bundle_cycle_2605.json".to_string(),
+                relative_path: "bundle_cycle_2605.json".to_string(),
+                id: "cycle-2605".to_string(),
+                bundle_type: "cycle".to_string(),
+                cycle: Some("2605".to_string()),
+                cycle_version: Some("01".to_string()),
+                start_valid: None,
+                end_valid: None,
+                checksum_sha256: None,
+                size_bytes: None,
+            }],
+            startup_prefetch: None,
+        }
+    }
+
+    #[test]
+    fn current_artifacts_root_requires_list_json() {
+        let object_json = serde_json::to_string(&discovery_manifest_with_nav_contract(
+            crate::REQUIRED_NAV_DB_CONTRACT_ID,
+        ))
+        .unwrap();
+
+        assert!(decode_current_artifacts_manifest_list(&object_json).is_err());
+    }
+
+    #[test]
+    fn current_artifacts_discovery_plan_selects_supported_contracts() {
+        let unsupported = discovery_manifest_with_nav_contract("NAV999");
+        let supported = discovery_manifest_with_nav_contract(crate::REQUIRED_NAV_DB_CONTRACT_ID);
+        let list_json = serde_json::to_string(&vec![unsupported, supported]).unwrap();
+
+        let plan =
+            plan_current_artifacts_discovery("https://example.test/packages", &list_json).unwrap();
+
+        assert_eq!(plan.discovery_jsons.len(), 1);
+        assert_eq!(
+            plan.bundle_requests,
+            vec![CurrentArtifactsBundleRequest {
+                filename: "bundle_cycle_2605.json".to_string(),
+                url: "https://example.test/packages/published_packaged/bundle_cycle_2605.json"
+                    .to_string(),
+            }]
+        );
+        let selected: CurrentArtifactsManifest =
+            serde_json::from_str(&plan.discovery_jsons[0]).unwrap();
+        assert_eq!(
+            selected.contracts.get("nav-db").map(String::as_str),
+            Some(crate::REQUIRED_NAV_DB_CONTRACT_ID)
+        );
+    }
+
     #[test]
     fn forced_gc_bad_navdbs_show_fetch_and_gc_in_core_row() {
         let discovery = CurrentArtifactsManifest {
             schema_version: Some(1),
+            contracts: test_contracts(),
             artifact_roots: test_artifact_roots(),
             as_of_date: Some("2026-03-25".to_string()),
             as_of_utc: Some("2026-03-25T12:00:00Z".to_string()),
@@ -2785,6 +2957,7 @@ mod tests {
     fn remote_poisoned_filename_is_suppressed_from_refetch() {
         let discovery = CurrentArtifactsManifest {
             schema_version: Some(1),
+            contracts: test_contracts(),
             artifact_roots: test_artifact_roots(),
             as_of_date: Some("2026-04-25".to_string()),
             as_of_utc: Some("2026-04-25T12:00:00Z".to_string()),
@@ -2890,6 +3063,7 @@ mod tests {
     fn reducer_cycles_region_in_core() {
         let discovery = CurrentArtifactsManifest {
             schema_version: Some(1),
+            contracts: test_contracts(),
             artifact_roots: test_artifact_roots(),
             as_of_date: Some("2026-04-15".to_string()),
             as_of_utc: Some("2026-04-15T12:00:00Z".to_string()),
@@ -2960,6 +3134,7 @@ mod tests {
     fn discovery_selects_latest_manifest_not_after_now_and_merges_cycle_bundles() {
         let early = CurrentArtifactsManifest {
             schema_version: Some(1),
+            contracts: test_contracts(),
             artifact_roots: test_artifact_roots(),
             as_of_date: Some("2026-03-25".to_string()),
             as_of_utc: Some("2026-03-25T12:00:00Z".to_string()),
@@ -2979,6 +3154,7 @@ mod tests {
         };
         let overlap = CurrentArtifactsManifest {
             schema_version: Some(1),
+            contracts: test_contracts(),
             artifact_roots: test_artifact_roots(),
             as_of_date: Some("2026-04-15".to_string()),
             as_of_utc: Some("2026-04-15T12:00:00Z".to_string()),

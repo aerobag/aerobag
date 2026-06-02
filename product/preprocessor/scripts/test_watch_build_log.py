@@ -21,14 +21,16 @@ class WatchBuildLogTests(unittest.TestCase):
             current_path = root / "current_artifacts.json"
             current_path.write_text(
                 json.dumps(
-                    {
-                        "schema_version": 1,
-                        "artifact_roots": {"packaged": "published_packaged/"},
-                        "diagnostics": {
-                            "filename": diagnostics_name,
-                            "error_count": 0,
-                        },
-                    }
+                    [
+                        {
+                            "schema_version": 1,
+                            "artifact_roots": {"packaged": "published_packaged/"},
+                            "diagnostics": {
+                                "filename": diagnostics_name,
+                                "error_count": 0,
+                            },
+                        }
+                    ]
                 ),
                 encoding="utf-8",
             )
@@ -54,6 +56,26 @@ class WatchBuildLogTests(unittest.TestCase):
             self.assertEqual(
                 watch_build_log.latest_current_artifacts_path(packaged), current_path
             )
+
+    def test_latest_current_artifacts_falls_back_to_version_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            packaged = root / "published_packaged"
+            packaged.mkdir()
+            version_path = root / "version_artifacts_20260517T010203Z.json"
+            version_path.write_text("{}", encoding="utf-8")
+
+            self.assertEqual(
+                watch_build_log.latest_current_artifacts_path(packaged), version_path
+            )
+
+    def test_parse_version_artifacts_path_from_log_detail(self) -> None:
+        self.assertEqual(
+            watch_build_log.parse_current_artifacts_path(
+                "PASS version_artifacts=/tmp/version_artifacts_20260517T010203Z.json"
+            ),
+            Path("/tmp/version_artifacts_20260517T010203Z.json"),
+        )
 
     def test_diagnostics_reject_parent_traversal(self) -> None:
         root = Path("/tmp/publication")

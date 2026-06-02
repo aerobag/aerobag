@@ -235,7 +235,7 @@ def parse_diagnostic_error_count(details: str) -> int | None:
 
 def parse_current_artifacts_path(final_details: str) -> Path | None:
     for token in final_details.split():
-        if token.startswith("current_artifacts="):
+        if token.startswith("current_artifacts=") or token.startswith("version_artifacts="):
             value = token.split("=", 1)[1]
             return Path(value) if value else None
     return None
@@ -300,6 +300,16 @@ def read_diagnostics_state(state: BuildState) -> DiagnosticsState:
             color="yellow",
         )
 
+    current = select_diagnostics_manifest(current)
+    if current is None:
+        if state.diagnostic_error_count is not None:
+            return diagnostics_from_count(state.diagnostic_error_count, "from log")
+        return DiagnosticsState(
+            status="missing",
+            text=f"diagnostics: no manifests in {current_artifacts_path.name}",
+            color="yellow",
+        )
+
     diagnostics = current.get("diagnostics")
     if not isinstance(diagnostics, dict):
         if state.diagnostic_error_count is not None:
@@ -359,11 +369,25 @@ def latest_current_artifacts_path(build_root: Path) -> Path | None:
         return latest_alias
     try:
         candidates = sorted(
-            publication_root_for_packaged_root(build_root).glob("current_artifacts_*T*.json")
+            publication_root_for_packaged_root(build_root).glob("version_artifacts_*T*.json")
         )
     except OSError:
         return None
     return candidates[-1] if candidates else None
+
+
+def select_diagnostics_manifest(current: object) -> dict | None:
+    if isinstance(current, dict):
+        return current
+    if not isinstance(current, list):
+        return None
+    manifests = [manifest for manifest in current if isinstance(manifest, dict)]
+    if not manifests:
+        return None
+    for manifest in manifests:
+        if isinstance(manifest.get("diagnostics"), dict):
+            return manifest
+    return manifests[0]
 
 
 def publication_root_for_packaged_root(packaged_root: Path) -> Path:

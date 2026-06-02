@@ -11,8 +11,12 @@ Primary docs:
 - `docs/PACKAGE_MANIFEST_CLEANUP_PLAN.md`
 
 Current published shape:
-- `current_artifacts_*.json`
+- `current_artifacts.json` and `current_artifacts_*.json`
+  - JSON list of current version-specific publication manifests
+- `version_artifacts_*.json`
+  - single build/version publication manifest used as merger input
   - `schema_version`
+  - `contracts`
   - `as_of_date`
   - `bundles`
   - `diagnostics`
@@ -33,13 +37,12 @@ Current published shape:
 - no `current_artifacts.obstacles`
 
 What was updated on the app side in this pass:
-- `snapshot_artifacts.py`
-  - snapshots the new contract shape
-  - copies `current_artifacts`, referenced bundles, referenced package files, and diagnostics
+- `snapshot_artifacts.py` was retired.
+  - dev clients should point at the artifact root directly.
+  - `preprocessor-cli merge-current-artifacts` publishes the list-form `current_artifacts.json`.
 - `ui/scripts/stage_dev_assets.py`
-  - stages from `current_artifacts.bundles[]`
-  - resolves cycle and fast assets from bundle `packages[]`
-  - stages `nav_db` from the `nav-db` package
+  - validates the list-form `current_artifacts.json`
+  - records the artifact root used for `/packages`
   - no longer expects legacy top-level `resource_index`, `catalog`, `nav_kv`, `fast_products`, `static_products`, or `obstacles`
 - `ui/web-app/vite.config.ts`
   - removed dead packaged aliases for `catalog` / `resource_index`
@@ -47,9 +50,8 @@ What was updated on the app side in this pass:
   - replaced dead imports of packaged `catalog` / `resource_index` with local fixtures so tests still run
 
 What was actually validated:
-- `python3 snapshot_artifacts.py`
 - `python3 ui/scripts/stage_dev_assets.py`
-- `python3 -m py_compile snapshot_artifacts.py ui/scripts/stage_dev_assets.py`
+- `python3 -m py_compile ui/scripts/stage_dev_assets.py`
 - `npm test` in `ui/web-app`
 - `npm run build` in `ui/web-app`
 

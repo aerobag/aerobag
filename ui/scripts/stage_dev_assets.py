@@ -36,11 +36,15 @@ def resolve_artifact_root() -> Path:
         "packaged": "published_packaged/",
         "unpacked": "published_unpacked/",
     }
-    if current_artifacts.get("artifact_roots") != expected_roots:
-        raise RuntimeError(
-            f"{current} has artifact_roots={current_artifacts.get('artifact_roots')!r}; "
-            f"expected {expected_roots!r}"
-        )
+    if not isinstance(current_artifacts, list) or not current_artifacts:
+        raise RuntimeError(f"{current} must be a non-empty current_artifacts list")
+    for manifest in current_artifacts:
+        artifact_roots = manifest.get("artifact_roots") if isinstance(manifest, dict) else None
+        if artifact_roots != expected_roots:
+            raise RuntimeError(
+                f"{current} has artifact_roots={artifact_roots!r}; "
+                f"expected {expected_roots!r}"
+            )
     return candidate
 
 

@@ -9392,17 +9392,22 @@ mod tests {
     fn missing_live_feed_products_do_not_abort_vector_overlay_resources() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let current_artifacts = format!(
+            r#"[{{
+                "schema_version": 1,
+                "contracts": {{"nav-db": "{}"}},
+                "artifact_roots": {{
+                    "packaged": "published_packaged",
+                    "unpacked": "published_unpacked"
+                }},
+                "bundles": []
+            }}]"#,
+            crate::REQUIRED_NAV_DB_CONTRACT_ID
+        );
         ingest_resource_in_session(
             init.handle,
             "publication/current_artifacts",
-            br#"{
-                "schema_version": 1,
-                "artifact_roots": {
-                    "packaged": "published_packaged",
-                    "unpacked": "published_unpacked"
-                },
-                "bundles": []
-            }"#,
+            current_artifacts.as_bytes(),
         )
         .expect("ingest current artifacts");
         let mut overlay = empty_map_overlay_query();
@@ -11605,7 +11610,11 @@ mod tests {
                 .publication_resolver
                 .ingest_resource(
                     "publication/current_artifacts",
-                    br#"{"schema_version":1,"as_of_utc":"2026-05-20T12:00:00Z","artifact_roots":{"packaged":"published_packaged","unpacked":"published_unpacked"},"bundles":[]}"#,
+                    format!(
+                        r#"[{{"schema_version":1,"contracts":{{"nav-db":"{}"}},"as_of_utc":"2026-05-20T12:00:00Z","artifact_roots":{{"packaged":"published_packaged","unpacked":"published_unpacked"}},"bundles":[]}}]"#,
+                        crate::REQUIRED_NAV_DB_CONTRACT_ID
+                    )
+                    .as_bytes(),
                 )
                 .expect("ingest current artifacts");
             session.current_artifacts_checked_epoch_ms = Some(checked_at);

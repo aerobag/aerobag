@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::package_management::package_contract_is_supported;
+use crate::package_management::{
+    decode_current_artifacts_manifest_list, package_contract_is_supported,
+    select_supported_current_artifacts_manifests,
+};
 use crate::{
     BundleManifest, BundlePackageArtifact, CoreResourceRequest, CoreResourceSource,
     CurrentArtifactsManifest, HadOperationOutcome, NavDbArtifactCandidate,
@@ -73,10 +76,11 @@ impl PublicationResolver {
         let payload = std::str::from_utf8(resource_bytes)
             .map_err(|err| format!("publication resource {resource_id} is not utf-8: {err}"))?;
         if resource_id == CURRENT_ARTIFACTS_RESOURCE_ID {
-            self.current_artifacts = Some(
-                serde_json::from_str::<CurrentArtifactsManifest>(payload)
-                    .map_err(|err| format!("failed to decode current_artifacts.json: {err}"))?,
-            );
+            let mut manifests = select_supported_current_artifacts_manifests(
+                decode_current_artifacts_manifest_list(payload)?,
+            )?;
+            manifests.sort_by(|left, right| left.as_of_utc.cmp(&right.as_of_utc));
+            self.current_artifacts = manifests.pop();
             return Ok(());
         }
         let filename = resource_id
@@ -352,6 +356,10 @@ mod tests {
     fn current_artifacts() -> CurrentArtifactsManifest {
         CurrentArtifactsManifest {
             schema_version: Some(1),
+            contracts: BTreeMap::from([(
+                "nav-db".to_string(),
+                crate::REQUIRED_NAV_DB_CONTRACT_ID.to_string(),
+            )]),
             artifact_roots: CurrentArtifactsArtifactRoots {
                 packaged: "published_packaged".to_string(),
                 unpacked: "published_unpacked".to_string(),
@@ -372,6 +380,10 @@ mod tests {
             }],
             startup_prefetch: None,
         }
+    }
+
+    fn current_artifacts_list_json() -> String {
+        serde_json::to_string(&vec![current_artifacts()]).unwrap()
     }
 
     fn bundle() -> BundleManifest {
@@ -428,9 +440,7 @@ mod tests {
         resolver
             .ingest_resource(
                 "publication/current_artifacts",
-                serde_json::to_string(&current_artifacts())
-                    .unwrap()
-                    .as_bytes(),
+                current_artifacts_list_json().as_bytes(),
             )
             .unwrap();
         let outcome = resolver
@@ -454,9 +464,7 @@ mod tests {
         resolver
             .ingest_resource(
                 "publication/current_artifacts",
-                serde_json::to_string(&current_artifacts())
-                    .unwrap()
-                    .as_bytes(),
+                current_artifacts_list_json().as_bytes(),
             )
             .unwrap();
         resolver
@@ -486,9 +494,7 @@ mod tests {
         resolver
             .ingest_resource(
                 "publication/current_artifacts",
-                serde_json::to_string(&current_artifacts())
-                    .unwrap()
-                    .as_bytes(),
+                current_artifacts_list_json().as_bytes(),
             )
             .unwrap();
         resolver
@@ -511,9 +517,7 @@ mod tests {
         resolver
             .ingest_resource(
                 "publication/current_artifacts",
-                serde_json::to_string(&current_artifacts())
-                    .unwrap()
-                    .as_bytes(),
+                current_artifacts_list_json().as_bytes(),
             )
             .unwrap();
         resolver
@@ -544,9 +548,7 @@ mod tests {
         resolver
             .ingest_resource(
                 "publication/current_artifacts",
-                serde_json::to_string(&current_artifacts())
-                    .unwrap()
-                    .as_bytes(),
+                current_artifacts_list_json().as_bytes(),
             )
             .unwrap();
         resolver

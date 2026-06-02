@@ -1,11 +1,12 @@
 use super::*;
 
-pub(super) fn nav_db_warning_text() -> String {
-    "This NAV-DB is getting moldy.".to_string()
+pub(super) fn nav_db_warning_text() -> Option<String> {
+    None
 }
 
 pub(super) fn nav_kv_family_warning_text(family_id: &str) -> Option<String> {
-    (family_id == "enr-h").then(|| "This IFR-high chart has a sample warning.".to_string())
+    let _ = family_id;
+    None
 }
 
 #[derive(Debug, Clone)]
@@ -1159,7 +1160,7 @@ pub(super) fn build_nav_kv_artifact(
                         .first()
                         .cloned()
                 }),
-            warning_text: Some(nav_db_warning_text()),
+            warning_text: nav_db_warning_text(),
             metadata: BTreeMap::from([
                 (
                     "contract_id".to_string(),

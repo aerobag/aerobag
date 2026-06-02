@@ -2002,7 +2002,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         Ok(result) => {
             write_build_status_html(config, &result.current_artifacts_path)?;
             master_log.log(format!(
-                "complete PASS current_artifacts={}",
+                "complete PASS version_artifacts={}",
                 result.current_artifacts_path.display()
             ))?;
             Ok(result)

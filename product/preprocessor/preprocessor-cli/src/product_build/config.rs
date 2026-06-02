@@ -23,6 +23,9 @@ impl ProductBuildConfig {
             ProductBuildProfile::Production => artifact_root.join("published_packaged"),
             ProductBuildProfile::Validation => artifact_root.join("published_packaged_validation"),
         };
+        let mut build_label = env::var("AEROBAG_BUILD_LABEL")
+            .ok()
+            .and_then(non_empty_build_label);
         let mut target_cycle = None;
         let mut fetch_jobs = env_usize("FETCH_JOBS").unwrap_or(4);
         let mut cpu_jobs = env_usize("CPU_JOBS").unwrap_or_else(default_cpu_jobs);
@@ -57,6 +60,14 @@ impl ProductBuildConfig {
                     build_root = PathBuf::from(
                         args.get(index + 1)
                             .context("missing value for --build-root")?,
+                    );
+                    index += 2;
+                }
+                "--build-label" => {
+                    build_label = non_empty_build_label(
+                        args.get(index + 1)
+                            .context("missing value for --build-label")?
+                            .clone(),
                     );
                     index += 2;
                 }
@@ -110,6 +121,7 @@ impl ProductBuildConfig {
             chart_cutline_root,
             build_root,
             profile,
+            build_label,
             target_cycle,
             fetch_jobs,
             cpu_jobs,
@@ -118,6 +130,19 @@ impl ProductBuildConfig {
             fetch_cache_mode,
         })
     }
+}
+
+fn non_empty_build_label(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(
+        trimmed
+            .chars()
+            .map(|ch| if ch.is_whitespace() { '_' } else { ch })
+            .collect(),
+    )
 }
 
 pub(super) fn env_path(name: &str) -> Option<PathBuf> {

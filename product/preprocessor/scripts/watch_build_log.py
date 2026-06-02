@@ -68,6 +68,7 @@ class BuildState:
         self.completed = 0
         self.running_units = 0
         self.header = ""
+        self.build_label = ""
         self.cycle_summary = ""
         self.bundle_cycle = "?"
         self.pid: int | None = None
@@ -90,6 +91,7 @@ class BuildState:
             self.header = f"{match.group('ts')} {match.group('rest')}"
             self.pid = parse_pid(match.group("rest"))
             self.build_root = parse_build_root(match.group("rest"))
+            self.build_label = parse_build_label(match.group("rest"))
             self.last_timestamp = match.group("ts")
             return
 
@@ -169,6 +171,7 @@ class BuildState:
         self.completed = 0
         self.running_units = 0
         self.header = ""
+        self.build_label = ""
         self.cycle_summary = ""
         self.bundle_cycle = "?"
         self.pid = None
@@ -221,6 +224,13 @@ def parse_build_root(header_rest: str) -> Path | None:
             value = token.split("=", 1)[1]
             return Path(value) if value else None
     return None
+
+
+def parse_build_label(header_rest: str) -> str:
+    for token in header_rest.split():
+        if token.startswith("build_label="):
+            return token.split("=", 1)[1]
+    return ""
 
 
 def parse_diagnostic_error_count(details: str) -> int | None:
@@ -470,6 +480,7 @@ def run_ui(stdscr, log_path: Path, refresh_seconds: float) -> None:
         )
 
         summary = (
+            f"build={state.build_label or '?'} "
             f"bundle_cycle={state.bundle_cycle} "
             f"active={len(state.active_tasks())} "
             f"completed={state.completed}/{state.total_tasks or '?'} "

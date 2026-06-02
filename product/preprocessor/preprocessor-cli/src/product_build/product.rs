@@ -15,10 +15,11 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         .with_context(|| format!("failed to create {}", log_root.display()))?;
     let mut master_log = MasterLog::create(&log_root.join("master.log"))?;
     master_log.log(format!(
-        "begin pid={} profile={} build_root={} scheduler=product_weighted_dag scheduler_version=2 fetch_jobs={} cpu_jobs={} max_heavy_jobs={} fetch_cache_mode={}",
+        "begin pid={} profile={} build_root={} build_label={} scheduler=product_weighted_dag scheduler_version=2 fetch_jobs={} cpu_jobs={} max_heavy_jobs={} fetch_cache_mode={}",
         std::process::id(),
         config.profile.as_str(),
         config.build_root.display(),
+        config.build_label.as_deref().unwrap_or("local"),
         config.fetch_jobs,
         config.cpu_jobs,
         config.max_heavy_jobs,

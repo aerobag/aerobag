@@ -162,6 +162,7 @@ pub fn gc_build_cache(config: &BuildCacheGcConfig) -> anyhow::Result<BuildCacheG
         chart_cutline_root: PathBuf::new(),
         build_root: config.build_root.clone(),
         profile: config.profile,
+        build_label: None,
         target_cycle: None,
         fetch_jobs: 1,
         cpu_jobs: 1,

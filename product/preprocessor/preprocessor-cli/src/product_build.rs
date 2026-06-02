@@ -125,6 +125,7 @@ pub struct ProductBuildConfig {
     pub chart_cutline_root: PathBuf,
     pub build_root: PathBuf,
     pub profile: ProductBuildProfile,
+    pub build_label: Option<String>,
     pub target_cycle: Option<String>,
     pub fetch_jobs: usize,
     pub cpu_jobs: usize,
@@ -1112,18 +1113,40 @@ fn internal_build_manifest_path(
 
 pub fn published_unpacked_root_from_build_root(build_root: &Path) -> anyhow::Result<PathBuf> {
     let artifact_root = artifact_root_from_build_root(build_root);
-    let unpacked_dir_name = match build_root.file_name().and_then(|name| name.to_str()) {
-        Some("published_packaged") => "published_unpacked",
-        Some("published_packaged_validation") => "published_unpacked_validation",
-        Some(other) => {
+    let build_root_name = build_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("build root has no final path component"))?;
+    if build_root_name == "published_packaged" {
+        return Ok(artifact_root.join("published_unpacked"));
+    }
+    if build_root_name == "published_packaged_validation" {
+        return Ok(artifact_root.join("published_unpacked_validation"));
+    }
+    let Some(parent_name) = build_root
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+    else {
+        return Err(anyhow::anyhow!(
+            "unsupported build root for unpacked publication: {}",
+            build_root_name
+        ));
+    };
+    match parent_name {
+        "published_packaged" => Ok(artifact_root
+            .join("published_unpacked")
+            .join(build_root_name)),
+        "published_packaged_validation" => Ok(artifact_root
+            .join("published_unpacked_validation")
+            .join(build_root_name)),
+        _ => {
             return Err(anyhow::anyhow!(
                 "unsupported build root for unpacked publication: {}",
-                other
+                build_root_name
             ))
         }
-        None => return Err(anyhow::anyhow!("build root has no final path component")),
-    };
-    Ok(artifact_root.join(unpacked_dir_name))
+    }
 }
 
 fn unpacked_target_dir(unpacked_root: &Path, published_filename: &str) -> anyhow::Result<PathBuf> {
@@ -4049,6 +4072,100 @@ mod tests {
         assert_eq!(
             manifests[0].contracts.get("nav-db").map(String::as_str),
             Some(NAV_DB_CONTRACT_ID)
+        );
+    }
+
+    #[test]
+    fn merge_current_artifacts_validates_version_subroots() {
+        let temp = tempdir().unwrap();
+        let publication_packaged_root = temp.path().join("published_packaged");
+        let mut version_paths = Vec::new();
+
+        for (label, contract_id, timestamp) in [
+            ("nav6-sunset", "NAV6", "20260514T000000Z"),
+            ("master", "NAV7", "20260514T000100Z"),
+        ] {
+            let packaged_root = publication_packaged_root.join(label);
+            fs::create_dir_all(&packaged_root).unwrap();
+            let nav_db_sha = if contract_id == "NAV6" {
+                "6".repeat(64)
+            } else {
+                "7".repeat(64)
+            };
+            let nav_db_filename = format!("nav_db_{contract_id}_2605_01_{nav_db_sha}.zip");
+            fs::write(packaged_root.join(&nav_db_filename), []).unwrap();
+            let bundle = BundleManifest {
+                schema_version: 2,
+                bundle_id: format!("cycle_2605_01_{label}"),
+                bundle_type: "cycle".to_string(),
+                cycle: "2605".to_string(),
+                cycle_version: "01".to_string(),
+                generated_at_utc: "2026-05-14T00:00:00Z".to_string(),
+                effective_date: "2026-05-14".to_string(),
+                expiration_date: "2026-06-11".to_string(),
+                start_valid: "2026-05-14".to_string(),
+                end_valid: "2026-06-11".to_string(),
+                packages: vec![BundlePackageArtifact {
+                    id: format!("NAV_DB_{contract_id}_2605_01"),
+                    family_id: "nav-db".to_string(),
+                    contract_id: contract_id.to_string(),
+                    region_id: None,
+                    filename: nav_db_filename.clone(),
+                    relative_path: nav_db_filename,
+                    cycle: Some("2605".to_string()),
+                    cycle_version: Some("01".to_string()),
+                    checksum_sha256: nav_db_sha,
+                    size_bytes: 0,
+                    published_at_utc: None,
+                    source_generated_at_utc: None,
+                    source_version: None,
+                    source_fetched_at_utc: None,
+                    effective_date: Some("2026-05-14".to_string()),
+                    expiration_date: Some("2026-06-11".to_string()),
+                    warning_text: None,
+                    metadata: BTreeMap::new(),
+                }],
+                ancillary: vec![],
+            };
+            let bundle_path = write_hashed_bundle_manifest(&packaged_root, &bundle).unwrap();
+            let version_manifest = CurrentArtifactsManifest {
+                schema_version: 1,
+                contracts: test_contracts(&[("nav-db", contract_id)]),
+                artifact_roots: current_artifact_roots_for_packaged_root(&packaged_root).unwrap(),
+                as_of_date: "2026-05-14".to_string(),
+                as_of_utc: "2026-05-14T00:00:00Z".to_string(),
+                bundles: vec![current_bundle_entry_from_path(&bundle_path).unwrap()],
+                startup_prefetch: None,
+                diagnostics: None,
+            };
+            let version_path = temp
+                .path()
+                .join(format!("version_artifacts_{timestamp}.json"));
+            fs::write(
+                &version_path,
+                serde_json::to_vec_pretty(&version_manifest).unwrap(),
+            )
+            .unwrap();
+            version_paths.push(version_path);
+        }
+
+        let current_path = merge_current_artifacts_manifests(
+            &publication_packaged_root,
+            Utc.with_ymd_and_hms(2026, 5, 14, 0, 2, 0).unwrap(),
+            &version_paths,
+        )
+        .unwrap();
+
+        let manifests: Vec<CurrentArtifactsManifest> =
+            serde_json::from_slice(&fs::read(current_path).unwrap()).unwrap();
+        assert_eq!(manifests.len(), 2);
+        assert_eq!(
+            manifests[0].artifact_roots.packaged,
+            "published_packaged/nav6-sunset/"
+        );
+        assert_eq!(
+            manifests[1].artifact_roots.packaged,
+            "published_packaged/master/"
         );
     }
 

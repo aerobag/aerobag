@@ -81,15 +81,19 @@ def run(
     capture: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     print(f"+ cd {cwd} && {' '.join(args)}", flush=True)
-    return subprocess.run(
+    result = subprocess.run(
         args,
         cwd=cwd,
         env=env,
-        check=True,
         text=True,
         stdout=subprocess.PIPE if capture else None,
         stderr=subprocess.STDOUT if capture else None,
     )
+    if result.returncode != 0:
+        if capture and result.stdout:
+            print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+        raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout)
+    return result
 
 
 def artifact_root(repo_root: Path) -> Path:
@@ -150,7 +154,14 @@ def build_ref(
     run(["cargo", "build", "-p", "preprocessor-cli"], cwd=worktree / PREPROCESSOR_DIR, env=env)
 
     binary = Path(env["CARGO_TARGET_DIR"]) / "debug" / "preprocessor-cli"
-    command = [str(binary), "build-product", "--build-root", str(build_root)]
+    command = [
+        str(binary),
+        "build-product",
+        "--build-root",
+        str(build_root),
+        "--build-label",
+        f"{ref}@{sha[:12]}",
+    ]
     if profile:
         command.extend(["--profile", profile])
     command.extend(build_args)
@@ -173,7 +184,7 @@ def main() -> int:
     args = parse_args()
     repo_root = args.repo_root.resolve()
     root = artifact_root(repo_root)
-    build_root = (args.build_root or default_build_root(root, args.profile)).resolve()
+    merge_build_root = (args.build_root or default_build_root(root, args.profile)).resolve()
     target_dir = (args.target_dir or (root / "target")).resolve()
     worktree_root_owned = args.worktree_root is None
     worktree_root = (
@@ -197,7 +208,9 @@ def main() -> int:
     try:
         for ref in args.refs:
             sha = resolve_commit(repo_root, ref)
-            worktree = worktree_root / safe_ref_name(ref, sha)
+            ref_name = safe_ref_name(ref, sha)
+            worktree = worktree_root / ref_name
+            version_build_root = merge_build_root / ref_name
             worktrees.append(worktree)
             print(f"building ref={ref} sha={sha} worktree={worktree}", flush=True)
             manifest = build_ref(
@@ -206,14 +219,19 @@ def main() -> int:
                 sha=sha,
                 worktree=worktree,
                 env=env,
-                build_root=build_root,
+                build_root=version_build_root,
                 profile=args.profile,
                 build_args=build_args,
             )
             manifests.append(manifest)
 
         merge_binary = target_dir / "debug" / "preprocessor-cli"
-        merge_command = [str(merge_binary), "merge-current-artifacts", "--build-root", str(build_root)]
+        merge_command = [
+            str(merge_binary),
+            "merge-current-artifacts",
+            "--build-root",
+            str(merge_build_root),
+        ]
         if args.profile:
             merge_command.extend(["--profile", args.profile])
         if args.as_of_utc:

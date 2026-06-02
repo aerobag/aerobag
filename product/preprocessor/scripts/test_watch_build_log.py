@@ -77,6 +77,15 @@ class WatchBuildLogTests(unittest.TestCase):
             Path("/tmp/version_artifacts_20260517T010203Z.json"),
         )
 
+    def test_build_label_is_parsed_from_begin_line(self) -> None:
+        state = watch_build_log.BuildState()
+        state.apply_line(
+            "+0:00 begin pid=123 profile=production build_root=/tmp/build "
+            "build_label=nav6-sunset@c641d0f2 scheduler=product_weighted_dag"
+        )
+
+        self.assertEqual(state.build_label, "nav6-sunset@c641d0f2")
+
     def test_diagnostics_reject_parent_traversal(self) -> None:
         root = Path("/tmp/publication")
         path = watch_build_log.diagnostics_manifest_path(

@@ -48,7 +48,7 @@ use sha2::{Digest, Sha256};
 
 fn usage() -> &'static str {
     "usage:
-  preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--build-label <label>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli merge-current-artifacts [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--as-of-utc <RFC3339 UTC>] --manifest <path> [--manifest <path>]...
   preprocessor-cli publish-discovery-manifest [--profile <validation|production>] [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
   preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
@@ -81,8 +81,8 @@ fn long_usage() -> &'static str {
   preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
   preprocessor-cli normalize-swim-notams --input-jsonl <path> --output-dir <path> --version-label <label>
   preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]...
-  preprocessor-cli build-cycle [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
-  preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli build-cycle [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--build-label <label>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--build-label <label>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli publish-discovery-manifest [--profile <validation|production>] [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
   preprocessor-cli gc-build-cache [--profile <validation|production>] [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>] [--bootstrap-from-build-manifests]
   preprocessor-cli explain-product-build [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]

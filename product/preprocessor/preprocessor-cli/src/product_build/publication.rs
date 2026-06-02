@@ -18,7 +18,7 @@ pub fn publish_discovery_manifest(
         .iter()
         .map(|filename| current_bundle_entry_from_path(&config.build_root.join(filename)))
         .collect::<anyhow::Result<Vec<_>>>()?;
-    let artifact_roots = default_current_artifact_roots();
+    let artifact_roots = current_artifact_roots_for_packaged_root(&config.build_root)?;
     let startup_prefetch =
         current_startup_prefetch_manifest(&config.build_root, &artifact_roots, &bundles)?;
     let contracts = current_artifacts_contracts(&config.build_root, &bundles)?;
@@ -312,13 +312,107 @@ pub(super) fn write_version_artifacts_json(
 }
 
 pub(super) fn publication_root_for_packaged_root(packaged_root: &Path) -> PathBuf {
-    match packaged_root.file_name().and_then(|name| name.to_str()) {
-        Some("published_packaged") => packaged_root
-            .parent()
-            .unwrap_or(packaged_root)
-            .to_path_buf(),
-        _ => packaged_root.to_path_buf(),
+    let is_packaged_root = packaged_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(is_packaged_root_name);
+    let is_packaged_child = packaged_root
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(is_packaged_root_name);
+    if is_packaged_root || is_packaged_child {
+        return artifact_root_from_build_root(packaged_root).to_path_buf();
     }
+    packaged_root.to_path_buf()
+}
+
+fn publication_root_for_unpacked_root(unpacked_root: &Path) -> PathBuf {
+    let is_unpacked_root = unpacked_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(is_unpacked_root_name);
+    let is_unpacked_child = unpacked_root
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(is_unpacked_root_name);
+    if is_unpacked_root || is_unpacked_child {
+        return unpacked_root
+            .parent()
+            .and_then(|parent| {
+                if is_unpacked_child {
+                    parent.parent()
+                } else {
+                    Some(parent)
+                }
+            })
+            .unwrap_or(unpacked_root)
+            .to_path_buf();
+    }
+    unpacked_root.to_path_buf()
+}
+
+fn is_packaged_root_name(name: &str) -> bool {
+    name == "published_packaged" || name == "published_packaged_validation"
+}
+
+fn is_unpacked_root_name(name: &str) -> bool {
+    name == "published_unpacked" || name == "published_unpacked_validation"
+}
+
+pub(super) fn current_artifact_roots_for_packaged_root(
+    packaged_root: &Path,
+) -> anyhow::Result<CurrentArtifactRoots> {
+    let is_packaged_root = packaged_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(is_packaged_root_name);
+    let is_packaged_child = packaged_root
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(is_packaged_root_name);
+    if !is_packaged_root && !is_packaged_child {
+        return Ok(default_current_artifact_roots());
+    }
+    let publication_root = publication_root_for_packaged_root(packaged_root);
+    let unpacked_root = published_unpacked_root_from_build_root(packaged_root)?;
+    Ok(CurrentArtifactRoots {
+        packaged: publication_root_url(
+            &publication_root,
+            packaged_root,
+            "artifact_roots.packaged",
+        )?,
+        unpacked: publication_root_url(
+            &publication_root,
+            &unpacked_root,
+            "artifact_roots.unpacked",
+        )?,
+    })
+}
+
+fn publication_root_url(
+    publication_root: &Path,
+    artifact_root: &Path,
+    field: &str,
+) -> anyhow::Result<String> {
+    let publication_root = normalize_absolute_path(publication_root);
+    let artifact_root = normalize_absolute_path(artifact_root);
+    let relative = artifact_root
+        .strip_prefix(&publication_root)
+        .with_context(|| {
+            format!(
+                "{field} root {} is not under publication root {}",
+                artifact_root.display(),
+                publication_root.display()
+            )
+        })?;
+    let value = relative.display().to_string();
+    if value.is_empty() {
+        bail!("{field} root must not be the publication root itself");
+    }
+    Ok(format!("{}/", value.trim_matches('/')))
 }
 
 pub(super) fn write_current_artifacts_aliases(
@@ -360,7 +454,7 @@ pub(super) fn write_current_artifacts_manifest(
 ) -> anyhow::Result<PathBuf> {
     let as_of_date = as_of_utc.date_naive();
     let bundles = build_current_bundle_entries(build_root, as_of_date)?;
-    let artifact_roots = default_current_artifact_roots();
+    let artifact_roots = current_artifact_roots_for_packaged_root(build_root)?;
     let startup_prefetch =
         current_startup_prefetch_manifest(build_root, &artifact_roots, &bundles)?;
     let contracts = current_artifacts_contracts(build_root, &bundles)?;
@@ -1128,18 +1222,19 @@ pub(super) fn validate_current_artifacts_manifest(
         validate_required_manifest_string(family_id, "current_artifacts.contracts key")?;
         validate_required_manifest_string(contract_id, "current_artifacts.contracts value")?;
     }
-    if current.artifact_roots.packaged != "published_packaged/" {
+    validate_publication_root_url(
+        &current.artifact_roots.packaged,
+        "current_artifacts.artifact_roots.packaged",
+    )?;
+    validate_publication_root_url(
+        &current.artifact_roots.unpacked,
+        "current_artifacts.artifact_roots.unpacked",
+    )?;
+    if current.artifact_roots.packaged == current.artifact_roots.unpacked {
         bail!(
-            "{} has unexpected artifact_roots.packaged {:?}",
+            "{} uses the same packaged and unpacked artifact roots: {}",
             path.display(),
             current.artifact_roots.packaged
-        );
-    }
-    if current.artifact_roots.unpacked != "published_unpacked/" {
-        bail!(
-            "{} has unexpected artifact_roots.unpacked {:?}",
-            path.display(),
-            current.artifact_roots.unpacked
         );
     }
     if let Some(prefetch) = &current.startup_prefetch {
@@ -1216,6 +1311,14 @@ pub(super) fn validate_publication_resource_url(value: &str, field: &str) -> any
         }
     }
     Ok(())
+}
+
+pub(super) fn validate_publication_root_url(value: &str, field: &str) -> anyhow::Result<()> {
+    if !value.ends_with('/') {
+        bail!("{field} must end with '/', got {value}");
+    }
+    let trimmed = value.trim_end_matches('/');
+    validate_publication_resource_url(trimmed, field)
 }
 
 pub(super) fn validate_bundle_manifest(
@@ -1316,6 +1419,7 @@ pub(super) fn validate_merged_current_artifacts(
     packaged_root: &Path,
     manifests: &[CurrentArtifactsManifest],
 ) -> anyhow::Result<()> {
+    let publication_root = publication_root_for_packaged_root(packaged_root);
     let mut seen_contract_sets = BTreeSet::new();
     for manifest in manifests {
         let contract_set_key = manifest
@@ -1330,14 +1434,16 @@ pub(super) fn validate_merged_current_artifacts(
                 manifest.contracts
             );
         }
+        let manifest_packaged_root =
+            publication_root.join(manifest.artifact_roots.packaged.trim_end_matches('/'));
         for bundle_ref in &manifest.bundles {
             validate_public_filename(
                 &bundle_ref.filename,
                 "current_artifacts[].bundles[].filename",
             )?;
-            let bundle_path = packaged_root.join(&bundle_ref.filename);
+            let bundle_path = manifest_packaged_root.join(&bundle_ref.filename);
             ensure_public_file_exists(&bundle_path)?;
-            let bundle = validate_bundle_manifest(packaged_root, &bundle_path)?;
+            let bundle = validate_bundle_manifest(&manifest_packaged_root, &bundle_path)?;
             validate_bundle_contracts_match_current(&bundle, manifest)?;
         }
         if let Some(diagnostics) = &manifest.diagnostics {
@@ -1345,7 +1451,7 @@ pub(super) fn validate_merged_current_artifacts(
                 &diagnostics.filename,
                 "current_artifacts[].diagnostics.filename",
             )?;
-            ensure_public_file_exists(&packaged_root.join(&diagnostics.filename))?;
+            ensure_public_file_exists(&manifest_packaged_root.join(&diagnostics.filename))?;
         }
     }
     Ok(())
@@ -1384,7 +1490,7 @@ pub(super) fn validate_unpacked_contract_for_discovery(
     let current = load_current_artifacts_manifest(discovery_path)?;
     validate_current_artifacts_manifest(&current, discovery_path)?;
     if let Some(prefetch) = &current.startup_prefetch {
-        let publication_root = unpacked_root.parent().unwrap_or(unpacked_root);
+        let publication_root = publication_root_for_unpacked_root(unpacked_root);
         for cycle in &prefetch.cycle_resources {
             for resource in &cycle.resources {
                 ensure_public_file_exists(&publication_root.join(&resource.url))?;

@@ -1940,6 +1940,7 @@ mod tests {
             chart_cutline_root: root.join("cutlines"),
             build_root: root.join("build"),
             profile: ProductBuildProfile::Validation,
+            build_label: None,
             target_cycle: Some("2605".to_string()),
             fetch_jobs: 4,
             cpu_jobs: 4,

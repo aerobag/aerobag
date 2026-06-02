@@ -4,7 +4,7 @@ use std::{
     collections::BTreeSet,
     env, fs,
     fs::File,
-    io::Read,
+    io::{Cursor, Read},
     path::{Path, PathBuf},
 };
 use zip::ZipArchive;
@@ -91,9 +91,7 @@ fn prefix_size_had_dir(dir: &Path, prefix: &str) -> anyhow::Result<(NavKvRoot, N
         .with_context(|| format!("failed to read {}", dir.join("root").display()))?;
     let root = NavKvRoot::parse(&root_bytes).map_err(anyhow::Error::msg)?;
     let stats = root
-        .prefix_stats(prefix, |page_index| {
-            fs::read(dir.join(format!("page_{page_index:04}"))).ok()
-        })
+        .prefix_stats(prefix, |page_index| read_dir_page(dir, page_index).ok())
         .with_context(|| format!("failed to scan HAD prefix {prefix}"))?;
     Ok((root, stats))
 }
@@ -116,9 +114,25 @@ fn query_had_dir(dir: &Path, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
     let root_bytes = fs::read(dir.join("root"))
         .with_context(|| format!("failed to read {}", dir.join("root").display()))?;
     let root = NavKvRoot::parse(&root_bytes).map_err(anyhow::Error::msg)?;
-    Ok(root.extract_value(key, |page_index| {
-        fs::read(dir.join(format!("page_{page_index:04}"))).ok()
-    }))
+    Ok(root.extract_value(key, |page_index| read_dir_page(dir, page_index).ok()))
+}
+
+fn read_dir_page(dir: &Path, page_index: u32) -> anyhow::Result<Vec<u8>> {
+    let path = dir.join(format!("page_{page_index:04}"));
+    let bytes = fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    decode_xz_if_needed(&bytes).with_context(|| format!("failed to decode {}", path.display()))
+}
+
+fn decode_xz_if_needed(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
+    const XZ_MAGIC: &[u8] = b"\xfd7zXZ\0";
+    if !bytes.starts_with(XZ_MAGIC) {
+        return Ok(bytes.to_vec());
+    }
+    let mut input = Cursor::new(bytes);
+    let mut decoded = Vec::new();
+    lzma_rs::xz_decompress(&mut input, &mut decoded)
+        .map_err(|err| anyhow::anyhow!("xz decompression failed: {err}"))?;
+    Ok(decoded)
 }
 
 fn query_had_zip(path: &Path, key: &str) -> anyhow::Result<Option<Vec<u8>>> {

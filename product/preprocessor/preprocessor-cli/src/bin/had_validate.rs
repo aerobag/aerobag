@@ -5,7 +5,7 @@ use std::{
     collections::BTreeSet,
     env, fs,
     fs::File,
-    io::Read,
+    io::{Cursor, Read},
     path::{Path, PathBuf},
 };
 use zip::ZipArchive;
@@ -105,9 +105,9 @@ impl HadSource {
 
     fn query(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
         match self {
-            Self::Dir { dir, root } => Ok(root.extract_value(key, |page_index| {
-                fs::read(dir.join(format!("page_{page_index:04}"))).ok()
-            })),
+            Self::Dir { dir, root } => {
+                Ok(root.extract_value(key, |page_index| read_dir_page(dir, page_index).ok()))
+            }
             Self::Zip { path, root } => {
                 let file = File::open(path)
                     .with_context(|| format!("failed to open {}", path.display()))?;
@@ -119,6 +119,24 @@ impl HadSource {
             }
         }
     }
+}
+
+fn read_dir_page(dir: &Path, page_index: u32) -> anyhow::Result<Vec<u8>> {
+    let path = dir.join(format!("page_{page_index:04}"));
+    let bytes = fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    decode_xz_if_needed(&bytes).with_context(|| format!("failed to decode {}", path.display()))
+}
+
+fn decode_xz_if_needed(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
+    const XZ_MAGIC: &[u8] = b"\xfd7zXZ\0";
+    if !bytes.starts_with(XZ_MAGIC) {
+        return Ok(bytes.to_vec());
+    }
+    let mut input = Cursor::new(bytes);
+    let mut decoded = Vec::new();
+    lzma_rs::xz_decompress(&mut input, &mut decoded)
+        .map_err(|err| anyhow::anyhow!("xz decompression failed: {err}"))?;
+    Ok(decoded)
 }
 
 fn read_zip_member(archive: &mut ZipArchive<File>, name: &str) -> anyhow::Result<Vec<u8>> {

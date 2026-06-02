@@ -12,6 +12,7 @@ chrono.workspace = true
 crossbeam-channel.workspace = true
 had-key = { path = "../../../crates/had-key" }
 libc = "0.2"
+lzma-rs = "0.3"
 preprocessor-charts = { path = "../preprocessor-charts" }
 preprocessor-csup = { path = "../preprocessor-csup" }
 preprocessor-data = { path = "../preprocessor-data" }

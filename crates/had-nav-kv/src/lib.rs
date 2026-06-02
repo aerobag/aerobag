@@ -1492,6 +1492,7 @@ fn startup_prefetch_pages(root: &NavKvRoot, pages: &[Vec<u8>]) -> Result<Vec<u32
     if !trace_extract_value(root, pages, &mut touched, "chart/catalog")? {
         return Ok(Vec::new());
     }
+    trace_extract_value(root, pages, &mut touched, "resource/families")?;
     trace_extract_value(
         root,
         pages,
@@ -1850,6 +1851,7 @@ mod tests {
                 pair("chart/catalog", "catalog-value"),
                 pair("package/by-id/a", "package-a"),
                 pair("package/by-id/b", "package-b"),
+                pair("resource/families", "families-value"),
                 pair("weather/metar-important-stations", "metar-importance"),
                 pair("vector/manifest", "vector-manifest"),
                 pair("waypoint/id/KRDD", "unrelated"),
@@ -1886,6 +1888,11 @@ mod tests {
             Some(b"package-b".as_slice())
         );
         assert_eq!(
+            root.extract_value("resource/families", |page| cache.get(&page).cloned())
+                .as_deref(),
+            Some(b"families-value".as_slice())
+        );
+        assert_eq!(
             root.extract_value("vector/manifest", |page| cache.get(&page).cloned())
                 .as_deref(),
             Some(b"vector-manifest".as_slice())
@@ -1906,6 +1913,7 @@ mod tests {
                 pair("chart/catalog", "catalog-value"),
                 pair("package/by-id/a", "package-a"),
                 pair("package/by-id/b", "package-b"),
+                pair("resource/families", "families-value"),
                 pair("weather/metar-important-stations", "metar-importance"),
                 pair("vector/manifest", "vector-manifest"),
             ],

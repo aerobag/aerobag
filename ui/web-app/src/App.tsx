@@ -8785,7 +8785,7 @@ function renderDataStatusFactValue(
   fact: UiDataStatusPageState["rows"][number]["facts"][number],
   nowMs: number,
 ): ReactNode {
-  const value = formatDataStatusFactValue(fact, nowMs);
+  const value = renderDataStatusFactContent(fact, nowMs);
   if (fact.link_url) {
     return (
       <a href={fact.link_url} target="_blank" rel="noreferrer">
@@ -8796,10 +8796,10 @@ function renderDataStatusFactValue(
   return value;
 }
 
-function formatDataStatusFactValue(
+function renderDataStatusFactContent(
   fact: UiDataStatusPageState["rows"][number]["facts"][number],
   nowMs: number,
-) {
+): ReactNode {
   if (!fact.time_utc || !fact.time_display) {
     return fact.value;
   }
@@ -8808,7 +8808,15 @@ function formatDataStatusFactValue(
     return fact.value;
   }
   const suffix = dataStatusRelativeTimeSuffix(instantMs, nowMs, fact.time_display);
-  return suffix ? `${fact.value} (${suffix})` : fact.value;
+  if (!suffix) {
+    return fact.value;
+  }
+  return (
+    <>
+      <span className="dataStatusPageFactValuePrimary">{fact.value}</span>
+      <span className="dataStatusPageFactValueRelative">({suffix})</span>
+    </>
+  );
 }
 
 function dataStatusRelativeTimeSuffix(

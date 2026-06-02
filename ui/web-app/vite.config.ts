@@ -45,19 +45,20 @@ const currentArtifactsPath = latestCurrentArtifacts(artifactReadRoot) ?? path.jo
 const currentArtifacts = JSON.parse(fs.readFileSync(currentArtifactsPath, "utf8")) as Array<{
   artifact_roots?: { packaged?: string; unpacked?: string };
 }>;
-const expectedArtifactRoots = {
-  packaged: "published_packaged/",
-  unpacked: "published_unpacked/",
-};
 if (!Array.isArray(currentArtifacts) || currentArtifacts.length === 0) {
   throw new Error(`${currentArtifactsPath} must be a non-empty current_artifacts list`);
 }
-for (const manifest of currentArtifacts) {
-  if (
-    manifest.artifact_roots?.packaged !== expectedArtifactRoots.packaged
-    || manifest.artifact_roots?.unpacked !== expectedArtifactRoots.unpacked
-  ) {
-    throw new Error(`${currentArtifactsPath} has artifact_roots=${JSON.stringify(manifest.artifact_roots)}; expected ${JSON.stringify(expectedArtifactRoots)}`);
+for (const [index, manifest] of currentArtifacts.entries()) {
+  for (const key of ["packaged", "unpacked"] as const) {
+    const root = manifest.artifact_roots?.[key];
+    if (
+      typeof root !== "string"
+      || root.trim() === ""
+      || root.startsWith("/")
+      || root.split("/").includes("..")
+    ) {
+      throw new Error(`${currentArtifactsPath}[${index}].artifact_roots.${key} is not a safe relative path: ${JSON.stringify(root)}`);
+    }
   }
 }
 function appendRequestLog(entry: Record<string, unknown>) {

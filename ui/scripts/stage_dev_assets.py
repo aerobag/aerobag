@@ -32,19 +32,18 @@ def resolve_artifact_root() -> Path:
     if not current.is_file():
         raise RuntimeError(f"artifact root does not contain {current}")
     current_artifacts = json.loads(current.read_text())
-    expected_roots = {
-        "packaged": "published_packaged/",
-        "unpacked": "published_unpacked/",
-    }
     if not isinstance(current_artifacts, list) or not current_artifacts:
         raise RuntimeError(f"{current} must be a non-empty current_artifacts list")
-    for manifest in current_artifacts:
+    for index, manifest in enumerate(current_artifacts):
         artifact_roots = manifest.get("artifact_roots") if isinstance(manifest, dict) else None
-        if artifact_roots != expected_roots:
+        if not isinstance(artifact_roots, dict):
             raise RuntimeError(
-                f"{current} has artifact_roots={artifact_roots!r}; "
-                f"expected {expected_roots!r}"
+                f"{current}[{index}] must have artifact_roots with packaged and unpacked paths"
             )
+        for key in ("packaged", "unpacked"):
+            root = artifact_roots.get(key)
+            if not isinstance(root, str) or not root.strip() or root.startswith("/") or ".." in root.split("/"):
+                raise RuntimeError(f"{current}[{index}].artifact_roots.{key} is not a safe relative path: {root!r}")
     return candidate
 
 

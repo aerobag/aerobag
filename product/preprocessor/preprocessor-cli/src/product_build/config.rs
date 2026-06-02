@@ -12,26 +12,26 @@ impl ProductBuildConfig {
             .parent()
             .expect("product should live under the repo root")
             .to_path_buf();
-        let artifact_root = default_artifact_write_path(&repo_root);
+        let mut build_root = default_artifact_write_path(&repo_root);
 
         let mut profile = ProductBuildProfile::Production;
         let mut chart_cutline_root = repo_root
             .join("third_party")
             .join("apps4av")
             .join("chart-cutlines");
-        let mut build_root = match profile {
-            ProductBuildProfile::Production => artifact_root.join("published_packaged"),
-            ProductBuildProfile::Validation => artifact_root.join("published_packaged_validation"),
-        };
-        let mut build_label = env::var("AEROBAG_BUILD_LABEL")
+        let mut publish_label = env::var("AEROBAG_PUBLISH_LABEL")
             .ok()
-            .and_then(non_empty_build_label);
+            .map(|value| parse_publish_component("AEROBAG_PUBLISH_LABEL", value))
+            .transpose()?;
+        let mut publish_timestamp = match env::var("AEROBAG_PUBLISH_TIMESTAMP") {
+            Ok(value) => parse_publish_component("AEROBAG_PUBLISH_TIMESTAMP", value)?,
+            Err(_) => Utc::now().format("%Y%m%dT%H%M%SZ").to_string(),
+        };
         let mut target_cycle = None;
         let mut fetch_jobs = env_usize("FETCH_JOBS").unwrap_or(4);
         let mut cpu_jobs = env_usize("CPU_JOBS").unwrap_or_else(default_cpu_jobs);
         let mut max_heavy_jobs = env_usize("MAX_HEAVY_JOBS").unwrap_or(4).max(1);
-        let fetch_cache_root = env_path("FETCH_CACHE_ROOT")
-            .unwrap_or_else(|| artifact_root.join("cache").join("fetch"));
+        let fetch_cache_root = env_path("FETCH_CACHE_ROOT");
         let fetch_cache_mode = env::var("FETCH_CACHE_MODE").unwrap_or_else(|_| "fill".to_string());
 
         let mut index = 0;
@@ -41,12 +41,6 @@ impl ProductBuildConfig {
                     let value = args.get(index + 1).context("missing value for --profile")?;
                     profile = ProductBuildProfile::parse(value)
                         .ok_or_else(|| anyhow::anyhow!("unsupported profile: {value}"))?;
-                    build_root = match profile {
-                        ProductBuildProfile::Production => artifact_root.join("published_packaged"),
-                        ProductBuildProfile::Validation => {
-                            artifact_root.join("published_packaged_validation")
-                        }
-                    };
                     index += 2;
                 }
                 "--chart-cutline-root" => {
@@ -63,12 +57,22 @@ impl ProductBuildConfig {
                     );
                     index += 2;
                 }
-                "--build-label" => {
-                    build_label = non_empty_build_label(
+                "--publish-label" => {
+                    publish_label = Some(parse_publish_component(
+                        &args[index],
                         args.get(index + 1)
-                            .context("missing value for --build-label")?
+                            .with_context(|| format!("missing value for {}", args[index]))?
                             .clone(),
-                    );
+                    )?);
+                    index += 2;
+                }
+                "--publish-timestamp" => {
+                    publish_timestamp = parse_publish_component(
+                        "--publish-timestamp",
+                        args.get(index + 1)
+                            .context("missing value for --publish-timestamp")?
+                            .clone(),
+                    )?;
                     index += 2;
                 }
                 "--source-root" => {
@@ -117,11 +121,23 @@ impl ProductBuildConfig {
             }
         }
 
+        let publish_label = publish_label.unwrap_or_else(|| "local".to_string());
+        let publish_dir = build_root
+            .join("published")
+            .join(&publish_label)
+            .join(&publish_timestamp);
+        let packaged_dir = publish_dir.join("packaged");
+        let fetch_cache_root =
+            fetch_cache_root.unwrap_or_else(|| build_root.join("cache").join("fetch"));
+
         Ok(Self {
             chart_cutline_root,
             build_root,
+            publish_dir,
+            packaged_dir,
             profile,
-            build_label,
+            publish_label,
+            publish_timestamp,
             target_cycle,
             fetch_jobs,
             cpu_jobs,
@@ -132,17 +148,20 @@ impl ProductBuildConfig {
     }
 }
 
-fn non_empty_build_label(value: String) -> Option<String> {
+fn parse_publish_component(field: &str, value: String) -> anyhow::Result<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return None;
+        bail!("{field} must not be empty");
     }
-    Some(
-        trimmed
-            .chars()
-            .map(|ch| if ch.is_whitespace() { '_' } else { ch })
-            .collect(),
-    )
+    if !trimmed
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+    {
+        bail!(
+            "{field} must be one path component containing only ASCII letters, digits, '.', '_', or '-'"
+        );
+    }
+    Ok(trimmed.to_string())
 }
 
 pub(super) fn env_path(name: &str) -> Option<PathBuf> {

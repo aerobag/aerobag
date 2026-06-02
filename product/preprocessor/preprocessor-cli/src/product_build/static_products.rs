@@ -10,7 +10,8 @@ pub(super) fn build_terrain_product(
     geoid_source_fetched_at_utc: Option<String>,
 ) -> anyhow::Result<(PathBuf, String, Option<String>, NodeRecord)> {
     let region_id = region.code().to_ascii_lowercase();
-    let input_dir = artifact_root_from_build_root(&config.build_root)
+    let input_dir = config
+        .build_root
         .join("private-work")
         .join("terrain")
         .join(&region_id)
@@ -906,7 +907,8 @@ pub(super) fn build_shaded_relief_product(
 )> {
     let region_id = region.code().to_ascii_lowercase();
     let overlays = prepare_shaded_relief_overlay_sources(config)?;
-    let input_dir = artifact_root_from_build_root(&config.build_root)
+    let input_dir = config
+        .build_root
         .join("private-work")
         .join("shaded-relief")
         .join(&region_id)
@@ -1717,7 +1719,8 @@ pub(super) fn terrain_tnmaccess_request(region: Region) -> PrefetchRequest {
 pub(super) fn build_terrain_discovery_index(
     config: &ProductBuildConfig,
 ) -> anyhow::Result<(PathBuf, Option<String>, NodeRecord)> {
-    let discovery_dir = artifact_root_from_build_root(&config.build_root)
+    let discovery_dir = config
+        .build_root
         .join("private-work")
         .join("terrain")
         .join("global-discovery")

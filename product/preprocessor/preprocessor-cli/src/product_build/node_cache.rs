@@ -203,31 +203,27 @@ pub(super) fn process_is_alive(pid: u32) -> bool {
 }
 
 pub(super) fn acquire_publication_lock<F>(
-    build_root: &Path,
+    publish_dir: &Path,
     log: F,
 ) -> anyhow::Result<PublicationLockGuard>
 where
     F: FnMut(&str),
 {
-    let lock_name = build_root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("published")
-        .to_string();
+    let build_root = artifact_root_from_publish_dir(publish_dir)?;
+    let lock_name = publish_path_key(publish_dir, &build_root);
     acquire_named_publication_lock(build_root, &lock_name, log)
 }
 
 pub(super) fn acquire_named_publication_lock<F>(
-    build_root: &Path,
+    build_root: impl AsRef<Path>,
     lock_name: &str,
     mut log: F,
 ) -> anyhow::Result<PublicationLockGuard>
 where
     F: FnMut(&str),
 {
-    let lock_dir = artifact_root_from_build_root(build_root)
-        .join("private-work")
-        .join("publication-locks");
+    let build_root = build_root.as_ref();
+    let lock_dir = build_root.join("private-work").join("publication-locks");
     fs::create_dir_all(&lock_dir)
         .with_context(|| format!("failed to create {}", lock_dir.display()))?;
     let lock_path = lock_dir.join(format!("{lock_name}.lock"));

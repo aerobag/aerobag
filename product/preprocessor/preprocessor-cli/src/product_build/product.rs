@@ -1,25 +1,24 @@
 use super::*;
 
 pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuildResult> {
-    fs::create_dir_all(&config.build_root)
-        .with_context(|| format!("failed to create {}", config.build_root.display()))?;
-    let log_root = artifact_root_from_build_root(&config.build_root)
+    fs::create_dir_all(&config.packaged_dir)
+        .with_context(|| format!("failed to create {}", config.packaged_dir.display()))?;
+    let log_root = config
+        .build_root
         .join("private-work")
         .join("orchestrator-logs")
-        .join(if config.profile == ProductBuildProfile::Production {
-            "published_packaged"
-        } else {
-            "published_packaged_validation"
-        });
+        .join("published");
     fs::create_dir_all(&log_root)
         .with_context(|| format!("failed to create {}", log_root.display()))?;
     let mut master_log = MasterLog::create(&log_root.join("master.log"))?;
     master_log.log(format!(
-        "begin pid={} profile={} build_root={} build_label={} scheduler=product_weighted_dag scheduler_version=2 fetch_jobs={} cpu_jobs={} max_heavy_jobs={} fetch_cache_mode={}",
+        "begin pid={} profile={} build_root={} publish_dir={} publish_label={} publish_timestamp={} scheduler=product_weighted_dag scheduler_version=2 fetch_jobs={} cpu_jobs={} max_heavy_jobs={} fetch_cache_mode={}",
         std::process::id(),
         config.profile.as_str(),
         config.build_root.display(),
-        config.build_label.as_deref().unwrap_or("local"),
+        config.publish_dir.display(),
+        config.publish_label,
+        config.publish_timestamp,
         config.fetch_jobs,
         config.cpu_jobs,
         config.max_heavy_jobs,
@@ -477,7 +476,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             move |kind, task_values_snapshot, task_node_records_snapshot| {
                 let config = config_for_tasks.clone();
                 let _publication_lock = if product_task_requires_publication_lock(&kind) {
-                    Some(acquire_publication_lock(&config.build_root, |message| {
+                    Some(acquire_publication_lock(&config.publish_dir, |message| {
                         eprintln!("{message}");
                     })?)
                 } else {
@@ -546,7 +545,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 source_urls_record,
-                                &cycle_config.build_root,
+                                &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::SourceUrls {
                                 dir: source_urls_dir,
@@ -577,7 +576,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 record.clone(),
-                                &cycle_config.build_root,
+                                &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::ChartFetch { record },
                             completion_detail: "cache_or_rebuild".to_string(),
@@ -609,7 +608,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 record,
-                                &cycle_config.build_root,
+                                &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::None,
                             completion_detail: "cache_or_rebuild".to_string(),
@@ -631,7 +630,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 record.clone(),
-                                &cycle_config.build_root,
+                                &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::CsupFetch { record },
                             completion_detail: "cache_or_rebuild".to_string(),
@@ -661,7 +660,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 record.clone(),
-                                &cycle_config.build_root,
+                                &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::CsupProcess { record, work_dir },
                             completion_detail: "cache_or_rebuild".to_string(),
@@ -696,7 +695,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 record,
-                                &cycle_config.build_root,
+                                &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::None,
                             completion_detail: "cache_or_rebuild".to_string(),
@@ -732,7 +731,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 record,
-                                &cycle_config.build_root,
+                                &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::None,
                             completion_detail: "cache_or_rebuild".to_string(),
@@ -750,7 +749,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 record.clone(),
-                                &cycle_config.build_root,
+                                &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::TppFetch { record },
                             completion_detail: "cache_or_rebuild".to_string(),
@@ -921,7 +920,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 record,
-                                &cycle_config.build_root,
+                                &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::FingerprintedTppSource {
                                 source,
@@ -994,7 +993,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 record,
-                                &cycle_config.build_root,
+                                &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::FingerprintedData {
                                 intermediate_sqlite_db,
@@ -1046,7 +1045,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 record,
-                                &cycle_config.build_root,
+                                &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::VectorHad { pairs, errors },
                             completion_detail: format!("cache_hit={}", cache_hit),
@@ -1114,7 +1113,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 record,
-                                &cycle_config.build_root,
+                                &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::None,
                             completion_detail: format!("cache_hit={}", cache_hit),
@@ -1126,7 +1125,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 source.node_record,
-                                &config.build_root,
+                                &config.packaged_dir,
                             )],
                             value: ProductTaskValue::WmmSource {
                                 cof_path: source.cof_path,
@@ -1221,7 +1220,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 built.node_record,
-                                &cycle_config.build_root,
+                                &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::PublishedNavDb {
                                 package: built.package,
@@ -1249,7 +1248,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             schema_version: 1,
                             profile: cycle_config.profile.as_str().to_string(),
                             cycle: source_urls.clone(),
-                            build_root: relative_product_build_path(&cycle_config.build_root),
+                            build_root: cycle_config.build_root.display().to_string(),
                             generated_at_utc: manifest_generated_at(&node_records),
                             fetch_cache_root: relative_artifact_path(
                                 &cycle_config.fetch_cache_root,
@@ -1305,10 +1304,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             &nav_db_package,
                         )?;
                         let bundle_manifest_path = write_hashed_bundle_manifest(
-                            &cycle_config.build_root,
+                            &cycle_config.packaged_dir,
                             &bundle_manifest,
                         )?;
-                        validate_bundle_manifest(&cycle_config.build_root, &bundle_manifest_path)?;
+                        validate_bundle_manifest(
+                            &cycle_config.packaged_dir,
+                            &bundle_manifest_path,
+                        )?;
                         Ok(ProductTaskCompletion {
                             node_records: vec![],
                             value: ProductTaskValue::CycleManifest {
@@ -1361,7 +1363,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 source.node_record,
-                                &config.build_root,
+                                &config.packaged_dir,
                             )],
                             value: ProductTaskValue::GeoidSource {
                                 csv_path: source.csv_path,
@@ -1638,7 +1640,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         };
                         let product_id = stable_product_id_with_contract("world-basemap")?;
                         let (published_zip, sha256, size_bytes) = publish_content_addressed_zip(
-                            &config.build_root,
+                            &config.packaged_dir,
                             &built.0,
                             &product_id,
                             built.2.as_deref(),
@@ -1683,7 +1685,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let product_id =
                             stable_product_id_with_contract(&format!("terrain-{region_id}"))?;
                         let (published_zip, sha256, size_bytes) = publish_content_addressed_zip(
-                            &config.build_root,
+                            &config.packaged_dir,
                             &built.0,
                             &product_id,
                             built.2.as_deref(),
@@ -1728,7 +1730,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             "terrain-{WIDE_ANGLE_REGION_ID}"
                         ))?;
                         let (published_zip, sha256, size_bytes) = publish_content_addressed_zip(
-                            &config.build_root,
+                            &config.packaged_dir,
                             &built.0,
                             &product_id,
                             built.2.as_deref(),
@@ -1773,7 +1775,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let product_id =
                             stable_product_id_with_contract(&format!("shaded-relief-{region_id}"))?;
                         let (published_zip, sha256, size_bytes) = publish_content_addressed_zip(
-                            &config.build_root,
+                            &config.packaged_dir,
                             &built.0,
                             &product_id,
                             built.2.as_deref(),
@@ -1818,7 +1820,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             "shaded-relief-{WIDE_ANGLE_REGION_ID}"
                         ))?;
                         let (published_zip, sha256, size_bytes) = publish_content_addressed_zip(
-                            &config.build_root,
+                            &config.packaged_dir,
                             &built.0,
                             &product_id,
                             built.2.as_deref(),
@@ -1841,17 +1843,17 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     ProductScheduledTaskKind::CurrentArtifacts => {
                         let as_of_utc = Utc::now();
                         let diagnostics = write_product_build_diagnostics(
-                            &config.build_root,
+                            &config.packaged_dir,
                             as_of_utc.date_naive(),
                             &task_values_snapshot,
                         )?;
                         let current_artifacts_path = write_current_artifacts_manifest(
-                            &config.build_root,
+                            &config.packaged_dir,
                             as_of_utc,
                             diagnostics.clone(),
                         )?;
                         cleanup_published_packaged_root(
-                            &config.build_root,
+                            &config.packaged_dir,
                             &current_artifacts_path,
                         )?;
                         let diagnostic_error_count = diagnostics
@@ -1884,7 +1886,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             .iter()
                             .filter(|bundle| bundle.bundle_type == "cycle")
                         {
-                            let bundle_manifest_path = config.build_root.join(&bundle_ref.filename);
+                            let bundle_manifest_path =
+                                config.packaged_dir.join(&bundle_ref.filename);
                             let bundle_manifest = load_bundle_manifest(&bundle_manifest_path)?;
                             let cycle = bundle_manifest.cycle.clone();
                             let mut cycle_config = config.clone();
@@ -1932,7 +1935,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let mut zip_artifacts = Vec::new();
                         zip_artifacts.extend(static_products);
                         sync_product_level_unpacked(
-                            &config.build_root,
+                            &config.packaged_dir,
                             &current_artifacts_path,
                             &zip_artifacts,
                         )?;
@@ -1948,7 +1951,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 Some(ProductTaskValue::CurrentArtifacts { path }) => path.clone(),
                                 _ => bail!("missing current artifacts output"),
                             };
-                        validate_packaged_contract(&config.build_root, &current_artifacts_path)?;
+                        validate_packaged_contract(&config.packaged_dir, &current_artifacts_path)?;
                         Ok(ProductTaskCompletion {
                             node_records: vec![],
                             value: ProductTaskValue::None,
@@ -1963,7 +1966,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             };
                         let unpacked_root = published_unpacked_root(&config)?;
                         validate_unpacked_contract(
-                            &config.build_root,
+                            &config.packaged_dir,
                             &unpacked_root,
                             &current_artifacts_path,
                         )?;
@@ -1987,7 +1990,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             )
             .collect::<anyhow::Result<Vec<_>>>()?;
         cycle_manifest_paths.sort();
-        let current_artifacts_path = match task_values.get("current-artifacts") {
+        let product_artifacts_path = match task_values.get("current-artifacts") {
             Some(ProductTaskValue::CurrentArtifacts { path }) => path.clone(),
             _ => bail!("missing current artifacts output"),
         };
@@ -1995,16 +1998,16 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
 
         Ok(ProductBuildResult {
             cycle_manifest_paths,
-            current_artifacts_path,
+            product_artifacts_path,
         })
     })();
 
     match result {
         Ok(result) => {
-            write_build_status_html(config, &result.current_artifacts_path)?;
+            write_build_status_html(config, &result.product_artifacts_path)?;
             master_log.log(format!(
-                "complete PASS version_artifacts={}",
-                result.current_artifacts_path.display()
+                "complete PASS product_artifacts={}",
+                result.product_artifacts_path.display()
             ))?;
             Ok(result)
         }

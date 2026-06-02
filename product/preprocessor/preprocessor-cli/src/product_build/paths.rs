@@ -1,27 +1,5 @@
 use super::*;
 
-pub(super) fn artifact_root_from_build_root(build_root: &Path) -> &Path {
-    if build_root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name == "published_packaged" || name == "published_packaged_validation")
-    {
-        return build_root.parent().unwrap_or(build_root);
-    }
-    if build_root
-        .parent()
-        .and_then(|value| value.file_name())
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name == "published_packaged" || name == "published_packaged_validation")
-    {
-        return build_root
-            .parent()
-            .and_then(|value| value.parent())
-            .unwrap_or(build_root);
-    }
-    build_root.parent().unwrap_or(build_root)
-}
-
 pub(super) fn normalize_absolute_path(path: &Path) -> PathBuf {
     use std::path::Component;
 
@@ -39,7 +17,7 @@ pub(super) fn normalize_absolute_path(path: &Path) -> PathBuf {
 }
 
 pub(super) fn relative_artifact_path(path: &Path, build_root: &Path) -> String {
-    let artifact_root = normalize_absolute_path(artifact_root_from_build_root(build_root));
+    let artifact_root = normalize_absolute_path(build_root);
     let normalized_path = normalize_absolute_path(path);
     normalized_path
         .strip_prefix(&artifact_root)
@@ -47,15 +25,52 @@ pub(super) fn relative_artifact_path(path: &Path, build_root: &Path) -> String {
         .unwrap_or_else(|_| path.display().to_string())
 }
 
-pub(super) fn relative_product_build_path(path: &Path) -> String {
-    let artifact_root = artifact_root_from_build_root(path);
-    path.strip_prefix(artifact_root)
-        .map(|value| value.display().to_string())
-        .unwrap_or_else(|_| path.display().to_string())
+pub(super) fn publish_path_key(path: &Path, build_root: &Path) -> String {
+    let relative = relative_artifact_path(path, build_root);
+    let key = relative
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    key.trim_matches('_').to_string()
+}
+
+pub(super) fn artifact_root_from_publish_dir(publish_dir: &Path) -> anyhow::Result<PathBuf> {
+    let timestamp_dir = publish_dir;
+    let label_dir = timestamp_dir.parent().ok_or_else(|| {
+        anyhow::anyhow!("publish_dir has no label parent: {}", publish_dir.display())
+    })?;
+    let published_dir = label_dir.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "publish_dir has no published parent: {}",
+            publish_dir.display()
+        )
+    })?;
+    if published_dir.file_name().and_then(|name| name.to_str()) != Some("published") {
+        bail!(
+            "publish_dir must be under <build_root>/published/<label>/<timestamp>, got {}",
+            publish_dir.display()
+        );
+    }
+    published_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "published dir has no build_root parent: {}",
+                published_dir.display()
+            )
+        })
 }
 
 pub(super) fn build_node_root(config: &ProductBuildConfig, name: &str) -> anyhow::Result<PathBuf> {
-    let root = artifact_root_from_build_root(&config.build_root)
+    let root = config
+        .build_root
         .join("private-work")
         .join("publish-nodes")
         .join(config.profile.as_str())
@@ -68,10 +83,7 @@ pub(super) fn build_shared_node_dir(
     config: &ProductBuildConfig,
     name: &str,
 ) -> anyhow::Result<PathBuf> {
-    let root = artifact_root_from_build_root(&config.build_root)
-        .join("cache")
-        .join("nodes")
-        .join(name);
+    let root = config.build_root.join("cache").join("nodes").join(name);
     fs::create_dir_all(&root).with_context(|| format!("failed to create {}", root.display()))?;
     Ok(root)
 }

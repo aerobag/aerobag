@@ -48,7 +48,7 @@ use sha2::{Digest, Sha256};
 
 fn usage() -> &'static str {
     "usage:
-  preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--build-label <label>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--publish-label <label>] [--publish-timestamp <YYYYMMDDTHHMMSSZ>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli merge-current-artifacts [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--as-of-utc <RFC3339 UTC>] --manifest <path> [--manifest <path>]...
   preprocessor-cli publish-discovery-manifest [--profile <validation|production>] [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
   preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
@@ -81,8 +81,8 @@ fn long_usage() -> &'static str {
   preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
   preprocessor-cli normalize-swim-notams --input-jsonl <path> --output-dir <path> --version-label <label>
   preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]...
-  preprocessor-cli build-cycle [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--build-label <label>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
-  preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--build-label <label>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli build-cycle [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--publish-label <label>] [--publish-timestamp <YYYYMMDDTHHMMSSZ>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--publish-label <label>] [--publish-timestamp <YYYYMMDDTHHMMSSZ>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli publish-discovery-manifest [--profile <validation|production>] [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
   preprocessor-cli gc-build-cache [--profile <validation|production>] [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>] [--bootstrap-from-build-manifests]
   preprocessor-cli explain-product-build [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
@@ -1529,22 +1529,6 @@ fn build_cache_gc_config_from_args(args: &[String]) -> anyhow::Result<BuildCache
                 let value = args.get(index + 1).context("missing value for --profile")?;
                 base.profile = ProductBuildProfile::parse(value)
                     .ok_or_else(|| anyhow::anyhow!("unsupported profile: {value}"))?;
-                if !args.iter().any(|arg| arg == "--build-root") {
-                    let artifact_root = default_artifact_write_path(
-                        &Path::new(env!("CARGO_MANIFEST_DIR"))
-                            .parent()
-                            .and_then(|path| path.parent())
-                            .and_then(|path| path.parent())
-                            .context("failed to derive repo root")?
-                            .to_path_buf(),
-                    );
-                    base.build_root = match base.profile {
-                        ProductBuildProfile::Production => artifact_root.join("published_packaged"),
-                        ProductBuildProfile::Validation => {
-                            artifact_root.join("published_packaged_validation")
-                        }
-                    };
-                }
                 index += 2;
             }
             "--build-root" => {
@@ -2400,8 +2384,8 @@ fn main() -> anyhow::Result<()> {
                 println!("cycle_manifest {}", cycle_manifest_path.display());
             }
             println!(
-                "version_artifacts {}",
-                result.current_artifacts_path.display()
+                "product_artifacts {}",
+                result.product_artifacts_path.display()
             );
         }
         Some("merge-current-artifacts") => {

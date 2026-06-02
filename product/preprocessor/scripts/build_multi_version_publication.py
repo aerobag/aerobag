@@ -8,20 +8,21 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 
 SCRIPT = Path(__file__).resolve()
 REPO_ROOT = SCRIPT.parents[3]
 PREPROCESSOR_DIR = Path("product/preprocessor")
-VERSION_MANIFEST_RE = re.compile(r"^(?:current_artifacts|version_artifacts)\s+(.+)$")
+PRODUCT_ARTIFACTS_RE = re.compile(r"^product_artifacts\s+(.+)$")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Build one product publication per git ref, then merge their "
-            "version_artifacts manifests into list-form current_artifacts.json."
+            "product_artifacts manifests into published/current_artifacts.json."
         )
     )
     parser.add_argument("refs", nargs="+", help="git commits, tags, or branch names to build")
@@ -47,7 +48,7 @@ def parse_args() -> argparse.Namespace:
         "--build-root",
         type=Path,
         default=None,
-        help="shared packaged publication root passed to build-product",
+        help="artifact root passed to build-product; it owns cache/ and published/",
     )
     parser.add_argument(
         "--profile",
@@ -58,7 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--as-of-utc",
         default=None,
-        help="RFC3339 UTC timestamp for the merged current_artifacts files",
+        help="RFC3339 UTC timestamp recorded in the merged current_artifacts file",
     )
     parser.add_argument(
         "--keep-worktrees",
@@ -106,15 +107,13 @@ def artifact_root(repo_root: Path) -> Path:
     return path if path.is_absolute() else (repo_root / path).resolve()
 
 
-def default_build_root(root: Path, profile: str | None) -> Path:
-    if profile == "validation":
-        return root / "published_packaged_validation"
-    return root / "published_packaged"
-
-
 def safe_ref_name(ref: str, sha: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", ref).strip("-")
     return f"{safe or 'ref'}-{sha[:12]}"
+
+
+def build_timestamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
 def resolve_commit(repo_root: Path, ref: str) -> str:
@@ -146,6 +145,8 @@ def build_ref(
     worktree: Path,
     env: dict[str, str],
     build_root: Path,
+    publish_label: str,
+    publish_timestamp: str,
     profile: str | None,
     build_args: list[str],
 ) -> Path:
@@ -159,8 +160,10 @@ def build_ref(
         "build-product",
         "--build-root",
         str(build_root),
-        "--build-label",
-        f"{ref}@{sha[:12]}",
+        "--publish-label",
+        publish_label,
+        "--publish-timestamp",
+        publish_timestamp,
     ]
     if profile:
         command.extend(["--profile", profile])
@@ -168,23 +171,23 @@ def build_ref(
     result = run(command, cwd=worktree / PREPROCESSOR_DIR, env=env, capture=True)
     print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
 
-    version_manifest = None
+    product_artifacts = None
     for line in result.stdout.splitlines():
-        match = VERSION_MANIFEST_RE.match(line.strip())
+        match = PRODUCT_ARTIFACTS_RE.match(line.strip())
         if match:
-            version_manifest = Path(match.group(1)).resolve()
-    if version_manifest is None:
-        raise RuntimeError(f"{ref} build did not report a version_artifacts path")
-    if not version_manifest.is_file():
-        raise RuntimeError(f"{ref} reported missing manifest {version_manifest}")
-    return version_manifest
+            product_artifacts = Path(match.group(1)).resolve()
+    if product_artifacts is None:
+        raise RuntimeError(f"{ref} build did not report a product_artifacts path")
+    if not product_artifacts.is_file():
+        raise RuntimeError(f"{ref} reported missing manifest {product_artifacts}")
+    return product_artifacts
 
 
 def main() -> int:
     args = parse_args()
     repo_root = args.repo_root.resolve()
     root = artifact_root(repo_root)
-    merge_build_root = (args.build_root or default_build_root(root, args.profile)).resolve()
+    build_root = (args.build_root or root).resolve()
     target_dir = (args.target_dir or (root / "target")).resolve()
     worktree_root_owned = args.worktree_root is None
     worktree_root = (
@@ -210,16 +213,22 @@ def main() -> int:
             sha = resolve_commit(repo_root, ref)
             ref_name = safe_ref_name(ref, sha)
             worktree = worktree_root / ref_name
-            version_build_root = merge_build_root / ref_name
+            timestamp = build_timestamp()
             worktrees.append(worktree)
-            print(f"building ref={ref} sha={sha} worktree={worktree}", flush=True)
+            print(
+                f"building ref={ref} sha={sha} publish_label={ref_name} "
+                f"publish_timestamp={timestamp} worktree={worktree}",
+                flush=True,
+            )
             manifest = build_ref(
                 repo_root=repo_root,
                 ref=ref,
                 sha=sha,
                 worktree=worktree,
                 env=env,
-                build_root=version_build_root,
+                build_root=build_root,
+                publish_label=ref_name,
+                publish_timestamp=timestamp,
                 profile=args.profile,
                 build_args=build_args,
             )
@@ -230,7 +239,7 @@ def main() -> int:
             str(merge_binary),
             "merge-current-artifacts",
             "--build-root",
-            str(merge_build_root),
+            str(build_root),
         ]
         if args.profile:
             merge_command.extend(["--profile", args.profile])

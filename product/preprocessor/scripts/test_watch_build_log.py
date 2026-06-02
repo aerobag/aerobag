@@ -12,19 +12,22 @@ class WatchBuildLogTests(unittest.TestCase):
     def test_diagnostics_resolve_through_packaged_artifact_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            packaged = root / "published_packaged"
-            packaged.mkdir()
+            publish_dir = root / "published" / "master" / "20260602T000000Z"
+            packaged = publish_dir / "packaged"
+            packaged.mkdir(parents=True)
             diagnostics_name = "build_errors_20260517.json"
             (packaged / diagnostics_name).write_text(
                 json.dumps({"error_count": 0}), encoding="utf-8"
             )
-            current_path = root / "current_artifacts.json"
+            current_path = root / "published" / "current_artifacts.json"
             current_path.write_text(
                 json.dumps(
                     [
                         {
                             "schema_version": 1,
-                            "artifact_roots": {"packaged": "published_packaged/"},
+                            "artifact_roots": {
+                                "packaged": "master/20260602T000000Z/packaged/"
+                            },
                             "diagnostics": {
                                 "filename": diagnostics_name,
                                 "error_count": 0,
@@ -48,49 +51,59 @@ class WatchBuildLogTests(unittest.TestCase):
     def test_latest_current_artifacts_uses_publication_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            packaged = root / "published_packaged"
-            packaged.mkdir()
-            current_path = root / "current_artifacts.json"
+            (root / "published").mkdir()
+            current_path = root / "published" / "current_artifacts.json"
             current_path.write_text("{}", encoding="utf-8")
 
             self.assertEqual(
-                watch_build_log.latest_current_artifacts_path(packaged), current_path
+                watch_build_log.latest_current_artifacts_path(root), current_path
             )
 
-    def test_latest_current_artifacts_falls_back_to_version_manifest(self) -> None:
+    def test_product_artifacts_path_uses_publish_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            packaged = root / "published_packaged"
-            packaged.mkdir()
-            version_path = root / "version_artifacts_20260517T010203Z.json"
-            version_path.write_text("{}", encoding="utf-8")
+            publish_dir = root / "published" / "master" / "20260602T000000Z"
+            publish_dir.mkdir(parents=True)
+            product_path = publish_dir / "product_artifacts.json"
+            product_path.write_text("{}", encoding="utf-8")
 
             self.assertEqual(
-                watch_build_log.latest_current_artifacts_path(packaged), version_path
+                watch_build_log.product_artifacts_path(publish_dir), product_path
             )
 
-    def test_parse_version_artifacts_path_from_log_detail(self) -> None:
+    def test_parse_product_artifacts_path_from_log_detail(self) -> None:
         self.assertEqual(
             watch_build_log.parse_current_artifacts_path(
-                "PASS version_artifacts=/tmp/version_artifacts_20260517T010203Z.json"
+                "PASS product_artifacts=/tmp/product_artifacts.json"
             ),
-            Path("/tmp/version_artifacts_20260517T010203Z.json"),
+            Path("/tmp/product_artifacts.json"),
         )
 
-    def test_build_label_is_parsed_from_begin_line(self) -> None:
+    def test_publish_label_is_parsed_from_begin_line(self) -> None:
         state = watch_build_log.BuildState()
         state.apply_line(
             "+0:00 begin pid=123 profile=production build_root=/tmp/build "
-            "build_label=nav6-sunset@c641d0f2 scheduler=product_weighted_dag"
+            "publish_dir=/tmp/build/published/nav6-sunset/20260602T000000Z "
+            "publish_label=nav6-sunset scheduler=product_weighted_dag"
         )
 
-        self.assertEqual(state.build_label, "nav6-sunset@c641d0f2")
+        self.assertEqual(state.publish_label, "nav6-sunset")
+
+    def test_publish_label_falls_back_to_publish_dir(self) -> None:
+        state = watch_build_log.BuildState()
+        state.apply_line(
+            "+0:00 begin pid=123 profile=production "
+            "build_root=/tmp/pub publish_dir=/tmp/pub/published/nav6-sunset-c641d0f2/20260602T000000Z "
+            "scheduler=product_weighted_dag"
+        )
+
+        self.assertEqual(state.publish_label, "nav6-sunset-c641d0f2")
 
     def test_diagnostics_reject_parent_traversal(self) -> None:
         root = Path("/tmp/publication")
         path = watch_build_log.diagnostics_manifest_path(
             root / "current_artifacts.json",
-            {"artifact_roots": {"packaged": "published_packaged/"}},
+            {"artifact_roots": {"packaged": "master/20260602T000000Z/packaged/"}},
             "../build_errors_20260517.json",
         )
 

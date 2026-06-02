@@ -1936,11 +1936,19 @@ mod tests {
     use tempfile::tempdir;
 
     fn test_config(root: &Path) -> ProductBuildConfig {
+        let build_root = root.join("build");
+        let publish_dir = build_root
+            .join("published")
+            .join("test")
+            .join("20260602T000000Z");
         ProductBuildConfig {
             chart_cutline_root: root.join("cutlines"),
-            build_root: root.join("build"),
+            build_root,
+            publish_dir: publish_dir.clone(),
+            packaged_dir: publish_dir.join("packaged"),
             profile: ProductBuildProfile::Validation,
-            build_label: None,
+            publish_label: "test".to_string(),
+            publish_timestamp: "20260602T000000Z".to_string(),
             target_cycle: Some("2605".to_string()),
             fetch_jobs: 4,
             cpu_jobs: 4,

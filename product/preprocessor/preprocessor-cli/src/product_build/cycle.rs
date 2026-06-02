@@ -1,25 +1,24 @@
 use super::*;
 
 pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
-    fs::create_dir_all(&config.build_root)
-        .with_context(|| format!("failed to create {}", config.build_root.display()))?;
-    let log_root = artifact_root_from_build_root(&config.build_root)
+    fs::create_dir_all(&config.packaged_dir)
+        .with_context(|| format!("failed to create {}", config.packaged_dir.display()))?;
+    let log_root = config
+        .build_root
         .join("private-work")
         .join("orchestrator-logs")
-        .join(if config.profile == ProductBuildProfile::Production {
-            "published_packaged"
-        } else {
-            "published_packaged_validation"
-        });
+        .join("published");
     fs::create_dir_all(&log_root)
         .with_context(|| format!("failed to create {}", log_root.display()))?;
     let mut master_log = MasterLog::create(&log_root.join("master.log"))?;
     master_log.log(format!(
-        "begin pid={} profile={} build_root={} build_label={} scheduler=weighted_dag scheduler_version=2 max_heavy_jobs={} cpu_jobs={} fetch_jobs={} fetch_cache_mode={}",
+        "begin pid={} profile={} build_root={} publish_dir={} publish_label={} publish_timestamp={} scheduler=weighted_dag scheduler_version=2 max_heavy_jobs={} cpu_jobs={} fetch_jobs={} fetch_cache_mode={}",
         std::process::id(),
         config.profile.as_str(),
         config.build_root.display(),
-        config.build_label.as_deref().unwrap_or("local"),
+        config.publish_dir.display(),
+        config.publish_label,
+        config.publish_timestamp,
         config.max_heavy_jobs,
         config.cpu_jobs,
         config.fetch_jobs,
@@ -35,7 +34,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         ))?;
         node_records.push(normalize_node_record_paths(
             source_urls_record,
-            &config.build_root,
+            &config.packaged_dir,
         ));
 
         let chart_versions = [
@@ -786,7 +785,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             for record in records {
                 node_records.push(normalize_node_record_paths(
                     record.clone(),
-                    &config.build_root,
+                    &config.packaged_dir,
                 ));
             }
         }
@@ -798,7 +797,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             schema_version: 1,
             profile: config.profile.as_str().to_string(),
             cycle: bundle_cycle.clone(),
-            build_root: relative_product_build_path(&config.build_root),
+            build_root: config.build_root.display().to_string(),
             generated_at_utc: manifest_generated_at(&node_records),
             fetch_cache_root: relative_artifact_path(&config.fetch_cache_root, &config.build_root),
             fetch_cache_mode: config.fetch_cache_mode.clone(),
@@ -849,8 +848,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         )?;
         let bundle_manifest = build_bundle_manifest(config, &build_manifest, &[], &nav_db.package)?;
         let bundle_manifest_path =
-            write_hashed_bundle_manifest(&config.build_root, &bundle_manifest)?;
-        validate_bundle_manifest(&config.build_root, &bundle_manifest_path)?;
+            write_hashed_bundle_manifest(&config.packaged_dir, &bundle_manifest)?;
+        validate_bundle_manifest(&config.packaged_dir, &bundle_manifest_path)?;
         sync_unpacked_metadata(config, &bundle_manifest, &bundle_manifest_path, None)?;
         record_gc_roots_from_build_manifest(
             config,

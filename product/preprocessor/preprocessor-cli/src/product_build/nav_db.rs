@@ -157,7 +157,7 @@ pub(super) fn build_bundle_manifest(
                     .unwrap_or_default(),
                 &package.checksum_sha256,
             )?;
-            publish_flat_artifact(&package_path, &config.build_root.join(&filename))?;
+            publish_flat_artifact(&package_path, &config.packaged_dir.join(&filename))?;
             Ok(BundlePackageArtifact {
                 id: package.id.clone(),
                 family_id: package.family_id.clone(),
@@ -1083,7 +1083,8 @@ pub(super) fn build_nav_kv_artifact(
                     })?;
                     page_filenames.push(page_filename);
                 }
-                let published_source_dir = artifact_root_from_build_root(&config.build_root)
+                let published_source_dir = config
+                    .build_root
                     .join("private-work")
                     .join("nav-kv")
                     .join(config.profile.as_str())

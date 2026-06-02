@@ -124,8 +124,11 @@ impl ProductBuildProfile {
 pub struct ProductBuildConfig {
     pub chart_cutline_root: PathBuf,
     pub build_root: PathBuf,
+    pub publish_dir: PathBuf,
+    pub packaged_dir: PathBuf,
     pub profile: ProductBuildProfile,
-    pub build_label: Option<String>,
+    pub publish_label: String,
+    pub publish_timestamp: String,
     pub target_cycle: Option<String>,
     pub fetch_jobs: usize,
     pub cpu_jobs: usize,
@@ -255,7 +258,6 @@ struct BundleManifest {
 struct CurrentArtifactsManifest {
     schema_version: u32,
     contracts: BTreeMap<String, String>,
-    #[serde(default = "default_current_artifact_roots")]
     artifact_roots: CurrentArtifactRoots,
     as_of_date: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -292,13 +294,6 @@ struct CurrentStartupPrefetchCycleResources {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct CurrentStartupPrefetchResource {
     url: String,
-}
-
-fn default_current_artifact_roots() -> CurrentArtifactRoots {
-    CurrentArtifactRoots {
-        packaged: "published_packaged/".to_string(),
-        unpacked: "published_unpacked/".to_string(),
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -500,7 +495,7 @@ struct RawChartCutlinePolygon {
 #[derive(Debug, Clone, Serialize)]
 pub struct ProductBuildResult {
     pub cycle_manifest_paths: Vec<PathBuf>,
-    pub current_artifacts_path: PathBuf,
+    pub product_artifacts_path: PathBuf,
 }
 
 fn static_product_task_ids(config: &ProductBuildConfig) -> Vec<String> {
@@ -1001,6 +996,8 @@ pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<Stri
     let mut lines = Vec::new();
     lines.push(format!("profile {}", config.profile.as_str()));
     lines.push(format!("build_root {}", config.build_root.display()));
+    lines.push(format!("publish_dir {}", config.publish_dir.display()));
+    lines.push(format!("packaged_dir {}", config.packaged_dir.display()));
     lines.push(format!(
         "chart_cutline_root {}",
         config.chart_cutline_root.display()
@@ -1086,67 +1083,35 @@ fn output_path<'a>(record: &'a NodeRecord, key: &str) -> anyhow::Result<&'a str>
 }
 
 fn resolve_artifact_path(config: &ProductBuildConfig, relative_path: &str) -> PathBuf {
-    artifact_root_from_build_root(&config.build_root).join(relative_path)
+    config.build_root.join(relative_path)
 }
 
 fn published_unpacked_root(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
-    published_unpacked_root_from_build_root(&config.build_root)
+    published_unpacked_root_from_packaged_dir(&config.packaged_dir)
 }
 
 fn internal_build_manifest_path(
     config: &ProductBuildConfig,
     bundle_cycle: &str,
 ) -> anyhow::Result<PathBuf> {
-    let artifact_root = artifact_root_from_build_root(&config.build_root);
-    let build_root_name = config
+    let publish_key = publish_path_key(&config.publish_dir, &config.build_root);
+    let dir = config
         .build_root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow::anyhow!("build root has no final path component"))?;
-    let dir = artifact_root
         .join("private-work")
         .join("build-manifests")
-        .join(build_root_name);
+        .join(publish_key);
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     Ok(dir.join(format!("build-manifest_{bundle_cycle}.json")))
 }
 
-pub fn published_unpacked_root_from_build_root(build_root: &Path) -> anyhow::Result<PathBuf> {
-    let artifact_root = artifact_root_from_build_root(build_root);
-    let build_root_name = build_root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow::anyhow!("build root has no final path component"))?;
-    if build_root_name == "published_packaged" {
-        return Ok(artifact_root.join("published_unpacked"));
-    }
-    if build_root_name == "published_packaged_validation" {
-        return Ok(artifact_root.join("published_unpacked_validation"));
-    }
-    let Some(parent_name) = build_root
-        .parent()
-        .and_then(|parent| parent.file_name())
-        .and_then(|name| name.to_str())
-    else {
-        return Err(anyhow::anyhow!(
-            "unsupported build root for unpacked publication: {}",
-            build_root_name
-        ));
-    };
-    match parent_name {
-        "published_packaged" => Ok(artifact_root
-            .join("published_unpacked")
-            .join(build_root_name)),
-        "published_packaged_validation" => Ok(artifact_root
-            .join("published_unpacked_validation")
-            .join(build_root_name)),
-        _ => {
-            return Err(anyhow::anyhow!(
-                "unsupported build root for unpacked publication: {}",
-                build_root_name
-            ))
-        }
-    }
+pub fn published_unpacked_root_from_packaged_dir(packaged_dir: &Path) -> anyhow::Result<PathBuf> {
+    let publish_dir = packaged_dir.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "packaged publication dir has no publish_dir parent: {}",
+            packaged_dir.display()
+        )
+    })?;
+    Ok(publish_dir.join("unpacked"))
 }
 
 fn unpacked_target_dir(unpacked_root: &Path, published_filename: &str) -> anyhow::Result<PathBuf> {
@@ -1160,15 +1125,18 @@ fn unpacked_target_dir(unpacked_root: &Path, published_filename: &str) -> anyhow
 }
 
 fn unpacked_marker_path(unpacked_root: &Path, published_filename: &str) -> anyhow::Result<PathBuf> {
-    let artifact_root = artifact_root_from_build_root(unpacked_root);
-    let unpacked_dir_name = unpacked_root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow::anyhow!("unpacked root has no final path component"))?;
-    let marker_dir = artifact_root
+    let publish_dir = unpacked_root.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "unpacked publication dir has no publish_dir parent: {}",
+            unpacked_root.display()
+        )
+    })?;
+    let build_root = artifact_root_from_publish_dir(publish_dir)?;
+    let publish_key = publish_path_key(publish_dir, &build_root);
+    let marker_dir = build_root
         .join("private-work")
-        .join("published_unpacked_state")
-        .join(unpacked_dir_name);
+        .join("published-unpacked-state")
+        .join(publish_key);
     fs::create_dir_all(&marker_dir)
         .with_context(|| format!("failed to create {}", marker_dir.display()))?;
     Ok(marker_dir.join(format!("{published_filename}.source-zip-sha256")))
@@ -1603,7 +1571,10 @@ fn sync_unpacked_metadata(
         if artifact.filename.ends_with(".zip") {
             continue;
         }
-        sync_unpacked_file(&config.build_root.join(&artifact.filename), &unpacked_root)?;
+        sync_unpacked_file(
+            &config.packaged_dir.join(&artifact.filename),
+            &unpacked_root,
+        )?;
     }
     sync_cycle_bundle_unpacked_zips(config, bundle_manifest, &unpacked_root, task_values)?;
     Ok(())
@@ -1632,13 +1603,14 @@ fn sync_cycle_bundle_unpacked_zips(
                 .cycle
                 .as_deref()
                 .context("nav-db package missing cycle")?;
-            let source_dir = artifact_root_from_build_root(&config.build_root)
+            let source_dir = config
+                .build_root
                 .join("private-work")
                 .join("nav-kv")
                 .join(config.profile.as_str())
                 .join(cycle);
             sync_nav_db_unpacked_zip_from_source(
-                &config.build_root.join(&package.filename),
+                &config.packaged_dir.join(&package.filename),
                 &source_dir,
                 unpacked_root,
                 &package.filename,
@@ -1709,7 +1681,7 @@ fn sync_cycle_bundle_unpacked_zips(
             )
         })?;
         sync_unpacked_zip_from_source(
-            &config.build_root.join(&package.filename),
+            &config.packaged_dir.join(&package.filename),
             &source_root,
             unpacked_root,
             &package.filename,
@@ -1832,21 +1804,21 @@ fn static_product_unpacked_strategy(
 }
 
 fn sync_product_level_unpacked(
-    build_root: &Path,
-    current_artifacts_path: &Path,
+    packaged_dir: &Path,
+    product_artifacts_path: &Path,
     zip_artifacts: &[PublishedZipArtifact],
 ) -> anyhow::Result<()> {
-    let unpacked_root = published_unpacked_root_from_build_root(build_root)?;
+    let unpacked_root = published_unpacked_root_from_packaged_dir(packaged_dir)?;
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
-    sync_unpacked_discovery_manifests(build_root, current_artifacts_path, &unpacked_root)?;
+    sync_unpacked_discovery_manifests(packaged_dir, product_artifacts_path, &unpacked_root)?;
     let current: CurrentArtifactsManifest = serde_json::from_slice(
-        &fs::read(current_artifacts_path)
-            .with_context(|| format!("failed to read {}", current_artifacts_path.display()))?,
+        &fs::read(product_artifacts_path)
+            .with_context(|| format!("failed to read {}", product_artifacts_path.display()))?,
     )
-    .with_context(|| format!("failed to parse {}", current_artifacts_path.display()))?;
+    .with_context(|| format!("failed to parse {}", product_artifacts_path.display()))?;
     if let Some(diagnostics) = &current.diagnostics {
-        sync_unpacked_file(&build_root.join(&diagnostics.filename), &unpacked_root)?;
+        sync_unpacked_file(&packaged_dir.join(&diagnostics.filename), &unpacked_root)?;
     }
     for artifact in zip_artifacts {
         let published_filename = artifact
@@ -1866,7 +1838,7 @@ fn sync_product_level_unpacked(
             }
         }
     }
-    cleanup_published_unpacked_root(&unpacked_root, current_artifacts_path)?;
+    cleanup_published_unpacked_root(&unpacked_root, product_artifacts_path)?;
     Ok(())
 }
 
@@ -3846,7 +3818,10 @@ mod tests {
         let current = CurrentArtifactsManifest {
             schema_version: 1,
             contracts: test_contracts(&[("nav-db", NAV_DB_CONTRACT_ID)]),
-            artifact_roots: default_current_artifact_roots(),
+            artifact_roots: CurrentArtifactRoots {
+                packaged: "packaged/".to_string(),
+                unpacked: "unpacked/".to_string(),
+            },
             as_of_date: "2026-05-03".to_string(),
             as_of_utc: "2026-05-03T18:01:00Z".to_string(),
             bundles: vec![CurrentBundleEntry {
@@ -3864,7 +3839,7 @@ mod tests {
             startup_prefetch: None,
             diagnostics: None,
         };
-        let current_path = root.join("version_artifacts_20260503T180100Z.json");
+        let current_path = root.join("product_artifacts.json");
         fs::write(&current_path, serde_json::to_vec_pretty(&current).unwrap()).unwrap();
         fs::write(root.join("bundle_cycle_stale_empty.json"), []).unwrap();
 
@@ -3883,9 +3858,14 @@ mod tests {
     }
 
     #[test]
-    fn current_artifacts_manifest_is_hoisted_above_packaged_and_names_roots() {
+    fn product_artifacts_manifest_lives_in_publish_dir_and_names_roots() {
         let temp = tempdir().unwrap();
-        let packaged_root = temp.path().join("published_packaged");
+        let publish_dir = temp
+            .path()
+            .join("published")
+            .join("master")
+            .join("20260504T010203Z");
+        let packaged_root = publish_dir.join("packaged");
         fs::create_dir_all(&packaged_root).unwrap();
 
         let current_path = write_current_artifacts_manifest(
@@ -3895,29 +3875,35 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            current_path,
-            temp.path().join("version_artifacts_20260504T010203Z.json")
-        );
-        assert!(temp
-            .path()
-            .join("version_artifacts_20260504T010203Z.json")
-            .is_file());
+        assert_eq!(current_path, publish_dir.join("product_artifacts.json"));
+        assert!(publish_dir.join("product_artifacts.json").is_file());
         assert!(!packaged_root.join("current_artifacts.json").exists());
         fs::write(packaged_root.join("current_artifacts.json"), "{}").unwrap();
         cleanup_published_packaged_root(&packaged_root, &current_path).unwrap();
         assert!(!packaged_root.join("current_artifacts.json").exists());
 
         let current = load_current_artifacts_manifest(&current_path).unwrap();
-        assert_eq!(current.artifact_roots.packaged, "published_packaged/");
-        assert_eq!(current.artifact_roots.unpacked, "published_unpacked/");
+        assert_eq!(
+            current.artifact_roots.packaged,
+            "master/20260504T010203Z/packaged/"
+        );
+        assert_eq!(
+            current.artifact_roots.unpacked,
+            "master/20260504T010203Z/unpacked/"
+        );
         assert!(current.bundles.is_empty());
     }
 
     #[test]
     fn current_artifacts_manifest_embeds_nav_db_startup_prefetch_urls() {
         let temp = tempdir().unwrap();
-        let root = temp.path();
+        let publish_dir = temp
+            .path()
+            .join("published")
+            .join("master")
+            .join("20260531T010203Z");
+        let root = publish_dir.join("packaged");
+        fs::create_dir_all(&root).unwrap();
         let nav_db_sha = "a".repeat(64);
         let nav_db_filename = format!("nav_db_{NAV_DB_CONTRACT_ID}_2605_01_{nav_db_sha}.zip");
         let bundle = BundleManifest {
@@ -3956,10 +3942,10 @@ mod tests {
             }],
             ancillary: vec![],
         };
-        write_hashed_bundle_manifest(root, &bundle).unwrap();
+        write_hashed_bundle_manifest(&root, &bundle).unwrap();
 
         let current_path = write_current_artifacts_manifest(
-            root,
+            &root,
             Utc.with_ymd_and_hms(2026, 5, 31, 1, 2, 3).unwrap(),
             None,
         )
@@ -3980,15 +3966,15 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 format!(
-                    "published_unpacked/{}/root",
+                    "master/20260531T010203Z/unpacked/{}/root",
                     zip_stem(&nav_db_filename).unwrap()
                 ),
                 format!(
-                    "published_unpacked/{}/page_0046",
+                    "master/20260531T010203Z/unpacked/{}/page_0046",
                     zip_stem(&nav_db_filename).unwrap()
                 ),
                 format!(
-                    "published_unpacked/{}/page_0570",
+                    "master/20260531T010203Z/unpacked/{}/page_0570",
                     zip_stem(&nav_db_filename).unwrap()
                 ),
             ]
@@ -3998,7 +3984,12 @@ mod tests {
     #[test]
     fn merge_current_artifacts_writes_list_alias() {
         let temp = tempdir().unwrap();
-        let packaged_root = temp.path().join("published_packaged");
+        let publish_dir = temp
+            .path()
+            .join("published")
+            .join("master")
+            .join("20260514T000000Z");
+        let packaged_root = publish_dir.join("packaged");
         fs::create_dir_all(&packaged_root).unwrap();
         let nav_db_sha = "a".repeat(64);
         let nav_db_filename = format!("nav_db_{NAV_DB_CONTRACT_ID}_2605_01_{nav_db_sha}.zip");
@@ -4037,33 +4028,37 @@ mod tests {
             ancillary: vec![],
         };
         let bundle_path = write_hashed_bundle_manifest(&packaged_root, &bundle).unwrap();
-        let version_manifest = CurrentArtifactsManifest {
+        let product_manifest = CurrentArtifactsManifest {
             schema_version: 1,
             contracts: test_contracts(&[("nav-db", NAV_DB_CONTRACT_ID)]),
-            artifact_roots: default_current_artifact_roots(),
+            artifact_roots: current_artifact_roots_for_packaged_root(&packaged_root).unwrap(),
             as_of_date: "2026-05-14".to_string(),
             as_of_utc: "2026-05-14T00:00:00Z".to_string(),
             bundles: vec![current_bundle_entry_from_path(&bundle_path).unwrap()],
             startup_prefetch: None,
             diagnostics: None,
         };
-        let version_path = temp.path().join("version_artifacts_20260514T000000Z.json");
+        let product_path = publish_dir.join("product_artifacts.json");
         fs::write(
-            &version_path,
-            serde_json::to_vec_pretty(&version_manifest).unwrap(),
+            &product_path,
+            serde_json::to_vec_pretty(&product_manifest).unwrap(),
         )
         .unwrap();
 
         let current_path = merge_current_artifacts_manifests(
-            &packaged_root,
+            temp.path(),
             Utc.with_ymd_and_hms(2026, 5, 14, 0, 1, 2).unwrap(),
-            &[version_path],
+            &[product_path],
         )
         .unwrap();
 
-        assert_eq!(current_path, temp.path().join("current_artifacts.json"));
-        assert!(temp
+        assert_eq!(
+            current_path,
+            temp.path().join("published").join("current_artifacts.json")
+        );
+        assert!(!temp
             .path()
+            .join("published")
             .join("current_artifacts_20260514T000102Z.json")
             .is_file());
         let manifests: Vec<CurrentArtifactsManifest> =
@@ -4078,14 +4073,14 @@ mod tests {
     #[test]
     fn merge_current_artifacts_validates_version_subroots() {
         let temp = tempdir().unwrap();
-        let publication_packaged_root = temp.path().join("published_packaged");
-        let mut version_paths = Vec::new();
+        let mut product_paths = Vec::new();
 
         for (label, contract_id, timestamp) in [
             ("nav6-sunset", "NAV6", "20260514T000000Z"),
             ("master", "NAV7", "20260514T000100Z"),
         ] {
-            let packaged_root = publication_packaged_root.join(label);
+            let publish_dir = temp.path().join("published").join(label).join(timestamp);
+            let packaged_root = publish_dir.join("packaged");
             fs::create_dir_all(&packaged_root).unwrap();
             let nav_db_sha = if contract_id == "NAV6" {
                 "6".repeat(64)
@@ -4128,7 +4123,7 @@ mod tests {
                 ancillary: vec![],
             };
             let bundle_path = write_hashed_bundle_manifest(&packaged_root, &bundle).unwrap();
-            let version_manifest = CurrentArtifactsManifest {
+            let product_manifest = CurrentArtifactsManifest {
                 schema_version: 1,
                 contracts: test_contracts(&[("nav-db", contract_id)]),
                 artifact_roots: current_artifact_roots_for_packaged_root(&packaged_root).unwrap(),
@@ -4138,21 +4133,19 @@ mod tests {
                 startup_prefetch: None,
                 diagnostics: None,
             };
-            let version_path = temp
-                .path()
-                .join(format!("version_artifacts_{timestamp}.json"));
+            let product_path = publish_dir.join("product_artifacts.json");
             fs::write(
-                &version_path,
-                serde_json::to_vec_pretty(&version_manifest).unwrap(),
+                &product_path,
+                serde_json::to_vec_pretty(&product_manifest).unwrap(),
             )
             .unwrap();
-            version_paths.push(version_path);
+            product_paths.push(product_path);
         }
 
         let current_path = merge_current_artifacts_manifests(
-            &publication_packaged_root,
+            temp.path(),
             Utc.with_ymd_and_hms(2026, 5, 14, 0, 2, 0).unwrap(),
-            &version_paths,
+            &product_paths,
         )
         .unwrap();
 
@@ -4161,11 +4154,11 @@ mod tests {
         assert_eq!(manifests.len(), 2);
         assert_eq!(
             manifests[0].artifact_roots.packaged,
-            "published_packaged/nav6-sunset/"
+            "nav6-sunset/20260514T000000Z/packaged/"
         );
         assert_eq!(
             manifests[1].artifact_roots.packaged,
-            "published_packaged/master/"
+            "master/20260514T000100Z/packaged/"
         );
     }
 
@@ -4173,7 +4166,12 @@ mod tests {
     fn nav_db_unpacked_sync_xzs_pages_but_leaves_root_raw() {
         let temp = tempdir().unwrap();
         let source_root = temp.path().join("source");
-        let unpacked_root = temp.path().join("published_unpacked");
+        let unpacked_root = temp
+            .path()
+            .join("published")
+            .join("master")
+            .join("20260504T000000Z")
+            .join("unpacked");
         fs::create_dir_all(&source_root).unwrap();
         fs::create_dir_all(&unpacked_root).unwrap();
         fs::write(source_root.join("root"), b"raw-root").unwrap();
@@ -4217,9 +4215,15 @@ mod tests {
     }
 
     #[test]
-    fn packaged_cleanup_prunes_historical_discovery_with_missing_package() {
+    fn packaged_cleanup_prunes_entries_not_reachable_from_product_artifacts() {
         let temp = tempdir().unwrap();
-        let root = temp.path();
+        let publish_dir = temp
+            .path()
+            .join("published")
+            .join("master")
+            .join("20260504T000000Z");
+        let root = publish_dir.join("packaged");
+        fs::create_dir_all(&root).unwrap();
         let current_cycle_bundle = BundleManifest {
             schema_version: 1,
             bundle_id: "cycle_2604_01".to_string(),
@@ -4235,18 +4239,18 @@ mod tests {
             ancillary: vec![],
         };
         let current_cycle_bundle_path =
-            write_hashed_bundle_manifest(root, &current_cycle_bundle).unwrap();
+            write_hashed_bundle_manifest(&root, &current_cycle_bundle).unwrap();
         let current = CurrentArtifactsManifest {
             schema_version: 1,
             contracts: test_contracts(&[]),
-            artifact_roots: default_current_artifact_roots(),
+            artifact_roots: current_artifact_roots_for_packaged_root(&root).unwrap(),
             as_of_date: "2026-05-04".to_string(),
             as_of_utc: "2026-05-04T00:00:00Z".to_string(),
             bundles: vec![current_bundle_entry_from_path(&current_cycle_bundle_path).unwrap()],
             startup_prefetch: None,
             diagnostics: None,
         };
-        let current_path = root.join("version_artifacts_20260504T000000Z.json");
+        let current_path = publish_dir.join("product_artifacts.json");
         fs::write(&current_path, serde_json::to_vec_pretty(&current).unwrap()).unwrap();
 
         let stale_cycle_bundle = BundleManifest {
@@ -4283,33 +4287,25 @@ mod tests {
             ancillary: vec![],
         };
         let stale_cycle_bundle_path =
-            write_hashed_bundle_manifest(root, &stale_cycle_bundle).unwrap();
-        let stale = CurrentArtifactsManifest {
-            schema_version: 1,
-            contracts: test_contracts(&[("enr-l", ENR_L_CONTRACT_ID)]),
-            artifact_roots: default_current_artifact_roots(),
-            as_of_date: "2026-05-03".to_string(),
-            as_of_utc: "2026-05-03T00:00:00Z".to_string(),
-            bundles: vec![current_bundle_entry_from_path(&stale_cycle_bundle_path).unwrap()],
-            startup_prefetch: None,
-            diagnostics: None,
-        };
-        let stale_path = root.join("version_artifacts_20260503T000000Z.json");
-        fs::write(&stale_path, serde_json::to_vec_pretty(&stale).unwrap()).unwrap();
+            write_hashed_bundle_manifest(&root, &stale_cycle_bundle).unwrap();
 
-        cleanup_published_packaged_root(root, &current_path).unwrap();
+        cleanup_published_packaged_root(&root, &current_path).unwrap();
 
         assert!(current_path.is_file());
         assert!(current_cycle_bundle_path.is_file());
-        assert!(!stale_path.exists());
         assert!(!stale_cycle_bundle_path.exists());
     }
 
     #[test]
     fn unpacked_cleanup_uses_unpacked_root_for_package_dirs() {
         let temp = tempdir().unwrap();
-        let packaged_root = temp.path().join("published_packaged");
-        let unpacked_root = temp.path().join("published_unpacked");
+        let publish_dir = temp
+            .path()
+            .join("published")
+            .join("master")
+            .join("20260504T000000Z");
+        let packaged_root = publish_dir.join("packaged");
+        let unpacked_root = publish_dir.join("unpacked");
         fs::create_dir_all(&packaged_root).unwrap();
         fs::create_dir_all(&unpacked_root).unwrap();
         let package_filename =
@@ -4356,16 +4352,15 @@ mod tests {
         let current = CurrentArtifactsManifest {
             schema_version: 1,
             contracts: test_contracts(&[("csup", CSUP_CONTRACT_ID)]),
-            artifact_roots: default_current_artifact_roots(),
+            artifact_roots: current_artifact_roots_for_packaged_root(&packaged_root).unwrap(),
             as_of_date: "2026-05-04".to_string(),
             as_of_utc: "2026-05-04T00:00:00Z".to_string(),
             bundles: vec![current_bundle_entry_from_path(&bundle_path).unwrap()],
             startup_prefetch: None,
             diagnostics: None,
         };
-        let current_path = packaged_root.join("version_artifacts_20260504T000000Z.json");
+        let current_path = publish_dir.join("product_artifacts.json");
         fs::write(&current_path, serde_json::to_vec_pretty(&current).unwrap()).unwrap();
-        sync_unpacked_file(&current_path, &unpacked_root).unwrap();
 
         cleanup_published_unpacked_root(&unpacked_root, &current_path).unwrap();
 

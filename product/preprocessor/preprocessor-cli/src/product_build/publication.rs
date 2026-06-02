@@ -9,19 +9,19 @@ pub fn publish_discovery_manifest(
     as_of_utc: DateTime<Utc>,
     bundle_filenames: &[String],
 ) -> anyhow::Result<PathBuf> {
-    fs::create_dir_all(&config.build_root)
-        .with_context(|| format!("failed to create {}", config.build_root.display()))?;
+    fs::create_dir_all(&config.packaged_dir)
+        .with_context(|| format!("failed to create {}", config.packaged_dir.display()))?;
     if bundle_filenames.is_empty() {
         bail!("publish-discovery-manifest requires at least one --bundle");
     }
     let bundles = bundle_filenames
         .iter()
-        .map(|filename| current_bundle_entry_from_path(&config.build_root.join(filename)))
+        .map(|filename| current_bundle_entry_from_path(&config.packaged_dir.join(filename)))
         .collect::<anyhow::Result<Vec<_>>>()?;
-    let artifact_roots = current_artifact_roots_for_packaged_root(&config.build_root)?;
+    let artifact_roots = current_artifact_roots_for_packaged_root(&config.packaged_dir)?;
     let startup_prefetch =
-        current_startup_prefetch_manifest(&config.build_root, &artifact_roots, &bundles)?;
-    let contracts = current_artifacts_contracts(&config.build_root, &bundles)?;
+        current_startup_prefetch_manifest(&config.packaged_dir, &artifact_roots, &bundles)?;
+    let contracts = current_artifacts_contracts(&config.packaged_dir, &bundles)?;
     let manifest = CurrentArtifactsManifest {
         schema_version: 1,
         contracts,
@@ -32,19 +32,25 @@ pub fn publish_discovery_manifest(
         startup_prefetch,
         diagnostics: None,
     };
-    let version_manifest_path =
-        write_version_artifacts_manifest_json(&config.build_root, as_of_utc, &manifest)?;
-    let immutable_path = publication_root_for_packaged_root(&config.build_root)
-        .join(version_artifacts_immutable_filename(as_of_utc));
+    let product_artifacts_path =
+        write_product_artifacts_manifest_json(&config.publish_dir, &manifest)?;
     let unpacked_root = published_unpacked_root(config)?;
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
-    sync_unpacked_discovery_manifests(&config.build_root, &version_manifest_path, &unpacked_root)?;
-    cleanup_published_packaged_root(&config.build_root, &version_manifest_path)?;
-    cleanup_published_unpacked_root(&unpacked_root, &version_manifest_path)?;
-    validate_packaged_contract(&config.build_root, &version_manifest_path)?;
-    validate_unpacked_contract(&config.build_root, &unpacked_root, &version_manifest_path)?;
-    Ok(immutable_path)
+    sync_unpacked_discovery_manifests(
+        &config.packaged_dir,
+        &product_artifacts_path,
+        &unpacked_root,
+    )?;
+    cleanup_published_packaged_root(&config.packaged_dir, &product_artifacts_path)?;
+    cleanup_published_unpacked_root(&unpacked_root, &product_artifacts_path)?;
+    validate_packaged_contract(&config.packaged_dir, &product_artifacts_path)?;
+    validate_unpacked_contract(
+        &config.packaged_dir,
+        &unpacked_root,
+        &product_artifacts_path,
+    )?;
+    Ok(product_artifacts_path)
 }
 
 pub(super) fn publish_content_addressed_zip(
@@ -271,26 +277,12 @@ pub(super) fn parse_cycle_bundle_filename(path: &Path) -> anyhow::Result<(String
     Ok((cycle, version, hash))
 }
 
-pub(super) fn current_artifacts_timestamp_string(as_of_utc: DateTime<Utc>) -> String {
-    as_of_utc.format("%Y%m%dT%H%M%SZ").to_string()
-}
-
-pub(super) fn current_artifacts_immutable_filename(as_of_utc: DateTime<Utc>) -> String {
-    format!(
-        "current_artifacts_{}.json",
-        current_artifacts_timestamp_string(as_of_utc)
-    )
-}
-
-pub(super) fn version_artifacts_immutable_filename(as_of_utc: DateTime<Utc>) -> String {
-    format!(
-        "version_artifacts_{}.json",
-        current_artifacts_timestamp_string(as_of_utc)
-    )
-}
-
 pub(super) fn current_artifacts_latest_alias_filename() -> &'static str {
     "current_artifacts.json"
+}
+
+pub(super) fn product_artifacts_filename() -> &'static str {
+    "product_artifacts.json"
 }
 
 pub(super) fn write_current_artifacts_json(
@@ -302,82 +294,59 @@ pub(super) fn write_current_artifacts_json(
     write_public_json_atomic(path, &bytes)
 }
 
-pub(super) fn write_version_artifacts_json(
+pub(super) fn write_product_artifacts_json(
     path: &Path,
     manifest: &CurrentArtifactsManifest,
 ) -> anyhow::Result<()> {
     let bytes = serde_json::to_vec_pretty(manifest)
-        .context("failed to encode version artifacts manifest")?;
+        .context("failed to encode product artifacts manifest")?;
     write_public_json_atomic(path, &bytes)
 }
 
-pub(super) fn publication_root_for_packaged_root(packaged_root: &Path) -> PathBuf {
-    let is_packaged_root = packaged_root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(is_packaged_root_name);
-    let is_packaged_child = packaged_root
-        .parent()
-        .and_then(|parent| parent.file_name())
-        .and_then(|name| name.to_str())
-        .is_some_and(is_packaged_root_name);
-    if is_packaged_root || is_packaged_child {
-        return artifact_root_from_build_root(packaged_root).to_path_buf();
+pub(super) fn publication_root_for_packaged_root(packaged_root: &Path) -> anyhow::Result<PathBuf> {
+    let publish_dir = packaged_root.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "packaged publication dir has no publish_dir parent: {}",
+            packaged_root.display()
+        )
+    })?;
+    publication_root_for_publish_dir(publish_dir)
+}
+
+pub(super) fn publication_root_for_publish_dir(publish_dir: &Path) -> anyhow::Result<PathBuf> {
+    let label_dir = publish_dir.parent().ok_or_else(|| {
+        anyhow::anyhow!("publish_dir has no label parent: {}", publish_dir.display())
+    })?;
+    let published_dir = label_dir.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "publish_dir has no published parent: {}",
+            publish_dir.display()
+        )
+    })?;
+    if published_dir.file_name().and_then(|name| name.to_str()) != Some("published") {
+        bail!(
+            "publish_dir must be under <build_root>/published/<label>/<timestamp>, got {}",
+            publish_dir.display()
+        );
     }
-    packaged_root.to_path_buf()
+    Ok(published_dir.to_path_buf())
 }
 
-fn publication_root_for_unpacked_root(unpacked_root: &Path) -> PathBuf {
-    let is_unpacked_root = unpacked_root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(is_unpacked_root_name);
-    let is_unpacked_child = unpacked_root
-        .parent()
-        .and_then(|parent| parent.file_name())
-        .and_then(|name| name.to_str())
-        .is_some_and(is_unpacked_root_name);
-    if is_unpacked_root || is_unpacked_child {
-        return unpacked_root
-            .parent()
-            .and_then(|parent| {
-                if is_unpacked_child {
-                    parent.parent()
-                } else {
-                    Some(parent)
-                }
-            })
-            .unwrap_or(unpacked_root)
-            .to_path_buf();
-    }
-    unpacked_root.to_path_buf()
-}
-
-fn is_packaged_root_name(name: &str) -> bool {
-    name == "published_packaged" || name == "published_packaged_validation"
-}
-
-fn is_unpacked_root_name(name: &str) -> bool {
-    name == "published_unpacked" || name == "published_unpacked_validation"
+fn publication_root_for_unpacked_root(unpacked_root: &Path) -> anyhow::Result<PathBuf> {
+    let publish_dir = unpacked_root.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "unpacked publication dir has no publish_dir parent: {}",
+            unpacked_root.display()
+        )
+    })?;
+    publication_root_for_publish_dir(publish_dir)
 }
 
 pub(super) fn current_artifact_roots_for_packaged_root(
     packaged_root: &Path,
 ) -> anyhow::Result<CurrentArtifactRoots> {
-    let is_packaged_root = packaged_root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(is_packaged_root_name);
-    let is_packaged_child = packaged_root
-        .parent()
-        .and_then(|parent| parent.file_name())
-        .and_then(|name| name.to_str())
-        .is_some_and(is_packaged_root_name);
-    if !is_packaged_root && !is_packaged_child {
-        return Ok(default_current_artifact_roots());
-    }
-    let publication_root = publication_root_for_packaged_root(packaged_root);
-    let unpacked_root = published_unpacked_root_from_build_root(packaged_root)?;
+    let publication_root = publication_root_for_packaged_root(packaged_root)?;
+    let unpacked_root = published_unpacked_root_from_packaged_dir(packaged_root)?;
     Ok(CurrentArtifactRoots {
         packaged: publication_root_url(
             &publication_root,
@@ -416,48 +385,43 @@ fn publication_root_url(
 }
 
 pub(super) fn write_current_artifacts_aliases(
-    packaged_root: &Path,
-    as_of_utc: DateTime<Utc>,
+    build_root: &Path,
+    _as_of_utc: DateTime<Utc>,
     manifests: &[CurrentArtifactsManifest],
 ) -> anyhow::Result<PathBuf> {
-    let publication_root = publication_root_for_packaged_root(packaged_root);
+    let publication_root = build_root.join("published");
     fs::create_dir_all(&publication_root)
         .with_context(|| format!("failed to create {}", publication_root.display()))?;
 
-    let immutable_filename = current_artifacts_immutable_filename(as_of_utc);
     let latest_filename = current_artifacts_latest_alias_filename();
-    let publication_immutable_path = publication_root.join(&immutable_filename);
     let publication_latest_path = publication_root.join(latest_filename);
-    write_current_artifacts_json(&publication_immutable_path, manifests)?;
     write_current_artifacts_json(&publication_latest_path, manifests)?;
 
     Ok(publication_latest_path)
 }
 
-pub(super) fn write_version_artifacts_manifest_json(
-    packaged_root: &Path,
-    as_of_utc: DateTime<Utc>,
+pub(super) fn write_product_artifacts_manifest_json(
+    publish_dir: &Path,
     manifest: &CurrentArtifactsManifest,
 ) -> anyhow::Result<PathBuf> {
-    let publication_root = publication_root_for_packaged_root(packaged_root);
-    fs::create_dir_all(&publication_root)
-        .with_context(|| format!("failed to create {}", publication_root.display()))?;
-    let publication_path = publication_root.join(version_artifacts_immutable_filename(as_of_utc));
-    write_version_artifacts_json(&publication_path, manifest)?;
-    Ok(publication_path)
+    fs::create_dir_all(publish_dir)
+        .with_context(|| format!("failed to create {}", publish_dir.display()))?;
+    let product_artifacts_path = publish_dir.join(product_artifacts_filename());
+    write_product_artifacts_json(&product_artifacts_path, manifest)?;
+    Ok(product_artifacts_path)
 }
 
 pub(super) fn write_current_artifacts_manifest(
-    build_root: &Path,
+    packaged_dir: &Path,
     as_of_utc: DateTime<Utc>,
     diagnostics: Option<CurrentDiagnosticsEntry>,
 ) -> anyhow::Result<PathBuf> {
     let as_of_date = as_of_utc.date_naive();
-    let bundles = build_current_bundle_entries(build_root, as_of_date)?;
-    let artifact_roots = current_artifact_roots_for_packaged_root(build_root)?;
+    let bundles = build_current_bundle_entries(packaged_dir, as_of_date)?;
+    let artifact_roots = current_artifact_roots_for_packaged_root(packaged_dir)?;
     let startup_prefetch =
-        current_startup_prefetch_manifest(build_root, &artifact_roots, &bundles)?;
-    let contracts = current_artifacts_contracts(build_root, &bundles)?;
+        current_startup_prefetch_manifest(packaged_dir, &artifact_roots, &bundles)?;
+    let contracts = current_artifacts_contracts(packaged_dir, &bundles)?;
     let manifest = CurrentArtifactsManifest {
         schema_version: 1,
         contracts,
@@ -468,7 +432,13 @@ pub(super) fn write_current_artifacts_manifest(
         startup_prefetch,
         diagnostics,
     };
-    write_version_artifacts_manifest_json(build_root, as_of_utc, &manifest)
+    let publish_dir = packaged_dir.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "packaged publication dir has no publish_dir parent: {}",
+            packaged_dir.display()
+        )
+    })?;
+    write_product_artifacts_manifest_json(publish_dir, &manifest)
 }
 
 pub(super) fn current_artifacts_contracts(
@@ -501,7 +471,7 @@ pub(super) fn current_artifacts_contracts(
 }
 
 pub fn merge_current_artifacts_manifests(
-    packaged_root: &Path,
+    build_root: &Path,
     as_of_utc: DateTime<Utc>,
     manifest_paths: &[PathBuf],
 ) -> anyhow::Result<PathBuf> {
@@ -516,8 +486,8 @@ pub fn merge_current_artifacts_manifests(
             Ok(manifest)
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
-    validate_merged_current_artifacts(packaged_root, &manifests)?;
-    write_current_artifacts_aliases(packaged_root, as_of_utc, &manifests)
+    validate_merged_current_artifacts(build_root, &manifests)?;
+    write_current_artifacts_aliases(build_root, as_of_utc, &manifests)
 }
 
 pub(super) fn current_startup_prefetch_manifest(
@@ -598,9 +568,9 @@ pub(super) fn write_build_status_html(
     config: &ProductBuildConfig,
     current_artifacts_path: &Path,
 ) -> anyhow::Result<()> {
-    let status = build_status_document(&config.build_root, current_artifacts_path)?;
+    let status = build_status_document(&config.packaged_dir, current_artifacts_path)?;
     let html = render_build_status_html(&status)?;
-    let packaged_path = config.build_root.join("build-status.html");
+    let packaged_path = config.packaged_dir.join("build-status.html");
     fs::write(&packaged_path, &html)
         .with_context(|| format!("failed to write {}", packaged_path.display()))?;
     let unpacked_root = published_unpacked_root(config)?;
@@ -1081,28 +1051,8 @@ pub(super) fn discovery_manifest_paths(
     root: &Path,
     current_artifacts_path: &Path,
 ) -> anyhow::Result<Vec<PathBuf>> {
-    let mut paths = vec![current_artifacts_path.to_path_buf()];
-    let mut seen = BTreeSet::from([current_artifacts_path.to_path_buf()]);
-    if current_artifacts_path.parent() != Some(root) {
-        return Ok(paths);
-    }
-    for entry in fs::read_dir(root)
-        .with_context(|| format!("failed to read {}", root.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .with_context(|| format!("failed to iterate {}", root.display()))?
-    {
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let is_discovery =
-            name.starts_with("version_artifacts_") && name.contains('T') && name.ends_with(".json");
-        if is_discovery && seen.insert(path.clone()) {
-            paths.push(path);
-        }
-    }
-    paths.sort();
-    Ok(paths)
+    let _ = root;
+    Ok(vec![current_artifacts_path.to_path_buf()])
 }
 
 pub(super) fn same_path(left: &Path, right: &Path) -> bool {
@@ -1416,10 +1366,10 @@ pub(super) fn validate_bundle_contracts_match_current(
 }
 
 pub(super) fn validate_merged_current_artifacts(
-    packaged_root: &Path,
+    build_root: &Path,
     manifests: &[CurrentArtifactsManifest],
 ) -> anyhow::Result<()> {
-    let publication_root = publication_root_for_packaged_root(packaged_root);
+    let publication_root = build_root.join("published");
     let mut seen_contract_sets = BTreeSet::new();
     for manifest in manifests {
         let contract_set_key = manifest
@@ -1490,7 +1440,7 @@ pub(super) fn validate_unpacked_contract_for_discovery(
     let current = load_current_artifacts_manifest(discovery_path)?;
     validate_current_artifacts_manifest(&current, discovery_path)?;
     if let Some(prefetch) = &current.startup_prefetch {
-        let publication_root = publication_root_for_unpacked_root(unpacked_root);
+        let publication_root = publication_root_for_unpacked_root(unpacked_root)?;
         for cycle in &prefetch.cycle_resources {
             for resource in &cycle.resources {
                 ensure_public_file_exists(&publication_root.join(&resource.url))?;
@@ -1810,7 +1760,7 @@ pub(super) fn publish_bundle_artifact(
     absolute_path: &Path,
     published_filename: &str,
 ) -> anyhow::Result<BundleArtifact> {
-    let published_path = config.build_root.join(published_filename);
+    let published_path = config.packaged_dir.join(published_filename);
     publish_flat_artifact(absolute_path, &published_path)?;
     bundle_artifact(absolute_path, published_filename)
 }

@@ -10,7 +10,8 @@ pub(super) fn manifest_generated_at(node_records: &[NodeRecord]) -> String {
 }
 
 pub(super) fn gc_roots_path(config: &ProductBuildConfig) -> PathBuf {
-    artifact_root_from_build_root(&config.build_root)
+    config
+        .build_root
         .join("cache")
         .join("gc_roots")
         .join(format!("{}_build_roots.json", config.profile.as_str()))
@@ -29,7 +30,7 @@ pub(super) fn load_gc_roots(
     Ok(GcRootsManifest {
         schema_version: 1,
         profile: config.profile.as_str().to_string(),
-        build_root: relative_product_build_path(&config.build_root),
+        build_root: config.build_root.display().to_string(),
         updated_at_utc: utc_now_string(),
         node_roots: BTreeMap::new(),
     })
@@ -65,13 +66,11 @@ pub(super) fn record_gc_roots(
     let now = utc_now_string();
     roots.schema_version = 1;
     roots.profile = config.profile.as_str().to_string();
-    roots.build_root = relative_product_build_path(&config.build_root);
+    roots.build_root = config.build_root.display().to_string();
     roots.updated_at_utc = now.clone();
     let prefix = format!("{scope}:");
     roots.node_roots.retain(|key, _| !key.starts_with(&prefix));
-    let cache_nodes_root = artifact_root_from_build_root(&config.build_root)
-        .join("cache")
-        .join("nodes");
+    let cache_nodes_root = config.build_root.join("cache").join("nodes");
     for (task_id, records) in task_records {
         for record in records {
             let key = format!("{scope}:{task_id}:{}:{}", record.name, record.fingerprint);
@@ -117,16 +116,11 @@ pub(super) fn record_gc_roots_from_build_manifest(
 pub(super) fn bootstrap_gc_roots_from_build_manifests(
     config: &ProductBuildConfig,
 ) -> anyhow::Result<PathBuf> {
-    let manifest_dir = artifact_root_from_build_root(&config.build_root)
+    let manifest_dir = config
+        .build_root
         .join("private-work")
         .join("build-manifests")
-        .join(
-            config
-                .build_root
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or(config.profile.as_str()),
-        );
+        .join(publish_path_key(&config.publish_dir, &config.build_root));
     let mut records = BTreeMap::<String, Vec<NodeRecord>>::new();
     if manifest_dir.is_dir() {
         for entry in fs::read_dir(&manifest_dir)
@@ -158,18 +152,24 @@ pub(super) fn bootstrap_gc_roots_from_build_manifests(
 }
 
 pub fn gc_build_cache(config: &BuildCacheGcConfig) -> anyhow::Result<BuildCacheGcReport> {
+    let publish_dir = config
+        .build_root
+        .join("published")
+        .join("gc")
+        .join("00000000T000000Z");
     let product_config = ProductBuildConfig {
         chart_cutline_root: PathBuf::new(),
         build_root: config.build_root.clone(),
+        publish_dir: publish_dir.clone(),
+        packaged_dir: publish_dir.join("packaged"),
         profile: config.profile,
-        build_label: None,
+        publish_label: "gc".to_string(),
+        publish_timestamp: "00000000T000000Z".to_string(),
         target_cycle: None,
         fetch_jobs: 1,
         cpu_jobs: 1,
         max_heavy_jobs: 1,
-        fetch_cache_root: artifact_root_from_build_root(&config.build_root)
-            .join("cache")
-            .join("fetch"),
+        fetch_cache_root: config.build_root.join("cache").join("fetch"),
         fetch_cache_mode: "cache-first".to_string(),
     };
     if config.bootstrap_from_build_manifests {
@@ -177,9 +177,7 @@ pub fn gc_build_cache(config: &BuildCacheGcConfig) -> anyhow::Result<BuildCacheG
     }
     let roots_path = gc_roots_path(&product_config);
     let roots = load_gc_roots(&roots_path, &product_config)?;
-    let cache_nodes_root = artifact_root_from_build_root(&config.build_root)
-        .join("cache")
-        .join("nodes");
+    let cache_nodes_root = config.build_root.join("cache").join("nodes");
     let rooted = roots
         .node_roots
         .values()
@@ -269,9 +267,7 @@ pub(super) fn scrub_terrain_private_work_scratch(
     mode: BuildCacheGcMode,
     report: &mut BuildCacheGcReport,
 ) -> anyhow::Result<()> {
-    let private_terrain_root = artifact_root_from_build_root(build_root)
-        .join("private-work")
-        .join("terrain");
+    let private_terrain_root = build_root.join("private-work").join("terrain");
     if !private_terrain_root.exists() {
         return Ok(());
     }

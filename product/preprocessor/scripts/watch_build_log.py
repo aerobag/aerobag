@@ -68,11 +68,12 @@ class BuildState:
         self.completed = 0
         self.running_units = 0
         self.header = ""
-        self.build_label = ""
+        self.publish_label = ""
         self.cycle_summary = ""
         self.bundle_cycle = "?"
         self.pid: int | None = None
         self.build_root: Path | None = None
+        self.publish_dir: Path | None = None
         self.diagnostic_error_count: int | None = None
         self.final_result: str | None = None
         self.final_details = ""
@@ -91,7 +92,10 @@ class BuildState:
             self.header = f"{match.group('ts')} {match.group('rest')}"
             self.pid = parse_pid(match.group("rest"))
             self.build_root = parse_build_root(match.group("rest"))
-            self.build_label = parse_build_label(match.group("rest"))
+            self.publish_dir = parse_publish_dir(match.group("rest"))
+            self.publish_label = parse_publish_label(match.group("rest"))
+            if not self.publish_label:
+                self.publish_label = infer_publish_label_from_publish_dir(self.publish_dir)
             self.last_timestamp = match.group("ts")
             return
 
@@ -171,11 +175,12 @@ class BuildState:
         self.completed = 0
         self.running_units = 0
         self.header = ""
-        self.build_label = ""
+        self.publish_label = ""
         self.cycle_summary = ""
         self.bundle_cycle = "?"
         self.pid = None
         self.build_root = None
+        self.publish_dir = None
         self.diagnostic_error_count = None
         self.final_result = None
         self.final_details = ""
@@ -226,11 +231,27 @@ def parse_build_root(header_rest: str) -> Path | None:
     return None
 
 
-def parse_build_label(header_rest: str) -> str:
+def parse_publish_dir(header_rest: str) -> Path | None:
     for token in header_rest.split():
-        if token.startswith("build_label="):
+        if token.startswith("publish_dir="):
+            value = token.split("=", 1)[1]
+            return Path(value) if value else None
+    return None
+
+
+def parse_publish_label(header_rest: str) -> str:
+    for token in header_rest.split():
+        if token.startswith("publish_label="):
             return token.split("=", 1)[1]
     return ""
+
+
+def infer_publish_label_from_publish_dir(publish_dir: Path | None) -> str:
+    if publish_dir is None:
+        return ""
+    if publish_dir.parent.name:
+        return publish_dir.parent.name
+    return publish_dir.name
 
 
 def parse_diagnostic_error_count(details: str) -> int | None:
@@ -245,7 +266,7 @@ def parse_diagnostic_error_count(details: str) -> int | None:
 
 def parse_current_artifacts_path(final_details: str) -> Path | None:
     for token in final_details.split():
-        if token.startswith("current_artifacts=") or token.startswith("version_artifacts="):
+        if token.startswith("current_artifacts=") or token.startswith("product_artifacts="):
             value = token.split("=", 1)[1]
             return Path(value) if value else None
     return None
@@ -275,6 +296,12 @@ def format_runtime(now_wall: datetime, launched_wall: str) -> str:
 
 def read_diagnostics_state(state: BuildState) -> DiagnosticsState:
     current_artifacts_path = parse_current_artifacts_path(state.final_details)
+    if (
+        current_artifacts_path is None
+        and state.diagnostic_error_count is not None
+        and state.publish_dir is not None
+    ):
+        current_artifacts_path = product_artifacts_path(state.publish_dir)
     if (
         current_artifacts_path is None
         and state.diagnostic_error_count is not None
@@ -374,16 +401,15 @@ def read_diagnostics_state(state: BuildState) -> DiagnosticsState:
 
 
 def latest_current_artifacts_path(build_root: Path) -> Path | None:
-    latest_alias = publication_root_for_packaged_root(build_root) / "current_artifacts.json"
+    latest_alias = publication_root_for_build_root(build_root) / "current_artifacts.json"
     if latest_alias.is_file():
         return latest_alias
-    try:
-        candidates = sorted(
-            publication_root_for_packaged_root(build_root).glob("version_artifacts_*T*.json")
-        )
-    except OSError:
-        return None
-    return candidates[-1] if candidates else None
+    return None
+
+
+def product_artifacts_path(publish_dir: Path) -> Path | None:
+    path = publish_dir / "product_artifacts.json"
+    return path if path.is_file() else None
 
 
 def select_diagnostics_manifest(current: object) -> dict | None:
@@ -400,10 +426,14 @@ def select_diagnostics_manifest(current: object) -> dict | None:
     return manifests[0]
 
 
-def publication_root_for_packaged_root(packaged_root: Path) -> Path:
-    if packaged_root.name == "published_packaged":
-        return packaged_root.parent
-    return packaged_root
+def publication_root_for_build_root(build_root: Path) -> Path:
+    return build_root / "published"
+
+
+def publication_root_for_manifest(manifest_path: Path) -> Path:
+    if manifest_path.name == "product_artifacts.json":
+        return manifest_path.parent.parent.parent
+    return manifest_path.parent
 
 
 def diagnostics_manifest_path(
@@ -424,7 +454,7 @@ def diagnostics_manifest_path(
         or ".." in filename_path.parts
     ):
         return None
-    return current_artifacts_path.parent / packaged_path / filename_path
+    return publication_root_for_manifest(current_artifacts_path) / packaged_path / filename_path
 
 
 def diagnostics_from_count(error_count: int, source: str) -> DiagnosticsState:
@@ -474,13 +504,17 @@ def run_ui(stdscr, log_path: Path, refresh_seconds: float) -> None:
             stdscr,
             1,
             0,
-            state.header or "waiting for build header...",
+            (
+                f"publish={state.publish_label or '?'} {state.header}"
+                if state.header
+                else "waiting for build header..."
+            ),
             curses.A_DIM,
             max_x,
         )
 
         summary = (
-            f"build={state.build_label or '?'} "
+            f"publish={state.publish_label or '?'} "
             f"bundle_cycle={state.bundle_cycle} "
             f"active={len(state.active_tasks())} "
             f"completed={state.completed}/{state.total_tasks or '?'} "
@@ -617,7 +651,7 @@ def main() -> int:
     parser.add_argument(
         "log_path",
         nargs="?",
-        default="/root/aerobag-artifacts/private-work/orchestrator-logs/published_packaged/master.log",
+        default="/root/aerobag-artifacts/private-work/orchestrator-logs/published/master.log",
         help="Path to master.log",
     )
     parser.add_argument(

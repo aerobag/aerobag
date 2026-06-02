@@ -1191,6 +1191,7 @@ fn sync_nav_db_unpacked_zip_from_source(
     unpacked_root: &Path,
     published_filename: &str,
     known_sha256: Option<&str>,
+    xz_jobs: usize,
 ) -> anyhow::Result<(bool, PathBuf)> {
     sync_unpacked_zip_from_source_with_marker(
         zip_path,
@@ -1199,7 +1200,9 @@ fn sync_nav_db_unpacked_zip_from_source(
         published_filename,
         known_sha256,
         Some(NAV_DB_UNPACKED_PAGE_ENCODING_MARKER),
-        hardlink_nav_db_zip_members_from_source_root,
+        |zip_path, source_root, output_dir| {
+            hardlink_nav_db_zip_members_from_source_root(zip_path, source_root, output_dir, xz_jobs)
+        },
     )
 }
 
@@ -1210,7 +1213,7 @@ fn sync_unpacked_zip_from_source_with_marker(
     published_filename: &str,
     known_sha256: Option<&str>,
     marker_suffix: Option<&str>,
-    sync_members: fn(&Path, &Path, &Path) -> anyhow::Result<()>,
+    sync_members: impl FnOnce(&Path, &Path, &Path) -> anyhow::Result<()>,
 ) -> anyhow::Result<(bool, PathBuf)> {
     let unpack_dir = unpacked_target_dir(unpacked_root, published_filename)?;
     let marker_path = unpacked_marker_path(unpacked_root, published_filename)?;
@@ -1341,14 +1344,20 @@ fn hardlink_nav_db_zip_members_from_source_root(
     zip_path: &Path,
     source_root: &Path,
     output_dir: &Path,
+    xz_jobs: usize,
 ) -> anyhow::Result<()> {
+    let mut page_jobs = Vec::new();
     sync_zip_members_from_source_root(zip_path, source_root, output_dir, |source, target| {
         if source
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.starts_with("page_"))
         {
-            write_xz_file_deterministic(source, target)
+            page_jobs.push(XzFileJob {
+                source: source.to_path_buf(),
+                target: target.to_path_buf(),
+            });
+            Ok(())
         } else {
             fs::hard_link(source, target).with_context(|| {
                 format!(
@@ -1358,14 +1367,15 @@ fn hardlink_nav_db_zip_members_from_source_root(
                 )
             })
         }
-    })
+    })?;
+    write_xz_files_parallel(page_jobs, xz_jobs)
 }
 
 fn sync_zip_members_from_source_root(
     zip_path: &Path,
     source_root: &Path,
     output_dir: &Path,
-    sync_file: impl Fn(&Path, &Path) -> anyhow::Result<()>,
+    mut sync_file: impl FnMut(&Path, &Path) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     let file =
         File::open(zip_path).with_context(|| format!("failed to open {}", zip_path.display()))?;
@@ -1399,6 +1409,53 @@ fn sync_zip_members_from_source_root(
             );
         }
         sync_file(&source, &outpath)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct XzFileJob {
+    source: PathBuf,
+    target: PathBuf,
+}
+
+fn write_xz_files_parallel(jobs: Vec<XzFileJob>, xz_jobs: usize) -> anyhow::Result<()> {
+    let worker_count = xz_jobs.max(1).min(jobs.len().max(1));
+    if worker_count == 1 {
+        for job in jobs {
+            write_xz_file_deterministic(&job.source, &job.target)?;
+        }
+        return Ok(());
+    }
+    let (sender, receiver) = crossbeam_channel::unbounded::<XzFileJob>();
+    for job in jobs {
+        sender
+            .send(job)
+            .context("failed to enqueue nav-db xz job")?;
+    }
+    drop(sender);
+    let worker_results = thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for _ in 0..worker_count {
+            let receiver = receiver.clone();
+            handles.push(scope.spawn(move || -> anyhow::Result<()> {
+                for job in receiver {
+                    write_xz_file_deterministic(&job.source, &job.target)?;
+                }
+                Ok(())
+            }));
+        }
+        handles
+            .into_iter()
+            .map(|handle| handle.join())
+            .collect::<Vec<_>>()
+    });
+    for result in worker_results {
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => return Err(err),
+            Err(_) => bail!("nav-db xz worker thread panicked"),
+        }
     }
     Ok(())
 }
@@ -1579,6 +1636,7 @@ fn sync_cycle_bundle_unpacked_zips(
                 unpacked_root,
                 &package.filename,
                 Some(&package.checksum_sha256),
+                config.cpu_jobs,
             )
             .with_context(|| format!("failed to unpack package {}", package.id))?;
             continue;
@@ -3927,8 +3985,10 @@ mod tests {
         fs::create_dir_all(&unpacked_root).unwrap();
         fs::write(source_root.join("root"), b"raw-root").unwrap();
         fs::write(source_root.join("page_0001"), b"raw-page-one").unwrap();
+        fs::write(source_root.join("page_0002"), b"raw-page-two").unwrap();
         let zip_path = temp.path().join("nav_db_test.zip");
-        zip_directory_deterministic(&zip_path, &source_root, &["root", "page_0001"]).unwrap();
+        zip_directory_deterministic(&zip_path, &source_root, &["root", "page_0001", "page_0002"])
+            .unwrap();
 
         let (_, unpack_dir) = sync_nav_db_unpacked_zip_from_source(
             &zip_path,
@@ -3936,24 +3996,31 @@ mod tests {
             &unpacked_root,
             "nav_db_test.zip",
             None,
+            2,
         )
         .unwrap();
 
         assert_eq!(fs::read(unpack_dir.join("root")).unwrap(), b"raw-root");
-        let page = fs::read(unpack_dir.join("page_0001")).unwrap();
-        assert_eq!(&page[..6], &[0xfd, b'7', b'z', b'X', b'Z', 0x00]);
-        let output = Command::new("xz")
-            .arg("--decompress")
-            .arg("--stdout")
-            .arg(unpack_dir.join("page_0001"))
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(output.stdout, b"raw-page-one");
+        for (page_name, expected) in [
+            ("page_0001", b"raw-page-one".as_slice()),
+            ("page_0002", b"raw-page-two".as_slice()),
+        ] {
+            let page_path = unpack_dir.join(page_name);
+            let page = fs::read(&page_path).unwrap();
+            assert_eq!(&page[..6], &[0xfd, b'7', b'z', b'X', b'Z', 0x00]);
+            let output = Command::new("xz")
+                .arg("--decompress")
+                .arg("--stdout")
+                .arg(&page_path)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(output.stdout, expected);
+        }
     }
 
     #[test]

@@ -243,10 +243,6 @@ where
                 let now = utc_now_string();
                 writeln!(file, "pid={pid}").ok();
                 writeln!(file, "started_at_utc={now}").ok();
-                log(&format!(
-                    "publication-lock acquired path={}",
-                    lock_path.display()
-                ));
                 return Ok(PublicationLockGuard { path: lock_path });
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {

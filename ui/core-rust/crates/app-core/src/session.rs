@@ -1476,6 +1476,9 @@ fn sync_cycle_product_freshness_status_records(session: &mut UiSession) -> Vec<U
 fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState {
     let metars_status = metar_live_feed_status_source(session);
     let mut rows = vec![
+        publication_status_page_row(session),
+        expected_contract_versions_status_page_row(),
+        nav_db_status_page_row(session),
         cycle_package_group_status_page_row(
             session,
             "cycle:charts",
@@ -1506,12 +1509,22 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
                 ("geo", "Geodesy", 40),
             ],
         ),
-        nav_db_status_page_row(session),
-    ];
-    rows.extend(package_warning_status_page_rows(session));
-    rows.extend([
-        publication_status_page_row(session),
         live_feed_connection_status_page_row(session),
+        live_feed_product_status_page_row(
+            session,
+            "tfrs",
+            "TFRs",
+            session.tfr_payload.is_some(),
+            session
+                .tfr_payload
+                .as_ref()
+                .and_then(|payload| payload.generated_at_utc),
+            DATA_FRESHNESS_POLICIES.live_feeds.tfrs,
+            session
+                .live_feeds
+                .product_loaded_version("tfrs")
+                .map(str::to_string),
+        ),
         live_feed_product_status_page_row(
             session,
             "metars",
@@ -1541,21 +1554,6 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
         ),
         live_feed_product_status_page_row(
             session,
-            "tfrs",
-            "TFRs",
-            session.tfr_payload.is_some(),
-            session
-                .tfr_payload
-                .as_ref()
-                .and_then(|payload| payload.generated_at_utc),
-            DATA_FRESHNESS_POLICIES.live_feeds.tfrs,
-            session
-                .live_feeds
-                .product_loaded_version("tfrs")
-                .map(str::to_string),
-        ),
-        live_feed_product_status_page_row(
-            session,
             "obstacles",
             "Obstacles",
             session.obstacle_had.is_some()
@@ -1579,7 +1577,8 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
                         .map(str::to_string)
                 }),
         ),
-    ]);
+    ];
+    rows.extend(package_warning_status_page_rows(session));
     UiDataStatusPageState {
         title: "Data status".to_string(),
         summary: data_status_page_summary(&rows),
@@ -1990,6 +1989,26 @@ fn nav_db_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
         "UNKNOWN",
         UiStatusSeverity::Info,
         "NAV DB package metadata does not include an expiration date.",
+        facts,
+    )
+}
+
+fn expected_contract_versions_status_page_row() -> UiDataStatusPageRow {
+    let facts = product_contracts::PRODUCT_CONTRACTS
+        .iter()
+        .map(|contract| {
+            status_fact(
+                package_warning_label(contract.family_id),
+                contract.contract_id,
+            )
+        })
+        .collect::<Vec<_>>();
+    status_page_row(
+        "contracts:expected",
+        "Contract versions",
+        product_contracts::PRODUCT_CONTRACTS.len().to_string(),
+        UiStatusSeverity::Ok,
+        "Core will only accept packages that match these product contract ids.",
         facts,
     )
 }
@@ -11690,6 +11709,64 @@ mod tests {
         assert_eq!(
             server.link_url.as_deref(),
             Some("http://aerobag-dev.iac.jonh.net:9085/live-feeds/status.html")
+        );
+    }
+
+    #[test]
+    fn data_status_page_reports_expected_contract_versions() {
+        let init = create_current_test_session();
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let row = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "contracts:expected")
+            .expect("expected contract versions row");
+
+        assert_eq!(row.label, "Contract versions");
+        assert_eq!(
+            row.value,
+            product_contracts::PRODUCT_CONTRACTS.len().to_string()
+        );
+        assert_eq!(row.severity, UiStatusSeverity::Ok);
+        assert_eq!(
+            row.facts
+                .iter()
+                .find(|fact| fact.label == "NAV DB")
+                .map(|fact| fact.value.as_str()),
+            Some(crate::REQUIRED_NAV_DB_CONTRACT_ID)
+        );
+    }
+
+    #[test]
+    fn data_status_page_orders_core_tiles_for_scanability() {
+        let init = create_current_test_session();
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let row_ids = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .take(11)
+            .map(|row| row.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            row_ids,
+            vec![
+                "publication:current_artifacts",
+                "contracts:expected",
+                "nav_db",
+                "cycle:charts",
+                "cycle:airport_docs",
+                "static:base_data",
+                "live_feed:connection",
+                "live_feed:tfrs",
+                "live_feed:metars",
+                "live_feed:nexrad",
+                "live_feed:obstacles",
+            ]
         );
     }
 

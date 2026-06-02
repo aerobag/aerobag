@@ -8768,7 +8768,7 @@ function DataStatusPage(props: {
                   {row.facts.map((fact) => (
                     <div key={`${row.id}:${fact.label}`} className="dataStatusPageFact">
                       <dt>{fact.label}</dt>
-                      <dd>{formatDataStatusFactValue(fact, nowMs)}</dd>
+                      <dd>{renderDataStatusFactValue(fact, nowMs)}</dd>
                     </div>
                   ))}
                 </dl>
@@ -8779,6 +8779,21 @@ function DataStatusPage(props: {
       </div>
     </section>
   );
+}
+
+function renderDataStatusFactValue(
+  fact: UiDataStatusPageState["rows"][number]["facts"][number],
+  nowMs: number,
+): ReactNode {
+  const value = formatDataStatusFactValue(fact, nowMs);
+  if (fact.link_url) {
+    return (
+      <a href={fact.link_url} target="_blank" rel="noreferrer">
+        {value}
+      </a>
+    );
+  }
+  return value;
 }
 
 function formatDataStatusFactValue(

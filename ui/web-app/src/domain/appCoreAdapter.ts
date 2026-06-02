@@ -33,6 +33,8 @@ import { attachNavKvStoreToSession, resolvePackageMemberUrl, runCoreHadOperation
 import { debugLog, debugTiming, installRustDebugLogBridge } from "./debugLog";
 import { isMetarLiveFeedPayloadResource, prepareMetarLiveFeedResource, resetMetarLiveFeedPrep } from "./metarLiveFeedPrep";
 
+declare const __AEROBAG_LIVE_FEEDS_ORIGIN__: string | null;
+
 export type DerivedChartPageState = {
   airports: ChartPageData["airports"];
   recent_airport_ids: string[];
@@ -123,6 +125,7 @@ export type UiDataStatusState = {
 export type UiDataStatusPageFact = {
   label: string;
   value: string;
+  link_url?: string | null;
   time_utc?: string | null;
   time_display?: "ago" | "old" | "until" | null;
 };
@@ -1494,11 +1497,18 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         if (liveFeedSubscription) {
           return;
         }
+        const sourceUrl = liveFeedSourceUrl();
+        const statusUrl = liveFeedStatusUrl(sourceUrl);
         const reportConnectionEvent = async (kind: "connecting" | "connected" | "message" | "error" | "closed", message?: string) => {
           snapshot = await parseSessionSnapshot(
             this.module.report_live_feed_connection_event_in_session(
               handle,
-              JSON.stringify({ kind, message: message ?? null }),
+              JSON.stringify({
+                kind,
+                message: message ?? null,
+                source_url: sourceUrl,
+                status_url: statusUrl,
+              }),
             ),
           );
           publishInvalidations(["session_snapshot"]);
@@ -1521,10 +1531,16 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           const closing = liveFeedSubscription;
           liveFeedSubscription = null;
           closing.close();
+          const sourceUrl = liveFeedSourceUrl();
           snapshot = await parseSessionSnapshot(
             this.module.report_live_feed_connection_event_in_session(
               handle,
-              JSON.stringify({ kind: "closed", message: null }),
+              JSON.stringify({
+                kind: "closed",
+                message: null,
+                source_url: sourceUrl,
+                status_url: liveFeedStatusUrl(sourceUrl),
+              }),
             ),
           );
           publishInvalidations(["session_snapshot"]);
@@ -1839,6 +1855,22 @@ function coreViewportForMap(viewport: MapViewportState) {
 type LiveFeedSubscription = {
   close(): void;
 };
+
+function liveFeedSourceUrl(): string {
+  const configured = __AEROBAG_LIVE_FEEDS_ORIGIN__?.trim();
+  if (configured) {
+    return configured.replace(/\/+$/, "");
+  }
+  if (typeof window !== "undefined" && window.location.origin) {
+    return window.location.origin;
+  }
+  return "";
+}
+
+function liveFeedStatusUrl(sourceUrl: string): string {
+  const origin = sourceUrl.replace(/\/+$/, "");
+  return origin ? `${origin}/live-feeds/status.html` : "/live-feeds/status.html";
+}
 
 function createLiveFeedSubscription(
   ingestEvents: (events: LiveFeedSseEvent[]) => Promise<void>,

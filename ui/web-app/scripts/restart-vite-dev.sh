@@ -60,8 +60,10 @@ PY
 ARTIFACT_READ_ROOT="${AEROBAG_ARTIFACT_READ_PATH:-$DEFAULT_ARTIFACT_READ_ROOT}"
 LIVE_FEEDS_ROOT="${AEROBAG_LIVE_FEEDS_ROOT:-$REPO_ROOT/../live-feeds}"
 LIVE_FEEDS_LOG="${AEROBAG_LIVE_FEEDS_LOG:-/tmp/aerobag-live-feedsd-$PORT.log}"
-LIVE_FEEDS_MODE="${AEROBAG_LIVE_FEEDS_MODE:-production}"
+LIVE_FEEDS_MODE="${AEROBAG_LIVE_FEEDS_MODE:-disabled}"
 LIVE_FEEDS_HOST="${AEROBAG_LIVE_FEEDS_HOST:-127.0.0.1}"
+DEFAULT_LIVE_FEEDS_ORIGIN="http://aerobag-dev.iac.jonh.net:9085"
+LIVE_FEEDS_ORIGIN="${AEROBAG_LIVE_FEEDS_ORIGIN:-}"
 DEFAULT_LIVE_FEEDS_FIXTURE_ROOT="$REPO_ROOT/../live-feeds-dev-fixture/live-feeds"
 mkdir -p "$LIVE_FEEDS_ROOT"
 
@@ -112,8 +114,12 @@ wait_for_shutdown() {
     remaining_roots="$(list_dev_roots || true)"
     remaining_workspace="$(list_workspace_pids || true)"
     listeners="$(list_port_listener_pids)"
-    live_feed_listeners="$(list_live_feed_port_listener_pids)"
-    live_feed_daemons="$(list_live_feed_daemon_pids || true)"
+    live_feed_listeners=""
+    live_feed_daemons=""
+    if [ "$LIVE_FEEDS_MODE" != "disabled" ]; then
+      live_feed_listeners="$(list_live_feed_port_listener_pids)"
+      live_feed_daemons="$(list_live_feed_daemon_pids || true)"
+    fi
     if [ -z "$remaining_roots" ] && [ -z "$remaining_workspace" ] && [ -z "$listeners" ] && [ -z "$live_feed_listeners" ] && [ -z "$live_feed_daemons" ]; then
       return 0
     fi
@@ -150,15 +156,19 @@ while read -r pid; do
   kill_tree "$pid"
 done < <(list_port_listener_pids)
 
-while read -r pid; do
-  [ -n "$pid" ] || continue
-  kill_tree "$pid"
-done < <(list_live_feed_daemon_pids || true)
+if [ "$LIVE_FEEDS_MODE" != "disabled" ]; then
+  while read -r pid; do
+    [ -n "$pid" ] || continue
+    kill_tree "$pid"
+  done < <(list_live_feed_daemon_pids || true)
+fi
 
-while read -r pid; do
-  [ -n "$pid" ] || continue
-  kill_tree "$pid"
-done < <(list_live_feed_port_listener_pids)
+if [ "$LIVE_FEEDS_MODE" != "disabled" ]; then
+  while read -r pid; do
+    [ -n "$pid" ] || continue
+    kill_tree "$pid"
+  done < <(list_live_feed_port_listener_pids)
+fi
 
 wait_for_shutdown
 
@@ -206,10 +216,14 @@ if [ "$LIVE_FEEDS_MODE" != "disabled" ]; then
     >"$LIVE_FEEDS_LOG" 2>&1 &
 fi
 
-LIVE_FEEDS_ENV=()
-if [ "$LIVE_FEEDS_MODE" != "disabled" ]; then
-  LIVE_FEEDS_ENV+=(AEROBAG_LIVE_FEEDS_ORIGIN="http://127.0.0.1:$LIVE_FEEDS_PORT")
+if [ -z "$LIVE_FEEDS_ORIGIN" ]; then
+  if [ "$LIVE_FEEDS_MODE" != "disabled" ]; then
+    LIVE_FEEDS_ORIGIN="http://127.0.0.1:$LIVE_FEEDS_PORT"
+  else
+    LIVE_FEEDS_ORIGIN="$DEFAULT_LIVE_FEEDS_ORIGIN"
+  fi
 fi
+LIVE_FEEDS_ENV=(AEROBAG_LIVE_FEEDS_ORIGIN="$LIVE_FEEDS_ORIGIN")
 
 exec env \
   AEROBAG_REPO_ROOT="$REPO_ROOT" \

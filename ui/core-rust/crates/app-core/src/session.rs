@@ -209,6 +209,10 @@ pub struct LiveFeedConnectionEvent {
     pub kind: LiveFeedConnectionEventKind,
     #[serde(default)]
     pub message: Option<String>,
+    #[serde(default)]
+    pub source_url: Option<String>,
+    #[serde(default)]
+    pub status_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,6 +233,8 @@ impl Default for LiveFeedConnectionMode {
 #[derive(Debug, Clone, PartialEq, Default)]
 struct LiveFeedConnectionSessionState {
     mode: LiveFeedConnectionMode,
+    source_url: Option<String>,
+    status_url: Option<String>,
     last_state_change_epoch_ms: Option<i64>,
     last_heard_epoch_ms: Option<i64>,
     last_error_epoch_ms: Option<i64>,
@@ -2054,6 +2060,13 @@ fn publication_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
 fn live_feed_connection_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
     let connection = &session.live_feed_connection;
     let mut facts = Vec::new();
+    if let Some(source_url) = connection.source_url.as_deref() {
+        facts.push(status_link_fact(
+            "Server",
+            source_url,
+            connection.status_url.as_deref().unwrap_or(source_url),
+        ));
+    }
     if let Some(last_heard) = connection.last_heard_epoch_ms {
         facts.push(status_time_fact(
             "Last server event",
@@ -2236,6 +2249,21 @@ fn status_fact(label: impl Into<String>, value: impl Into<String>) -> UiDataStat
     UiDataStatusPageFact {
         label: label.into(),
         value: value.into(),
+        link_url: None,
+        time_utc: None,
+        time_display: None,
+    }
+}
+
+fn status_link_fact(
+    label: impl Into<String>,
+    value: impl Into<String>,
+    link_url: impl Into<String>,
+) -> UiDataStatusPageFact {
+    UiDataStatusPageFact {
+        label: label.into(),
+        value: value.into(),
+        link_url: Some(link_url.into()),
         time_utc: None,
         time_display: None,
     }
@@ -2249,6 +2277,7 @@ fn status_time_fact(
     UiDataStatusPageFact {
         label: label.into(),
         value: format_status_utc(instant),
+        link_url: None,
         time_utc: Some(format_status_rfc3339(instant)),
         time_display: Some(display),
     }
@@ -4526,6 +4555,8 @@ pub fn ingest_live_feed_sse_event_in_session_at_epoch_ms(
         LiveFeedConnectionEvent {
             kind: LiveFeedConnectionEventKind::Message,
             message: None,
+            source_url: None,
+            status_url: None,
         },
         epoch_ms,
     );
@@ -4552,6 +4583,8 @@ pub fn ingest_live_feed_sse_events_in_session_at_epoch_ms(
             LiveFeedConnectionEvent {
                 kind: LiveFeedConnectionEventKind::Message,
                 message: None,
+                source_url: None,
+                status_url: None,
             },
             epoch_ms,
         );
@@ -4583,6 +4616,8 @@ pub fn ingest_resource_in_session_at_epoch_ms(
                 LiveFeedConnectionEvent {
                     kind: LiveFeedConnectionEventKind::Message,
                     message: None,
+                    source_url: None,
+                    status_url: None,
                 },
                 epoch_ms,
             );
@@ -4646,6 +4681,12 @@ fn record_live_feed_connection_event(
 ) {
     advance_session_wall_clock(session, epoch_ms);
     let at = session.wall_clock_epoch_ms;
+    if event.source_url.is_some() {
+        session.live_feed_connection.source_url = event.source_url;
+    }
+    if event.status_url.is_some() {
+        session.live_feed_connection.status_url = event.status_url;
+    }
     match event.kind {
         LiveFeedConnectionEventKind::Connecting => {
             session.live_feed_connection.mode = LiveFeedConnectionMode::Connecting;
@@ -11601,6 +11642,10 @@ mod tests {
             LiveFeedConnectionEvent {
                 kind: LiveFeedConnectionEventKind::Connected,
                 message: None,
+                source_url: Some("http://aerobag-dev.iac.jonh.net:9085".to_string()),
+                status_url: Some(
+                    "http://aerobag-dev.iac.jonh.net:9085/live-feeds/status.html".to_string(),
+                ),
             },
             utc("2026-05-20T12:00:00Z").timestamp_millis(),
         )
@@ -11610,6 +11655,8 @@ mod tests {
             LiveFeedConnectionEvent {
                 kind: LiveFeedConnectionEventKind::Message,
                 message: None,
+                source_url: None,
+                status_url: None,
             },
             utc("2026-05-20T12:03:00Z").timestamp_millis(),
         )
@@ -11625,6 +11672,16 @@ mod tests {
         assert!(row
             .detail
             .contains("Last server event was at 2026-05-20 12:03 UTC"));
+        let server = row
+            .facts
+            .iter()
+            .find(|fact| fact.label == "Server")
+            .expect("server URL fact");
+        assert_eq!(server.value, "http://aerobag-dev.iac.jonh.net:9085");
+        assert_eq!(
+            server.link_url.as_deref(),
+            Some("http://aerobag-dev.iac.jonh.net:9085/live-feeds/status.html")
+        );
     }
 
     #[test]

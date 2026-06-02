@@ -59,6 +59,8 @@ pub struct UiDataStatusPageFact {
     pub label: String,
     pub value: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time_utc: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time_display: Option<UiDataStatusPageTimeDisplay>,

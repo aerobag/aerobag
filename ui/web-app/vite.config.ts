@@ -242,6 +242,9 @@ function aerobagStaticPlugin(): Plugin {
 
 export default defineConfig({
   plugins: [react(), aerobagStaticPlugin()],
+  define: {
+    __AEROBAG_LIVE_FEEDS_ORIGIN__: JSON.stringify(liveFeedsOrigin),
+  },
   resolve: {
     preserveSymlinks: true,
     alias: {

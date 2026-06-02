@@ -2444,6 +2444,12 @@ button {
   white-space: nowrap;
 }
 
+.dataStatusPageFact dd a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.12em;
+}
+
 .planScrollViewport {
   position: relative;
   flex: 1 1 auto;

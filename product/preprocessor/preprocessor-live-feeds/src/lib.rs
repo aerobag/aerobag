@@ -246,6 +246,8 @@ enum PirepTextMode {
 pub struct StructuredMetarDataset {
     schema_version: u32,
     version_label: String,
+    generated_at_utc: String,
+    observed_at_utc: String,
     metar_count: usize,
     metars_by_station: BTreeMap<String, StructuredMetarRecord>,
 }
@@ -593,6 +595,8 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
         &StructuredMetarDataset {
             schema_version: 4,
             version_label: request.version_label.clone(),
+            generated_at_utc: request.generated_at_utc.to_rfc3339(),
+            observed_at_utc: request.generated_at_utc.to_rfc3339(),
             metar_count,
             metars_by_station: model.metars_by_station.clone(),
         },
@@ -2528,6 +2532,14 @@ mod tests {
         assert!(metars_by_station.contains_key("KAAA"));
         assert!(metars_by_station.contains_key("KBBB"));
         assert!(dataset.get("metars").is_none());
+        assert_eq!(
+            dataset.get("generated_at_utc"),
+            Some(&Value::String("2026-04-16T04:00:00+00:00".to_string())),
+        );
+        assert_eq!(
+            dataset.get("observed_at_utc"),
+            Some(&Value::String("2026-04-16T04:00:00+00:00".to_string())),
+        );
         assert_eq!(
             dataset.pointer("/metars_by_station/KAAA/observed_at_utc"),
             Some(&Value::String("2026-04-16T04:00:00.000Z".to_string())),

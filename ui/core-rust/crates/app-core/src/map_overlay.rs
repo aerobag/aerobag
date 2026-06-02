@@ -359,6 +359,8 @@ pub struct MetarProductPayload {
     #[serde(default)]
     pub generated_at_utc: Option<DateTime<Utc>>,
     #[serde(default)]
+    pub observed_at_utc: Option<DateTime<Utc>>,
+    #[serde(default)]
     pub metar_count: Option<u32>,
     pub metars_by_station: HashMap<String, MetarRecord>,
     #[serde(default)]
@@ -6190,6 +6192,7 @@ mod tests {
             schema_version: 3,
             version_label: "test".to_string(),
             generated_at_utc: None,
+            observed_at_utc: None,
             metar_count: Some(1),
             metars_by_station,
             pireps: Vec::new(),
@@ -6415,6 +6418,7 @@ mod tests {
                     schema_version: 3,
                     version_label: "test".to_string(),
                     generated_at_utc: None,
+                    observed_at_utc: None,
                     metar_count: Some(1),
                     metars_by_station: HashMap::from([(
                         "KMT1".to_string(),
@@ -6647,6 +6651,7 @@ mod tests {
             schema_version: 3,
             version_label: "test".to_string(),
             generated_at_utc: None,
+            observed_at_utc: None,
             metar_count: Some(1),
             metars_by_station,
             pireps: Vec::new(),
@@ -6773,6 +6778,7 @@ mod tests {
             schema_version: 3,
             version_label: "test".to_string(),
             generated_at_utc: None,
+            observed_at_utc: None,
             metar_count: Some(1),
             metars_by_station,
             pireps: Vec::new(),

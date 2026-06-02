@@ -129,6 +129,8 @@ pub struct PreparedMetarLiveFeed {
     pub version_label: String,
     #[serde(default)]
     pub generated_at_utc: Option<String>,
+    #[serde(default)]
+    pub observed_at_utc: Option<String>,
     pub records: Vec<MetarRecord>,
     pub tiles: Vec<PreparedMetarTile>,
 }
@@ -898,6 +900,7 @@ fn prepare_metar_live_feed(payload: &MetarProductPayload) -> PreparedMetarLiveFe
         schema_version: 1,
         version_label: payload.version_label.clone(),
         generated_at_utc: payload.generated_at_utc.map(|value| value.to_rfc3339()),
+        observed_at_utc: payload.observed_at_utc.map(|value| value.to_rfc3339()),
         records,
         tiles: tiles
             .into_iter()
@@ -1030,6 +1033,8 @@ mod tests {
         serde_json::json!({
             "schema_version": 2,
             "version_label": version,
+            "generated_at_utc": "2026-05-18T20:00:00Z",
+            "observed_at_utc": "2026-05-18T20:00:00Z",
             "metar_count": metars_by_station.len(),
             "metars_by_station": metars_by_station
         })
@@ -1274,6 +1279,7 @@ mod tests {
             "version_label": "from",
             "metar_count": 1,
             "generated_at_utc": "2026-05-18T20:00:00Z",
+            "observed_at_utc": "2026-05-18T20:00:00Z",
             "metars_by_station": {
                 "KAAA": {"station_id": "KAAA", "raw_text": "same"}
             }
@@ -1283,6 +1289,7 @@ mod tests {
             "version_label": "to",
             "metar_count": 1,
             "generated_at_utc": "2026-05-18T20:05:00Z",
+            "observed_at_utc": "2026-05-18T20:05:00Z",
             "metars_by_station": {
                 "KAAA": {"station_id": "KAAA", "raw_text": "same"}
             }
@@ -1291,10 +1298,16 @@ mod tests {
             product: "metars".to_string(),
             from_version: "from".to_string(),
             to_version: "to".to_string(),
-            top_level_changed: serde_json::Map::from_iter([(
-                "generated_at_utc".to_string(),
-                serde_json::json!("2026-05-18T20:05:00Z"),
-            )]),
+            top_level_changed: serde_json::Map::from_iter([
+                (
+                    "generated_at_utc".to_string(),
+                    serde_json::json!("2026-05-18T20:05:00Z"),
+                ),
+                (
+                    "observed_at_utc".to_string(),
+                    serde_json::json!("2026-05-18T20:05:00Z"),
+                ),
+            ]),
             top_level_removed: Vec::new(),
             changed: serde_json::Map::new(),
             removed: Vec::new(),

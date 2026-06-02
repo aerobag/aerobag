@@ -657,7 +657,7 @@ fn metar_live_feed_status_source(session: &UiSession) -> LiveFeedProductStatusSo
     if let Some(payload) = session.metar_payload.as_ref() {
         return LiveFeedProductStatusSource {
             loaded: true,
-            observed_utc: payload.generated_at_utc,
+            observed_utc: payload.observed_at_utc.or(payload.generated_at_utc),
             loaded_version: Some(payload.version_label.clone()),
         };
     }
@@ -4785,19 +4785,10 @@ fn install_prepared_metar_live_feed(
     session: &mut UiSession,
     envelope: crate::PreparedMetarLiveFeedEnvelope,
 ) -> AppResult<()> {
-    let generated_at_utc = envelope
-        .feed
-        .generated_at_utc
-        .as_deref()
-        .map(|value| {
-            chrono::DateTime::parse_from_rfc3339(value)
-                .map(|value| value.with_timezone(&chrono::Utc))
-                .map_err(|err| AppError {
-                    kind: AppErrorKind::InvalidManifest,
-                    message: format!("failed to parse prepared METAR generated_at_utc: {err}"),
-                })
-        })
-        .transpose()?;
+    let generated_at_utc =
+        parse_prepared_metar_timestamp(envelope.feed.generated_at_utc.as_deref(), "generated")?;
+    let observed_at_utc =
+        parse_prepared_metar_timestamp(envelope.feed.observed_at_utc.as_deref(), "observed")?;
     let metars_by_station = envelope
         .feed
         .records
@@ -4809,6 +4800,7 @@ fn install_prepared_metar_live_feed(
         schema_version: 3,
         version_label: envelope.feed.version_label.clone(),
         generated_at_utc,
+        observed_at_utc,
         metar_count: Some(envelope.feed.records.len() as u32),
         metars_by_station,
         pireps: Vec::new(),
@@ -4816,6 +4808,22 @@ fn install_prepared_metar_live_feed(
     session.prepared_metar_feed = Some(envelope.feed);
     rebuild_metar_tile_cache(session);
     Ok(())
+}
+
+fn parse_prepared_metar_timestamp(
+    value: Option<&str>,
+    label: &str,
+) -> AppResult<Option<chrono::DateTime<chrono::Utc>>> {
+    value
+        .map(|value| {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .map(|value| value.with_timezone(&chrono::Utc))
+                .map_err(|err| AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message: format!("failed to parse prepared METAR {label}_at_utc: {err}"),
+                })
+        })
+        .transpose()
 }
 
 fn read_installed_nexrad_package(
@@ -9464,6 +9472,7 @@ mod tests {
             schema_version: 3,
             version_label: "v1".to_string(),
             generated_at_utc: None,
+            observed_at_utc: None,
             metar_count: Some(1),
             metars_by_station,
             pireps: Vec::new(),
@@ -9678,6 +9687,7 @@ mod tests {
             schema_version: 3,
             version_label: "v1".to_string(),
             generated_at_utc: None,
+            observed_at_utc: None,
             metar_count: Some(1),
             metars_by_station,
             pireps: Vec::new(),
@@ -9752,6 +9762,7 @@ mod tests {
             schema_version: 3,
             version_label: "v1".to_string(),
             generated_at_utc: None,
+            observed_at_utc: None,
             metar_count: Some(2),
             metars_by_station,
             pireps: Vec::new(),
@@ -9938,6 +9949,7 @@ mod tests {
                 schema_version: 3,
                 version_label: "v1".to_string(),
                 generated_at_utc: None,
+                observed_at_utc: None,
                 metar_count: Some(1),
                 metars_by_station: HashMap::from([(
                     "KAAA".to_string(),
@@ -10110,6 +10122,7 @@ mod tests {
                 schema_version: 3,
                 version_label: "v1".to_string(),
                 generated_at_utc: None,
+                observed_at_utc: None,
                 metar_count: Some(1),
                 metars_by_station: HashMap::from([(
                     "KAAA".to_string(),
@@ -11009,6 +11022,7 @@ mod tests {
                 schema_version: 3,
                 version_label: "old-metars".to_string(),
                 generated_at_utc: Some(utc("2020-01-01T00:00:00Z")),
+                observed_at_utc: Some(utc("2020-01-01T00:00:00Z")),
                 metar_count: Some(0),
                 metars_by_station: HashMap::new(),
                 pireps: Vec::new(),
@@ -11034,6 +11048,7 @@ mod tests {
                 schema_version: 3,
                 version_label: "loaded-metars".to_string(),
                 generated_at_utc: Some(utc("2026-05-20T11:55:00Z")),
+                observed_at_utc: Some(utc("2026-05-20T11:55:00Z")),
                 metar_count: Some(0),
                 metars_by_station: HashMap::new(),
                 pireps: Vec::new(),
@@ -11050,6 +11065,47 @@ mod tests {
         assert!(
             !has_data_status_box(&snapshot, LIVE_FEED_METARS_STATUS_ID),
             "loaded fresh METAR data should not be replaced by an unavailable warning"
+        );
+        let data_status = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "live_feed:metars")
+            .expect("METAR data-status row");
+        assert_eq!(data_status.value, "OK");
+        assert_eq!(data_status.severity, UiStatusSeverity::Ok);
+    }
+
+    #[test]
+    fn loaded_metar_feed_uses_observed_at_for_freshness_status() {
+        let init = create_ui_session_at_epoch_ms(
+            FlightPlan::default(),
+            &[],
+            None,
+            None,
+            utc("2026-05-20T12:00:00Z").timestamp_millis(),
+        )
+        .expect("create session");
+        set_map_layer_visibility_in_session(init.handle, "metars", true).expect("show metars");
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            session.metar_payload = Some(MetarProductPayload {
+                schema_version: 3,
+                version_label: "observed-metars".to_string(),
+                generated_at_utc: None,
+                observed_at_utc: Some(utc("2026-05-20T11:55:00Z")),
+                metar_count: Some(0),
+                metars_by_station: HashMap::new(),
+                pireps: Vec::new(),
+            });
+        }
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+
+        assert!(
+            !has_data_status_box(&snapshot, LIVE_FEED_METARS_STATUS_ID),
+            "fresh METAR data with observed_at_utc should not raise a chart warning"
         );
         let data_status = snapshot
             .data_status_page_state
@@ -11080,6 +11136,7 @@ mod tests {
                 schema_version: 3,
                 version_label: "fresh-then-old-metars".to_string(),
                 generated_at_utc: Some(utc("2026-05-20T11:45:00Z")),
+                observed_at_utc: Some(utc("2026-05-20T11:45:00Z")),
                 metar_count: Some(0),
                 metars_by_station: HashMap::new(),
                 pireps: Vec::new(),

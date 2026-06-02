@@ -184,6 +184,8 @@ pub struct NavDbArtifactCandidate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expiration_date: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_source: Option<CoreResourceSource>,
 }
 
@@ -210,6 +212,8 @@ pub struct NavDbOpenResult {
     pub selected_effective_date: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_expiration_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_warning_text: Option<String>,
     pub statuses: Vec<NavDbArtifactOpenStatus>,
 }
 
@@ -366,6 +370,7 @@ impl NavDbOpenController {
             selected_cycle_version: candidate.cycle_version.clone(),
             selected_effective_date: candidate.effective_date.clone(),
             selected_expiration_date: candidate.expiration_date.clone(),
+            selected_warning_text: candidate.warning_text.clone(),
             statuses: self.statuses.iter().filter_map(Clone::clone).collect(),
         }
     }
@@ -3578,6 +3583,7 @@ mod tests {
                 cycle_version: None,
                 effective_date: None,
                 expiration_date: None,
+                warning_text: None,
                 root_source: None,
             },
             NavDbArtifactCandidate {
@@ -3588,6 +3594,7 @@ mod tests {
                 cycle_version: None,
                 effective_date: None,
                 expiration_date: None,
+                warning_text: None,
                 root_source: Some(CoreResourceSource::PublicUrl {
                     url: "https://example.test/nav_db/root".to_string(),
                 }),
@@ -3685,6 +3692,7 @@ mod tests {
             cycle_version: None,
             effective_date: None,
             expiration_date: None,
+            warning_text: None,
             root_source: Some(CoreResourceSource::PublicUrl {
                 url: "https://example.test/nav_db/root".to_string(),
             }),
@@ -3742,6 +3750,7 @@ mod tests {
             cycle_version: None,
             effective_date: None,
             expiration_date: None,
+            warning_text: None,
             root_source: None,
         }]);
         controller

@@ -381,6 +381,8 @@ struct BundlePackageArtifact {
     effective_date: Option<String>,
     expiration_date: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    warning_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     ui_warning: Option<BundlePackageUiWarning>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     metadata: BTreeMap<String, serde_json::Value>,
@@ -560,6 +562,10 @@ fn contract_artifact_version(contract_id: &str, version_label: &str) -> String {
     format!("{contract_id}_{version_label}")
 }
 
+fn product_warning_text_for_family(family_id: &str) -> Option<String> {
+    matches!(family_id, "nav-db" | "enr-h").then(|| "This is a sample warning!".to_string())
+}
+
 fn stable_product_id_with_contract(id: &str) -> anyhow::Result<String> {
     Ok(format!(
         "{}_{}",
@@ -614,6 +620,7 @@ fn build_stable_bundle_package_artifact(
 ) -> anyhow::Result<BundlePackageArtifact> {
     let (family_id, region_id) = stable_product_family_region(id)?;
     let contract_id = product_contract_id_for_family(&family_id)?;
+    let warning_text = product_warning_text_for_family(&family_id);
     let filename = filename_string(published_zip)?;
     let (effective_date, published_at_utc) =
         stable_effective_date_from_published_file(published_zip)?;
@@ -634,6 +641,7 @@ fn build_stable_bundle_package_artifact(
         source_fetched_at_utc,
         effective_date: Some(effective_date),
         expiration_date: None,
+        warning_text,
         ui_warning: None,
         metadata: package_metadata_with_contract_id(
             stable_product_package_metadata(id),
@@ -2199,9 +2207,23 @@ mod tests {
             source_fetched_at_utc: None,
             effective_date: Some("2026-05-14".to_string()),
             expiration_date: Some("2026-06-11".to_string()),
+            warning_text: None,
             ui_warning: None,
             metadata: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn product_warning_text_samples_nav_db_and_ifr_h() {
+        assert_eq!(
+            product_warning_text_for_family("nav-db").as_deref(),
+            Some("This is a sample warning!")
+        );
+        assert_eq!(
+            product_warning_text_for_family("enr-h").as_deref(),
+            Some("This is a sample warning!")
+        );
+        assert_eq!(product_warning_text_for_family("sec"), None);
     }
 
     #[test]
@@ -3057,6 +3079,7 @@ mod tests {
                 source_fetched_at_utc: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
+                warning_text: None,
                 ui_warning: None,
                 metadata: package_metadata_with_contract_id(
                     chart_wide_angle_package_metadata(false, Some(1)),
@@ -3080,6 +3103,7 @@ mod tests {
                 source_fetched_at_utc: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
+                warning_text: None,
                 ui_warning: None,
                 metadata: BTreeMap::from([(
                     "contract_id".to_string(),
@@ -3734,6 +3758,7 @@ mod tests {
                 source_fetched_at_utc: Some("2026-04-15T23:00:00Z".to_string()),
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
+                warning_text: None,
                 ui_warning: None,
                 metadata: BTreeMap::new(),
             }],
@@ -3845,6 +3870,7 @@ mod tests {
                 source_fetched_at_utc: None,
                 effective_date: Some("2026-05-14".to_string()),
                 expiration_date: Some("2026-06-11".to_string()),
+                warning_text: None,
                 ui_warning: None,
                 metadata: BTreeMap::from([(
                     NAV_DB_STARTUP_PREFETCH_MEMBERS_METADATA_KEY.to_string(),
@@ -3990,6 +4016,7 @@ mod tests {
                 source_fetched_at_utc: None,
                 effective_date: Some("2026-03-19".to_string()),
                 expiration_date: Some("2026-04-16".to_string()),
+                warning_text: None,
                 ui_warning: None,
                 metadata: BTreeMap::new(),
             }],
@@ -4058,6 +4085,7 @@ mod tests {
                 source_fetched_at_utc: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
+                warning_text: None,
                 ui_warning: None,
                 metadata: BTreeMap::new(),
             }],

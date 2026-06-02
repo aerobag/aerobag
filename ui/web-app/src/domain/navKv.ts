@@ -525,6 +525,7 @@ type CoreResourceSource =
 type NavDbArtifactCandidate = {
   package_id: string;
   filename: string;
+  warning_text?: string;
   root_source?: CoreResourceSource;
 };
 
@@ -543,6 +544,7 @@ type NavDbOpenResult = {
   selected_cycle_version?: string;
   selected_effective_date?: string;
   selected_expiration_date?: string;
+  selected_warning_text?: string;
   statuses: NavDbArtifactOpenStatus[];
 };
 

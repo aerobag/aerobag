@@ -59,6 +59,12 @@ impl PublicationResolver {
         self.bundle_manifests_by_filename.len()
     }
 
+    pub fn loaded_bundle_packages(&self) -> impl Iterator<Item = &BundlePackageArtifact> {
+        self.bundle_manifests_by_filename
+            .values()
+            .flat_map(|bundle| bundle.packages.iter())
+    }
+
     pub fn ingest_resource(
         &mut self,
         resource_id: &str,
@@ -142,6 +148,7 @@ impl PublicationResolver {
                     cycle_version: package.cycle_version.clone(),
                     effective_date: package.effective_date.clone(),
                     expiration_date: package.expiration_date.clone(),
+                    warning_text: package.warning_text.clone(),
                     root_source: Some(self.package_member_source(package, "root")?),
                 })
             })
@@ -382,6 +389,7 @@ mod tests {
                 size_bytes: None,
                 effective_date: None,
                 expiration_date: None,
+                warning_text: None,
                 ui_warning: None,
                 metadata: Some(crate::package_management::BundlePackageMetadata {
                     full_coverage_zoom: None,

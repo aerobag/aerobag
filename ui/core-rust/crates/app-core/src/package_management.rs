@@ -38,6 +38,8 @@ pub struct BundlePackageArtifact {
     pub size_bytes: Option<u64>,
     pub effective_date: Option<String>,
     pub expiration_date: Option<String>,
+    #[serde(default)]
+    pub warning_text: Option<String>,
     pub ui_warning: Option<BundlePackageUiWarning>,
     pub metadata: Option<BundlePackageMetadata>,
 }
@@ -2016,6 +2018,7 @@ mod tests {
             size_bytes: None,
             effective_date: effective.map(str::to_string),
             expiration_date: expires.map(str::to_string),
+            warning_text: None,
             ui_warning: None,
             metadata: (product == "nav-db").then(nav_db_metadata),
         }
@@ -2715,6 +2718,7 @@ mod tests {
                 size_bytes: None,
                 effective_date: Some("2026-03-20".to_string()),
                 expiration_date: Some("2026-04-16".to_string()),
+                warning_text: None,
                 ui_warning: None,
                 metadata: Some(nav_db_metadata()),
             }],
@@ -2733,6 +2737,7 @@ mod tests {
                 size_bytes: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
+                warning_text: None,
                 ui_warning: None,
                 metadata: Some(nav_db_metadata()),
             }],
@@ -2825,6 +2830,7 @@ mod tests {
                 size_bytes: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
+                warning_text: None,
                 ui_warning: None,
                 metadata: Some(nav_db_metadata()),
             }],

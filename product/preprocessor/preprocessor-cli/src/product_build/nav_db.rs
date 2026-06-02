@@ -174,6 +174,7 @@ pub(super) fn build_bundle_manifest(
                 source_fetched_at_utc: None,
                 effective_date: package.effective_date.clone(),
                 expiration_date: package.expiration_date.clone(),
+                warning_text: product_warning_text_for_family(&package.family_id),
                 ui_warning: None,
                 metadata: package_metadata_with_contract_id(package.metadata.clone(), contract_id),
             })
@@ -1151,6 +1152,7 @@ pub(super) fn build_nav_kv_artifact(
                         .first()
                         .cloned()
                 }),
+            warning_text: product_warning_text_for_family("nav-db"),
             ui_warning: None,
             metadata: BTreeMap::from([
                 (
@@ -1238,6 +1240,7 @@ pub(super) fn bundle_package_artifact_from_resource_package(
         source_fetched_at_utc: None,
         effective_date: package.effective_date.clone(),
         expiration_date: package.expiration_date.clone(),
+        warning_text: product_warning_text_for_family(&package.family_id),
         ui_warning: None,
         metadata: package_metadata_with_contract_id(package.metadata.clone(), contract_id),
     })
@@ -2361,6 +2364,9 @@ pub(super) fn build_nav_kv_package_pairs(
         if let Some(ui_warning) = &package.ui_warning {
             value["ui_warning"] = serde_json::json!(ui_warning);
         }
+        if let Some(warning_text) = &package.warning_text {
+            value["warning_text"] = serde_json::json!(warning_text);
+        }
         let mut index_entry = serde_json::json!({
             "id": package.id,
             "family_id": package.family_id,
@@ -2370,6 +2376,9 @@ pub(super) fn build_nav_kv_package_pairs(
         });
         if let Some(ui_warning) = &package.ui_warning {
             index_entry["ui_warning"] = serde_json::json!(ui_warning);
+        }
+        if let Some(warning_text) = &package.warning_text {
+            index_entry["warning_text"] = serde_json::json!(warning_text);
         }
         package_index.push(index_entry);
         pairs.push(json_pair(

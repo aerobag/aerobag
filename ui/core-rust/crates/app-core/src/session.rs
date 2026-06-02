@@ -47,7 +47,7 @@ use crate::{
     query_map_overlay_for_surface, query_map_selection_for_surface, state,
     AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
     AirspaceReferenceTilePayload, AirwayPresentationPlan, AppError, AppErrorKind, AppEvent,
-    AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
+    AppResult, AppState, AppUiState, BundlePackageArtifact, FlightPlan, FlightPlanDisplayRowKind,
     FlightPlanRowActionExecution, FlightPlanRowActionId, GuidanceState, LatLon, LegDisplayElement,
     MapOverlayConfig, MapOverlayQueryResult, MapSelectionSessionAction, MapSurfaceMetrics,
     MapViewport, MetarProductPayload, MetarTilePayload, NavDbOpenResult, NavKvLookup,
@@ -176,6 +176,7 @@ struct AttachedNavDbArtifact {
     cycle_version: Option<String>,
     effective_date: Option<String>,
     expiration_date: Option<String>,
+    warning_text: Option<String>,
 }
 
 impl From<&NavDbOpenResult> for AttachedNavDbArtifact {
@@ -188,6 +189,7 @@ impl From<&NavDbOpenResult> for AttachedNavDbArtifact {
             cycle_version: result.selected_cycle_version.clone(),
             effective_date: result.selected_effective_date.clone(),
             expiration_date: result.selected_expiration_date.clone(),
+            warning_text: result.selected_warning_text.clone(),
         }
     }
 }
@@ -426,6 +428,8 @@ struct NavDbPackageRecord {
     effective_date: Option<String>,
     #[serde(default)]
     expiration_date: Option<String>,
+    #[serde(default)]
+    warning_text: Option<String>,
     #[serde(default)]
     ui_warning: Option<PackageUiWarningRecord>,
 }
@@ -1267,19 +1271,103 @@ fn sync_cycle_product_freshness_status_records_if_needed(
     sync_cycle_product_freshness_status_records(session)
 }
 
-fn package_ui_warning_status_record(package: &NavDbPackageRecord) -> Option<DataStatusRecord> {
-    let warning = package.ui_warning.as_ref()?;
-    Some(DataStatusRecord::new(
-        format!("{PACKAGE_UI_WARNING_STATUS_PREFIX}{}", package.id),
-        warning.label.clone(),
-        warning.value.clone(),
-        warning.severity,
+fn structured_package_warning_status_record(
+    package_id: &str,
+    label: String,
+    value: Option<String>,
+    severity: UiStatusSeverity,
+    detail: String,
+) -> DataStatusRecord {
+    DataStatusRecord::new(
+        format!("{PACKAGE_UI_WARNING_STATUS_PREFIX}{package_id}"),
+        label,
+        value,
+        severity,
         matches!(
-            warning.severity,
+            severity,
             UiStatusSeverity::Caution | UiStatusSeverity::Warning | UiStatusSeverity::Unavailable
         ),
-        warning.detail.clone(),
-    ))
+        detail,
+    )
+}
+
+fn warning_text_package_status_record(
+    package_id: &str,
+    family_id: &str,
+    warning_text: &str,
+) -> DataStatusRecord {
+    DataStatusRecord::new(
+        format!("{PACKAGE_UI_WARNING_STATUS_PREFIX}{package_id}"),
+        package_warning_label(family_id),
+        Some("WARNING".to_string()),
+        UiStatusSeverity::Warning,
+        true,
+        warning_text.to_string(),
+    )
+}
+
+fn nav_db_package_warning_status_record(package: &NavDbPackageRecord) -> Option<DataStatusRecord> {
+    if let Some(warning) = package.ui_warning.as_ref() {
+        return Some(structured_package_warning_status_record(
+            &package.id,
+            warning.label.clone(),
+            warning.value.clone(),
+            warning.severity,
+            warning.detail.clone(),
+        ));
+    }
+    package.warning_text.as_ref().map(|warning_text| {
+        warning_text_package_status_record(&package.id, &package.family_id, warning_text)
+    })
+}
+
+fn bundle_package_warning_status_record(
+    package: &BundlePackageArtifact,
+) -> Option<DataStatusRecord> {
+    if let Some(warning) = package.ui_warning.as_ref() {
+        return Some(structured_package_warning_status_record(
+            &package.id,
+            warning.label.clone(),
+            warning.value.clone(),
+            warning.severity,
+            warning.detail.clone(),
+        ));
+    }
+    package.warning_text.as_ref().map(|warning_text| {
+        warning_text_package_status_record(&package.id, &package.family_id, warning_text)
+    })
+}
+
+fn attached_nav_db_warning_status_record(
+    artifact: &AttachedNavDbArtifact,
+) -> Option<DataStatusRecord> {
+    artifact.warning_text.as_ref().map(|warning_text| {
+        DataStatusRecord::new(
+            format!("{PACKAGE_UI_WARNING_STATUS_PREFIX}{}", artifact.package_id),
+            "NAV DB",
+            Some("WARNING".to_string()),
+            UiStatusSeverity::Warning,
+            true,
+            warning_text.clone(),
+        )
+    })
+}
+
+fn package_warning_label(family_id: &str) -> String {
+    match family_id {
+        "nav-db" => "NAV DB".to_string(),
+        "sec" => "Sectional".to_string(),
+        "tac" => "TAC".to_string(),
+        "enr-l" => "IFR-L".to_string(),
+        "enr-h" => "IFR-H".to_string(),
+        "tpp" => "TPP".to_string(),
+        "csup" => "CSup".to_string(),
+        "terrain" => "Terrain".to_string(),
+        "shaded-relief" => "Shaded relief".to_string(),
+        "world-basemap" => "World basemap".to_string(),
+        "geo" => "Geodesy".to_string(),
+        other => other.to_ascii_uppercase(),
+    }
 }
 
 fn nav_db_package_records(session: &UiSession) -> Vec<NavDbPackageRecord> {
@@ -1301,13 +1389,34 @@ fn nav_db_package_records(session: &UiSession) -> Vec<NavDbPackageRecord> {
     records
 }
 
-fn sync_package_ui_warning_status_records(session: &mut UiSession) -> bool {
-    let mut records = Vec::new();
-    for package in nav_db_package_records(session) {
-        if let Some(record) = package_ui_warning_status_record(&package) {
-            records.push(record);
+fn package_warning_status_records(session: &UiSession) -> Vec<DataStatusRecord> {
+    let mut records = BTreeMap::new();
+    for package in session
+        .publication_resolver
+        .loaded_bundle_packages()
+        .filter(|package| crate::package_management::package_contract_is_supported(package))
+    {
+        if let Some(record) = bundle_package_warning_status_record(package) {
+            records.insert(record.id.clone(), record);
         }
     }
+    for package in nav_db_package_records(session) {
+        if let Some(record) = nav_db_package_warning_status_record(&package) {
+            records.insert(record.id.clone(), record);
+        }
+    }
+    if let Some(record) = session
+        .nav_db_artifact
+        .as_ref()
+        .and_then(attached_nav_db_warning_status_record)
+    {
+        records.insert(record.id.clone(), record);
+    }
+    records.into_values().collect()
+}
+
+fn sync_package_ui_warning_status_records(session: &mut UiSession) -> bool {
+    let records = package_warning_status_records(session);
     let active_ids = records
         .iter()
         .map(|record| record.id.clone())
@@ -1355,7 +1464,7 @@ fn sync_cycle_product_freshness_status_records(session: &mut UiSession) -> Vec<U
 
 fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState {
     let metars_status = metar_live_feed_status_source(session);
-    let rows = vec![
+    let mut rows = vec![
         cycle_package_group_status_page_row(
             session,
             "cycle:charts",
@@ -1387,6 +1496,9 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
             ],
         ),
         nav_db_status_page_row(session),
+    ];
+    rows.extend(package_warning_status_page_rows(session));
+    rows.extend([
         publication_status_page_row(session),
         live_feed_connection_status_page_row(session),
         live_feed_product_status_page_row(
@@ -1456,12 +1568,34 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
                         .map(str::to_string)
                 }),
         ),
-    ];
+    ]);
     UiDataStatusPageState {
         title: "Data status".to_string(),
         summary: data_status_page_summary(&rows),
         rows,
     }
+}
+
+fn package_warning_status_page_rows(session: &UiSession) -> Vec<UiDataStatusPageRow> {
+    let mut records = package_warning_status_records(session);
+    records.sort_by(|left, right| {
+        left.label
+            .cmp(&right.label)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    records
+        .into_iter()
+        .map(|record| {
+            status_page_row(
+                record.id,
+                record.label,
+                record.value.unwrap_or_else(|| "WARNING".to_string()),
+                record.severity,
+                record.detail,
+                Vec::new(),
+            )
+        })
+        .collect()
 }
 
 fn data_status_page_summary(rows: &[UiDataStatusPageRow]) -> String {
@@ -9027,6 +9161,7 @@ mod tests {
             selected_cycle_version: None,
             selected_effective_date: None,
             selected_expiration_date: expiration_date.map(str::to_string),
+            selected_warning_text: None,
             statuses: Vec::new(),
         }
     }
@@ -11497,6 +11632,81 @@ mod tests {
         assert_eq!(warning.severity, UiStatusSeverity::Warning);
         assert!(warning.drives_caution);
         assert!(warning.detail.contains("sunsetted"));
+        assert!(snapshot.data_status_page_state.rows.iter().any(|row| {
+            row.id == "package_ui_warning:SEC_SUNSET"
+                && row.value == "SUNSET"
+                && row.detail.contains("sunsetted")
+        }));
+    }
+
+    #[test]
+    fn package_warning_text_records_warning_and_status_page_row() {
+        let init = create_current_test_session();
+        attach_nav_db_package_records_for_test(
+            init.handle,
+            vec![serde_json::json!({
+                "id": "ENR_H_SAMPLE",
+                "family_id": "enr-h",
+                "warning_text": "This is a sample warning!"
+            })],
+        );
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let warning = data_status_box(&snapshot, "package_ui_warning:ENR_H_SAMPLE");
+        assert_eq!(warning.label, "IFR-H");
+        assert_eq!(warning.value.as_deref(), Some("WARNING"));
+        assert_eq!(warning.severity, UiStatusSeverity::Warning);
+        assert!(warning.drives_caution);
+        assert_eq!(warning.detail, "This is a sample warning!");
+        assert!(snapshot.data_status_page_state.rows.iter().any(|row| {
+            row.id == "package_ui_warning:ENR_H_SAMPLE"
+                && row.label == "IFR-H"
+                && row.value == "WARNING"
+                && row.detail == "This is a sample warning!"
+        }));
+    }
+
+    #[test]
+    fn publication_bundle_warning_text_records_warning_and_status_page_row() {
+        let init = create_current_test_session();
+        let mut package =
+            package_record_json("ENR_H_BUNDLE_SAMPLE", "enr-h", Some("2026-05-14"), None);
+        package["warning_text"] = serde_json::json!("This is a sample warning!");
+        ingest_bundle_packages_for_test(init.handle, vec![package]);
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let warning = data_status_box(&snapshot, "package_ui_warning:ENR_H_BUNDLE_SAMPLE");
+        assert_eq!(warning.label, "IFR-H");
+        assert_eq!(warning.value.as_deref(), Some("WARNING"));
+        assert_eq!(warning.severity, UiStatusSeverity::Warning);
+        assert_eq!(warning.detail, "This is a sample warning!");
+        assert!(snapshot.data_status_page_state.rows.iter().any(|row| {
+            row.id == "package_ui_warning:ENR_H_BUNDLE_SAMPLE"
+                && row.label == "IFR-H"
+                && row.value == "WARNING"
+        }));
+    }
+
+    #[test]
+    fn selected_nav_db_warning_text_records_warning() {
+        let init = create_current_test_session();
+        let store = crate::navkv::nav_kv_store_for_test(&[], 256);
+        let mut open_result = nav_db_open_result_for_test("NAV_DB_SAMPLE", Some("2026-06-11"));
+        open_result.selected_warning_text = Some("This is a sample warning!".to_string());
+        attach_nav_kv_store_to_session_with_open_result(init.handle, 1, &store, Some(&open_result))
+            .expect("attach nav kv");
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let warning = data_status_box(&snapshot, "package_ui_warning:NAV_DB_SAMPLE");
+        assert_eq!(warning.label, "NAV DB");
+        assert_eq!(warning.value.as_deref(), Some("WARNING"));
+        assert_eq!(warning.severity, UiStatusSeverity::Warning);
+        assert_eq!(warning.detail, "This is a sample warning!");
+        assert!(snapshot.data_status_page_state.rows.iter().any(|row| {
+            row.id == "package_ui_warning:NAV_DB_SAMPLE"
+                && row.label == "NAV DB"
+                && row.value == "WARNING"
+        }));
     }
 
     #[test]

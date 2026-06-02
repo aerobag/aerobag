@@ -5520,19 +5520,6 @@ function MapPage(props: {
               </>
             </>
           </Profiler>
-        </div>
-        <StatusControlDock
-          controls={ownshipControls}
-          dataStatusState={dataStatusState}
-          lowered={statusControlDockLowered}
-          ownshipOpen={trayGroup.isOpen("ownship")}
-          statusOpen={trayGroup.isOpen("status")}
-          onOwnshipToggle={() => trayGroup.toggle("ownship")}
-          onStatusToggle={() => trayGroup.toggle("status")}
-          onAction={onStatusAction}
-          options={ownshipSourceOptions}
-          transportControls={<SituationTransportRow controls={ownshipControls.situation_controls} onInput={onSituationControlInput} />}
-        />
         {mapIsVisible && situationOverlay ? (
           <>
             <svg className="situationOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
@@ -5689,6 +5676,19 @@ function MapPage(props: {
             </svg>
           </>
         ) : null}
+        </div>
+        <StatusControlDock
+          controls={ownshipControls}
+          dataStatusState={dataStatusState}
+          lowered={statusControlDockLowered}
+          ownshipOpen={trayGroup.isOpen("ownship")}
+          statusOpen={trayGroup.isOpen("status")}
+          onOwnshipToggle={() => trayGroup.toggle("ownship")}
+          onStatusToggle={() => trayGroup.toggle("status")}
+          onAction={onStatusAction}
+          options={ownshipSourceOptions}
+          transportControls={<SituationTransportRow controls={ownshipControls.situation_controls} onInput={onSituationControlInput} />}
+        />
 
         <div className="chartDock">
           <HomeNavButton active={page === "home"} onClick={() => onSelectPage("home")} />

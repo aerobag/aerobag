@@ -55,6 +55,7 @@ fn nav_kv_builder_source_paths() -> Vec<PathBuf> {
         workspace_root.join("preprocessor-procedure-geometry/src/procedure_legs.rs"),
         repo_root.join("crates/procedure-geometry-types/src/lib.rs"),
         repo_root.join("crates/had-key/src/lib.rs"),
+        repo_root.join("crates/had-nav-kv/src/lib.rs"),
     ]
 }
 

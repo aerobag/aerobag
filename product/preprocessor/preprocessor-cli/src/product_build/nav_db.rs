@@ -1,5 +1,13 @@
 use super::*;
 
+pub(super) fn nav_db_warning_text() -> String {
+    "This NAV-DB is getting moldy.".to_string()
+}
+
+pub(super) fn nav_kv_family_warning_text(family_id: &str) -> Option<String> {
+    (family_id == "enr-h").then(|| "This IFR-high chart has a sample warning.".to_string())
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct StaticRasterCatalogEntry {
     pub(super) product_id: String,

@@ -551,14 +551,6 @@ fn contract_artifact_version(contract_id: &str, version_label: &str) -> String {
     format!("{contract_id}_{version_label}")
 }
 
-fn nav_db_warning_text() -> String {
-    "This NAV-DB is getting moldy.".to_string()
-}
-
-fn nav_kv_family_warning_text(family_id: &str) -> Option<String> {
-    (family_id == "enr-h").then(|| "This IFR-high chart has a sample warning.".to_string())
-}
-
 fn stable_product_id_with_contract(id: &str) -> anyhow::Result<String> {
     Ok(format!(
         "{}_{}",
@@ -2263,12 +2255,15 @@ mod tests {
 
     #[test]
     fn sample_warning_texts_are_product_specific() {
-        assert_eq!(nav_db_warning_text(), "This NAV-DB is getting moldy.");
         assert_eq!(
-            nav_kv_family_warning_text("enr-h").as_deref(),
+            nav_db::nav_db_warning_text(),
+            "This NAV-DB is getting moldy."
+        );
+        assert_eq!(
+            nav_db::nav_kv_family_warning_text("enr-h").as_deref(),
             Some("This IFR-high chart has a sample warning.")
         );
-        assert_eq!(nav_kv_family_warning_text("sec"), None);
+        assert_eq!(nav_db::nav_kv_family_warning_text("sec"), None);
     }
 
     #[test]

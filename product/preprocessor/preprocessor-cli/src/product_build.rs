@@ -382,19 +382,8 @@ struct BundlePackageArtifact {
     expiration_date: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     warning_text: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    ui_warning: Option<BundlePackageUiWarning>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     metadata: BTreeMap<String, serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct BundlePackageUiWarning {
-    severity: String,
-    label: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    value: Option<String>,
-    detail: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -562,8 +551,12 @@ fn contract_artifact_version(contract_id: &str, version_label: &str) -> String {
     format!("{contract_id}_{version_label}")
 }
 
-fn product_warning_text_for_family(family_id: &str) -> Option<String> {
-    matches!(family_id, "nav-db" | "enr-h").then(|| "This is a sample warning!".to_string())
+fn nav_db_warning_text() -> String {
+    "This NAV-DB is getting moldy.".to_string()
+}
+
+fn nav_kv_family_warning_text(family_id: &str) -> Option<String> {
+    (family_id == "enr-h").then(|| "This IFR-high chart has a sample warning.".to_string())
 }
 
 fn stable_product_id_with_contract(id: &str) -> anyhow::Result<String> {
@@ -620,7 +613,6 @@ fn build_stable_bundle_package_artifact(
 ) -> anyhow::Result<BundlePackageArtifact> {
     let (family_id, region_id) = stable_product_family_region(id)?;
     let contract_id = product_contract_id_for_family(&family_id)?;
-    let warning_text = product_warning_text_for_family(&family_id);
     let filename = filename_string(published_zip)?;
     let (effective_date, published_at_utc) =
         stable_effective_date_from_published_file(published_zip)?;
@@ -641,8 +633,7 @@ fn build_stable_bundle_package_artifact(
         source_fetched_at_utc,
         effective_date: Some(effective_date),
         expiration_date: None,
-        warning_text,
-        ui_warning: None,
+        warning_text: None,
         metadata: package_metadata_with_contract_id(
             stable_product_package_metadata(id),
             contract_id,
@@ -2266,22 +2257,18 @@ mod tests {
             effective_date: Some("2026-05-14".to_string()),
             expiration_date: Some("2026-06-11".to_string()),
             warning_text: None,
-            ui_warning: None,
             metadata: BTreeMap::new(),
         }
     }
 
     #[test]
-    fn product_warning_text_samples_nav_db_and_ifr_h() {
+    fn sample_warning_texts_are_product_specific() {
+        assert_eq!(nav_db_warning_text(), "This NAV-DB is getting moldy.");
         assert_eq!(
-            product_warning_text_for_family("nav-db").as_deref(),
-            Some("This is a sample warning!")
+            nav_kv_family_warning_text("enr-h").as_deref(),
+            Some("This IFR-high chart has a sample warning.")
         );
-        assert_eq!(
-            product_warning_text_for_family("enr-h").as_deref(),
-            Some("This is a sample warning!")
-        );
-        assert_eq!(product_warning_text_for_family("sec"), None);
+        assert_eq!(nav_kv_family_warning_text("sec"), None);
     }
 
     #[test]
@@ -2467,6 +2454,11 @@ mod tests {
                 ResourceFamily {
                     id: "tac".to_string(),
                     display_name: "TAC".to_string(),
+                    kind: "tiled_raster".to_string(),
+                },
+                ResourceFamily {
+                    id: "enr-h".to_string(),
+                    display_name: "IFR High".to_string(),
                     kind: "tiled_raster".to_string(),
                 },
             ],
@@ -3138,7 +3130,6 @@ mod tests {
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
                 warning_text: None,
-                ui_warning: None,
                 metadata: package_metadata_with_contract_id(
                     chart_wide_angle_package_metadata(false, Some(1)),
                     SEC_CONTRACT_ID,
@@ -3162,7 +3153,6 @@ mod tests {
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
                 warning_text: None,
-                ui_warning: None,
                 metadata: BTreeMap::from([(
                     "contract_id".to_string(),
                     serde_json::json!(NAV_DB_CONTRACT_ID),
@@ -3451,6 +3441,16 @@ mod tests {
             .unwrap()
             .iter()
             .any(|value| value["id"] == "sec"));
+        let ifr_high = families
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|value| value["id"] == "enr-h")
+            .expect("ifr high family");
+        assert_eq!(
+            ifr_high["warning_text"],
+            "This IFR-high chart has a sample warning."
+        );
 
         let regions = pair_value("resource/regions");
         assert_eq!(regions.as_array().unwrap()[0]["id"], "nw");
@@ -3817,7 +3817,6 @@ mod tests {
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
                 warning_text: None,
-                ui_warning: None,
                 metadata: BTreeMap::new(),
             }],
             ancillary: vec![],
@@ -3929,7 +3928,6 @@ mod tests {
                 effective_date: Some("2026-05-14".to_string()),
                 expiration_date: Some("2026-06-11".to_string()),
                 warning_text: None,
-                ui_warning: None,
                 metadata: BTreeMap::from([(
                     NAV_DB_STARTUP_PREFETCH_MEMBERS_METADATA_KEY.to_string(),
                     serde_json::json!(["root", "page_0046", "page_0570"]),
@@ -4084,7 +4082,6 @@ mod tests {
                 effective_date: Some("2026-03-19".to_string()),
                 expiration_date: Some("2026-04-16".to_string()),
                 warning_text: None,
-                ui_warning: None,
                 metadata: BTreeMap::new(),
             }],
             ancillary: vec![],
@@ -4153,7 +4150,6 @@ mod tests {
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
                 warning_text: None,
-                ui_warning: None,
                 metadata: BTreeMap::new(),
             }],
             ancillary: vec![],

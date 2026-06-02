@@ -47,7 +47,7 @@ use crate::{
     query_map_overlay_for_surface, query_map_selection_for_surface, state,
     AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
     AirspaceReferenceTilePayload, AirwayPresentationPlan, AppError, AppErrorKind, AppEvent,
-    AppResult, AppState, AppUiState, BundlePackageArtifact, FlightPlan, FlightPlanDisplayRowKind,
+    AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
     FlightPlanRowActionExecution, FlightPlanRowActionId, GuidanceState, LatLon, LegDisplayElement,
     MapOverlayConfig, MapOverlayQueryResult, MapSelectionSessionAction, MapSurfaceMetrics,
     MapViewport, MetarProductPayload, MetarTilePayload, NavDbOpenResult, NavKvLookup,
@@ -428,6 +428,12 @@ struct NavDbPackageRecord {
     effective_date: Option<String>,
     #[serde(default)]
     expiration_date: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct NavDbFamilyRecord {
+    id: String,
+    display_name: String,
     #[serde(default)]
     warning_text: Option<String>,
     #[serde(default)]
@@ -1272,14 +1278,14 @@ fn sync_cycle_product_freshness_status_records_if_needed(
 }
 
 fn structured_package_warning_status_record(
-    package_id: &str,
+    warning_id: &str,
     label: String,
     value: Option<String>,
     severity: UiStatusSeverity,
     detail: String,
 ) -> DataStatusRecord {
     DataStatusRecord::new(
-        format!("{PACKAGE_UI_WARNING_STATUS_PREFIX}{package_id}"),
+        format!("{PACKAGE_UI_WARNING_STATUS_PREFIX}{warning_id}"),
         label,
         value,
         severity,
@@ -1292,12 +1298,12 @@ fn structured_package_warning_status_record(
 }
 
 fn warning_text_package_status_record(
-    package_id: &str,
+    warning_id: &str,
     family_id: &str,
     warning_text: &str,
 ) -> DataStatusRecord {
     DataStatusRecord::new(
-        format!("{PACKAGE_UI_WARNING_STATUS_PREFIX}{package_id}"),
+        format!("{PACKAGE_UI_WARNING_STATUS_PREFIX}{warning_id}"),
         package_warning_label(family_id),
         Some("WARNING".to_string()),
         UiStatusSeverity::Warning,
@@ -1306,36 +1312,34 @@ fn warning_text_package_status_record(
     )
 }
 
-fn nav_db_package_warning_status_record(package: &NavDbPackageRecord) -> Option<DataStatusRecord> {
-    if let Some(warning) = package.ui_warning.as_ref() {
+fn nav_db_family_warning_status_record(family: &NavDbFamilyRecord) -> Option<DataStatusRecord> {
+    if !family_warning_is_supported(&family.id) {
+        return None;
+    }
+    let warning_id = format!("family:{}", family.id);
+    if let Some(warning) = family.ui_warning.as_ref() {
         return Some(structured_package_warning_status_record(
-            &package.id,
-            warning.label.clone(),
+            &warning_id,
+            if warning.label.is_empty() {
+                family.display_name.clone()
+            } else {
+                warning.label.clone()
+            },
             warning.value.clone(),
             warning.severity,
             warning.detail.clone(),
         ));
     }
-    package.warning_text.as_ref().map(|warning_text| {
-        warning_text_package_status_record(&package.id, &package.family_id, warning_text)
+    family.warning_text.as_ref().map(|warning_text| {
+        warning_text_package_status_record(&warning_id, &family.id, warning_text)
     })
 }
 
-fn bundle_package_warning_status_record(
-    package: &BundlePackageArtifact,
-) -> Option<DataStatusRecord> {
-    if let Some(warning) = package.ui_warning.as_ref() {
-        return Some(structured_package_warning_status_record(
-            &package.id,
-            warning.label.clone(),
-            warning.value.clone(),
-            warning.severity,
-            warning.detail.clone(),
-        ));
-    }
-    package.warning_text.as_ref().map(|warning_text| {
-        warning_text_package_status_record(&package.id, &package.family_id, warning_text)
-    })
+fn family_warning_is_supported(family_id: &str) -> bool {
+    matches!(
+        family_id,
+        "sec" | "tac" | "enr-l" | "enr-h" | "tpp" | "csup"
+    )
 }
 
 fn attached_nav_db_warning_status_record(
@@ -1389,19 +1393,20 @@ fn nav_db_package_records(session: &UiSession) -> Vec<NavDbPackageRecord> {
     records
 }
 
+fn nav_db_family_records(session: &UiSession) -> Vec<NavDbFamilyRecord> {
+    let Some(store) = session.nav_kv_store.as_ref() else {
+        return Vec::new();
+    };
+    let Ok(NavKvLookup::Hit(bytes)) = store.get_bytes("resource/families") else {
+        return Vec::new();
+    };
+    serde_json::from_slice::<Vec<NavDbFamilyRecord>>(&bytes).unwrap_or_default()
+}
+
 fn package_warning_status_records(session: &UiSession) -> Vec<DataStatusRecord> {
     let mut records = BTreeMap::new();
-    for package in session
-        .publication_resolver
-        .loaded_bundle_packages()
-        .filter(|package| crate::package_management::package_contract_is_supported(package))
-    {
-        if let Some(record) = bundle_package_warning_status_record(package) {
-            records.insert(record.id.clone(), record);
-        }
-    }
-    for package in nav_db_package_records(session) {
-        if let Some(record) = nav_db_package_warning_status_record(&package) {
+    for family in nav_db_family_records(session) {
+        if let Some(record) = nav_db_family_warning_status_record(&family) {
             records.insert(record.id.clone(), record);
         }
     }
@@ -11662,86 +11667,126 @@ mod tests {
     }
 
     #[test]
-    fn package_ui_warning_records_warning() {
+    fn nav_db_family_ui_warning_records_warning() {
         let init = create_current_test_session();
         let store = crate::navkv::nav_kv_store_for_test(
             &[(
-                "package/by-id/SEC_SUNSET",
-                br#"{
-                    "id": "SEC_SUNSET",
-                    "family_id": "sec",
-                    "ui_warning": {
-                        "severity": "warning",
-                        "label": "SECTIONAL",
-                        "value": "SUNSET",
-                        "detail": "This sectional package format is being sunsetted."
+                "resource/families",
+                br#"[
+                    {
+                        "id": "sec",
+                        "display_name": "Sectional",
+                        "kind": "tiled_raster",
+                        "ui_warning": {
+                            "severity": "warning",
+                            "label": "SECTIONAL",
+                            "value": "SUNSET",
+                            "detail": "This sectional family format is being sunsetted."
+                        }
                     }
-                }"#,
+                ]"#,
             )],
             1024,
         );
         attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
 
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");
-        let warning = data_status_box(&snapshot, "package_ui_warning:SEC_SUNSET");
+        let warning = data_status_box(&snapshot, "package_ui_warning:family:sec");
         assert_eq!(warning.label, "SECTIONAL");
         assert_eq!(warning.value.as_deref(), Some("SUNSET"));
         assert_eq!(warning.severity, UiStatusSeverity::Warning);
         assert!(warning.drives_caution);
         assert!(warning.detail.contains("sunsetted"));
         assert!(snapshot.data_status_page_state.rows.iter().any(|row| {
-            row.id == "package_ui_warning:SEC_SUNSET"
+            row.id == "package_ui_warning:family:sec"
                 && row.value == "SUNSET"
                 && row.detail.contains("sunsetted")
         }));
     }
 
     #[test]
-    fn package_warning_text_records_warning_and_status_page_row() {
+    fn nav_db_family_warning_text_records_warning_and_status_page_row() {
         let init = create_current_test_session();
-        attach_nav_db_package_records_for_test(
-            init.handle,
-            vec![serde_json::json!({
-                "id": "ENR_H_SAMPLE",
-                "family_id": "enr-h",
-                "warning_text": "This is a sample warning!"
-            })],
+        let store = crate::navkv::nav_kv_store_for_test(
+            &[(
+                "resource/families",
+                br#"[
+                    {
+                        "id": "enr-h",
+                        "display_name": "IFR High",
+                        "kind": "tiled_raster",
+                        "warning_text": "This IFR-high chart has a sample warning."
+                    }
+                ]"#,
+            )],
+            1024,
         );
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
 
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");
-        let warning = data_status_box(&snapshot, "package_ui_warning:ENR_H_SAMPLE");
+        let warning = data_status_box(&snapshot, "package_ui_warning:family:enr-h");
         assert_eq!(warning.label, "IFR-H");
         assert_eq!(warning.value.as_deref(), Some("WARNING"));
         assert_eq!(warning.severity, UiStatusSeverity::Warning);
         assert!(warning.drives_caution);
-        assert_eq!(warning.detail, "This is a sample warning!");
+        assert_eq!(warning.detail, "This IFR-high chart has a sample warning.");
         assert!(snapshot.data_status_page_state.rows.iter().any(|row| {
-            row.id == "package_ui_warning:ENR_H_SAMPLE"
+            row.id == "package_ui_warning:family:enr-h"
                 && row.label == "IFR-H"
                 && row.value == "WARNING"
-                && row.detail == "This is a sample warning!"
+                && row.detail == "This IFR-high chart has a sample warning."
         }));
     }
 
     #[test]
-    fn publication_bundle_warning_text_records_warning_and_status_page_row() {
+    fn nav_db_family_warning_text_dedupes_regional_packages() {
         let init = create_current_test_session();
-        let mut package =
-            package_record_json("ENR_H_BUNDLE_SAMPLE", "enr-h", Some("2026-05-14"), None);
-        package["warning_text"] = serde_json::json!("This is a sample warning!");
-        ingest_bundle_packages_for_test(init.handle, vec![package]);
+        let packages = vec![
+            serde_json::json!({
+                "id": "AK_ENR_H_ENH1_2605",
+                "family_id": "enr-h"
+            }),
+            serde_json::json!({
+                "id": "NW_ENR_H_ENH1_2605",
+                "family_id": "enr-h"
+            }),
+        ];
+        let family_bytes = br#"[
+            {
+                "id": "enr-h",
+                "display_name": "IFR High",
+                "kind": "tiled_raster",
+                "warning_text": "This IFR-high chart has a sample warning."
+            }
+        ]"#;
+        let mut entries = packages
+            .iter()
+            .map(|package| {
+                let package_id = package["id"].as_str().expect("package id");
+                let key = nav_kv_key_for_query(&NavKvQuery::PackageById {
+                    package_id: package_id.to_string(),
+                })
+                .expect("package key");
+                let bytes = serde_json::to_vec(package).expect("package json");
+                (key, bytes)
+            })
+            .collect::<Vec<_>>();
+        entries.push(("resource/families".to_string(), family_bytes.to_vec()));
+        let entry_refs = entries
+            .iter()
+            .map(|(key, bytes)| (key.as_str(), bytes.as_slice()))
+            .collect::<Vec<_>>();
+        let store = crate::navkv::nav_kv_store_for_test(&entry_refs, 2048);
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
 
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");
-        let warning = data_status_box(&snapshot, "package_ui_warning:ENR_H_BUNDLE_SAMPLE");
-        assert_eq!(warning.label, "IFR-H");
-        assert_eq!(warning.value.as_deref(), Some("WARNING"));
-        assert_eq!(warning.severity, UiStatusSeverity::Warning);
-        assert_eq!(warning.detail, "This is a sample warning!");
-        assert!(snapshot.data_status_page_state.rows.iter().any(|row| {
-            row.id == "package_ui_warning:ENR_H_BUNDLE_SAMPLE"
-                && row.label == "IFR-H"
-                && row.value == "WARNING"
-        }));
+        let warnings = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .filter(|row| row.id == "package_ui_warning:family:enr-h")
+            .count();
+        assert_eq!(warnings, 1);
     }
 
     #[test]
@@ -11749,7 +11794,7 @@ mod tests {
         let init = create_current_test_session();
         let store = crate::navkv::nav_kv_store_for_test(&[], 256);
         let mut open_result = nav_db_open_result_for_test("NAV_DB_SAMPLE", Some("2026-06-11"));
-        open_result.selected_warning_text = Some("This is a sample warning!".to_string());
+        open_result.selected_warning_text = Some("This NAV-DB is getting moldy.".to_string());
         attach_nav_kv_store_to_session_with_open_result(init.handle, 1, &store, Some(&open_result))
             .expect("attach nav kv");
 
@@ -11758,7 +11803,7 @@ mod tests {
         assert_eq!(warning.label, "NAV DB");
         assert_eq!(warning.value.as_deref(), Some("WARNING"));
         assert_eq!(warning.severity, UiStatusSeverity::Warning);
-        assert_eq!(warning.detail, "This is a sample warning!");
+        assert_eq!(warning.detail, "This NAV-DB is getting moldy.");
         assert!(snapshot.data_status_page_state.rows.iter().any(|row| {
             row.id == "package_ui_warning:NAV_DB_SAMPLE"
                 && row.label == "NAV DB"

@@ -174,8 +174,7 @@ pub(super) fn build_bundle_manifest(
                 source_fetched_at_utc: None,
                 effective_date: package.effective_date.clone(),
                 expiration_date: package.expiration_date.clone(),
-                warning_text: product_warning_text_for_family(&package.family_id),
-                ui_warning: None,
+                warning_text: None,
                 metadata: package_metadata_with_contract_id(package.metadata.clone(), contract_id),
             })
         })
@@ -1152,8 +1151,7 @@ pub(super) fn build_nav_kv_artifact(
                         .first()
                         .cloned()
                 }),
-            warning_text: product_warning_text_for_family("nav-db"),
-            ui_warning: None,
+            warning_text: Some(nav_db_warning_text()),
             metadata: BTreeMap::from([
                 (
                     "contract_id".to_string(),
@@ -1240,8 +1238,7 @@ pub(super) fn bundle_package_artifact_from_resource_package(
         source_fetched_at_utc: None,
         effective_date: package.effective_date.clone(),
         expiration_date: package.expiration_date.clone(),
-        warning_text: product_warning_text_for_family(&package.family_id),
-        ui_warning: None,
+        warning_text: None,
         metadata: package_metadata_with_contract_id(package.metadata.clone(), contract_id),
     })
 }
@@ -2295,11 +2292,15 @@ pub(super) fn build_nav_kv_resource_summary_pairs(
         .families
         .iter()
         .map(|family| {
-            serde_json::json!({
+            let mut value = serde_json::json!({
                 "id": family.id,
                 "display_name": family.display_name,
                 "kind": family.kind,
-            })
+            });
+            if let Some(warning_text) = nav_kv_family_warning_text(&family.id) {
+                value["warning_text"] = serde_json::json!(warning_text);
+            }
+            value
         })
         .collect::<Vec<_>>();
     let regions = resource_index
@@ -2361,9 +2362,6 @@ pub(super) fn build_nav_kv_package_pairs(
             "expiration_date": package.expiration_date,
             "metadata": package.metadata,
         });
-        if let Some(ui_warning) = &package.ui_warning {
-            value["ui_warning"] = serde_json::json!(ui_warning);
-        }
         if let Some(warning_text) = &package.warning_text {
             value["warning_text"] = serde_json::json!(warning_text);
         }
@@ -2374,9 +2372,6 @@ pub(super) fn build_nav_kv_package_pairs(
             "region_id": package.region_id,
             "metadata": &package.metadata,
         });
-        if let Some(ui_warning) = &package.ui_warning {
-            index_entry["ui_warning"] = serde_json::json!(ui_warning);
-        }
         if let Some(warning_text) = &package.warning_text {
             index_entry["warning_text"] = serde_json::json!(warning_text);
         }

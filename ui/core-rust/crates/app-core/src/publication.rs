@@ -390,7 +390,6 @@ mod tests {
                 effective_date: None,
                 expiration_date: None,
                 warning_text: None,
-                ui_warning: None,
                 metadata: Some(crate::package_management::BundlePackageMetadata {
                     full_coverage_zoom: None,
                     wide_angle_region_id: None,

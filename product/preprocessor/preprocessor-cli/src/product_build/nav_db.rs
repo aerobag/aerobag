@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn nav_db_warning_text() -> Option<String> {
-    None
+    Some("NAV6 is being sunsetted. Please update the app to version 7.".to_string())
 }
 
 pub(super) fn nav_kv_family_warning_text(family_id: &str) -> Option<String> {

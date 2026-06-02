@@ -2257,8 +2257,11 @@ mod tests {
     }
 
     #[test]
-    fn product_warning_texts_are_disabled_by_default() {
-        assert_eq!(nav_db::nav_db_warning_text(), None);
+    fn nav6_sunset_warning_is_product_specific() {
+        assert_eq!(
+            nav_db::nav_db_warning_text().as_deref(),
+            Some("NAV6 is being sunsetted. Please update the app to version 7.")
+        );
         assert_eq!(nav_db::nav_kv_family_warning_text("enr-h"), None);
         assert_eq!(nav_db::nav_kv_family_warning_text("sec"), None);
     }

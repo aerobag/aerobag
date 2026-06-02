@@ -591,8 +591,18 @@ fn normalize_simulated_state_schema(
     observed_at_utc: DateTime<Utc>,
 ) {
     if product == "metars" {
+        let timestamp = observed_at_utc.to_rfc3339_opts(SecondsFormat::Secs, true);
         if let Some(object) = value.as_object_mut() {
             object.remove("important_station_ids");
+            object.insert(
+                "version_label".to_string(),
+                Value::String(version.to_string()),
+            );
+            object.insert(
+                "generated_at_utc".to_string(),
+                Value::String(timestamp.clone()),
+            );
+            object.insert("observed_at_utc".to_string(), Value::String(timestamp));
         }
         return;
     }
@@ -1159,6 +1169,7 @@ mod tests {
         };
         assert_eq!(value["version_label"], "20260518T201200_000Z_m0");
         assert_eq!(value["generated_at_utc"], "2026-05-18T20:12:00Z");
+        assert_eq!(value["observed_at_utc"], "2026-05-18T20:12:00Z");
         let written = read_json_value(&path)?;
         assert_eq!(written, value);
         Ok(())
@@ -1292,7 +1303,19 @@ mod tests {
             panic!("expected json payload");
         };
         assert!(to_value.get("important_station_ids").is_none());
+        assert_eq!(from_value["generated_at_utc"], "2026-05-18T20:12:00Z");
+        assert_eq!(from_value["observed_at_utc"], "2026-05-18T20:12:00Z");
+        assert_eq!(to_value["generated_at_utc"], "2026-05-18T20:12:06Z");
+        assert_eq!(to_value["observed_at_utc"], "2026-05-18T20:12:06Z");
         let delta = second.precomputed_delta.expect("precomputed METAR delta");
+        assert_eq!(
+            delta.top_level_changed.get("generated_at_utc"),
+            Some(&json!("2026-05-18T20:12:06Z"))
+        );
+        assert_eq!(
+            delta.top_level_changed.get("observed_at_utc"),
+            Some(&json!("2026-05-18T20:12:06Z"))
+        );
         let applied = apply_record_delta(
             "metars_by_station",
             Some("metar_count"),

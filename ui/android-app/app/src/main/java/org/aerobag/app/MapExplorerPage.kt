@@ -43,6 +43,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -456,7 +457,6 @@ internal fun MapExplorerPage(
     onSelectMapFamily: (String) -> Unit,
     onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
-    onModalOverlayOpenChange: (Boolean) -> Unit,
     navElement: NavElementUiView?,
     plan: org.aerobag.app.domain.FlightPlan,
     planUiState: FlightPlanUiState?,
@@ -498,13 +498,6 @@ internal fun MapExplorerPage(
     var mapOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
     var nexradImages by remember(uiSession) { mutableStateOf<List<NexradOverlayImage>>(emptyList()) }
     var terrainOverlay by remember(uiSession) { mutableStateOf<List<TerrainOverlayImage>>(emptyList()) }
-
-    LaunchedEffect(mapSelection != null) {
-        onModalOverlayOpenChange(mapSelection != null)
-    }
-    DisposableEffect(Unit) {
-        onDispose { onModalOverlayOpenChange(false) }
-    }
     var terrainOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
     var flightPlanRoute by remember(plan.id, plan.version) { mutableStateOf<List<FlightPlanRouteSegment>>(emptyList()) }
     var mapGestureActive by remember { mutableStateOf(false) }
@@ -1785,59 +1778,82 @@ internal fun MapExplorerPage(
         }
 
         mapSelection?.let { selection ->
-            Scrim(modifier = Modifier.zIndex(OverlayPlaneModalScrim)) { mapSelection = null }
-            MapSelectionTray(
-                state = selection,
-                onBoundsChange = { mapSelectionTrayBounds = it },
-                modifier = Modifier
-                    .zIndex(OverlayPlaneModal)
-                    .align(
-                        when {
-                            selection.point.x < surfaceWidthPx / 2f && selection.point.y < surfaceHeightPx / 2f -> Alignment.BottomEnd
-                            selection.point.x < surfaceWidthPx / 2f -> Alignment.TopEnd
-                            selection.point.y < surfaceHeightPx / 2f -> Alignment.BottomStart
-                            else -> Alignment.TopStart
-                        },
-                    )
-                    .padding(ThumbGap),
-                onSelectItem = { item ->
-                    mapSelection = selection.copy(selectedItem = item)
-                },
-                onSelectAction = { item, action ->
-                    action.detailText?.let { detail ->
-                        mapSelection = selection.copy(selectedItem = item.copy(detailText = detail))
-                        return@MapSelectionTray
+            Popup(
+                onDismissRequest = { mapSelection = null },
+                properties = PopupProperties(focusable = true, clippingEnabled = false),
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    Scrim { mapSelection = null }
+                    if (selection.detailModal != null) {
+                        MapSelectionDetailModal(
+                            title = selection.detailModal.title,
+                            text = selection.detailModal.text,
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .zIndex(OverlayPlaneModal),
+                        )
+                    } else {
+                        MapSelectionTray(
+                            state = selection,
+                            onBoundsChange = { mapSelectionTrayBounds = it },
+                            modifier = Modifier
+                                .zIndex(OverlayPlaneModal)
+                                .align(
+                                    when {
+                                        selection.point.x < surfaceWidthPx / 2f && selection.point.y < surfaceHeightPx / 2f -> Alignment.BottomEnd
+                                        selection.point.x < surfaceWidthPx / 2f -> Alignment.TopEnd
+                                        selection.point.y < surfaceHeightPx / 2f -> Alignment.BottomStart
+                                        else -> Alignment.TopStart
+                                    },
+                                )
+                                .padding(ThumbGap),
+                            onSelectItem = { item ->
+                                mapSelection = selection.copy(selectedItem = item, detailModal = null)
+                            },
+                            onSelectAction = { item, action ->
+                                action.detailText?.let { detail ->
+                                    mapSelection = selection.copy(
+                                        selectedItem = item,
+                                        detailModal = MapSelectionDetailModalState(
+                                            title = action.label,
+                                            text = detail,
+                                        ),
+                                    )
+                                    return@MapSelectionTray
+                                }
+                                action.flightPlanRowAction?.let { rowAction ->
+                                    runCatching { uiSession.performFlightPlanRowAction(rowAction.rowUid, rowAction.actionUid) }
+                                        .onSuccess(onSessionSnapshotChange)
+                                        .onFailure { Log.w("AerobagSelection", "flight-plan row action failed", it) }
+                                    mapSelection = null
+                                    return@MapSelectionTray
+                                }
+                                action.sessionAction?.let { sessionAction ->
+                                    runCatching { uiSession.performMapSelectionAction(sessionAction) }
+                                        .onSuccess(onSessionSnapshotChange)
+                                        .onFailure { Log.w("AerobagSelection", "map selection action failed", it) }
+                                    mapSelection = null
+                                    return@MapSelectionTray
+                                }
+                                when (action.id) {
+                                    "plates", "csup" -> {
+                                        val airportId = (item.navRef as? NavRef.Airport)?.code
+                                        if (airportId != null) {
+                                            val target = if (action.id == "csup") "CSup" else "Folder"
+                                            val snapshot = uiSession.selectAirport(airportId)
+                                            onSessionSnapshotChange(snapshot)
+                                            runCatching { uiSession.selectChart("Plate:$airportId:$target") }
+                                                .onSuccess(onSessionSnapshotChange)
+                                            onSelectPage(AppPage.Charts)
+                                            mapSelection = null
+                                        }
+                                    }
+                                }
+                            },
+                        )
                     }
-                    action.flightPlanRowAction?.let { rowAction ->
-                        runCatching { uiSession.performFlightPlanRowAction(rowAction.rowUid, rowAction.actionUid) }
-                            .onSuccess(onSessionSnapshotChange)
-                            .onFailure { Log.w("AerobagSelection", "flight-plan row action failed", it) }
-                        mapSelection = null
-                        return@MapSelectionTray
-                    }
-                    action.sessionAction?.let { sessionAction ->
-                        runCatching { uiSession.performMapSelectionAction(sessionAction) }
-                            .onSuccess(onSessionSnapshotChange)
-                            .onFailure { Log.w("AerobagSelection", "map selection action failed", it) }
-                        mapSelection = null
-                        return@MapSelectionTray
-                    }
-                    when (action.id) {
-                        "plates", "csup" -> {
-                            val airportId = (item.navRef as? NavRef.Airport)?.code
-                            if (airportId != null) {
-                                val target = if (action.id == "csup") "CSup" else "Folder"
-                                val snapshot = uiSession.selectAirport(airportId)
-                                onSessionSnapshotChange(snapshot)
-                                runCatching { uiSession.selectChart("Plate:$airportId:$target") }
-                                    .onSuccess(onSessionSnapshotChange)
-                                onSelectPage(AppPage.Charts)
-                                mapSelection = null
-                            }
-                        }
-                    }
-                },
-            )
+                }
+            }
         }
 
         NavElementDock(
@@ -2800,6 +2816,52 @@ internal fun MapSelectionTray(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+internal fun MapSelectionDetailModal(
+    title: String,
+    text: String,
+    modifier: Modifier = Modifier,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Surface(
+        modifier = modifier
+            .widthIn(max = ThumbSize * 8f)
+            .heightIn(max = ThumbSize * 7f),
+        shape = RoundedCornerShape(ThumbRadius + 4.dp),
+        color = uiTheme.controls.panelBg.copy(alpha = 0.98f),
+        contentColor = uiTheme.controls.panelFg,
+        shadowElevation = 8.dp,
+        border = BorderStroke(1.dp, uiTheme.controls.panelBorder.copy(alpha = 0.85f)),
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(ThumbSize * 0.18f)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.5f),
+        ) {
+            Text(
+                text = title.uppercase(),
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 0.4.sp,
+                ),
+                color = uiTheme.controls.panelFg,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    lineHeight = 17.sp,
+                ),
+                color = uiTheme.controls.panelFg,
+            )
         }
     }
 }

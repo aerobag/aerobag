@@ -508,6 +508,12 @@ internal data class MapSelectionUiState(
     val point: Offset,
     val result: MapSelectionQueryResult,
     val selectedItem: MapSelectionItem?,
+    val detailModal: MapSelectionDetailModalState? = null,
+)
+
+internal data class MapSelectionDetailModalState(
+    val title: String,
+    val text: String,
 )
 
 internal data class FlightPlanDisplayRow(
@@ -3046,8 +3052,6 @@ internal fun AerobagApp() {
         )
     }
 
-    var rootChromeSuppressed by remember { mutableStateOf(false) }
-
     BackHandler(enabled = pageHistory.isNotEmpty()) {
         val previous = pageHistory.lastOrNull() ?: return@BackHandler
         restoreSnapshot(previous, pageHistory.dropLast(1))
@@ -3125,7 +3129,6 @@ internal fun AerobagApp() {
                         },
                         onSelectPage = ::navigateToPage,
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
-                        onModalOverlayOpenChange = { rootChromeSuppressed = it },
                         navElement = navElement,
                         plan = currentPlan,
                         planUiState = sessionPlanUiState,
@@ -3252,22 +3255,20 @@ internal fun AerobagApp() {
                     )
                 }
             }
-            if (!rootChromeSuppressed) {
-                DebugDock(
-                    open = debugPanelOpen,
-                    onToggle = { debugPanelOpen = !debugPanelOpen },
-                    expandAbove = true,
-                    modifier = Modifier
-                        .zIndex(OverlayPlaneControls)
-                        .align(Alignment.BottomEnd)
-                        .padding(end = ThumbSize + (ThumbSize * 0.1f)),
-                ) {
-                    CommonDebugPanel(
-                        uptimeLabel = uptimeLabel,
-                        debugState = sessionSnapshot.debugState,
-                        onDebugFlagChange = ::setDebugFlag,
-                    )
-                }
+            DebugDock(
+                open = debugPanelOpen,
+                onToggle = { debugPanelOpen = !debugPanelOpen },
+                expandAbove = true,
+                modifier = Modifier
+                    .zIndex(OverlayPlaneControls)
+                    .align(Alignment.BottomEnd)
+                    .padding(end = ThumbSize + (ThumbSize * 0.1f)),
+            ) {
+                CommonDebugPanel(
+                    uptimeLabel = uptimeLabel,
+                    debugState = sessionSnapshot.debugState,
+                    onDebugFlagChange = ::setDebugFlag,
+                )
             }
         }
     }

@@ -629,6 +629,12 @@ pub fn get_session_snapshot_json(handle: u64) -> Result<String, String> {
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn get_session_snapshot_at_epoch_ms_json(handle: u64, epoch_ms: i64) -> Result<String, String> {
+    let snapshot = app_core::get_session_snapshot_at_epoch_ms(handle as u32, epoch_ms)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn restore_chart_page_state_in_session_json(
     handle: u64,
     recent_airport_ids_json: &str,
@@ -2565,6 +2571,19 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getSessionSnap
     handle: i64,
 ) -> jstring {
     return_string(&mut env, get_session_snapshot_json(handle as u64))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getSessionSnapshotAtEpochMsJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    epoch_ms: i64,
+) -> jstring {
+    return_string(
+        &mut env,
+        get_session_snapshot_at_epoch_ms_json(handle as u64, epoch_ms),
+    )
 }
 
 #[unsafe(no_mangle)]

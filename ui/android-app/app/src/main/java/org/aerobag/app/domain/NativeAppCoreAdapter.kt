@@ -668,7 +668,7 @@ class NativeUiSession internal constructor(
     private fun runPagedMutationAndRefresh(operation: () -> String): UiSessionSnapshot {
         val store = navKvStore ?: error("nav_kv store is required for paged session mutation")
         store.runPagedSessionOperationElement(operation = operation)
-        snapshot = decodeSnapshot(bridge.getSessionSnapshotJson(handle))
+        snapshot = decodeSnapshot(bridge.getSessionSnapshotAtEpochMsJson(handle, System.currentTimeMillis()))
         return snapshot
     }
 
@@ -955,7 +955,7 @@ class NativeUiSession internal constructor(
     }
 
     fun refreshSnapshot(): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.getSessionSnapshotJson(handle))
+        snapshot = decodeSnapshot(bridge.getSessionSnapshotAtEpochMsJson(handle, System.currentTimeMillis()))
         return syncGuidanceGeometry()
     }
 
@@ -1760,6 +1760,7 @@ private data class WireUiSessionSnapshot(
     val data_status_state: WireUiDataStatusState,
     val debug_state: WireUiDebugState = WireUiDebugState(),
     val raster_map: WireRasterMapUiState? = null,
+    val next_cycle_product_freshness_check_epoch_ms: Long? = null,
 )
 
 @kotlinx.serialization.Serializable
@@ -1839,6 +1840,7 @@ data class UiSessionSnapshot(
     val dataStatusState: UiDataStatusState,
     val debugState: UiDebugState,
     val rasterMap: RasterMapUiState?,
+    val nextCycleProductFreshnessCheckEpochMs: Long?,
 )
 
 data class MapOverlayQueryOutcome(
@@ -2024,6 +2026,7 @@ private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     dataStatusState = data_status_state.toUi(),
     debugState = debug_state.toUi(),
     rasterMap = raster_map?.toUi(),
+    nextCycleProductFreshnessCheckEpochMs = next_cycle_product_freshness_check_epoch_ms,
 )
 
 internal fun WireDerivedChartAirport.toUi() = ChartAirport(

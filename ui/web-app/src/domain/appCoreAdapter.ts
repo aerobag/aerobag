@@ -81,6 +81,7 @@ export type UiSessionSnapshot = {
   data_status_page_state: UiDataStatusPageState;
   debug_state: UiDebugState;
   raster_map?: RasterMapUiState | null;
+  next_cycle_product_freshness_check_epoch_ms?: number | null;
 };
 
 export type DebugFlagId = "tile_labels" | "nexrad_tile_labels" | "fast_tiles" | "offline_simulated_clock_buttons" | "sequencing_finish_lines";

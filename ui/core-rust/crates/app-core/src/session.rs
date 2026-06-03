@@ -110,6 +110,7 @@ pub struct UiSessionSnapshot {
     pub data_status_page_state: UiDataStatusPageState,
     pub debug_state: UiDebugState,
     pub raster_map: Option<crate::RasterMapUiState>,
+    pub next_cycle_product_freshness_check_epoch_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -245,6 +246,7 @@ struct LiveFeedConnectionSessionState {
 struct CycleProductFreshnessState {
     dirty: bool,
     missing_nav_kv_pages: BTreeSet<u32>,
+    next_check_epoch_ms: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -994,6 +996,10 @@ fn advance_session_wall_clock(session: &mut UiSession, epoch_ms: i64) {
     session.wall_clock_epoch_ms = session.wall_clock_epoch_ms.max(epoch_ms);
 }
 
+fn min_epoch_ms(current: Option<i64>, candidate: i64) -> Option<i64> {
+    Some(current.map_or(candidate, |current| current.min(candidate)))
+}
+
 fn freshness_status_severity(violation: FreshnessViolation) -> UiStatusSeverity {
     match violation.severity {
         FreshnessSeverity::Info => UiStatusSeverity::Info,
@@ -1051,6 +1057,7 @@ fn sync_live_feed_age_status_record(
 struct CycleProductFreshnessSync {
     changed: bool,
     missing_nav_kv_pages: BTreeSet<u32>,
+    next_check_epoch_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1079,24 +1086,30 @@ fn sync_displayed_chart_validity_freshness(session: &mut UiSession) -> CycleProd
     for option in &catalog.displayed_maps {
         let (family_label, family_sort_key) =
             chart_family_status_label(&option.map_view.chart_family);
-        collect_chart_validity_violations(
-            &mut violations,
-            &mut seen,
-            family_label,
-            family_sort_key,
-            option.map_view.package_effective_date.as_deref(),
-            option.map_view.package_expiration_date.as_deref(),
-            now_utc,
-        );
-        if let Some(wide_angle) = option.map_view.wide_angle.as_ref() {
+        sync.next_check_epoch_ms = min_optional_epoch_ms(
+            sync.next_check_epoch_ms,
             collect_chart_validity_violations(
                 &mut violations,
                 &mut seen,
                 family_label,
                 family_sort_key,
-                wide_angle.package_effective_date.as_deref(),
-                wide_angle.package_expiration_date.as_deref(),
+                option.map_view.package_effective_date.as_deref(),
+                option.map_view.package_expiration_date.as_deref(),
                 now_utc,
+            ),
+        );
+        if let Some(wide_angle) = option.map_view.wide_angle.as_ref() {
+            sync.next_check_epoch_ms = min_optional_epoch_ms(
+                sync.next_check_epoch_ms,
+                collect_chart_validity_violations(
+                    &mut violations,
+                    &mut seen,
+                    family_label,
+                    family_sort_key,
+                    wide_angle.package_effective_date.as_deref(),
+                    wide_angle.package_expiration_date.as_deref(),
+                    now_utc,
+                ),
             );
         }
     }
@@ -1118,6 +1131,13 @@ fn sync_displayed_chart_validity_freshness(session: &mut UiSession) -> CycleProd
     sync
 }
 
+fn min_optional_epoch_ms(current: Option<i64>, candidate: Option<i64>) -> Option<i64> {
+    match candidate {
+        Some(candidate) => min_epoch_ms(current, candidate),
+        None => current,
+    }
+}
+
 fn collect_chart_validity_violations(
     violations: &mut Vec<ChartValidityViolation>,
     seen: &mut BTreeSet<(u8, ChartValidityViolationKind)>,
@@ -1126,7 +1146,8 @@ fn collect_chart_validity_violations(
     effective_date: Option<&str>,
     expiration_date: Option<&str>,
     now_utc: DateTime<Utc>,
-) {
+) -> Option<i64> {
+    let mut next_check_epoch_ms = None;
     if let Some(effective_date) = effective_date {
         if let Some(effective_utc) = parse_utc_instant(effective_date) {
             if now_utc < effective_utc {
@@ -1137,6 +1158,8 @@ fn collect_chart_validity_violations(
                     family_sort_key,
                     ChartValidityViolationKind::NotYetEffective,
                 );
+                next_check_epoch_ms =
+                    min_epoch_ms(next_check_epoch_ms, effective_utc.timestamp_millis());
             }
         }
     }
@@ -1150,9 +1173,13 @@ fn collect_chart_validity_violations(
                     family_sort_key,
                     ChartValidityViolationKind::Expired,
                 );
+            } else {
+                next_check_epoch_ms =
+                    min_epoch_ms(next_check_epoch_ms, expiration_utc.timestamp_millis());
             }
         }
     }
+    next_check_epoch_ms
 }
 
 fn push_chart_validity_violation(
@@ -1163,25 +1190,14 @@ fn push_chart_validity_violation(
     kind: ChartValidityViolationKind,
 ) {
     let key = (family_sort_key, kind);
-    if seen.insert(key) {
-        violations.push(ChartValidityViolation {
-            family_label,
-            family_sort_key,
-            kind,
-        });
+    if !seen.insert(key) {
+        return;
     }
-}
-
-fn chart_family_status_label(chart_family: &str) -> (&'static str, u8) {
-    match chart_family {
-        "tac" => ("TAC", 10),
-        "sec" => ("Sectional", 20),
-        "enr-l" => ("IFR-Low", 30),
-        "enr-h" => ("IFR-High", 40),
-        "world-basemap" => ("World basemap", 50),
-        "shaded-relief" => ("Shaded relief", 60),
-        _ => ("Chart", 250),
-    }
+    violations.push(ChartValidityViolation {
+        family_label,
+        family_sort_key,
+        kind,
+    });
 }
 
 fn chart_validity_value(violations: &[ChartValidityViolation]) -> &'static str {
@@ -1200,13 +1216,10 @@ fn chart_validity_value(violations: &[ChartValidityViolation]) -> &'static str {
 }
 
 fn chart_validity_detail(violations: &[ChartValidityViolation]) -> String {
-    let mut families = violations
+    let family_list = violations
         .iter()
         .map(|violation| (violation.family_sort_key, violation.family_label))
-        .collect::<Vec<_>>();
-    families.sort_unstable();
-    families.dedup();
-    let family_list = families
+        .collect::<BTreeSet<_>>()
         .into_iter()
         .map(|(_, label)| label)
         .collect::<Vec<_>>()
@@ -1249,6 +1262,7 @@ fn sync_nav_db_expiration_freshness(session: &mut UiSession) -> CycleProductFres
         return sync;
     };
     if !cycle_product_is_expired(expiration_utc, now_utc) {
+        sync.next_check_epoch_ms = Some(expiration_utc.timestamp_millis());
         sync.changed = clear_data_status_record(session, CYCLE_NAV_DB_STATUS_ID);
         return sync;
     };
@@ -1274,6 +1288,15 @@ fn mark_cycle_product_freshness_dirty(session: &mut UiSession) {
     session.cycle_product_freshness.missing_nav_kv_pages.clear();
 }
 
+fn mark_cycle_product_freshness_dirty_if_deadline_due(session: &mut UiSession) {
+    let Some(next_check_epoch_ms) = session.cycle_product_freshness.next_check_epoch_ms else {
+        return;
+    };
+    if session.wall_clock_epoch_ms >= next_check_epoch_ms {
+        mark_cycle_product_freshness_dirty(session);
+    }
+}
+
 fn sync_cycle_product_freshness_status_records_if_needed(
     session: &mut UiSession,
 ) -> Vec<UiInvalidation> {
@@ -1281,6 +1304,38 @@ fn sync_cycle_product_freshness_status_records_if_needed(
         return Vec::new();
     }
     sync_cycle_product_freshness_status_records(session)
+}
+
+fn sync_cycle_product_freshness_status_records(session: &mut UiSession) -> Vec<UiInvalidation> {
+    let selected = sync_displayed_chart_validity_freshness(session);
+    let nav_db = sync_nav_db_expiration_freshness(session);
+    session.cycle_product_freshness = CycleProductFreshnessState {
+        dirty: false,
+        missing_nav_kv_pages: nav_db.missing_nav_kv_pages,
+        next_check_epoch_ms: min_optional_epoch_ms(
+            selected.next_check_epoch_ms,
+            nav_db.next_check_epoch_ms,
+        ),
+    };
+    let changed =
+        selected.changed | nav_db.changed | sync_package_ui_warning_status_records(session);
+    if changed {
+        vec![UiInvalidation::SessionSnapshot]
+    } else {
+        Vec::new()
+    }
+}
+
+fn chart_family_status_label(chart_family: &str) -> (&'static str, u8) {
+    match chart_family {
+        "tac" => ("TAC", 10),
+        "sec" => ("Sectional", 20),
+        "enr-l" => ("IFR-Low", 30),
+        "enr-h" => ("IFR-High", 40),
+        "world-basemap" => ("World basemap", 50),
+        "shaded-relief" => ("Shaded relief", 60),
+        _ => ("Chart", 250),
+    }
 }
 
 fn structured_package_warning_status_record(
@@ -1455,22 +1510,6 @@ fn sync_package_ui_warning_status_records(session: &mut UiSession) -> bool {
         sync_data_status_projection(session);
     }
     changed
-}
-
-fn sync_cycle_product_freshness_status_records(session: &mut UiSession) -> Vec<UiInvalidation> {
-    let selected = sync_displayed_chart_validity_freshness(session);
-    let nav_db = sync_nav_db_expiration_freshness(session);
-    session.cycle_product_freshness = CycleProductFreshnessState {
-        dirty: false,
-        missing_nav_kv_pages: nav_db.missing_nav_kv_pages,
-    };
-    let changed =
-        selected.changed | nav_db.changed | sync_package_ui_warning_status_records(session);
-    if changed {
-        vec![UiInvalidation::SessionSnapshot]
-    } else {
-        Vec::new()
-    }
 }
 
 fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState {
@@ -2472,6 +2511,7 @@ fn create_ui_session_inner(
         data_status_page_state,
         debug_state: snapshot_debug_state,
         raster_map: None,
+        next_cycle_product_freshness_check_epoch_ms: None,
     };
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
     lock_sessions().insert(
@@ -4420,6 +4460,7 @@ pub fn get_session_snapshot_at_epoch_ms(
     let lookup_started_at = crate::core_clock_ms();
     let session = session_mut(&mut sessions, handle)?;
     advance_session_wall_clock(session, epoch_ms);
+    mark_cycle_product_freshness_dirty_if_deadline_due(session);
     let lookup_ms = elapsed_ms(lookup_started_at);
     let cycle_freshness_started_at = crate::core_clock_ms();
     sync_cycle_product_freshness_status_records_if_needed(session);
@@ -7541,6 +7582,9 @@ fn try_snapshot_for_session(session: &UiSession) -> Result<UiSessionSnapshot, Ha
         data_status_page_state,
         debug_state,
         raster_map,
+        next_cycle_product_freshness_check_epoch_ms: session
+            .cycle_product_freshness
+            .next_check_epoch_ms,
     })
 }
 
@@ -11977,14 +12021,19 @@ mod tests {
     }
 
     #[test]
-    fn cycle_product_freshness_ignores_clean_expiration_boundary() {
+    fn cycle_product_freshness_recomputes_when_expiration_deadline_passes() {
         let init = create_current_test_session();
         let store = crate::navkv::nav_kv_store_for_test(&[], 256);
+        let expiration = utc("2026-05-21T00:00:00Z");
         let open_result = nav_db_open_result_for_test("NAV_DB_TEST", Some("2026-05-21T00:00:00Z"));
         attach_nav_kv_store_to_session_with_open_result(init.handle, 1, &store, Some(&open_result))
             .expect("attach nav kv");
         let snapshot = get_session_snapshot(init.handle).expect("fresh snapshot");
         assert!(!has_data_status_box(&snapshot, CYCLE_NAV_DB_STATUS_ID));
+        assert_eq!(
+            snapshot.next_cycle_product_freshness_check_epoch_ms,
+            Some(expiration.timestamp_millis())
+        );
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
@@ -11993,17 +12042,10 @@ mod tests {
         }
 
         let snapshot = get_session_snapshot(init.handle).expect("expired snapshot");
-        assert!(!has_data_status_box(&snapshot, CYCLE_NAV_DB_STATUS_ID));
-        {
-            let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
-            mark_cycle_product_freshness_dirty(session);
-        }
-
-        let snapshot = get_session_snapshot(init.handle).expect("dirty expired snapshot");
         let nav_db = data_status_box(&snapshot, CYCLE_NAV_DB_STATUS_ID);
         assert_eq!(nav_db.label, "NAV DB");
         assert_eq!(nav_db.value.as_deref(), Some("EXPIRED"));
+        assert_eq!(snapshot.next_cycle_product_freshness_check_epoch_ms, None);
     }
 
     #[test]

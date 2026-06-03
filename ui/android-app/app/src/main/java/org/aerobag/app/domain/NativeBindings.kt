@@ -265,6 +265,8 @@ interface NativeBridge {
 
     fun getSessionSnapshotJson(handle: Long): String
 
+    fun getSessionSnapshotAtEpochMsJson(handle: Long, epochMs: Long): String
+
     fun performFlightPlanRowActionInSessionJson(
         handle: Long,
         rowUid: String,
@@ -687,6 +689,8 @@ object NativeBindings : NativeBridge {
     ): String
 
     external override fun getSessionSnapshotJson(handle: Long): String
+
+    external override fun getSessionSnapshotAtEpochMsJson(handle: Long, epochMs: Long): String
 
     external override fun performFlightPlanRowActionInSessionJson(
         handle: Long,

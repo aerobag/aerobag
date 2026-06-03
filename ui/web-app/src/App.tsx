@@ -1479,6 +1479,7 @@ export default function App() {
   );
   const sessionSnapshotRefreshInFlightRef = useRef(false);
   const sessionSnapshotRefreshTimerRef = useRef<number | null>(null);
+  const cycleProductFreshnessTimerRef = useRef<number | null>(null);
   const [sessionSnapshot, setSessionSnapshot] = useState<UiSessionSnapshot>({
     app_state: {
       active_plan: null,
@@ -1537,6 +1538,7 @@ export default function App() {
     },
     debug_state: initialDebugState,
     raster_map: null,
+    next_cycle_product_freshness_check_epoch_ms: null,
   });
   const [playbackSourcePath, setPlaybackSourcePath] = useState(defaultPlaybackTracePath);
   const [debugWarningActive, setDebugWarningActive] = useState(false);
@@ -1801,6 +1803,57 @@ export default function App() {
       uiSession.setInvalidationListener(null);
     };
   }, [requestSessionSnapshotRefresh, uiSession]);
+
+  useEffect(() => {
+    if (cycleProductFreshnessTimerRef.current !== null) {
+      window.clearTimeout(cycleProductFreshnessTimerRef.current);
+      cycleProductFreshnessTimerRef.current = null;
+    }
+    const nextCheckEpochMs = sessionSnapshot.next_cycle_product_freshness_check_epoch_ms;
+    if (nextCheckEpochMs === null || nextCheckEpochMs === undefined) {
+      return;
+    }
+    const maxTimerDelayMs = 2_147_000_000;
+    const armTimer = () => {
+      const delayMs = Math.min(
+        Math.max(0, nextCheckEpochMs - Date.now()),
+        maxTimerDelayMs,
+      );
+      cycleProductFreshnessTimerRef.current = window.setTimeout(() => {
+        cycleProductFreshnessTimerRef.current = null;
+        if (Date.now() >= nextCheckEpochMs) {
+          requestSessionSnapshotRefresh("low_priority", "cycle_product_freshness_deadline");
+          return;
+        }
+        armTimer();
+      }, delayMs);
+      debugLog("cycle_product_freshness.deadline.scheduled", {
+        next_check_epoch_ms: nextCheckEpochMs,
+        delay_ms: Math.round(delayMs),
+      });
+    };
+    armTimer();
+    return () => {
+      if (cycleProductFreshnessTimerRef.current !== null) {
+        window.clearTimeout(cycleProductFreshnessTimerRef.current);
+        cycleProductFreshnessTimerRef.current = null;
+      }
+    };
+  }, [requestSessionSnapshotRefresh, sessionSnapshot.next_cycle_product_freshness_check_epoch_ms]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+      const nextCheckEpochMs = sessionSnapshot.next_cycle_product_freshness_check_epoch_ms;
+      if (nextCheckEpochMs !== null && nextCheckEpochMs !== undefined && Date.now() >= nextCheckEpochMs) {
+        requestSessionSnapshotRefresh("low_priority", "cycle_product_freshness_resume");
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [requestSessionSnapshotRefresh, sessionSnapshot.next_cycle_product_freshness_check_epoch_ms]);
 
   useEffect(() => {
     if (!uiSession || playbackUiState.status !== "playing") {

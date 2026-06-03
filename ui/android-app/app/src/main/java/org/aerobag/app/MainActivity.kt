@@ -2418,6 +2418,13 @@ internal fun AerobagApp() {
         onDispose { uiSession.destroy() }
     }
     var sessionSnapshot by remember(uiSession) { mutableStateOf(uiSession.snapshot) }
+    LaunchedEffect(uiSession, sessionSnapshot.nextCycleProductFreshnessCheckEpochMs) {
+        val nextCheckEpochMs = sessionSnapshot.nextCycleProductFreshnessCheckEpochMs ?: return@LaunchedEffect
+        val delayMs = (nextCheckEpochMs - System.currentTimeMillis())
+            .coerceAtLeast(0L)
+        delay(delayMs)
+        sessionSnapshot = uiSession.refreshSnapshot()
+    }
     val liveFeedCache = remember(uiSession, context) {
         LiveFeedCacheStore.open(context.applicationContext)
     }

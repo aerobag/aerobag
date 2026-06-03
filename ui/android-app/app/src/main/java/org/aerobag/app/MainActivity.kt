@@ -1217,6 +1217,17 @@ internal fun chartFamilyIconResId(chartFamily: MapChartFamily): Int = when (char
     MapChartFamily.WorldBasemap -> R.drawable.shaded_relief_icon
 }
 
+@DrawableRes
+internal fun chartFamilyIconResId(chartFamilyId: String): Int = when (chartFamilyId) {
+    "sec" -> R.drawable.sectional_icon
+    "tac" -> R.drawable.tac_icon
+    "enr-l" -> R.drawable.ifr_l_icon
+    "enr-h" -> R.drawable.ifr_h_icon
+    "shaded-relief" -> R.drawable.shaded_relief_icon
+    "world-basemap" -> R.drawable.shaded_relief_icon
+    else -> R.drawable.page_chart_icon
+}
+
 internal fun chartFamilyId(chartFamily: MapChartFamily): String = when (chartFamily) {
     MapChartFamily.Sec -> "sec"
     MapChartFamily.Tac -> "tac"
@@ -2729,16 +2740,16 @@ internal fun AerobagApp() {
                                 id = timingId,
                                 fromPage = page,
                                 startedMs = SystemClock.elapsedRealtime(),
-                                trigger = "map-family:${chartFamilyId(it)}",
+                                trigger = "map-family:$it",
                             )
-                            Log.i(TileBudgetLogTag, "map-family-click id=$timingId family=${chartFamilyId(it)}")
+                            Log.i(TileBudgetLogTag, "map-family-click id=$timingId family=$it")
                             pageHistory = boundedHistory(pageHistory + currentSnapshot())
                             page = AppPage.Map
                             val selectStartMs = SystemClock.elapsedRealtime()
                             val nextSnapshot = uiSession.selectMapFamily(it)
                             Log.i(
                                 TileBudgetLogTag,
-                                "map-family-select-core id=$timingId family=${chartFamilyId(it)} elapsedMs=${SystemClock.elapsedRealtime() - selectStartMs}",
+                                "map-family-select-core id=$timingId family=$it elapsedMs=${SystemClock.elapsedRealtime() - selectStartMs}",
                             )
                             val nextRasterMapState = requireNotNull(nextSnapshot.rasterMap) {
                                 "core selectMapFamily returned no raster map state"
@@ -2748,7 +2759,7 @@ internal fun AerobagApp() {
                             sessionSnapshot = nextSnapshot
                             Log.i(
                                 TileBudgetLogTag,
-                                "map-family-click-done id=$timingId family=${chartFamilyId(it)} elapsedMs=${SystemClock.elapsedRealtime() - clickStartMs}",
+                                "map-family-click-done id=$timingId family=$it elapsedMs=${SystemClock.elapsedRealtime() - clickStartMs}",
                             )
                         },
                         onSelectPage = ::navigateToPage,

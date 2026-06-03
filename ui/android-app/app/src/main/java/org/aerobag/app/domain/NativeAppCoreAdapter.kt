@@ -288,7 +288,7 @@ data class NexradOverlayTileCorners(
 data class RasterMapUiState(
     val selectedMapId: String,
     val selectedMapLabel: String,
-    val selectedFamilyId: MapChartFamily,
+    val selectedFamilyId: String,
     val selectedFamilyLabel: String,
     val selectedFamilyLauncherLabel: String,
     val minZoom: Double,
@@ -298,7 +298,7 @@ data class RasterMapUiState(
 )
 
 data class MapFamilyOption(
-    val id: MapChartFamily,
+    val id: String,
     val label: String,
     val launcherLabel: String,
     val enabled: Boolean,
@@ -390,13 +390,15 @@ data class TerrainOverlayQueryResult(
     val tileRequests: List<TerrainOverlayTileRequest>,
 )
 
+private val NativeAppCoreJson = Json {
+    encodeDefaults = true
+    ignoreUnknownKeys = true
+}
+
 class NativeAppCoreAdapter(
     private val navKvStore: NavKvStore? = null,
     private val bridge: NativeBridge = NativeBindings,
-    private val json: Json = Json {
-        encodeDefaults = true
-        ignoreUnknownKeys = true
-    },
+    private val json: Json = NativeAppCoreJson,
 ) {
     fun situationRingCandidates(): List<SituationRingCandidate> =
         json.decodeFromString<List<WireSituationRingCandidate>>(bridge.situationRingCandidatesJson())
@@ -937,11 +939,11 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
-    fun selectMapFamily(familyId: MapChartFamily): UiSessionSnapshot {
+    fun selectMapFamily(familyId: String): UiSessionSnapshot {
         val store = navKvStore ?: return snapshot
         snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(
             store.runPagedSessionOperationElement {
-                bridge.selectMapFamilyInSessionJson(handle, json.encodeToString(familyId.toWireName()))
+                bridge.selectMapFamilyInSessionJson(handle, json.encodeToString(familyId))
             },
         ).toUi()
         return snapshot
@@ -1767,7 +1769,7 @@ private data class WireUiSessionSnapshot(
 private data class WireRasterMapUiState(
     val selected_map_id: String = "",
     val selected_map_label: String = "",
-    val selected_family_id: WireChartFamilyId,
+    val selected_family_id: String,
     val selected_family_label: String = "",
     val selected_family_launcher_label: String = "",
     val min_zoom: Double = 0.0,
@@ -1778,7 +1780,7 @@ private data class WireRasterMapUiState(
 
 @kotlinx.serialization.Serializable
 private data class WireMapFamilyOption(
-    val id: WireChartFamilyId,
+    val id: String,
     val label: String,
     val launcher_label: String,
     val enabled: Boolean,
@@ -1903,7 +1905,7 @@ data class UiChartPageState(
 private fun WireRasterMapUiState.toUi() = RasterMapUiState(
     selectedMapId = selected_map_id,
     selectedMapLabel = selected_map_label,
-    selectedFamilyId = selected_family_id.toUi(),
+    selectedFamilyId = selected_family_id,
     selectedFamilyLabel = selected_family_label,
     selectedFamilyLauncherLabel = selected_family_launcher_label,
     minZoom = min_zoom,
@@ -1917,30 +1919,15 @@ private fun WireRasterMapUiState.toUi() = RasterMapUiState(
 )
 
 private fun WireMapFamilyOption.toUi() = MapFamilyOption(
-    id = id.toUi(),
+    id = id,
     label = label,
     launcherLabel = launcher_label,
     enabled = enabled,
     active = active,
 )
 
-private fun WireChartFamilyId.toUi() = when (this) {
-    WireChartFamilyId.Sec -> MapChartFamily.Sec
-    WireChartFamilyId.Tac -> MapChartFamily.Tac
-    WireChartFamilyId.EnrL -> MapChartFamily.EnrL
-    WireChartFamilyId.EnrH -> MapChartFamily.EnrH
-    WireChartFamilyId.ShadedRelief -> MapChartFamily.ShadedRelief
-    WireChartFamilyId.WorldBasemap -> MapChartFamily.WorldBasemap
-}
-
-private fun MapChartFamily.toWireName(): String = when (this) {
-    MapChartFamily.Sec -> "sec"
-    MapChartFamily.Tac -> "tac"
-    MapChartFamily.EnrL -> "enr-l"
-    MapChartFamily.EnrH -> "enr-h"
-    MapChartFamily.ShadedRelief -> "shaded-relief"
-    MapChartFamily.WorldBasemap -> "world-basemap"
-}
+internal fun decodeRasterMapUiStateForTesting(rasterMapJson: String): RasterMapUiState =
+    NativeAppCoreJson.decodeFromString<WireRasterMapUiState>(rasterMapJson).toUi()
 
 private fun WireDerivedChartPageState.toUi() = DerivedChartPageState(
     airports = airports.map { it.toUi() },

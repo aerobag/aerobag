@@ -453,7 +453,7 @@ internal fun MapExplorerPage(
     onSelectOwnshipSource: (String) -> Unit,
     onSituationControlInput: (SituationControlInput) -> Unit,
     onPlaybackSourcePathChange: (String) -> Unit,
-    onSelectMapFamily: (MapChartFamily) -> Unit,
+    onSelectMapFamily: (String) -> Unit,
     onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
     navElement: NavElementUiView?,
@@ -566,7 +566,7 @@ internal fun MapExplorerPage(
                     sizePx = tile.size_px.toFloat(),
                     zoom = tile.source_zoom,
                     mapViewId = tile.primary.map_view_id,
-                    family = tile.family.toMapChartFamily() ?: selectedFamilyId,
+                    family = tile.family.toMapChartFamily() ?: selectedFamilyId.toMapChartFamily() ?: MapChartFamily.Sec,
                     sources = sources,
                 )
             }
@@ -577,7 +577,7 @@ internal fun MapExplorerPage(
     val trayOptions = remember(mapFamilyOptions) {
         mapFamilyOptions.map { option ->
             ChartTrayOption(
-                id = chartFamilyId(option.id),
+                id = option.id,
                 label = option.label,
                 launcherLabel = option.launcherLabel,
                 available = option.enabled,
@@ -669,16 +669,7 @@ internal fun MapExplorerPage(
             },
         )
     }
-    val selectedLauncher = trayOptions.firstOrNull { option ->
-        when (option.id) {
-            "sec" -> selectedFamilyId == MapChartFamily.Sec
-            "tac" -> selectedFamilyId == MapChartFamily.Tac
-            "enr-l" -> selectedFamilyId == MapChartFamily.EnrL
-            "enr-h" -> selectedFamilyId == MapChartFamily.EnrH
-            "shaded-relief" -> selectedFamilyId == MapChartFamily.ShadedRelief
-            else -> false
-        }
-    } ?: trayOptions.first()
+    val selectedLauncher = trayOptions.firstOrNull { option -> option.id == selectedFamilyId } ?: trayOptions.first()
     val tileRects = remember(tiles) {
         tiles.associate { tile ->
             val leftPx = tile.leftPx.roundToInt()

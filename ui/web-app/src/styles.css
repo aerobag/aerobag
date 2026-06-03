@@ -1947,10 +1947,10 @@ button {
   min-width: 0;
   padding: calc(var(--thumb) * 0.055) calc(var(--thumb) * 0.08);
   box-sizing: border-box;
-  border: 1px solid rgba(255, 255, 255, 0.32);
+  border: 1px solid var(--theme-flight-data-border);
   border-radius: calc(var(--thumb-radius) * 0.38);
-  background: rgba(12, 20, 24, 0.74);
-  color: #ffffff;
+  background: var(--theme-flight-data-bg);
+  color: var(--theme-flight-data-value);
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.18);
   backdrop-filter: blur(8px);
   display: flex;
@@ -1964,7 +1964,7 @@ button {
   font-weight: 800;
   line-height: 1;
   letter-spacing: 0.035em;
-  opacity: 0.82;
+  color: var(--theme-flight-data-label);
 }
 
 .flightDataValue {
@@ -1979,7 +1979,7 @@ button {
 }
 
 .flightDataValue.isMissing {
-  opacity: 0.58;
+  color: var(--theme-flight-data-missing-value);
 }
 
 @media (max-width: 1180px) {

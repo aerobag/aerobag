@@ -547,6 +547,11 @@ type UiThemeJson = {
     data_status_quiet_bg: string;
     data_status_quiet_stroke: string;
     chart_surface_bg: string;
+    flight_data_bg: string;
+    flight_data_border: string;
+    flight_data_label: string;
+    flight_data_value: string;
+    flight_data_missing_value: string;
     cdi_pointer: string;
   };
   aviation: {
@@ -2504,6 +2509,11 @@ export default function App() {
         "--theme-data-status-quiet-bg": controlTheme.data_status_quiet_bg,
         "--theme-data-status-quiet-stroke": controlTheme.data_status_quiet_stroke,
         "--theme-chart-surface-bg": controlTheme.chart_surface_bg,
+        "--theme-flight-data-bg": controlTheme.flight_data_bg,
+        "--theme-flight-data-border": controlTheme.flight_data_border,
+        "--theme-flight-data-label": controlTheme.flight_data_label,
+        "--theme-flight-data-value": controlTheme.flight_data_value,
+        "--theme-flight-data-missing-value": controlTheme.flight_data_missing_value,
         "--theme-cdi-pointer": controlTheme.cdi_pointer,
         "--theme-class-b-d-blue": loadedUiTheme.aviation.class_b_d_blue,
         "--theme-class-c-magenta": loadedUiTheme.aviation.class_c_magenta,

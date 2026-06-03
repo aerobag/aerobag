@@ -18,6 +18,11 @@
     "data_status_quiet_bg": "#d9dee1",
     "data_status_quiet_stroke": "#4e5960",
     "chart_surface_bg": "#8c9dad",
+    "flight_data_bg": "#0c1418bd",
+    "flight_data_border": "#ffffff52",
+    "flight_data_label": "#ffffffd1",
+    "flight_data_value": "#ffffff",
+    "flight_data_missing_value": "#ffffff94",
     "cdi_pointer": "#d45a7a"
   },
   "aviation": {

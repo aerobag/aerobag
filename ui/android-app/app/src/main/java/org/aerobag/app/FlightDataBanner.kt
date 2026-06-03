@@ -16,8 +16,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -143,8 +141,8 @@ private fun FlightDataBannerCell(
             .width(FlightDataCellWidth)
             .height(FlightDataCellHeight)
             .clip(shape)
-            .background(uiTheme.controls.panelBg.copy(alpha = 0.74f))
-            .border(1.dp, Color.White.copy(alpha = 0.32f), shape)
+            .background(uiTheme.controls.flightDataBg)
+            .border(1.dp, uiTheme.controls.flightDataBorder, shape)
             .padding(horizontal = ThumbSize * 0.08f, vertical = ThumbSize * 0.055f),
         contentAlignment = Alignment.Center,
     ) {
@@ -154,7 +152,7 @@ private fun FlightDataBannerCell(
         ) {
             Text(
                 text = cell.label,
-                color = uiTheme.controls.panelFg.copy(alpha = 0.82f),
+                color = uiTheme.controls.flightDataLabel,
                 fontSize = 9.sp,
                 fontWeight = FontWeight.ExtraBold,
                 lineHeight = 9.sp,
@@ -164,11 +162,7 @@ private fun FlightDataBannerCell(
             )
             Text(
                 text = cell.value ?: "\u2014",
-                color = if (cell.value == null) {
-                    lerp(uiTheme.controls.panelFg, uiTheme.controls.panelBg, 0.42f)
-                } else {
-                    uiTheme.controls.panelFg
-                },
+                color = if (cell.value == null) uiTheme.controls.flightDataMissingValue else uiTheme.controls.flightDataValue,
                 fontSize = 19.sp,
                 fontWeight = FontWeight.Black,
                 lineHeight = 18.sp,

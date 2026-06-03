@@ -31,6 +31,11 @@ data class ControlsTheme(
     val dataStatusQuietBg: Color,
     val dataStatusQuietStroke: Color,
     val chartSurfaceBg: Color,
+    val flightDataBg: Color,
+    val flightDataBorder: Color,
+    val flightDataLabel: Color,
+    val flightDataValue: Color,
+    val flightDataMissingValue: Color,
     val cdiPointer: Color,
 )
 
@@ -82,6 +87,11 @@ private data class WireControlsTheme(
     val data_status_quiet_bg: String,
     val data_status_quiet_stroke: String,
     val chart_surface_bg: String,
+    val flight_data_bg: String,
+    val flight_data_border: String,
+    val flight_data_label: String,
+    val flight_data_value: String,
+    val flight_data_missing_value: String,
     val cdi_pointer: String,
 )
 
@@ -138,6 +148,11 @@ object UiThemeLoader {
                 dataStatusQuietBg = wire.controls.data_status_quiet_bg.toColor(),
                 dataStatusQuietStroke = wire.controls.data_status_quiet_stroke.toColor(),
                 chartSurfaceBg = wire.controls.chart_surface_bg.toColor(),
+                flightDataBg = wire.controls.flight_data_bg.toColor(),
+                flightDataBorder = wire.controls.flight_data_border.toColor(),
+                flightDataLabel = wire.controls.flight_data_label.toColor(),
+                flightDataValue = wire.controls.flight_data_value.toColor(),
+                flightDataMissingValue = wire.controls.flight_data_missing_value.toColor(),
                 cdiPointer = wire.controls.cdi_pointer.toColor(),
             ),
             aviation = AviationTheme(

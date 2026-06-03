@@ -611,13 +611,15 @@ internal fun ChartsPage(
             }
         }
 
-        FlightDataBanner(
-            banner = flightDataBanner,
-            surfaceSize = surfaceSize,
-            situationDockTopPadding = situationDockTopPadding,
-            uiTheme = uiTheme,
-            modifier = Modifier.align(if (surfaceSize.width > surfaceSize.height) Alignment.TopEnd else Alignment.TopCenter),
-        )
+        if (page == AppPage.Map) {
+            FlightDataBanner(
+                banner = flightDataBanner,
+                surfaceSize = surfaceSize,
+                situationDockTopPadding = situationDockTopPadding,
+                uiTheme = uiTheme,
+                modifier = Modifier.align(if (surfaceSize.width > surfaceSize.height) Alignment.TopEnd else Alignment.TopCenter),
+            )
+        }
 
         DataStatusBadge(
             dataStatusState = dataStatusState,

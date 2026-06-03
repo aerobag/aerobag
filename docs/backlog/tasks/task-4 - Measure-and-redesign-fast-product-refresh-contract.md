@@ -1,6 +1,6 @@
 ---
 id: TASK-4
-title: live-feeds transition
+title: live-feed transition cleanup
 state: high
 assignee: []
 created_date: '2026-05-12 16:20'
@@ -16,20 +16,20 @@ ordinal: 4000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-- Some stale docs/backlog text still mentions fast-products and old commands.
-  - Real future streaming adapters like SWIM/NOTAMs are not implemented yet.
-  - Production serving details remain: supervisor, reverse proxy, and SSE
-    scaling.
-  - Android now consumes live-feed packages through its cache/SSE path. Remaining
-    Android gaps are product UI-specific, currently winds-aloft display and
-    debug tile labels.
-  - NEXRAD PNG delta encoding remains deferred under TASK-121.
+- Audit active docs/backlog text for retired rolling-product terminology and old
+  operational commands.
+- Real future streaming adapters like SWIM/NOTAMs are not implemented yet.
+- Production serving details remain: supervisor, reverse proxy, and SSE scaling.
+- Android now consumes live-feed packages through its cache/SSE path. Remaining
+  Android gaps are product UI-specific, currently winds-aloft display and debug
+  tile labels.
+- NEXRAD PNG delta encoding remains deferred under TASK-121.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Measure cost of refetching fast products through the current contract.
-- [ ] #2 Measure frequency and volume of fast product updates.
-- [ ] #3 Compute a target data volume for continuous refresh.
-- [ ] #4 Propose whether current-artifacts, watch-like discovery, or hanging-get invalidations should be the durable contract.
+- [x] #1 Active docs describe rolling data as live-feed products, not static package rows.
+- [x] #2 Backlog tasks use live-feed terminology except when explicitly recording historical context.
+- [x] #3 Old operational commands are marked historical or removed from current instructions.
+- [ ] #4 Remaining live-feed production gaps are tracked as concrete follow-up tasks.
 <!-- AC:END -->

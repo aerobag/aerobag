@@ -130,8 +130,8 @@ Publication ordering is part of the contract:
 - Done: Vite no longer synthesizes live-feed timelines or SSE frames. In dev,
   `restart-vite-dev.sh` starts `aerobag-live-feedsd` beside Vite and proxies
   `/live-feeds`.
-- Done: the `preprocessor-cli update-live-feeds` operational command and its
-  CLI-owned batch builder bridge have been removed.
+- Done: the retired live-feed CLI operational command and its CLI-owned batch
+  builder bridge have been removed.
 - Done: the remaining live-feed integration tests moved out of
   `preprocessor-cli` into `preprocessor-live-feeds`, so the CLI no longer owns
   live-feed build/publish behavior.

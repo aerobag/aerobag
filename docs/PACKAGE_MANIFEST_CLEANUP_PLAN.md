@@ -140,7 +140,6 @@ Bundle examples:
 
 ```text
 bundle_cycle_2604_01_<sha256>.json
-bundle_fast_<sha256>.json
 ```
 
 `current_artifacts_YYYYMMDD.json` should keep a stable discovery name. It points at hashed bundle filenames and records their `checksum_sha256` values.
@@ -188,25 +187,16 @@ This avoids implying that every cycle update strongly recommends redownloading h
 
 The cycle bundle is the package-planning authority for stable products.
 
-## Fast Products
+## Live Feeds
 
-Fast products should not live in the cycle bundle because they roll every few minutes.
+Rolling products such as METARs, TFRs, NEXRAD, winds aloft, and obstacle live
+updates are not part of the static package manifest. They use the separate
+`/live-feeds` contract with `current.json`, immutable version manifests, states,
+deltas where supported, and SSE invalidation.
 
-Use a separate content-addressed fast bundle:
-
-```text
-bundle_fast_<sha256>.json
-```
-
-Examples:
-
-```text
-tfrs_*.zip
-metars_*.zip
-nexrad_*.zip
-```
-
-Fast rows should include:
+Static cycle/stable publication remains responsible for package installation
+and offline package sync. Live-feed products are fetched and cached through the
+live-feed cache path, not through `current_artifacts` bundle rows.
 
 ```text
 id
@@ -318,13 +308,6 @@ Example:
       "checksum_sha256": "...",
       "size_bytes": 123
     },
-    {
-      "id": "fast_current",
-      "bundle_type": "fast",
-      "relative_path": "bundle_fast_<sha256>.json",
-      "checksum_sha256": "...",
-      "size_bytes": 123
-    }
   ]
 }
 ```
@@ -356,12 +339,11 @@ The production build must end with a contract regression test that asserts the p
 
 This should run as an explicit scheduler task after publication and before reporting build success. It should validate the packaged tree and the unpacked tree generated from it.
 
-Required fast assertions:
+Required publication assertions:
 
 - `current_artifacts_YYYYMMDD.json` exists and is the only stable discovery entry point clients need.
 - Every bundle referenced by `current_artifacts` exists.
 - Cycle bundle filenames match `bundle_cycle_YYCC_VV_<sha256>.json`.
-- Fast bundle filenames match `bundle_fast_<sha256>.json`.
 - Every app-installable package is listed in `packages[]`.
 - No app-installable package appears only as a top-level convenience field.
 - Transitional artifacts appear only in `ancillary[]`.
@@ -388,7 +370,8 @@ Android should:
 
 - Read `current_artifacts_YYYYMMDD.json`.
 - Fetch `bundle_cycle_YYCC_VV_<sha256>.json` from the `relative_path` in `current_artifacts`.
-- Optionally fetch fast bundle metadata on the fast-product polling cadence.
+- Fetch rolling/live products through the live-feed cache/SSE contract, not
+  through package bundles.
 - Plan app installs only from `packages[]`.
 - Ignore `ancillary[]` outside developer/debug tooling.
 - Fetch `staticBaseUrl + relative_path`.

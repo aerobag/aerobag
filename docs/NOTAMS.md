@@ -7,7 +7,7 @@ This is intentionally a plan doc, not a feed-details doc. Raw SWIM/SCDS connecti
 ## Goals
 
 - ingest FAA NOTAM data from the SWIM/SCDS queue
-- publish a replace-everything current-state fast product for clients
+- publish a replace-everything current-state live-feed product for clients
 - keep queue and credential complexity out of app/web/core
 - keep XML parsing and FAA-specific semantics out of clients
 
@@ -61,7 +61,7 @@ SQLite is the preferred state format because:
 - idempotent upserts are easy
 - airport / keyword / time indexing is easy
 - crash recovery is straightforward
-- snapshot export into a fast product is simple
+- snapshot export into a live-feed product is simple
 
 ### 3. Snapshot / Export
 
@@ -70,7 +70,7 @@ The live mutable state store is not itself a node output.
 Instead:
 - a DAG step reads a consistent snapshot of the current state
 - exports a content-addressed artifact
-- packages and publishes it through the normal fast-product machinery
+- packages and publishes it through the normal live-feed publisher path
 
 That means the content-addressed identity belongs to the exported snapshot, not the ever-changing SQLite DB.
 
@@ -96,9 +96,9 @@ A build step owns deterministic export:
 - emit manifest
 - emit zip/package
 
-This is what later becomes a normal fast product.
+This is what later becomes a normal live-feed product.
 
-## Why We Are Not Wiring The Queue Straight Into `build-fast-subset`
+## Why We Are Not Wiring The Queue Straight Into The Live-Feed Builder
 
 That would be the wrong abstraction.
 
@@ -155,7 +155,7 @@ But this is still offline normalization from captured files, not the persistent 
 ## Client Contract
 
 Target client contract remains:
-- replace-everything current-state fast product
+- replace-everything current-state live-feed product
 
 Not:
 - queue deltas in clients
@@ -165,7 +165,7 @@ Not:
 Likely package contents:
 - `notams.json`
 - manifest
-- zipped fast product
+- zipped live-feed install package where needed
 
 Likely normalized fields:
 - stable NOTAM id
@@ -193,7 +193,7 @@ Plate attachment is desirable for many FDC/procedure NOTAMs, but it should be an
 - likely a combination of FAA/NMS message identifiers and NOTAM identifiers, but this needs to be pinned down carefully
 
 3. Export cadence
-- how often do we refresh the fast `notams` package from state?
+- how often do we refresh the live-feed `notams` state from producer-owned state?
 
 4. Plate/procedure mapping
 - how aggressively can we attach FDC NOTAMs to plates/procedures without introducing bad matches?
@@ -205,4 +205,4 @@ Build the persistent producer-side NOTAM state store:
 - SQLite current-state DB
 - checkpoints
 
-Then add a DAG export step that snapshots that state into a real fast `notams` package.
+Then add an export step that snapshots that state into a real `notams` live-feed state.

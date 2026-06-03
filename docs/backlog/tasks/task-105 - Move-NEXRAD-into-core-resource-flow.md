@@ -24,6 +24,6 @@ NEXRAD is still platform-owned on both web and Android: each UI fetches the mani
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Core owns NEXRAD manifest parsing, availability status, and frame list; platform code only advances the displayed frame as paint scheduling.
-- [x] #2 Web and Android satisfy opaque core resource requests instead of fetching `/fast-products` or package members directly for NEXRAD.
+- [x] #2 Web and Android satisfy opaque core resource requests instead of fetching legacy web product routes or package members directly for NEXRAD.
 - [x] #3 Both platforms render the same core-provided NEXRAD frame state.
 <!-- AC:END -->

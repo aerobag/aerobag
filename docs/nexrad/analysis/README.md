@@ -1,11 +1,14 @@
-# NEXRAD Fast-Product Analysis
+# NEXRAD Live-Feed Analysis
 
-This directory preserves the one-off analysis used while revisiting NEXRAD fast-product
+This directory preserves the one-off analysis used while revisiting NEXRAD live-feed
 transport. The sampled upstream run lives outside the repo at:
 
 ```text
 /root/aerobag-five/tmp-fast-product-analysis/upstream-nexrad/2026-05-11T170642Z_2026-05-12T202440Z
 ```
+
+The `tmp-fast-product-analysis` directory name is historical; it predates the
+live-feed terminology.
 
 The source files are upstream MRMS frames, not Aerobag's Avare-style postprocessed PNG bundle:
 

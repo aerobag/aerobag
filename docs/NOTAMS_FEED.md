@@ -156,7 +156,7 @@ FAA extension fields observed in XML:
 
 ## Implications For Preprocessor Design
 
-The fast-product path should not assume a simple REST/JSON source. The likely shape is:
+The live-feed product path should not assume a simple REST/JSON source. The likely shape is:
 
 1. Java collector drains queue to raw capture files.
 2. Rust-side normalization step parses captured AIXM XML.
@@ -174,10 +174,10 @@ Plate attachment is desirable for many FDC/procedure NOTAMs, but airport fallbac
 - SCDS is not intended for FAA/NAS-impacting operational use.
 - For Aerobag’s advisory/non-certified use, this is acceptable enough to continue prototyping.
 - Queue consumption is stateful; test runs can drain messages from the subscription queue.
-- We have a Rust normalizer for captured messages, but not a live stateful fast-product publisher yet.
+- We have a Rust normalizer for captured messages, but not a live stateful live-feed publisher yet.
 
 ## Next Step
 
-Build a persistent current-state store from the event stream, then publish that state as a real fast `notams` package from `build-fast-subset`.
+Build a persistent current-state store from the event stream, then publish that state as a real `notams` live-feed product.
 
-We should not wire the live SWIM queue directly into `build-fast-subset` until that state model exists, because the queue is event-driven and stateful rather than a cheap snapshot feed.
+We should not wire the live SWIM queue directly into the live-feed builder until that state model exists, because the queue is event-driven and stateful rather than a cheap snapshot feed.

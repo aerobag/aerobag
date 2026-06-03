@@ -126,25 +126,25 @@ by the simpler rows+columns presentation, they can now flop back to the default 
 and we're back in the preferred condition.
 
 The discussion above is really about slow products (28/56-day products, durable products like
-terrain). Fast products want some other UI and recommended polic(ies). Fast products are things
+terrain). Live-feed products want some other UI and recommended polic(ies). Live-feed products are things
 that, if you don't have them, don't fundamentally break the application:
 TFRs, NEXRAD, METARs, NOTAMs, ADSB traffic.
 [TODO clear UIs for when these layers are selected but unavailable or stale.]
 
 I'm thinking that the UI for these is:
-For each fast product, select whether it's:
+For each live-feed product, select whether it's:
 - pause/play for download (media player icons)
 - visible/invisible on displays (eyeball / closed eye icons)
 If the product download state is "paused", we can still have it be visible, but
 as it ages, the indicator will go from (green) "NEXRAD 2 min old" to (orange) "NEXRAD 10 min old"
-to (red) "NEXRAD stale" (and we stop displaying it at the stale threshold). Each fast
+to (red) "NEXRAD stale" (and we stop displaying it at the stale threshold). Each live-feed
 product will have its own warning & stale threshholds.
 - "pause" only affects proactive internet fetches. Passive receiving paths (like ADSB transponder
 or stratux) never pause.
 
 Each of the user preferences above:
 - slow product row/col & advance-matrix select/play/pause states
-- fast product play/pause, visible/invisible
+- live-feed product play/pause, visible/invisible
 ...are part of the user*device state. We should store it durably across app crashes/restarts.
 When we have a cloud account server, we should store it durably there, and (optionally) sync
 it between devices.

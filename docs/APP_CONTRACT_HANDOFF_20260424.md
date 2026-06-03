@@ -33,7 +33,7 @@ Current published shape:
 - no published `catalog`
 - no published `data/main.db`
 - no `current_artifacts.static_products`
-- no `current_artifacts.fast_products`
+- no legacy `current_artifacts.fast_products`
 - no `current_artifacts.obstacles`
 
 What was updated on the app side in this pass:
@@ -67,5 +67,5 @@ Known remaining risk:
 
 Recommended next step:
 1. Launch one real UI target.
-2. Exercise startup, chart loading, vectors, terrain, and fast-product loading against the new artifacts.
+2. Exercise startup, chart loading, vectors, terrain, and live-feed loading against the new artifacts.
 3. If anything fails, remove or adapt the remaining legacy `resource_index` assumptions in `ui/core-rust` / `app-ffi`.

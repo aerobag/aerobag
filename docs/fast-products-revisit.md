@@ -1,10 +1,10 @@
-## Fast products:
+## Live feeds:
 
-Let's talk about correcting how we think about fast products.
+Let's talk about correcting how we think about live feeds.
 Up until now, they've inherited almost everything from the slow (cycles & stable) pipeline.
 A big chonky build, the client polls via current_artifacts, if the pointer moves, the
 client fetches the updated bundles. We have hacky stuff in the clients to poll and refresh
-the fast products, different on each client, eww.
+the live feeds, different on each client, eww.
 
 Let's completely revisit how we do this stuff, and make a better **plan**.  Path I see:
 
@@ -16,7 +16,7 @@ every five minutes, so we start polling 0.9*5*60 after the last publication time
 How do we advertise available products to clients? Presently, we couple the notion of
 "family available" to "version available" via current-artifacts. Instead we should decouple
 these: Some static "live-feeds-manifest.json" will provide the URLs to the client-facing
-endpoints for the fast products; that knowledge will last the life of the application session.
+endpoints for the live feeds; that knowledge will last the life of the application session.
 
 How does the client detect that new data is available? And how does the client retrieve the
 new data? These might be coupled, because I suspect for some data streams (TFRs, NOTAMs, maybe
@@ -41,7 +41,7 @@ a newer version.
 If the server has version Z, and has a good delta, it might send Z-X. Otherwise it just sends Z.
 
 Perhaps, before we build anything complicated, we should measure! we have a few hours of
-historical fast-product data on root@aerobag-prod.iac.jonh.net. Let's go study each product:
+historical live-feed data on root@aerobag-prod.iac.jonh.net. Let's go study each product:
 - How frequently does the product change?
 - How big is the delta between adjacent copies of the product? (Answering this may require
 writing per-product diffs.)
@@ -291,7 +291,7 @@ Plan:
   added, removed.
 - Because full TFR snapshots are tiny, implementation complexity should stay modest. It is
   acceptable to fall back to full snapshots aggressively.
-- The biggest win is not bandwidth alone; it is having a uniform fast-product update mechanism
+- The biggest win is not bandwidth alone; it is having a uniform live-feed update mechanism
   where the server can cheaply say "no change" for 90% of checks.
 
 ## NEXRAD
@@ -300,7 +300,7 @@ Important measurement distinction: the existing Aerobag NEXRAD package is a post
 Avare-style product, not the upstream product. It fetches three upstream MRMS frames, warps them,
 converts them to PNG, resizes them to 25%, and packages `nexrad.json` plus `frame_0.png`,
 `frame_1.png`, and `frame_2.png`. That format bakes in an animation policy and creates
-redundancy, so it is the wrong basis for deciding the long-term fast-product protocol.
+redundancy, so it is the wrong basis for deciding the long-term live-feed protocol.
 
 The upstream product we should study is:
 
@@ -485,7 +485,7 @@ Plan/questions for optimization:
 Winds aloft is a much lower-cadence product than METARs, TFRs, or NEXRAD. It is issued about every
 6 hours, so whole-package delivery is only about 4 updates/day.
 
-The local fast-product samples are already zipped packages around 9.6-9.8 MiB each:
+The local live-feed samples are already zipped packages around 9.6-9.8 MiB each:
 
 ```text
 sample_count          9
@@ -497,7 +497,7 @@ Interpretation:
 
 - Delta delivery is probably not useful enough to prioritize. Each issuance is far apart in time,
   and the daily whole-package bandwidth is already modest.
-- If winds aloft becomes part of a uniform fast-product delta protocol, it can participate, but it
+- If winds aloft becomes part of a uniform live-feed delta protocol, it can participate, but it
   should not drive the design. Straight whole-package refreshes are likely fine for the first
   implementation.
 
@@ -515,6 +515,6 @@ Interpretation:
   bytes in the common case.
 - The product should use stable obstacle identity plus exact added/changed/removed records, not a
   lossy or spatial approximation.
-- Obstacles are a strong candidate for the shared fast-product delta protocol because they provide
+- Obstacles are a strong candidate for the shared live-feed delta protocol because they provide
   an outsized bandwidth win without requiring the more complex image-specific machinery needed for
   NEXRAD.

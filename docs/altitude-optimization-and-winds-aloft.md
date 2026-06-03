@@ -30,7 +30,7 @@ References:
 ## Current Measuring Package
 
 The first package is intentionally a raw measuring artifact, not a client wire
-format. It is published as the fast product `winds-aloft`.
+format. It is published as the live-feed product `winds-aloft`.
 
 Contents:
 
@@ -66,8 +66,8 @@ compression.
 
 ## Next Shape
 
-The current artifact proves the fetch-cache, node-cache, fast-bundle, packaged,
-and unpacked publication path. It is not intended for direct client consumption.
+The current artifact proves the fetch-cache, node-cache, live-feed publishing,
+and client transport path. It is not intended for direct client consumption.
 
 Likely next work:
 

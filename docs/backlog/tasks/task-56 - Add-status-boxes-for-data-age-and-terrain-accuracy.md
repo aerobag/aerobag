@@ -43,5 +43,5 @@ Here are some possible presentations:
 - [ ] #1 Core exposes data age and accuracy status fields.
 - [ ] #2 UI renders compact status boxes consistently across platforms.
 - [ ] #3 Stale or degraded status can feed the caution system.
-- [ ] #4 Product age warnings cover fast products such as NEXRAD, METAR, NOTAM, TFR, and ADS-B where applicable.
+- [ ] #4 Product age warnings cover live-feed products such as NEXRAD, METAR, NOTAM, TFR, and ADS-B where applicable.
 <!-- AC:END -->

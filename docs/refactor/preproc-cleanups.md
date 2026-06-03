@@ -2,7 +2,7 @@
 
 ## Goal
 
-Reduce copy/paste in the preprocessor build pipeline without changing published artifact contracts. The highest-risk duplication is in orchestration code: cache-node execution, regional package loops, fast-product staging, and package/zip utilities.
+Reduce copy/paste in the preprocessor build pipeline without changing published artifact contracts. The highest-risk duplication is in orchestration code: cache-node execution, regional package loops, live-feed staging, and package/zip utilities.
 
 ## Cleanup Candidates
 
@@ -16,9 +16,9 @@ Reduce copy/paste in the preprocessor build pipeline without changing published 
    - Desired helper: generic regional package orchestration with product-specific naming/build closures.
    - Risk: package manifests and cache roots are contract-sensitive, so refactor only after step 1 is stable.
 
-3. Done: Factor fast-product builder skeleton.
+3. Done: Factor live-feed product builder skeleton.
    - TFR, METAR, and NEXRAD repeat timestamped private-work setup, provenance writing, fetch-cache wiring, node-cache wrapping, and output tuple creation.
-   - Desired helper: common fast-product workspace/provenance/cache wrapper while keeping product-specific URL selection and parsing separate.
+   - Desired helper: common live-feed workspace/provenance/cache wrapper while keeping product-specific URL selection and parsing separate.
 
 4. Done: Move small shared utilities out of product crates.
    - Moved the duplicated `sanitize_label` helper into `preprocessor-tools`.
@@ -26,7 +26,7 @@ Reduce copy/paste in the preprocessor build pipeline without changing published 
 
 5. Done: Centralize deterministic zip writing.
    - Added `preprocessor-zip::write_deterministic_zip`.
-   - Migrated fast-product, vector, data, and static tile ZIP writers to the shared helper.
+   - Migrated live-feed, vector, data, and static tile ZIP writers to the shared helper.
    - Kept ZIP utilities out of `preprocessor-tools` so ZIP-only changes do not spoil TPP/CSUP render caches.
    - Left raw ZIP writer usage in tests where it creates small fixture archives.
 

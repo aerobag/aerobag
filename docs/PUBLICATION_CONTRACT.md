@@ -106,8 +106,8 @@ Examples:
 - nav HAD package: `nav_db_...zip` becomes `nav_db_.../root` and
   `nav_db_.../values/<page>`
 - chart package: `sec_nw_...zip` becomes `sec_nw_.../tiles/...`
-- fast package: `metars_...zip` becomes `metars_.../manifest.json`,
-  `metars_.../metars.json`, and tile files
+- live-feed payloads are not part of this static package tree. They use the
+  separate `/live-feeds` contract.
 
 ## Sparse Tiles
 

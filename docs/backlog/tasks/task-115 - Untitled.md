@@ -12,7 +12,9 @@ ordinal: 115000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-• Yes, bad news: build_product() currently takes the publication lock near the start and holds it for the
+Historical context before the live-feed daemon migration:
+
+• Yes, bad news: build_product() took the publication lock near the start and held it for the
   whole product build.
 
   Specifically, aerobag/product/preprocessor/preprocessor-cli/src/product_build.rs:1239 creates logs, then
@@ -20,18 +22,18 @@ ordinal: 115000
 
   let _publication_lock = acquire_publication_lock(...)
 
-  That guard stays in scope until build_product() returns, after the whole scheduler run and final status
-  write. So if build-product spends 2 hours building TPPs, update-live-feeds will block for that whole time.
+  That guard stayed in scope until build_product() returned, after the whole scheduler run and final status
+  write. So if build-product spent 2 hours building TPPs, the old live-feed CLI command blocked for that whole time.
 
-  update_live_feeds() also takes the same publication lock immediately at aerobag/product/preprocessor/
+  update_live_feeds() also took the same publication lock immediately at aerobag/product/preprocessor/
   preprocessor-cli/src/product_build.rs:2977, before it even fetches/builds METARs.
 
-  So the current locking model is wrong for live feeds.
+  So that locking model was wrong for live feeds.
 
-  The fix should be: split this into narrower locks.
+  The fix was: split this into narrower locks and then remove the old CLI path.
 
   - build_product should not hold the publication lock while doing private/cache build work.
-  - update_live_feeds should not hold the publication lock while fetching/building METARs.
+  - live-feed publication should not hold the cycle publication lock while fetching/building METARs.
   - Each path should acquire a lock only around the final mutation of public roots/current pointers.
   - Better: use separate locks for cycle/package publication and live-feed publication, since they write
     different public contract roots. That way a cycle publish window does not block METAR updates unless they
@@ -41,7 +43,7 @@ ordinal: 115000
 ## Resolution
 
 <!-- SECTION:RESOLUTION:BEGIN -->
-The old `preprocessor-cli update-live-feeds` path was removed. Live feeds now
+The old live-feed CLI path was removed. Live feeds now
 publish under their own daemon/library path instead of sharing the cycle package
 publication lock, so cycle publication work no longer gates live-feed updates.
 <!-- SECTION:RESOLUTION:END -->

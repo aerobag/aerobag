@@ -546,6 +546,10 @@ impl LiveFeedsState {
             .is_some()
     }
 
+    pub fn current_product_version(&self, product: &str) -> Option<&str> {
+        self.products.get(product)?.current_version.as_deref()
+    }
+
     pub fn current_loaded(&self) -> bool {
         self.current_loaded
     }

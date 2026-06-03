@@ -5180,6 +5180,18 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
         }
     }
     let loaded_obstacles_version = session.live_feeds.product_loaded_version("obstacles");
+    if let Some(current_obstacles_version) = session.live_feeds.current_product_version("obstacles")
+    {
+        if session
+            .obstacle_had
+            .as_ref()
+            .is_some_and(|had| had.version != current_obstacles_version)
+        {
+            session.obstacle_had = None;
+            session.obstacle_tile_cache.clear();
+            session.map_overlay_config.obstacle_layer = None;
+        }
+    }
     let obstacles_installed = session
         .obstacle_had
         .as_ref()
@@ -9235,6 +9247,248 @@ mod tests {
         parse_utc_instant(value).expect("UTC timestamp")
     }
 
+    struct TestObstacleHad {
+        manifest: serde_json::Value,
+        root_bytes: Vec<u8>,
+        pages: Vec<Vec<u8>>,
+        state_sha256: String,
+    }
+
+    fn build_test_obstacle_had(
+        viewport: &MapViewport,
+        version: &str,
+        record_id: &str,
+    ) -> TestObstacleHad {
+        let obstacle_manifest_base = serde_json::json!({
+            "schema_version": 1,
+            "product_id": "obstacles",
+            "version_label": version,
+            "encoding": format!("had-nav-kv-v{}", had_nav_kv::VERSION),
+            "root": "root",
+            "page_path_template": "page_{page:04}",
+            "point_layers": {
+                "obstacle": {
+                    "min_zoom": 8,
+                    "max_zoom": 8,
+                    "available_zooms": [8],
+                    "zoom_levels": [{
+                        "zoom": 8,
+                        "filtered": false,
+                        "min_agl_ft": 0
+                    }]
+                }
+            }
+        });
+        let obstacle_layer =
+            obstacle_layer_config_from_live_manifest_value(obstacle_manifest_base.clone())
+                .expect("obstacle layer config");
+        let obstacle_tile =
+            visible_obstacle_tile_window(&obstacle_layer, viewport, 240.0, 240.0, None, 1.0)
+                .into_iter()
+                .next()
+                .expect("visible obstacle tile");
+        let tile_payload = PointTilePayload {
+            schema_version: 1,
+            layer: "obstacle".to_string(),
+            z: obstacle_tile.z,
+            x: obstacle_tile.x,
+            y: obstacle_tile.y,
+            records: vec![PointVectorRecord {
+                id: record_id.to_string(),
+                kind: "obstacle".to_string(),
+                lat: viewport.center.lat,
+                lon: viewport.center.lon,
+                label: "".to_string(),
+                style_class: "obstacle".to_string(),
+                towered: None,
+                fuel_available: None,
+                public_use: None,
+                private_use: None,
+                has_paved_runway: None,
+                heliport: None,
+                has_water_runway: None,
+                longest_runway_length_ft: None,
+                longest_runway_heading_true_deg: None,
+                elevation_msl_ft: None,
+                obstacle: Some(crate::map_overlay::ObstaclePointSemantics {
+                    height_agl_ft: 300.0,
+                    elevation_msl_ft: 500.0,
+                    top_msl_ft: 800.0,
+                    is_tall: false,
+                }),
+            }],
+        };
+        let obstacle_key = nav_kv_key_for_query(&NavKvQuery::ObstacleTile {
+            z: obstacle_tile.z,
+            x: obstacle_tile.x,
+            y: obstacle_tile.y,
+        })
+        .expect("obstacle tile key");
+        let pairs = vec![had_nav_kv::NavKvPair {
+            key: obstacle_key,
+            value: serde_json::to_vec(&tile_payload).expect("tile json"),
+        }];
+        let built =
+            had_nav_kv::build_nav_kv_sorted(pairs.clone(), 1024).expect("build obstacle HAD");
+        let state_sha256 = had_nav_kv::nav_kv_canonical_sha256_from_pairs(&pairs);
+        let mut manifest = obstacle_manifest_base;
+        manifest["page_count"] = serde_json::json!(built.pages.len());
+        manifest["page_size"] = serde_json::json!(built.page_size);
+        manifest["state_sha256"] = serde_json::json!(state_sha256);
+
+        TestObstacleHad {
+            manifest,
+            root_bytes: built.root_bytes,
+            pages: built.pages,
+            state_sha256,
+        }
+    }
+
+    fn ingest_test_live_obstacle_state(handle: u32, version: &str, obstacle_had: &TestObstacleHad) {
+        ingest_resource_in_session(
+            handle,
+            "live_feeds/current",
+            format!(
+                r#"{{
+                    "products": {{
+                        "obstacles": {{
+                            "current": "{version}",
+                            "version_manifest_url": "versions/obstacles/{version}.json",
+                            "state_url": "states/obstacles/{version}/manifest.json",
+                            "state_sha256": "{}"
+                        }}
+                    }}
+                }}"#,
+                obstacle_had.state_sha256
+            )
+            .as_bytes(),
+        )
+        .expect("current manifest");
+        ingest_resource_in_session(
+            handle,
+            &format!("live_feeds/version/obstacles/{version}"),
+            format!(
+                r#"{{
+                    "product": "obstacles",
+                    "version": "{version}",
+                    "state": {{
+                        "kind": "nav_kv",
+                        "url": "states/obstacles/{version}/manifest.json",
+                        "state_sha256": "{}"
+                    }}
+                }}"#,
+                obstacle_had.state_sha256
+            )
+            .as_bytes(),
+        )
+        .expect("version manifest");
+        ingest_resource_in_session(
+            handle,
+            &format!("live_feeds/state/obstacles/{version}"),
+            &serde_json::to_vec(&obstacle_had.manifest).expect("manifest json"),
+        )
+        .expect("state manifest");
+    }
+
+    fn load_test_live_obstacle_had_pages(
+        handle: u32,
+        version: &str,
+        obstacle_had: &TestObstacleHad,
+        metrics: &MapSurfaceMetrics,
+    ) {
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, handle).expect("session");
+            let statuses = ensure_live_obstacle_inputs_loaded(session, metrics);
+            assert_eq!(statuses.len(), 1);
+        }
+        let effects = drain_session_resource_effects(handle).expect("root effects");
+        let effects = effects
+            .into_iter()
+            .filter(|effect| {
+                effect
+                    .resource
+                    .id
+                    .starts_with(&format!("live_obstacle_had/{version}/"))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(effects.len(), 1);
+        assert_eq!(
+            effects[0].resource.id,
+            format!("live_obstacle_had/{version}/root")
+        );
+        ingest_resource_in_session(
+            handle,
+            &format!("live_obstacle_had/{version}/root"),
+            &obstacle_had.root_bytes,
+        )
+        .expect("ingest root");
+
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, handle).expect("session");
+            let statuses = ensure_live_obstacle_inputs_loaded(session, metrics);
+            assert_eq!(statuses.len(), 1);
+        }
+        let page_effects = drain_session_resource_effects(handle)
+            .expect("page effects")
+            .into_iter()
+            .filter(|effect| {
+                effect
+                    .resource
+                    .id
+                    .starts_with(&format!("live_obstacle_had/{version}/"))
+            })
+            .collect::<Vec<_>>();
+        assert!(!page_effects.is_empty());
+        for effect in &page_effects {
+            let page_text = effect
+                .resource
+                .id
+                .strip_prefix(&format!("live_obstacle_had/{version}/page/"))
+                .expect("page resource id");
+            let page_index = page_text.parse::<usize>().expect("page index");
+            ingest_resource_in_session(
+                handle,
+                &effect.resource.id,
+                &obstacle_had.pages[page_index],
+            )
+            .expect("ingest page");
+        }
+    }
+
+    fn query_obstacle_feature_ids(handle: u32, metrics: &MapSurfaceMetrics) -> Vec<String> {
+        let (config, obstacle_cache) = {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, handle).expect("session");
+            let statuses = ensure_live_obstacle_inputs_loaded(session, metrics);
+            assert!(statuses.is_empty());
+            (
+                session.map_overlay_config.clone(),
+                session.obstacle_tile_cache.clone(),
+            )
+        };
+        let overlay = query_map_overlay_for_surface(
+            metrics,
+            &config,
+            true,
+            false,
+            &[],
+            None,
+            &HashMap::new(),
+            &obstacle_cache,
+            &HashMap::new(),
+            None,
+            &HashMap::new(),
+            None,
+        );
+        overlay
+            .visible_features
+            .into_iter()
+            .map(|feature| feature.id)
+            .collect()
+    }
+
     fn create_current_test_session() -> UiSessionInitResult {
         create_ui_session_at_epoch_ms(
             FlightPlan::default(),
@@ -10698,6 +10952,70 @@ mod tests {
             .visible_features
             .iter()
             .any(|feature| feature.id == "obstacle:test"));
+    }
+
+    #[test]
+    fn live_obstacle_current_change_drops_stale_had_before_new_pages_arrive() {
+        let viewport = MapViewport {
+            center: LatLon { lat: 0.0, lon: 0.0 },
+            zoom: 8.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let v1 = build_test_obstacle_had(&viewport, "v1", "obstacle:old");
+        let v2 = build_test_obstacle_had(&viewport, "v2", "obstacle:new");
+        let metrics = MapSurfaceMetrics::new(viewport, 240.0, 240.0, 1.0);
+
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            install_vector_manifest_config(session, minimal_vector_manifest_json())
+                .expect("vector manifest");
+            session.map_layer_state.vectors.visible = true;
+        }
+
+        ingest_test_live_obstacle_state(init.handle, "v1", &v1);
+        load_test_live_obstacle_had_pages(init.handle, "v1", &v1, &metrics);
+        let feature_ids = query_obstacle_feature_ids(init.handle, &metrics);
+        assert!(feature_ids.iter().any(|id| id == "obstacle:old"));
+
+        ingest_resource_in_session(
+            init.handle,
+            "live_feeds/current",
+            format!(
+                r#"{{
+                    "products": {{
+                        "obstacles": {{
+                            "current": "v2",
+                            "version_manifest_url": "versions/obstacles/v2.json",
+                            "state_url": "states/obstacles/v2/manifest.json",
+                            "state_sha256": "{}"
+                        }}
+                    }}
+                }}"#,
+                v2.state_sha256
+            )
+            .as_bytes(),
+        )
+        .expect("v2 current manifest");
+
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            assert!(session.obstacle_had.is_none());
+            assert!(session.obstacle_tile_cache.is_empty());
+            assert!(session.map_overlay_config.obstacle_layer.is_none());
+        }
+        let feature_ids = query_obstacle_feature_ids(init.handle, &metrics);
+        assert!(!feature_ids.iter().any(|id| id == "obstacle:old"));
+
+        ingest_test_live_obstacle_state(init.handle, "v2", &v2);
+        load_test_live_obstacle_had_pages(init.handle, "v2", &v2, &metrics);
+        let feature_ids = query_obstacle_feature_ids(init.handle, &metrics);
+        assert!(!feature_ids.iter().any(|id| id == "obstacle:old"));
+        assert!(feature_ids.iter().any(|id| id == "obstacle:new"));
     }
 
     #[test]

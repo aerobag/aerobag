@@ -8,6 +8,17 @@ import zlib from "node:zlib";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
+const usage = `usage: build-dev-live-feeds-fixture.mjs [options]
+
+Options:
+  --output <dir>         Output root; writes <dir>/live-feeds.
+  --metars <dir>         METAR fixture zip directory.
+  --winds-aloft <dir>    Winds-aloft fixture zip directory.
+  --no-winds-aloft       Omit winds-aloft fixtures.
+  --tfr-state <file>     Add one JSON TFR state.
+  --merge-root <dir>     Copy an existing live-feed root before generated states.
+  --obstacles-had <dir>  Add one obstacle HAD output directory containing manifest.json, root, and pages.
+`;
 const defaultMetarFixtureRoot = path.join(
   repoRoot,
   "..",
@@ -33,6 +44,7 @@ const windsAloftFixtureRoot = resolveOptionalFixtureRoot(
 );
 const tfrStatePath = args.tfrState ? path.resolve(args.tfrState) : null;
 const mergeRoot = args.mergeRoot ? path.resolve(args.mergeRoot) : null;
+const obstaclesHadRoot = args.obstaclesHad ? path.resolve(args.obstaclesHad) : null;
 
 if (fs.existsSync(outputRoot)) {
   fs.rmSync(outputRoot, { recursive: true, force: true });
@@ -57,17 +69,26 @@ if (windsAloftFixtureRoot) {
 if (tfrStatePath) {
   publishSingleStateProduct(liveFeedsRoot, "tfrs", tfrStatePath);
 }
+if (obstaclesHadRoot) {
+  publishObstacleHadState(liveFeedsRoot, obstaclesHadRoot);
+}
 resetCurrentToFirstFixtureVersions(liveFeedsRoot);
 console.log(`wrote ${metarStates.length} METAR live-feed states to ${liveFeedsRoot}`);
 if (tfrStatePath) {
   console.log(`wrote TFR live-feed state from ${tfrStatePath}`);
+}
+if (obstaclesHadRoot) {
+  console.log(`wrote obstacle live-feed HAD state from ${obstaclesHadRoot}`);
 }
 
 function parseArgs(argv) {
   const parsed = {};
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === "--output") {
+    if (arg === "--help" || arg === "-h") {
+      console.log(usage);
+      process.exit(0);
+    } else if (arg === "--output") {
       parsed.output = argv[++index];
     } else if (arg === "--metars") {
       parsed.metars = argv[++index];
@@ -79,6 +100,8 @@ function parseArgs(argv) {
       parsed.tfrState = argv[++index];
     } else if (arg === "--merge-root") {
       parsed.mergeRoot = argv[++index];
+    } else if (arg === "--obstacles-had") {
+      parsed.obstaclesHad = argv[++index];
     } else {
       throw new Error(`unknown argument: ${arg}`);
     }
@@ -151,6 +174,75 @@ function publishSingleStateProduct(root, product, sourcePath) {
     state_sha256: stateSha256,
   };
   fs.writeFileSync(currentPath, `${prettyJson(current)}\n`);
+}
+
+function publishObstacleHadState(root, sourceRoot) {
+  const manifestPath = path.join(sourceRoot, "manifest.json");
+  const manifest = readJsonIfExists(manifestPath);
+  if (!manifest) {
+    throw new Error(`${sourceRoot}: missing manifest.json`);
+  }
+  if (manifest.product_id !== "obstacles") {
+    throw new Error(`${manifestPath}: product_id is ${manifest.product_id}, expected obstacles`);
+  }
+  const version = manifest.version_label;
+  if (typeof version !== "string" || version.length === 0) {
+    throw new Error(`${manifestPath}: missing version_label`);
+  }
+  const stateSha256 = manifest.state_sha256;
+  if (typeof stateSha256 !== "string" || stateSha256.length === 0) {
+    throw new Error(`${manifestPath}: missing state_sha256`);
+  }
+
+  const stateDir = path.join(root, "states", "obstacles", version);
+  const versionDir = path.join(root, "versions", "obstacles");
+  fs.mkdirSync(path.dirname(stateDir), { recursive: true });
+  fs.mkdirSync(versionDir, { recursive: true });
+  copyTree(sourceRoot, stateDir);
+
+  const statePath = path.join(stateDir, "manifest.json");
+  const stateBytes = fs.readFileSync(statePath);
+  const versionManifest = {
+    schema_version: 1,
+    product: "obstacles",
+    version,
+    previous: null,
+    state: {
+      kind: "nav_kv",
+      url: relativeUrl(root, statePath),
+      bytes: stateBytes.length,
+      blob_sha256: sha256Hex(stateBytes),
+      state_sha256: stateSha256,
+    },
+    install_state: obstacleInstallStateRef(root, stateDir, version, stateSha256),
+    delta_from_previous: null,
+  };
+  const versionPath = path.join(versionDir, `${version}.json`);
+  fs.writeFileSync(versionPath, `${prettyJson(versionManifest)}\n`);
+}
+
+function obstacleInstallStateRef(root, stateDir, version, stateSha256) {
+  const manifest = readJsonIfExists(path.join(stateDir, "manifest.json"));
+  const packageName = manifest?.files?.package_zip ?? `obstacles_${version}.zip`;
+  const sourcePackagePath = path.join(stateDir, packageName);
+  if (!fs.existsSync(sourcePackagePath)) {
+    return null;
+  }
+  const packagePath = path.join(root, "packages", "obstacles", `${version}.zip`);
+  fs.mkdirSync(path.dirname(packagePath), { recursive: true });
+  try {
+    fs.linkSync(sourcePackagePath, packagePath);
+  } catch {
+    fs.copyFileSync(sourcePackagePath, packagePath);
+  }
+  const bytes = fs.readFileSync(packagePath);
+  return {
+    kind: "nav_kv_package",
+    url: relativeUrl(root, packagePath),
+    bytes: bytes.length,
+    blob_sha256: sha256Hex(bytes),
+    state_sha256: stateSha256,
+  };
 }
 
 function publishJsonStateSequence(root, product, states) {

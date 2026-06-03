@@ -352,8 +352,7 @@ private fun fetchCoreResource(
         is CoreResourceSource.PublicUrl -> {
             require(
                 resource.id.startsWith("publication/") ||
-                    resource.id.startsWith("live_feeds/") ||
-                    resource.id.startsWith("live_obstacle_had/"),
+                    resource.id.startsWith("live_feeds/"),
             ) {
                 "Android received public_url for package-backed resource ${resource.id}"
             }

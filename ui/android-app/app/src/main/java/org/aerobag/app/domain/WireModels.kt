@@ -824,6 +824,7 @@ data class WireMapSelectionAction(
     val label: String,
     val enabled: Boolean,
     val display_only: Boolean,
+    val detail_text: String? = null,
     val airspace_limit: WireAirspaceLimitGlyph? = null,
     val session_action: String? = null,
     val flight_plan_row_action: WireMapSelectionFlightPlanRowAction? = null,

@@ -456,6 +456,7 @@ internal fun MapExplorerPage(
     onSelectMapFamily: (String) -> Unit,
     onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
+    onModalOverlayOpenChange: (Boolean) -> Unit,
     navElement: NavElementUiView?,
     plan: org.aerobag.app.domain.FlightPlan,
     planUiState: FlightPlanUiState?,
@@ -497,6 +498,13 @@ internal fun MapExplorerPage(
     var mapOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
     var nexradImages by remember(uiSession) { mutableStateOf<List<NexradOverlayImage>>(emptyList()) }
     var terrainOverlay by remember(uiSession) { mutableStateOf<List<TerrainOverlayImage>>(emptyList()) }
+
+    LaunchedEffect(mapSelection != null) {
+        onModalOverlayOpenChange(mapSelection != null)
+    }
+    DisposableEffect(Unit) {
+        onDispose { onModalOverlayOpenChange(false) }
+    }
     var terrainOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
     var flightPlanRoute by remember(plan.id, plan.version) { mutableStateOf<List<FlightPlanRouteSegment>>(emptyList()) }
     var mapGestureActive by remember { mutableStateOf(false) }
@@ -1796,6 +1804,10 @@ internal fun MapExplorerPage(
                     mapSelection = selection.copy(selectedItem = item)
                 },
                 onSelectAction = { item, action ->
+                    action.detailText?.let { detail ->
+                        mapSelection = selection.copy(selectedItem = item.copy(detailText = detail))
+                        return@MapSelectionTray
+                    }
                     action.flightPlanRowAction?.let { rowAction ->
                         runCatching { uiSession.performFlightPlanRowAction(rowAction.rowUid, rowAction.actionUid) }
                             .onSuccess(onSessionSnapshotChange)

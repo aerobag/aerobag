@@ -254,6 +254,7 @@ import org.aerobag.app.domain.SequencingMode
 import org.aerobag.app.domain.SituationControlInput
 import org.aerobag.app.domain.SituationRingCandidate
 import org.aerobag.app.domain.TileStorageKind
+import org.aerobag.app.domain.UiDataStatusState
 import org.aerobag.app.domain.UiDebugState
 import org.aerobag.app.domain.UiMapLayerToggleState
 import org.aerobag.app.domain.UiTheme
@@ -345,6 +346,7 @@ internal fun ChartsPage(
     uiTheme: UiTheme,
     ownship: OwnshipRenderState,
     ownshipControls: OwnshipControlModel,
+    dataStatusState: UiDataStatusState,
     flightDataBanner: FlightDataBannerModel,
     uiSession: NativeUiSession,
     navElement: NavElementUiView?,
@@ -355,6 +357,7 @@ internal fun ChartsPage(
     onFolderOpenChange: (Boolean) -> Unit,
     onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
+    onStatusAction: (String) -> Unit,
     onSelectAirport: (String) -> Unit,
     onSelectChart: (String) -> Unit,
 ) {
@@ -368,6 +371,7 @@ internal fun ChartsPage(
     var airportTrayOpen by remember { mutableStateOf(false) }
     var chartTrayOpen by remember { mutableStateOf(false) }
     var loadTrayOpen by remember { mutableStateOf(false) }
+    var dataStatusTrayOpen by remember { mutableStateOf(false) }
     var situationTrayOpen by remember { mutableStateOf(false) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
     val surfaceWidthDp = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
@@ -399,7 +403,7 @@ internal fun ChartsPage(
     val viewportState = rememberUpdatedState(viewport)
     val imageWidthPx = bitmap?.width?.toFloat() ?: 0f
     val imageHeightPx = bitmap?.height?.toFloat() ?: 0f
-    val trayOpen = airportTrayOpen || chartTrayOpen || loadTrayOpen || situationTrayOpen
+    val trayOpen = airportTrayOpen || chartTrayOpen || loadTrayOpen || dataStatusTrayOpen || situationTrayOpen
     val plateProcedureLoads by produceState<List<ProcedureLoadOption>>(initialValue = emptyList(), plan.version, selectedChart?.id) {
         val chart = selectedChart
         value = if (chart == null) {
@@ -615,6 +619,25 @@ internal fun ChartsPage(
             modifier = Modifier.align(if (surfaceSize.width > surfaceSize.height) Alignment.TopEnd else Alignment.TopCenter),
         )
 
+        DataStatusBadge(
+            dataStatusState = dataStatusState,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(
+                    top = situationDockTopPadding,
+                    end = ThumbGap + MenuDockStyle.Situation.buttonWidth + ThumbGap,
+                ),
+            open = dataStatusTrayOpen,
+            onToggle = {
+                dataStatusTrayOpen = !dataStatusTrayOpen
+                airportTrayOpen = false
+                chartTrayOpen = false
+                loadTrayOpen = false
+                situationTrayOpen = false
+            },
+            onAction = onStatusAction,
+        )
+
         SituationStatusBadge(
             controls = ownshipControls,
             modifier = Modifier
@@ -626,6 +649,7 @@ internal fun ChartsPage(
                 airportTrayOpen = false
                 chartTrayOpen = false
                 loadTrayOpen = false
+                dataStatusTrayOpen = false
             },
             onSelectSource = { sourceId ->
                 situationTrayOpen = false
@@ -652,24 +676,28 @@ internal fun ChartsPage(
                 airportTrayOpen = false
                 chartTrayOpen = false
                 loadTrayOpen = false
+                dataStatusTrayOpen = false
                 situationTrayOpen = false
             },
             onToggleAirportTray = {
                 airportTrayOpen = !airportTrayOpen
                 chartTrayOpen = false
                 loadTrayOpen = false
+                dataStatusTrayOpen = false
                 situationTrayOpen = false
             },
             onToggleChartTray = {
                 chartTrayOpen = !chartTrayOpen
                 airportTrayOpen = false
                 loadTrayOpen = false
+                dataStatusTrayOpen = false
                 situationTrayOpen = false
             },
             onToggleLoadTray = {
                 loadTrayOpen = !loadTrayOpen
                 airportTrayOpen = false
                 chartTrayOpen = false
+                dataStatusTrayOpen = false
                 situationTrayOpen = false
             },
             onToggleFolder = {
@@ -677,18 +705,21 @@ internal fun ChartsPage(
                 airportTrayOpen = false
                 chartTrayOpen = false
                 loadTrayOpen = false
+                dataStatusTrayOpen = false
                 situationTrayOpen = false
             },
             onSelectAirport = {
                 onSelectAirport(it)
                 airportTrayOpen = false
                 loadTrayOpen = false
+                dataStatusTrayOpen = false
                 situationTrayOpen = false
             },
             onSelectChart = {
                 onSelectChart(it)
                 chartTrayOpen = false
                 loadTrayOpen = false
+                dataStatusTrayOpen = false
                 situationTrayOpen = false
             },
             onSelectProcedureLoad = { loadId ->
@@ -696,6 +727,7 @@ internal fun ChartsPage(
                     .onSuccess(onSessionSnapshotChange)
                     .onFailure { Log.w("AerobagCharts", "plate procedure load failed", it) }
                 loadTrayOpen = false
+                dataStatusTrayOpen = false
             },
         )
 
@@ -704,6 +736,7 @@ internal fun ChartsPage(
                 airportTrayOpen = false
                 chartTrayOpen = false
                 loadTrayOpen = false
+                dataStatusTrayOpen = false
                 situationTrayOpen = false
             }
         }

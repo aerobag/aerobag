@@ -356,6 +356,7 @@ data class MapSelectionAction(
     val label: String,
     val enabled: Boolean,
     val displayOnly: Boolean,
+    val detailText: String?,
     val airspaceLimit: AirspaceLimitGlyph?,
     val sessionAction: String?,
     val flightPlanRowAction: MapSelectionFlightPlanRowAction?,
@@ -1742,6 +1743,44 @@ private data class WireUiDataStatusState(
 )
 
 @kotlinx.serialization.Serializable
+private enum class WireUiDataStatusPageTimeDisplay {
+    @kotlinx.serialization.SerialName("ago")
+    Ago,
+
+    @kotlinx.serialization.SerialName("old")
+    Old,
+
+    @kotlinx.serialization.SerialName("until")
+    Until,
+}
+
+@kotlinx.serialization.Serializable
+private data class WireUiDataStatusPageFact(
+    val label: String,
+    val value: String,
+    val link_url: String? = null,
+    val time_utc: String? = null,
+    val time_display: WireUiDataStatusPageTimeDisplay? = null,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireUiDataStatusPageRow(
+    val id: String,
+    val label: String,
+    val value: String,
+    val severity: WireUiStatusSeverity,
+    val detail: String,
+    val facts: List<WireUiDataStatusPageFact> = emptyList(),
+)
+
+@kotlinx.serialization.Serializable
+private data class WireUiDataStatusPageState(
+    val title: String,
+    val summary: String,
+    val rows: List<WireUiDataStatusPageRow> = emptyList(),
+)
+
+@kotlinx.serialization.Serializable
 private data class WireUiDebugState(
     val tile_labels: Boolean = false,
     val nexrad_tile_labels: Boolean = false,
@@ -1760,6 +1799,7 @@ private data class WireUiSessionSnapshot(
     val chart_page_state: WireUiChartPageState,
     val map_layer_state: WireUiMapLayerState = WireUiMapLayerState(),
     val data_status_state: WireUiDataStatusState,
+    val data_status_page_state: WireUiDataStatusPageState,
     val debug_state: WireUiDebugState = WireUiDebugState(),
     val raster_map: WireRasterMapUiState? = null,
     val next_cycle_product_freshness_check_epoch_ms: Long? = null,
@@ -1840,6 +1880,7 @@ data class UiSessionSnapshot(
     val chartPageState: UiChartPageState,
     val mapLayerState: UiMapLayerState,
     val dataStatusState: UiDataStatusState,
+    val dataStatusPageState: UiDataStatusPageState,
     val debugState: UiDebugState,
     val rasterMap: RasterMapUiState?,
     val nextCycleProductFreshnessCheckEpochMs: Long?,
@@ -1885,6 +1926,35 @@ data class UiDataStatusState(
     val boxes: List<UiDataStatusBox>,
     val launcherCount: String?,
     val launcherSeverity: UiStatusSeverity,
+)
+
+enum class UiDataStatusPageTimeDisplay {
+    Ago,
+    Old,
+    Until,
+}
+
+data class UiDataStatusPageFact(
+    val label: String,
+    val value: String,
+    val linkUrl: String?,
+    val timeUtc: String?,
+    val timeDisplay: UiDataStatusPageTimeDisplay?,
+)
+
+data class UiDataStatusPageRow(
+    val id: String,
+    val label: String,
+    val value: String,
+    val severity: UiStatusSeverity,
+    val detail: String,
+    val facts: List<UiDataStatusPageFact>,
+)
+
+data class UiDataStatusPageState(
+    val title: String,
+    val summary: String,
+    val rows: List<UiDataStatusPageRow>,
 )
 
 data class UiDebugState(
@@ -1994,6 +2064,35 @@ private fun WireUiDataStatusState.toUi() = UiDataStatusState(
     launcherSeverity = launcher_severity.toUi(),
 )
 
+private fun WireUiDataStatusPageTimeDisplay.toUi() = when (this) {
+    WireUiDataStatusPageTimeDisplay.Ago -> UiDataStatusPageTimeDisplay.Ago
+    WireUiDataStatusPageTimeDisplay.Old -> UiDataStatusPageTimeDisplay.Old
+    WireUiDataStatusPageTimeDisplay.Until -> UiDataStatusPageTimeDisplay.Until
+}
+
+private fun WireUiDataStatusPageFact.toUi() = UiDataStatusPageFact(
+    label = label,
+    value = value,
+    linkUrl = link_url,
+    timeUtc = time_utc,
+    timeDisplay = time_display?.toUi(),
+)
+
+private fun WireUiDataStatusPageRow.toUi() = UiDataStatusPageRow(
+    id = id,
+    label = label,
+    value = value,
+    severity = severity.toUi(),
+    detail = detail,
+    facts = facts.map { it.toUi() },
+)
+
+private fun WireUiDataStatusPageState.toUi() = UiDataStatusPageState(
+    title = title,
+    summary = summary,
+    rows = rows.map { it.toUi() },
+)
+
 private fun WireUiDebugState.toUi() = UiDebugState(
     tileLabels = tile_labels,
     nexradTileLabels = nexrad_tile_labels,
@@ -2011,6 +2110,7 @@ private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     chartPageState = chart_page_state.toUi(),
     mapLayerState = map_layer_state.toUi(),
     dataStatusState = data_status_state.toUi(),
+    dataStatusPageState = data_status_page_state.toUi(),
     debugState = debug_state.toUi(),
     rasterMap = raster_map?.toUi(),
     nextCycleProductFreshnessCheckEpochMs = next_cycle_product_freshness_check_epoch_ms,
@@ -2292,6 +2392,7 @@ private fun WireMapSelectionAction.toUi() = MapSelectionAction(
     label = label,
     enabled = enabled,
     displayOnly = display_only,
+    detailText = detail_text,
     airspaceLimit = airspace_limit?.toUi(),
     sessionAction = session_action,
     flightPlanRowAction = flight_plan_row_action?.toUi(),

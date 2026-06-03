@@ -140,6 +140,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -261,9 +262,13 @@ import org.aerobag.app.domain.SequencingMode
 import org.aerobag.app.domain.SituationControlInput
 import org.aerobag.app.domain.SituationRingCandidate
 import org.aerobag.app.domain.TileStorageKind
+import org.aerobag.app.domain.UiDataStatusPageFact
+import org.aerobag.app.domain.UiDataStatusPageState
+import org.aerobag.app.domain.UiDataStatusPageTimeDisplay
 import org.aerobag.app.domain.UiDataStatusState
 import org.aerobag.app.domain.UiDebugState
 import org.aerobag.app.domain.UiMapLayerToggleState
+import org.aerobag.app.domain.UiStatusActionStyle
 import org.aerobag.app.domain.UiStatusSeverity
 import org.aerobag.app.domain.UiTheme
 import org.aerobag.app.domain.UiThemeLoader
@@ -483,6 +488,7 @@ internal enum class AppPage {
     Plan,
     Charts,
     Home,
+    DataStatus,
 }
 
 internal data class AppViewSnapshot(
@@ -1068,6 +1074,7 @@ internal val PageOptions = listOf(
     PageTrayOption(AppPage.Charts, "PLATE", "PLATE", R.drawable.page_plate_icon),
     PageTrayOption(AppPage.Plan, "FLIGHT PLAN", "PLAN", R.drawable.page_plan1_icon),
     PageTrayOption(AppPage.Home, "HOME", "HOME"),
+    PageTrayOption(AppPage.DataStatus, "DATA STATUS", "DATA"),
 )
 
 internal fun mostRecentChartOrPlatePageFromHistory(pageHistory: List<AppViewSnapshot>): AppPage =
@@ -1091,8 +1098,8 @@ internal val HomeGridButtons = listOf(
     HomeGridButton("chart", "CHART", targetPage = AppPage.Map, enabled = true, iconResId = R.drawable.page_chart_icon),
     HomeGridButton("plate", "PLATE", targetPage = AppPage.Charts, enabled = true, iconResId = R.drawable.page_plate_icon),
     HomeGridButton("flight-plan", "FLIGHT\nPLAN", targetPage = AppPage.Plan, enabled = true),
+    HomeGridButton("data-status", "DATA\nSTATUS", targetPage = AppPage.DataStatus, enabled = true),
     HomeGridButton("offline-packages", "OFFLINE\nPACKAGES", enabled = true),
-    HomeGridButton("s5", "S5"),
     HomeGridButton("s6", "S6"),
     HomeGridButton("s7", "S7"),
     HomeGridButton("s8", "S8"),
@@ -1352,53 +1359,115 @@ internal fun DataStatusBadge(
     val hasStatus = dataStatusState.boxes.isNotEmpty()
     if (!hasStatus) return
 
-    val launcherLabel = dataStatusState.launcherCount?.let { "\u26A0 $it" } ?: "STATUS"
-    val accentColor = statusSeverityColor(dataStatusState.launcherSeverity)
-    Box(modifier = modifier.wrapContentSize(unbounded = true, align = Alignment.TopEnd)) {
-        MenuDock(
-            launcherLabel = launcherLabel,
-            open = open,
-            onToggle = onToggle,
-            style = MenuDockStyle.DataStatus,
-            options = listOf(
-                MenuDockOption(
-                    key = "status",
-                    label = launcherLabel,
-                    active = dataStatusState.launcherCount != null,
-                    accentColor = accentColor,
-                ) {},
-            ),
-            body = {
-                dataStatusState.boxes.forEach { box ->
-                    DataStatusBoxRow(
-                        label = box.label,
-                        value = box.value ?: "\u2014",
-                        detail = box.detail,
-                        severity = box.severity,
-                        hushed = box.hushed,
-                    )
-                    if (box.actions.isNotEmpty()) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(3.dp),
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            box.actions.forEach { action ->
-                                CompactSquareButton(
-                                    label = action.label.uppercase(),
-                                    enabled = action.enabled,
-                                    wide = true,
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .height(ThumbSize * 0.72f),
-                                    maxLines = 1,
-                                    onClick = { onAction(action.id) },
-                                )
-                            }
+    val uiTheme = LocalAerobagUiTheme.current
+    val density = LocalDensity.current
+    val launcherSize = ThumbSize * 0.5f
+    val panelWidth = ThumbSize * 4.25f
+    val hasLauncherCount = dataStatusState.launcherCount != null
+    val warningLauncher = dataStatusState.launcherSeverity == UiStatusSeverity.Warning
+    val launcherBg = when {
+        !hasLauncherCount -> uiTheme.controls.dataStatusQuietBg
+        warningLauncher -> lerp(uiTheme.controls.dataStatusWarningBg, Color(0xFFD55B18), 0.22f)
+        else -> uiTheme.controls.dataStatusWarningBg
+    }
+    val launcherStroke = if (hasLauncherCount) uiTheme.controls.dataStatusWarningStroke else uiTheme.controls.dataStatusQuietStroke
+    val resolvedLauncherBg = if (open) lerp(launcherBg, Color.White, 0.18f) else launcherBg
+    val popupOffset = with(density) {
+        IntOffset(
+            x = (launcherSize - panelWidth).toPx().roundToInt(),
+            y = (launcherSize + ThumbGap).toPx().roundToInt(),
+        )
+    }
+    Box(
+        modifier = modifier
+            .size(launcherSize)
+            .wrapContentSize(unbounded = true, align = Alignment.TopEnd),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(launcherSize)
+                .clip(RoundedCornerShape(ThumbRadius * 0.78f))
+                .background(resolvedLauncherBg)
+                .border(1.dp, launcherStroke, RoundedCornerShape(ThumbRadius * 0.78f))
+                .clickable(
+                    indication = null,
+                    interactionSource = remember { MutableInteractionSource() },
+                    onClick = onToggle,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Canvas(modifier = Modifier.size(ThumbSize * 0.414f)) {
+                val symbol = Path().apply {
+                    moveTo(size.width * 0.50f, size.height * 0.08f)
+                    lineTo(size.width * 0.92f, size.height * 0.84f)
+                    lineTo(size.width * 0.08f, size.height * 0.84f)
+                    close()
+                }
+                drawPath(symbol, launcherStroke)
+                drawLine(
+                    color = Color(0xFF111111),
+                    start = Offset(size.width * 0.50f, size.height * 0.32f),
+                    end = Offset(size.width * 0.50f, size.height * 0.58f),
+                    strokeWidth = size.width * 0.10f,
+                    cap = StrokeCap.Round,
+                )
+                drawCircle(
+                    color = Color(0xFF111111),
+                    radius = size.width * 0.045f,
+                    center = Offset(size.width * 0.50f, size.height * 0.71f),
+                )
+            }
+            dataStatusState.launcherCount?.let { count ->
+                Text(
+                    text = count,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = ThumbSize * 0.055f, bottom = ThumbSize * 0.035f),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = (-0.3).sp,
+                    ),
+                    color = Color(0xFF111111),
+                    maxLines = 1,
+                )
+            }
+        }
+        if (open) {
+            Popup(
+                offset = popupOffset,
+                onDismissRequest = onToggle,
+                properties = PopupProperties(focusable = true),
+            ) {
+                Surface(
+                    modifier = Modifier
+                        .width(panelWidth)
+                        .heightIn(max = ThumbSize * 7.2f),
+                    shape = RoundedCornerShape(ThumbRadius),
+                    color = uiTheme.controls.panelBg.copy(alpha = 0.96f),
+                    contentColor = uiTheme.controls.panelFg,
+                    shadowElevation = 8.dp,
+                    border = BorderStroke(1.dp, uiTheme.controls.panelBorder.copy(alpha = 0.85f)),
+                ) {
+                    LazyColumn(
+                        modifier = Modifier.padding(ThumbSize * 0.14f),
+                        verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.12f),
+                    ) {
+                        lazyColumnItems(dataStatusState.boxes) { box ->
+                            DataStatusBoxRow(
+                                label = box.label,
+                                value = box.value ?: "\u2014",
+                                detail = box.detail,
+                                severity = box.severity,
+                                hushed = box.hushed,
+                                actions = box.actions,
+                                onAction = onAction,
+                            )
                         }
                     }
                 }
-            },
-        )
+            }
+        }
     }
 }
 
@@ -1409,50 +1478,113 @@ private fun DataStatusBoxRow(
     detail: String,
     severity: UiStatusSeverity,
     hushed: Boolean,
+    actions: List<org.aerobag.app.domain.UiStatusAction>,
+    onAction: (String) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val accentColor = statusSeverityColor(severity)
-    val background = if (hushed) {
-        uiTheme.controls.buttonBg.copy(alpha = 0.62f)
-    } else {
-        uiTheme.controls.buttonBg
-    }
+    val background = Color.White.copy(alpha = if (hushed) 0.48f else 0.78f)
+    val strokeWidth = if (severity == UiStatusSeverity.Caution || severity == UiStatusSeverity.Warning) 2.dp else 1.dp
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(ThumbRadius))
+            .alpha(if (hushed) 0.58f else 1f)
+            .clip(RoundedCornerShape(ThumbRadius * 0.72f))
             .background(background)
-            .border(1.dp, accentColor.copy(alpha = if (hushed) 0.42f else 0.9f), RoundedCornerShape(ThumbRadius))
-            .padding(8.dp),
-        verticalArrangement = Arrangement.spacedBy(3.dp),
+            .border(strokeWidth, accentColor.copy(alpha = if (hushed) 0.42f else 0.74f), RoundedCornerShape(ThumbRadius * 0.72f))
+            .padding(ThumbSize * 0.12f),
+        verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.06f),
     ) {
         Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.12f),
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text(
                 text = label,
                 modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.labelLarge,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 0.6.sp,
+                ),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                color = uiTheme.controls.buttonFg,
+                color = uiTheme.controls.panelFg,
             )
             Text(
                 text = value,
-                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 0.4.sp,
+                ),
                 maxLines = 1,
-                color = accentColor,
+                color = uiTheme.controls.panelFg,
             )
         }
         Text(
             text = detail,
-            style = MaterialTheme.typography.bodySmall,
+            style = MaterialTheme.typography.bodySmall.copy(
+                fontSize = 10.sp,
+                lineHeight = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+            ),
             maxLines = 3,
             overflow = TextOverflow.Ellipsis,
-            color = uiTheme.controls.buttonFg.copy(alpha = if (hushed) 0.68f else 0.9f),
+            color = uiTheme.controls.panelFg.copy(alpha = if (hushed) 0.68f else 0.9f),
         )
+        if (actions.isNotEmpty()) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f),
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(modifier = Modifier.weight(1f))
+                actions.forEach { action ->
+                    val actionBg = when (action.style) {
+                        UiStatusActionStyle.Hush -> uiTheme.controls.panelFg.copy(alpha = 0.88f)
+                        UiStatusActionStyle.Normal -> uiTheme.controls.buttonBg
+                    }
+                    Surface(
+                        modifier = Modifier
+                            .widthIn(min = ThumbSize * 0.9f)
+                            .height(ThumbSize * 0.42f)
+                            .alpha(if (action.enabled) 1f else 0.45f)
+                            .then(
+                                if (action.enabled) {
+                                    Modifier.clickable(
+                                        indication = null,
+                                        interactionSource = remember { MutableInteractionSource() },
+                                    ) { onAction(action.id) }
+                                } else {
+                                    Modifier
+                                },
+                            ),
+                        shape = RoundedCornerShape(ThumbRadius * 0.45f),
+                        color = actionBg,
+                        contentColor = Color.White,
+                        border = BorderStroke(1.dp, uiTheme.controls.panelFg.copy(alpha = 0.16f)),
+                    ) {
+                        Box(
+                            modifier = Modifier.padding(horizontal = ThumbSize * 0.14f),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = action.label.uppercase(),
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 0.5.sp,
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1462,6 +1594,233 @@ private fun statusSeverityColor(severity: UiStatusSeverity): Color = when (sever
     UiStatusSeverity.Caution -> Color(0xFFFFD35A)
     UiStatusSeverity.Warning -> Color(0xFFFF8B5A)
     UiStatusSeverity.Unavailable -> Color(0xFFB7BDC7)
+}
+
+@Composable
+internal fun DataStatusPage(
+    page: AppPage,
+    state: UiDataStatusPageState,
+    mostRecentChartOrPlatePage: AppPage,
+    onOpenRecentChartOrPlate: () -> Unit,
+    onSelectPage: (AppPage) -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(page) {
+        while (true) {
+            nowMs = System.currentTimeMillis()
+            delay(10_000)
+        }
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(uiTheme.controls.chartSurfaceBg),
+    ) {
+        HomeReturnDock(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .zIndex(OverlayPlaneControls),
+            currentPage = page,
+            chartPlateTargetPage = mostRecentChartOrPlatePage,
+            onHomeClick = { onSelectPage(AppPage.Home) },
+            onOpenChartOrPlate = onOpenRecentChartOrPlate,
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(
+                    start = ThumbGap,
+                    end = ThumbGap,
+                    top = ThumbSize + (ThumbGap * 2f),
+                    bottom = ThumbGap,
+                )
+                .clip(RoundedCornerShape(ThumbRadius))
+                .background(uiTheme.controls.buttonBg.copy(alpha = 0.84f))
+                .padding(ThumbSize * 0.28f),
+            verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.2f),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.25f),
+                verticalAlignment = Alignment.Bottom,
+            ) {
+                Text(
+                    text = state.title.uppercase(),
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
+                    color = uiTheme.controls.buttonFg,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = state.summary.uppercase(),
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
+                    color = uiTheme.controls.buttonFg.copy(alpha = 0.76f),
+                    textAlign = TextAlign.End,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(ThumbSize * 7f),
+                modifier = Modifier.fillMaxSize(),
+                horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.22f),
+                verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.22f),
+            ) {
+                lazyGridItems(state.rows, key = { it.id }) { row ->
+                    DataStatusPageRowCard(row = row, nowMs = nowMs)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DataStatusPageRowCard(
+    row: org.aerobag.app.domain.UiDataStatusPageRow,
+    nowMs: Long,
+) {
+    val accentColor = statusSeverityColor(row.severity)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(ThumbRadius))
+            .background(Color.White.copy(alpha = 0.90f))
+            .border(
+                width = if (row.severity == UiStatusSeverity.Ok || row.severity == UiStatusSeverity.Info) 2.dp else 3.dp,
+                color = accentColor.copy(alpha = 0.84f),
+                shape = RoundedCornerShape(ThumbRadius),
+            )
+            .padding(ThumbSize * 0.24f),
+        verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.13f),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.2f),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = row.label.uppercase(),
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
+                color = Color(0xFF101820),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = row.value.uppercase(),
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
+                color = Color(0xFF101820),
+                textAlign = TextAlign.End,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text(
+            text = row.detail,
+            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
+            color = Color(0xFF101820),
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (row.facts.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.1f)) {
+                row.facts.chunked(2).forEach { factRow ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.18f),
+                    ) {
+                        factRow.forEach { fact ->
+                            DataStatusFactView(
+                                fact = fact,
+                                nowMs = nowMs,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        if (factRow.size == 1) {
+                            Box(modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DataStatusFactView(
+    fact: UiDataStatusPageFact,
+    nowMs: Long,
+    modifier: Modifier = Modifier,
+) {
+    val uriHandler = LocalUriHandler.current
+    val textColor = Color(0xFF101820)
+    val value = dataStatusFactDisplayValue(fact, nowMs)
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .then(
+                if (fact.linkUrl.isNullOrBlank()) {
+                    Modifier
+                } else {
+                    Modifier.clickable { uriHandler.openUri(fact.linkUrl) }
+                },
+            ),
+        verticalArrangement = Arrangement.spacedBy(1.dp),
+    ) {
+        Text(
+            text = fact.label.uppercase(),
+            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Black),
+            color = textColor.copy(alpha = 0.64f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.ExtraBold),
+            color = textColor,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            textDecoration = if (fact.linkUrl.isNullOrBlank()) TextDecoration.None else TextDecoration.Underline,
+        )
+    }
+}
+
+private fun dataStatusFactDisplayValue(fact: UiDataStatusPageFact, nowMs: Long): String {
+    val timeUtc = fact.timeUtc ?: return fact.value
+    val display = fact.timeDisplay ?: return fact.value
+    val instantMs = runCatching { java.time.Instant.parse(timeUtc).toEpochMilli() }.getOrNull()
+        ?: return fact.value
+    val suffix = dataStatusRelativeTimeSuffix(instantMs, nowMs, display)
+    return if (suffix.isBlank()) fact.value else "${fact.value}\n($suffix)"
+}
+
+private fun dataStatusRelativeTimeSuffix(
+    instantMs: Long,
+    nowMs: Long,
+    display: UiDataStatusPageTimeDisplay,
+): String {
+    val deltaMs = instantMs - nowMs
+    val magnitude = formatDataStatusDuration(kotlin.math.abs(deltaMs))
+    return when (display) {
+        UiDataStatusPageTimeDisplay.Old -> "$magnitude old"
+        UiDataStatusPageTimeDisplay.Until -> if (deltaMs >= 0) "in $magnitude" else "$magnitude ago"
+        UiDataStatusPageTimeDisplay.Ago -> if (deltaMs >= 0) "in $magnitude" else "$magnitude ago"
+    }
+}
+
+private fun formatDataStatusDuration(durationMs: Long): String {
+    val minutes = durationMs / 60_000L
+    if (minutes < 60L) return "${minutes}m"
+    val hours = minutes / 60L
+    if (hours < 48L) return "${hours}h"
+    val days = hours / 24L
+    if (days < 60L) return "${days}d"
+    val months = days / 30L
+    if (months < 24L) return "${months}mo"
+    val years = days / 365L
+    return "${years}y"
 }
 
 @Composable
@@ -2687,6 +3046,8 @@ internal fun AerobagApp() {
         )
     }
 
+    var rootChromeSuppressed by remember { mutableStateOf(false) }
+
     BackHandler(enabled = pageHistory.isNotEmpty()) {
         val previous = pageHistory.lastOrNull() ?: return@BackHandler
         restoreSnapshot(previous, pageHistory.dropLast(1))
@@ -2764,6 +3125,7 @@ internal fun AerobagApp() {
                         },
                         onSelectPage = ::navigateToPage,
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
+                        onModalOverlayOpenChange = { rootChromeSuppressed = it },
                         navElement = navElement,
                         plan = currentPlan,
                         planUiState = sessionPlanUiState,
@@ -2802,6 +3164,7 @@ internal fun AerobagApp() {
                         uiTheme = uiTheme,
                         ownship = appUiState.ownship.render,
                         ownshipControls = appUiState.ownship.controls,
+                        dataStatusState = sessionSnapshot.dataStatusState,
                         flightDataBanner = appUiState.flightDataBanner,
                         uiSession = uiSession,
                         navElement = navElement,
@@ -2820,6 +3183,11 @@ internal fun AerobagApp() {
                         },
                         onSelectPage = ::navigateToPage,
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
+                        onStatusAction = { actionId ->
+                            runCatching { uiSession.performStatusAction(actionId) }
+                                .onSuccess { sessionSnapshot = it }
+                                .onFailure { error -> Log.w("AerobagCharts", "status action failed: $actionId", error) }
+                        },
                         onSelectAirport = { airportId ->
                             sessionSnapshot = uiSession.selectAirport(airportId)
                             val airport = chartAirportById[airportId]
@@ -2874,21 +3242,32 @@ internal fun AerobagApp() {
                         onRuntimeMaybeAvailable = { runtimeReloadToken += 1 },
                     )
                 }
+                AppPage.DataStatus -> {
+                    DataStatusPage(
+                        page = page,
+                        state = sessionSnapshot.dataStatusPageState,
+                        mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),
+                        onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
+                        onSelectPage = ::navigateToPage,
+                    )
+                }
             }
-            DebugDock(
-                open = debugPanelOpen,
-                onToggle = { debugPanelOpen = !debugPanelOpen },
-                expandAbove = true,
-                modifier = Modifier
-                    .zIndex(OverlayPlaneControls)
-                    .align(Alignment.BottomEnd)
-                    .padding(end = ThumbSize + (ThumbSize * 0.1f)),
-            ) {
-                CommonDebugPanel(
-                    uptimeLabel = uptimeLabel,
-                    debugState = sessionSnapshot.debugState,
-                    onDebugFlagChange = ::setDebugFlag,
-                )
+            if (!rootChromeSuppressed) {
+                DebugDock(
+                    open = debugPanelOpen,
+                    onToggle = { debugPanelOpen = !debugPanelOpen },
+                    expandAbove = true,
+                    modifier = Modifier
+                        .zIndex(OverlayPlaneControls)
+                        .align(Alignment.BottomEnd)
+                        .padding(end = ThumbSize + (ThumbSize * 0.1f)),
+                ) {
+                    CommonDebugPanel(
+                        uptimeLabel = uptimeLabel,
+                        debugState = sessionSnapshot.debugState,
+                        onDebugFlagChange = ::setDebugFlag,
+                    )
+                }
             }
         }
     }

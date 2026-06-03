@@ -4785,6 +4785,7 @@ mod tests {
             input_dir,
             output_dir: output_dir.clone(),
             version_label: "test-obstacles".to_string(),
+            generated_at_utc: None,
         })?;
 
         assert_eq!(

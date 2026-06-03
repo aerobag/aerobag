@@ -78,6 +78,7 @@ fn long_usage() -> &'static str {
   preprocessor-cli audit-bravo-unions --class-airspace-shp <path> --output-svg <path> [--version-label <label>]
   preprocessor-cli audit-class-airspace-simplification --class-airspace-shp <path> [--tolerances-degrees <csv>] [--ident <id>]
   preprocessor-cli build-obstacles [--build-root <path>] [--fetch-jobs <count>] [--snapshot-date <YYYY-MM-DD>]
+  preprocessor-cli build-obstacles-from-input --input-dir <path> --output-dir <path> --version-label <label> [--generated-at-utc <RFC3339 UTC>]
   preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
   preprocessor-cli normalize-swim-notams --input-jsonl <path> --output-dir <path> --version-label <label>
   preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]...
@@ -312,6 +313,63 @@ fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, Path
         output_dir,
         version_label: snapshot_label,
         generated_at_utc: None,
+    })?;
+    Ok((result.manifest_path, result.stats_path, result.zip_path))
+}
+
+fn run_build_obstacles_from_input_command(
+    args: &[String],
+) -> anyhow::Result<(PathBuf, PathBuf, PathBuf)> {
+    let mut input_dir = None;
+    let mut output_dir = None;
+    let mut version_label = None;
+    let mut generated_at_utc = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args.get(index).map(String::as_str) {
+            Some("--input-dir") => {
+                input_dir = Some(PathBuf::from(
+                    args.get(index + 1)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                ));
+                index += 2;
+            }
+            Some("--output-dir") => {
+                output_dir = Some(PathBuf::from(
+                    args.get(index + 1)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                ));
+                index += 2;
+            }
+            Some("--version-label") => {
+                version_label = Some(
+                    args.get(index + 1)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                );
+                index += 2;
+            }
+            Some("--generated-at-utc") => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?;
+                generated_at_utc = Some(
+                    DateTime::parse_from_rfc3339(value)
+                        .with_context(|| format!("failed to parse generated-at UTC {value}"))?
+                        .with_timezone(&Utc),
+                );
+                index += 2;
+            }
+            _ => anyhow::bail!("{}", usage()),
+        }
+    }
+    let result = build_obstacle_dataset(&BuildObstacleDatasetRequest {
+        input_dir: input_dir.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+        output_dir: output_dir.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+        version_label: version_label.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+        generated_at_utc,
     })?;
     Ok((result.manifest_path, result.stats_path, result.zip_path))
 }
@@ -1595,6 +1653,7 @@ fn main() -> anyhow::Result<()> {
                 | "audit-bravo-unions"
                 | "audit-class-airspace-simplification"
                 | "build-obstacles"
+                | "build-obstacles-from-input"
                 | "build-cycle"
                 | "build-product"
                 | "audit-terrain-airports"
@@ -2355,6 +2414,13 @@ fn main() -> anyhow::Result<()> {
         }
         Some("build-obstacles") => {
             let (manifest_path, stats_path, zip_path) = run_build_obstacles_command(&args[2..])?;
+            println!("manifest {}", manifest_path.display());
+            println!("stats {}", stats_path.display());
+            println!("zip {}", zip_path.display());
+        }
+        Some("build-obstacles-from-input") => {
+            let (manifest_path, stats_path, zip_path) =
+                run_build_obstacles_from_input_command(&args[2..])?;
             println!("manifest {}", manifest_path.display());
             println!("stats {}", stats_path.display());
             println!("zip {}", zip_path.display());

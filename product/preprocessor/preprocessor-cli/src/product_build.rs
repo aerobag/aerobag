@@ -917,6 +917,7 @@ enum ProductTaskValue {
     },
     PublishedNavDb {
         package: BundlePackageArtifact,
+        unpack_source_root: PathBuf,
     },
     BuiltStandaloneProduct {
         zip_path: PathBuf,
@@ -1633,16 +1634,27 @@ fn sync_cycle_bundle_unpacked_zips(
     };
     for package in &bundle_manifest.packages {
         if package.family_id == "nav-db" {
-            let cycle = package
-                .cycle
-                .as_deref()
-                .context("nav-db package missing cycle")?;
-            let source_dir = config
-                .build_root
-                .join("private-work")
-                .join("nav-kv")
-                .join(config.profile.as_str())
-                .join(cycle);
+            let source_dir = if let Some(task_values) = task_values {
+                resolve_cycle_bundle_package_unpack_source_root(
+                    task_values,
+                    &bundle_manifest.cycle,
+                    package,
+                )?
+            } else {
+                resolve_cycle_bundle_package_unpack_source_root_from_build_manifest(
+                    config,
+                    build_manifest
+                        .as_ref()
+                        .expect("build manifest should exist for standalone cycle unpack"),
+                    package,
+                )?
+            }
+            .with_context(|| {
+                format!(
+                    "failed to resolve unpack source root for package {}",
+                    package.id
+                )
+            })?;
             sync_nav_db_unpacked_zip_from_source(
                 &config.packaged_dir.join(&package.filename),
                 &source_dir,
@@ -1740,6 +1752,7 @@ fn resolve_cycle_bundle_package_unpack_source_root_from_build_manifest(
         .unwrap_or_default()
         .to_ascii_lowercase();
     let node_name = match package.family_id.as_str() {
+        "nav-db" => "nav-db".to_string(),
         "csup" => "csup-package".to_string(),
         "tpp" => format!("tpp-{region_id}-package"),
         "sec" | "tac" | "enr-l" | "enr-h" => {
@@ -1756,11 +1769,29 @@ fn resolve_cycle_bundle_package_unpack_source_root_from_build_manifest(
         Some(record) => record,
         None => return Ok(None),
     };
-    let root = record
-        .outputs
-        .get("unpack_source_root")
-        .map(|path| resolve_artifact_path(config, path));
+    let root = if package.family_id == "nav-db" {
+        resolve_nav_db_unpack_source_root_from_record(config, record)
+    } else {
+        record
+            .outputs
+            .get("unpack_source_root")
+            .map(|path| resolve_artifact_path(config, path))
+    };
     Ok(root)
+}
+
+fn resolve_nav_db_unpack_source_root_from_record(
+    config: &ProductBuildConfig,
+    record: &NodeRecord,
+) -> Option<PathBuf> {
+    if let Some(path) = record.outputs.get("unpack_source_root") {
+        return Some(resolve_artifact_path(config, path));
+    }
+    let zip_path = record
+        .outputs
+        .get("nav_db_zip")
+        .map(|path| resolve_artifact_path(config, path))?;
+    zip_path.parent().map(|parent| parent.join("nav_db"))
 }
 
 fn resolve_cycle_bundle_package_unpack_source_root(
@@ -1781,6 +1812,7 @@ fn resolve_cycle_bundle_package_unpack_source_root(
         .unwrap_or_default()
         .to_ascii_lowercase();
     let task_id = match package.family_id.as_str() {
+        "nav-db" => task_id(bundle_cycle, "nav-db"),
         "csup" => task_id(bundle_cycle, "csup-package"),
         "tpp" => task_id(bundle_cycle, &format!("tpp-{region_id}-package")),
         "sec" | "tac" | "enr-l" | "enr-h" => task_id(
@@ -1797,6 +1829,9 @@ fn resolve_cycle_bundle_package_unpack_source_root(
         Some(ProductTaskValue::FingerprintedTppSource { source, .. }) => {
             source.unpack_source_root.clone()
         }
+        Some(ProductTaskValue::PublishedNavDb {
+            unpack_source_root, ..
+        }) => unpack_source_root.clone(),
         _ => return Ok(None),
     };
     Ok(Some(root))
@@ -2420,11 +2455,19 @@ mod tests {
                 fingerprint: "tpp-fingerprint".to_string(),
             },
         );
+        task_values.insert(
+            "2605:nav-db".to_string(),
+            ProductTaskValue::PublishedNavDb {
+                package: bundle_package("nav-db", None),
+                unpack_source_root: unpack_source_root.clone(),
+            },
+        );
 
         for package in [
             bundle_package("sec", Some("nw")),
             bundle_package("csup", Some("ak")),
             bundle_package("tpp", Some("ak")),
+            bundle_package("nav-db", None),
         ] {
             let resolved =
                 resolve_cycle_bundle_package_unpack_source_root(&task_values, "2605", &package)
@@ -2432,6 +2475,70 @@ mod tests {
                     .expect("package root");
             assert_eq!(resolved, unpack_source_root);
         }
+    }
+
+    #[test]
+    fn nav_db_build_manifest_resolution_uses_node_output_source_root() {
+        let temp = tempdir().expect("tempdir");
+        let build_root = temp.path().join("artifacts");
+        let config = ProductBuildConfig {
+            chart_cutline_root: temp.path().join("chart-cutlines"),
+            build_root: build_root.clone(),
+            publish_dir: build_root
+                .join("published")
+                .join("master")
+                .join("20260514T000000Z"),
+            packaged_dir: build_root
+                .join("published")
+                .join("master")
+                .join("20260514T000000Z")
+                .join("packaged"),
+            profile: ProductBuildProfile::Production,
+            publish_label: "master".to_string(),
+            publish_timestamp: "20260514T000000Z".to_string(),
+            target_cycle: Some("2605".to_string()),
+            fetch_jobs: 1,
+            cpu_jobs: 1,
+            max_heavy_jobs: 1,
+            fetch_cache_root: build_root.join("cache").join("fetch"),
+            fetch_cache_mode: "shared".to_string(),
+        };
+        let build_manifest = BuildManifest {
+            schema_version: 1,
+            profile: "production".to_string(),
+            cycle: "2605".to_string(),
+            build_root: build_root.display().to_string(),
+            generated_at_utc: "2026-05-14T00:00:00Z".to_string(),
+            fetch_cache_root: "cache/fetch".to_string(),
+            fetch_cache_mode: "shared".to_string(),
+            nodes: vec![NodeRecord {
+                name: "nav-db".to_string(),
+                fingerprint: "fingerprint".to_string(),
+                started_at_utc: "2026-05-14T00:00:00Z".to_string(),
+                finished_at_utc: "2026-05-14T00:00:00Z".to_string(),
+                elapsed_ms: 0,
+                cache_hit: true,
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::from([(
+                    "nav_db_zip".to_string(),
+                    "cache/nodes/nav-db/abc/output/nav_db_2605.zip".to_string(),
+                )]),
+                output_details: BTreeMap::new(),
+            }],
+        };
+
+        let resolved = resolve_cycle_bundle_package_unpack_source_root_from_build_manifest(
+            &config,
+            &build_manifest,
+            &bundle_package("nav-db", None),
+        )
+        .unwrap()
+        .expect("nav-db source root");
+
+        assert_eq!(
+            resolved,
+            build_root.join("cache/nodes/nav-db/abc/output/nav_db")
+        );
     }
 
     #[test]

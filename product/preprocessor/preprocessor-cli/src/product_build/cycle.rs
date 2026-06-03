@@ -846,6 +846,22 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             &[],
             &[],
         )?;
+        let mut build_manifest = build_manifest;
+        build_manifest.nodes.push(normalize_node_record_paths(
+            nav_db.node_record.clone(),
+            &config.packaged_dir,
+        ));
+        build_manifest
+            .nodes
+            .sort_by(|left, right| left.name.cmp(&right.name));
+        build_manifest.generated_at_utc = manifest_generated_at(&build_manifest.nodes);
+        fs::write(
+            &build_manifest_path,
+            serde_json::to_vec_pretty(&build_manifest)
+                .context("failed to encode product build manifest")?,
+        )
+        .with_context(|| format!("failed to write {}", build_manifest_path.display()))?;
+
         let bundle_manifest = build_bundle_manifest(config, &build_manifest, &[], &nav_db.package)?;
         let bundle_manifest_path =
             write_hashed_bundle_manifest(&config.packaged_dir, &bundle_manifest)?;

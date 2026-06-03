@@ -7,7 +7,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,7 +35,10 @@ def parse_args() -> argparse.Namespace:
         "--worktree-root",
         type=Path,
         default=None,
-        help="directory for temporary git worktrees (default: a temp directory)",
+        help=(
+            "directory for persistent git worktrees "
+            "(default: artifact-root/private-work/multi-version-worktrees)"
+        ),
     )
     parser.add_argument(
         "--target-dir",
@@ -64,7 +66,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--keep-worktrees",
         action="store_true",
-        help="leave temporary worktrees in place for inspection",
+        help="deprecated; worktrees are persistent by default",
+    )
+    parser.add_argument(
+        "--remove-worktrees",
+        action="store_true",
+        help="remove the per-ref worktrees after this run",
     )
     parser.add_argument(
         "build_args",
@@ -112,6 +119,11 @@ def safe_ref_name(ref: str, sha: str) -> str:
     return f"{safe or 'ref'}-{sha[:12]}"
 
 
+def safe_worktree_name(ref: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", ref).strip("-")
+    return safe or "ref"
+
+
 def build_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
@@ -137,6 +149,39 @@ def remove_worktree(repo_root: Path, path: Path) -> None:
         shutil.rmtree(path)
 
 
+def worktree_is_git_checkout(path: Path) -> bool:
+    return (
+        path.is_dir()
+        and subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+        == 0
+    )
+
+
+def ensure_clean_worktree(path: Path) -> None:
+    result = run(["git", "status", "--porcelain"], cwd=path, capture=True)
+    if result.stdout.strip():
+        raise RuntimeError(
+            f"persistent worktree {path} has local changes; clean it or remove it before rebuilding"
+        )
+
+
+def ensure_worktree(repo_root: Path, path: Path, sha: str) -> None:
+    if path.exists():
+        if not worktree_is_git_checkout(path):
+            raise RuntimeError(f"persistent worktree path exists but is not a git checkout: {path}")
+        ensure_clean_worktree(path)
+        run(["git", "checkout", "--detach", sha], cwd=path)
+        return
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    run(["git", "worktree", "add", "--detach", str(path), sha], cwd=repo_root)
+
+
 def build_ref(
     *,
     repo_root: Path,
@@ -150,8 +195,7 @@ def build_ref(
     profile: str | None,
     build_args: list[str],
 ) -> Path:
-    remove_worktree(repo_root, worktree)
-    run(["git", "worktree", "add", "--detach", str(worktree), sha], cwd=repo_root)
+    ensure_worktree(repo_root, worktree, sha)
     run(["cargo", "build", "-p", "preprocessor-cli"], cwd=worktree / PREPROCESSOR_DIR, env=env)
 
     binary = Path(env["CARGO_TARGET_DIR"]) / "debug" / "preprocessor-cli"
@@ -189,11 +233,10 @@ def main() -> int:
     root = artifact_root(repo_root)
     build_root = (args.build_root or root).resolve()
     target_dir = (args.target_dir or (root / "target")).resolve()
-    worktree_root_owned = args.worktree_root is None
     worktree_root = (
-        Path(tempfile.mkdtemp(prefix="aerobag-multi-version-"))
-        if args.worktree_root is None
-        else args.worktree_root.resolve()
+        args.worktree_root.resolve()
+        if args.worktree_root is not None
+        else root / "private-work" / "multi-version-worktrees"
     )
     worktree_root.mkdir(parents=True, exist_ok=True)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -212,7 +255,7 @@ def main() -> int:
         for ref in args.refs:
             sha = resolve_commit(repo_root, ref)
             ref_name = safe_ref_name(ref, sha)
-            worktree = worktree_root / ref_name
+            worktree = worktree_root / safe_worktree_name(ref)
             timestamp = build_timestamp()
             worktrees.append(worktree)
             print(
@@ -250,13 +293,13 @@ def main() -> int:
         result = run(merge_command, cwd=repo_root / PREPROCESSOR_DIR, env=env, capture=True)
         print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
     finally:
-        if args.keep_worktrees:
+        if args.keep_worktrees and not args.remove_worktrees:
             print(f"kept worktrees under {worktree_root}", flush=True)
-        else:
+        elif args.remove_worktrees:
             for worktree in worktrees:
                 remove_worktree(repo_root, worktree)
-            if worktree_root_owned:
-                shutil.rmtree(worktree_root, ignore_errors=True)
+        else:
+            print(f"kept persistent worktrees under {worktree_root}", flush=True)
     return 0
 
 

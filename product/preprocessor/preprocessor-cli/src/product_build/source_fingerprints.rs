@@ -26,10 +26,12 @@ fn repo_root() -> PathBuf {
 
 fn hash_sources(label: &str, paths: &[PathBuf]) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
+    let repo_root = repo_root();
     hasher.update(label.as_bytes());
     hasher.update([0xff]);
     for path in paths {
-        hasher.update(path.to_string_lossy().as_bytes());
+        let source_identity = source_hash_identity(path, &repo_root);
+        hasher.update(source_identity.to_string_lossy().as_bytes());
         hasher.update([0]);
         hasher.update(
             hash_file(path)
@@ -39,6 +41,10 @@ fn hash_sources(label: &str, paths: &[PathBuf]) -> anyhow::Result<String> {
         hasher.update([0xff]);
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn source_hash_identity<'a>(path: &'a Path, repo_root: &'a Path) -> &'a Path {
+    path.strip_prefix(repo_root).unwrap_or(path)
 }
 
 fn nav_kv_builder_source_paths() -> Vec<PathBuf> {
@@ -113,5 +119,14 @@ mod tests {
     fn builder_fingerprints_hash_successfully() {
         assert_eq!(nav_kv_builder_fingerprint().unwrap().len(), 64);
         assert_eq!(terrain_discovery_builder_fingerprint().unwrap().len(), 64);
+    }
+
+    #[test]
+    fn builder_source_hash_uses_repo_relative_paths() {
+        let path = crate_root().join("src/product_build/nav_db.rs");
+        assert_eq!(
+            source_hash_identity(&path, &repo_root()),
+            Path::new("product/preprocessor/preprocessor-cli/src/product_build/nav_db.rs")
+        );
     }
 }

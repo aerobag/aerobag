@@ -1304,6 +1304,14 @@ function basePlotLayout(title, yTitle) {
     yaxis: { title: yTitle, tickfont: { size: 10 }, gridcolor: "#e1e1dc", rangemode: "tozero" },
   };
 }
+function purgeExistingPlots() {
+  if (!window.Plotly) return;
+  document.querySelectorAll(".plot").forEach((node) => {
+    if (node.data || node.layout || node._fullLayout) {
+      Plotly.purge(node);
+    }
+  });
+}
 function renderUpdateIntervalPlot(product, data) {
   const samples = data.samples.filter((sample) => sample.update_interval_ms != null);
   const node = document.getElementById(plotId(product, "update_interval_ms"));
@@ -1392,6 +1400,7 @@ async function render() {
   const status = await response.json();
   const products = Object.entries(status.products).sort(([left], [right]) => left.localeCompare(right));
   statusEl.className = "";
+  purgeExistingPlots();
   statusEl.innerHTML = `
     <div class="summary">
       <div><b>Generated</b> ${status.generated_at_utc}</div>

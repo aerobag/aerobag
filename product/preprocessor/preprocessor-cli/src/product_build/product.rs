@@ -1217,6 +1217,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             &stable_packages,
                             &static_raster_tile_levels,
                         )?;
+                        let unpack_source_root = resolve_nav_db_unpack_source_root_from_record(
+                            &cycle_config,
+                            &built.node_record,
+                        )
+                        .with_context(|| {
+                            format!("nav-db node for cycle {cycle} missing unpack source root")
+                        })?;
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 built.node_record,
@@ -1224,6 +1231,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             )],
                             value: ProductTaskValue::PublishedNavDb {
                                 package: built.package,
+                                unpack_source_root,
                             },
                             completion_detail: "cache_or_rebuild".to_string(),
                         })
@@ -1291,12 +1299,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 }
                             })
                             .collect::<anyhow::Result<Vec<_>>>()?;
-                        let nav_db_package = match task_values_snapshot
-                            .get(&cycle_task_id(&cycle, "nav-db"))
-                        {
-                            Some(ProductTaskValue::PublishedNavDb { package }) => package.clone(),
-                            _ => bail!("missing nav-db output for cycle {cycle}"),
-                        };
+                        let nav_db_package =
+                            match task_values_snapshot.get(&cycle_task_id(&cycle, "nav-db")) {
+                                Some(ProductTaskValue::PublishedNavDb { package, .. }) => {
+                                    package.clone()
+                                }
+                                _ => bail!("missing nav-db output for cycle {cycle}"),
+                            };
                         let bundle_manifest = build_bundle_manifest(
                             &cycle_config,
                             &build_manifest,

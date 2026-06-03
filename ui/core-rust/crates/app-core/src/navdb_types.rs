@@ -58,12 +58,10 @@ pub struct WaypointIdentifierSuggestion {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WaypointIdentifierRecord {
     pub identifier: String,
-    pub nav_ref: NavRef,
     pub kind: String,
-    pub city: String,
-    pub state: String,
-    pub facility_name: String,
-    pub position: LatLon,
+    pub display_name: String,
+    pub lat: f64,
+    pub lon: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -9,6 +9,26 @@ pub(super) fn nav_kv_family_warning_text(family_id: &str) -> Option<String> {
     None
 }
 
+const NAV_COORDINATE_DECIMAL_SCALE: f64 = 10_000_000.0;
+
+pub(super) fn round_nav_coordinate(value: f64) -> f64 {
+    let rounded = (value * NAV_COORDINATE_DECIMAL_SCALE).round() / NAV_COORDINATE_DECIMAL_SCALE;
+    if rounded == 0.0 {
+        0.0
+    } else {
+        rounded
+    }
+}
+
+pub(super) fn nav_lat_lon_json(lat: f64, lon: f64) -> serde_json::Value {
+    // Nav-db coordinates use the repo-wide 7-decimal degree rule. Move other
+    // product-family lat/lon emitters to the same precision as they are touched.
+    serde_json::json!({
+        "lat": round_nav_coordinate(lat),
+        "lon": round_nav_coordinate(lon),
+    })
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct StaticRasterCatalogEntry {
     pub(super) product_id: String,
@@ -1314,8 +1334,8 @@ pub(super) fn build_nav_kv_chart_catalog(
                     "storage_kind": "sectional_package",
                     "package_name": collection.package_id,
                     "initial_viewport": {
-                        "lat": collection.default_view.lat,
-                        "lon": collection.default_view.lon,
+                        "lat": round_nav_coordinate(collection.default_view.lat),
+                        "lon": round_nav_coordinate(collection.default_view.lon),
                         "zoom": collection.default_view.zoom,
                     },
                     "levels": levels,
@@ -1995,8 +2015,8 @@ pub(super) fn build_nav_kv_static_raster_catalog_entries(
                     "storage_kind": "static_product",
                     "package_name": entry.product_id.clone(),
                     "initial_viewport": {
-                        "lat": initial_viewport.lat,
-                        "lon": initial_viewport.lon,
+                        "lat": round_nav_coordinate(initial_viewport.lat),
+                        "lon": round_nav_coordinate(initial_viewport.lon),
                         "zoom": initial_viewport.zoom,
                     },
                     "levels": levels,
@@ -2700,7 +2720,7 @@ pub(super) fn build_nav_kv_airport_navref_pairs(
         }
         pairs.push(json_pair(
             format!("navref/position/airport/{key_id}"),
-            &serde_json::json!({ "lat": lat, "lon": lon }),
+            &nav_lat_lon_json(lat, lon),
             "navref airport position",
         )?);
         let info = runway_info.get(&id.trim().to_ascii_uppercase());
@@ -2768,23 +2788,16 @@ pub(super) fn build_nav_kv_navaid_navref_pairs(
         let key_id = had_upper_key_component(&id);
         pairs.push(json_pair(
             format!("navref/position/navaid/{key_id}"),
-            &serde_json::json!({ "lat": lat, "lon": lon }),
+            &nav_lat_lon_json(lat, lon),
             "navref navaid position",
         )?);
-        if matches!(
-            kind.trim().to_ascii_uppercase().as_str(),
-            "VOR" | "VOR/DME" | "VORTAC"
-        ) {
+        if navaid_is_waypoint_symbol_eligible(&kind) {
             pairs.push(json_pair(
                 format!("navref/symbol/navaid/{key_id}"),
                 &serde_json::json!({
                     "kind": kind.to_ascii_lowercase(),
                     "label": navaid_display_label(&id, &facility_name),
                     "style_class": "nav",
-                    "towered": false,
-                    "fuel_available": false,
-                    "runway_length_ratio": 0.0,
-                    "longest_runway_heading_true_deg": serde_json::Value::Null,
                 }),
                 "navref navaid symbol",
             )?);
@@ -2821,7 +2834,7 @@ pub(super) fn build_nav_kv_arinc_navaid_navref_pairs(
     let mut pairs = Vec::new();
     for row in rows {
         let (identifier, icao_code, section_code, subsection_code, airport_id, lat, lon) = row?;
-        let position = serde_json::json!({ "lat": lat, "lon": lon });
+        let position = nav_lat_lon_json(lat, lon);
         if section_code.trim().eq_ignore_ascii_case("P")
             && subsection_code.trim().eq_ignore_ascii_case("N")
             && !airport_id.trim().is_empty()
@@ -2880,7 +2893,7 @@ pub(super) fn build_nav_kv_fix_navref_pairs(
         let key_id = had_upper_key_component(&id);
         pairs.push(json_pair(
             format!("navref/position/fix/{key_id}"),
-            &serde_json::json!({ "lat": lat, "lon": lon }),
+            &nav_lat_lon_json(lat, lon),
             "navref fix position",
         )?);
         pairs.push(json_pair(
@@ -2889,10 +2902,6 @@ pub(super) fn build_nav_kv_fix_navref_pairs(
                 "kind": kind.to_ascii_lowercase(),
                 "label": titlecase_nav_label(&facility_name).to_ascii_uppercase(),
                 "style_class": "fix",
-                "towered": false,
-                "fuel_available": false,
-                "runway_length_ratio": 0.0,
-                "longest_runway_heading_true_deg": serde_json::Value::Null,
             }),
             "navref fix symbol",
         )?);
@@ -2936,7 +2945,7 @@ pub(super) fn build_nav_kv_runway_position_pairs(
                     had_upper_key_component(&airport_id),
                     had_upper_key_component(&format!("RW{ident}")),
                 ),
-                &serde_json::json!({ "lat": lat, "lon": lon }),
+                &nav_lat_lon_json(lat, lon),
                 "navref runway position",
             )?);
         }
@@ -2948,48 +2957,46 @@ pub(super) fn build_nav_kv_waypoint_lookup_pairs(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<Vec<NavKvPair>> {
     let mut candidates = Vec::<serde_json::Value>::new();
-    let mut exists_by_identifier = BTreeMap::<String, (bool, bool, bool)>::new();
+    let mut kind_by_identifier = BTreeMap::<String, String>::new();
     collect_waypoint_candidates(
         connection,
         "airports",
         "airport",
         &mut candidates,
-        &mut exists_by_identifier,
+        &mut kind_by_identifier,
     )?;
     collect_waypoint_candidates(
         connection,
         "nav",
         "navaid",
         &mut candidates,
-        &mut exists_by_identifier,
+        &mut kind_by_identifier,
     )?;
     collect_waypoint_candidates(
         connection,
         "fix",
         "fix",
         &mut candidates,
-        &mut exists_by_identifier,
+        &mut kind_by_identifier,
     )?;
 
     let mut pairs = Vec::new();
-    for (identifier, (exists_as_airport, exists_as_navaid, exists_as_fix)) in exists_by_identifier {
+    for (identifier, kind) in kind_by_identifier {
         let nav_ref = if is_runway_identifier(&identifier) {
-            Some(serde_json::json!({ "Fix": identifier }))
-        } else if exists_as_navaid {
-            Some(serde_json::json!({ "Navaid": identifier }))
-        } else if exists_as_airport {
-            Some(serde_json::json!({ "Airport": identifier }))
-        } else if exists_as_fix {
-            Some(serde_json::json!({ "Fix": identifier }))
+            serde_json::json!({ "Fix": identifier })
+        } else if kind == "navaid" {
+            serde_json::json!({ "Navaid": identifier })
+        } else if kind == "airport" {
+            serde_json::json!({ "Airport": identifier })
         } else {
-            None
+            serde_json::json!({ "Fix": identifier })
         };
         pairs.push(json_pair(
             format!(
                 "waypoint/identifier/{}",
                 had_upper_key_component(&identifier)
             ),
-            &nav_ref.unwrap_or(serde_json::Value::Null),
+            &nav_ref,
             "waypoint identifier",
         )?);
     }
@@ -3064,13 +3071,22 @@ pub(super) fn collect_waypoint_candidates(
     table: &str,
     kind: &str,
     candidates: &mut Vec<serde_json::Value>,
-    exists_by_identifier: &mut BTreeMap<String, (bool, bool, bool)>,
+    kind_by_identifier: &mut BTreeMap<String, String>,
 ) -> anyhow::Result<()> {
     let sql = if kind == "airport" {
         format!(
             "
         SELECT trim(LocationID), trim(City), trim(State), trim(FacilityName),
-               CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL)
+               CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL), ''
+        FROM {table}
+        WHERE trim(LocationID) <> ''
+        "
+        )
+    } else if kind == "navaid" {
+        format!(
+            "
+        SELECT trim(LocationID), '', '', trim(FacilityName),
+               CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL), trim(Type)
         FROM {table}
         WHERE trim(LocationID) <> ''
         "
@@ -3079,7 +3095,7 @@ pub(super) fn collect_waypoint_candidates(
         format!(
             "
         SELECT trim(LocationID), '', '', trim(FacilityName),
-               CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL)
+               CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL), ''
         FROM {table}
         WHERE trim(LocationID) <> ''
         "
@@ -3094,37 +3110,71 @@ pub(super) fn collect_waypoint_candidates(
             row.get::<_, String>(3)?,
             row.get::<_, f64>(4)?,
             row.get::<_, f64>(5)?,
+            row.get::<_, String>(6)?,
         ))
     })?;
     for row in rows {
-        let (identifier, city, state, facility_name, lat, lon) = row?;
+        let (identifier, city, state, facility_name, lat, lon, navaid_type) = row?;
         let identifier = identifier.trim().to_ascii_uppercase();
         if identifier.is_empty() {
             continue;
         }
-        let entry = exists_by_identifier.entry(identifier.clone()).or_default();
-        match kind {
-            "airport" => entry.0 = true,
-            "navaid" => entry.1 = true,
-            "fix" => entry.2 = true,
-            _ => {}
+        if kind == "navaid" && !navaid_is_waypoint_symbol_eligible(&navaid_type) {
+            continue;
         }
-        let nav_ref = match kind {
-            "airport" => serde_json::json!({ "Airport": identifier }),
-            "navaid" => serde_json::json!({ "Navaid": identifier }),
-            _ => serde_json::json!({ "Fix": identifier }),
-        };
+        record_waypoint_identifier_kind(kind_by_identifier, &identifier, kind)?;
         candidates.push(serde_json::json!({
             "identifier": identifier,
-            "nav_ref": nav_ref,
             "kind": kind,
-            "city": city,
-            "state": state,
-            "facility_name": facility_name,
-            "position": { "lat": lat, "lon": lon },
+            "display_name": waypoint_identifier_display_name(kind, &city, &state, &facility_name),
+            "lat": round_nav_coordinate(lat),
+            "lon": round_nav_coordinate(lon),
         }));
     }
     Ok(())
+}
+
+pub(super) fn record_waypoint_identifier_kind(
+    kind_by_identifier: &mut BTreeMap<String, String>,
+    identifier: &str,
+    kind: &str,
+) -> anyhow::Result<()> {
+    if let Some(existing) = kind_by_identifier.insert(identifier.to_string(), kind.to_string()) {
+        bail!(
+            "waypoint identifier {identifier} is emitted as both {existing} and {kind}; prefix lookup requires one kind per identifier"
+        );
+    }
+    Ok(())
+}
+
+pub(super) fn waypoint_identifier_display_name(
+    kind: &str,
+    city: &str,
+    state: &str,
+    facility_name: &str,
+) -> String {
+    let facility_name = facility_name.trim();
+    let location = [city.trim(), state.trim()]
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !facility_name.is_empty() && !location.is_empty() {
+        format!("{facility_name}\n{location}")
+    } else if !facility_name.is_empty() {
+        facility_name.to_string()
+    } else if !location.is_empty() {
+        location
+    } else {
+        kind.to_string()
+    }
+}
+
+pub(super) fn navaid_is_waypoint_symbol_eligible(kind: &str) -> bool {
+    matches!(
+        kind.trim().to_ascii_uppercase().as_str(),
+        "VOR" | "VOR/DME" | "VORTAC"
+    )
 }
 
 pub(super) fn waypoint_kind_rank(kind: &str) -> usize {
@@ -3871,7 +3921,7 @@ impl NavLookupContext {
             return nav_ref;
         }
 
-        serde_json::json!({ "LatLon": { "lat": lat, "lon": lon } })
+        serde_json::json!({ "LatLon": nav_lat_lon_json(lat, lon) })
     }
 
     fn classify_by_position_json(&self, lat: f64, lon: f64) -> Option<serde_json::Value> {
@@ -4022,8 +4072,7 @@ pub(super) fn load_nav_position_map(
     let mut map = BTreeMap::new();
     for row in rows {
         let (id, lat, lon) = row?;
-        map.entry(id)
-            .or_insert_with(|| serde_json::json!({ "lat": lat, "lon": lon }));
+        map.entry(id).or_insert_with(|| nav_lat_lon_json(lat, lon));
     }
     Ok(map)
 }
@@ -4082,8 +4131,7 @@ pub(super) fn load_arinc_navaid_position_map(
     let mut map = BTreeMap::new();
     for row in rows {
         let (key, lat, lon) = row?;
-        map.entry(key)
-            .or_insert_with(|| serde_json::json!({ "lat": lat, "lon": lon }));
+        map.entry(key).or_insert_with(|| nav_lat_lon_json(lat, lon));
     }
     Ok(map)
 }
@@ -4119,8 +4167,7 @@ pub(super) fn load_terminal_navaid_position_map(
     let mut map = BTreeMap::new();
     for row in rows {
         let (key, lat, lon) = row?;
-        map.entry(key)
-            .or_insert_with(|| serde_json::json!({ "lat": lat, "lon": lon }));
+        map.entry(key).or_insert_with(|| nav_lat_lon_json(lat, lon));
     }
     Ok(map)
 }
@@ -4254,7 +4301,7 @@ pub(super) fn load_runway_position_map(
                     airport_id.clone(),
                     format!("RW{}", ident.to_ascii_uppercase()),
                 ),
-                serde_json::json!({ "lat": lat, "lon": lon }),
+                nav_lat_lon_json(lat, lon),
             );
         }
     }
@@ -4358,12 +4405,12 @@ pub(super) fn build_nav_kv_airway_pairs(
     let mut spatial_points = BTreeMap::<(i32, i32), Vec<serde_json::Value>>::new();
     for row in rows {
         let (name, branch_key, sequence, point_name, lat, lon) = row?;
-        let position = serde_json::json!({ "lat": lat, "lon": lon });
+        let position = nav_lat_lon_json(lat, lon);
         let nav_ref = nav_context.classify_airway_point_json(&point_name, lat, lon);
         let point = serde_json::json!({
             "airway_name": name,
             "sequence": sequence,
-            "position": position,
+            "position": position.clone(),
             "nav_ref": nav_ref.clone(),
         });
         branch_points
@@ -4374,7 +4421,7 @@ pub(super) fn build_nav_kv_airway_pairs(
             "airway_name": name,
             "branch_key": branch_key,
             "sequence": sequence,
-            "position": { "lat": lat, "lon": lon },
+            "position": position,
             "nav_ref": nav_ref,
         });
         spatial_points
@@ -4746,6 +4793,20 @@ pub(super) fn max_zoom_for_levels(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nav_lat_lon_json_rounds_to_seven_decimals() {
+        assert_eq!(round_nav_coordinate(47.49313888888889), 47.4931389);
+        assert_eq!(round_nav_coordinate(-122.215750055), -122.2157501);
+        assert_eq!(round_nav_coordinate(-0.00000001), 0.0);
+        assert_eq!(
+            nav_lat_lon_json(47.49313888888889, -122.215750055),
+            serde_json::json!({
+                "lat": 47.4931389,
+                "lon": -122.2157501,
+            })
+        );
+    }
 
     #[test]
     fn airport_navref_pairs_emit_dense_metar_importance_record() {

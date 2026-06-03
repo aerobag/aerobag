@@ -57,7 +57,7 @@ use procedure_geometry_types as pgt;
 use product_contracts::{
     NAV_DB_CONTRACT_ID, SHADED_RELIEF_CONTRACT_ID, TERRAIN_CONTRACT_ID, WORLD_BASEMAP_CONTRACT_ID,
 };
-use serde::{Deserialize, Serialize};
+use serde::{ser::SerializeStruct, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
@@ -443,10 +443,32 @@ struct VectorHadPairLine {
     value_json: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 struct ChartCutlinePolygonRecord {
     id: String,
     points: Vec<[f64; 2]>,
+}
+
+impl Serialize for ChartCutlinePolygonRecord {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("ChartCutlinePolygonRecord", 2)?;
+        state.serialize_field("id", &self.id)?;
+        let points = self
+            .points
+            .iter()
+            .map(|point| {
+                [
+                    nav_db::round_nav_coordinate(point[0]),
+                    nav_db::round_nav_coordinate(point[1]),
+                ]
+            })
+            .collect::<Vec<_>>();
+        state.serialize_field("points", &points)?;
+        state.end()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -481,10 +503,22 @@ struct OfflineRegionSummaryEntry {
     count: usize,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
 struct OfflineRegionLatLon {
     lat: f64,
     lon: f64,
+}
+
+impl Serialize for OfflineRegionLatLon {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("OfflineRegionLatLon", 2)?;
+        state.serialize_field("lat", &nav_db::round_nav_coordinate(self.lat))?;
+        state.serialize_field("lon", &nav_db::round_nav_coordinate(self.lon))?;
+        state.end()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -3466,7 +3500,8 @@ mod tests {
                     LocationID TEXT,
                     FacilityName TEXT,
                     ARPLatitude REAL,
-                    ARPLongitude REAL
+                    ARPLongitude REAL,
+                    Type TEXT
                 );
                 CREATE TABLE fix (
                     LocationID TEXT,
@@ -3505,6 +3540,71 @@ mod tests {
         assert!(
             pairs.iter().all(|pair| pair.key != "waypoint/prefix/KRNT"),
             "longer prefixes are redundant when a shorter emitted bucket can be filtered"
+        );
+    }
+
+    #[test]
+    fn nav_kv_waypoint_prefix_values_are_slim_and_exclude_vot_navaids() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE airports (
+                    LocationID TEXT,
+                    City TEXT,
+                    State TEXT,
+                    FacilityName TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL
+                );
+                CREATE TABLE nav (
+                    LocationID TEXT,
+                    FacilityName TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL,
+                    Type TEXT
+                );
+                CREATE TABLE fix (
+                    LocationID TEXT,
+                    FacilityName TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL
+                );
+                INSERT INTO nav VALUES ('SEA', 'Seattle 116.80', 47.43538888888889, -122.30961111111111, 'VORTAC');
+                INSERT INTO nav VALUES ('SEA', 'Seattle VOT 117.50', 47.4, -122.3, 'VOT');
+                INSERT INTO nav VALUES ('RNT', 'Renton NDB', 47.49313888888889, -122.215750055, 'NDB');
+                ",
+            )
+            .unwrap();
+
+        let pairs = build_nav_kv_waypoint_lookup_pairs(&connection).unwrap();
+        let identifier_sea = pairs
+            .iter()
+            .find(|pair| pair.key == "waypoint/identifier/SEA")
+            .expect("SEA identifier");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&identifier_sea.value).unwrap(),
+            serde_json::json!({ "Navaid": "SEA" })
+        );
+        assert!(pairs
+            .iter()
+            .all(|pair| pair.key != "waypoint/identifier/RNT"));
+
+        let prefix_s = pairs
+            .iter()
+            .find(|pair| pair.key == "waypoint/prefix/S")
+            .expect("S prefix");
+        let suggestions =
+            serde_json::from_slice::<Vec<serde_json::Value>>(&prefix_s.value).unwrap();
+        assert_eq!(
+            suggestions,
+            vec![serde_json::json!({
+                "identifier": "SEA",
+                "kind": "navaid",
+                "display_name": "Seattle 116.80",
+                "lat": 47.4353889,
+                "lon": -122.3096111,
+            })]
         );
     }
 
@@ -3758,7 +3858,7 @@ mod tests {
         );
         assert_eq!(
             rows[0]["nav_position"],
-            serde_json::json!({ "lat": 42.5580083333333, "lon": -89.1052583333333 })
+            serde_json::json!({ "lat": 42.5580083, "lon": -89.1052583 })
         );
         assert_eq!(
             rows[1]["defining_nav_ref"],
@@ -4077,7 +4177,7 @@ mod tests {
 
         for (label, contract_id, timestamp) in [
             ("nav6-sunset", "NAV6", "20260514T000000Z"),
-            ("master", "NAV7", "20260514T000100Z"),
+            ("master", NAV_DB_CONTRACT_ID, "20260514T000100Z"),
         ] {
             let publish_dir = temp.path().join("published").join(label).join(timestamp);
             let packaged_root = publish_dir.join("packaged");
@@ -4085,7 +4185,7 @@ mod tests {
             let nav_db_sha = if contract_id == "NAV6" {
                 "6".repeat(64)
             } else {
-                "7".repeat(64)
+                "8".repeat(64)
             };
             let nav_db_filename = format!("nav_db_{contract_id}_2605_01_{nav_db_sha}.zip");
             fs::write(packaged_root.join(&nav_db_filename), []).unwrap();

@@ -678,7 +678,9 @@ pub struct NavSymbolFeature {
     pub style_class: String,
     #[serde(default)]
     pub obstacle_variant: Option<String>,
+    #[serde(default)]
     pub towered: bool,
+    #[serde(default)]
     pub fuel_available: bool,
     #[serde(default)]
     pub has_paved_runway: Option<bool>,
@@ -686,7 +688,9 @@ pub struct NavSymbolFeature {
     pub heliport: Option<bool>,
     #[serde(default)]
     pub has_water_runway: Option<bool>,
+    #[serde(default)]
     pub runway_length_ratio: f64,
+    #[serde(default)]
     pub longest_runway_heading_true_deg: Option<f64>,
 }
 

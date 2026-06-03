@@ -1898,35 +1898,44 @@ fn suggest_waypoint_identifier_candidates(
     let mut suggestions = candidates
         .into_iter()
         .filter_map(|candidate| {
-            canonical_waypoint_identifier_record_for_ui(store, candidate).transpose()
+            waypoint_identifier_record_nav_ref(&candidate).map(|nav_ref| (candidate, nav_ref))
         })
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .filter(|candidate| {
+        .filter(|(candidate, _)| {
             candidate
                 .identifier
                 .trim()
                 .to_ascii_uppercase()
                 .starts_with(&prefix)
         })
-        .map(|candidate| {
-            let symbol_feature = nav_symbol_feature(store, &candidate.nav_ref)?;
-            let distance_from_anchor_nm =
-                flight_leg_distance_nm(anchor_position, candidate.position);
-            Ok(WaypointIdentifierSuggestion {
+        .filter_map(|candidate| {
+            let (candidate, nav_ref) = candidate;
+            let symbol_feature = match nav_symbol_feature(store, &nav_ref) {
+                Ok(symbol_feature) => symbol_feature,
+                Err(err) => return Some(Err(err)),
+            };
+            if matches!(
+                nav_ref,
+                NavRef::Navaid(_) | NavRef::ArincNavaid { .. } | NavRef::TerminalNavaid { .. }
+            ) && symbol_feature.is_none()
+            {
+                return None;
+            }
+            let distance_from_anchor_nm = flight_leg_distance_nm(
+                anchor_position,
+                LatLon {
+                    lat: candidate.lat,
+                    lon: candidate.lon,
+                },
+            );
+            Some(Ok(WaypointIdentifierSuggestion {
                 identifier: candidate.identifier,
-                nav_ref: candidate.nav_ref,
-                kind: candidate.kind.clone(),
-                display_name: waypoint_identifier_display_name(
-                    &candidate.kind,
-                    &candidate.city,
-                    &candidate.state,
-                    &candidate.facility_name,
-                ),
+                nav_ref,
+                kind: candidate.kind,
+                display_name: candidate.display_name,
                 distance_text: format!("{:.0}nm", distance_from_anchor_nm),
                 distance_from_anchor_nm,
                 symbol_feature,
-            })
+            }))
         })
         .collect::<Result<Vec<_>, HadReadError>>()?;
     suggestions.sort_by(|left, right| {
@@ -1975,29 +1984,6 @@ fn resolve_waypoint_identifier_for_ui(
     Ok(Some(nav_ref))
 }
 
-fn canonical_waypoint_identifier_record_for_ui(
-    store: &NavKvStore,
-    mut record: WaypointIdentifierRecord,
-) -> Result<Option<WaypointIdentifierRecord>, HadReadError> {
-    if !waypoint_identifier_nav_ref_is_acceptable_for_ui(store, &record.nav_ref)? {
-        return Ok(None);
-    }
-    match &record.nav_ref {
-        NavRef::Airport(code) => record.identifier = code.trim().to_ascii_uppercase(),
-        NavRef::Navaid(_)
-        | NavRef::ArincNavaid { .. }
-        | NavRef::TerminalNavaid { .. }
-        | NavRef::Fix(_)
-        | NavRef::LatLon(_)
-        | NavRef::Spot(_) => record.identifier = record.identifier.trim().to_ascii_uppercase(),
-    }
-    if record.identifier.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(record))
-    }
-}
-
 fn waypoint_identifier_nav_ref_is_acceptable_for_ui(
     store: &NavKvStore,
     nav_ref: &NavRef,
@@ -2022,26 +2008,16 @@ fn waypoint_identifier_is_canonical_for_ui(identifier: &str, nav_ref: &NavRef) -
     }
 }
 
-fn waypoint_identifier_display_name(
-    kind: &str,
-    city: &str,
-    state: &str,
-    facility_name: &str,
-) -> String {
-    let facility_name = facility_name.trim();
-    let location = [city.trim(), state.trim()]
-        .into_iter()
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>()
-        .join(", ");
-    if !facility_name.is_empty() && !location.is_empty() {
-        format!("{facility_name}\n{location}")
-    } else if !facility_name.is_empty() {
-        facility_name.to_string()
-    } else if !location.is_empty() {
-        location
-    } else {
-        kind.to_string()
+fn waypoint_identifier_record_nav_ref(record: &WaypointIdentifierRecord) -> Option<NavRef> {
+    let identifier = record.identifier.trim().to_ascii_uppercase();
+    if identifier.is_empty() {
+        return None;
+    }
+    match record.kind.trim() {
+        "airport" => Some(NavRef::Airport(identifier)),
+        "navaid" => Some(NavRef::Navaid(identifier)),
+        "fix" => Some(NavRef::Fix(identifier)),
+        _ => None,
     }
 }
 
@@ -5307,27 +5283,17 @@ mod tests {
         let kr_bucket = vec![
             WaypointIdentifierRecord {
                 identifier: "KRNT".to_string(),
-                nav_ref: NavRef::Airport("KRNT".to_string()),
                 kind: "airport".to_string(),
-                city: "Renton".to_string(),
-                state: "WA".to_string(),
-                facility_name: "Renton Municipal".to_string(),
-                position: LatLon {
-                    lat: 47.493,
-                    lon: -122.216,
-                },
+                display_name: "Renton Municipal\nRenton, WA".to_string(),
+                lat: 47.493,
+                lon: -122.216,
             },
             WaypointIdentifierRecord {
                 identifier: "KRDD".to_string(),
-                nav_ref: NavRef::Airport("KRDD".to_string()),
                 kind: "airport".to_string(),
-                city: "Redding".to_string(),
-                state: "CA".to_string(),
-                facility_name: "Redding Regional".to_string(),
-                position: LatLon {
-                    lat: 40.509,
-                    lon: -122.293,
-                },
+                display_name: "Redding Regional\nRedding, CA".to_string(),
+                lat: 40.509,
+                lon: -122.293,
             },
         ];
         let store = test_nav_kv_store(&[(
@@ -5380,27 +5346,17 @@ mod tests {
         let kr_bucket = vec![
             WaypointIdentifierRecord {
                 identifier: "KRNT".to_string(),
-                nav_ref: NavRef::Airport("KRNT".to_string()),
                 kind: "airport".to_string(),
-                city: "Renton".to_string(),
-                state: "WA".to_string(),
-                facility_name: "Renton Municipal".to_string(),
-                position: LatLon {
-                    lat: 47.493,
-                    lon: -122.216,
-                },
+                display_name: "Renton Municipal\nRenton, WA".to_string(),
+                lat: 47.493,
+                lon: -122.216,
             },
             WaypointIdentifierRecord {
                 identifier: "KRDD".to_string(),
-                nav_ref: NavRef::Airport("KRDD".to_string()),
                 kind: "airport".to_string(),
-                city: "Redding".to_string(),
-                state: "CA".to_string(),
-                facility_name: "Redding Regional".to_string(),
-                position: LatLon {
-                    lat: 40.509,
-                    lon: -122.293,
-                },
+                display_name: "Redding Regional\nRedding, CA".to_string(),
+                lat: 40.509,
+                lon: -122.293,
             },
         ];
         let store = test_nav_kv_store(&[(
@@ -6055,72 +6011,32 @@ mod tests {
             serde_json::json!({
                 "kind": "vortac",
                 "label": "SEA 116.80",
-                "style_class": "nav",
-                "towered": false,
-                "fuel_available": false,
-                "runway_length_ratio": 0.0,
-                "longest_runway_heading_true_deg": null
+                "style_class": "nav"
             }),
         )]);
-        let short_alias = WaypointIdentifierRecord {
-            identifier: "RNT".to_string(),
-            nav_ref: NavRef::Airport("KRNT".to_string()),
-            kind: "airport".to_string(),
-            city: "Renton".to_string(),
-            state: "WA".to_string(),
-            facility_name: "Renton Municipal".to_string(),
-            position: LatLon {
-                lat: 47.493,
-                lon: -122.216,
-            },
-        };
-        let canonical = WaypointIdentifierRecord {
-            identifier: "KRNT".to_string(),
-            ..short_alias.clone()
-        };
-        let navaid = WaypointIdentifierRecord {
-            identifier: "SEA".to_string(),
-            nav_ref: NavRef::Navaid("SEA".to_string()),
-            ..short_alias.clone()
-        };
-        let ndb = WaypointIdentifierRecord {
-            identifier: "RNT".to_string(),
-            nav_ref: NavRef::Navaid("RNT".to_string()),
-            ..short_alias.clone()
-        };
 
-        assert_eq!(
-            canonical_waypoint_identifier_record_for_ui(&store, short_alias)
-                .expect("canonicalize short airport alias")
-                .expect("short airport alias canonicalizes for suggestions")
-                .identifier,
-            "KRNT"
-        );
-        assert_eq!(
-            canonical_waypoint_identifier_record_for_ui(&store, canonical)
-                .expect("canonicalize airport")
-                .expect("canonical airport")
-                .identifier,
-            "KRNT"
-        );
-        assert_eq!(
-            canonical_waypoint_identifier_record_for_ui(&store, navaid)
-                .expect("canonicalize VOR-family navaid")
-                .expect("navaid identifier")
-                .identifier,
-            "SEA"
-        );
-        assert!(canonical_waypoint_identifier_record_for_ui(&store, ndb)
-            .expect("canonicalize NDB")
-            .is_none());
         assert!(!waypoint_identifier_is_canonical_for_ui(
             "RNT",
+            &NavRef::Airport("KRNT".to_string())
+        ));
+        assert!(waypoint_identifier_is_canonical_for_ui(
+            "KRNT",
             &NavRef::Airport("KRNT".to_string())
         ));
         assert!(waypoint_identifier_is_canonical_for_ui(
             "SEA",
             &NavRef::Navaid("SEA".to_string())
         ));
+        assert!(waypoint_identifier_nav_ref_is_acceptable_for_ui(
+            &store,
+            &NavRef::Navaid("SEA".to_string())
+        )
+        .expect("VOR-family symbol is acceptable"));
+        assert!(!waypoint_identifier_nav_ref_is_acceptable_for_ui(
+            &store,
+            &NavRef::Navaid("RNT".to_string())
+        )
+        .expect("navaid without a symbol is rejected"));
     }
 
     #[test]

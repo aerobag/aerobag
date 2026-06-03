@@ -2192,6 +2192,13 @@ internal fun readStoredPage(prefs: SharedPreferences): AppPage {
 }
 
 internal fun summarizeRuntimeBootstrapFailure(error: Throwable): String {
+    val messages = generateSequence(error) { it.cause }
+        .mapNotNull { it.message?.trim() }
+        .filter { it.isNotEmpty() }
+        .toList()
+    messages.firstOrNull { it.contains("no readable installed nav-db package") }?.let { detail ->
+        return "No usable NAV DB is installed. Sync will fetch a compatible NAV DB and clean up rejected package files.\n\n$detail"
+    }
     val chain = generateSequence(error) { it.cause }
         .mapNotNull { throwable ->
             val detail = throwable.message?.trim().orEmpty()

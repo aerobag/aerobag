@@ -296,7 +296,31 @@ impl NavDbOpenController {
                 }
             }
         }
-        Err("missing readable installed data package with prefix NAV_DB_".to_string())
+        Err(self.no_readable_candidate_message())
+    }
+
+    fn no_readable_candidate_message(&self) -> String {
+        if self.candidates.is_empty() {
+            return "no installed nav-db package candidates".to_string();
+        }
+        let rejected = self
+            .statuses
+            .iter()
+            .filter_map(|status| status.as_ref())
+            .filter(|status| !status.readable)
+            .map(|status| {
+                let message = status.message.as_deref().unwrap_or("unreadable");
+                format!("{}: {message}", status.filename)
+            })
+            .collect::<Vec<_>>();
+        if rejected.is_empty() {
+            "no readable installed nav-db package".to_string()
+        } else {
+            format!(
+                "no readable installed nav-db package; rejected {}",
+                rejected.join("; ")
+            )
+        }
     }
 
     pub fn ingest_resource(
@@ -3769,9 +3793,11 @@ mod tests {
             .step()
             .expect_err("missing contract rejects nav_db");
         assert!(
-            err.contains("missing readable installed data package"),
+            err.contains("no readable installed nav-db package"),
             "{err}"
         );
+        assert!(err.contains("nav_db_old.zip"), "{err}");
+        assert!(err.contains("missing nav-db contract"), "{err}");
         let statuses = controller.statuses();
         assert_eq!(statuses.len(), 1);
         assert!(!statuses[0].readable);

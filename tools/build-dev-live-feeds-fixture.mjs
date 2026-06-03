@@ -15,7 +15,10 @@ Options:
   --metars <dir>         METAR fixture zip directory.
   --winds-aloft <dir>    Winds-aloft fixture zip directory.
   --no-winds-aloft       Omit winds-aloft fixtures.
-  --tfr-state <file>     Add one JSON TFR state.
+  --tfr-state <file>     Add one JSON TFR state; defaults to newest private-work TFR build when present.
+  --no-tfrs              Omit TFR fixtures.
+  --nexrad-state <dir>   Add one NEXRAD output directory containing manifest.json and tiles; may repeat.
+  --no-nexrad            Omit NEXRAD fixtures.
   --merge-root <dir>     Copy an existing live-feed root before generated states.
   --obstacles-had <dir>  Add an obstacle HAD output directory containing manifest.json, root, and pages; may repeat.
 `;
@@ -33,6 +36,8 @@ const defaultWindsAloftFixtureRoot = path.join(
   "winds-aloft",
   "cycle-trace",
 );
+const defaultTfrBuildRoot = path.join(repoRoot, "..", "private-work", "live-feed-build", "tfrs");
+const defaultNexradBuildRoot = path.join(repoRoot, "..", "private-work", "live-feed-build", "nexrad");
 
 const args = parseArgs(process.argv.slice(2));
 const outputRoot = path.resolve(args.output ?? path.join(repoRoot, "..", "live-feeds-dev-fixture"));
@@ -42,7 +47,8 @@ const windsAloftFixtureRoot = resolveOptionalFixtureRoot(
   args.windsAloft,
   defaultWindsAloftFixtureRoot,
 );
-const tfrStatePath = args.tfrState ? path.resolve(args.tfrState) : null;
+const tfrStatePath = resolveTfrStatePath(args.tfrState, defaultTfrBuildRoot);
+const nexradStateRoots = resolveNexradStateRoots(args.nexradState, defaultNexradBuildRoot);
 const mergeRoot = args.mergeRoot ? path.resolve(args.mergeRoot) : null;
 const obstaclesHadRoots = (args.obstaclesHad ?? []).map((entry) => path.resolve(entry));
 
@@ -69,6 +75,11 @@ if (windsAloftFixtureRoot) {
 if (tfrStatePath) {
   publishSingleStateProduct(liveFeedsRoot, "tfrs", tfrStatePath);
 }
+if (nexradStateRoots.length > 0) {
+  const nexradStates = loadNexradStates(nexradStateRoots);
+  publishDirectoryStateSequence(liveFeedsRoot, "nexrad", nexradStates);
+  console.log(`wrote ${nexradStates.length} NEXRAD live-feed state(s)`);
+}
 if (obstaclesHadRoots.length > 0) {
   publishObstacleHadStates(liveFeedsRoot, obstaclesHadRoots);
 }
@@ -76,6 +87,11 @@ resetCurrentToFirstFixtureVersions(liveFeedsRoot);
 console.log(`wrote ${metarStates.length} METAR live-feed states to ${liveFeedsRoot}`);
 if (tfrStatePath) {
   console.log(`wrote TFR live-feed state from ${tfrStatePath}`);
+} else {
+  console.log(`omitted TFR live-feed state; no default build found under ${defaultTfrBuildRoot}`);
+}
+if (nexradStateRoots.length === 0) {
+  console.log(`omitted NEXRAD live-feed state; no default build found under ${defaultNexradBuildRoot}`);
 }
 if (obstaclesHadRoots.length > 0) {
   console.log(`wrote ${obstaclesHadRoots.length} obstacle live-feed HAD state(s)`);
@@ -97,7 +113,20 @@ function parseArgs(argv) {
     } else if (arg === "--no-winds-aloft") {
       parsed.windsAloft = false;
     } else if (arg === "--tfr-state") {
+      if (parsed.tfrState === false) {
+        throw new Error("--tfr-state conflicts with --no-tfrs");
+      }
       parsed.tfrState = argv[++index];
+    } else if (arg === "--no-tfrs") {
+      parsed.tfrState = false;
+    } else if (arg === "--nexrad-state") {
+      if (parsed.nexradState === false) {
+        throw new Error("--nexrad-state conflicts with --no-nexrad");
+      }
+      parsed.nexradState ??= [];
+      parsed.nexradState.push(argv[++index]);
+    } else if (arg === "--no-nexrad") {
+      parsed.nexradState = false;
     } else if (arg === "--merge-root") {
       parsed.mergeRoot = argv[++index];
     } else if (arg === "--obstacles-had") {
@@ -128,6 +157,96 @@ function resolveOptionalFixtureRoot(argValue, primaryRoot, fallbackRoot = null) 
     return fallbackRoot;
   }
   return null;
+}
+
+function resolveTfrStatePath(argValue, defaultBuildRoot) {
+  if (argValue === false) {
+    return null;
+  }
+  if (typeof argValue === "string") {
+    const resolved = path.resolve(argValue);
+    if (!fs.existsSync(resolved)) {
+      throw new Error(`TFR state does not exist: ${resolved}`);
+    }
+    return resolved;
+  }
+  return discoverLatestTfrStatePath(defaultBuildRoot);
+}
+
+function discoverLatestTfrStatePath(buildRoot) {
+  let latest = null;
+  for (const statePath of discoverOutputFiles(buildRoot, "tfrs.json")) {
+    const state = readJsonIfExists(statePath);
+    if (typeof state?.version_label !== "string" || state.version_label.length === 0) {
+      continue;
+    }
+    const mtimeMs = fs.statSync(statePath).mtimeMs;
+    if (!latest || mtimeMs > latest.mtimeMs) {
+      latest = { path: statePath, mtimeMs };
+    }
+  }
+  return latest?.path ?? null;
+}
+
+function resolveNexradStateRoots(argValue, defaultBuildRoot) {
+  if (argValue === false) {
+    return [];
+  }
+  if (Array.isArray(argValue)) {
+    return argValue.map((entry) => {
+      const resolved = path.resolve(entry);
+      validateNexradStateRoot(resolved);
+      return resolved;
+    });
+  }
+  return discoverNexradStateRoots(defaultBuildRoot);
+}
+
+function discoverNexradStateRoots(buildRoot) {
+  const byVersion = new Map();
+  for (const manifestPath of discoverOutputFiles(buildRoot, "manifest.json")) {
+    const sourceRoot = path.dirname(manifestPath);
+    const manifest = readJsonIfExists(manifestPath);
+    if (manifest?.product !== "nexrad" || typeof manifest.state_id !== "string") {
+      continue;
+    }
+    if (!fs.existsSync(path.join(sourceRoot, "tiles"))) {
+      continue;
+    }
+    const mtimeMs = fs.statSync(manifestPath).mtimeMs;
+    const previous = byVersion.get(manifest.state_id);
+    if (!previous || mtimeMs > previous.mtimeMs) {
+      byVersion.set(manifest.state_id, {
+        sourceRoot,
+        mtimeMs,
+        observedAt: manifest.observed_at_utc ?? "",
+      });
+    }
+  }
+  return [...byVersion.entries()]
+    .sort((left, right) => {
+      const leftEntry = left[1];
+      const rightEntry = right[1];
+      return leftEntry.observedAt.localeCompare(rightEntry.observedAt) || left[0].localeCompare(right[0]);
+    })
+    .map(([, entry]) => entry.sourceRoot);
+}
+
+function discoverOutputFiles(buildRoot, fileName) {
+  if (!fs.existsSync(buildRoot)) {
+    return [];
+  }
+  const results = [];
+  for (const entry of fs.readdirSync(buildRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const candidate = path.join(buildRoot, entry.name, "output", fileName);
+    if (fs.existsSync(candidate)) {
+      results.push(candidate);
+    }
+  }
+  return results;
 }
 
 function publishSingleStateProduct(root, product, sourcePath) {
@@ -175,6 +294,83 @@ function publishSingleStateProduct(root, product, sourcePath) {
     state_sha256: stateSha256,
   };
   fs.writeFileSync(currentPath, `${prettyJson(current)}\n`);
+}
+
+function loadNexradStates(sourceRoots) {
+  const seenVersions = new Set();
+  return sourceRoots
+    .map((sourceRoot) => {
+      const manifest = validateNexradStateRoot(sourceRoot);
+      return {
+        sourceRoot,
+        manifest,
+        version: manifest.state_id,
+        observedAt: manifest.observed_at_utc ?? "",
+      };
+    })
+    .filter((entry) => {
+      if (seenVersions.has(entry.version)) {
+        return false;
+      }
+      seenVersions.add(entry.version);
+      return true;
+    })
+    .sort((left, right) => left.observedAt.localeCompare(right.observedAt) || left.version.localeCompare(right.version));
+}
+
+function validateNexradStateRoot(sourceRoot) {
+  const manifestPath = path.join(sourceRoot, "manifest.json");
+  const manifest = readJsonIfExists(manifestPath);
+  if (!manifest) {
+    throw new Error(`${sourceRoot}: missing manifest.json`);
+  }
+  if (manifest.product !== "nexrad") {
+    throw new Error(`${manifestPath}: product is ${manifest.product}, expected nexrad`);
+  }
+  if (typeof manifest.state_id !== "string" || manifest.state_id.length === 0) {
+    throw new Error(`${manifestPath}: missing state_id`);
+  }
+  if (!fs.existsSync(path.join(sourceRoot, "tiles"))) {
+    throw new Error(`${sourceRoot}: missing tiles directory`);
+  }
+  return manifest;
+}
+
+function publishDirectoryStateSequence(root, product, states) {
+  const stateRoot = path.join(root, "states", product);
+  const versionDir = path.join(root, "versions", product);
+  fs.mkdirSync(stateRoot, { recursive: true });
+  fs.mkdirSync(versionDir, { recursive: true });
+
+  let previous = null;
+  for (const entry of states) {
+    const stateDir = path.join(stateRoot, entry.version);
+    copyTree(entry.sourceRoot, stateDir);
+    const statePath = path.join(stateDir, "manifest.json");
+    const stateBytes = fs.readFileSync(statePath);
+    const stateSha256 = sha256Hex(canonicalJson(entry.manifest));
+    const versionManifest = {
+      schema_version: 1,
+      product,
+      version: entry.version,
+      previous: previous?.version ?? null,
+      state: {
+        url: relativeUrl(root, statePath),
+        bytes: stateBytes.length,
+        blob_sha256: sha256Hex(stateBytes),
+        state_sha256: stateSha256,
+      },
+      delta_from_previous: null,
+    };
+    const versionPath = path.join(versionDir, `${entry.version}.json`);
+    fs.writeFileSync(versionPath, `${prettyJson(versionManifest)}\n`);
+    entry.stateSha256 = stateSha256;
+    entry.versionManifestPath = versionPath;
+    entry.statePath = statePath;
+    previous = entry;
+  }
+
+  setCurrentProduct(root, product, states[0]);
 }
 
 function publishObstacleHadStates(root, sourceRoots) {

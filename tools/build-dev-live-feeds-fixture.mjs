@@ -17,7 +17,7 @@ Options:
   --no-winds-aloft       Omit winds-aloft fixtures.
   --tfr-state <file>     Add one JSON TFR state.
   --merge-root <dir>     Copy an existing live-feed root before generated states.
-  --obstacles-had <dir>  Add one obstacle HAD output directory containing manifest.json, root, and pages.
+  --obstacles-had <dir>  Add an obstacle HAD output directory containing manifest.json, root, and pages; may repeat.
 `;
 const defaultMetarFixtureRoot = path.join(
   repoRoot,
@@ -44,7 +44,7 @@ const windsAloftFixtureRoot = resolveOptionalFixtureRoot(
 );
 const tfrStatePath = args.tfrState ? path.resolve(args.tfrState) : null;
 const mergeRoot = args.mergeRoot ? path.resolve(args.mergeRoot) : null;
-const obstaclesHadRoot = args.obstaclesHad ? path.resolve(args.obstaclesHad) : null;
+const obstaclesHadRoots = (args.obstaclesHad ?? []).map((entry) => path.resolve(entry));
 
 if (fs.existsSync(outputRoot)) {
   fs.rmSync(outputRoot, { recursive: true, force: true });
@@ -69,16 +69,16 @@ if (windsAloftFixtureRoot) {
 if (tfrStatePath) {
   publishSingleStateProduct(liveFeedsRoot, "tfrs", tfrStatePath);
 }
-if (obstaclesHadRoot) {
-  publishObstacleHadState(liveFeedsRoot, obstaclesHadRoot);
+if (obstaclesHadRoots.length > 0) {
+  publishObstacleHadStates(liveFeedsRoot, obstaclesHadRoots);
 }
 resetCurrentToFirstFixtureVersions(liveFeedsRoot);
 console.log(`wrote ${metarStates.length} METAR live-feed states to ${liveFeedsRoot}`);
 if (tfrStatePath) {
   console.log(`wrote TFR live-feed state from ${tfrStatePath}`);
 }
-if (obstaclesHadRoot) {
-  console.log(`wrote obstacle live-feed HAD state from ${obstaclesHadRoot}`);
+if (obstaclesHadRoots.length > 0) {
+  console.log(`wrote ${obstaclesHadRoots.length} obstacle live-feed HAD state(s)`);
 }
 
 function parseArgs(argv) {
@@ -101,7 +101,8 @@ function parseArgs(argv) {
     } else if (arg === "--merge-root") {
       parsed.mergeRoot = argv[++index];
     } else if (arg === "--obstacles-had") {
-      parsed.obstaclesHad = argv[++index];
+      parsed.obstaclesHad ??= [];
+      parsed.obstaclesHad.push(argv[++index]);
     } else {
       throw new Error(`unknown argument: ${arg}`);
     }
@@ -176,7 +177,14 @@ function publishSingleStateProduct(root, product, sourcePath) {
   fs.writeFileSync(currentPath, `${prettyJson(current)}\n`);
 }
 
-function publishObstacleHadState(root, sourceRoot) {
+function publishObstacleHadStates(root, sourceRoots) {
+  const usedVersions = new Set();
+  for (const sourceRoot of sourceRoots) {
+    publishObstacleHadState(root, sourceRoot, usedVersions);
+  }
+}
+
+function publishObstacleHadState(root, sourceRoot, usedVersions) {
   const manifestPath = path.join(sourceRoot, "manifest.json");
   const manifest = readJsonIfExists(manifestPath);
   if (!manifest) {
@@ -185,10 +193,11 @@ function publishObstacleHadState(root, sourceRoot) {
   if (manifest.product_id !== "obstacles") {
     throw new Error(`${manifestPath}: product_id is ${manifest.product_id}, expected obstacles`);
   }
-  const version = manifest.version_label;
-  if (typeof version !== "string" || version.length === 0) {
+  const baseVersion = manifest.version_label;
+  if (typeof baseVersion !== "string" || baseVersion.length === 0) {
     throw new Error(`${manifestPath}: missing version_label`);
   }
+  const version = uniqueFixtureVersion(baseVersion, usedVersions);
   const stateSha256 = manifest.state_sha256;
   if (typeof stateSha256 !== "string" || stateSha256.length === 0) {
     throw new Error(`${manifestPath}: missing state_sha256`);
@@ -219,6 +228,17 @@ function publishObstacleHadState(root, sourceRoot) {
   };
   const versionPath = path.join(versionDir, `${version}.json`);
   fs.writeFileSync(versionPath, `${prettyJson(versionManifest)}\n`);
+}
+
+function uniqueFixtureVersion(baseVersion, usedVersions) {
+  let version = baseVersion;
+  let suffix = 2;
+  while (usedVersions.has(version)) {
+    version = `${baseVersion}__fixture${suffix}`;
+    suffix += 1;
+  }
+  usedVersions.add(version);
+  return version;
 }
 
 function obstacleInstallStateRef(root, stateDir, version, stateSha256) {

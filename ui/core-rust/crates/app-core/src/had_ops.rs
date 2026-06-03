@@ -2619,7 +2619,10 @@ fn materialized_procedure_from_geometry_record(
     let resolved_legs = record
         .leg_bundles
         .iter()
-        .map(|bundle| resolved_leg_from_geometry_bundle(&record, bundle, component_index))
+        .enumerate()
+        .map(|(bundle_index, bundle)| {
+            resolved_leg_from_geometry_bundle(&record, bundle, bundle_index, component_index)
+        })
         .collect::<AppResult<Vec<_>>>()?;
     let data_quality = record
         .data_quality
@@ -2679,10 +2682,11 @@ fn concretized_items_from_geometry_record(
 fn resolved_leg_from_geometry_bundle(
     record: &pgt::ProcedureGeometryRecord,
     bundle: &pgt::ProcedureGeometryLegBundle,
+    bundle_index: usize,
     component_index: usize,
 ) -> AppResult<ResolvedLeg> {
     Ok(ResolvedLeg {
-        id: bundle.id.clone(),
+        id: derived_procedure_geometry_leg_id(record, bundle_index),
         from: nav_ref_from_geometry(bundle.from.clone()),
         to: nav_ref_from_geometry(bundle.to.clone()),
         source: ResolvedLegSource::RouteComponent { component_index },
@@ -2696,6 +2700,25 @@ fn resolved_leg_from_geometry_bundle(
             display_path: Some(display_path_from_geometry(bundle.path.clone())),
         }),
     })
+}
+
+fn derived_procedure_geometry_leg_id(
+    record: &pgt::ProcedureGeometryRecord,
+    bundle_index: usize,
+) -> String {
+    format!(
+        "procedure-{}-{}-{}-{}-{}-{}",
+        record.key.airport_id.trim(),
+        pgt::procedure_kind_component(&record.key.kind),
+        record.key.procedure_id.trim(),
+        procedure_transition_id_component(record.key.runway_transition.as_deref()),
+        procedure_transition_id_component(record.key.enroute_transition.as_deref()),
+        bundle_index
+    )
+}
+
+fn procedure_transition_id_component(value: Option<&str>) -> &str {
+    value.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("_")
 }
 
 fn display_path_from_geometry(path: pgt::ProcedureGeometryPath) -> LegDisplayPath {
@@ -4130,12 +4153,10 @@ mod tests {
             &key,
             serde_json::json!({
                 "leg_bundles": [{
-                    "id": "leg-1",
                     "role": "common",
                     "from": { "kind": "airport", "value": "KAAA" },
                     "to": { "kind": "fix", "value": "FIXA" },
                     "path_termination": "track_to_fix",
-                    "leg_sequence": 10,
                     "path": { "elements": [] }
                 }],
                 "data_quality": [{
@@ -4189,7 +4210,10 @@ mod tests {
             }]
         );
         assert_eq!(materialized.resolved_legs.len(), 1);
-        assert_eq!(materialized.resolved_legs[0].id, "leg-1");
+        assert_eq!(
+            materialized.resolved_legs[0].id,
+            "procedure-KAAA-APPROACH-RNAV-A-_-TRANS-0"
+        );
         assert_eq!(
             materialized.resolved_legs[0].source,
             ResolvedLegSource::RouteComponent { component_index: 2 }
@@ -4221,12 +4245,10 @@ mod tests {
                 &segment_key,
                 serde_json::json!({
                     "leg_bundles": [{
-                        "id": "seg-leg-1",
                         "role": "common",
                         "from": { "kind": "airport", "value": "KAAA" },
                         "to": { "kind": "fix", "value": "FIXA" },
                         "path_termination": "track_to_fix",
-                        "leg_sequence": 10,
                         "path": { "elements": [] }
                     }]
                 }),
@@ -4245,7 +4267,10 @@ mod tests {
         .expect("materialize split procedure geometry");
 
         assert_eq!(materialized.resolved_legs.len(), 1);
-        assert_eq!(materialized.resolved_legs[0].id, "seg-leg-1");
+        assert_eq!(
+            materialized.resolved_legs[0].id,
+            "procedure-KAAA-APPROACH-RNAV-A-_-TRANS-0"
+        );
         assert_eq!(
             materialized.concretized_items,
             vec![ConcretizedNavItem::Waypoint {

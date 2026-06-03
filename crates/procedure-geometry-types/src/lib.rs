@@ -162,18 +162,20 @@ pub struct ProcedureGeometryWaypoint {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProcedureGeometryLegBundle {
+    #[serde(default, skip_serializing)]
     pub id: String,
     pub role: ProcedureSegmentRole,
     pub from: ProcedureNavRef,
     pub to: ProcedureNavRef,
     pub path_termination: ProcedurePathTermination,
+    #[serde(default, skip_serializing)]
     pub leg_sequence: i32,
     pub path: ProcedureGeometryPath,
     #[serde(default, skip_serializing)]
     pub waypoints: Vec<ProcedureGeometryWaypoint>,
     #[serde(default, skip_serializing_if = "is_default")]
     pub sequencing_after: ProcedureSequencingRule,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing)]
     pub source_row_sequences: Vec<i32>,
 }
 
@@ -297,6 +299,8 @@ mod tests {
         assert!(value.get("data_quality").is_none());
 
         let bundle = &value["leg_bundles"][0];
+        assert!(bundle.get("id").is_none());
+        assert!(bundle.get("leg_sequence").is_none());
         assert!(bundle.get("waypoints").is_none());
         assert!(bundle.get("sequencing_after").is_none());
         assert!(bundle.get("source_row_sequences").is_none());
@@ -310,12 +314,10 @@ mod tests {
     fn omitted_geometry_fields_deserialize_to_runtime_defaults() {
         let json = serde_json::json!({
             "leg_bundles": [{
-                "id": "leg-1",
                 "role": "common",
                 "from": { "kind": "airport", "value": "KAAA" },
                 "to": { "kind": "fix", "value": "FIXA" },
                 "path_termination": "track_to_fix",
-                "leg_sequence": 10,
                 "path": { "elements": [] }
             }]
         });
@@ -325,6 +327,8 @@ mod tests {
         assert_eq!(record.key, ProcedureGeometryKey::default());
         assert_eq!(record.terminal_discontinuity, None);
         assert!(record.data_quality.is_empty());
+        assert!(record.leg_bundles[0].id.is_empty());
+        assert_eq!(record.leg_bundles[0].leg_sequence, 0);
         assert_eq!(
             record.leg_bundles[0].path.style,
             ProcedureGeometryPathStyle::Solid
@@ -342,6 +346,33 @@ mod tests {
             record.leg_bundles[0].waypoints[0].nav_ref,
             ProcedureNavRef::Fix("FIXA".to_string())
         );
+    }
+
+    #[test]
+    fn serde_omits_diagnostic_leg_provenance() {
+        let mut record = sample_record();
+        record.leg_bundles[0].source_row_sequences = vec![10, 20];
+
+        let value = serde_json::to_value(&record).expect("serialize procedure geometry record");
+        assert!(value["leg_bundles"][0].get("source_row_sequences").is_none());
+
+        let old_payload = serde_json::json!({
+            "leg_bundles": [{
+                "id": "leg-1",
+                "role": "common",
+                "from": { "kind": "airport", "value": "KAAA" },
+                "to": { "kind": "fix", "value": "FIXA" },
+                "path_termination": "track_to_fix",
+                "leg_sequence": 10,
+                "path": { "elements": [] },
+                "source_row_sequences": [10, 20]
+            }]
+        });
+        let decoded: ProcedureGeometryRecord =
+            serde_json::from_value(old_payload).expect("deserialize old provenance field");
+        assert_eq!(decoded.leg_bundles[0].id, "leg-1");
+        assert_eq!(decoded.leg_bundles[0].leg_sequence, 10);
+        assert_eq!(decoded.leg_bundles[0].source_row_sequences, vec![10, 20]);
     }
 
     #[test]

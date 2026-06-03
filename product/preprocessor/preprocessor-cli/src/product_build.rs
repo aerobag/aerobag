@@ -3233,7 +3233,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_kv_procedure_geometry_pairs_split_reused_role_segments_losslessly() {
+    fn nav_kv_procedure_geometry_pairs_split_reused_role_segments_preserving_runtime_fields() {
         let common = vec![test_procedure_geometry_bundle(
             "common-10",
             pgt::ProcedureSegmentRole::Common,
@@ -3286,7 +3286,9 @@ mod tests {
         let mut segment_record: pgt::ProcedureGeometrySegmentRecord =
             serde_json::from_slice(&segment_pairs[0].value).unwrap();
         populate_test_segment_waypoints(&mut segment_record);
-        assert_eq!(segment_record.leg_bundles, common);
+        let mut expected_common = common.clone();
+        clear_omitted_procedure_geometry_fields(&mut expected_common);
+        assert_eq!(segment_record.leg_bundles, expected_common);
 
         let segments = segment_pairs
             .iter()
@@ -3303,7 +3305,8 @@ mod tests {
             })
             .collect::<BTreeMap<_, _>>();
 
-        for original in originals {
+        for mut original in originals {
+            clear_omitted_procedure_geometry_fields(&mut original.leg_bundles);
             let pair = pairs
                 .iter()
                 .find(|pair| pair.key == pgt::procedure_geometry_navdb_key(&original.key))
@@ -3315,6 +3318,16 @@ mod tests {
             split.components.clear();
             pgt::populate_derived_procedure_geometry_fields(&mut split);
             assert_eq!(split, original);
+        }
+    }
+
+    fn clear_omitted_procedure_geometry_fields(
+        leg_bundles: &mut [pgt::ProcedureGeometryLegBundle],
+    ) {
+        for bundle in leg_bundles {
+            bundle.id.clear();
+            bundle.leg_sequence = 0;
+            bundle.source_row_sequences.clear();
         }
     }
 

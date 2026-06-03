@@ -1602,6 +1602,12 @@ private fun statusSeverityColor(severity: UiStatusSeverity): Color = when (sever
     UiStatusSeverity.Unavailable -> Color(0xFFB7BDC7)
 }
 
+private val DataStatusPageTitleTextSize = 15.sp
+private val DataStatusPageSummaryTextSize = 10.sp
+private val DataStatusPageRowHeaderTextSize = 13.sp
+private val DataStatusPageDetailTextSize = 10.sp
+private val DataStatusPageFactTextSize = 9.sp
+
 @Composable
 internal fun DataStatusPage(
     page: AppPage,
@@ -1654,14 +1660,22 @@ internal fun DataStatusPage(
                 Text(
                     text = state.title.uppercase(),
                     modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
+                    style = MaterialTheme.typography.headlineSmall.copy(
+                        fontSize = DataStatusPageTitleTextSize,
+                        lineHeight = DataStatusPageTitleTextSize,
+                        fontWeight = FontWeight.Black,
+                    ),
                     color = uiTheme.controls.buttonFg,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     text = state.summary.uppercase(),
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontSize = DataStatusPageSummaryTextSize,
+                        lineHeight = DataStatusPageSummaryTextSize * 1.08f,
+                        fontWeight = FontWeight.Black,
+                    ),
                     color = uiTheme.controls.buttonFg.copy(alpha = 0.76f),
                     textAlign = TextAlign.End,
                     maxLines = 2,
@@ -1709,14 +1723,22 @@ private fun DataStatusPageRowCard(
             Text(
                 text = row.label.uppercase(),
                 modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontSize = DataStatusPageRowHeaderTextSize,
+                    lineHeight = DataStatusPageRowHeaderTextSize,
+                    fontWeight = FontWeight.Black,
+                ),
                 color = Color(0xFF101820),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
                 text = row.value.uppercase(),
-                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontSize = DataStatusPageRowHeaderTextSize,
+                    lineHeight = DataStatusPageRowHeaderTextSize,
+                    fontWeight = FontWeight.Black,
+                ),
                 color = Color(0xFF101820),
                 textAlign = TextAlign.End,
                 maxLines = 1,
@@ -1725,7 +1747,11 @@ private fun DataStatusPageRowCard(
         }
         Text(
             text = row.detail,
-            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
+            style = MaterialTheme.typography.bodyLarge.copy(
+                fontSize = DataStatusPageDetailTextSize,
+                lineHeight = DataStatusPageDetailTextSize * 1.25f,
+                fontWeight = FontWeight.Bold,
+            ),
             color = Color(0xFF101820),
             maxLines = 3,
             overflow = TextOverflow.Ellipsis,
@@ -1777,14 +1803,22 @@ private fun DataStatusFactView(
     ) {
         Text(
             text = fact.label.uppercase(),
-            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Black),
+            style = MaterialTheme.typography.bodyLarge.copy(
+                fontSize = DataStatusPageFactTextSize,
+                lineHeight = DataStatusPageFactTextSize,
+                fontWeight = FontWeight.Black,
+            ),
             color = textColor.copy(alpha = 0.64f),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
         Text(
             text = value,
-            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.ExtraBold),
+            style = MaterialTheme.typography.bodyLarge.copy(
+                fontSize = DataStatusPageFactTextSize,
+                lineHeight = DataStatusPageFactTextSize * 1.18f,
+                fontWeight = FontWeight.ExtraBold,
+            ),
             color = textColor,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,

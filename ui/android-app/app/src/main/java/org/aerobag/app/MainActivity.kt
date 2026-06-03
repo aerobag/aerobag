@@ -256,6 +256,7 @@ import org.aerobag.app.domain.SectionalPackages
 import org.aerobag.app.domain.AndroidRuntimeContent
 import org.aerobag.app.domain.AndroidLiveFeedClient
 import org.aerobag.app.domain.LiveFeedCacheStore
+import org.aerobag.app.domain.LiveFeedConnectionEvent
 import org.aerobag.app.domain.LiveFeedFetchPolicy
 import org.aerobag.app.domain.LiveFeedInstalledSummary
 import org.aerobag.app.domain.SequencingMode
@@ -2863,6 +2864,15 @@ internal fun AerobagApp() {
             Log.w("AndroidLiveFeeds", "failed to promote ${summary.product}/${summary.version}", error)
         }
     }
+    fun reportLiveFeedConnection(event: LiveFeedConnectionEvent) {
+        runCatching {
+            uiSession.reportLiveFeedConnectionEvent(event)
+        }.onSuccess {
+            sessionSnapshot = it
+        }.onFailure { error ->
+            Log.w("AndroidLiveFeeds", "failed to report live-feed connection ${event.kind}", error)
+        }
+    }
     LaunchedEffect(uiSession, liveFeedCache, context, prefs) {
         val appContext = context.applicationContext
         withContext(Dispatchers.IO) {
@@ -2885,6 +2895,11 @@ internal fun AerobagApp() {
                 }
             },
             onChanged = {},
+            onConnectionEvent = { event ->
+                withContext(Dispatchers.Main) {
+                    reportLiveFeedConnection(event)
+                }
+            },
         )
     }
     DisposableEffect(uiSession, context) {

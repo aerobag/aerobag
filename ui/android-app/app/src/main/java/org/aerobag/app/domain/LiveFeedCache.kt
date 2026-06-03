@@ -50,6 +50,16 @@ data class LiveFeedSseEvent(
     val data: String,
 )
 
+@Serializable
+data class LiveFeedConnectionEvent(
+    val kind: String,
+    val message: String? = null,
+    @SerialName("source_url")
+    val sourceUrl: String? = null,
+    @SerialName("status_url")
+    val statusUrl: String? = null,
+)
+
 class LiveFeedCache(
     installedStatesJson: String = "[]",
     private val bridge: NativeBridge = NativeBindings,
@@ -132,17 +142,28 @@ class AndroidLiveFeedClient(
     suspend fun bootstrapAndRun(
         promote: suspend (LiveFeedInstalledSummary) -> Unit,
         onChanged: suspend () -> Unit,
+        onConnectionEvent: suspend (LiveFeedConnectionEvent) -> Unit = {},
     ) {
         pumpUntilSettled(promote, onChanged)
         while (kotlin.coroutines.coroutineContext.isActive) {
             runCatching {
-                readSseLoop(promote, onChanged)
+                readSseLoop(promote, onChanged, onConnectionEvent)
             }.onFailure { error ->
                 if (error is CancellationException) throw error
                 if (error is SocketTimeoutException) {
                     Log.i(TAG, "live-feed SSE idle for ${LiveFeedSseIdleTimeoutMs}ms; reconnecting")
                 } else {
                     Log.w(TAG, "live-feed SSE loop failed: ${error.message}", error)
+                }
+                onConnectionEvent(
+                    LiveFeedConnectionEvent(
+                        kind = "error",
+                        message = error.message ?: error::class.java.simpleName,
+                        sourceUrl = sourceRootUrl,
+                        statusUrl = liveFeedStatusUrl(sourceRootUrl),
+                    ),
+                )
+                if (error !is SocketTimeoutException) {
                     delay(5_000)
                 }
                 pumpUntilSettled(promote, onChanged)
@@ -204,8 +225,17 @@ class AndroidLiveFeedClient(
     private suspend fun readSseLoop(
         promote: suspend (LiveFeedInstalledSummary) -> Unit,
         onChanged: suspend () -> Unit,
+        onConnectionEvent: suspend (LiveFeedConnectionEvent) -> Unit,
     ) = withContext(Dispatchers.IO) {
         val url = resolveLiveFeedUrl("/live-feeds/events", sourceRootUrl)
+        val statusUrl = liveFeedStatusUrl(sourceRootUrl)
+        onConnectionEvent(
+            LiveFeedConnectionEvent(
+                kind = "connecting",
+                sourceUrl = sourceRootUrl,
+                statusUrl = statusUrl,
+            ),
+        )
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = LiveFeedSseConnectTimeoutMs
             readTimeout = LiveFeedSseIdleTimeoutMs
@@ -213,6 +243,13 @@ class AndroidLiveFeedClient(
         }
         try {
             connection.inputStream.bufferedReader().use { reader ->
+                onConnectionEvent(
+                    LiveFeedConnectionEvent(
+                        kind = "connected",
+                        sourceUrl = sourceRootUrl,
+                        statusUrl = statusUrl,
+                    ),
+                )
                 var eventName: String? = null
                 var eventId: String? = null
                 val dataLines = mutableListOf<String>()
@@ -226,6 +263,7 @@ class AndroidLiveFeedClient(
                     dataLines.clear()
                     eventName = null
                     eventId = null
+                    onConnectionEvent(LiveFeedConnectionEvent(kind = "message"))
                     if (!cache.ingestSseEvent(event)) return
                     pumpUntilSettled(promote, onChanged)
                 }
@@ -241,6 +279,13 @@ class AndroidLiveFeedClient(
                 }
                 flushEvent()
             }
+            onConnectionEvent(
+                LiveFeedConnectionEvent(
+                    kind = "closed",
+                    sourceUrl = sourceRootUrl,
+                    statusUrl = statusUrl,
+                ),
+            )
         } finally {
             connection.disconnect()
         }
@@ -316,6 +361,9 @@ fun resolveLiveFeedUrl(url: String, sourceRootUrl: String): String =
         url.startsWith("/") -> "${sourceRootUrl.trimEnd('/')}$url"
         else -> "${sourceRootUrl.trimEnd('/')}/live-feeds/${url.trimStart('/')}"
     }
+
+fun liveFeedStatusUrl(sourceRootUrl: String): String =
+    resolveLiveFeedUrl("/live-feeds/status.html", sourceRootUrl)
 
 object LiveFeedCacheStore {
     private val json = Json {

@@ -1053,6 +1053,13 @@ class NativeUiSession internal constructor(
         ).invalidations
     }
 
+    fun reportLiveFeedConnectionEvent(event: LiveFeedConnectionEvent): UiSessionSnapshot {
+        snapshot = decodeSnapshot(
+            bridge.reportLiveFeedConnectionEventInSessionJson(handle, json.encodeToString(event)),
+        )
+        return snapshot
+    }
+
     fun queryMapOverlay(
         viewport: MapViewportState,
         widthPx: Double,

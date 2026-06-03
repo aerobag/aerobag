@@ -730,6 +730,21 @@ pub fn ingest_live_feed_sse_events_in_session_json(
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
+pub fn report_live_feed_connection_event_in_session_json(
+    handle: u64,
+    event_json: &str,
+) -> Result<String, String> {
+    let event: app_core::LiveFeedConnectionEvent =
+        serde_json::from_str(event_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::report_live_feed_connection_event_in_session(
+        handle as u32,
+        event,
+        now_epoch_ms(),
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn get_map_overlay_in_session_json(
     handle: u64,
     viewport_json: &str,
@@ -2700,6 +2715,18 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_ingestLiveFeed
 ) -> jstring {
     let result = get_java_string(&mut env, events_json)
         .and_then(|events| ingest_live_feed_sse_events_in_session_json(handle as u64, &events));
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_reportLiveFeedConnectionEventInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    event_json: JString,
+) -> jstring {
+    let result = get_java_string(&mut env, event_json)
+        .and_then(|event| report_live_feed_connection_event_in_session_json(handle as u64, &event));
     return_string(&mut env, result)
 }
 

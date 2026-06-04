@@ -235,7 +235,6 @@ import org.aerobag.app.domain.MapViewportState
 import org.aerobag.app.domain.NativeAppCoreAdapter
 import org.aerobag.app.domain.NativeBindings
 import org.aerobag.app.domain.NativeUiSession
-import org.aerobag.app.domain.NexradOverlayTile
 import org.aerobag.app.domain.NavKvStore
 import org.aerobag.app.domain.NavRef
 import org.aerobag.app.domain.NavElementUiView
@@ -288,6 +287,7 @@ import org.aerobag.app.domain.viewportCenterLatLon
 import org.aerobag.app.domain.worldToLatLon
 import org.aerobag.app.domain.zoomAroundPoint
 import org.aerobag.app.domain.zoomImageAroundPoint
+import org.aerobag.app.generated.NexradOverlayTile
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonPrimitive
 import org.aerobag.app.generated.airportCircleMarkerPath
@@ -1218,10 +1218,11 @@ internal fun MapExplorerPage(
             }
             val images = withContext(Dispatchers.IO) {
                 overlay.tiles.map { tile ->
-                    val bytes = runCatching {
-                        uiSession.nexradTileBytes(tile.src)
-                    }.getOrElse {
-                        fetchResourceBytes(resolvePlaybackTraceUrl(tile.src, devServerBaseUrl))
+                    val bytes = uiSession.nexradTileBytes(tile.src) { resource ->
+                        val fetchStartMs = SystemClock.elapsedRealtime()
+                        fetchCoreResource(context, resource, devServerBaseUrl).also {
+                            fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                        }
                     }
                     imageBytes += bytes.size
                     val decodeStartMs = SystemClock.elapsedRealtime()
@@ -1931,23 +1932,23 @@ private fun RasterImageLayers(
                     (tile.sourceY + tile.sourceHeight).toFloat(),
                 )
                 val destination = floatArrayOf(
-                    tile.corners.nw.x,
-                    tile.corners.nw.y,
-                    tile.corners.ne.x,
-                    tile.corners.ne.y,
-                    tile.corners.se.x,
-                    tile.corners.se.y,
-                    tile.corners.sw.x,
-                    tile.corners.sw.y,
+                    tile.corners.nw.x.toFloat(),
+                    tile.corners.nw.y.toFloat(),
+                    tile.corners.ne.x.toFloat(),
+                    tile.corners.ne.y.toFloat(),
+                    tile.corners.se.x.toFloat(),
+                    tile.corners.se.y.toFloat(),
+                    tile.corners.sw.x.toFloat(),
+                    tile.corners.sw.y.toFloat(),
                 )
                 val matrix = Matrix().apply {
                     setPolyToPoly(source, 0, destination, 0, 4)
                 }
                 val clipPath = AndroidPath().apply {
-                    moveTo(tile.corners.nw.x, tile.corners.nw.y)
-                    lineTo(tile.corners.ne.x, tile.corners.ne.y)
-                    lineTo(tile.corners.se.x, tile.corners.se.y)
-                    lineTo(tile.corners.sw.x, tile.corners.sw.y)
+                    moveTo(tile.corners.nw.x.toFloat(), tile.corners.nw.y.toFloat())
+                    lineTo(tile.corners.ne.x.toFloat(), tile.corners.ne.y.toFloat())
+                    lineTo(tile.corners.se.x.toFloat(), tile.corners.se.y.toFloat())
+                    lineTo(tile.corners.sw.x.toFloat(), tile.corners.sw.y.toFloat())
                     close()
                 }
                 drawContext.canvas.nativeCanvas.apply {

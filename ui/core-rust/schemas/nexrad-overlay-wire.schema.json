@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "org.aerobag.ui-wire.nexrad-overlay",
+  "title": "NexradOverlayQueryResult",
+  "description": "Core-owned wire contract for NEXRAD overlay queries emitted by app-core.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "tiles", "stats"],
+  "properties": {
+    "status": { "$ref": "#/$defs/NexradOverlayStatus" },
+    "tiles": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/NexradOverlayTile" },
+      "default": []
+    },
+    "stats": {
+      "$ref": "#/$defs/NexradOverlayStats",
+      "default": {}
+    }
+  },
+  "x-export-order": [
+    "NexradOverlayStatusState",
+    "NexradOverlayStatus",
+    "NexradOverlayScreenPoint",
+    "NexradOverlayTileCorners",
+    "NexradOverlayTile",
+    "NexradOverlayStats",
+    "NexradOverlayQueryResult"
+  ],
+  "$defs": {
+    "NexradOverlayStatusState": {
+      "type": "string",
+      "enum": ["hidden", "loading", "unavailable", "ready"]
+    },
+    "NexradOverlayStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "$ref": "#/$defs/NexradOverlayStatusState" },
+        "reason": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "count": {
+          "type": ["integer", "null"],
+          "default": null
+        }
+      }
+    },
+    "NexradOverlayScreenPoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      }
+    },
+    "NexradOverlayTileCorners": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nw", "ne", "se", "sw"],
+      "properties": {
+        "nw": { "$ref": "#/$defs/NexradOverlayScreenPoint" },
+        "ne": { "$ref": "#/$defs/NexradOverlayScreenPoint" },
+        "se": { "$ref": "#/$defs/NexradOverlayScreenPoint" },
+        "sw": { "$ref": "#/$defs/NexradOverlayScreenPoint" }
+      }
+    },
+    "NexradOverlayTile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "src",
+        "res",
+        "x",
+        "y",
+        "source_x",
+        "source_y",
+        "source_width",
+        "source_height",
+        "image_width",
+        "image_height",
+        "corners"
+      ],
+      "properties": {
+        "key": { "type": "string" },
+        "src": { "type": "string" },
+        "res": { "type": "integer" },
+        "x": { "type": "integer" },
+        "y": { "type": "integer" },
+        "source_x": { "type": "integer" },
+        "source_y": { "type": "integer" },
+        "source_width": { "type": "integer" },
+        "source_height": { "type": "integer" },
+        "image_width": { "type": "integer" },
+        "image_height": { "type": "integer" },
+        "corners": { "$ref": "#/$defs/NexradOverlayTileCorners" }
+      }
+    },
+    "NexradOverlayStats": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_tile_count",
+        "render_piece_count",
+        "split_count",
+        "max_affine_error_px",
+        "level_pixel_span_px",
+        "max_level_pixel_stretch_px",
+        "max_stack_depth",
+        "res",
+        "observed_at_utc"
+      ],
+      "properties": {
+        "source_tile_count": {
+          "type": "integer",
+          "default": 0
+        },
+        "render_piece_count": {
+          "type": "integer",
+          "default": 0
+        },
+        "split_count": {
+          "type": "integer",
+          "default": 0
+        },
+        "max_affine_error_px": {
+          "type": "number",
+          "default": 0.0
+        },
+        "level_pixel_span_px": {
+          "type": "number",
+          "default": 0.0
+        },
+        "max_level_pixel_stretch_px": {
+          "type": "number",
+          "default": 0.0
+        },
+        "max_stack_depth": {
+          "type": "integer",
+          "default": 0
+        },
+        "res": {
+          "type": ["integer", "null"],
+          "default": null
+        },
+        "observed_at_utc": {
+          "type": ["string", "null"],
+          "default": null
+        }
+      }
+    }
+  }
+}

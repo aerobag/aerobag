@@ -1,8 +1,6 @@
 package org.aerobag.app.domain
 
 import android.util.Log
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -15,6 +13,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.aerobag.app.generated.NexradOverlayQueryResult
 
 data class VectorTileRequest(
     val layer: String,
@@ -206,83 +205,6 @@ data class UiMapLayerState(
     val nexrad: UiMapLayerToggleState,
     val terrainWarning: UiMapLayerToggleState,
     val offlineRegions: UiMapLayerToggleState,
-)
-
-@Serializable
-data class NexradOverlayQueryResult(
-    val status: NexradOverlayStatus,
-    val tiles: List<NexradOverlayTile> = emptyList(),
-    val stats: NexradOverlayStats = NexradOverlayStats(),
-)
-
-@Serializable
-sealed class NexradOverlayStatus {
-    @Serializable
-    @SerialName("hidden")
-    data object Hidden : NexradOverlayStatus()
-
-    @Serializable
-    @SerialName("unavailable")
-    data class Unavailable(val reason: String) : NexradOverlayStatus()
-
-    @Serializable
-    @SerialName("loading")
-    data object Loading : NexradOverlayStatus()
-
-    @Serializable
-    @SerialName("ready")
-    data class Ready(val count: Int) : NexradOverlayStatus()
-}
-
-@Serializable
-data class NexradOverlayStats(
-    @SerialName("source_tile_count")
-    val sourceTileCount: Int = 0,
-    @SerialName("render_piece_count")
-    val renderPieceCount: Int = 0,
-    @SerialName("split_count")
-    val splitCount: Int = 0,
-    @SerialName("max_affine_error_px")
-    val maxAffineErrorPx: Double = 0.0,
-    @SerialName("level_pixel_span_px")
-    val levelPixelSpanPx: Double = 0.0,
-    @SerialName("max_level_pixel_stretch_px")
-    val maxLevelPixelStretchPx: Double = 0.0,
-    @SerialName("max_stack_depth")
-    val maxStackDepth: Int = 0,
-    val res: Int? = null,
-    @SerialName("observed_at_utc")
-    val observedAtUtc: String? = null,
-)
-
-@Serializable
-data class NexradOverlayTile(
-    val key: String,
-    val src: String,
-    val res: Int,
-    val x: Int,
-    val y: Int,
-    @SerialName("source_x")
-    val sourceX: Int,
-    @SerialName("source_y")
-    val sourceY: Int,
-    @SerialName("source_width")
-    val sourceWidth: Int,
-    @SerialName("source_height")
-    val sourceHeight: Int,
-    @SerialName("image_width")
-    val imageWidth: Int,
-    @SerialName("image_height")
-    val imageHeight: Int,
-    val corners: NexradOverlayTileCorners,
-)
-
-@Serializable
-data class NexradOverlayTileCorners(
-    val nw: ScreenPoint,
-    val ne: ScreenPoint,
-    val se: ScreenPoint,
-    val sw: ScreenPoint,
 )
 
 data class RasterMapUiState(
@@ -1155,8 +1077,21 @@ class NativeUiSession internal constructor(
         )
     }
 
-    fun nexradTileBytes(src: String): ByteArray =
-        bridge.nexradTileBytesInSession(handle, src)
+    fun nexradTileBytes(
+        src: String,
+        fetchResource: (CoreResourceRequest) -> ByteArray,
+    ): ByteArray {
+        val store = navKvStore ?: error("session missing nav_db for NEXRAD tile fetch")
+        store.runPagedSessionOperationElement(
+            fetchSessionResource = fetchResource,
+            ingestSessionResource = { resource, bytes ->
+                bridge.ingestResourceInSession(handle, resource.id, bytes)
+            },
+        ) {
+            bridge.prepareNexradTileInSessionJson(handle, src)
+        }
+        return bridge.nexradTileBytesInSession(handle, src)
+    }
 
     fun queryRasterTilePlanJson(
         viewport: MapViewportState,

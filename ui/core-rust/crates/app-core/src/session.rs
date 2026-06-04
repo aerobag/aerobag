@@ -163,6 +163,7 @@ struct UiSession {
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<TfrProductPayload>,
     nexrad_installed: Option<LiveNexradInstalledState>,
+    nexrad_tile_cache: HashMap<String, Vec<u8>>,
     terrain_source_tile_cache: HashMap<String, Vec<u8>>,
     pending_resource_effects: Vec<UiSessionResourceEffect>,
     wall_clock_epoch_ms: i64,
@@ -2556,6 +2557,7 @@ fn create_ui_session_inner(
             obstacle_had: None,
             obstacle_tile_cache: HashMap::new(),
             nexrad_installed: None,
+            nexrad_tile_cache: HashMap::new(),
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
@@ -4667,6 +4669,12 @@ pub fn ingest_resource_in_session_at_epoch_ms(
     bytes: &[u8],
     epoch_ms: i64,
 ) -> AppResult<()> {
+    if let Some(src) = nexrad_tile_src_from_resource_id(resource_id) {
+        let mut sessions = lock_sessions();
+        let session = session_mut(&mut sessions, handle)?;
+        session.nexrad_tile_cache.insert(src, bytes.to_vec());
+        return Ok(());
+    }
     if LiveFeedsState::handles_resource(resource_id) {
         let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, handle)?;
@@ -6775,24 +6783,25 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
 pub fn nexrad_tile_bytes_in_session(handle: u32, src: &str) -> AppResult<Vec<u8>> {
     let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
-    let installed = session.nexrad_installed.as_ref().ok_or_else(|| AppError {
-        kind: AppErrorKind::InvalidManifest,
-        message: "no installed NEXRAD package is available in this session".to_string(),
-    })?;
-    let member_path = nexrad_installed_member_path(src).ok_or_else(|| AppError {
-        kind: AppErrorKind::InvalidManifest,
-        message: format!(
-            "NEXRAD tile URL {src} is not inside installed package {}",
-            installed.version
-        ),
-    })?;
-    installed
-        .members
-        .get(&member_path)
+    if let Some(installed) = &session.nexrad_installed {
+        let member_path = nexrad_installed_member_path(src).ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!(
+                "NEXRAD tile URL {src} is not inside installed package {}",
+                installed.version
+            ),
+        })?;
+        if let Some(bytes) = installed.members.get(&member_path) {
+            return Ok(bytes.clone());
+        }
+    }
+    session
+        .nexrad_tile_cache
+        .get(src)
         .cloned()
         .ok_or_else(|| AppError {
             kind: AppErrorKind::InvalidManifest,
-            message: format!("installed NEXRAD package missing {member_path}"),
+            message: format!("NEXRAD tile bytes are not loaded for {src}"),
         })
 }
 
@@ -6802,6 +6811,75 @@ fn nexrad_installed_member_path(src: &str) -> Option<String> {
     // The installed package is rooted at the state directory, while web URLs include
     // live-feeds/states/nexrad/<state-id>/.
     Some(format!("tiles/{rest}"))
+}
+
+const NEXRAD_TILE_RESOURCE_PREFIX: &str = "live_feeds/nexrad_tile/";
+
+pub fn prepare_nexrad_tile_in_session(handle: u32, src: &str) -> AppResult<HadOperationOutcome> {
+    {
+        let sessions = lock_sessions();
+        let session = session_ref(&sessions, handle)?;
+        if nexrad_tile_bytes_loaded(session, src)? {
+            return Ok(HadOperationOutcome::complete(serde_json::Value::Null));
+        }
+    }
+    let resource = nexrad_tile_resource_request(src)?;
+    Ok(HadOperationOutcome::NeedResources {
+        resources: vec![resource],
+    })
+}
+
+fn nexrad_tile_bytes_loaded(session: &UiSession, src: &str) -> AppResult<bool> {
+    if let Some(installed) = &session.nexrad_installed {
+        let member_path = nexrad_installed_member_path(src).ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!(
+                "NEXRAD tile URL {src} is not inside installed package {}",
+                installed.version
+            ),
+        })?;
+        if installed.members.contains_key(&member_path) {
+            return Ok(true);
+        }
+    }
+    Ok(session.nexrad_tile_cache.contains_key(src))
+}
+
+fn nexrad_tile_resource_request(src: &str) -> AppResult<CoreResourceRequest> {
+    let resource_id = nexrad_tile_resource_id(src)?;
+    Ok(CoreResourceRequest::public_url(resource_id, src, false))
+}
+
+fn nexrad_tile_resource_id(src: &str) -> AppResult<String> {
+    let src = normalize_nexrad_tile_src(src)?;
+    let suffix = src
+        .trim_start_matches('/')
+        .strip_prefix("live-feeds/states/nexrad/")
+        .expect("normalized NEXRAD src must have live-feed prefix");
+    Ok(format!("{NEXRAD_TILE_RESOURCE_PREFIX}{suffix}"))
+}
+
+fn nexrad_tile_src_from_resource_id(resource_id: &str) -> Option<String> {
+    let suffix = resource_id.strip_prefix(NEXRAD_TILE_RESOURCE_PREFIX)?;
+    let src = format!("/live-feeds/states/nexrad/{suffix}");
+    normalize_nexrad_tile_src(&src).ok()
+}
+
+fn normalize_nexrad_tile_src(src: &str) -> AppResult<String> {
+    let trimmed = src.trim_start_matches('/');
+    let Some(rest) = trimmed.strip_prefix("live-feeds/states/nexrad/") else {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("NEXRAD tile URL {src} is not a live-feed NEXRAD state tile"),
+        });
+    };
+    if !rest.contains("/tiles/") {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("NEXRAD tile URL {src} is missing a tiles/ member path"),
+        });
+    }
+    Ok(format!("/{trimmed}"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -10031,6 +10109,7 @@ mod tests {
             obstacle_had: None,
             obstacle_tile_cache: HashMap::new(),
             nexrad_installed: None,
+            nexrad_tile_cache: HashMap::new(),
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
@@ -10213,6 +10292,7 @@ mod tests {
             obstacle_had: None,
             obstacle_tile_cache: HashMap::new(),
             nexrad_installed: None,
+            nexrad_tile_cache: HashMap::new(),
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
@@ -10659,6 +10739,7 @@ mod tests {
             obstacle_had: None,
             obstacle_tile_cache: HashMap::new(),
             nexrad_installed: None,
+            nexrad_tile_cache: HashMap::new(),
             taf_payload: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
@@ -11273,6 +11354,56 @@ mod tests {
         let bytes =
             nexrad_tile_bytes_in_session(init.handle, &query.tiles[0].src).expect("tile bytes");
         assert_eq!(bytes, b"tile-png");
+    }
+
+    #[test]
+    fn nexrad_overlay_wire_status_is_state_tagged() {
+        let value = serde_json::to_value(NexradOverlayQueryResult {
+            status: NexradOverlayStatus::Ready { count: 96 },
+            tiles: Vec::new(),
+            stats: NexradOverlayStats::default(),
+        })
+        .expect("serialize nexrad overlay");
+
+        assert_eq!(
+            value["status"],
+            serde_json::json!({ "state": "ready", "count": 96 })
+        );
+        assert!(value["tiles"].as_array().expect("tiles array").is_empty());
+        assert_eq!(value["stats"]["source_tile_count"], serde_json::json!(0));
+    }
+
+    #[test]
+    fn nexrad_tile_prepare_faults_and_caches_live_feed_tile_resource() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let src = "/live-feeds/states/nexrad/state-v1/tiles/res3/0/0.png";
+
+        let outcome = prepare_nexrad_tile_in_session(init.handle, src).expect("prepare tile");
+        let HadOperationOutcome::NeedResources { resources } = outcome else {
+            panic!("expected missing NEXRAD tile to fault a resource");
+        };
+        assert_eq!(resources.len(), 1);
+        assert_eq!(
+            resources[0].id,
+            "live_feeds/nexrad_tile/state-v1/tiles/res3/0/0.png"
+        );
+        assert_eq!(resources[0].optional, false);
+        assert_eq!(
+            resources[0].source,
+            CoreResourceSource::PublicUrl {
+                url: src.to_string()
+            }
+        );
+
+        ingest_resource_in_session(init.handle, &resources[0].id, b"png-bytes")
+            .expect("ingest tile bytes");
+
+        let outcome =
+            prepare_nexrad_tile_in_session(init.handle, src).expect("prepare cached tile");
+        assert!(matches!(outcome, HadOperationOutcome::Complete { .. }));
+        let bytes = nexrad_tile_bytes_in_session(init.handle, src).expect("tile bytes");
+        assert_eq!(bytes, b"png-bytes");
     }
 
     #[test]

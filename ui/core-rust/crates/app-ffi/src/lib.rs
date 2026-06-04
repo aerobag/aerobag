@@ -865,6 +865,12 @@ pub fn nexrad_tile_bytes_in_session(handle: u64, src: &str) -> Result<Vec<u8>, S
     app_core::nexrad_tile_bytes_in_session(handle as u32, src).map_err(|err| err.to_string())
 }
 
+pub fn prepare_nexrad_tile_in_session_json(handle: u64, src: &str) -> Result<String, String> {
+    let outcome = app_core::prepare_nexrad_tile_in_session(handle as u32, src)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 pub fn get_raster_tile_plan_in_session_json(
     handle: u64,
     viewport_json: &str,
@@ -2940,6 +2946,18 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_nexradTileByte
     let result = get_java_string(&mut env, src)
         .and_then(|src| nexrad_tile_bytes_in_session(handle as u64, &src));
     return_byte_array(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_prepareNexradTileInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    src: JString,
+) -> jstring {
+    let result = get_java_string(&mut env, src)
+        .and_then(|src| prepare_nexrad_tile_in_session_json(handle as u64, &src));
+    return_string(&mut env, result)
 }
 
 #[unsafe(no_mangle)]

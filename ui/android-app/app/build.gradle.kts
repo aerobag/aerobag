@@ -87,6 +87,7 @@ val artifactRoot = File(
 val uiThemeFile = file("../../shared-fixtures/ui-theme.json")
 val devBootstrapFile = file("../../shared/dev-bootstrap.json")
 val generatedSymbolSourceDir = layout.buildDirectory.dir("generated/aerobagSymbols/kotlin")
+val generatedWireSourceDir = layout.buildDirectory.dir("generated/aerobagWire/kotlin")
 
 fun linkOrCopy(source: File, target: File) {
     target.parentFile.mkdirs()
@@ -155,6 +156,22 @@ val generateSharedNavSymbols by tasks.registering(Exec::class) {
     )
 }
 
+val generateSharedWireTypes by tasks.registering(Exec::class) {
+    workingDir = repoRoot
+    inputs.file(repoRoot.resolve("ui/core-rust/schemas/nexrad-overlay-wire.schema.json"))
+    inputs.file(repoRoot.resolve("tools/generate-ui-wire-types.mjs"))
+    outputs.dir(generatedWireSourceDir)
+    outputs.file(repoRoot.resolve("ui/web-app/src/generated/nexradOverlayWire.ts"))
+    commandLine(
+        "node",
+        repoRoot.resolve("tools/generate-ui-wire-types.mjs").absolutePath,
+        "--android-out",
+        generatedWireSourceDir.get().asFile.resolve("org/aerobag/app/generated").absolutePath,
+        "--web-out",
+        repoRoot.resolve("ui/web-app/src/generated/nexradOverlayWire.ts").absolutePath,
+    )
+}
+
 android {
     namespace = "org.aerobag.app"
     compileSdk = 34
@@ -198,6 +215,7 @@ android {
     sourceSets.getByName("main").jniLibs.setSrcDirs(listOf(rustJniLibsDir))
     sourceSets.getByName("main").assets.setSrcDirs(listOf(generatedPrototypeAssetsDir))
     sourceSets.getByName("main").java.srcDir(generatedSymbolSourceDir)
+    sourceSets.getByName("main").java.srcDir(generatedWireSourceDir)
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -209,6 +227,7 @@ tasks.named("preBuild") {
     dependsOn(copyRustLibraries)
     dependsOn(stageCanonicalAndroidAssets)
     dependsOn(generateSharedNavSymbols)
+    dependsOn(generateSharedWireTypes)
 }
 
 dependencies {

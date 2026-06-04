@@ -207,7 +207,7 @@ pub use session::{
     load_playback_trace_in_session, load_raster_map_catalog_in_session,
     nexrad_tile_bytes_in_session, pause_playback_in_session,
     perform_flight_plan_row_action_in_session, perform_map_selection_action_in_session,
-    perform_status_action_in_session, play_playback_in_session,
+    perform_status_action_in_session, play_playback_in_session, prepare_nexrad_tile_in_session,
     preview_flight_plan_entry_in_session, project_flight_plan_route_in_session,
     push_situation_sample_in_session, push_situation_sample_in_session_outcome,
     register_ownship_source_in_session, register_ownship_source_in_session_outcome,

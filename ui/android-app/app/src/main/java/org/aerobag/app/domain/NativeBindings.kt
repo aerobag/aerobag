@@ -404,6 +404,11 @@ interface NativeBridge {
         src: String,
     ): ByteArray
 
+    fun prepareNexradTileInSessionJson(
+        handle: Long,
+        src: String,
+    ): String
+
     fun renderTerrainOverlayTilesInSession(
         handle: Long,
         packedTileBytes: ByteArray,
@@ -830,6 +835,11 @@ object NativeBindings : NativeBridge {
         handle: Long,
         src: String,
     ): ByteArray
+
+    external override fun prepareNexradTileInSessionJson(
+        handle: Long,
+        src: String,
+    ): String
 
     external override fun renderTerrainOverlayTilesInSession(
         handle: Long,

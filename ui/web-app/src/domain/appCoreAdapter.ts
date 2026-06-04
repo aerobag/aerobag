@@ -28,12 +28,22 @@ import type {
   SituationSample,
   WaypointIdentifierSuggestion,
 } from "./types";
-import { viewportCenterLatLon, type MapViewportState, type ScreenPoint } from "./mapViewport";
+import type { NexradOverlayQueryResult } from "../generated/nexradOverlayWire";
+import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 import { attachNavKvStoreToSession, resolvePackageMemberUrl, runCoreHadOperation, runCoreHadSessionOperation, type UiInvalidation, type UiInvalidationListener } from "./navKv";
 import { debugLog, debugTiming, installRustDebugLogBridge } from "./debugLog";
 import { isMetarLiveFeedPayloadResource, prepareMetarLiveFeedResource, resetMetarLiveFeedPrep } from "./metarLiveFeedPrep";
 
 declare const __AEROBAG_LIVE_FEEDS_ORIGIN__: string | null;
+
+export type {
+  NexradOverlayQueryResult,
+  NexradOverlayStats,
+  NexradOverlayStatus,
+  NexradOverlayStatusState,
+  NexradOverlayTile,
+  NexradOverlayTileCorners,
+} from "../generated/nexradOverlayWire";
 
 export type DerivedChartPageState = {
   airports: ChartPageData["airports"];
@@ -467,48 +477,6 @@ export type TerrainOverlayTileRequest = {
 export type TerrainOverlayQueryResult = {
   status: TerrainOverlayStatus;
   tile_requests: TerrainOverlayTileRequest[];
-};
-
-export type NexradOverlayStatus =
-  | { state: "hidden" }
-  | { state: "loading" }
-  | { state: "unavailable"; reason: string }
-  | { state: "ready"; count: number };
-
-export type NexradOverlayTile = {
-  key: string;
-  src: string;
-  res: number;
-  x: number;
-  y: number;
-  source_x: number;
-  source_y: number;
-  source_width: number;
-  source_height: number;
-  image_width: number;
-  image_height: number;
-  corners: {
-    nw: ScreenPoint;
-    ne: ScreenPoint;
-    se: ScreenPoint;
-    sw: ScreenPoint;
-  };
-};
-
-export type NexradOverlayQueryResult = {
-  status: NexradOverlayStatus;
-  tiles: NexradOverlayTile[];
-  stats: {
-    source_tile_count: number;
-    render_piece_count: number;
-    split_count: number;
-    max_affine_error_px: number;
-    level_pixel_span_px: number;
-    max_level_pixel_stretch_px: number;
-    max_stack_depth: number;
-    res?: number | null;
-    observed_at_utc?: string | null;
-  };
 };
 
 export type RasterTileSource = {

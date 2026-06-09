@@ -1,0 +1,25 @@
+# App/runtime packages installed on aerobag-prod after the source checkout exists.
+# Keep this list in source control so dependency changes move with deployable code.
+build-essential
+curl
+unzip
+zip
+python3
+gdal-bin
+python3-gdal
+python3-numpy
+python3-pil
+python3-pypdf
+imagemagick
+ghostscript
+libimage-exiftool-perl
+poppler-utils
+sqlite3
+openjdk-21-jre-headless
+nodejs
+npm
+rustup
+nginx
+pkg-config
+git
+rsync

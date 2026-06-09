@@ -59,6 +59,11 @@ def parse_args() -> argparse.Namespace:
         help="product build profile passed to build-product",
     )
     parser.add_argument(
+        "--release",
+        action="store_true",
+        help="build and run release preprocessor-cli binaries from the shared target dir",
+    )
+    parser.add_argument(
         "--as-of-utc",
         default=None,
         help="RFC3339 UTC timestamp recorded in the merged current_artifacts file",
@@ -193,12 +198,18 @@ def build_ref(
     publish_label: str,
     publish_timestamp: str,
     profile: str | None,
+    release: bool,
     build_args: list[str],
 ) -> Path:
     ensure_worktree(repo_root, worktree, sha)
-    run(["cargo", "build", "-p", "preprocessor-cli"], cwd=worktree / PREPROCESSOR_DIR, env=env)
+    cargo_command = ["cargo", "build"]
+    if release:
+        cargo_command.append("--release")
+    cargo_command.extend(["-p", "preprocessor-cli"])
+    run(cargo_command, cwd=worktree / PREPROCESSOR_DIR, env=env)
 
-    binary = Path(env["CARGO_TARGET_DIR"]) / "debug" / "preprocessor-cli"
+    target_profile = "release" if release else "debug"
+    binary = Path(env["CARGO_TARGET_DIR"]) / target_profile / "preprocessor-cli"
     command = [
         str(binary),
         "build-product",
@@ -273,11 +284,13 @@ def main() -> int:
                 publish_label=ref_name,
                 publish_timestamp=timestamp,
                 profile=args.profile,
+                release=args.release,
                 build_args=build_args,
             )
             manifests.append(manifest)
 
-        merge_binary = target_dir / "debug" / "preprocessor-cli"
+        target_profile = "release" if args.release else "debug"
+        merge_binary = target_dir / target_profile / "preprocessor-cli"
         merge_command = [
             str(merge_binary),
             "merge-current-artifacts",

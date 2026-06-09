@@ -1,0 +1,17 @@
+{
+  "ssh_user": "root",
+  "ssh_host": "aerobag-prod.iac.jonh.net",
+  "source_root": "/opt/aerobag",
+  "data_root": "/mnt/aerobag-data",
+  "artifact_root": "/mnt/aerobag-data/artifacts",
+  "ui_target_root": "/mnt/aerobag-data/ui-target",
+  "cargo_target_dir": "/var/cache/aerobag-build/target",
+  "web_dist": "/mnt/aerobag-data/ui-target/web/dist",
+  "checkout_ref": "master",
+  "additional_publication_refs": [
+    "nav6-sunset"
+  ],
+  "build_profile": "production",
+  "live_feeds_listen": "127.0.0.1:8095",
+  "nginx_server_name": "_"
+}

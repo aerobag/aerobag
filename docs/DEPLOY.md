@@ -1,163 +1,158 @@
-# Deploy 1
+# Production Deploy
 
-This is the first-pass deployment path for a VM that has the git repo checked
-out and enough disk for the generated artifacts plus the built web tree.
-
-## apt prereqs
-
-Install the VM packages:
+Aerobag production is deployed from the dev machine with:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y \
-  build-essential \
-  curl \
-  unzip \
-  zip \
-  python3 \
-  gdal-bin \
-  python3-gdal \
-  python3-numpy \
-  python3-pil \
-  python3-pypdf \
-  imagemagick \
-  ghostscript \
-  libimage-exiftool-perl \
-  systemd \
-  poppler-utils \
-  sqlite3 \
-  openjdk-21-jre-headless \
-  nodejs \
-  npm \
-  rustup \
-  nginx
+cd /root/aerobag-preprocessor/aerobag
+tools/deploy_prod.py --config deploy/aerobag-prod.json
 ```
 
-Use `rustup` for Rust. Do not install the distro `cargo`/`rustc` packages for
-this deployment path; they can lag behind what the repo needs and do not manage
-the WASM target cleanly.
+Use `--skip-build` to install/update prod, restart live-feeds, and leave the
+long product/web build for the systemd timer or a manual service start.
 
-```bash
-rustup default stable
-rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli
+Use `--runtime-config-only` to refresh env files, generated helper scripts,
+nginx, and systemd runtime units without touching the source checkout or
+currently running product build.
+
+The deploy tool is intentionally dev-pushed. `aerobag-prod` does not need git
+credentials back to dev or GitHub. The tool creates a local git bundle with all
+refs, copies it to prod, fetches all heads/tags into `/opt/aerobag`, checks out
+the configured production ref, and leaves the other refs available for
+multi-version publication worktrees.
+
+## Config
+
+The checked-in prod config is `deploy/aerobag-prod.json`.
+
+Important fields:
+
+- `checkout_ref`: the source ref used for the running prod checkout and
+  live-feeds daemon.
+- `additional_publication_refs`: older product-contract branches to include in
+  the merged cycle publication, such as `nav6-sunset`.
+- `artifact_root`: the persistent product build root. It owns `cache/`,
+  `private-work/`, `live-feeds/`, and `published/`.
+- `ui_target_root`: persistent web build workspace and final static output.
+- `cargo_target_dir`: persistent Rust target dir shared across deploys.
+
+The package list is not host config. It lives in
+`deploy/prod-packages.txt` and is installed from the checked-out repo on prod.
+The deploy script installs only a tiny bootstrap set before the checkout exists:
+`ca-certificates`, `git`, and `rsync`.
+
+The deploy writes `/etc/aerobag/env` on prod. The important publication values
+are:
+
+```sh
+SOURCE_ROOT=/opt/aerobag
+ARTIFACT_ROOT=/mnt/aerobag-data/artifacts
+AEROBAG_ARTIFACT_WRITE_PATH=/mnt/aerobag-data/artifacts
+AEROBAG_ARTIFACT_READ_PATH=/mnt/aerobag-data/artifacts/published
+AEROBAG_UI_TARGET_ROOT=/mnt/aerobag-data/ui-target
+CARGO_TARGET_DIR=/var/cache/aerobag-build/target
+AEROBAG_WEB_DIST=/mnt/aerobag-data/ui-target/web/dist
 ```
 
-Release-like WASM builds use Binaryen `wasm-opt` by default and require
-Binaryen `version_129` or newer. Install that from the upstream Binaryen release
-assets, not from an older distro package. The web app has a pinned installer:
+`AEROBAG_ARTIFACT_READ_PATH` points at the public publication root, not the full
+artifact root. Clients see it through `/packages/`.
+
+## Prod Layout
+
+The prod container uses:
+
+```text
+/opt/aerobag                                      git checkout
+/mnt/aerobag-data/artifacts/cache                build/fetch cache
+/mnt/aerobag-data/artifacts/private-work         build logs and work dirs
+/mnt/aerobag-data/artifacts/live-feeds           live-feed publication
+/mnt/aerobag-data/artifacts/published            public cycle publication root
+/mnt/aerobag-data/ui-target/web/dist             static web app
+/var/cache/aerobag-build/target                  Rust build cache
+/etc/aerobag/deployed-rev                        deployed checkout commit
+/etc/aerobag/deploy-config.json                  deployed ref summary
+```
+
+The public cycle publication contract is:
+
+```text
+/mnt/aerobag-data/artifacts/published/current_artifacts.json
+/mnt/aerobag-data/artifacts/published/<publish-label>/<timestamp>/packaged/
+/mnt/aerobag-data/artifacts/published/<publish-label>/<timestamp>/unpacked/
+```
+
+`current_artifacts.json` is always a JSON list and is written only by
+`preprocessor-cli merge-current-artifacts`.
+
+## Services
+
+The deploy installs these systemd units:
+
+- `aerobag-build-product.service`: one-shot multi-version cycle publication,
+  cache GC, and web static build.
+- `aerobag-build-product.timer`: runs the product build every 2 hours.
+- `aerobag-live-feeds.service`: continuous live-feeds daemon.
+- `aerobag-client-debug-log.service`: localhost-only receiver for browser
+  `POST /__debug_log` batches.
+- `aerobag-health.service` and `aerobag-health.timer`: refresh machine-readable
+  health status every minute.
+- `nginx.service`: public HTTP server on port 80.
+
+Manual product rebuild:
 
 ```bash
-cd "$SOURCE_ROOT/ui/web-app"
+ssh root@aerobag-prod.iac.jonh.net systemctl start --no-block aerobag-build-product.service
+```
+
+Omit `--no-block` only when you intentionally want the shell to wait for the
+full product and web build to finish.
+
+Inspect build progress:
+
+```bash
+ssh root@aerobag-prod.iac.jonh.net \
+  /opt/aerobag/product/preprocessor/scripts/watch_build_log.py \
+  --log /mnt/aerobag-data/artifacts/private-work/orchestrator-logs/published/master.log
+```
+
+The default timer command uses:
+
+```bash
+/opt/aerobag/product/preprocessor/scripts/build_multi_version_publication.py \
+  --release \
+  --profile production \
+  --build-root /mnt/aerobag-data/artifacts \
+  --target-dir /var/cache/aerobag-build/target \
+  <additional refs...> master
+```
+
+It then runs:
+
+```bash
+/var/cache/aerobag-build/target/release/preprocessor-cli \
+  gc-build-cache --profile production \
+  --build-root /mnt/aerobag-data/artifacts \
+  --bootstrap-from-build-manifests --execute
+
+cd /opt/aerobag/ui/web-app
 npm run install:wasm-opt
-```
+npm run build:release
 
-That installs Binaryen under `$AEROBAG_UI_TARGET_ROOT/tools/`, where the WASM
-build script finds it automatically. Set `AEROBAG_WASM_OPT_BIN` only if using a
-different install location. Release-like builds fail loudly if `wasm-opt` is
-missing, too old, or produces a module that fails startup.
-
-## Define paths
-
-Set these somewhere you can source before running the commands below.
-
-Point this at the git clone:
-
-```bash
-export SOURCE_ROOT=/wherever/aerobag
-```
-
-Point this where the preprocessor should write published packaged/unpacked
-artifacts:
-
-```bash
-export ARTIFACT_ROOT=/mnt/aerobag-data/artifacts
-```
-
-Point this where the web build should put generated WASM, staged static inputs,
-node workspace files, and the final deployable `dist/` tree:
-
-```bash
-export AEROBAG_UI_TARGET_ROOT=/mnt/aerobag-data/ui-target
-```
-
-Derived paths:
-
-```bash
-export CARGO_TARGET_DIR="$ARTIFACT_ROOT/target"
-export AEROBAG_ARTIFACT_WRITE_PATH="$ARTIFACT_ROOT"
-export AEROBAG_ARTIFACT_READ_PATH="$ARTIFACT_ROOT"
-export AEROBAG_WEB_DIST="$AEROBAG_UI_TARGET_ROOT/web/dist"
-```
-
-With these values:
-
-- source lives under `$SOURCE_ROOT`
-- content artifacts live under `$ARTIFACT_ROOT`
-- web build outputs live under `$AEROBAG_UI_TARGET_ROOT`
-- the static site root is exactly `$AEROBAG_WEB_DIST`
-
-## Build the preprocessor
-
-```bash
-cd "$SOURCE_ROOT/product/preprocessor"
-cargo build --release -p preprocessor-cli -p live-feeds-daemon
-```
-
-Run the product build once before installing timed executions. The live-feed
-daemon reads the published cycle product for shared inputs such as towered
-airport metadata.
-
-```bash
-time "$CARGO_TARGET_DIR/release/preprocessor-cli" build-product --source-root "$SOURCE_ROOT"
-```
-
-After this completes, `$ARTIFACT_ROOT` should contain the published artifact
-contract the web build consumes:
-
-- `current_artifacts.json`
-- `published_packaged/`
-- `published_unpacked/`
-
-## Build the web static tree
-
-The web release build reads from `$AEROBAG_ARTIFACT_READ_PATH` and writes under
-`$AEROBAG_UI_TARGET_ROOT`.
-
-```bash
-cd "$SOURCE_ROOT"
-tools/deploy_prod
-```
-
-That command builds products, builds the web tree, then publishes the Android
-APK into that fresh tree. Pass `--skip-product` only when the current published
-artifact set is already known-good and should be reused.
-
-The web release portion:
-
-1. validates the current artifact set that will be served under `/packages`
-2. builds the Rust/WASM adapter in release mode
-3. runs TypeScript checking
-4. runs `vite build`
-5. writes the deployable static tree to `$AEROBAG_WEB_DIST`
-
-The static tree includes the app chunks and WASM. Product content is served
-through the publication contract rooted at `/packages`; do not publish or rely
-on legacy content routes such as `/plates`, `/thumbnails`, `/nav-kv`, or
-`/sectional-packages`.
-
-## Publish the Android APK
-
-Build the Android APK on the production host after the web release build. The
-web build empties and recreates `$AEROBAG_WEB_DIST`, so the APK publisher must
-run after the web build. `tools/deploy_prod` does this ordering automatically.
-
-```bash
-cd "$SOURCE_ROOT/ui/android-app"
+cd /opt/aerobag/ui/android-app
 ./scripts/build_prod_apk.sh
 ```
 
-That script:
+Release-like WASM builds require Binaryen `version_129` or newer. The pinned
+`install:wasm-opt` step installs it under `$AEROBAG_UI_TARGET_ROOT/tools/`,
+where the WASM build script finds it automatically. Set `AEROBAG_WASM_OPT_BIN`
+only if using a different install location.
+
+The Android APK publisher runs after the web build because the web build empties
+and recreates `$AEROBAG_WEB_DIST`. It writes a hash-named APK under
+`$AEROBAG_WEB_DIST/downloads/` plus
+`$AEROBAG_WEB_DIST/downloads/android-apk.json`, which the About page uses for
+the download link. Do not publish a stable APK filename such as `latest.apk`.
+
+The Android APK publisher:
 
 1. builds the Android app with `ANDROID_PACKAGE_SOURCE_BASE_URL` defaulting to
    `https://aerobag.org/packages/`
@@ -172,84 +167,66 @@ That script:
 6. writes `$AEROBAG_WEB_DIST/downloads/android-apk.json`, which is what the
    `/about` page reads to show the current versioned link
 
-Do not publish a stable APK filename such as `latest.apk`. Each published app
-version gets a hash-named APK, and the About page points at that versioned file.
+The obsolete `build-fast-subset` path is not part of production deploy. Live
+METAR/TFR/NEXRAD/winds/obstacle data is owned by `aerobag-live-feedsd`.
 
-## Serve the web tree
+## Nginx
 
-Point the static web server at:
+Prod serves:
+
+- `/`: static web app from `/mnt/aerobag-data/ui-target/web/dist`
+- `/downloads/`: Android APK metadata and versioned APK from the static web app
+- `/packages/`: `/mnt/aerobag-data/artifacts/published/`
+- `/live-feeds/`: proxied to `aerobag-live-feedsd`
+- `/icons/`: source-tree icon assets
+- `/health.json`: machine-readable deploy/build/live-feed status
+- `/__debug_log`: proxied to the client debug log receiver
+
+The nginx config blocks `/packages/cache/` and `/packages/private-work/`.
+
+## Health
+
+Machine-readable status is written to:
 
 ```text
-$AEROBAG_WEB_DIST
+/mnt/aerobag-data/health/status.json
 ```
 
-Minimal nginx sketch:
+and exposed as:
 
-```nginx
-server {
-    listen 80;
-    server_name _;
-
-    root /mnt/aerobag-data/ui-target/web/dist;
-    index index.html;
-
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
-}
+```text
+http://aerobag-prod.iac.jonh.net/health.json
 ```
 
-Use the real value of `$AEROBAG_WEB_DIST` in the nginx config; nginx will not
-expand the shell variable inside the config file.
+It reports:
 
-## Schedule product builds
+- deployed commit and configured publication refs
+- systemd active/enabled states
+- `published/current_artifacts.json` age, manifest count, and contract summary
+- `live-feeds/current.json` age
+- most recent orchestrator log path
 
-Once the one-shot product and web build are working, schedule content refreshes
-and run the live-feed daemon.
+The live-feeds daemon also serves:
 
-Every 2 hours, run `build-product`:
+```text
+/live-feeds/status.json
+/live-feeds/status.html
+/live-feeds/events
+```
+
+Browser debug logs are written as JSON lines under:
+
+```text
+/mnt/aerobag-data/client-debug/client-debug-YYYYMMDD.jsonl
+```
+
+## Smoke Checks
+
+After deploy:
 
 ```bash
-time "$CARGO_TARGET_DIR/release/preprocessor-cli" build-product --source-root "$SOURCE_ROOT"
+curl -I http://aerobag-prod.iac.jonh.net/
+curl -I http://aerobag-prod.iac.jonh.net/packages/current_artifacts.json
+curl -s http://aerobag-prod.iac.jonh.net/health.json
+curl -s http://aerobag-prod.iac.jonh.net/live-feeds/status.json
 ```
-
-Run `aerobag-live-feedsd` continuously. The exact supervisor is deployment
-policy; for a command-line test instance:
-
-```bash
-"$CARGO_TARGET_DIR/release/aerobag-live-feedsd" \
-  --live-root "$ARTIFACT_ROOT/live-feeds" \
-  --publication-root "$ARTIFACT_ROOT" \
-  --scratch-root "$ARTIFACT_ROOT/private-work/live-feeds" \
-  --listen 127.0.0.1:8095
-```
-
-Initial live-feed polling cadence is intentionally conservative and easy to
-adjust: NEXRAD 60 seconds, METARs and TFRs 5 minutes, winds aloft 1 hour, and
-obstacles 6 hours.
-
-When the published artifacts change, rebuild and redeploy the web static tree:
-
-```bash
-cd "$SOURCE_ROOT"
-tools/deploy_prod
-```
-
-To reuse the current published artifact set without running the preprocessor:
-
-```bash
-cd "$SOURCE_ROOT"
-tools/deploy_prod --skip-product
-```
-
-## Smoke checks
-
-After deploying nginx, verify:
-
-```bash
-curl -I http://localhost/
-curl -I http://localhost/packages/current_artifacts.json
-```
-
-Then verify at least one representative chart tile, plate image, live-feed
-manifest, and shaded-relief tile from the current published artifact set.

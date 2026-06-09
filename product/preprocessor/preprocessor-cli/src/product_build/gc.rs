@@ -116,13 +116,43 @@ pub(super) fn record_gc_roots_from_build_manifest(
 pub(super) fn bootstrap_gc_roots_from_build_manifests(
     config: &ProductBuildConfig,
 ) -> anyhow::Result<PathBuf> {
-    let manifest_dir = config
+    let current_artifacts_path = config
+        .build_root
+        .join("published")
+        .join(current_artifacts_latest_alias_filename());
+    let current_artifacts: Vec<CurrentArtifactsManifest> = serde_json::from_slice(
+        &fs::read(&current_artifacts_path)
+            .with_context(|| format!("failed to read {}", current_artifacts_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", current_artifacts_path.display()))?;
+    if current_artifacts.is_empty() {
+        bail!(
+            "{} must contain at least one manifest",
+            current_artifacts_path.display()
+        );
+    }
+
+    let build_manifests_root = config
         .build_root
         .join("private-work")
-        .join("build-manifests")
-        .join(publish_path_key(&config.publish_dir, &config.build_root));
+        .join("build-manifests");
+    let mut manifest_dirs = BTreeMap::new();
+    for manifest in &current_artifacts {
+        let publish_dir = publish_dir_for_current_artifacts_manifest(config, manifest)?;
+        let publish_key = publish_path_key(&publish_dir, &config.build_root);
+        manifest_dirs.insert(publish_key.clone(), build_manifests_root.join(publish_key));
+    }
+
     let mut records = BTreeMap::<String, Vec<NodeRecord>>::new();
-    if manifest_dir.is_dir() {
+    for (publish_key, manifest_dir) in manifest_dirs {
+        if !manifest_dir.is_dir() {
+            bail!(
+                "build manifest directory for current publication {} is missing: {}",
+                publish_key,
+                manifest_dir.display()
+            );
+        }
+        let mut found = false;
         for entry in fs::read_dir(&manifest_dir)
             .with_context(|| format!("failed to read {}", manifest_dir.display()))?
         {
@@ -139,16 +169,72 @@ pub(super) fn bootstrap_gc_roots_from_build_manifests(
                 &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
             )
             .with_context(|| format!("failed to parse {}", path.display()))?;
-            records.insert(format!("{}:build-manifest", manifest.cycle), manifest.nodes);
+            found = true;
+            records
+                .entry(format!("{}:{}:build-manifest", publish_key, manifest.cycle))
+                .or_default()
+                .extend(manifest.nodes);
+        }
+        if !found {
+            bail!(
+                "no build-manifest_*.json files found in {}",
+                manifest_dir.display()
+            );
         }
     }
-    if records.is_empty() {
+    record_gc_roots(config, "full", &records)
+}
+
+fn publish_dir_for_current_artifacts_manifest(
+    config: &ProductBuildConfig,
+    manifest: &CurrentArtifactsManifest,
+) -> anyhow::Result<PathBuf> {
+    let packaged_root = manifest.artifact_roots.packaged.trim();
+    let relative_packaged_root = packaged_root.trim_matches('/');
+    if relative_packaged_root.is_empty() {
+        bail!("current_artifacts artifact_roots.packaged must not be empty");
+    }
+    let relative_packaged_path = Path::new(relative_packaged_root);
+    if relative_packaged_path.is_absolute() {
         bail!(
-            "no build-manifest_*.json files found in {}",
-            manifest_dir.display()
+            "current_artifacts artifact_roots.packaged must be relative: {}",
+            manifest.artifact_roots.packaged
         );
     }
-    record_gc_roots(config, "full", &records)
+    for component in relative_packaged_path.components() {
+        if !matches!(component, std::path::Component::Normal(_)) {
+            bail!(
+                "current_artifacts artifact_roots.packaged contains an invalid path component: {}",
+                manifest.artifact_roots.packaged
+            );
+        }
+    }
+    if relative_packaged_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some("packaged")
+    {
+        bail!(
+            "current_artifacts artifact_roots.packaged must end with packaged/: {}",
+            manifest.artifact_roots.packaged
+        );
+    }
+    let relative_publish_dir = relative_packaged_path.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "current_artifacts artifact_roots.packaged has no publish directory: {}",
+            manifest.artifact_roots.packaged
+        )
+    })?;
+    if relative_publish_dir.as_os_str().is_empty() {
+        bail!(
+            "current_artifacts artifact_roots.packaged has no publish directory: {}",
+            manifest.artifact_roots.packaged
+        );
+    }
+    Ok(config
+        .build_root
+        .join("published")
+        .join(relative_publish_dir))
 }
 
 pub fn gc_build_cache(config: &BuildCacheGcConfig) -> anyhow::Result<BuildCacheGcReport> {
@@ -259,6 +345,143 @@ pub fn gc_build_cache(config: &BuildCacheGcConfig) -> anyhow::Result<BuildCacheG
         &mut report,
     )?;
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn test_config(build_root: PathBuf) -> ProductBuildConfig {
+        let publish_dir = build_root
+            .join("published")
+            .join("gc")
+            .join("00000000T000000Z");
+        ProductBuildConfig {
+            chart_cutline_root: PathBuf::new(),
+            build_root,
+            publish_dir: publish_dir.clone(),
+            packaged_dir: publish_dir.join("packaged"),
+            profile: ProductBuildProfile::Production,
+            publish_label: "gc".to_string(),
+            publish_timestamp: "00000000T000000Z".to_string(),
+            target_cycle: None,
+            fetch_jobs: 1,
+            cpu_jobs: 1,
+            max_heavy_jobs: 1,
+            fetch_cache_root: PathBuf::new(),
+            fetch_cache_mode: "cache-first".to_string(),
+        }
+    }
+
+    fn current_manifest(
+        label: &str,
+        timestamp: &str,
+        nav_contract: &str,
+    ) -> CurrentArtifactsManifest {
+        CurrentArtifactsManifest {
+            schema_version: 1,
+            contracts: BTreeMap::from([("nav-db".to_string(), nav_contract.to_string())]),
+            artifact_roots: CurrentArtifactRoots {
+                packaged: format!("{label}/{timestamp}/packaged/"),
+                unpacked: format!("{label}/{timestamp}/unpacked/"),
+            },
+            as_of_date: "2026-06-09".to_string(),
+            as_of_utc: "2026-06-09T00:00:00Z".to_string(),
+            bundles: Vec::new(),
+            startup_prefetch: None,
+            diagnostics: None,
+        }
+    }
+
+    fn node_record(name: &str, fingerprint: &str) -> NodeRecord {
+        NodeRecord {
+            name: name.to_string(),
+            fingerprint: fingerprint.to_string(),
+            started_at_utc: "2026-06-09T00:00:00Z".to_string(),
+            finished_at_utc: "2026-06-09T00:00:01Z".to_string(),
+            elapsed_ms: 1000,
+            cache_hit: true,
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            output_details: BTreeMap::new(),
+        }
+    }
+
+    fn write_build_manifest(
+        build_root: &Path,
+        label: &str,
+        timestamp: &str,
+        cycle: &str,
+        nodes: Vec<NodeRecord>,
+    ) {
+        let publish_dir = build_root.join("published").join(label).join(timestamp);
+        let manifest_dir = build_root
+            .join("private-work")
+            .join("build-manifests")
+            .join(publish_path_key(&publish_dir, build_root));
+        fs::create_dir_all(&manifest_dir).unwrap();
+        let manifest = BuildManifest {
+            schema_version: 1,
+            profile: "production".to_string(),
+            cycle: cycle.to_string(),
+            build_root: build_root.display().to_string(),
+            generated_at_utc: "2026-06-09T00:00:01Z".to_string(),
+            fetch_cache_root: "cache/fetch".to_string(),
+            fetch_cache_mode: "cache-first".to_string(),
+            nodes,
+        };
+        fs::write(
+            manifest_dir.join(format!("build-manifest_{cycle}.json")),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn bootstrap_gc_roots_from_build_manifests_uses_merged_current_artifacts() {
+        let temp = tempdir().unwrap();
+        let build_root = temp.path().join("artifacts");
+        let config = test_config(build_root.clone());
+        let current_artifacts = vec![
+            current_manifest("nav6-sunset-abc", "20260609T000000Z", "NAV6"),
+            current_manifest("master-def", "20260609T000010Z", "NAV9"),
+        ];
+        fs::create_dir_all(build_root.join("published")).unwrap();
+        fs::write(
+            build_root
+                .join("published")
+                .join(current_artifacts_latest_alias_filename()),
+            serde_json::to_vec_pretty(&current_artifacts).unwrap(),
+        )
+        .unwrap();
+        write_build_manifest(
+            &build_root,
+            "nav6-sunset-abc",
+            "20260609T000000Z",
+            "2606",
+            vec![node_record("nav-db", "nav6-fingerprint")],
+        );
+        write_build_manifest(
+            &build_root,
+            "master-def",
+            "20260609T000010Z",
+            "2606",
+            vec![node_record("nav-db", "nav9-fingerprint")],
+        );
+
+        let roots_path =
+            bootstrap_gc_roots_from_build_manifests(&config).expect("bootstrap GC roots");
+        let roots: GcRootsManifest =
+            serde_json::from_slice(&fs::read(roots_path).unwrap()).unwrap();
+        let rooted = roots
+            .node_roots
+            .values()
+            .map(|root| (root.node_name.as_str(), root.fingerprint.as_str()))
+            .collect::<BTreeSet<_>>();
+        assert!(rooted.contains(&("nav-db", "nav6-fingerprint")));
+        assert!(rooted.contains(&("nav-db", "nav9-fingerprint")));
+    }
 }
 
 pub(super) fn scrub_terrain_private_work_scratch(

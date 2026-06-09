@@ -344,7 +344,7 @@ impl DaemonConfig {
         let mut listen = None;
         let mut scratch_root = None;
         let mut fetch_cache_root = None;
-        let mut fetch_cache_mode = "cache-first".to_string();
+        let mut fetch_cache_mode = "fill".to_string();
         let mut fetch_jobs = 4_usize;
         let mut poll_loop_interval_ms = 5_000_u64;
         let mut simulation = false;
@@ -1513,6 +1513,7 @@ mod tests {
         )?;
         assert_eq!(config.live_root, PathBuf::from("/tmp/live-feeds"));
         assert_eq!(config.listen, "127.0.0.1:8095".parse::<SocketAddr>()?);
+        assert_eq!(config.fetch_cache_mode, "fill");
         assert_eq!(config.event_interval_ms, 17);
         assert!(config.check_config);
         assert!(config.simulation.is_none());

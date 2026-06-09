@@ -799,7 +799,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/aerobag/env
-ExecStart=/bin/bash -lc 'source /etc/aerobag/env; exec "$CARGO_TARGET_DIR/release/aerobag-live-feedsd" --live-root "$ARTIFACT_ROOT/live-feeds" --scratch-root "$ARTIFACT_ROOT/private-work/live-feeds" --fetch-cache-root "$ARTIFACT_ROOT/cache/fetch" --listen "$AEROBAG_LIVE_FEEDS_LISTEN"'
+ExecStart=/bin/bash -lc 'source /etc/aerobag/env; exec "$CARGO_TARGET_DIR/release/aerobag-live-feedsd" --live-root "$ARTIFACT_ROOT/live-feeds" --scratch-root "$ARTIFACT_ROOT/private-work/live-feeds" --fetch-cache-root "$ARTIFACT_ROOT/cache/fetch" --fetch-cache-mode fill --listen "$AEROBAG_LIVE_FEEDS_LISTEN"'
 Restart=always
 RestartSec=10
 

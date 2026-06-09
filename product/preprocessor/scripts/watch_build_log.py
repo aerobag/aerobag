@@ -3,12 +3,15 @@
 import argparse
 import curses
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import re
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 LAUNCH_RE = re.compile(
@@ -292,6 +295,126 @@ def format_runtime(now_wall: datetime, launched_wall: str) -> str:
     if hours:
         return f"{hours}:{minutes:02d}:{seconds:02d}"
     return f"{minutes}:{seconds:02d}"
+
+
+def runtime_seconds(now_wall: datetime, launched_wall: str | None) -> int | None:
+    if not launched_wall:
+        return None
+    try:
+        start = datetime.fromisoformat(launched_wall)
+        delta = (now_wall - start).total_seconds()
+    except ValueError:
+        return None
+    return max(int(delta), 0)
+
+
+def task_snapshot(task: TaskState, now_wall: datetime) -> dict:
+    runtime = runtime_seconds(now_wall, task.launched_wall)
+    return {
+        "task": task.task,
+        "launched_at": task.launched_at,
+        "launched_wall": task.launched_wall,
+        "weight": task.weight,
+        "status": task.status,
+        "details": task.details,
+        "completed_at": task.completed_at,
+        "completed_wall": task.completed_wall,
+        "runtime_seconds": runtime,
+        "runtime": format_runtime(now_wall, task.launched_wall),
+    }
+
+
+def state_snapshot(
+    state: BuildState,
+    log_path: Path,
+    completed_limit: int | None = 20,
+    now_wall: datetime | None = None,
+) -> dict:
+    now_wall = now_wall or datetime.now(timezone.utc)
+    diagnostics = read_diagnostics_state(state)
+    pid_alive = pid_is_alive(state.pid)
+    current_artifacts_path = parse_current_artifacts_path(state.final_details)
+    if (
+        current_artifacts_path is None
+        and state.diagnostic_error_count is not None
+        and state.publish_dir is not None
+    ):
+        current_artifacts_path = product_artifacts_path(state.publish_dir)
+    if (
+        current_artifacts_path is None
+        and state.diagnostic_error_count is not None
+        and state.build_root is not None
+    ):
+        current_artifacts_path = latest_current_artifacts_path(state.build_root)
+
+    result = "in_progress"
+    if state.final_result == "PASS":
+        result = "pass"
+    elif state.final_result == "FAIL":
+        result = "fail"
+
+    return {
+        "schema_version": 1,
+        "generated_at_utc": now_wall.isoformat().replace("+00:00", "Z"),
+        "log": {
+            "path": str(log_path),
+            "exists": log_path.exists(),
+            "last_line": state.last_line,
+            "last_timestamp": state.last_timestamp,
+        },
+        "build": {
+            "publish_label": state.publish_label or None,
+            "header": state.header,
+            "cycle_summary": state.cycle_summary,
+            "bundle_cycle": state.bundle_cycle,
+            "build_root": str(state.build_root) if state.build_root is not None else None,
+            "publish_dir": str(state.publish_dir) if state.publish_dir is not None else None,
+            "current_artifacts": (
+                str(current_artifacts_path) if current_artifacts_path is not None else None
+            ),
+        },
+        "progress": {
+            "total_tasks": state.total_tasks,
+            "launched": state.launched,
+            "completed": state.completed,
+            "pending": state.pending_count(),
+            "active": len(state.active_tasks()),
+            "running_units": state.running_units,
+            "work_unit_budget": state.work_unit_budget,
+            "completion_fraction": (
+                state.completed / state.total_tasks if state.total_tasks > 0 else None
+            ),
+            "scheduled_fraction": (
+                state.launched / state.total_tasks if state.total_tasks > 0 else None
+            ),
+        },
+        "result": {
+            "status": result,
+            "raw": state.final_result,
+            "at": state.final_at,
+            "details": state.final_details,
+        },
+        "diagnostics": {
+            "status": diagnostics.status,
+            "text": diagnostics.text,
+            "color": diagnostics.color,
+        },
+        "process": {
+            "pid": state.pid,
+            "alive": pid_alive,
+        },
+        "tasks": {
+            "active": [task_snapshot(task, now_wall) for task in state.active_tasks()],
+            "completed": [
+                task_snapshot(task, now_wall)
+                for task in (
+                    state.recent_completed(completed_limit)
+                    if completed_limit is not None
+                    else [state.tasks[key] for key in reversed(state.completion_order)]
+                )
+            ],
+        },
+    }
 
 
 def read_diagnostics_state(state: BuildState) -> DiagnosticsState:
@@ -646,8 +769,420 @@ def run_ui(stdscr, log_path: Path, refresh_seconds: float) -> None:
             break
 
 
+def print_json_snapshot(log_path: Path, completed_limit: int | None) -> None:
+    snapshot = state_snapshot(read_state(log_path), log_path, completed_limit)
+    print(json.dumps(snapshot, indent=2, sort_keys=True))
+
+
+def run_json_watch(log_path: Path, refresh_seconds: float, completed_limit: int | None) -> None:
+    while True:
+        snapshot = state_snapshot(read_state(log_path), log_path, completed_limit)
+        try:
+            print(json.dumps(snapshot, sort_keys=True), flush=True)
+        except BrokenPipeError:
+            sys.stdout = open(os.devnull, "w")
+            return
+        time.sleep(refresh_seconds)
+
+
+def parse_listen_address(value: str) -> tuple[str, int]:
+    if ":" not in value:
+        return value, 8097
+    host, port = value.rsplit(":", 1)
+    return host or "127.0.0.1", int(port)
+
+
+def run_web_server(log_path: Path, listen: str, refresh_seconds: float) -> None:
+    host, port = parse_listen_address(listen)
+
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "AerobagBuildWatch/1"
+
+        def log_message(self, format: str, *args) -> None:
+            return
+
+        def do_HEAD(self) -> None:
+            self._handle_get(send_body=False)
+
+        def do_GET(self) -> None:
+            self._handle_get(send_body=True)
+
+        def _handle_get(self, send_body: bool) -> None:
+            path = urlparse(self.path).path
+            if path == "/" or path == "/index.html":
+                self._send_bytes(
+                    200,
+                    build_dashboard_html(refresh_seconds).encode("utf-8"),
+                    "text/html; charset=utf-8",
+                    send_body,
+                )
+                return
+            if path == "/api/state":
+                payload = state_snapshot(read_state(log_path), log_path, completed_limit=None)
+                self._send_bytes(
+                    200,
+                    json.dumps(payload, sort_keys=True).encode("utf-8"),
+                    "application/json",
+                    send_body,
+                )
+                return
+            if path == "/health.json":
+                self._send_bytes(200, b'{"ok":true}\n', "application/json", send_body)
+                return
+            self._send_bytes(404, b"not found\n", "text/plain; charset=utf-8", send_body)
+
+        def _send_bytes(
+            self, status: int, body: bytes, content_type: str, send_body: bool = True
+        ) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            if send_body:
+                self.wfile.write(body)
+
+    server = ThreadingHTTPServer((host, port), Handler)
+    print(f"watch_build_log serving {log_path} on http://{host}:{port}/", flush=True)
+    server.serve_forever()
+
+
+def build_dashboard_html(refresh_seconds: float) -> str:
+    refresh_ms = max(int(refresh_seconds * 1000), 250)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aerobag Build Watch</title>
+  <style>
+    :root {{
+      color-scheme: dark;
+      --bg: #101312;
+      --panel: #171b19;
+      --panel-strong: #1f2522;
+      --line: #303833;
+      --text: #edf3ee;
+      --muted: #a9b5ad;
+      --green: #50d890;
+      --yellow: #f0c85a;
+      --red: #ff6b6b;
+      --cyan: #66d9e8;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }}
+    main {{
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 24px;
+    }}
+    header {{
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 16px;
+      align-items: start;
+      margin-bottom: 18px;
+    }}
+    h1 {{
+      margin: 0;
+      font-size: 24px;
+      font-weight: 700;
+    }}
+    .subtle {{ color: var(--muted); }}
+    .mono {{ font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; }}
+    .pill {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 4px 10px;
+      border: 1px solid var(--line);
+      background: var(--panel-strong);
+      color: var(--text);
+      border-radius: 6px;
+      font-weight: 650;
+      white-space: nowrap;
+    }}
+    .ok {{ color: var(--green); }}
+    .warn {{ color: var(--yellow); }}
+    .bad {{ color: var(--red); }}
+    .info {{ color: var(--cyan); }}
+    .grid {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 12px;
+    }}
+    .panel {{
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 14px;
+      min-width: 0;
+    }}
+    .metric-label {{
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }}
+    .metric-value {{
+      margin-top: 6px;
+      font-size: 26px;
+      line-height: 1.1;
+      font-weight: 760;
+    }}
+    .bar {{
+      height: 10px;
+      background: #0b0d0c;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      margin-top: 10px;
+    }}
+    .bar > div {{
+      height: 100%;
+      width: 0%;
+      background: var(--green);
+      transition: width 180ms linear;
+    }}
+    .wide {{
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(0, .8fr);
+      gap: 12px;
+    }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }}
+    th, td {{
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      padding: 8px 6px;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }}
+    th {{
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }}
+    tr:last-child td {{ border-bottom: 0; }}
+    .status-line {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }}
+    .header-meta {{
+      margin-top: 8px;
+      max-width: 100%;
+    }}
+    .header-meta summary {{
+      cursor: pointer;
+      color: var(--muted);
+      user-select: none;
+      width: fit-content;
+    }}
+    .header-meta pre {{
+      margin: 8px 0 0;
+      padding: 10px;
+      max-height: 160px;
+      overflow: auto;
+      background: #0b0d0c;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--muted);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }}
+    .last-line {{
+      margin-top: 12px;
+      padding: 10px;
+      background: #0b0d0c;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--muted);
+      min-height: 42px;
+      overflow-wrap: anywhere;
+    }}
+    @media (max-width: 980px) {{
+      main {{ padding: 16px; }}
+      header, .wide {{ grid-template-columns: 1fr; }}
+      .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+    }}
+    @media (max-width: 560px) {{
+      .grid {{ grid-template-columns: 1fr; }}
+      .metric-value {{ font-size: 22px; }}
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Aerobag Build Watch</h1>
+        <div class="status-line">
+          <span id="publishLabel" class="pill info">publish=?</span>
+          <span id="cycleLabel" class="pill">cycle=?</span>
+        </div>
+        <details class="header-meta">
+          <summary>Build metadata</summary>
+          <pre id="headerLine"></pre>
+        </details>
+      </div>
+      <div id="resultPill" class="pill">connecting</div>
+    </header>
+
+    <section class="grid">
+      <div class="panel">
+        <div class="metric-label">Completed</div>
+        <div id="completedMetric" class="metric-value">-</div>
+        <div class="bar"><div id="completedBar"></div></div>
+      </div>
+      <div class="panel">
+        <div class="metric-label">Scheduled</div>
+        <div id="scheduledMetric" class="metric-value">-</div>
+        <div class="bar"><div id="scheduledBar"></div></div>
+      </div>
+      <div class="panel">
+        <div class="metric-label">Running Units</div>
+        <div id="unitsMetric" class="metric-value">-</div>
+      </div>
+      <div class="panel">
+        <div class="metric-label">Active Tasks</div>
+        <div id="activeMetric" class="metric-value">-</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="status-line" id="statusLine"></div>
+      <div class="last-line mono" id="lastLine"></div>
+    </section>
+
+    <section class="wide" style="margin-top:12px">
+      <div class="panel">
+        <h2 style="margin:0 0 8px;font-size:16px">Active Tasks</h2>
+        <table>
+          <thead><tr><th style="width:88px">Start</th><th>Task</th><th style="width:88px">Weight</th><th style="width:96px">Runtime</th></tr></thead>
+          <tbody id="activeTasks"></tbody>
+        </table>
+      </div>
+      <div class="panel">
+        <h2 style="margin:0 0 8px;font-size:16px">Completed</h2>
+        <table>
+          <thead><tr><th style="width:88px">Done</th><th>Task</th></tr></thead>
+          <tbody id="completedTasks"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script>
+    const refreshMs = {refresh_ms};
+    const cls = (status) => status === "pass" || status === true ? "ok" : status === "fail" || status === false ? "bad" : "warn";
+    const text = (value) => value == null || value === "" ? "-" : String(value);
+    const pct = (fraction) => fraction == null ? 0 : Math.max(0, Math.min(100, Math.round(fraction * 1000) / 10));
+    function set(id, value) {{ document.getElementById(id).textContent = value; }}
+    function pill(value, className) {{ return `<span class="pill ${{className || ""}}">${{escapeHtml(value)}}</span>`; }}
+    function escapeHtml(value) {{
+      return String(value).replace(/[&<>"']/g, (ch) => ({{ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }}[ch]));
+    }}
+    function taskRows(tasks, active) {{
+      if (!tasks.length) {{
+        return `<tr><td colspan="${{active ? 4 : 2}}" class="subtle">(none)</td></tr>`;
+      }}
+      return tasks.map((task) => active
+        ? `<tr><td class="mono">${{escapeHtml(text(task.launched_at))}}</td><td class="mono">${{escapeHtml(task.task)}}</td><td>${{task.weight}}</td><td class="mono">${{escapeHtml(text(task.runtime))}}</td></tr>`
+        : `<tr><td class="mono">${{escapeHtml(text(task.completed_at))}}</td><td><span class="mono">${{escapeHtml(task.task)}}</span><br><span class="subtle">${{escapeHtml(task.details || "")}}</span></td></tr>`
+      ).join("");
+    }}
+    function metadataLines(state) {{
+      const lines = [];
+      const seen = new Set();
+      function add(line) {{
+        if (!line || seen.has(line)) return;
+        seen.add(line);
+        lines.push(line);
+      }}
+      function addTokens(source) {{
+        if (!source) return;
+        for (const token of String(source).split(/\\s+/)) {{
+          if (!token) continue;
+          if (token.startsWith("+")) {{
+            add(`elapsed=${{token}}`);
+          }} else if (token.includes("=")) {{
+            add(token);
+          }}
+        }}
+      }}
+      add(`log_path=${{state.log.path}}${{state.log.exists ? "" : " (missing)"}}`);
+      addTokens(state.build.header);
+      addTokens(state.build.cycle_summary);
+      return lines.join("\\n") || "(none)";
+    }}
+    function render(state) {{
+      const progress = state.progress;
+      set("publishLabel", `publish=${{state.build.publish_label || "?"}}`);
+      const cycleEl = document.getElementById("cycleLabel");
+      if (state.build.bundle_cycle && state.build.bundle_cycle !== "?") {{
+        cycleEl.style.display = "";
+        cycleEl.textContent = `cycle=${{state.build.bundle_cycle}}`;
+      }} else {{
+        cycleEl.style.display = "none";
+      }}
+      set("headerLine", metadataLines(state));
+      const result = state.result.status;
+      const resultEl = document.getElementById("resultPill");
+      resultEl.className = `pill ${{cls(result)}}`;
+      resultEl.textContent = result === "in_progress" ? "in progress" : result;
+      set("completedMetric", `${{progress.completed}} / ${{progress.total_tasks || "?"}}`);
+      set("scheduledMetric", `${{progress.launched}} / ${{progress.total_tasks || "?"}}`);
+      set("unitsMetric", `${{progress.running_units}} / ${{progress.work_unit_budget || "?"}}`);
+      set("activeMetric", String(progress.active));
+      document.getElementById("completedBar").style.width = pct(progress.completion_fraction) + "%";
+      document.getElementById("scheduledBar").style.width = pct(progress.scheduled_fraction) + "%";
+      const statusParts = [
+        pill(`pid=${{state.process.pid || "unknown"}} ${{state.process.alive === true ? "alive" : state.process.alive === false ? "dead" : "unknown"}}`, cls(state.process.alive)),
+        pill(`pending=${{progress.pending}}`, "info"),
+        pill(`updated=${{state.generated_at_utc}}`, "")
+      ];
+      if (!(result === "in_progress" && state.diagnostics.status === "pending")) {{
+        statusParts.splice(1, 0, pill(state.diagnostics.text, state.diagnostics.color === "green" ? "ok" : "warn"));
+      }}
+      document.getElementById("statusLine").innerHTML = statusParts.join("");
+      set("lastLine", state.log.last_line || "last: (none yet)");
+      document.getElementById("activeTasks").innerHTML = taskRows(state.tasks.active, true);
+      document.getElementById("completedTasks").innerHTML = taskRows(state.tasks.completed, false);
+    }}
+    async function refresh() {{
+      try {{
+        const response = await fetch(new URL("api/state", window.location.href), {{ cache: "no-store" }});
+        render(await response.json());
+      }} catch (error) {{
+        document.getElementById("resultPill").className = "pill bad";
+        document.getElementById("resultPill").textContent = String(error);
+      }} finally {{
+        setTimeout(refresh, refreshMs);
+      }}
+    }}
+    refresh();
+  </script>
+</body>
+</html>
+"""
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Watch an aerobag orchestrator log in curses.")
+    parser = argparse.ArgumentParser(description="Watch an aerobag orchestrator log.")
     parser.add_argument(
         "log_path",
         nargs="?",
@@ -660,9 +1195,41 @@ def main() -> int:
         default=2.0,
         help="Refresh interval in seconds",
     )
+    parser.add_argument(
+        "--recent-limit",
+        type=int,
+        default=20,
+        help="Number of completed tasks to include in JSON snapshots; negative means all",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print one machine-readable JSON snapshot and exit",
+    )
+    parser.add_argument(
+        "--json-watch",
+        action="store_true",
+        help="Stream one compact JSON snapshot per line",
+    )
+    parser.add_argument(
+        "--serve",
+        nargs="?",
+        const="127.0.0.1:8097",
+        help="Serve a web dashboard and /api/state JSON endpoint, optionally on host:port",
+    )
     args = parser.parse_args()
 
     log_path = Path(os.path.expanduser(args.log_path))
+    completed_limit = None if args.recent_limit < 0 else args.recent_limit
+    if args.json:
+        print_json_snapshot(log_path, completed_limit)
+        return 0
+    if args.json_watch:
+        run_json_watch(log_path, args.refresh_seconds, completed_limit)
+        return 0
+    if args.serve:
+        run_web_server(log_path, args.serve, args.refresh_seconds)
+        return 0
     curses.wrapper(run_ui, log_path, args.refresh_seconds)
     return 0
 

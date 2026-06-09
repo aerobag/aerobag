@@ -93,6 +93,8 @@ The deploy installs these systemd units:
 - `aerobag-live-feeds.service`: continuous live-feeds daemon.
 - `aerobag-client-debug-log.service`: localhost-only receiver for browser
   `POST /__debug_log` batches.
+- `aerobag-build-watch.service`: localhost-only web dashboard and JSON endpoint
+  for the product build log.
 - `aerobag-health.service` and `aerobag-health.timer`: refresh machine-readable
   health status every minute.
 - `nginx.service`: public HTTP server on port 80.
@@ -111,7 +113,14 @@ Inspect build progress:
 ```bash
 ssh root@aerobag-prod.iac.jonh.net \
   /opt/aerobag/product/preprocessor/scripts/watch_build_log.py \
-  --log /mnt/aerobag-data/artifacts/private-work/orchestrator-logs/published/master.log
+  /mnt/aerobag-data/artifacts/private-work/orchestrator-logs/published/master.log
+```
+
+Or use the web dashboard:
+
+```text
+http://aerobag-prod.iac.jonh.net/build-watch/
+http://aerobag-prod.iac.jonh.net/build-watch/api/state
 ```
 
 The default timer command uses:
@@ -181,6 +190,7 @@ Prod serves:
 - `/icons/`: source-tree icon assets
 - `/health.json`: machine-readable deploy/build/live-feed status
 - `/__debug_log`: proxied to the client debug log receiver
+- `/build-watch/`: proxied to the build log dashboard
 
 The nginx config blocks `/packages/cache/` and `/packages/private-work/`.
 

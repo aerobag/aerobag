@@ -109,6 +109,35 @@ class WatchBuildLogTests(unittest.TestCase):
 
         self.assertIsNone(path)
 
+    def test_json_snapshot_reports_progress_and_liveness(self) -> None:
+        state = watch_build_log.BuildState()
+        state.apply_line(
+            "2026-06-09T21:00:00+00:00 +0:00 begin pid=1 profile=production "
+            "build_root=/tmp/build publish_dir=/tmp/build/published/master/20260609T210000Z "
+            "publish_label=master scheduler=product_weighted_dag"
+        )
+        state.apply_line(
+            "2026-06-09T21:00:01+00:00 +0:01 scheduler-ready tasks=2 work_unit_budget=4"
+        )
+        state.apply_line(
+            "2026-06-09T21:00:02+00:00 +0:02 product-scheduler-launch nav-db "
+            "launched=1/2 completed=0/2 weight=1 running_units=1/4"
+        )
+        state.apply_line(
+            "2026-06-09T21:00:03+00:00 +0:03 product-scheduler-complete nav-db "
+            "completed=1/2 running_units=0/4 published"
+        )
+
+        snapshot = watch_build_log.state_snapshot(state, Path("/tmp/build.log"))
+
+        self.assertEqual(snapshot["schema_version"], 1)
+        self.assertEqual(snapshot["build"]["publish_label"], "master")
+        self.assertEqual(snapshot["progress"]["total_tasks"], 2)
+        self.assertEqual(snapshot["progress"]["completed"], 1)
+        self.assertEqual(snapshot["progress"]["pending"], 1)
+        self.assertEqual(snapshot["tasks"]["completed"][0]["task"], "nav-db")
+        self.assertEqual(snapshot["process"]["alive"], True)
+
 
 if __name__ == "__main__":
     unittest.main()

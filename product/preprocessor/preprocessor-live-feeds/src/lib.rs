@@ -575,6 +575,8 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
         &request.taf_xml_path,
         &request.pirep_xml_path,
     )?;
+    let content_timestamp = metar_product_content_timestamp(&model, request.generated_at_utc)?;
+    let content_timestamp_text = content_timestamp.to_rfc3339();
     let metar_count = model.metars_by_station.len();
     let taf_count = model.tafs_by_station.len();
     let pirep_count = model.pireps.len();
@@ -595,8 +597,8 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
         &StructuredMetarDataset {
             schema_version: 4,
             version_label: request.version_label.clone(),
-            generated_at_utc: request.generated_at_utc.to_rfc3339(),
-            observed_at_utc: request.generated_at_utc.to_rfc3339(),
+            generated_at_utc: content_timestamp_text.clone(),
+            observed_at_utc: content_timestamp_text.clone(),
             metar_count,
             metars_by_station: model.metars_by_station.clone(),
         },
@@ -627,7 +629,7 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
     let manifest = MetarManifest {
         schema_version: METAR_PRODUCT_CONTRACT_VERSION,
         version_label: request.version_label.clone(),
-        generated_at_utc: request.generated_at_utc.to_rfc3339(),
+        generated_at_utc: content_timestamp_text,
         files: MetarManifestFiles {
             manifest: "manifest.json".to_string(),
             structured_json: "metars.json".to_string(),
@@ -724,6 +726,42 @@ fn metar_product_model(
         tafs_by_station,
         pireps,
     })
+}
+
+fn metar_product_content_timestamp(
+    model: &MetarProductModel,
+    fallback: DateTime<Utc>,
+) -> anyhow::Result<DateTime<Utc>> {
+    let mut latest = None;
+    for value in model
+        .metars_by_station
+        .values()
+        .map(|record| record.observed_at_utc.as_str())
+        .chain(
+            model
+                .tafs_by_station
+                .values()
+                .map(|record| record.issued_at_utc.as_str()),
+        )
+        .chain(
+            model
+                .pireps
+                .iter()
+                .map(|record| record.observed_at_utc.as_str()),
+        )
+    {
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let parsed = DateTime::parse_from_rfc3339(value)
+            .with_context(|| format!("failed to parse METAR source timestamp {value:?}"))?
+            .with_timezone(&Utc);
+        if latest.is_none_or(|current| parsed > current) {
+            latest = Some(parsed);
+        }
+    }
+    Ok(latest.unwrap_or(fallback))
 }
 
 fn structured_metar_records(input_xml_path: &Path) -> anyhow::Result<Vec<StructuredMetarRecord>> {
@@ -2498,6 +2536,9 @@ mod tests {
         let generated_at_utc = DateTime::parse_from_rfc3339("2026-04-16T04:00:00Z")
             .expect("valid fixture timestamp")
             .with_timezone(&Utc);
+        let later_generated_at_utc = DateTime::parse_from_rfc3339("2026-04-16T04:05:00Z")
+            .expect("valid fixture timestamp")
+            .with_timezone(&Utc);
         let first_result = build_metar_dataset(&BuildMetarRequest {
             metar_xml_path: first,
             taf_xml_path: taf_first,
@@ -2512,7 +2553,7 @@ mod tests {
             pirep_xml_path: pirep_second,
             output_dir: temp.path().join("second-out"),
             version_label,
-            generated_at_utc,
+            generated_at_utc: later_generated_at_utc,
         })?;
 
         assert_eq!(

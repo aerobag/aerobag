@@ -27,6 +27,7 @@ const metarBakeoffDeltaFrom = process.env.AEROBAG_METAR_BAKEOFF_DELTA_FROM ?? "f
 const metarBakeoffDeltaTo = process.env.AEROBAG_METAR_BAKEOFF_DELTA_TO ?? "1bd77ad5a9393345";
 const sharedRoot = path.join(repoRoot, "ui", "shared");
 const sharedFixturesRoot = path.join(repoRoot, "ui", "shared-fixtures");
+const productContractsPath = path.join(repoRoot, "crates", "product-contracts", "src", "lib.rs");
 const debugLogPath = path.join("/tmp", "aerobag-web-debug.log");
 const requestLogPath = path.join("/tmp", "aerobag-web-requests.log");
 const artifactReadPathConfigFile = path.join(repoRoot, ".aerobag-artifact-read-path");
@@ -61,6 +62,31 @@ for (const [index, manifest] of currentArtifacts.entries()) {
     }
   }
 }
+
+function loadProductContracts(): Record<string, string> {
+  const source = fs.readFileSync(productContractsPath, "utf8");
+  const constants = new Map<string, string>();
+  for (const match of source.matchAll(/pub const ([A-Z0-9_]+_CONTRACT_ID): &str = "([^"]+)";/g)) {
+    constants.set(match[1], match[2]);
+  }
+  const contracts: Record<string, string> = {};
+  for (const match of source.matchAll(
+    /ProductContract\s*\{\s*family_id:\s*"([^"]+)",\s*contract_id:\s*([A-Z0-9_]+_CONTRACT_ID),\s*\}/g,
+  )) {
+    const contractId = constants.get(match[2]);
+    if (!contractId) {
+      throw new Error(`${productContractsPath} references unknown contract constant ${match[2]}`);
+    }
+    contracts[match[1]] = contractId;
+  }
+  if (!contracts["nav-db"]) {
+    throw new Error(`${productContractsPath} did not declare a nav-db contract`);
+  }
+  return contracts;
+}
+
+const productContracts = loadProductContracts();
+
 function appendRequestLog(entry: Record<string, unknown>) {
   fs.appendFileSync(requestLogPath, `${JSON.stringify({ ts: Date.now(), ...entry })}\n`);
 }
@@ -246,8 +272,20 @@ function aerobagStaticPlugin(): Plugin {
   };
 }
 
+function aerobagProductContractsPlugin(): Plugin {
+  return {
+    name: "aerobag-product-contracts",
+    transformIndexHtml(html) {
+      return html.replace(
+        "__AEROBAG_PRODUCT_CONTRACTS__",
+        JSON.stringify(productContracts),
+      );
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), aerobagStaticPlugin()],
+  plugins: [aerobagProductContractsPlugin(), react(), aerobagStaticPlugin()],
   define: {
     __AEROBAG_LIVE_FEEDS_ORIGIN__: JSON.stringify(liveFeedsOrigin),
   },

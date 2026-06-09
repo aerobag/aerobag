@@ -214,17 +214,12 @@
           const contracts = manifest && manifest.contracts && typeof manifest.contracts === "object"
             ? manifest.contracts
             : null;
-          return !!contracts
-            && contracts["nav-db"] === "NAV7"
-            && contracts["sec"] === "SEC1"
-            && contracts["tac"] === "TAC1"
-            && contracts["enr-l"] === "ENL1"
-            && contracts["enr-h"] === "ENH1"
-            && contracts["tpp"] === "TPP1"
-            && contracts["csup"] === "CSUP1"
-            && contracts["terrain"] === "TER1"
-            && contracts["shaded-relief"] === "SHD1"
-            && contracts["world-basemap"] === "WBM1";
+          const requiredContracts = __AEROBAG_PRODUCT_CONTRACTS__;
+          const entries = contracts ? Object.entries(contracts) : [];
+          return entries.length > 0
+            && entries.every(function (entry) {
+              return requiredContracts[entry[0]] === entry[1];
+            });
         }
         function selectSupportedManifest(manifests) {
           const supported = manifests

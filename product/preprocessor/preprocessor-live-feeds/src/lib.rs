@@ -15,7 +15,7 @@ pub mod engine;
 pub mod products;
 pub mod simulation;
 
-const METAR_PRODUCT_CONTRACT_VERSION: u32 = 7;
+const METAR_PRODUCT_CONTRACT_VERSION: u32 = 8;
 const METAR_TREND_TOKENS: &[&str] = &["BECMG", "TEMPO", "INTER", "NOSIG", "PROB30", "PROB40"];
 
 #[derive(Debug, Clone)]

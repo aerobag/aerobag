@@ -3431,7 +3431,12 @@ function MapPage(props: {
     return () => observer.disconnect();
   }, []);
 
-  const center = useMemo(() => viewportCenterLatLon(viewport), [viewport]);
+  const chartSearchAnchorWorldX = viewport.centerWorldX.toFixed(6);
+  const chartSearchAnchorWorldY = viewport.centerWorldY.toFixed(6);
+  const chartSearchAnchor = useMemo(
+    () => viewportCenterLatLon(viewport),
+    [chartSearchAnchorWorldX, chartSearchAnchorWorldY],
+  );
   useEffect(() => {
     const prefix = chartSearch.query.trim().toUpperCase();
     if (!chartSearch.open || prefix.length === 0) {
@@ -3441,7 +3446,7 @@ function MapPage(props: {
     let cancelled = false;
     setChartSearch((current) => ({ ...current, loading: true, error: null }));
     props.appCoreAdapter
-      .suggestWaypointIdentifiersNear(center, prefix, 8)
+      .suggestWaypointIdentifiersNear(chartSearchAnchor, prefix, 8)
       .then((suggestions) => {
         if (!cancelled) {
           setChartSearch((current) => ({ ...current, loading: false, error: null, suggestions }));
@@ -3460,7 +3465,7 @@ function MapPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [center, chartSearch.open, chartSearch.query, props.appCoreAdapter]);
+  }, [chartSearch.open, chartSearch.query, chartSearchAnchor, props.appCoreAdapter]);
   const [tiles, setTiles] = useState<RasterRenderTile[]>([]);
   const [rasterTileViewport, setRasterTileViewport] = useState<MapViewportState | null>(null);
   const [failedRasterTileKeys, setFailedRasterTileKeys] = useState<Set<string>>(() => new Set());
@@ -4221,6 +4226,7 @@ function MapPage(props: {
       });
       return;
     }
+    const center = viewportCenterLatLon(viewport);
     mapOverlayQueryRequestRef.current = {
       id: ++mapOverlayQueryRequestIdRef.current,
       requestedAt: performance.now(),

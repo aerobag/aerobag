@@ -1825,6 +1825,8 @@ type LiveFeedSubscription = {
   close(): void;
 };
 
+const LiveFeedEventSourceReconnectDelayMs = 5_000;
+
 function liveFeedSourceUrl(): string {
   const configured = __AEROBAG_LIVE_FEEDS_ORIGIN__?.trim();
   if (configured) {
@@ -1849,15 +1851,25 @@ function createLiveFeedSubscription(
   if (typeof EventSource === "undefined") {
     throw new Error("EventSource is unavailable in this app-core runtime");
   }
-  void reportConnectionEvent("connecting").catch((error: unknown) => {
-    log("live_feeds.connection_event.failed", { message: error instanceof Error ? error.message : String(error) });
-  });
-  const events = new EventSource("/live-feeds/events");
   const queuedEvents: LiveFeedSseEvent[] = [];
   let closed = false;
+  let events: EventSource | null = null;
   let flushTimer: number | null = null;
   let flushInFlight = false;
   let flushAgain = false;
+  let reconnectTimer: number | null = null;
+  const reportEvent = (kind: "connecting" | "connected" | "message" | "error" | "closed", message?: string) => {
+    void reportConnectionEvent(kind, message).catch((error: unknown) => {
+      log("live_feeds.connection_event.failed", { message: error instanceof Error ? error.message : String(error) });
+    });
+  };
+  const clearReconnectTimer = () => {
+    if (reconnectTimer === null) {
+      return;
+    }
+    globalThis.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  };
   const scheduleFlush = () => {
     if (flushTimer !== null || closed) {
       return;
@@ -1888,43 +1900,86 @@ function createLiveFeedSubscription(
       }
     });
   };
-  events.addEventListener("live-feed-current", (event) => {
+  const openConnection = () => {
     if (closed) {
       return;
     }
-    const message = event as MessageEvent<string>;
-    void reportConnectionEvent("message").catch((error: unknown) => {
-      log("live_feeds.connection_event.failed", { message: error instanceof Error ? error.message : String(error) });
+    clearReconnectTimer();
+    reportEvent("connecting");
+    const nextEvents = new EventSource("/live-feeds/events");
+    events = nextEvents;
+    const isCurrent = () => !closed && events === nextEvents;
+    nextEvents.addEventListener("live-feed-current", (event) => {
+      if (!isCurrent()) {
+        return;
+      }
+      clearReconnectTimer();
+      const message = event as MessageEvent<string>;
+      reportEvent("message");
+      queuedEvents.push({
+        id: message.lastEventId || null,
+        event: "live-feed-current",
+        data: message.data,
+      });
+      scheduleFlush();
     });
-    queuedEvents.push({
-      id: message.lastEventId || null,
-      event: "live-feed-current",
-      data: message.data,
-    });
-    scheduleFlush();
-  });
-  events.onopen = () => {
+    nextEvents.onopen = () => {
+      if (!isCurrent()) {
+        return;
+      }
+      clearReconnectTimer();
+      reportEvent("connected");
+    };
+    nextEvents.onerror = () => {
+      if (!isCurrent()) {
+        return;
+      }
+      log("live_feeds.sse.error", { ready_state: nextEvents.readyState });
+      reportEvent("error", "EventSource error");
+      scheduleReconnect(LiveFeedEventSourceReconnectDelayMs);
+    };
+  };
+  const scheduleReconnect = (delayMs: number) => {
     if (closed) {
       return;
     }
-    void reportConnectionEvent("connected").catch((error: unknown) => {
-      log("live_feeds.connection_event.failed", { message: error instanceof Error ? error.message : String(error) });
-    });
+    if (reconnectTimer !== null) {
+      return;
+    }
+    reconnectTimer = globalThis.setTimeout(() => {
+      reconnectTimer = null;
+      if (closed) {
+        return;
+      }
+      const previous = events;
+      events = null;
+      previous?.close();
+      openConnection();
+    }, delayMs) as unknown as number;
   };
-  events.onerror = () => {
-    log("live_feeds.sse.error", {});
-    void reportConnectionEvent("error", "EventSource error").catch((error: unknown) => {
-      log("live_feeds.connection_event.failed", { message: error instanceof Error ? error.message : String(error) });
-    });
+  const handleOnline = () => {
+    if (closed || events?.readyState === EventSource.OPEN) {
+      return;
+    }
+    scheduleReconnect(0);
   };
+  if (typeof window !== "undefined") {
+    window.addEventListener("online", handleOnline);
+  }
+  openConnection();
   return {
     close: () => {
       closed = true;
+      clearReconnectTimer();
       if (flushTimer !== null) {
         globalThis.clearTimeout(flushTimer);
         flushTimer = null;
       }
-      events.close();
+      if (typeof window !== "undefined") {
+        window.removeEventListener("online", handleOnline);
+      }
+      events?.close();
+      events = null;
     },
   };
 }

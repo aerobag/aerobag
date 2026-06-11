@@ -7,8 +7,12 @@ cd /root/aerobag-preprocessor/aerobag
 tools/deploy_prod.py --config deploy/aerobag-prod.json
 ```
 
-Use `--skip-build` to install/update prod, restart live-feeds, and leave the
-long product/web build for the systemd timer or a manual service start.
+By default, deploy starts the long cycle product publication asynchronously,
+then builds the web static tree and Android APK synchronously. A web or Android
+build failure makes `deploy_prod.py` fail.
+
+Use `--skip-build` to install/update prod, restart live-feeds, and skip both the
+async cycle product publication and the synchronous web/Android build.
 
 Use `--runtime-config-only` to refresh env files, generated helper scripts,
 nginx, and systemd runtime units without touching the source checkout or
@@ -87,8 +91,8 @@ The public cycle publication contract is:
 
 The deploy installs these systemd units:
 
-- `aerobag-build-product.service`: one-shot multi-version cycle publication,
-  cache GC, and web static build.
+- `aerobag-build-product.service`: one-shot multi-version cycle publication and
+  cache GC.
 - `aerobag-build-product.timer`: runs the product build every 2 hours.
 - `aerobag-live-feeds.service`: continuous live-feeds daemon.
 - `aerobag-client-debug-log.service`: localhost-only receiver for browser
@@ -106,7 +110,7 @@ ssh root@aerobag-prod.iac.jonh.net systemctl start --no-block aerobag-build-prod
 ```
 
 Omit `--no-block` only when you intentionally want the shell to wait for the
-full product and web build to finish.
+full cycle product build to finish.
 
 Inspect build progress:
 
@@ -141,7 +145,12 @@ It then runs:
   gc-build-cache --profile production \
   --build-root /mnt/aerobag-data/artifacts \
   --bootstrap-from-build-manifests --execute
+```
 
+Normal deploy also runs this web/Android build synchronously after starting the
+cycle product service:
+
+```bash
 cd /opt/aerobag/ui/web-app
 npm run install:wasm-opt
 npm run build:release

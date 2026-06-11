@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
         description=(
             "Deploy Aerobag production from dev to an aerobag-prod container. "
             "The target receives a full git repo via bundle, then builds cycle "
-            "publication, live-feeds, and the static web app under systemd."
+            "publication, live-feeds, the static web app, and Android APK."
         )
     )
     parser.add_argument(
@@ -46,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-build",
         action="store_true",
-        help="install/update prod but do not start the long product/web build",
+        help="install/update prod but do not start product publication or build web/Android outputs",
     )
     parser.add_argument(
         "--runtime-config-only",
@@ -418,6 +418,16 @@ cd "$SOURCE_ROOT"
   --bootstrap-from-build-manifests \\
   --execute
 
+/usr/local/bin/aerobag-write-health
+"""
+
+
+def build_web_android_script() -> str:
+    return """#!/usr/bin/env bash
+set -euo pipefail
+source /etc/aerobag/env
+export PATH CARGO_TARGET_DIR AEROBAG_UI_TARGET_ROOT AEROBAG_ARTIFACT_WRITE_PATH AEROBAG_ARTIFACT_READ_PATH
+
 cd "$SOURCE_ROOT/ui/web-app"
 npm run install:wasm-opt
 npm run build:release
@@ -763,14 +773,14 @@ def nginx_config(config: dict[str, Any]) -> str:
 
 def build_product_unit() -> str:
     return """[Unit]
-Description=Aerobag product and web publication build
+Description=Aerobag cycle product publication build
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/aerobag/env
-ExecStart=/usr/local/bin/aerobag-build-product-and-web
+ExecStart=/usr/local/bin/aerobag-build-product-publication
 TimeoutStartSec=infinity
 """
 
@@ -902,8 +912,15 @@ def write_remote_config(
         )
         write_remote_file(
             config,
-            "/usr/local/bin/aerobag-build-product-and-web",
+            "/usr/local/bin/aerobag-build-product-publication",
             build_product_script(config),
+            mode="0755",
+            dry_run=dry_run,
+        )
+        write_remote_file(
+            config,
+            "/usr/local/bin/aerobag-build-web-and-android",
+            build_web_android_script(),
             mode="0755",
             dry_run=dry_run,
         )
@@ -1023,6 +1040,10 @@ def run_initial_toolchain_build(config: dict[str, Any], *, dry_run: bool) -> Non
     run_ssh(config, "/usr/local/bin/aerobag-ensure-toolchain", dry_run=dry_run)
 
 
+def run_web_android_build(config: dict[str, Any], *, dry_run: bool) -> None:
+    run_ssh(config, "/usr/local/bin/aerobag-build-web-and-android", dry_run=dry_run)
+
+
 def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
     if args.runtime_config_only:
         prepare_remote_paths(config, dry_run=args.dry_run)
@@ -1062,6 +1083,8 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
     run_initial_toolchain_build(config, dry_run=args.dry_run)
     reload_services(config, dry_run=args.dry_run)
     start_runtime(config, skip_build=args.skip_build, dry_run=args.dry_run)
+    if not args.skip_build:
+        run_web_android_build(config, dry_run=args.dry_run)
 
 
 def main() -> int:

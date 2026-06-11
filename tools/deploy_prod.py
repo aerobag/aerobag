@@ -74,9 +74,9 @@ def verify_android_metadata(env: dict[str, str]) -> None:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--build-product",
+        "--skip-product",
         action="store_true",
-        help="also run the long preprocessor product build before the web build",
+        help="skip the preprocessor product build and reuse the existing published artifact set",
     )
     parser.add_argument("--skip-web", action="store_true", help="do not build the web static tree")
     parser.add_argument("--skip-android", action="store_true", help="do not publish the Android APK")
@@ -89,7 +89,7 @@ def main(argv: list[str]) -> int:
     root = repo_root()
     env = resolve_env(root)
 
-    if args.build_product:
+    if not args.skip_product:
         build_product(root, env, args.dry_run)
     if not args.skip_web:
         build_web(root, env, args.dry_run)

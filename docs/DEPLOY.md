@@ -129,10 +129,9 @@ cd "$SOURCE_ROOT"
 tools/deploy_prod
 ```
 
-That command builds the web tree, then publishes the Android APK into that
-fresh tree. It intentionally does not run `build-product` by default because
-that can be the long preprocessor job; pass `--build-product` when this deploy
-should also rebuild cycle products.
+That command builds products, builds the web tree, then publishes the Android
+APK into that fresh tree. Pass `--skip-product` only when the current published
+artifact set is already known-good and should be reused.
 
 The web release portion:
 
@@ -231,6 +230,13 @@ When the published artifacts change, rebuild and redeploy the web static tree:
 ```bash
 cd "$SOURCE_ROOT"
 tools/deploy_prod
+```
+
+To reuse the current published artifact set without running the preprocessor:
+
+```bash
+cd "$SOURCE_ROOT"
+tools/deploy_prod --skip-product
 ```
 
 ## Smoke checks

@@ -1022,6 +1022,7 @@ internal data class HomeGridButton(
     val key: String,
     val label: String,
     val targetPage: AppPage? = null,
+    val externalUrl: String? = null,
     val enabled: Boolean = false,
     @DrawableRes val iconResId: Int? = null,
 )
@@ -1107,7 +1108,7 @@ internal val HomeGridButtons = listOf(
     HomeGridButton("flight-plan", "FLIGHT\nPLAN", targetPage = AppPage.Plan, enabled = true),
     HomeGridButton("data-status", "DATA\nSTATUS", targetPage = AppPage.DataStatus, enabled = true),
     HomeGridButton("offline-packages", "OFFLINE\nPACKAGES", enabled = true),
-    HomeGridButton("s6", "S6"),
+    HomeGridButton("about", "ABOUT", externalUrl = "https://aerobag.org/about", enabled = true),
     HomeGridButton("s7", "S7"),
     HomeGridButton("s8", "S8"),
     HomeGridButton("s9", "S9"),

@@ -71,6 +71,17 @@ val androidPackageSourceBaseUrl = System.getenv("ANDROID_PACKAGE_SOURCE_BASE_URL
 val androidLiveFeedSourceBaseUrl = System.getenv("ANDROID_LIVE_FEED_SOURCE_BASE_URL")?.takeIf { it.isNotBlank() }
     ?: readInstanceConfigValue("ANDROID_LIVE_FEED_SOURCE_BASE_URL")
     ?: ""
+fun readIntegerBuildConfig(key: String, defaultValue: Int): Int {
+    val rawValue = System.getenv(key)
+        ?: readInstanceConfigValue(key)
+        ?: return defaultValue
+    return rawValue.toIntOrNull()
+        ?: throw IllegalArgumentException("$key must be an integer, got '$rawValue'")
+}
+val androidVersionCode = readIntegerBuildConfig("ANDROID_VERSION_CODE", 1)
+val androidVersionName = System.getenv("ANDROID_VERSION_NAME")
+    ?: readInstanceConfigValue("ANDROID_VERSION_NAME")
+    ?: "0.1.0"
 val artifactReadPathConfigFile = repoRoot.resolve(".aerobag-artifact-read-path")
 val configuredArtifactRoot = artifactReadPathConfigFile.readText().trim()
 val defaultArtifactRoot =
@@ -180,8 +191,8 @@ android {
         applicationId = "org.aerobag.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = androidVersionCode
+        versionName = androidVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

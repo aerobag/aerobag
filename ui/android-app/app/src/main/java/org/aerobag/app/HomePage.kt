@@ -141,6 +141,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.semantics
@@ -353,6 +354,7 @@ internal fun HomePage(
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
     val prefs = remember(context) { context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE) }
     val coroutineScope = rememberCoroutineScope()
     val offlinePackagesControllerAlive = remember(offlinePackagesControllerHandle) { AtomicBoolean(true) }
@@ -568,9 +570,11 @@ internal fun HomePage(
                     iconResId = button.iconResId,
                     wide = true,
                     onClick = {
-                        Log.i("AerobagNavigation", "home button key=${button.key} target=${button.targetPage}")
+                        Log.i("AerobagNavigation", "home button key=${button.key} target=${button.targetPage} external=${button.externalUrl}")
                         if (button.targetPage != null) {
                             onSelectPage(button.targetPage)
+                        } else if (button.externalUrl != null) {
+                            uriHandler.openUri(button.externalUrl)
                         } else if (button.key == "offline-packages") {
                             Log.i("AerobagNavigation", "offline packages open requested")
                             offlinePackagesOpen = true

@@ -503,7 +503,7 @@ function offlineRegionSummaryIcon(action: string): string {
   }
 }
 
-type AppPage = "map" | "plan" | "charts" | "home" | "data";
+type AppPage = "map" | "plan" | "charts" | "home" | "data" | "about";
 
 type WebPageTilePaintTiming = {
   id: number;
@@ -854,6 +854,8 @@ const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string; ic
 ];
 
 const webUiStateStorageKey = "aerobag.web.uiState.v1";
+const aboutPagePath = "/about";
+const androidApkMetadataPath = "/downloads/android-apk.json";
 const maxViewHistoryDepth = 64;
 const loadedUiTheme = uiTheme as UiThemeJson;
 const controlTheme = loadedUiTheme.controls;
@@ -871,6 +873,15 @@ type PersistedWebUiState = {
   selectedAirportId?: string;
   selectedChartId?: string;
   recentAirportIds?: string[];
+};
+
+type AndroidApkDownloadMetadata = {
+  apk_url: string;
+  filename: string;
+  git_commit: string;
+  version_code: number;
+  version_name: string;
+  built_at_utc: string;
 };
 
 type FlightDataBannerEdge = "left" | "right";
@@ -892,6 +903,17 @@ type WebHistoryState = {
   current?: AppViewSnapshot;
   stack?: AppViewSnapshot[];
 };
+
+function appPageForCurrentPath(): AppPage | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  return window.location.pathname === aboutPagePath ? "about" : null;
+}
+
+function urlForAppPage(page: AppPage): string {
+  return page === "about" ? aboutPagePath : "/";
+}
 
 type RasterRenderTile = {
   drawKey: string;
@@ -1447,7 +1469,8 @@ export default function App() {
   const uptimeLabel = useSessionUptimeLabel(sessionStartMs);
   const initialDebugState = useMemo(defaultUiDebugState, []);
   const persistedUiState = useMemo(readPersistedWebUiState, []);
-  const [page, setPage] = useState<AppPage>(persistedUiState.page ?? "map");
+  const initialPage = useMemo(() => appPageForCurrentPath() ?? persistedUiState.page ?? "map", [persistedUiState.page]);
+  const [page, setPage] = useState<AppPage>(initialPage);
   const [pageHistory, setPageHistory] = useState<AppViewSnapshot[]>([]);
   const [appCoreAdapter, setAppCoreAdapter] = useState<AppCoreAdapter | null>(null);
   const [adapterBackend, setAdapterBackend] = useState<AdapterBackendKind>("wasm");
@@ -2311,7 +2334,7 @@ export default function App() {
 
   useEffect(() => {
     writePersistedWebUiState({
-      page,
+      page: page === "about" ? undefined : page,
       selectedAirportId,
       selectedChartId,
       recentAirportIds,
@@ -2370,7 +2393,7 @@ export default function App() {
         current: currentSnapshot(),
         stack: pageHistory,
       };
-      window.history.replaceState(state, "");
+      window.history.replaceState(state, "", urlForAppPage(page));
     }, 120);
     return () => window.clearTimeout(timeoutId);
   }, [page, pageHistory, rasterMapState?.selected_map_id, mapViewport, selectedAirportId, selectedChartId, recentAirportIds, chartViewport, chartFolderOpen]);
@@ -2422,7 +2445,7 @@ export default function App() {
         current: nextCurrent,
         stack: nextHistory,
       };
-      window.history.pushState(state, "");
+      window.history.pushState(state, "", urlForAppPage(nextPage));
     }
   }
 
@@ -2442,6 +2465,7 @@ export default function App() {
           stack: nextHistory,
         } satisfies WebHistoryState,
         "",
+        urlForAppPage(nextCurrent.page),
       );
     }
   }
@@ -2529,6 +2553,7 @@ export default function App() {
       return;
     }
     const shouldHideStartupShell =
+      page === "about" ||
       startupFatalError !== null ||
       sessionInitError !== null ||
       mapSelectorLoadError !== null ||
@@ -2537,7 +2562,9 @@ export default function App() {
         currentPlan !== null &&
         planUiState !== null);
     if (shouldHideStartupShell) {
-      const reason = startupFatalError !== null
+      const reason = page === "about"
+        ? "about_page"
+        : startupFatalError !== null
         ? "startup_fatal_error"
         : sessionInitError !== null
           ? "session_init_error"
@@ -2548,7 +2575,15 @@ export default function App() {
               : "app_ready";
       window.__aerobag_hide_startup_shell?.(reason);
     }
-  }, [appReady, chartPageStateLoadError, currentPlan, mapSelectorLoadError, planUiState, sessionInitError, startupFatalError]);
+  }, [appReady, chartPageStateLoadError, currentPlan, mapSelectorLoadError, page, planUiState, sessionInitError, startupFatalError]);
+
+  if (page === "about") {
+    return (
+      <main className="appShell" style={themeVars}>
+        <AboutPage onOpenApp={() => navigateToPage("map")} />
+      </main>
+    );
+  }
 
   if (startupFatalError) {
     return (
@@ -8746,8 +8781,9 @@ function HomePage(props: {
     { id: "plate", label: "PLATE", page: "charts", iconSrc: PAGE_PLATE_ICON_SRC },
     { id: "flight-plan", label: "FLIGHT\nPLAN", page: "plan" },
     { id: "data-status", label: "DATA\nSTATUS", page: "data" },
+    { id: "about", label: "ABOUT", page: "about" },
   ];
-  const placeholderLabels = ["S5", "S6", "S7", "S8", "S9"];
+  const placeholderLabels = ["S6", "S7", "S8", "S9"];
 
   return (
     <section className="appPage planPage">
@@ -8788,6 +8824,105 @@ function HomePage(props: {
         onDoubleClick={stopDoubleClick}
         onClick={onOpenPlan}
       />
+    </section>
+  );
+}
+
+function AboutPage(props: {
+  onOpenApp: () => void;
+}) {
+  const [metadata, setMetadata] = useState<AndroidApkDownloadMetadata | null>(null);
+  const [metadataError, setMetadataError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setMetadataError(null);
+    fetch(androidApkMetadataPath, { cache: "no-cache" })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const parsed = await response.json() as Partial<AndroidApkDownloadMetadata>;
+        if (
+          typeof parsed.apk_url !== "string" ||
+          typeof parsed.filename !== "string" ||
+          typeof parsed.git_commit !== "string" ||
+          typeof parsed.version_name !== "string" ||
+          typeof parsed.built_at_utc !== "string" ||
+          typeof parsed.version_code !== "number"
+        ) {
+          throw new Error("invalid android-apk metadata");
+        }
+        if (!cancelled) {
+          setMetadata(parsed as AndroidApkDownloadMetadata);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setMetadata(null);
+          setMetadataError(errorMessage(error));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const shortCommit = metadata?.git_commit.slice(0, 8) ?? "";
+  return (
+    <section className="appPage aboutPage">
+      <div className="aboutPagePanel">
+        <div className="aboutPageHeader">
+          <p className="aboutPageEyebrow">Aerobag</p>
+          <h1>Flight planning, charts, and weather for awkward cockpits.</h1>
+          <p>
+            The web app runs at aerobag.org. The Android app is published as a sideloadable APK
+            configured for the same production package and live-feed endpoints.
+          </p>
+        </div>
+
+        <div className="aboutDownloadCard">
+          <h2>Android APK</h2>
+          {metadata ? (
+            <>
+              <a className="aboutDownloadButton" href={metadata.apk_url}>
+                Download {metadata.filename}
+              </a>
+              <dl className="aboutMetadata">
+                <div>
+                  <dt>Version</dt>
+                  <dd>{metadata.version_name}</dd>
+                </div>
+                <div>
+                  <dt>Build</dt>
+                  <dd>{shortCommit}</dd>
+                </div>
+                <div>
+                  <dt>Published</dt>
+                  <dd>{metadata.built_at_utc}</dd>
+                </div>
+              </dl>
+            </>
+          ) : (
+            <p className="aboutDownloadUnavailable">
+              {loading
+                ? "Checking Android download metadata..."
+                : `Android APK is not published in this static tree${metadataError ? `: ${metadataError}` : "."}`}
+            </p>
+          )}
+        </div>
+
+        <button type="button" className="aboutOpenAppButton" onClick={props.onOpenApp}>
+          Open Web App
+        </button>
+      </div>
     </section>
   );
 }

@@ -946,6 +946,133 @@ button {
   cursor: default;
 }
 
+.aboutPage {
+  display: grid;
+  place-items: center;
+  padding: calc(var(--thumb) * 0.4);
+  background:
+    radial-gradient(circle at 78% 18%, rgba(246, 201, 91, 0.28), transparent 30%),
+    radial-gradient(circle at 18% 82%, rgba(90, 142, 164, 0.26), transparent 34%),
+    var(--theme-chart-surface-bg);
+  color: var(--theme-button-normal-fg);
+}
+
+.aboutPagePanel {
+  width: min(calc(var(--thumb) * 9.5), calc(100vw - (var(--thumb) * 0.8)));
+  max-height: calc(100vh - (var(--thumb) * 0.8));
+  overflow-y: auto;
+  border-radius: calc(var(--thumb-radius) * 1.1);
+  padding: calc(var(--thumb) * 0.48);
+  background: color-mix(in srgb, var(--theme-button-normal-bg) 82%, white);
+  box-shadow: var(--shadow);
+}
+
+.aboutPageHeader {
+  display: grid;
+  gap: calc(var(--thumb) * 0.18);
+}
+
+.aboutPageEyebrow {
+  margin: 0;
+  color: color-mix(in srgb, var(--theme-button-normal-fg) 72%, transparent);
+  font-size: calc(var(--thumb) * 0.24);
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.aboutPageHeader h1 {
+  margin: 0;
+  font-size: clamp(1.8rem, calc(var(--thumb) * 0.66), 3.4rem);
+  line-height: 0.98;
+  letter-spacing: -0.04em;
+}
+
+.aboutPageHeader p {
+  margin: 0;
+  color: color-mix(in srgb, var(--theme-button-normal-fg) 78%, transparent);
+  font-size: calc(var(--thumb) * 0.24);
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.aboutDownloadCard {
+  display: grid;
+  gap: calc(var(--thumb) * 0.18);
+  margin-top: calc(var(--thumb) * 0.44);
+  border-radius: calc(var(--thumb-radius) * 0.8);
+  padding: calc(var(--thumb) * 0.32);
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: inset 0 0 0 2px rgba(16, 24, 32, 0.18);
+}
+
+.aboutDownloadCard h2 {
+  margin: 0;
+  font-size: calc(var(--thumb) * 0.34);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.aboutDownloadButton,
+.aboutOpenAppButton {
+  display: inline-grid;
+  min-height: var(--thumb);
+  place-items: center;
+  border: 0;
+  border-radius: var(--thumb-radius);
+  padding: 0 calc(var(--thumb) * 0.32);
+  background: var(--theme-button-selected-bg);
+  color: var(--theme-button-selected-fg);
+  font: inherit;
+  font-size: calc(var(--thumb) * 0.26);
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  text-align: center;
+  text-decoration: none;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.aboutOpenAppButton {
+  margin-top: calc(var(--thumb) * 0.34);
+  background: var(--theme-header-button);
+  color: var(--theme-button-normal-fg);
+}
+
+.aboutDownloadUnavailable {
+  margin: 0;
+  color: color-mix(in srgb, var(--theme-button-normal-fg) 74%, transparent);
+  font-size: calc(var(--thumb) * 0.23);
+  font-weight: 800;
+}
+
+.aboutMetadata {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(calc(var(--thumb) * 2), 1fr));
+  gap: calc(var(--thumb) * 0.16);
+  margin: 0;
+}
+
+.aboutMetadata div {
+  min-width: 0;
+}
+
+.aboutMetadata dt {
+  color: color-mix(in srgb, var(--theme-button-normal-fg) 62%, transparent);
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.aboutMetadata dd {
+  margin: 0;
+  overflow: hidden;
+  font-size: calc(var(--thumb) * 0.22);
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .chartDockDouble {
   gap: calc(var(--thumb-gap) * 0.8);
 }

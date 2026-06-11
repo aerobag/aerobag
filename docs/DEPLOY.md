@@ -125,11 +125,16 @@ The web release build reads from `$AEROBAG_ARTIFACT_READ_PATH` and writes under
 `$AEROBAG_UI_TARGET_ROOT`.
 
 ```bash
-cd "$SOURCE_ROOT/ui/web-app"
-npm run build:release
+cd "$SOURCE_ROOT"
+tools/deploy_prod
 ```
 
-That command:
+That command builds the web tree, then publishes the Android APK into that
+fresh tree. It intentionally does not run `build-product` by default because
+that can be the long preprocessor job; pass `--build-product` when this deploy
+should also rebuild cycle products.
+
+The web release portion:
 
 1. validates the current artifact set that will be served under `/packages`
 2. builds the Rust/WASM adapter in release mode
@@ -141,6 +146,32 @@ The static tree includes the app chunks and WASM. Product content is served
 through the publication contract rooted at `/packages`; do not publish or rely
 on legacy content routes such as `/plates`, `/thumbnails`, `/nav-kv`, or
 `/sectional-packages`.
+
+## Publish the Android APK
+
+Build the Android APK on the production host after the web release build. The
+web build empties and recreates `$AEROBAG_WEB_DIST`, so the APK publisher must
+run after the web build. `tools/deploy_prod` does this ordering automatically.
+
+```bash
+cd "$SOURCE_ROOT/ui/android-app"
+./scripts/build_prod_apk.sh
+```
+
+That script:
+
+1. builds the Android app with `ANDROID_PACKAGE_SOURCE_BASE_URL` defaulting to
+   `https://aerobag.org/packages/`
+2. builds with `ANDROID_LIVE_FEED_SOURCE_BASE_URL` defaulting to
+   `https://aerobag.org`
+3. preserves the stable Android app identity `org.aerobag.app`
+4. copies exactly one versioned APK name into `$AEROBAG_WEB_DIST/downloads`,
+   for example `aerobag-android-4dbd9ead.apk`
+5. writes `$AEROBAG_WEB_DIST/downloads/android-apk.json`, which is what the
+   `/about` page reads to show the current versioned link
+
+Do not publish a stable APK filename such as `latest.apk`. Each published app
+version gets a hash-named APK, and the About page points at that versioned file.
 
 ## Serve the web tree
 
@@ -198,8 +229,8 @@ obstacles 6 hours.
 When the published artifacts change, rebuild and redeploy the web static tree:
 
 ```bash
-cd "$SOURCE_ROOT/ui/web-app"
-npm run build:release
+cd "$SOURCE_ROOT"
+tools/deploy_prod
 ```
 
 ## Smoke checks

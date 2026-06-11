@@ -23,3 +23,7 @@ nginx
 pkg-config
 git
 rsync
+google-android-build-tools-34.0.0-installer
+google-android-cmdline-tools-13.0-installer
+google-android-platform-34-installer
+google-android-platform-tools-installer

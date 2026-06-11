@@ -44,6 +44,11 @@ The package list is not host config. It lives in
 The deploy script installs only a tiny bootstrap set before the checkout exists:
 `ca-certificates`, `git`, and `rsync`.
 
+Production APK builds use the Android SDK under `/usr/lib/android-sdk`.
+`deploy_prod.py` installs the Android command-line tools, platform 34,
+build-tools 34.0.0, platform-tools, accepts SDK licenses, installs NDK
+`26.3.11579264`, and writes `ui/android-app/local.properties`.
+
 The deploy writes `/etc/aerobag/env` on prod. The important publication values
 are:
 
@@ -55,6 +60,8 @@ AEROBAG_ARTIFACT_READ_PATH=/mnt/aerobag-data/artifacts/published
 AEROBAG_UI_TARGET_ROOT=/mnt/aerobag-data/ui-target
 CARGO_TARGET_DIR=/var/cache/aerobag-build/target
 AEROBAG_WEB_DIST=/mnt/aerobag-data/ui-target/web/dist
+ANDROID_HOME=/usr/lib/android-sdk
+ANDROID_SDK_ROOT=/usr/lib/android-sdk
 ```
 
 `AEROBAG_ARTIFACT_READ_PATH` points at the public publication root, not the full
@@ -151,6 +158,8 @@ Normal deploy also runs this web/Android build synchronously after starting the
 cycle product service:
 
 ```bash
+/usr/local/bin/aerobag-ensure-android-sdk
+
 cd /opt/aerobag/ui/web-app
 npm run install:wasm-opt
 npm run build:release

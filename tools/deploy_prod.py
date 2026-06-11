@@ -27,6 +27,8 @@ REPO_PACKAGE_MANIFEST = "deploy/prod-packages.txt"
 BOOTSTRAP_PACKAGES = ["ca-certificates", "git", "rsync"]
 CLIENT_DEBUG_LISTEN = "127.0.0.1:8096"
 BUILD_WATCH_LISTEN = "127.0.0.1:8097"
+ANDROID_SDK_ROOT = "/usr/lib/android-sdk"
+ANDROID_NDK_VERSION = "26.3.11579264"
 
 
 def parse_args() -> argparse.Namespace:
@@ -234,6 +236,7 @@ def install_repo_packages(config: dict[str, Any], *, dry_run: bool) -> None:
         f"""
         set -euo pipefail
         export DEBIAN_FRONTEND=noninteractive
+        printf 'google-android-installers google-android-installers/mirror select https://dl.google.com\\n' | debconf-set-selections
         package_file={shell_quote(package_file)}
         if [ ! -f "$package_file" ]; then
           echo "missing production package manifest: $package_file" >&2
@@ -351,6 +354,8 @@ def env_file(config: dict[str, Any]) -> str:
         "AEROBAG_BUILD_WATCH_LOG": (
             f"{artifact_root}/private-work/orchestrator-logs/published/master.log"
         ),
+        "ANDROID_HOME": ANDROID_SDK_ROOT,
+        "ANDROID_SDK_ROOT": ANDROID_SDK_ROOT,
         "PATH": "/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     }
     return "".join(f"{key}={shell_quote(value)}\n" for key, value in values.items())
@@ -392,6 +397,41 @@ fi
 """
 
 
+def ensure_android_sdk_script() -> str:
+    return f"""#!/usr/bin/env bash
+set -euo pipefail
+source /etc/aerobag/env
+export PATH ANDROID_HOME ANDROID_SDK_ROOT AEROBAG_UI_TARGET_ROOT
+
+ANDROID_HOME="${{ANDROID_HOME:-{ANDROID_SDK_ROOT}}}"
+ANDROID_SDK_ROOT="${{ANDROID_SDK_ROOT:-$ANDROID_HOME}}"
+SDKMANAGER="$ANDROID_HOME/cmdline-tools/13.0/bin/sdkmanager"
+REQUIRED_NDK="{ANDROID_NDK_VERSION}"
+
+if [ ! -x "$SDKMANAGER" ]; then
+  echo "missing Android sdkmanager: $SDKMANAGER" >&2
+  exit 1
+fi
+
+mkdir -p "$ANDROID_HOME" /root/.android
+{{ yes || true; }} | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses >/dev/null
+"$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install \\
+  "platforms;android-34" \\
+  "build-tools;34.0.0" \\
+  "platform-tools" \\
+  "ndk;$REQUIRED_NDK"
+
+mkdir -p "$SOURCE_ROOT/ui/android-app"
+printf 'sdk.dir=%s\\n' "$ANDROID_HOME" > "$SOURCE_ROOT/ui/android-app/local.properties"
+
+test -d "$ANDROID_HOME/platforms/android-34"
+test -d "$ANDROID_HOME/build-tools/34.0.0"
+test -x "$ANDROID_HOME/platform-tools/adb"
+test -x "$ANDROID_HOME/ndk/$REQUIRED_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
+test -x "$ANDROID_HOME/ndk/$REQUIRED_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android21-clang"
+"""
+
+
 def build_product_script(config: dict[str, Any]) -> str:
     refs = " ".join(shell_quote(ref) for ref in publication_refs(config))
     profile = shell_quote(config["build_profile"])
@@ -427,6 +467,8 @@ def build_web_android_script() -> str:
 set -euo pipefail
 source /etc/aerobag/env
 export PATH CARGO_TARGET_DIR AEROBAG_UI_TARGET_ROOT AEROBAG_ARTIFACT_WRITE_PATH AEROBAG_ARTIFACT_READ_PATH
+
+/usr/local/bin/aerobag-ensure-android-sdk
 
 cd "$SOURCE_ROOT/ui/web-app"
 npm run install:wasm-opt
@@ -912,6 +954,13 @@ def write_remote_config(
         )
         write_remote_file(
             config,
+            "/usr/local/bin/aerobag-ensure-android-sdk",
+            ensure_android_sdk_script(),
+            mode="0755",
+            dry_run=dry_run,
+        )
+        write_remote_file(
+            config,
             "/usr/local/bin/aerobag-build-product-publication",
             build_product_script(config),
             mode="0755",
@@ -1040,6 +1089,10 @@ def run_initial_toolchain_build(config: dict[str, Any], *, dry_run: bool) -> Non
     run_ssh(config, "/usr/local/bin/aerobag-ensure-toolchain", dry_run=dry_run)
 
 
+def run_android_sdk_setup(config: dict[str, Any], *, dry_run: bool) -> None:
+    run_ssh(config, "/usr/local/bin/aerobag-ensure-android-sdk", dry_run=dry_run)
+
+
 def run_web_android_build(config: dict[str, Any], *, dry_run: bool) -> None:
     run_ssh(config, "/usr/local/bin/aerobag-build-web-and-android", dry_run=dry_run)
 
@@ -1081,6 +1134,7 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
     )
     write_remote_config(config, dry_run=args.dry_run)
     run_initial_toolchain_build(config, dry_run=args.dry_run)
+    run_android_sdk_setup(config, dry_run=args.dry_run)
     reload_services(config, dry_run=args.dry_run)
     start_runtime(config, skip_build=args.skip_build, dry_run=args.dry_run)
     if not args.skip_build:

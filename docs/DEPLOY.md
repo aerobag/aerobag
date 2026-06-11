@@ -164,9 +164,12 @@ That script:
 2. builds with `ANDROID_LIVE_FEED_SOURCE_BASE_URL` defaulting to
    `https://aerobag.org`
 3. preserves the stable Android app identity `org.aerobag.app`
-4. copies exactly one versioned APK name into `$AEROBAG_WEB_DIST/downloads`,
+4. builds the packaged Rust JNI library in release mode for `arm64-v8a` by
+   default; override `ANDROID_BUILD_RUST_RELEASE` or `ANDROID_TARGET_ABIS` only
+   for development diagnostics
+5. copies exactly one versioned APK name into `$AEROBAG_WEB_DIST/downloads`,
    for example `aerobag-android-4dbd9ead.apk`
-5. writes `$AEROBAG_WEB_DIST/downloads/android-apk.json`, which is what the
+6. writes `$AEROBAG_WEB_DIST/downloads/android-apk.json`, which is what the
    `/about` page reads to show the current versioned link
 
 Do not publish a stable APK filename such as `latest.apk`. Each published app

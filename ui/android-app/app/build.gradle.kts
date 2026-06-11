@@ -16,6 +16,28 @@ val rustArchiver = "$ndkRoot/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
 val rustToolchainBin = "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin"
 val cargoBinary = "$rustToolchainBin/cargo"
 val rustcBinary = "$rustToolchainBin/rustc"
+
+fun readBooleanBuildConfig(key: String, defaultValue: Boolean): Boolean {
+    val rawValue = System.getenv(key)
+        ?: readInstanceConfigValue(key)
+        ?: return defaultValue
+    return when (rawValue.lowercase()) {
+        "1", "true", "yes", "on" -> true
+        "0", "false", "no", "off" -> false
+        else -> throw IllegalArgumentException("$key must be a boolean, got '$rawValue'")
+    }
+}
+
+fun readStringListBuildConfig(key: String): List<String>? {
+    val rawValue = System.getenv(key)
+        ?: readInstanceConfigValue(key)
+        ?: return null
+    return rawValue
+        .split(",")
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+}
+
 data class RustAndroidTarget(
     val rustTriple: String,
     val abi: String,
@@ -82,6 +104,23 @@ val androidVersionCode = readIntegerBuildConfig("ANDROID_VERSION_CODE", 1)
 val androidVersionName = System.getenv("ANDROID_VERSION_NAME")
     ?: readInstanceConfigValue("ANDROID_VERSION_NAME")
     ?: "0.1.0"
+val androidBuildRustRelease = readBooleanBuildConfig("ANDROID_BUILD_RUST_RELEASE", false)
+val androidRustProfileArgs = if (androidBuildRustRelease) listOf("--release") else emptyList()
+val androidRustProfileDir = if (androidBuildRustRelease) "release" else "debug"
+val androidTargetAbiFilters = readStringListBuildConfig("ANDROID_TARGET_ABIS")
+val enabledRustAndroidTargets = androidTargetAbiFilters
+    ?.let { requestedAbis ->
+        val knownAbis = rustAndroidTargets.map { it.abi }.toSet()
+        val unknownAbis = requestedAbis.filter { it !in knownAbis }
+        if (unknownAbis.isNotEmpty()) {
+            throw IllegalArgumentException("ANDROID_TARGET_ABIS contains unsupported Rust ABI(s): ${unknownAbis.joinToString(", ")}")
+        }
+        rustAndroidTargets.filter { it.abi in requestedAbis }
+    }
+    ?: rustAndroidTargets
+if (enabledRustAndroidTargets.isEmpty()) {
+    throw IllegalArgumentException("ANDROID_TARGET_ABIS did not select any Rust Android targets")
+}
 val artifactReadPathConfigFile = repoRoot.resolve(".aerobag-artifact-read-path")
 val configuredArtifactRoot = artifactReadPathConfigFile.readText().trim()
 val defaultArtifactRoot =
@@ -110,7 +149,7 @@ fun linkOrCopy(source: File, target: File) {
     }
 }
 
-val copyRustLibraries = rustAndroidTargets.map { target ->
+val copyRustLibraries = enabledRustAndroidTargets.map { target ->
     val linker = "$ndkToolchainBin/${target.linkerPrefix}21-clang"
     val buildTask = tasks.register<Exec>("buildRust${target.abi.replace("-", "").replace("_", "")}Android") {
         workingDir = rustProjectDir
@@ -125,11 +164,11 @@ val copyRustLibraries = rustAndroidTargets.map { target ->
         environment("AR_${target.rustTriple.replace("-", "_")}", rustArchiver)
         environment("ANDROID_NDK_ROOT", ndkRoot)
         environment("NDK_HOME", ndkRoot)
-        commandLine(cargoBinary, "build", "-p", "app-ffi", "--target", target.rustTriple)
+        commandLine(listOf(cargoBinary, "build", "-p", "app-ffi", "--target", target.rustTriple) + androidRustProfileArgs)
     }
     tasks.register<Copy>("copyRust${target.abi.replace("-", "").replace("_", "")}Library") {
         dependsOn(buildTask)
-        from(File(rustTargetDir, "${target.rustTriple}/debug/libapp_ffi.so"))
+        from(File(rustTargetDir, "${target.rustTriple}/$androidRustProfileDir/libapp_ffi.so"))
         into(rustJniLibsDir.map { it.dir(target.abi) })
         rename { "libapp_ffi.so" }
     }
@@ -197,6 +236,11 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
+        }
+        if (androidTargetAbiFilters != null) {
+            ndk {
+                abiFilters += androidTargetAbiFilters
+            }
         }
     }
 

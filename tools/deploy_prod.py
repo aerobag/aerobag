@@ -368,7 +368,10 @@ source /etc/aerobag/env
 export PATH CARGO_TARGET_DIR AEROBAG_UI_TARGET_ROOT AEROBAG_ARTIFACT_WRITE_PATH AEROBAG_ARTIFACT_READ_PATH
 
 rustup default stable
-rustup target add wasm32-unknown-unknown
+rustup target add \
+  wasm32-unknown-unknown \
+  x86_64-linux-android \
+  aarch64-linux-android
 
 cd "$SOURCE_ROOT/product/preprocessor"
 cargo build --release -p preprocessor-cli -p live-feeds-daemon

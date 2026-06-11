@@ -47,7 +47,8 @@ The deploy script installs only a tiny bootstrap set before the checkout exists:
 Production APK builds use the Android SDK under `/usr/lib/android-sdk`.
 `deploy_prod.py` installs the Android command-line tools, platform 34,
 build-tools 34.0.0, platform-tools, accepts SDK licenses, installs NDK
-`26.3.11579264`, and writes `ui/android-app/local.properties`.
+`26.3.11579264`, installs the Rust `x86_64-linux-android` and
+`aarch64-linux-android` targets, and writes `ui/android-app/local.properties`.
 
 The deploy writes `/etc/aerobag/env` on prod. The important publication values
 are:

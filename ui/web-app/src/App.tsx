@@ -8881,11 +8881,7 @@ function AboutPage(props: {
       <div className="aboutPagePanel">
         <div className="aboutPageHeader">
           <p className="aboutPageEyebrow">Aerobag</p>
-          <h1>Flight planning, charts, and weather for awkward cockpits.</h1>
-          <p>
-            The web app runs at aerobag.org. The Android app is published as a sideloadable APK
-            configured for the same production package and live-feed endpoints.
-          </p>
+          <h1>Flight planning, charts, and weather.</h1>
         </div>
 
         <div className="aboutDownloadCard">

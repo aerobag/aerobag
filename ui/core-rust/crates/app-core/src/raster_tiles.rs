@@ -434,6 +434,7 @@ pub fn raster_tile_plan_with_options(
         } else {
             1.0
         };
+    let display_zoom = viewport.zoom;
     let planning_viewport = if (device_pixel_ratio - 1.0).abs() > f64::EPSILON {
         MapViewport {
             center: viewport.center,
@@ -468,6 +469,7 @@ pub fn raster_tile_plan_with_options(
             &planning_viewport,
             planning_width_px,
             planning_height_px,
+            display_zoom,
             selected_region_id,
             options,
         ));
@@ -536,6 +538,7 @@ fn render_tiles_for_family(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
+    display_zoom: f64,
     selected_region_id: Option<&str>,
     options: RasterTilePlanOptions,
 ) -> Vec<PlannedTile> {
@@ -544,6 +547,7 @@ fn render_tiles_for_family(
         viewport,
         width_px,
         height_px,
+        display_zoom,
         selected_region_id,
         options,
     ) {
@@ -564,7 +568,7 @@ fn render_tiles_for_family(
 
     for (map_view_id, option) in family_views {
         let map_view = &option.map_view;
-        let levels = levels_for_map_view(map_view, viewport.zoom, options);
+        let levels = levels_for_map_view(map_view, display_zoom, viewport.zoom, options);
         for level in levels {
             let is_full_coverage_level =
                 family_full_coverage_zoom.is_some_and(|zoom| (level.zoom as f64) <= zoom);
@@ -644,6 +648,7 @@ fn render_wide_angle_tiles_for_family(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
+    display_zoom: f64,
     selected_region_id: Option<&str>,
     options: RasterTilePlanOptions,
 ) -> Option<Vec<PlannedTile>> {
@@ -657,7 +662,7 @@ fn render_wide_angle_tiles_for_family(
                 .map(|wide_angle| (map_view_id, option, wide_angle))
         })
         .filter(|(_, option, wide_angle)| {
-            viewport.zoom <= wide_angle_max_display_zoom(&option.map_view, wide_angle, options)
+            display_zoom <= wide_angle_max_display_zoom(&option.map_view, wide_angle, options)
         })
         .max_by_key(|(_, option, _)| {
             if Some(option.region_id.as_str()) == selected_region_id {
@@ -690,6 +695,7 @@ fn render_wide_angle_tiles_for_family(
         viewport,
         width_px,
         height_px,
+        display_zoom,
         options,
     ))
 }
@@ -728,6 +734,7 @@ fn render_tiles_for_single_map_view(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
+    display_zoom: f64,
     options: RasterTilePlanOptions,
 ) -> Vec<PlannedTile> {
     let map_view = &option.map_view;
@@ -739,7 +746,7 @@ fn render_tiles_for_single_map_view(
     let max_world_y = center_world.1 + height_px / 2.0 / scale;
     let mut tiles = Vec::new();
 
-    for level in levels_for_map_view(map_view, viewport.zoom, options) {
+    for level in levels_for_map_view(map_view, display_zoom, viewport.zoom, options) {
         let tile_world_size = WORLD_SIZE / 2_f64.powi(level.zoom as i32);
         let tile_screen_size = tile_world_size * scale;
         let x_start = (min_world_x / tile_world_size).floor() as i64;
@@ -1017,13 +1024,14 @@ fn dedupe_tiles(tiles: Vec<PlannedTile>) -> Vec<PlannedTile> {
 
 fn levels_for_map_view(
     map_view: &RasterMapView,
-    zoom: f64,
+    display_zoom: f64,
+    source_zoom: f64,
     options: RasterTilePlanOptions,
 ) -> Vec<RasterTileLevel> {
-    if zoom < map_view.min_zoom || zoom > map_view.max_display_zoom {
+    if display_zoom < map_view.min_zoom || display_zoom > map_view.max_display_zoom {
         return Vec::new();
     }
-    let Some(desired_level) = pick_level(map_view, zoom, options) else {
+    let Some(desired_level) = pick_level(map_view, source_zoom, options) else {
         return Vec::new();
     };
     vec![desired_level.clone()]
@@ -1917,6 +1925,48 @@ mod tests {
             .tiles
             .iter()
             .all(|tile| { tile.source_zoom == 10 && tile.size_px <= 512.0 }));
+    }
+
+    #[test]
+    fn high_dpi_does_not_exhaust_logical_display_zoom_budget() {
+        let catalog = RasterMapCatalog {
+            selected_map_id: "tac:nw".to_string(),
+            selected_map: None,
+            available_maps: Vec::new(),
+            displayed_maps: vec![option(
+                "tac:nw",
+                "tac",
+                "NW_TAC",
+                vec![level(12, 0, 4095, 0, 4095)],
+            )],
+            geometry: RasterDisplayGeometry::default(),
+            family_options: Vec::new(),
+        };
+
+        let plan = raster_tile_plan_with_options(
+            &catalog,
+            &MapViewport {
+                center: LatLon {
+                    lat: 47.5,
+                    lon: -122.3,
+                },
+                // High-DPI displays may prefer sharper source tiles, but DPR
+                // must not make a chart disappear before the user-visible zoom
+                // crosses the chart's max_display_zoom.
+                zoom: 11.7,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            411.421875,
+            760.0,
+            RasterTilePlanOptions {
+                device_pixel_ratio: 2.625,
+                ..RasterTilePlanOptions::default()
+            },
+        );
+
+        assert!(!plan.tiles.is_empty());
+        assert!(plan.tiles.iter().all(|tile| tile.source_zoom == 12));
     }
 
     #[test]

@@ -518,3 +518,6 @@ Interpretation:
 - Obstacles are a strong candidate for the shared live-feed delta protocol because they provide
   an outsized bandwidth win without requiring the more complex image-specific machinery needed for
   NEXRAD.
+
+------------------------------------------------------------------------------
+

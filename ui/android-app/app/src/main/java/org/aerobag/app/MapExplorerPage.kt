@@ -713,29 +713,14 @@ internal fun MapExplorerPage(
         if (!mapFollowUiState.following || surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) {
             return
         }
-        val overlay = resolveSituationOverlay(
-            ownship = ownship,
-            viewport = nextViewport,
-            widthUnits = surfaceWidthPx,
-            heightUnits = surfaceHeightPx,
-            ringCandidates = situationRingCandidates,
-        )
-        if (overlay == null) {
-            runCatching { uiSession.disengageMapFollow(nextViewport) }.onSuccess(onSessionSnapshotChange)
-            return
-        }
-        val point = overlay.pointUnits
-        if (point.x < 0f || point.x > surfaceWidthPx || point.y < 0f || point.y > surfaceHeightPx) {
-            runCatching { uiSession.disengageMapFollow(nextViewport) }.onSuccess(onSessionSnapshotChange)
-            return
-        }
         runCatching {
-            uiSession.setMapFollowOffset(
+            uiSession.syncMapFollow(
                 nextViewport,
-                (point.x - surfaceWidthPx / 2f).toDouble(),
-                (point.y - surfaceHeightPx / 2f).toDouble(),
+                surfaceWidthPx.toDouble(),
+                surfaceHeightPx.toDouble(),
             )
         }.onSuccess(onSessionSnapshotChange)
+            .onFailure { Log.w(MapViewportLogTag, "map follow sync failed", it) }
     }
 
     fun updateViewport(nextViewport: MapViewportState, syncFollow: Boolean = true) {

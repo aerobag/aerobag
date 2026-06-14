@@ -183,13 +183,6 @@ interface NativeBridge {
         viewportJson: String,
     ): String
 
-    fun setMapFollowOffsetInSessionJson(
-        handle: Long,
-        viewportJson: String,
-        offsetXPx: Double,
-        offsetYPx: Double,
-    ): String
-
     fun loadPlaybackTraceInSessionJson(
         handle: Long,
         sourcePathJson: String,
@@ -622,13 +615,6 @@ object NativeBindings : NativeBridge {
     external override fun disengageMapFollowInSessionJson(
         handle: Long,
         viewportJson: String,
-    ): String
-
-    external override fun setMapFollowOffsetInSessionJson(
-        handle: Long,
-        viewportJson: String,
-        offsetXPx: Double,
-        offsetYPx: Double,
     ): String
 
     external override fun loadPlaybackTraceInSessionJson(

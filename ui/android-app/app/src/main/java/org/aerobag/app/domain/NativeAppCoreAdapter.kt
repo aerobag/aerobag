@@ -784,19 +784,6 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
-    fun setMapFollowOffset(viewport: MapViewportState, offsetXPx: Double, offsetYPx: Double): UiSessionSnapshot {
-        snapshot =
-            decodeSnapshot(
-                bridge.setMapFollowOffsetInSessionJson(
-                    handle,
-                    viewport.toCoreViewport().toCoreJson(json),
-                    offsetXPx,
-                    offsetYPx,
-                ),
-            )
-        return snapshot
-    }
-
     fun loadPlaybackTrace(sourcePath: String, traceJson: String): UiSessionSnapshot {
         snapshot =
             decodeSnapshot(

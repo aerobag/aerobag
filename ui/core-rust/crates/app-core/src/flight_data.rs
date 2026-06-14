@@ -27,6 +27,7 @@ pub struct FlightDataComputer {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FlightDataBannerInput {
     pub altitude_ft: Option<f64>,
+    pub vertical_speed_fpm: Option<f64>,
     pub track_magnetic_deg: Option<f64>,
     pub desired_track_magnetic_deg: Option<f64>,
     pub waypoint_distance_nm: Option<f64>,
@@ -64,7 +65,11 @@ impl FlightDataComputer {
                     "GS kt",
                     self.ground_speed_kt.map(format_knots),
                 ),
-                cell("vertical_speed", "VS fpm", None),
+                cell(
+                    "vertical_speed",
+                    "VS fpm",
+                    input.vertical_speed_fpm.map(format_feet_per_minute),
+                ),
                 cell(
                     "track",
                     "TRK °M",
@@ -199,6 +204,10 @@ pub fn format_knots(value: f64) -> String {
     format!("{value:.0}")
 }
 
+pub fn format_feet_per_minute(value: f64) -> String {
+    format!("{value:.0}")
+}
+
 pub fn format_fuel_gal(value: f64) -> String {
     format!("{value:.1}")
 }
@@ -287,5 +296,23 @@ mod tests {
 
         assert_eq!(row_fuel, Some("2.5"));
         assert_eq!(final_fuel, Some("2.5"));
+    }
+
+    #[test]
+    fn banner_reports_vertical_speed_when_supplied() {
+        let computer = FlightDataComputer::default();
+        let banner = computer.banner(FlightDataBannerInput {
+            vertical_speed_fpm: Some(450.0),
+            ..FlightDataBannerInput::default()
+        });
+
+        assert_eq!(
+            banner
+                .cells
+                .iter()
+                .find(|cell| cell.id == "vertical_speed")
+                .and_then(|cell| cell.value.as_deref()),
+            Some("450")
+        );
     }
 }

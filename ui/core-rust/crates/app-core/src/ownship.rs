@@ -4,6 +4,8 @@ use crate::geometry::LatLon;
 
 const DEFAULT_STALE_AFTER_MS: i64 = 5_000;
 const FEET_PER_NAUTICAL_MILE: f64 = 6076.12;
+const VERTICAL_SPEED_FILTER_WINDOW_MS: i64 = 6_000;
+const VERTICAL_SPEED_HISTORY_RETENTION_MS: i64 = 12_000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SituationRingCandidate {
@@ -98,6 +100,7 @@ pub struct SituationKinematics {
     pub ground_speed_kt: Option<f64>,
     pub altitude_msl_ft: Option<f64>,
     pub pressure_altitude_ft: Option<f64>,
+    pub vertical_speed_fpm: Option<f64>,
     pub event_time_epoch_ms: i64,
 }
 
@@ -117,6 +120,8 @@ pub struct SituationSample {
     pub ground_speed_kt: Option<f64>,
     pub altitude_msl_ft: Option<f64>,
     pub pressure_altitude_ft: Option<f64>,
+    #[serde(default)]
+    pub vertical_speed_fpm: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -139,6 +144,8 @@ pub struct OwnshipSourceStatus {
     pub provides_altitude: bool,
     pub status_label: String,
     pub latest_sample: Option<SituationSample>,
+    #[serde(default)]
+    pub recent_samples: Vec<SituationSample>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -359,6 +366,7 @@ pub fn register_source(
             ),
             status_label: "Unavailable".to_string(),
             latest_sample: None,
+            recent_samples: Vec::new(),
         }),
     }
     refresh(&next)
@@ -427,6 +435,7 @@ pub fn push_sample(state: &OwnshipState, sample: SituationSample) -> OwnshipStat
                     || sample.pressure_altitude_ft.is_some(),
                 status_label: "Connected".to_string(),
                 latest_sample: None,
+                recent_samples: Vec::new(),
             };
             apply_sample(&mut source, sample);
             next.sources.push(source);
@@ -447,7 +456,23 @@ fn apply_sample(source: &mut OwnshipSourceStatus, sample: SituationSample) {
     source.provides_speed = sample.ground_speed_kt.is_some();
     source.provides_altitude =
         sample.altitude_msl_ft.is_some() || sample.pressure_altitude_ft.is_some();
-    source.latest_sample = Some(sample);
+    source.latest_sample = Some(sample.clone());
+    source.recent_samples.push(sample);
+    prune_recent_samples(source);
+}
+
+fn prune_recent_samples(source: &mut OwnshipSourceStatus) {
+    let Some(latest_time) = source
+        .latest_sample
+        .as_ref()
+        .map(|sample| sample.event_time_epoch_ms)
+    else {
+        source.recent_samples.clear();
+        return;
+    };
+    source.recent_samples.retain(|sample| {
+        latest_time - sample.event_time_epoch_ms <= VERTICAL_SPEED_HISTORY_RETENTION_MS
+    });
 }
 
 fn refresh(state: &OwnshipState) -> OwnshipState {
@@ -526,6 +551,9 @@ fn resolve_state(
         ground_speed_kt: sample.ground_speed_kt,
         altitude_msl_ft: sample.altitude_msl_ft,
         pressure_altitude_ft: sample.pressure_altitude_ft,
+        vertical_speed_fpm: sample
+            .vertical_speed_fpm
+            .or_else(|| filtered_vertical_speed_fpm(source, sample)),
         event_time_epoch_ms: sample.event_time_epoch_ms,
     };
 
@@ -630,6 +658,30 @@ fn project_render_state(resolved: &ResolvedOwnshipState) -> OwnshipRenderState {
         altitude_msl_ft,
         pressure_altitude_ft,
     }
+}
+
+fn filtered_vertical_speed_fpm(
+    source: &OwnshipSourceStatus,
+    latest: &SituationSample,
+) -> Option<f64> {
+    let latest_altitude_ft = sample_altitude_ft(latest)?;
+    let target_time_ms = latest.event_time_epoch_ms - VERTICAL_SPEED_FILTER_WINDOW_MS;
+    let oldest = source
+        .recent_samples
+        .iter()
+        .filter(|sample| sample.event_time_epoch_ms < latest.event_time_epoch_ms)
+        .filter(|sample| sample_altitude_ft(sample).is_some())
+        .min_by_key(|sample| (sample.event_time_epoch_ms - target_time_ms).abs())?;
+    let elapsed_ms = latest.event_time_epoch_ms - oldest.event_time_epoch_ms;
+    if elapsed_ms < 1_000 {
+        return None;
+    }
+    let oldest_altitude_ft = sample_altitude_ft(oldest)?;
+    Some((latest_altitude_ft - oldest_altitude_ft) * 60_000.0 / elapsed_ms as f64)
+}
+
+fn sample_altitude_ft(sample: &SituationSample) -> Option<f64> {
+    sample.altitude_msl_ft.or(sample.pressure_altitude_ft)
 }
 
 fn project_controls(
@@ -845,6 +897,7 @@ mod tests {
                 ground_speed_kt: Some(120.0),
                 altitude_msl_ft: None,
                 pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
             },
         );
         let state = push_sample(
@@ -862,6 +915,7 @@ mod tests {
                 ground_speed_kt: None,
                 altitude_msl_ft: None,
                 pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
             },
         );
 
@@ -891,6 +945,7 @@ mod tests {
                 ground_speed_kt: Some(120.0),
                 altitude_msl_ft: None,
                 pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
             },
         );
         let state = push_sample(
@@ -911,6 +966,7 @@ mod tests {
                 ground_speed_kt: Some(100.0),
                 altitude_msl_ft: None,
                 pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
             },
         );
         let state = set_policy(
@@ -939,6 +995,7 @@ mod tests {
                 ground_speed_kt: None,
                 altitude_msl_ft: None,
                 pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
             },
         );
 
@@ -957,5 +1014,71 @@ mod tests {
         assert!(candidates
             .windows(2)
             .all(|pair| pair[0].radius_nm < pair[1].radius_nm));
+    }
+
+    #[test]
+    fn vertical_speed_prefers_native_sample_value() {
+        let state = push_sample(
+            &OwnshipState::default(),
+            sample_with_altitude("gps", 1_000, 3_000.0, Some(450.0)),
+        );
+        let state = push_sample(
+            &state,
+            sample_with_altitude("gps", 7_000, 3_600.0, Some(500.0)),
+        );
+
+        assert_eq!(
+            state
+                .resolved
+                .kinematics
+                .as_ref()
+                .and_then(|kinematics| kinematics.vertical_speed_fpm),
+            Some(500.0)
+        );
+    }
+
+    #[test]
+    fn vertical_speed_falls_back_to_six_second_altitude_history() {
+        let state = push_sample(
+            &OwnshipState::default(),
+            sample_with_altitude("gps", 1_000, 3_000.0, None),
+        );
+        let state = push_sample(&state, sample_with_altitude("gps", 4_000, 3_150.0, None));
+        let state = push_sample(&state, sample_with_altitude("gps", 7_000, 3_600.0, None));
+
+        assert_eq!(
+            state
+                .resolved
+                .kinematics
+                .as_ref()
+                .and_then(|kinematics| kinematics.vertical_speed_fpm),
+            Some(6000.0)
+        );
+    }
+
+    fn sample_with_altitude(
+        source_id: &str,
+        event_time_epoch_ms: i64,
+        altitude_msl_ft: f64,
+        vertical_speed_fpm: Option<f64>,
+    ) -> SituationSample {
+        SituationSample {
+            source_id: OwnshipSourceId(source_id.to_string()),
+            source_kind: OwnshipSourceKind::DeviceGps,
+            event_time_epoch_ms,
+            received_time_epoch_ms: event_time_epoch_ms,
+            position: Some(LatLon {
+                lat: 47.0,
+                lon: -122.0,
+            }),
+            horizontal_accuracy_m: None,
+            vertical_accuracy_m: None,
+            track_deg_true: Some(90.0),
+            heading_deg_true: None,
+            ground_speed_kt: Some(120.0),
+            altitude_msl_ft: Some(altitude_msl_ft),
+            pressure_altitude_ft: None,
+            vertical_speed_fpm,
+        }
     }
 }

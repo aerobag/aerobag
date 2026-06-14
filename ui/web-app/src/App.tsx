@@ -2024,6 +2024,7 @@ export default function App() {
               ground_speed_kt: speedMps == null ? null : speedMps * metersPerSecondToKnots,
               altitude_msl_ft: altitudeM == null ? null : altitudeM * metersToFeet,
               pressure_altitude_ft: null,
+              vertical_speed_fpm: null,
             };
             void uiSession.pushSituationSample(sample).then(async (pushedSnapshot) => {
               if (cancelled) {

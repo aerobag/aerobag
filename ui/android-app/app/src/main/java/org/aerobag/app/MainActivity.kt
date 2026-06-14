@@ -360,7 +360,6 @@ internal val ThumbGap = 5.6.dp
 internal val SituationDockOverlapWidth = ThumbSize * 10f
 internal val PlanGridGap = 2.dp
 internal const val DefaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json"
-internal const val DefaultAndroidDevServerBaseUrl = "http://10.0.2.2:8080"
 internal const val DefaultAndroidPackageSourceBaseUrl = "aerobag.org"
 internal const val CurrentArtifactsDiscoveryFilename = "current_artifacts.json"
 internal const val PublicationPackageRootPath = "packages"
@@ -2951,7 +2950,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
         val sourceRootUrl = resolveLiveFeedSourceRootUrl(
             appContext,
             prefs,
-            androidDevServerBaseUrl(),
+            loadAndroidDevServerBaseUrl(appContext),
         )
         AndroidLiveFeedClient(
             context = appContext,

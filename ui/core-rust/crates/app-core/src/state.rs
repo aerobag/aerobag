@@ -189,6 +189,7 @@ mod tests {
                 ground_speed_kt: Some(120.0),
                 altitude_msl_ft: None,
                 pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
             }),
         )
         .unwrap();

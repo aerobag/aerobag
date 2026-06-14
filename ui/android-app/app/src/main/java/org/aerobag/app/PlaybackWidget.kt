@@ -137,6 +137,7 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -313,7 +314,6 @@ import kotlinx.serialization.encodeToString
 import java.io.BufferedOutputStream
 import java.io.File
 import java.nio.ByteBuffer
-import java.net.URL
 import java.security.MessageDigest
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -339,7 +339,8 @@ internal fun PlaybackWidget(
     onSnapshotChange: (UiSessionSnapshot) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val devServerBaseUrl = remember { androidDevServerBaseUrl() }
+    val context = LocalContext.current
+    val devServerBaseUrl = remember(context) { loadAndroidDevServerBaseUrl(context.applicationContext) }
     val scope = rememberCoroutineScope()
     var isBusy by remember { mutableStateOf(false) }
     var scrubCursorSeconds by remember { mutableStateOf<Double?>(null) }
@@ -352,161 +353,166 @@ internal fun PlaybackWidget(
     Surface(
         modifier =
             modifier
-                .widthIn(min = ThumbSize * 2.8f, max = ThumbSize * 5.2f),
+                .widthIn(min = ThumbSize * 2.8f, max = ThumbSize * 5.2f)
+                .consumePointerGestures(),
         shape = panelShape,
         color = Color(0xF0FCF8F1),
         contentColor = Color(0xFF132129),
         border = BorderStroke(1.dp, Color(0x334E626C)),
         shadowElevation = 6.dp,
     ) {
-        Box {
-            Box(
-                modifier =
-                    Modifier
-                        .matchParentSize()
-                        .consumePointerGestures(),
-            )
-            Column(
-                modifier = Modifier.padding(ThumbSize * 0.12f),
-                verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f),
+        Column(
+            modifier = Modifier.padding(ThumbSize * 0.12f),
+            verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = summary,
-                        modifier = Modifier.weight(1f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF132129),
-                    )
-                    Text(
-                        text = "${String.format("%.1f", playbackUiState.rate)}x",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF52656D),
-                    )
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    BasicTextField(
-                        value = sourcePath,
-                        onValueChange = onSourcePathChange,
-                        singleLine = true,
-                        textStyle =
-                            MaterialTheme.typography.labelSmall.copy(
-                                color = Color(0xFF132129),
-                                fontSize = 11.sp,
-                            ),
-                        modifier =
-                            Modifier
-                                .weight(1f)
-                                .height(ThumbSize * 0.42f)
-                                .clip(RoundedCornerShape(ThumbRadius * 0.55f))
-                                .background(Color.White)
-                                .border(1.dp, Color(0x24132129), RoundedCornerShape(ThumbRadius * 0.55f))
-                                .padding(horizontal = ThumbSize * 0.1f, vertical = ThumbSize * 0.11f),
-                    )
-                    PlaybackSmallButton(
-                        label = "LOAD",
-                        enabled = !isBusy && sourcePath.isNotBlank(),
-                        onClick = {
-                            scope.launch {
-                                isBusy = true
-                                try {
-                                    val traceJson =
-                                        withContext(Dispatchers.IO) {
-                                            URL(resolvePlaybackTraceUrl(sourcePath, devServerBaseUrl)).readText()
-                                        }
-                                    onSnapshotChange(uiSession.loadPlaybackTrace(sourcePath, traceJson))
-                                } catch (error: Throwable) {
-                                    Log.e("AerobagPlayback", "trace load failed: $sourcePath", error)
-                                } finally {
-                                    isBusy = false
-                                }
-                            }
-                        },
-                    )
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    PlaybackSmallButton(
-                        label = "",
-                        icon = if (playbackUiState.status == PlaybackStatus.Playing) PlaybackButtonIcon.Pause else PlaybackButtonIcon.Play,
-                        enabled = playbackUiState.status != PlaybackStatus.Empty,
-                        onClick = {
-                            scope.launch {
-                                runCatching {
-                                    if (playbackUiState.status == PlaybackStatus.Playing) {
-                                        uiSession.pausePlayback(System.currentTimeMillis().toDouble())
-                                    } else {
-                                        uiSession.playPlayback(System.currentTimeMillis().toDouble())
+                Text(
+                    text = summary,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF132129),
+                )
+                Text(
+                    text = "${String.format("%.1f", playbackUiState.rate)}x",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF52656D),
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BasicTextField(
+                    value = sourcePath,
+                    onValueChange = onSourcePathChange,
+                    singleLine = true,
+                    textStyle =
+                        MaterialTheme.typography.labelSmall.copy(
+                            color = Color(0xFF132129),
+                            fontSize = 11.sp,
+                        ),
+                    modifier =
+                        Modifier
+                            .weight(1f)
+                            .height(ThumbSize * 0.42f)
+                            .clip(RoundedCornerShape(ThumbRadius * 0.55f))
+                            .background(Color.White)
+                            .border(1.dp, Color(0x24132129), RoundedCornerShape(ThumbRadius * 0.55f))
+                            .padding(horizontal = ThumbSize * 0.1f, vertical = ThumbSize * 0.11f),
+                )
+                PlaybackSmallButton(
+                    label = "LOAD",
+                    enabled = !isBusy && sourcePath.isNotBlank(),
+                    onClick = {
+                        scope.launch {
+                            isBusy = true
+                            try {
+                                val traceUrl = resolvePlaybackTraceUrl(sourcePath, devServerBaseUrl)
+                                Log.i("AerobagPlayback", "loading trace $traceUrl")
+                                val traceJson =
+                                    withContext(Dispatchers.IO) {
+                                        fetchResourceBytes(traceUrl).decodeToString()
                                     }
-                                }.onSuccess(onSnapshotChange)
-                                    .onFailure { Log.e("AerobagPlayback", "play/pause failed", it) }
-                            }
-                        },
-                    )
-                    Text(
-                        text = "SPD",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF52656D),
-                    )
-                    PlaybackRateRail(
-                        value = playbackUiState.rate.toFloat().coerceIn(0.25f, 11f),
-                        enabled = playbackUiState.status != PlaybackStatus.Empty,
-                        modifier = Modifier.weight(1f).height(ThumbSize * 0.42f),
-                        onValueChange = { nextRate ->
-                            scope.launch {
-                                runCatching {
-                                    uiSession.setPlaybackRate(nextRate.toDouble(), System.currentTimeMillis().toDouble())
-                                }.onSuccess(onSnapshotChange)
-                                    .onFailure { Log.e("AerobagPlayback", "rate change failed", it) }
-                            }
-                        },
-                    )
-                }
-                PlaybackOverview(
-                    playbackUiState = playbackUiState,
-                    cursorSeconds = cursorSeconds,
-                    durationSeconds = durationSeconds,
-                    onScrub = { nextCursorSeconds, finished ->
-                        scrubCursorSeconds = nextCursorSeconds
-                        seekJob?.cancel()
-                        seekJob = scope.launch {
-                            runCatching {
-                                uiSession.seekPlayback(nextCursorSeconds, System.currentTimeMillis().toDouble())
-                            }.onSuccess {
-                                onSnapshotChange(it)
-                                if (finished) {
-                                    scrubCursorSeconds = null
-                                }
-                            }.onFailure {
-                                if (it !is CancellationException) {
-                                    Log.e("AerobagPlayback", "seek failed", it)
-                                }
+                                onSnapshotChange(uiSession.loadPlaybackTrace(sourcePath, traceJson))
+                            } catch (error: Throwable) {
+                                Log.e("AerobagPlayback", "trace load failed: $sourcePath", error)
+                            } finally {
+                                isBusy = false
                             }
                         }
                     },
                 )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text(playbackUiState.cursorLabel, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = Color(0xFF52656D))
-                    Text(playbackUiState.durationLabel, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = Color(0xFF52656D))
-                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                PlaybackSmallButton(
+                    label = "",
+                    icon = if (playbackUiState.status == PlaybackStatus.Playing) PlaybackButtonIcon.Pause else PlaybackButtonIcon.Play,
+                    enabled = playbackUiState.status != PlaybackStatus.Empty,
+                    onClick = {
+                        scope.launch {
+                            runCatching {
+                                if (playbackUiState.status == PlaybackStatus.Playing) {
+                                    uiSession.pausePlayback(System.currentTimeMillis().toDouble())
+                                } else {
+                                    uiSession.playPlayback(System.currentTimeMillis().toDouble())
+                                }
+                            }.onSuccess(onSnapshotChange)
+                                .onFailure { Log.e("AerobagPlayback", "play/pause failed", it) }
+                        }
+                    },
+                )
+                Text(
+                    text = "SPD",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF52656D),
+                )
+                PlaybackRateRail(
+                    value = playbackUiState.rate.toFloat().coerceIn(0.25f, 11f),
+                    enabled = playbackUiState.status != PlaybackStatus.Empty,
+                    modifier = Modifier.weight(1f).height(ThumbSize * 0.42f),
+                    onValueChange = { nextRate ->
+                        scope.launch {
+                            runCatching {
+                                uiSession.setPlaybackRate(nextRate.toDouble(), System.currentTimeMillis().toDouble())
+                            }.onSuccess(onSnapshotChange)
+                                .onFailure { Log.e("AerobagPlayback", "rate change failed", it) }
+                        }
+                    },
+                )
+            }
+            PlaybackOverview(
+                playbackUiState = playbackUiState,
+                cursorSeconds = cursorSeconds,
+                durationSeconds = durationSeconds,
+                onScrub = { nextCursorSeconds, finished ->
+                    scrubCursorSeconds = nextCursorSeconds
+                    seekJob?.cancel()
+                    seekJob = scope.launch {
+                        runCatching {
+                            uiSession.seekPlayback(nextCursorSeconds, System.currentTimeMillis().toDouble())
+                        }.onSuccess {
+                            onSnapshotChange(it)
+                            if (finished) {
+                                scrubCursorSeconds = null
+                            }
+                        }.onFailure {
+                            if (it !is CancellationException) {
+                                Log.e("AerobagPlayback", "seek failed", it)
+                            }
+                        }
+                    }
+                },
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    playbackUiState.cursorLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF52656D),
+                )
+                Text(
+                    playbackUiState.durationLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF52656D),
+                )
             }
         }
     }

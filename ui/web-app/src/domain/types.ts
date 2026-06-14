@@ -699,6 +699,7 @@ export type SituationSample = {
   ground_speed_kt: number | null;
   altitude_msl_ft: number | null;
   pressure_altitude_ft: number | null;
+  vertical_speed_fpm?: number | null;
 };
 
 export type OwnshipSourceRegistration = {

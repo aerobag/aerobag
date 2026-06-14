@@ -7925,6 +7925,13 @@ fn project_flight_data_banner(
 
     Ok(flight_data_computer.banner(crate::FlightDataBannerInput {
         altitude_ft,
+        vertical_speed_fpm: session
+            .app_state
+            .ownship
+            .resolved
+            .kinematics
+            .as_ref()
+            .and_then(|kinematics| kinematics.vertical_speed_fpm),
         track_magnetic_deg,
         desired_track_magnetic_deg,
         waypoint_distance_nm,
@@ -8895,6 +8902,7 @@ fn apply_situation_to_ownship(
             ground_speed_kt: situation.speed_kt,
             altitude_msl_ft: situation.altitude_msl_ft,
             pressure_altitude_ft: None,
+            vertical_speed_fpm: None,
         }),
     )?;
     sequence_guidance_by_ownship_position(session)?;
@@ -13021,6 +13029,7 @@ mod tests {
                 ground_speed_kt: Some(120.0),
                 altitude_msl_ft: Some(3000.0),
                 pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
             },
         )
         .expect("push gps sample");
@@ -13053,6 +13062,7 @@ mod tests {
                 ground_speed_kt: Some(120.0),
                 altitude_msl_ft: Some(3000.0),
                 pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
             },
         )
         .expect("push gps sample");
@@ -13087,6 +13097,7 @@ mod tests {
                 ground_speed_kt: Some(120.0),
                 altitude_msl_ft: Some(3000.0),
                 pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
             },
         )
         .expect("missing magvar should not abort ownship sample projection");
@@ -13230,6 +13241,7 @@ mod tests {
                 ground_speed_kt: Some(120.0),
                 altitude_msl_ft: Some(3000.0),
                 pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
             },
         )
         .expect("push gps sample");
@@ -13322,6 +13334,7 @@ mod tests {
                 ground_speed_kt: Some(120.0),
                 altitude_msl_ft: Some(3000.0),
                 pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
             },
         )
         .expect("push sample");
@@ -13356,6 +13369,7 @@ mod tests {
                 ground_speed_kt: Some(120.0),
                 altitude_msl_ft: Some(3000.0),
                 pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
             },
         )
         .expect("push sample");
@@ -13421,6 +13435,7 @@ mod tests {
                 ground_speed_kt: Some(120.0),
                 altitude_msl_ft: Some(3000.0),
                 pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
             },
         )
         .expect("push sample");

@@ -87,9 +87,12 @@ fun readInstanceConfigValue(key: String): String? {
 val webPort = System.getenv("WEB_PORT")
     ?: readInstanceConfigValue("WEB_PORT")
     ?: "8080"
+val androidDevServerBaseUrl = System.getenv("ANDROID_DEV_SERVER_BASE_URL")
+    ?: readInstanceConfigValue("ANDROID_DEV_SERVER_BASE_URL")
+    ?: "http://10.0.2.2:$webPort"
 val androidPackageSourceBaseUrl = System.getenv("ANDROID_PACKAGE_SOURCE_BASE_URL")
     ?: readInstanceConfigValue("ANDROID_PACKAGE_SOURCE_BASE_URL")
-    ?: "http://10.0.2.2:$webPort/packages/"
+    ?: "$androidDevServerBaseUrl/packages/"
 val androidLiveFeedSourceBaseUrl = System.getenv("ANDROID_LIVE_FEED_SOURCE_BASE_URL")?.takeIf { it.isNotBlank() }
     ?: readInstanceConfigValue("ANDROID_LIVE_FEED_SOURCE_BASE_URL")
     ?: ""
@@ -186,6 +189,7 @@ val stageCanonicalAndroidAssets by tasks.registering {
         fixturesDir.mkdirs()
         linkOrCopy(uiThemeFile, fixturesDir.resolve("ui-theme.json"))
         linkOrCopy(devBootstrapFile, fixturesDir.resolve("dev-bootstrap.json"))
+        fixturesDir.resolve("android-dev-server-base-url.txt").writeText(androidDevServerBaseUrl)
         fixturesDir.resolve("android-package-source-base-url.txt").writeText(androidPackageSourceBaseUrl)
         fixturesDir.resolve("android-live-feed-source-base-url.txt").writeText(androidLiveFeedSourceBaseUrl)
     }

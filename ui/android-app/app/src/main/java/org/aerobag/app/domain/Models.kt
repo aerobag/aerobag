@@ -689,6 +689,7 @@ data class SituationSample(
     val groundSpeedKt: Double? = null,
     val altitudeMslFt: Double? = null,
     val pressureAltitudeFt: Double? = null,
+    val verticalSpeedFpm: Double? = null,
 )
 
 data class OwnshipSourceRegistration(

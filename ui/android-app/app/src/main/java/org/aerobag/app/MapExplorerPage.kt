@@ -465,7 +465,7 @@ internal fun MapExplorerPage(
     val activity = context as? MainActivity
     val density = LocalDensity.current
     val json = remember { Json { ignoreUnknownKeys = true } }
-    val devServerBaseUrl = remember { androidDevServerBaseUrl() }
+    val devServerBaseUrl = remember(context) { loadAndroidDevServerBaseUrl(context.applicationContext) }
     val focusRequester = remember { FocusRequester() }
     var chartTrayOpen by remember { mutableStateOf(false) }
     var layerTrayOpen by remember { mutableStateOf(false) }

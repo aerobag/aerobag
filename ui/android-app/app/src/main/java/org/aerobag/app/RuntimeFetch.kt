@@ -331,7 +331,13 @@ import kotlin.math.pow
 import kotlin.math.sin
 
 
-internal fun androidDevServerBaseUrl(): String = DefaultAndroidDevServerBaseUrl
+internal fun loadAndroidDevServerBaseUrl(context: Context): String =
+    context.assets.open("fixtures/android-dev-server-base-url.txt")
+        .bufferedReader()
+        .use { it.readText().trim() }
+        .trimEnd('/')
+        .takeIf { it.isNotBlank() }
+        ?: error("android dev server base URL asset is empty")
 
 internal fun loadAndroidPackageSourceBaseUrl(context: Context): String =
     runCatching {

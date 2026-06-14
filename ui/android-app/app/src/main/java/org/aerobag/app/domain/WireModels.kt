@@ -1440,6 +1440,9 @@ enum class WireFlightPlanDisplayRowKind {
 
     @SerialName("discontinuity")
     Discontinuity,
+
+    @SerialName("summary")
+    Summary,
 }
 
 @Serializable
@@ -1457,6 +1460,7 @@ data class WireFlightDataCell(
     val id: String,
     val label: String,
     val value: String? = null,
+    val tone: String = "normal",
 )
 
 @Serializable

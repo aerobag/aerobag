@@ -400,7 +400,7 @@ export type FlightPlanUiState = {
   guidance: GuidanceUiView | null;
 };
 
-export type FlightPlanDisplayRowKind = "waypoint" | "group" | "discontinuity";
+export type FlightPlanDisplayRowKind = "waypoint" | "group" | "discontinuity" | "summary";
 
 export type FlightPlanRowActionUiView = {
   id: string;
@@ -651,6 +651,7 @@ export type FlightDataCell = {
   id: string;
   label: string;
   value: string | null;
+  tone?: "normal" | "muted";
 };
 
 export type FlightDataColumn = {

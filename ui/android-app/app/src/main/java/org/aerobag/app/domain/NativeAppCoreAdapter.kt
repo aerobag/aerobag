@@ -2948,12 +2948,14 @@ private fun WireFlightDataCell.toUi() = FlightDataCell(
     id = id,
     label = label,
     value = value,
+    tone = tone,
 )
 
 private fun FlightDataCell.toWire() = WireFlightDataCell(
     id = id,
     label = label,
     value = value,
+    tone = tone,
 )
 
 private fun WireFlightDataColumn.toUi() = FlightDataColumn(
@@ -3044,12 +3046,14 @@ private fun WireFlightPlanDisplayRowKind.toUi() = when (this) {
     WireFlightPlanDisplayRowKind.Waypoint -> FlightPlanDisplayRowKind.Waypoint
     WireFlightPlanDisplayRowKind.Group -> FlightPlanDisplayRowKind.Group
     WireFlightPlanDisplayRowKind.Discontinuity -> FlightPlanDisplayRowKind.Discontinuity
+    WireFlightPlanDisplayRowKind.Summary -> FlightPlanDisplayRowKind.Summary
 }
 
 private fun FlightPlanDisplayRowKind.toWire() = when (this) {
     FlightPlanDisplayRowKind.Waypoint -> WireFlightPlanDisplayRowKind.Waypoint
     FlightPlanDisplayRowKind.Group -> WireFlightPlanDisplayRowKind.Group
     FlightPlanDisplayRowKind.Discontinuity -> WireFlightPlanDisplayRowKind.Discontinuity
+    FlightPlanDisplayRowKind.Summary -> WireFlightPlanDisplayRowKind.Summary
 }
 
 private fun WireFlightPlanRowActionUiView.toUi() = FlightPlanRowActionUiView(

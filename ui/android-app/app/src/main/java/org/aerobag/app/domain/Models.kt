@@ -394,6 +394,7 @@ enum class FlightPlanDisplayRowKind {
     Waypoint,
     Group,
     Discontinuity,
+    Summary,
 }
 
 data class FlightPlanRowActionUiView(
@@ -409,6 +410,7 @@ data class FlightDataCell(
     val id: String,
     val label: String,
     val value: String?,
+    val tone: String = "normal",
 )
 
 data class FlightDataColumn(

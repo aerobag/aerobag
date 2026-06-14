@@ -6,7 +6,7 @@ use crate::geodesy::initial_course_deg;
 use crate::geometry::LatLon;
 use crate::ids::AirportId;
 use crate::map_overlay::NavSymbolFeature;
-use crate::{FlightDataCell, FlightDataColumn};
+use crate::{FlightDataCell, FlightDataCellTone, FlightDataColumn};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlightPlan {
@@ -890,6 +890,7 @@ pub enum FlightPlanDisplayRowKind {
     Waypoint,
     Group,
     Discontinuity,
+    Summary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1948,6 +1949,8 @@ fn populate_default_flight_data_cells(rows: &mut [FlightPlanDisplayRowUiView]) {
             None,
             None,
             None,
+            None,
+            FlightDataCellTone::Normal,
         );
     }
 }

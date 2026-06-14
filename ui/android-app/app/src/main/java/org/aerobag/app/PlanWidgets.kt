@@ -501,36 +501,53 @@ internal fun FlightPlanDataRow(
         }
     Row(modifier = modifier.then(rowBoundsModifier), horizontalArrangement = Arrangement.spacedBy(PlanGridGap)) {
         Box(modifier = Modifier.width(ThumbSize * 2.5f).height(cellHeight)) {
-            CompactSquareButton(
-                label = row.label,
-                modifier =
-                    Modifier
+            if (row.rowKind == "summary") {
+                PlanCell(
+                    row.label,
+                    modifier = Modifier
                         .height(cellHeight)
-                        .width(ThumbSize * 2.5f - indent)
+                        .width(ThumbSize * 2.5f)
+                        .align(Alignment.CenterEnd),
+                    cellHeight = cellHeight,
+                    muted = true,
+                )
+            } else {
+                CompactSquareButton(
+                    label = row.label,
+                    modifier =
+                        Modifier
+                            .height(cellHeight)
+                            .width(ThumbSize * 2.5f - indent)
+                            .align(Alignment.CenterEnd)
+                            .alpha(1f),
+                    testTag = "parity:plan-row:${row.id}",
+                    centered = false,
+                    textStartPadding = 10.dp,
+                    backgroundColor = defaultButtonColor,
+                    selected = selected,
+                    selectedColor = selectedButtonColor,
+                    maxLines = 2,
+                    textModifier =
+                        Modifier
+                            .padding(end = ThumbSize * 0.78f),
+                    onClick = onWaypointClick,
+                )
+                PlanWaypointSymbol(
+                    feature = row.symbolFeature,
+                    modifier = Modifier
                         .align(Alignment.CenterEnd)
+                        .padding(end = ThumbSize * 0.12f)
                         .alpha(1f),
-                testTag = "parity:plan-row:${row.id}",
-                centered = false,
-                textStartPadding = 10.dp,
-                backgroundColor = defaultButtonColor,
-                selected = selected,
-                selectedColor = selectedButtonColor,
-                maxLines = 2,
-                textModifier =
-                    Modifier
-                        .padding(end = ThumbSize * 0.78f),
-                onClick = onWaypointClick,
-            )
-            PlanWaypointSymbol(
-                feature = row.symbolFeature,
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = ThumbSize * 0.12f)
-                    .alpha(1f),
-            )
+                )
+            }
         }
         row.dataCells.forEach { cell ->
-            PlanCell(cell.value ?: "—", Modifier.weight(1f), cellHeight = cellHeight)
+            PlanCell(
+                cell.value ?: "—",
+                Modifier.weight(1f),
+                cellHeight = cellHeight,
+                muted = cell.tone == "muted" || row.rowKind == "summary",
+            )
         }
     }
 }
@@ -590,7 +607,14 @@ internal fun FlightPlanGroupBlock(
 }
 
 @Composable
-internal fun PlanCell(value: String, modifier: Modifier, isHeader: Boolean = false, cellHeight: Dp? = null, alpha: Float = 1f) {
+internal fun PlanCell(
+    value: String,
+    modifier: Modifier,
+    isHeader: Boolean = false,
+    cellHeight: Dp? = null,
+    alpha: Float = 1f,
+    muted: Boolean = false,
+) {
     val uiTheme = LocalAerobagUiTheme.current
     val resolvedCellHeight = cellHeight ?: if (isHeader) ThumbSize * 0.5f else ThumbSize
     Box(
@@ -605,7 +629,12 @@ internal fun PlanCell(value: String, modifier: Modifier, isHeader: Boolean = fal
         Text(
             value,
             style = if (isHeader) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodyMedium,
-            color = if (isHeader) uiTheme.controls.panelMuted else uiTheme.controls.panelFg,
+            color =
+                when {
+                    isHeader -> uiTheme.controls.panelMuted
+                    muted -> uiTheme.controls.panelFg.copy(alpha = 0.6f)
+                    else -> uiTheme.controls.panelFg
+                },
             fontWeight = if (isHeader) FontWeight.Bold else FontWeight.Medium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,

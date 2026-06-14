@@ -2541,6 +2541,7 @@ export default function App() {
         "--theme-flight-data-label": controlTheme.flight_data_label,
         "--theme-flight-data-value": controlTheme.flight_data_value,
         "--theme-flight-data-missing-value": controlTheme.flight_data_missing_value,
+        "--theme-flight-data-muted-value": `color-mix(in srgb, ${controlTheme.panel_fg} 60%, ${controlTheme.panel_bg})`,
         "--theme-cdi-pointer": controlTheme.cdi_pointer,
         "--theme-class-b-d-blue": loadedUiTheme.aviation.class_b_d_blue,
         "--theme-class-c-magenta": loadedUiTheme.aviation.class_c_magenta,
@@ -6594,7 +6595,7 @@ function FlightPlanPage(props: {
                 : row.uid,
         rowUid: row.uid,
         label: row.label,
-        dataCells: row.data_cells.map((cell) => cell.value ?? "\u2014"),
+        dataCells: row.data_cells,
         active: row.active,
         enabled: row.enabled ?? true,
         syntheticDirectTo: row.synthetic_direct_to ?? false,
@@ -6850,7 +6851,7 @@ function FlightPlanPage(props: {
       setStructuredArrow(null);
       return;
     }
-    const scrollPane = planScrollSurfaceRef.current;
+    const scrollPane = planScrollViewportRef.current;
     const content = planScrollContentRef.current;
     if (!scrollPane || !content) {
       setStructuredArrow(null);
@@ -7019,65 +7020,87 @@ function FlightPlanPage(props: {
                 ))}
                 {displayRows.map((row, index) => (
                   <Fragment key={row.id}>
-                    <button
-                      key={`${row.id}:waypoint`}
-	                  type="button"
-                      data-testid={`plan-row-${row.rowUid}`}
-	                  ref={(node) => {
-	                    if (row.refKey === null) {
-	                      return;
-	                    }
-                    if (node) {
-                      structuredRowRefs.current.set(row.refKey, node);
-                    } else {
-                      structuredRowRefs.current.delete(row.refKey);
-                    }
-                  }}
-                  className={[
-                    "planWaypointCell",
-	                    "planWaypointButton",
-                    selectedWaypointIndex === index ? "isSelected" : "",
-                    row.active ? "isActiveLeg" : "",
-                    !row.enabled ? "isDisabled" : "",
-                    row.syntheticDirectTo ? "isSyntheticDirectTo" : "",
-	                    "planStructuredWaypointCell",
-	                    row.rowKind === "group" ? "isGroupHeader" : "",
-	                    row.depth > 0 ? "isChildRow" : "",
-	                    row.rowKind === "discontinuity" ? "isDiscontinuityItem" : "",
-	                  ].filter(Boolean).join(" ")}
-                  onClick={(event) => {
-                    if (!row.enabled && !row.syntheticDirectTo) {
-                      return;
-                    }
-                    const page = pageRef.current;
-                    if (page) {
-                      const pageRect = page.getBoundingClientRect();
-                      const rowRect = event.currentTarget.getBoundingClientRect();
-                      setSelectedWaypointAnchor({
-                        top: rowRect.top - pageRect.top,
-                        height: rowRect.height,
-                      });
-                    }
-                    setSelectedWaypointUid(row.rowUid);
-                    setAirwayPicker(null);
-                    setProcedurePicker(null);
-                  }}
-                >
-                    <WaypointButtonContent
-                      label={row.label}
-                      symbolFeature={row.symbolFeature}
-                      indented={row.depth > 0}
-                    />
-                    </button>
-                    {row.dataCells.map((value, cellIndex) => (
+                    {row.rowKind === "summary" ? (
+                      <div
+                        key={`${row.id}:waypoint`}
+                        data-testid={`plan-row-${row.rowUid}`}
+                        ref={(node) => {
+                          if (row.refKey === null) {
+                            return;
+                          }
+                          if (node) {
+                            structuredRowRefs.current.set(row.refKey, node);
+                          } else {
+                            structuredRowRefs.current.delete(row.refKey);
+                          }
+                        }}
+                        className="planWaypointCell planStructuredWaypointCell planSummaryCell"
+                      >
+                        {row.label}
+                      </div>
+                    ) : (
+                      <button
+                        key={`${row.id}:waypoint`}
+                        type="button"
+                        data-testid={`plan-row-${row.rowUid}`}
+                        ref={(node) => {
+                          if (row.refKey === null) {
+                            return;
+                          }
+                          if (node) {
+                            structuredRowRefs.current.set(row.refKey, node);
+                          } else {
+                            structuredRowRefs.current.delete(row.refKey);
+                          }
+                        }}
+                        className={[
+                          "planWaypointCell",
+                          "planWaypointButton",
+                          selectedWaypointIndex === index ? "isSelected" : "",
+                          row.active ? "isActiveLeg" : "",
+                          !row.enabled ? "isDisabled" : "",
+                          row.syntheticDirectTo ? "isSyntheticDirectTo" : "",
+                          "planStructuredWaypointCell",
+                          row.rowKind === "group" ? "isGroupHeader" : "",
+                          row.depth > 0 ? "isChildRow" : "",
+                          row.rowKind === "discontinuity" ? "isDiscontinuityItem" : "",
+                        ].filter(Boolean).join(" ")}
+                        onClick={(event) => {
+                          if (!row.enabled && !row.syntheticDirectTo) {
+                            return;
+                          }
+                          const page = pageRef.current;
+                          if (page) {
+                            const pageRect = page.getBoundingClientRect();
+                            const rowRect = event.currentTarget.getBoundingClientRect();
+                            setSelectedWaypointAnchor({
+                              top: rowRect.top - pageRect.top,
+                              height: rowRect.height,
+                            });
+                          }
+                          setSelectedWaypointUid(row.rowUid);
+                          setAirwayPicker(null);
+                          setProcedurePicker(null);
+                        }}
+                      >
+                        <WaypointButtonContent
+                          label={row.label}
+                          symbolFeature={row.symbolFeature}
+                          indented={row.depth > 0}
+                        />
+                      </button>
+                    )}
+                    {row.dataCells.map((cell, cellIndex) => (
                       <div
                         key={`${row.id}:data:${planDataColumns[cellIndex]?.id ?? cellIndex}`}
                         className={[
                           "planCell",
                           row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
+                          row.rowKind === "summary" ? "planSummaryCell" : "",
+                          cell.tone === "muted" ? "isMuted" : "",
                         ].filter(Boolean).join(" ")}
                       >
-                        {value}
+                        {cell.value ?? "\u2014"}
                       </div>
                     ))}
                   </Fragment>

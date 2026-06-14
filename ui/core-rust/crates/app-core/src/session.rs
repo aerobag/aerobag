@@ -8075,7 +8075,10 @@ fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadRe
                 app_ui_state.ownship.render.speed_kt,
                 Some(session.wall_clock_epoch_ms),
             ),
-            app_ui_state.ownship.render.position,
+            crate::had_ops::FlightPlanLiveData {
+                ownship_position: app_ui_state.ownship.render.position,
+                now_epoch_ms: Some(session.wall_clock_epoch_ms),
+            },
         )?);
     }
     app_ui_state.flight_data_banner = project_flight_data_banner(session, &app_ui_state)?;
@@ -8444,6 +8447,7 @@ fn active_leg_geometry(
 
 #[derive(Debug, Clone)]
 struct PlanPreviewLeg {
+    resolved_leg_index: usize,
     pointer_key: String,
     geometry: GuidanceLegGeometry,
     distance_nm: f64,
@@ -8459,8 +8463,8 @@ fn sync_plan_preview_to_active_leg(session: &mut UiSession) -> AppResult<()> {
         .map(|guidance| guidance.active_leg_index)
         .unwrap_or(0);
     let Some(record) = plan_preview_legs(plan, &session.guidance_leg_geometry)
-        .get(leg_index)
-        .cloned()
+        .into_iter()
+        .find(|record| record.resolved_leg_index == leg_index)
     else {
         return Ok(());
     };
@@ -8779,11 +8783,14 @@ fn plan_preview_legs(
     }
     plan.resolved_legs
         .iter()
-        .filter_map(|leg| {
-            let pointer_key = pointer_key_for_preview_leg(plan, leg, &component_leg_counts)?;
+        .enumerate()
+        .filter_map(|(leg_index, leg)| {
+            let pointer_key =
+                pointer_key_for_preview_leg(plan, leg_index, leg, &component_leg_counts)?;
             let geometry = geometry_for_resolved_leg(leg, geometry_by_leg_id)?;
             let distance_nm = geometry_distance_nm(&geometry);
             Some(PlanPreviewLeg {
+                resolved_leg_index: leg_index,
                 pointer_key,
                 geometry,
                 distance_nm,
@@ -8794,6 +8801,7 @@ fn plan_preview_legs(
 
 fn pointer_key_for_preview_leg(
     plan: &FlightPlan,
+    leg_index: usize,
     leg: &ResolvedLeg,
     component_leg_counts: &HashMap<usize, usize>,
 ) -> Option<String> {
@@ -8809,13 +8817,25 @@ fn pointer_key_for_preview_leg(
                 .unwrap_or(0)
                 > 1
             {
-                Some(format!("guidance-leg:{}", leg.id))
+                Some(format!(
+                    "guidance-leg:{}:{}:{}",
+                    preview_component_pointer_scope(plan, component_index),
+                    leg_index,
+                    leg.id
+                ))
             } else {
                 plan.route_component_uids.get(component_index).cloned()
             }
         }
         ResolvedLegSource::LegacyPlanLeg { leg_index } => Some(format!("legacy:{leg_index}:from")),
     }
+}
+
+fn preview_component_pointer_scope(plan: &FlightPlan, component_index: usize) -> String {
+    plan.route_component_uids
+        .get(component_index)
+        .map(|uid| format!("component:{uid}"))
+        .unwrap_or_else(|| format!("component-index:{component_index}"))
 }
 
 fn geometry_for_resolved_leg(
@@ -13776,6 +13796,96 @@ mod tests {
     }
 
     #[test]
+    fn plan_preview_syncs_active_leg_by_resolved_leg_index() {
+        let b = LatLon {
+            lat: 40.0,
+            lon: -119.0,
+        };
+        let c = LatLon {
+            lat: 41.0,
+            lon: -119.0,
+        };
+        let d = LatLon {
+            lat: 42.0,
+            lon: -119.0,
+        };
+        let plan = FlightPlan {
+            id: "preview-unpreviewable-prefix".to_string(),
+            name: "unpreviewable prefix".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Fix("NO_GEOM_A".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Fix("NO_GEOM_B".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::LatLon(b),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::LatLon(c),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::LatLon(d),
+                },
+            ],
+            route_component_uids: vec![
+                "row-no-geom-a".to_string(),
+                "row-no-geom-b".to_string(),
+                "row-b".to_string(),
+                "row-c".to_string(),
+                "row-d".to_string(),
+            ],
+            route_component_uid_counter: 5,
+            resolved_legs: vec![
+                ResolvedLeg {
+                    id: "missing-geometry".to_string(),
+                    from: NavRef::Fix("NO_GEOM_A".to_string()),
+                    to: NavRef::Fix("NO_GEOM_B".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "leg-b-c".to_string(),
+                    from: NavRef::LatLon(b),
+                    to: NavRef::LatLon(c),
+                    source: ResolvedLegSource::RouteComponent { component_index: 2 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "leg-c-d".to_string(),
+                    from: NavRef::LatLon(c),
+                    to: NavRef::LatLon(d),
+                    source: ResolvedLegSource::RouteComponent { component_index: 3 },
+                    procedure_provenance: None,
+                },
+            ],
+            guidance: Some(GuidanceState {
+                active_leg_index: 1,
+                active_detail_index: Some(1),
+                display_split_leg_id: None,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+        let init = create_ui_session(plan, &[], None, None).expect("create session");
+        let snapshot = select_plan_preview(init.handle);
+        let position = ownship_position(&snapshot);
+
+        assert_near(position.lat, b.lat);
+        assert_near(position.lon, b.lon);
+    }
+
+    #[test]
     fn plan_preview_controls_stop_at_waypoints_and_plan_ends() {
         let init =
             create_ui_session(lat_lon_preview_plan(), &[], None, None).expect("create session");
@@ -14052,8 +14162,126 @@ mod tests {
         let records = plan_preview_legs(&plan, &HashMap::new());
 
         assert_eq!(records.len(), 2);
-        assert_eq!(records[0].pointer_key, "guidance-leg:proc-1");
-        assert_eq!(records[1].pointer_key, "guidance-leg:proc-2");
+        assert_eq!(
+            records[0].pointer_key,
+            "guidance-leg:component:row-proc:0:proc-1"
+        );
+        assert_eq!(
+            records[1].pointer_key,
+            "guidance-leg:component:row-proc:1:proc-2"
+        );
+    }
+
+    #[test]
+    fn plan_preview_distinguishes_duplicate_guidance_leg_ids_across_components() {
+        let a = LatLon {
+            lat: 40.0,
+            lon: -120.0,
+        };
+        let b = LatLon {
+            lat: 40.0,
+            lon: -119.9,
+        };
+        let c = LatLon {
+            lat: 40.0,
+            lon: -119.8,
+        };
+        let d = LatLon {
+            lat: 40.0,
+            lon: -119.7,
+        };
+        let e = LatLon {
+            lat: 40.0,
+            lon: -119.6,
+        };
+        let plan = FlightPlan {
+            id: "duplicate-airway-leg-id-preview".to_string(),
+            name: "duplicate airway ids".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Airway {
+                    airway: crate::AirwaySegment {
+                        name: "V1".to_string(),
+                        branch_key: None,
+                        entry: NavRef::LatLon(a),
+                        exit: NavRef::LatLon(c),
+                    },
+                },
+                RouteComponent::Airway {
+                    airway: crate::AirwaySegment {
+                        name: "V2".to_string(),
+                        branch_key: None,
+                        entry: NavRef::LatLon(c),
+                        exit: NavRef::LatLon(e),
+                    },
+                },
+            ],
+            route_component_uids: vec!["row-v1".to_string(), "row-v2".to_string()],
+            route_component_uid_counter: 2,
+            resolved_legs: vec![
+                ResolvedLeg {
+                    id: "airway--0".to_string(),
+                    from: NavRef::LatLon(a),
+                    to: NavRef::LatLon(b),
+                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "airway--1".to_string(),
+                    from: NavRef::LatLon(b),
+                    to: NavRef::LatLon(c),
+                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "airway--0".to_string(),
+                    from: NavRef::LatLon(c),
+                    to: NavRef::LatLon(d),
+                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "airway--1".to_string(),
+                    from: NavRef::LatLon(d),
+                    to: NavRef::LatLon(e),
+                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
+                    procedure_provenance: None,
+                },
+            ],
+            guidance: Some(GuidanceState {
+                active_leg_index: 0,
+                active_detail_index: Some(0),
+                display_split_leg_id: None,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+
+        let records = plan_preview_legs(&plan, &HashMap::new());
+        let keys = records
+            .iter()
+            .map(|record| record.pointer_key.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(keys.len(), 4);
+        assert_eq!(keys.iter().collect::<HashSet<_>>().len(), keys.len());
+        assert_eq!(
+            keys,
+            vec![
+                "guidance-leg:component:row-v1:0:airway--0",
+                "guidance-leg:component:row-v1:1:airway--1",
+                "guidance-leg:component:row-v2:2:airway--0",
+                "guidance-leg:component:row-v2:3:airway--1",
+            ]
+        );
     }
 
     #[test]

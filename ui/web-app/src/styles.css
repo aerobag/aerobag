@@ -2589,7 +2589,7 @@ button {
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
+  overflow: auto;
   overscroll-behavior: contain;
   padding-bottom: calc(var(--thumb) * 0.1);
   margin-bottom: calc(var(--thumb) * 0.1);
@@ -2601,9 +2601,9 @@ button {
 }
 
 .planScrollSurface {
-  width: 100%;
-  overflow-x: auto;
-  overflow-y: visible;
+  width: max-content;
+  min-width: 100%;
+  overflow: visible;
 }
 
 .planTableWrap {
@@ -2714,6 +2714,15 @@ button {
   font-weight: 700;
   justify-content: flex-end;
   text-align: right;
+}
+
+.planCell.isMuted {
+  color: var(--theme-flight-data-muted-value);
+}
+
+.planSummaryCell {
+  color: var(--theme-panel-muted);
+  font-weight: 800;
 }
 
 .planWaypointButton {
@@ -2966,8 +2975,6 @@ button {
   }
 
   .planScrollSurface {
-    overflow-x: auto;
-    overflow-y: auto;
     padding-right: 0;
   }
 

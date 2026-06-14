@@ -1,12 +1,27 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use chrono::{DateTime, Utc};
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FlightDataCellTone {
+    #[default]
+    Normal,
+    Muted,
+}
+
+impl FlightDataCellTone {
+    fn is_normal(&self) -> bool {
+        matches!(self, Self::Normal)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlightDataCell {
     pub id: String,
     pub label: String,
     pub value: Option<String>,
+    #[serde(default, skip_serializing_if = "FlightDataCellTone::is_normal")]
+    pub tone: FlightDataCellTone,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,9 +135,11 @@ impl FlightDataComputer {
     pub fn flight_plan_row_cells(
         &self,
         row_has_data: bool,
-        distance_nm: Option<f64>,
-        eta_distance_nm: Option<f64>,
+        segment_distance_nm: Option<f64>,
+        cumulative_distance_nm: Option<f64>,
+        eta: Option<String>,
         course_magnetic_deg: Option<f64>,
+        distance_tone: FlightDataCellTone,
     ) -> Vec<FlightDataCell> {
         if !row_has_data {
             return flight_plan_columns()
@@ -131,16 +148,21 @@ impl FlightDataComputer {
                     id: column.id,
                     label: column.label,
                     value: Some(String::new()),
+                    tone: FlightDataCellTone::Normal,
                 })
                 .collect();
         }
 
-        let ete = distance_nm.and_then(|distance| self.format_ete(distance));
-        let eta = eta_distance_nm.and_then(|distance| self.format_eta(distance));
-        let fuel = distance_nm.and_then(|distance| self.format_fuel(distance));
+        let ete = cumulative_distance_nm.and_then(|distance| self.format_ete(distance));
+        let fuel = cumulative_distance_nm.and_then(|distance| self.format_fuel(distance));
 
         vec![
-            cell("waypoint_distance", "WPT nm", distance_nm.map(format_nm)),
+            cell_with_tone(
+                "waypoint_distance",
+                "DIST nm",
+                segment_distance_nm.map(format_nm),
+                distance_tone,
+            ),
             cell("final_eta", "ETA", eta),
             cell("waypoint_ete", "ETE", ete),
             cell("fuel", "FUEL gal", fuel),
@@ -150,6 +172,33 @@ impl FlightDataComputer {
                 course_magnetic_deg.map(format_course_degrees),
             ),
         ]
+    }
+
+    pub fn flight_plan_summary_cells(&self, total_distance_nm: Option<f64>) -> Vec<FlightDataCell> {
+        vec![
+            cell(
+                "waypoint_distance",
+                "DIST nm",
+                total_distance_nm.map(format_nm),
+            ),
+            cell("final_eta", "ETA", None),
+            cell(
+                "waypoint_ete",
+                "ETE",
+                total_distance_nm.and_then(|distance| self.format_ete(distance)),
+            ),
+            cell(
+                "fuel",
+                "FUEL gal",
+                total_distance_nm.and_then(|distance| self.format_fuel(distance)),
+            ),
+            cell("desired_track", "DTK °M", None),
+        ]
+    }
+
+    pub fn format_eta_at(&self, distance_nm: f64, now_epoch_ms: i64) -> Option<String> {
+        let ete_seconds = self.ete_seconds(distance_nm)?;
+        Some(format_eta(now_epoch_ms, ete_seconds))
     }
 
     fn format_ete(&self, distance_nm: f64) -> Option<String> {
@@ -178,7 +227,7 @@ impl FlightDataComputer {
 
 pub fn flight_plan_columns() -> Vec<FlightDataColumn> {
     vec![
-        column("waypoint_distance", "WPT nm"),
+        column("waypoint_distance", "DIST nm"),
         column("final_eta", "ETA"),
         column("waypoint_ete", "ETE"),
         column("fuel", "FUEL gal"),
@@ -193,7 +242,7 @@ pub fn possible_columns() -> Vec<FlightDataColumn> {
         column("vertical_speed", "VS fpm"),
         column("track", "TRK °M"),
         column("desired_track", "DTK °M"),
-        column("waypoint_distance", "WPT nm"),
+        column("waypoint_distance", "DIST nm"),
         column("waypoint_ete", "ETE"),
         column("final_distance", "FINAL nm"),
         column("final_ete", "F-ETE"),
@@ -204,10 +253,20 @@ pub fn possible_columns() -> Vec<FlightDataColumn> {
 }
 
 pub fn cell(id: &str, label: &str, value: Option<String>) -> FlightDataCell {
+    cell_with_tone(id, label, value, FlightDataCellTone::Normal)
+}
+
+pub fn cell_with_tone(
+    id: &str,
+    label: &str,
+    value: Option<String>,
+    tone: FlightDataCellTone,
+) -> FlightDataCell {
     FlightDataCell {
         id: id.to_string(),
         label: label.to_string(),
         value,
+        tone,
     }
 }
 
@@ -292,7 +351,14 @@ mod tests {
             .find(|cell| cell.id == "final_ete")
             .and_then(|cell| cell.value.as_deref());
 
-        let row_cells = computer.flight_plan_row_cells(true, Some(30.0), None, None);
+        let row_cells = computer.flight_plan_row_cells(
+            true,
+            Some(12.0),
+            Some(30.0),
+            None,
+            None,
+            FlightDataCellTone::Normal,
+        );
         let row_ete = row_cells
             .iter()
             .find(|cell| cell.id == "waypoint_ete")
@@ -300,6 +366,11 @@ mod tests {
 
         assert_eq!(final_ete, Some("15:00"));
         assert_eq!(row_ete, final_ete);
+    }
+
+    #[test]
+    fn flight_plan_distance_column_is_named_dist() {
+        assert_eq!(flight_plan_columns()[0].label, "DIST nm");
     }
 
     #[test]
@@ -319,7 +390,14 @@ mod tests {
     #[test]
     fn computes_fuel_when_fuel_flow_is_available() {
         let computer = FlightDataComputer::with_fuel_flow(Some(120.0), Some(10.0));
-        let row_cells = computer.flight_plan_row_cells(true, Some(30.0), None, None);
+        let row_cells = computer.flight_plan_row_cells(
+            true,
+            Some(12.0),
+            Some(30.0),
+            None,
+            None,
+            FlightDataCellTone::Normal,
+        );
         let row_fuel = row_cells
             .iter()
             .find(|cell| cell.id == "fuel")
@@ -336,6 +414,27 @@ mod tests {
 
         assert_eq!(row_fuel, Some("2.5"));
         assert_eq!(final_fuel, Some("2.5"));
+    }
+
+    #[test]
+    fn row_eta_uses_cumulative_distance_from_now() {
+        let computer = FlightDataComputer::new(Some(120.0));
+        let row_cells = computer.flight_plan_row_cells(
+            true,
+            Some(12.0),
+            Some(30.0),
+            computer.format_eta_at(30.0, 12 * 60 * 60 * 1000),
+            None,
+            FlightDataCellTone::Normal,
+        );
+
+        assert_eq!(
+            row_cells
+                .iter()
+                .find(|cell| cell.id == "final_eta")
+                .and_then(|cell| cell.value.as_deref()),
+            Some("12:15")
+        );
     }
 
     #[test]
@@ -369,7 +468,14 @@ mod tests {
             .iter()
             .find(|cell| cell.id == "final_eta")
             .and_then(|cell| cell.value.as_deref());
-        let row_cells = computer.flight_plan_row_cells(true, Some(30.0), Some(30.0), None);
+        let row_cells = computer.flight_plan_row_cells(
+            true,
+            Some(30.0),
+            Some(30.0),
+            computer.format_eta_at(30.0, noon_utc),
+            None,
+            FlightDataCellTone::Normal,
+        );
         let row_eta = row_cells
             .iter()
             .find(|cell| cell.id == "final_eta")

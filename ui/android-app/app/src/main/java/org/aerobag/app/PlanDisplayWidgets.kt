@@ -353,6 +353,7 @@ internal fun buildFlightPlanDisplayRows(planUiState: FlightPlanUiState): List<Fl
                     FlightPlanDisplayRowKind.Waypoint -> "waypoint"
                     FlightPlanDisplayRowKind.Group -> "group"
                     FlightPlanDisplayRowKind.Discontinuity -> "discontinuity"
+                    FlightPlanDisplayRowKind.Summary -> "summary"
                 },
             componentKind = row.componentKind,
             componentUid = row.componentUid,

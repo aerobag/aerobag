@@ -48,8 +48,8 @@ pub use debug_log::{
 };
 pub use errors::{AppError, AppErrorKind, AppResult};
 pub use flight_data::{
-    FlightDataBannerInput, FlightDataBannerModel, FlightDataCell, FlightDataColumn,
-    FlightDataComputer,
+    FlightDataBannerInput, FlightDataBannerModel, FlightDataCell, FlightDataCellTone,
+    FlightDataColumn, FlightDataComputer,
 };
 pub use geodesy::{
     cross_track_left_nm, great_circle_display_path, great_circle_distance_nm,

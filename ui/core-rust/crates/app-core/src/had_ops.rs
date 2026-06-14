@@ -25,6 +25,12 @@ use crate::{
     WaypointIdentifierRecord, WaypointIdentifierSuggestion, REQUIRED_NAV_DB_CONTRACT_ID,
 };
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct FlightPlanLiveData {
+    pub ownship_position: Option<LatLon>,
+    pub now_epoch_ms: Option<i64>,
+}
+
 const NAV_DB_ROOT_MEMBER_PATH: &str = "root";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -826,7 +832,7 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
             plan,
             current_ui_state,
             crate::FlightDataComputer::default(),
-            None,
+            FlightPlanLiveData::default(),
         )?)?,
         HadOperation::FlightPlanUiMutation { mutation } => {
             serde_json::to_value(FlightPlanUiMutation {
@@ -835,7 +841,7 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
                     mutation.plan.clone(),
                     mutation.ui_state,
                     crate::FlightDataComputer::default(),
-                    None,
+                    FlightPlanLiveData::default(),
                 )?,
                 ..mutation
             })?
@@ -1277,19 +1283,34 @@ pub(crate) fn flight_plan_ui_state(
     plan: FlightPlan,
     current_ui_state: FlightPlanUiState,
     computer: crate::FlightDataComputer,
-    ownship_position: Option<LatLon>,
+    live_data: FlightPlanLiveData,
 ) -> Result<FlightPlanUiState, HadReadError> {
     let plan = crate::build_flight_plan(plan)?;
     let mut ui_state = current_ui_state;
+    ui_state
+        .display_rows
+        .retain(|row| row.row_kind != crate::FlightPlanDisplayRowKind::Summary);
     let mut missing_pages = HadReadPageCollector::default();
     let route = missing_pages
         .collect(project_flight_plan_route(store, &plan))?
         .unwrap_or_default();
-    let eta_distance_by_leg_id = eta_distance_by_leg_id(&route, ownship_position);
-    for row in &mut ui_state.display_rows {
+    let active_row_index = ui_state
+        .guidance
+        .as_ref()
+        .and_then(|guidance| guidance.active_to_row_uid.as_ref())
+        .and_then(|active_uid| {
+            ui_state
+                .display_rows
+                .iter()
+                .position(|row| &row.uid == active_uid)
+        });
+    let use_live_distances = live_data.ownship_position.is_some() && active_row_index.is_some();
+    let mut total_remaining_distance_nm = 0.0;
+    let mut has_remaining_distance = false;
+    for (row_index, row) in ui_state.display_rows.iter_mut().enumerate() {
         let mut distance_nm = None;
-        let mut eta_distance_nm = None;
         let mut course_deg = None;
+        let mut distance_tone = crate::FlightDataCellTone::Normal;
         row.symbol_feature = match &row.nav_ref {
             Some(nav_ref) => missing_pages
                 .collect(nav_symbol_feature(store, nav_ref))?
@@ -1306,7 +1327,6 @@ pub(crate) fn flight_plan_ui_state(
                                 .map(|segment| segment.distance_nm)
                                 .sum::<f64>(),
                     );
-                    eta_distance_nm = eta_distance_by_leg_id.get(&leg.id).copied();
                     course_deg = missing_pages
                         .collect(true_to_magnetic_course_deg_optional(
                             store,
@@ -1321,11 +1341,57 @@ pub(crate) fn flight_plan_ui_state(
                 }
             }
         }
+        let row_has_data = row.row_kind != crate::FlightPlanDisplayRowKind::Group;
+        let include_in_remaining = if let Some(active_index) = active_row_index {
+            if use_live_distances && row_index < active_index {
+                distance_tone = crate::FlightDataCellTone::Muted;
+                false
+            } else {
+                true
+            }
+        } else {
+            true
+        };
+        if use_live_distances && Some(row_index) == active_row_index {
+            if let (Some(ownship_position), Some(leg_index)) =
+                (live_data.ownship_position, row.leg_index)
+            {
+                if let Some(leg) = plan.resolved_legs.get(leg_index) {
+                    let destination_position =
+                        missing_pages.collect(nav_ref_position(store, &leg.to, None))?;
+                    distance_nm = destination_position.map(|position| {
+                        crate::great_circle_distance_nm(ownship_position, position)
+                    });
+                }
+            }
+        }
+        let cumulative_distance_nm = if row_has_data && include_in_remaining {
+            if let Some(distance_nm) = distance_nm {
+                total_remaining_distance_nm += distance_nm;
+                has_remaining_distance = true;
+                Some(total_remaining_distance_nm)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let eta = if use_live_distances {
+            cumulative_distance_nm.and_then(|distance_nm| {
+                live_data
+                    .now_epoch_ms
+                    .and_then(|now_epoch_ms| computer.format_eta_at(distance_nm, now_epoch_ms))
+            })
+        } else {
+            None
+        };
         row.data_cells = computer.flight_plan_row_cells(
-            row.row_kind != crate::FlightPlanDisplayRowKind::Group,
+            row_has_data,
             distance_nm,
-            eta_distance_nm,
+            cumulative_distance_nm,
+            eta,
             course_deg,
+            distance_tone,
         );
         if crate::planning::flight_plan_row_actions(row)
             .any(|action| action.id == FlightPlanRowActionId::ShowPlate)
@@ -1351,6 +1417,12 @@ pub(crate) fn flight_plan_ui_state(
             }
         }
     }
+    if has_remaining_distance {
+        ui_state.display_rows.push(flight_plan_summary_row(
+            &computer,
+            total_remaining_distance_nm,
+        ));
+    }
     ui_state.data_columns = crate::flight_data::flight_plan_columns();
     let pages = missing_pages.into_pages();
     if !pages.is_empty() {
@@ -1359,37 +1431,43 @@ pub(crate) fn flight_plan_ui_state(
     Ok(ui_state)
 }
 
-fn eta_distance_by_leg_id(
-    route: &[FlightPlanRouteSegment],
-    ownship_position: Option<LatLon>,
-) -> HashMap<String, f64> {
-    let mut cumulative_distance_nm = 0.0;
-    let mut distance_by_leg_id = HashMap::new();
-    for segment in route {
-        let Some(segment_distance_nm) =
-            eta_segment_remaining_distance_nm(segment, ownship_position)
-        else {
-            continue;
-        };
-        cumulative_distance_nm += segment_distance_nm.max(0.0);
-        distance_by_leg_id.insert(segment.leg_id.clone(), cumulative_distance_nm);
-    }
-    distance_by_leg_id
-}
-
-fn eta_segment_remaining_distance_nm(
-    segment: &FlightPlanRouteSegment,
-    ownship_position: Option<LatLon>,
-) -> Option<f64> {
-    match segment.status {
-        crate::FlightPlanRouteSegmentStatus::Completed => None,
-        crate::FlightPlanRouteSegmentStatus::Active => Some(
-            ownship_position
-                .map(|position| crate::great_circle_distance_nm(position, segment.to))
-                .unwrap_or(segment.distance_nm),
-        ),
-        crate::FlightPlanRouteSegmentStatus::ActiveLegRemaining
-        | crate::FlightPlanRouteSegmentStatus::Remaining => Some(segment.distance_nm),
+fn flight_plan_summary_row(
+    computer: &crate::FlightDataComputer,
+    total_distance_nm: f64,
+) -> crate::planning::FlightPlanDisplayRowUiView {
+    crate::planning::FlightPlanDisplayRowUiView {
+        uid: "flight-plan:summary".to_string(),
+        label: "TOTAL".to_string(),
+        row_kind: crate::FlightPlanDisplayRowKind::Summary,
+        component_kind: None,
+        component_uid: None,
+        component_index: None,
+        procedure_id: None,
+        procedure_kind: None,
+        leg_index: None,
+        data_cells: computer.flight_plan_summary_cells(Some(total_distance_nm)),
+        show_plate_target_id: None,
+        chart_airport_id: None,
+        nav_ref: None,
+        symbol_feature: None,
+        depth: 0,
+        active: false,
+        enabled: false,
+        synthetic_direct_to: false,
+        can_add_airway_after: false,
+        can_add_procedure_before: false,
+        can_remove_component: false,
+        can_reorder_component: false,
+        can_reorder_up: false,
+        can_reorder_down: false,
+        replace_procedure_component_index: None,
+        start_component_index: None,
+        end_component_index: None,
+        origin_anchor: None,
+        destination_anchor: None,
+        preceding_waypoint: None,
+        following_waypoint: None,
+        action_matrix: Vec::new(),
     }
 }
 
@@ -2942,7 +3020,7 @@ pub(crate) fn append_flight_plan_entry(
             appended.clone(),
             crate::project_ui_state(&appended),
             crate::FlightDataComputer::default(),
-            None,
+            FlightPlanLiveData::default(),
         )?,
         plan: appended,
     })
@@ -2965,7 +3043,7 @@ pub(crate) fn insert_waypoint_best_position(
             inserted.clone(),
             crate::project_ui_state(&inserted),
             crate::FlightDataComputer::default(),
-            None,
+            FlightPlanLiveData::default(),
         )?,
         plan: inserted,
     })
@@ -4371,7 +4449,7 @@ mod tests {
             plan.clone(),
             crate::planning::project_ui_state(&plan),
             crate::FlightDataComputer::default(),
-            None,
+            FlightPlanLiveData::default(),
         )
         .expect("project flight plan ui state");
         let row_course = ui_state
@@ -4390,6 +4468,201 @@ mod tests {
         assert_eq!(
             row_course,
             crate::flight_data::format_course_degrees(true_course - 14.0)
+        );
+    }
+
+    #[test]
+    fn flight_plan_ui_state_projects_live_remaining_distance_and_summary() {
+        let aaa = LatLon { lat: 0.0, lon: 0.0 };
+        let bbb = LatLon { lat: 0.0, lon: 1.0 };
+        let ccc = LatLon { lat: 0.0, lon: 2.0 };
+        let ownship = LatLon { lat: 0.0, lon: 1.5 };
+        let store = test_nav_kv_store(&[
+            (
+                "navref/position/airport/KAAA",
+                serde_json::json!({"lat": aaa.lat, "lon": aaa.lon}),
+            ),
+            (
+                "navref/position/airport/KBBB",
+                serde_json::json!({"lat": bbb.lat, "lon": bbb.lon}),
+            ),
+            (
+                "navref/position/airport/KCCC",
+                serde_json::json!({"lat": ccc.lat, "lon": ccc.lon}),
+            ),
+        ]);
+        let plan = crate::build_flight_plan(FlightPlan {
+            id: "plan-live-distance".to_string(),
+            name: "KAAA KBBB KCCC".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KAAA".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KBBB".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KCCC".to_string()),
+                },
+            ],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: Some(AirportId("KAAA".to_string())),
+            destination: Some(AirportId("KCCC".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        })
+        .expect("build plan");
+        let plan = crate::activate_leg(&plan, 1).expect("activate KBBB-KCCC leg");
+        let now_epoch_ms = 12 * 60 * 60 * 1000;
+        let computer = crate::FlightDataComputer::new(Some(120.0));
+        let ui_state = flight_plan_ui_state(
+            &store,
+            plan.clone(),
+            crate::planning::project_ui_state(&plan),
+            computer,
+            FlightPlanLiveData {
+                ownship_position: Some(ownship),
+                now_epoch_ms: Some(now_epoch_ms),
+            },
+        )
+        .expect("project live flight plan ui state");
+
+        let bbb_row = ui_state
+            .display_rows
+            .iter()
+            .find(|row| row.label == "KBBB")
+            .expect("KBBB row");
+        let ccc_row = ui_state
+            .display_rows
+            .iter()
+            .find(|row| row.label == "KCCC")
+            .expect("KCCC row");
+        let summary_row = ui_state
+            .display_rows
+            .iter()
+            .find(|row| row.row_kind == crate::FlightPlanDisplayRowKind::Summary)
+            .expect("summary row");
+        fn row_cell<'a>(
+            row: &'a crate::planning::FlightPlanDisplayRowUiView,
+            id: &str,
+        ) -> &'a crate::FlightDataCell {
+            row.data_cells
+                .iter()
+                .find(|cell| cell.id == id)
+                .expect("cell")
+        }
+        let live_distance_nm = crate::great_circle_distance_nm(ownship, ccc);
+
+        assert_eq!(
+            row_cell(bbb_row, "waypoint_distance").tone,
+            crate::FlightDataCellTone::Muted
+        );
+        assert_eq!(
+            row_cell(bbb_row, "waypoint_ete").value.as_deref(),
+            None,
+            "rows before the active guidance leg should not contribute to remaining ETE"
+        );
+        assert_eq!(
+            row_cell(ccc_row, "waypoint_distance").value.as_deref(),
+            Some(crate::flight_data::format_nm(live_distance_nm).as_str())
+        );
+        assert_eq!(
+            row_cell(ccc_row, "waypoint_distance").tone,
+            crate::FlightDataCellTone::Normal
+        );
+        assert_eq!(
+            row_cell(ccc_row, "final_eta").value,
+            computer.format_eta_at(live_distance_nm, now_epoch_ms)
+        );
+        assert_eq!(
+            row_cell(summary_row, "waypoint_distance").value.as_deref(),
+            Some(crate::flight_data::format_nm(live_distance_nm).as_str())
+        );
+        assert_eq!(
+            row_cell(summary_row, "waypoint_ete").value.as_deref(),
+            row_cell(ccc_row, "waypoint_ete").value.as_deref()
+        );
+    }
+
+    #[test]
+    fn flight_plan_ui_state_projects_static_total_summary_without_active_leg() {
+        let aaa = LatLon { lat: 0.0, lon: 0.0 };
+        let bbb = LatLon { lat: 0.0, lon: 1.0 };
+        let ccc = LatLon { lat: 0.0, lon: 2.0 };
+        let store = test_nav_kv_store(&[
+            (
+                "navref/position/airport/KAAA",
+                serde_json::json!({"lat": aaa.lat, "lon": aaa.lon}),
+            ),
+            (
+                "navref/position/airport/KBBB",
+                serde_json::json!({"lat": bbb.lat, "lon": bbb.lon}),
+            ),
+            (
+                "navref/position/airport/KCCC",
+                serde_json::json!({"lat": ccc.lat, "lon": ccc.lon}),
+            ),
+        ]);
+        let plan = crate::build_flight_plan(FlightPlan {
+            id: "plan-static-total".to_string(),
+            name: "KAAA KBBB KCCC".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KAAA".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KBBB".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KCCC".to_string()),
+                },
+            ],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: Some(AirportId("KAAA".to_string())),
+            destination: Some(AirportId("KCCC".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        })
+        .expect("build plan");
+        let ui_state = flight_plan_ui_state(
+            &store,
+            plan.clone(),
+            crate::planning::project_ui_state(&plan),
+            crate::FlightDataComputer::default(),
+            FlightPlanLiveData::default(),
+        )
+        .expect("project static flight plan ui state");
+        let total_distance_nm =
+            crate::great_circle_distance_nm(aaa, bbb) + crate::great_circle_distance_nm(bbb, ccc);
+        let summary_row = ui_state
+            .display_rows
+            .iter()
+            .find(|row| row.row_kind == crate::FlightPlanDisplayRowKind::Summary)
+            .expect("summary row");
+        let distance_cell = summary_row
+            .data_cells
+            .iter()
+            .find(|cell| cell.id == "waypoint_distance")
+            .expect("summary distance cell");
+
+        assert_eq!(summary_row.label, "TOTAL");
+        assert_eq!(
+            distance_cell.value.as_deref(),
+            Some(crate::flight_data::format_nm(total_distance_nm).as_str())
         );
     }
 
@@ -4458,7 +4731,7 @@ mod tests {
             plan.clone(),
             crate::planning::project_ui_state(&plan),
             crate::FlightDataComputer::default(),
-            None,
+            FlightPlanLiveData::default(),
         ) {
             Ok(_) => panic!("expected batched page fault"),
             Err(HadReadError::NeedPages(pages)) => {
@@ -4478,7 +4751,7 @@ mod tests {
             plan.clone(),
             crate::planning::project_ui_state(&plan),
             crate::FlightDataComputer::default(),
-            None,
+            FlightPlanLiveData::default(),
         )
         .expect("project flight plan ui state after batch");
     }
@@ -4873,7 +5146,24 @@ mod tests {
 
     #[test]
     fn flight_plan_ui_state_enrichment_preserves_live_guidance_nav_element() {
-        let store = load_current_nav_kv_store();
+        let store = test_nav_kv_store(&[
+            (
+                "navref/position/airport/KPAO",
+                serde_json::json!({"lat": 37.461, "lon": -122.115}),
+            ),
+            (
+                "navref/position/fix/VPDUB",
+                serde_json::json!({"lat": 38.0, "lon": -122.0}),
+            ),
+            (
+                "navref/position/airport/KVCB",
+                serde_json::json!({"lat": 38.377, "lon": -121.962}),
+            ),
+            (
+                "navref/position/airport/KWLW",
+                serde_json::json!({"lat": 39.516, "lon": -122.218}),
+            ),
+        ]);
         let plan = FlightPlan {
             id: "kpao-vpdub-vcb-wlw".to_string(),
             name: "KPAO VPDUB KVCB KWLW".to_string(),

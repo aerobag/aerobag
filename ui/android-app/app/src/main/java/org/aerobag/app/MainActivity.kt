@@ -262,6 +262,7 @@ import org.aerobag.app.domain.LiveFeedCacheStore
 import org.aerobag.app.domain.LiveFeedConnectionEvent
 import org.aerobag.app.domain.LiveFeedFetchPolicy
 import org.aerobag.app.domain.LiveFeedInstalledSummary
+import org.aerobag.app.domain.MapDisplayFrame
 import org.aerobag.app.domain.SequencingMode
 import org.aerobag.app.domain.SituationControlInput
 import org.aerobag.app.domain.SituationRingCandidate
@@ -280,6 +281,7 @@ import org.aerobag.app.domain.UiSessionSnapshot
 import org.aerobag.app.domain.VisibleMapFeature
 import org.aerobag.app.domain.VisibleMetarFeature
 import org.aerobag.app.domain.VisiblePirepFeature
+import org.aerobag.app.domain.WorldPoint
 import org.aerobag.app.domain.applyPinchGesture
 import org.aerobag.app.domain.clampZoom
 import org.aerobag.app.domain.createInitialImageViewport
@@ -1288,12 +1290,8 @@ internal fun latLonToScreenPoint(
     widthPx: Float,
     heightPx: Float,
 ): Offset {
-    val world = latLonToWorld(point.lat, point.lon)
-    val scale = scaleForZoom(viewport.zoom)
-    return Offset(
-        x = ((world.x - viewport.centerWorldX) * scale + widthPx / 2f).toFloat(),
-        y = ((world.y - viewport.centerWorldY) * scale + heightPx / 2f).toFloat(),
-    )
+    val screenPoint = MapDisplayFrame(viewport, widthPx, heightPx).latLonToScreen(point.lat, point.lon)
+    return Offset(screenPoint.x, screenPoint.y)
 }
 
 internal fun plateFolderColor(uiTheme: UiTheme, category: String): Color =
@@ -1962,12 +1960,8 @@ internal fun latLonToScreen(
     widthUnits: Float,
     heightUnits: Float,
 ): Offset {
-    val world = latLonToWorld(lat, lon)
-    val scale = scaleForZoom(viewport.zoom)
-    return Offset(
-        x = (((world.x - viewport.centerWorldX) * scale) + widthUnits / 2f).toFloat(),
-        y = (((world.y - viewport.centerWorldY) * scale) + heightUnits / 2f).toFloat(),
-    )
+    val screenPoint = MapDisplayFrame(viewport, widthUnits, heightUnits).latLonToScreen(lat, lon)
+    return Offset(screenPoint.x, screenPoint.y)
 }
 
 internal fun mercatorMetersToWorld(xMeters: Double, yMeters: Double): Offset {
@@ -1984,11 +1978,10 @@ internal fun worldToScreen(
     widthUnits: Float,
     heightUnits: Float,
 ): Offset {
-    val scale = scaleForZoom(viewport.zoom)
-    return Offset(
-        x = ((world.x - viewport.centerWorldX) * scale + widthUnits / 2f).toFloat(),
-        y = ((world.y - viewport.centerWorldY) * scale + heightUnits / 2f).toFloat(),
+    val screenPoint = MapDisplayFrame(viewport, widthUnits, heightUnits).worldToScreen(
+        WorldPoint(world.x.toDouble(), world.y.toDouble()),
     )
+    return Offset(screenPoint.x, screenPoint.y)
 }
 
 internal fun screenToWorldOffset(
@@ -1998,11 +1991,8 @@ internal fun screenToWorldOffset(
     widthUnits: Float,
     heightUnits: Float,
 ): Offset {
-    val scale = scaleForZoom(viewport.zoom)
-    return Offset(
-        x = (((screenX - widthUnits / 2f) / scale) + viewport.centerWorldX).toFloat(),
-        y = (((screenY - heightUnits / 2f) / scale) + viewport.centerWorldY).toFloat(),
-    )
+    val world = MapDisplayFrame(viewport, widthUnits, heightUnits).screenToWorld(ScreenPoint(screenX, screenY))
+    return Offset(world.x.toFloat(), world.y.toFloat())
 }
 
 internal fun terrainAltitudeBucketForOwnship(ownship: OwnshipRenderState): Double? = null
@@ -2559,17 +2549,13 @@ internal fun transformScreenPoint(
     toViewport: MapViewportState,
     toSurface: OverlaySurfaceUnits,
 ): AirspaceScreenPoint {
-    val world =
-        screenToWorld(
-            viewport = fromViewport,
-            point = ScreenPoint(x.toFloat(), y.toFloat()),
-            widthPx = fromSurface.width,
-            heightPx = fromSurface.height,
-        )
-    val nextScale = scaleForZoom(toViewport.zoom)
+    val transformed = MapDisplayFrame(toViewport, toSurface.width, toSurface.height).transformScreenPointFrom(
+        from = MapDisplayFrame(fromViewport, fromSurface.width, fromSurface.height),
+        point = ScreenPoint(x.toFloat(), y.toFloat()),
+    )
     return AirspaceScreenPoint(
-        x = (world.x - toViewport.centerWorldX) * nextScale + toSurface.width / 2.0,
-        y = (world.y - toViewport.centerWorldY) * nextScale + toSurface.height / 2.0,
+        x = transformed.x.toDouble(),
+        y = transformed.y.toDouble(),
     )
 }
 

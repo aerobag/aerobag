@@ -34,6 +34,30 @@ data class WorldPoint(
     val y: Double,
 )
 
+data class MapDisplayFrame(
+    val viewport: MapViewportState,
+    val widthPx: Float,
+    val heightPx: Float,
+) {
+    fun screenToWorld(point: ScreenPoint): WorldPoint =
+        screenToWorld(viewport, point, widthPx, heightPx)
+
+    fun worldToScreen(world: WorldPoint): ScreenPoint {
+        val scale = scaleForZoom(viewport.zoom)
+        val wrappedX = world.x + (((viewport.centerWorldX - world.x) / WORLD_SIZE).roundToInt() * WORLD_SIZE)
+        return ScreenPoint(
+            x = (((wrappedX - viewport.centerWorldX) * scale) + widthPx / 2f).toFloat(),
+            y = (((world.y - viewport.centerWorldY) * scale) + heightPx / 2f).toFloat(),
+        )
+    }
+
+    fun latLonToScreen(lat: Double, lon: Double): ScreenPoint =
+        worldToScreen(latLonToWorld(lat, lon))
+
+    fun transformScreenPointFrom(from: MapDisplayFrame, point: ScreenPoint): ScreenPoint =
+        worldToScreen(from.screenToWorld(point))
+}
+
 data class RenderTile(
     val x: Int,
     val yTms: Int,

@@ -6000,12 +6000,6 @@ fn ensure_vector_inputs_loaded_impl(
     ))
 }
 
-fn queue_nav_kv_pages_for_map_overlay(session: &mut UiSession, pages: Vec<u32>) {
-    for resource in nav_kv_page_resources(pages) {
-        enqueue_session_resource_effect(session, resource, [UiInvalidation::MapOverlay]);
-    }
-}
-
 fn vector_inputs_status_record(
     value: impl Into<String>,
     severity: UiStatusSeverity,
@@ -6024,22 +6018,15 @@ fn vector_inputs_status_record(
 fn ensure_vector_inputs_loaded_for_map_overlay(
     session: &mut UiSession,
     metrics: &MapSurfaceMetrics,
-) -> Vec<DataStatusRecord> {
+) -> Result<Vec<DataStatusRecord>, HadReadError> {
     match ensure_vector_inputs_loaded(session, metrics) {
-        Ok(()) => Vec::new(),
-        Err(HadReadError::NeedPages(pages)) => {
-            queue_nav_kv_pages_for_map_overlay(session, pages);
-            vec![vector_inputs_status_record(
-                "Loading vectors",
-                UiStatusSeverity::Info,
-                "Visible vector data is waiting for nav-db pages. The map is rendering the resident overlay data and will redraw when the pages arrive.",
-            )]
-        }
-        Err(HadReadError::Fatal(message)) => vec![vector_inputs_status_record(
+        Ok(()) => Ok(Vec::new()),
+        Err(HadReadError::NeedPages(pages)) => Err(HadReadError::NeedPages(pages)),
+        Err(HadReadError::Fatal(message)) => Ok(vec![vector_inputs_status_record(
             "Vector overlay failed",
             UiStatusSeverity::Caution,
             format!("Vector overlay data could not be loaded: {message}"),
-        )],
+        )]),
     }
 }
 
@@ -6260,9 +6247,10 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
     let mut supplemental_status_records = Vec::new();
     let vector_inputs_started_at = crate::core_clock_ms();
     if session.map_layer_state.vectors.visible {
-        supplemental_status_records.extend(ensure_vector_inputs_loaded_for_map_overlay(
-            session, &metrics,
-        ));
+        match ensure_vector_inputs_loaded_for_map_overlay(session, &metrics) {
+            Ok(records) => supplemental_status_records.extend(records),
+            Err(err) => return had_read_error_to_overlay_outcome(err),
+        }
     }
     let vector_inputs_ms = elapsed_ms(vector_inputs_started_at);
     let display_vectors = session.map_layer_state.vectors.visible && session.vector_manifest_loaded;
@@ -6291,8 +6279,9 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
             Ok(Some(catalog)) => catalog.regions,
             Ok(None) => Vec::new(),
             Err(HadReadError::NeedPages(pages)) => {
-                queue_nav_kv_pages_for_map_overlay(session, pages);
-                Vec::new()
+                return Ok(HadOperationOutcome::NeedResources {
+                    resources: nav_kv_page_resources(pages),
+                });
             }
             Err(err) => return had_read_error_to_overlay_outcome(err),
         }
@@ -6322,8 +6311,9 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
             match flight_plan_overlay_features(session, &viewport, width_px, height_px) {
                 Ok(features) => features,
                 Err(HadReadError::NeedPages(pages)) => {
-                    queue_nav_kv_pages_for_map_overlay(session, pages);
-                    Vec::new()
+                    return Ok(HadOperationOutcome::NeedResources {
+                        resources: nav_kv_page_resources(pages),
+                    });
                 }
                 Err(err) => return had_read_error_to_overlay_outcome(err),
             };
@@ -10449,7 +10439,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_vector_pages_are_background_effects_for_map_overlay() {
+    fn missing_vector_pages_block_map_overlay_until_loaded() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         let (store, pages) = crate::navkv::nav_kv_store_without_pages_and_pages_for_test(
@@ -10471,17 +10461,13 @@ mod tests {
         )
         .expect("overlay outcome");
 
-        let HadOperationOutcome::Complete {
-            result,
-            invalidations,
-        } = outcome
-        else {
-            panic!("missing vector pages should not block map overlay: {outcome:?}");
+        let HadOperationOutcome::NeedResources { resources } = outcome else {
+            panic!("missing vector pages should block map overlay: {outcome:?}");
         };
-        assert_no_session_snapshot_invalidation(&invalidations);
-        let overlay: MapOverlayQueryResult =
-            serde_json::from_value(result).expect("decode overlay result");
-        assert!(overlay.visible_features.is_empty());
+        assert!(
+            !resources.is_empty(),
+            "missing vector pages should be returned through the paged operation contract"
+        );
         {
             let sessions = lock_sessions();
             let session = sessions.get(&init.handle).expect("session");
@@ -10493,17 +10479,8 @@ mod tests {
             );
         }
 
-        let effects = drain_session_resource_effects(init.handle).expect("drain effects");
-        assert!(
-            !effects.is_empty(),
-            "missing vector pages should be queued as background effects"
-        );
-        for effect in effects {
-            assert_eq!(
-                effect.after_success_invalidations,
-                vec![UiInvalidation::MapOverlay]
-            );
-            let page_index = crate::nav_kv_page_index_from_resource_id(&effect.resource.id)
+        for resource in resources {
+            let page_index = crate::nav_kv_page_index_from_resource_id(&resource.id)
                 .expect("nav kv page resource id");
             insert_nav_kv_page_for_attached_sessions(1, page_index, &pages[page_index as usize]);
         }

@@ -1,6 +1,7 @@
 package org.aerobag.app.domain
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MapViewportTest {
@@ -73,5 +74,57 @@ class MapViewportTest {
         assertEquals(viewport.centerWorldX, preserved.centerWorldX, 1e-8)
         assertEquals(viewport.centerWorldY, preserved.centerWorldY, 1e-8)
         assertEquals(viewport.zoom, preserved.zoom, 1e-8)
+    }
+
+    @Test
+    fun displayFrameCarryForwardMatchesDirectProjectionAfterDrag() {
+        val oldViewport = createInitialViewport(initialViewport, minZoom, maxZoom)
+        val oldFrame = MapDisplayFrame(oldViewport, 1200f, 900f)
+        val airportLat = 42.10
+        val airportLon = -70.80
+        val oldScreen = oldFrame.latLonToScreen(airportLat, airportLon)
+        val nextViewport = dragViewport(oldViewport, dx = 173f, dy = -91f)
+        val nextFrame = MapDisplayFrame(nextViewport, 1200f, 900f)
+
+        val carried = nextFrame.transformScreenPointFrom(oldFrame, oldScreen)
+        val direct = nextFrame.latLonToScreen(airportLat, airportLon)
+
+        assertEquals(direct.x.toDouble(), carried.x.toDouble(), 1e-4)
+        assertEquals(direct.y.toDouble(), carried.y.toDouble(), 1e-4)
+    }
+
+    @Test
+    fun displayFrameCarryForwardMatchesDirectProjectionAfterResize() {
+        val oldViewport = createInitialViewport(initialViewport, minZoom, maxZoom)
+        val oldFrame = MapDisplayFrame(oldViewport, 1200f, 900f)
+        val airportLat = 42.10
+        val airportLon = -70.80
+        val oldScreen = oldFrame.latLonToScreen(airportLat, airportLon)
+        val nextFrame = MapDisplayFrame(oldViewport, 900f, 1200f)
+
+        val carried = nextFrame.transformScreenPointFrom(oldFrame, oldScreen)
+        val direct = nextFrame.latLonToScreen(airportLat, airportLon)
+
+        assertEquals(direct.x.toDouble(), carried.x.toDouble(), 1e-4)
+        assertEquals(direct.y.toDouble(), carried.y.toDouble(), 1e-4)
+    }
+
+    @Test
+    fun displayFrameProjectsNearestWrappedWorldCopy() {
+        val center = latLonToWorld(0.0, 179.0)
+        val viewport = MapViewportState(
+            centerWorldX = center.x,
+            centerWorldY = center.y,
+            zoom = 2.0,
+        )
+        val frame = MapDisplayFrame(viewport, 1000f, 800f)
+
+        val nearbyAcrossAntimeridian = frame.latLonToScreen(0.0, -179.0)
+
+        assertTrue(
+            "nearest copy should project just right of center, not one full world left",
+            nearbyAcrossAntimeridian.x > 500f && nearbyAcrossAntimeridian.x < 510f,
+        )
+        assertEquals(400.0, nearbyAcrossAntimeridian.y.toDouble(), 1e-4)
     }
 }

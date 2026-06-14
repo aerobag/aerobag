@@ -1146,7 +1146,7 @@ internal fun MapExplorerPage(
             onViewportChange(nextViewport)
         }
     }
-    LaunchedEffect(uiSession, liveFeedGeneration, viewport, surfaceSize, density.density, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.offlineRegions.visible, devServerBaseUrl) {
+    LaunchedEffect(uiSession, liveFeedGeneration, currentViewport, surfaceSize, density.density, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.offlineRegions.visible, devServerBaseUrl) {
         if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
             mapOverlayError = null
             return@LaunchedEffect
@@ -1158,7 +1158,7 @@ internal fun MapExplorerPage(
             val overlayStartMs = SystemClock.elapsedRealtime()
             val outcome = withContext(Dispatchers.IO) {
                 uiSession.queryMapOverlay(
-                    viewport,
+                    currentViewport,
                     overlayWidthPx.toDouble(),
                     overlayHeightPx.toDouble(),
                     density.density.toDouble(),
@@ -1171,10 +1171,10 @@ internal fun MapExplorerPage(
                 onSessionSnapshotChange(uiSession.refreshSnapshot())
             }
             val overlay = outcome.overlay
-            val (centerLat, centerLon) = viewportCenterLatLon(viewport)
+            val (centerLat, centerLon) = viewportCenterLatLon(currentViewport)
             Log.i(
                 MapLayerLogTag,
-                "overlay center=${"%.3f".format(centerLat)},${"%.3f".format(centerLon)} zoom=${"%.2f".format(viewport.zoom)} size=${surfaceSize.width}x${surfaceSize.height} vectorsVisible=${mapLayerState.vectors.visible} metarsVisible=${mapLayerState.metars.visible} offlineRegionsVisible=${mapLayerState.offlineRegions.visible} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} airspaceLabels=${overlay.airspaceLabels.size} offlineRegions=${overlay.offlineRegions.size} metars=${overlay.visibleMetars.size} pireps=${overlay.visiblePireps.size} invalidations=${outcome.invalidations} elapsedMs=${SystemClock.elapsedRealtime() - overlayStartMs}",
+                "overlay center=${"%.3f".format(centerLat)},${"%.3f".format(centerLon)} zoom=${"%.2f".format(currentViewport.zoom)} size=${surfaceSize.width}x${surfaceSize.height} vectorsVisible=${mapLayerState.vectors.visible} metarsVisible=${mapLayerState.metars.visible} offlineRegionsVisible=${mapLayerState.offlineRegions.visible} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} airspaceLabels=${overlay.airspaceLabels.size} offlineRegions=${overlay.offlineRegions.size} metars=${overlay.visibleMetars.size} pireps=${overlay.visiblePireps.size} invalidations=${outcome.invalidations} elapsedMs=${SystemClock.elapsedRealtime() - overlayStartMs}",
             )
             outcome
         } catch (error: CancellationException) {
@@ -1186,7 +1186,7 @@ internal fun MapExplorerPage(
             return@LaunchedEffect
         }
         committedMapOverlay = overlayOutcome.overlay
-        committedOverlayViewport = viewport
+        committedOverlayViewport = currentViewport
         committedOverlaySurfaceUnits = OverlaySurfaceUnits(overlayWidthPx, overlayHeightPx)
         mapOverlayError = null
     }
@@ -1244,7 +1244,7 @@ internal fun MapExplorerPage(
             Log.w("AerobagLayers", "nexrad unavailable", error)
         }
     }
-    LaunchedEffect(uiSession, viewport, surfaceSize, mapLayerState.terrainWarning.visible, devServerBaseUrl) {
+    LaunchedEffect(uiSession, currentViewport, surfaceSize, mapLayerState.terrainWarning.visible, devServerBaseUrl) {
         val effectStartMs = SystemClock.elapsedRealtime()
         if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
             terrainOverlay = emptyList()
@@ -1265,7 +1265,7 @@ internal fun MapExplorerPage(
             var rawBytesTotal = 0L
             var requestCount = 0
             val query = withContext(Dispatchers.IO) {
-                uiSession.queryTerrainOverlay(viewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble()) { resource ->
+                uiSession.queryTerrainOverlay(currentViewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble()) { resource ->
                     fetchCoreResource(context, resource, devServerBaseUrl)
                 }
             }.also { queryMs = SystemClock.elapsedRealtime() - effectStartMs }

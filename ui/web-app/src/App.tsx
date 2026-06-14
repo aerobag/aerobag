@@ -83,6 +83,7 @@ import {
 import {
   applyPinchGesture,
   createPinchSnapshot,
+  displayFrameCssTransform,
   dragViewport,
   latLonToWorld,
   preserveViewportForMap,
@@ -93,6 +94,7 @@ import {
   worldToLatLon,
   worldToScreen,
   zoomAroundPoint,
+  type MapDisplayFrame,
   type MapViewportState,
   type ScreenPoint,
 } from "./domain/mapViewport";
@@ -3010,7 +3012,7 @@ function MapPage(props: {
   const [nexradTransferSamples, setNexradTransferSamples] = useState<
     Array<{ atMs: number; transferBytes: number; encodedBytes: number; decodedBytes: number }>
   >([]);
-  const [nexradOverlayViewport, setNexradOverlayViewport] = useState<MapViewportState | null>(null);
+  const [nexradOverlayFrame, setNexradOverlayFrame] = useState<MapDisplayFrame | null>(null);
   const nexradQueryRequestRef = useRef<{
     id: number;
     session: UiSession;
@@ -3034,7 +3036,7 @@ function MapPage(props: {
   const terrainFrameStartRef = useRef<Map<string, number>>(new Map());
   const lastTerrainRenderPlanKeyRef = useRef("");
   const [flightPlanRoute, setFlightPlanRoute] = useState<FlightPlanRouteSegment[]>([]);
-  const [mapOverlayViewport, setMapOverlayViewport] = useState<MapViewportState | null>(null);
+  const [mapOverlayFrame, setMapOverlayFrame] = useState<MapDisplayFrame | null>(null);
   const mapOverlayQueryRequestRef = useRef<{
     id: number;
     requestedAt: number;
@@ -3221,7 +3223,7 @@ function MapPage(props: {
               continue;
             }
             setNexradOverlay(query);
-            setNexradOverlayViewport(request.viewport);
+            setNexradOverlayFrame({ viewport: request.viewport, width: request.width, height: request.height });
             debugLog("nexrad.overlay.frame.ready", {
               status: query.status,
               tiles: query.tiles.length,
@@ -3243,7 +3245,7 @@ function MapPage(props: {
               tiles: [],
               stats: emptyNexradOverlayStats(),
             });
-            setNexradOverlayViewport(null);
+            setNexradOverlayFrame(null);
           }
         }
       } finally {
@@ -3325,7 +3327,7 @@ function MapPage(props: {
               airspace_labels: [],
               offline_regions: [],
             });
-            setMapOverlayViewport(null);
+            setMapOverlayFrame(null);
             console.error(error);
           }
         }
@@ -3361,7 +3363,7 @@ function MapPage(props: {
     landedMapOverlayQueryRequestIdRef.current = request.id;
     setMapOverlay(overlay);
     const overlayStateQueuedAt = performance.now();
-    setMapOverlayViewport(request.viewport);
+    setMapOverlayFrame({ viewport: request.viewport, width: request.width, height: request.height });
     const landEndedAt = performance.now();
     const overlayCounts = {
       visible_features: overlay.visible_features.length,
@@ -3434,7 +3436,7 @@ function MapPage(props: {
       request_to_commit_ms: Math.round(committedAt - timing.queryStartedAt),
       queue_to_commit_ms: Math.round(committedAt - timing.requestedAt),
     });
-  }, [mapOverlay, mapOverlayViewport]);
+  }, [mapOverlay, mapOverlayFrame]);
 
   useLayoutEffect(() => {
     committedViewportRef.current = viewport;
@@ -3503,6 +3505,7 @@ function MapPage(props: {
   }, [chartSearch.open, chartSearch.query, chartSearchAnchor, props.appCoreAdapter]);
   const [tiles, setTiles] = useState<RasterRenderTile[]>([]);
   const [rasterTileViewport, setRasterTileViewport] = useState<MapViewportState | null>(null);
+  const [rasterTileFrame, setRasterTileFrame] = useState<MapDisplayFrame | null>(null);
   const [failedRasterTileKeys, setFailedRasterTileKeys] = useState<Set<string>>(() => new Set());
   const loadedRasterTileKeysRef = useRef<Set<string>>(new Set());
   const completedPageTilePaintTimingIdsRef = useRef<Set<number>>(new Set());
@@ -3635,6 +3638,7 @@ function MapPage(props: {
     setTiles(nextTiles);
     const tilesStateQueuedAt = performance.now();
     setRasterTileViewport(request.viewport);
+    setRasterTileFrame({ viewport: request.viewport, width: request.width, height: request.height });
     const landEndedAt = performance.now();
     rasterTilePlanLandingTimingRef.current = {
       id: request.id,
@@ -3822,6 +3826,7 @@ function MapPage(props: {
             console.error("failed to query raster tile plan", error);
             setTiles([]);
             setRasterTileViewport(null);
+            setRasterTileFrame(null);
           }
         }
       } finally {
@@ -3839,6 +3844,7 @@ function MapPage(props: {
       rasterTilePlanPendingRef.current = false;
       setTiles([]);
       setRasterTileViewport(null);
+      setRasterTileFrame(null);
       return;
     }
     const devicePixelRatio = window.devicePixelRatio || 1;
@@ -4096,7 +4102,7 @@ function MapPage(props: {
       nexradQueryRequestRef.current = null;
       nexradQueryPendingRef.current = false;
       setNexradOverlay({ status: { state: "hidden" }, tiles: [], stats: emptyNexradOverlayStats() });
-      setNexradOverlayViewport(null);
+      setNexradOverlayFrame(null);
       return;
     }
     nexradQueryRequestRef.current = {
@@ -4245,6 +4251,7 @@ function MapPage(props: {
         airspace_labels: [],
         offline_regions: [],
       });
+      setMapOverlayFrame(null);
       return;
     }
     if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
@@ -4259,6 +4266,7 @@ function MapPage(props: {
         airspace_labels: [],
         offline_regions: [],
       });
+      setMapOverlayFrame(null);
       return;
     }
     const center = viewportCenterLatLon(viewport);
@@ -4295,16 +4303,15 @@ function MapPage(props: {
   ]);
 
   const overlayTransform = useMemo(() => {
-    if (!mapOverlayViewport) {
+    if (!mapOverlayFrame || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return undefined;
     }
-    const currentScale = scaleForZoom(viewport.zoom);
-    const overlayScale = scaleForZoom(mapOverlayViewport.zoom);
-    const scaleRatio = currentScale / overlayScale;
-    const dx = (mapOverlayViewport.centerWorldX - viewport.centerWorldX) * currentScale;
-    const dy = (mapOverlayViewport.centerWorldY - viewport.centerWorldY) * currentScale;
-    return `translate(${dx}px, ${dy}px) scale(${scaleRatio})`;
-  }, [mapOverlayViewport, viewport]);
+    return displayFrameCssTransform(mapOverlayFrame, {
+      viewport,
+      width: surfaceSize.width,
+      height: surfaceSize.height,
+    });
+  }, [mapOverlayFrame, surfaceSize.height, surfaceSize.width, viewport]);
   const selectedMapHighlight = useMemo(() => {
     const highlight = mapSelection?.selectedItem?.highlight;
     if (!highlight || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
@@ -4361,27 +4368,25 @@ function MapPage(props: {
     return null;
   }, [mapOverlay.airspace_paths, mapOverlay.offline_regions, mapOverlay.tfr_paths, mapOverlay.visible_features, mapOverlay.visible_metars, mapOverlay.visible_pireps, mapSelection?.selectedItem, surfaceSize.height, surfaceSize.width, viewport]);
   const rasterTileTransform = useMemo(() => {
-    if (!rasterTileViewport) {
+    if (!rasterTileFrame || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return undefined;
     }
-    const currentScale = scaleForZoom(viewport.zoom);
-    const tileScale = scaleForZoom(rasterTileViewport.zoom);
-    const scaleRatio = currentScale / tileScale;
-    const dx = (rasterTileViewport.centerWorldX - viewport.centerWorldX) * currentScale;
-    const dy = (rasterTileViewport.centerWorldY - viewport.centerWorldY) * currentScale;
-    return `translate(${dx}px, ${dy}px) scale(${scaleRatio})`;
-  }, [rasterTileViewport, viewport]);
+    return displayFrameCssTransform(rasterTileFrame, {
+      viewport,
+      width: surfaceSize.width,
+      height: surfaceSize.height,
+    });
+  }, [rasterTileFrame, surfaceSize.height, surfaceSize.width, viewport]);
   const nexradOverlayTransform = useMemo(() => {
-    if (!nexradOverlayViewport) {
+    if (!nexradOverlayFrame || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return undefined;
     }
-    const currentScale = scaleForZoom(viewport.zoom);
-    const overlayScale = scaleForZoom(nexradOverlayViewport.zoom);
-    const scaleRatio = currentScale / overlayScale;
-    const dx = (nexradOverlayViewport.centerWorldX - viewport.centerWorldX) * currentScale;
-    const dy = (nexradOverlayViewport.centerWorldY - viewport.centerWorldY) * currentScale;
-    return `translate(${dx}px, ${dy}px) scale(${scaleRatio})`;
-  }, [nexradOverlayViewport, viewport]);
+    return displayFrameCssTransform(nexradOverlayFrame, {
+      viewport,
+      width: surfaceSize.width,
+      height: surfaceSize.height,
+    });
+  }, [nexradOverlayFrame, surfaceSize.height, surfaceSize.width, viewport]);
 
   function transientViewportTransform(renderedViewport: MapViewportState, nextViewport: MapViewportState) {
     if (sameMapViewport(renderedViewport, nextViewport)) {
@@ -5258,7 +5263,7 @@ function MapPage(props: {
             <div
               className="rasterTileLayer"
               aria-hidden="true"
-              style={rasterTileTransform ? { transform: rasterTileTransform, transformOrigin: "center center" } : undefined}
+              style={rasterTileTransform ? { transform: rasterTileTransform, transformOrigin: "0 0" } : undefined}
             >
               {tiles.map((tile) => (
                 <div
@@ -5308,7 +5313,7 @@ function MapPage(props: {
               viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
               preserveAspectRatio="none"
               aria-hidden="true"
-              style={nexradOverlayTransform ? { transform: nexradOverlayTransform, transformOrigin: "center center" } : undefined}
+              style={nexradOverlayTransform ? { transform: nexradOverlayTransform, transformOrigin: "0 0" } : undefined}
             >
               {nexradOverlay.tiles.map((tile) => {
                 const bounds = nexradTileBounds(tile);
@@ -5353,7 +5358,7 @@ function MapPage(props: {
                     className="airspaceOverlay"
                     viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
                     preserveAspectRatio="none"
-                    style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+                    style={overlayTransform ? { transform: overlayTransform, transformOrigin: "0 0" } : undefined}
                   >
                     {mapOverlay.airspace_paths.map((feature) => (
                       <AirspaceDisplayPathGroup key={feature.id} feature={feature} />
@@ -5381,7 +5386,7 @@ function MapPage(props: {
                     className="offlineRegionsOverlay"
                     viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
                     preserveAspectRatio="none"
-                    style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+                    style={overlayTransform ? { transform: overlayTransform, transformOrigin: "0 0" } : undefined}
                   >
                     {mapOverlay.offline_regions.map((region) => {
                       const color = aviationThemeColor(region.color_key);
@@ -5484,7 +5489,7 @@ function MapPage(props: {
                     className="vectorOverlay"
                     viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
                     preserveAspectRatio="none"
-                    style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+                    style={overlayTransform ? { transform: overlayTransform, transformOrigin: "0 0" } : undefined}
                   >
                     {mapOverlay.visible_features.map((feature) => {
                       return (
@@ -5506,7 +5511,7 @@ function MapPage(props: {
                     className="metarOverlay"
                     viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
                     preserveAspectRatio="none"
-                    style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+                    style={overlayTransform ? { transform: overlayTransform, transformOrigin: "0 0" } : undefined}
                   >
                     {mapOverlay.visible_metars.map((feature) => (
                       <g
@@ -5525,7 +5530,7 @@ function MapPage(props: {
                     className="metarOverlay"
                     viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
                     preserveAspectRatio="none"
-                    style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+                    style={overlayTransform ? { transform: overlayTransform, transformOrigin: "0 0" } : undefined}
                   >
                     {mapOverlay.visible_pireps.map((feature) => (
                       <g
@@ -5544,7 +5549,7 @@ function MapPage(props: {
                     className="vectorOverlay flightPlanVectorOverlay"
                     viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
                     preserveAspectRatio="none"
-                    style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+                    style={overlayTransform ? { transform: overlayTransform, transformOrigin: "0 0" } : undefined}
                   >
                     {(mapOverlay.flight_plan_features ?? []).map((feature) => {
                       return (
@@ -5566,7 +5571,7 @@ function MapPage(props: {
                     className="mapSelectionHighlightOverlay"
                     viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
                     preserveAspectRatio="none"
-                    style={selectedMapHighlight.kind === "spot" ? undefined : overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+                    style={selectedMapHighlight.kind === "spot" ? undefined : overlayTransform ? { transform: overlayTransform, transformOrigin: "0 0" } : undefined}
                   >
                     {selectedMapHighlight.kind === "point" ? (
                       <g transform={`translate(${selectedMapHighlight.feature.screen_x} ${selectedMapHighlight.feature.screen_y})`}>

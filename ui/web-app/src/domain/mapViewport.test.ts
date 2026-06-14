@@ -4,11 +4,15 @@ import {
   applyPinchGesture,
   createInitialViewport,
   createPinchSnapshot,
+  dragViewport,
   isStaleMapFollowTargetViewport,
+  latLonToWorld,
   preserveViewportForMap,
   sameMapViewport,
   screenToWorld,
+  transformScreenPointBetweenFrames,
   viewportCenterLatLon,
+  worldToScreen,
   zoomAroundPoint,
 } from "./mapViewport";
 
@@ -124,5 +128,34 @@ describe("mapViewport", () => {
     expect(isStaleMapFollowTargetViewport(stale, awaited)).toBe(true);
     expect(isStaleMapFollowTargetViewport(awaited, awaited)).toBe(false);
     expect(isStaleMapFollowTargetViewport(stale, null)).toBe(false);
+  });
+
+  it("carries screen-space overlay points across resize", () => {
+    const viewport = createInitialViewport(mapView);
+    const world = latLonToWorld(42.1, -70.8);
+    const oldFrame = { viewport, width: 1200, height: 900 };
+    const newFrame = { viewport, width: 900, height: 1200 };
+    const oldScreen = worldToScreen(viewport, world, oldFrame.width, oldFrame.height);
+
+    const carried = transformScreenPointBetweenFrames(oldFrame, newFrame, oldScreen);
+    const direct = worldToScreen(viewport, world, newFrame.width, newFrame.height);
+
+    expect(carried.x).toBeCloseTo(direct.x, 8);
+    expect(carried.y).toBeCloseTo(direct.y, 8);
+  });
+
+  it("carries screen-space overlay points across pan", () => {
+    const viewport = createInitialViewport(mapView);
+    const nextViewport = dragViewport(viewport, 173, -91);
+    const world = latLonToWorld(42.1, -70.8);
+    const oldFrame = { viewport, width: 1200, height: 900 };
+    const newFrame = { viewport: nextViewport, width: 1200, height: 900 };
+    const oldScreen = worldToScreen(viewport, world, oldFrame.width, oldFrame.height);
+
+    const carried = transformScreenPointBetweenFrames(oldFrame, newFrame, oldScreen);
+    const direct = worldToScreen(nextViewport, world, newFrame.width, newFrame.height);
+
+    expect(carried.x).toBeCloseTo(direct.x, 8);
+    expect(carried.y).toBeCloseTo(direct.y, 8);
   });
 });

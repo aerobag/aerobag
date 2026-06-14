@@ -13,6 +13,12 @@ export type ScreenPoint = {
   y: number;
 };
 
+export type MapDisplayFrame = {
+  viewport: MapViewportState;
+  width: number;
+  height: number;
+};
+
 const VIEWPORT_EPSILON = 1e-9;
 const WORLD_SIZE = 256;
 const MAX_LATITUDE = 85.05112878;
@@ -112,6 +118,45 @@ export function worldToScreen(
     x: (world.x - viewport.centerWorldX) * scale + width / 2,
     y: (world.y - viewport.centerWorldY) * scale + height / 2,
   };
+}
+
+function displayFrameTransformParts(from: MapDisplayFrame, to: MapDisplayFrame): {
+  scale: number;
+  translateX: number;
+  translateY: number;
+} {
+  const fromScale = scaleForZoom(from.viewport.zoom);
+  const toScale = scaleForZoom(to.viewport.zoom);
+  const scale = toScale / fromScale;
+  return {
+    scale,
+    translateX: to.width / 2 - (from.width / 2) * scale + (from.viewport.centerWorldX - to.viewport.centerWorldX) * toScale,
+    translateY: to.height / 2 - (from.height / 2) * scale + (from.viewport.centerWorldY - to.viewport.centerWorldY) * toScale,
+  };
+}
+
+export function transformScreenPointBetweenFrames(
+  from: MapDisplayFrame,
+  to: MapDisplayFrame,
+  point: ScreenPoint,
+): ScreenPoint {
+  const transform = displayFrameTransformParts(from, to);
+  return {
+    x: point.x * transform.scale + transform.translateX,
+    y: point.y * transform.scale + transform.translateY,
+  };
+}
+
+export function displayFrameCssTransform(from: MapDisplayFrame, to: MapDisplayFrame): string | undefined {
+  if (
+    sameMapViewport(from.viewport, to.viewport)
+    && Math.abs(from.width - to.width) < VIEWPORT_EPSILON
+    && Math.abs(from.height - to.height) < VIEWPORT_EPSILON
+  ) {
+    return undefined;
+  }
+  const transform = displayFrameTransformParts(from, to);
+  return `matrix(${transform.scale}, 0, 0, ${transform.scale}, ${transform.translateX}, ${transform.translateY})`;
 }
 
 export function zoomAroundPoint(

@@ -172,6 +172,8 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -251,6 +253,7 @@ import org.aerobag.app.domain.RenderTile
 import org.aerobag.app.domain.RouteSegmentStatus
 import org.aerobag.app.domain.RouteComponentViewKind
 import org.aerobag.app.domain.RouteComponent
+import org.aerobag.app.domain.RuntimeContent
 import org.aerobag.app.domain.ScreenPoint
 import org.aerobag.app.domain.SectionalPackages
 import org.aerobag.app.domain.AndroidRuntimeContent
@@ -2645,6 +2648,7 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalComposeUiApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val retainedModel = ViewModelProvider(this)[AerobagRetainedModel::class.java]
         requestAndroidGps()
         setContent {
             MaterialTheme {
@@ -2654,7 +2658,7 @@ class MainActivity : ComponentActivity() {
                         .semantics { testTagsAsResourceId = true },
                     color = Color(0xFFF3EFE4),
                 ) {
-                    AerobagApp()
+                    AerobagApp(retainedModel)
                 }
             }
         }
@@ -2707,6 +2711,82 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+internal class AerobagRetainedCoreSession(
+    val runtimeContent: RuntimeContent,
+    val appCore: NativeAppCoreAdapter,
+    val initialPlan: FlightPlan,
+    val uiSession: NativeUiSession,
+    val situationRingCandidates: List<SituationRingCandidate>,
+    val decodedTileBitmapCache: DecodedTileBitmapCache,
+) {
+    private var closed = false
+
+    fun close() {
+        if (closed) return
+        closed = true
+        runCatching { uiSession.destroy() }
+            .onFailure { Log.w("AerobagRetainedState", "failed to destroy retained UI session", it) }
+        runCatching { runtimeContent.navKvStore.close() }
+            .onFailure { Log.w("AerobagRetainedState", "failed to close retained nav DB", it) }
+        decodedTileBitmapCache.clear()
+    }
+}
+
+internal class AerobagRetainedModel : ViewModel() {
+    var runtimeResult: Result<RuntimeContent>? = null
+    var coreSession: AerobagRetainedCoreSession? = null
+    var page: AppPage? = null
+    var pageHistory: List<AppViewSnapshot> = emptyList()
+    var mapViewport: MapViewportState? = null
+
+    fun resetRuntime() {
+        val sessionRuntime = coreSession?.runtimeContent
+        coreSession?.close()
+        coreSession = null
+        runtimeResult?.getOrNull()
+            ?.takeIf { it !== sessionRuntime }
+            ?.let { runtime ->
+                runCatching { runtime.navKvStore.close() }
+                    .onFailure { Log.w("AerobagRetainedState", "failed to close retained runtime", it) }
+            }
+        runtimeResult = null
+    }
+
+    fun getOrCreateCoreSession(
+        runtimeContent: RuntimeContent,
+        recentAirportIds: List<String>,
+        selectedAirportId: String?,
+        selectedChartId: String?,
+    ): AerobagRetainedCoreSession {
+        coreSession
+            ?.takeIf { it.runtimeContent === runtimeContent }
+            ?.let { return it }
+
+        coreSession?.close()
+        val appCore = NativeAppCoreAdapter(navKvStore = runtimeContent.navKvStore)
+        val initialPlan = appCore.emptyFlightPlan()
+        val uiSession = appCore.createUiSession(
+            initialPlan,
+            recentAirportIds,
+            selectedAirportId,
+            selectedChartId,
+        )
+        return AerobagRetainedCoreSession(
+            runtimeContent = runtimeContent,
+            appCore = appCore,
+            initialPlan = initialPlan,
+            uiSession = uiSession,
+            situationRingCandidates = appCore.situationRingCandidates(),
+            decodedTileBitmapCache = DecodedTileBitmapCache(DecodedTileCacheMaxBytes),
+        ).also { coreSession = it }
+    }
+
+    override fun onCleared() {
+        resetRuntime()
+        super.onCleared()
+    }
+}
+
 internal fun situationControlInputForKeyEvent(event: AndroidKeyEvent): SituationControlInput? =
     when (event.unicodeChar.takeIf { it != 0 }?.toChar()) {
         '<' -> SituationControlInput.SkipBackward
@@ -2717,20 +2797,30 @@ internal fun situationControlInputForKeyEvent(event: AndroidKeyEvent): Situation
     }
 
 @Composable
-internal fun AerobagApp() {
+internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
     val context = LocalContext.current
     val prefs = remember(context) { context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE) }
     val bootstrap = remember(context) { AndroidRuntimeContent.loadBootstrap(context.applicationContext) }
     var runtimeReloadToken by remember { mutableStateOf(0) }
+    fun requestRuntimeReload() {
+        retainedModel.resetRuntime()
+        runtimeReloadToken += 1
+    }
     val offlinePackagesControllerHandle = remember(prefs) { initialOfflinePackagesControllerHandle(prefs) }
     DisposableEffect(offlinePackagesControllerHandle) {
         onDispose { NativeBindings.destroyOfflinePackagesController(offlinePackagesControllerHandle) }
     }
     val uiTheme = remember(context) { UiThemeLoader.load(context.applicationContext) }
-    val runtimeFixture by produceState<Result<org.aerobag.app.domain.RuntimeContent>?>(initialValue = null, context, bootstrap, runtimeReloadToken) {
-        value = withContext(Dispatchers.IO) {
+    val runtimeFixture by produceState<Result<RuntimeContent>?>(initialValue = retainedModel.runtimeResult, context, bootstrap, runtimeReloadToken) {
+        retainedModel.runtimeResult?.let {
+            value = it
+            return@produceState
+        }
+        val loaded = withContext(Dispatchers.IO) {
             runCatching { AndroidRuntimeContent.loadInstalledRuntime(context.applicationContext, bootstrap) }
         }
+        retainedModel.runtimeResult = loaded
+        value = loaded
     }
     var keepOfflinePackagesVisible by remember { mutableStateOf(false) }
     var runtimeFailureMessage by remember { mutableStateOf<String?>(null) }
@@ -2768,7 +2858,7 @@ internal fun AerobagApp() {
                         "Loading..."
                     },
                 offlinePackagesControllerHandle = offlinePackagesControllerHandle,
-                onRuntimeMaybeAvailable = { runtimeReloadToken += 1 },
+                onRuntimeMaybeAvailable = { requestRuntimeReload() },
             )
         }
         return
@@ -2790,42 +2880,38 @@ internal fun AerobagApp() {
                 bootstrapMessage = runtimeFailureMessage
                     ?: "Runtime bootstrap failed. Refresh library, then sync required packages in Offline Packages to continue.",
                 offlinePackagesControllerHandle = offlinePackagesControllerHandle,
-                onRuntimeMaybeAvailable = { runtimeReloadToken += 1 },
+                onRuntimeMaybeAvailable = { requestRuntimeReload() },
             )
         }
         return
     }
     val fixture = runtimeFixture!!.getOrThrow()
-    val appCore = remember(fixture.navKvStore) {
-        NativeAppCoreAdapter(
-            navKvStore = fixture.navKvStore,
-        )
-    }
-    val situationRingCandidates = remember(appCore) { appCore.situationRingCandidates() }
-    val initialPlan = remember(appCore) { appCore.emptyFlightPlan() }
     val sessionStartElapsedMs = remember { SystemClock.elapsedRealtime() }
     val uptimeLabel = rememberUptimeLabel(sessionStartElapsedMs)
     val storedRecentAirportIds = remember { readRecentAirportIds(context.applicationContext) }
     val storedSelectedAirportId = remember { prefs.getString(UiPrefsSelectedAirportKey, null).orEmpty() }
     val storedSelectedChartId = remember { prefs.getString(UiPrefsSelectedChartKey, null).orEmpty() }
+    val retainedCoreSession = retainedModel.getOrCreateCoreSession(
+        runtimeContent = fixture,
+        recentAirportIds = storedRecentAirportIds,
+        selectedAirportId = storedSelectedAirportId.ifBlank { null },
+        selectedChartId = storedSelectedChartId.ifBlank { null },
+    )
+    val appCore = retainedCoreSession.appCore
+    val situationRingCandidates = retainedCoreSession.situationRingCandidates
+    val initialPlan = retainedCoreSession.initialPlan
+    val uiSession = retainedCoreSession.uiSession
     var page by remember {
         mutableStateOf(
-            if (keepOfflinePackagesVisible) {
-                AppPage.Home
-            } else {
-                readStoredPage(prefs)
-            },
+            retainedModel.page
+                ?: if (keepOfflinePackagesVisible) {
+                    AppPage.Home
+                } else {
+                    readStoredPage(prefs)
+                },
         )
     }
-    var pageHistory by remember { mutableStateOf<List<AppViewSnapshot>>(emptyList()) }
-    val uiSession = remember(appCore) {
-        appCore.createUiSession(
-            initialPlan,
-            storedRecentAirportIds,
-            storedSelectedAirportId.ifBlank { null },
-            storedSelectedChartId.ifBlank { null },
-        )
-    }
+    var pageHistory by remember { mutableStateOf(retainedModel.pageHistory) }
     val initialRasterMapState = remember(uiSession) {
         requireNotNull(uiSession.snapshot.rasterMap) {
             "core session did not provide raster map state"
@@ -2833,9 +2919,6 @@ internal fun AerobagApp() {
     }
     var rasterMapState by remember(uiSession) { mutableStateOf(initialRasterMapState) }
     var selectedMapId by remember(uiSession) { mutableStateOf(initialRasterMapState.selectedMapId) }
-    DisposableEffect(uiSession) {
-        onDispose { uiSession.destroy() }
-    }
     var sessionSnapshot by remember(uiSession) { mutableStateOf(uiSession.snapshot) }
     LaunchedEffect(uiSession, sessionSnapshot.nextCycleProductFreshnessCheckEpochMs) {
         val nextCheckEpochMs = sessionSnapshot.nextCycleProductFreshnessCheckEpochMs ?: return@LaunchedEffect
@@ -2929,13 +3012,13 @@ internal fun AerobagApp() {
         )
     }
     val selectedMap = rasterMapState
-    var mapViewport by remember { mutableStateOf(createInitialSituationViewport()) }
+    var mapViewport by remember { mutableStateOf(retainedModel.mapViewport ?: createInitialSituationViewport()) }
     var chartViewport by remember { mutableStateOf<org.aerobag.app.domain.ImageViewportState?>(null) }
     var chartFolderOpen by remember { mutableStateOf(false) }
     var pageTilePaintTiming by remember { mutableStateOf<PageTilePaintTiming?>(null) }
     var nextPageTilePaintTimingId by remember { mutableStateOf(1L) }
     var debugPanelOpen by remember { mutableStateOf(false) }
-    val decodedTileBitmapCache = remember(fixture.navKvStore) { DecodedTileBitmapCache(DecodedTileCacheMaxBytes) }
+    val decodedTileBitmapCache = retainedCoreSession.decodedTileBitmapCache
     var playbackSourcePath by remember { mutableStateOf(DefaultPlaybackTracePath) }
     val planListState = rememberLazyListState()
     val chartAirportById = remember(derivedChartPageState.airports) { derivedChartPageState.airports.associateBy { it.id } }
@@ -2951,7 +3034,14 @@ internal fun AerobagApp() {
     }
 
     LaunchedEffect(page, selectedAirportId, selectedChartId, recentAirportIds) {
+        retainedModel.page = page
         writeUiPrefs(context.applicationContext, page, selectedAirportId, selectedChartId, recentAirportIds)
+    }
+    LaunchedEffect(pageHistory) {
+        retainedModel.pageHistory = pageHistory
+    }
+    LaunchedEffect(mapViewport) {
+        retainedModel.mapViewport = mapViewport
     }
     LaunchedEffect(
         appCore,
@@ -3292,7 +3382,7 @@ internal fun AerobagApp() {
                         initialOfflinePackagesOpen = keepOfflinePackagesVisible,
                         offlinePackagesControllerHandle = offlinePackagesControllerHandle,
                         onOfflinePackagesClosed = { keepOfflinePackagesVisible = false },
-                        onRuntimeMaybeAvailable = { runtimeReloadToken += 1 },
+                        onRuntimeMaybeAvailable = { requestRuntimeReload() },
                     )
                 }
                 AppPage.DataStatus -> {

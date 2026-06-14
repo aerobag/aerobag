@@ -1435,6 +1435,8 @@ internal fun openCancellablePackageConnection(sourceUrl: String): HttpURLConnect
         useCaches = false
     }
 
+private fun downloadTimingMs(nanos: Long): Long = nanos / 1_000_000L
+
 internal fun resolvePublicationRootUrl(configuredPackageSourceBaseUrl: String): String {
     val configured = configuredPackageSourceBaseUrl.trim().trimEnd('/')
     check(configured.isNotBlank()) { "package source URL is blank" }
@@ -1473,6 +1475,14 @@ internal suspend fun downloadPackageToTempFile(
     val digest = MessageDigest.getInstance("SHA-256")
     var sizeBytes = 0L
     var complete = false
+    var responseCode: Int? = null
+    var responseContentLength: Long? = null
+    var readNanos = 0L
+    var writeNanos = 0L
+    var digestNanos = 0L
+    var progressNanos = 0L
+    var progressCallbacks = 0L
+    val downloadStartNanos = SystemClock.elapsedRealtimeNanos()
     val connection = openCancellablePackageConnection(sourceUrl)
     activeConnections.add(connection)
     val completionHandle = currentCoroutineContext()[Job]?.invokeOnCompletion { error ->
@@ -1482,21 +1492,36 @@ internal suspend fun downloadPackageToTempFile(
         }
     }
     try {
-        Log.i("OfflinePackages", "http download start $sourceUrl")
+        val responseStartNanos = SystemClock.elapsedRealtimeNanos()
+        responseCode = connection.responseCode
+        responseContentLength = connection.contentLengthLong.takeIf { it >= 0L }
+        Log.i(
+            "OfflinePackages",
+            "http download start $sourceUrl response=$responseCode contentLength=${responseContentLength ?: "unknown"} setupMs=${downloadTimingMs(SystemClock.elapsedRealtimeNanos() - responseStartNanos)}",
+        )
         connection.inputStream.buffered().use { input ->
             BufferedOutputStream(temp.outputStream()).use { output ->
                 val buffer = ByteArray(64 * 1024)
                 while (true) {
                     currentCoroutineContext().ensureActive()
+                    val readStartNanos = SystemClock.elapsedRealtimeNanos()
                     val read = input.read(buffer)
+                    readNanos += SystemClock.elapsedRealtimeNanos() - readStartNanos
                     currentCoroutineContext().ensureActive()
                     if (read < 0) {
                         break
                     }
+                    val writeStartNanos = SystemClock.elapsedRealtimeNanos()
                     output.write(buffer, 0, read)
+                    writeNanos += SystemClock.elapsedRealtimeNanos() - writeStartNanos
+                    val digestStartNanos = SystemClock.elapsedRealtimeNanos()
                     digest.update(buffer, 0, read)
+                    digestNanos += SystemClock.elapsedRealtimeNanos() - digestStartNanos
                     sizeBytes += read.toLong()
+                    val progressStartNanos = SystemClock.elapsedRealtimeNanos()
                     onBytesRead(read.toLong())
+                    progressNanos += SystemClock.elapsedRealtimeNanos() - progressStartNanos
+                    progressCallbacks += 1
                 }
             }
         }
@@ -1506,6 +1531,10 @@ internal suspend fun downloadPackageToTempFile(
         activeConnections.remove(connection)
         connection.disconnect()
         Log.i("OfflinePackages", "http download end $sourceUrl complete=$complete")
+        Log.i(
+            "OfflinePackages",
+            "http download stats filename=$filename bytes=$sizeBytes complete=$complete totalMs=${downloadTimingMs(SystemClock.elapsedRealtimeNanos() - downloadStartNanos)} readMs=${downloadTimingMs(readNanos)} writeMs=${downloadTimingMs(writeNanos)} digestMs=${downloadTimingMs(digestNanos)} progressMs=${downloadTimingMs(progressNanos)} progressCallbacks=$progressCallbacks response=$responseCode contentLength=${responseContentLength ?: "unknown"} url=$sourceUrl",
+        )
         if (!complete) {
             temp.delete()
         }

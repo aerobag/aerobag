@@ -146,6 +146,7 @@ struct UiSession {
     data_status_state: UiDataStatusState,
     debug_state: UiDebugState,
     resource_policy: CoreResourcePolicy,
+    installed_package_ids: BTreeSet<String>,
     publication_resolver: PublicationResolver,
     current_artifacts_checked_epoch_ms: Option<i64>,
     cycle_product_freshness: CycleProductFreshnessState,
@@ -2537,6 +2538,7 @@ fn create_ui_session_inner(
             data_status_state,
             debug_state,
             resource_policy: CoreResourcePolicy::InstalledPackage,
+            installed_package_ids: BTreeSet::new(),
             publication_resolver: PublicationResolver::with_resource_policy(
                 "/packages",
                 CoreResourcePolicy::InstalledPackage,
@@ -2685,6 +2687,16 @@ pub fn set_resource_policy_in_session(
         session.publication_resolver.set_resource_policy(policy);
         session.raster_map_catalog = None;
     }
+    snapshot_for_session(session)
+}
+
+pub fn set_installed_package_ids_in_session(
+    handle: u32,
+    package_ids: Vec<String>,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    session.installed_package_ids = package_ids.into_iter().collect();
     snapshot_for_session(session)
 }
 
@@ -6829,8 +6841,19 @@ pub fn get_terrain_overlay_in_session_at_epoch_ms(
         kinematics.position.lat.is_finite() && kinematics.position.lon.is_finite()
     });
     let has_altitude = ownship_terrain_altitude_ft(session).is_some();
-    let mut query =
-        crate::query_terrain_overlay(&viewport, width_px, height_px, has_position, has_altitude);
+    let mut query = match session.resource_policy {
+        CoreResourcePolicy::InstalledPackage => crate::query_terrain_overlay_with_available_packages(
+            &viewport,
+            width_px,
+            height_px,
+            has_position,
+            has_altitude,
+            &session.installed_package_ids,
+        ),
+        CoreResourcePolicy::PublicUnpacked => {
+            crate::query_terrain_overlay(&viewport, width_px, height_px, has_position, has_altitude)
+        }
+    };
     match resolve_terrain_overlay_source_resources(session, &mut query) {
         TerrainSourceResolution::NeedResources(resources) => {
             return Ok(HadOperationOutcome::NeedResources { resources });
@@ -10326,6 +10349,7 @@ mod tests {
             data_status_state: default_data_status_state(),
             debug_state: default_debug_state(),
             resource_policy: CoreResourcePolicy::InstalledPackage,
+            installed_package_ids: BTreeSet::new(),
             publication_resolver: PublicationResolver::with_resource_policy(
                 "/packages",
                 CoreResourcePolicy::InstalledPackage,
@@ -10509,6 +10533,7 @@ mod tests {
             data_status_state: default_data_status_state(),
             debug_state: default_debug_state(),
             resource_policy: CoreResourcePolicy::InstalledPackage,
+            installed_package_ids: BTreeSet::new(),
             publication_resolver: PublicationResolver::with_resource_policy(
                 "/packages",
                 CoreResourcePolicy::InstalledPackage,
@@ -10943,6 +10968,7 @@ mod tests {
             data_status_state: default_data_status_state(),
             debug_state: default_debug_state(),
             resource_policy: CoreResourcePolicy::InstalledPackage,
+            installed_package_ids: BTreeSet::new(),
             publication_resolver: PublicationResolver::with_resource_policy(
                 "/packages",
                 CoreResourcePolicy::InstalledPackage,

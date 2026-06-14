@@ -891,12 +891,29 @@ data class WireTerrainOverlayStatusReady(
 @Serializable
 data class WireTerrainOverlayTileRequest(
     val key: String,
+    val product_id: String,
+    val path: String,
+    val source_tiles: List<WireTerrainOverlaySourceTile>,
     val z: Int,
     val x: Int,
     val y_tms: Int,
     val left: Double,
     val top: Double,
     val size: Double,
+)
+
+@Serializable
+data class WireTerrainOverlaySourceTile(
+    val product_id: String,
+    val path: String,
+    val resource: WireCoreResourceRequest? = null,
+)
+
+@Serializable
+data class WireCoreResourceRequest(
+    val id: String,
+    val source: JsonObject,
+    val optional: Boolean = false,
 )
 
 @Serializable

@@ -168,6 +168,17 @@ pub fn set_resource_policy_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn set_installed_package_ids_in_session_json(
+    handle: u64,
+    package_ids_json: &str,
+) -> Result<String, String> {
+    let package_ids: Vec<String> =
+        serde_json::from_str(package_ids_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::set_installed_package_ids_in_session(handle as u32, package_ids)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 fn resource_policy_from_wire(policy: &str) -> Result<app_core::CoreResourcePolicy, String> {
     match policy {
         "public_unpacked" => Ok(app_core::CoreResourcePolicy::PublicUnpacked),
@@ -2050,6 +2061,20 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setResourcePol
     let result = (|| {
         let policy_json = get_java_string(&mut env, policy_json)?;
         set_resource_policy_in_session_json(handle as u64, &policy_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setInstalledPackageIdsInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    package_ids_json: JString,
+) -> jstring {
+    let result = (|| {
+        let package_ids_json = get_java_string(&mut env, package_ids_json)?;
+        set_installed_package_ids_in_session_json(handle as u64, &package_ids_json)
     })();
     return_string(&mut env, result)
 }

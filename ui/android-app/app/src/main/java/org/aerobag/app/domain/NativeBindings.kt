@@ -79,6 +79,11 @@ interface NativeBridge {
         selectedChartIdJson: String,
     ): String
 
+    fun setInstalledPackageIdsInSessionJson(
+        handle: Long,
+        packageIdsJson: String,
+    ): String
+
     fun performMapSelectionActionInSessionJson(
         handle: Long,
         actionJson: String,
@@ -544,6 +549,11 @@ object NativeBindings : NativeBridge {
         recentAirportIdsJson: String,
         selectedAirportIdJson: String,
         selectedChartIdJson: String,
+    ): String
+
+    external override fun setInstalledPackageIdsInSessionJson(
+        handle: Long,
+        packageIdsJson: String,
     ): String
 
     external override fun performMapSelectionActionInSessionJson(

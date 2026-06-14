@@ -307,12 +307,21 @@ sealed interface TerrainOverlayStatus {
 
 data class TerrainOverlayTileRequest(
     val key: String,
+    val productId: String,
+    val path: String,
+    val sourceTiles: List<TerrainOverlaySourceTile>,
     val z: Int,
     val x: Int,
     val yTms: Int,
     val left: Double,
     val top: Double,
     val size: Double,
+)
+
+data class TerrainOverlaySourceTile(
+    val productId: String,
+    val path: String,
+    val resource: CoreResourceRequest?,
 )
 
 data class TerrainOverlayQueryResult(
@@ -342,6 +351,7 @@ class NativeAppCoreAdapter(
         recentAirportIds: List<String>,
         selectedAirportId: String?,
         selectedChartId: String?,
+        installedPackageIds: List<String> = emptyList(),
     ): NativeUiSession {
         val resultJson = bridge.createUiSessionJson(
             json.encodeToString(plan.toWire()),
@@ -358,6 +368,7 @@ class NativeAppCoreAdapter(
             initialSnapshot = result.snapshot.toUi(),
         )
         navKvStore?.attachToSession(result.handle)
+        session.setInstalledPackageIds(installedPackageIds)
         session.loadRasterMapCatalog()
         return session.apply {
             syncGuidanceGeometry()
@@ -881,6 +892,13 @@ class NativeUiSession internal constructor(
         return syncGuidanceGeometry()
     }
 
+    fun setInstalledPackageIds(packageIds: List<String>): UiSessionSnapshot {
+        snapshot = decodeSnapshot(
+            bridge.setInstalledPackageIdsInSessionJson(handle, json.encodeToString(packageIds)),
+        )
+        return snapshot
+    }
+
     fun performFlightPlanRowAction(rowUid: String, actionUid: String): UiSessionSnapshot {
         return runPagedMutationAndRefresh {
             bridge.performFlightPlanRowActionInSessionJson(handle, rowUid, actionUid)
@@ -1123,8 +1141,22 @@ class NativeUiSession internal constructor(
         return bridge.getRasterTilePlanInSessionJson(handle, viewportJson, widthPx, heightPx)
     }
 
-    fun renderTerrainOverlayTileByKey(tileKey: String, aircraftAltitudeFt: Double): ByteArray =
-        bridge.renderTerrainOverlayTileByKeyInSession(handle, tileKey, aircraftAltitudeFt)
+    fun renderTerrainOverlayTile(
+        request: TerrainOverlayTileRequest,
+        aircraftAltitudeFt: Double,
+        fetchResource: (CoreResourceRequest) -> ByteArray,
+    ): ByteArray {
+        val resources = request.sourceTiles
+            .mapNotNull { it.resource }
+            .distinctBy { it.id }
+        require(resources.isNotEmpty()) {
+            "terrain request ${request.key} has no core source resources"
+        }
+        resources.forEach { resource ->
+            bridge.ingestResourceInSession(handle, resource.id, fetchResource(resource))
+        }
+        return bridge.renderTerrainOverlayTileByKeyInSession(handle, request.key, aircraftAltitudeFt)
+    }
 
     fun syncMapFollow(viewport: MapViewportState, widthPx: Double, heightPx: Double): UiSessionSnapshot {
         val viewportJson = json.encodeToString(viewport.toWire())
@@ -2184,12 +2216,27 @@ private fun WireTerrainOverlayStatus.toUi(): TerrainOverlayStatus = when (this) 
 
 private fun WireTerrainOverlayTileRequest.toUi() = TerrainOverlayTileRequest(
     key = key,
+    productId = product_id,
+    path = path,
+    sourceTiles = source_tiles.map { it.toUi() },
     z = z,
     x = x,
     yTms = y_tms,
     left = left,
     top = top,
     size = size,
+)
+
+private fun WireTerrainOverlaySourceTile.toUi() = TerrainOverlaySourceTile(
+    productId = product_id,
+    path = path,
+    resource = resource?.toUi(),
+)
+
+private fun WireCoreResourceRequest.toUi() = CoreResourceRequest(
+    id = id,
+    source = parseCoreResourceSource(source),
+    optional = optional,
 )
 
 private fun WireVectorTileRequest.toUi() = VectorTileRequest(

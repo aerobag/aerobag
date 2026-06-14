@@ -92,7 +92,7 @@ function appendRequestLog(entry: Record<string, unknown>) {
 }
 
 function mountStaticTree(sourceRoot: string, options: { missingStatus?: number; logPrefix?: string; direct?: boolean } = {}) {
-  return (req: { headers?: Record<string, string | string[] | undefined>; url?: string }, res: { statusCode: number; end: (body?: string | Buffer) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
+  return (req: { headers?: Record<string, string | string[] | undefined>; method?: string; url?: string }, res: { statusCode: number; end: (body?: string | Buffer) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
     const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
     const relativePath = requestPath.replace(/^\/+/, "");
     const filePath = path.resolve(sourceRoot, relativePath);
@@ -104,7 +104,8 @@ function mountStaticTree(sourceRoot: string, options: { missingStatus?: number; 
       res.end("forbidden");
       return;
     }
-    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+    const fileStat = fs.existsSync(filePath) ? fs.statSync(filePath) : null;
+    if (!fileStat?.isFile()) {
       if (options.missingStatus) {
         res.statusCode = options.missingStatus ?? 404;
         if (options.logPrefix) {
@@ -142,16 +143,28 @@ function mountStaticTree(sourceRoot: string, options: { missingStatus?: number; 
     } else if (relativePath === "current_artifacts.json") {
       res.setHeader("Cache-Control", "no-cache");
     }
+    const sendFile = (stream: fs.ReadStream) => {
+      if (req.method === "HEAD") {
+        stream.destroy();
+        res.end();
+        return;
+      }
+      stream.pipe(res);
+    };
     if (options.direct) {
-      const body = fs.readFileSync(filePath);
-      res.setHeader("Content-Length", String(body.length));
-      res.end(body);
+      res.setHeader("Content-Length", String(fileStat.size));
+      if (req.method === "HEAD") {
+        res.end();
+        return;
+      }
+      res.end(fs.readFileSync(filePath));
       return;
     }
     const stream = fs.createReadStream(filePath);
     if (extension === ".terrain") {
       res.setHeader("Content-Encoding", "gzip");
-      stream.pipe(res);
+      res.setHeader("Content-Length", String(fileStat.size));
+      sendFile(stream);
       return;
     }
     if (shouldCompress && supportsBrotli) {
@@ -164,7 +177,8 @@ function mountStaticTree(sourceRoot: string, options: { missingStatus?: number; 
       stream.pipe(zlib.createGzip()).pipe(res);
       return;
     }
-    stream.pipe(res);
+    res.setHeader("Content-Length", String(fileStat.size));
+    sendFile(stream);
   };
 }
 

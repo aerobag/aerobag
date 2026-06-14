@@ -14,6 +14,7 @@ data class RuntimeBootstrap(
 data class RuntimeContent(
     val bootstrap: RuntimeBootstrap,
     val navKvStore: NavKvStore,
+    val installedPackageIds: List<String>,
 )
 
 data class NavDbArtifactStatus(
@@ -58,10 +59,15 @@ object AndroidRuntimeContent {
         val navKvOpenStartMs = SystemClock.elapsedRealtime()
         val navKvStore = openInstalledNavDb(context).first
         val navKvOpenMs = SystemClock.elapsedRealtime() - navKvOpenStartMs
+        val installedPackageIds = InstalledPackages.listInstalledArtifacts(context.applicationContext)
+            .map { it.artifactId }
+            .distinct()
+            .sorted()
         return loadInstalledRuntime(
             bootstrap = bootstrap,
             navKvStore = navKvStore,
             navKvOpenMs = navKvOpenMs,
+            installedPackageIds = installedPackageIds,
         )
     }
 
@@ -69,11 +75,13 @@ object AndroidRuntimeContent {
         bootstrap: RuntimeBootstrap,
         navKvStore: NavKvStore,
         navKvOpenMs: Long,
+        installedPackageIds: List<String> = emptyList(),
     ): RuntimeContent {
         val startMs = SystemClock.elapsedRealtime()
         return RuntimeContent(
             bootstrap = bootstrap,
             navKvStore = navKvStore,
+            installedPackageIds = installedPackageIds,
         ).also {
             Log.i(
                 TAG,

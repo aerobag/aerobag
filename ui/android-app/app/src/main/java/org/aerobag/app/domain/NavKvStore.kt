@@ -43,6 +43,41 @@ data class PagedSessionOperationResult(
     val invalidations: List<String>,
 )
 
+fun parseCoreResourceRequests(outcome: JsonObject): List<CoreResourceRequest> =
+    outcome.getValue("resources").jsonArray.map { element ->
+        parseCoreResourceRequest(element.jsonObject)
+    }
+
+fun parseCoreResourceRequest(resource: JsonObject): CoreResourceRequest =
+    CoreResourceRequest(
+        id = resource.getValue("id").jsonPrimitive.content,
+        source = parseCoreResourceSource(resource.getValue("source").jsonObject),
+        optional = resource["optional"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: false,
+    )
+
+fun parseCoreResourceSource(source: JsonObject): CoreResourceSource =
+    when (val kind = source.getValue("kind").jsonPrimitive.content) {
+        "public_url" -> CoreResourceSource.PublicUrl(
+            url = source.getValue("url").jsonPrimitive.content,
+        )
+        "package_member" -> CoreResourceSource.PackageMember(
+            packageId = source.getValue("package_id").jsonPrimitive.content,
+            filename = source.getValue("filename").jsonPrimitive.content,
+            memberPath = source.getValue("member_path").jsonPrimitive.content,
+        )
+        "installed_artifact_member" -> CoreResourceSource.InstalledArtifactMember(
+            filename = source.getValue("filename").jsonPrimitive.content,
+            memberPath = source.getValue("member_path").jsonPrimitive.content,
+        )
+        "nav_kv_member" -> CoreResourceSource.NavKvMember(
+            memberPath = source.getValue("member_path").jsonPrimitive.content,
+        )
+        "unavailable" -> CoreResourceSource.Unavailable(
+            message = source.getValue("message").jsonPrimitive.content,
+        )
+        else -> error("unknown core resource source kind: $kind")
+    }
+
 data class NavDbOpenReport(
     val statuses: List<NavDbArtifactStatus>,
 )
@@ -241,39 +276,6 @@ class NavKvStore private constructor(
                 ?: error("missing installed artifact ${source.filename}")
             return InstalledPackages.readZipEntryBytes(artifact.file, source.memberPath)
         }
-
-        private fun parseCoreResourceRequests(outcome: JsonObject): List<CoreResourceRequest> =
-            outcome.getValue("resources").jsonArray.map { element ->
-                val resource = element.jsonObject
-                CoreResourceRequest(
-                    id = resource.getValue("id").jsonPrimitive.content,
-                    source = parseCoreResourceSource(resource.getValue("source").jsonObject),
-                    optional = resource["optional"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: false,
-                )
-            }
-
-        private fun parseCoreResourceSource(source: JsonObject): CoreResourceSource =
-            when (val kind = source.getValue("kind").jsonPrimitive.content) {
-                "public_url" -> CoreResourceSource.PublicUrl(
-                    url = source.getValue("url").jsonPrimitive.content,
-                )
-                "package_member" -> CoreResourceSource.PackageMember(
-                    packageId = source.getValue("package_id").jsonPrimitive.content,
-                    filename = source.getValue("filename").jsonPrimitive.content,
-                    memberPath = source.getValue("member_path").jsonPrimitive.content,
-                )
-                "installed_artifact_member" -> CoreResourceSource.InstalledArtifactMember(
-                    filename = source.getValue("filename").jsonPrimitive.content,
-                    memberPath = source.getValue("member_path").jsonPrimitive.content,
-                )
-                "nav_kv_member" -> CoreResourceSource.NavKvMember(
-                    memberPath = source.getValue("member_path").jsonPrimitive.content,
-                )
-                "unavailable" -> CoreResourceSource.Unavailable(
-                    message = source.getValue("message").jsonPrimitive.content,
-                )
-                else -> error("unknown core resource source kind: $kind")
-            }
 
         private fun WireNavDbArtifactStatus.toStatus(): NavDbArtifactStatus =
             NavDbArtifactStatus(

@@ -142,6 +142,24 @@ pub fn query_terrain_overlay(
     has_position: bool,
     has_altitude: bool,
 ) -> TerrainOverlayQueryResult {
+    query_terrain_overlay_with_available_packages(
+        viewport,
+        width_px,
+        height_px,
+        has_position,
+        has_altitude,
+        &all_terrain_package_ids(),
+    )
+}
+
+pub fn query_terrain_overlay_with_available_packages(
+    viewport: &crate::MapViewport,
+    width_px: f64,
+    height_px: f64,
+    has_position: bool,
+    has_altitude: bool,
+    available_package_ids: &BTreeSet<String>,
+) -> TerrainOverlayQueryResult {
     if !has_position {
         return TerrainOverlayQueryResult {
             status: TerrainOverlayStatus::NoPosition,
@@ -154,11 +172,24 @@ pub fn query_terrain_overlay(
             tile_requests: Vec::new(),
         };
     }
-    let tile_requests = terrain_tile_requests(viewport, width_px, height_px);
+    let tile_requests = terrain_tile_requests_with_available_packages(
+        viewport,
+        width_px,
+        height_px,
+        available_package_ids,
+    );
     let count = tile_requests.len();
     if count > MAX_TERRAIN_TILES {
         return TerrainOverlayQueryResult {
             status: TerrainOverlayStatus::TooManyTiles { count },
+            tile_requests: Vec::new(),
+        };
+    }
+    if count == 0 {
+        return TerrainOverlayQueryResult {
+            status: TerrainOverlayStatus::Unavailable {
+                reason: "no installed terrain packages cover the viewport".to_string(),
+            },
             tile_requests: Vec::new(),
         };
     }
@@ -403,19 +434,6 @@ pub fn parse_abt1_tile(tile_bytes: &[u8]) -> Result<(TerrainTileInfo, Vec<i16>),
         },
         samples,
     ))
-}
-
-fn terrain_tile_requests(
-    viewport: &crate::MapViewport,
-    width_px: f64,
-    height_px: f64,
-) -> Vec<TerrainOverlayTileRequest> {
-    terrain_tile_requests_with_available_packages(
-        viewport,
-        width_px,
-        height_px,
-        &all_terrain_package_ids(),
-    )
 }
 
 fn terrain_tile_requests_with_available_packages(
@@ -696,6 +714,58 @@ mod tests {
         assert!(
             terrain_product_ids_for_tile_with_available_packages(8, 76, 164, &available).is_empty()
         );
+    }
+
+    #[test]
+    fn terrain_overlay_reports_unavailable_without_installed_package() {
+        let viewport = crate::MapViewport {
+            center: crate::LatLon {
+                lat: 37.5,
+                lon: -122.1,
+            },
+            zoom: 12.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let result = query_terrain_overlay_with_available_packages(
+            &viewport,
+            1024.0,
+            1024.0,
+            true,
+            true,
+            &BTreeSet::new(),
+        );
+        assert!(matches!(
+            result.status,
+            TerrainOverlayStatus::Unavailable { .. }
+        ));
+        assert!(result.tile_requests.is_empty());
+    }
+
+    #[test]
+    fn terrain_overlay_uses_installed_package_availability() {
+        let viewport = crate::MapViewport {
+            center: crate::LatLon {
+                lat: 37.5,
+                lon: -122.1,
+            },
+            zoom: 12.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let result = query_terrain_overlay_with_available_packages(
+            &viewport,
+            1024.0,
+            1024.0,
+            true,
+            true,
+            &package_id_set(&["terrain-sw"]),
+        );
+        assert!(matches!(result.status, TerrainOverlayStatus::Ready { .. }));
+        assert!(result.tile_requests.iter().all(|request| request
+            .source_tiles
+            .iter()
+            .all(|source| source.product_id == terrain_package_id("terrain-sw"))));
     }
 
     #[test]

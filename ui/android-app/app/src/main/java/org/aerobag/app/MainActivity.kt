@@ -90,7 +90,6 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.rememberScrollState
@@ -1100,6 +1099,7 @@ internal val OfflineProductOptions = listOf(
     OfflinePackageDimension("sec", "Sectional"),
     OfflinePackageDimension("tac", "TAC"),
     OfflinePackageDimension("shaded-relief", "Shaded Relief"),
+    OfflinePackageDimension("terrain", "Terrain"),
     OfflinePackageDimension("enr-l", "IFR-L"),
     OfflinePackageDimension("enr-h", "IFR-H"),
     OfflinePackageDimension("tpp", "TPP"),
@@ -2755,6 +2755,7 @@ internal class AerobagRetainedModel : ViewModel() {
             recentAirportIds,
             selectedAirportId,
             selectedChartId,
+            runtimeContent.installedPackageIds,
         )
         return AerobagRetainedCoreSession(
             runtimeContent = runtimeContent,
@@ -2787,27 +2788,34 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
     val prefs = remember(context) { context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE) }
     val bootstrap = remember(context) { AndroidRuntimeContent.loadBootstrap(context.applicationContext) }
     var runtimeReloadToken by remember { mutableStateOf(0) }
+    var runtimeFixture by remember { mutableStateOf<Result<RuntimeContent>?>(retainedModel.runtimeResult) }
+    var keepOfflinePackagesVisible by remember { mutableStateOf(false) }
     fun requestRuntimeReload() {
+        runtimeFixture = null
         retainedModel.resetRuntime()
         runtimeReloadToken += 1
+    }
+    fun requestRuntimeReloadKeepingOfflinePackagesVisible() {
+        keepOfflinePackagesVisible = true
+        requestRuntimeReload()
     }
     val offlinePackagesControllerHandle = remember(prefs) { initialOfflinePackagesControllerHandle(prefs) }
     DisposableEffect(offlinePackagesControllerHandle) {
         onDispose { NativeBindings.destroyOfflinePackagesController(offlinePackagesControllerHandle) }
     }
     val uiTheme = remember(context) { UiThemeLoader.load(context.applicationContext) }
-    val runtimeFixture by produceState<Result<RuntimeContent>?>(initialValue = retainedModel.runtimeResult, context, bootstrap, runtimeReloadToken) {
+    LaunchedEffect(context, bootstrap, runtimeReloadToken) {
         retainedModel.runtimeResult?.let {
-            value = it
-            return@produceState
+            runtimeFixture = it
+            return@LaunchedEffect
         }
+        runtimeFixture = null
         val loaded = withContext(Dispatchers.IO) {
             runCatching { AndroidRuntimeContent.loadInstalledRuntime(context.applicationContext, bootstrap) }
         }
         retainedModel.runtimeResult = loaded
-        value = loaded
+        runtimeFixture = loaded
     }
-    var keepOfflinePackagesVisible by remember { mutableStateOf(false) }
     var runtimeFailureMessage by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(runtimeFixture) {
         when {
@@ -2843,7 +2851,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                         "Loading..."
                     },
                 offlinePackagesControllerHandle = offlinePackagesControllerHandle,
-                onRuntimeMaybeAvailable = { requestRuntimeReload() },
+                onRuntimeMaybeAvailable = { requestRuntimeReloadKeepingOfflinePackagesVisible() },
             )
         }
         return
@@ -2865,7 +2873,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                 bootstrapMessage = runtimeFailureMessage
                     ?: "Runtime bootstrap failed. Refresh library, then sync required packages in Offline Packages to continue.",
                 offlinePackagesControllerHandle = offlinePackagesControllerHandle,
-                onRuntimeMaybeAvailable = { requestRuntimeReload() },
+                onRuntimeMaybeAvailable = { requestRuntimeReloadKeepingOfflinePackagesVisible() },
             )
         }
         return
@@ -3367,7 +3375,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                         initialOfflinePackagesOpen = keepOfflinePackagesVisible,
                         offlinePackagesControllerHandle = offlinePackagesControllerHandle,
                         onOfflinePackagesClosed = { keepOfflinePackagesVisible = false },
-                        onRuntimeMaybeAvailable = { requestRuntimeReload() },
+                        onRuntimeMaybeAvailable = { requestRuntimeReloadKeepingOfflinePackagesVisible() },
                     )
                 }
                 AppPage.DataStatus -> {

@@ -1301,6 +1301,7 @@ internal fun MapExplorerPage(
         }
         runCatching {
             var queryMs = 0L
+            var fetchMs = 0L
             var renderMs = 0L
             var parseMs = 0L
             var rawBytesTotal = 0L
@@ -1321,7 +1322,12 @@ internal fun MapExplorerPage(
                 val images = withContext(Dispatchers.IO) {
                     query.tileRequests.map { request ->
                         val renderStartMs = SystemClock.elapsedRealtime()
-                        val rawBytes = uiSession.renderTerrainOverlayTileByKey(request.key, Double.NaN)
+                        val rawBytes = uiSession.renderTerrainOverlayTile(request, Double.NaN) { resource ->
+                            val fetchStartMs = SystemClock.elapsedRealtime()
+                            fetchCoreResource(context, resource, devServerBaseUrl).also {
+                                fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                            }
+                        }
                         renderMs += SystemClock.elapsedRealtime() - renderStartMs
                         rawBytesTotal += rawBytes.size
                         val parseStartMs = SystemClock.elapsedRealtime()
@@ -1341,7 +1347,7 @@ internal fun MapExplorerPage(
                 }
                 Log.i(
                     MapLayerLogTag,
-                    "terrain loaded requests=$requestCount images=${images.size} rawBytes=$rawBytesTotal queryMs=$queryMs renderMs=$renderMs parseMs=$parseMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}",
+                    "terrain loaded requests=$requestCount images=${images.size} rawBytes=$rawBytesTotal queryMs=$queryMs fetchMs=$fetchMs renderMs=$renderMs parseMs=$parseMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}",
                 )
                 images
             }

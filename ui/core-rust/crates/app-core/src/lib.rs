@@ -222,9 +222,10 @@ pub use session::{
     select_map_family_in_session, select_ownship_source_in_session,
     select_ownship_source_in_session_outcome, select_procedure_at_flight_plan_row_in_session,
     select_raster_map_in_session, sequence_active_leg_in_session, set_debug_flag_in_session,
-    set_map_follow_offset_in_session, set_map_layer_enabled_in_session,
-    set_map_layer_visibility_in_session, set_playback_rate_in_session,
-    set_playback_rate_in_session_outcome, set_resource_policy_in_session, set_situation_in_session,
+    set_installed_package_ids_in_session, set_map_follow_offset_in_session,
+    set_map_layer_enabled_in_session, set_map_layer_visibility_in_session,
+    set_playback_rate_in_session, set_playback_rate_in_session_outcome,
+    set_resource_policy_in_session, set_situation_in_session,
     set_situation_in_session_outcome, suggest_waypoint_identifiers_at_flight_plan_row_in_session,
     suspend_sequencing_in_session, sync_guidance_geometry_in_session, sync_live_feeds_in_session,
     sync_map_follow_in_session, tick_debug_ownship_driver_in_session,
@@ -241,10 +242,11 @@ pub use state::{
     UiSnapshotAppState,
 };
 pub use terrain::{
-    parse_abt1_tile, query_terrain_overlay, render_terrain_warning_png,
-    render_terrain_warning_png_from_tiles, render_terrain_warning_raw_rgba_from_tiles,
-    render_terrain_warning_rgba, TerrainOverlayQueryResult, TerrainOverlaySourceTile,
-    TerrainOverlayStatus, TerrainOverlayTileRequest, TerrainTileInfo,
+    parse_abt1_tile, query_terrain_overlay, query_terrain_overlay_with_available_packages,
+    render_terrain_warning_png, render_terrain_warning_png_from_tiles,
+    render_terrain_warning_raw_rgba_from_tiles, render_terrain_warning_rgba,
+    TerrainOverlayQueryResult, TerrainOverlaySourceTile, TerrainOverlayStatus,
+    TerrainOverlayTileRequest, TerrainTileInfo,
 };
 pub use ui_work_scheduler::{
     SessionSnapshotRefreshDecision, SessionSnapshotRefreshPriority,

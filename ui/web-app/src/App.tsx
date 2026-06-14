@@ -783,6 +783,9 @@ const RASTER_TILE_OVERDRAW_PX = 1;
 
 function TerrainOverlayCanvasTile({ tile }: { tile: TerrainOverlayImage }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // Deliberately key this scroll effect only on active row identity. Row data
+  // changes during passive ownship/replay updates must not yank the user's
+  // manual FP scroll position.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) {
@@ -6496,6 +6499,11 @@ function FlightPlanPage(props: {
     throw new Error("FlightPlanPage requires core-projected FlightPlanUiState");
   }
   const guidance = planUiState.guidance ?? null;
+  const activeFromRowUid = guidance?.active_from_row_uid ?? null;
+  const activeToRowUid = guidance?.active_to_row_uid ?? null;
+  const activeGuidanceRowsKey = guidance?.active_leg
+    ? `${activeFromRowUid ?? ""}->${activeToRowUid ?? ""}`
+    : null;
   const structuredSurfaceRef = useRef<HTMLDivElement | null>(null);
   const structuredTableRef = useRef<HTMLDivElement | null>(null);
   const planScrollViewportRef = useRef<HTMLDivElement | null>(null);
@@ -6847,7 +6855,7 @@ function FlightPlanPage(props: {
   }, [displayRows]);
 
   useEffect(() => {
-    if (!guidance?.active_leg) {
+    if (!activeGuidanceRowsKey) {
       setStructuredArrow(null);
       return;
     }
@@ -6858,11 +6866,11 @@ function FlightPlanPage(props: {
       return;
     }
 
-    const fromIndex = guidance.active_from_row_uid
-      ? displayRows.findIndex((row) => row.rowUid === guidance.active_from_row_uid)
+    const fromIndex = activeFromRowUid
+      ? displayRows.findIndex((row) => row.rowUid === activeFromRowUid)
       : -1;
-    const toIndex = guidance.active_to_row_uid
-      ? displayRows.findIndex((row) => row.rowUid === guidance.active_to_row_uid)
+    const toIndex = activeToRowUid
+      ? displayRows.findIndex((row) => row.rowUid === activeToRowUid)
       : -1;
     if (toIndex < 0) {
       setStructuredArrow(null);
@@ -6916,20 +6924,39 @@ function FlightPlanPage(props: {
     };
 
     measureArrow();
+    scrollPane?.addEventListener("scroll", scheduleMeasure, { passive: true });
+    window.addEventListener("resize", scheduleMeasure);
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      scrollPane?.removeEventListener("scroll", scheduleMeasure);
+      window.removeEventListener("resize", scheduleMeasure);
+    };
+  }, [activeFromRowUid, activeGuidanceRowsKey, activeToRowUid, displayRows]);
+
+  useEffect(() => {
+    if (!activeGuidanceRowsKey || !activeToRowUid) {
+      return;
+    }
+    const fromElement = activeFromRowUid
+      ? structuredRowRefs.current.get(
+          displayRows.find((row) => row.rowUid === activeFromRowUid)?.refKey ?? "",
+        )
+      : null;
+    const toElement = structuredRowRefs.current.get(
+      displayRows.find((row) => row.rowUid === activeToRowUid)?.refKey ?? "",
+    );
+    if (!toElement) {
+      return;
+    }
 
     const handle = window.requestAnimationFrame(() => {
       fromElement?.scrollIntoView({ block: "nearest", inline: "nearest" });
       toElement.scrollIntoView({ block: "nearest", inline: "nearest" });
     });
-    scrollPane?.addEventListener("scroll", scheduleMeasure, { passive: true });
-    window.addEventListener("resize", scheduleMeasure);
     return () => {
       window.cancelAnimationFrame(handle);
-      window.cancelAnimationFrame(animationFrame);
-      scrollPane?.removeEventListener("scroll", scheduleMeasure);
-      window.removeEventListener("resize", scheduleMeasure);
     };
-  }, [displayRows, guidance?.active_leg]);
+  }, [activeGuidanceRowsKey]);
 
   useEffect(() => {
     if (selectedRow === null) {

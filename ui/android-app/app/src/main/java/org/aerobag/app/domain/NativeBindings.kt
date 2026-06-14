@@ -366,6 +366,15 @@ interface NativeBridge {
         pointDisplayScale: Double,
     ): String
 
+    fun getMapSelectionForNavRefInSessionWithPointDisplayScaleJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+        navRefJson: String,
+        pointDisplayScale: Double,
+    ): String
+
     fun getTerrainOverlayInSessionJson(
         handle: Long,
         viewportJson: String,
@@ -795,6 +804,15 @@ object NativeBindings : NativeBridge {
         widthPx: Double,
         heightPx: Double,
         clickJson: String,
+        pointDisplayScale: Double,
+    ): String
+
+    external override fun getMapSelectionForNavRefInSessionWithPointDisplayScaleJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+        navRefJson: String,
         pointDisplayScale: Double,
     ): String
 

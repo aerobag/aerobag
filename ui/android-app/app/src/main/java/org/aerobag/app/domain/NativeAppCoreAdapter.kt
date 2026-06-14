@@ -244,6 +244,13 @@ data class MapSelectionQueryResult(
     val categories: List<MapSelectionCategory>,
 )
 
+data class MapSelectionForNavRefResult(
+    val position: LatLonPoint,
+    val targetZoom: Double,
+    val selection: MapSelectionQueryResult,
+    val selectedItemId: String?,
+)
+
 data class MapSelectionCategory(
     val id: String,
     val label: String,
@@ -1030,6 +1037,30 @@ class NativeUiSession internal constructor(
                     widthPx,
                     heightPx,
                     clickJson,
+                    pointDisplayScale,
+                )
+            },
+        ).toUi()
+    }
+
+    fun queryMapSelectionForNavRef(
+        viewport: MapViewportState,
+        widthPx: Double,
+        heightPx: Double,
+        navRef: NavRef,
+        pointDisplayScale: Double,
+    ): MapSelectionForNavRefResult {
+        val viewportJson = json.encodeToString(viewport.toWire())
+        val navRefJson = json.encodeToString(navRef.toWire())
+        val store = navKvStore ?: error("session missing nav_db for map selection")
+        return json.decodeFromJsonElement<WireMapSelectionForNavRefResult>(
+            store.runPagedSessionOperationElement {
+                bridge.getMapSelectionForNavRefInSessionWithPointDisplayScaleJson(
+                    handle,
+                    viewportJson,
+                    widthPx,
+                    heightPx,
+                    navRefJson,
                     pointDisplayScale,
                 )
             },
@@ -2294,6 +2325,13 @@ private fun WireMapSelectionQueryResult.toUi() = MapSelectionQueryResult(
     clickLat = click_lat,
     clickLon = click_lon,
     categories = categories.map { it.toUi() },
+)
+
+private fun WireMapSelectionForNavRefResult.toUi() = MapSelectionForNavRefResult(
+    position = position.toUi(),
+    targetZoom = target_zoom,
+    selection = selection.toUi(),
+    selectedItemId = selected_item_id,
 )
 
 private fun WireMapSelectionCategory.toUi() = MapSelectionCategory(

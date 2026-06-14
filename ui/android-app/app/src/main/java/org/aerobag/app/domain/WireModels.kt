@@ -738,6 +738,14 @@ data class WireMapSelectionQueryResult(
 )
 
 @Serializable
+data class WireMapSelectionForNavRefResult(
+    val position: WireLatLon,
+    val target_zoom: Double,
+    val selection: WireMapSelectionQueryResult,
+    val selected_item_id: String? = null,
+)
+
+@Serializable
 data class WireMapSelectionCategory(
     val id: String,
     val label: String,

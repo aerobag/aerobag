@@ -24,6 +24,10 @@ const AIRPORT_MIN_DISPLAY_ZOOM: f64 = 8.0;
 const FIX_MIN_DISPLAY_ZOOM: f64 = 9.0;
 const NAV_MIN_DISPLAY_ZOOM: f64 = 7.0;
 const OBSTACLE_MIN_DISPLAY_ZOOM: f64 = 8.0;
+// Search result focus should land at a local chart scale, not preserve a
+// previously zoomed-out continental view. Preserve closer views, but raise
+// wider views to the app's default chart startup zoom.
+pub const MAP_SELECTION_NAV_REF_MIN_FOCUS_ZOOM: f64 = 10.0;
 const OBSTACLE_LOOKAHEAD_MINUTES: f64 = 5.0;
 const OBSTACLE_LOOKAHEAD_DEFAULT_DIAMETER_NM: f64 = 5.0;
 const OBSTACLE_LOOKAHEAD_CENTER_OFFSET_DIAMETER_RATIO: f64 = 0.3;
@@ -726,6 +730,14 @@ pub struct MapSelectionQueryResult {
     pub categories: Vec<MapSelectionCategory>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MapSelectionForNavRefResult {
+    pub position: LatLon,
+    pub target_zoom: f64,
+    pub selection: MapSelectionQueryResult,
+    pub selected_item_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlightPlanSelectionPoint {
     pub nav_ref: NavRef,
@@ -1396,6 +1408,7 @@ pub fn query_map_overlay_with_point_display_scale(
         metar_payload,
         airspace_feature_cache,
         tfr_payload,
+        &[],
     )
 }
 
@@ -1493,6 +1506,7 @@ pub fn query_map_overlay_for_surface(
     metar_payload: Option<&MetarProductPayload>,
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
+    protected_point_features: &[VisibleMapFeature],
 ) -> MapOverlayQueryResult {
     let total_started_at = core_clock_ms();
     let viewport = &metrics.viewport;
@@ -1754,6 +1768,7 @@ pub fn query_map_overlay_for_surface(
     suppress_overlapping_vector_labels(
         &mut visible_features,
         &mut airspace_labels,
+        protected_point_features,
         point_display_scale,
     );
     let labels_ms = overlay_elapsed_ms(labels_started_at);
@@ -2952,6 +2967,22 @@ fn nav_ref_match_key(nav_ref: Option<&NavRef>) -> Option<String> {
     nav_ref.map(|nav_ref| serde_json::to_string(nav_ref).unwrap_or_else(|_| format!("{nav_ref:?}")))
 }
 
+pub fn selected_map_selection_item_id_for_nav_ref(
+    result: &MapSelectionQueryResult,
+    nav_ref: &NavRef,
+) -> Option<String> {
+    let key = nav_ref_match_key(Some(nav_ref))?;
+    result.categories.iter().find_map(|category| {
+        category
+            .items
+            .iter()
+            .find(|candidate| {
+                nav_ref_match_key(candidate.nav_ref.as_ref()).as_deref() == Some(&key)
+            })
+            .map(|item| item.id.clone())
+    })
+}
+
 fn nav_ref_overlay_key(nav_ref: &NavRef) -> String {
     serde_json::to_string(nav_ref).unwrap_or_else(|_| format!("{nav_ref:?}"))
 }
@@ -3764,41 +3795,73 @@ impl LabelRect {
 enum LabelRef {
     Airspace(usize),
     Point(usize),
+    ProtectedPoint,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LabelCandidate {
+    label_ref: LabelRef,
+    rect: LabelRect,
+    priority: u8,
+    order: usize,
 }
 
 fn suppress_overlapping_vector_labels(
     visible_features: &mut [VisibleMapFeature],
     airspace_labels: &mut Vec<AirspaceDisplayLabel>,
+    protected_point_features: &[VisibleMapFeature],
     point_display_scale: f64,
 ) {
     let point_display_scale = point_display_scale.max(0.1);
-    let mut candidates = Vec::<(LabelRef, LabelRect)>::new();
+    let mut candidates = Vec::<LabelCandidate>::new();
+    let mut order = 0usize;
     for (index, label) in airspace_labels.iter().enumerate() {
         if let Some(rect) = airspace_label_rect(label, point_display_scale) {
-            candidates.push((
-                LabelRef::Airspace(index),
-                rect.padded(LABEL_COLLISION_PADDING_PX),
-            ));
+            candidates.push(LabelCandidate {
+                label_ref: LabelRef::Airspace(index),
+                rect: rect.padded(LABEL_COLLISION_PADDING_PX),
+                priority: 0,
+                order,
+            });
+            order += 1;
         }
     }
     for (index, feature) in visible_features.iter().enumerate() {
         if let Some(rect) = point_feature_label_rect(feature, point_display_scale) {
-            candidates.push((
-                LabelRef::Point(index),
-                rect.padded(LABEL_COLLISION_PADDING_PX),
-            ));
+            candidates.push(LabelCandidate {
+                label_ref: LabelRef::Point(index),
+                rect: rect.padded(LABEL_COLLISION_PADDING_PX),
+                priority: point_feature_label_priority(feature),
+                order,
+            });
+            order += 1;
         }
     }
+    for feature in protected_point_features {
+        if let Some(rect) = point_feature_label_rect(feature, point_display_scale) {
+            candidates.push(LabelCandidate {
+                label_ref: LabelRef::ProtectedPoint,
+                rect: rect.padded(LABEL_COLLISION_PADDING_PX),
+                priority: point_feature_label_priority(feature),
+                order,
+            });
+            order += 1;
+        }
+    }
+    candidates.sort_by_key(|candidate| (candidate.priority, candidate.order));
 
     let mut occupied = Vec::<LabelRect>::new();
     let mut keep_airspace = vec![true; airspace_labels.len()];
     let mut keep_point = vec![true; visible_features.len()];
 
-    for (label_ref, rect) in candidates.into_iter().rev() {
+    for candidate in candidates.into_iter().rev() {
+        let label_ref = candidate.label_ref;
+        let rect = candidate.rect;
         if occupied.iter().any(|kept| rect.overlaps(*kept)) {
             match label_ref {
                 LabelRef::Airspace(index) => keep_airspace[index] = false,
                 LabelRef::Point(index) => keep_point[index] = false,
+                LabelRef::ProtectedPoint => {}
             }
         } else {
             occupied.push(rect);
@@ -3816,6 +3879,19 @@ fn suppress_overlapping_vector_labels(
         index += 1;
         keep
     });
+}
+
+fn point_feature_label_priority(feature: &VisibleMapFeature) -> u8 {
+    match feature.label_style {
+        VectorIdentLabelStyle::ActiveFlightPlan => 60,
+        VectorIdentLabelStyle::FlightPlan => 50,
+        VectorIdentLabelStyle::Default => match feature.style_class.as_str() {
+            "nav" => 40,
+            "airport" => 30,
+            "fix" => 20,
+            _ => 10,
+        },
+    }
 }
 
 fn airspace_label_rect(label: &AirspaceDisplayLabel, scale: f64) -> Option<LabelRect> {
@@ -5238,6 +5314,48 @@ mod tests {
                 display: lower.to_string(),
             },
         }
+    }
+
+    fn test_selection_item(id: &str, nav_ref: Option<NavRef>) -> MapSelectionItem {
+        MapSelectionItem {
+            id: id.to_string(),
+            label: id.to_string(),
+            sublabel: String::new(),
+            description: None,
+            detail_text: None,
+            highlight: MapSelectionHighlight::Spot { lat: 0.0, lon: 0.0 },
+            nav_ref,
+            symbol_feature: None,
+            metar_feature: None,
+            pirep_feature: None,
+            airspace_icon: None,
+            actions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn selected_map_selection_item_id_matches_nav_ref_in_core() {
+        let result = MapSelectionQueryResult {
+            click_lat: 0.0,
+            click_lon: 0.0,
+            categories: vec![MapSelectionCategory {
+                id: "airport".to_string(),
+                label: "Airport".to_string(),
+                items: vec![
+                    test_selection_item("khwd", Some(NavRef::Airport("KHWD".to_string()))),
+                    test_selection_item("koak", Some(NavRef::Airport("KOAK".to_string()))),
+                ],
+            }],
+        };
+
+        assert_eq!(
+            selected_map_selection_item_id_for_nav_ref(
+                &result,
+                &NavRef::Airport("KHWD".to_string()),
+            )
+            .as_deref(),
+            Some("khwd"),
+        );
     }
 
     #[test]
@@ -7588,10 +7706,52 @@ mod tests {
         ];
         let mut airspace_labels = Vec::new();
 
-        suppress_overlapping_vector_labels(&mut features, &mut airspace_labels, 1.0);
+        suppress_overlapping_vector_labels(&mut features, &mut airspace_labels, &[], 1.0);
 
         assert_eq!(features[0].label, "");
         assert_eq!(features[1].label, "ABC");
+    }
+
+    #[test]
+    fn airport_labels_suppress_colocated_fix_labels() {
+        let mut features = vec![
+            test_visible_feature("airports:KPAE", "airport", "airport", "KPAE", 100.0, 100.0),
+            test_visible_feature("fix:KONAH", "fix", "fix", "KONAH", 100.0, 100.0),
+        ];
+        let mut airspace_labels = Vec::new();
+
+        suppress_overlapping_vector_labels(&mut features, &mut airspace_labels, &[], 1.0);
+
+        assert_eq!(features[0].label, "KPAE");
+        assert_eq!(features[1].label, "");
+    }
+
+    #[test]
+    fn flight_plan_labels_protect_against_vector_labels() {
+        let mut features = vec![test_visible_feature(
+            "nav:PAE:VOR",
+            "VOR/DME",
+            "nav",
+            "PAE",
+            100.0,
+            100.0,
+        )];
+        let mut flight_plan_feature = test_visible_feature(
+            "flight-plan:airport:KPAE",
+            "airport",
+            "airport",
+            "KPAE",
+            100.0,
+            100.0,
+        );
+        flight_plan_feature.label_style = VectorIdentLabelStyle::FlightPlan;
+        let protected = vec![flight_plan_feature];
+        let mut airspace_labels = Vec::new();
+
+        suppress_overlapping_vector_labels(&mut features, &mut airspace_labels, &protected, 1.0);
+
+        assert_eq!(features[0].label, "");
+        assert_eq!(protected[0].label, "KPAE");
     }
 
     #[test]
@@ -7616,7 +7776,7 @@ mod tests {
             screen_y: 100.0,
         }];
 
-        suppress_overlapping_vector_labels(&mut features, &mut airspace_labels, 1.0);
+        suppress_overlapping_vector_labels(&mut features, &mut airspace_labels, &[], 1.0);
 
         assert!(airspace_labels.is_empty());
         assert_eq!(features[0].label, "ABC");
@@ -7630,7 +7790,7 @@ mod tests {
         ];
         let mut airspace_labels = Vec::new();
 
-        suppress_overlapping_vector_labels(&mut features, &mut airspace_labels, 1.0);
+        suppress_overlapping_vector_labels(&mut features, &mut airspace_labels, &[], 1.0);
         assert_eq!(features[0].label, "LONGA");
         assert_eq!(features[1].label, "LONGB");
 
@@ -7638,7 +7798,7 @@ mod tests {
             test_visible_feature("fix:LONGA", "fix", "fix", "LONGA", 100.0, 100.0),
             test_visible_feature("fix:LONGB", "fix", "fix", "LONGB", 100.0, 130.0),
         ];
-        suppress_overlapping_vector_labels(&mut features, &mut airspace_labels, 3.0);
+        suppress_overlapping_vector_labels(&mut features, &mut airspace_labels, &[], 3.0);
 
         assert_eq!(features[0].label, "");
         assert_eq!(features[1].label, "LONGB");
@@ -7667,7 +7827,7 @@ mod tests {
             },
         ];
         let mut unscaled_features = features.clone();
-        suppress_overlapping_vector_labels(&mut unscaled_features, &mut airspace_labels, 1.0);
+        suppress_overlapping_vector_labels(&mut unscaled_features, &mut airspace_labels, &[], 1.0);
         assert_eq!(airspace_labels.len(), 2);
 
         let mut airspace_labels = vec![
@@ -7695,7 +7855,7 @@ mod tests {
             },
         ];
         let mut scaled_features = features;
-        suppress_overlapping_vector_labels(&mut scaled_features, &mut airspace_labels, 3.0);
+        suppress_overlapping_vector_labels(&mut scaled_features, &mut airspace_labels, &[], 3.0);
 
         assert_eq!(airspace_labels.len(), 1);
         assert_eq!(airspace_labels[0].feature_id, "airspace:b");

@@ -4932,19 +4932,6 @@ function MapPage(props: {
     syncFollowStateForViewport(nextViewport);
   }
 
-  function selectMapSelectionItemForNavRef(result: MapSelectionQueryResult, navRef: NavRef) {
-    const key = navRefKey(navRef);
-    for (const category of result.categories) {
-      const item = category.items.find((candidate) =>
-        candidate.nav_ref ? navRefKey(candidate.nav_ref) === key : false,
-      );
-      if (item) {
-        return item;
-      }
-    }
-    return null;
-  }
-
   async function recenterOnNavRef(navRef: NavRef) {
     const position = await props.appCoreAdapter.resolveNavRefPosition(navRef);
     const centerWorld = latLonToWorld(position.lat, position.lon);
@@ -4959,29 +4946,58 @@ function MapPage(props: {
   }
 
   async function inspectNavRef(navRef: NavRef) {
-    const { position, viewport: nextViewport } = await recenterOnNavRef(navRef);
     if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+      await recenterOnNavRef(navRef);
       return;
     }
+    const inspection = await uiSession.queryMapSelectionForNavRef(
+      viewportRef.current,
+      surfaceSize.width,
+      surfaceSize.height,
+      navRef,
+    );
+    const position = inspection.position;
+    const centerWorld = latLonToWorld(position.lat, position.lon);
+    const nextViewport = {
+      ...viewportRef.current,
+      centerWorldX: centerWorld.x,
+      centerWorldY: centerWorld.y,
+      zoom: inspection.target_zoom,
+    };
+    debugLog("chart.search.inspect_nav_ref", {
+      nav_ref: navRef,
+      position,
+      target_zoom: inspection.target_zoom,
+      selected_item_id: inspection.selected_item_id ?? null,
+    });
+    updateViewport(nextViewport);
+    syncFollowStateForViewport(nextViewport);
     const point = worldToScreen(
       nextViewport,
       latLonToWorld(position.lat, position.lon),
       surfaceSize.width,
       surfaceSize.height,
     );
-    const result = await uiSession.queryMapSelection(
-      nextViewport,
-      surfaceSize.width,
-      surfaceSize.height,
-      position,
-    );
-    const selectedItem = selectMapSelectionItemForNavRef(result, navRef);
+    const selectedItem = mapSelectionItemById(inspection.selection, inspection.selected_item_id ?? null);
     setMapSelection({
       point,
-      result,
+      result: inspection.selection,
       selectedItem,
       detailModal: null,
     });
+  }
+
+  function mapSelectionItemById(result: MapSelectionQueryResult, itemId: string | null) {
+    if (!itemId) {
+      return null;
+    }
+    for (const category of result.categories) {
+      const item = category.items.find((candidate) => candidate.id === itemId);
+      if (item) {
+        return item;
+      }
+    }
+    return null;
   }
 
   function submitChartSearch() {
@@ -4989,10 +5005,9 @@ function MapPage(props: {
     if (!query) {
       return;
     }
-    const selected = chartSearch.suggestions[0] ?? null;
     setChartSearch((current) => ({ ...current, loading: true, error: null }));
     void (async () => {
-      const navRef = selected?.nav_ref ?? await props.appCoreAdapter.resolveWaypointIdentifier(query);
+      const navRef = await props.appCoreAdapter.resolveWaypointIdentifier(query);
       if (!navRef) {
         setChartSearch((current) => ({
           ...current,
@@ -9790,22 +9805,6 @@ function flightPlanEntryPreviewSegments(
     });
   }
   return segments;
-}
-
-function navRefKey(value: NavRef) {
-  if ("Airport" in value) return `airport:${value.Airport}`;
-  if ("Navaid" in value) return `navaid:${value.Navaid}`;
-  if ("Fix" in value) return `fix:${value.Fix}`;
-  if ("ArincNavaid" in value) {
-    const nav = value.ArincNavaid;
-    return `arinc-navaid:${nav.identifier}:${nav.icao_code}:${nav.section_code}:${nav.subsection_code}`;
-  }
-  if ("TerminalNavaid" in value) {
-    const nav = value.TerminalNavaid;
-    return `terminal-navaid:${nav.airport_id}:${nav.identifier}:${nav.icao_code}:${nav.section_code}:${nav.subsection_code}`;
-  }
-  if ("LatLon" in value) return `latlon:${value.LatLon.lat}:${value.LatLon.lon}`;
-  return `spot:${value.Spot.lat}:${value.Spot.lon}`;
 }
 
 function navRefLabel(value: NavRef) {

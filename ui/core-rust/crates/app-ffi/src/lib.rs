@@ -823,6 +823,32 @@ pub fn get_map_selection_in_session_with_point_display_scale_json(
     serde_json::to_string(&selection).map_err(|err| err.to_string())
 }
 
+pub fn get_map_selection_for_nav_ref_in_session_with_point_display_scale_json(
+    handle: u64,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+    nav_ref_json: &str,
+    point_display_scale: f64,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let nav_ref: app_core::NavRef =
+        serde_json::from_str(nav_ref_json).map_err(|err| err.to_string())?;
+    let selection =
+        app_core::get_map_selection_for_nav_ref_in_session_with_point_display_scale_at_epoch_ms(
+            handle as u32,
+            viewport,
+            width_px,
+            height_px,
+            nav_ref,
+            point_display_scale,
+            now_epoch_ms(),
+        )
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&selection).map_err(|err| err.to_string())
+}
+
 pub fn get_terrain_overlay_in_session_json(
     handle: u64,
     viewport_json: &str,
@@ -2813,6 +2839,32 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getMapSelectio
             width_px,
             height_px,
             &click,
+            point_display_scale,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getMapSelectionForNavRefInSessionWithPointDisplayScaleJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    viewport_json: JString,
+    width_px: f64,
+    height_px: f64,
+    nav_ref_json: JString,
+    point_display_scale: f64,
+) -> jstring {
+    let result = (|| {
+        let viewport = get_java_string(&mut env, viewport_json)?;
+        let nav_ref = get_java_string(&mut env, nav_ref_json)?;
+        get_map_selection_for_nav_ref_in_session_with_point_display_scale_json(
+            handle as u64,
+            &viewport,
+            width_px,
+            height_px,
+            &nav_ref,
             point_display_scale,
         )
     })();

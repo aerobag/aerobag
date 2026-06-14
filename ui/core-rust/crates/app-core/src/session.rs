@@ -38,6 +38,7 @@ use crate::{
         nearest_available_layer_zoom, obstacle_layer_config_from_live_manifest_value,
         vector_overlay_input_requests, visible_obstacle_tile_window, FlightPlanSelectionPoint,
         MetarTileRecord, PointTileLayerConfig, VectorOverlayInputRequests,
+        MAP_SELECTION_NAV_REF_MIN_FOCUS_ZOOM,
     },
     map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
     planning::NavElementUiView,
@@ -49,14 +50,14 @@ use crate::{
     AirspaceReferenceTilePayload, AirwayPresentationPlan, AppError, AppErrorKind, AppEvent,
     AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
     FlightPlanRowActionExecution, FlightPlanRowActionId, GuidanceState, LatLon, LegDisplayElement,
-    MapOverlayConfig, MapOverlayQueryResult, MapSelectionSessionAction, MapSurfaceMetrics,
-    MapViewport, MetarProductPayload, MetarTilePayload, NavDbOpenResult, NavKvLookup,
-    NavKvPageProbeStats, NavKvQuery, NavKvRoot, NavKvStore, NavRef, PlanLeg, PlaybackUiState,
-    PointTilePayload, ProcedureDiscontinuity, ProcedureKind, ProcedureLoadCommand,
-    RasterMapCatalog, RasterResourceMode, RasterTilePlan, ResolvedLeg, ResolvedLegSource,
-    RouteComponentViewKind, SequencingMode, SituationControlInput, SituationControlMenuItem,
-    TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
-    VectorAggregateTilePayload, VectorIdentLabelStyle,
+    MapOverlayConfig, MapOverlayQueryResult, MapSelectionForNavRefResult, MapSelectionQueryResult,
+    MapSelectionSessionAction, MapSurfaceMetrics, MapViewport, MetarProductPayload,
+    MetarTilePayload, NavDbOpenResult, NavKvLookup, NavKvPageProbeStats, NavKvQuery, NavKvRoot,
+    NavKvStore, NavRef, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity,
+    ProcedureKind, ProcedureLoadCommand, RasterMapCatalog, RasterResourceMode, RasterTilePlan,
+    ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode, SituationControlInput,
+    SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload,
+    UiSnapshotAppState, VectorAggregateTilePayload, VectorIdentLabelStyle,
 };
 
 const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
@@ -6289,6 +6290,21 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
         Vec::new()
     };
     let offline_ms = elapsed_ms(offline_started_at);
+    let flight_plan_started_at = crate::core_clock_ms();
+    let flight_plan_features = if display_vectors {
+        match flight_plan_overlay_features(session, &viewport, width_px, height_px) {
+            Ok(features) => features,
+            Err(HadReadError::NeedPages(pages)) => {
+                return Ok(HadOperationOutcome::NeedResources {
+                    resources: nav_kv_page_resources(pages),
+                });
+            }
+            Err(err) => return had_read_error_to_overlay_outcome(err),
+        }
+    } else {
+        Vec::new()
+    };
+    let flight_plan_ms = elapsed_ms(flight_plan_started_at);
     let overlay_started_at = crate::core_clock_ms();
     let mut overlay = query_map_overlay_for_surface(
         &metrics,
@@ -6303,22 +6319,10 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
         session.metar_payload.as_ref(),
         &session.airspace_feature_cache,
         session.tfr_payload.as_ref(),
+        &flight_plan_features,
     );
     let overlay_ms = elapsed_ms(overlay_started_at);
-    let flight_plan_started_at = crate::core_clock_ms();
-    if display_vectors {
-        overlay.flight_plan_features =
-            match flight_plan_overlay_features(session, &viewport, width_px, height_px) {
-                Ok(features) => features,
-                Err(HadReadError::NeedPages(pages)) => {
-                    return Ok(HadOperationOutcome::NeedResources {
-                        resources: nav_kv_page_resources(pages),
-                    });
-                }
-                Err(err) => return had_read_error_to_overlay_outcome(err),
-            };
-    }
-    let flight_plan_ms = elapsed_ms(flight_plan_started_at);
+    overlay.flight_plan_features = flight_plan_features;
     let supplemental_started_at = crate::core_clock_ms();
     overlay
         .data_status_records
@@ -6528,8 +6532,83 @@ pub fn get_map_selection_in_session_with_point_display_scale_at_epoch_ms(
     let session = session_mut(&mut sessions, handle)?;
     advance_session_wall_clock(session, epoch_ms);
     let metrics = MapSurfaceMetrics::new(viewport, width_px, height_px, point_display_scale);
+    let selection = match materialize_map_selection_in_session(session, &metrics, click)? {
+        MapSelectionMaterialization::Complete(selection) => selection,
+        MapSelectionMaterialization::NeedResources(resources) => {
+            return Ok(HadOperationOutcome::NeedResources { resources });
+        }
+    };
+    Ok(HadOperationOutcome::complete(
+        serde_json::to_value(selection).map_err(|err| AppError {
+            kind: AppErrorKind::Internal,
+            message: err.to_string(),
+        })?,
+    ))
+}
+
+pub fn get_map_selection_for_nav_ref_in_session_with_point_display_scale_at_epoch_ms(
+    handle: u32,
+    viewport: MapViewport,
+    width_px: f64,
+    height_px: f64,
+    nav_ref: NavRef,
+    point_display_scale: f64,
+    epoch_ms: i64,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    advance_session_wall_clock(session, epoch_ms);
+    let store = session_nav_kv_store(session)?;
+    let position = match nav_ref_position(store, &nav_ref, None) {
+        Ok(position) => position,
+        Err(err) => return had_read_error_to_overlay_outcome(err),
+    };
+    let target_zoom = viewport.zoom.max(MAP_SELECTION_NAV_REF_MIN_FOCUS_ZOOM);
+    let selection_viewport = MapViewport {
+        center: position,
+        zoom: target_zoom,
+        ..viewport
+    };
+    let metrics =
+        MapSurfaceMetrics::new(selection_viewport, width_px, height_px, point_display_scale);
+    let selection = match materialize_map_selection_in_session(session, &metrics, position)? {
+        MapSelectionMaterialization::Complete(selection) => selection,
+        MapSelectionMaterialization::NeedResources(resources) => {
+            return Ok(HadOperationOutcome::NeedResources { resources });
+        }
+    };
+    let selected_item_id = crate::selected_map_selection_item_id_for_nav_ref(&selection, &nav_ref);
+    Ok(HadOperationOutcome::complete(
+        serde_json::to_value(MapSelectionForNavRefResult {
+            position,
+            target_zoom,
+            selection,
+            selected_item_id,
+        })
+        .map_err(|err| AppError {
+            kind: AppErrorKind::Internal,
+            message: err.to_string(),
+        })?,
+    ))
+}
+
+enum MapSelectionMaterialization {
+    Complete(MapSelectionQueryResult),
+    NeedResources(Vec<CoreResourceRequest>),
+}
+
+fn materialize_map_selection_in_session(
+    session: &mut UiSession,
+    metrics: &MapSurfaceMetrics,
+    click: LatLon,
+) -> AppResult<MapSelectionMaterialization> {
     if let Err(err) = ensure_vector_inputs_loaded(session, &metrics) {
-        return had_read_error_to_overlay_outcome(err);
+        return match had_read_error_to_overlay_outcome(err)? {
+            HadOperationOutcome::Complete { .. } => unreachable!(),
+            HadOperationOutcome::NeedResources { resources } => {
+                Ok(MapSelectionMaterialization::NeedResources(resources))
+            }
+        };
     }
     let plan = session.app_state.active_plan.as_ref();
     let store = session_nav_kv_store(session)?;
@@ -6549,17 +6628,31 @@ pub fn get_map_selection_in_session_with_point_display_scale_at_epoch_ms(
         ) {
             Ok(Some(catalog)) => catalog.regions,
             Ok(None) => Vec::new(),
-            Err(err) => return had_read_error_to_overlay_outcome(err),
+            Err(err) => {
+                return match had_read_error_to_overlay_outcome(err)? {
+                    HadOperationOutcome::Complete { .. } => unreachable!(),
+                    HadOperationOutcome::NeedResources { resources } => {
+                        Ok(MapSelectionMaterialization::NeedResources(resources))
+                    }
+                };
+            }
         }
     } else {
         Vec::new()
     };
     let flight_plan_points = match flight_plan_selection_points(session) {
         Ok(points) => points,
-        Err(err) => return had_read_error_to_overlay_outcome(err),
+        Err(err) => {
+            return match had_read_error_to_overlay_outcome(err)? {
+                HadOperationOutcome::Complete { .. } => unreachable!(),
+                HadOperationOutcome::NeedResources { resources } => {
+                    Ok(MapSelectionMaterialization::NeedResources(resources))
+                }
+            };
+        }
     };
     let selection = query_map_selection_for_surface(
-        &metrics,
+        metrics,
         &session.map_overlay_config,
         plan,
         click,
@@ -6574,16 +6667,11 @@ pub fn get_map_selection_in_session_with_point_display_scale_at_epoch_ms(
         &mut availability,
     );
     if !missing_pages.is_empty() {
-        return Ok(HadOperationOutcome::NeedResources {
-            resources: nav_kv_page_resources(missing_pages),
-        });
+        return Ok(MapSelectionMaterialization::NeedResources(
+            nav_kv_page_resources(missing_pages),
+        ));
     }
-    Ok(HadOperationOutcome::complete(
-        serde_json::to_value(selection).map_err(|err| AppError {
-            kind: AppErrorKind::Internal,
-            message: err.to_string(),
-        })?,
-    ))
+    Ok(MapSelectionMaterialization::Complete(selection))
 }
 
 pub fn get_terrain_overlay_in_session(
@@ -9557,6 +9645,7 @@ mod tests {
             None,
             &HashMap::new(),
             None,
+            &[],
         );
         overlay
             .visible_features
@@ -11012,6 +11101,7 @@ mod tests {
             None,
             &HashMap::new(),
             None,
+            &[],
         );
 
         assert!(overlay
@@ -11220,6 +11310,7 @@ mod tests {
             None,
             &HashMap::new(),
             None,
+            &[],
         );
 
         assert!(overlay

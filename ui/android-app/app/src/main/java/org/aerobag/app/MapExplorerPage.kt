@@ -772,6 +772,62 @@ internal fun MapExplorerPage(
         }
     }
 
+    fun mapSelectionItemById(result: MapSelectionQueryResult, itemId: String?): MapSelectionItem? {
+        if (itemId == null) {
+            return null
+        }
+        return result.categories
+            .asSequence()
+            .flatMap { it.items.asSequence() }
+            .firstOrNull { it.id == itemId }
+    }
+
+    fun inspectNavRef(navRef: NavRef) {
+        if (surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) {
+            recenterOnNavRef(navRef)
+            return
+        }
+        runCatching {
+            val inspection = uiSession.queryMapSelectionForNavRef(
+                currentViewport,
+                surfaceWidthPx.toDouble(),
+                surfaceHeightPx.toDouble(),
+                navRef,
+                density.density.toDouble(),
+            )
+            val center = latLonToWorld(inspection.position.lat, inspection.position.lon)
+            val nextViewport = currentViewport.copy(
+                centerWorldX = center.x,
+                centerWorldY = center.y,
+                zoom = inspection.targetZoom,
+            )
+            updateViewport(nextViewport)
+            val point = worldToScreen(
+                nextViewport,
+                Offset(center.x.toFloat(), center.y.toFloat()),
+                surfaceWidthPx,
+                surfaceHeightPx,
+            )
+            mapSelection = MapSelectionUiState(
+                point = point,
+                result = inspection.selection,
+                selectedItem = mapSelectionItemById(inspection.selection, inspection.selectedItemId),
+            )
+            chartTrayOpen = false
+            layerTrayOpen = false
+            dataStatusTrayOpen = false
+            situationTrayOpen = false
+            chartSearchText = ""
+            chartSearchOpen = false
+            chartSearchLoading = false
+            chartSearchError = null
+            chartSearchSuggestions = emptyList()
+        }.onFailure { error ->
+            chartSearchLoading = false
+            chartSearchError = "Search failed: ${error.message ?: error.toString()}"
+        }
+    }
+
     fun submitChartSearch() {
         val query = chartSearchText.trim().uppercase()
         if (query.isBlank()) {
@@ -780,9 +836,9 @@ internal fun MapExplorerPage(
         chartSearchLoading = true
         chartSearchError = null
         runCatching {
-            chartSearchSuggestions.firstOrNull()?.navRef ?: appCore.resolveNavRefIdentifier(query)
+            appCore.resolveNavRefIdentifier(query)
         }.onSuccess { navRef ->
-            recenterOnNavRef(navRef)
+            inspectNavRef(navRef)
         }.onFailure { error ->
             chartSearchLoading = false
             chartSearchError = "No waypoint match for $query: ${error.message ?: error.toString()}"
@@ -1732,7 +1788,7 @@ internal fun MapExplorerPage(
             },
             onChartSearchFocus = { chartSearchOpen = true },
             onChartSearchSubmit = { submitChartSearch() },
-            onChartSearchSuggestionClick = { suggestion -> recenterOnNavRef(suggestion.navRef) },
+            onChartSearchSuggestionClick = { suggestion -> inspectNavRef(suggestion.navRef) },
         )
 
         val playbackLeftRoomUnits = surfaceWidthDp / 2f - (ThumbSize.value * 1.5f) - (ThumbGap.value * 2f)

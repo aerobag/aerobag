@@ -2038,6 +2038,26 @@ pub fn get_map_selection_in_session(
 }
 
 #[wasm_bindgen]
+pub fn get_map_selection_for_nav_ref_in_session(
+    handle: u32,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+    nav_ref_json: &str,
+    now_epoch_ms: f64,
+) -> Result<String, JsValue> {
+    get_map_selection_for_nav_ref_in_session_json(
+        handle,
+        viewport_json,
+        width_px,
+        height_px,
+        nav_ref_json,
+        now_epoch_ms,
+    )
+    .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn get_terrain_overlay_in_session(
     handle: u32,
     viewport_json: &str,
@@ -2756,6 +2776,32 @@ fn get_map_selection_in_session_json(
         now_epoch_ms as i64,
     )
     .map_err(|err| err.to_string())?;
+    serde_json::to_string(&selection).map_err(|err| err.to_string())
+}
+
+fn get_map_selection_for_nav_ref_in_session_json(
+    handle: u32,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+    nav_ref_json: &str,
+    now_epoch_ms: f64,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let nav_ref: app_core::NavRef =
+        serde_json::from_str(nav_ref_json).map_err(|err| err.to_string())?;
+    let selection =
+        app_core::get_map_selection_for_nav_ref_in_session_with_point_display_scale_at_epoch_ms(
+            handle,
+            viewport,
+            width_px,
+            height_px,
+            nav_ref,
+            1.0,
+            now_epoch_ms as i64,
+        )
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&selection).map_err(|err| err.to_string())
 }
 

@@ -368,6 +368,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     ingestAirspaceLabelTiles: (...args) => call("ingestAirspaceLabelTiles", args),
     queryMapOverlay: (...args) => call("queryMapOverlay", args),
     queryMapSelection: (...args) => call("queryMapSelection", args),
+    queryMapSelectionForNavRef: (...args) => call("queryMapSelectionForNavRef", args),
     queryTerrainOverlay: (...args) => call("queryTerrainOverlay", args),
     queryNexradOverlay: (...args) => call("queryNexradOverlay", args),
     queryRasterTilePlan: (...args) => call("queryRasterTilePlan", args),

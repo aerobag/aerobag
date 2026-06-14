@@ -1,7 +1,7 @@
 ---
 id: TASK-80
 title: text route validation slow
-state: medium
+state: done
 assignee: []
 created_date: '2026-05-12 19:51'
 labels:

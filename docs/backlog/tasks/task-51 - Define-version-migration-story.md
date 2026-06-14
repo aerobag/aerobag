@@ -1,7 +1,7 @@
 ---
 id: TASK-51
 title: Define product contract versioning and migration story
-state: high
+state: done
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use chrono::{DateTime, Utc};
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlightDataCell {
     pub id: String,
@@ -22,6 +24,7 @@ pub struct FlightDataBannerModel {
 pub struct FlightDataComputer {
     ground_speed_kt: Option<f64>,
     fuel_flow_gph: Option<f64>,
+    now_epoch_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -40,9 +43,22 @@ impl FlightDataComputer {
     }
 
     pub fn with_fuel_flow(ground_speed_kt: Option<f64>, fuel_flow_gph: Option<f64>) -> Self {
+        Self::with_fuel_flow_and_clock(ground_speed_kt, fuel_flow_gph, None)
+    }
+
+    pub fn with_clock(ground_speed_kt: Option<f64>, now_epoch_ms: Option<i64>) -> Self {
+        Self::with_fuel_flow_and_clock(ground_speed_kt, None, now_epoch_ms)
+    }
+
+    pub fn with_fuel_flow_and_clock(
+        ground_speed_kt: Option<f64>,
+        fuel_flow_gph: Option<f64>,
+        now_epoch_ms: Option<i64>,
+    ) -> Self {
         Self {
             ground_speed_kt: ground_speed_kt.filter(|speed| *speed > 1.0),
             fuel_flow_gph: fuel_flow_gph.filter(|fuel_flow| *fuel_flow > 0.0),
+            now_epoch_ms,
         }
     }
 
@@ -56,6 +72,9 @@ impl FlightDataComputer {
         let final_fuel = input
             .final_distance_nm
             .and_then(|distance| self.format_fuel(distance));
+        let final_eta = input
+            .final_distance_nm
+            .and_then(|distance| self.format_eta(distance));
 
         FlightDataBannerModel {
             cells: vec![
@@ -93,7 +112,7 @@ impl FlightDataComputer {
                 ),
                 cell("final_ete", "F-ETE", final_ete),
                 cell("final_fuel", "F-FUEL gal", final_fuel),
-                cell("final_eta", "ETA", None),
+                cell("final_eta", "ETA", final_eta),
             ],
         }
     }
@@ -102,7 +121,7 @@ impl FlightDataComputer {
         &self,
         row_has_data: bool,
         distance_nm: Option<f64>,
-        eta: Option<String>,
+        eta_distance_nm: Option<f64>,
         course_magnetic_deg: Option<f64>,
     ) -> Vec<FlightDataCell> {
         if !row_has_data {
@@ -117,6 +136,7 @@ impl FlightDataComputer {
         }
 
         let ete = distance_nm.and_then(|distance| self.format_ete(distance));
+        let eta = eta_distance_nm.and_then(|distance| self.format_eta(distance));
         let fuel = distance_nm.and_then(|distance| self.format_fuel(distance));
 
         vec![
@@ -133,8 +153,18 @@ impl FlightDataComputer {
     }
 
     fn format_ete(&self, distance_nm: f64) -> Option<String> {
+        self.ete_seconds(distance_nm).map(format_ete_seconds)
+    }
+
+    fn format_eta(&self, distance_nm: f64) -> Option<String> {
+        let now_epoch_ms = self.now_epoch_ms?;
+        let ete_seconds = self.ete_seconds(distance_nm)?;
+        Some(format_eta(now_epoch_ms, ete_seconds))
+    }
+
+    fn ete_seconds(&self, distance_nm: f64) -> Option<i64> {
         self.ground_speed_kt
-            .map(|speed_kt| format_ete(distance_nm, speed_kt))
+            .map(|speed_kt| (distance_nm / speed_kt * 3600.0).round().max(0.0) as i64)
     }
 
     fn format_fuel(&self, distance_nm: f64) -> Option<String> {
@@ -221,8 +251,8 @@ pub fn format_course_degrees(course_deg: f64) -> String {
     }
 }
 
-fn format_ete(distance_nm: f64, speed_kt: f64) -> String {
-    let total_seconds = (distance_nm / speed_kt * 3600.0).round().max(0.0) as u32;
+fn format_ete_seconds(total_seconds: i64) -> String {
+    let total_seconds = total_seconds.max(0) as u32;
     if total_seconds >= 3600 {
         let total_minutes = (total_seconds + 30) / 60;
         let hours = total_minutes / 60;
@@ -233,6 +263,16 @@ fn format_ete(distance_nm: f64, speed_kt: f64) -> String {
         let seconds = total_seconds % 60;
         format!("{minutes:02}:{seconds:02}")
     }
+}
+
+fn format_eta(now_epoch_ms: i64, ete_seconds: i64) -> String {
+    let eta_epoch_ms = now_epoch_ms
+        .saturating_add(ete_seconds.saturating_mul(1000))
+        .saturating_add(30_000);
+    DateTime::<Utc>::from_timestamp_millis(eta_epoch_ms)
+        .unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
+        .format("%H:%M")
+        .to_string()
 }
 
 #[cfg(test)]
@@ -314,5 +354,28 @@ mod tests {
                 .and_then(|cell| cell.value.as_deref()),
             Some("450")
         );
+    }
+
+    #[test]
+    fn computes_eta_when_clock_and_ground_speed_are_available() {
+        let noon_utc = 1_781_438_400_000;
+        let computer = FlightDataComputer::with_clock(Some(120.0), Some(noon_utc));
+        let banner = computer.banner(FlightDataBannerInput {
+            final_distance_nm: Some(30.0),
+            ..FlightDataBannerInput::default()
+        });
+        let final_eta = banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "final_eta")
+            .and_then(|cell| cell.value.as_deref());
+        let row_cells = computer.flight_plan_row_cells(true, Some(30.0), Some(30.0), None);
+        let row_eta = row_cells
+            .iter()
+            .find(|cell| cell.id == "final_eta")
+            .and_then(|cell| cell.value.as_deref());
+
+        assert_eq!(final_eta, Some("12:15"));
+        assert_eq!(row_eta, final_eta);
     }
 }

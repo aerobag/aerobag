@@ -247,6 +247,12 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "update_ownship_source_status_in_session_paged",
         "push_situation_sample_in_session_paged",
         "select_ownship_source_in_session_paged",
+        "load_playback_trace_in_session_paged",
+        "play_playback_in_session_paged",
+        "pause_playback_in_session_paged",
+        "seek_playback_in_session_paged",
+        "set_playback_rate_in_session_paged",
+        "tick_playback_in_session_paged",
     ];
     let mut violations = Vec::new();
     for export in paged_web_exports {
@@ -298,6 +304,12 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "updateOwnshipSourceStatusInSessionPagedJson",
         "pushSituationSampleInSessionPagedJson",
         "selectOwnshipSourceInSessionPagedJson",
+        "loadPlaybackTraceInSessionPagedJson",
+        "playPlaybackInSessionPagedJson",
+        "pausePlaybackInSessionPagedJson",
+        "seekPlaybackInSessionPagedJson",
+        "setPlaybackRateInSessionPagedJson",
+        "tickPlaybackInSessionPagedJson",
     ];
     for export in paged_android_snapshot_helper_exports {
         let needle = format!("bridge.{export}");

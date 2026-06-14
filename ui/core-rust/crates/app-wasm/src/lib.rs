@@ -1837,13 +1837,34 @@ pub fn load_playback_trace_in_session(
 }
 
 #[wasm_bindgen]
+pub fn load_playback_trace_in_session_paged(
+    handle: u32,
+    source_path_json: &str,
+    trace_json: &str,
+) -> Result<String, JsValue> {
+    load_playback_trace_in_session_paged_json(handle, source_path_json, trace_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> Result<String, JsValue> {
     play_playback_in_session_json(handle, now_epoch_ms).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
+pub fn play_playback_in_session_paged(handle: u32, now_epoch_ms: f64) -> Result<String, JsValue> {
+    play_playback_in_session_paged_json(handle, now_epoch_ms).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn pause_playback_in_session(handle: u32, now_epoch_ms: f64) -> Result<String, JsValue> {
     pause_playback_in_session_json(handle, now_epoch_ms).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn pause_playback_in_session_paged(handle: u32, now_epoch_ms: f64) -> Result<String, JsValue> {
+    pause_playback_in_session_paged_json(handle, now_epoch_ms)
+        .map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -1853,6 +1874,16 @@ pub fn seek_playback_in_session(
     now_epoch_ms: f64,
 ) -> Result<String, JsValue> {
     seek_playback_in_session_json(handle, cursor_seconds, now_epoch_ms)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn seek_playback_in_session_paged(
+    handle: u32,
+    cursor_seconds: f64,
+    now_epoch_ms: f64,
+) -> Result<String, JsValue> {
+    seek_playback_in_session_paged_json(handle, cursor_seconds, now_epoch_ms)
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -1867,8 +1898,23 @@ pub fn set_playback_rate_in_session(
 }
 
 #[wasm_bindgen]
+pub fn set_playback_rate_in_session_paged(
+    handle: u32,
+    rate: f64,
+    now_epoch_ms: f64,
+) -> Result<String, JsValue> {
+    set_playback_rate_in_session_paged_json(handle, rate, now_epoch_ms)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> Result<String, JsValue> {
     tick_playback_in_session_json(handle, now_epoch_ms).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn tick_playback_in_session_paged(handle: u32, now_epoch_ms: f64) -> Result<String, JsValue> {
+    tick_playback_in_session_paged_json(handle, now_epoch_ms).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -2560,16 +2606,41 @@ fn load_playback_trace_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+fn load_playback_trace_in_session_paged_json(
+    handle: u32,
+    source_path_json: &str,
+    trace_json: &str,
+) -> Result<String, String> {
+    let source_path: String =
+        serde_json::from_str(source_path_json).map_err(|err| err.to_string())?;
+    let outcome =
+        app_core::load_playback_trace_in_session_outcome(handle, &source_path, trace_json)
+            .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 fn play_playback_in_session_json(handle: u32, now_epoch_ms: f64) -> Result<String, String> {
     let snapshot =
         app_core::play_playback_in_session(handle, now_epoch_ms).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+fn play_playback_in_session_paged_json(handle: u32, now_epoch_ms: f64) -> Result<String, String> {
+    let outcome = app_core::play_playback_in_session_outcome(handle, now_epoch_ms)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 fn pause_playback_in_session_json(handle: u32, now_epoch_ms: f64) -> Result<String, String> {
     let snapshot =
         app_core::pause_playback_in_session(handle, now_epoch_ms).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn pause_playback_in_session_paged_json(handle: u32, now_epoch_ms: f64) -> Result<String, String> {
+    let outcome = app_core::pause_playback_in_session_outcome(handle, now_epoch_ms)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
 fn seek_playback_in_session_json(
@@ -2582,6 +2653,16 @@ fn seek_playback_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+fn seek_playback_in_session_paged_json(
+    handle: u32,
+    cursor_seconds: f64,
+    now_epoch_ms: f64,
+) -> Result<String, String> {
+    let outcome = app_core::seek_playback_in_session_outcome(handle, cursor_seconds, now_epoch_ms)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 fn set_playback_rate_in_session_json(
     handle: u32,
     rate: f64,
@@ -2592,10 +2673,26 @@ fn set_playback_rate_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+fn set_playback_rate_in_session_paged_json(
+    handle: u32,
+    rate: f64,
+    now_epoch_ms: f64,
+) -> Result<String, String> {
+    let outcome = app_core::set_playback_rate_in_session_outcome(handle, rate, now_epoch_ms)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 fn tick_playback_in_session_json(handle: u32, now_epoch_ms: f64) -> Result<String, String> {
     let snapshot =
         app_core::tick_playback_in_session(handle, now_epoch_ms).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn tick_playback_in_session_paged_json(handle: u32, now_epoch_ms: f64) -> Result<String, String> {
+    let outcome = app_core::tick_playback_in_session_outcome(handle, now_epoch_ms)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
 fn select_chart_in_session_json(handle: u32, chart_id_json: &str) -> Result<String, String> {

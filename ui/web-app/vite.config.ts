@@ -91,8 +91,8 @@ function appendRequestLog(entry: Record<string, unknown>) {
   fs.appendFileSync(requestLogPath, `${JSON.stringify({ ts: Date.now(), ...entry })}\n`);
 }
 
-function mountStaticTree(sourceRoot: string, options: { missingStatus?: number; logPrefix?: string } = {}) {
-  return (req: { headers?: Record<string, string | string[] | undefined>; url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
+function mountStaticTree(sourceRoot: string, options: { missingStatus?: number; logPrefix?: string; direct?: boolean } = {}) {
+  return (req: { headers?: Record<string, string | string[] | undefined>; url?: string }, res: { statusCode: number; end: (body?: string | Buffer) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
     const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
     const relativePath = requestPath.replace(/^\/+/, "");
     const filePath = path.resolve(sourceRoot, relativePath);
@@ -141,6 +141,12 @@ function mountStaticTree(sourceRoot: string, options: { missingStatus?: number; 
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
     } else if (relativePath === "current_artifacts.json") {
       res.setHeader("Cache-Control", "no-cache");
+    }
+    if (options.direct) {
+      const body = fs.readFileSync(filePath);
+      res.setHeader("Content-Length", String(body.length));
+      res.end(body);
+      return;
     }
     const stream = fs.createReadStream(filePath);
     if (extension === ".terrain") {
@@ -238,7 +244,7 @@ function aerobagStaticPlugin(): Plugin {
     });
     server.middlewares.use("/packages", mountStaticTree(artifactReadRoot, { missingStatus: 404, logPrefix: "packages" }));
     server.middlewares.use("/icons", mountStaticTree(iconsRoot, { missingStatus: 404, logPrefix: "icons" }));
-    server.middlewares.use("/adsb-traces", mountStaticTree(adsbTraceRoot, { missingStatus: 404, logPrefix: "adsb_traces" }));
+    server.middlewares.use("/adsb-traces", mountStaticTree(adsbTraceRoot, { missingStatus: 404, logPrefix: "adsb_traces", direct: true }));
     for (const legacyPrefix of [
       "/afd",
       "/files",

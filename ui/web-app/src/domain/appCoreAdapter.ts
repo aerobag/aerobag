@@ -694,12 +694,12 @@ type WasmModule = {
   disengage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
   set_map_follow_offset_in_session(handle: number, viewportJson: string, offsetXPx: number, offsetYPx: number): Promise<string> | string;
   sync_map_follow_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
-  load_playback_trace_in_session(handle: number, sourcePathJson: string, traceJson: string): Promise<string> | string;
-  play_playback_in_session(handle: number, nowEpochMs: number): Promise<string> | string;
-  pause_playback_in_session(handle: number, nowEpochMs: number): Promise<string> | string;
-  seek_playback_in_session(handle: number, cursorSeconds: number, nowEpochMs: number): Promise<string> | string;
-  set_playback_rate_in_session(handle: number, rate: number, nowEpochMs: number): Promise<string> | string;
-  tick_playback_in_session(handle: number, nowEpochMs: number): Promise<string> | string;
+  load_playback_trace_in_session_paged(handle: number, sourcePathJson: string, traceJson: string): Promise<string> | string;
+  play_playback_in_session_paged(handle: number, nowEpochMs: number): Promise<string> | string;
+  pause_playback_in_session_paged(handle: number, nowEpochMs: number): Promise<string> | string;
+  seek_playback_in_session_paged(handle: number, cursorSeconds: number, nowEpochMs: number): Promise<string> | string;
+  set_playback_rate_in_session_paged(handle: number, rate: number, nowEpochMs: number): Promise<string> | string;
+  tick_playback_in_session_paged(handle: number, nowEpochMs: number): Promise<string> | string;
   register_ownship_source_in_session_paged(handle: number, registrationJson: string): Promise<string> | string;
   update_ownship_source_status_in_session_paged(handle: number, updateJson: string): Promise<string> | string;
   push_situation_sample_in_session_paged(handle: number, sampleJson: string): Promise<string> | string;
@@ -1290,37 +1290,49 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       loadPlaybackTrace: async (sourcePath, traceJson) => {
         snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.load_playback_trace_in_session(handle, JSON.stringify(sourcePath), traceJson)),
+          runSessionOperation<UiSessionSnapshot>(() =>
+            this.module.load_playback_trace_in_session_paged(handle, JSON.stringify(sourcePath), traceJson),
+          ),
         );
         return snapshot;
       },
       playPlayback: async (nowEpochMs) => {
         snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.play_playback_in_session(handle, nowEpochMs)),
+          runSessionOperation<UiSessionSnapshot>(() =>
+            this.module.play_playback_in_session_paged(handle, nowEpochMs),
+          ),
         );
         return snapshot;
       },
       pausePlayback: async (nowEpochMs) => {
         snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.pause_playback_in_session(handle, nowEpochMs)),
+          runSessionOperation<UiSessionSnapshot>(() =>
+            this.module.pause_playback_in_session_paged(handle, nowEpochMs),
+          ),
         );
         return snapshot;
       },
       seekPlayback: async (cursorSeconds, nowEpochMs) => {
         snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.seek_playback_in_session(handle, cursorSeconds, nowEpochMs)),
+          runSessionOperation<UiSessionSnapshot>(() =>
+            this.module.seek_playback_in_session_paged(handle, cursorSeconds, nowEpochMs),
+          ),
         );
         return snapshot;
       },
       setPlaybackRate: async (rate, nowEpochMs) => {
         snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.set_playback_rate_in_session(handle, rate, nowEpochMs)),
+          runSessionOperation<UiSessionSnapshot>(() =>
+            this.module.set_playback_rate_in_session_paged(handle, rate, nowEpochMs),
+          ),
         );
         return snapshot;
       },
       tickPlayback: async (nowEpochMs) => {
         snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.tick_playback_in_session(handle, nowEpochMs)),
+          runSessionOperation<UiSessionSnapshot>(() =>
+            this.module.tick_playback_in_session_paged(handle, nowEpochMs),
+          ),
         );
         return snapshot;
       },
@@ -1736,12 +1748,12 @@ async function loadBestAvailableAdapterUncached(
     "disengage_map_follow_in_session",
     "set_map_follow_offset_in_session",
     "sync_map_follow_in_session",
-    "load_playback_trace_in_session",
-    "play_playback_in_session",
-    "pause_playback_in_session",
-    "seek_playback_in_session",
-    "set_playback_rate_in_session",
-    "tick_playback_in_session",
+    "load_playback_trace_in_session_paged",
+    "play_playback_in_session_paged",
+    "pause_playback_in_session_paged",
+    "seek_playback_in_session_paged",
+    "set_playback_rate_in_session_paged",
+    "tick_playback_in_session_paged",
     "register_ownship_source_in_session_paged",
     "update_ownship_source_status_in_session_paged",
     "push_situation_sample_in_session_paged",

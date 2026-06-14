@@ -3206,6 +3206,7 @@ pub fn push_situation_sample_in_session(
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    advance_session_wall_clock(session, sample.received_time_epoch_ms);
     session.app_state = state::reduce(&session.app_state, AppEvent::PushSituationSample(sample))?;
     snapshot_for_session(session)
 }
@@ -3216,6 +3217,7 @@ pub fn push_situation_sample_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    advance_session_wall_clock(session, sample.received_time_epoch_ms);
     session.app_state = state::reduce(&session.app_state, AppEvent::PushSituationSample(sample))?;
     session_snapshot_outcome(session)
 }
@@ -3343,6 +3345,27 @@ pub fn load_playback_trace_in_session(
     snapshot_for_session(session)
 }
 
+pub fn load_playback_trace_in_session_outcome(
+    handle: u32,
+    source_path: &str,
+    trace_json: &str,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    let situation = session
+        .playback
+        .load_trace_json(source_path.to_string(), trace_json)?;
+    apply_situation_to_ownship(
+        session,
+        PLAYBACK_SOURCE_ID,
+        crate::OwnshipSourceKind::AdsbTrackPlayback,
+        "ADS-B Trace Playback",
+        situation,
+        0,
+    )?;
+    session_snapshot_outcome(session)
+}
+
 pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
@@ -3359,6 +3382,25 @@ pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiS
     snapshot_for_session(session)
 }
 
+pub fn play_playback_in_session_outcome(
+    handle: u32,
+    now_epoch_ms: f64,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    if let Some(situation) = session.playback.play(now_epoch_ms) {
+        apply_situation_to_ownship(
+            session,
+            PLAYBACK_SOURCE_ID,
+            crate::OwnshipSourceKind::AdsbTrackPlayback,
+            "ADS-B Trace Playback",
+            situation,
+            now_epoch_ms as i64,
+        )?;
+    }
+    session_snapshot_outcome(session)
+}
+
 pub fn pause_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
@@ -3373,6 +3415,25 @@ pub fn pause_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<Ui
         )?;
     }
     snapshot_for_session(session)
+}
+
+pub fn pause_playback_in_session_outcome(
+    handle: u32,
+    now_epoch_ms: f64,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    if let Some(situation) = session.playback.pause(now_epoch_ms) {
+        apply_situation_to_ownship(
+            session,
+            PLAYBACK_SOURCE_ID,
+            crate::OwnshipSourceKind::AdsbTrackPlayback,
+            "ADS-B Trace Playback",
+            situation,
+            now_epoch_ms as i64,
+        )?;
+    }
+    session_snapshot_outcome(session)
 }
 
 pub fn seek_playback_in_session(
@@ -3395,6 +3456,26 @@ pub fn seek_playback_in_session(
     snapshot_for_session(session)
 }
 
+pub fn seek_playback_in_session_outcome(
+    handle: u32,
+    cursor_seconds: f64,
+    now_epoch_ms: f64,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    if let Some(situation) = session.playback.seek(cursor_seconds, now_epoch_ms) {
+        apply_situation_to_ownship(
+            session,
+            PLAYBACK_SOURCE_ID,
+            crate::OwnshipSourceKind::AdsbTrackPlayback,
+            "ADS-B Trace Playback",
+            situation,
+            now_epoch_ms as i64,
+        )?;
+    }
+    session_snapshot_outcome(session)
+}
+
 pub fn set_playback_rate_in_session(
     handle: u32,
     rate: f64,
@@ -3415,6 +3496,26 @@ pub fn set_playback_rate_in_session(
     snapshot_for_session(session)
 }
 
+pub fn set_playback_rate_in_session_outcome(
+    handle: u32,
+    rate: f64,
+    now_epoch_ms: f64,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    if let Some(situation) = session.playback.set_rate(rate, now_epoch_ms) {
+        apply_situation_to_ownship(
+            session,
+            PLAYBACK_SOURCE_ID,
+            crate::OwnshipSourceKind::AdsbTrackPlayback,
+            "ADS-B Trace Playback",
+            situation,
+            now_epoch_ms as i64,
+        )?;
+    }
+    session_snapshot_outcome(session)
+}
+
 pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
@@ -3429,6 +3530,25 @@ pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiS
         )?;
     }
     snapshot_for_session(session)
+}
+
+pub fn tick_playback_in_session_outcome(
+    handle: u32,
+    now_epoch_ms: f64,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    if let Some(situation) = session.playback.tick(now_epoch_ms) {
+        apply_situation_to_ownship(
+            session,
+            PLAYBACK_SOURCE_ID,
+            crate::OwnshipSourceKind::AdsbTrackPlayback,
+            "ADS-B Trace Playback",
+            situation,
+            now_epoch_ms as i64,
+        )?;
+    }
+    session_snapshot_outcome(session)
 }
 
 pub fn set_situation_in_session(
@@ -6597,18 +6717,27 @@ enum MapSelectionMaterialization {
     NeedResources(Vec<CoreResourceRequest>),
 }
 
+fn had_read_error_to_map_selection_materialization(
+    err: HadReadError,
+) -> AppResult<MapSelectionMaterialization> {
+    match had_read_error_to_overlay_outcome(err)? {
+        HadOperationOutcome::NeedResources { resources } => {
+            Ok(MapSelectionMaterialization::NeedResources(resources))
+        }
+        HadOperationOutcome::Complete { .. } => Err(AppError {
+            kind: AppErrorKind::Internal,
+            message: "HAD read error unexpectedly materialized a complete selection".to_string(),
+        }),
+    }
+}
+
 fn materialize_map_selection_in_session(
     session: &mut UiSession,
     metrics: &MapSurfaceMetrics,
     click: LatLon,
 ) -> AppResult<MapSelectionMaterialization> {
     if let Err(err) = ensure_vector_inputs_loaded(session, &metrics) {
-        return match had_read_error_to_overlay_outcome(err)? {
-            HadOperationOutcome::Complete { .. } => unreachable!(),
-            HadOperationOutcome::NeedResources { resources } => {
-                Ok(MapSelectionMaterialization::NeedResources(resources))
-            }
-        };
+        return had_read_error_to_map_selection_materialization(err);
     }
     let plan = session.app_state.active_plan.as_ref();
     let store = session_nav_kv_store(session)?;
@@ -6629,12 +6758,7 @@ fn materialize_map_selection_in_session(
             Ok(Some(catalog)) => catalog.regions,
             Ok(None) => Vec::new(),
             Err(err) => {
-                return match had_read_error_to_overlay_outcome(err)? {
-                    HadOperationOutcome::Complete { .. } => unreachable!(),
-                    HadOperationOutcome::NeedResources { resources } => {
-                        Ok(MapSelectionMaterialization::NeedResources(resources))
-                    }
-                };
+                return had_read_error_to_map_selection_materialization(err);
             }
         }
     } else {
@@ -6643,12 +6767,7 @@ fn materialize_map_selection_in_session(
     let flight_plan_points = match flight_plan_selection_points(session) {
         Ok(points) => points,
         Err(err) => {
-            return match had_read_error_to_overlay_outcome(err)? {
-                HadOperationOutcome::Complete { .. } => unreachable!(),
-                HadOperationOutcome::NeedResources { resources } => {
-                    Ok(MapSelectionMaterialization::NeedResources(resources))
-                }
-            };
+            return had_read_error_to_map_selection_materialization(err);
         }
     };
     let selection = query_map_selection_for_surface(
@@ -6933,7 +7052,10 @@ fn nexrad_tile_resource_id(src: &str) -> AppResult<String> {
     let suffix = src
         .trim_start_matches('/')
         .strip_prefix("live-feeds/states/nexrad/")
-        .expect("normalized NEXRAD src must have live-feed prefix");
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("NEXRAD tile URL {src} is not a live-feed NEXRAD state tile"),
+        })?;
     Ok(format!("{NEXRAD_TILE_RESOURCE_PREFIX}{suffix}"))
 }
 
@@ -7949,7 +8071,11 @@ fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadRe
             store,
             plan,
             active_plan.clone(),
-            crate::FlightDataComputer::new(app_ui_state.ownship.render.speed_kt),
+            crate::FlightDataComputer::with_clock(
+                app_ui_state.ownship.render.speed_kt,
+                Some(session.wall_clock_epoch_ms),
+            ),
+            app_ui_state.ownship.render.position,
         )?);
     }
     app_ui_state.flight_data_banner = project_flight_data_banner(session, &app_ui_state)?;
@@ -7963,7 +8089,8 @@ fn project_flight_data_banner(
     let ownship = &app_ui_state.ownship.render;
     let position = ownship.position;
     let store = session.nav_kv_store.as_ref();
-    let flight_data_computer = crate::FlightDataComputer::new(ownship.speed_kt);
+    let flight_data_computer =
+        crate::FlightDataComputer::with_clock(ownship.speed_kt, Some(session.wall_clock_epoch_ms));
 
     let altitude_ft = ownship.altitude_msl_ft.or(ownship.pressure_altitude_ft);
     let track_magnetic_deg = match (store, position, ownship.orientation_deg) {
@@ -8954,6 +9081,7 @@ fn apply_situation_to_ownship(
     timestamp_epoch_ms: i64,
 ) -> AppResult<()> {
     let source_id = crate::OwnshipSourceId(source_id.to_string());
+    advance_session_wall_clock(session, timestamp_epoch_ms);
     session.app_state = state::reduce(
         &session.app_state,
         AppEvent::RegisterOwnshipSource(crate::OwnshipSourceRegistration {
@@ -13066,6 +13194,63 @@ mod tests {
             ),
             "257"
         );
+    }
+
+    #[test]
+    fn eta_cells_use_ground_speed_and_session_clock() {
+        let store = crate::navkv::nav_kv_store_for_test(&[], 256);
+        let noon_utc = utc("2026-06-14T12:00:00Z").timestamp_millis();
+        let init = create_ui_session_at_epoch_ms(lat_lon_preview_plan(), &[], None, None, noon_utc)
+            .expect("create session");
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+
+        let snapshot = push_situation_sample_in_session(
+            init.handle,
+            SituationSample {
+                source_id: OwnshipSourceId("test-gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: noon_utc,
+                received_time_epoch_ms: noon_utc,
+                position: Some(LatLon {
+                    lat: 40.0,
+                    lon: -119.0,
+                }),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(0.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: Some(3000.0),
+                pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
+            },
+        )
+        .expect("push sample");
+
+        let banner_eta = snapshot
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "final_eta")
+            .and_then(|cell| cell.value.as_deref());
+        let row_eta = snapshot
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .expect("active plan")
+            .display_rows
+            .iter()
+            .find(|row| row.leg_index == Some(1))
+            .and_then(|row| {
+                row.data_cells
+                    .iter()
+                    .find(|cell| cell.id == "final_eta")
+                    .and_then(|cell| cell.value.as_deref())
+            });
+
+        assert_eq!(banner_eta, Some("12:30"));
+        assert_eq!(row_eta, Some("12:30"));
     }
 
     fn empty_test_plan() -> FlightPlan {

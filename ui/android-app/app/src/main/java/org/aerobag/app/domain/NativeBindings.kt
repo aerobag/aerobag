@@ -189,7 +189,18 @@ interface NativeBridge {
         traceJson: String,
     ): String
 
+    fun loadPlaybackTraceInSessionPagedJson(
+        handle: Long,
+        sourcePathJson: String,
+        traceJson: String,
+    ): String
+
     fun playPlaybackInSessionJson(
+        handle: Long,
+        nowEpochMs: Double,
+    ): String
+
+    fun playPlaybackInSessionPagedJson(
         handle: Long,
         nowEpochMs: Double,
     ): String
@@ -199,7 +210,18 @@ interface NativeBridge {
         nowEpochMs: Double,
     ): String
 
+    fun pausePlaybackInSessionPagedJson(
+        handle: Long,
+        nowEpochMs: Double,
+    ): String
+
     fun seekPlaybackInSessionJson(
+        handle: Long,
+        cursorSeconds: Double,
+        nowEpochMs: Double,
+    ): String
+
+    fun seekPlaybackInSessionPagedJson(
         handle: Long,
         cursorSeconds: Double,
         nowEpochMs: Double,
@@ -211,7 +233,18 @@ interface NativeBridge {
         nowEpochMs: Double,
     ): String
 
+    fun setPlaybackRateInSessionPagedJson(
+        handle: Long,
+        rate: Double,
+        nowEpochMs: Double,
+    ): String
+
     fun tickPlaybackInSessionJson(
+        handle: Long,
+        nowEpochMs: Double,
+    ): String
+
+    fun tickPlaybackInSessionPagedJson(
         handle: Long,
         nowEpochMs: Double,
     ): String
@@ -623,7 +656,18 @@ object NativeBindings : NativeBridge {
         traceJson: String,
     ): String
 
+    external override fun loadPlaybackTraceInSessionPagedJson(
+        handle: Long,
+        sourcePathJson: String,
+        traceJson: String,
+    ): String
+
     external override fun playPlaybackInSessionJson(
+        handle: Long,
+        nowEpochMs: Double,
+    ): String
+
+    external override fun playPlaybackInSessionPagedJson(
         handle: Long,
         nowEpochMs: Double,
     ): String
@@ -633,7 +677,18 @@ object NativeBindings : NativeBridge {
         nowEpochMs: Double,
     ): String
 
+    external override fun pausePlaybackInSessionPagedJson(
+        handle: Long,
+        nowEpochMs: Double,
+    ): String
+
     external override fun seekPlaybackInSessionJson(
+        handle: Long,
+        cursorSeconds: Double,
+        nowEpochMs: Double,
+    ): String
+
+    external override fun seekPlaybackInSessionPagedJson(
         handle: Long,
         cursorSeconds: Double,
         nowEpochMs: Double,
@@ -645,7 +700,18 @@ object NativeBindings : NativeBridge {
         nowEpochMs: Double,
     ): String
 
+    external override fun setPlaybackRateInSessionPagedJson(
+        handle: Long,
+        rate: Double,
+        nowEpochMs: Double,
+    ): String
+
     external override fun tickPlaybackInSessionJson(
+        handle: Long,
+        nowEpochMs: Double,
+    ): String
+
+    external override fun tickPlaybackInSessionPagedJson(
         handle: Long,
         nowEpochMs: Double,
     ): String

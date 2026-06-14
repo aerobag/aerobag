@@ -785,40 +785,43 @@ class NativeUiSession internal constructor(
     }
 
     fun loadPlaybackTrace(sourcePath: String, traceJson: String): UiSessionSnapshot {
-        snapshot =
-            decodeSnapshot(
-                bridge.loadPlaybackTraceInSessionJson(
-                    handle,
-                    json.encodeToString(sourcePath),
-                    traceJson,
-                ),
+        return runPagedSnapshot {
+            bridge.loadPlaybackTraceInSessionPagedJson(
+                handle,
+                json.encodeToString(sourcePath),
+                traceJson,
             )
-        return snapshot
+        }
     }
 
     fun playPlayback(nowEpochMs: Double): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.playPlaybackInSessionJson(handle, nowEpochMs))
-        return snapshot
+        return runPagedSnapshot {
+            bridge.playPlaybackInSessionPagedJson(handle, nowEpochMs)
+        }
     }
 
     fun pausePlayback(nowEpochMs: Double): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.pausePlaybackInSessionJson(handle, nowEpochMs))
-        return snapshot
+        return runPagedSnapshot {
+            bridge.pausePlaybackInSessionPagedJson(handle, nowEpochMs)
+        }
     }
 
     fun seekPlayback(cursorSeconds: Double, nowEpochMs: Double): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.seekPlaybackInSessionJson(handle, cursorSeconds, nowEpochMs))
-        return snapshot
+        return runPagedSnapshot {
+            bridge.seekPlaybackInSessionPagedJson(handle, cursorSeconds, nowEpochMs)
+        }
     }
 
     fun setPlaybackRate(rate: Double, nowEpochMs: Double): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.setPlaybackRateInSessionJson(handle, rate, nowEpochMs))
-        return snapshot
+        return runPagedSnapshot {
+            bridge.setPlaybackRateInSessionPagedJson(handle, rate, nowEpochMs)
+        }
     }
 
     fun tickPlayback(nowEpochMs: Double): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.tickPlaybackInSessionJson(handle, nowEpochMs))
-        return snapshot
+        return runPagedSnapshot {
+            bridge.tickPlaybackInSessionPagedJson(handle, nowEpochMs)
+        }
     }
 
     fun selectAirport(airportId: String): UiSessionSnapshot {

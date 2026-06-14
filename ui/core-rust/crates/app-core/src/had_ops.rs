@@ -826,6 +826,7 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
             plan,
             current_ui_state,
             crate::FlightDataComputer::default(),
+            None,
         )?)?,
         HadOperation::FlightPlanUiMutation { mutation } => {
             serde_json::to_value(FlightPlanUiMutation {
@@ -834,6 +835,7 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
                     mutation.plan.clone(),
                     mutation.ui_state,
                     crate::FlightDataComputer::default(),
+                    None,
                 )?,
                 ..mutation
             })?
@@ -1275,6 +1277,7 @@ pub(crate) fn flight_plan_ui_state(
     plan: FlightPlan,
     current_ui_state: FlightPlanUiState,
     computer: crate::FlightDataComputer,
+    ownship_position: Option<LatLon>,
 ) -> Result<FlightPlanUiState, HadReadError> {
     let plan = crate::build_flight_plan(plan)?;
     let mut ui_state = current_ui_state;
@@ -1282,8 +1285,10 @@ pub(crate) fn flight_plan_ui_state(
     let route = missing_pages
         .collect(project_flight_plan_route(store, &plan))?
         .unwrap_or_default();
+    let eta_distance_by_leg_id = eta_distance_by_leg_id(&route, ownship_position);
     for row in &mut ui_state.display_rows {
         let mut distance_nm = None;
+        let mut eta_distance_nm = None;
         let mut course_deg = None;
         row.symbol_feature = match &row.nav_ref {
             Some(nav_ref) => missing_pages
@@ -1301,6 +1306,7 @@ pub(crate) fn flight_plan_ui_state(
                                 .map(|segment| segment.distance_nm)
                                 .sum::<f64>(),
                     );
+                    eta_distance_nm = eta_distance_by_leg_id.get(&leg.id).copied();
                     course_deg = missing_pages
                         .collect(true_to_magnetic_course_deg_optional(
                             store,
@@ -1318,7 +1324,7 @@ pub(crate) fn flight_plan_ui_state(
         row.data_cells = computer.flight_plan_row_cells(
             row.row_kind != crate::FlightPlanDisplayRowKind::Group,
             distance_nm,
-            None,
+            eta_distance_nm,
             course_deg,
         );
         if crate::planning::flight_plan_row_actions(row)
@@ -1351,6 +1357,40 @@ pub(crate) fn flight_plan_ui_state(
         return Err(HadReadError::NeedPages(pages));
     }
     Ok(ui_state)
+}
+
+fn eta_distance_by_leg_id(
+    route: &[FlightPlanRouteSegment],
+    ownship_position: Option<LatLon>,
+) -> HashMap<String, f64> {
+    let mut cumulative_distance_nm = 0.0;
+    let mut distance_by_leg_id = HashMap::new();
+    for segment in route {
+        let Some(segment_distance_nm) =
+            eta_segment_remaining_distance_nm(segment, ownship_position)
+        else {
+            continue;
+        };
+        cumulative_distance_nm += segment_distance_nm.max(0.0);
+        distance_by_leg_id.insert(segment.leg_id.clone(), cumulative_distance_nm);
+    }
+    distance_by_leg_id
+}
+
+fn eta_segment_remaining_distance_nm(
+    segment: &FlightPlanRouteSegment,
+    ownship_position: Option<LatLon>,
+) -> Option<f64> {
+    match segment.status {
+        crate::FlightPlanRouteSegmentStatus::Completed => None,
+        crate::FlightPlanRouteSegmentStatus::Active => Some(
+            ownship_position
+                .map(|position| crate::great_circle_distance_nm(position, segment.to))
+                .unwrap_or(segment.distance_nm),
+        ),
+        crate::FlightPlanRouteSegmentStatus::ActiveLegRemaining
+        | crate::FlightPlanRouteSegmentStatus::Remaining => Some(segment.distance_nm),
+    }
 }
 
 fn chart_page_state(
@@ -2718,7 +2758,10 @@ fn derived_procedure_geometry_leg_id(
 }
 
 fn procedure_transition_id_component(value: Option<&str>) -> &str {
-    value.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("_")
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("_")
 }
 
 fn display_path_from_geometry(path: pgt::ProcedureGeometryPath) -> LegDisplayPath {
@@ -2899,6 +2942,7 @@ pub(crate) fn append_flight_plan_entry(
             appended.clone(),
             crate::project_ui_state(&appended),
             crate::FlightDataComputer::default(),
+            None,
         )?,
         plan: appended,
     })
@@ -2921,6 +2965,7 @@ pub(crate) fn insert_waypoint_best_position(
             inserted.clone(),
             crate::project_ui_state(&inserted),
             crate::FlightDataComputer::default(),
+            None,
         )?,
         plan: inserted,
     })
@@ -4326,6 +4371,7 @@ mod tests {
             plan.clone(),
             crate::planning::project_ui_state(&plan),
             crate::FlightDataComputer::default(),
+            None,
         )
         .expect("project flight plan ui state");
         let row_course = ui_state
@@ -4412,6 +4458,7 @@ mod tests {
             plan.clone(),
             crate::planning::project_ui_state(&plan),
             crate::FlightDataComputer::default(),
+            None,
         ) {
             Ok(_) => panic!("expected batched page fault"),
             Err(HadReadError::NeedPages(pages)) => {
@@ -4431,6 +4478,7 @@ mod tests {
             plan.clone(),
             crate::planning::project_ui_state(&plan),
             crate::FlightDataComputer::default(),
+            None,
         )
         .expect("project flight plan ui state after batch");
     }

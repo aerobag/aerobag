@@ -13102,6 +13102,94 @@ mod tests {
         }
     }
 
+    fn short_procedure_display_path_plan() -> FlightPlan {
+        let a = LatLon {
+            lat: 40.0,
+            lon: -120.0,
+        };
+        let b = LatLon {
+            lat: 40.0,
+            lon: -119.95,
+        };
+        let c = LatLon {
+            lat: 40.05,
+            lon: -119.95,
+        };
+        FlightPlan {
+            id: "short-procedure-display-path".to_string(),
+            name: "Synthetic Procedure".to_string(),
+            legs: Vec::new(),
+            route_components: vec![RouteComponent::Procedure {
+                procedure: crate::ProcedureSegment {
+                    airport_id: crate::AirportId("KAAA".to_string()),
+                    procedure_id: "TEST".to_string(),
+                    kind: ProcedureKind::Approach,
+                    runway_transition: None,
+                    enroute_transition: None,
+                    terminal_discontinuity: None,
+                    data_quality: Vec::new(),
+                },
+            }],
+            route_component_uids: vec!["row-procedure".to_string()],
+            route_component_uid_counter: 1,
+            resolved_legs: vec![ResolvedLeg {
+                id: "procedure-leg".to_string(),
+                from: NavRef::Fix("FIXA".to_string()),
+                to: NavRef::Fix("FIXC".to_string()),
+                source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                procedure_provenance: Some(crate::ProcedureLegProvenance {
+                    airport_id: "KAAA".to_string(),
+                    procedure_id: "TEST".to_string(),
+                    kind: ProcedureKind::Approach,
+                    role: crate::ProcedureSegmentRole::Common,
+                    path_termination: crate::PathTermination::TrackToFix,
+                    leg_sequence: 10,
+                    display_path: Some(crate::LegDisplayPath {
+                        style: crate::LegDisplayPathStyle::Solid,
+                        elements: vec![
+                            LegDisplayElement::Segment { start: a, end: b },
+                            LegDisplayElement::Segment { start: b, end: c },
+                        ],
+                        effective_terminal_course_deg: None,
+                        debug_element_sources: Vec::new(),
+                        debug_element_roles: Vec::new(),
+                    }),
+                }),
+            }],
+            guidance: Some(GuidanceState {
+                active_leg_index: 0,
+                active_detail_index: Some(0),
+                display_split_leg_id: None,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        }
+    }
+
+    fn short_procedure_nav_kv_store() -> NavKvStore {
+        crate::navkv::nav_kv_store_for_test(
+            &[
+                (
+                    "navref/position/fix/FIXA",
+                    br#"{"lat":40.0,"lon":-120.0}"# as &[u8],
+                ),
+                (
+                    "navref/position/fix/FIXC",
+                    br#"{"lat":40.05,"lon":-119.95}"# as &[u8],
+                ),
+            ],
+            256,
+        )
+    }
+
     fn select_plan_preview(handle: u32) -> UiSessionSnapshot {
         set_situation_in_session(
             handle,
@@ -13667,6 +13755,103 @@ mod tests {
             .and_then(|plan| plan.guidance.as_ref())
             .and_then(|guidance| guidance.nav_element.cdi_indicator_dots);
         assert!(dots.is_some(), "expected CDI dots after ownship update");
+    }
+
+    #[test]
+    fn synced_guidance_geometry_supports_replay_sequencing() {
+        let store = short_procedure_nav_kv_store();
+        let init = create_ui_session(short_procedure_display_path_plan(), &[], None, None)
+            .expect("create session");
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        let outcome =
+            sync_guidance_geometry_in_session(init.handle).expect("sync guidance geometry");
+        assert!(
+            matches!(outcome, HadOperationOutcome::Complete { .. }),
+            "procedure display-path geometry should sync without HAD page faults"
+        );
+
+        load_playback_trace_in_session(
+            init.handle,
+            "cross-active-leg.json",
+            r#"{"trace":[[0.0,40.0,-120.0,3000,120.0,90.0],[10.0,40.002,-119.948,3000,120.0,45.0]]}"#,
+        )
+        .expect("load replay trace");
+        play_playback_in_session(init.handle, 0.0).expect("play replay");
+        let snapshot = tick_playback_in_session(init.handle, 10_000.0).expect("tick replay");
+        let guidance = snapshot
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .expect("guidance");
+
+        assert_eq!(guidance.active_leg_index, Some(0));
+        let sessions = lock_sessions();
+        let core_guidance = session_ref(&sessions, init.handle)
+            .expect("session")
+            .app_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .expect("core guidance");
+        assert_eq!(core_guidance.active_detail_index, Some(1));
+    }
+
+    #[test]
+    fn synced_guidance_geometry_drives_flight_data_banner_eta() {
+        let store = short_procedure_nav_kv_store();
+        let noon_utc = utc("2026-06-14T12:00:00Z").timestamp_millis();
+        let init = create_ui_session_at_epoch_ms(
+            short_procedure_display_path_plan(),
+            &[],
+            None,
+            None,
+            noon_utc,
+        )
+        .expect("create session");
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        let outcome =
+            sync_guidance_geometry_in_session(init.handle).expect("sync guidance geometry");
+        assert!(
+            matches!(outcome, HadOperationOutcome::Complete { .. }),
+            "procedure display-path geometry should sync without HAD page faults"
+        );
+
+        let snapshot = push_situation_sample_in_session(
+            init.handle,
+            SituationSample {
+                source_id: OwnshipSourceId("test-gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: noon_utc,
+                received_time_epoch_ms: noon_utc,
+                position: Some(LatLon {
+                    lat: 40.0,
+                    lon: -120.0,
+                }),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(90.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: Some(3000.0),
+                pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
+            },
+        )
+        .expect("push sample");
+
+        let banner_eta = snapshot
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "final_eta")
+            .and_then(|cell| cell.value.as_deref());
+
+        assert!(
+            banner_eta.is_some(),
+            "synced active geometry should produce final ETA"
+        );
     }
 
     #[test]

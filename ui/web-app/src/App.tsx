@@ -98,6 +98,7 @@ import {
   type MapViewportState,
   type ScreenPoint,
 } from "./domain/mapViewport";
+import { flightPlanRouteSegmentRenderKey } from "./domain/flightPlanRouteRender";
 import { MapFollowTargetGate } from "./domain/mapFollowTargetGate";
 import {
   clampImageViewport,
@@ -4241,7 +4242,13 @@ function MapPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [onHighLatencyWarning, plan.id, plan.version, plan.guidance, plan.resolved_legs, uiInvalidationRevisions.flight_plan_route, uiSession]);
+  }, [
+    onHighLatencyWarning,
+    plan.id,
+    plan.version,
+    uiInvalidationRevisions.flight_plan_route,
+    uiSession,
+  ]);
 
   useEffect(() => {
     if (!mapIsVisible || !mapOverlayLayersVisible) {
@@ -5465,8 +5472,8 @@ function MapPage(props: {
               <>
                 {mapIsVisible && routeScreenSegments.length > 0 ? (
                   <svg className="flightPlanOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
-                    {routeScreenSegments.map((segment) => (
-                      <Fragment key={segment.id}>
+                    {routeScreenSegments.map((segment, segmentIndex) => (
+                      <Fragment key={flightPlanRouteSegmentRenderKey(segment, segmentIndex)}>
                         {debugState.sequencing_finish_lines && segment.status === "active"
                           ? segment.finishLinePaths.map((finishLinePath, index) => (
                               <line

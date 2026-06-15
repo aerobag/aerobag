@@ -1,7 +1,7 @@
 ---
 id: TASK-74
 title: Bring Android inspector feature highlights to parity
-state: medium
+state: done
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:

@@ -1,7 +1,7 @@
 ---
 id: TASK-69
 title: Fix Replay panel click-through z-order
-state: medium
+state: done
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:

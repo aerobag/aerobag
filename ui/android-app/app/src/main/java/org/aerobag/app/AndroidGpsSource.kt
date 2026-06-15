@@ -17,9 +17,13 @@ object AndroidGpsSource {
     private val mutableSamples = MutableSharedFlow<SituationSample>(
         extraBufferCapacity = 32,
     )
+    private val mutableSourceSelectionRequests = MutableSharedFlow<String>(
+        extraBufferCapacity = 8,
+    )
 
     val status: StateFlow<OwnshipSourceStatusUpdate> = mutableStatus
     val samples: SharedFlow<SituationSample> = mutableSamples
+    val sourceSelectionRequests: SharedFlow<String> = mutableSourceSelectionRequests
 
     fun registration() =
         OwnshipSourceRegistration(
@@ -38,6 +42,10 @@ object AndroidGpsSource {
         mutableSamples.tryEmit(sample)
     }
 
+    fun requestSourceSelection(sourceId: String) {
+        mutableSourceSelectionRequests.tryEmit(sourceId)
+    }
+
     fun searchingStatus(label: String = "Searching") =
         OwnshipSourceStatusUpdate(
             sourceId = SourceId,
@@ -50,6 +58,14 @@ object AndroidGpsSource {
         OwnshipSourceStatusUpdate(
             sourceId = SourceId,
             connectionState = SourceConnectionState.Connected,
+            enabled = true,
+            statusLabel = label,
+        )
+
+    fun pausedStatus(label: String = "Paused") =
+        OwnshipSourceStatusUpdate(
+            sourceId = SourceId,
+            connectionState = SourceConnectionState.Unavailable,
             enabled = true,
             statusLabel = label,
         )

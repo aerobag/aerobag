@@ -110,6 +110,9 @@ val androidVersionName = System.getenv("ANDROID_VERSION_NAME")
 val androidBuildRustRelease = readBooleanBuildConfig("ANDROID_BUILD_RUST_RELEASE", false)
 val androidRustProfileArgs = if (androidBuildRustRelease) listOf("--release") else emptyList()
 val androidRustProfileDir = if (androidBuildRustRelease) "release" else "debug"
+val androidRust16KbPageSizeRustFlags = listOf(
+    "-Clink-arg=-Wl,-z,max-page-size=16384",
+)
 val androidTargetAbiFilters = readStringListBuildConfig("ANDROID_TARGET_ABIS")
 val enabledRustAndroidTargets = androidTargetAbiFilters
     ?.let { requestedAbis ->
@@ -123,6 +126,11 @@ val enabledRustAndroidTargets = androidTargetAbiFilters
     ?: rustAndroidTargets
 if (enabledRustAndroidTargets.isEmpty()) {
     throw IllegalArgumentException("ANDROID_TARGET_ABIS did not select any Rust Android targets")
+}
+fun rustFlagsForAndroidTarget(target: RustAndroidTarget): String {
+    val envKey = "CARGO_TARGET_${target.envPrefix}_RUSTFLAGS"
+    val existingFlags = System.getenv(envKey)?.trim()?.takeIf { it.isNotEmpty() }
+    return (listOfNotNull(existingFlags) + androidRust16KbPageSizeRustFlags).joinToString(" ")
 }
 val artifactReadPathConfigFile = repoRoot.resolve(".aerobag-artifact-read-path")
 val configuredArtifactRoot = artifactReadPathConfigFile.readText().trim()
@@ -165,6 +173,7 @@ val copyRustLibraries = enabledRustAndroidTargets.map { target ->
         environment("CC_${target.rustTriple}", linker)
         environment("CXX_${target.rustTriple.replace("-", "_")}", linker.replace("clang", "clang++"))
         environment("AR_${target.rustTriple.replace("-", "_")}", rustArchiver)
+        environment("CARGO_TARGET_${target.envPrefix}_RUSTFLAGS", rustFlagsForAndroidTarget(target))
         environment("ANDROID_NDK_ROOT", ndkRoot)
         environment("NDK_HOME", ndkRoot)
         commandLine(listOf(cargoBinary, "build", "-p", "app-ffi", "--target", target.rustTriple) + androidRustProfileArgs)

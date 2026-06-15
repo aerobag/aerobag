@@ -2,7 +2,6 @@ package org.aerobag.app
 
 import android.Manifest
 import android.content.Context
-import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
@@ -1876,7 +1875,7 @@ internal fun SituationSourceRow(
     ) {
         sources.forEach { source ->
             CompactSquareButton(
-                label = source.label,
+                label = situationSourceButtonLabel(source),
                 enabled = source.enabled,
                 selected = source.active,
                 wide = false,
@@ -1887,6 +1886,9 @@ internal fun SituationSourceRow(
         }
     }
 }
+
+internal fun situationSourceButtonLabel(source: org.aerobag.app.domain.OwnshipSourceMenuItem): String =
+    source.label
 
 @Composable
 internal fun SituationTransportRow(
@@ -2671,6 +2673,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestAndroidGps() {
+        if (AndroidGpsPower.isGpsPaused(this)) {
+            AndroidGpsSource.publishStatus(AndroidGpsSource.pausedStatus())
+            return
+        }
         if (hasPreciseLocationPermission()) {
             startAndroidGpsService()
             return
@@ -2691,8 +2697,7 @@ class MainActivity : ComponentActivity() {
         }.toTypedArray()
 
     private fun startAndroidGpsService() {
-        AndroidGpsSource.publishStatus(AndroidGpsSource.searchingStatus())
-        ContextCompat.startForegroundService(this, Intent(this, AndroidGpsService::class.java))
+        AndroidGpsService.startHighPrecisionGps(this)
     }
 }
 
@@ -2785,6 +2790,7 @@ internal fun situationControlInputForKeyEvent(event: AndroidKeyEvent): Situation
 @Composable
 internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
     val context = LocalContext.current
+    val appContext = context.applicationContext
     val prefs = remember(context) { context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE) }
     val bootstrap = remember(context) { AndroidRuntimeContent.loadBootstrap(context.applicationContext) }
     var runtimeReloadToken by remember { mutableStateOf(0) }
@@ -2913,6 +2919,15 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
     var rasterMapState by remember(uiSession) { mutableStateOf(initialRasterMapState) }
     var selectedMapId by remember(uiSession) { mutableStateOf(initialRasterMapState.selectedMapId) }
     var sessionSnapshot by remember(uiSession) { mutableStateOf(uiSession.snapshot) }
+    fun selectOwnshipSource(sourceId: String) {
+        sessionSnapshot = uiSession.selectOwnshipSource(OwnshipSelection.Source(sourceId))
+        AndroidGpsPower.clearPendingOwnshipSource(appContext)
+        if (AndroidGpsPower.shouldRunHighPrecisionGpsForSource(sourceId)) {
+            AndroidGpsService.startHighPrecisionGps(appContext)
+        } else {
+            AndroidGpsService.pauseForOwnshipSelection(appContext)
+        }
+    }
     LaunchedEffect(uiSession, sessionSnapshot.nextCycleProductFreshnessCheckEpochMs) {
         val nextCheckEpochMs = sessionSnapshot.nextCycleProductFreshnessCheckEpochMs ?: return@LaunchedEffect
         val delayMs = (nextCheckEpochMs - System.currentTimeMillis())
@@ -3054,6 +3069,11 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
     LaunchedEffect(uiSession) {
         sessionSnapshot = uiSession.registerOwnshipSource(AndroidGpsSource.registration())
         sessionSnapshot = uiSession.updateOwnshipSourceStatus(AndroidGpsSource.status.value)
+        val startupOwnshipSource = AndroidGpsPower.consumePendingOwnshipSource(appContext)
+            ?: AndroidGpsPower.batterySavingFallbackSourceId().takeIf { AndroidGpsPower.isGpsPaused(appContext) }
+        if (startupOwnshipSource != null) {
+            selectOwnshipSource(startupOwnshipSource)
+        }
         launch {
             AndroidGpsSource.status.collect { status ->
                 sessionSnapshot = uiSession.updateOwnshipSourceStatus(status)
@@ -3062,6 +3082,11 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
         launch {
             AndroidGpsSource.samples.collect { sample ->
                 sessionSnapshot = uiSession.pushSituationSample(sample)
+            }
+        }
+        launch {
+            AndroidGpsSource.sourceSelectionRequests.collect { sourceId ->
+                selectOwnshipSource(sourceId)
             }
         }
     }
@@ -3224,9 +3249,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                         },
                         onViewportChange = { mapViewport = it },
                         onSessionSnapshotChange = { sessionSnapshot = it },
-                        onSelectOwnshipSource = { sourceId ->
-                            sessionSnapshot = uiSession.selectOwnshipSource(OwnshipSelection.Source(sourceId))
-                        },
+                        onSelectOwnshipSource = ::selectOwnshipSource,
                         onSituationControlInput = { input ->
                             sessionSnapshot = uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble())
                         },
@@ -3357,6 +3380,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                                 boundedHistory(pageHistory + currentSnapshot()),
                             )
                         },
+                        onSelectOwnshipSource = ::selectOwnshipSource,
                     )
                 }
                 AppPage.Home -> {

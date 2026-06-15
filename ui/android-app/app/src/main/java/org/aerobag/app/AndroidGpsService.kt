@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Location
@@ -28,6 +29,7 @@ import org.aerobag.app.domain.SituationSample
 
 class AndroidGpsService : Service() {
     private lateinit var fusedLocationClient: FusedLocationProviderClient
+    private var finalStatusPublished = false
 
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
@@ -42,8 +44,27 @@ class AndroidGpsService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ActionPauseGps -> {
+                pauseFromNotification()
+                return START_NOT_STICKY
+            }
+            ActionResumeGps -> {
+                AndroidGpsPower.markGpsActive(this)
+                AndroidGpsPower.setPendingOwnshipSource(this, AndroidGpsSource.SourceId)
+                AndroidGpsSource.requestSourceSelection(AndroidGpsSource.SourceId)
+                dismissPausedNotification()
+            }
+        }
+
+        if (AndroidGpsPower.isGpsPaused(this)) {
+            publishFinalStatus(AndroidGpsSource.pausedStatus())
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         if (!hasPreciseLocationPermission()) {
-            AndroidGpsSource.publishStatus(AndroidGpsSource.unavailableStatus("Precise location required"))
+            publishFinalStatus(AndroidGpsSource.unavailableStatus("Precise location required"))
             stopSelf()
             return START_NOT_STICKY
         }
@@ -52,7 +73,7 @@ class AndroidGpsService : Service() {
         ServiceCompat.startForeground(
             this,
             NotificationId,
-            buildNotification("Searching for GPS"),
+            buildActiveNotification(),
             android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
         )
         requestHighAccuracyUpdates()
@@ -61,13 +82,16 @@ class AndroidGpsService : Service() {
 
     override fun onDestroy() {
         fusedLocationClient.removeLocationUpdates(locationCallback)
-        AndroidGpsSource.publishStatus(AndroidGpsSource.unavailableStatus("GPS stopped"))
+        if (!finalStatusPublished) {
+            AndroidGpsSource.publishStatus(AndroidGpsSource.pausedStatus())
+        }
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun requestHighAccuracyUpdates() {
+        fusedLocationClient.removeLocationUpdates(locationCallback)
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, UpdateIntervalMs)
             .setMinUpdateIntervalMillis(FastestUpdateIntervalMs)
             .setMinUpdateDistanceMeters(0f)
@@ -79,13 +103,29 @@ class AndroidGpsService : Service() {
             fusedLocationClient.requestLocationUpdates(request, locationCallback, Looper.getMainLooper())
                 .addOnFailureListener { error ->
                     Log.e(LogTag, "Failed to request GPS updates", error)
-                    AndroidGpsSource.publishStatus(AndroidGpsSource.failedStatus("GPS request failed"))
+                    publishFinalStatus(AndroidGpsSource.failedStatus("GPS request failed"))
                 }
         } catch (error: SecurityException) {
             Log.e(LogTag, "Location permission was revoked before GPS updates started", error)
-            AndroidGpsSource.publishStatus(AndroidGpsSource.unavailableStatus("Location permission required"))
+            publishFinalStatus(AndroidGpsSource.unavailableStatus("Location permission required"))
             stopSelf()
         }
+    }
+
+    private fun pauseFromNotification() {
+        AndroidGpsPower.markGpsPaused(this)
+        AndroidGpsPower.setPendingOwnshipSource(this, PlanPreviewOwnshipSourceId)
+        AndroidGpsSource.requestSourceSelection(PlanPreviewOwnshipSourceId)
+        fusedLocationClient.removeLocationUpdates(locationCallback)
+        publishFinalStatus(AndroidGpsSource.pausedStatus())
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        postPausedNotification()
+        stopSelf()
+    }
+
+    private fun publishFinalStatus(status: org.aerobag.app.domain.OwnshipSourceStatusUpdate) {
+        finalStatusPublished = true
+        AndroidGpsSource.publishStatus(status)
     }
 
     private fun publishLocation(location: Location) {
@@ -127,12 +167,18 @@ class AndroidGpsService : Service() {
         manager.createNotificationChannel(channel)
     }
 
-    private fun buildNotification(text: String) =
+    private fun buildActiveNotification() =
         NotificationCompat.Builder(this, NotificationChannelId)
             .setSmallIcon(R.drawable.plan_view_icon)
             .setContentTitle("Aerobag GPS")
-            .setContentText(text)
+            .setContentText("High-precision GPS active")
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .addAction(
+                R.drawable.plan_view_icon,
+                "Pause GPS",
+                serviceIntent(ActionPauseGps, 1),
+            )
             .setContentIntent(
                 PendingIntent.getActivity(
                     this,
@@ -143,6 +189,54 @@ class AndroidGpsService : Service() {
             )
             .build()
 
+    private fun buildPausedNotification() =
+        NotificationCompat.Builder(this, NotificationChannelId)
+            .setSmallIcon(R.drawable.plan_view_icon)
+            .setContentTitle("GPS paused")
+            .setContentText("Plan Preview active. Select GPS to resume live position.")
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .addAction(
+                R.drawable.plan_view_icon,
+                "Resume GPS",
+                serviceIntent(ActionResumeGps, 2),
+            )
+            .setContentIntent(
+                PendingIntent.getActivity(
+                    this,
+                    0,
+                    Intent(this, MainActivity::class.java),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                ),
+            )
+            .build()
+
+    private fun serviceIntent(action: String, requestCode: Int): PendingIntent =
+        PendingIntent.getService(
+            this,
+            requestCode,
+            Intent(this, AndroidGpsService::class.java).setAction(action),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+
+    private fun postPausedNotification() {
+        if (!hasNotificationPermission()) return
+        runCatching {
+            getSystemService(NotificationManager::class.java)
+                .notify(PausedNotificationId, buildPausedNotification())
+        }.onFailure { error ->
+            Log.w(LogTag, "Failed to post paused GPS notification", error)
+        }
+    }
+
+    private fun dismissPausedNotification() {
+        getSystemService(NotificationManager::class.java).cancel(PausedNotificationId)
+    }
+
+    private fun hasNotificationPermission(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+
     private fun Location.bearingIfPresent(): Double? =
         if (hasBearing()) bearing.toDouble() else null
 
@@ -152,13 +246,33 @@ class AndroidGpsService : Service() {
     private fun Location.altitudeFtIfPresent(): Double? =
         if (hasAltitude()) altitude * MetersToFeet else null
 
-    private companion object {
-        const val LogTag = "AerobagGps"
-        const val NotificationChannelId = "aerobag_gps"
-        const val NotificationId = 1001
-        const val UpdateIntervalMs = 1_000L
-        const val FastestUpdateIntervalMs = 500L
-        const val MetersToFeet = 3.280839895
-        const val MetersPerSecondToKnots = 1.943844492
+    companion object {
+        private const val LogTag = "AerobagGps"
+        private const val NotificationChannelId = "aerobag_gps"
+        private const val NotificationId = 1001
+        private const val PausedNotificationId = 1002
+        private const val ActionPauseGps = "org.aerobag.app.action.PAUSE_GPS"
+        private const val ActionResumeGps = "org.aerobag.app.action.RESUME_GPS"
+        private const val UpdateIntervalMs = 1_000L
+        private const val FastestUpdateIntervalMs = 500L
+        private const val MetersToFeet = 3.280839895
+        private const val MetersPerSecondToKnots = 1.943844492
+
+        fun startHighPrecisionGps(context: Context) {
+            AndroidGpsPower.markGpsActive(context)
+            AndroidGpsSource.publishStatus(AndroidGpsSource.searchingStatus())
+            context.getSystemService(NotificationManager::class.java).cancel(PausedNotificationId)
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, AndroidGpsService::class.java),
+            )
+        }
+
+        fun pauseForOwnshipSelection(context: Context) {
+            AndroidGpsPower.markGpsPaused(context)
+            AndroidGpsPower.clearPendingOwnshipSource(context)
+            AndroidGpsSource.publishStatus(AndroidGpsSource.pausedStatus())
+            context.stopService(Intent(context, AndroidGpsService::class.java))
+        }
     }
 }

@@ -234,7 +234,6 @@ import org.aerobag.app.domain.NavElementUiView
 import org.aerobag.app.domain.OwnshipControlModel
 import org.aerobag.app.domain.OwnshipMode
 import org.aerobag.app.domain.OwnshipRenderState
-import org.aerobag.app.domain.OwnshipSelection
 import org.aerobag.app.domain.PackageZipStore
 import org.aerobag.app.domain.PlaybackStatus
 import org.aerobag.app.domain.PlaybackUiState
@@ -360,6 +359,7 @@ internal fun ChartsPage(
     onStatusAction: (String) -> Unit,
     onSelectAirport: (String) -> Unit,
     onSelectChart: (String) -> Unit,
+    onSelectOwnshipSource: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val activity = context as? MainActivity
@@ -655,7 +655,7 @@ internal fun ChartsPage(
             },
             onSelectSource = { sourceId ->
                 situationTrayOpen = false
-                onSessionSnapshotChange(uiSession.selectOwnshipSource(OwnshipSelection.Source(sourceId)))
+                onSelectOwnshipSource(sourceId)
             },
             onSituationControlInput = { input ->
                 onSessionSnapshotChange(uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble()))

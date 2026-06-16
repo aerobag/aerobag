@@ -267,6 +267,7 @@ import org.aerobag.app.domain.SituationControlInput
 import org.aerobag.app.domain.SituationRingCandidate
 import org.aerobag.app.domain.TileStorageKind
 import org.aerobag.app.domain.UiDataStatusPageFact
+import org.aerobag.app.domain.UiDataStatusPageRow
 import org.aerobag.app.domain.UiDataStatusPageState
 import org.aerobag.app.domain.UiDataStatusPageTimeDisplay
 import org.aerobag.app.domain.UiDataStatusState
@@ -1619,6 +1620,7 @@ private val DataStatusPageFactTextSize = 9.sp
 internal fun DataStatusPage(
     page: AppPage,
     state: UiDataStatusPageState,
+    dataSourcesRow: UiDataStatusPageRow,
     mostRecentChartOrPlatePage: AppPage,
     onOpenRecentChartOrPlate: () -> Unit,
     onSelectPage: (AppPage) -> Unit,
@@ -1695,7 +1697,7 @@ internal fun DataStatusPage(
                 horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.22f),
                 verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.22f),
             ) {
-                lazyGridItems(state.rows, key = { it.id }) { row ->
+                lazyGridItems(listOf(dataSourcesRow) + state.rows, key = { it.id }) { row ->
                     DataStatusPageRowCard(row = row, nowMs = nowMs)
                 }
             }
@@ -1705,7 +1707,7 @@ internal fun DataStatusPage(
 
 @Composable
 private fun DataStatusPageRowCard(
-    row: org.aerobag.app.domain.UiDataStatusPageRow,
+    row: UiDataStatusPageRow,
     nowMs: Long,
 ) {
     val accentColor = statusSeverityColor(row.severity)
@@ -1785,6 +1787,52 @@ private fun DataStatusPageRowCard(
             }
         }
     }
+}
+
+private fun dataSourcesStatusRow(
+    context: Context,
+    prefs: SharedPreferences,
+): UiDataStatusPageRow {
+    val appContext = context.applicationContext
+    val configuredCycleDataBaseUrl = readPackageSourceBaseUrl(appContext, prefs)
+    val cycleDataBaseUrl = runCatching {
+        resolvePublicationRootUrl(configuredCycleDataBaseUrl)
+    }.getOrElse {
+        configuredCycleDataBaseUrl.trim().trimEnd('/')
+    }
+    val liveFeedsRootUrl = runCatching {
+        resolveLiveFeedSourceRootUrl(
+            appContext,
+            prefs,
+            loadAndroidDevServerBaseUrl(appContext),
+        )
+    }.getOrElse {
+        cycleDataBaseUrl.trimEnd('/').removeSuffix("/$PublicationPackageRootPath")
+    }
+    val liveFeedsBaseUrl = "${liveFeedsRootUrl.trimEnd('/')}/live-feeds"
+    return UiDataStatusPageRow(
+        id = "data_sources",
+        label = "Data Sources",
+        value = "Config",
+        severity = UiStatusSeverity.Info,
+        detail = "Base URLs used for remote aviation data.",
+        facts = listOf(
+            UiDataStatusPageFact(
+                label = "Cycle Data",
+                value = cycleDataBaseUrl,
+                linkUrl = cycleDataBaseUrl,
+                timeUtc = null,
+                timeDisplay = null,
+            ),
+            UiDataStatusPageFact(
+                label = "Live Feeds",
+                value = liveFeedsBaseUrl,
+                linkUrl = liveFeedsBaseUrl,
+                timeUtc = null,
+                timeDisplay = null,
+            ),
+        ),
+    )
 }
 
 @Composable
@@ -3412,6 +3460,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                     DataStatusPage(
                         page = page,
                         state = sessionSnapshot.dataStatusPageState,
+                        dataSourcesRow = dataSourcesStatusRow(appContext, prefs),
                         mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         onSelectPage = ::navigateToPage,

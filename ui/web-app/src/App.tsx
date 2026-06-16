@@ -124,6 +124,8 @@ import { airwayExitCandidatesFromPresentation } from "./domain/airwayPresentatio
 import { debugLog, debugTiming, installGlobalErrorLogging } from "./domain/debugLog";
 import { TerrainOverlayRenderer } from "./domain/terrainOverlayRenderer";
 
+declare const __AEROBAG_LIVE_FEEDS_ORIGIN__: string | null;
+
 type SurfaceSize = {
   width: number;
   height: number;
@@ -2906,6 +2908,7 @@ export default function App() {
         <DataStatusPage
           page={page}
           state={sessionSnapshot.data_status_page_state}
+          dataSourcesRow={dataSourcesStatusRow()}
           mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
           onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
           onSelectPage={navigateToPage}
@@ -9016,6 +9019,7 @@ function AboutPage(props: {
 function DataStatusPage(props: {
   page: AppPage;
   state: UiDataStatusPageState;
+  dataSourcesRow: UiDataStatusPageState["rows"][number];
   mostRecentChartOrPlatePage: AppPage;
   onOpenRecentChartOrPlate: () => void;
   onSelectPage: (page: AppPage) => void;
@@ -9046,29 +9050,78 @@ function DataStatusPage(props: {
           <p>{props.state.summary}</p>
         </header>
         <div className="dataStatusPageRows">
-          {props.state.rows.map((row) => (
-            <article key={row.id} className={`dataStatusPageRow statusSeverity-${row.severity}`}>
-              <div className="dataStatusPageRowHeader">
-                <span className="dataStatusPageRowLabel">{row.label}</span>
-                <span className="dataStatusPageRowValue">{row.value}</span>
-              </div>
-              <div className="dataStatusPageRowDetail">{row.detail}</div>
-              {row.facts.length > 0 ? (
-                <dl className="dataStatusPageFacts">
-                  {row.facts.map((fact) => (
-                    <div key={`${row.id}:${fact.label}`} className="dataStatusPageFact">
-                      <dt>{fact.label}</dt>
-                      <dd>{renderDataStatusFactValue(fact, nowMs)}</dd>
-                    </div>
-                  ))}
-                </dl>
-              ) : null}
-            </article>
+          {[props.dataSourcesRow, ...props.state.rows].map((row) => (
+            <DataStatusPageRowArticle key={row.id} row={row} nowMs={nowMs} />
           ))}
         </div>
       </div>
     </section>
   );
+}
+
+function DataStatusPageRowArticle(props: {
+  row: UiDataStatusPageState["rows"][number];
+  nowMs: number;
+}) {
+  const { row, nowMs } = props;
+  return (
+    <article className={`dataStatusPageRow statusSeverity-${row.severity}`}>
+      <div className="dataStatusPageRowHeader">
+        <span className="dataStatusPageRowLabel">{row.label}</span>
+        <span className="dataStatusPageRowValue">{row.value}</span>
+      </div>
+      <div className="dataStatusPageRowDetail">{row.detail}</div>
+      {row.facts.length > 0 ? (
+        <dl className="dataStatusPageFacts">
+          {row.facts.map((fact) => (
+            <div key={`${row.id}:${fact.label}`} className="dataStatusPageFact">
+              <dt>{fact.label}</dt>
+              <dd>{renderDataStatusFactValue(fact, nowMs)}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+    </article>
+  );
+}
+
+function dataSourcesStatusRow(): UiDataStatusPageState["rows"][number] {
+  const cycleDataBaseUrl = webCycleDataBaseUrl();
+  const liveFeedsBaseUrl = webLiveFeedsBaseUrl();
+  return {
+    id: "data_sources",
+    label: "Data Sources",
+    value: "Config",
+    severity: "info",
+    detail: "Base URLs used for remote aviation data.",
+    facts: [
+      {
+        label: "Cycle Data",
+        value: cycleDataBaseUrl,
+        link_url: cycleDataBaseUrl,
+      },
+      {
+        label: "Live Feeds",
+        value: liveFeedsBaseUrl,
+        link_url: liveFeedsBaseUrl,
+      },
+    ],
+  };
+}
+
+function webCycleDataBaseUrl(): string {
+  const origin = typeof window !== "undefined" ? window.location.origin.replace(/\/+$/, "") : "";
+  return origin ? `${origin}/packages` : "/packages";
+}
+
+function webLiveFeedsBaseUrl(): string {
+  const configured = __AEROBAG_LIVE_FEEDS_ORIGIN__?.trim();
+  const root = configured
+    ? configured.replace(/\/+$/, "")
+    : typeof window !== "undefined"
+      ? window.location.origin.replace(/\/+$/, "")
+      : "";
+  return root ? `${root}/live-feeds` : "/live-feeds";
 }
 
 function renderDataStatusFactValue(

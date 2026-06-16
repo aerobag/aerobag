@@ -28,6 +28,7 @@ import type {
   WaypointIdentifierSuggestion,
 } from "./domain/types";
 import uiTheme from "@shared-ui-theme";
+import aboutReadmeHtml from "./content/about-readme.html?raw";
 import planViewIcon from "./assets/plan-view-icon.svg";
 import {
   airportCircleMarkerPath,
@@ -8954,48 +8955,55 @@ function AboutPage(props: {
   }, []);
 
   const shortCommit = metadata?.git_commit.slice(0, 8) ?? "";
+  const apkUnavailableTitle = loading
+    ? "Checking Android download metadata..."
+    : `Android APK is not published in this static tree${metadataError ? `: ${metadataError}` : "."}`;
   return (
     <section className="appPage aboutPage">
       <div className="aboutPagePanel">
-        <div className="aboutPageHeader">
-          <p className="aboutPageEyebrow">Aerobag</p>
-          <h1>Flight planning, charts, and weather.</h1>
-        </div>
-
-        <div className="aboutDownloadCard">
-          <h2>Android APK</h2>
+        <div className="aboutActionRow">
           {metadata ? (
-            <>
-              <a className="aboutDownloadButton" href={metadata.apk_url}>
-                Download {metadata.filename}
-              </a>
-              <dl className="aboutMetadata">
-                <div>
-                  <dt>Version</dt>
-                  <dd>{metadata.version_name}</dd>
-                </div>
-                <div>
-                  <dt>Build</dt>
-                  <dd>{shortCommit}</dd>
-                </div>
-                <div>
-                  <dt>Published</dt>
-                  <dd>{metadata.built_at_utc}</dd>
-                </div>
-              </dl>
-            </>
+            <a
+              className="aboutActionButton"
+              href={metadata.apk_url}
+              title={`Download ${metadata.filename} (${metadata.version_name}, ${shortCommit})`}
+            >
+              Android APK
+            </a>
           ) : (
-            <p className="aboutDownloadUnavailable">
-              {loading
-                ? "Checking Android download metadata..."
-                : `Android APK is not published in this static tree${metadataError ? `: ${metadataError}` : "."}`}
-            </p>
+            <button type="button" className="aboutActionButton" disabled title={apkUnavailableTitle}>
+              Android APK
+            </button>
           )}
+          <button type="button" className="aboutActionButton" onClick={props.onOpenApp}>
+            Open Web App
+          </button>
         </div>
+        {metadata ? (
+          <dl className="aboutMetadata">
+            <div>
+              <dt>Android Version</dt>
+              <dd>{metadata.version_name}</dd>
+            </div>
+            <div>
+              <dt>Build</dt>
+              <dd>{shortCommit}</dd>
+            </div>
+            <div>
+              <dt>Published</dt>
+              <dd>{metadata.built_at_utc}</dd>
+            </div>
+          </dl>
+        ) : (
+          <p className="aboutDownloadUnavailable">{apkUnavailableTitle}</p>
+        )}
 
-        <button type="button" className="aboutOpenAppButton" onClick={props.onOpenApp}>
-          Open Web App
-        </button>
+        <div className="aboutReadmeRegion">
+          <article
+            className="aboutReadmeContent"
+            dangerouslySetInnerHTML={{ __html: aboutReadmeHtml }}
+          />
+        </div>
       </div>
     </section>
   );

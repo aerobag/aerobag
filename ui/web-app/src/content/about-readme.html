@@ -1,0 +1,86 @@
+<p><strong>NO WARRANTY</strong>: Every single line of this software was vibe coded. Nobody has
+tested it. It might be wrong or misleading in dangerous ways. If you're using
+it in the flight simulator, have fun! If you're using it in the cockpit,
+do so entirely at your own risk.  It is not warranted
+to be suitable for any purpose; by using it, you idemnify and agree to hold
+harmless any developer associated with the software.</p>
+
+<h1>What is it?</h1>
+
+<p>Aerobag is a flight planning tool and electronic flight bag.
+It works the same online as a web app (for flight planning on the big screen)
+and as an Android app (for taking charts and plates with you offline).</p>
+
+<h1>Where did it come from?</h1>
+
+<p>I have been using <a href="https://www.apps4av.com/overview.html">Avare</a> for almost as many years as it has existed. I love that
+it's open source.  I love that I can have as many copies on as many devices as
+I want, so I have backups for my backups. (In fact, it was Garmin's device limit
+policy that drove me to cancel my Pilot subscription.) I love that it runs on
+Android so I don't have to use Apple's walled garden to take charts in the
+plane.</p>
+
+<p>As awesome as all that is, I thought maybe it was time to take a stab at
+refreshing the concept. Aerobag a very direct descendent of Avare: you'll see
+its heritage everywhere. Here are some things that improve:</p>
+
+<ul>
+  <li>Same app web and tablet. The web (online) app fetches data on demand;
+don't try to use it on a poor hotspot. The tablet (offline) app lets you
+prefetch packages for the areas and types of flying you do.</li>
+  <li>Android Aerobag can manage multiple cycle packages simultaneously, so
+you can fetch the next cycle when the FAA publishes it (~20 days ahead) and
+already have it with you on your flight.</li>
+  <li>Offline regions depicted on map to help you plan packages</li>
+  <li>Efficient live weather feed protocol (if your hotspot works in the cockpit)</li>
+  <li>Rich vector layer with airports and airspaces</li>
+  <li>Click to inspect features on the map</li>
+  <li>Airways and approaches</li>
+  <li>Terrain warning layer</li>
+  <li>Better-organized plates and CSup pages</li>
+  <li>TACs paint over Sectionals so you don't have to switch between them</li>
+  <li>Warnings about stale data</li>
+</ul>
+
+<h1>Missing features</h1>
+
+<ul>
+  <li>No ADSB-in modes</li>
+  <li>No 3D mode</li>
+</ul>
+<p>...</p>
+
+<h1>Future ambitions</h1>
+
+<ul>
+  <li>Special charts (Grand Canyon)</li>
+  <li>Legends (LAX SFRA)</li>
+  <li>Aircraft profiles and altitude planning.</li>
+  <li>Link devices through a server to synchronize package management and flight
+  plans.</li>
+  <li>Capture and save flight logs</li>
+  <li>North-up view (using those rich vectors!)</li>
+  <li>STARs and SIDs</li>
+  <li>Better airway selection and flight plan manipulation</li>
+</ul>
+<p>...</p>
+
+<h1>Privacy</h1>
+
+<p>Aerobag doesn't have a privacy policy; you should assume we've been taken over
+by private equity and have already sold your middle initial.</p>
+
+<p>That said, when you visit aerobag.org on the web, data is fetched on demand, which
+means the server traffic reveals what part of the world you're looking at.
+The Android client preloads packages, which reveals much coarser information, but
+its live-feed data stream may similarly reveal location information.</p>
+
+<p>If you want to guard your privacy more closely, note that all of aerobag is open
+source. You can run your own server instance, which will fetch data from government
+sources.</p>
+
+<h1>Feedback</h1>
+
+<p>This thing is brand new. I'll be happy to hear what you think! I suspect the
+UI flow isn't ideally smooth yet, and I'm sure it's littered with bugs. Let me
+know with GitHub issues!</p>

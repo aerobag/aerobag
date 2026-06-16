@@ -958,65 +958,29 @@ button {
 }
 
 .aboutPagePanel {
-  width: min(calc(var(--thumb) * 9.5), calc(100vw - (var(--thumb) * 0.8)));
+  width: min(60vw, calc(100vw - (var(--thumb) * 0.8)));
+  min-width: min(calc(var(--thumb) * 9.5), calc(100vw - (var(--thumb) * 0.8)));
+  height: min(calc(var(--thumb) * 13), calc(100vh - (var(--thumb) * 0.8)));
   max-height: calc(100vh - (var(--thumb) * 0.8));
-  overflow-y: auto;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: calc(var(--thumb) * 0.2);
+  overflow: hidden;
   border-radius: calc(var(--thumb-radius) * 1.1);
   padding: calc(var(--thumb) * 0.48);
   background: color-mix(in srgb, var(--theme-button-normal-bg) 82%, white);
   box-shadow: var(--shadow);
 }
 
-.aboutPageHeader {
+.aboutActionRow {
   display: grid;
-  gap: calc(var(--thumb) * 0.18);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: calc(var(--thumb) * 0.22);
 }
 
-.aboutPageEyebrow {
-  margin: 0;
-  color: color-mix(in srgb, var(--theme-button-normal-fg) 72%, transparent);
-  font-size: calc(var(--thumb) * 0.24);
-  font-weight: 900;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.aboutPageHeader h1 {
-  margin: 0;
-  font-size: clamp(1.8rem, calc(var(--thumb) * 0.66), 3.4rem);
-  line-height: 0.98;
-  letter-spacing: -0.04em;
-}
-
-.aboutPageHeader p {
-  margin: 0;
-  color: color-mix(in srgb, var(--theme-button-normal-fg) 78%, transparent);
-  font-size: calc(var(--thumb) * 0.24);
-  font-weight: 800;
-  line-height: 1.35;
-}
-
-.aboutDownloadCard {
-  display: grid;
-  gap: calc(var(--thumb) * 0.18);
-  margin-top: calc(var(--thumb) * 0.44);
-  border-radius: calc(var(--thumb-radius) * 0.8);
-  padding: calc(var(--thumb) * 0.32);
-  background: rgba(255, 255, 255, 0.74);
-  box-shadow: inset 0 0 0 2px rgba(16, 24, 32, 0.18);
-}
-
-.aboutDownloadCard h2 {
-  margin: 0;
-  font-size: calc(var(--thumb) * 0.34);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.aboutDownloadButton,
-.aboutOpenAppButton {
+.aboutActionButton {
   display: inline-grid;
-  min-height: var(--thumb);
+  min-height: calc(var(--thumb) * 1.15);
   place-items: center;
   border: 0;
   border-radius: var(--thumb-radius);
@@ -1024,7 +988,7 @@ button {
   background: var(--theme-button-selected-bg);
   color: var(--theme-button-selected-fg);
   font: inherit;
-  font-size: calc(var(--thumb) * 0.26);
+  font-size: calc(var(--thumb) * 0.32);
   font-weight: 900;
   letter-spacing: 0.02em;
   text-align: center;
@@ -1033,8 +997,12 @@ button {
   cursor: pointer;
 }
 
-.aboutOpenAppButton {
-  margin-top: calc(var(--thumb) * 0.34);
+.aboutActionButton:disabled {
+  cursor: default;
+  opacity: 0.54;
+}
+
+.aboutActionButton:nth-child(2) {
   background: var(--theme-header-button);
   color: var(--theme-button-normal-fg);
 }
@@ -1042,13 +1010,13 @@ button {
 .aboutDownloadUnavailable {
   margin: 0;
   color: color-mix(in srgb, var(--theme-button-normal-fg) 74%, transparent);
-  font-size: calc(var(--thumb) * 0.23);
-  font-weight: 800;
+  font-size: calc(var(--thumb) * 0.2);
+  font-weight: 600;
 }
 
 .aboutMetadata {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(calc(var(--thumb) * 2), 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: calc(var(--thumb) * 0.16);
   margin: 0;
 }
@@ -1059,18 +1027,91 @@ button {
 
 .aboutMetadata dt {
   color: color-mix(in srgb, var(--theme-button-normal-fg) 62%, transparent);
-  font-size: calc(var(--thumb) * 0.18);
-  font-weight: 900;
+  font-size: calc(var(--thumb) * 0.16);
+  font-weight: 800;
   text-transform: uppercase;
 }
 
 .aboutMetadata dd {
   margin: 0;
   overflow: hidden;
-  font-size: calc(var(--thumb) * 0.22);
-  font-weight: 900;
+  font-size: calc(var(--thumb) * 0.2);
+  font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.aboutReadmeRegion {
+  min-height: 0;
+  overflow: hidden;
+  overflow-y: auto;
+  border-radius: calc(var(--thumb-radius) * 0.8);
+  padding: calc(var(--thumb) * 0.42);
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: inset 0 0 0 2px rgba(16, 24, 32, 0.18);
+}
+
+.aboutReadmeContent {
+  max-width: 108ch;
+  margin: 0 auto;
+  color: var(--theme-button-normal-fg);
+  font-size: clamp(1rem, calc(var(--thumb) * 0.23), 1.35rem);
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.aboutReadmeContent > :first-child {
+  margin-top: 0;
+}
+
+.aboutReadmeContent > :last-child {
+  margin-bottom: 0;
+}
+
+.aboutReadmeContent h1 {
+  margin: calc(var(--thumb) * 0.58) 0 calc(var(--thumb) * 0.18);
+  font-size: clamp(1.8rem, calc(var(--thumb) * 0.42), 2.6rem);
+  line-height: 1;
+  letter-spacing: -0.035em;
+}
+
+.aboutReadmeContent p {
+  margin: 0 0 calc(var(--thumb) * 0.28);
+}
+
+.aboutReadmeContent ul {
+  display: grid;
+  gap: calc(var(--thumb) * 0.12);
+  margin: 0 0 calc(var(--thumb) * 0.34);
+  padding-left: calc(var(--thumb) * 0.42);
+}
+
+.aboutReadmeContent a {
+  color: color-mix(in srgb, var(--theme-button-selected-bg) 76%, black);
+  font-weight: 700;
+}
+
+@media (max-width: 560px) {
+  .aboutPagePanel {
+    width: calc(100vw - (var(--thumb) * 0.4));
+    min-width: 0;
+    height: calc(100vh - (var(--thumb) * 0.4));
+    padding: calc(var(--thumb) * 0.28);
+  }
+
+  .aboutActionRow {
+    gap: calc(var(--thumb) * 0.12);
+  }
+
+  .aboutActionButton {
+    min-height: var(--thumb);
+    padding: 0 calc(var(--thumb) * 0.12);
+    font-size: calc(var(--thumb) * 0.22);
+  }
+
+  .aboutMetadata {
+    grid-template-columns: 1fr;
+  }
 }
 
 .chartDockDouble {

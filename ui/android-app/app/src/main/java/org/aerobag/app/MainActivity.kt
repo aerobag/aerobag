@@ -234,6 +234,7 @@ import org.aerobag.app.domain.NavKvStore
 import org.aerobag.app.domain.NavRef
 import org.aerobag.app.domain.NavElementUiView
 import org.aerobag.app.domain.OwnshipControlModel
+import org.aerobag.app.domain.OwnshipLauncherTextTone
 import org.aerobag.app.domain.OwnshipMode
 import org.aerobag.app.domain.OwnshipRenderState
 import org.aerobag.app.domain.OwnshipSelection
@@ -1106,15 +1107,14 @@ internal val OfflineProductOptions = listOf(
 )
 
 internal val HomeGridButtons = listOf(
+    // Three columns, row 1.
     HomeGridButton("chart", "CHART", targetPage = AppPage.Map, enabled = true, iconResId = R.drawable.page_chart_icon),
     HomeGridButton("plate", "PLATE", targetPage = AppPage.Charts, enabled = true, iconResId = R.drawable.page_plate_icon),
     HomeGridButton("flight-plan", "FLIGHT\nPLAN", targetPage = AppPage.Plan, enabled = true),
+    // Three columns, row 2.
     HomeGridButton("data-status", "DATA\nSTATUS", targetPage = AppPage.DataStatus, enabled = true),
     HomeGridButton("offline-packages", "OFFLINE\nPACKAGES", enabled = true),
     HomeGridButton("about", "ABOUT", externalUrl = "https://aerobag.org/about", enabled = true),
-    HomeGridButton("s7", "S7"),
-    HomeGridButton("s8", "S8"),
-    HomeGridButton("s9", "S9"),
 )
 
 internal data class ChartTrayOption(
@@ -1329,12 +1329,18 @@ internal fun SituationStatusBadge(
 ) {
     val trayColumnCount = max(controls.sources.size, controls.situationControls.size).coerceAtLeast(1)
     val trayWidth = (ThumbSize * trayColumnCount.toFloat()) + (3.dp * (trayColumnCount - 1).toFloat()) + 6.dp
+    val uiTheme = LocalAerobagUiTheme.current
+    val launcherForegroundColor = when (controls.launcherTextTone) {
+        OwnshipLauncherTextTone.Normal -> uiTheme.controls.situationStatusFg
+        OwnshipLauncherTextTone.Unavailable -> uiTheme.controls.situationStatusUnavailableFg
+    }
     Box(modifier = modifier.wrapContentSize(unbounded = true, align = Alignment.TopEnd)) {
         MenuDock(
             launcherLabel = controls.launcherLabel,
             open = open,
             onToggle = onToggle,
             style = MenuDockStyle.Situation,
+            launcherForegroundColor = launcherForegroundColor,
             trayWidthOverride = trayWidth,
             options = emptyList(),
             body = {

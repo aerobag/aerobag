@@ -546,6 +546,7 @@ type UiThemeJson = {
     map_selection_display_fg: string;
     situation_status_bg: string;
     situation_status_fg: string;
+    situation_status_unavailable_fg: string;
     data_status_warning_bg: string;
     data_status_warning_stroke: string;
     data_status_quiet_bg: string;
@@ -590,6 +591,16 @@ const PAGE_PLATE_ICON_SRC = "/icons/icons/page-plate-icon.png?v=20260424b";
 const LAYER_VECTORS_ICON_SRC = "/icons/icons/layer-vectors-icon.png?v=20260424b";
 const LAYER_NEXRAD_ICON_SRC = "/icons/icons/layer-nexrad-icon.png?v=20260424b";
 const LAYER_TERRAIN_WARNING_ICON_SRC = "/icons/icons/layer-terrain-warning-icon.png?v=20260424b";
+const HOME_GRID_COLUMN_COUNT = 3;
+const HOME_GRID_BUTTONS: Array<{ id: string; label: string; page: AppPage; iconSrc?: string }> = [
+  // Three columns, row 1.
+  { id: "chart", label: "CHART", page: "map", iconSrc: PAGE_CHART_ICON_SRC },
+  { id: "plate", label: "PLATE", page: "charts", iconSrc: PAGE_PLATE_ICON_SRC },
+  { id: "flight-plan", label: "FLIGHT\nPLAN", page: "plan" },
+  // Three columns, row 2.
+  { id: "data-status", label: "DATA\nSTATUS", page: "data" },
+  { id: "about", label: "ABOUT", page: "about" },
+];
 
 function chartFamilyIconSrc(familyId: ChartFamilyId | null | undefined): string | undefined {
   switch (familyId) {
@@ -1543,6 +1554,7 @@ export default function App() {
           selection: { kind: "auto" },
           launcher_label: "No GPS",
           launcher_tone: "unavailable",
+          launcher_text_tone: "unavailable",
           sources: [],
           situation_controls: [],
         },
@@ -2536,6 +2548,7 @@ export default function App() {
         "--theme-map-selection-display-fg": controlTheme.map_selection_display_fg,
         "--theme-situation-status-bg": controlTheme.situation_status_bg,
         "--theme-situation-status-fg": controlTheme.situation_status_fg,
+        "--theme-situation-status-unavailable-fg": controlTheme.situation_status_unavailable_fg,
         "--theme-data-status-warning-bg": controlTheme.data_status_warning_bg,
         "--theme-data-status-warning-stroke": controlTheme.data_status_warning_stroke,
         "--theme-data-status-quiet-bg": controlTheme.data_status_quiet_bg,
@@ -8855,14 +8868,6 @@ function HomePage(props: {
   debugWarningActive: boolean;
 }) {
   const { page, planUiState, onSelectPage, onOpenPlan } = props;
-  const homeButtons: Array<{ id: string; label: string; page: AppPage; iconSrc?: string }> = [
-    { id: "chart", label: "CHART", page: "map", iconSrc: PAGE_CHART_ICON_SRC },
-    { id: "plate", label: "PLATE", page: "charts", iconSrc: PAGE_PLATE_ICON_SRC },
-    { id: "flight-plan", label: "FLIGHT\nPLAN", page: "plan" },
-    { id: "data-status", label: "DATA\nSTATUS", page: "data" },
-    { id: "about", label: "ABOUT", page: "about" },
-  ];
-  const placeholderLabels = ["S6", "S7", "S8", "S9"];
 
   return (
     <section className="appPage planPage">
@@ -8874,8 +8879,12 @@ function HomePage(props: {
         />
       </div>
 
-      <div className="homeGrid" aria-label="Home navigation">
-        {homeButtons.map((button) => (
+      <div
+        className="homeGrid"
+        aria-label="Home navigation"
+        style={{ "--home-grid-column-count": HOME_GRID_COLUMN_COUNT } as CSSProperties}
+      >
+        {HOME_GRID_BUTTONS.map((button) => (
           <button
             key={button.id}
             type="button"
@@ -8887,11 +8896,6 @@ function HomePage(props: {
           >
             {button.iconSrc ? <img className="chartButtonIcon" src={button.iconSrc} alt="" aria-hidden="true" /> : null}
             <span className="chartButtonLabel chartButtonLabelDouble">{button.label}</span>
-          </button>
-        ))}
-        {placeholderLabels.map((label) => (
-          <button key={label} type="button" className="chartButton chartButtonDouble homeButton" disabled>
-            <span className="chartButtonLabel chartButtonLabelDouble">{label}</span>
           </button>
         ))}
       </div>
@@ -9358,7 +9362,7 @@ function SituationStatusBadge(props: {
   return (
     <TrayDock
       launcherLabel={props.controls.launcher_label}
-      launcherClassName={`situationStatusLauncher situationStatus-${props.controls.launcher_tone}`}
+      launcherClassName={`situationStatusLauncher situationStatus-${props.controls.launcher_tone} situationStatusText-${props.controls.launcher_text_tone}`}
       open={props.open}
       onToggle={props.onToggle}
       ariaLabel="Ownship source"

@@ -84,6 +84,13 @@ pub enum OwnshipControlTone {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum OwnshipLauncherTextTone {
+    Normal,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SourceConnectionState {
     Unavailable,
     Searching,
@@ -255,6 +262,7 @@ pub struct OwnshipControlModel {
     pub selection: OwnshipSelectionCommand,
     pub launcher_label: String,
     pub launcher_tone: OwnshipControlTone,
+    pub launcher_text_tone: OwnshipLauncherTextTone,
     pub sources: Vec<OwnshipSourceMenuItem>,
     pub situation_controls: Vec<SituationControlMenuItem>,
 }
@@ -285,6 +293,7 @@ impl Default for OwnshipState {
                 selection: OwnshipSelectionCommand::Auto,
                 launcher_label: "No GPS".to_string(),
                 launcher_tone: OwnshipControlTone::Unavailable,
+                launcher_text_tone: OwnshipLauncherTextTone::Unavailable,
                 sources: Vec::new(),
                 situation_controls: situation_control_handler_for_mode(OwnshipMode::None)
                     .menu_items(),
@@ -710,6 +719,7 @@ fn project_controls(
     let launcher_tone = active
         .map(|source| source.tone)
         .unwrap_or(OwnshipControlTone::Unavailable);
+    let launcher_text_tone = launcher_text_tone_for_control_tone(launcher_tone);
 
     OwnshipControlModel {
         mode,
@@ -721,6 +731,7 @@ fn project_controls(
         },
         launcher_label,
         launcher_tone,
+        launcher_text_tone,
         sources: menu_sources,
         situation_controls: situation_control_handler_for_mode(selected_mode).menu_items(),
     }
@@ -873,6 +884,13 @@ fn source_control_tone(source: &OwnshipSourceStatus) -> OwnshipControlTone {
     }
 }
 
+fn launcher_text_tone_for_control_tone(tone: OwnshipControlTone) -> OwnshipLauncherTextTone {
+    match tone {
+        OwnshipControlTone::Unavailable => OwnshipLauncherTextTone::Unavailable,
+        OwnshipControlTone::Ready | OwnshipControlTone::Neutral => OwnshipLauncherTextTone::Normal,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -923,6 +941,72 @@ mod tests {
         assert_eq!(state.resolved.banner_text, "NO GPS POSITION");
         assert!(!state.render.draw_aircraft);
         assert!(!state.render.draw_cdi);
+    }
+
+    #[test]
+    fn selected_unavailable_gps_uses_unavailable_launcher_text_tone() {
+        let state = register_source(
+            &OwnshipState::default(),
+            OwnshipSourceRegistration {
+                source_id: OwnshipSourceId("gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                display_name: "GPS".to_string(),
+                selectable: true,
+                auto_eligible: true,
+            },
+        );
+        let state = update_source_status(
+            &state,
+            OwnshipSourceStatusUpdate {
+                source_id: OwnshipSourceId("gps".to_string()),
+                connection_state: SourceConnectionState::Searching,
+                enabled: true,
+                status_label: "Searching".to_string(),
+            },
+        );
+        let state = select_source(
+            &state,
+            OwnshipSelectionCommand::Source {
+                source_id: OwnshipSourceId("gps".to_string()),
+            },
+        );
+
+        assert_eq!(state.controls.launcher_label, "No GPS");
+        assert_eq!(
+            state.controls.launcher_text_tone,
+            OwnshipLauncherTextTone::Unavailable
+        );
+    }
+
+    #[test]
+    fn connected_gps_uses_normal_launcher_text_tone() {
+        let state = push_sample(
+            &OwnshipState::default(),
+            SituationSample {
+                source_id: OwnshipSourceId("gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 1_000,
+                received_time_epoch_ms: 1_000,
+                position: Some(LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                }),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(90.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: None,
+                pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
+            },
+        );
+
+        assert_eq!(state.controls.launcher_label, "GPS");
+        assert_eq!(
+            state.controls.launcher_text_tone,
+            OwnshipLauncherTextTone::Normal
+        );
     }
 
     #[test]

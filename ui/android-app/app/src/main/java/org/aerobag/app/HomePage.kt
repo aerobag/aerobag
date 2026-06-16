@@ -332,6 +332,11 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
 
+private const val HomeGridColumnCount = 3
+private val HomeGridTileSize = ThumbSize * 2f
+private val HomeGridWidth =
+    (HomeGridTileSize * HomeGridColumnCount.toFloat()) +
+        (ThumbGap * (HomeGridColumnCount - 1).toFloat())
 
 @Composable
 internal fun HomePage(
@@ -538,6 +543,13 @@ internal fun HomePage(
             .fillMaxSize()
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
+        val homeGridRowCount =
+            ((HomeGridButtons.size + HomeGridColumnCount - 1) / HomeGridColumnCount)
+                .coerceAtLeast(1)
+        val homeGridHeight =
+            (HomeGridTileSize * homeGridRowCount.toFloat()) +
+                (ThumbGap * (homeGridRowCount - 1).toFloat())
+
         HomeReturnDock(
             modifier = Modifier.align(Alignment.TopStart),
             currentPage = page,
@@ -547,14 +559,11 @@ internal fun HomePage(
         )
 
         LazyVerticalGrid(
-            columns = GridCells.Fixed(3),
+            columns = GridCells.Fixed(HomeGridColumnCount),
             modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(
-                    start = ThumbGap + (ThumbSize * 0.5f),
-                    top = ThumbSize + ThumbGap * 2f,
-                )
-                .width((ThumbSize * 6f) + (ThumbGap * 2f)),
+                .align(Alignment.Center)
+                .width(HomeGridWidth)
+                .height(homeGridHeight),
             horizontalArrangement = Arrangement.spacedBy(ThumbGap),
             verticalArrangement = Arrangement.spacedBy(ThumbGap),
             userScrollEnabled = false,

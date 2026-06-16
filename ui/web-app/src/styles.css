@@ -676,6 +676,7 @@ button {
   text-shadow: none;
 }
 
+.situationStatusLauncher.situationStatusText-normal,
 .situationStatusLauncher.situationStatus-ready {
   color: var(--theme-situation-status-fg);
 }
@@ -686,6 +687,10 @@ button {
 
 .situationStatusLauncher.situationStatus-unavailable {
   color: var(--theme-situation-status-fg);
+}
+
+.situationStatusLauncher.situationStatusText-unavailable {
+  color: var(--theme-situation-status-unavailable-fg);
 }
 
 .dataStatusDock {
@@ -934,12 +939,15 @@ button {
 
 .homeGrid {
   position: absolute;
-  top: calc((var(--thumb-gap) * 2) + var(--thumb));
-  left: calc(var(--thumb-gap) + (var(--thumb) * 0.5));
+  top: 50%;
+  left: 50%;
   z-index: 3;
   display: grid;
-  grid-template-columns: repeat(3, calc(var(--thumb) * 2));
+  --home-grid-tile-size: calc(var(--thumb) * 2);
+  grid-template-columns: repeat(var(--home-grid-column-count, 3), var(--home-grid-tile-size));
   gap: var(--thumb-gap);
+  width: max-content;
+  transform: translate(-50%, -50%);
 }
 
 .homeButton:disabled {

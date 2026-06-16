@@ -668,6 +668,7 @@ export type OwnshipMode = "none" | "live" | "replay" | "simulated";
 export type OwnshipBannerSeverity = "info" | "caution" | "warning";
 
 export type OwnshipControlTone = "ready" | "unavailable" | "neutral";
+export type OwnshipLauncherTextTone = "normal" | "unavailable";
 
 export type SituationControlInput = "skip_backward" | "fast_rewind" | "fast_forward" | "skip_forward";
 
@@ -739,6 +740,7 @@ export type OwnshipControlModel = {
   policy?: OwnshipSelectionCommand;
   launcher_label: string;
   launcher_tone: OwnshipControlTone;
+  launcher_text_tone: OwnshipLauncherTextTone;
   sources: Array<{
     source_id: { 0: string } | string;
     source_kind: OwnshipSourceKind;

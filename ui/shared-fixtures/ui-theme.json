@@ -13,6 +13,7 @@
     "map_selection_display_fg": "#24333a",
     "situation_status_bg": "#fcf8f1e6",
     "situation_status_fg": "#111111",
+    "situation_status_unavailable_fg": "#e04646",
     "data_status_warning_bg": "#f8d85b",
     "data_status_warning_stroke": "#d37b12",
     "data_status_quiet_bg": "#d9dee1",

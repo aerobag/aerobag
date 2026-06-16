@@ -97,6 +97,7 @@ data class WireOwnshipControlModel(
     val selection: WireOwnshipSelection = WireOwnshipSelection.Auto,
     val launcher_label: String = "No GPS",
     val launcher_tone: WireOwnshipControlTone = WireOwnshipControlTone.Unavailable,
+    val launcher_text_tone: WireOwnshipLauncherTextTone = WireOwnshipLauncherTextTone.Unavailable,
     val sources: List<WireOwnshipSourceMenuItem> = emptyList(),
     val situation_controls: List<WireSituationControlMenuItem> = emptyList(),
 )
@@ -412,6 +413,15 @@ enum class WireOwnshipControlTone {
 
     @SerialName("neutral")
     Neutral,
+}
+
+@Serializable
+enum class WireOwnshipLauncherTextTone {
+    @SerialName("normal")
+    Normal,
+
+    @SerialName("unavailable")
+    Unavailable,
 }
 
 @Serializable

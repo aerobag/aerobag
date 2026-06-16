@@ -121,6 +121,7 @@ export const emptyState: AppState = {
       selection: { kind: "auto" },
       launcher_label: "No GPS",
       launcher_tone: "unavailable",
+      launcher_text_tone: "unavailable",
       sources: [],
       situation_controls: [],
     },

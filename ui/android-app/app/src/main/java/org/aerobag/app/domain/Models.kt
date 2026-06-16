@@ -624,6 +624,11 @@ enum class OwnshipControlTone {
     Neutral,
 }
 
+enum class OwnshipLauncherTextTone {
+    Normal,
+    Unavailable,
+}
+
 enum class SituationControlInput {
     SkipBackward,
     FastRewind,
@@ -649,6 +654,7 @@ data class OwnshipControlModel(
     val selection: OwnshipSelection = OwnshipSelection.Auto,
     val launcherLabel: String = "No GPS",
     val launcherTone: OwnshipControlTone = OwnshipControlTone.Unavailable,
+    val launcherTextTone: OwnshipLauncherTextTone = OwnshipLauncherTextTone.Unavailable,
     val sources: List<OwnshipSourceMenuItem> = emptyList(),
     val situationControls: List<SituationControlMenuItem> = emptyList(),
 )

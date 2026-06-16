@@ -1294,6 +1294,7 @@ private fun OwnshipControlModel.toWire() = WireOwnshipControlModel(
     selection = selection.toWire(),
     launcher_label = launcherLabel,
     launcher_tone = launcherTone.toWire(),
+    launcher_text_tone = launcherTextTone.toWire(),
     sources = sources.map { it.toWire() },
     situation_controls = situationControls.map { it.toWire() },
 )
@@ -1415,6 +1416,7 @@ private fun WireOwnshipControlModel.toUi() = OwnshipControlModel(
     selection = selection.toUi(),
     launcherLabel = launcher_label,
     launcherTone = launcher_tone.toUi(),
+    launcherTextTone = launcher_text_tone.toUi(),
     sources = sources.map { it.toUi() },
     situationControls = situation_controls.map { it.toUi() },
 )
@@ -1518,6 +1520,16 @@ private fun OwnshipControlTone.toWire(): WireOwnshipControlTone = when (this) {
     OwnshipControlTone.Ready -> WireOwnshipControlTone.Ready
     OwnshipControlTone.Unavailable -> WireOwnshipControlTone.Unavailable
     OwnshipControlTone.Neutral -> WireOwnshipControlTone.Neutral
+}
+
+private fun WireOwnshipLauncherTextTone.toUi(): OwnshipLauncherTextTone = when (this) {
+    WireOwnshipLauncherTextTone.Normal -> OwnshipLauncherTextTone.Normal
+    WireOwnshipLauncherTextTone.Unavailable -> OwnshipLauncherTextTone.Unavailable
+}
+
+private fun OwnshipLauncherTextTone.toWire(): WireOwnshipLauncherTextTone = when (this) {
+    OwnshipLauncherTextTone.Normal -> WireOwnshipLauncherTextTone.Normal
+    OwnshipLauncherTextTone.Unavailable -> WireOwnshipLauncherTextTone.Unavailable
 }
 
 private fun WireOwnshipSourceKind.toUi(): OwnshipSourceKind = when (this) {

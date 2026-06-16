@@ -3,6 +3,35 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 INSTANCE_CONFIG="$ROOT/../INSTANCE_CONFIG"
+CLEAR_INSTALLED_PACKAGES=0
+
+usage() {
+  cat <<'EOF'
+usage: install_launch_check.sh [--clear-installed-packages]
+
+Installs, launches, and checks the Android app. By default, installed package
+data is preserved. Pass --clear-installed-packages to delete installed package
+directories before installing.
+EOF
+}
+
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --clear-installed-packages)
+      CLEAR_INSTALLED_PACKAGES=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
 ENV_ANDROID_SERIAL_SET="${ANDROID_SERIAL+x}"
 ENV_ANDROID_SERIAL_VALUE="${ANDROID_SERIAL-}"
 ENV_ANDROID_PACKAGE_SOURCE_BASE_URL_SET="${ANDROID_PACKAGE_SOURCE_BASE_URL+x}"
@@ -68,12 +97,16 @@ ANDROID_LIVE_FEED_SOURCE_BASE_URL="${ANDROID_LIVE_FEED_SOURCE_BASE_URL:-}"
 
 mkdir -p "$GRADLE_USER_HOME" "$PROJECT_CACHE_DIR"
 
-echo "[0/5] clear installed package dirs"
-adb -s "$ANDROID_SERIAL" shell run-as "$APP_ID" rm -rf \
-  files/packages \
-  files/chart-packages \
-  files/plate-packages \
-  files/data-packages >/dev/null 2>&1 || true
+if [[ "$CLEAR_INSTALLED_PACKAGES" -eq 1 ]]; then
+  echo "[0/5] clear installed package dirs"
+  adb -s "$ANDROID_SERIAL" shell run-as "$APP_ID" rm -rf \
+    files/packages \
+    files/chart-packages \
+    files/plate-packages \
+    files/data-packages >/dev/null 2>&1 || true
+else
+  echo "[0/5] preserve installed package dirs"
+fi
 
 echo "[1/5] installDebug"
 adb -s "$ANDROID_SERIAL" reverse "tcp:${PACKAGE_SOURCE_PORT}" "tcp:${PACKAGE_SOURCE_PORT}" >/dev/null

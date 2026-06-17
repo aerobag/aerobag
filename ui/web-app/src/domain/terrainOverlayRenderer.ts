@@ -22,6 +22,13 @@ type TerrainWorkerRenderRequest = TerrainRenderRequest & {
   browserInstanceId: string;
 };
 
+type TerrainWorkerRenderBatchRequest = {
+  kind: "render_batch";
+  id: number;
+  browserInstanceId: string;
+  requests: TerrainRenderRequest[];
+};
+
 type TerrainWorkerRenderResponse =
   | {
       kind: "rendered";
@@ -40,7 +47,30 @@ type TerrainWorkerRenderResponse =
       cacheKey: string;
       tileKey: string;
       error: string;
+    }
+  | {
+      kind: "rendered_batch_tile";
+      id: number;
+      ok: true;
+      generation: number;
+      cacheKey: string;
+      tileKey: string;
+      rawBytes: Uint8Array;
+    }
+  | {
+      kind: "rendered_batch";
+      id: number;
+      ok: true;
+      tileCount: number;
+    }
+  | {
+      kind: "rendered_batch";
+      id: number;
+      ok: false;
+      error: string;
     };
+
+type TerrainWorkerRequest = TerrainWorkerRenderRequest | TerrainWorkerRenderBatchRequest;
 
 export class TerrainOverlayRenderer {
   private nextId = 1;
@@ -49,8 +79,9 @@ export class TerrainOverlayRenderer {
     type: "module",
   });
   private readonly pending = new Map<number, {
-    resolve: (result: TerrainRenderResult) => void;
+    resolve: (result: unknown) => void;
     reject: (error: Error) => void;
+    onTile?: (result: TerrainRenderResult) => void;
   }>();
 
   constructor() {
@@ -74,7 +105,21 @@ export class TerrainOverlayRenderer {
       ...request,
     };
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { resolve: (result) => resolve(result as TerrainRenderResult), reject });
+      this.worker.postMessage(message);
+    });
+  }
+
+  renderTiles(requests: TerrainRenderRequest[], onTile: (result: TerrainRenderResult) => void): Promise<void> {
+    const id = this.nextId++;
+    const message: TerrainWorkerRequest = {
+      kind: "render_batch",
+      id,
+      browserInstanceId: getBrowserInstanceId(),
+      requests,
+    };
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve: () => resolve(), reject, onTile });
       this.worker.postMessage(message);
     });
   }
@@ -89,15 +134,26 @@ export class TerrainOverlayRenderer {
     if (!pending) {
       return;
     }
-    this.pending.delete(message.id);
-    if (message.ok) {
+    if (message.ok && message.kind === "rendered") {
+      this.pending.delete(message.id);
       pending.resolve({
         generation: message.generation,
         cacheKey: message.cacheKey,
         tileKey: message.tileKey,
         rawBytes: message.rawBytes,
       });
+    } else if (message.ok && message.kind === "rendered_batch_tile") {
+      pending.onTile?.({
+        generation: message.generation,
+        cacheKey: message.cacheKey,
+        tileKey: message.tileKey,
+        rawBytes: message.rawBytes,
+      });
+    } else if (message.ok && message.kind === "rendered_batch") {
+      this.pending.delete(message.id);
+      pending.resolve(undefined);
     } else {
+      this.pending.delete(message.id);
       pending.reject(new Error(message.error));
     }
   }

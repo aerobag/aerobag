@@ -643,6 +643,7 @@ data class OwnshipRenderState(
     val orientationDeg: Double? = null,
     val magneticVariationDeg: Double? = null,
     val speedKt: Double? = null,
+    val terrainAltitudeBucketFt: Double? = null,
 )
 
 data class OwnshipControlModel(
@@ -742,6 +743,7 @@ data class PlaybackUiState(
     val cursorLabel: String = "0:00",
     val durationLabel: String = "0:00",
     val rate: Double = 1.0,
+    val tickIntervalMs: Int = 100,
     val speedProfileNorm: List<Double?> = emptyList(),
     val altitudeProfileNorm: List<Double?> = emptyList(),
     val gapSpans: List<PlaybackGapSpan> = emptyList(),

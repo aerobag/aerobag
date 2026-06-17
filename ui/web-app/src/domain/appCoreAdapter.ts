@@ -470,6 +470,7 @@ export type TerrainOverlaySourceTile = {
 
 export type TerrainOverlayTileRequest = {
   key: string;
+  cache_key: string;
   product_id: string;
   path: string;
   source_tiles: TerrainOverlaySourceTile[];
@@ -484,6 +485,17 @@ export type TerrainOverlayTileRequest = {
 export type TerrainOverlayQueryResult = {
   status: TerrainOverlayStatus;
   tile_requests: TerrainOverlayTileRequest[];
+  altitude_bucket_ft: number | null;
+  frame_key: string | null;
+  schedule: TerrainOverlayScheduleDecision;
+};
+
+export type TerrainOverlayScheduleDecision = {
+  cached_count: number;
+  in_flight_count: number;
+  missing_count: number;
+  frame_complete: boolean;
+  work_batch: TerrainOverlayTileRequest[];
 };
 
 export type RasterTileSource = {
@@ -601,7 +613,13 @@ export interface UiSession {
   queryMapOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<MapOverlayQueryResult>;
   queryMapSelection(viewport: MapViewportState, widthPx: number, heightPx: number, click: LatLon): Promise<MapSelectionQueryResult>;
   queryMapSelectionForNavRef(viewport: MapViewportState, widthPx: number, heightPx: number, navRef: NavRef): Promise<MapSelectionForNavRefResult>;
-  queryTerrainOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<TerrainOverlayQueryResult>;
+  queryTerrainOverlay(
+    viewport: MapViewportState,
+    widthPx: number,
+    heightPx: number,
+    decodedCacheKeys: string[],
+    inFlightCacheKeys: string[],
+  ): Promise<TerrainOverlayQueryResult>;
   queryNexradOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<NexradOverlayQueryResult>;
   queryRasterTilePlan(viewport: MapViewportState, widthPx: number, heightPx: number, devicePixelRatio?: number): Promise<RasterTilePlan>;
   renderTerrainOverlayTileByKey(tileKey: string, aircraftAltitudeFt: number): Promise<Uint8Array>;
@@ -745,10 +763,12 @@ type WasmModule = {
   ingest_resource_in_session(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
   ingest_prepared_metar_live_feed_resource_in_session(handle: number, resourceId: string, preparedResourceBytes: Uint8Array): Promise<void> | void;
   report_session_resource_failure_in_session(handle: number, resourceId: string, message: string): Promise<string> | string;
+  report_session_resource_failure_in_session_at_epoch_ms(handle: number, resourceId: string, message: string, nowEpochMs: number): Promise<string> | string;
   get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, nowEpochMs: number): Promise<string> | string;
   get_map_selection_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, clickJson: string, nowEpochMs: number): Promise<string> | string;
   get_map_selection_for_nav_ref_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, navRefJson: string, nowEpochMs: number): Promise<string> | string;
   get_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, nowEpochMs: number): Promise<string> | string;
+  get_scheduled_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, decodedCacheKeysJson: string, inFlightCacheKeysJson: string, nowEpochMs: number): Promise<string> | string;
   get_nexrad_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, nowEpochMs: number): Promise<string> | string;
   get_raster_tile_plan_in_session_with_display_scale(handle: number, viewportJson: string, widthPx: number, heightPx: number, devicePixelRatio: number, nowEpochMs: number): Promise<string> | string;
   render_terrain_overlay_tile_by_key_in_session(handle: number, terrainTileKey: string, aircraftAltitudeFt: number): Promise<Uint8Array> | Uint8Array;
@@ -918,7 +938,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     let liveFeedSubscription: LiveFeedSubscription | null = null;
     reportSessionResourceFailure = async (resourceId, message) => {
       snapshot = await parseSessionSnapshot(
-        this.module.report_session_resource_failure_in_session(handle, resourceId, message),
+        this.module.report_session_resource_failure_in_session_at_epoch_ms(handle, resourceId, message, Date.now()),
       );
       debugLog("core.ui.invalidations.source", {
         source: "resource_failure",
@@ -1409,15 +1429,17 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             ),
           ),
         ),
-      queryTerrainOverlay: async (viewport, widthPx, heightPx) =>
+      queryTerrainOverlay: async (viewport, widthPx, heightPx, decodedCacheKeys, inFlightCacheKeys) =>
         withSessionRetry(async () =>
           runSessionOperation<TerrainOverlayQueryResult>(
             () =>
-              this.module.get_terrain_overlay_in_session(
+              this.module.get_scheduled_terrain_overlay_in_session(
                 handle,
                 JSON.stringify(coreViewportForMap(viewport)),
                 widthPx,
                 heightPx,
+                JSON.stringify(decodedCacheKeys),
+                JSON.stringify(inFlightCacheKeys),
                 Date.now(),
               ),
             (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
@@ -1779,6 +1801,7 @@ async function loadBestAvailableAdapterUncached(
     "get_map_selection_in_session",
     "get_map_selection_for_nav_ref_in_session",
     "get_terrain_overlay_in_session",
+    "get_scheduled_terrain_overlay_in_session",
     "get_nexrad_overlay_in_session",
     "get_raster_tile_plan_in_session_with_display_scale",
     "render_terrain_overlay_tile_by_key_in_session",
@@ -1807,6 +1830,7 @@ async function loadBestAvailableAdapterUncached(
     "sequence_active_leg_in_session",
     "ingest_resource_in_session",
     "report_session_resource_failure_in_session",
+    "report_session_resource_failure_in_session_at_epoch_ms",
     "nav_db_open_controller_create",
     "nav_db_open_controller_destroy",
     "nav_db_open_controller_finish",

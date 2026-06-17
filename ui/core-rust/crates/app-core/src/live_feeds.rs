@@ -12,11 +12,13 @@ use crate::{
 const CURRENT_RESOURCE_ID: &str = "live_feeds/current";
 const CURRENT_ADDRESS: &str = "/live-feeds/current.json";
 const LIVE_FEEDS_PREFIX: &str = "/live-feeds/";
+const FAILED_RESOURCE_RETRY_DELAY_MS: i64 = 5 * 60 * 1000;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct LiveFeedsState {
     products: HashMap<String, LiveFeedProductState>,
     current_loaded: bool,
+    resource_failure_retry_after_epoch_ms: HashMap<String, i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -157,6 +159,28 @@ struct LiveFeedCurrentEvent {
 impl LiveFeedsState {
     pub fn sync_outcome(&self) -> HadOperationOutcome {
         let resources = self.missing_resources();
+        self.outcome_for_resources(resources)
+    }
+
+    pub fn sync_outcome_at_epoch_ms(&self, epoch_ms: i64) -> HadOperationOutcome {
+        let resources = self.retryable_resources(self.missing_resources(), epoch_ms);
+        self.outcome_for_resources(resources)
+    }
+
+    pub fn sync_product_outcome_at_epoch_ms(
+        &self,
+        product: &str,
+        epoch_ms: i64,
+    ) -> HadOperationOutcome {
+        let resources = if self.current_loaded {
+            self.missing_resources_for_products(std::iter::once(product))
+        } else {
+            self.missing_resources()
+        };
+        self.outcome_for_resources(self.retryable_resources(resources, epoch_ms))
+    }
+
+    fn outcome_for_resources(&self, resources: Vec<CoreResourceRequest>) -> HadOperationOutcome {
         if resources.is_empty() {
             HadOperationOutcome::complete(
                 serde_json::to_value(self.snapshot()).expect("live feed snapshot serializes"),
@@ -183,6 +207,21 @@ impl LiveFeedsState {
 
     pub fn sync_outcome_with_invalidations(&self) -> HadOperationOutcome {
         let resources = self.missing_resources();
+        self.outcome_for_resources_with_invalidations(resources)
+    }
+
+    pub fn sync_outcome_with_invalidations_at_epoch_ms(
+        &self,
+        epoch_ms: i64,
+    ) -> HadOperationOutcome {
+        let resources = self.retryable_resources(self.missing_resources(), epoch_ms);
+        self.outcome_for_resources_with_invalidations(resources)
+    }
+
+    fn outcome_for_resources_with_invalidations(
+        &self,
+        resources: Vec<CoreResourceRequest>,
+    ) -> HadOperationOutcome {
         if resources.is_empty() {
             HadOperationOutcome::complete_with_invalidations(
                 serde_json::to_value(self.snapshot()).expect("live feed snapshot serializes"),
@@ -252,6 +291,8 @@ impl LiveFeedsState {
             let current: CurrentManifest =
                 serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?;
             self.current_loaded = true;
+            self.resource_failure_retry_after_epoch_ms
+                .remove(resource_id);
             let products = current.products;
             self.products
                 .retain(|product, _| products.contains_key(product));
@@ -278,6 +319,8 @@ impl LiveFeedsState {
             }
             let entry = self.products.entry(product).or_default();
             if entry.current_version.as_deref() != Some(version.as_str()) {
+                self.resource_failure_retry_after_epoch_ms
+                    .remove(resource_id);
                 return Ok(());
             }
             entry.state_url = Some(manifest.state.url);
@@ -286,6 +329,8 @@ impl LiveFeedsState {
             entry.delta_from_previous = manifest.delta_from_previous;
             entry.version_manifest =
                 Some(serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?);
+            self.resource_failure_retry_after_epoch_ms
+                .remove(resource_id);
             return Ok(());
         }
         if let Some(rest) = resource_id.strip_prefix("live_feeds/state/") {
@@ -293,6 +338,8 @@ impl LiveFeedsState {
             let parsed: Value = serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?;
             let entry = self.products.entry(product).or_default();
             if entry.current_version.as_deref() != Some(version.as_str()) {
+                self.resource_failure_retry_after_epoch_ms
+                    .remove(resource_id);
                 return Ok(());
             }
             if let Some(expected) = &entry.expected_state_sha256 {
@@ -317,6 +364,8 @@ impl LiveFeedsState {
             }
             entry.state_manifest = Some(parsed);
             entry.loaded_version = Some(version);
+            self.resource_failure_retry_after_epoch_ms
+                .remove(resource_id);
             return Ok(());
         }
         if let Some(rest) = resource_id.strip_prefix("live_feeds/delta/") {
@@ -328,6 +377,8 @@ impl LiveFeedsState {
             }
             let entry = self.products.entry(product.clone()).or_default();
             if entry.current_version.as_deref() != Some(to_version.as_str()) {
+                self.resource_failure_retry_after_epoch_ms
+                    .remove(resource_id);
                 return Ok(());
             }
             let delta_ref = entry.delta_from_previous.clone().ok_or_else(|| {
@@ -376,11 +427,22 @@ impl LiveFeedsState {
             }
             entry.state_manifest = Some(next_state);
             entry.loaded_version = Some(to_version);
+            self.resource_failure_retry_after_epoch_ms
+                .remove(resource_id);
             return Ok(());
         }
         Err(invalid_live_feed(format!(
             "unsupported live feed resource id: {resource_id}"
         )))
+    }
+
+    pub fn record_resource_failure(&mut self, resource_id: &str, epoch_ms: i64) {
+        if Self::handles_resource(resource_id) {
+            self.resource_failure_retry_after_epoch_ms.insert(
+                resource_id.to_string(),
+                epoch_ms + FAILED_RESOURCE_RETRY_DELAY_MS,
+            );
+        }
     }
 
     pub fn ingest_prepared_metar_live_feed(
@@ -647,6 +709,22 @@ impl LiveFeedsState {
             }
         }
         resources
+    }
+
+    fn retryable_resources(
+        &self,
+        resources: Vec<CoreResourceRequest>,
+        epoch_ms: i64,
+    ) -> Vec<CoreResourceRequest> {
+        resources
+            .into_iter()
+            .filter(
+                |resource| match self.resource_failure_retry_after_epoch_ms.get(&resource.id) {
+                    Some(retry_after) => *retry_after <= epoch_ms,
+                    None => true,
+                },
+            )
+            .collect()
     }
 
     fn snapshot(&self) -> LiveFeedsSnapshot {
@@ -1108,6 +1186,24 @@ mod tests {
                 url: "/live-feeds/current.json".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn failed_current_manifest_fetch_is_retry_gated() {
+        let mut state = LiveFeedsState::default();
+        state.record_resource_failure("live_feeds/current", 1_000);
+
+        let HadOperationOutcome::Complete { .. } = state.sync_outcome_at_epoch_ms(1_001) else {
+            panic!("current manifest retry should be suppressed before retry deadline");
+        };
+
+        let HadOperationOutcome::NeedResources { resources } =
+            state.sync_outcome_at_epoch_ms(1_000 + FAILED_RESOURCE_RETRY_DELAY_MS)
+        else {
+            panic!("current manifest retry should resume at retry deadline");
+        };
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].id, "live_feeds/current");
     }
 
     #[test]

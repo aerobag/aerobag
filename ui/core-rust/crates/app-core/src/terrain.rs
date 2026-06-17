@@ -1,12 +1,15 @@
 use std::collections::BTreeSet;
+use std::io::Read;
 
 use serde::{Deserialize, Serialize};
 
 const ABT1_MAGIC: &[u8; 4] = b"ABT1";
+const GZIP_MAGIC: &[u8; 2] = b"\x1f\x8b";
 const HEADER_BYTES: usize = 20;
 const MIN_TERRAIN_ZOOM: u32 = 0;
 const MAX_TERRAIN_ZOOM: u32 = 10;
 const TERRAIN_FULL_COVERAGE_ZOOM: u32 = 7;
+const TERRAIN_ALTITUDE_BUCKET_FT: f64 = 200.0;
 const TERRAIN_WIDE_BASE_ID: &str = "terrain-wide";
 const WORLD_SIZE: f64 = 256.0;
 const MAX_LATITUDE: f64 = 85.051_128_78;
@@ -100,6 +103,18 @@ pub struct TerrainTileInfo {
 pub struct TerrainOverlayQueryResult {
     pub status: TerrainOverlayStatus,
     pub tile_requests: Vec<TerrainOverlayTileRequest>,
+    pub altitude_bucket_ft: Option<f64>,
+    pub frame_key: Option<String>,
+    pub schedule: TerrainOverlayScheduleDecision,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TerrainOverlayScheduleDecision {
+    pub cached_count: usize,
+    pub in_flight_count: usize,
+    pub missing_count: usize,
+    pub frame_complete: bool,
+    pub work_batch: Vec<TerrainOverlayTileRequest>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -116,6 +131,7 @@ pub enum TerrainOverlayStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TerrainOverlayTileRequest {
     pub key: String,
+    pub cache_key: String,
     pub product_id: String,
     pub path: String,
     pub source_tiles: Vec<TerrainOverlaySourceTile>,
@@ -164,12 +180,18 @@ pub fn query_terrain_overlay_with_available_packages(
         return TerrainOverlayQueryResult {
             status: TerrainOverlayStatus::NoPosition,
             tile_requests: Vec::new(),
+            altitude_bucket_ft: None,
+            frame_key: None,
+            schedule: empty_terrain_overlay_schedule(),
         };
     }
     if !has_altitude {
         return TerrainOverlayQueryResult {
             status: TerrainOverlayStatus::NoAltitude,
             tile_requests: Vec::new(),
+            altitude_bucket_ft: None,
+            frame_key: None,
+            schedule: empty_terrain_overlay_schedule(),
         };
     }
     let tile_requests = terrain_tile_requests_with_available_packages(
@@ -183,6 +205,9 @@ pub fn query_terrain_overlay_with_available_packages(
         return TerrainOverlayQueryResult {
             status: TerrainOverlayStatus::TooManyTiles { count },
             tile_requests: Vec::new(),
+            altitude_bucket_ft: None,
+            frame_key: None,
+            schedule: empty_terrain_overlay_schedule(),
         };
     }
     if count == 0 {
@@ -191,12 +216,81 @@ pub fn query_terrain_overlay_with_available_packages(
                 reason: "no installed terrain packages cover the viewport".to_string(),
             },
             tile_requests: Vec::new(),
+            altitude_bucket_ft: None,
+            frame_key: None,
+            schedule: empty_terrain_overlay_schedule(),
         };
     }
     TerrainOverlayQueryResult {
         status: TerrainOverlayStatus::Ready { count },
         tile_requests,
+        altitude_bucket_ft: None,
+        frame_key: None,
+        schedule: empty_terrain_overlay_schedule(),
     }
+}
+
+pub fn terrain_altitude_bucket_ft(altitude_ft: Option<f64>) -> Option<f64> {
+    altitude_ft
+        .filter(|altitude| altitude.is_finite())
+        .map(|altitude| {
+            (altitude / TERRAIN_ALTITUDE_BUCKET_FT).round() * TERRAIN_ALTITUDE_BUCKET_FT
+        })
+}
+
+pub fn prepare_terrain_overlay_frame(
+    query: &mut TerrainOverlayQueryResult,
+    altitude_ft: Option<f64>,
+    sort_origin: Option<crate::LatLon>,
+    viewport: &crate::MapViewport,
+    width_px: f64,
+    height_px: f64,
+) {
+    let altitude_bucket_ft = terrain_altitude_bucket_ft(altitude_ft);
+    query.altitude_bucket_ft = altitude_bucket_ft;
+    if let Some(origin) = sort_origin {
+        sort_terrain_tile_requests_by_distance(query, origin, viewport, width_px, height_px);
+    }
+    for request in &mut query.tile_requests {
+        request.cache_key = terrain_cache_key(&request.key, altitude_bucket_ft);
+    }
+    query.frame_key = if matches!(query.status, TerrainOverlayStatus::Ready { .. }) {
+        Some(terrain_frame_key(&query.tile_requests, altitude_bucket_ft))
+    } else {
+        None
+    };
+}
+
+pub fn schedule_terrain_overlay_frame(
+    query: &mut TerrainOverlayQueryResult,
+    decoded_cache_keys: &BTreeSet<String>,
+    in_flight_cache_keys: &BTreeSet<String>,
+) {
+    if !matches!(query.status, TerrainOverlayStatus::Ready { .. }) {
+        query.schedule = empty_terrain_overlay_schedule();
+        return;
+    }
+    let mut cached_count = 0;
+    let mut in_flight_count = 0;
+    let mut missing_count = 0;
+    let mut work_batch = Vec::new();
+    for request in &query.tile_requests {
+        if decoded_cache_keys.contains(&request.cache_key) {
+            cached_count += 1;
+        } else if in_flight_cache_keys.contains(&request.cache_key) {
+            in_flight_count += 1;
+        } else {
+            missing_count += 1;
+            work_batch.push(request.clone());
+        }
+    }
+    query.schedule = TerrainOverlayScheduleDecision {
+        cached_count,
+        in_flight_count,
+        missing_count,
+        frame_complete: cached_count == query.tile_requests.len(),
+        work_batch,
+    };
 }
 
 pub fn render_terrain_warning_png(
@@ -436,6 +530,23 @@ pub fn parse_abt1_tile(tile_bytes: &[u8]) -> Result<(TerrainTileInfo, Vec<i16>),
     ))
 }
 
+pub(crate) fn terrain_source_payload_to_abt1_bytes(payload: &[u8]) -> Result<Vec<u8>, String> {
+    let abt1_bytes = if payload.starts_with(GZIP_MAGIC) {
+        let mut decoder = flate2::read::GzDecoder::new(payload);
+        let mut decoded = Vec::new();
+        decoder
+            .read_to_end(&mut decoded)
+            .map_err(|err| format!("failed to gzip-decode terrain tile payload: {err}"))?;
+        decoded
+    } else {
+        payload.to_vec()
+    };
+    if abt1_bytes.len() < HEADER_BYTES || &abt1_bytes[0..4] != ABT1_MAGIC {
+        return Err("terrain source payload is not an ABT1 tile".to_string());
+    }
+    Ok(abt1_bytes)
+}
+
 fn terrain_tile_requests_with_available_packages(
     viewport: &crate::MapViewport,
     width_px: f64,
@@ -480,8 +591,10 @@ fn terrain_tile_requests_with_available_packages(
             );
             if let Some(product_id) = product_ids.first() {
                 let path = format!("tiles/{terrain_zoom}/{x}/{y_tms}.terrain");
+                let key = format!("terrain/{path}");
                 requests.push(TerrainOverlayTileRequest {
-                    key: format!("terrain/{path}"),
+                    cache_key: terrain_cache_key(&key, None),
+                    key,
                     product_id: product_id.clone(),
                     path: path.clone(),
                     source_tiles: product_ids
@@ -504,6 +617,70 @@ fn terrain_tile_requests_with_available_packages(
         }
     }
     requests
+}
+
+fn terrain_cache_key(tile_key: &str, altitude_bucket_ft: Option<f64>) -> String {
+    match altitude_bucket_ft {
+        Some(altitude_bucket_ft) => format!("{tile_key}@{altitude_bucket_ft:.0}"),
+        None => format!("{tile_key}@no-alt"),
+    }
+}
+
+fn empty_terrain_overlay_schedule() -> TerrainOverlayScheduleDecision {
+    TerrainOverlayScheduleDecision {
+        cached_count: 0,
+        in_flight_count: 0,
+        missing_count: 0,
+        frame_complete: false,
+        work_batch: Vec::new(),
+    }
+}
+
+fn terrain_frame_key(
+    requests: &[TerrainOverlayTileRequest],
+    altitude_bucket_ft: Option<f64>,
+) -> String {
+    let altitude = altitude_bucket_ft
+        .map(|altitude| format!("{altitude:.0}"))
+        .unwrap_or_else(|| "no-alt".to_string());
+    let tile_keys = requests
+        .iter()
+        .map(|request| request.key.as_str())
+        .collect::<Vec<_>>()
+        .join("|");
+    format!("{altitude}:{tile_keys}")
+}
+
+fn sort_terrain_tile_requests_by_distance(
+    query: &mut TerrainOverlayQueryResult,
+    origin: crate::LatLon,
+    viewport: &crate::MapViewport,
+    width_px: f64,
+    height_px: f64,
+) {
+    if width_px <= 0.0 || height_px <= 0.0 {
+        return;
+    }
+    let center_world = lat_lon_to_world(viewport.center.lat, viewport.center.lon);
+    let origin_world = lat_lon_to_world(origin.lat, origin.lon);
+    let scale = scale_for_zoom(viewport.zoom);
+    let origin_x = (origin_world.0 - center_world.0) * scale + width_px / 2.0;
+    let origin_y = (origin_world.1 - center_world.1) * scale + height_px / 2.0;
+    query.tile_requests.sort_by(|left, right| {
+        let left_distance = terrain_request_distance_squared(left, origin_x, origin_y);
+        let right_distance = terrain_request_distance_squared(right, origin_x, origin_y);
+        left_distance.total_cmp(&right_distance)
+    });
+}
+
+fn terrain_request_distance_squared(
+    request: &TerrainOverlayTileRequest,
+    target_x: f64,
+    target_y: f64,
+) -> f64 {
+    let center_x = request.left + request.size / 2.0;
+    let center_y = request.top + request.size / 2.0;
+    (center_x - target_x).powi(2) + (center_y - target_y).powi(2)
 }
 
 fn terrain_zoom_for_viewport(view_zoom: f64) -> u32 {
@@ -629,6 +806,100 @@ mod tests {
         assert_eq!(&rgba[4..8], &[255, 220, 0, 125]);
         assert_eq!(&rgba[8..12], &[185, 0, 45, 190]);
         assert_eq!(&rgba[12..16], &[0, 82, 150, 70]);
+    }
+
+    #[test]
+    fn decodes_gzip_terrain_source_payload_to_abt1() {
+        use std::io::Write;
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"ABT1");
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&(-32768_i16).to_le_bytes());
+        bytes.extend_from_slice(&0_i16.to_le_bytes());
+        bytes.extend_from_slice(&1.0_f32.to_le_bytes());
+        bytes.extend_from_slice(&0.0_f32.to_le_bytes());
+        bytes.extend_from_slice(&2500_i16.to_le_bytes());
+
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&bytes).expect("write gzip payload");
+        let gzip_bytes = encoder.finish().expect("finish gzip payload");
+
+        assert_eq!(
+            terrain_source_payload_to_abt1_bytes(&gzip_bytes).expect("decode terrain payload"),
+            bytes
+        );
+    }
+
+    #[test]
+    fn prepares_core_owned_terrain_frame_identity() {
+        let request = |key: &str, left: f64, top: f64| TerrainOverlayTileRequest {
+            key: key.to_string(),
+            cache_key: String::new(),
+            product_id: "terrain-sw".to_string(),
+            path: key.strip_prefix("terrain/").unwrap_or(key).to_string(),
+            source_tiles: Vec::new(),
+            z: 9,
+            x: 0,
+            y_tms: 0,
+            left,
+            top,
+            size: 10.0,
+        };
+        let mut query = TerrainOverlayQueryResult {
+            status: TerrainOverlayStatus::Ready { count: 2 },
+            tile_requests: vec![
+                request("terrain/tiles/9/1/2.terrain", 1_000.0, 1_000.0),
+                request("terrain/tiles/9/3/4.terrain", 45.0, 45.0),
+            ],
+            altitude_bucket_ft: None,
+            frame_key: None,
+            schedule: empty_terrain_overlay_schedule(),
+        };
+        prepare_terrain_overlay_frame(
+            &mut query,
+            Some(1_190.0),
+            Some(crate::LatLon { lat: 0.0, lon: 0.0 }),
+            &crate::MapViewport {
+                center: crate::LatLon { lat: 0.0, lon: 0.0 },
+                zoom: 0.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            100.0,
+            100.0,
+        );
+
+        assert_eq!(query.altitude_bucket_ft, Some(1_200.0));
+        assert_eq!(query.tile_requests[0].key, "terrain/tiles/9/3/4.terrain");
+        assert_eq!(
+            query.tile_requests[0].cache_key,
+            "terrain/tiles/9/3/4.terrain@1200"
+        );
+        assert_eq!(
+            query.frame_key.as_deref(),
+            Some("1200:terrain/tiles/9/3/4.terrain|terrain/tiles/9/1/2.terrain")
+        );
+
+        let mut decoded_cache_keys = BTreeSet::new();
+        decoded_cache_keys.insert("terrain/tiles/9/3/4.terrain@1200".to_string());
+        let in_flight_cache_keys = BTreeSet::new();
+        schedule_terrain_overlay_frame(&mut query, &decoded_cache_keys, &in_flight_cache_keys);
+
+        assert_eq!(query.schedule.cached_count, 1);
+        assert_eq!(query.schedule.in_flight_count, 0);
+        assert_eq!(query.schedule.missing_count, 1);
+        assert!(!query.schedule.frame_complete);
+        assert_eq!(
+            query
+                .schedule
+                .work_batch
+                .iter()
+                .map(|request| request.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["terrain/tiles/9/1/2.terrain"]
+        );
     }
 
     #[test]

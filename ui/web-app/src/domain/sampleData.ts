@@ -115,6 +115,7 @@ export const emptyState: AppState = {
       speed_kt: null,
       altitude_msl_ft: null,
       pressure_altitude_ft: null,
+      terrain_altitude_bucket_ft: null,
     },
     controls: {
       mode: "none",

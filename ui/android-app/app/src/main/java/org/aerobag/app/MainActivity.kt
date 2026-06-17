@@ -2049,8 +2049,6 @@ internal fun screenToWorldOffset(
     return Offset(world.x.toFloat(), world.y.toFloat())
 }
 
-internal fun terrainAltitudeBucketForOwnship(ownship: OwnshipRenderState): Double? = null
-
 internal class RasterTileBitmapLoader(
     private val context: Context,
     scope: CoroutineScope,
@@ -3143,9 +3141,14 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
             }
         }
     }
-    LaunchedEffect(uiSession, sessionSnapshot.playbackUiState.status) {
+    LaunchedEffect(
+        uiSession,
+        sessionSnapshot.playbackUiState.status,
+        sessionSnapshot.playbackUiState.tickIntervalMs,
+    ) {
+        val tickIntervalMs = sessionSnapshot.playbackUiState.tickIntervalMs.coerceIn(16, 1000).toLong()
         while (sessionSnapshot.playbackUiState.status == PlaybackStatus.Playing) {
-            delay(250)
+            delay(tickIntervalMs)
             runCatching { uiSession.tickPlayback(System.currentTimeMillis().toDouble()) }
                 .onSuccess {
                     sessionSnapshot = it

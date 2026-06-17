@@ -235,6 +235,7 @@ pub struct OwnshipRenderState {
     pub speed_kt: Option<f64>,
     pub altitude_msl_ft: Option<f64>,
     pub pressure_altitude_ft: Option<f64>,
+    pub terrain_altitude_bucket_ft: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -649,6 +650,8 @@ fn project_render_state(resolved: &ResolvedOwnshipState) -> OwnshipRenderState {
         .kinematics
         .as_ref()
         .and_then(|kinematics| kinematics.pressure_altitude_ft);
+    let terrain_altitude_bucket_ft =
+        crate::terrain_altitude_bucket_ft(altitude_msl_ft.or(pressure_altitude_ft));
 
     OwnshipRenderState {
         mode: resolved.mode,
@@ -666,6 +669,7 @@ fn project_render_state(resolved: &ResolvedOwnshipState) -> OwnshipRenderState {
         speed_kt,
         altitude_msl_ft,
         pressure_altitude_ft,
+        terrain_altitude_bucket_ft,
     }
 }
 

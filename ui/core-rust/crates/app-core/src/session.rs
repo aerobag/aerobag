@@ -755,6 +755,39 @@ fn dedupe_invalidations(invalidations: &mut Vec<UiInvalidation>) {
     invalidations.dedup();
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct OwnshipTerrainRefreshKey {
+    has_position: bool,
+    altitude_bucket_ft: Option<f64>,
+}
+
+fn ownship_terrain_refresh_key(session: &UiSession) -> OwnshipTerrainRefreshKey {
+    let has_position = session
+        .app_state
+        .ownship
+        .resolved
+        .kinematics
+        .as_ref()
+        .is_some_and(|kinematics| {
+            kinematics.position.lat.is_finite() && kinematics.position.lon.is_finite()
+        });
+    OwnshipTerrainRefreshKey {
+        has_position,
+        altitude_bucket_ft: crate::terrain_altitude_bucket_ft(ownship_terrain_altitude_ft(session)),
+    }
+}
+
+fn terrain_overlay_invalidations_for_ownship_change(
+    before: OwnshipTerrainRefreshKey,
+    after: OwnshipTerrainRefreshKey,
+) -> Vec<UiInvalidation> {
+    if before == after {
+        Vec::new()
+    } else {
+        vec![UiInvalidation::TerrainOverlay]
+    }
+}
+
 fn procedure_geometry_status_records_for_plan(plan: &FlightPlan) -> Vec<DataStatusRecord> {
     plan.route_components
         .iter()
@@ -3287,9 +3320,16 @@ pub fn push_situation_sample_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    let terrain_key_before = ownship_terrain_refresh_key(session);
     advance_session_wall_clock(session, sample.received_time_epoch_ms);
     session.app_state = state::reduce(&session.app_state, AppEvent::PushSituationSample(sample))?;
-    session_snapshot_outcome(session)
+    session_snapshot_outcome_with_invalidations(
+        session,
+        terrain_overlay_invalidations_for_ownship_change(
+            terrain_key_before,
+            ownship_terrain_refresh_key(session),
+        ),
+    )
 }
 
 pub fn set_ownship_policy_in_session(
@@ -3344,6 +3384,7 @@ pub fn select_ownship_source_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    let terrain_key_before = ownship_terrain_refresh_key(session);
     let selected_source_kind = match &selection {
         crate::OwnshipSelectionCommand::Source { source_id } => session
             .app_state
@@ -3371,7 +3412,13 @@ pub fn select_ownship_source_in_session_outcome(
         }
         _ => {}
     }
-    session_snapshot_outcome(session)
+    session_snapshot_outcome_with_invalidations(
+        session,
+        terrain_overlay_invalidations_for_ownship_change(
+            terrain_key_before,
+            ownship_terrain_refresh_key(session),
+        ),
+    )
 }
 
 fn is_replay_ownship_source(kind: crate::OwnshipSourceKind) -> bool {
@@ -3422,6 +3469,7 @@ pub fn load_playback_trace_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    let terrain_key_before = ownship_terrain_refresh_key(session);
     let situation = session
         .playback
         .load_trace_json(source_path.to_string(), trace_json)?;
@@ -3433,7 +3481,13 @@ pub fn load_playback_trace_in_session_outcome(
         situation,
         0,
     )?;
-    session_snapshot_outcome(session)
+    session_snapshot_outcome_with_invalidations(
+        session,
+        terrain_overlay_invalidations_for_ownship_change(
+            terrain_key_before,
+            ownship_terrain_refresh_key(session),
+        ),
+    )
 }
 
 pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
@@ -3458,6 +3512,7 @@ pub fn play_playback_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    let terrain_key_before = ownship_terrain_refresh_key(session);
     if let Some(situation) = session.playback.play(now_epoch_ms) {
         apply_situation_to_ownship(
             session,
@@ -3468,7 +3523,13 @@ pub fn play_playback_in_session_outcome(
             now_epoch_ms as i64,
         )?;
     }
-    session_snapshot_outcome(session)
+    session_snapshot_outcome_with_invalidations(
+        session,
+        terrain_overlay_invalidations_for_ownship_change(
+            terrain_key_before,
+            ownship_terrain_refresh_key(session),
+        ),
+    )
 }
 
 pub fn pause_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
@@ -3493,6 +3554,7 @@ pub fn pause_playback_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    let terrain_key_before = ownship_terrain_refresh_key(session);
     if let Some(situation) = session.playback.pause(now_epoch_ms) {
         apply_situation_to_ownship(
             session,
@@ -3503,7 +3565,13 @@ pub fn pause_playback_in_session_outcome(
             now_epoch_ms as i64,
         )?;
     }
-    session_snapshot_outcome(session)
+    session_snapshot_outcome_with_invalidations(
+        session,
+        terrain_overlay_invalidations_for_ownship_change(
+            terrain_key_before,
+            ownship_terrain_refresh_key(session),
+        ),
+    )
 }
 
 pub fn seek_playback_in_session(
@@ -3533,6 +3601,7 @@ pub fn seek_playback_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    let terrain_key_before = ownship_terrain_refresh_key(session);
     if let Some(situation) = session.playback.seek(cursor_seconds, now_epoch_ms) {
         apply_situation_to_ownship(
             session,
@@ -3543,7 +3612,13 @@ pub fn seek_playback_in_session_outcome(
             now_epoch_ms as i64,
         )?;
     }
-    session_snapshot_outcome(session)
+    session_snapshot_outcome_with_invalidations(
+        session,
+        terrain_overlay_invalidations_for_ownship_change(
+            terrain_key_before,
+            ownship_terrain_refresh_key(session),
+        ),
+    )
 }
 
 pub fn set_playback_rate_in_session(
@@ -3573,6 +3648,7 @@ pub fn set_playback_rate_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    let terrain_key_before = ownship_terrain_refresh_key(session);
     if let Some(situation) = session.playback.set_rate(rate, now_epoch_ms) {
         apply_situation_to_ownship(
             session,
@@ -3583,7 +3659,13 @@ pub fn set_playback_rate_in_session_outcome(
             now_epoch_ms as i64,
         )?;
     }
-    session_snapshot_outcome(session)
+    session_snapshot_outcome_with_invalidations(
+        session,
+        terrain_overlay_invalidations_for_ownship_change(
+            terrain_key_before,
+            ownship_terrain_refresh_key(session),
+        ),
+    )
 }
 
 pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
@@ -3608,6 +3690,7 @@ pub fn tick_playback_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    let terrain_key_before = ownship_terrain_refresh_key(session);
     if let Some(situation) = session.playback.tick(now_epoch_ms) {
         apply_situation_to_ownship(
             session,
@@ -3618,7 +3701,13 @@ pub fn tick_playback_in_session_outcome(
             now_epoch_ms as i64,
         )?;
     }
-    session_snapshot_outcome(session)
+    session_snapshot_outcome_with_invalidations(
+        session,
+        terrain_overlay_invalidations_for_ownship_change(
+            terrain_key_before,
+            ownship_terrain_refresh_key(session),
+        ),
+    )
 }
 
 pub fn set_situation_in_session(
@@ -3644,6 +3733,7 @@ pub fn set_situation_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    let terrain_key_before = ownship_terrain_refresh_key(session);
     apply_situation_to_ownship(
         session,
         DIRECT_SITUATION_SOURCE_ID,
@@ -3652,7 +3742,13 @@ pub fn set_situation_in_session_outcome(
         situation,
         0,
     )?;
-    session_snapshot_outcome(session)
+    session_snapshot_outcome_with_invalidations(
+        session,
+        terrain_overlay_invalidations_for_ownship_change(
+            terrain_key_before,
+            ownship_terrain_refresh_key(session),
+        ),
+    )
 }
 
 pub fn tick_debug_ownship_driver_in_session(
@@ -3671,8 +3767,15 @@ pub fn tick_debug_ownship_driver_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    let terrain_key_before = ownship_terrain_refresh_key(session);
     tick_debug_ownship_driver(session, now_epoch_ms)?;
-    session_snapshot_outcome(session)
+    session_snapshot_outcome_with_invalidations(
+        session,
+        terrain_overlay_invalidations_for_ownship_change(
+            terrain_key_before,
+            ownship_terrain_refresh_key(session),
+        ),
+    )
 }
 
 #[allow(dead_code)]
@@ -4786,7 +4889,9 @@ pub fn ingest_tafs_in_session(handle: u32, payload: &TafProductPayload) -> AppRe
 pub fn sync_live_feeds_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
-    Ok(session.live_feeds.sync_outcome_with_invalidations())
+    Ok(session
+        .live_feeds
+        .sync_outcome_with_invalidations_at_epoch_ms(session.wall_clock_epoch_ms))
 }
 
 pub fn ingest_live_feed_sse_event_in_session(
@@ -4909,11 +5014,18 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         return Ok(());
     }
     if let Some(rest) = resource_id.strip_prefix("terrain/source/") {
+        let abt1_bytes =
+            crate::terrain::terrain_source_payload_to_abt1_bytes(bytes).map_err(|message| {
+                AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message,
+                }
+            })?;
         let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, handle)?;
         session
             .terrain_source_tile_cache
-            .insert(rest.to_string(), bytes.to_vec());
+            .insert(rest.to_string(), abt1_bytes);
         return Ok(());
     }
     Err(AppError {
@@ -5210,9 +5322,22 @@ pub fn report_session_resource_failure_in_session(
     resource_id: &str,
     message: &str,
 ) -> AppResult<UiSessionSnapshot> {
+    report_session_resource_failure_in_session_at_epoch_ms(handle, resource_id, message, 0)
+}
+
+pub fn report_session_resource_failure_in_session_at_epoch_ms(
+    handle: u32,
+    resource_id: &str,
+    message: &str,
+    epoch_ms: i64,
+) -> AppResult<UiSessionSnapshot> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    advance_session_wall_clock(session, epoch_ms);
     if LiveFeedsState::handles_resource(resource_id) {
+        session
+            .live_feeds
+            .record_resource_failure(resource_id, session.wall_clock_epoch_ms);
         record_live_feed_fetch_failure(session, resource_id, message);
         sync_live_feed_overlay_status_records(session);
     } else if resource_id.starts_with("terrain/source/")
@@ -6250,8 +6375,9 @@ fn ensure_live_obstacle_inputs_loaded(
     metrics: &MapSurfaceMetrics,
 ) -> Vec<DataStatusRecord> {
     if session.obstacle_had.is_none() {
-        if let HadOperationOutcome::NeedResources { resources } =
-            session.live_feeds.sync_product_outcome("obstacles")
+        if let HadOperationOutcome::NeedResources { resources } = session
+            .live_feeds
+            .sync_product_outcome_at_epoch_ms("obstacles", session.wall_clock_epoch_ms)
         {
             for resource in resources {
                 enqueue_session_resource_effect(session, resource, [UiInvalidation::MapOverlay]);
@@ -6879,6 +7005,26 @@ pub fn get_terrain_overlay_in_session_at_epoch_ms(
     height_px: f64,
     epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
+    get_scheduled_terrain_overlay_in_session_at_epoch_ms(
+        handle,
+        viewport,
+        width_px,
+        height_px,
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+        epoch_ms,
+    )
+}
+
+pub fn get_scheduled_terrain_overlay_in_session_at_epoch_ms(
+    handle: u32,
+    viewport: MapViewport,
+    width_px: f64,
+    height_px: f64,
+    decoded_cache_keys: &BTreeSet<String>,
+    in_flight_cache_keys: &BTreeSet<String>,
+    epoch_ms: i64,
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     advance_session_wall_clock(session, epoch_ms);
@@ -6887,6 +7033,15 @@ pub fn get_terrain_overlay_in_session_at_epoch_ms(
         let result = TerrainOverlayQueryResult {
             status: crate::TerrainOverlayStatus::Hidden,
             tile_requests: Vec::new(),
+            altitude_bucket_ft: None,
+            frame_key: None,
+            schedule: crate::TerrainOverlayScheduleDecision {
+                cached_count: 0,
+                in_flight_count: 0,
+                missing_count: 0,
+                frame_complete: false,
+                work_batch: Vec::new(),
+            },
         };
         return complete_terrain_overlay_outcome_with_invalidations(
             session,
@@ -6899,6 +7054,8 @@ pub fn get_terrain_overlay_in_session_at_epoch_ms(
         kinematics.position.lat.is_finite() && kinematics.position.lon.is_finite()
     });
     let has_altitude = ownship_terrain_altitude_ft(session).is_some();
+    let ownship_position = kinematics.map(|kinematics| kinematics.position);
+    let terrain_altitude_ft = ownship_terrain_altitude_ft(session);
     let mut query = match session.resource_policy {
         CoreResourcePolicy::InstalledPackage => {
             crate::query_terrain_overlay_with_available_packages(
@@ -6914,6 +7071,14 @@ pub fn get_terrain_overlay_in_session_at_epoch_ms(
             crate::query_terrain_overlay(&viewport, width_px, height_px, has_position, has_altitude)
         }
     };
+    crate::prepare_terrain_overlay_frame(
+        &mut query,
+        terrain_altitude_ft,
+        ownship_position,
+        &viewport,
+        width_px,
+        height_px,
+    );
     match resolve_terrain_overlay_source_resources(session, &mut query) {
         TerrainSourceResolution::NeedResources(resources) => {
             return Ok(HadOperationOutcome::NeedResources { resources });
@@ -6924,12 +7089,22 @@ pub fn get_terrain_overlay_in_session_at_epoch_ms(
                 TerrainOverlayQueryResult {
                     status: crate::TerrainOverlayStatus::Unavailable { reason },
                     tile_requests: Vec::new(),
+                    altitude_bucket_ft: None,
+                    frame_key: None,
+                    schedule: crate::TerrainOverlayScheduleDecision {
+                        cached_count: 0,
+                        in_flight_count: 0,
+                        missing_count: 0,
+                        frame_complete: false,
+                        work_batch: Vec::new(),
+                    },
                 },
                 freshness_invalidations,
             );
         }
         TerrainSourceResolution::Resolved => {}
     }
+    crate::schedule_terrain_overlay_frame(&mut query, decoded_cache_keys, in_flight_cache_keys);
     complete_terrain_overlay_outcome_with_invalidations(session, query, freshness_invalidations)
 }
 
@@ -7028,7 +7203,9 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
     let manifest = if let Some(installed) = &session.nexrad_installed {
         installed.manifest.clone()
     } else {
-        if let HadOperationOutcome::NeedResources { resources } = session.live_feeds.sync_outcome()
+        if let HadOperationOutcome::NeedResources { resources } = session
+            .live_feeds
+            .sync_outcome_at_epoch_ms(session.wall_clock_epoch_ms)
         {
             return Ok(HadOperationOutcome::NeedResources { resources });
         }
@@ -7893,9 +8070,23 @@ fn snapshot_for_session(session: &UiSession) -> AppResult<UiSessionSnapshot> {
 }
 
 fn session_snapshot_outcome(session: &UiSession) -> AppResult<HadOperationOutcome> {
+    session_snapshot_outcome_with_invalidations(session, Vec::new())
+}
+
+fn session_snapshot_outcome_with_invalidations(
+    session: &UiSession,
+    mut invalidations: Vec<UiInvalidation>,
+) -> AppResult<HadOperationOutcome> {
+    dedupe_invalidations(&mut invalidations);
     match try_snapshot_for_session(session) {
         Ok(snapshot) => serde_json::to_value(snapshot)
-            .map(HadOperationOutcome::complete)
+            .map(|snapshot| {
+                if invalidations.is_empty() {
+                    HadOperationOutcome::complete(snapshot)
+                } else {
+                    HadOperationOutcome::complete_with_invalidations(snapshot, invalidations)
+                }
+            })
             .map_err(|err| AppError {
                 kind: AppErrorKind::Internal,
                 message: err.to_string(),
@@ -10007,6 +10198,21 @@ mod tests {
             !invalidations.contains(&UiInvalidation::SessionSnapshot),
             "viewport overlay queries must not drive session snapshot invalidations"
         );
+    }
+
+    fn complete_invalidations(outcome: HadOperationOutcome) -> Vec<UiInvalidation> {
+        match outcome {
+            HadOperationOutcome::Complete { invalidations, .. } => invalidations,
+            HadOperationOutcome::NeedResources { resources } => {
+                panic!("unexpected resource request: {resources:?}")
+            }
+        }
+    }
+
+    fn assert_only_terrain_overlay_invalidated(invalidations: &[UiInvalidation]) {
+        assert!(invalidations.contains(&UiInvalidation::TerrainOverlay));
+        assert!(!invalidations.contains(&UiInvalidation::MapOverlay));
+        assert!(!invalidations.contains(&UiInvalidation::SessionSnapshot));
     }
 
     fn raster_map_option(
@@ -12861,6 +13067,73 @@ mod tests {
         assert_eq!(terrain.value.as_deref(), Some("UNAVAIL"));
         assert!(terrain.drives_caution);
         assert!(terrain.detail.contains("ownship position is unavailable"));
+    }
+
+    #[test]
+    fn playback_altitude_bucket_change_invalidates_only_terrain_overlay() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+
+        let load_invalidations = complete_invalidations(
+            load_playback_trace_in_session_outcome(
+                init.handle,
+                "test-trace.json",
+                r#"{"trace":[[0.0,47.0,-122.0,0,100.0,90.0],[10.0,47.1,-122.1,1000,100.0,90.0]]}"#,
+            )
+            .expect("load replay trace"),
+        );
+        assert_only_terrain_overlay_invalidated(&load_invalidations);
+
+        let play_invalidations = complete_invalidations(
+            play_playback_in_session_outcome(init.handle, 0.0).expect("play replay"),
+        );
+        assert!(play_invalidations.is_empty());
+
+        let tick_invalidations = complete_invalidations(
+            tick_playback_in_session_outcome(init.handle, 10_000.0).expect("tick replay"),
+        );
+        assert_only_terrain_overlay_invalidated(&tick_invalidations);
+    }
+
+    #[test]
+    fn terrain_source_resource_ingest_decodes_gzip_package_member_payload() {
+        use std::io::Write;
+
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let mut raw_abt1 = Vec::new();
+        raw_abt1.extend_from_slice(b"ABT1");
+        raw_abt1.extend_from_slice(&2_u16.to_le_bytes());
+        raw_abt1.extend_from_slice(&2_u16.to_le_bytes());
+        raw_abt1.extend_from_slice(&(-32768_i16).to_le_bytes());
+        raw_abt1.extend_from_slice(&0_i16.to_le_bytes());
+        raw_abt1.extend_from_slice(&1.0_f32.to_le_bytes());
+        raw_abt1.extend_from_slice(&0.0_f32.to_le_bytes());
+        for sample in [2500_i16; 4] {
+            raw_abt1.extend_from_slice(&sample.to_le_bytes());
+        }
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder
+            .write_all(&raw_abt1)
+            .expect("write gzip terrain tile");
+        let gzip_abt1 = encoder.finish().expect("finish gzip terrain tile");
+
+        ingest_resource_in_session(
+            init.handle,
+            "terrain/source/terrain-sw/tiles/9/1/2.terrain",
+            &gzip_abt1,
+        )
+        .expect("ingest gzip terrain tile");
+        let raw_rgba = render_terrain_overlay_tile_by_key_in_session(
+            init.handle,
+            "terrain/tiles/9/1/2.terrain",
+            Some(2000.0),
+        )
+        .expect("render terrain tile by key");
+
+        assert_eq!(u16::from_le_bytes([raw_rgba[0], raw_rgba[1]]), 1);
+        assert_eq!(u16::from_le_bytes([raw_rgba[2], raw_rgba[3]]), 1);
+        assert_eq!(&raw_rgba[4..8], &[185, 0, 45, 190]);
     }
 
     #[test]

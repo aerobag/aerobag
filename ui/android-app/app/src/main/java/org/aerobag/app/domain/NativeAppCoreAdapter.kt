@@ -307,6 +307,7 @@ sealed interface TerrainOverlayStatus {
 
 data class TerrainOverlayTileRequest(
     val key: String,
+    val cacheKey: String,
     val productId: String,
     val path: String,
     val sourceTiles: List<TerrainOverlaySourceTile>,
@@ -327,6 +328,17 @@ data class TerrainOverlaySourceTile(
 data class TerrainOverlayQueryResult(
     val status: TerrainOverlayStatus,
     val tileRequests: List<TerrainOverlayTileRequest>,
+    val altitudeBucketFt: Double?,
+    val frameKey: String?,
+    val schedule: TerrainOverlayScheduleDecision,
+)
+
+data class TerrainOverlayScheduleDecision(
+    val cachedCount: Int,
+    val inFlightCount: Int,
+    val missingCount: Int,
+    val frameComplete: Boolean,
+    val workBatch: List<TerrainOverlayTileRequest>,
 )
 
 private val NativeAppCoreJson = Json {
@@ -1079,14 +1091,25 @@ class NativeUiSession internal constructor(
         viewport: MapViewportState,
         widthPx: Double,
         heightPx: Double,
+        decodedCacheKeys: Collection<String>,
+        inFlightCacheKeys: Collection<String>,
         fetchResource: (CoreResourceRequest) -> ByteArray,
     ): TerrainOverlayQueryResult {
         val viewportJson = json.encodeToString(viewport.toWire())
+        val decodedCacheKeysJson = json.encodeToString(decodedCacheKeys.toList())
+        val inFlightCacheKeysJson = json.encodeToString(inFlightCacheKeys.toList())
         val store = navKvStore ?: error("session missing nav_db for terrain overlay")
         return json.decodeFromJsonElement<WireTerrainOverlayQueryResult>(
             store.runPagedSessionOperationElement(
                 operation = {
-                    bridge.getTerrainOverlayInSessionJson(handle, viewportJson, widthPx, heightPx)
+                    bridge.getScheduledTerrainOverlayInSessionJson(
+                        handle,
+                        viewportJson,
+                        widthPx,
+                        heightPx,
+                        decodedCacheKeysJson,
+                        inFlightCacheKeysJson,
+                    )
                 },
                 fetchSessionResource = fetchResource,
                 ingestSessionResource = { resource, bytes ->
@@ -1308,6 +1331,7 @@ private fun OwnshipRenderState.toWire() = WireOwnshipRenderState(
     orientation_deg = orientationDeg,
     magnetic_variation_deg = magneticVariationDeg,
     speed_kt = speedKt,
+    terrain_altitude_bucket_ft = terrainAltitudeBucketFt,
 )
 
 private fun OwnshipControlModel.toWire() = WireOwnshipControlModel(
@@ -1430,6 +1454,7 @@ private fun WireOwnshipRenderState.toUi() = OwnshipRenderState(
     orientationDeg = orientation_deg,
     magneticVariationDeg = magnetic_variation_deg,
     speedKt = speed_kt,
+    terrainAltitudeBucketFt = terrain_altitude_bucket_ft,
 )
 
 private fun WireOwnshipControlModel.toUi() = OwnshipControlModel(
@@ -1470,6 +1495,7 @@ private fun WirePlaybackUiState.toUi() = PlaybackUiState(
     cursorLabel = cursor_label,
     durationLabel = duration_label,
     rate = rate,
+    tickIntervalMs = tick_interval_ms,
     speedProfileNorm = speed_profile_norm,
     altitudeProfileNorm = altitude_profile_norm,
     gapSpans = gap_spans.map { PlaybackGapSpan(it.start_seconds, it.end_seconds) },
@@ -2228,6 +2254,17 @@ private fun WireAirspaceFeatureRequest.toUi() = AirspaceFeatureRequest(
 private fun WireTerrainOverlayQueryResult.toUi() = TerrainOverlayQueryResult(
     status = status.toUi(),
     tileRequests = tile_requests.map { it.toUi() },
+    altitudeBucketFt = altitude_bucket_ft,
+    frameKey = frame_key,
+    schedule = schedule.toUi(),
+)
+
+private fun WireTerrainOverlayScheduleDecision.toUi() = TerrainOverlayScheduleDecision(
+    cachedCount = cached_count,
+    inFlightCount = in_flight_count,
+    missingCount = missing_count,
+    frameComplete = frame_complete,
+    workBatch = work_batch.map { it.toUi() },
 )
 
 private fun WireTerrainOverlayStatus.toUi(): TerrainOverlayStatus = when (this) {
@@ -2241,6 +2278,7 @@ private fun WireTerrainOverlayStatus.toUi(): TerrainOverlayStatus = when (this) 
 
 private fun WireTerrainOverlayTileRequest.toUi() = TerrainOverlayTileRequest(
     key = key,
+    cacheKey = cache_key,
     productId = product_id,
     path = path,
     sourceTiles = source_tiles.map { it.toUi() },

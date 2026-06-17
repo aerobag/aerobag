@@ -615,6 +615,7 @@ export type PlaybackUiState = {
   cursor_label: string;
   duration_label: string;
   rate: number;
+  tick_interval_ms: number;
   speed_profile_norm: Array<number | null>;
   altitude_profile_norm: Array<number | null>;
   gap_spans: Array<{
@@ -731,6 +732,7 @@ export type OwnshipRenderState = {
   speed_kt: number | null;
   altitude_msl_ft: number | null;
   pressure_altitude_ft: number | null;
+  terrain_altitude_bucket_ft: number | null;
 };
 
 export type OwnshipControlModel = {

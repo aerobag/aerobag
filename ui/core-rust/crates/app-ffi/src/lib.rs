@@ -4,7 +4,7 @@ use jni::sys::jbyteArray;
 use jni::sys::jstring;
 use jni::JNIEnv;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 #[cfg(target_os = "android")]
 use std::ffi::CString;
 #[cfg(target_os = "android")]
@@ -934,6 +934,33 @@ pub fn get_terrain_overlay_in_session_json(
         viewport,
         width_px,
         height_px,
+        now_epoch_ms(),
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&overlay).map_err(|err| err.to_string())
+}
+
+pub fn get_scheduled_terrain_overlay_in_session_json(
+    handle: u64,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+    decoded_cache_keys_json: &str,
+    in_flight_cache_keys_json: &str,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let decoded_cache_keys: BTreeSet<String> =
+        serde_json::from_str(decoded_cache_keys_json).map_err(|err| err.to_string())?;
+    let in_flight_cache_keys: BTreeSet<String> =
+        serde_json::from_str(in_flight_cache_keys_json).map_err(|err| err.to_string())?;
+    let overlay = app_core::get_scheduled_terrain_overlay_in_session_at_epoch_ms(
+        handle as u32,
+        viewport,
+        width_px,
+        height_px,
+        &decoded_cache_keys,
+        &in_flight_cache_keys,
         now_epoch_ms(),
     )
     .map_err(|err| err.to_string())?;
@@ -3063,6 +3090,33 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getTerrainOver
     let result = (|| {
         let viewport = get_java_string(&mut env, viewport_json)?;
         get_terrain_overlay_in_session_json(handle as u64, &viewport, width_px, height_px)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getScheduledTerrainOverlayInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    viewport_json: JString,
+    width_px: f64,
+    height_px: f64,
+    decoded_cache_keys_json: JString,
+    in_flight_cache_keys_json: JString,
+) -> jstring {
+    let result = (|| {
+        let viewport = get_java_string(&mut env, viewport_json)?;
+        let decoded_cache_keys = get_java_string(&mut env, decoded_cache_keys_json)?;
+        let in_flight_cache_keys = get_java_string(&mut env, in_flight_cache_keys_json)?;
+        get_scheduled_terrain_overlay_in_session_json(
+            handle as u64,
+            &viewport,
+            width_px,
+            height_px,
+            &decoded_cache_keys,
+            &in_flight_cache_keys,
+        )
     })();
     return_string(&mut env, result)
 }

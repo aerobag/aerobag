@@ -413,6 +413,15 @@ interface NativeBridge {
         heightPx: Double,
     ): String
 
+    fun getScheduledTerrainOverlayInSessionJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+        decodedCacheKeysJson: String,
+        inFlightCacheKeysJson: String,
+    ): String
+
     fun getNexradOverlayInSessionJson(
         handle: Long,
         viewportJson: String,
@@ -889,6 +898,15 @@ object NativeBindings : NativeBridge {
         viewportJson: String,
         widthPx: Double,
         heightPx: Double,
+    ): String
+
+    external override fun getScheduledTerrainOverlayInSessionJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+        decodedCacheKeysJson: String,
+        inFlightCacheKeysJson: String,
     ): String
 
     external override fun getNexradOverlayInSessionJson(

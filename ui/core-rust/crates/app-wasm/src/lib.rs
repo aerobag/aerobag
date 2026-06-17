@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     io::Cursor,
     sync::{
         atomic::{AtomicU32, Ordering},
@@ -2052,6 +2052,23 @@ pub fn report_session_resource_failure_in_session(
 }
 
 #[wasm_bindgen]
+pub fn report_session_resource_failure_in_session_at_epoch_ms(
+    handle: u32,
+    resource_id: &str,
+    message: &str,
+    epoch_ms: f64,
+) -> Result<String, JsValue> {
+    let snapshot = app_core::report_session_resource_failure_in_session_at_epoch_ms(
+        handle,
+        resource_id,
+        message,
+        epoch_ms as i64,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn get_map_overlay_in_session(
     handle: u32,
     viewport_json: &str,
@@ -2113,6 +2130,28 @@ pub fn get_terrain_overlay_in_session(
 ) -> Result<String, JsValue> {
     get_terrain_overlay_in_session_json(handle, viewport_json, width_px, height_px, now_epoch_ms)
         .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn get_scheduled_terrain_overlay_in_session(
+    handle: u32,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+    decoded_cache_keys_json: &str,
+    in_flight_cache_keys_json: &str,
+    now_epoch_ms: f64,
+) -> Result<String, JsValue> {
+    get_scheduled_terrain_overlay_in_session_json(
+        handle,
+        viewport_json,
+        width_px,
+        height_px,
+        decoded_cache_keys_json,
+        in_flight_cache_keys_json,
+        now_epoch_ms,
+    )
+    .map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -2916,6 +2955,34 @@ fn get_terrain_overlay_in_session_json(
         viewport,
         width_px,
         height_px,
+        now_epoch_ms as i64,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&overlay).map_err(|err| err.to_string())
+}
+
+fn get_scheduled_terrain_overlay_in_session_json(
+    handle: u32,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+    decoded_cache_keys_json: &str,
+    in_flight_cache_keys_json: &str,
+    now_epoch_ms: f64,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let decoded_cache_keys: BTreeSet<String> =
+        serde_json::from_str(decoded_cache_keys_json).map_err(|err| err.to_string())?;
+    let in_flight_cache_keys: BTreeSet<String> =
+        serde_json::from_str(in_flight_cache_keys_json).map_err(|err| err.to_string())?;
+    let overlay = app_core::get_scheduled_terrain_overlay_in_session_at_epoch_ms(
+        handle,
+        viewport,
+        width_px,
+        height_px,
+        &decoded_cache_keys,
+        &in_flight_cache_keys,
         now_epoch_ms as i64,
     )
     .map_err(|err| err.to_string())?;

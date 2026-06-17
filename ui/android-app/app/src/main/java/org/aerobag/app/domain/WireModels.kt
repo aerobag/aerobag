@@ -89,6 +89,7 @@ data class WireOwnshipRenderState(
     val orientation_deg: Double? = null,
     val magnetic_variation_deg: Double? = null,
     val speed_kt: Double? = null,
+    val terrain_altitude_bucket_ft: Double? = null,
 )
 
 @Serializable
@@ -134,6 +135,7 @@ data class WirePlaybackUiState(
     val cursor_label: String = "0:00",
     val duration_label: String = "0:00",
     val rate: Double = 1.0,
+    val tick_interval_ms: Int = 100,
     val speed_profile_norm: List<Double?> = emptyList(),
     val altitude_profile_norm: List<Double?> = emptyList(),
     val gap_spans: List<WirePlaybackGapSpan> = emptyList(),
@@ -901,6 +903,7 @@ data class WireTerrainOverlayStatusReady(
 @Serializable
 data class WireTerrainOverlayTileRequest(
     val key: String,
+    val cache_key: String,
     val product_id: String,
     val path: String,
     val source_tiles: List<WireTerrainOverlaySourceTile>,
@@ -930,6 +933,18 @@ data class WireCoreResourceRequest(
 data class WireTerrainOverlayQueryResult(
     val status: @Serializable(with = WireTerrainOverlayStatusSerializer::class) WireTerrainOverlayStatus,
     val tile_requests: List<WireTerrainOverlayTileRequest>,
+    val altitude_bucket_ft: Double? = null,
+    val frame_key: String? = null,
+    val schedule: WireTerrainOverlayScheduleDecision,
+)
+
+@Serializable
+data class WireTerrainOverlayScheduleDecision(
+    val cached_count: Int,
+    val in_flight_count: Int,
+    val missing_count: Int,
+    val frame_complete: Boolean,
+    val work_batch: List<WireTerrainOverlayTileRequest> = emptyList(),
 )
 
 object WireTerrainOverlayStatusSerializer : JsonContentPolymorphicSerializer<WireTerrainOverlayStatus>(WireTerrainOverlayStatus::class) {

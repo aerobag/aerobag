@@ -43,6 +43,7 @@ dependencies = [
  "airspace-geometry",
  "app-fixtures",
  "chrono",
+ "flate2",
  "had-key",
  "had-nav-kv",
  "image",

@@ -8,6 +8,7 @@ use crate::{
 };
 
 const DEFAULT_PLAYBACK_RATE: f64 = 1.0;
+const PLAYBACK_TICK_INTERVAL_MS: u32 = 100;
 const PLAYBACK_PREVIEW_BINS: usize = 160;
 const PLAYBACK_GAP_THRESHOLD_SECONDS: f64 = 120.0;
 
@@ -33,6 +34,7 @@ pub struct PlaybackUiState {
     pub cursor_label: String,
     pub duration_label: String,
     pub rate: f64,
+    pub tick_interval_ms: u32,
     pub speed_profile_norm: Vec<Option<f64>>,
     pub altitude_profile_norm: Vec<Option<f64>>,
     pub gap_spans: Vec<PlaybackGapSpan>,
@@ -53,6 +55,7 @@ impl Default for PlaybackUiState {
             cursor_label: format_playback_clock(0.0),
             duration_label: format_playback_clock(0.0),
             rate: DEFAULT_PLAYBACK_RATE,
+            tick_interval_ms: PLAYBACK_TICK_INTERVAL_MS,
             speed_profile_norm: Vec::new(),
             altitude_profile_norm: Vec::new(),
             gap_spans: Vec::new(),
@@ -219,6 +222,7 @@ impl PlaybackSessionState {
             cursor_label: format_playback_clock(self.cursor_seconds),
             duration_label: format_playback_clock(duration_seconds(trace)),
             rate: self.rate,
+            tick_interval_ms: PLAYBACK_TICK_INTERVAL_MS,
             speed_profile_norm: build_profile(trace, |point| point.speed_kt),
             altitude_profile_norm: build_profile(trace, |point| point.altitude_ft),
             gap_spans: trace.gap_spans.clone(),

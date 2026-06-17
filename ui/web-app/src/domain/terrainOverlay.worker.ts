@@ -17,6 +17,20 @@ type TerrainWorkerRenderRequest = {
   sourceTiles: TerrainOverlaySourceTile[];
 };
 
+type TerrainWorkerRenderBatchRequest = {
+  kind: "render_batch";
+  id: number;
+  browserInstanceId: string;
+  requests: Array<Omit<TerrainWorkerRenderRequest, "kind" | "id" | "browserInstanceId">>;
+};
+
+type TerrainWorkerRenderResult = {
+  generation: number;
+  cacheKey: string;
+  tileKey: string;
+  rawBytes: Uint8Array;
+};
+
 type TerrainWorkerRenderResponse =
   | {
       kind: "rendered";
@@ -35,10 +49,31 @@ type TerrainWorkerRenderResponse =
       cacheKey: string;
       tileKey: string;
       error: string;
+    }
+  | {
+      kind: "rendered_batch_tile";
+      id: number;
+      ok: true;
+      generation: number;
+      cacheKey: string;
+      tileKey: string;
+      rawBytes: Uint8Array;
+    }
+  | {
+      kind: "rendered_batch";
+      id: number;
+      ok: true;
+      tileCount: number;
+    }
+  | {
+      kind: "rendered_batch";
+      id: number;
+      ok: false;
+      error: string;
     };
 
 type TerrainWorkerRuntime = {
-  addEventListener(type: "message", listener: (event: MessageEvent<TerrainWorkerRenderRequest>) => void): void;
+  addEventListener(type: "message", listener: (event: MessageEvent<TerrainWorkerRenderRequest | TerrainWorkerRenderBatchRequest>) => void): void;
   postMessage(message: TerrainWorkerRenderResponse, transfer?: Transferable[]): void;
 };
 
@@ -48,10 +83,11 @@ let wasmReady: Promise<void> | null = null;
 
 ctx.addEventListener("message", (event) => {
   const message = event.data;
-  if (message.kind !== "render") {
-    return;
+  if (message.kind === "render") {
+    void renderTerrainTile(message);
+  } else if (message.kind === "render_batch") {
+    void renderTerrainTileBatch(message);
   }
-  void renderTerrainTile(message);
 });
 
 async function renderTerrainTile(message: TerrainWorkerRenderRequest): Promise<void> {
@@ -59,36 +95,13 @@ async function renderTerrainTile(message: TerrainWorkerRenderRequest): Promise<v
   const startedAt = performance.now();
   try {
     await ensureWasmReady();
-    if (message.sourceTiles.length === 0) {
-      throw new Error(`terrain tile ${message.tileKey} has no source tiles`);
-    }
-    const fetchStartedAt = performance.now();
-    const sourceBytes = await Promise.all(message.sourceTiles.map(fetchSourceTile));
-    const fetchMs = performance.now() - fetchStartedAt;
-    const renderStartedAt = performance.now();
-    const rawBytes = sourceBytes.length === 1
-      ? render_terrain_warning_raw_rgba(sourceBytes[0], message.altitudeBucketFt)
-      : render_terrain_warning_raw_rgba_from_packed_tiles(packTerrainTileBytes(sourceBytes), message.altitudeBucketFt);
-    const renderMs = performance.now() - renderStartedAt;
-    const transferableBytes = new Uint8Array(rawBytes);
-    debugLog("terrain.worker.tile.done", {
-      tile_key: message.tileKey,
-      source_count: sourceBytes.length,
-      source_bytes: sourceBytes.reduce((sum, bytes) => sum + bytes.byteLength, 0),
-      raw_bytes: transferableBytes.byteLength,
-      fetch_ms: Math.round(fetchMs),
-      render_ms: Math.round(renderMs),
-      elapsed_ms: Math.round(performance.now() - startedAt),
-    });
+    const result = await renderTerrainTileBytes(message, startedAt);
     ctx.postMessage({
       kind: "rendered",
       id: message.id,
       ok: true,
-      generation: message.generation,
-      cacheKey: message.cacheKey,
-      tileKey: message.tileKey,
-      rawBytes: transferableBytes,
-    }, [transferableBytes.buffer]);
+      ...result,
+    }, [result.rawBytes.buffer]);
   } catch (error) {
     const messageText = error instanceof Error ? error.message : String(error);
     debugLog("terrain.worker.tile.error", {
@@ -106,6 +119,94 @@ async function renderTerrainTile(message: TerrainWorkerRenderRequest): Promise<v
       error: messageText,
     });
   }
+}
+
+async function renderTerrainTileBatch(message: TerrainWorkerRenderBatchRequest): Promise<void> {
+  setBrowserInstanceId(message.browserInstanceId);
+  const startedAt = performance.now();
+  try {
+    await ensureWasmReady();
+    const fetchStartedAt = performance.now();
+    await Promise.all(message.requests.flatMap((request) => request.sourceTiles.map(fetchSourceTile)));
+    const fetchMs = performance.now() - fetchStartedAt;
+    let rawBytesTotal = 0;
+    let renderedCount = 0;
+    for (const request of message.requests) {
+      const result = await renderTerrainTileBytes(request, performance.now(), true);
+      rawBytesTotal += result.rawBytes.byteLength;
+      renderedCount += 1;
+      ctx.postMessage({
+        kind: "rendered_batch_tile",
+        id: message.id,
+        ok: true,
+        ...result,
+      }, [result.rawBytes.buffer]);
+      await yieldToBrowser();
+    }
+    debugLog("terrain.worker.batch.done", {
+      tile_count: message.requests.length,
+      raw_bytes: rawBytesTotal,
+      fetch_ms: Math.round(fetchMs),
+      elapsed_ms: Math.round(performance.now() - startedAt),
+    });
+    ctx.postMessage({
+      kind: "rendered_batch",
+      id: message.id,
+      ok: true,
+      tileCount: renderedCount,
+    });
+  } catch (error) {
+    const messageText = error instanceof Error ? error.message : String(error);
+    debugLog("terrain.worker.batch.error", {
+      tile_count: message.requests.length,
+      elapsed_ms: Math.round(performance.now() - startedAt),
+      error: messageText,
+    });
+    ctx.postMessage({
+      kind: "rendered_batch",
+      id: message.id,
+      ok: false,
+      error: messageText,
+    });
+  }
+}
+
+function yieldToBrowser(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function renderTerrainTileBytes(
+  request: Omit<TerrainWorkerRenderRequest, "kind" | "id" | "browserInstanceId">,
+  startedAt: number,
+  suppressFetchTiming = false,
+): Promise<TerrainWorkerRenderResult> {
+  if (request.sourceTiles.length === 0) {
+    throw new Error(`terrain tile ${request.tileKey} has no source tiles`);
+  }
+  const fetchStartedAt = performance.now();
+  const sourceBytes = await Promise.all(request.sourceTiles.map(fetchSourceTile));
+  const fetchMs = performance.now() - fetchStartedAt;
+  const renderStartedAt = performance.now();
+  const rawBytes = sourceBytes.length === 1
+    ? render_terrain_warning_raw_rgba(sourceBytes[0], request.altitudeBucketFt)
+    : render_terrain_warning_raw_rgba_from_packed_tiles(packTerrainTileBytes(sourceBytes), request.altitudeBucketFt);
+  const renderMs = performance.now() - renderStartedAt;
+  const transferableBytes = new Uint8Array(rawBytes);
+  debugLog("terrain.worker.tile.done", {
+    tile_key: request.tileKey,
+    source_count: sourceBytes.length,
+    source_bytes: sourceBytes.reduce((sum, bytes) => sum + bytes.byteLength, 0),
+    raw_bytes: transferableBytes.byteLength,
+    fetch_ms: suppressFetchTiming ? 0 : Math.round(fetchMs),
+    render_ms: Math.round(renderMs),
+    elapsed_ms: Math.round(performance.now() - startedAt),
+  });
+  return {
+    generation: request.generation,
+    cacheKey: request.cacheKey,
+    tileKey: request.tileKey,
+    rawBytes: transferableBytes,
+  };
 }
 
 async function ensureWasmReady(): Promise<void> {

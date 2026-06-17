@@ -172,6 +172,7 @@ mod tests {
             speed_kt: None,
             altitude_msl_ft: None,
             pressure_altitude_ft: None,
+            terrain_altitude_bucket_ft: None,
         }
     }
 

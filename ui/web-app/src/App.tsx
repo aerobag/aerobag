@@ -653,7 +653,15 @@ type TerrainOverlayUiState = {
 
 type TerrainPendingFrame = {
   query: TerrainOverlayQueryResult;
-  altitudeBucket: number | null;
+  frameKey: string;
+};
+
+type TerrainScheduleRequest = {
+  id: number;
+  session: UiSession;
+  viewport: MapViewportState;
+  width: number;
+  height: number;
 };
 
 type TerrainTileCacheEntry = {
@@ -662,20 +670,15 @@ type TerrainTileCacheEntry = {
   imageHeight: number;
 };
 
-type TerrainTileRenderTask = {
-  request: TerrainOverlayTileRequest;
-  altitudeBucket: number;
-  generation: number;
-};
-
-const TERRAIN_ALTITUDE_BUCKET_FT = 200;
-
-function terrainCacheKey(request: TerrainOverlayTileRequest, altitudeBucket: number | null) {
-  return `${request.key}@${altitudeBucket ?? "no-alt"}`;
+function terrainCacheKey(request: TerrainOverlayTileRequest) {
+  return request.cache_key;
 }
 
-function terrainFrameKey(query: TerrainOverlayQueryResult, altitudeBucket: number | null) {
-  return `${altitudeBucket ?? "no-alt"}:${query.tile_requests.map((request) => request.key).join("|")}`;
+function requireTerrainFrameKey(query: TerrainOverlayQueryResult) {
+  if (!query.frame_key) {
+    throw new Error("ready terrain overlay query is missing core frame_key");
+  }
+  return query.frame_key;
 }
 
 function pruneTerrainFrameStarts(starts: Map<string, number>) {
@@ -706,7 +709,7 @@ function parseTerrainRawRgba(bytes: Uint8Array): TerrainTileCacheEntry {
   return {
     imageWidth,
     imageHeight,
-    rgba: new Uint8ClampedArray(bytes.slice(4, expectedBytes)),
+    rgba: new Uint8ClampedArray(bytes.buffer, bytes.byteOffset + 4, expectedBytes - 4),
   };
 }
 
@@ -725,19 +728,11 @@ function terrainRequestSummary(requests: TerrainOverlayTileRequest[]) {
   };
 }
 
-function terrainAltitudeBucketForOwnship(ownship: OwnshipRenderState) {
-  const altitude = ownship.altitude_msl_ft ?? ownship.pressure_altitude_ft;
-  return altitude == null || !Number.isFinite(altitude)
-    ? null
-    : Math.round(altitude / TERRAIN_ALTITUDE_BUCKET_FT) * TERRAIN_ALTITUDE_BUCKET_FT;
-}
-
 function cachedTerrainImageForDisplay(
   cache: Map<string, TerrainTileCacheEntry>,
   request: TerrainOverlayTileRequest,
-  targetAltitudeBucket: number | null,
 ) {
-  const exact = cache.get(terrainCacheKey(request, targetAltitudeBucket));
+  const exact = cache.get(terrainCacheKey(request));
   return exact ? ({ ...request, ...exact } satisfies TerrainOverlayImage) : null;
 }
 
@@ -759,32 +754,16 @@ function terrainImageForViewport(
   };
 }
 
-function terrainRequestSortDistance(
-  request: TerrainOverlayTileRequest,
-  ownship: OwnshipRenderState,
-  viewport: MapViewportState,
-  widthPx: number,
-  heightPx: number,
-) {
-  const target = ownship.position
-    ? latLonToScreen(ownship.position.lat, ownship.position.lon, viewport, widthPx, heightPx)
-    : { x: widthPx / 2, y: heightPx / 2 };
-  const centerX = request.left + request.size / 2;
-  const centerY = request.top + request.size / 2;
-  return (centerX - target.x) ** 2 + (centerY - target.y) ** 2;
-}
-
 function terrainImagesForCompleteQuery(
   cache: Map<string, TerrainTileCacheEntry>,
   query: TerrainOverlayQueryResult,
-  altitudeBucket: number | null,
 ) {
   if (query.status.state !== "ready") {
     return null;
   }
   const images: TerrainOverlayImage[] = [];
   for (const request of query.tile_requests) {
-    const cached = cachedTerrainImageForDisplay(cache, request, altitudeBucket);
+    const cached = cachedTerrainImageForDisplay(cache, request);
     if (!cached) {
       return null;
     }
@@ -1431,6 +1410,7 @@ function emptyPlaybackUiState(): PlaybackUiState {
     cursor_label: "0:00",
     duration_label: "0:00",
     rate: 1,
+    tick_interval_ms: 100,
     speed_profile_norm: [],
     altitude_profile_norm: [],
     gap_spans: [],
@@ -1554,6 +1534,7 @@ export default function App() {
           speed_kt: null,
           altitude_msl_ft: null,
           pressure_altitude_ft: null,
+          terrain_altitude_bucket_ft: null,
         },
         controls: {
           mode: "none",
@@ -1921,12 +1902,13 @@ export default function App() {
       }).catch(() => {});
     };
     tick();
-    const timer = window.setInterval(tick, 250);
+    const intervalMs = Math.max(16, Math.min(1000, playbackUiState.tick_interval_ms));
+    const timer = window.setInterval(tick, intervalMs);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [playbackUiState.status, uiSession]);
+  }, [playbackUiState.status, playbackUiState.tick_interval_ms, uiSession]);
 
   useEffect(() => {
     if (!uiSession || !debugOwnshipDriverActive) {
@@ -3052,11 +3034,11 @@ function MapPage(props: {
   const [terrainOverlay, setTerrainOverlay] = useState<TerrainOverlayUiState>({ query: null, images: [] });
   const terrainTileCacheRef = useRef<Map<string, TerrainTileCacheEntry>>(new Map());
   const terrainTileInFlightRef = useRef<Set<string>>(new Set());
-  const terrainRenderQueueRef = useRef<Map<string, TerrainTileRenderTask>>(new Map());
+  const terrainScheduleRequestRef = useRef<TerrainScheduleRequest | null>(null);
+  const terrainScheduleRequestIdRef = useRef(0);
+  const terrainSchedulePendingRef = useRef(false);
   const terrainRenderPumpActiveRef = useRef(false);
   const terrainRendererRef = useRef<TerrainOverlayRenderer | null>(null);
-  const terrainRenderGenerationRef = useRef(0);
-  const terrainCurrentBucketRef = useRef<number | null>(null);
   const terrainPendingFrameRef = useRef<TerrainPendingFrame | null>(null);
   const terrainFrameStartRef = useRef<Map<string, number>>(new Map());
   const lastTerrainRenderPlanKeyRef = useRef("");
@@ -3130,98 +3112,188 @@ function MapPage(props: {
     terrainRenderPumpActiveRef.current = true;
     void (async () => {
       try {
-        while (terrainRenderQueueRef.current.size > 0) {
+        while (terrainSchedulePendingRef.current) {
+          terrainSchedulePendingRef.current = false;
           const renderer = terrainRendererRef.current;
           if (!renderer) {
-            terrainRenderQueueRef.current.clear();
             return;
           }
-          const next = terrainRenderQueueRef.current.entries().next().value as
-            | [string, TerrainTileRenderTask]
-            | undefined;
-          if (!next) {
+          const request = terrainScheduleRequestRef.current;
+          if (!request) {
             return;
           }
-          const [cacheKey, task] = next;
-          terrainRenderQueueRef.current.delete(cacheKey);
-          if (terrainTileCacheRef.current.has(cacheKey) || terrainTileInFlightRef.current.has(cacheKey)) {
-            continue;
-          }
-          if (task.altitudeBucket !== terrainCurrentBucketRef.current) {
-            continue;
-          }
-          terrainTileInFlightRef.current.add(cacheKey);
+          let query: TerrainOverlayQueryResult;
           try {
-            const tileStartedAt = performance.now();
-            if (task.altitudeBucket !== terrainCurrentBucketRef.current) {
+            query = await request.session.queryTerrainOverlay(
+              request.viewport,
+              request.width,
+              request.height,
+              Array.from(terrainTileCacheRef.current.keys()),
+              Array.from(terrainTileInFlightRef.current),
+            );
+          } catch (error: unknown) {
+            if (terrainScheduleRequestRef.current?.id !== request.id) {
               continue;
             }
-            const renderStartedAt = performance.now();
-            const result = await renderer.renderTile({
-              generation: task.generation,
+            debugLog("terrain.overlay.query.error", {
+              zoom: request.viewport.zoom,
+              error: errorMessage(error),
+            });
+            console.warn("terrain overlay unavailable", error);
+            continue;
+          }
+          if (terrainScheduleRequestRef.current?.id !== request.id) {
+            continue;
+          }
+          if (query.status.state !== "ready") {
+            debugLog("terrain.overlay.unavailable", {
+              status: query.status,
+              request_count: query.tile_requests.length,
+              zoom: request.viewport.zoom,
+            });
+            terrainPendingFrameRef.current = null;
+            setTerrainOverlay({ query, images: [] });
+            continue;
+          }
+          const queryAltitudeBucket = query.altitude_bucket_ft;
+          if (queryAltitudeBucket == null) {
+            debugLog("terrain.overlay.no_altitude_bucket", {
+              status: query.status,
+              request_count: query.tile_requests.length,
+              zoom: request.viewport.zoom,
+            });
+            terrainPendingFrameRef.current = null;
+            setTerrainOverlay({ query, images: [] });
+            continue;
+          }
+          const frameKey = requireTerrainFrameKey(query);
+          terrainPendingFrameRef.current = { query, frameKey };
+          if (!terrainFrameStartRef.current.has(frameKey)) {
+            terrainFrameStartRef.current.set(frameKey, performance.now());
+            pruneTerrainFrameStarts(terrainFrameStartRef.current);
+          }
+          if (query.schedule.frame_complete) {
+            commitTerrainFrameIfReady(frameKey, queryAltitudeBucket);
+            continue;
+          }
+          const workBatch = query.schedule.work_batch;
+          const renderPlanKey = [
+            frameKey,
+            query.schedule.cached_count,
+            query.schedule.in_flight_count,
+            query.schedule.missing_count,
+            workBatch.length,
+            workBatch[0]?.cache_key ?? "none",
+          ].join(":");
+          if (renderPlanKey !== lastTerrainRenderPlanKeyRef.current) {
+            lastTerrainRenderPlanKeyRef.current = renderPlanKey;
+            const requestSummary = terrainRequestSummary(query.tile_requests);
+            debugLog("terrain.overlay.render.plan", {
+              request_count: query.tile_requests.length,
+              cached_count: query.schedule.cached_count,
+              in_flight_count: query.schedule.in_flight_count,
+              missing_count: query.schedule.missing_count,
+              work_batch_count: workBatch.length,
+              altitude_bucket: queryAltitudeBucket,
+              request_zooms: requestSummary.zooms,
+              next_tile: workBatch[0]?.key ?? null,
+            });
+          }
+          if (workBatch.length === 0) {
+            continue;
+          }
+          const batch = workBatch
+            .map((tileRequest) => ({ tileRequest, cacheKey: terrainCacheKey(tileRequest) }))
+            .filter(({ cacheKey }) =>
+              !terrainTileCacheRef.current.has(cacheKey) && !terrainTileInFlightRef.current.has(cacheKey),
+            );
+          if (batch.length === 0) {
+            terrainSchedulePendingRef.current = true;
+            continue;
+          }
+          for (const { cacheKey } of batch) {
+            terrainTileInFlightRef.current.add(cacheKey);
+          }
+          try {
+            const batchStartedAt = performance.now();
+            let rawBytesTotal = 0;
+            let tileCount = 0;
+            await renderer.renderTiles(batch.map(({ tileRequest, cacheKey }) => ({
+              generation: 0,
               cacheKey,
-              tileKey: task.request.key,
-              altitudeBucketFt: task.altitudeBucket,
-              sourceTiles: task.request.source_tiles,
+              tileKey: tileRequest.key,
+              altitudeBucketFt: queryAltitudeBucket,
+              sourceTiles: tileRequest.source_tiles,
+            })), (result) => {
+              const parsed = parseTerrainRawRgba(result.rawBytes);
+              terrainTileCacheRef.current.set(result.cacheKey, parsed);
+              rawBytesTotal += result.rawBytes.byteLength;
+              tileCount += 1;
             });
-            const renderElapsedMs = performance.now() - renderStartedAt;
-            const rawBytes = result.rawBytes;
-            const parsed = parseTerrainRawRgba(rawBytes);
-            terrainTileCacheRef.current.set(cacheKey, parsed);
-            debugLog("terrain.overlay.tile.done", {
-              key: task.request.key,
-              altitude_bucket: task.altitudeBucket,
-              generation: result.generation,
-              raw_bytes: rawBytes.byteLength,
-              image_width: parsed.imageWidth,
-              image_height: parsed.imageHeight,
-              render_ms: Math.round(renderElapsedMs),
-              elapsed_ms: Math.round(performance.now() - tileStartedAt),
-            });
-            setTerrainOverlay((current) => {
-              const pendingFrame = terrainPendingFrameRef.current;
-              if (
-                !pendingFrame
-                || pendingFrame.altitudeBucket !== task.altitudeBucket
-                || !pendingFrame.query.tile_requests.some((request) => terrainCacheKey(request, task.altitudeBucket) === cacheKey)
-              ) {
-                return current;
-              }
-              const readyImages = terrainImagesForCompleteQuery(terrainTileCacheRef.current, pendingFrame.query, task.altitudeBucket);
-              if (!readyImages) {
-                return current;
-              }
-              const frameKey = terrainFrameKey(pendingFrame.query, task.altitudeBucket);
-              const frameStartedAt = terrainFrameStartRef.current.get(frameKey);
-              terrainFrameStartRef.current.delete(frameKey);
-              debugLog("terrain.overlay.frame.ready", {
-                altitude_bucket: task.altitudeBucket,
-                request_count: pendingFrame.query.tile_requests.length,
-                image_count: readyImages.length,
-                elapsed_ms: frameStartedAt == null ? null : Math.round(performance.now() - frameStartedAt),
-              });
-              return {
-                query: pendingFrame.query,
-                images: readyImages,
-              };
+            debugLog("terrain.overlay.batch.done", {
+              altitude_bucket: queryAltitudeBucket,
+              tile_count: tileCount,
+              raw_bytes: rawBytesTotal,
+              elapsed_ms: Math.round(performance.now() - batchStartedAt),
             });
           } catch (error: unknown) {
-            debugLog("terrain.overlay.tile.error", {
-              key: task.request.key,
+            debugLog("terrain.overlay.batch.error", {
+              altitude_bucket: queryAltitudeBucket,
+              tile_count: batch.length,
               error: errorMessage(error),
             });
           } finally {
-            terrainTileInFlightRef.current.delete(cacheKey);
+            for (const { cacheKey } of batch) {
+              terrainTileInFlightRef.current.delete(cacheKey);
+            }
           }
-          await new Promise((resolve) => window.setTimeout(resolve, 0));
+          for (const tileRequest of workBatch) {
+            if (!terrainTileCacheRef.current.has(terrainCacheKey(tileRequest))) {
+              debugLog("terrain.overlay.tile.error", {
+                key: tileRequest.key,
+                error: "batch render did not return tile",
+              });
+            }
+          }
+          terrainSchedulePendingRef.current = true;
         }
       } finally {
         terrainRenderPumpActiveRef.current = false;
-        if (terrainRenderQueueRef.current.size > 0) {
+        if (terrainSchedulePendingRef.current) {
           pumpTerrainRenderQueue();
         }
       }
     })();
+  }
+
+  function commitTerrainFrameIfReady(frameKey: string, altitudeBucket: number) {
+    const pendingFrame = terrainPendingFrameRef.current;
+    if (!pendingFrame || pendingFrame.frameKey !== frameKey) {
+      return false;
+    }
+    const readyImages = terrainImagesForCompleteQuery(terrainTileCacheRef.current, pendingFrame.query);
+    if (!readyImages) {
+      return false;
+    }
+    const frameStartedAt = terrainFrameStartRef.current.get(frameKey);
+    terrainFrameStartRef.current.delete(frameKey);
+    terrainPendingFrameRef.current = null;
+    debugLog("terrain.overlay.frame.ready", {
+      altitude_bucket: altitudeBucket,
+      request_count: pendingFrame.query.tile_requests.length,
+      image_count: readyImages.length,
+      elapsed_ms: frameStartedAt == null ? null : Math.round(performance.now() - frameStartedAt),
+    });
+    setTerrainOverlay({
+      query: pendingFrame.query,
+      images: readyImages,
+    });
+    logAfterNextPaint("terrain.overlay.frame.painted", performance.now(), {
+      altitude_bucket: altitudeBucket,
+      request_count: pendingFrame.query.tile_requests.length,
+      image_count: readyImages.length,
+    });
+    return true;
   }
 
   function pumpNexradQueryQueue() {
@@ -3983,143 +4055,37 @@ function MapPage(props: {
       terrainPendingFrameRef.current = null;
       terrainFrameStartRef.current.clear();
       terrainTileInFlightRef.current.clear();
-      terrainRenderQueueRef.current.clear();
-      terrainRenderGenerationRef.current += 1;
+      terrainScheduleRequestRef.current = null;
+      terrainSchedulePendingRef.current = false;
     };
   }, []);
 
-  const terrainAltitudeBucket = terrainAltitudeBucketForOwnship(ownship);
-  terrainCurrentBucketRef.current = terrainAltitudeBucket;
+  const terrainAltitudeBucket = ownship.terrain_altitude_bucket_ft;
 
   useEffect(() => {
     if (!mapIsVisible || !uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
-      terrainCurrentBucketRef.current = null;
       terrainPendingFrameRef.current = null;
-      terrainRenderQueueRef.current.clear();
-      terrainRenderGenerationRef.current += 1;
+      terrainScheduleRequestRef.current = null;
+      terrainSchedulePendingRef.current = false;
       setTerrainOverlay({ query: null, images: [] });
       return;
     }
     if (!mapLayerState.terrain_warning.visible) {
-      terrainCurrentBucketRef.current = null;
       terrainPendingFrameRef.current = null;
-      terrainRenderQueueRef.current.clear();
-      terrainRenderGenerationRef.current += 1;
+      terrainScheduleRequestRef.current = null;
+      terrainSchedulePendingRef.current = false;
       setTerrainOverlay({ query: null, images: [] });
       return;
     }
-    if (terrainAltitudeBucket == null) {
-      terrainPendingFrameRef.current = null;
-      terrainRenderQueueRef.current.clear();
-      terrainRenderGenerationRef.current += 1;
-      setTerrainOverlay((current) => current.images.length === 0 ? current : { query: current.query, images: [] });
-      return;
-    }
-    const session = uiSession;
-    let cancelled = false;
-
-    async function syncTerrainOverlay() {
-      const query = await session.queryTerrainOverlay(
-        viewport,
-        surfaceSize.width,
-        surfaceSize.height,
-      );
-      if (cancelled) {
-        return;
-      }
-      if (query.status.state !== "ready") {
-        debugLog("terrain.overlay.unavailable", {
-          status: query.status,
-          request_count: query.tile_requests.length,
-          zoom: viewport.zoom,
-        });
-        terrainPendingFrameRef.current = null;
-        terrainRenderGenerationRef.current += 1;
-        setTerrainOverlay({ query, images: [] });
-        return;
-      }
-      if (terrainAltitudeBucket == null) {
-        debugLog("terrain.overlay.no_altitude_bucket", {
-          status: query.status,
-          request_count: query.tile_requests.length,
-          zoom: viewport.zoom,
-        });
-        terrainPendingFrameRef.current = null;
-        terrainRenderQueueRef.current.clear();
-        terrainRenderGenerationRef.current += 1;
-        setTerrainOverlay({ query, images: [] });
-        return;
-      }
-      const generation = terrainRenderGenerationRef.current + 1;
-      terrainRenderGenerationRef.current = generation;
-      terrainPendingFrameRef.current = { query, altitudeBucket: terrainAltitudeBucket };
-      const cache = terrainTileCacheRef.current;
-      const inFlight = terrainTileInFlightRef.current;
-      const readyImages = terrainImagesForCompleteQuery(cache, query, terrainAltitudeBucket);
-      if (readyImages) {
-        setTerrainOverlay({ query, images: readyImages });
-      }
-      const missingRequests = query.tile_requests.filter((request) => {
-        const key = terrainCacheKey(request, terrainAltitudeBucket);
-        return !cache.has(key) && !inFlight.has(key) && !terrainRenderQueueRef.current.has(key);
-      }).sort((left, right) =>
-        terrainRequestSortDistance(left, ownship, viewport, surfaceSize.width, surfaceSize.height)
-          - terrainRequestSortDistance(right, ownship, viewport, surfaceSize.width, surfaceSize.height),
-      );
-      if (missingRequests.length === 0) {
-        if (!readyImages) {
-          setTerrainOverlay((current) => ({ query, images: current.images }));
-        }
-        return;
-      }
-      terrainRenderQueueRef.current.clear();
-      for (const request of missingRequests) {
-        const key = terrainCacheKey(request, terrainAltitudeBucket);
-        if (!cache.has(key) && !inFlight.has(key)) {
-          terrainRenderQueueRef.current.set(key, { request, altitudeBucket: terrainAltitudeBucket, generation });
-        }
-      }
-      const renderPlanKey = `${terrainAltitudeBucket}:${readyImages?.length ?? 0}:${missingRequests.length}:${missingRequests.map((request) => request.key).join("|")}`;
-      if (renderPlanKey !== lastTerrainRenderPlanKeyRef.current) {
-        lastTerrainRenderPlanKeyRef.current = renderPlanKey;
-        const frameKey = terrainFrameKey(query, terrainAltitudeBucket);
-        if (!terrainFrameStartRef.current.has(frameKey)) {
-          terrainFrameStartRef.current.set(frameKey, performance.now());
-          pruneTerrainFrameStarts(terrainFrameStartRef.current);
-        }
-        const requestSummary = terrainRequestSummary(query.tile_requests);
-        const missingSummary = terrainRequestSummary(missingRequests);
-        debugLog("terrain.overlay.render.plan", {
-          request_count: query.tile_requests.length,
-          cached_count: readyImages?.length ?? 0,
-          missing_count: missingRequests.length,
-          altitude_bucket: terrainAltitudeBucket,
-          request_zooms: requestSummary.zooms,
-          missing_zooms: missingSummary.zooms,
-        });
-      }
-      pumpTerrainRenderQueue();
-    }
-
-    syncTerrainOverlay().catch((error: unknown) => {
-      if ((error as { name?: string } | null)?.name === "AbortError") {
-        return;
-      }
-      console.warn("terrain overlay unavailable", error);
-      if (!cancelled) {
-        setTerrainOverlay({
-          query: {
-            status: { state: "no_altitude" },
-            tile_requests: [],
-          },
-          images: [],
-        });
-      }
-    });
-
-    return () => {
-      cancelled = true;
+    terrainScheduleRequestRef.current = {
+      id: ++terrainScheduleRequestIdRef.current,
+      session: uiSession,
+      viewport,
+      width: surfaceSize.width,
+      height: surfaceSize.height,
     };
+    terrainSchedulePendingRef.current = true;
+    pumpTerrainRenderQueue();
   }, [mapIsVisible, mapLayerState.terrain_warning.visible, surfaceSize.height, surfaceSize.width, terrainAltitudeBucket, uiInvalidationRevisions.terrain_overlay, uiSession, viewport]);
 
   useEffect(() => {
@@ -6338,7 +6304,13 @@ function PlaybackWidget(props: {
           autoCapitalize="off"
           autoCorrect="off"
         />
-        <button type="button" className="playbackWidgetButton" disabled={!canControl || isBusy} onClick={() => void loadTrace()}>
+        <button
+          type="button"
+          className="playbackWidgetButton"
+          data-testid="playback-load-button"
+          disabled={!canControl || isBusy}
+          onClick={() => void loadTrace()}
+        >
           LOAD
         </button>
       </div>
@@ -6346,6 +6318,7 @@ function PlaybackWidget(props: {
         <button
           type="button"
           className="playbackWidgetButton playbackWidgetMediaButton"
+          data-testid="playback-play-toggle"
           disabled={!canControl || playbackUiState.status === "empty"}
           onClick={() => void playPause()}
           aria-label={playbackUiState.status === "playing" ? "Pause playback" : "Play playback"}
@@ -9420,6 +9393,7 @@ function SituationStatusBadge(props: {
       style="situation"
       options={props.options}
       footer={props.transportControls}
+      testId="ownship-source-button"
     />
   );
 }

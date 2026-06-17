@@ -55,7 +55,8 @@ use preprocessor_vectors::{
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use procedure_geometry_types as pgt;
 use product_contracts::{
-    NAV_DB_CONTRACT_ID, SHADED_RELIEF_CONTRACT_ID, TERRAIN_CONTRACT_ID, WORLD_BASEMAP_CONTRACT_ID,
+    NAV_DB_CONTRACT_ID, SHADED_RELIEF_CONTRACT_ID, TERRAIN_CONTRACT_ID,
+    TERRAIN_TER2_HEIGHT_QUANTIZATION_FT, TERRAIN_TER2_MAX_ZOOM, WORLD_BASEMAP_CONTRACT_ID,
 };
 use serde::{ser::SerializeStruct, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -984,7 +985,7 @@ const TPP_RENDER_WEIGHT: usize = 1;
 const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
 const TPP_FETCH_NODE_VERSION: &str = "v2-source-content-fingerprint";
 const STATIC_SOURCE_FETCH_NODE_VERSION: &str = "v1";
-const TERRAIN_PIPELINE_VERSION: &str = "v5-tile-boxes";
+const TERRAIN_PIPELINE_VERSION: &str = "v6-ter2-z9-max-none-ceil64-gradient";
 const SHADED_RELIEF_PIPELINE_VERSION: &str = "v8-wide-angle-split-tile-boxes";
 const SHADED_RELIEF_OVERLAY_STYLE_VERSION: &str = "v1-gray-borders-bluegray-primary-roads";
 const SHADED_RELIEF_STATE_BORDERS_URL: &str =
@@ -1023,7 +1024,7 @@ const WORLD_BASEMAP_LAND_URL: &str =
 const WORLD_BASEMAP_BOUNDARIES_URL: &str =
     "https://naturalearth.s3.amazonaws.com/110m_cultural/ne_110m_admin_0_boundary_lines_land.zip";
 const TERRAIN_MIN_ZOOM: u32 = 0;
-const TERRAIN_ZOOM: u32 = 10;
+const TERRAIN_ZOOM: u32 = TERRAIN_TER2_MAX_ZOOM;
 const TERRAIN_TILE_SIZE: u32 = 512;
 const RASTER_BASEMAP_MAX_DISPLAY_ZOOM: f64 = 12.5;
 

@@ -245,7 +245,7 @@ pub use state::{
     UiSnapshotAppState,
 };
 pub use terrain::{
-    parse_abt1_tile, prepare_terrain_overlay_frame, query_terrain_overlay,
+    parse_abt2_tile, prepare_terrain_overlay_frame, query_terrain_overlay,
     query_terrain_overlay_with_available_packages, render_terrain_warning_png,
     render_terrain_warning_png_from_tiles, render_terrain_warning_raw_rgba_from_tiles,
     render_terrain_warning_rgba, schedule_terrain_overlay_frame, terrain_altitude_bucket_ft,

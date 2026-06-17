@@ -122,7 +122,7 @@ optional metadata. Clients follow `relative_path`; they do not infer public
 filenames from package ids.
 
 Package contract ids use a product-family prefix, such as `NAV9`, `TPP1`,
-`CSUP1`, `SEC1`, and `TER1`. The same string appears in package filenames and
+`CSUP1`, `SEC1`, and `TER2`. The same string appears in package filenames and
 manifest content so the package hash self-describes the declared contract.
 
 ## Client Resolution

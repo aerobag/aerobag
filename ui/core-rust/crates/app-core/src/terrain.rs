@@ -3,13 +3,15 @@ use std::io::Read;
 
 use serde::{Deserialize, Serialize};
 
-const ABT1_MAGIC: &[u8; 4] = b"ABT1";
+const ABT2_MAGIC: &[u8; 4] = b"ABT2";
 const GZIP_MAGIC: &[u8; 2] = b"\x1f\x8b";
 const HEADER_BYTES: usize = 20;
 const MIN_TERRAIN_ZOOM: u32 = 0;
-const MAX_TERRAIN_ZOOM: u32 = 10;
+const MAX_TERRAIN_ZOOM: u32 = product_contracts::TERRAIN_TER2_MAX_ZOOM;
+const TERRAIN_COVERAGE_ZOOM: u32 = 10;
 const TERRAIN_FULL_COVERAGE_ZOOM: u32 = 7;
 const TERRAIN_ALTITUDE_BUCKET_FT: f64 = 200.0;
+const TERRAIN_NODATA: i16 = -32768;
 const TERRAIN_WIDE_BASE_ID: &str = "terrain-wide";
 const WORLD_SIZE: f64 = 256.0;
 const MAX_LATITUDE: f64 = 85.051_128_78;
@@ -319,7 +321,7 @@ pub fn render_terrain_warning_rgba_from_tiles(
     }
     let parsed_tiles = tile_bytes_list
         .iter()
-        .map(|tile_bytes| parse_abt1_tile(tile_bytes))
+        .map(|tile_bytes| parse_abt2_tile(tile_bytes))
         .collect::<Result<Vec<_>, _>>()?;
     let (info, samples) = composite_terrain_samples(&parsed_tiles)?;
     let rgba = render_terrain_warning_samples(&info, &samples, aircraft_altitude_ft);
@@ -332,7 +334,7 @@ pub fn render_terrain_warning_raw_rgba_from_tiles(
 ) -> Result<Vec<u8>, String> {
     let (info, rgba) =
         render_terrain_warning_rgba_from_tiles(tile_bytes_list, aircraft_altitude_ft)?;
-    Ok(pack_raw_rgba(downsample_terrain_warning_rgba(&info, &rgba)))
+    Ok(pack_raw_rgba(info.width, info.height, &rgba))
 }
 
 fn encode_terrain_warning_png(info: &TerrainTileInfo, rgba: &[u8]) -> Result<Vec<u8>, String> {
@@ -355,7 +357,7 @@ pub fn render_terrain_warning_rgba(
     tile_bytes: &[u8],
     aircraft_altitude_ft: f64,
 ) -> Result<(TerrainTileInfo, Vec<u8>), String> {
-    let (info, samples) = parse_abt1_tile(tile_bytes)?;
+    let (info, samples) = parse_abt2_tile(tile_bytes)?;
     Ok((
         info.clone(),
         render_terrain_warning_samples(&info, &samples, aircraft_altitude_ft),
@@ -400,52 +402,11 @@ fn render_terrain_warning_samples(
     rgba
 }
 
-fn downsample_terrain_warning_rgba(info: &TerrainTileInfo, rgba: &[u8]) -> (u16, u16, Vec<u8>) {
-    const DOWNSAMPLE: usize = 2;
-    let source_width = info.width as usize;
-    let source_height = info.height as usize;
-    let width = source_width / DOWNSAMPLE;
-    let height = source_height / DOWNSAMPLE;
-    let mut output = vec![0_u8; width * height * 4];
-    for y in 0..height {
-        for x in 0..width {
-            let mut chosen = [0_u8; 4];
-            for dy in 0..DOWNSAMPLE {
-                for dx in 0..DOWNSAMPLE {
-                    let source_pixel =
-                        ((y * DOWNSAMPLE + dy) * source_width + (x * DOWNSAMPLE + dx)) * 4;
-                    let candidate = [
-                        rgba[source_pixel],
-                        rgba[source_pixel + 1],
-                        rgba[source_pixel + 2],
-                        rgba[source_pixel + 3],
-                    ];
-                    if terrain_warning_priority(candidate) > terrain_warning_priority(chosen) {
-                        chosen = candidate;
-                    }
-                }
-            }
-            let output_pixel = (y * width + x) * 4;
-            output[output_pixel..output_pixel + 4].copy_from_slice(&chosen);
-        }
-    }
-    (width as u16, height as u16, output)
-}
-
-fn terrain_warning_priority(pixel: [u8; 4]) -> u8 {
-    match pixel {
-        [185, 0, 45, 190] => 3,
-        [255, 220, 0, 125] => 2,
-        [0, 82, 150, 70] => 1,
-        _ => 0,
-    }
-}
-
-fn pack_raw_rgba((width, height, rgba): (u16, u16, Vec<u8>)) -> Vec<u8> {
+fn pack_raw_rgba(width: u16, height: u16, rgba: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(4 + rgba.len());
     output.extend_from_slice(&width.to_le_bytes());
     output.extend_from_slice(&height.to_le_bytes());
-    output.extend_from_slice(&rgba);
+    output.extend_from_slice(rgba);
     output
 }
 
@@ -487,13 +448,14 @@ fn composite_terrain_samples(
     Ok((first_info.clone(), composite))
 }
 
-pub fn parse_abt1_tile(tile_bytes: &[u8]) -> Result<(TerrainTileInfo, Vec<i16>), String> {
-    if tile_bytes.len() < HEADER_BYTES || &tile_bytes[0..4] != ABT1_MAGIC {
-        return Err("invalid ABT1 terrain tile header".to_string());
+pub fn parse_abt2_tile(tile_bytes: &[u8]) -> Result<(TerrainTileInfo, Vec<i16>), String> {
+    if tile_bytes.len() < HEADER_BYTES || &tile_bytes[0..4] != ABT2_MAGIC {
+        return Err("invalid ABT2 terrain tile header".to_string());
     }
     let width = u16::from_le_bytes([tile_bytes[4], tile_bytes[5]]);
     let height = u16::from_le_bytes([tile_bytes[6], tile_bytes[7]]);
     let nodata = i16::from_le_bytes([tile_bytes[8], tile_bytes[9]]);
+    let _reserved = i16::from_le_bytes([tile_bytes[10], tile_bytes[11]]);
     let scale = f32::from_le_bytes([
         tile_bytes[12],
         tile_bytes[13],
@@ -506,17 +468,37 @@ pub fn parse_abt1_tile(tile_bytes: &[u8]) -> Result<(TerrainTileInfo, Vec<i16>),
         tile_bytes[18],
         tile_bytes[19],
     ]);
+    if nodata != TERRAIN_NODATA
+        || scale != product_contracts::TERRAIN_TER2_HEIGHT_QUANTIZATION_FT as f32
+        || offset != 0.0
+    {
+        return Err("ABT2 terrain tile header does not match TER2 contract".to_string());
+    }
     let sample_count = width as usize * height as usize;
     let expected_bytes = HEADER_BYTES + sample_count * 2;
-    if tile_bytes.len() < expected_bytes {
+    if tile_bytes.len() != expected_bytes {
         return Err(format!(
-            "truncated ABT1 terrain tile: expected {expected_bytes} bytes, got {}",
+            "invalid ABT2 terrain tile length: expected {expected_bytes} bytes, got {}",
             tile_bytes.len()
         ));
     }
     let mut samples = Vec::with_capacity(sample_count);
-    for chunk in tile_bytes[HEADER_BYTES..expected_bytes].chunks_exact(2) {
-        samples.push(i16::from_le_bytes([chunk[0], chunk[1]]));
+    for (index, chunk) in tile_bytes[HEADER_BYTES..expected_bytes]
+        .chunks_exact(2)
+        .enumerate()
+    {
+        let residual = u16::from_le_bytes([chunk[0], chunk[1]]);
+        let x = index % width as usize;
+        let y = index / width as usize;
+        let prediction = match (x, y) {
+            (0, 0) => 0_u16,
+            (_, 0) => samples[index - 1] as u16,
+            (0, _) => samples[index - width as usize] as u16,
+            _ => (samples[index - 1] as u16)
+                .wrapping_add(samples[index - width as usize] as u16)
+                .wrapping_sub(samples[index - width as usize - 1] as u16),
+        };
+        samples.push(prediction.wrapping_add(residual) as i16);
     }
     Ok((
         TerrainTileInfo {
@@ -530,21 +512,17 @@ pub fn parse_abt1_tile(tile_bytes: &[u8]) -> Result<(TerrainTileInfo, Vec<i16>),
     ))
 }
 
-pub(crate) fn terrain_source_payload_to_abt1_bytes(payload: &[u8]) -> Result<Vec<u8>, String> {
-    let abt1_bytes = if payload.starts_with(GZIP_MAGIC) {
-        let mut decoder = flate2::read::GzDecoder::new(payload);
-        let mut decoded = Vec::new();
-        decoder
-            .read_to_end(&mut decoded)
-            .map_err(|err| format!("failed to gzip-decode terrain tile payload: {err}"))?;
-        decoded
-    } else {
-        payload.to_vec()
-    };
-    if abt1_bytes.len() < HEADER_BYTES || &abt1_bytes[0..4] != ABT1_MAGIC {
-        return Err("terrain source payload is not an ABT1 tile".to_string());
+pub(crate) fn terrain_source_payload_to_abt2_bytes(payload: &[u8]) -> Result<Vec<u8>, String> {
+    if !payload.starts_with(GZIP_MAGIC) {
+        return Err("terrain source payload is not gzip-compressed ABT2".to_string());
     }
-    Ok(abt1_bytes)
+    let mut decoder = flate2::read::GzDecoder::new(payload);
+    let mut abt2_bytes = Vec::new();
+    decoder
+        .read_to_end(&mut abt2_bytes)
+        .map_err(|err| format!("failed to gzip-decode terrain tile payload: {err}"))?;
+    parse_abt2_tile(&abt2_bytes)?;
+    Ok(abt2_bytes)
 }
 
 fn terrain_tile_requests_with_available_packages(
@@ -709,7 +687,7 @@ fn terrain_product_ids_for_tile_with_available_packages(
         return Vec::new();
     }
 
-    let zoom_delta = MAX_TERRAIN_ZOOM.saturating_sub(zoom);
+    let zoom_delta = TERRAIN_COVERAGE_ZOOM.saturating_sub(zoom);
     let x_min = x << zoom_delta;
     let x_max = ((x + 1) << zoom_delta).saturating_sub(1);
     let y_tms_min = y_tms << zoom_delta;
@@ -787,19 +765,38 @@ mod tests {
         package_ids(base_ids).into_iter().collect()
     }
 
-    #[test]
-    fn classifies_abt1_tile_against_aircraft_altitude() {
+    fn terrain_tile_bytes(width: u16, height: u16, samples: &[i16]) -> Vec<u8> {
+        assert_eq!(samples.len(), width as usize * height as usize);
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"ABT1");
-        bytes.extend_from_slice(&2_u16.to_le_bytes());
-        bytes.extend_from_slice(&2_u16.to_le_bytes());
-        bytes.extend_from_slice(&(-32768_i16).to_le_bytes());
+        bytes.extend_from_slice(b"ABT2");
+        bytes.extend_from_slice(&width.to_le_bytes());
+        bytes.extend_from_slice(&height.to_le_bytes());
+        bytes.extend_from_slice(&TERRAIN_NODATA.to_le_bytes());
         bytes.extend_from_slice(&0_i16.to_le_bytes());
-        bytes.extend_from_slice(&1.0_f32.to_le_bytes());
+        bytes.extend_from_slice(
+            &(product_contracts::TERRAIN_TER2_HEIGHT_QUANTIZATION_FT as f32).to_le_bytes(),
+        );
         bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-        for sample in [1000_i16, 1600_i16, 2600_i16, -32768_i16] {
-            bytes.extend_from_slice(&sample.to_le_bytes());
+        for (index, sample) in samples.iter().copied().enumerate() {
+            let x = index % width as usize;
+            let y = index / width as usize;
+            let prediction = match (x, y) {
+                (0, 0) => 0_u16,
+                (_, 0) => samples[index - 1] as u16,
+                (0, _) => samples[index - width as usize] as u16,
+                _ => (samples[index - 1] as u16)
+                    .wrapping_add(samples[index - width as usize] as u16)
+                    .wrapping_sub(samples[index - width as usize - 1] as u16),
+            };
+            let residual = (sample as u16).wrapping_sub(prediction);
+            bytes.extend_from_slice(&residual.to_le_bytes());
         }
+        bytes
+    }
+
+    #[test]
+    fn classifies_abt2_tile_against_aircraft_altitude() {
+        let bytes = terrain_tile_bytes(2, 2, &[16, 25, 41, TERRAIN_NODATA]);
 
         let (_, rgba) = render_terrain_warning_rgba(&bytes, 2000.0).expect("render terrain");
         assert_eq!(&rgba[0..4], &[255, 220, 0, 125]);
@@ -809,27 +806,20 @@ mod tests {
     }
 
     #[test]
-    fn decodes_gzip_terrain_source_payload_to_abt1() {
+    fn decodes_gzip_terrain_source_payload_to_abt2() {
         use std::io::Write;
 
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"ABT1");
-        bytes.extend_from_slice(&1_u16.to_le_bytes());
-        bytes.extend_from_slice(&1_u16.to_le_bytes());
-        bytes.extend_from_slice(&(-32768_i16).to_le_bytes());
-        bytes.extend_from_slice(&0_i16.to_le_bytes());
-        bytes.extend_from_slice(&1.0_f32.to_le_bytes());
-        bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-        bytes.extend_from_slice(&2500_i16.to_le_bytes());
+        let bytes = terrain_tile_bytes(1, 1, &[40]);
 
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(&bytes).expect("write gzip payload");
         let gzip_bytes = encoder.finish().expect("finish gzip payload");
 
         assert_eq!(
-            terrain_source_payload_to_abt1_bytes(&gzip_bytes).expect("decode terrain payload"),
+            terrain_source_payload_to_abt2_bytes(&gzip_bytes).expect("decode terrain payload"),
             bytes
         );
+        assert!(terrain_source_payload_to_abt2_bytes(&bytes).is_err());
     }
 
     #[test]
@@ -904,15 +894,7 @@ mod tests {
 
     #[test]
     fn writes_warning_png() {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"ABT1");
-        bytes.extend_from_slice(&1_u16.to_le_bytes());
-        bytes.extend_from_slice(&1_u16.to_le_bytes());
-        bytes.extend_from_slice(&(-32768_i16).to_le_bytes());
-        bytes.extend_from_slice(&0_i16.to_le_bytes());
-        bytes.extend_from_slice(&1.0_f32.to_le_bytes());
-        bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-        bytes.extend_from_slice(&2500_i16.to_le_bytes());
+        let bytes = terrain_tile_bytes(1, 1, &[40]);
 
         let png = render_terrain_warning_png(&bytes, 2000.0).expect("render png");
         assert_eq!(&png[0..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
@@ -921,7 +903,7 @@ mod tests {
     #[test]
     fn selects_southwest_terrain_for_palo_alto_tile() {
         assert_eq!(
-            terrain_product_ids_for_tile(10, 164, 627),
+            terrain_product_ids_for_tile(9, 82, 313),
             package_ids(&["terrain-sw"])
         );
     }
@@ -1049,30 +1031,17 @@ mod tests {
 
     #[test]
     fn composites_overlapping_terrain_tiles_by_valid_highest_sample() {
-        let tile = |samples: [i16; 4]| {
-            let mut bytes = Vec::new();
-            bytes.extend_from_slice(b"ABT1");
-            bytes.extend_from_slice(&2_u16.to_le_bytes());
-            bytes.extend_from_slice(&2_u16.to_le_bytes());
-            bytes.extend_from_slice(&(-32768_i16).to_le_bytes());
-            bytes.extend_from_slice(&0_i16.to_le_bytes());
-            bytes.extend_from_slice(&1.0_f32.to_le_bytes());
-            bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-            for sample in samples {
-                bytes.extend_from_slice(&sample.to_le_bytes());
-            }
-            bytes
-        };
-        let southwest = tile([100, -32768, 300, -32768]);
-        let northwest = tile([-32768, 200, 250, -32768]);
+        let tile = |samples: [i16; 4]| terrain_tile_bytes(2, 2, &samples);
+        let southwest = tile([2, TERRAIN_NODATA, 5, TERRAIN_NODATA]);
+        let northwest = tile([TERRAIN_NODATA, 3, 4, TERRAIN_NODATA]);
 
         let (info, samples) = composite_terrain_samples(&[
-            parse_abt1_tile(&southwest).expect("parse southwest"),
-            parse_abt1_tile(&northwest).expect("parse northwest"),
+            parse_abt2_tile(&southwest).expect("parse southwest"),
+            parse_abt2_tile(&northwest).expect("parse northwest"),
         ])
         .expect("composite terrain");
 
-        assert_eq!(info.nodata, -32768);
-        assert_eq!(samples, vec![100, 200, 300, -32768]);
+        assert_eq!(info.nodata, TERRAIN_NODATA);
+        assert_eq!(samples, vec![2, 3, 5, TERRAIN_NODATA]);
     }
 }

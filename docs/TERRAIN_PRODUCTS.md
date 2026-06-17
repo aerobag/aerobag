@@ -16,11 +16,12 @@ terrain_<region>_<sha256>.zip
   tiles/<z>/<x>/<y>.terrain
 ```
 
-Each `.terrain` tile is a 512x512 signed 16-bit little-endian raster with a
-small binary header. The current magic is `ABT1`; samples are integer feet and
-`-32768` is nodata. The region set matches the existing Aerobag raster product
-regions. Tile coordinates follow the existing GDAL/gdal2tiles TMS convention
-used by chart tiles, not XYZ north-origin y.
+Each `.terrain` tile is a gzip-compressed `ABT2` payload with a 20-byte binary
+header and a 512x512 signed 16-bit raster encoded as modular gradient
+residuals. TER2 samples are upward-quantized 64-foot bins; `-32768` is nodata.
+The region set matches the existing Aerobag raster product regions. Tile
+coordinates follow the existing GDAL/gdal2tiles TMS convention used by chart
+tiles, not XYZ north-origin y.
 
 Nodata is a first-class value, not an alias for zero elevation. If a source DEM
 cell cannot be fetched and no alternate TNMAccess candidate exists, the builder
@@ -28,16 +29,16 @@ omits that source cell, records it in `manifest.json` as `missing_dem_cells`,
 and emits `-32768` for uncovered samples. Clients must treat `-32768` as
 "unknown terrain", not "sea level" or "safe/no granite here".
 
-The terrain source/max zoom is z10. With 512px tiles this is roughly a 2x
-horizontal downsample from USGS 3DEP 1 arc-second source spacing at
-mid-latitudes. The package also contains parent tiles down to z0 so zoomed-out
-views do not have to fetch an unbounded set of z10 children.
+The terrain source/max zoom is z9. Base tiles are generated directly from the
+USGS 3DEP source VRT using GDAL max resampling with source overviews disabled.
+The package also contains parent tiles down to z0 so zoomed-out views do not
+have to fetch an unbounded set of z9 children.
 
 Parent terrain tiles are safety-conservative: each parent sample is the maximum
-valid elevation from the corresponding child sample footprint. If every
-contributing child sample is nodata, the parent sample remains nodata. This
-means zoomed-out terrain can overstate terrain height, but should not hide a
-peak by averaging it away.
+valid quantized elevation from the corresponding child sample footprint. If
+every contributing child sample is nodata, the parent sample remains nodata.
+This means zoomed-out terrain can overstate terrain height, but should not hide
+a peak by averaging it away.
 
 The numeric terrain product is terrain height in feet above the WGS84 ellipsoid:
 
@@ -64,15 +65,81 @@ integer latitude/longitude grid, converts meters to integer feet, and records
 source URL, ZIP SHA-256, fetched timestamp, model effective date, grid release
 date, and citation in the terrain manifest.
 
-The intended sample encoding is signed 16-bit integer feet with explicit
-metadata:
+The TER2 sample encoding is signed 16-bit 64-foot bins with explicit metadata:
 
 - `output_units: feet`
+- `height_quantization_ft: 64`
 - `output_vertical_datum: WGS84 ellipsoid`
 - `source_vertical_datum`: copied from the source DEM metadata
 - `nodata: -32768`
 - `missing_dem_cells`: one-degree DEM cells that were intentionally omitted
   because every discovered source candidate failed
+
+## Compression Notes
+
+The `ABT2` tile payload stores quantized signed 16-bit samples as unsigned
+16-bit modular residuals using this predictor:
+
+```text
+prediction(x, y) =
+  left                           when x > 0 and y == 0
+  up                             when x == 0 and y > 0
+  left + up - upper_left         when x > 0 and y > 0
+  0                              for x == 0 and y == 0
+
+residual = (sample_bits - prediction) mod 65536
+sample_bits = sample_i16 reinterpreted as u16
+```
+
+The decoded sample value is converted to feet as:
+
+```text
+height_ft = sample_i16 * 64
+```
+
+The outer terrain ZIP stores `.terrain` members without deflating them again.
+
+Historical ABT1 compression probe:
+
+A 2026-06-16 NW-region probe measured the current package against exact
+sample-preserving predictors. The source artifact was:
+
+```text
+terrain_nw_c04695cb9f1f5222.zip
+tiles: 3,564
+decoded ABT1 bytes: 1,868,633,712
+current ZIP bytes: 1,091,629,550
+current .terrain member bytes: 1,091,189,742
+```
+
+Exact predictor results, measured on every NW tile:
+
+```text
+codec                         member bytes  vs current
+current ABT1 gzip            1,091,189,742        1.000
+average-neighbor delta gzip    746,594,245        0.684
+gradient delta gzip            712,042,605        0.653
+```
+
+Per-zoom NW ratios for the gradient predictor:
+
+```text
+z0   1.025
+z1   0.974
+z2   0.944
+z3   0.931
+z4   0.915
+z5   0.887
+z6   0.869
+z7   0.841
+z8   0.803
+z9   0.738
+z10  0.612
+```
+
+The higher zooms dominate total bytes, so the z0 regression is immaterial. TER2
+adds z9 max-resampled source tiles and 64-foot upward quantization on top of the
+gradient residual encoding measured here.
 
 ## Publication
 

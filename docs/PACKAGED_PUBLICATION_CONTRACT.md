@@ -61,12 +61,14 @@ by the preprocessor source pipeline. The nav-db also carries `magvar/source`,
 which records upstream source metadata.
 
 The terrain package contains `manifest.json` plus
-`tiles/<z>/<x>/<y>.terrain` members. The source/max zoom is z10, and parent
-tiles are generated down to z0. Parent terrain samples are the maximum valid
-child elevation over the covered child sample footprint; all-nodata footprints
-remain nodata. Terrain tile members are gzip-compressed `ABT1` payloads stored
-directly in the outer zip. The outer zip must not deflate `.terrain` members
-again.
+`tiles/<z>/<x>/<y>.terrain` members. TER2 numeric terrain source/max zoom is
+z9, and parent tiles are generated down to z0. Source tiles are generated from
+the DEM with GDAL max resampling and overviews disabled. Terrain heights are
+quantized upward into 64-foot bins. Parent terrain samples are the maximum
+valid quantized elevation over the covered child sample footprint; all-nodata
+footprints remain nodata. Terrain tile members are gzip-compressed `ABT2`
+payloads stored directly in the outer zip. The outer zip must not deflate
+`.terrain` members again.
 
 When serving unpacked `terrain-*/tiles/**/*.terrain` over HTTP, the server
 should treat the file bytes as precompressed content:
@@ -75,7 +77,7 @@ should treat the file bytes as precompressed content:
 - `Content-Encoding: gzip`
 - no additional dynamic gzip/deflate recompression
 
-With those headers, browser fetch consumers receive decompressed `ABT1` bytes.
+With those headers, browser fetch consumers receive decompressed `ABT2` bytes.
 Offline zip consumers that read directly from packaged ZIPs must gzip-decode the
 member payload after reading the zip entry.
 
@@ -87,7 +89,7 @@ cycle bundle's `packages[]`. Consumers fetch it only if they explicitly need a
 terrain-background visual layer.
 
 The package contains `manifest.json` plus `tiles/<z>/<x>/<y>.webp` members. The
-source/max zoom uses the same z10, 512x512 grid as the numeric terrain product,
+source/max zoom uses the same z10, 512x512 grid as the shaded-relief source,
 with alpha-preserving RGBA parent tiles generated down to z0. WebP tile members
 are already image-compressed and are stored in the outer zip without another
 deflate pass.

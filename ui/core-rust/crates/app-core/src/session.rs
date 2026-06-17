@@ -5014,8 +5014,8 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         return Ok(());
     }
     if let Some(rest) = resource_id.strip_prefix("terrain/source/") {
-        let abt1_bytes =
-            crate::terrain::terrain_source_payload_to_abt1_bytes(bytes).map_err(|message| {
+        let abt2_bytes =
+            crate::terrain::terrain_source_payload_to_abt2_bytes(bytes).map_err(|message| {
                 AppError {
                     kind: AppErrorKind::InvalidManifest,
                     message,
@@ -5025,7 +5025,7 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         let session = session_mut(&mut sessions, handle)?;
         session
             .terrain_source_tile_cache
-            .insert(rest.to_string(), abt1_bytes);
+            .insert(rest.to_string(), abt2_bytes);
         return Ok(());
     }
     Err(AppError {
@@ -13101,27 +13101,40 @@ mod tests {
 
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
-        let mut raw_abt1 = Vec::new();
-        raw_abt1.extend_from_slice(b"ABT1");
-        raw_abt1.extend_from_slice(&2_u16.to_le_bytes());
-        raw_abt1.extend_from_slice(&2_u16.to_le_bytes());
-        raw_abt1.extend_from_slice(&(-32768_i16).to_le_bytes());
-        raw_abt1.extend_from_slice(&0_i16.to_le_bytes());
-        raw_abt1.extend_from_slice(&1.0_f32.to_le_bytes());
-        raw_abt1.extend_from_slice(&0.0_f32.to_le_bytes());
-        for sample in [2500_i16; 4] {
-            raw_abt1.extend_from_slice(&sample.to_le_bytes());
+        let samples = [40_i16; 4];
+        let mut raw_abt2 = Vec::new();
+        raw_abt2.extend_from_slice(b"ABT2");
+        raw_abt2.extend_from_slice(&2_u16.to_le_bytes());
+        raw_abt2.extend_from_slice(&2_u16.to_le_bytes());
+        raw_abt2.extend_from_slice(&(-32768_i16).to_le_bytes());
+        raw_abt2.extend_from_slice(&0_i16.to_le_bytes());
+        raw_abt2.extend_from_slice(
+            &(product_contracts::TERRAIN_TER2_HEIGHT_QUANTIZATION_FT as f32).to_le_bytes(),
+        );
+        raw_abt2.extend_from_slice(&0.0_f32.to_le_bytes());
+        for (index, sample) in samples.iter().copied().enumerate() {
+            let x = index % 2;
+            let y = index / 2;
+            let prediction = match (x, y) {
+                (0, 0) => 0_u16,
+                (_, 0) => samples[index - 1] as u16,
+                (0, _) => samples[index - 2] as u16,
+                _ => (samples[index - 1] as u16)
+                    .wrapping_add(samples[index - 2] as u16)
+                    .wrapping_sub(samples[index - 3] as u16),
+            };
+            raw_abt2.extend_from_slice(&(sample as u16).wrapping_sub(prediction).to_le_bytes());
         }
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         encoder
-            .write_all(&raw_abt1)
+            .write_all(&raw_abt2)
             .expect("write gzip terrain tile");
-        let gzip_abt1 = encoder.finish().expect("finish gzip terrain tile");
+        let gzip_abt2 = encoder.finish().expect("finish gzip terrain tile");
 
         ingest_resource_in_session(
             init.handle,
             "terrain/source/terrain-sw/tiles/9/1/2.terrain",
-            &gzip_abt1,
+            &gzip_abt2,
         )
         .expect("ingest gzip terrain tile");
         let raw_rgba = render_terrain_overlay_tile_by_key_in_session(
@@ -13131,8 +13144,8 @@ mod tests {
         )
         .expect("render terrain tile by key");
 
-        assert_eq!(u16::from_le_bytes([raw_rgba[0], raw_rgba[1]]), 1);
-        assert_eq!(u16::from_le_bytes([raw_rgba[2], raw_rgba[3]]), 1);
+        assert_eq!(u16::from_le_bytes([raw_rgba[0], raw_rgba[1]]), 2);
+        assert_eq!(u16::from_le_bytes([raw_rgba[2], raw_rgba[3]]), 2);
         assert_eq!(&raw_rgba[4..8], &[185, 0, 45, 190]);
     }
 

@@ -34,12 +34,13 @@ pub(super) fn build_terrain_product(
         );
     }
     if let Some(cached_selection) = cached_terrain_dem_selection(&dem_candidates, &fetch_cache)? {
-        let source_fingerprint = terrain_source_fingerprint_from_cached(
+        let dem_source_fingerprint = terrain_source_fingerprint_from_cached(
             &cached_selection.selection.urls,
             &cached_selection.sources,
             &cached_selection.selection.missing_cells,
             Some((geoid_csv_path, geoid_metadata_path)),
         )?;
+        let source_fingerprint = terrain_output_fingerprint(&dem_source_fingerprint);
         let version_label = content_product_version_label(&source_fingerprint);
         let inputs = terrain_product_inputs(
             region,
@@ -73,7 +74,7 @@ pub(super) fn build_terrain_product(
         &format!("terrain-{region_id}-dem"),
     )?;
     let dem_paths = terrain_dem_paths_from_requests(&dem_dir, &dem_selection.requests)?;
-    let source_fingerprint = if let Some(sources) =
+    let dem_source_fingerprint = if let Some(sources) =
         cached_terrain_dem_sources_for_requests(&fetch_cache, &dem_selection.requests)?
     {
         terrain_source_fingerprint_from_cached(
@@ -90,6 +91,7 @@ pub(super) fn build_terrain_product(
             Some((geoid_csv_path, geoid_metadata_path)),
         )?
     };
+    let source_fingerprint = terrain_output_fingerprint(&dem_source_fingerprint);
     let version_label = content_product_version_label(&source_fingerprint);
     let inputs = terrain_product_inputs(
         region,
@@ -241,7 +243,13 @@ pub(super) fn terrain_wide_source_fingerprint(
     regional_products: &[(String, PathBuf, String, String, Option<String>)],
 ) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"terrain-wide-v1");
+    hasher.update(b"terrain-wide-v2-ter2");
+    hasher.update(TERRAIN_CONTRACT_ID.as_bytes());
+    hasher.update([0]);
+    hasher.update(TERRAIN_PIPELINE_VERSION.as_bytes());
+    hasher.update([0]);
+    hasher.update(TERRAIN_TER2_HEIGHT_QUANTIZATION_FT.to_string().as_bytes());
+    hasher.update([0]);
     hasher.update(FULL_COVERAGE_ZOOM.to_string().as_bytes());
     for (region_id, _output_dir, source_version, zip_sha256, _fetched_at) in regional_products {
         hasher.update(region_id.as_bytes());
@@ -251,6 +259,23 @@ pub(super) fn terrain_wide_source_fingerprint(
         hasher.update(zip_sha256.as_bytes());
         hasher.update([0xff]);
     }
+    format!("{:x}", hasher.finalize())
+}
+
+pub(super) fn terrain_output_fingerprint(dem_source_fingerprint: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"terrain-output-v1-ter2");
+    hasher.update(TERRAIN_CONTRACT_ID.as_bytes());
+    hasher.update([0]);
+    hasher.update(TERRAIN_PIPELINE_VERSION.as_bytes());
+    hasher.update([0]);
+    hasher.update(TERRAIN_ZOOM.to_string().as_bytes());
+    hasher.update([0]);
+    hasher.update(TERRAIN_TILE_SIZE.to_string().as_bytes());
+    hasher.update([0]);
+    hasher.update(TERRAIN_TER2_HEIGHT_QUANTIZATION_FT.to_string().as_bytes());
+    hasher.update([0]);
+    hasher.update(dem_source_fingerprint.as_bytes());
     format!("{:x}", hasher.finalize())
 }
 
@@ -277,6 +302,14 @@ pub(super) fn terrain_wide_product_inputs(
             FULL_COVERAGE_ZOOM.to_string(),
         ),
         ("tile_size".to_string(), TERRAIN_TILE_SIZE.to_string()),
+        (
+            "terrain_contract_id".to_string(),
+            TERRAIN_CONTRACT_ID.to_string(),
+        ),
+        (
+            "height_quantization_ft".to_string(),
+            TERRAIN_TER2_HEIGHT_QUANTIZATION_FT.to_string(),
+        ),
         (
             "source_fingerprint".to_string(),
             source_fingerprint.to_string(),
@@ -314,7 +347,9 @@ pub(super) fn composite_terrain_wide_tiles(
         .arg("--max-zoom")
         .arg(FULL_COVERAGE_ZOOM.to_string())
         .arg("--tile-size")
-        .arg(TERRAIN_TILE_SIZE.to_string());
+        .arg(TERRAIN_TILE_SIZE.to_string())
+        .arg("--height-quantization-ft")
+        .arg(TERRAIN_TER2_HEIGHT_QUANTIZATION_FT.to_string());
     for (_region_id, output_dir, _source_version, _zip_sha256, _fetched_at) in regional_products {
         command.arg("--source-dir").arg(output_dir);
     }
@@ -342,10 +377,18 @@ pub(super) fn terrain_product_inputs(
     let region_id = region.code().to_ascii_lowercase();
     Ok(BTreeMap::from([
         ("product_id".to_string(), format!("terrain-{region_id}")),
+        (
+            "terrain_contract_id".to_string(),
+            TERRAIN_CONTRACT_ID.to_string(),
+        ),
         ("region".to_string(), region.code().to_string()),
         ("min_zoom".to_string(), TERRAIN_MIN_ZOOM.to_string()),
         ("max_zoom".to_string(), TERRAIN_ZOOM.to_string()),
         ("tile_size".to_string(), TERRAIN_TILE_SIZE.to_string()),
+        (
+            "height_quantization_ft".to_string(),
+            TERRAIN_TER2_HEIGHT_QUANTIZATION_FT.to_string(),
+        ),
         (
             "source_fingerprint".to_string(),
             source_fingerprint.to_string(),
@@ -2433,6 +2476,8 @@ pub(super) fn build_terrain_region_tiles(
         .arg(TERRAIN_ZOOM.to_string())
         .arg("--tile-size")
         .arg(TERRAIN_TILE_SIZE.to_string())
+        .arg("--height-quantization-ft")
+        .arg(TERRAIN_TER2_HEIGHT_QUANTIZATION_FT.to_string())
         .arg("--version-label")
         .arg(version_label)
         .arg("--source-count")
@@ -3392,21 +3437,39 @@ import numpy as np
 
 TERRAIN_TILE_SUFFIXES = {'.terrain'}
 NODATA = -32768
+MAGIC = b'ABT2'
 
-def read_tile(path, tile_size):
+def encode_gradient_delta(samples):
+    raw = samples.astype('<i2', copy=False).view('<u2').astype(np.uint32)
+    prediction = np.zeros(raw.shape, dtype=np.uint32)
+    prediction[0, 1:] = raw[0, :-1]
+    prediction[1:, 0] = raw[:-1, 0]
+    prediction[1:, 1:] = raw[1:, :-1] + raw[:-1, 1:] - raw[:-1, :-1]
+    return ((raw - prediction) & 0xffff).astype('<u2')
+
+def decode_gradient_delta(payload, tile_size):
+    residual = np.frombuffer(payload, dtype='<u2').reshape((tile_size, tile_size)).astype(np.uint32)
+    raw = residual.cumsum(axis=0, dtype=np.uint32).cumsum(axis=1, dtype=np.uint32)
+    return (raw & 0xffff).astype('<u2').view('<i2')
+
+def read_tile(path, tile_size, height_quantization_ft):
     with gzip.open(path, 'rb') as f:
         raw = f.read()
-    if raw[:4] != b'ABT1':
-        raise ValueError(f'{path} is not an ABT1 terrain tile')
+    if raw[:4] != MAGIC:
+        raise ValueError(f'{path} is not an ABT2 terrain tile')
     width, height, nodata, _reserved, scale, offset = struct.unpack('<HHhhff', raw[4:20])
-    if width != tile_size or height != tile_size or nodata != NODATA:
+    if width != tile_size or height != tile_size or nodata != NODATA or scale != float(height_quantization_ft) or offset != 0.0:
         raise ValueError(f'{path} has unexpected terrain header')
-    samples = np.frombuffer(raw[20:], dtype='<i2').reshape((tile_size, tile_size))
+    expected_bytes = 20 + tile_size * tile_size * 2
+    if len(raw) != expected_bytes:
+        raise ValueError(f'{path} has unexpected terrain payload length')
+    samples = decode_gradient_delta(raw[20:], tile_size)
     return scale, offset, samples
 
-def write_tile(path, payload, tile_size):
+def write_tile(path, samples, tile_size, height_quantization_ft):
     path.parent.mkdir(parents=True, exist_ok=True)
-    raw = b'ABT1' + struct.pack('<HHhhff', tile_size, tile_size, NODATA, 0, 1.0, 0.0) + payload
+    payload = encode_gradient_delta(samples)
+    raw = MAGIC + struct.pack('<HHhhff', tile_size, tile_size, NODATA, 0, float(height_quantization_ft), 0.0) + payload.tobytes()
     with open(path, 'wb') as f:
         f.write(gzip.compress(raw, mtime=0))
 
@@ -3434,20 +3497,20 @@ def scan_sources(source_dirs, max_zoom):
                         groups[rel].append(tile_path)
     return groups
 
-def composite_group(paths, output_path, tile_size):
-    first_scale, first_offset, first_samples = read_tile(paths[0], tile_size)
+def composite_group(paths, output_path, tile_size, height_quantization_ft):
+    first_scale, first_offset, first_samples = read_tile(paths[0], tile_size, height_quantization_ft)
     composite = np.full(first_samples.shape, NODATA, dtype='<i2')
     composite_elevations = np.full(first_samples.shape, -np.inf, dtype=np.float64)
     for path in paths:
-        scale, offset, samples = read_tile(path, tile_size)
+        scale, offset, samples = read_tile(path, tile_size, height_quantization_ft)
         valid = samples != NODATA
         elevations = samples.astype(np.float64) * scale + offset
         better = valid & (elevations > composite_elevations)
-        encoded = np.rint((elevations - first_offset) / first_scale)
+        encoded = np.ceil((elevations - first_offset) / first_scale)
         encoded = np.clip(encoded, np.iinfo(np.int16).min, np.iinfo(np.int16).max).astype('<i2')
         composite[better] = encoded[better]
         composite_elevations[better] = elevations[better]
-    write_tile(output_path, composite.tobytes(), tile_size)
+    write_tile(output_path, composite, tile_size, height_quantization_ft)
 
 def scan_levels(output_dir):
     levels = []
@@ -3487,12 +3550,13 @@ def main():
     parser.add_argument('--source-fingerprint', required=True)
     parser.add_argument('--max-zoom', required=True, type=int)
     parser.add_argument('--tile-size', required=True, type=int)
+    parser.add_argument('--height-quantization-ft', required=True, type=int)
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
     groups = scan_sources(args.source_dir, args.max_zoom)
     for rel, paths in sorted(groups.items()):
-        composite_group(paths, output_dir / rel, args.tile_size)
+        composite_group(paths, output_dir / rel, args.tile_size, args.height_quantization_ft)
     levels = scan_levels(output_dir)
     if not levels:
         raise SystemExit('no terrain wide-angle tiles were produced')
@@ -3506,15 +3570,17 @@ def main():
         'max_zoom': args.max_zoom,
         'base_zoom': args.max_zoom,
         'tile_size': args.tile_size,
-        'tile_format': 'ABT1',
+        'tile_format': 'ABT2',
         'tile_content_encoding': 'gzip',
         'zip_member_compression': 'stored',
         'wide_angle': True,
         'wide_angle_max_zoom': args.max_zoom,
-        'parent_tile_policy': 'max valid elevation over regional low-zoom source samples; all-nodata regions remain nodata',
+        'parent_tile_policy': 'max valid quantized elevation over regional low-zoom source samples; all-nodata regions remain nodata',
         'source_policy': 'max-composite matching low-zoom tiles from regional terrain products',
-        'sample_encoding': 'int16_le',
-        'sample_units': 'feet',
+        'sample_encoding': 'int16_le_quantized_gradient_delta',
+        'sample_units': 'height_quantization_ft bins',
+        'height_quantization_ft': args.height_quantization_ft,
+        'output_units': 'feet',
         'sample_vertical_datum': 'WGS84 ellipsoid',
         'nodata': NODATA,
         'source_region_count': len(args.source_dir),
@@ -3543,6 +3609,22 @@ WORKER_GEOID = None
 WORKER_TILES_ROOT = None
 WORKER_ZOOM = None
 WORKER_TILE_SIZE = None
+WORKER_HEIGHT_QUANTIZATION_FT = None
+NODATA = -32768
+MAGIC = b'ABT2'
+
+def encode_gradient_delta(samples):
+    raw = samples.astype('<i2', copy=False).view('<u2').astype(np.uint32)
+    prediction = np.zeros(raw.shape, dtype=np.uint32)
+    prediction[0, 1:] = raw[0, :-1]
+    prediction[1:, 0] = raw[:-1, 0]
+    prediction[1:, 1:] = raw[1:, :-1] + raw[:-1, 1:] - raw[:-1, :-1]
+    return ((raw - prediction) & 0xffff).astype('<u2')
+
+def decode_gradient_delta(payload, tile_size):
+    residual = np.frombuffer(payload, dtype='<u2').reshape((tile_size, tile_size)).astype(np.uint32)
+    raw = residual.cumsum(axis=0, dtype=np.uint32).cumsum(axis=1, dtype=np.uint32)
+    return (raw & 0xffff).astype('<u2').view('<i2')
 
 def mercator(lon, lat):
     lat = max(min(lat, 85.05112878), -85.05112878)
@@ -3599,34 +3681,37 @@ def geoid(values, lat, lon):
     ne = values[(lat1, lon1)]
     return (sw * (1-ln) + se * ln) * (1-lt) + (nw * (1-ln) + ne * ln) * lt
 
-def write_tile(path, payload, tile_size):
+def write_tile(path, samples, tile_size, height_quantization_ft):
     path.parent.mkdir(parents=True, exist_ok=True)
-    raw = b'ABT1' + struct.pack('<HHhhff', tile_size, tile_size, -32768, 0, 1.0, 0.0) + payload
+    payload = encode_gradient_delta(samples)
+    raw = MAGIC + struct.pack('<HHhhff', tile_size, tile_size, NODATA, 0, float(height_quantization_ft), 0.0) + payload.tobytes()
     with open(path, 'wb') as f:
         f.write(gzip.compress(raw, mtime=0))
 
-def read_tile(path, tile_size):
+def read_tile(path, tile_size, height_quantization_ft):
     with gzip.open(path, 'rb') as f:
         raw = f.read()
-    if raw[:4] != b'ABT1':
-        raise ValueError(f'{path} is not an ABT1 terrain tile')
+    if raw[:4] != MAGIC:
+        raise ValueError(f'{path} is not an ABT2 terrain tile')
     width, height, nodata, _reserved, _scale, _offset = struct.unpack('<HHhhff', raw[4:20])
-    if width != tile_size or height != tile_size or nodata != -32768:
+    if width != tile_size or height != tile_size or nodata != NODATA or _scale != float(height_quantization_ft) or _offset != 0.0:
         raise ValueError(f'{path} has unexpected terrain header')
-    return np.frombuffer(raw[20:], dtype='<i2').reshape((tile_size, tile_size))
+    expected_bytes = 20 + tile_size * tile_size * 2
+    if len(raw) != expected_bytes:
+        raise ValueError(f'{path} has unexpected terrain payload length')
+    return decode_gradient_delta(raw[20:], tile_size)
 
 def max_downsample_2x2(samples):
-    nodata = -32768
     blocks = samples.reshape((samples.shape[0] // 2, 2, samples.shape[1] // 2, 2))
-    valid = blocks != nodata
-    safe = np.where(valid, blocks, -32768)
+    valid = blocks != NODATA
+    safe = np.where(valid, blocks, NODATA)
     reduced = safe.max(axis=(1, 3)).astype('<i2')
-    reduced[~valid.any(axis=(1, 3))] = nodata
+    reduced[~valid.any(axis=(1, 3))] = NODATA
     return reduced
 
-def build_parent_tile(tiles_root, z, x, y, tile_size):
+def build_parent_tile(tiles_root, z, x, y, tile_size, height_quantization_ft):
     half = tile_size // 2
-    parent = np.full((tile_size, tile_size), -32768, dtype='<i2')
+    parent = np.full((tile_size, tile_size), NODATA, dtype='<i2')
     children = [
         (x * 2, y * 2 + 1, 0, half, 0, half),
         (x * 2 + 1, y * 2 + 1, 0, half, half, tile_size),
@@ -3636,10 +3721,10 @@ def build_parent_tile(tiles_root, z, x, y, tile_size):
     for child_x, child_y, row0, row1, col0, col1 in children:
         child_path = tiles_root / str(z + 1) / str(child_x) / f'{child_y}.terrain'
         if child_path.exists():
-            parent[row0:row1, col0:col1] = max_downsample_2x2(read_tile(child_path, tile_size))
-    write_tile(tiles_root / str(z) / str(x) / f'{y}.terrain', parent.tobytes(), tile_size)
+            parent[row0:row1, col0:col1] = max_downsample_2x2(read_tile(child_path, tile_size, height_quantization_ft))
+    write_tile(tiles_root / str(z) / str(x) / f'{y}.terrain', parent, tile_size, height_quantization_ft)
 
-def build_parent_pyramid(tiles_root, max_zoom, tile_size):
+def build_parent_pyramid(tiles_root, max_zoom, tile_size, height_quantization_ft):
     counts = {max_zoom: sum(1 for _ in (tiles_root / str(max_zoom)).glob('*/*.terrain'))}
     for z in range(max_zoom - 1, -1, -1):
         child_root = tiles_root / str(z + 1)
@@ -3649,7 +3734,7 @@ def build_parent_pyramid(tiles_root, max_zoom, tile_size):
             child_y = int(child_path.stem)
             parents.add((child_x // 2, child_y // 2))
         for x, y in sorted(parents):
-            build_parent_tile(tiles_root, z, x, y, tile_size)
+            build_parent_tile(tiles_root, z, x, y, tile_size, height_quantization_ft)
         counts[z] = len(parents)
     return counts
 
@@ -3682,8 +3767,8 @@ def scan_terrain_levels(tiles_root):
         })
     return levels
 
-def init_worker(vrt_path, geoid_csv_path, tiles_root, zoom, tile_size):
-    global WORKER_DS, WORKER_GEOID, WORKER_TILES_ROOT, WORKER_ZOOM, WORKER_TILE_SIZE
+def init_worker(vrt_path, geoid_csv_path, tiles_root, zoom, tile_size, height_quantization_ft):
+    global WORKER_DS, WORKER_GEOID, WORKER_TILES_ROOT, WORKER_ZOOM, WORKER_TILE_SIZE, WORKER_HEIGHT_QUANTIZATION_FT
     WORKER_DS = gdal.Open(vrt_path)
     if WORKER_DS is None:
         raise RuntimeError(f'failed to open {vrt_path}')
@@ -3691,6 +3776,7 @@ def init_worker(vrt_path, geoid_csv_path, tiles_root, zoom, tile_size):
     WORKER_TILES_ROOT = Path(tiles_root)
     WORKER_ZOOM = zoom
     WORKER_TILE_SIZE = tile_size
+    WORKER_HEIGHT_QUANTIZATION_FT = height_quantization_ft
 
 def render_tile(task):
     x, y = task
@@ -3699,19 +3785,20 @@ def render_tile(task):
         '', WORKER_DS, format='MEM', dstSRS='EPSG:3857',
         outputBounds=[minx, miny, maxx, maxy],
         width=WORKER_TILE_SIZE, height=WORKER_TILE_SIZE,
-        resampleAlg='bilinear', dstNodata=-999999.0,
+        resampleAlg='max', overviewLevel='NONE', dstNodata=-999999.0,
     )
     arr = warped.ReadAsArray()
     center_lon, center_lat = lonlat((minx + maxx) / 2.0, (miny + maxy) / 2.0)
     tile_geoid_ft = geoid(WORKER_GEOID, center_lat, center_lon)
     invalid = (arr <= -999998.0) | np.isnan(arr)
-    samples = np.rint(arr.astype(np.float64) * 3.280839895 + tile_geoid_ft)
+    samples = np.ceil((arr.astype(np.float64) * 3.280839895 + tile_geoid_ft) / WORKER_HEIGHT_QUANTIZATION_FT)
     samples = np.clip(samples, -32767, 32767).astype('<i2')
-    samples[invalid] = -32768
+    samples[invalid] = NODATA
     write_tile(
         WORKER_TILES_ROOT / str(WORKER_ZOOM) / str(x) / f'{y}.terrain',
-        samples.tobytes(),
+        samples,
         WORKER_TILE_SIZE,
+        WORKER_HEIGHT_QUANTIZATION_FT,
     )
     return 1
 
@@ -3725,6 +3812,7 @@ def main():
     ap.add_argument('--bbox', required=True)
     ap.add_argument('--zoom', required=True, type=int)
     ap.add_argument('--tile-size', required=True, type=int)
+    ap.add_argument('--height-quantization-ft', required=True, type=int)
     ap.add_argument('--version-label', required=True)
     ap.add_argument('--source-count', required=True, type=int)
     ap.add_argument('--missing-cells', default='')
@@ -3738,16 +3826,16 @@ def main():
     tasks = [(x, y) for x in x_range for y in y_range]
     workers = max(1, args.workers)
     if workers == 1:
-        init_worker(args.vrt, args.geoid_csv, str(tiles_root), args.zoom, args.tile_size)
+        init_worker(args.vrt, args.geoid_csv, str(tiles_root), args.zoom, args.tile_size, args.height_quantization_ft)
         count = sum(render_tile(task) for task in tasks)
     else:
         with ProcessPoolExecutor(
             max_workers=workers,
             initializer=init_worker,
-            initargs=(args.vrt, args.geoid_csv, str(tiles_root), args.zoom, args.tile_size),
+            initargs=(args.vrt, args.geoid_csv, str(tiles_root), args.zoom, args.tile_size, args.height_quantization_ft),
         ) as pool:
             count = sum(pool.map(render_tile, tasks, chunksize=8))
-    level_counts = build_parent_pyramid(tiles_root, args.zoom, args.tile_size)
+    level_counts = build_parent_pyramid(tiles_root, args.zoom, args.tile_size, args.height_quantization_ft)
     levels = scan_terrain_levels(tiles_root)
     manifest = {
         'schema_version': 1,
@@ -3758,12 +3846,15 @@ def main():
         'max_zoom': args.zoom,
         'base_zoom': args.zoom,
         'tile_size': args.tile_size,
-        'tile_format': 'ABT1',
+        'tile_format': 'ABT2',
         'tile_content_encoding': 'gzip',
         'zip_member_compression': 'stored',
-        'parent_tile_policy': 'max valid elevation over child samples; all-nodata children remain nodata',
-        'sample_encoding': 'int16_le',
-        'sample_units': 'feet',
+        'base_tile_resampling': 'GDAL max resampling from source DEM with overviewLevel=NONE',
+        'parent_tile_policy': 'max valid quantized elevation over child samples; all-nodata children remain nodata',
+        'sample_encoding': 'int16_le_quantized_gradient_delta',
+        'sample_units': 'height_quantization_ft bins',
+        'height_quantization_ft': args.height_quantization_ft,
+        'output_units': 'feet',
         'sample_vertical_datum': 'WGS84 ellipsoid',
         'source_dem': 'USGS 3DEP 1 arc-second DEM',
         'source_dem_vertical_datum': 'source tile metadata; generally NAVD88 in CONUS',

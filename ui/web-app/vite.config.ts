@@ -121,6 +121,8 @@ function mountStaticTree(sourceRoot: string, options: { missingStatus?: number; 
     const contentType =
       extension === ".webp"
         ? "image/webp"
+        : extension === ".jpg" || extension === ".jpeg"
+          ? "image/jpeg"
         : extension === ".png"
           ? "image/png"
           : extension === ".terrain"

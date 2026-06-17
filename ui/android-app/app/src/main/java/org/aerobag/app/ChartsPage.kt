@@ -792,6 +792,22 @@ internal fun ChartPlateReturnButton(
 }
 
 @Composable
+internal fun HomePageButton(
+    currentPage: AppPage,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val homeOption = PageOptions.first { it.page == AppPage.Home }
+    CompactSquareButton(
+        label = homeOption.launcherLabel,
+        modifier = modifier.size(ThumbSize),
+        selected = currentPage == AppPage.Home,
+        iconResId = homeOption.iconResId,
+        onClick = onClick,
+    )
+}
+
+@Composable
 internal fun HomeReturnDock(
     modifier: Modifier = Modifier,
     currentPage: AppPage,
@@ -804,10 +820,8 @@ internal fun HomeReturnDock(
         horizontalArrangement = Arrangement.spacedBy(ThumbGap),
         verticalAlignment = Alignment.Top,
     ) {
-        CompactSquareButton(
-            label = "HOME",
-            modifier = Modifier.size(ThumbSize),
-            selected = currentPage == AppPage.Home,
+        HomePageButton(
+            currentPage = currentPage,
             onClick = onHomeClick,
         )
         ChartPlateReturnButton(
@@ -873,10 +887,8 @@ internal fun MapTopLeftControls(
         horizontalArrangement = Arrangement.spacedBy(ThumbGap),
         verticalAlignment = Alignment.Top,
     ) {
-        CompactSquareButton(
-            label = "HOME",
-            modifier = Modifier.size(ThumbSize),
-            selected = currentPage == AppPage.Home,
+        HomePageButton(
+            currentPage = currentPage,
             onClick = { onSelectPage(AppPage.Home) },
         )
         ChartPlateToggleButton(
@@ -1099,10 +1111,8 @@ internal fun ChartViewerSelectors(
             horizontalArrangement = Arrangement.spacedBy(ThumbGap),
             verticalAlignment = Alignment.Top,
         ) {
-            CompactSquareButton(
-                label = "HOME",
-                modifier = Modifier.size(ThumbSize),
-                selected = currentPage == AppPage.Home,
+            HomePageButton(
+                currentPage = currentPage,
                 onClick = { onSelectPage(AppPage.Home) },
             )
 

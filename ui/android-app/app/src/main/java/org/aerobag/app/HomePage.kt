@@ -338,6 +338,24 @@ private val HomeGridWidth =
         (ThumbGap * (HomeGridColumnCount - 1).toFloat())
 
 @Composable
+private fun HomePageBackdrop() {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val backdropAlignment = if (maxHeight > maxWidth) {
+            Alignment.CenterStart
+        } else {
+            Alignment.BottomCenter
+        }
+        Image(
+            painter = painterResource(R.drawable.home_page_backdrop),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            alignment = backdropAlignment,
+            modifier = Modifier.fillMaxSize(),
+        )
+    }
+}
+
+@Composable
 internal fun HomePage(
     page: AppPage,
     pageHistory: List<AppViewSnapshot>,
@@ -542,6 +560,8 @@ internal fun HomePage(
             .fillMaxSize()
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
+        HomePageBackdrop()
+
         val homeGridRowCount =
             ((HomeGridButtons.size + HomeGridColumnCount - 1) / HomeGridColumnCount)
                 .coerceAtLeast(1)

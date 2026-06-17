@@ -1085,7 +1085,7 @@ internal val PageOptions = listOf(
     PageTrayOption(AppPage.Map, "CHART", "CHART", R.drawable.page_chart_icon),
     PageTrayOption(AppPage.Charts, "PLATE", "PLATE", R.drawable.page_plate_icon),
     PageTrayOption(AppPage.Plan, "FLIGHT PLAN", "PLAN", R.drawable.page_plan1_icon),
-    PageTrayOption(AppPage.Home, "HOME", "HOME"),
+    PageTrayOption(AppPage.Home, "HOME", "HOME", R.drawable.page_home_icon),
     PageTrayOption(AppPage.DataStatus, "DATA STATUS", "DATA"),
 )
 

@@ -138,7 +138,6 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
@@ -801,22 +800,13 @@ internal fun CompactSquareButton(
         shape = iconShape,
         color = resolvedContainerColor,
         contentColor = resolvedContentColor,
+        border = BorderStroke(1.dp, lerp(resolvedContainerColor, Color.Black, 0.22f)),
         shadowElevation = 2.dp,
     ) {
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = if (centered) Alignment.Center else Alignment.CenterStart,
         ) {
-            val heavyFrameThickness = if (iconResId != null) with(LocalDensity.current) { 8f.toDp() } else 0.dp
-            if (iconResId != null) {
-                Box(
-                    modifier = Modifier
-                        .matchParentSize()
-                        .padding(4.dp)
-                        .clip(RoundedCornerShape(ThumbRadius * 0.92f))
-                        .background(uiTheme.controls.buttonBg),
-                )
-            }
             if (accentColor != null) {
                 Box(
                     modifier = Modifier
@@ -831,7 +821,7 @@ internal fun CompactSquareButton(
                     iconResId = iconResId,
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(4.dp + heavyFrameThickness),
+                        .padding(8.dp),
                 )
                 OutlinedButtonLabel(
                     text = renderedLabel,

@@ -588,8 +588,10 @@ type PlateFolderCategory = ChartAsset["folder_category"];
 
 const emptyChartPage: ChartPageData = { airports: [] };
 const PAGE_CHART_ICON_SRC = "/icons/icons/page-chart-icon.png?v=20260424b";
+const PAGE_HOME_ICON_SRC = "/icons/icons/page-home-icon.png?v=20260617a";
 const PAGE_PLAN_ICON_SRC = "/icons/icons/page-plan1-icon.png?v=20260424b";
 const PAGE_PLATE_ICON_SRC = "/icons/icons/page-plate-icon.png?v=20260424b";
+const HOME_PAGE_BACKDROP_SRC = "/icons/backdrops/home-page-backdrop.jpg?v=20260617a";
 const LAYER_VECTORS_ICON_SRC = "/icons/icons/layer-vectors-icon.png?v=20260424b";
 const LAYER_NEXRAD_ICON_SRC = "/icons/icons/layer-nexrad-icon.png?v=20260424b";
 const LAYER_TERRAIN_WARNING_ICON_SRC = "/icons/icons/layer-terrain-warning-icon.png?v=20260424b";
@@ -849,7 +851,7 @@ const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string; ic
   { id: "charts", label: "PLATE", launcherLabel: "PLATE", iconSrc: PAGE_PLATE_ICON_SRC },
   { id: "plan", label: "FLIGHT PLAN", launcherLabel: "PLAN", iconSrc: PAGE_PLAN_ICON_SRC },
   { id: "data", label: "DATA STATUS", launcherLabel: "DATA" },
-  { id: "home", label: "HOME", launcherLabel: "HOME" },
+  { id: "home", label: "HOME", launcherLabel: "HOME", iconSrc: PAGE_HOME_ICON_SRC },
 ];
 
 const webUiStateStorageKey = "aerobag.web.uiState.v1";
@@ -7710,6 +7712,7 @@ function HomeNavButton(props: {
   active: boolean;
   onClick: () => void;
 }) {
+  const option = pageOptions.find((entry) => entry.id === "home");
   return (
     <button
       type="button"
@@ -7721,7 +7724,8 @@ function HomeNavButton(props: {
       onClick={props.onClick}
       aria-label="Open home page"
     >
-      <span className="chartButtonLabel">HOME</span>
+      {option?.iconSrc ? <img className="chartButtonIcon" src={option.iconSrc} alt="" aria-hidden="true" /> : null}
+      <span className="chartButtonLabel">{option?.launcherLabel ?? "HOME"}</span>
     </button>
   );
 }
@@ -8842,7 +8846,10 @@ function HomePage(props: {
   const { page, planUiState, onSelectPage, onOpenPlan } = props;
 
   return (
-    <section className="appPage planPage">
+    <section
+      className="appPage homePage"
+      style={{ "--home-page-backdrop": `url(${HOME_PAGE_BACKDROP_SRC})` } as CSSProperties}
+    >
       <div className="chartDock">
         <HomeNavButton active={true} onClick={() => {}} />
         <ChartPlateReturnButton

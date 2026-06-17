@@ -950,6 +950,22 @@ button {
   transform: translate(-50%, -50%);
 }
 
+.homePage {
+  overflow: hidden;
+  background-color: var(--theme-chart-surface-bg);
+  background-image: var(--home-page-backdrop, none);
+  background-repeat: no-repeat;
+  background-position: left center;
+  background-size: auto 100%;
+}
+
+@media (min-aspect-ratio: 1/1) {
+  .homePage {
+    background-position: center bottom;
+    background-size: 100% auto;
+  }
+}
+
 .homeButton:disabled {
   cursor: default;
 }

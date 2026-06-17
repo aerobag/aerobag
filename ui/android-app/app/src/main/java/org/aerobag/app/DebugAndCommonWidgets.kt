@@ -147,9 +147,11 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -164,7 +166,9 @@ import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -506,6 +510,78 @@ internal fun buttonLabel(label: String): String = label.uppercase()
 internal fun buttonLabelStyle(): TextStyle = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
 
 @Composable
+internal fun FittedSingleLineText(
+    text: String,
+    modifier: Modifier = Modifier,
+    style: TextStyle,
+    color: Color,
+    minFontSize: TextUnit = 9.sp,
+    maxFontSize: TextUnit = style.fontSize.takeIf { it != TextUnit.Unspecified } ?: 12.sp,
+    textAlign: TextAlign = TextAlign.Center,
+    outlineColor: Color? = null,
+    outlineOffsets: List<IntOffset> = emptyList(),
+) {
+    val textMeasurer = rememberTextMeasurer()
+    BoxWithConstraints(
+        modifier = modifier,
+        contentAlignment = when (textAlign) {
+            TextAlign.Start -> Alignment.CenterStart
+            TextAlign.End -> Alignment.CenterEnd
+            else -> Alignment.Center
+        },
+    ) {
+        val maxWidthPx = constraints.maxWidth
+        val maxHeightPx = constraints.maxHeight
+        val fittedStyle = remember(text, style, minFontSize, maxFontSize, maxWidthPx, maxHeightPx) {
+            if (maxWidthPx <= 0 || maxHeightPx <= 0) {
+                return@remember style.copy(fontSize = maxFontSize)
+            }
+            var candidateSp = maxFontSize.value
+            val minSp = minFontSize.value.coerceAtMost(candidateSp)
+            while (candidateSp >= minSp) {
+                val candidateStyle = style.copy(fontSize = candidateSp.sp)
+                val result = textMeasurer.measure(
+                    text = AnnotatedString(text),
+                    style = candidateStyle,
+                    overflow = TextOverflow.Clip,
+                    softWrap = false,
+                    maxLines = 1,
+                    constraints = Constraints(maxWidth = maxWidthPx, maxHeight = maxHeightPx),
+                )
+                if (!result.hasVisualOverflow) {
+                    return@remember candidateStyle
+                }
+                candidateSp -= 0.5f
+            }
+            style.copy(fontSize = minSp.sp)
+        }
+        outlineColor?.let { strokeColor ->
+            outlineOffsets.forEach { offset ->
+                Text(
+                    text = text,
+                    modifier = Modifier.offset { offset },
+                    style = fittedStyle,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Clip,
+                    textAlign = textAlign,
+                    color = strokeColor,
+                )
+            }
+        }
+        Text(
+            text = text,
+            style = fittedStyle,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Clip,
+            textAlign = textAlign,
+            color = color,
+        )
+    }
+}
+
+@Composable
 internal fun IconFrame(
     @DrawableRes iconResId: Int,
     modifier: Modifier = Modifier,
@@ -585,6 +661,19 @@ internal fun OutlinedButtonLabel(
         IntOffset(-1, 2),
         IntOffset(1, 2),
     )
+    if (maxLines == 1 && !text.contains('\n')) {
+        FittedSingleLineText(
+            text = text,
+            modifier = modifier,
+            style = style,
+            color = color,
+            minFontSize = 9.sp,
+            textAlign = textAlign,
+            outlineColor = Color.Black,
+            outlineOffsets = offsets,
+        )
+        return
+    }
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         offsets.forEach { offset ->
             Text(
@@ -748,22 +837,32 @@ internal fun CompactSquareButton(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .padding(horizontal = if (wide) 0.dp else 1.dp, vertical = 2.dp)
+                .padding(horizontal = if (wide) 0.dp else 1.dp, vertical = 2.dp)
                         .then(textModifier),
                     style = renderedLabelStyle.copy(fontSize = 13.sp),
-                    maxLines = maxLines,
+                    maxLines = if (renderedLabel.contains('\n')) maxLines else 1,
                     color = resolvedContentColor,
                 )
             } else {
-                Text(
-                    text = renderedLabel,
-                    modifier = (if (centered) Modifier else Modifier.padding(start = textStartPadding, end = 8.dp)).then(textModifier),
-                    style = renderedLabelStyle,
-                    textAlign = if (centered) TextAlign.Center else TextAlign.Start,
-                    maxLines = maxLines,
-                    overflow = TextOverflow.Clip,
-                    color = resolvedContentColor,
-                )
+                if (maxLines == 1 && !renderedLabel.contains('\n')) {
+                    FittedSingleLineText(
+                        text = renderedLabel,
+                        modifier = (if (centered) Modifier.fillMaxWidth() else Modifier.padding(start = textStartPadding, end = 8.dp).fillMaxWidth()).then(textModifier),
+                        style = renderedLabelStyle,
+                        textAlign = if (centered) TextAlign.Center else TextAlign.Start,
+                        color = resolvedContentColor,
+                    )
+                } else {
+                    Text(
+                        text = renderedLabel,
+                        modifier = (if (centered) Modifier else Modifier.padding(start = textStartPadding, end = 8.dp)).then(textModifier),
+                        style = renderedLabelStyle,
+                        textAlign = if (centered) TextAlign.Center else TextAlign.Start,
+                        maxLines = maxLines,
+                        overflow = TextOverflow.Clip,
+                        color = resolvedContentColor,
+                    )
+                }
             }
         }
     }

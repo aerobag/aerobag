@@ -284,6 +284,7 @@ import org.aerobag.app.domain.WorldPoint
 import org.aerobag.app.domain.applyPinchGesture
 import org.aerobag.app.domain.clampZoom
 import org.aerobag.app.domain.createInitialImageViewport
+import org.aerobag.app.domain.createInitialViewport
 import org.aerobag.app.domain.createPinchSnapshot
 import org.aerobag.app.domain.dragImageViewport
 import org.aerobag.app.domain.dragViewport
@@ -371,7 +372,6 @@ internal const val DecodedTileCacheMaxBytes = 96L * 1024L * 1024L
 internal const val MapTileLoadWorkerCount = 4
 internal const val SlowTileLoadLogMs = 1000L
 internal val TileLoadGenerationIds = AtomicLong()
-internal val VampsPosition = LatLon(47.3648944444444, -121.980275)
 
 internal data class PageTilePaintTiming(
     val id: Long,
@@ -480,6 +480,7 @@ internal fun defaultUiDebugState() = UiDebugState(
     playbackVisible = false,
     fastTiles = false,
     offlineSimulatedClockButtons = false,
+    badAutopilot = false,
 )
 internal val PackageManagementJson = Json {
     encodeDefaults = true
@@ -1294,15 +1295,6 @@ internal fun latLonToScreenPoint(
 
 internal fun plateFolderColor(uiTheme: UiTheme, category: String): Color =
     uiTheme.plateFolder.labelColors[category] ?: uiTheme.plateFolder.labelColors["other"] ?: Color(0xFF52656D)
-
-internal fun createInitialSituationViewport(): MapViewportState {
-    val center = latLonToWorld(VampsPosition.lat, VampsPosition.lon)
-    return MapViewportState(
-        centerWorldX = center.x,
-        centerWorldY = center.y,
-        zoom = 10.0,
-    )
-}
 
 internal fun mapViewportFromCore(viewport: CoreMapViewport): MapViewportState {
     val center = latLonToWorld(viewport.center.lat, viewport.center.lon)
@@ -3071,7 +3063,16 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
         )
     }
     val selectedMap = rasterMapState
-    var mapViewport by remember { mutableStateOf(retainedModel.mapViewport ?: createInitialSituationViewport()) }
+    var mapViewport by remember {
+        mutableStateOf(
+            retainedModel.mapViewport
+                ?: createInitialViewport(
+                    initialRasterMapState.initialViewport,
+                    initialRasterMapState.minZoom,
+                    initialRasterMapState.maxZoom,
+                ),
+        )
+    }
     var chartViewport by remember { mutableStateOf<org.aerobag.app.domain.ImageViewportState?>(null) }
     var chartFolderOpen by remember { mutableStateOf(false) }
     var pageTilePaintTiming by remember { mutableStateOf<PageTilePaintTiming?>(null) }

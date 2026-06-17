@@ -97,6 +97,8 @@ pub struct UiDebugState {
     pub offline_simulated_clock_buttons: bool,
     #[serde(default)]
     pub sequencing_finish_lines: bool,
+    #[serde(default)]
+    pub bad_autopilot: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2517,7 +2519,9 @@ fn create_ui_session_inner(
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_project_snapshot_app_state");
     }
-    let app_ui_state = state::project_app_ui_state(&app_state);
+    let debug_state = default_debug_state();
+    let mut app_ui_state = state::project_app_ui_state(&app_state);
+    project_debug_ownship_driver_availability_for_state(&debug_state, false, &mut app_ui_state);
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_project_app_ui_state");
     }
@@ -2534,7 +2538,6 @@ fn create_ui_session_inner(
     let hushed_status_ids = BTreeSet::new();
     let data_status_state = project_data_status_state(&data_status_records, &hushed_status_ids);
     let data_status_page_state = default_data_status_page_state();
-    let debug_state = default_debug_state();
     let snapshot_debug_state = debug_state_for_app_state(&debug_state, &app_state);
     let snapshot = UiSessionSnapshot {
         app_state: snapshot_app_state,
@@ -3359,7 +3362,7 @@ pub fn select_ownship_source_in_session(
         crate::OwnshipSelectionCommand::Auto => None,
     };
     if selected_source_kind == Some(crate::OwnshipSourceKind::DebugOwnshipDriver)
-        && !debug_ownship_driver_available(session)
+        && !debug_ownship_driver_selectable(session)
     {
         return snapshot_for_session(session);
     }
@@ -3396,7 +3399,7 @@ pub fn select_ownship_source_in_session_outcome(
         crate::OwnshipSelectionCommand::Auto => None,
     };
     if selected_source_kind == Some(crate::OwnshipSourceKind::DebugOwnshipDriver)
-        && !debug_ownship_driver_available(session)
+        && !debug_ownship_driver_selectable(session)
     {
         return session_snapshot_outcome(session);
     }
@@ -4731,6 +4734,20 @@ pub fn set_debug_flag_in_session(
             session.debug_state.offline_simulated_clock_buttons = enabled
         }
         "sequencing_finish_lines" => session.debug_state.sequencing_finish_lines = enabled,
+        "bad_autopilot" => {
+            session.debug_state.bad_autopilot = enabled;
+            if !enabled {
+                session.debug_ownship_driver = DebugOwnshipDriverState::default();
+                if selected_ownship_source_kind(&session.app_state.ownship)
+                    == Some(crate::OwnshipSourceKind::DebugOwnshipDriver)
+                {
+                    session.app_state = state::reduce(
+                        &session.app_state,
+                        AppEvent::SelectOwnshipSource(crate::OwnshipSelectionCommand::Auto),
+                    )?;
+                }
+            }
+        }
         _ => {
             return Err(AppError {
                 kind: AppErrorKind::Internal,
@@ -8286,6 +8303,7 @@ fn default_debug_state() -> UiDebugState {
         fast_tiles: false,
         offline_simulated_clock_buttons: false,
         sequencing_finish_lines: false,
+        bad_autopilot: false,
     }
 }
 
@@ -8450,7 +8468,26 @@ fn project_flight_data_banner(
 }
 
 fn project_debug_ownship_driver_availability(session: &UiSession, app_ui_state: &mut AppUiState) {
-    let available = debug_ownship_driver_available(session);
+    project_debug_ownship_driver_availability_for_state(
+        &session.debug_state,
+        debug_ownship_driver_available(session),
+        app_ui_state,
+    );
+}
+
+fn project_debug_ownship_driver_availability_for_state(
+    debug_state: &UiDebugState,
+    available: bool,
+    app_ui_state: &mut AppUiState,
+) {
+    if !debug_state.bad_autopilot {
+        app_ui_state
+            .ownship
+            .controls
+            .sources
+            .retain(|source| source.source_kind != crate::OwnshipSourceKind::DebugOwnshipDriver);
+        return;
+    }
     for source in &mut app_ui_state.ownship.controls.sources {
         if source.source_kind == crate::OwnshipSourceKind::DebugOwnshipDriver {
             source.enabled = available;
@@ -8460,6 +8497,10 @@ fn project_debug_ownship_driver_availability(session: &UiSession, app_ui_state: 
             }
         }
     }
+}
+
+fn debug_ownship_driver_selectable(session: &UiSession) -> bool {
+    session.debug_state.bad_autopilot && debug_ownship_driver_available(session)
 }
 
 fn debug_ownship_driver_available(session: &UiSession) -> bool {
@@ -8924,6 +8965,9 @@ fn apply_plan_preview_pointer(
 }
 
 fn tick_debug_ownship_driver(session: &mut UiSession, now_epoch_ms: f64) -> AppResult<()> {
+    if !session.debug_state.bad_autopilot {
+        return Ok(());
+    }
     if selected_ownship_source_kind(&session.app_state.ownship)
         != Some(crate::OwnshipSourceKind::DebugOwnshipDriver)
     {
@@ -13574,6 +13618,10 @@ mod tests {
         .expect("select plan preview")
     }
 
+    fn enable_bad_autopilot(handle: u32) -> UiSessionSnapshot {
+        set_debug_flag_in_session(handle, "bad_autopilot", true).expect("enable Bad Autopilot")
+    }
+
     fn ownship_position(snapshot: &UiSessionSnapshot) -> LatLon {
         snapshot
             .app_ui_state
@@ -14050,6 +14098,86 @@ mod tests {
             "GPS, Plan Preview, and Replay should keep their relative menu order",
         );
         assert_enabled_situation_controls(&gps, &[]);
+    }
+
+    #[test]
+    fn bad_autopilot_source_is_hidden_until_debug_flag_is_enabled() {
+        let init =
+            create_ui_session(lat_lon_preview_plan(), &[], None, None).expect("create session");
+        assert!(
+            !init
+                .snapshot
+                .app_ui_state
+                .ownship
+                .controls
+                .sources
+                .iter()
+                .any(|source| source.source_kind == OwnshipSourceKind::DebugOwnshipDriver),
+            "Bad Autopilot must not appear in production/default source menu",
+        );
+
+        let ignored_select = select_ownship_source_in_session(
+            init.handle,
+            crate::OwnshipSelectionCommand::Source {
+                source_id: OwnshipSourceId(DEBUG_OWNSHIP_DRIVER_SOURCE_ID.to_string()),
+            },
+        )
+        .expect("select Bad Autopilot while hidden");
+        assert!(
+            ignored_select
+                .app_ui_state
+                .ownship
+                .controls
+                .sources
+                .iter()
+                .all(|source| source.source_kind != OwnshipSourceKind::DebugOwnshipDriver),
+            "stale platform calls must not surface Bad Autopilot while the flag is off",
+        );
+
+        let enabled = enable_bad_autopilot(init.handle);
+        assert!(
+            enabled
+                .app_ui_state
+                .ownship
+                .controls
+                .sources
+                .iter()
+                .any(|source| {
+                    source.source_kind == OwnshipSourceKind::DebugOwnshipDriver && source.enabled
+                }),
+            "Bad Autopilot should be selectable once the flag is enabled and active leg geometry is available",
+        );
+
+        let selected = select_ownship_source_in_session(
+            init.handle,
+            crate::OwnshipSelectionCommand::Source {
+                source_id: OwnshipSourceId(DEBUG_OWNSHIP_DRIVER_SOURCE_ID.to_string()),
+            },
+        )
+        .expect("select Bad Autopilot");
+        assert!(matches!(
+            selected.app_ui_state.ownship.controls.selection,
+            crate::OwnshipSelectionCommand::Source { ref source_id }
+                if source_id.0 == DEBUG_OWNSHIP_DRIVER_SOURCE_ID
+        ));
+
+        let disabled =
+            set_debug_flag_in_session(init.handle, "bad_autopilot", false).expect("disable flag");
+        assert!(!disabled.debug_state.bad_autopilot);
+        assert!(matches!(
+            disabled.app_ui_state.ownship.controls.selection,
+            crate::OwnshipSelectionCommand::Auto
+        ));
+        assert!(
+            disabled
+                .app_ui_state
+                .ownship
+                .controls
+                .sources
+                .iter()
+                .all(|source| source.source_kind != OwnshipSourceKind::DebugOwnshipDriver),
+            "disabling the flag removes Bad Autopilot from the source menu",
+        );
     }
 
     #[test]
@@ -14567,9 +14695,29 @@ mod tests {
 
     #[test]
     fn plan_preview_recovers_after_newer_bad_autopilot_samples() {
-        let init =
-            create_ui_session(lat_lon_preview_plan(), &[], None, None).expect("create session");
+        let plan = lat_lon_preview_plan();
+        let active_detail_id = guidance_detail_id_for_index(&plan, 1).expect("active detail id");
+        let active_from = LatLon {
+            lat: 40.0,
+            lon: -119.0,
+        };
+        let active_to = LatLon {
+            lat: 41.0,
+            lon: -119.0,
+        };
+        let init = create_ui_session(plan, &[], None, None).expect("create session");
         select_plan_preview(init.handle);
+        set_guidance_leg_geometry_in_session(
+            init.handle,
+            vec![GuidanceLegGeometry {
+                leg_id: active_detail_id,
+                from: active_from,
+                to: active_to,
+                path: vec![active_from, active_to],
+            }],
+        )
+        .expect("install guidance geometry");
+        enable_bad_autopilot(init.handle);
         select_ownship_source_in_session(
             init.handle,
             crate::OwnshipSelectionCommand::Source {
@@ -15150,6 +15298,7 @@ mod tests {
             ],
         )
         .expect("install guidance geometry");
+        enable_bad_autopilot(init.handle);
         let mut snapshot = select_ownship_source_in_session(
             init.handle,
             crate::OwnshipSelectionCommand::Source {
@@ -15469,6 +15618,7 @@ mod tests {
             ],
         )
         .expect("install guidance geometry");
+        enable_bad_autopilot(init.handle);
         select_ownship_source_in_session(
             init.handle,
             crate::OwnshipSelectionCommand::Source {
@@ -15618,6 +15768,7 @@ mod tests {
             }],
         )
         .expect("install aggregate guidance geometry");
+        enable_bad_autopilot(init.handle);
         select_ownship_source_in_session(
             init.handle,
             crate::OwnshipSelectionCommand::Source {

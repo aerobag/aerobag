@@ -8,6 +8,11 @@ const WORLD_SIZE: f64 = 256.0;
 const MAX_LATITUDE: f64 = 85.05112878;
 const NO_RASTER_FAMILY_ID: &str = "none";
 const NO_RASTER_SELECTED_MAP_ID: &str = "none";
+const CORE_INITIAL_VIEWPORT: RasterInitialViewport = RasterInitialViewport {
+    lat: 47.4931388888889,
+    lon: -122.21575,
+    zoom: 10.0,
+};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RasterMapCatalog {
@@ -375,7 +380,7 @@ pub fn raster_map_ui_state(catalog: &RasterMapCatalog) -> Option<RasterMapUiStat
             .unwrap_or_else(|| selected_map.map_view.chart_family.clone()),
         min_zoom: effective_min_zoom(&selected_map.map_view),
         max_zoom: selected_map.map_view.max_zoom,
-        initial_viewport: selected_map.map_view.initial_viewport.clone(),
+        initial_viewport: CORE_INITIAL_VIEWPORT,
         family_options: catalog.family_options.clone(),
     })
 }
@@ -1677,6 +1682,28 @@ mod tests {
         let ui_state = raster_map_ui_state(&catalog).expect("raster map ui state");
 
         assert_eq!(ui_state.min_zoom, 0.0);
+    }
+
+    #[test]
+    fn raster_map_ui_state_initial_viewport_is_core_startup_policy() {
+        let regional = option(
+            "sec:nw",
+            "sec",
+            "NW_SEC_2604",
+            vec![level(8, 40, 43, 155, 158)],
+        );
+        let catalog = RasterMapCatalog {
+            selected_map_id: "sec:nw".to_string(),
+            selected_map: Some(regional.clone()),
+            available_maps: Vec::new(),
+            displayed_maps: vec![regional],
+            geometry: RasterDisplayGeometry::default(),
+            family_options: Vec::new(),
+        };
+
+        let ui_state = raster_map_ui_state(&catalog).expect("raster map ui state");
+
+        assert_eq!(ui_state.initial_viewport, CORE_INITIAL_VIEWPORT);
     }
 
     #[test]

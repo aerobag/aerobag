@@ -347,6 +347,7 @@ internal fun CommonDebugPanel(
     DebugCheckbox("offline simulated clock buttons", debugState.offlineSimulatedClockButtons) {
         onDebugFlagChange("offline_simulated_clock_buttons", it)
     }
+    DebugCheckbox("Bad Autopilot", debugState.badAutopilot) { onDebugFlagChange("bad_autopilot", it) }
 }
 
 @Composable

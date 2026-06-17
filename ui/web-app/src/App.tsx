@@ -84,6 +84,7 @@ import {
 import {
   applyPinchGesture,
   createPinchSnapshot,
+  createInitialViewport,
   displayFrameCssTransform,
   dragViewport,
   latLonToWorld,
@@ -586,7 +587,6 @@ type TrayDockStyle = "compact" | "plate_narrow" | "plate_wide" | "wide" | "situa
 type PlateFolderCategory = ChartAsset["folder_category"];
 
 const emptyChartPage: ChartPageData = { airports: [] };
-const O88_POSITION = { lat: 38.19338888888888, lon: -121.70363888888889 };
 const PAGE_CHART_ICON_SRC = "/icons/icons/page-chart-icon.png?v=20260424b";
 const PAGE_PLAN_ICON_SRC = "/icons/icons/page-plan1-icon.png?v=20260424b";
 const PAGE_PLATE_ICON_SRC = "/icons/icons/page-plate-icon.png?v=20260424b";
@@ -859,7 +859,6 @@ const maxViewHistoryDepth = 64;
 const loadedUiTheme = uiTheme as UiThemeJson;
 const controlTheme = loadedUiTheme.controls;
 const plateFolderTheme = loadedUiTheme.plate_folder;
-const MATLK_POSITION = { lat: 27.826816666666662, lon: -80.95118611111111 };
 const defaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json";
 const startupHighLatencyWarningGraceMs = 10_000;
 const browserGeolocationSourceId = "browser-geolocation";
@@ -1451,6 +1450,7 @@ function defaultUiDebugState(): UiDebugState {
     fast_tiles: false,
     offline_simulated_clock_buttons: false,
     sequencing_finish_lines: false,
+    bad_autopilot: false,
   };
 }
 
@@ -2101,14 +2101,7 @@ export default function App() {
   const selectedChartId = derivedChartPageState.selected_chart_id;
 
   const selectedMap = rasterMapState;
-  const [mapViewport, setMapViewport] = useState<MapViewportState>(() => {
-    const center = latLonToWorld(O88_POSITION.lat, O88_POSITION.lon);
-    return {
-      centerWorldX: center.x,
-      centerWorldY: center.y,
-      zoom: 10.0,
-    };
-  });
+  const [mapViewport, setMapViewport] = useState<MapViewportState | null>(null);
   const [chartViewport, setChartViewport] = useState<ImageViewportState | null>(null);
   const [chartFolderOpen, setChartFolderOpen] = useState(false);
   const selectedFamily = useMemo(
@@ -2201,12 +2194,6 @@ export default function App() {
       ));
       markStartupProgress("session.initial_snapshot", "Using initial session snapshot");
       let createdSnapshot = debugTiming("startup.session.initial_snapshot", () => created.initialSnapshot());
-      markStartupProgress("session.ownship_start", "Starting ownship source");
-      createdSnapshot = await debugTiming("startup.session.ownship_start", () => created.setSituation({
-        position: { kind: "lat_lon", lat: MATLK_POSITION.lat, lon: MATLK_POSITION.lon },
-        orientation_deg: 342,
-        speed_kt: 0,
-      }));
       for (const flagId of Object.keys(initialDebugState) as DebugFlagId[]) {
         if (initialDebugState[flagId]) {
           createdSnapshot = await created.setDebugFlag(flagId, true);
@@ -2256,7 +2243,9 @@ export default function App() {
     if (!sessionSnapshot.raster_map) {
       return;
     }
-    setRasterMapState(sessionSnapshot.raster_map);
+    const nextRasterMap = sessionSnapshot.raster_map;
+    setRasterMapState(nextRasterMap);
+    setMapViewport((current) => current ?? createInitialViewport(nextRasterMap));
     setMapSelectorLoadError(null);
   }, [sessionSnapshot.raster_map]);
 
@@ -2297,13 +2286,16 @@ export default function App() {
     if (!selectedMap) {
       return;
     }
-    setMapViewport((current) => preserveViewportForMap(current, selectedMap));
+    setMapViewport((current) => (
+      current === null ? createInitialViewport(selectedMap) : preserveViewportForMap(current, selectedMap)
+    ));
   }, [selectedMap]);
 
   const appReady =
     appCoreAdapter !== null &&
     uiSession !== null &&
     selectedMap !== null &&
+    mapViewport !== null &&
     currentPlan !== null &&
     planUiState !== null;
 
@@ -2349,6 +2341,9 @@ export default function App() {
   }, [page, recentAirportIds, selectedAirportId, selectedChartId]);
 
   function currentSnapshot(): AppViewSnapshot {
+    if (mapViewport === null) {
+      throw new Error("cannot snapshot map view before core supplies an initial viewport");
+    }
     return {
       page,
       selectedMapId: rasterMapState?.selected_map_id ?? "",
@@ -2394,6 +2389,9 @@ export default function App() {
     if (typeof window === "undefined") {
       return;
     }
+    if (!appReady) {
+      return;
+    }
     const timeoutId = window.setTimeout(() => {
       const state: WebHistoryState = {
         __aerobag: true,
@@ -2403,7 +2401,7 @@ export default function App() {
       window.history.replaceState(state, "", urlForAppPage(page));
     }, 120);
     return () => window.clearTimeout(timeoutId);
-  }, [page, pageHistory, rasterMapState?.selected_map_id, mapViewport, selectedAirportId, selectedChartId, recentAirportIds, chartViewport, chartFolderOpen]);
+  }, [appReady, page, pageHistory, rasterMapState?.selected_map_id, mapViewport, selectedAirportId, selectedChartId, recentAirportIds, chartViewport, chartFolderOpen]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -2612,7 +2610,7 @@ export default function App() {
     );
   }
 
-  if (!appReady || !currentPlan || !planUiState || !selectedMap) {
+  if (!appReady || !currentPlan || !planUiState || !selectedMap || !rasterMapState || !mapViewport) {
     return (
       <main className="startupProgressHost" aria-live="polite">
         <span>{startupProgress.detail ?? startupProgress.phase}</span>
@@ -2640,7 +2638,7 @@ export default function App() {
               pageTilePaintTimingRef.current = null;
             }
           }}
-          onViewportChange={setMapViewport}
+          onViewportChange={(next) => setMapViewport(next)}
           onViewportGestureActiveChange={handleMapViewportGestureActiveChange}
           onViewportGestureActivity={handleMapViewportGestureActivity}
           onSelectMapFamily={(familyId) => {
@@ -9184,6 +9182,7 @@ function CommonDebugPanel(props: {
     { id: "fast_tiles", label: "fast tiles" },
     { id: "offline_simulated_clock_buttons", label: "offline simulated clock buttons" },
     { id: "sequencing_finish_lines", label: "sequencing finish lines" },
+    { id: "bad_autopilot", label: "Bad Autopilot" },
   ];
 
   return (

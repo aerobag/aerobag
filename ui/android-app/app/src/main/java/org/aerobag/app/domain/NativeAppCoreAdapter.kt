@@ -1842,6 +1842,7 @@ private data class WireUiDebugState(
     val playback_visible: Boolean = false,
     val fast_tiles: Boolean = false,
     val offline_simulated_clock_buttons: Boolean = false,
+    val bad_autopilot: Boolean = false,
 )
 
 @kotlinx.serialization.Serializable
@@ -2014,6 +2015,7 @@ data class UiDebugState(
     val playbackVisible: Boolean,
     val fastTiles: Boolean,
     val offlineSimulatedClockButtons: Boolean,
+    val badAutopilot: Boolean,
 )
 
 data class UiChartPageState(
@@ -2150,6 +2152,7 @@ private fun WireUiDebugState.toUi() = UiDebugState(
     playbackVisible = playback_visible,
     fastTiles = fast_tiles,
     offlineSimulatedClockButtons = offline_simulated_clock_buttons,
+    badAutopilot = bad_autopilot,
 )
 
 private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(

@@ -190,7 +190,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.ChartAirport
 import org.aerobag.app.domain.ChartAsset
-import org.aerobag.app.domain.ChartPackages
 import org.aerobag.app.domain.AppState
 import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
@@ -365,6 +364,7 @@ internal fun ChartsPage(
     val activity = context as? MainActivity
     val density = LocalDensity.current
     val focusRequester = remember { FocusRequester() }
+    val devServerBaseUrl = remember(context) { loadAndroidDevServerBaseUrl(context.applicationContext) }
     val chartLabelsById = remember(airports) {
         airports.flatMap { airport -> airport.charts }.associate { chart -> chart.id to chart.label }
     }
@@ -380,22 +380,17 @@ internal fun ChartsPage(
         if (situationDockLowered) ThumbSize + (ThumbGap * 2f) else ThumbGap
     val sortedCharts = selectedAirport?.charts ?: emptyList()
     val overscrollPx = with(density) { ThumbSize.toPx() }
-    val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, selectedChart?.id, selectedChart?.assetPath) {
-        val chart = selectedChart
-        val path = chart?.assetPath
-        value = if (path == null) {
+    val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, selectedChart?.id, uiSession, devServerBaseUrl) {
+        val chartId = selectedChart?.id
+        value = if (chartId == null) {
             null
         } else {
             withContext(Dispatchers.IO) {
                 runCatching {
-                    val localFile = java.io.File(context.filesDir, path)
-                    val inputStream = when {
-                        localFile.isFile -> localFile.inputStream()
-                        else -> ChartPackages.loadChartBytes(context, chart)?.inputStream()
+                    val bytes = uiSession.chartAssetBytes(chartId, "asset") { resource ->
+                        fetchCoreResource(context, resource, devServerBaseUrl)
                     }
-                    inputStream?.use { stream ->
-                        BitmapFactory.decodeStream(stream)?.asImageBitmap()
-                    }
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
                 }.getOrNull()
             }
         }
@@ -579,7 +574,9 @@ internal fun ChartsPage(
                 modifier = Modifier.fillMaxSize(),
                 charts = sortedCharts,
                 selectedChartId = selectedChart?.id,
+                uiSession = uiSession,
                 uiTheme = uiTheme,
+                devServerBaseUrl = devServerBaseUrl,
                 onSelectChart = {
                     onSelectChart(it)
                 },
@@ -1173,7 +1170,9 @@ internal fun PlateFolderGrid(
     modifier: Modifier = Modifier,
     charts: List<ChartAsset>,
     selectedChartId: String?,
+    uiSession: NativeUiSession,
     uiTheme: UiTheme,
+    devServerBaseUrl: String,
     onSelectChart: (String) -> Unit,
 ) {
     val context = LocalContext.current
@@ -1184,14 +1183,18 @@ internal fun PlateFolderGrid(
         verticalArrangement = Arrangement.spacedBy(FolderThumbGutter),
     ) {
         lazyGridItems(charts, key = { it.id }) { chart ->
-            val thumbnail by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, chart.id, chart.thumbnailSourceAssetPath) {
-                value = chart.thumbnailSourceAssetPath?.let {
+            val thumbnail by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, chart.id, chart.hasThumbnail, uiSession, devServerBaseUrl) {
+                value = if (chart.hasThumbnail) {
                     withContext(Dispatchers.IO) {
                         runCatching {
-                            val bytes = ChartPackages.loadThumbnailBytes(context, chart) ?: return@runCatching null
+                            val bytes = uiSession.chartAssetBytes(chart.id, "thumbnail") { resource ->
+                                fetchCoreResource(context, resource, devServerBaseUrl)
+                            }
                             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
                         }.getOrNull()
                     }
+                } else {
+                    null
                 }
             }
             Surface(

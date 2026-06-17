@@ -558,7 +558,6 @@ export type CatalogJson = {
     kind: string;
     georeferenced: boolean;
     page_count: number;
-    asset_base_path: string;
   }>;
   supplements: unknown[];
 };
@@ -883,14 +882,10 @@ export type ChartPageData = {
     charts: Array<{
       id: string;
       airport_id: string;
-      package_id: string;
       label: string;
       kind: string;
       folder_category: string;
-      source_asset_path: string;
-      asset_path: string;
-      thumbnail_source_path: string | null;
-      thumbnail_path: string | null;
+      has_thumbnail: boolean;
       georef: PlateGeoref | null;
     }>;
   }>;
@@ -962,23 +957,19 @@ export type ResourceIndexJson = {
     id: string;
     airport_id: string;
     region_id: RegionId;
-    package_id: string;
-    asset_path: string;
-    thumbnail_path?: string | null;
     label: string;
     asset_kind: string;
     document_type: string;
+    has_thumbnail?: boolean;
     georef?: PlateGeoref | null;
   }>;
   csups: Array<{
     id: string;
     airport_id: string;
     region_id: RegionId;
-    package_id: string;
-    asset_path: string;
-    thumbnail_path?: string | null;
     label: string;
     asset_kind: string;
     document_type: string;
+    has_thumbnail?: boolean;
   }>;
 };

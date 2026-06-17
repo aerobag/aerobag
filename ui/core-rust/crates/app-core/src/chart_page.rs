@@ -39,6 +39,18 @@ pub struct PlateAirportRecord {
 pub struct DerivedChartAsset {
     pub id: String,
     pub airport_id: String,
+    pub label: String,
+    pub kind: String,
+    pub folder_category: String,
+    pub has_thumbnail: bool,
+    #[serde(default)]
+    pub georef: Option<PlateGeoref>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlateChartAssetRecord {
+    pub id: String,
+    pub airport_id: String,
     pub package_id: String,
     pub label: String,
     pub kind: String,
@@ -49,6 +61,20 @@ pub struct DerivedChartAsset {
     pub thumbnail_path: Option<String>,
     #[serde(default)]
     pub georef: Option<PlateGeoref>,
+}
+
+impl From<PlateChartAssetRecord> for DerivedChartAsset {
+    fn from(record: PlateChartAssetRecord) -> Self {
+        Self {
+            id: record.id,
+            airport_id: record.airport_id,
+            label: record.label,
+            kind: record.kind,
+            folder_category: record.folder_category,
+            has_thumbnail: record.thumbnail_path.is_some(),
+            georef: record.georef,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -231,14 +257,10 @@ mod tests {
         DerivedChartAsset {
             id: id.to_string(),
             airport_id: "KXYZ".to_string(),
-            package_id: "pkg".to_string(),
             label: id.to_string(),
             kind: kind.to_string(),
             folder_category: folder_category.to_string(),
-            source_asset_path: String::new(),
-            asset_path: String::new(),
-            thumbnail_source_path: None,
-            thumbnail_path: None,
+            has_thumbnail: false,
             georef: None,
         }
     }

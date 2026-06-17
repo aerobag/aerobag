@@ -190,7 +190,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.ChartAirport
 import org.aerobag.app.domain.ChartAsset
-import org.aerobag.app.domain.ChartPackages
 import org.aerobag.app.domain.AppState
 import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
@@ -206,7 +205,10 @@ import org.aerobag.app.domain.FlightPlanRowActionUiView
 import org.aerobag.app.domain.FlightPlanRouteSegment
 import org.aerobag.app.domain.FlightPlanUiState
 import org.aerobag.app.domain.GuidanceState
+import org.aerobag.app.domain.CoreResourceRequest
+import org.aerobag.app.domain.CoreResourceSource
 import org.aerobag.app.domain.InstalledPackages
+import org.aerobag.app.domain.kindForLog
 import org.aerobag.app.domain.AirspaceDisplayDecoration
 import org.aerobag.app.domain.AirspaceDisplayLabel
 import org.aerobag.app.domain.AirspaceDisplayPath
@@ -407,4 +409,38 @@ internal fun fetchResourceBytes(url: String): ByteArray {
     connection.connectTimeout = 1500
     connection.readTimeout = 2500
     return connection.inputStream.buffered().use { it.readBytes() }
+}
+
+internal fun fetchCoreResource(
+    context: Context,
+    resource: CoreResourceRequest,
+    devServerBaseUrl: String,
+): ByteArray {
+    val prefs = context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE)
+    val publicationRootUrl = resolvePublicationRootUrl(readPackageSourceBaseUrl(context.applicationContext, prefs))
+    return when (val source = resource.source) {
+        is CoreResourceSource.PackageMember ->
+            InstalledPackages.readZipEntryBytes(context, source.packageId, source.memberPath)
+        is CoreResourceSource.PublicUrl -> {
+            require(
+                resource.id.startsWith("publication/") ||
+                    resource.id.startsWith("live_feeds/") ||
+                    resource.id.startsWith("chart_asset/"),
+            ) {
+                "Android received public_url for package-backed resource ${resource.id}"
+            }
+            val url = if (source.url.startsWith("/packages/")) {
+                resolvePackageSourceUrl(source.url.removePrefix("/packages/"), publicationRootUrl)
+            } else if (source.url.startsWith("/live-feeds/")) {
+                "${resolveLiveFeedSourceRootUrl(context.applicationContext, prefs, devServerBaseUrl)}${source.url}"
+            } else {
+                resolvePlaybackTraceUrl(source.url, devServerBaseUrl)
+            }
+            fetchResourceBytes(url)
+        }
+        is CoreResourceSource.Unavailable ->
+            error("core resource ${resource.id} is unavailable: ${source.message}")
+        is CoreResourceSource.InstalledArtifactMember, is CoreResourceSource.NavKvMember ->
+            error("Android session fetch cannot handle ${source.kindForLog()} for ${resource.id}")
+    }
 }

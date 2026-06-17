@@ -959,6 +959,17 @@ pub fn get_nexrad_overlay_in_session_json(
     serde_json::to_string(&overlay).map_err(|err| err.to_string())
 }
 
+pub fn resolve_chart_asset_resource_in_session_json(
+    handle: u64,
+    chart_id: &str,
+    asset_kind: &str,
+) -> Result<String, String> {
+    let outcome =
+        app_core::resolve_chart_asset_resource_in_session(handle as u32, chart_id, asset_kind)
+            .map_err(|err| err.to_string())?;
+    app_core::serialize_publication_outcome(outcome)
+}
+
 pub fn nexrad_tile_bytes_in_session(handle: u64, src: &str) -> Result<Vec<u8>, String> {
     app_core::nexrad_tile_bytes_in_session(handle as u32, src).map_err(|err| err.to_string())
 }
@@ -3084,6 +3095,22 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getNexradOverl
     let result = (|| {
         let viewport = get_java_string(&mut env, viewport_json)?;
         get_nexrad_overlay_in_session_json(handle as u64, &viewport, width_px, height_px)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_resolveChartAssetResourceInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    chart_id: JString,
+    asset_kind: JString,
+) -> jstring {
+    let result = (|| {
+        let chart_id = get_java_string(&mut env, chart_id)?;
+        let asset_kind = get_java_string(&mut env, asset_kind)?;
+        resolve_chart_asset_resource_in_session_json(handle as u64, &chart_id, &asset_kind)
     })();
     return_string(&mut env, result)
 }

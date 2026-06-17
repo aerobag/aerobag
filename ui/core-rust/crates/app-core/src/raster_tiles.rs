@@ -952,6 +952,11 @@ fn tile_source_resource(
     relative_path: &str,
     resource_mode: RasterResourceMode,
 ) -> RasterTileResource {
+    // TASK-25 raster exception: raster tile plans carry package/member identity
+    // because web and Android need a high-throughput tile-specific fetch/decode
+    // path. This is not the general resource model. New resource consumers
+    // should ask core for opaque CoreResourceRequest values instead; see
+    // resolve_chart_asset_resource_in_session and the terrain/NEXRAD overlays.
     let package_name = map_view.package_name.clone().unwrap_or_else(|| {
         panic!(
             "raster map view {} is missing package_name",

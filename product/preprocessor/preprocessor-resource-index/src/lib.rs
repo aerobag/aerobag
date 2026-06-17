@@ -136,7 +136,6 @@ pub struct CatalogPlateRecord {
     pub kind: String,
     pub georeferenced: bool,
     pub page_count: u32,
-    pub asset_base_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub procedure_uid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -157,7 +156,6 @@ pub struct CatalogSupplementRecord {
     pub region_id: String,
     pub cycle: String,
     pub page_count: u32,
-    pub asset_base_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -558,7 +556,7 @@ pub fn build_catalog(index: &ResourceIndex) -> Catalog {
         .plates
         .iter()
         .filter_map(|plate| {
-            let package_record = package_by_id.get(&plate.package_id)?;
+            package_by_id.get(&plate.package_id)?;
             let procedure_code = procedure_code_from_asset_path(&plate.asset_path);
             Some(CatalogPlateRecord {
                 id: CatalogPlateId {
@@ -576,14 +574,6 @@ pub fn build_catalog(index: &ResourceIndex) -> Catalog {
                 kind: plate.asset_kind.clone(),
                 georeferenced: plate.georef.is_some(),
                 page_count: 1,
-                asset_base_path: format!(
-                    "{}/{}",
-                    package_record.id,
-                    plate
-                        .asset_path
-                        .strip_suffix(".png")
-                        .unwrap_or(&plate.asset_path)
-                ),
                 procedure_uid: plate.procedure_uid.clone(),
                 georef: plate.georef.clone(),
             })
@@ -594,19 +584,12 @@ pub fn build_catalog(index: &ResourceIndex) -> Catalog {
         .csups
         .iter()
         .filter_map(|csup| {
-            let package_record = package_by_id.get(&csup.package_id)?;
+            package_by_id.get(&csup.package_id)?;
             Some(CatalogSupplementRecord {
                 airport_id: csup.airport_id.clone(),
                 region_id: csup.region_id.clone(),
                 cycle: cycle.clone(),
                 page_count: 1,
-                asset_base_path: format!(
-                    "{}/{}",
-                    package_record.id,
-                    csup.asset_path
-                        .strip_suffix(".png")
-                        .unwrap_or(&csup.asset_path)
-                ),
             })
         })
         .collect::<Vec<_>>();

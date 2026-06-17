@@ -30,7 +30,7 @@ import type {
 } from "./types";
 import type { NexradOverlayQueryResult } from "../generated/nexradOverlayWire";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
-import { attachNavKvStoreToSession, resolvePackageMemberUrl, runCoreHadOperation, runCoreHadSessionOperation, type UiInvalidation, type UiInvalidationListener } from "./navKv";
+import { attachNavKvStoreToSession, resolveChartAssetUrl, runCoreHadOperation, runCoreHadSessionOperation, type UiInvalidation, type UiInvalidationListener } from "./navKv";
 import { debugLog, debugTiming, installRustDebugLogBridge } from "./debugLog";
 import { isMetarLiveFeedPayloadResource, prepareMetarLiveFeedResource, resetMetarLiveFeedPrep } from "./metarLiveFeedPrep";
 
@@ -589,7 +589,7 @@ export interface UiSession {
   setMapLayerEnabled(layerId: MapLayerId, enabled: boolean): Promise<UiSessionSnapshot>;
   setDebugFlag(flagId: DebugFlagId, enabled: boolean): Promise<UiSessionSnapshot>;
   loadRasterMapCatalog(): Promise<UiSessionSnapshot>;
-  resolvePackageMemberUrl(packageId: string, memberPath: string): Promise<string>;
+  resolveChartAssetUrl(chartId: string, assetKind: "asset" | "thumbnail"): Promise<string>;
   selectMapFamily(familyId: ChartFamilyId): Promise<UiSessionSnapshot>;
   selectRasterMap(selectedMapId: string): Promise<UiSessionSnapshot>;
   selectAirport(airportId: string): Promise<UiSessionSnapshot>;
@@ -682,7 +682,7 @@ type WasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
   resolve_metar_manifest_in_session(handle: number): Promise<string> | string;
   resolve_nav_db_artifact_candidates_in_session(handle: number): Promise<string> | string;
-  resolve_package_member_in_session(handle: number, packageId: string, memberPath: string): Promise<string> | string;
+  resolve_chart_asset_resource_in_session(handle: number, chartId: string, assetKind: string): Promise<string> | string;
   situation_ring_candidates_json(): Promise<string> | string;
   empty_flight_plan_json(): Promise<string> | string;
   create_ui_session(planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string, nowEpochMs: number): Promise<string> | string;
@@ -1224,8 +1224,8 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         return snapshot;
       },
-      resolvePackageMemberUrl: (packageId, memberPath) =>
-        resolvePackageMemberUrl(handle, packageId, memberPath),
+      resolveChartAssetUrl: (chartId, assetKind) =>
+        resolveChartAssetUrl(handle, chartId, assetKind),
       selectMapFamily: async (familyId) => {
         snapshot = await withSessionRetry(async () =>
           runSessionOperation<UiSessionSnapshot>(() =>
@@ -1763,6 +1763,7 @@ async function loadBestAvailableAdapterUncached(
     "set_map_layer_enabled_in_session",
     "set_debug_flag_in_session",
     "load_raster_map_catalog_in_session",
+    "resolve_chart_asset_resource_in_session",
     "sync_guidance_geometry_in_session",
     "project_flight_plan_route_in_session",
     "select_map_family_in_session",

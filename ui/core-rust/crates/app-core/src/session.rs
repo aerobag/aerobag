@@ -15,6 +15,7 @@ use crate::CoreResourcePolicy;
 use crate::{
     chart_ident_label_for_nav_ref_symbol,
     chart_page::airport_ids_from_plan,
+    chart_page::PlateChartAssetRecord,
     data_status::{
         parse_status_action_id, project_data_status_state, DataStatusRecord, UiDataStatusPageFact,
         UiDataStatusPageRow, UiDataStatusPageState, UiDataStatusPageTimeDisplay, UiDataStatusState,
@@ -44,7 +45,7 @@ use crate::{
     planning::NavElementUiView,
     playback::PlaybackSessionState,
     project_nav_symbol_feature,
-    publication::PublicationResolver,
+    publication::{PublicationResolvedResource, PublicationResolver},
     query_map_overlay_for_surface, query_map_selection_for_surface, state,
     AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
     AirspaceReferenceTilePayload, AirwayPresentationPlan, AppError, AppErrorKind, AppEvent,
@@ -2656,24 +2657,75 @@ pub fn resolve_nav_db_artifact_candidates_in_session(
         })
 }
 
-pub fn resolve_package_member_in_session(
+pub fn resolve_chart_asset_resource_in_session(
     handle: u32,
-    package_id: &str,
-    member_path: &str,
+    chart_id: &str,
+    asset_kind: &str,
 ) -> AppResult<HadOperationOutcome> {
+    let sessions = lock_sessions();
+    let session = session_ref(&sessions, handle)?;
+    let chart = match read_chart_asset_by_id(session_nav_kv_store(session)?, chart_id) {
+        Ok(chart) => chart,
+        Err(HadReadError::NeedPages(pages)) => {
+            return Ok(HadOperationOutcome::NeedResources {
+                resources: nav_kv_page_resources(pages),
+            });
+        }
+        Err(HadReadError::Fatal(message)) => {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message,
+            });
+        }
+    };
+    let member_path = match asset_kind {
+        "asset" => Some(chart.asset_path.as_str()),
+        "thumbnail" => chart.thumbnail_path.as_deref(),
+        _ => {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message: format!("unsupported chart asset kind: {asset_kind}"),
+            });
+        }
+    };
+    let member_path = member_path.ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidManifest,
+        message: format!("chart {chart_id} has no {asset_kind} asset"),
+    })?;
+    let target_resource_id = format!("chart_asset/{asset_kind}/{chart_id}");
+    let resources = session
+        .publication_resolver
+        .package_resource_requests(&target_resource_id, &chart.package_id, member_path, false)
+        .map_err(|message| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message,
+        })?;
+    for resource in &resources {
+        if resource.id == target_resource_id {
+            return Ok(HadOperationOutcome::complete(
+                serde_json::to_value(PublicationResolvedResource {
+                    source: resource.source.clone(),
+                })
+                .map_err(|err| AppError {
+                    kind: AppErrorKind::Internal,
+                    message: err.to_string(),
+                })?,
+            ));
+        }
+    }
+    Ok(HadOperationOutcome::NeedResources { resources })
+}
+
+pub fn resolve_metar_manifest_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
     session
         .publication_resolver
-        .resolve_package_resource(package_id, member_path)
+        .resolve_family_resource("metars", "manifest.json")
         .map_err(|message| AppError {
             kind: AppErrorKind::InvalidManifest,
             message,
         })
-}
-
-pub fn resolve_metar_manifest_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    resolve_package_member_in_session(handle, "metars", "manifest.json")
 }
 
 pub fn set_resource_policy_in_session(
@@ -2919,6 +2971,12 @@ fn resolve_raster_tile_source_public_url(
     source: &mut crate::RasterTileSource,
     resolved_urls: &mut HashMap<(String, String), String>,
 ) -> AppResult<()> {
+    // TASK-25 raster exception: raster tiles intentionally do not flow through
+    // generic CoreResourceRequest ingestion. Core still owns package/member
+    // resolution here, but returns resolved browser URLs so the web renderer can
+    // let the browser image cache stream many tiles cheaply. New non-raster
+    // resources should use the normalized core-driven resource path instead;
+    // see resolve_chart_asset_resource_in_session and terrain/NEXRAD queries.
     let crate::RasterTileResource::PublicUnpacked {
         package_name,
         member_path,
@@ -6842,14 +6900,16 @@ pub fn get_terrain_overlay_in_session_at_epoch_ms(
     });
     let has_altitude = ownship_terrain_altitude_ft(session).is_some();
     let mut query = match session.resource_policy {
-        CoreResourcePolicy::InstalledPackage => crate::query_terrain_overlay_with_available_packages(
-            &viewport,
-            width_px,
-            height_px,
-            has_position,
-            has_altitude,
-            &session.installed_package_ids,
-        ),
+        CoreResourcePolicy::InstalledPackage => {
+            crate::query_terrain_overlay_with_available_packages(
+                &viewport,
+                width_px,
+                height_px,
+                has_position,
+                has_altitude,
+                &session.installed_package_ids,
+            )
+        }
         CoreResourcePolicy::PublicUnpacked => {
             crate::query_terrain_overlay(&viewport, width_px, height_px, has_position, has_altitude)
         }
@@ -7709,6 +7769,24 @@ fn session_nav_kv_store(session: &UiSession) -> AppResult<&NavKvStore> {
         kind: AppErrorKind::Internal,
         message: "session missing nav kv store".to_string(),
     })
+}
+
+fn read_chart_asset_by_id(
+    store: &NavKvStore,
+    chart_id: &str,
+) -> Result<PlateChartAssetRecord, HadReadError> {
+    let key = nav_kv_key_for_query(&NavKvQuery::PlateById {
+        plate_id: chart_id.to_string(),
+    })
+    .ok_or_else(|| HadReadError::Fatal("invalid plate id query".to_string()))?;
+    match store.get_bytes(&key).map_err(HadReadError::Fatal)? {
+        NavKvLookup::Hit(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|err| HadReadError::Fatal(format!("HAD JSON decode failed for {key}: {err}"))),
+        NavKvLookup::MissingKey => Err(HadReadError::Fatal(format!(
+            "HAD missing required plate asset key: {key}"
+        ))),
+        NavKvLookup::MissingPages(pages) => Err(HadReadError::NeedPages(pages)),
+    }
 }
 
 fn airport_plate_availability(

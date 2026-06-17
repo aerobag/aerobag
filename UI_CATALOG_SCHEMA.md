@@ -123,8 +123,7 @@ It replaces hardcoded client metadata such as:
   "display_name": "ILS OR LOC RWY 04R",
   "kind": "approach",
   "georeferenced": true,
-  "page_count": 1,
-  "asset_base_path": "plates/KBOS/IAP-ILS-RWY-04R"
+  "page_count": 1
 }
 ```
 
@@ -135,8 +134,7 @@ It replaces hardcoded client metadata such as:
   "airport_id": "KBOS",
   "region_id": "ne",
   "cycle": "2026-04-16",
-  "page_count": 5,
-  "asset_base_path": "afd/KBOS"
+  "page_count": 5
 }
 ```
 

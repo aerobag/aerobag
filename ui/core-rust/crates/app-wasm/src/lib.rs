@@ -245,12 +245,12 @@ pub fn resolve_metar_manifest_in_session(handle: u32) -> Result<String, JsValue>
 }
 
 #[wasm_bindgen]
-pub fn resolve_package_member_in_session(
+pub fn resolve_chart_asset_resource_in_session(
     handle: u32,
-    package_id: &str,
-    member_path: &str,
+    chart_id: &str,
+    asset_kind: &str,
 ) -> Result<String, JsValue> {
-    let outcome = app_core::resolve_package_member_in_session(handle, package_id, member_path)
+    let outcome = app_core::resolve_chart_asset_resource_in_session(handle, chart_id, asset_kind)
         .map_err(|err| JsValue::from_str(&err.to_string()))?;
     app_core::serialize_publication_outcome(outcome).map_err(|err| JsValue::from_str(&err))
 }

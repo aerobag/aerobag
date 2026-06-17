@@ -510,14 +510,10 @@ data class MapViewportSeed(
 data class ChartAsset(
     val id: String,
     val airportId: String,
-    val packageId: String,
     val label: String,
     val kind: String,
     val folderCategory: String,
-    val sourceAssetPath: String,
-    val assetPath: String,
-    val thumbnailSourceAssetPath: String?,
-    val thumbnailAssetPath: String?,
+    val hasThumbnail: Boolean,
 )
 
 data class ChartAirport(

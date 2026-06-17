@@ -17,7 +17,7 @@ type NavKvWasmModule = {
   nav_kv_prefetch_pages(handle: number): Promise<string> | string;
   resolve_metar_manifest_in_session(handle: number): Promise<string> | string;
   resolve_nav_db_artifact_candidates_in_session(handle: number): Promise<string> | string;
-  resolve_package_member_in_session(handle: number, packageId: string, memberPath: string): Promise<string> | string;
+  resolve_chart_asset_resource_in_session(handle: number, chartId: string, assetKind: string): Promise<string> | string;
 };
 
 export type UiInvalidation =
@@ -490,18 +490,18 @@ async function resolveSessionPublicationResult<T>(
   }
 }
 
-export async function resolvePackageMemberUrl(
+export async function resolveChartAssetUrl(
   sessionHandle: number,
-  packageId: string,
-  memberPath: string,
+  chartId: string,
+  assetKind: "asset" | "thumbnail",
 ): Promise<string> {
   const wasm = await ensureWasmReady();
   const result = await resolveSessionPublicationResult<{ source: CoreResourceSource }>(
     wasm,
     sessionHandle,
-    () => wasm.resolve_package_member_in_session(sessionHandle, packageId, memberPath),
+    () => wasm.resolve_chart_asset_resource_in_session(sessionHandle, chartId, assetKind),
   );
-  return publicResourceUrl({ id: "publication/resolved_package_member", source: result.source });
+  return publicResourceUrl({ id: `chart_asset/${assetKind}/${chartId}`, source: result.source });
 }
 
 type CoreResourceRequest = {

@@ -420,6 +420,12 @@ interface NativeBridge {
         heightPx: Double,
     ): String
 
+    fun resolveChartAssetResourceInSessionJson(
+        handle: Long,
+        chartId: String,
+        assetKind: String,
+    ): String
+
     fun getRasterTilePlanInSessionJson(
         handle: Long,
         viewportJson: String,
@@ -890,6 +896,12 @@ object NativeBindings : NativeBridge {
         viewportJson: String,
         widthPx: Double,
         heightPx: Double,
+    ): String
+
+    external override fun resolveChartAssetResourceInSessionJson(
+        handle: Long,
+        chartId: String,
+        assetKind: String,
     ): String
 
     external override fun getRasterTilePlanInSessionJson(

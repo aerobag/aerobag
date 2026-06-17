@@ -955,6 +955,10 @@ function renderTileFromCore(
   tile: RasterTileDraw,
   cssScale = 1,
 ): RasterRenderTile {
+  // TASK-25 raster exception: raster tiles deliberately arrive as resolved image
+  // URLs so the browser can stream/cache many tiles without generic resource
+  // ingestion. Do not copy this for new resources; use core-owned resource
+  // operations such as resolveChartAssetUrl or the terrain/NEXRAD overlays.
   const packageName = tile.primary.package_name;
   if (!packageName) {
     throw new Error(`raster tile ${tile.draw_key} missing package_name`);
@@ -2143,9 +2147,8 @@ export default function App() {
       selected_airport_id: selectedAirportId,
       selected_chart_id: selectedChartId,
       selected_chart_label: selectedChart?.label ?? null,
-      selected_chart_asset_path: selectedChart?.asset_path ?? null,
     });
-  }, [selectedAirportId, selectedChartId, selectedChart?.label, selectedChart?.asset_path]);
+  }, [selectedAirportId, selectedChartId, selectedChart?.label]);
   useEffect(() => {
     let cancelled = false;
     markStartupProgress("adapter.load", "Loading app-core adapter");
@@ -2858,7 +2861,6 @@ export default function App() {
               requested_airport_id: selectedAirport?.id ?? null,
               requested_chart_id: chartId,
               requested_chart_label: nextChart?.label ?? null,
-              requested_chart_asset_path: nextChart?.asset_path ?? null,
             });
             if (uiSession) {
               void uiSession.selectChart(chartId).then((nextSnapshot) => {
@@ -8296,7 +8298,7 @@ function ChartsPage(props: {
       return;
     }
     let cancelled = false;
-    void uiSession.resolvePackageMemberUrl(selectedChart.package_id, selectedChart.asset_path)
+    void uiSession.resolveChartAssetUrl(selectedChart.id, "asset")
       .then((assetUrl) => {
         if (cancelled) {
           return;
@@ -8312,8 +8314,6 @@ function ChartsPage(props: {
       .catch((error) => {
         debugLog("charts.asset.resolve_failed", {
           chart_id: selectedChart.id,
-          package_id: selectedChart.package_id,
-          asset_path: selectedChart.asset_path,
           error: errorMessage(error),
         });
         if (!cancelled) {
@@ -8329,7 +8329,7 @@ function ChartsPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [selectedChart?.id, selectedChart?.package_id, selectedChart?.asset_path, uiSession]);
+  }, [selectedChart?.id, uiSession]);
 
   useEffect(() => {
     if (!folderOpen || !uiSession) {
@@ -8337,7 +8337,7 @@ function ChartsPage(props: {
     }
     let cancelled = false;
     const chartsToResolve = sortedCharts.filter((chart) =>
-      chart.thumbnail_path && resolvedChartUrls[chart.id]?.thumbnailUrl === undefined,
+      chart.has_thumbnail && resolvedChartUrls[chart.id]?.thumbnailUrl === undefined,
     );
     if (chartsToResolve.length === 0) {
       return;
@@ -8346,15 +8346,13 @@ function ChartsPage(props: {
       try {
         return {
           chart,
-          thumbnailUrl: chart.thumbnail_path
-            ? await uiSession.resolvePackageMemberUrl(chart.package_id, chart.thumbnail_path)
+          thumbnailUrl: chart.has_thumbnail
+            ? await uiSession.resolveChartAssetUrl(chart.id, "thumbnail")
             : null,
         };
       } catch (error) {
         debugLog("charts.thumbnail.resolve_failed", {
           chart_id: chart.id,
-          package_id: chart.package_id,
-          thumbnail_path: chart.thumbnail_path,
           error: errorMessage(error),
         });
         return { chart, thumbnailUrl: null };

@@ -32,6 +32,7 @@ pub mod ui_work_scheduler;
 pub use chart_page::{
     airport_ids_from_plan, derive_chart_page_state_from_airports, DerivedChartAirport,
     DerivedChartAsset, DerivedChartCatalog, DerivedChartPage, DerivedChartPageState,
+    PlateChartAssetRecord,
 };
 pub use content::{
     AvailabilityDetail, CachedPlate, CachedTileset, ContentAvailability, ContentInventory,
@@ -215,8 +216,8 @@ pub use session::{
     register_ownship_source_in_session, register_ownship_source_in_session_outcome,
     render_terrain_overlay_tile_by_key_in_session, render_terrain_overlay_tile_in_session,
     render_terrain_overlay_tiles_in_session, report_live_feed_connection_event_in_session,
-    report_session_resource_failure_in_session, resolve_metar_manifest_in_session,
-    resolve_nav_db_artifact_candidates_in_session, resolve_package_member_in_session,
+    report_session_resource_failure_in_session, resolve_chart_asset_resource_in_session,
+    resolve_metar_manifest_in_session, resolve_nav_db_artifact_candidates_in_session,
     restore_chart_page_state_in_session, restore_direct_to_in_session, seek_playback_in_session,
     seek_playback_in_session_outcome, select_airport_in_session, select_chart_in_session,
     select_map_family_in_session, select_ownship_source_in_session,

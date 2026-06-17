@@ -191,7 +191,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.ChartAirport
 import org.aerobag.app.domain.ChartAsset
-import org.aerobag.app.domain.ChartPackages
 import org.aerobag.app.domain.AppState
 import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion

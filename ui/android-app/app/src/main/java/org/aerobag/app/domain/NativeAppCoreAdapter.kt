@@ -1116,6 +1116,27 @@ class NativeUiSession internal constructor(
         )
     }
 
+    fun chartAssetBytes(
+        chartId: String,
+        assetKind: String,
+        fetchResource: (CoreResourceRequest) -> ByteArray,
+    ): ByteArray {
+        require(assetKind == "asset" || assetKind == "thumbnail") {
+            "unsupported chart asset kind: $assetKind"
+        }
+        val store = navKvStore ?: error("session missing nav_db for chart asset fetch")
+        val result = store.runPagedSessionOperationElement(
+            fetchSessionResource = fetchResource,
+            ingestSessionResource = { resource, bytes ->
+                bridge.ingestResourceInSession(handle, resource.id, bytes)
+            },
+        ) {
+            bridge.resolveChartAssetResourceInSessionJson(handle, chartId, assetKind)
+        }.jsonObject
+        val source = parseCoreResourceSource(result.getValue("source").jsonObject)
+        return fetchResource(CoreResourceRequest("chart_asset/$assetKind/$chartId", source, false))
+    }
+
     fun nexradTileBytes(
         src: String,
         fetchResource: (CoreResourceRequest) -> ByteArray,
@@ -1858,14 +1879,10 @@ internal data class WireDerivedChartAirport(
 internal data class WireDerivedChartAsset(
     val id: String,
     val airport_id: String,
-    val package_id: String,
     val label: String,
     val kind: String,
     val folder_category: String,
-    val source_asset_path: String,
-    val asset_path: String,
-    val thumbnail_source_path: String? = null,
-    val thumbnail_path: String? = null,
+    val has_thumbnail: Boolean,
 )
 
 internal fun WireDerivedChartPage.toUi() = ChartPageFixture(
@@ -2133,14 +2150,10 @@ internal fun WireDerivedChartAirport.toUi() = ChartAirport(
 internal fun WireDerivedChartAsset.toUi() = ChartAsset(
     id = id,
     airportId = airport_id,
-    packageId = package_id,
     label = label,
     kind = kind,
     folderCategory = folder_category,
-    sourceAssetPath = source_asset_path,
-    assetPath = asset_path,
-    thumbnailSourceAssetPath = thumbnail_source_path,
-    thumbnailAssetPath = thumbnail_path,
+    hasThumbnail = has_thumbnail,
 )
 
 @kotlinx.serialization.Serializable

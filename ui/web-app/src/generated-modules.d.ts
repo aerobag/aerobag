@@ -92,7 +92,7 @@ declare module "@generated/app_wasm.js" {
   export const core_had_operation: (...args: unknown[]) => string;
   export const resolve_metar_manifest_in_session: (...args: unknown[]) => string;
   export const resolve_nav_db_artifact_candidates_in_session: (...args: unknown[]) => string;
-  export const resolve_package_member_in_session: (...args: unknown[]) => string;
+  export const resolve_chart_asset_resource_in_session: (...args: unknown[]) => string;
   export const metar_bakeoff_run: (...args: unknown[]) => string;
 }
 

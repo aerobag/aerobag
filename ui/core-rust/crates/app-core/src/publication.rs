@@ -93,19 +93,14 @@ impl PublicationResolver {
         Ok(())
     }
 
-    pub fn resolve_package_resource(
-        &self,
-        package_id: &str,
-        member_path: &str,
-    ) -> Result<HadOperationOutcome, String> {
-        self.resolve_resource(|package| package.id == package_id, member_path)
-    }
-
     pub fn package_member_public_url(
         &self,
         package_id: &str,
         member_path: &str,
     ) -> Result<String, String> {
+        // TASK-25 raster exception: this direct package/member URL helper is
+        // kept for the raster tile public-unpacked fast path. New non-raster
+        // resources should return opaque CoreResourceRequest values instead.
         if self.resource_policy != CoreResourcePolicy::PublicUnpacked {
             return Err(
                 "publication URL resolution requires public_unpacked resource policy".to_string(),

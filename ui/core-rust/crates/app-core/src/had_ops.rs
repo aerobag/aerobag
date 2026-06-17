@@ -1518,7 +1518,7 @@ fn resolve_plate_airport(
     let mut missing_pages = Vec::new();
     for plate_id in &record.chart_ids {
         match read_plate_by_id(store, plate_id)? {
-            PlateByIdRead::Hit(chart) => charts.push(chart),
+            PlateByIdRead::Hit(chart) => charts.push(chart.into()),
             PlateByIdRead::MissingPages(pages) => missing_pages.extend(pages),
         }
     }
@@ -1534,7 +1534,7 @@ fn resolve_plate_airport(
 }
 
 enum PlateByIdRead {
-    Hit(crate::DerivedChartAsset),
+    Hit(crate::PlateChartAssetRecord),
     MissingPages(Vec<u32>),
 }
 
@@ -5269,11 +5269,7 @@ mod tests {
                 )
             })
             .clone();
-        assert!(
-            vor_a.asset_path.to_uppercase().contains("VOR-A"),
-            "expected VOR-A asset path, got {:?}",
-            vor_a
-        );
+        assert_eq!(vor_a.label, "VOR-A");
         let _chart_catalog = crate::DerivedChartCatalog {
             airports: vec![kpae],
         };

@@ -357,7 +357,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     setMapLayerEnabled: (...args) => updateSnapshot(call("setMapLayerEnabled", args)),
     setDebugFlag: (...args) => updateSnapshot(call("setDebugFlag", args)),
     loadRasterMapCatalog: () => updateSnapshot(call("loadRasterMapCatalog")),
-    resolvePackageMemberUrl: (...args) => call("resolvePackageMemberUrl", args),
+    resolveChartAssetUrl: (...args) => call("resolveChartAssetUrl", args),
     selectMapFamily: (...args) => updateSnapshot(call("selectMapFamily", args)),
     selectRasterMap: (...args) => updateSnapshot(call("selectRasterMap", args)),
     selectAirport: (...args) => updateSnapshot(call("selectAirport", args)),

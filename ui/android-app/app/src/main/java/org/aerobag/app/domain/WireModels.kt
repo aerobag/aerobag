@@ -1744,22 +1744,6 @@ data class WireMapViewportSeed(
 )
 
 @Serializable
-data class WireChartAsset(
-    val id: String,
-    val airport_id: String,
-    val label: String,
-    val kind: String,
-    val asset_path: String,
-)
-
-@Serializable
-data class WireChartAirport(
-    val id: String,
-    val label: String,
-    val charts: List<WireChartAsset>,
-)
-
-@Serializable
 data class WirePlateId(
     val airport_id: String,
     val procedure_code: String,
@@ -1778,7 +1762,6 @@ data class WirePlateRecord(
     val kind: String,
     val georeferenced: Boolean,
     val page_count: Int,
-    val asset_base_path: String,
 )
 
 @Serializable
@@ -1787,5 +1770,4 @@ data class WireSupplementRecord(
     val region_id: WireRegionId,
     val cycle: String,
     val page_count: Int,
-    val asset_base_path: String,
 )

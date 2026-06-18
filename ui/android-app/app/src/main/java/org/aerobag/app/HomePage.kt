@@ -386,7 +386,10 @@ internal fun HomePage(
     var packageSourceBaseUrl by remember(context, prefs) {
         mutableStateOf(readPackageSourceBaseUrl(context.applicationContext, prefs))
     }
-    var offlinePackagesOpen by remember { mutableStateOf(forceOfflinePackagesOpen || initialOfflinePackagesOpen) }
+    val offlinePackagesRouted = page == AppPage.OfflinePackages
+    var offlinePackagesOpen by remember(page) {
+        mutableStateOf(forceOfflinePackagesOpen || initialOfflinePackagesOpen || offlinePackagesRouted)
+    }
     val regionOptions = remember { offlineRegionOptions() }
     val regionIds = remember(regionOptions) { regionOptions.map { it.id } }
     val productIds = remember { OfflineProductOptions.map { it.id } }
@@ -542,13 +545,13 @@ internal fun HomePage(
             null -> Unit
         }
     }
-    LaunchedEffect(forceOfflinePackagesOpen) {
-        if (forceOfflinePackagesOpen) {
+    LaunchedEffect(forceOfflinePackagesOpen, offlinePackagesRouted) {
+        if (forceOfflinePackagesOpen || offlinePackagesRouted) {
             offlinePackagesOpen = true
         }
     }
-    LaunchedEffect(forceOfflinePackagesOpen, offlinePackagesOpen) {
-        if (forceOfflinePackagesOpen || offlinePackagesOpen) {
+    LaunchedEffect(forceOfflinePackagesOpen, offlinePackagesOpen, offlinePackagesRouted) {
+        if (forceOfflinePackagesOpen || offlinePackagesOpen || offlinePackagesRouted) {
             launchOfflinePackageOperation {
                 dispatchOfflinePackagesController(OfflinePackagesControllerEventWire.EnsureLibrary)
             }
@@ -560,7 +563,9 @@ internal fun HomePage(
             .fillMaxSize()
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
-        HomePageBackdrop()
+        if (!offlinePackagesRouted) {
+            HomePageBackdrop()
+        }
 
         val homeGridRowCount =
             ((HomeGridButtons.size + HomeGridColumnCount - 1) / HomeGridColumnCount)
@@ -570,63 +575,81 @@ internal fun HomePage(
                 (ThumbGap * (homeGridRowCount - 1).toFloat())
 
         HomeReturnDock(
-            modifier = Modifier.align(Alignment.TopStart),
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .zIndex(2f),
             currentPage = page,
             chartPlateTargetPage = mostRecentChartOrPlatePage,
             onHomeClick = { onSelectPage(AppPage.Home) },
             onOpenChartOrPlate = onOpenRecentChartOrPlate,
         )
 
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(HomeGridColumnCount),
-            modifier = Modifier
-                .align(Alignment.Center)
-                .width(HomeGridWidth)
-                .height(homeGridHeight),
-            horizontalArrangement = Arrangement.spacedBy(ThumbGap),
-            verticalArrangement = Arrangement.spacedBy(ThumbGap),
-            userScrollEnabled = false,
-        ) {
-            lazyGridItems(HomeGridButtons, key = { it.key }) { button ->
-                CompactSquareButton(
-                    label = button.label,
-                    modifier = Modifier
-                        .width(ThumbSize * 2f)
-                        .height(ThumbSize * 2f),
-                    maxLines = 2,
-                    enabled = button.enabled,
-                    iconResId = button.iconResId,
-                    wide = true,
-                    onClick = {
-                        Log.i("AerobagNavigation", "home button key=${button.key} target=${button.targetPage} external=${button.externalUrl}")
-                        if (button.targetPage != null) {
-                            onSelectPage(button.targetPage)
-                        } else if (button.externalUrl != null) {
-                            uriHandler.openUri(button.externalUrl)
-                        } else if (button.key == "offline-packages") {
-                            Log.i("AerobagNavigation", "offline packages open requested")
-                            offlinePackagesOpen = true
-                        }
-                    },
-                )
+        if (!offlinePackagesRouted) {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(HomeGridColumnCount),
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .width(HomeGridWidth)
+                    .height(homeGridHeight),
+                horizontalArrangement = Arrangement.spacedBy(ThumbGap),
+                verticalArrangement = Arrangement.spacedBy(ThumbGap),
+                userScrollEnabled = false,
+            ) {
+                lazyGridItems(HomeGridButtons, key = { it.key }) { button ->
+                    CompactSquareButton(
+                        label = button.label,
+                        modifier = Modifier
+                            .width(ThumbSize * 2f)
+                            .height(ThumbSize * 2f),
+                        maxLines = 2,
+                        enabled = button.enabled,
+                        iconResId = button.iconResId,
+                        wide = true,
+                        onClick = {
+                            Log.i("AerobagNavigation", "home button key=${button.key} target=${button.targetPage} external=${button.externalUrl}")
+                            if (button.targetPage != null) {
+                                onSelectPage(button.targetPage)
+                            } else if (button.externalUrl != null) {
+                                uriHandler.openUri(button.externalUrl)
+                            }
+                        },
+                    )
+                }
             }
+
+            NavElementDock(
+                navElement = navElement,
+                onClick = onOpenPlan,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = ThumbGap),
+            )
         }
 
-        NavElementDock(
-            navElement = navElement,
-            onClick = onOpenPlan,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = ThumbGap),
-        )
-
-        if (offlinePackagesOpen || forceOfflinePackagesOpen) {
-            if (!forceOfflinePackagesOpen) {
+        if (offlinePackagesOpen || forceOfflinePackagesOpen || offlinePackagesRouted) {
+            if (!forceOfflinePackagesOpen && !offlinePackagesRouted) {
                 Scrim { offlinePackagesOpen = false }
             }
+            val offlinePanelModifier =
+                if (offlinePackagesRouted) {
+                    Modifier
+                        .fillMaxSize()
+                        .padding(
+                            start = ThumbGap,
+                            end = ThumbGap,
+                            top = ThumbSize + (ThumbGap * 2f),
+                            bottom = ThumbGap,
+                        )
+                        .zIndex(1f)
+                } else {
+                    Modifier
+                        .align(Alignment.Center)
+                        .padding(ThumbGap * 1.4f)
+                        .zIndex(1f)
+                }
             val controllerUiState = offlinePackagesControllerResult?.uiState
-            val navDbStatus by produceState<org.aerobag.app.domain.NavDbStatus?>(initialValue = null, context, navDbStatusRefreshToken, offlinePackagesOpen, forceOfflinePackagesOpen) {
-                if (!offlinePackagesOpen && !forceOfflinePackagesOpen) {
+            val navDbStatus by produceState<org.aerobag.app.domain.NavDbStatus?>(initialValue = null, context, navDbStatusRefreshToken, offlinePackagesOpen, forceOfflinePackagesOpen, offlinePackagesRouted) {
+                if (!offlinePackagesOpen && !forceOfflinePackagesOpen && !offlinePackagesRouted) {
                     value = null
                     return@produceState
                 }
@@ -691,15 +714,13 @@ internal fun HomePage(
                     },
                     closeEnabled = !forceOfflinePackagesOpen,
                     onClose = {
-                        if (!forceOfflinePackagesOpen) {
+                        if (!forceOfflinePackagesOpen && !offlinePackagesRouted) {
                             offlinePackagesOpen = false
                             onOfflinePackagesClosed?.invoke()
                         }
                     },
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .padding(ThumbGap * 1.4f)
-                        .zIndex(1f),
+                    showCloseButton = false,
+                    modifier = offlinePanelModifier,
                 )
             } else if (controllerUiState.plannerUiState == null) {
                 OfflinePackagesErrorPanel(
@@ -709,15 +730,13 @@ internal fun HomePage(
                     ).joinToString("\n\n"),
                     closeEnabled = !forceOfflinePackagesOpen,
                     onClose = {
-                        if (!forceOfflinePackagesOpen) {
+                        if (!forceOfflinePackagesOpen && !offlinePackagesRouted) {
                             offlinePackagesOpen = false
                             onOfflinePackagesClosed?.invoke()
                         }
                     },
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .padding(ThumbGap * 1.4f)
-                        .zIndex(1f),
+                    showCloseButton = false,
+                    modifier = offlinePanelModifier,
                 )
             } else {
                 OfflinePackagesPanel(
@@ -809,15 +828,13 @@ internal fun HomePage(
                     syncInFlight = controllerUiState.syncInFlight,
                     closeEnabled = !forceOfflinePackagesOpen,
                     onClose = {
-                        if (!forceOfflinePackagesOpen) {
+                        if (!forceOfflinePackagesOpen && !offlinePackagesRouted) {
                             offlinePackagesOpen = false
                             onOfflinePackagesClosed?.invoke()
                         }
                     },
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .padding(ThumbGap * 1.4f)
-                        .zIndex(1f),
+                    showCloseButton = false,
+                    modifier = offlinePanelModifier,
                 )
             }
         }

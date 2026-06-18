@@ -335,6 +335,7 @@ internal fun OfflinePackagesErrorPanel(
     message: String,
     closeEnabled: Boolean,
     onClose: () -> Unit,
+    showCloseButton: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
@@ -365,12 +366,14 @@ internal fun OfflinePackagesErrorPanel(
                     fontWeight = FontWeight.ExtraBold,
                     color = uiTheme.controls.panelFg,
                 )
-                CompactSquareButton(
-                    label = "X",
-                    modifier = Modifier.size(ThumbSize * 0.72f),
-                    enabled = closeEnabled,
-                    onClick = onClose,
-                )
+                if (showCloseButton) {
+                    CompactSquareButton(
+                        label = "X",
+                        modifier = Modifier.size(ThumbSize * 0.72f),
+                        enabled = closeEnabled,
+                        onClick = onClose,
+                    )
+                }
             }
             Text(
                 text = message,
@@ -395,6 +398,7 @@ internal fun OfflinePackagesLibraryPanel(
     onCancelRefresh: () -> Unit,
     closeEnabled: Boolean,
     onClose: () -> Unit,
+    showCloseButton: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
@@ -437,13 +441,15 @@ internal fun OfflinePackagesLibraryPanel(
                     testTag = "parity:offline-refresh-button",
                     onClick = if (refreshInFlight) onCancelRefresh else onRefresh,
                 )
-                CompactSquareButton(
-                    label = "X",
-                    modifier = Modifier.size(ThumbSize * 0.72f),
-                    enabled = closeEnabled,
-                    testTag = "parity:offline-close-button",
-                    onClick = onClose,
-                )
+                if (showCloseButton) {
+                    CompactSquareButton(
+                        label = "X",
+                        modifier = Modifier.size(ThumbSize * 0.72f),
+                        enabled = closeEnabled,
+                        testTag = "parity:offline-close-button",
+                        onClick = onClose,
+                    )
+                }
             }
             Text(
                 text = message,
@@ -510,6 +516,7 @@ internal fun OfflinePackagesPanel(
     syncInFlight: Boolean,
     closeEnabled: Boolean,
     onClose: () -> Unit,
+    showCloseButton: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
@@ -570,13 +577,15 @@ internal fun OfflinePackagesPanel(
                     testTag = "parity:offline-sync-button",
                     onClick = if (syncInFlight) onCancelOperation else onSync,
                 )
-                CompactSquareButton(
-                    label = "X",
-                    modifier = Modifier.size(ThumbSize * 0.72f),
-                    enabled = closeEnabled,
-                    testTag = "parity:offline-close-button",
-                    onClick = onClose,
-                )
+                if (showCloseButton) {
+                    CompactSquareButton(
+                        label = "X",
+                        modifier = Modifier.size(ThumbSize * 0.72f),
+                        enabled = closeEnabled,
+                        testTag = "parity:offline-close-button",
+                        onClick = onClose,
+                    )
+                }
             }
 
             syncMessage?.let { message ->

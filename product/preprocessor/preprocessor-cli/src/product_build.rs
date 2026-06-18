@@ -1262,34 +1262,6 @@ fn unpacked_marker_value(zip_sha256: &str, marker_suffix: Option<&str>) -> Strin
     }
 }
 
-fn sync_unpacked_dir_from_existing(
-    source_dir: &Path,
-    unpacked_root: &Path,
-    published_filename: &str,
-    known_sha256: &str,
-) -> anyhow::Result<(bool, PathBuf)> {
-    let unpack_dir = unpacked_target_dir(unpacked_root, published_filename)?;
-    let marker_path = unpacked_marker_path(unpacked_root, published_filename)?;
-    if unpack_dir.is_dir()
-        && unpacked_dir_has_files(&unpack_dir)?
-        && fs::read_to_string(&marker_path)
-            .ok()
-            .as_deref()
-            .map(str::trim)
-            == Some(known_sha256)
-    {
-        return Ok((true, unpack_dir));
-    }
-    if unpack_dir.exists() {
-        fs::remove_dir_all(&unpack_dir)
-            .with_context(|| format!("failed to remove {}", unpack_dir.display()))?;
-    }
-    hardlink_dir_recursive(source_dir, &unpack_dir)?;
-    fs::write(&marker_path, format!("{known_sha256}\n"))
-        .with_context(|| format!("failed to write {}", marker_path.display()))?;
-    Ok((false, unpack_dir))
-}
-
 fn hardlink_dir_recursive(source_dir: &Path, output_dir: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(output_dir)
         .with_context(|| format!("failed to create {}", output_dir.display()))?;
@@ -1669,42 +1641,6 @@ fn sync_cycle_bundle_unpacked_zips(
         }
         if package.cycle.is_none() {
             continue;
-        }
-        if let Some(cycle) = &package.cycle {
-            let legacy_filename = format!(
-                "{}_{}_{}.zip",
-                package.family_id.replace('-', "_"),
-                package
-                    .region_id
-                    .as_deref()
-                    .unwrap_or_default()
-                    .to_ascii_lowercase(),
-                cycle
-            );
-            let legacy_dir = unpacked_target_dir(unpacked_root, &legacy_filename)?;
-            let legacy_marker_path = unpacked_marker_path(unpacked_root, &legacy_filename)?;
-            if legacy_dir.is_dir()
-                && fs::read_to_string(&legacy_marker_path)
-                    .ok()
-                    .as_deref()
-                    .map(str::trim)
-                    == Some(package.checksum_sha256.as_str())
-            {
-                sync_unpacked_dir_from_existing(
-                    &legacy_dir,
-                    unpacked_root,
-                    &package.filename,
-                    &package.checksum_sha256,
-                )
-                .with_context(|| {
-                    format!(
-                        "failed to sync hashed unpacked package {} from existing {}",
-                        package.id,
-                        legacy_dir.display()
-                    )
-                })?;
-                continue;
-            }
         }
         let source_root = if let Some(task_values) = task_values {
             resolve_cycle_bundle_package_unpack_source_root(

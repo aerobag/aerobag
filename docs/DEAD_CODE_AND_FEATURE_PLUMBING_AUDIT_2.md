@@ -48,34 +48,6 @@ Proposed action:
 - Gate high-volume tile, viewport, and overlay logs behind a DBG flag shared with web/core logging policy.
 - Keep warnings/errors and coarse operation timings always visible only if they are actionable.
 
-### Finish shrinking `MainActivity.kt` after the first split
-
-Evidence:
-- `ui/android-app/app/src/main/java/org/aerobag/app/MainActivity.kt` is down to about 3.5k lines, but still contains app-shell state, runtime bootstrap, tile loader machinery, page navigation, and live-feed startup.
-- Major page surfaces have been split into files such as `MapExplorerPage.kt`, `HomePage.kt`, `FlightPlanPage.kt`, `ChartsPage.kt`, and `OfflinePackagesPage.kt`.
-
-Why this still smells:
-- This is no longer the original 10k-line emergency, but cross-cutting runtime/tile/navigation code remains interleaved.
-- Dead-code cleanup and behavioral refactors are still riskier when app shell and resource loading live in one large file.
-
-Proposed action:
-- Continue the split narrowly: move tile loading/cache helpers, retained runtime/session setup, and app navigation shell into focused files.
-- Do not move product logic out of core; this is Kotlin UI organization only.
-
-### Remove legacy unpacked package reuse path from preprocessor publication
-
-Evidence:
-- `product/preprocessor/preprocessor-cli/src/product_build.rs` still constructs a `legacy_filename` from `{family_id}_{region}_{cycle}.zip`.
-- If a matching old unpacked directory and marker exist, it syncs the new hashed unpacked package from that legacy directory.
-
-Why this still smells:
-- The current publication contract uses hashed package filenames and explicit package rows.
-- Reusing old unpacked directories by legacy naming is migration glue and can hide stale publication state.
-
-Proposed action:
-- Delete the legacy-name reuse path once the current publication tree is clean.
-- Require the unpacked publication to be derived from the current package filename/manifest only.
-
 ## Verified Resolved Or Accepted From The Previous Audit
 
 - Home-page placeholder buttons: no `placeholderLabels` home-grid scaffold remains.
@@ -97,3 +69,5 @@ Proposed action:
 - Bad AP source contract: retained as a dev feature, but renamed from debug-ownship-driver terminology to `BadAutopilot` / `bad_autopilot` across core, WASM, web, and Android.
 - Playback panel visibility: moved from `UiDebugState.playback_visible` to core-owned `UiPlaybackPanelState.visible` / `playback_panel_state`; web and Android now render playback controls from the product UI field.
 - Android dev-bootstrap stale fields: `WireDevBootstrap` now only accepts the optional `package_management_now_utc` planner-clock override, and the shared bootstrap asset no longer carries ignored content/chart/recent-airport fixture state.
+- Preprocessor legacy unpacked package reuse: deleted the legacy `{family_id}_{region}_{cycle}.zip` reuse branch; cycle unpacked publication now derives package directories from current hashed package rows/files.
+- Android `MainActivity.kt` split: moved data-status UI to `DataStatusPage.kt`, raster tile loading/cache helpers to `TileLoading.kt`, and retained runtime/session holder state to `RetainedSession.kt`; `MainActivity.kt` is now app shell/navigation plus remaining cross-page glue.

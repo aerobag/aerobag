@@ -48,9 +48,9 @@ version = "0.1.0"
 dependencies = [
  "airspace-geometry",
  "chrono",
+ "flate2",
  "had-key",
  "had-nav-kv",
- "png",
  "postcard",
  "procedure-geometry-types",
  "product-contracts",

@@ -27,7 +27,7 @@
             </intent-filter>
         </activity>
         <service
-            android:name=".AndroidGpsService"
+            android:name=".AerobagGpsService"
             android:exported="false"
             android:foregroundServiceType="location" />
     </application>

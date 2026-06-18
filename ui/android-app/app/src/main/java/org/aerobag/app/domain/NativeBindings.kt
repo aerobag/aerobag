@@ -488,6 +488,8 @@ object NativeBindings : NativeBridge {
 
     private external fun installCoreDebugLogger()
 
+    external fun configureGpsCaptureLogPath(path: String)
+
     external override fun createOfflinePackagesController(packagesStateJson: String): Long
 
     external override fun dispatchOfflinePackagesControllerJson(handle: Long, inputJson: String): String

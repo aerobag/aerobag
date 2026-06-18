@@ -8,6 +8,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 #[cfg(target_os = "android")]
 use std::ffi::CString;
 #[cfg(target_os = "android")]
+use std::io::Write;
+#[cfg(target_os = "android")]
 use std::os::raw::{c_char, c_int};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -15,6 +17,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "android")]
 const ANDROID_LOG_INFO: c_int = 4;
+
+#[cfg(target_os = "android")]
+static GPS_CAPTURE_LOG_PATH: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 #[cfg(target_os = "android")]
 #[link(name = "log")]
@@ -40,6 +45,8 @@ fn now_epoch_ms_f64() -> f64 {
 
 #[cfg(target_os = "android")]
 fn log_core_debug(tag: &str, data: &serde_json::Value) {
+    append_gps_capture_log_record(tag, data);
+
     let Ok(tag) = CString::new(tag) else {
         return;
     };
@@ -53,6 +60,45 @@ fn log_core_debug(tag: &str, data: &serde_json::Value) {
 
 #[cfg(not(target_os = "android"))]
 fn log_core_debug(_tag: &str, _data: &serde_json::Value) {}
+
+#[cfg(target_os = "android")]
+fn set_gps_capture_log_path(path: Option<String>) {
+    *GPS_CAPTURE_LOG_PATH
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = path;
+}
+
+#[cfg(not(target_os = "android"))]
+fn set_gps_capture_log_path(_path: Option<String>) {}
+
+#[cfg(target_os = "android")]
+fn append_gps_capture_log_record(tag: &str, data: &serde_json::Value) {
+    if !tag.starts_with("ownship.gps_capture.") {
+        return;
+    }
+    let path = GPS_CAPTURE_LOG_PATH
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    let Some(path) = path else {
+        return;
+    };
+    let record = serde_json::json!({
+        "logged_at_epoch_ms": now_epoch_ms(),
+        "tag": tag,
+        "data": data,
+    });
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
+        return;
+    };
+    let _ = writeln!(file, "{record}");
+}
 
 pub fn build_flight_plan_json(plan_json: &str) -> Result<String, String> {
     let plan: app_core::FlightPlan =
@@ -1795,6 +1841,18 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_installCoreDeb
     _class: JClass,
 ) {
     install_core_debug_logger();
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_configureGpsCaptureLogPath(
+    mut env: JNIEnv,
+    _class: JClass,
+    path: JString,
+) {
+    match get_java_string(&mut env, path) {
+        Ok(path) if !path.is_empty() => set_gps_capture_log_path(Some(path)),
+        _ => set_gps_capture_log_path(None),
+    }
 }
 
 #[unsafe(no_mangle)]

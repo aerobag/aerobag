@@ -27,7 +27,7 @@ import org.aerobag.app.domain.LatLonPoint
 import org.aerobag.app.domain.OwnshipSourceKind
 import org.aerobag.app.domain.SituationSample
 
-class AndroidGpsService : Service() {
+class AerobagGpsService : Service() {
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private var finalStatusPublished = false
 
@@ -143,6 +143,8 @@ class AndroidGpsService : Service() {
                 eventTimeEpochMs = location.time.takeIf { it > 0L } ?: now,
                 receivedTimeEpochMs = now,
                 position = LatLonPoint(lat = location.latitude, lon = location.longitude),
+                horizontalAccuracyM = location.horizontalAccuracyMIfPresent(),
+                verticalAccuracyM = location.verticalAccuracyMIfPresent(),
                 trackDegTrue = location.bearingIfPresent(),
                 headingDegTrue = location.bearingIfPresent(),
                 groundSpeedKt = location.speedKtIfPresent(),
@@ -215,7 +217,7 @@ class AndroidGpsService : Service() {
         PendingIntent.getService(
             this,
             requestCode,
-            Intent(this, AndroidGpsService::class.java).setAction(action),
+            Intent(this, AerobagGpsService::class.java).setAction(action),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
@@ -246,6 +248,16 @@ class AndroidGpsService : Service() {
     private fun Location.altitudeFtIfPresent(): Double? =
         if (hasAltitude()) altitude * MetersToFeet else null
 
+    private fun Location.horizontalAccuracyMIfPresent(): Double? =
+        if (hasAccuracy()) accuracy.toDouble() else null
+
+    private fun Location.verticalAccuracyMIfPresent(): Double? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && hasVerticalAccuracy()) {
+            verticalAccuracyMeters.toDouble()
+        } else {
+            null
+        }
+
     companion object {
         private const val LogTag = "AerobagGps"
         private const val NotificationChannelId = "aerobag_gps"
@@ -264,7 +276,7 @@ class AndroidGpsService : Service() {
             context.getSystemService(NotificationManager::class.java).cancel(PausedNotificationId)
             ContextCompat.startForegroundService(
                 context,
-                Intent(context, AndroidGpsService::class.java),
+                Intent(context, AerobagGpsService::class.java),
             )
         }
 
@@ -272,7 +284,7 @@ class AndroidGpsService : Service() {
             AndroidGpsPower.markGpsPaused(context)
             AndroidGpsPower.clearPendingOwnshipSource(context)
             AndroidGpsSource.publishStatus(AndroidGpsSource.pausedStatus())
-            context.stopService(Intent(context, AndroidGpsService::class.java))
+            context.stopService(Intent(context, AerobagGpsService::class.java))
         }
     }
 }

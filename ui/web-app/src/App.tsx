@@ -1453,6 +1453,7 @@ function defaultUiDebugState(): UiDebugState {
     offline_simulated_clock_buttons: false,
     sequencing_finish_lines: false,
     bad_autopilot: false,
+    gps_capture: false,
   };
 }
 
@@ -9190,6 +9191,7 @@ function CommonDebugPanel(props: {
     { id: "offline_simulated_clock_buttons", label: "offline simulated clock buttons" },
     { id: "sequencing_finish_lines", label: "sequencing finish lines" },
     { id: "bad_autopilot", label: "Bad Autopilot" },
+    { id: "gps_capture", label: "capture GPS samples" },
   ];
 
   return (

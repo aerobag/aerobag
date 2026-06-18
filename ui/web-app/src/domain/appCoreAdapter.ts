@@ -94,7 +94,7 @@ export type UiSessionSnapshot = {
   next_cycle_product_freshness_check_epoch_ms?: number | null;
 };
 
-export type DebugFlagId = "tile_labels" | "nexrad_tile_labels" | "fast_tiles" | "offline_simulated_clock_buttons" | "sequencing_finish_lines" | "bad_autopilot";
+export type DebugFlagId = "tile_labels" | "nexrad_tile_labels" | "fast_tiles" | "offline_simulated_clock_buttons" | "sequencing_finish_lines" | "bad_autopilot" | "gps_capture";
 
 export type UiDebugState = {
   tile_labels: boolean;
@@ -104,6 +104,7 @@ export type UiDebugState = {
   offline_simulated_clock_buttons: boolean;
   sequencing_finish_lines: boolean;
   bad_autopilot: boolean;
+  gps_capture: boolean;
 };
 
 export type UiStatusSeverity = "ok" | "info" | "caution" | "warning" | "unavailable";

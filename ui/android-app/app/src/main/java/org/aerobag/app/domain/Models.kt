@@ -689,6 +689,8 @@ data class SituationSample(
     val eventTimeEpochMs: Long,
     val receivedTimeEpochMs: Long,
     val position: LatLonPoint? = null,
+    val horizontalAccuracyM: Double? = null,
+    val verticalAccuracyM: Double? = null,
     val trackDegTrue: Double? = null,
     val headingDegTrue: Double? = null,
     val groundSpeedKt: Double? = null,

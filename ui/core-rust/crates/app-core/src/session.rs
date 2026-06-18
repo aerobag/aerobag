@@ -99,6 +99,8 @@ pub struct UiDebugState {
     pub sequencing_finish_lines: bool,
     #[serde(default)]
     pub bad_autopilot: bool,
+    #[serde(default)]
+    pub gps_capture: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3286,6 +3288,7 @@ pub fn update_ownship_source_status_in_session(
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    maybe_log_gps_capture_status(session, &update);
     session.app_state = state::reduce(
         &session.app_state,
         AppEvent::UpdateOwnshipSourceStatus(update),
@@ -3299,6 +3302,7 @@ pub fn update_ownship_source_status_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    maybe_log_gps_capture_status(session, &update);
     session.app_state = state::reduce(
         &session.app_state,
         AppEvent::UpdateOwnshipSourceStatus(update),
@@ -3312,6 +3316,7 @@ pub fn push_situation_sample_in_session(
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    maybe_log_gps_capture_sample(session, &sample);
     advance_session_wall_clock(session, sample.received_time_epoch_ms);
     session.app_state = state::reduce(&session.app_state, AppEvent::PushSituationSample(sample))?;
     snapshot_for_session(session)
@@ -3324,6 +3329,7 @@ pub fn push_situation_sample_in_session_outcome(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let terrain_key_before = ownship_terrain_refresh_key(session);
+    maybe_log_gps_capture_sample(session, &sample);
     advance_session_wall_clock(session, sample.received_time_epoch_ms);
     session.app_state = state::reduce(&session.app_state, AppEvent::PushSituationSample(sample))?;
     session_snapshot_outcome_with_invalidations(
@@ -3332,6 +3338,64 @@ pub fn push_situation_sample_in_session_outcome(
             terrain_key_before,
             ownship_terrain_refresh_key(session),
         ),
+    )
+}
+
+fn maybe_log_gps_capture_status(session: &UiSession, update: &crate::OwnshipSourceStatusUpdate) {
+    if !session.debug_state.gps_capture {
+        return;
+    }
+    let source_kind = session
+        .app_state
+        .ownship
+        .sources
+        .iter()
+        .find(|source| source.source_id == update.source_id)
+        .map(|source| source.source_kind);
+    if !source_kind.is_some_and(is_gps_capture_source_kind) {
+        return;
+    }
+    crate::core_debug_log(
+        "ownship.gps_capture.status",
+        &serde_json::json!({
+            "kind": "status",
+            "source_id": update.source_id,
+            "source_kind": source_kind,
+            "update": update,
+        }),
+    );
+}
+
+fn maybe_log_gps_capture_sample(session: &UiSession, sample: &crate::SituationSample) {
+    if !session.debug_state.gps_capture || !is_gps_capture_source_kind(sample.source_kind) {
+        return;
+    }
+    if session
+        .app_state
+        .ownship
+        .sources
+        .iter()
+        .find(|source| source.source_id == sample.source_id)
+        .and_then(|source| source.latest_sample.as_ref())
+        .is_some_and(|latest_sample| latest_sample == sample)
+    {
+        return;
+    }
+    crate::core_debug_log(
+        "ownship.gps_capture.sample",
+        &serde_json::json!({
+            "kind": "sample",
+            "source_id": sample.source_id,
+            "source_kind": sample.source_kind,
+            "sample": sample,
+        }),
+    );
+}
+
+fn is_gps_capture_source_kind(source_kind: crate::OwnshipSourceKind) -> bool {
+    matches!(
+        source_kind,
+        crate::OwnshipSourceKind::DeviceGps | crate::OwnshipSourceKind::ExternalGps
     )
 }
 
@@ -4734,6 +4798,7 @@ pub fn set_debug_flag_in_session(
             session.debug_state.offline_simulated_clock_buttons = enabled
         }
         "sequencing_finish_lines" => session.debug_state.sequencing_finish_lines = enabled,
+        "gps_capture" => session.debug_state.gps_capture = enabled,
         "bad_autopilot" => {
             session.debug_state.bad_autopilot = enabled;
             if !enabled {
@@ -8304,6 +8369,7 @@ fn default_debug_state() -> UiDebugState {
         offline_simulated_clock_buttons: false,
         sequencing_finish_lines: false,
         bad_autopilot: false,
+        gps_capture: false,
     }
 }
 

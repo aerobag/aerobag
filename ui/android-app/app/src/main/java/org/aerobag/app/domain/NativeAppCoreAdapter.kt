@@ -1645,6 +1645,8 @@ private fun SituationSample.toCoreJson(json: Json): String =
             position?.let { json.encodeToJsonElement(WireLatLon.serializer(), it.toWire()) }
                 ?: kotlinx.serialization.json.JsonNull,
         )
+        put("horizontal_accuracy_m", horizontalAccuracyM?.let { kotlinx.serialization.json.JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
+        put("vertical_accuracy_m", verticalAccuracyM?.let { kotlinx.serialization.json.JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
         put("track_deg_true", trackDegTrue?.let { kotlinx.serialization.json.JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
         put("heading_deg_true", headingDegTrue?.let { kotlinx.serialization.json.JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
         put("ground_speed_kt", groundSpeedKt?.let { kotlinx.serialization.json.JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
@@ -1843,6 +1845,7 @@ private data class WireUiDebugState(
     val fast_tiles: Boolean = false,
     val offline_simulated_clock_buttons: Boolean = false,
     val bad_autopilot: Boolean = false,
+    val gps_capture: Boolean = false,
 )
 
 @kotlinx.serialization.Serializable
@@ -2016,6 +2019,7 @@ data class UiDebugState(
     val fastTiles: Boolean,
     val offlineSimulatedClockButtons: Boolean,
     val badAutopilot: Boolean,
+    val gpsCapture: Boolean,
 )
 
 data class UiChartPageState(
@@ -2153,6 +2157,7 @@ private fun WireUiDebugState.toUi() = UiDebugState(
     fastTiles = fast_tiles,
     offlineSimulatedClockButtons = offline_simulated_clock_buttons,
     badAutopilot = bad_autopilot,
+    gpsCapture = gps_capture,
 )
 
 private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(

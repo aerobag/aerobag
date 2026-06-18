@@ -481,6 +481,7 @@ internal fun defaultUiDebugState() = UiDebugState(
     fastTiles = false,
     offlineSimulatedClockButtons = false,
     badAutopilot = false,
+    gpsCapture = false,
 )
 internal val PackageManagementJson = Json {
     encodeDefaults = true
@@ -2697,7 +2698,7 @@ class MainActivity : ComponentActivity() {
     private val gpsPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
             if (grants[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
-                startAndroidGpsService()
+                startAerobagGpsService()
             } else {
                 AndroidGpsSource.publishStatus(AndroidGpsSource.unavailableStatus("Precise location required"))
             }
@@ -2706,6 +2707,13 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalComposeUiApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        runCatching {
+            NativeBindings.configureGpsCaptureLogPath(
+                File(filesDir, "aerobag-gps-capture.jsonl").absolutePath,
+            )
+        }.onFailure { error ->
+            Log.w("AerobagGpsCapture", "failed to configure GPS capture log path", error)
+        }
         val retainedModel = ViewModelProvider(this)[AerobagRetainedModel::class.java]
         requestAndroidGps()
         setContent {
@@ -2749,7 +2757,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         if (hasPreciseLocationPermission()) {
-            startAndroidGpsService()
+            startAerobagGpsService()
             return
         }
         gpsPermissionLauncher.launch(requiredGpsPermissions())
@@ -2767,8 +2775,8 @@ class MainActivity : ComponentActivity() {
             }
         }.toTypedArray()
 
-    private fun startAndroidGpsService() {
-        AndroidGpsService.startHighPrecisionGps(this)
+    private fun startAerobagGpsService() {
+        AerobagGpsService.startHighPrecisionGps(this)
     }
 }
 
@@ -2994,9 +3002,9 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
         sessionSnapshot = uiSession.selectOwnshipSource(OwnshipSelection.Source(sourceId))
         AndroidGpsPower.clearPendingOwnshipSource(appContext)
         if (AndroidGpsPower.shouldRunHighPrecisionGpsForSource(sourceId)) {
-            AndroidGpsService.startHighPrecisionGps(appContext)
+            AerobagGpsService.startHighPrecisionGps(appContext)
         } else {
-            AndroidGpsService.pauseForOwnshipSelection(appContext)
+            AerobagGpsService.pauseForOwnshipSelection(appContext)
         }
     }
     LaunchedEffect(uiSession, sessionSnapshot.nextCycleProductFreshnessCheckEpochMs) {

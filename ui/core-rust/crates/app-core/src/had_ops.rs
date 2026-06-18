@@ -3969,7 +3969,7 @@ mod tests {
     #[test]
     fn plate_airport_operation_resolves_chart_ids() {
         let airport = br#"{"id":"KRNT","label":"RENTON MUNI","airport_type":"AIRPORT","package_ids":["NW_TPP_2604"],"chart_ids":["plate:KRNT:APD-WA-AIRPORT DIAGRAM.png"]}"#;
-        let plate = br#"{"id":"plate:KRNT:APD-WA-AIRPORT DIAGRAM.png","airport_id":"KRNT","package_id":"NW_TPP_2604","label":"Airport Diagram","kind":"plate","folder_category":"airport-diagram","source_asset_path":"plates/RNT/APD-WA-AIRPORT DIAGRAM.png","asset_path":"plates/RNT/APD-WA-AIRPORT DIAGRAM.png","thumbnail_source_path":null,"thumbnail_path":null,"georef":null}"#;
+        let plate = br#"{"id":"plate:KRNT:APD-WA-AIRPORT DIAGRAM.png","airport_id":"KRNT","package_id":"NW_TPP_2604","label":"Airport Diagram","kind":"plate","folder_category":"airport-diagram","asset_path":"plates/RNT/APD-WA-AIRPORT DIAGRAM.png"}"#;
         let (root, pages) = fixture(
             &[
                 ("plate/airport/KRNT", airport.as_slice()),

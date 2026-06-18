@@ -1,9 +1,29 @@
 use had_key::upper_component;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
+
+const NAV_COORDINATE_DECIMAL_SCALE: f64 = 10_000_000.0;
+
+fn round_nav_coordinate(value: f64) -> f64 {
+    let rounded = (value * NAV_COORDINATE_DECIMAL_SCALE).round() / NAV_COORDINATE_DECIMAL_SCALE;
+    if rounded == 0.0 {
+        0.0
+    } else {
+        rounded
+    }
+}
+
+fn serialize_nav_coordinate<S>(value: &f64, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_f64(round_nav_coordinate(*value))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ProcedureLatLon {
+    #[serde(serialize_with = "serialize_nav_coordinate")]
     pub lat: f64,
+    #[serde(serialize_with = "serialize_nav_coordinate")]
     pub lon: f64,
 }
 
@@ -354,7 +374,9 @@ mod tests {
         record.leg_bundles[0].source_row_sequences = vec![10, 20];
 
         let value = serde_json::to_value(&record).expect("serialize procedure geometry record");
-        assert!(value["leg_bundles"][0].get("source_row_sequences").is_none());
+        assert!(value["leg_bundles"][0]
+            .get("source_row_sequences")
+            .is_none());
 
         let old_payload = serde_json::json!({
             "leg_bundles": [{
@@ -373,6 +395,22 @@ mod tests {
         assert_eq!(decoded.leg_bundles[0].id, "leg-1");
         assert_eq!(decoded.leg_bundles[0].leg_sequence, 10);
         assert_eq!(decoded.leg_bundles[0].source_row_sequences, vec![10, 20]);
+    }
+
+    #[test]
+    fn procedure_lat_lon_serializes_with_nav_coordinate_precision() {
+        let value = serde_json::to_value(ProcedureLatLon {
+            lat: 47.49313888888889,
+            lon: -122.215750055,
+        })
+        .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "lat": 47.4931389,
+                "lon": -122.2157501,
+            })
+        );
     }
 
     #[test]

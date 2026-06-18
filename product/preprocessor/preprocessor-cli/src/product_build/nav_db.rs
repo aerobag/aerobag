@@ -4557,20 +4557,22 @@ pub(super) fn nav_kv_plate_asset(
         .rsplit('/')
         .next()
         .unwrap_or(&plate.asset_path);
-    let thumbnail_path = non_empty_string(&plate.thumbnail_path);
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "id": format!("plate:{airport_id}:{filename}"),
         "airport_id": airport_id,
         "package_id": plate.package_id,
         "label": plate.label,
         "kind": "plate",
         "folder_category": folder_category_for_document_type(&plate.document_type),
-        "source_asset_path": plate.asset_path,
         "asset_path": plate.asset_path,
-        "thumbnail_source_path": thumbnail_path,
-        "thumbnail_path": thumbnail_path,
-        "georef": plate.georef,
-    })
+    });
+    if let Some(thumbnail_path) = non_empty_string(&plate.thumbnail_path) {
+        value["thumbnail_path"] = serde_json::json!(thumbnail_path);
+    }
+    if let Some(georef) = &plate.georef {
+        value["georef"] = serde_json::json!(georef);
+    }
+    value
 }
 
 pub(super) fn nav_kv_csup_asset(
@@ -4582,20 +4584,19 @@ pub(super) fn nav_kv_csup_asset(
         .rsplit('/')
         .next()
         .unwrap_or(&csup.asset_path);
-    let thumbnail_path = non_empty_string(&csup.thumbnail_path);
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "id": format!("csup:{airport_id}:{filename}"),
         "airport_id": airport_id,
         "package_id": csup.package_id,
         "label": csup.label,
         "kind": "csup",
         "folder_category": "csup",
-        "source_asset_path": csup.asset_path,
         "asset_path": csup.asset_path,
-        "thumbnail_source_path": thumbnail_path,
-        "thumbnail_path": thumbnail_path,
-        "georef": serde_json::Value::Null,
-    })
+    });
+    if let Some(thumbnail_path) = non_empty_string(&csup.thumbnail_path) {
+        value["thumbnail_path"] = serde_json::json!(thumbnail_path);
+    }
+    value
 }
 
 pub(super) fn non_empty_string(value: &str) -> Option<&str> {
@@ -4806,6 +4807,70 @@ mod tests {
                 "lon": -122.2157501,
             })
         );
+    }
+
+    #[test]
+    fn plate_and_csup_asset_records_omit_duplicate_and_empty_fields() {
+        let plate = preprocessor_resource_index::PlateRecord {
+            id: "plate-id".to_string(),
+            airport_id: "KRNT".to_string(),
+            icao_airport_id: None,
+            region_id: "NW".to_string(),
+            package_id: "NW_TPP_TPP1_2606_01".to_string(),
+            asset_path: "plates/RNT/APD-WA-AIRPORT DIAGRAM.png".to_string(),
+            thumbnail_path: String::new(),
+            label: "Airport Diagram".to_string(),
+            asset_kind: "plate".to_string(),
+            document_type: "airport_diagram".to_string(),
+            procedure_uid: None,
+            georef: None,
+        };
+        let value = nav_kv_plate_asset("KRNT", &plate);
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "id": "plate:KRNT:APD-WA-AIRPORT DIAGRAM.png",
+                "airport_id": "KRNT",
+                "package_id": "NW_TPP_TPP1_2606_01",
+                "label": "Airport Diagram",
+                "kind": "plate",
+                "folder_category": "airport-diagram",
+                "asset_path": "plates/RNT/APD-WA-AIRPORT DIAGRAM.png",
+            })
+        );
+        assert!(value.get("source_asset_path").is_none());
+        assert!(value.get("thumbnail_source_path").is_none());
+        assert!(value.get("thumbnail_path").is_none());
+        assert!(value.get("georef").is_none());
+
+        let csup = preprocessor_resource_index::CsupRecord {
+            id: "csup-id".to_string(),
+            airport_id: "KRNT".to_string(),
+            region_id: "NW".to_string(),
+            package_id: "NW_CSUP_CSUP1_2606_01".to_string(),
+            asset_path: "afd/01A/CSUP-WA_0.png".to_string(),
+            thumbnail_path: "afd/01A/CSUP-WA_0_thumb.png".to_string(),
+            label: "Chart Supplement".to_string(),
+            asset_kind: "csup".to_string(),
+            document_type: "csup".to_string(),
+        };
+        let value = nav_kv_csup_asset("KRNT", &csup);
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "id": "csup:KRNT:CSUP-WA_0.png",
+                "airport_id": "KRNT",
+                "package_id": "NW_CSUP_CSUP1_2606_01",
+                "label": "Chart Supplement",
+                "kind": "csup",
+                "folder_category": "csup",
+                "asset_path": "afd/01A/CSUP-WA_0.png",
+                "thumbnail_path": "afd/01A/CSUP-WA_0_thumb.png",
+            })
+        );
+        assert!(value.get("source_asset_path").is_none());
+        assert!(value.get("thumbnail_source_path").is_none());
+        assert!(value.get("georef").is_none());
     }
 
     #[test]

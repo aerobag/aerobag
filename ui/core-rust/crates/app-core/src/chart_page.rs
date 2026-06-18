@@ -55,9 +55,7 @@ pub struct PlateChartAssetRecord {
     pub label: String,
     pub kind: String,
     pub folder_category: String,
-    pub source_asset_path: String,
     pub asset_path: String,
-    pub thumbnail_source_path: Option<String>,
     pub thumbnail_path: Option<String>,
     #[serde(default)]
     pub georef: Option<PlateGeoref>,

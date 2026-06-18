@@ -13,7 +13,7 @@ use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use zip::ZipArchive;
 
 const POINT_LAYER_ZOOM_POLICY: &[(&str, u8)] = &[("airport", 9), ("fix", 9), ("nav", 9)];
@@ -380,7 +380,9 @@ struct PointTileRecord {
 struct PointRecord {
     id: String,
     kind: String,
+    #[serde(serialize_with = "serialize_coord")]
     lat: f64,
+    #[serde(serialize_with = "serialize_coord")]
     lon: f64,
     label: String,
     style_class: String,
@@ -427,21 +429,23 @@ struct AirspaceFeature {
     schema_version: u32,
     id: String,
     kind: String,
+    #[serde(skip_serializing)]
     source: String,
-    cycle: String,
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     ident: Option<String>,
     airspace_class: String,
+    #[serde(skip_serializing)]
     local_type: String,
     style_hint: String,
     vertical: AirspaceVertical,
+    #[serde(serialize_with = "serialize_coord_bbox")]
     bbox: [f64; 4],
+    #[serde(skip_serializing)]
     label: AirspaceLabel,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing)]
     label_candidates: Vec<AirspaceLabelCandidate>,
     paths: Vec<AirspacePath>,
-    source_properties: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -453,20 +457,16 @@ struct AirspaceVertical {
 #[derive(Debug, Clone, Serialize)]
 struct AirspaceLimit {
     display: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing)]
     feet: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    unit: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reference: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct AirspaceLabel {
     text: String,
+    #[serde(serialize_with = "serialize_coord")]
     lon: f64,
+    #[serde(serialize_with = "serialize_coord")]
     lat: f64,
 }
 
@@ -474,7 +474,9 @@ struct AirspaceLabel {
 struct AirspaceLabelCandidate {
     rank: u32,
     score: f64,
+    #[serde(serialize_with = "serialize_coord")]
     lon: f64,
+    #[serde(serialize_with = "serialize_coord")]
     lat: f64,
 }
 
@@ -484,6 +486,7 @@ struct AirspacePath {
     closed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     interior_side: Option<String>,
+    #[serde(serialize_with = "serialize_coord_pair")]
     start: [f64; 2],
     segments: Vec<AirspacePathSegment>,
     #[serde(skip_serializing)]
@@ -494,12 +497,15 @@ struct AirspacePath {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum AirspacePathSegment {
     Line {
+        #[serde(serialize_with = "serialize_coord_pair")]
         to: [f64; 2],
     },
     Arc {
+        #[serde(serialize_with = "serialize_coord_pair")]
         center: [f64; 2],
         radius_ft: f64,
         clockwise: bool,
+        #[serde(serialize_with = "serialize_coord_pair")]
         to: [f64; 2],
     },
 }
@@ -508,7 +514,9 @@ enum AirspacePathSegment {
 struct AirspaceTileLabel {
     feature_id: String,
     text: String,
+    #[serde(serialize_with = "serialize_coord")]
     lon: f64,
+    #[serde(serialize_with = "serialize_coord")]
     lat: f64,
     rank: u32,
     score: f64,
@@ -1710,6 +1718,8 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
             if !valid_lat_lon(lat, lon) {
                 continue;
             }
+            let lat = round_coord(lat);
+            let lon = round_coord(lon);
             let airport_runway_info = (table_name == "airports")
                 .then(|| runway_info.get(&raw_id))
                 .flatten();
@@ -1781,6 +1791,8 @@ fn load_obstacle_points(input_dir: &Path) -> anyhow::Result<Vec<ObstaclePointRec
         } else {
             lon_deg + lon_min + lon_sec
         };
+        let lat = round_coord(lat);
+        let lon = round_coord(lon);
         let height_msl = parse_float(field(raw, 90, 5));
         let height_agl = parse_float(field(raw, 84, 5));
         if height_agl < MIN_OBSTACLE_AGL_FT as f64 || !valid_lat_lon(lat, lon) {
@@ -1885,7 +1897,6 @@ fn load_class_airspace_features(
             id,
             kind: "airspace".to_string(),
             source: "faa_nasr_class_airspace_shapefile".to_string(),
-            cycle: version_label.trim_start_matches("data_").to_string(),
             name,
             ident,
             airspace_class: class.to_string(),
@@ -1900,7 +1911,6 @@ fn load_class_airspace_features(
             },
             label_candidates: Vec::new(),
             paths,
-            source_properties: properties,
         });
     }
 
@@ -1997,21 +2007,11 @@ fn controlled_airspace_outline_feature(
     if paths.is_empty() {
         return None;
     }
-    let mut source_properties = BTreeMap::new();
-    source_properties.insert(
-        "DERIVED_FROM".to_string(),
-        "controlled_airspace_shelves".to_string(),
-    );
-    source_properties.insert(
-        "OUTLINE_COMPONENT_COUNT".to_string(),
-        group.len().to_string(),
-    );
     Some(AirspaceFeature {
         schema_version: 1,
         id,
         kind: "airspace".to_string(),
         source: "derived_controlled_airspace_outline".to_string(),
-        cycle: version_label.trim_start_matches("data_").to_string(),
         name: format!("{} OUTLINE", representative.name),
         ident: representative.ident.clone(),
         airspace_class: representative.airspace_class.clone(),
@@ -2021,16 +2021,10 @@ fn controlled_airspace_outline_feature(
             lower: AirspaceLimit {
                 display: String::new(),
                 feet: None,
-                unit: None,
-                reference: None,
-                description: None,
             },
             upper: AirspaceLimit {
                 display: String::new(),
                 feet: None,
-                unit: None,
-                reference: None,
-                description: None,
             },
         },
         bbox,
@@ -2041,7 +2035,6 @@ fn controlled_airspace_outline_feature(
         },
         label_candidates: Vec::new(),
         paths,
-        source_properties,
     })
 }
 
@@ -2455,10 +2448,6 @@ fn parse_saa_xml(
             designator
         ),
     );
-    let mut properties = BTreeMap::new();
-    properties.insert("SOURCE_FILE".to_string(), source_name.to_string());
-    properties.insert("SAA_TYPE".to_string(), saa_type.clone());
-    properties.insert("DESIGNATOR".to_string(), designator.clone());
     let paths = state
         .paths
         .iter()
@@ -2478,7 +2467,6 @@ fn parse_saa_xml(
         id,
         kind: "airspace".to_string(),
         source: "faa_nasr_saa_aixm".to_string(),
-        cycle: version_label.trim_start_matches("data_").to_string(),
         name,
         ident: Some(designator),
         airspace_class: saa_type.clone(),
@@ -2498,7 +2486,6 @@ fn parse_saa_xml(
             lat: anchor[1],
         }],
         paths,
-        source_properties: properties,
     }))
 }
 
@@ -2746,7 +2733,39 @@ fn parse_float(value: &str) -> f64 {
 }
 
 fn round_coord(value: f64) -> f64 {
-    (value * 10_000_000.0).round() / 10_000_000.0
+    let rounded = (value * 10_000_000.0).round() / 10_000_000.0;
+    if rounded == 0.0 {
+        0.0
+    } else {
+        rounded
+    }
+}
+
+fn serialize_coord<S>(value: &f64, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_f64(round_coord(*value))
+}
+
+fn serialize_coord_pair<S>(value: &[f64; 2], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    [round_coord(value[0]), round_coord(value[1])].serialize(serializer)
+}
+
+fn serialize_coord_bbox<S>(value: &[f64; 4], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    [
+        round_coord(value[0]),
+        round_coord(value[1]),
+        round_coord(value[2]),
+        round_coord(value[3]),
+    ]
+    .serialize(serializer)
 }
 
 fn round_float(value: f64) -> f64 {
@@ -2849,13 +2868,7 @@ fn property<'a>(properties: &'a BTreeMap<String, String>, key: &str) -> Option<&
 }
 
 fn airspace_limit(properties: &BTreeMap<String, String>, prefix: &str) -> AirspaceLimit {
-    let desc = property(properties, &format!("{prefix}_DESC"))
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
     let raw_value = property(properties, &format!("{prefix}_VAL")).unwrap_or("");
-    let unit = property(properties, &format!("{prefix}_UOM"))
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
     let reference = property(properties, &format!("{prefix}_CODE"))
         .filter(|value| !value.is_empty())
         .map(str::to_string);
@@ -2863,9 +2876,6 @@ fn airspace_limit(properties: &BTreeMap<String, String>, prefix: &str) -> Airspa
     AirspaceLimit {
         display: limit_display(raw_value, reference.as_deref()),
         feet,
-        unit,
-        reference,
-        description: desc,
     }
 }
 
@@ -2885,11 +2895,6 @@ fn aixm_limit(value: &str, unit: Option<&str>, reference: Option<&str>) -> Airsp
             limit_display(value, reference)
         },
         feet,
-        unit: unit.filter(|value| !value.is_empty()).map(str::to_string),
-        reference: reference
-            .filter(|value| !value.is_empty())
-            .map(str::to_string),
-        description: None,
     }
 }
 
@@ -4760,6 +4765,121 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&pairs[0].value_json).unwrap()["id"],
             "airspace:data_2604:saa:aa:a381"
         );
+    }
+
+    #[test]
+    fn point_records_serialize_coordinates_with_nav_precision() {
+        let point = PointRecord {
+            id: "airports:KRNT".to_string(),
+            kind: "airport".to_string(),
+            lat: 47.49313888888889,
+            lon: -122.215750055,
+            label: "RENTON MUNI".to_string(),
+            style_class: "airport".to_string(),
+            obstacle: None,
+            towered: Some(true),
+            fuel_available: None,
+            public_use: None,
+            private_use: None,
+            has_paved_runway: None,
+            heliport: None,
+            has_water_runway: None,
+            longest_runway_length_ft: None,
+            longest_runway_heading_true_deg: None,
+            elevation_msl_ft: None,
+        };
+
+        let value = serde_json::to_value(point).unwrap();
+        assert_eq!(value["lat"], serde_json::json!(47.4931389));
+        assert_eq!(value["lon"], serde_json::json!(-122.2157501));
+    }
+
+    #[test]
+    fn airspace_features_serialize_runtime_contract_only() {
+        let feature = AirspaceFeature {
+            schema_version: 1,
+            id: "airspace:data_2606:b:sea".to_string(),
+            kind: "airspace".to_string(),
+            source: "faa_nasr_class_airspace_shapefile".to_string(),
+            name: "SEATTLE CLASS B".to_string(),
+            ident: Some("SEA".to_string()),
+            airspace_class: "B".to_string(),
+            local_type: "CLASS_B".to_string(),
+            style_hint: "class_b".to_string(),
+            vertical: AirspaceVertical {
+                lower: AirspaceLimit {
+                    display: "SFC".to_string(),
+                    feet: Some(0),
+                },
+                upper: AirspaceLimit {
+                    display: "10000 MSL".to_string(),
+                    feet: Some(10_000),
+                },
+            },
+            bbox: [-122.987654321, 47.123456789, -122.00000004, 48.00000004],
+            label: AirspaceLabel {
+                text: "SEA".to_string(),
+                lon: -122.215750055,
+                lat: 47.49313888888889,
+            },
+            label_candidates: vec![AirspaceLabelCandidate {
+                rank: 0,
+                score: 1.0,
+                lon: -122.215750055,
+                lat: 47.49313888888889,
+            }],
+            paths: vec![AirspacePath {
+                role: "boundary".to_string(),
+                closed: true,
+                interior_side: None,
+                start: [-122.111111149, 47.222222249],
+                segments: vec![
+                    AirspacePathSegment::Line {
+                        to: [-122.333333349, 47.444444449],
+                    },
+                    AirspacePathSegment::Arc {
+                        center: [-122.555555559, 47.666666669],
+                        radius_ft: 6076.12,
+                        clockwise: true,
+                        to: [-122.777777779, 47.888888889],
+                    },
+                ],
+                points: vec![[-122.0, 47.0]],
+            }],
+        };
+
+        let value = serde_json::to_value(feature).unwrap();
+        for producer_only_field in ["source", "local_type", "label", "label_candidates"] {
+            assert!(
+                value.get(producer_only_field).is_none(),
+                "{producer_only_field} should not be in the nav-db feature payload"
+            );
+        }
+        assert_eq!(
+            value["vertical"]["lower"],
+            serde_json::json!({ "display": "SFC" })
+        );
+        assert_eq!(
+            value["vertical"]["upper"],
+            serde_json::json!({ "display": "10000 MSL" })
+        );
+        assert_eq!(
+            value["bbox"],
+            serde_json::json!([-122.9876543, 47.1234568, -122.0, 48.0])
+        );
+        assert_eq!(
+            value["paths"][0]["start"],
+            serde_json::json!([-122.1111111, 47.2222222])
+        );
+        assert_eq!(
+            value["paths"][0]["segments"][0]["to"],
+            serde_json::json!([-122.3333333, 47.4444444])
+        );
+        assert_eq!(
+            value["paths"][0]["segments"][1]["center"],
+            serde_json::json!([-122.5555556, 47.6666667])
+        );
+        assert!(value["paths"][0].get("points").is_none());
     }
 
     #[test]

@@ -1613,6 +1613,8 @@ private val DataStatusPageFactTextSize = 9.sp
 private val SettingsPageTitleTextSize = 16.sp
 private val SettingsPageRowTitleTextSize = 13.sp
 private val SettingsPageStopTextSize = 9.sp
+private val SettingsSliderStopLabelSlotWidth = 48.dp
+private val SettingsSliderStopLabelsHeight = 12.dp
 
 @Composable
 internal fun DataStatusPage(
@@ -1823,29 +1825,42 @@ private fun SettingsPageRowView(
             valueRange = 0f..maxIndex.toFloat(),
             steps = (row.stops.size - 2).coerceAtLeast(0),
         )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            row.stops.forEach { stop ->
-                Text(
-                    text = stop.label,
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontSize = SettingsPageStopTextSize,
-                        lineHeight = SettingsPageStopTextSize,
-                        fontWeight = if (stop.id == row.valueId) FontWeight.Black else FontWeight.Bold,
-                    ),
-                    color = if (stop.id == row.valueId) {
-                        Color(0xFF101820)
-                    } else {
-                        uiTheme.controls.buttonFg.copy(alpha = 0.70f)
-                    },
-                    textAlign = TextAlign.Center,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+        SettingsSliderStopLabels(row)
+    }
+}
+
+@Composable
+private fun SettingsSliderStopLabels(row: UiSettingsPageRow) {
+    val uiTheme = LocalAerobagUiTheme.current
+    val maxIndex = (row.stops.size - 1).coerceAtLeast(1)
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(SettingsSliderStopLabelsHeight),
+    ) {
+        val slotWidth = SettingsSliderStopLabelSlotWidth.coerceAtMost(maxWidth)
+        val travel = (maxWidth - slotWidth).coerceAtLeast(0.dp)
+        row.stops.forEachIndexed { index, stop ->
+            val fraction = index.toFloat() / maxIndex.toFloat()
+            Text(
+                text = stop.label,
+                modifier = Modifier
+                    .width(slotWidth)
+                    .offset(x = travel * fraction),
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontSize = SettingsPageStopTextSize,
+                    lineHeight = SettingsPageStopTextSize,
+                    fontWeight = if (stop.id == row.valueId) FontWeight.Black else FontWeight.Bold,
+                ),
+                color = if (stop.id == row.valueId) {
+                    Color(0xFF101820)
+                } else {
+                    uiTheme.controls.buttonFg.copy(alpha = 0.70f)
+                },
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
@@ -2874,6 +2889,8 @@ class MainActivity : ComponentActivity() {
 
     private val displayPolicyHandler = Handler(Looper.getMainLooper())
     private var displayPolicyForeground = false
+    private var displayPolicyWindowFocused = false
+    private var displayPolicyTopResumed = true
     private var activeDisplayPolicy: UiDisplayPolicy? = null
     private val displayDimRunnable = Runnable {
         applyDisplayPolicyDimState()
@@ -2896,7 +2913,7 @@ class MainActivity : ComponentActivity() {
     private fun syncDisplayPolicy() {
         displayPolicyHandler.removeCallbacks(displayDimRunnable)
         val policy = activeDisplayPolicy
-        if (!displayPolicyForeground || policy?.keepScreenOn != true) {
+        if (!displayPolicyCanControlWindow() || policy?.keepScreenOn != true) {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             restoreSystemWindowBrightness()
             return
@@ -2909,13 +2926,16 @@ class MainActivity : ComponentActivity() {
 
     private fun applyDisplayPolicyDimState() {
         val policy = activeDisplayPolicy ?: return
-        if (!displayPolicyForeground || !policy.keepScreenOn || policy.dimAfterMs == null) {
+        if (!displayPolicyCanControlWindow() || !policy.keepScreenOn || policy.dimAfterMs == null) {
             return
         }
         val attrs = window.attributes
         attrs.screenBrightness = policy.dimBrightness.coerceIn(0.0f, 1.0f)
         window.attributes = attrs
     }
+
+    private fun displayPolicyCanControlWindow(): Boolean =
+        displayPolicyForeground && displayPolicyWindowFocused && displayPolicyTopResumed
 
     private fun restoreSystemWindowBrightness() {
         val attrs = window.attributes
@@ -2968,6 +2988,26 @@ class MainActivity : ComponentActivity() {
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         restoreSystemWindowBrightness()
         super.onPause()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        displayPolicyWindowFocused = hasFocus
+        if (hasFocus) {
+            noteDisplayUserActivity()
+        } else {
+            syncDisplayPolicy()
+        }
+    }
+
+    override fun onTopResumedActivityChanged(isTopResumedActivity: Boolean) {
+        super.onTopResumedActivityChanged(isTopResumedActivity)
+        displayPolicyTopResumed = isTopResumedActivity
+        if (isTopResumedActivity) {
+            noteDisplayUserActivity()
+        } else {
+            syncDisplayPolicy()
+        }
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {

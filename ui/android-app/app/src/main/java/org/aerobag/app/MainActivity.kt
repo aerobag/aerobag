@@ -2471,7 +2471,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                 startedMs = SystemClock.elapsedRealtime(),
                 trigger = "page-to-map",
             )
-            Log.i(TileBudgetLogTag, "tile-paint-start id=${pageTilePaintTiming?.id} trigger=${pageTilePaintTiming?.trigger} from=$page")
+            perfLogInfo(TileBudgetLogTag) { "tile-paint-start id=${pageTilePaintTiming?.id} trigger=${pageTilePaintTiming?.trigger} from=$page" }
         }
         pageHistory = boundedHistory(pageHistory + currentSnapshot())
         page = nextPage
@@ -2569,25 +2569,23 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                                 startedMs = SystemClock.elapsedRealtime(),
                                 trigger = "map-family:$it",
                             )
-                            Log.i(TileBudgetLogTag, "map-family-click id=$timingId family=$it")
+                            perfLogInfo(TileBudgetLogTag) { "map-family-click id=$timingId family=$it" }
                             pageHistory = boundedHistory(pageHistory + currentSnapshot())
                             page = AppPage.Map
                             val selectStartMs = SystemClock.elapsedRealtime()
                             val nextSnapshot = uiSession.selectMapFamily(it)
-                            Log.i(
-                                TileBudgetLogTag,
-                                "map-family-select-core id=$timingId family=$it elapsedMs=${SystemClock.elapsedRealtime() - selectStartMs}",
-                            )
+                            perfLogInfo(TileBudgetLogTag) {
+                                "map-family-select-core id=$timingId family=$it elapsedMs=${SystemClock.elapsedRealtime() - selectStartMs}"
+                            }
                             val nextRasterMapState = requireNotNull(nextSnapshot.rasterMap) {
                                 "core selectMapFamily returned no raster map state"
                             }
                             rasterMapState = nextRasterMapState
                             selectedMapId = nextRasterMapState.selectedMapId
                             sessionSnapshot = nextSnapshot
-                            Log.i(
-                                TileBudgetLogTag,
-                                "map-family-click-done id=$timingId family=$it elapsedMs=${SystemClock.elapsedRealtime() - clickStartMs}",
-                            )
+                            perfLogInfo(TileBudgetLogTag) {
+                                "map-family-click-done id=$timingId family=$it elapsedMs=${SystemClock.elapsedRealtime() - clickStartMs}"
+                            }
                         },
                         onSelectPage = ::navigateToPage,
                         onOpenPlan = { navigateToPage(AppPage.Plan) },

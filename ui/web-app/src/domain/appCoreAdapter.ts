@@ -31,7 +31,7 @@ import type {
 import type { NexradOverlayQueryResult } from "../generated/nexradOverlayWire";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 import { attachNavKvStoreToSession, resolveChartAssetUrl, runCoreHadOperation, runCoreHadSessionOperation, type UiInvalidation, type UiInvalidationListener } from "./navKv";
-import { debugLog, debugTiming, installRustDebugLogBridge } from "./debugLog";
+import { debugLog, debugTiming, installRustDebugLogBridge, perfDebugLog } from "./debugLog";
 import { isMetarLiveFeedPayloadResource, prepareMetarLiveFeedResource, resetMetarLiveFeedPrep } from "./metarLiveFeedPrep";
 
 declare const __AEROBAG_LIVE_FEEDS_ORIGIN__: string | null;
@@ -967,10 +967,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       const parseStartedAt = typeof performance === "undefined" ? 0 : performance.now();
       const parsed = JSON.parse(snapshotJson) as UiSessionSnapshot;
       if (typeof performance !== "undefined") {
-        debugLog("session.snapshot.adapter_parse", {
+        perfDebugLog("session.snapshot.adapter_parse", () => ({
           parse_ms: Math.round(performance.now() - parseStartedAt),
           json_bytes: snapshotJson.length,
-        });
+        }));
       }
       return parsed;
     };
@@ -1520,7 +1520,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           const plan = JSON.parse(planJson) as RasterTilePlan;
           const parseMs = performance.now() - parseStartedAt;
           const totalMs = performance.now() - totalStartedAt;
-          debugLog("raster.tile_plan.adapter_timing", {
+          perfDebugLog("raster.tile_plan.adapter_timing", () => ({
             total_ms: Math.round(totalMs),
             stringify_ms: Math.round(stringifyMs),
             wasm_ms: Math.round(wasmMs),
@@ -1532,7 +1532,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             height_px: heightPx,
             device_pixel_ratio: devicePixelRatio,
             zoom: viewport.zoom,
-          });
+          }));
           return plan;
         }),
       renderTerrainOverlayTileByKey: async (tileKey, aircraftAltitudeFt) =>

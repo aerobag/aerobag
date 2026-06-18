@@ -9,6 +9,8 @@ pub type CoreClockMs = fn() -> f64;
 static CORE_DEBUG_LOGGER: OnceLock<Mutex<Option<CoreDebugLogger>>> = OnceLock::new();
 static CORE_CLOCK_MS: OnceLock<Mutex<Option<CoreClockMs>>> = OnceLock::new();
 
+pub const CORE_VERBOSE_PERF_LOGS: bool = false;
+
 pub fn set_core_debug_logger(logger: Option<CoreDebugLogger>) {
     *CORE_DEBUG_LOGGER
         .get_or_init(|| Mutex::new(None))
@@ -46,6 +48,18 @@ pub fn core_debug_log_value(tag: &str, data: &Value) {
     {
         logger(tag, data);
     }
+}
+
+#[inline(always)]
+pub fn core_perf_debug_log<T, F>(tag: &str, data: F)
+where
+    T: Serialize,
+    F: FnOnce() -> T,
+{
+    if !CORE_VERBOSE_PERF_LOGS {
+        return;
+    }
+    core_debug_log(tag, &data());
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -123,7 +123,13 @@ import type {
   VisiblePirepFeature,
 } from "./domain/appCoreAdapter";
 import { airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
-import { debugLog, debugTiming, installGlobalErrorLogging } from "./domain/debugLog";
+import {
+  debugLog,
+  debugTiming,
+  installGlobalErrorLogging,
+  perfDebugLog,
+  VERBOSE_PERF_DEBUG_LOGS,
+} from "./domain/debugLog";
 import { TerrainOverlayRenderer } from "./domain/terrainOverlayRenderer";
 
 declare const __AEROBAG_LIVE_FEEDS_ORIGIN__: string | null;
@@ -182,7 +188,7 @@ const animationFrameGapWarnMs = 50;
 const dragViewportReactCommitThrottleMs = 90;
 
 function installMainThreadResponsivenessInstrumentation(): () => void {
-  if (typeof window === "undefined" || typeof performance === "undefined") {
+  if (!VERBOSE_PERF_DEBUG_LOGS || typeof window === "undefined" || typeof performance === "undefined") {
     return () => {};
   }
 
@@ -201,10 +207,10 @@ function installMainThreadResponsivenessInstrumentation(): () => void {
     const now = performance.now();
     const lagMs = now - nextExpectedProbe;
     if (lagMs >= mainThreadLagWarnMs) {
-      debugLog("main_thread.event_loop_lag", {
+      perfDebugLog("main_thread.event_loop_lag", () => ({
         lag_ms: Math.round(lagMs),
         probe_interval_ms: mainThreadLagProbeIntervalMs,
-      });
+      }));
     }
     nextExpectedProbe = now + mainThreadLagProbeIntervalMs;
     lagTimer = window.setTimeout(probeLag, mainThreadLagProbeIntervalMs);
@@ -216,9 +222,9 @@ function installMainThreadResponsivenessInstrumentation(): () => void {
     }
     const gapMs = frameAt - previousFrameAt;
     if (gapMs >= animationFrameGapWarnMs) {
-      debugLog("main_thread.raf_gap", {
+      perfDebugLog("main_thread.raf_gap", () => ({
         gap_ms: Math.round(gapMs),
-      });
+      }));
     }
     previousFrameAt = frameAt;
     rafHandle = window.requestAnimationFrame(probeFrame);
@@ -241,49 +247,49 @@ function installMainThreadResponsivenessInstrumentation(): () => void {
 
 function installLongTaskObserver(): PerformanceObserver | null {
   if (typeof PerformanceObserver === "undefined") {
-    debugLog("main_thread.longtask.support", { supported: false, reason: "missing_performance_observer" });
+    perfDebugLog("main_thread.longtask.support", () => ({ supported: false, reason: "missing_performance_observer" }));
     return null;
   }
   const supportedEntryTypes = PerformanceObserver.supportedEntryTypes ?? [];
   if (!supportedEntryTypes.includes("longtask")) {
-    debugLog("main_thread.longtask.support", { supported: false, reason: "unsupported_entry_type" });
+    perfDebugLog("main_thread.longtask.support", () => ({ supported: false, reason: "unsupported_entry_type" }));
     return null;
   }
   const observer = new PerformanceObserver((list) => {
     for (const entry of list.getEntries()) {
-      debugLog("main_thread.longtask", {
+      perfDebugLog("main_thread.longtask", () => ({
         name: entry.name,
         start_time_ms: Math.round(entry.startTime),
         duration_ms: Math.round(entry.duration),
-      });
+      }));
     }
   });
   observer.observe({ entryTypes: ["longtask"] });
-  debugLog("main_thread.longtask.support", { supported: true });
+  perfDebugLog("main_thread.longtask.support", () => ({ supported: true }));
   return observer;
 }
 
 function logAfterNextPaint(tag: string, startedAt: number, data: Record<string, unknown>) {
-  if (typeof window === "undefined" || typeof performance === "undefined") {
+  if (!VERBOSE_PERF_DEBUG_LOGS || typeof window === "undefined" || typeof performance === "undefined") {
     return;
   }
   const landedAt = performance.now();
   window.requestAnimationFrame(() => {
     const firstFrameAt = performance.now();
-    debugLog(`${tag}.first_frame`, {
+    perfDebugLog(`${tag}.first_frame`, () => ({
       ...data,
       first_frame_ms: Math.round(firstFrameAt - landedAt),
       elapsed_ms: Math.round(firstFrameAt - startedAt),
-    });
+    }));
     window.requestAnimationFrame(() => {
       const afterPaintAt = performance.now();
-      debugLog(tag, {
+      perfDebugLog(tag, () => ({
         ...data,
         first_frame_ms: Math.round(firstFrameAt - landedAt),
         frame_gap_ms: Math.round(afterPaintAt - firstFrameAt),
         after_paint_ms: Math.round(afterPaintAt - landedAt),
         elapsed_ms: Math.round(afterPaintAt - startedAt),
-      });
+      }));
     });
   });
 }
@@ -300,6 +306,9 @@ const logReactProfilerRender: ProfilerOnRenderCallback = (
   startTime,
   commitTime,
 ) => {
+  if (!VERBOSE_PERF_DEBUG_LOGS) {
+    return;
+  }
   const commitDelayMs = commitTime - startTime;
   const shouldLogActual = phase === "mount" || actualDuration >= reactProfilerActualDurationLogMs;
   const shouldLogCommitDelay = reactProfilerCommitDelayIds.has(id) && commitDelayMs >= reactProfilerCommitDelayLogMs;
@@ -307,7 +316,7 @@ const logReactProfilerRender: ProfilerOnRenderCallback = (
     shouldLogActual
     || shouldLogCommitDelay
   ) {
-    debugLog("react.profiler.render", {
+    perfDebugLog("react.profiler.render", () => ({
       id,
       phase,
       actual_duration_ms: Math.round(actualDuration),
@@ -315,7 +324,7 @@ const logReactProfilerRender: ProfilerOnRenderCallback = (
       commit_delay_ms: Math.round(commitDelayMs),
       start_time_ms: Math.round(startTime),
       commit_time_ms: Math.round(commitTime),
-    });
+    }));
   }
 };
 
@@ -2444,13 +2453,13 @@ export default function App() {
         startedAt: performance.now(),
       };
       pageTilePaintTimingRef.current = timing;
-      debugLog("web.page-to-map.start", { id: timing.id, from_page: timing.fromPage });
+      perfDebugLog("web.page-to-map.start", () => ({ id: timing.id, from_page: timing.fromPage }));
       requestAnimationFrame(() => {
-        debugLog("web.page-to-map.visible_frame", {
+        perfDebugLog("web.page-to-map.visible_frame", () => ({
           id: timing.id,
           from_page: timing.fromPage,
           elapsed_ms: Math.round(performance.now() - timing.startedAt),
-        });
+        }));
       });
     }
     const nextHistory = boundedHistory([...pageHistory, currentSnapshot()]);
@@ -3163,22 +3172,22 @@ function MapPage(props: {
             continue;
           }
           if (query.status.state !== "ready") {
-            debugLog("terrain.overlay.unavailable", {
+            perfDebugLog("terrain.overlay.unavailable", () => ({
               status: query.status,
               request_count: query.tile_requests.length,
               zoom: request.viewport.zoom,
-            });
+            }));
             terrainPendingFrameRef.current = null;
             setTerrainOverlay({ query, images: [] });
             continue;
           }
           const queryAltitudeBucket = query.altitude_bucket_ft;
           if (queryAltitudeBucket == null) {
-            debugLog("terrain.overlay.no_altitude_bucket", {
+            perfDebugLog("terrain.overlay.no_altitude_bucket", () => ({
               status: query.status,
               request_count: query.tile_requests.length,
               zoom: request.viewport.zoom,
-            });
+            }));
             terrainPendingFrameRef.current = null;
             setTerrainOverlay({ query, images: [] });
             continue;
@@ -3205,7 +3214,7 @@ function MapPage(props: {
           if (renderPlanKey !== lastTerrainRenderPlanKeyRef.current) {
             lastTerrainRenderPlanKeyRef.current = renderPlanKey;
             const requestSummary = terrainRequestSummary(query.tile_requests);
-            debugLog("terrain.overlay.render.plan", {
+            perfDebugLog("terrain.overlay.render.plan", () => ({
               request_count: query.tile_requests.length,
               cached_count: query.schedule.cached_count,
               in_flight_count: query.schedule.in_flight_count,
@@ -3214,7 +3223,7 @@ function MapPage(props: {
               altitude_bucket: queryAltitudeBucket,
               request_zooms: requestSummary.zooms,
               next_tile: workBatch[0]?.key ?? null,
-            });
+            }));
           }
           if (workBatch.length === 0) {
             continue;
@@ -3247,12 +3256,12 @@ function MapPage(props: {
               rawBytesTotal += result.rawBytes.byteLength;
               tileCount += 1;
             });
-            debugLog("terrain.overlay.batch.done", {
+            perfDebugLog("terrain.overlay.batch.done", () => ({
               altitude_bucket: queryAltitudeBucket,
               tile_count: tileCount,
               raw_bytes: rawBytesTotal,
               elapsed_ms: Math.round(performance.now() - batchStartedAt),
-            });
+            }));
           } catch (error: unknown) {
             debugLog("terrain.overlay.batch.error", {
               altitude_bucket: queryAltitudeBucket,
@@ -3266,10 +3275,10 @@ function MapPage(props: {
           }
           for (const tileRequest of workBatch) {
             if (!terrainTileCacheRef.current.has(terrainCacheKey(tileRequest))) {
-              debugLog("terrain.overlay.tile.error", {
+              perfDebugLog("terrain.overlay.tile.error", () => ({
                 key: tileRequest.key,
                 error: "batch render did not return tile",
-              });
+              }));
             }
           }
           terrainSchedulePendingRef.current = true;
@@ -3295,12 +3304,12 @@ function MapPage(props: {
     const frameStartedAt = terrainFrameStartRef.current.get(frameKey);
     terrainFrameStartRef.current.delete(frameKey);
     terrainPendingFrameRef.current = null;
-    debugLog("terrain.overlay.frame.ready", {
+    perfDebugLog("terrain.overlay.frame.ready", () => ({
       altitude_bucket: altitudeBucket,
       request_count: pendingFrame.query.tile_requests.length,
       image_count: readyImages.length,
       elapsed_ms: frameStartedAt == null ? null : Math.round(performance.now() - frameStartedAt),
-    });
+    }));
     setTerrainOverlay({
       query: pendingFrame.query,
       images: readyImages,
@@ -3338,17 +3347,17 @@ function MapPage(props: {
             }
             setNexradOverlay(query);
             setNexradOverlayFrame({ viewport: request.viewport, width: request.width, height: request.height });
-            debugLog("nexrad.overlay.frame.ready", {
+            perfDebugLog("nexrad.overlay.frame.ready", () => ({
               status: query.status,
               tiles: query.tiles.length,
               loaded_images: preload.loaded,
               failed_images: preload.failed,
               elapsed_ms: Math.round(performance.now() - startedAt),
-            });
+            }));
             if (query.status.state !== "ready") {
-              debugLog("nexrad.overlay.unavailable", { status: query.status });
+              perfDebugLog("nexrad.overlay.unavailable", () => ({ status: query.status }));
             } else if (request.debugTileLabels) {
-              debugLog("nexrad.overlay.mesh", query.stats);
+              perfDebugLog("nexrad.overlay.mesh", () => query.stats);
             }
           } catch (error: unknown) {
             if (nexradQueryRequestRef.current?.id !== request.id) {
@@ -3386,13 +3395,13 @@ function MapPage(props: {
           }
           const startedAt = performance.now();
           try {
-            debugLog("map.overlay.query.start", {
+            perfDebugLog("map.overlay.query.start", () => ({
               zoom: request.viewport.zoom,
               center: request.center,
               width: request.width,
               height: request.height,
               queue_wait_ms: Math.round(startedAt - request.requestedAt),
-            });
+            }));
             const overlay = await request.session.queryMapOverlay(
               request.viewport,
               request.width,
@@ -3400,31 +3409,31 @@ function MapPage(props: {
             );
             const superseded = mapOverlayQueryRequestRef.current?.id !== request.id;
             if (superseded && !supersededMapOverlayCanLand(request)) {
-              debugLog("map.overlay.query.stale_result", {
+              perfDebugLog("map.overlay.query.stale_result", () => ({
                 request_id: request.id,
                 current_request_id: mapOverlayQueryRequestRef.current?.id ?? null,
                 newer_pending: mapOverlayQueryPendingRef.current,
                 zoom: request.viewport.zoom,
                 elapsed_ms: Math.round(performance.now() - startedAt),
-              });
+              }));
               continue;
             }
             landMapOverlayQuery(request, overlay, startedAt, superseded);
           } catch (error) {
             if (mapOverlayQueryRequestRef.current?.id !== request.id) {
-              debugLog("map.overlay.query.stale_error", {
+              perfDebugLog("map.overlay.query.stale_error", () => ({
                 zoom: request.viewport.zoom,
                 elapsed_ms: Math.round(performance.now() - startedAt),
                 error: errorMessage(error),
-              });
+              }));
               continue;
             }
             if (isInvalidUiSessionHandleError(error)) {
-              debugLog("map.overlay.query.stale_session", {
+              perfDebugLog("map.overlay.query.stale_session", () => ({
                 zoom: request.viewport.zoom,
                 elapsed_ms: Math.round(performance.now() - startedAt),
                 error: errorMessage(error),
-              });
+              }));
               continue;
             }
             debugLog("map.overlay.query.error", {
@@ -3505,7 +3514,7 @@ function MapPage(props: {
       flightPlanFeatures: overlayCounts.flight_plan_features,
       committed: false,
     };
-    debugLog("map.overlay.query.land_steps", {
+    perfDebugLog("map.overlay.query.land_steps", () => ({
       id: request.id,
       superseded,
       ...overlayCounts,
@@ -3513,14 +3522,14 @@ function MapPage(props: {
       viewport_state_queue_ms: Math.round(landEndedAt - overlayStateQueuedAt),
       land_sync_ms: Math.round(landEndedAt - landStartedAt),
       elapsed_ms: Math.round(landEndedAt - startedAt),
-    });
-    debugLog(superseded ? "map.overlay.query.superseded_result" : "map.overlay.query.done", {
+    }));
+    perfDebugLog(superseded ? "map.overlay.query.superseded_result" : "map.overlay.query.done", () => ({
       id: request.id,
       zoom: request.viewport.zoom,
       center: request.center,
       elapsed_ms: Math.round(performance.now() - startedAt),
       ...overlayCounts,
-    });
+    }));
     logAfterNextPaint("map.overlay.query.after_paint", startedAt, {
       id: request.id,
       superseded,
@@ -3535,7 +3544,7 @@ function MapPage(props: {
     }
     timing.committed = true;
     const committedAt = performance.now();
-    debugLog("map.overlay.query.commit", {
+    perfDebugLog("map.overlay.query.commit", () => ({
       id: timing.id,
       visible_features: timing.visibleFeatures,
       visible_metars: timing.visibleMetars,
@@ -3549,7 +3558,7 @@ function MapPage(props: {
       land_to_commit_ms: Math.round(committedAt - timing.landStartedAt),
       request_to_commit_ms: Math.round(committedAt - timing.queryStartedAt),
       queue_to_commit_ms: Math.round(committedAt - timing.requestedAt),
-    });
+    }));
   }, [mapOverlay, mapOverlayFrame]);
 
   useLayoutEffect(() => {
@@ -3685,10 +3694,10 @@ function MapPage(props: {
     const imageLoadStartedAt = rasterTileImageLoadStartedAtRef.current;
     if (imageLoadStartedAt !== null) {
       requestAnimationFrame(() => {
-        debugLog("map.raster.images.done", {
+        perfDebugLog("map.raster.images.done", () => ({
           elapsed_ms: Math.round(performance.now() - imageLoadStartedAt),
           tiles: tileList.length,
-        });
+        }));
       });
       rasterTileImageLoadStartedAtRef.current = null;
     }
@@ -3700,13 +3709,13 @@ function MapPage(props: {
     }
     requestAnimationFrame(() => {
       completedPageTilePaintTimingIdsRef.current.add(timing.id);
-      debugLog("web.page-to-map.frame", {
+      perfDebugLog("web.page-to-map.frame", () => ({
         id: timing.id,
         from_page: timing.fromPage,
         phase,
         elapsed_ms: Math.round(performance.now() - timing.startedAt),
         tiles: tiles.length,
-      });
+      }));
       onPageTilePaintTimingComplete(timing.id);
     });
   }, [onPageTilePaintTimingComplete, tiles.length]);
@@ -3767,7 +3776,7 @@ function MapPage(props: {
       sameViewport,
       committed: false,
     };
-    debugLog("map.raster.plan.landed", {
+    perfDebugLog("map.raster.plan.landed", () => ({
       id: request.id,
       key: request.key,
       superseded,
@@ -3777,8 +3786,8 @@ function MapPage(props: {
       same_viewport: sameViewport,
       land_sync_ms: Math.round(landEndedAt - landStartedAt),
       elapsed_ms: Math.round(landEndedAt - startedAt),
-    });
-    debugLog("map.raster.plan.land_steps", {
+    }));
+    perfDebugLog("map.raster.plan.land_steps", () => ({
       id: request.id,
       key: request.key,
       superseded,
@@ -3794,7 +3803,7 @@ function MapPage(props: {
       viewport_state_queue_ms: Math.round(landEndedAt - tilesStateQueuedAt),
       land_sync_ms: Math.round(landEndedAt - landStartedAt),
       elapsed_ms: Math.round(landEndedAt - startedAt),
-    });
+    }));
     logAfterNextPaint("map.raster.plan.after_paint", startedAt, {
       id: request.id,
       key: request.key,
@@ -3814,7 +3823,7 @@ function MapPage(props: {
     }
     timing.committed = true;
     const committedAt = performance.now();
-    debugLog("map.raster.plan.commit", {
+    perfDebugLog("map.raster.plan.commit", () => ({
       id: timing.id,
       key: timing.key,
       tiles: timing.tiles,
@@ -3825,7 +3834,7 @@ function MapPage(props: {
       land_to_commit_ms: Math.round(committedAt - timing.landStartedAt),
       request_to_commit_ms: Math.round(committedAt - timing.queryStartedAt),
       queue_to_commit_ms: Math.round(committedAt - timing.requestedAt),
-    });
+    }));
   }, [rasterTileViewport, tiles]);
 
   function pumpRasterTilePlanQueue() {
@@ -3843,7 +3852,7 @@ function MapPage(props: {
           }
           const startedAt = performance.now();
           try {
-            debugLog("map.raster.plan.start", {
+            perfDebugLog("map.raster.plan.start", () => ({
               id: request.id,
               key: request.key,
               selected_map_id: request.selectedMapId,
@@ -3854,7 +3863,7 @@ function MapPage(props: {
               height: request.height,
               device_pixel_ratio: request.devicePixelRatio,
               queue_wait_ms: Math.round(startedAt - request.requestedAt),
-            });
+            }));
             const plan = await request.session.queryRasterTilePlan(
               request.viewport,
               request.width,
@@ -3863,73 +3872,74 @@ function MapPage(props: {
             );
             const planSuperseded = rasterTilePlanRequestRef.current?.id !== request.id;
             if (planSuperseded && !supersededRasterPlanCanLand(request)) {
-              debugLog("map.raster.plan.stale_result", {
+              perfDebugLog("map.raster.plan.stale_result", () => ({
                 id: request.id,
                 elapsed_ms: Math.round(performance.now() - startedAt),
                 tiles: plan.tiles.length,
-              });
+              }));
               continue;
             }
             if (planSuperseded) {
-              debugLog("map.raster.plan.superseded_result", {
+              perfDebugLog("map.raster.plan.superseded_result", () => ({
                 id: request.id,
                 latest_id: rasterTilePlanRequestRef.current?.id ?? null,
                 elapsed_ms: Math.round(performance.now() - startedAt),
                 tiles: plan.tiles.length,
-              });
+              }));
             }
-            if (!planSuperseded && request.pageTilePaintTiming) {
-              debugLog("web.page-to-map.plan", {
-              id: request.pageTilePaintTiming.id,
-              from_page: request.pageTilePaintTiming.fromPage,
-              elapsed_ms: Math.round(performance.now() - request.pageTilePaintTiming.startedAt),
-              tiles: plan.tiles.length,
-              device_pixel_ratio: request.devicePixelRatio,
-              });
+            const pageTilePaintTiming = request.pageTilePaintTiming;
+            if (!planSuperseded && pageTilePaintTiming) {
+              perfDebugLog("web.page-to-map.plan", () => ({
+                id: pageTilePaintTiming.id,
+                from_page: pageTilePaintTiming.fromPage,
+                elapsed_ms: Math.round(performance.now() - pageTilePaintTiming.startedAt),
+                tiles: plan.tiles.length,
+                device_pixel_ratio: request.devicePixelRatio,
+              }));
             }
-            debugLog("map.raster.plan.done", {
+            perfDebugLog("map.raster.plan.done", () => ({
               id: request.id,
               key: request.key,
               superseded: planSuperseded,
               elapsed_ms: Math.round(performance.now() - startedAt),
               tiles: plan.tiles.length,
-            });
+            }));
             const resolveStartedAt = performance.now();
             const nextTiles = plan.tiles.map((tile) =>
               renderTileFromCore(tile, 1 / request.devicePixelRatio),
             );
             const urlsSuperseded = rasterTilePlanRequestRef.current?.id !== request.id;
             if (urlsSuperseded && !supersededRasterPlanCanLand(request)) {
-              debugLog("map.raster.tiles.stale_result", {
+              perfDebugLog("map.raster.tiles.stale_result", () => ({
                 id: request.id,
                 elapsed_ms: Math.round(performance.now() - resolveStartedAt),
                 tiles: nextTiles.length,
-              });
+              }));
               continue;
             }
             if (urlsSuperseded && !planSuperseded) {
-              debugLog("map.raster.tiles.superseded_result", {
+              perfDebugLog("map.raster.tiles.superseded_result", () => ({
                 id: request.id,
                 latest_id: rasterTilePlanRequestRef.current?.id ?? null,
                 elapsed_ms: Math.round(performance.now() - resolveStartedAt),
                 tiles: nextTiles.length,
-              });
+              }));
             }
-            debugLog("map.raster.tiles.done", {
+            perfDebugLog("map.raster.tiles.done", () => ({
               id: request.id,
               key: request.key,
               superseded: urlsSuperseded,
               elapsed_ms: Math.round(performance.now() - resolveStartedAt),
               tiles: nextTiles.length,
-            });
+            }));
             landRasterTilePlan(request, nextTiles, urlsSuperseded, startedAt);
           } catch (error) {
             if (rasterTilePlanRequestRef.current?.id !== request.id) {
-              debugLog("map.raster.plan.stale_error", {
+              perfDebugLog("map.raster.plan.stale_error", () => ({
                 id: request.id,
                 elapsed_ms: Math.round(performance.now() - startedAt),
                 error: errorMessage(error),
-              });
+              }));
               continue;
             }
             debugLog("map.raster.plan.error", {
@@ -4192,13 +4202,13 @@ function MapPage(props: {
   }, [nexradOverlay.stats.observed_at_utc, nexradTransferSamples, uptimeLabel]);
 
   useEffect(() => {
-    debugLog("map.nav_element.render", {
+    perfDebugLog("map.nav_element.render", () => ({
       app_state_active_plan: plan?.id ?? null,
       plan_guidance: planUiState?.guidance?.nav_element ?? null,
       ownship_mode: ownship.mode,
       ownship_draw_cdi: ownship.draw_cdi,
       ownship_position: ownship.position,
-    });
+    }));
   }, [ownship.draw_cdi, ownship.mode, ownship.position, plan, planUiState]);
 
   useEffect(() => {
@@ -4213,7 +4223,7 @@ function MapPage(props: {
       const startedAt = performance.now();
       const segments = await session.projectFlightPlanRoute();
       const elapsedMs = Math.round(performance.now() - startedAt);
-      debugLog("map.route.segments", {
+      perfDebugLog("map.route.segments", () => ({
         count: segments.length,
         elapsed_ms: elapsedMs,
         segments: segments.map((segment) => ({
@@ -4222,7 +4232,7 @@ function MapPage(props: {
           to: segment.to,
           status: segment.status,
         })),
-      });
+      }));
       if (elapsedMs > 250) {
         onHighLatencyWarning("map.route.resolve.slow", {
           count: segments.length,
@@ -4436,11 +4446,11 @@ function MapPage(props: {
     const next = pendingReactViewportRef.current;
     pendingReactViewportRef.current = null;
     if (next && !sameMapViewport(next, committedViewportRef.current)) {
-      debugLog("map.viewport.react_commit.flush", {
+      perfDebugLog("map.viewport.react_commit.flush", () => ({
         zoom: next.zoom,
         center_world_x: next.centerWorldX,
         center_world_y: next.centerWorldY,
-      });
+      }));
       onViewportChange(next);
     }
   }
@@ -4455,11 +4465,11 @@ function MapPage(props: {
       const pending = pendingReactViewportRef.current;
       pendingReactViewportRef.current = null;
       if (pending && !sameMapViewport(pending, committedViewportRef.current)) {
-        debugLog("map.viewport.react_commit.throttled", {
+        perfDebugLog("map.viewport.react_commit.throttled", () => ({
           zoom: pending.zoom,
           center_world_x: pending.centerWorldX,
           center_world_y: pending.centerWorldY,
-        });
+        }));
         onViewportChange(pending);
       }
     }, dragViewportReactCommitThrottleMs);
@@ -4501,11 +4511,11 @@ function MapPage(props: {
     }
     if (gestureActiveRef.current) {
       deferredFollowSyncViewportRef.current = nextViewport;
-      debugLog("map.follow.sync.deferred_for_gesture", {
+      perfDebugLog("map.follow.sync.deferred_for_gesture", () => ({
         zoom: nextViewport.zoom,
         center_world_x: nextViewport.centerWorldX,
         center_world_y: nextViewport.centerWorldY,
-      });
+      }));
       return;
     }
     deferredFollowSyncViewportRef.current = null;
@@ -4513,18 +4523,18 @@ function MapPage(props: {
     followSyncSerialRef.current = serial;
     followTargetGateRef.current.beginSync(nextViewport);
     setFollowSyncPendingSerial(serial);
-    debugLog("map.follow.sync.request", {
+    perfDebugLog("map.follow.sync.request", () => ({
       serial,
       zoom: nextViewport.zoom,
       center_world_x: nextViewport.centerWorldX,
       center_world_y: nextViewport.centerWorldY,
       gesture_active: gestureActiveRef.current,
-    });
+    }));
     void uiSession
       .syncMapFollow(nextViewport, surfaceSize.width, surfaceSize.height)
       .then((nextSnapshot) => {
         if (followSyncSerialRef.current !== serial) {
-          debugLog("map.follow.sync.stale_response", { serial, latest_serial: followSyncSerialRef.current });
+          perfDebugLog("map.follow.sync.stale_response", () => ({ serial, latest_serial: followSyncSerialRef.current }));
           return;
         }
         const syncedTarget = nextSnapshot.map_follow_target_viewport
@@ -4609,7 +4619,7 @@ function MapPage(props: {
         for (let stepIndex = 0; stepIndex < stepsPerDrag; stepIndex += 1) {
           const nextViewport = dragViewport(viewportRef.current, dx, dy);
           noteViewportGesture();
-          debugLog("map.drag.viewport", {
+          perfDebugLog("map.drag.viewport", () => ({
             automated: true,
             run_id: runId,
             drag_index: dragIndex,
@@ -4620,7 +4630,7 @@ function MapPage(props: {
             center_world_x: nextViewport.centerWorldX,
             center_world_y: nextViewport.centerWorldY,
             following: mapFollowUiState.following,
-          });
+          }));
           updateViewport(nextViewport, { deferReactCommit: true });
           if (!followDisabledForRun) {
             syncFollowStateForViewport(nextViewport);
@@ -4695,13 +4705,13 @@ function MapPage(props: {
     }
     const remainingGestureMs = viewportGestureUntilRef.current - Date.now();
     if (gestureActiveRef.current || followSyncPendingSerial !== 0 || remainingGestureMs > 0) {
-      debugLog("map.follow.target.skip_during_gesture", {
+      perfDebugLog("map.follow.target.skip_during_gesture", () => ({
         pending_sync_serial: followSyncPendingSerial,
         remaining_gesture_ms: Math.max(0, remainingGestureMs),
         zoom: mapFollowTargetViewport.zoom,
         center_lat: mapFollowTargetViewport.center.lat,
         center_lon: mapFollowTargetViewport.center.lon,
-      });
+      }));
       if (!gestureActiveRef.current && followSyncPendingSerial === 0 && remainingGestureMs > 0) {
         const timeout = window.setTimeout(() => {
           setFollowTargetRetryToken((token) => token + 1);
@@ -4713,22 +4723,22 @@ function MapPage(props: {
     const nextViewport = mapViewportFromCore(mapFollowTargetViewport);
     const awaitedViewport = followTargetGateRef.current.awaitedViewport();
     if (!followTargetGateRef.current.shouldApplyTarget(nextViewport)) {
-      debugLog("map.follow.target.skip_stale_sync_target", {
+      perfDebugLog("map.follow.target.skip_stale_sync_target", () => ({
         target_zoom: nextViewport.zoom,
         target_center_world_x: nextViewport.centerWorldX,
         target_center_world_y: nextViewport.centerWorldY,
         awaited_zoom: awaitedViewport?.zoom,
         awaited_center_world_x: awaitedViewport?.centerWorldX,
         awaited_center_world_y: awaitedViewport?.centerWorldY,
-      });
+      }));
       return;
     }
     if (!sameMapViewport(nextViewport, viewport)) {
-      debugLog("map.follow.target.apply", {
+      perfDebugLog("map.follow.target.apply", () => ({
         zoom: nextViewport.zoom,
         center_world_x: nextViewport.centerWorldX,
         center_world_y: nextViewport.centerWorldY,
-      });
+      }));
       updateViewport(nextViewport, { deferReactCommit: true });
     }
   }, [followSyncPendingSerial, followTargetRetryToken, mapFollowTargetViewport, mapFollowUiState.following, viewport]);
@@ -4784,14 +4794,14 @@ function MapPage(props: {
       const dy = point.y - dragRef.current.last.y;
       const nextViewport = dragViewport(viewportRef.current, dx, dy);
       noteViewportGesture();
-      debugLog("map.drag.viewport", {
+      perfDebugLog("map.drag.viewport", () => ({
         dx,
         dy,
         zoom: nextViewport.zoom,
         center_world_x: nextViewport.centerWorldX,
         center_world_y: nextViewport.centerWorldY,
         following: mapFollowUiState.following,
-      });
+      }));
       updateViewport(nextViewport, { deferReactCommit: true });
       syncFollowStateForViewport(nextViewport);
       dragRef.current = { id: event.pointerId, last: point };
@@ -4820,12 +4830,12 @@ function MapPage(props: {
         surfaceSize.height,
       );
       noteViewportGesture();
-      debugLog("map.pinch.viewport", {
+      perfDebugLog("map.pinch.viewport", () => ({
         zoom: nextViewport.zoom,
         center_world_x: nextViewport.centerWorldX,
         center_world_y: nextViewport.centerWorldY,
         following: mapFollowUiState.following,
-      });
+      }));
       updateViewport(nextViewport);
       syncFollowStateForViewport(nextViewport);
     }
@@ -5064,12 +5074,12 @@ function MapPage(props: {
     if (!timing) {
       return;
     }
-    debugLog("web.page-to-map.images", {
+    perfDebugLog("web.page-to-map.images", () => ({
       id: timing.id,
       from_page: timing.fromPage,
       elapsed_ms: Math.round(performance.now() - timing.startedAt),
       tiles: tiles.length,
-    });
+    }));
     completePageTilePaintTiming(timing, "images");
   }
 
@@ -6187,22 +6197,22 @@ function PlaybackWidget(props: {
       return;
     }
     if (Math.abs(scrubCursorSeconds - committedCursorSeconds) < 1e-6) {
-      debugLog("playback.seek.scrub_cleared", {
+      perfDebugLog("playback.seek.scrub_cleared", () => ({
         scrub_cursor_seconds: scrubCursorSeconds,
         committed_cursor_seconds: committedCursorSeconds,
-      });
+      }));
       setScrubCursorSeconds(null);
     }
   }, [committedCursorSeconds, scrubCursorSeconds]);
 
   useEffect(() => {
-    debugLog("playback.seek.state", {
+    perfDebugLog("playback.seek.state", () => ({
       committed_cursor_seconds: committedCursorSeconds,
       scrub_cursor_seconds: scrubCursorSeconds,
       displayed_cursor_seconds: cursorSeconds,
       duration_seconds: durationSeconds,
       status: playbackUiState.status,
-    });
+    }));
   }, [committedCursorSeconds, cursorSeconds, durationSeconds, playbackUiState.status, scrubCursorSeconds]);
 
   async function loadTrace() {
@@ -6290,12 +6300,12 @@ function PlaybackWidget(props: {
 
   function beginScrub(clientX: number) {
     const nextCursorSeconds = cursorSecondsForPointer(clientX);
-    debugLog("playback.seek.pointer_move", {
+    perfDebugLog("playback.seek.pointer_move", () => ({
       pointer_x: clientX,
       next_cursor_seconds: nextCursorSeconds,
       committed_cursor_seconds: committedCursorSeconds,
       scrub_cursor_seconds: scrubCursorSeconds,
-    });
+    }));
     setScrubCursorSeconds(nextCursorSeconds);
     void commitSeek(nextCursorSeconds, { clearScrub: false });
   }

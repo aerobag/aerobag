@@ -132,7 +132,7 @@ internal class RasterTileBitmapLoader(
     init {
         repeat(workerCount) { workerIndex ->
             workerScope.launch {
-                Log.i(TileBudgetLogTag, "worker-start worker=$workerIndex")
+                perfLogInfo(TileBudgetLogTag) { "worker-start worker=$workerIndex" }
                 try {
                     while (true) {
                         if (queueSignal.receiveCatching().isClosed) {
@@ -175,7 +175,7 @@ internal class RasterTileBitmapLoader(
                         }
                     }
                 } finally {
-                    Log.w(TileBudgetLogTag, "worker-stop worker=$workerIndex")
+                    perfLogInfo(TileBudgetLogTag) { "worker-stop worker=$workerIndex" }
                 }
             }
         }
@@ -212,10 +212,9 @@ internal class RasterTileBitmapLoader(
                 result = CompletableDeferred(),
             )
         }
-        Log.i(
-            TileBudgetLogTag,
-            "load-start gen=$generationId map=$mapId missing=${missingTiles.size} workers=$MapTileLoadWorkerCount groups=[${formatTileBudgetSummary(missingTiles)}] first=${missingTiles.firstOrNull()?.let(::formatTileRef) ?: "none"}",
-        )
+        perfLogInfo(TileBudgetLogTag) {
+            "load-start gen=$generationId map=$mapId missing=${missingTiles.size} workers=$MapTileLoadWorkerCount groups=[${formatTileBudgetSummary(missingTiles)}] first=${missingTiles.firstOrNull()?.let(::formatTileRef) ?: "none"}"
+        }
         try {
             val droppedCount = queueMutex.withLock {
                 val dropped = pendingWork.size
@@ -230,10 +229,9 @@ internal class RasterTileBitmapLoader(
                     return emptyList()
                 }
             }
-            Log.i(
-                TileBudgetLogTag,
-                "load-enqueued gen=$generationId map=$mapId count=${missingTiles.size} droppedQueued=$droppedCount enqueueMs=${SystemClock.elapsedRealtime() - batchStartMs}",
-            )
+            perfLogInfo(TileBudgetLogTag) {
+                "load-enqueued gen=$generationId map=$mapId count=${missingTiles.size} droppedQueued=$droppedCount enqueueMs=${SystemClock.elapsedRealtime() - batchStartMs}"
+            }
             val loadedTiles = mutableListOf<LoadedRenderTileBitmap>()
             deferredResults.forEach { work ->
                 currentCoroutineContext().ensureActive()
@@ -246,10 +244,9 @@ internal class RasterTileBitmapLoader(
             deferredResults.forEach { work ->
                 work.result.cancel()
             }
-            Log.w(
-                TileBudgetLogTag,
-                "load-cancel gen=$generationId map=$mapId missing=${missingTiles.size} elapsedMs=${SystemClock.elapsedRealtime() - batchStartMs}",
-            )
+            perfLogInfo(TileBudgetLogTag) {
+                "load-cancel gen=$generationId map=$mapId missing=${missingTiles.size} elapsedMs=${SystemClock.elapsedRealtime() - batchStartMs}"
+            }
             throw error
         }
     }

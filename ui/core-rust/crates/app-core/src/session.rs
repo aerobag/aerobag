@@ -5068,9 +5068,8 @@ pub fn get_session_snapshot_at_epoch_ms(
     let snapshot_started_at = crate::core_clock_ms();
     let result = snapshot_for_session(session);
     let snapshot_ms = elapsed_ms(snapshot_started_at);
-    crate::core_debug_log(
-        "session.snapshot.total",
-        &serde_json::json!({
+    crate::core_perf_debug_log("session.snapshot.total", || {
+        serde_json::json!({
             "total_ms": elapsed_ms(total_started_at),
             "lock_ms": lock_ms,
             "lookup_ms": lookup_ms,
@@ -5080,8 +5079,8 @@ pub fn get_session_snapshot_at_epoch_ms(
             "status_record_count": status_record_count,
             "pending_resource_effect_count": pending_resource_effect_count,
             "status": if result.is_ok() { "ok" } else { "error" },
-        }),
-    );
+        })
+    });
     result
 }
 
@@ -6473,9 +6472,8 @@ fn ensure_vector_inputs_loaded(
         Err(HadReadError::NeedPages(_)) => None,
         Err(HadReadError::Fatal(message)) => Some(message.as_str()),
     };
-    crate::core_debug_log(
-        "map.overlay.vector_inputs",
-        &serde_json::json!({
+    crate::core_perf_debug_log("map.overlay.vector_inputs", || {
+        serde_json::json!({
             "status": status,
             "error": error,
             "total_ms": elapsed_ms(total_started_at),
@@ -6502,8 +6500,8 @@ fn ensure_vector_inputs_loaded(
             "loaded_airspace_features": stats.loaded_airspace_features,
             "cached_vector_tiles": session.vector_tile_cache.len(),
             "cached_airspace_features": session.airspace_feature_cache.len(),
-        }),
-    );
+        })
+    });
     result
 }
 
@@ -8440,9 +8438,8 @@ fn try_snapshot_for_session(session: &UiSession) -> Result<UiSessionSnapshot, Ha
         .and_then(crate::raster_map_ui_state);
     let raster_ms = elapsed_ms(raster_started_at);
     let total_ms = elapsed_ms(total_started_at);
-    crate::core_debug_log(
-        "session.snapshot.core",
-        &serde_json::json!({
+    crate::core_perf_debug_log("session.snapshot.core", || {
+        serde_json::json!({
             "total_ms": total_ms,
             "app_ui_ms": app_ui_ms,
             "debug_ms": debug_ms,
@@ -8456,8 +8453,8 @@ fn try_snapshot_for_session(session: &UiSession) -> Result<UiSessionSnapshot, Ha
             "status_page_rows": data_status_page_state.rows.len(),
             "settings_page_rows": settings_page_state.rows.len(),
             "map_families": raster_map.as_ref().map(|state| state.family_options.len()).unwrap_or(0),
-        }),
-    );
+        })
+    });
     Ok(UiSessionSnapshot {
         app_state,
         app_ui_state,

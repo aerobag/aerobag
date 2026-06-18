@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
-    core_clock_ms, core_debug_log,
+    core_clock_ms, core_perf_debug_log,
     data_status::{DataStatusRecord, UiStatusSeverity},
     geometry::LatLon,
     great_circle_distance_nm, AppError, AppErrorKind, AppResult, FlightPlan, FlightPlanRowActionId,
@@ -1777,31 +1777,34 @@ pub fn query_map_overlay_for_surface(
     let needed_vector_tiles =
         merge_aggregate_vector_tile_requests(needed_vector_tiles, airspace.needed_tiles);
     let merge_ms = overlay_elapsed_ms(merge_started_at);
-    let total_ms = overlay_elapsed_ms(total_started_at);
-    let airspace_path_points = airspace_display_path_point_count(&airspace.paths);
-    let airspace_decoration_points = airspace_display_path_decoration_point_count(&airspace.paths);
-    let airspace_decoration_segments =
-        airspace_display_path_decoration_segment_count(&airspace.paths);
-    let tfr_path_points = airspace_display_path_point_count(&tfrs.paths);
-    let tfr_decoration_points = airspace_display_path_decoration_point_count(&tfrs.paths);
-    let tfr_decoration_segments = airspace_display_path_decoration_segment_count(&tfrs.paths);
-    let offline_region_points = offline_region_point_count(&offline_regions);
-    let timing = json!({
-        "total_ms": total_ms,
-        "offline_ms": offline_ms,
-        "point_vector_ms": point_vector_ms,
-        "obstacle_ms": obstacle_ms,
-        "budget_ms": budget_ms,
-        "airspace_ms": airspace_ms,
-        "tfr_ms": tfr_ms,
-        "metar_ms": metar_ms,
-        "status_ms": status_ms,
-        "labels_ms": labels_ms,
-        "merge_ms": merge_ms,
-    });
-    core_debug_log(
-        "map.overlay.core",
-        &json!({
+    core_perf_debug_log("map.overlay.core", || {
+        let airspace_path_points = airspace_display_path_point_count(&airspace.paths);
+        let airspace_decoration_points =
+            airspace_display_path_decoration_point_count(&airspace.paths);
+        let airspace_decoration_segments =
+            airspace_display_path_decoration_segment_count(&airspace.paths);
+        let tfr_path_points = airspace_display_path_point_count(&tfrs.paths);
+        let tfr_decoration_points = airspace_display_path_decoration_point_count(&tfrs.paths);
+        let tfr_decoration_segments = airspace_display_path_decoration_segment_count(&tfrs.paths);
+        let offline_region_points = offline_region_point_count(&offline_regions);
+        let timing = json!({
+            "total_ms": overlay_elapsed_ms(total_started_at),
+            "offline_ms": offline_ms,
+            "point_vector_ms": point_vector_ms,
+            "obstacle_ms": obstacle_ms,
+            "budget_ms": budget_ms,
+            "airspace_ms": airspace_ms,
+            "tfr_ms": tfr_ms,
+            "metar_ms": metar_ms,
+            "status_ms": status_ms,
+            "labels_ms": labels_ms,
+            "merge_ms": merge_ms,
+        });
+        let data_status = data_status_records
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<Vec<_>>();
+        json!({
             "center_lat": viewport.center.lat,
             "center_lon": viewport.center.lon,
             "raw_zoom": viewport.zoom,
@@ -1841,9 +1844,9 @@ pub fn query_map_overlay_for_surface(
             "offline_regions": offline_regions.len(),
             "offline_region_points": offline_region_points,
             "timing": timing,
-            "data_status": data_status_records.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(),
-        }),
-    );
+            "data_status": data_status,
+        })
+    });
 
     MapOverlayQueryResult {
         needed_vector_tiles,

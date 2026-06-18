@@ -44,8 +44,8 @@ pub use data_status::{
     UiStatusActionStyle, UiStatusSeverity,
 };
 pub use debug_log::{
-    core_clock_ms, core_debug_log, core_debug_log_value, set_core_clock_ms, set_core_debug_logger,
-    CoreClockMs, CoreDebugLogger, CoreDebugTimer,
+    core_clock_ms, core_debug_log, core_debug_log_value, core_perf_debug_log, set_core_clock_ms,
+    set_core_debug_logger, CoreClockMs, CoreDebugLogger, CoreDebugTimer, CORE_VERBOSE_PERF_LOGS,
 };
 pub use errors::{AppError, AppErrorKind, AppResult};
 pub use flight_data::{

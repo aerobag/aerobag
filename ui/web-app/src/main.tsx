@@ -2,7 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { loadBestAvailableAdapter } from "./domain/appCoreAdapter";
-import { debugLog } from "./domain/debugLog";
+import { debugLog, perfDebugLog, VERBOSE_PERF_DEBUG_LOGS } from "./domain/debugLog";
 import { installStartupReloadHarness } from "./startupReloadHarness";
 import "./styles.css";
 
@@ -118,17 +118,17 @@ function logStartupCacheWarm() {
 }
 
 function installPaintObservers() {
-  if (typeof PerformanceObserver === "undefined") {
+  if (!VERBOSE_PERF_DEBUG_LOGS || typeof PerformanceObserver === "undefined") {
     return;
   }
   try {
     const observer = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
-        debugLog("PERF_PAINT", {
+        perfDebugLog("PERF_PAINT", () => ({
           name: entry.name,
           start_time_ms: Math.round(entry.startTime),
           duration_ms: Math.round(entry.duration),
-        });
+        }));
       }
     });
     observer.observe({ type: "paint", buffered: true });
@@ -138,7 +138,7 @@ function installPaintObservers() {
 }
 
 function installLongTaskObserver() {
-  if (typeof PerformanceObserver === "undefined") {
+  if (!VERBOSE_PERF_DEBUG_LOGS || typeof PerformanceObserver === "undefined") {
     return;
   }
   if (!PerformanceObserver.supportedEntryTypes?.includes("longtask")) {
@@ -147,11 +147,11 @@ function installLongTaskObserver() {
   try {
     const observer = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
-        debugLog("PERF_LONG_TASK", {
+        perfDebugLog("PERF_LONG_TASK", () => ({
           name: entry.name,
           start_time_ms: Math.round(entry.startTime),
           duration_ms: Math.round(entry.duration),
-        });
+        }));
       }
     });
     observer.observe({ type: "longtask", buffered: true });
@@ -161,7 +161,7 @@ function installLongTaskObserver() {
 }
 
 function installEventLoopLagMonitor() {
-  if (typeof window === "undefined") {
+  if (!VERBOSE_PERF_DEBUG_LOGS || typeof window === "undefined") {
     return;
   }
   let expectedAt = performance.now() + 500;
@@ -172,10 +172,10 @@ function installEventLoopLagMonitor() {
     if (lagMs < 250) {
       return;
     }
-    debugLog("PERF_EVENT_LOOP_LAG", {
+    perfDebugLog("PERF_EVENT_LOOP_LAG", () => ({
       lag_ms: Math.round(lagMs),
       now_ms: Math.round(now),
-    });
+    }));
   }, 500);
 }
 

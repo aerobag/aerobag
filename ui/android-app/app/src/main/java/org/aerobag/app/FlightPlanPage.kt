@@ -647,7 +647,6 @@ internal fun FlightPlanPage(
 
     LaunchedEffect(rows, pendingSelectedRowKey) {
         val selectionKey = pendingSelectedRowKey ?: return@LaunchedEffect
-        Log.d("AerobagReorder", "resolveSelection pendingKey=$selectionKey rows=${rows.joinToString(" | ") { "${it.selectionKey}:${it.rowKind}:${it.label}" }}")
         val nextIndex =
             rows.indexOfFirst { row ->
                 row.selectionKey == selectionKey

@@ -18,6 +18,8 @@ let flushScheduled = false;
 let flushInFlight = false;
 let browserInstanceId = resolveBrowserInstanceId();
 
+export const VERBOSE_PERF_DEBUG_LOGS = false;
+
 function scheduleFlush() {
   if (
     flushScheduled
@@ -90,6 +92,13 @@ export function debugLog(tag: string, data?: unknown) {
     }
   }
   scheduleFlush();
+}
+
+export function perfDebugLog(tag: string, data?: () => unknown) {
+  if (!VERBOSE_PERF_DEBUG_LOGS) {
+    return;
+  }
+  debugLog(tag, data?.());
 }
 
 export function observeDebugLog(observer: (record: DebugLogRecord) => void): () => void {
@@ -210,6 +219,17 @@ export function debugTiming<T>(
     debugLog(`${tag}.error`, { ...objectData(data), elapsed_ms: Math.round(performance.now() - start), message: error instanceof Error ? error.message : String(error) });
     throw error;
   }
+}
+
+export function perfDebugTiming<T>(
+  tag: string,
+  work: () => T,
+  data?: () => unknown,
+): T {
+  if (!VERBOSE_PERF_DEBUG_LOGS) {
+    return work();
+  }
+  return debugTiming(tag, work, data?.());
 }
 
 function objectData(data: unknown): Record<string, unknown> {

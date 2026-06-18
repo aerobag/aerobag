@@ -16,6 +16,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.aerobag.app.perfLogInfo
 
 data class CoreResourceRequest(
     val id: String,
@@ -389,7 +390,7 @@ class NavKvStore private constructor(
         bridge.navKvInsertResource(handle, resource.id, pageBytes)
         val elapsedMs = SystemClock.elapsedRealtime() - startMs
         if (elapsedMs >= 10) {
-            Log.i(TAG, "ensurePage($pageIndex) took ${elapsedMs}ms")
+            perfLogInfo(TAG) { "ensurePage($pageIndex) took ${elapsedMs}ms" }
         }
     }
 

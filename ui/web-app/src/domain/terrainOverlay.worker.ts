@@ -4,7 +4,7 @@ import init, {
   render_terrain_warning_raw_rgba_from_packed_tiles,
 } from "@generated/app_wasm.js";
 import type { TerrainOverlaySourceTile } from "./appCoreAdapter";
-import { debugLog, installRustDebugLogBridge, setBrowserInstanceId } from "./debugLog";
+import { debugLog, installRustDebugLogBridge, perfDebugLog, setBrowserInstanceId } from "./debugLog";
 
 type TerrainWorkerRenderRequest = {
   kind: "render";
@@ -143,12 +143,12 @@ async function renderTerrainTileBatch(message: TerrainWorkerRenderBatchRequest):
       }, [result.rawBytes.buffer]);
       await yieldToBrowser();
     }
-    debugLog("terrain.worker.batch.done", {
+    perfDebugLog("terrain.worker.batch.done", () => ({
       tile_count: message.requests.length,
       raw_bytes: rawBytesTotal,
       fetch_ms: Math.round(fetchMs),
       elapsed_ms: Math.round(performance.now() - startedAt),
-    });
+    }));
     ctx.postMessage({
       kind: "rendered_batch",
       id: message.id,
@@ -192,7 +192,7 @@ async function renderTerrainTileBytes(
     : render_terrain_warning_raw_rgba_from_packed_tiles(packTerrainTileBytes(sourceBytes), request.altitudeBucketFt);
   const renderMs = performance.now() - renderStartedAt;
   const transferableBytes = new Uint8Array(rawBytes);
-  debugLog("terrain.worker.tile.done", {
+  perfDebugLog("terrain.worker.tile.done", () => ({
     tile_key: request.tileKey,
     source_count: sourceBytes.length,
     source_bytes: sourceBytes.reduce((sum, bytes) => sum + bytes.byteLength, 0),
@@ -200,7 +200,7 @@ async function renderTerrainTileBytes(
     fetch_ms: suppressFetchTiming ? 0 : Math.round(fetchMs),
     render_ms: Math.round(renderMs),
     elapsed_ms: Math.round(performance.now() - startedAt),
-  });
+  }));
   return {
     generation: request.generation,
     cacheKey: request.cacheKey,

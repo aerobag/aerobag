@@ -2,7 +2,7 @@ use app_core::{GeometryBundle, PolygonRecord};
 use serde::Serialize;
 use std::fs;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn sample_geometry() -> GeometryBundle {
     GeometryBundle {
@@ -63,6 +63,14 @@ pub fn fixture_nav_db_package_zip_path() -> PathBuf {
         );
         return path;
     }
+    if let Some((package_zip_path, _)) = current_nav_db_artifact_paths() {
+        assert!(
+            package_zip_path.is_file(),
+            "current nav-db package zip missing: {}",
+            package_zip_path.display()
+        );
+        return package_zip_path;
+    }
     let root = fixture_published_packaged_root();
     let mut matches = fs::read_dir(&root)
         .unwrap_or_else(|err| panic!("read {}: {err}", root.display()))
@@ -89,7 +97,25 @@ pub fn fixture_nav_db_package_zip_path() -> PathBuf {
 }
 
 pub fn load_fixture_nav_kv_pages() -> (Vec<u8>, Vec<Vec<u8>>) {
+    if let Some(value) = std::env::var_os("AEROBAG_FIXTURE_NAV_DB_UNPACKED_DIR") {
+        let path = PathBuf::from(value);
+        assert!(
+            path.is_dir(),
+            "AEROBAG_FIXTURE_NAV_DB_UNPACKED_DIR does not name a directory: {}",
+            path.display()
+        );
+        return load_nav_kv_pages_from_dir(&path);
+    }
+    if let Some((_, unpacked_dir)) = current_nav_db_artifact_paths() {
+        if unpacked_dir.is_dir() {
+            return load_nav_kv_pages_from_dir(&unpacked_dir);
+        }
+    }
     let zip_path = fixture_nav_db_package_zip_path();
+    load_nav_kv_pages_from_zip(&zip_path)
+}
+
+fn load_nav_kv_pages_from_zip(zip_path: &Path) -> (Vec<u8>, Vec<Vec<u8>>) {
     let file = fs::File::open(&zip_path)
         .unwrap_or_else(|err| panic!("open {}: {err}", zip_path.display()));
     let mut archive = zip::ZipArchive::new(file)
@@ -136,9 +162,97 @@ pub fn load_fixture_nav_kv_pages() -> (Vec<u8>, Vec<Vec<u8>>) {
             .unwrap_or_else(|err| panic!("open {} in {}: {err}", entry_name, zip_path.display()))
             .read_to_end(&mut page_bytes)
             .unwrap_or_else(|err| panic!("read {} in {}: {err}", entry_name, zip_path.display()));
-        pages.push(page_bytes);
+        pages.push(decode_nav_kv_page_for_fixture(&entry_name, page_bytes));
     }
     (root_bytes, pages)
+}
+
+fn load_nav_kv_pages_from_dir(nav_kv_dir: &Path) -> (Vec<u8>, Vec<Vec<u8>>) {
+    let root_path = nav_kv_dir.join("root");
+    let root_bytes =
+        fs::read(&root_path).unwrap_or_else(|err| panic!("read {}: {err}", root_path.display()));
+    let root = app_core::NavKvRoot::parse(&root_bytes)
+        .unwrap_or_else(|err| panic!("parse {}: {err}", root_path.display()));
+    let page_count = root.page_count() as usize;
+    let mut pages = Vec::with_capacity(page_count);
+    for page_index in 0..page_count {
+        let page_name = format!("page_{page_index:04}");
+        let page_path = nav_kv_dir.join(&page_name);
+        let page_bytes = fs::read(&page_path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", page_path.display()));
+        pages.push(decode_nav_kv_page_for_fixture(&page_name, page_bytes));
+    }
+    (root_bytes, pages)
+}
+
+fn decode_nav_kv_page_for_fixture(page_name: &str, page_bytes: Vec<u8>) -> Vec<u8> {
+    let resource_id = page_name
+        .strip_prefix("page_")
+        .map(|page| format!("nav_kv/page/{page}"))
+        .unwrap_or_else(|| format!("nav_kv/page/{page_name}"));
+    app_core::decode_nav_db_page_resource_bytes(&resource_id, &page_bytes)
+        .unwrap_or_else(|err| panic!("decode fixture nav_kv page {page_name}: {err}"))
+        .into_owned()
+}
+
+fn current_nav_db_artifact_paths() -> Option<(PathBuf, PathBuf)> {
+    let artifact_root = artifact_read_root()?;
+    let current_artifacts_json =
+        fs::read_to_string(artifact_root.join("current_artifacts.json")).ok()?;
+    let current = app_core::select_supported_current_artifacts_manifests(
+        app_core::decode_current_artifacts_manifest_list(&current_artifacts_json).ok()?,
+    )
+    .ok()?
+    .into_iter()
+    .next()?;
+    let unpacked_root = artifact_root.join(current.artifact_roots.unpacked.as_str());
+    let packaged_root = artifact_root.join(current.artifact_roots.packaged.as_str());
+    let cycle_bundle = current
+        .bundles
+        .iter()
+        .find(|bundle| bundle.bundle_type == "cycle")?;
+    let bundle_relative_path = if cycle_bundle.relative_path.is_empty() {
+        cycle_bundle.filename.as_str()
+    } else {
+        cycle_bundle.relative_path.as_str()
+    };
+    let bundle: app_core::BundleManifest =
+        serde_json::from_slice(&fs::read(unpacked_root.join(bundle_relative_path)).ok()?).ok()?;
+    let nav_db = bundle
+        .packages
+        .iter()
+        .find(|package| package.family_id == "nav-db")?;
+    let unpacked_dir = nav_db.relative_path.strip_suffix(".zip")?;
+    Some((
+        packaged_root.join(nav_db.relative_path.as_str()),
+        unpacked_root.join(unpacked_dir),
+    ))
+}
+
+fn artifact_read_root() -> Option<PathBuf> {
+    if let Some(value) = std::env::var_os("AEROBAG_ARTIFACT_READ_PATH") {
+        return Some(PathBuf::from(value));
+    }
+    let repo_root = repo_root()?;
+    let configured = fs::read_to_string(repo_root.join(".aerobag-artifact-read-path")).ok()?;
+    let configured = PathBuf::from(configured.trim());
+    Some(if configured.is_absolute() {
+        configured
+    } else {
+        repo_root.join(configured)
+    })
+}
+
+fn repo_root() -> Option<PathBuf> {
+    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    loop {
+        if dir.join(".aerobag-artifact-read-path").is_file() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

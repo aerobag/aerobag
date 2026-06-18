@@ -1,5 +1,10 @@
 package org.aerobag.app.domain
 
+interface CoreSettingsStore {
+    fun readSettings(): ByteArray?
+    fun writeSettings(bytes: ByteArray)
+}
+
 interface NativeBridge {
     fun createOfflinePackagesController(packagesStateJson: String): Long
 
@@ -77,6 +82,12 @@ interface NativeBridge {
         recentAirportIdsJson: String,
         selectedAirportIdJson: String,
         selectedChartIdJson: String,
+    ): String
+
+    fun configurePlatformCapabilitiesInSessionJson(
+        handle: Long,
+        capabilitiesJson: String,
+        settingsStore: CoreSettingsStore,
     ): String
 
     fun setInstalledPackageIdsInSessionJson(
@@ -307,6 +318,11 @@ interface NativeBridge {
     fun performStatusActionInSessionJson(
         handle: Long,
         actionId: String,
+    ): String
+
+    fun performSettingsActionInSessionJson(
+        handle: Long,
+        actionJson: String,
     ): String
 
     fun loadPlateProcedureInSessionJson(
@@ -568,6 +584,12 @@ object NativeBindings : NativeBridge {
         selectedChartIdJson: String,
     ): String
 
+    external override fun configurePlatformCapabilitiesInSessionJson(
+        handle: Long,
+        capabilitiesJson: String,
+        settingsStore: CoreSettingsStore,
+    ): String
+
     external override fun setInstalledPackageIdsInSessionJson(
         handle: Long,
         packageIdsJson: String,
@@ -796,6 +818,11 @@ object NativeBindings : NativeBridge {
     external override fun performStatusActionInSessionJson(
         handle: Long,
         actionId: String,
+    ): String
+
+    external override fun performSettingsActionInSessionJson(
+        handle: Long,
+        actionJson: String,
     ): String
 
     external override fun loadPlateProcedureInSessionJson(

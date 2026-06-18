@@ -3,7 +3,7 @@ use std::{
     io::Read,
     sync::{
         atomic::{AtomicU32, Ordering},
-        Mutex, MutexGuard, OnceLock,
+        Arc, Mutex, MutexGuard, OnceLock,
     },
 };
 
@@ -62,6 +62,68 @@ use crate::{
 };
 
 const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
+const SETTINGS_PERSISTENCE_VERSION: u32 = 1;
+const DISPLAY_DIM_TIMEOUT_ROW_ID: &str = "display_dim_timeout";
+const DISPLAY_DIM_TIMEOUT_ACTION_ID: &str = "display_dim_timeout";
+const DISPLAY_DIM_BRIGHTNESS: f32 = 0.05;
+
+impl DisplayDimTimeout {
+    fn id(self) -> &'static str {
+        match self {
+            Self::TenSeconds => "10s",
+            Self::ThirtySeconds => "30s",
+            Self::OneMinute => "1m",
+            Self::TwoMinutes => "2m",
+            Self::FiveMinutes => "5m",
+            Self::Never => "never",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::TenSeconds => "10s",
+            Self::ThirtySeconds => "30s",
+            Self::OneMinute => "1m",
+            Self::TwoMinutes => "2m",
+            Self::FiveMinutes => "5m",
+            Self::Never => "Never",
+        }
+    }
+
+    fn dim_after_ms(self) -> Option<u64> {
+        match self {
+            Self::TenSeconds => Some(10_000),
+            Self::ThirtySeconds => Some(30_000),
+            Self::OneMinute => Some(60_000),
+            Self::TwoMinutes => Some(120_000),
+            Self::FiveMinutes => Some(300_000),
+            Self::Never => None,
+        }
+    }
+
+    fn from_value_id(value_id: &str) -> Option<Self> {
+        match value_id {
+            "10s" => Some(Self::TenSeconds),
+            "30s" => Some(Self::ThirtySeconds),
+            "1m" => Some(Self::OneMinute),
+            "2m" => Some(Self::TwoMinutes),
+            "5m" => Some(Self::FiveMinutes),
+            "never" => Some(Self::Never),
+            _ => None,
+        }
+    }
+
+    fn all_stops() -> [Self; 6] {
+        [
+            Self::TenSeconds,
+            Self::ThirtySeconds,
+            Self::OneMinute,
+            Self::TwoMinutes,
+            Self::FiveMinutes,
+            Self::Never,
+        ]
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiChartPageState {
@@ -103,6 +165,92 @@ pub struct UiDebugState {
     pub gps_capture: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PlatformDisplayPolicyCapability {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PlatformCapabilities {
+    #[serde(default)]
+    pub display_policy: Option<PlatformDisplayPolicyCapability>,
+}
+
+pub trait SettingsStorage: Send + Sync {
+    fn read_settings(&self) -> AppResult<Option<Vec<u8>>>;
+    fn write_settings(&self, bytes: &[u8]) -> AppResult<()>;
+}
+
+pub type SettingsStorageHandle = Arc<dyn SettingsStorage>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DisplayDimTimeout {
+    #[serde(rename = "10s")]
+    TenSeconds,
+    #[serde(rename = "30s")]
+    ThirtySeconds,
+    #[serde(rename = "1m")]
+    OneMinute,
+    #[serde(rename = "2m")]
+    TwoMinutes,
+    #[serde(rename = "5m")]
+    FiveMinutes,
+    #[serde(rename = "never")]
+    Never,
+}
+
+impl Default for DisplayDimTimeout {
+    fn default() -> Self {
+        Self::TwoMinutes
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SettingsPreferences {
+    #[serde(default)]
+    pub display_dim_timeout: DisplayDimTimeout,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiSettingsSliderStop {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiSettingsPageRow {
+    pub kind: String,
+    pub id: String,
+    pub title: String,
+    pub value_id: String,
+    pub stops: Vec<UiSettingsSliderStop>,
+    pub action_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiSettingsPageState {
+    pub title: String,
+    pub summary: String,
+    pub rows: Vec<UiSettingsPageRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiDisplayPolicy {
+    pub keep_screen_on: bool,
+    pub dim_after_ms: Option<u64>,
+    pub dim_brightness: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiSettingsAction {
+    pub action_id: String,
+    pub value_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SettingsPersistenceDocument {
+    version: u32,
+    preferences: SettingsPreferences,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiSessionSnapshot {
     pub app_state: UiSnapshotAppState,
@@ -114,6 +262,8 @@ pub struct UiSessionSnapshot {
     pub map_layer_state: UiMapLayerState,
     pub data_status_state: UiDataStatusState,
     pub data_status_page_state: UiDataStatusPageState,
+    pub settings_page_state: UiSettingsPageState,
+    pub display_policy: Option<UiDisplayPolicy>,
     pub debug_state: UiDebugState,
     pub raster_map: Option<crate::RasterMapUiState>,
     pub next_cycle_product_freshness_check_epoch_ms: Option<i64>,
@@ -149,6 +299,9 @@ struct UiSession {
     data_status_records: BTreeMap<String, DataStatusRecord>,
     hushed_status_ids: BTreeSet<String>,
     data_status_state: UiDataStatusState,
+    platform_capabilities: PlatformCapabilities,
+    settings_preferences: SettingsPreferences,
+    settings_storage: Option<SettingsStorageHandle>,
     debug_state: UiDebugState,
     resource_policy: CoreResourcePolicy,
     installed_package_ids: BTreeSet<String>,
@@ -2540,6 +2693,9 @@ fn create_ui_session_inner(
     let hushed_status_ids = BTreeSet::new();
     let data_status_state = project_data_status_state(&data_status_records, &hushed_status_ids);
     let data_status_page_state = default_data_status_page_state();
+    let settings_page_state = default_settings_page_state();
+    let settings_preferences = SettingsPreferences::default();
+    let platform_capabilities = PlatformCapabilities::default();
     let snapshot_debug_state = debug_state_for_app_state(&debug_state, &app_state);
     let snapshot = UiSessionSnapshot {
         app_state: snapshot_app_state,
@@ -2551,6 +2707,8 @@ fn create_ui_session_inner(
         map_layer_state: map_layer_state.clone(),
         data_status_state: data_status_state.clone(),
         data_status_page_state,
+        settings_page_state,
+        display_policy: None,
         debug_state: snapshot_debug_state,
         raster_map: None,
         next_cycle_product_freshness_check_epoch_ms: None,
@@ -2575,6 +2733,9 @@ fn create_ui_session_inner(
             data_status_records,
             hushed_status_ids,
             data_status_state,
+            platform_capabilities,
+            settings_preferences,
+            settings_storage: None,
             debug_state,
             resource_policy: CoreResourcePolicy::InstalledPackage,
             installed_package_ids: BTreeSet::new(),
@@ -2776,6 +2937,41 @@ pub fn set_resource_policy_in_session(
         session.resource_policy = policy;
         session.publication_resolver.set_resource_policy(policy);
         session.raster_map_catalog = None;
+    }
+    snapshot_for_session(session)
+}
+
+pub fn configure_platform_capabilities_in_session(
+    handle: u32,
+    capabilities: PlatformCapabilities,
+    settings_storage: Option<SettingsStorageHandle>,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    session.platform_capabilities = capabilities;
+    session.settings_storage = settings_storage;
+    load_settings_preferences_from_storage(session)?;
+    snapshot_for_session(session)
+}
+
+pub fn perform_settings_action_in_session(
+    handle: u32,
+    action: UiSettingsAction,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    match action.action_id.as_str() {
+        DISPLAY_DIM_TIMEOUT_ACTION_ID => {
+            if session.platform_capabilities.display_policy.is_none() {
+                return Err(invalid_settings_action(&action.action_id));
+            }
+            let timeout = DisplayDimTimeout::from_value_id(&action.value_id).ok_or_else(|| {
+                invalid_settings_action_value(&action.action_id, &action.value_id)
+            })?;
+            session.settings_preferences.display_dim_timeout = timeout;
+            write_settings_preferences_to_storage(session)?;
+        }
+        _ => return Err(invalid_settings_action(&action.action_id)),
     }
     snapshot_for_session(session)
 }
@@ -4517,6 +4713,20 @@ fn invalid_status_action(action_id: &str) -> AppError {
     AppError {
         kind: AppErrorKind::UnsupportedOperation,
         message: format!("unknown status action: {action_id}"),
+    }
+}
+
+fn invalid_settings_action(action_id: &str) -> AppError {
+    AppError {
+        kind: AppErrorKind::UnsupportedOperation,
+        message: format!("unknown settings action: {action_id}"),
+    }
+}
+
+fn invalid_settings_action_value(action_id: &str, value_id: &str) -> AppError {
+    AppError {
+        kind: AppErrorKind::UnsupportedOperation,
+        message: format!("unknown settings value for {action_id}: {value_id}"),
     }
 }
 
@@ -8210,6 +8420,8 @@ fn try_snapshot_for_session(session: &UiSession) -> Result<UiSessionSnapshot, Ha
     let map_layer_state = session.map_layer_state.clone();
     let data_status_state = session.data_status_state.clone();
     let data_status_page_state = project_data_status_page_state(session);
+    let settings_page_state = project_settings_page_state(session);
+    let display_policy = project_display_policy(session);
     let clone_ms = elapsed_ms(clone_started_at);
     let raster_started_at = crate::core_clock_ms();
     let raster_map = session
@@ -8231,6 +8443,7 @@ fn try_snapshot_for_session(session: &UiSession) -> Result<UiSessionSnapshot, Ha
             "raster_ms": raster_ms,
             "status_boxes": data_status_state.boxes.len(),
             "status_page_rows": data_status_page_state.rows.len(),
+            "settings_page_rows": settings_page_state.rows.len(),
             "map_families": raster_map.as_ref().map(|state| state.family_options.len()).unwrap_or(0),
         }),
     );
@@ -8244,6 +8457,8 @@ fn try_snapshot_for_session(session: &UiSession) -> Result<UiSessionSnapshot, Ha
         map_layer_state,
         data_status_state,
         data_status_page_state,
+        settings_page_state,
+        display_policy,
         debug_state,
         raster_map,
         next_cycle_product_freshness_check_epoch_ms: session
@@ -8358,6 +8573,103 @@ fn default_data_status_page_state() -> UiDataStatusPageState {
         summary: "Status will appear after core session data loads.".to_string(),
         rows: Vec::new(),
     }
+}
+
+fn default_settings_page_state() -> UiSettingsPageState {
+    UiSettingsPageState {
+        title: "Settings".to_string(),
+        summary: String::new(),
+        rows: Vec::new(),
+    }
+}
+
+fn project_settings_page_state(session: &UiSession) -> UiSettingsPageState {
+    let mut rows = Vec::new();
+    if session.platform_capabilities.display_policy.is_some() {
+        rows.push(UiSettingsPageRow {
+            kind: "slider".to_string(),
+            id: DISPLAY_DIM_TIMEOUT_ROW_ID.to_string(),
+            title: "\u{1F50B} Display dims after...".to_string(),
+            value_id: session
+                .settings_preferences
+                .display_dim_timeout
+                .id()
+                .to_string(),
+            stops: DisplayDimTimeout::all_stops()
+                .into_iter()
+                .map(|timeout| UiSettingsSliderStop {
+                    id: timeout.id().to_string(),
+                    label: timeout.label().to_string(),
+                })
+                .collect(),
+            action_id: DISPLAY_DIM_TIMEOUT_ACTION_ID.to_string(),
+        });
+    }
+    UiSettingsPageState {
+        title: "Settings".to_string(),
+        summary: if rows.is_empty() {
+            "No platform settings are available.".to_string()
+        } else {
+            String::new()
+        },
+        rows,
+    }
+}
+
+fn project_display_policy(session: &UiSession) -> Option<UiDisplayPolicy> {
+    session
+        .platform_capabilities
+        .display_policy
+        .as_ref()
+        .map(|_| UiDisplayPolicy {
+            keep_screen_on: true,
+            dim_after_ms: session
+                .settings_preferences
+                .display_dim_timeout
+                .dim_after_ms(),
+            dim_brightness: DISPLAY_DIM_BRIGHTNESS,
+        })
+}
+
+fn load_settings_preferences_from_storage(session: &mut UiSession) -> AppResult<()> {
+    let Some(storage) = session.settings_storage.as_ref() else {
+        return Ok(());
+    };
+    let Some(bytes) = storage.read_settings()? else {
+        return Ok(());
+    };
+    session.settings_preferences = decode_settings_preferences(&bytes);
+    Ok(())
+}
+
+fn write_settings_preferences_to_storage(session: &UiSession) -> AppResult<()> {
+    let Some(storage) = session.settings_storage.as_ref() else {
+        return Ok(());
+    };
+    let bytes = encode_settings_preferences(&session.settings_preferences)?;
+    storage.write_settings(&bytes)
+}
+
+fn decode_settings_preferences(bytes: &[u8]) -> SettingsPreferences {
+    if bytes.is_empty() {
+        return SettingsPreferences::default();
+    }
+    serde_json::from_slice::<SettingsPersistenceDocument>(bytes)
+        .ok()
+        .filter(|document| document.version == SETTINGS_PERSISTENCE_VERSION)
+        .map(|document| document.preferences)
+        .unwrap_or_default()
+}
+
+fn encode_settings_preferences(preferences: &SettingsPreferences) -> AppResult<Vec<u8>> {
+    serde_json::to_vec(&SettingsPersistenceDocument {
+        version: SETTINGS_PERSISTENCE_VERSION,
+        preferences: preferences.clone(),
+    })
+    .map_err(|err| AppError {
+        kind: AppErrorKind::Internal,
+        message: err.to_string(),
+    })
 }
 
 fn default_debug_state() -> UiDebugState {
@@ -9961,6 +10273,101 @@ mod tests {
         parse_utc_instant(value).expect("UTC timestamp")
     }
 
+    #[derive(Default)]
+    struct MemorySettingsStorage {
+        bytes: Mutex<Option<Vec<u8>>>,
+    }
+
+    impl SettingsStorage for MemorySettingsStorage {
+        fn read_settings(&self) -> AppResult<Option<Vec<u8>>> {
+            Ok(self.bytes.lock().expect("settings lock").clone())
+        }
+
+        fn write_settings(&self, bytes: &[u8]) -> AppResult<()> {
+            *self.bytes.lock().expect("settings lock") = Some(bytes.to_vec());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn settings_page_omits_display_row_without_platform_capability() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+
+        assert!(init.snapshot.settings_page_state.rows.is_empty());
+        assert!(init.snapshot.display_policy.is_none());
+    }
+
+    #[test]
+    fn display_dim_setting_uses_core_owned_storage() {
+        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let snapshot = configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities {
+                display_policy: Some(PlatformDisplayPolicyCapability::default()),
+            },
+            Some(storage.clone()),
+        )
+        .expect("configure platform capabilities");
+
+        assert_eq!(snapshot.settings_page_state.rows.len(), 1);
+        assert_eq!(snapshot.settings_page_state.rows[0].value_id, "2m");
+        assert_eq!(
+            snapshot
+                .display_policy
+                .as_ref()
+                .and_then(|policy| policy.dim_after_ms),
+            Some(120_000)
+        );
+
+        let snapshot = perform_settings_action_in_session(
+            init.handle,
+            UiSettingsAction {
+                action_id: "display_dim_timeout".to_string(),
+                value_id: "30s".to_string(),
+            },
+        )
+        .expect("perform settings action");
+        assert_eq!(snapshot.settings_page_state.rows[0].value_id, "30s");
+        assert_eq!(
+            snapshot
+                .display_policy
+                .as_ref()
+                .and_then(|policy| policy.dim_after_ms),
+            Some(30_000)
+        );
+
+        let persisted = storage
+            .read_settings()
+            .expect("read settings")
+            .expect("persisted bytes");
+        let persisted_json: serde_json::Value =
+            serde_json::from_slice(&persisted).expect("persisted json");
+        assert_eq!(persisted_json["version"], 1);
+        assert_eq!(persisted_json["preferences"]["display_dim_timeout"], "30s");
+
+        let next =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let next_snapshot = configure_platform_capabilities_in_session(
+            next.handle,
+            PlatformCapabilities {
+                display_policy: Some(PlatformDisplayPolicyCapability::default()),
+            },
+            Some(storage),
+        )
+        .expect("configure platform capabilities");
+        assert_eq!(next_snapshot.settings_page_state.rows[0].value_id, "30s");
+        assert_eq!(
+            next_snapshot
+                .display_policy
+                .as_ref()
+                .and_then(|policy| policy.dim_after_ms),
+            Some(30_000)
+        );
+    }
+
     struct TestObstacleHad {
         manifest: serde_json::Value,
         root_bytes: Vec<u8>,
@@ -10741,6 +11148,9 @@ mod tests {
             data_status_records: BTreeMap::new(),
             hushed_status_ids: BTreeSet::new(),
             data_status_state: default_data_status_state(),
+            platform_capabilities: PlatformCapabilities::default(),
+            settings_preferences: SettingsPreferences::default(),
+            settings_storage: None,
             debug_state: default_debug_state(),
             resource_policy: CoreResourcePolicy::InstalledPackage,
             installed_package_ids: BTreeSet::new(),
@@ -10925,6 +11335,9 @@ mod tests {
             data_status_records: BTreeMap::new(),
             hushed_status_ids: BTreeSet::new(),
             data_status_state: default_data_status_state(),
+            platform_capabilities: PlatformCapabilities::default(),
+            settings_preferences: SettingsPreferences::default(),
+            settings_storage: None,
             debug_state: default_debug_state(),
             resource_policy: CoreResourcePolicy::InstalledPackage,
             installed_package_ids: BTreeSet::new(),
@@ -11360,6 +11773,9 @@ mod tests {
             data_status_records: BTreeMap::new(),
             hushed_status_ids: BTreeSet::new(),
             data_status_state: default_data_status_state(),
+            platform_capabilities: PlatformCapabilities::default(),
+            settings_preferences: SettingsPreferences::default(),
+            settings_storage: None,
             debug_state: default_debug_state(),
             resource_policy: CoreResourcePolicy::InstalledPackage,
             installed_package_ids: BTreeSet::new(),

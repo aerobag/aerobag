@@ -12,6 +12,7 @@ product-contracts = { path = "../../../../crates/product-contracts" }
 procedure-geometry-types = { path = "../../../../crates/procedure-geometry-types" }
 chrono.workspace = true
 flate2.workspace = true
+lzma-rs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

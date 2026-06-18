@@ -1,8 +1,8 @@
 pub use app_core::*;
-use jni::objects::{JByteArray, JClass, JString};
+use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JString, JValue};
 use jni::sys::jbyteArray;
 use jni::sys::jstring;
-use jni::JNIEnv;
+use jni::{JNIEnv, JavaVM};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 #[cfg(target_os = "android")]
@@ -12,7 +12,7 @@ use std::io::Write;
 #[cfg(target_os = "android")]
 use std::os::raw::{c_char, c_int};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "android")]
@@ -214,6 +214,18 @@ pub fn set_resource_policy_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn configure_platform_capabilities_in_session_json(
+    handle: u64,
+    capabilities_json: &str,
+) -> Result<String, String> {
+    let capabilities: app_core::PlatformCapabilities =
+        serde_json::from_str(capabilities_json).map_err(|err| err.to_string())?;
+    let snapshot =
+        app_core::configure_platform_capabilities_in_session(handle as u32, capabilities, None)
+            .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn set_installed_package_ids_in_session_json(
     handle: u64,
     package_ids_json: &str,
@@ -252,6 +264,17 @@ pub fn perform_status_action_in_session_json(
     action_id: &str,
 ) -> Result<String, String> {
     let snapshot = app_core::perform_status_action_in_session(handle as u32, action_id.to_string())
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn perform_settings_action_in_session_json(
+    handle: u64,
+    action_json: &str,
+) -> Result<String, String> {
+    let action: app_core::UiSettingsAction =
+        serde_json::from_str(action_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::perform_settings_action_in_session(handle as u32, action)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
@@ -1487,7 +1510,8 @@ pub fn nav_kv_insert_resource_bytes(
 ) -> Result<(), String> {
     let page_index = app_core::nav_kv_page_index_from_resource_id(resource_id)
         .ok_or_else(|| format!("unsupported nav kv resource id: {resource_id}"))?;
-    nav_kv_insert_page_bytes(handle, page_index, resource_bytes)
+    let decoded_bytes = app_core::decode_nav_db_page_resource_bytes(resource_id, resource_bytes)?;
+    nav_kv_insert_page_bytes(handle, page_index, decoded_bytes.as_ref())
 }
 
 pub fn attach_nav_kv_store_to_session_json(
@@ -1803,6 +1827,83 @@ fn get_java_string(env: &mut JNIEnv, value: JString) -> Result<String, String> {
     env.get_string(&value)
         .map(|s| s.into())
         .map_err(|err| err.to_string())
+}
+
+struct JniSettingsStore {
+    vm: JavaVM,
+    store: GlobalRef,
+}
+
+impl app_core::SettingsStorage for JniSettingsStore {
+    fn read_settings(&self) -> app_core::AppResult<Option<Vec<u8>>> {
+        let mut env = self
+            .vm
+            .attach_current_thread()
+            .map_err(|err| app_core::AppError {
+                kind: app_core::AppErrorKind::Internal,
+                message: err.to_string(),
+            })?;
+        let value = env
+            .call_method(self.store.as_obj(), "readSettings", "()[B", &[])
+            .map_err(|err| app_core::AppError {
+                kind: app_core::AppErrorKind::Internal,
+                message: err.to_string(),
+            })?
+            .l()
+            .map_err(|err| app_core::AppError {
+                kind: app_core::AppErrorKind::Internal,
+                message: err.to_string(),
+            })?;
+        if value.is_null() {
+            return Ok(None);
+        }
+        env.convert_byte_array(JByteArray::from(value))
+            .map(Some)
+            .map_err(|err| app_core::AppError {
+                kind: app_core::AppErrorKind::Internal,
+                message: err.to_string(),
+            })
+    }
+
+    fn write_settings(&self, bytes: &[u8]) -> app_core::AppResult<()> {
+        let mut env = self
+            .vm
+            .attach_current_thread()
+            .map_err(|err| app_core::AppError {
+                kind: app_core::AppErrorKind::Internal,
+                message: err.to_string(),
+            })?;
+        let array = env
+            .byte_array_from_slice(bytes)
+            .map_err(|err| app_core::AppError {
+                kind: app_core::AppErrorKind::Internal,
+                message: err.to_string(),
+            })?;
+        let array = JObject::from(array);
+        env.call_method(
+            self.store.as_obj(),
+            "writeSettings",
+            "([B)V",
+            &[JValue::Object(&array)],
+        )
+        .map(|_| ())
+        .map_err(|err| app_core::AppError {
+            kind: app_core::AppErrorKind::Internal,
+            message: err.to_string(),
+        })
+    }
+}
+
+fn settings_store_from_java(
+    env: &mut JNIEnv,
+    store: JObject,
+) -> Result<Option<app_core::SettingsStorageHandle>, String> {
+    if store.is_null() {
+        return Ok(None);
+    }
+    let vm = env.get_java_vm().map_err(|err| err.to_string())?;
+    let store = env.new_global_ref(store).map_err(|err| err.to_string())?;
+    Ok(Some(Arc::new(JniSettingsStore { vm, store })))
 }
 
 fn get_java_byte_array(env: &mut JNIEnv, value: JByteArray) -> Result<Vec<u8>, String> {
@@ -2162,6 +2263,30 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setResourcePol
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_configurePlatformCapabilitiesInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    capabilities_json: JString,
+    settings_store: JObject,
+) -> jstring {
+    let result = (|| {
+        let capabilities_json = get_java_string(&mut env, capabilities_json)?;
+        let capabilities: app_core::PlatformCapabilities =
+            serde_json::from_str(&capabilities_json).map_err(|err| err.to_string())?;
+        let settings_storage = settings_store_from_java(&mut env, settings_store)?;
+        let snapshot = app_core::configure_platform_capabilities_in_session(
+            handle as u32,
+            capabilities,
+            settings_storage,
+        )
+        .map_err(|err| err.to_string())?;
+        serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setInstalledPackageIdsInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -2201,6 +2326,20 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performStatusA
     let result = (|| {
         let action_id = get_java_string(&mut env, action_id)?;
         perform_status_action_in_session_json(handle as u64, &action_id)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performSettingsActionInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    action_json: JString,
+) -> jstring {
+    let result = (|| {
+        let action_json = get_java_string(&mut env, action_json)?;
+        perform_settings_action_in_session_json(handle as u64, &action_json)
     })();
     return_string(&mut env, result)
 }

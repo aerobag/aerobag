@@ -9,12 +9,16 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.KeyEvent as AndroidKeyEvent
 import android.view.MotionEvent
+import android.view.WindowManager
 import java.util.LinkedHashMap
 import java.net.HttpURLConnection
+import kotlin.math.roundToInt
 import androidx.annotation.DrawableRes
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.activity.result.contract.ActivityResultContracts
@@ -78,6 +82,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -191,6 +196,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.ChartAirport
 import org.aerobag.app.domain.ChartAsset
+import org.aerobag.app.domain.CoreSettingsStore
 import org.aerobag.app.domain.AppState
 import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
@@ -271,7 +277,10 @@ import org.aerobag.app.domain.UiDataStatusPageState
 import org.aerobag.app.domain.UiDataStatusPageTimeDisplay
 import org.aerobag.app.domain.UiDataStatusState
 import org.aerobag.app.domain.UiDebugState
+import org.aerobag.app.domain.UiDisplayPolicy
 import org.aerobag.app.domain.UiMapLayerToggleState
+import org.aerobag.app.domain.UiSettingsPageRow
+import org.aerobag.app.domain.UiSettingsPageState
 import org.aerobag.app.domain.UiStatusActionStyle
 import org.aerobag.app.domain.UiStatusSeverity
 import org.aerobag.app.domain.UiTheme
@@ -495,6 +504,7 @@ internal enum class AppPage {
     Charts,
     Home,
     DataStatus,
+    Settings,
 }
 
 internal data class AppViewSnapshot(
@@ -1088,6 +1098,7 @@ internal val PageOptions = listOf(
     PageTrayOption(AppPage.Plan, "FLIGHT PLAN", "PLAN", R.drawable.page_plan1_icon),
     PageTrayOption(AppPage.Home, "HOME", "HOME", R.drawable.page_home_icon),
     PageTrayOption(AppPage.DataStatus, "DATA STATUS", "DATA"),
+    PageTrayOption(AppPage.Settings, "SETTINGS", "SET"),
 )
 
 internal fun mostRecentChartOrPlatePageFromHistory(pageHistory: List<AppViewSnapshot>): AppPage =
@@ -1115,6 +1126,8 @@ internal val HomeGridButtons = listOf(
     HomeGridButton("flight-plan", "FLIGHT\nPLAN", targetPage = AppPage.Plan, enabled = true),
     // Three columns, row 2.
     HomeGridButton("data-status", "DATA\nSTATUS", targetPage = AppPage.DataStatus, enabled = true),
+    HomeGridButton("settings", "SETTINGS", targetPage = AppPage.Settings, enabled = true),
+    // Three columns, row 3.
     HomeGridButton("offline-packages", "OFFLINE\nPACKAGES", enabled = true),
     HomeGridButton("about", "ABOUT", externalUrl = "https://aerobag.org/about", enabled = true),
 )
@@ -1597,6 +1610,9 @@ private val DataStatusPageSummaryTextSize = 10.sp
 private val DataStatusPageRowHeaderTextSize = 13.sp
 private val DataStatusPageDetailTextSize = 10.sp
 private val DataStatusPageFactTextSize = 9.sp
+private val SettingsPageTitleTextSize = 16.sp
+private val SettingsPageRowTitleTextSize = 13.sp
+private val SettingsPageStopTextSize = 9.sp
 
 @Composable
 internal fun DataStatusPage(
@@ -1682,6 +1698,153 @@ internal fun DataStatusPage(
                 lazyGridItems(listOf(dataSourcesRow) + state.rows, key = { it.id }) { row ->
                     DataStatusPageRowCard(row = row, nowMs = nowMs)
                 }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun SettingsPage(
+    page: AppPage,
+    state: UiSettingsPageState,
+    mostRecentChartOrPlatePage: AppPage,
+    onOpenRecentChartOrPlate: () -> Unit,
+    onSelectPage: (AppPage) -> Unit,
+    onSettingsAction: (String, String) -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(uiTheme.controls.chartSurfaceBg),
+    ) {
+        HomeReturnDock(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .zIndex(OverlayPlaneControls),
+            currentPage = page,
+            chartPlateTargetPage = mostRecentChartOrPlatePage,
+            onHomeClick = { onSelectPage(AppPage.Home) },
+            onOpenChartOrPlate = onOpenRecentChartOrPlate,
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(
+                    start = ThumbGap,
+                    end = ThumbGap,
+                    top = ThumbSize + (ThumbGap * 2f),
+                    bottom = ThumbGap,
+                )
+                .clip(RoundedCornerShape(ThumbRadius))
+                .background(uiTheme.controls.buttonBg.copy(alpha = 0.84f))
+                .padding(ThumbSize * 0.3f),
+            verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.25f),
+        ) {
+            Text(
+                text = state.title.uppercase(),
+                style = MaterialTheme.typography.headlineSmall.copy(
+                    fontSize = SettingsPageTitleTextSize,
+                    lineHeight = SettingsPageTitleTextSize,
+                    fontWeight = FontWeight.Black,
+                ),
+                color = uiTheme.controls.buttonFg,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (state.rows.isEmpty()) {
+                Text(
+                    text = state.summary.ifBlank { "No settings available." },
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontSize = SettingsPageRowTitleTextSize,
+                        lineHeight = SettingsPageRowTitleTextSize * 1.2f,
+                        fontWeight = FontWeight.Bold,
+                    ),
+                    color = uiTheme.controls.buttonFg.copy(alpha = 0.78f),
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.2f),
+                ) {
+                    lazyColumnItems(state.rows, key = { it.id }) { row ->
+                        SettingsPageRowView(row = row, onSettingsAction = onSettingsAction)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsPageRowView(
+    row: UiSettingsPageRow,
+    onSettingsAction: (String, String) -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    if (row.kind != "slider" || row.stops.isEmpty()) {
+        return
+    }
+    val selectedIndex = row.stops.indexOfFirst { it.id == row.valueId }.takeIf { it >= 0 } ?: 0
+    var sliderIndex by remember(row.id, row.valueId, row.stops) {
+        mutableStateOf(selectedIndex.toFloat())
+    }
+    val maxIndex = (row.stops.size - 1).coerceAtLeast(0)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(ThumbRadius))
+            .background(Color.White.copy(alpha = 0.92f))
+            .padding(ThumbSize * 0.28f),
+        verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.14f),
+    ) {
+        Text(
+            text = row.title,
+            style = MaterialTheme.typography.titleLarge.copy(
+                fontSize = SettingsPageRowTitleTextSize,
+                lineHeight = SettingsPageRowTitleTextSize * 1.08f,
+                fontWeight = FontWeight.Black,
+            ),
+            color = Color(0xFF101820),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Slider(
+            value = sliderIndex.coerceIn(0f, maxIndex.toFloat()),
+            onValueChange = { value ->
+                sliderIndex = value.roundToInt().coerceIn(0, maxIndex).toFloat()
+            },
+            onValueChangeFinished = {
+                val nextStop = row.stops.getOrNull(sliderIndex.roundToInt())
+                if (nextStop != null && nextStop.id != row.valueId) {
+                    onSettingsAction(row.actionId, nextStop.id)
+                }
+            },
+            valueRange = 0f..maxIndex.toFloat(),
+            steps = (row.stops.size - 2).coerceAtLeast(0),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            row.stops.forEach { stop ->
+                Text(
+                    text = stop.label,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = SettingsPageStopTextSize,
+                        lineHeight = SettingsPageStopTextSize,
+                        fontWeight = if (stop.id == row.valueId) FontWeight.Black else FontWeight.Bold,
+                    ),
+                    color = if (stop.id == row.valueId) {
+                        Color(0xFF101820)
+                    } else {
+                        uiTheme.controls.buttonFg.copy(alpha = 0.70f)
+                    },
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }
@@ -2658,10 +2821,24 @@ internal fun writeUiPrefs(
 
 internal fun readStoredPage(prefs: SharedPreferences): AppPage {
     val stored = prefs.getString(UiPrefsPageKey, AppPage.Map.name) ?: AppPage.Map.name
-    return if (stored == "Settings") {
-        AppPage.Home
-    } else {
-        runCatching { AppPage.valueOf(stored) }.getOrDefault(AppPage.Map)
+    return runCatching { AppPage.valueOf(stored) }.getOrDefault(AppPage.Map)
+}
+
+private const val CoreSettingsFileName = "core-settings-v1.json"
+
+private class AndroidCoreSettingsStore(context: Context) : CoreSettingsStore {
+    private val file = File(context.applicationContext.filesDir, CoreSettingsFileName)
+
+    override fun readSettings(): ByteArray? =
+        if (file.exists()) {
+            file.readBytes()
+        } else {
+            null
+        }
+
+    override fun writeSettings(bytes: ByteArray) {
+        file.parentFile?.mkdirs()
+        file.writeBytes(bytes)
     }
 }
 
@@ -2695,6 +2872,13 @@ class MainActivity : ComponentActivity() {
     var onHardwareZoomDelta: ((Double) -> Boolean)? = null
     var onSituationControlInput: ((SituationControlInput) -> Boolean)? = null
 
+    private val displayPolicyHandler = Handler(Looper.getMainLooper())
+    private var displayPolicyForeground = false
+    private var activeDisplayPolicy: UiDisplayPolicy? = null
+    private val displayDimRunnable = Runnable {
+        applyDisplayPolicyDimState()
+    }
+
     private val gpsPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
             if (grants[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
@@ -2703,6 +2887,48 @@ class MainActivity : ComponentActivity() {
                 AndroidGpsSource.publishStatus(AndroidGpsSource.unavailableStatus("Precise location required"))
             }
         }
+
+    fun applyCoreDisplayPolicy(policy: UiDisplayPolicy?) {
+        activeDisplayPolicy = policy
+        syncDisplayPolicy()
+    }
+
+    private fun syncDisplayPolicy() {
+        displayPolicyHandler.removeCallbacks(displayDimRunnable)
+        val policy = activeDisplayPolicy
+        if (!displayPolicyForeground || policy?.keepScreenOn != true) {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            restoreSystemWindowBrightness()
+            return
+        }
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        restoreSystemWindowBrightness()
+        val dimAfterMs = policy.dimAfterMs ?: return
+        displayPolicyHandler.postDelayed(displayDimRunnable, dimAfterMs.coerceAtLeast(1L))
+    }
+
+    private fun applyDisplayPolicyDimState() {
+        val policy = activeDisplayPolicy ?: return
+        if (!displayPolicyForeground || !policy.keepScreenOn || policy.dimAfterMs == null) {
+            return
+        }
+        val attrs = window.attributes
+        attrs.screenBrightness = policy.dimBrightness.coerceIn(0.0f, 1.0f)
+        window.attributes = attrs
+    }
+
+    private fun restoreSystemWindowBrightness() {
+        val attrs = window.attributes
+        if (attrs.screenBrightness == WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE) {
+            return
+        }
+        attrs.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        window.attributes = attrs
+    }
+
+    private fun noteDisplayUserActivity() {
+        syncDisplayPolicy()
+    }
 
     @OptIn(ExperimentalComposeUiApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -2730,8 +2956,30 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        displayPolicyForeground = true
+        syncDisplayPolicy()
+    }
+
+    override fun onPause() {
+        displayPolicyForeground = false
+        displayPolicyHandler.removeCallbacks(displayDimRunnable)
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        restoreSystemWindowBrightness()
+        super.onPause()
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            noteDisplayUserActivity()
+        }
+        return super.dispatchTouchEvent(event)
+    }
+
     override fun dispatchKeyEvent(event: AndroidKeyEvent): Boolean {
         if (event.action == AndroidKeyEvent.ACTION_DOWN) {
+            noteDisplayUserActivity()
             val situationInput = situationControlInputForKeyEvent(event)
             if (situationInput != null && (onSituationControlInput?.invoke(situationInput) == true)) {
                 return true
@@ -2822,6 +3070,7 @@ internal class AerobagRetainedModel : ViewModel() {
     }
 
     fun getOrCreateCoreSession(
+        context: Context,
         runtimeContent: RuntimeContent,
         recentAirportIds: List<String>,
         selectedAirportId: String?,
@@ -2840,6 +3089,8 @@ internal class AerobagRetainedModel : ViewModel() {
             selectedAirportId,
             selectedChartId,
             runtimeContent.installedPackageIds,
+            settingsStore = AndroidCoreSettingsStore(context.applicationContext),
+            displayPolicySettingsAvailable = true,
         )
         return AerobagRetainedCoreSession(
             runtimeContent = runtimeContent,
@@ -2970,6 +3221,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
     val storedSelectedAirportId = remember { prefs.getString(UiPrefsSelectedAirportKey, null).orEmpty() }
     val storedSelectedChartId = remember { prefs.getString(UiPrefsSelectedChartKey, null).orEmpty() }
     val retainedCoreSession = retainedModel.getOrCreateCoreSession(
+        context = appContext,
         runtimeContent = fixture,
         recentAirportIds = storedRecentAirportIds,
         selectedAirportId = storedSelectedAirportId.ifBlank { null },
@@ -2998,6 +3250,14 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
     var rasterMapState by remember(uiSession) { mutableStateOf(initialRasterMapState) }
     var selectedMapId by remember(uiSession) { mutableStateOf(initialRasterMapState.selectedMapId) }
     var sessionSnapshot by remember(uiSession) { mutableStateOf(uiSession.snapshot) }
+    LaunchedEffect(context, sessionSnapshot.displayPolicy) {
+        (context as? MainActivity)?.applyCoreDisplayPolicy(sessionSnapshot.displayPolicy)
+    }
+    DisposableEffect(context) {
+        onDispose {
+            (context as? MainActivity)?.applyCoreDisplayPolicy(null)
+        }
+    }
     fun selectOwnshipSource(sourceId: String) {
         sessionSnapshot = uiSession.selectOwnshipSource(OwnshipSelection.Source(sourceId))
         AndroidGpsPower.clearPendingOwnshipSource(appContext)
@@ -3503,6 +3763,20 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                         mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         onSelectPage = ::navigateToPage,
+                    )
+                }
+                AppPage.Settings -> {
+                    SettingsPage(
+                        page = page,
+                        state = sessionSnapshot.settingsPageState,
+                        mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),
+                        onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
+                        onSelectPage = ::navigateToPage,
+                        onSettingsAction = { actionId, valueId ->
+                            runCatching { uiSession.performSettingsAction(actionId, valueId) }
+                                .onSuccess { sessionSnapshot = it }
+                                .onFailure { error -> Log.w("AerobagSettings", "settings action failed: $actionId=$valueId", error) }
+                        },
                     )
                 }
             }

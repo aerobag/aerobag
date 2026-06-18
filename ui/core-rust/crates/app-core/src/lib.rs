@@ -58,9 +58,10 @@ pub use geodesy::{
 };
 pub use geometry::{GeoBounds, GeometryBundle, LatLon, MapViewport, PolygonRecord};
 pub use had_ops::{
-    nav_kv_page_index_from_resource_id, run_had_operation, CoreResourceRequest, CoreResourceSource,
-    HadOperation, HadOperationOutcome, NavDbArtifactCandidate, NavDbArtifactOpenStatus,
-    NavDbOpenController, NavDbOpenResult, UiInvalidation,
+    decode_nav_db_page_resource_bytes, nav_kv_page_index_from_resource_id, run_had_operation,
+    CoreResourceRequest, CoreResourceSource, HadOperation, HadOperationOutcome,
+    NavDbArtifactCandidate, NavDbArtifactOpenStatus, NavDbOpenController, NavDbOpenResult,
+    UiInvalidation,
 };
 pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
 pub use live_feed_cache::{
@@ -180,8 +181,8 @@ pub use raster_tiles::{
 pub use session::{
     activate_next_leg_in_session, append_flight_plan_entry_in_session,
     apply_situation_control_input_in_session, attach_nav_kv_store_to_session,
-    attach_nav_kv_store_to_session_with_open_result, create_ui_session,
-    create_ui_session_at_epoch_ms, create_ui_session_profiled,
+    attach_nav_kv_store_to_session_with_open_result, configure_platform_capabilities_in_session,
+    create_ui_session, create_ui_session_at_epoch_ms, create_ui_session_profiled,
     create_ui_session_profiled_at_epoch_ms, destroy_session, disengage_map_follow_in_session,
     drain_session_resource_effects, engage_map_follow_in_session, get_map_overlay_in_session,
     get_map_overlay_in_session_at_epoch_ms, get_map_overlay_in_session_with_point_display_scale,
@@ -210,14 +211,14 @@ pub use session::{
     load_playback_trace_in_session, load_playback_trace_in_session_outcome,
     load_raster_map_catalog_in_session, nexrad_tile_bytes_in_session, pause_playback_in_session,
     pause_playback_in_session_outcome, perform_flight_plan_row_action_in_session,
-    perform_map_selection_action_in_session, perform_status_action_in_session,
-    play_playback_in_session, play_playback_in_session_outcome, prepare_nexrad_tile_in_session,
-    preview_flight_plan_entry_in_session, project_flight_plan_route_in_session,
-    push_situation_sample_in_session, push_situation_sample_in_session_outcome,
-    register_ownship_source_in_session, register_ownship_source_in_session_outcome,
-    render_terrain_overlay_tile_by_key_in_session, render_terrain_overlay_tile_in_session,
-    render_terrain_overlay_tiles_in_session, report_live_feed_connection_event_in_session,
-    report_session_resource_failure_in_session,
+    perform_map_selection_action_in_session, perform_settings_action_in_session,
+    perform_status_action_in_session, play_playback_in_session, play_playback_in_session_outcome,
+    prepare_nexrad_tile_in_session, preview_flight_plan_entry_in_session,
+    project_flight_plan_route_in_session, push_situation_sample_in_session,
+    push_situation_sample_in_session_outcome, register_ownship_source_in_session,
+    register_ownship_source_in_session_outcome, render_terrain_overlay_tile_by_key_in_session,
+    render_terrain_overlay_tile_in_session, render_terrain_overlay_tiles_in_session,
+    report_live_feed_connection_event_in_session, report_session_resource_failure_in_session,
     report_session_resource_failure_in_session_at_epoch_ms,
     resolve_chart_asset_resource_in_session, resolve_metar_manifest_in_session,
     resolve_nav_db_artifact_candidates_in_session, restore_chart_page_state_in_session,
@@ -235,9 +236,11 @@ pub use session::{
     tick_debug_ownship_driver_in_session, tick_debug_ownship_driver_in_session_outcome,
     tick_playback_in_session, tick_playback_in_session_outcome, unsuspend_sequencing_in_session,
     update_ownship_source_status_in_session, update_ownship_source_status_in_session_outcome,
-    GuidanceLegGeometry, LiveFeedConnectionEvent, LiveFeedConnectionEventKind, UiChartPageState,
-    UiDebugState, UiMapLayerState, UiMapLayerToggleState, UiSessionInitResult,
-    UiSessionResourceEffect, UiSessionSnapshot,
+    DisplayDimTimeout, GuidanceLegGeometry, LiveFeedConnectionEvent, LiveFeedConnectionEventKind,
+    PlatformCapabilities, PlatformDisplayPolicyCapability, SettingsPreferences, SettingsStorage,
+    SettingsStorageHandle, UiChartPageState, UiDebugState, UiDisplayPolicy, UiMapLayerState,
+    UiMapLayerToggleState, UiSessionInitResult, UiSessionResourceEffect, UiSessionSnapshot,
+    UiSettingsAction, UiSettingsPageRow, UiSettingsPageState, UiSettingsSliderStop,
 };
 pub use situation::{Situation, SituationPosition};
 pub use state::{

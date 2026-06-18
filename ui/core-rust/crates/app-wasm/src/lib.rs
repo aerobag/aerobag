@@ -1,7 +1,5 @@
 use std::{
-    borrow::Cow,
     collections::{BTreeSet, HashMap},
-    io::Cursor,
     sync::{
         atomic::{AtomicU32, Ordering},
         Mutex, MutexGuard, OnceLock,
@@ -168,13 +166,12 @@ pub fn nav_db_open_controller_ingest_resource(
     resource_id: &str,
     resource_bytes: &[u8],
 ) -> Result<(), JsValue> {
-    let decoded_bytes = decode_nav_db_page_resource_bytes(resource_id, resource_bytes)?;
     let mut controllers = lock_nav_db_open_controllers();
     let controller = controllers.get_mut(&handle).ok_or_else(|| {
         JsValue::from_str(&format!("invalid nav db open controller handle: {handle}"))
     })?;
     controller
-        .ingest_resource(resource_id, decoded_bytes.as_ref())
+        .ingest_resource(resource_id, resource_bytes)
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -275,42 +272,9 @@ pub fn nav_kv_insert_resource(
         app_core::nav_kv_page_index_from_resource_id(resource_id).ok_or_else(|| {
             JsValue::from_str(&format!("unsupported nav kv resource id: {resource_id}"))
         })?;
-    let decoded_bytes = decode_nav_db_page_resource_bytes(resource_id, resource_bytes)?;
+    let decoded_bytes = app_core::decode_nav_db_page_resource_bytes(resource_id, resource_bytes)
+        .map_err(|err| JsValue::from_str(&err))?;
     nav_kv_insert_page(handle, page_index, decoded_bytes.as_ref())
-}
-
-fn decode_nav_db_page_resource_bytes<'a>(
-    resource_id: &str,
-    resource_bytes: &'a [u8],
-) -> Result<Cow<'a, [u8]>, JsValue> {
-    if !is_xz_nav_db_page_resource_id(resource_id) {
-        return Ok(Cow::Borrowed(resource_bytes));
-    }
-    let mut input = Cursor::new(resource_bytes);
-    let mut decoded = Vec::new();
-    lzma_rs::xz_decompress(&mut input, &mut decoded).map_err(|err| {
-        JsValue::from_str(&format!(
-            "failed to xz-decode nav-db page {resource_id}: {err}"
-        ))
-    })?;
-    Ok(Cow::Owned(decoded))
-}
-
-fn is_xz_nav_db_page_resource_id(resource_id: &str) -> bool {
-    app_core::nav_kv_page_index_from_resource_id(resource_id).is_some()
-        || nav_db_artifact_page_resource_id(resource_id)
-}
-
-fn nav_db_artifact_page_resource_id(resource_id: &str) -> bool {
-    let Some(rest) = resource_id.strip_prefix("nav_db/artifact/") else {
-        return false;
-    };
-    let Some((index, page)) = rest.split_once("/page/") else {
-        return false;
-    };
-    index.parse::<usize>().is_ok()
-        && page.len() == 4
-        && page.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 #[wasm_bindgen]
@@ -1496,6 +1460,18 @@ pub fn perform_status_action_in_session(
 }
 
 #[wasm_bindgen]
+pub fn perform_settings_action_in_session(
+    session_handle: u32,
+    action_json: &str,
+) -> Result<String, JsValue> {
+    let action: app_core::UiSettingsAction =
+        serde_json::from_str(action_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let snapshot = app_core::perform_settings_action_in_session(session_handle, action)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn activate_next_leg_in_session(session_handle: u32) -> Result<String, JsValue> {
     let snapshot = app_core::activate_next_leg_in_session(session_handle)
         .map_err(|err| JsValue::from_str(&err.to_string()))?;
@@ -1662,6 +1638,18 @@ pub fn create_ui_session_profiled(
 #[wasm_bindgen]
 pub fn set_resource_policy_in_session(handle: u32, policy_json: &str) -> Result<String, JsValue> {
     set_resource_policy_in_session_json(handle, policy_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn configure_platform_capabilities_in_session(
+    handle: u32,
+    capabilities_json: &str,
+) -> Result<String, JsValue> {
+    let capabilities: app_core::PlatformCapabilities = serde_json::from_str(capabilities_json)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let snapshot = app_core::configure_platform_capabilities_in_session(handle, capabilities, None)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[wasm_bindgen]

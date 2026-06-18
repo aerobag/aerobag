@@ -89,6 +89,8 @@ export type UiSessionSnapshot = {
   map_layer_state: UiMapLayerState;
   data_status_state: UiDataStatusState;
   data_status_page_state: UiDataStatusPageState;
+  settings_page_state: UiSettingsPageState;
+  display_policy: UiDisplayPolicy | null;
   debug_state: UiDebugState;
   raster_map?: RasterMapUiState | null;
   next_cycle_product_freshness_check_epoch_ms?: number | null;
@@ -156,6 +158,32 @@ export type UiDataStatusPageState = {
   title: string;
   summary: string;
   rows: UiDataStatusPageRow[];
+};
+
+export type UiSettingsSliderStop = {
+  id: string;
+  label: string;
+};
+
+export type UiSettingsPageRow = {
+  kind: string;
+  id: string;
+  title: string;
+  value_id: string;
+  stops: UiSettingsSliderStop[];
+  action_id: string;
+};
+
+export type UiSettingsPageState = {
+  title: string;
+  summary: string;
+  rows: UiSettingsPageRow[];
+};
+
+export type UiDisplayPolicy = {
+  keep_screen_on: boolean;
+  dim_after_ms: number | null;
+  dim_brightness: number;
 };
 
 export type MapLayerId =
@@ -708,6 +736,7 @@ type WasmModule = {
   create_ui_session(planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string, nowEpochMs: number): Promise<string> | string;
   create_ui_session_profiled?: (planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string, nowEpochMs: number) => Promise<string> | string;
   set_resource_policy_in_session(handle: number, policyJson: string): Promise<string> | string;
+  configure_platform_capabilities_in_session(handle: number, capabilitiesJson: string): Promise<string> | string;
   set_situation_in_session_paged(handle: number, situationJson: string): Promise<string> | string;
   tick_debug_ownship_driver_in_session_paged(handle: number, nowEpochMs: number): Promise<string> | string;
   engage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
@@ -900,6 +929,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       await debugTiming("startup.session.reset_metar_prep", () => resetMetarLiveFeedPrep());
       await debugTiming("startup.session.set_resource_policy", () =>
         module.set_resource_policy_in_session(created.handle, JSON.stringify("public_unpacked")),
+      );
+      await debugTiming("startup.session.configure_platform", () =>
+        module.configure_platform_capabilities_in_session(
+          created.handle,
+          JSON.stringify({ display_policy: null }),
+        ),
       );
       await debugTiming("startup.session.attach_nav_kv", () => attachNavKvStoreToSession(created.handle));
       const catalogedSnapshot = await debugTiming("startup.session.load_raster_catalog", () =>
@@ -1764,6 +1799,7 @@ async function loadBestAvailableAdapterUncached(
     "empty_flight_plan_json",
     "create_ui_session",
     "set_resource_policy_in_session",
+    "configure_platform_capabilities_in_session",
     "perform_flight_plan_row_action_in_session",
     "perform_status_action_in_session",
     "set_situation_in_session_paged",

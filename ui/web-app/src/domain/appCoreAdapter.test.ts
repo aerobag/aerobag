@@ -59,6 +59,12 @@ const snapshotJson = JSON.stringify({
     summary: "All tracked data is usable.",
     rows: [],
   },
+  settings_page_state: {
+    title: "Settings",
+    summary: "No platform settings are available.",
+    rows: [],
+  },
+  display_policy: null,
 });
 
 describe("loadBestAvailableAdapter", () => {
@@ -103,6 +109,7 @@ describe("loadBestAvailableAdapter", () => {
       set_map_layer_enabled_in_session: async () => snapshotJson,
       set_debug_flag_in_session: async () => snapshotJson,
       set_resource_policy_in_session: async () => snapshotJson,
+      configure_platform_capabilities_in_session: async () => snapshotJson,
       load_raster_map_catalog_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       select_map_family_in_session: async () => snapshotJson,
       select_raster_map_in_session: async () => snapshotJson,

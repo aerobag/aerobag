@@ -346,6 +346,11 @@ private val NativeAppCoreJson = Json {
     ignoreUnknownKeys = true
 }
 
+private object NoopCoreSettingsStore : CoreSettingsStore {
+    override fun readSettings(): ByteArray? = null
+    override fun writeSettings(bytes: ByteArray) = Unit
+}
+
 class NativeAppCoreAdapter(
     private val navKvStore: NavKvStore? = null,
     private val bridge: NativeBridge = NativeBindings,
@@ -364,6 +369,8 @@ class NativeAppCoreAdapter(
         selectedAirportId: String?,
         selectedChartId: String?,
         installedPackageIds: List<String> = emptyList(),
+        settingsStore: CoreSettingsStore? = null,
+        displayPolicySettingsAvailable: Boolean = false,
     ): NativeUiSession {
         val resultJson = bridge.createUiSessionJson(
             json.encodeToString(plan.toWire()),
@@ -380,6 +387,19 @@ class NativeAppCoreAdapter(
             initialSnapshot = result.snapshot.toUi(),
         )
         navKvStore?.attachToSession(result.handle)
+        session.configurePlatformCapabilities(
+            capabilitiesJson = buildJsonObject {
+                put(
+                    "display_policy",
+                    if (displayPolicySettingsAvailable) {
+                        buildJsonObject {}
+                    } else {
+                        JsonNull
+                    },
+                )
+            }.toString(),
+            settingsStore = settingsStore ?: NoopCoreSettingsStore,
+        )
         session.setInstalledPackageIds(installedPackageIds)
         session.loadRasterMapCatalog()
         return session.apply {
@@ -911,6 +931,16 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
+    fun configurePlatformCapabilities(
+        capabilitiesJson: String,
+        settingsStore: CoreSettingsStore,
+    ): UiSessionSnapshot {
+        snapshot = decodeSnapshot(
+            bridge.configurePlatformCapabilitiesInSessionJson(handle, capabilitiesJson, settingsStore),
+        )
+        return snapshot
+    }
+
     fun performFlightPlanRowAction(rowUid: String, actionUid: String): UiSessionSnapshot {
         return runPagedMutationAndRefresh {
             bridge.performFlightPlanRowActionInSessionJson(handle, rowUid, actionUid)
@@ -919,6 +949,19 @@ class NativeUiSession internal constructor(
 
     fun performStatusAction(actionId: String): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.performStatusActionInSessionJson(handle, actionId))
+        return snapshot
+    }
+
+    fun performSettingsAction(actionId: String, valueId: String): UiSessionSnapshot {
+        snapshot = decodeSnapshot(
+            bridge.performSettingsActionInSessionJson(
+                handle,
+                buildJsonObject {
+                    put("action_id", actionId)
+                    put("value_id", valueId)
+                }.toString(),
+            ),
+        )
         return snapshot
     }
 
@@ -1838,6 +1881,36 @@ private data class WireUiDataStatusPageState(
 )
 
 @kotlinx.serialization.Serializable
+private data class WireUiSettingsSliderStop(
+    val id: String,
+    val label: String,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireUiSettingsPageRow(
+    val kind: String,
+    val id: String,
+    val title: String,
+    val value_id: String,
+    val stops: List<WireUiSettingsSliderStop> = emptyList(),
+    val action_id: String,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireUiSettingsPageState(
+    val title: String = "Settings",
+    val summary: String = "",
+    val rows: List<WireUiSettingsPageRow> = emptyList(),
+)
+
+@kotlinx.serialization.Serializable
+private data class WireUiDisplayPolicy(
+    val keep_screen_on: Boolean,
+    val dim_after_ms: Long? = null,
+    val dim_brightness: Float,
+)
+
+@kotlinx.serialization.Serializable
 private data class WireUiDebugState(
     val tile_labels: Boolean = false,
     val nexrad_tile_labels: Boolean = false,
@@ -1859,6 +1932,8 @@ private data class WireUiSessionSnapshot(
     val map_layer_state: WireUiMapLayerState = WireUiMapLayerState(),
     val data_status_state: WireUiDataStatusState,
     val data_status_page_state: WireUiDataStatusPageState,
+    val settings_page_state: WireUiSettingsPageState = WireUiSettingsPageState(),
+    val display_policy: WireUiDisplayPolicy? = null,
     val debug_state: WireUiDebugState = WireUiDebugState(),
     val raster_map: WireRasterMapUiState? = null,
     val next_cycle_product_freshness_check_epoch_ms: Long? = null,
@@ -1936,6 +2011,8 @@ data class UiSessionSnapshot(
     val mapLayerState: UiMapLayerState,
     val dataStatusState: UiDataStatusState,
     val dataStatusPageState: UiDataStatusPageState,
+    val settingsPageState: UiSettingsPageState,
+    val displayPolicy: UiDisplayPolicy?,
     val debugState: UiDebugState,
     val rasterMap: RasterMapUiState?,
     val nextCycleProductFreshnessCheckEpochMs: Long?,
@@ -2010,6 +2087,32 @@ data class UiDataStatusPageState(
     val title: String,
     val summary: String,
     val rows: List<UiDataStatusPageRow>,
+)
+
+data class UiSettingsSliderStop(
+    val id: String,
+    val label: String,
+)
+
+data class UiSettingsPageRow(
+    val kind: String,
+    val id: String,
+    val title: String,
+    val valueId: String,
+    val stops: List<UiSettingsSliderStop>,
+    val actionId: String,
+)
+
+data class UiSettingsPageState(
+    val title: String,
+    val summary: String,
+    val rows: List<UiSettingsPageRow>,
+)
+
+data class UiDisplayPolicy(
+    val keepScreenOn: Boolean,
+    val dimAfterMs: Long?,
+    val dimBrightness: Float,
 )
 
 data class UiDebugState(
@@ -2150,6 +2253,32 @@ private fun WireUiDataStatusPageState.toUi() = UiDataStatusPageState(
     rows = rows.map { it.toUi() },
 )
 
+private fun WireUiSettingsSliderStop.toUi() = UiSettingsSliderStop(
+    id = id,
+    label = label,
+)
+
+private fun WireUiSettingsPageRow.toUi() = UiSettingsPageRow(
+    kind = kind,
+    id = id,
+    title = title,
+    valueId = value_id,
+    stops = stops.map { it.toUi() },
+    actionId = action_id,
+)
+
+private fun WireUiSettingsPageState.toUi() = UiSettingsPageState(
+    title = title,
+    summary = summary,
+    rows = rows.map { it.toUi() },
+)
+
+private fun WireUiDisplayPolicy.toUi() = UiDisplayPolicy(
+    keepScreenOn = keep_screen_on,
+    dimAfterMs = dim_after_ms,
+    dimBrightness = dim_brightness,
+)
+
 private fun WireUiDebugState.toUi() = UiDebugState(
     tileLabels = tile_labels,
     nexradTileLabels = nexrad_tile_labels,
@@ -2170,6 +2299,8 @@ private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     mapLayerState = map_layer_state.toUi(),
     dataStatusState = data_status_state.toUi(),
     dataStatusPageState = data_status_page_state.toUi(),
+    settingsPageState = settings_page_state.toUi(),
+    displayPolicy = display_policy?.toUi(),
     debugState = debug_state.toUi(),
     rasterMap = raster_map?.toUi(),
     nextCycleProductFreshnessCheckEpochMs = next_cycle_product_freshness_check_epoch_ms,

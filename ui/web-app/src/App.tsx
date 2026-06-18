@@ -1573,6 +1573,12 @@ export default function App() {
       summary: "Status will appear after core session data loads.",
       rows: [],
     },
+    settings_page_state: {
+      title: "Settings",
+      summary: "No platform settings are available.",
+      rows: [],
+    },
+    display_policy: null,
     debug_state: initialDebugState,
     raster_map: null,
     next_cycle_product_freshness_check_epoch_ms: null,

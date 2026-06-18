@@ -2995,35 +2995,85 @@ fn can_reorder_component_in_direction(
     target_index.is_some_and(|index| index < plan.route_components.len())
 }
 
-fn rebuild_after_component_remap(
+#[derive(Debug, Clone)]
+struct RebuiltRouteComponent {
+    // Preserved rows carry their old stable UID; genuinely new rows leave this empty.
+    // Guidance restoration anchors to these UIDs instead of trusting shifted indices.
+    uid: Option<String>,
+    component: RouteComponent,
+    preserved_legs: Option<Vec<ResolvedLeg>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuidanceRebuildPolicy {
+    PreserveByRowUid,
+    Clear,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveGuidanceAnchor {
+    from_row_uid: Option<String>,
+    to_row_uid: Option<String>,
+    guidance: GuidanceState,
+    active_detail_element_index: Option<usize>,
+}
+
+fn rebuilt_existing_component(
+    plan: &FlightPlan,
+    old_grouped_legs: &BTreeMap<usize, Vec<ResolvedLeg>>,
+    old_index: usize,
+) -> RebuiltRouteComponent {
+    RebuiltRouteComponent {
+        uid: plan.route_component_uids.get(old_index).cloned(),
+        component: plan.route_components[old_index].clone(),
+        preserved_legs: old_grouped_legs.get(&old_index).cloned(),
+    }
+}
+
+fn rebuilt_new_component(
+    component: RouteComponent,
+    preserved_legs: Option<Vec<ResolvedLeg>>,
+) -> RebuiltRouteComponent {
+    RebuiltRouteComponent {
+        uid: None,
+        component,
+        preserved_legs,
+    }
+}
+
+fn rebuild_plan_from_uid_components(
     old_plan: &FlightPlan,
-    new_components: Vec<RouteComponent>,
-    old_index_by_new_index: Vec<Option<usize>>,
+    rebuilt_components: Vec<RebuiltRouteComponent>,
+    guidance_policy: GuidanceRebuildPolicy,
 ) -> FlightPlan {
     let old_plan = old_plan.clone().normalized();
-    let old_grouped_legs = grouped_component_legs(&old_plan);
-    let grouped_by_component = old_index_by_new_index
-        .iter()
-        .enumerate()
-        .filter_map(|(new_index, old_index)| {
-            let old_index = (*old_index)?;
-            let legs = old_grouped_legs.get(&old_index)?;
-            Some((new_index, rewrite_grouped_legs_source(legs, new_index)))
-        })
-        .collect::<BTreeMap<usize, Vec<ResolvedLeg>>>();
-    let resolved =
-        rebuild_resolved_legs_with_grouped_components(&new_components, &grouped_by_component);
-
-    let mut plan = old_plan;
-    let (route_component_uids, next_counter) =
-        route_component_uids_from_remap(&plan, old_index_by_new_index);
-    plan.legs.clear();
-    plan.route_components = new_components;
-    plan.route_component_uids = route_component_uids;
-    plan.route_component_uid_counter = next_counter;
-    plan.resolved_legs = resolved;
-    plan.guidance = revalidate_guidance_after_plan_edit(plan.guidance, &plan.resolved_legs);
-    plan.normalized()
+    let old_guidance = old_plan.guidance.clone();
+    let active_anchor = (guidance_policy == GuidanceRebuildPolicy::PreserveByRowUid)
+        .then(|| capture_active_guidance_anchor(&old_plan))
+        .flatten();
+    let (route_components, route_component_uids, route_component_uid_counter, grouped_legs) =
+        materialize_rebuilt_components(&old_plan, rebuilt_components);
+    let resolved_legs =
+        rebuild_resolved_legs_with_grouped_components(&route_components, &grouped_legs);
+    let mut plan = FlightPlan {
+        legs: Vec::new(),
+        route_components,
+        route_component_uids,
+        route_component_uid_counter,
+        resolved_legs,
+        guidance: None,
+        ..old_plan
+    }
+    .normalized();
+    plan.guidance = match guidance_policy {
+        GuidanceRebuildPolicy::PreserveByRowUid => match active_anchor {
+            Some(anchor) => restore_guidance_from_row_uid_anchor(&plan, &anchor),
+            // Direct-to and other states without row anchors keep the old bounded-index behavior.
+            None => revalidate_guidance_after_plan_edit(old_guidance, &plan.resolved_legs),
+        },
+        GuidanceRebuildPolicy::Clear => None,
+    };
+    plan
 }
 
 fn allocate_route_component_uid(next_counter: &mut u64) -> String {
@@ -3032,20 +3082,161 @@ fn allocate_route_component_uid(next_counter: &mut u64) -> String {
     uid
 }
 
-fn route_component_uids_from_remap(
+fn materialize_rebuilt_components(
     plan: &FlightPlan,
-    old_index_by_new_index: impl IntoIterator<Item = Option<usize>>,
-) -> (Vec<String>, u64) {
+    rebuilt_components: Vec<RebuiltRouteComponent>,
+) -> (
+    Vec<RouteComponent>,
+    Vec<String>,
+    u64,
+    BTreeMap<usize, Vec<ResolvedLeg>>,
+) {
     let mut next_counter = plan.route_component_uid_counter;
-    let uids = old_index_by_new_index
+    let mut seen = BTreeMap::<String, ()>::new();
+    let mut route_components = Vec::with_capacity(rebuilt_components.len());
+    let mut route_component_uids = Vec::with_capacity(rebuilt_components.len());
+    let mut grouped_legs = BTreeMap::<usize, Vec<ResolvedLeg>>::new();
+
+    for (new_index, rebuilt) in rebuilt_components.into_iter().enumerate() {
+        let uid = rebuilt
+            .uid
+            .filter(|uid| !uid.is_empty() && !seen.contains_key(uid))
+            .unwrap_or_else(|| allocate_route_component_uid(&mut next_counter));
+        seen.insert(uid.clone(), ());
+        if let Some(legs) = rebuilt.preserved_legs {
+            grouped_legs.insert(new_index, rewrite_grouped_legs_source(&legs, new_index));
+        }
+        route_component_uids.push(uid);
+        route_components.push(rebuilt.component);
+    }
+
+    (
+        route_components,
+        route_component_uids,
+        next_counter,
+        grouped_legs,
+    )
+}
+
+fn capture_active_guidance_anchor(plan: &FlightPlan) -> Option<ActiveGuidanceAnchor> {
+    let guidance = plan.guidance.clone()?;
+    if guidance.sequencing_mode == SequencingMode::DirectTo {
+        return None;
+    }
+    let rows = guidance_anchor_display_rows(plan);
+    let (from_row_uid, to_row_uid) = active_guidance_row_uids(plan, &rows);
+    let active_detail_element_index = guidance
+        .active_detail_index
+        .and_then(|detail_index| guidance_detail_ref_by_index(plan, detail_index))
+        .filter(|detail| detail.leg_index == guidance.active_leg_index)
+        .map(|detail| detail.element_index);
+    Some(ActiveGuidanceAnchor {
+        from_row_uid,
+        to_row_uid,
+        guidance,
+        active_detail_element_index,
+    })
+}
+
+fn restore_guidance_from_row_uid_anchor(
+    plan: &FlightPlan,
+    anchor: &ActiveGuidanceAnchor,
+) -> Option<GuidanceState> {
+    if anchor.to_row_uid.is_none() {
+        return None;
+    }
+
+    for leg_index in 0..plan.resolved_legs.len() {
+        let mut candidate_guidance = anchor.guidance.clone();
+        candidate_guidance.active_leg_index = leg_index;
+        candidate_guidance.direct_to = None;
+        candidate_guidance.display_split_leg_id =
+            plan.resolved_legs.get(leg_index).map(|leg| leg.id.clone());
+        candidate_guidance.active_detail_index =
+            active_detail_index_for_restored_leg(plan, leg_index, anchor);
+        let candidate_plan = FlightPlan {
+            guidance: Some(candidate_guidance.clone()),
+            ..plan.clone()
+        };
+        let rows = guidance_anchor_display_rows(&candidate_plan);
+        let candidate_uids = active_guidance_row_uids(&candidate_plan, &rows);
+        if candidate_uids == (anchor.from_row_uid.clone(), anchor.to_row_uid.clone()) {
+            return revalidate_guidance_after_plan_edit(
+                Some(candidate_guidance),
+                &candidate_plan.resolved_legs,
+            );
+        }
+    }
+
+    None
+}
+
+fn active_detail_index_for_restored_leg(
+    plan: &FlightPlan,
+    leg_index: usize,
+    anchor: &ActiveGuidanceAnchor,
+) -> Option<usize> {
+    let element_index = anchor.active_detail_element_index.unwrap_or(0);
+    guidance_detail_refs(plan)
         .into_iter()
-        .map(|old_index| {
-            old_index
-                .and_then(|index| plan.route_component_uids.get(index).cloned())
-                .unwrap_or_else(|| allocate_route_component_uid(&mut next_counter))
+        .find(|detail| detail.leg_index == leg_index && detail.element_index == element_index)
+        .map(|detail| detail.detail_index)
+        .or_else(|| first_guidance_detail_index_for_leg(plan, leg_index))
+}
+
+fn guidance_anchor_display_rows(plan: &FlightPlan) -> Vec<FlightPlanDisplayRowUiView> {
+    let plan = plan.clone().normalized();
+    let grouped_legs = grouped_component_legs(&plan);
+    let projected_items =
+        dedupe_component_items_for_projection(&plan.route_components, &grouped_legs);
+    let active_component_index = plan
+        .guidance
+        .as_ref()
+        .and_then(|guidance| active_component_index_for_guidance(&plan, guidance));
+    let components = plan
+        .route_components
+        .iter()
+        .enumerate()
+        .map(|(component_index, component)| {
+            let component_nav_ref = match component {
+                RouteComponent::Waypoint { waypoint } => Some(waypoint.clone()),
+                RouteComponent::Airway { .. } | RouteComponent::Procedure { .. } => None,
+            };
+            RouteComponentUiView {
+                uid: component_uid(&plan, component_index),
+                component_index,
+                kind: component_view_kind(component),
+                summary: component_summary(component),
+                procedure_id: component_procedure_id(component),
+                procedure_kind: component_procedure_kind(component),
+                chart_airport_id: component_chart_airport_id(component),
+                nav_ref: component_nav_ref,
+                items: projected_items
+                    .get(component_index)
+                    .cloned()
+                    .unwrap_or_default(),
+                active: active_component_index == Some(component_index),
+                can_add_airway_after: false,
+                can_add_procedure_before: false,
+                can_remove: false,
+                can_reorder: false,
+                can_reorder_up: false,
+                can_reorder_down: false,
+                replace_procedure_component_index: None,
+                preceding_waypoint: adjacent_waypoint_component(
+                    &plan.route_components,
+                    component_index,
+                    -1,
+                ),
+                following_waypoint: adjacent_waypoint_component(
+                    &plan.route_components,
+                    component_index,
+                    1,
+                ),
+            }
         })
         .collect::<Vec<_>>();
-    (uids, next_counter)
+    project_display_rows(&plan, &components, &[])
 }
 
 pub fn delete_component(plan: &FlightPlan, component_index: usize) -> AppResult<FlightPlan> {
@@ -3057,20 +3248,23 @@ pub fn delete_component(plan: &FlightPlan, component_index: usize) -> AppResult<
         });
     }
 
-    let mut new_components = Vec::new();
-    let mut old_index_by_new_index = Vec::new();
-    for (old_index, component) in plan.route_components.iter().cloned().enumerate() {
+    let old_grouped_legs = grouped_component_legs(&plan);
+    let mut rebuilt_components = Vec::new();
+    for old_index in 0..plan.route_components.len() {
         if old_index == component_index {
             continue;
         }
-        new_components.push(component);
-        old_index_by_new_index.push(Some(old_index));
+        rebuilt_components.push(rebuilt_existing_component(
+            &plan,
+            &old_grouped_legs,
+            old_index,
+        ));
     }
 
-    Ok(rebuild_after_component_remap(
+    Ok(rebuild_plan_from_uid_components(
         &plan,
-        new_components,
-        old_index_by_new_index,
+        rebuilt_components,
+        GuidanceRebuildPolicy::PreserveByRowUid,
     ))
 }
 
@@ -3125,54 +3319,39 @@ fn rebuild_with_airway_replacement(
         });
     }
 
-    let old_grouped_legs = grouped_component_legs(&plan);
     let start_index = if drop_before_target {
         component_index
     } else {
         0
     };
-    let mut new_components = Vec::new();
-    let mut old_index_by_new_index = Vec::new();
-    let mut grouped_by_component = BTreeMap::new();
+    let old_grouped_legs = grouped_component_legs(&plan);
+    let mut rebuilt_components = Vec::new();
 
     for old_index in start_index..plan.route_components.len() {
         if old_index == component_index {
             let Some((component, replacement_legs)) = replacement.clone() else {
                 continue;
             };
-            let new_index = new_components.len();
-            if let Some(legs) = replacement_legs {
-                grouped_by_component
-                    .insert(new_index, rewrite_grouped_legs_source(&legs, new_index));
-            }
-            new_components.push(component);
-            old_index_by_new_index.push(Some(old_index));
+            rebuilt_components.push(RebuiltRouteComponent {
+                uid: plan.route_component_uids.get(old_index).cloned(),
+                component,
+                preserved_legs: replacement_legs,
+            });
             continue;
         }
 
-        let new_index = new_components.len();
-        if let Some(legs) = old_grouped_legs.get(&old_index) {
-            grouped_by_component.insert(new_index, rewrite_grouped_legs_source(legs, new_index));
-        }
-        new_components.push(plan.route_components[old_index].clone());
-        old_index_by_new_index.push(Some(old_index));
+        rebuilt_components.push(rebuilt_existing_component(
+            &plan,
+            &old_grouped_legs,
+            old_index,
+        ));
     }
 
-    let resolved =
-        rebuild_resolved_legs_with_grouped_components(&new_components, &grouped_by_component);
-    let (route_component_uids, next_counter) =
-        route_component_uids_from_remap(&plan, old_index_by_new_index);
-    let guidance = revalidate_guidance_after_plan_edit(plan.guidance, &resolved);
-    Ok(FlightPlan {
-        legs: Vec::new(),
-        route_components: new_components,
-        route_component_uids,
-        route_component_uid_counter: next_counter,
-        resolved_legs: resolved,
-        guidance,
-        ..plan
-    }
-    .normalized())
+    Ok(rebuild_plan_from_uid_components(
+        &plan,
+        rebuilt_components,
+        GuidanceRebuildPolicy::PreserveByRowUid,
+    ))
 }
 
 fn airway_replacement_from_remaining_points(
@@ -3302,15 +3481,15 @@ pub fn remove_all_above(plan: &FlightPlan, component_index: usize) -> AppResult<
         });
     }
     let keep_from = component_index.saturating_add(1);
-    let new_components = plan.route_components[keep_from..].to_vec();
-    let old_index_by_new_index = (keep_from..plan.route_components.len())
-        .map(Some)
+    let old_grouped_legs = grouped_component_legs(&plan);
+    let rebuilt_components = (keep_from..plan.route_components.len())
+        .map(|old_index| rebuilt_existing_component(&plan, &old_grouped_legs, old_index))
         .collect::<Vec<_>>();
 
-    Ok(rebuild_after_component_remap(
+    Ok(rebuild_plan_from_uid_components(
         &plan,
-        new_components,
-        old_index_by_new_index,
+        rebuilt_components,
+        GuidanceRebuildPolicy::PreserveByRowUid,
     ))
 }
 
@@ -3418,25 +3597,26 @@ pub fn insert_waypoint(
     }
 
     let inserted = RouteComponent::Waypoint { waypoint };
-    let mut new_components = Vec::with_capacity(plan.route_components.len() + 1);
-    let mut old_index_by_new_index = Vec::with_capacity(plan.route_components.len() + 1);
-    for (old_index, component) in plan.route_components.iter().cloned().enumerate() {
+    let old_grouped_legs = grouped_component_legs(&plan);
+    let mut rebuilt_components = Vec::with_capacity(plan.route_components.len() + 1);
+    for old_index in 0..plan.route_components.len() {
         if old_index == component_index && before {
-            new_components.push(inserted.clone());
-            old_index_by_new_index.push(None);
+            rebuilt_components.push(rebuilt_new_component(inserted.clone(), None));
         }
-        new_components.push(component);
-        old_index_by_new_index.push(Some(old_index));
+        rebuilt_components.push(rebuilt_existing_component(
+            &plan,
+            &old_grouped_legs,
+            old_index,
+        ));
         if old_index == component_index && !before {
-            new_components.push(inserted.clone());
-            old_index_by_new_index.push(None);
+            rebuilt_components.push(rebuilt_new_component(inserted.clone(), None));
         }
     }
 
-    Ok(rebuild_after_component_remap(
+    Ok(rebuild_plan_from_uid_components(
         &plan,
-        new_components,
-        old_index_by_new_index,
+        rebuilt_components,
+        GuidanceRebuildPolicy::PreserveByRowUid,
     ))
 }
 
@@ -3464,28 +3644,20 @@ pub fn move_component(
         });
     }
 
-    let mut indexed_components = plan
-        .route_components
-        .iter()
-        .cloned()
-        .enumerate()
-        .collect::<Vec<_>>();
-    let moved = indexed_components.remove(component_index);
-    indexed_components.insert(target_index as usize, moved);
+    let mut old_indices = (0..plan.route_components.len()).collect::<Vec<_>>();
+    let moved = old_indices.remove(component_index);
+    old_indices.insert(target_index as usize, moved);
 
-    let new_components = indexed_components
-        .iter()
-        .map(|(_, component)| component.clone())
-        .collect::<Vec<_>>();
-    let old_index_by_new_index = indexed_components
-        .iter()
-        .map(|(old_index, _)| Some(*old_index))
+    let old_grouped_legs = grouped_component_legs(&plan);
+    let rebuilt_components = old_indices
+        .into_iter()
+        .map(|old_index| rebuilt_existing_component(&plan, &old_grouped_legs, old_index))
         .collect::<Vec<_>>();
 
-    Ok(rebuild_after_component_remap(
+    Ok(rebuild_plan_from_uid_components(
         &plan,
-        new_components,
-        old_index_by_new_index,
+        rebuilt_components,
+        GuidanceRebuildPolicy::PreserveByRowUid,
     ))
 }
 
@@ -3522,24 +3694,26 @@ pub fn flatten_component_to_waypoints(
         .into_iter()
         .map(|waypoint| RouteComponent::Waypoint { waypoint })
         .collect::<Vec<_>>();
-    let mut new_components = Vec::new();
-    let mut old_index_by_new_index = Vec::new();
+    let old_grouped_legs = grouped_component_legs(&plan);
+    let mut rebuilt_components = Vec::new();
     for old_index in 0..plan.route_components.len() {
         if old_index == component_index {
             for replacement in replacements.iter().cloned() {
-                new_components.push(replacement);
-                old_index_by_new_index.push(None);
+                rebuilt_components.push(rebuilt_new_component(replacement, None));
             }
             continue;
         }
-        new_components.push(plan.route_components[old_index].clone());
-        old_index_by_new_index.push(Some(old_index));
+        rebuilt_components.push(rebuilt_existing_component(
+            &plan,
+            &old_grouped_legs,
+            old_index,
+        ));
     }
 
-    Ok(rebuild_after_component_remap(
+    Ok(rebuild_plan_from_uid_components(
         &plan,
-        new_components,
-        old_index_by_new_index,
+        rebuilt_components,
+        GuidanceRebuildPolicy::PreserveByRowUid,
     ))
 }
 
@@ -3622,61 +3796,45 @@ pub fn insert_airway_between_waypoints(
         end_component_index
     };
 
-    let mut new_components = Vec::<RouteComponent>::new();
-    let mut preserved_grouped_legs = BTreeMap::<usize, Vec<ResolvedLeg>>::new();
+    let mut rebuilt_components = Vec::<RebuiltRouteComponent>::new();
     let old_grouped_legs = grouped_component_legs(&plan);
 
     for old_index in 0..preserve_start_end {
-        let new_index = new_components.len();
-        new_components.push(plan.route_components[old_index].clone());
-        if let Some(legs) = old_grouped_legs.get(&old_index) {
-            preserved_grouped_legs.insert(new_index, rewrite_grouped_legs_source(legs, new_index));
-        }
+        rebuilt_components.push(rebuilt_existing_component(
+            &plan,
+            &old_grouped_legs,
+            old_index,
+        ));
     }
 
-    let airway_component_index = new_components.len();
-    new_components.push(RouteComponent::Airway {
-        airway: airway.clone(),
-    });
+    rebuilt_components.push(rebuilt_new_component(
+        RouteComponent::Airway {
+            airway: airway.clone(),
+        },
+        Some(airway_legs),
+    ));
 
     for old_index in preserve_end_start..plan.route_components.len() {
-        let new_index = new_components.len();
-        new_components.push(plan.route_components[old_index].clone());
-        if let Some(legs) = old_grouped_legs.get(&old_index) {
-            preserved_grouped_legs.insert(new_index, rewrite_grouped_legs_source(legs, new_index));
-        }
+        rebuilt_components.push(rebuilt_existing_component(
+            &plan,
+            &old_grouped_legs,
+            old_index,
+        ));
     }
 
-    preserved_grouped_legs.insert(
-        airway_component_index,
-        rewrite_grouped_legs_source(&airway_legs, airway_component_index),
+    let rebuilt = rebuild_plan_from_uid_components(
+        &plan,
+        rebuilt_components,
+        GuidanceRebuildPolicy::PreserveByRowUid,
     );
-
-    let resolved_legs =
-        rebuild_resolved_legs_with_grouped_components(&new_components, &preserved_grouped_legs);
-
-    if resolved_legs.is_empty() {
+    if rebuilt.resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message: "flight plan must contain at least one flyable leg after airway insertion"
                 .to_string(),
         });
     }
-    let old_index_by_new_index = (0..preserve_start_end)
-        .map(Some)
-        .chain(std::iter::once(None))
-        .chain((preserve_end_start..plan.route_components.len()).map(Some));
-    let (route_component_uids, route_component_uid_counter) =
-        route_component_uids_from_remap(&plan, old_index_by_new_index);
-
-    Ok(FlightPlan {
-        route_components: new_components,
-        route_component_uids,
-        route_component_uid_counter,
-        resolved_legs: resolved_legs.clone(),
-        guidance: revalidate_guidance_after_plan_edit(plan.guidance.clone(), &resolved_legs),
-        ..plan
-    })
+    Ok(rebuilt)
 }
 
 pub fn insert_airway_after_waypoint(
@@ -3721,47 +3879,35 @@ pub fn insert_airway_after_waypoint(
         start_component_index + 1
     };
 
-    let mut new_components = plan.route_components[..preserve_start_end].to_vec();
-    let airway_component_index = new_components.len();
-    new_components.push(RouteComponent::Airway {
-        airway: airway.clone(),
-    });
-
     let old_grouped_legs = grouped_component_legs(&plan);
-    let mut grouped_legs = BTreeMap::<usize, Vec<ResolvedLeg>>::new();
+    let mut rebuilt_components = Vec::<RebuiltRouteComponent>::new();
     for old_index in 0..preserve_start_end {
-        if let Some(legs) = old_grouped_legs.get(&old_index) {
-            grouped_legs.insert(old_index, legs.clone());
-        }
+        rebuilt_components.push(rebuilt_existing_component(
+            &plan,
+            &old_grouped_legs,
+            old_index,
+        ));
     }
-    grouped_legs.insert(
-        airway_component_index,
-        rewrite_grouped_legs_source(&airway_legs, airway_component_index),
-    );
+    rebuilt_components.push(rebuilt_new_component(
+        RouteComponent::Airway {
+            airway: airway.clone(),
+        },
+        Some(airway_legs),
+    ));
 
-    let resolved_legs =
-        rebuild_resolved_legs_with_grouped_components(&new_components, &grouped_legs);
-    if resolved_legs.is_empty() {
+    let rebuilt = rebuild_plan_from_uid_components(
+        &plan,
+        rebuilt_components,
+        GuidanceRebuildPolicy::PreserveByRowUid,
+    );
+    if rebuilt.resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message: "flight plan must contain at least one flyable leg after airway insertion"
                 .to_string(),
         });
     }
-    let old_index_by_new_index = (0..preserve_start_end)
-        .map(Some)
-        .chain(std::iter::once(None));
-    let (route_component_uids, route_component_uid_counter) =
-        route_component_uids_from_remap(&plan, old_index_by_new_index);
-
-    Ok(FlightPlan {
-        route_components: new_components,
-        route_component_uids,
-        route_component_uid_counter,
-        resolved_legs: resolved_legs.clone(),
-        guidance: revalidate_guidance_after_plan_edit(plan.guidance.clone(), &resolved_legs),
-        ..plan
-    })
+    Ok(rebuilt)
 }
 
 pub fn insert_airway_after_airway(
@@ -3809,41 +3955,30 @@ pub fn insert_airway_after_airway(
         });
     }
 
-    let mut new_components = plan.route_components.clone();
-    let airway_component_index = new_components.len();
-    new_components.push(RouteComponent::Airway {
-        airway: airway.clone(),
-    });
+    let old_grouped_legs = grouped_component_legs(&plan);
+    let mut rebuilt_components = (0..plan.route_components.len())
+        .map(|old_index| rebuilt_existing_component(&plan, &old_grouped_legs, old_index))
+        .collect::<Vec<_>>();
+    rebuilt_components.push(rebuilt_new_component(
+        RouteComponent::Airway {
+            airway: airway.clone(),
+        },
+        Some(airway_legs),
+    ));
 
-    let mut grouped_legs = grouped_component_legs(&plan);
-    grouped_legs.insert(
-        airway_component_index,
-        rewrite_grouped_legs_source(&airway_legs, airway_component_index),
+    let rebuilt = rebuild_plan_from_uid_components(
+        &plan,
+        rebuilt_components,
+        GuidanceRebuildPolicy::PreserveByRowUid,
     );
-
-    let resolved_legs =
-        rebuild_resolved_legs_with_grouped_components(&new_components, &grouped_legs);
-    if resolved_legs.is_empty() {
+    if rebuilt.resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message: "flight plan must contain at least one flyable leg after airway insertion"
                 .to_string(),
         });
     }
-    let old_index_by_new_index = (0..plan.route_components.len())
-        .map(Some)
-        .chain(std::iter::once(None));
-    let (route_component_uids, route_component_uid_counter) =
-        route_component_uids_from_remap(&plan, old_index_by_new_index);
-
-    Ok(FlightPlan {
-        route_components: new_components,
-        route_component_uids,
-        route_component_uid_counter,
-        resolved_legs: resolved_legs.clone(),
-        guidance: revalidate_guidance_after_plan_edit(plan.guidance.clone(), &resolved_legs),
-        ..plan
-    })
+    Ok(rebuilt)
 }
 
 pub fn insert_procedure_between_waypoints(
@@ -3906,61 +4041,45 @@ pub fn insert_procedure_between_waypoints(
         });
     }
 
-    let mut new_components = Vec::<RouteComponent>::new();
-    let mut preserved_grouped_legs = BTreeMap::<usize, Vec<ResolvedLeg>>::new();
+    let mut rebuilt_components = Vec::<RebuiltRouteComponent>::new();
     let old_grouped_legs = grouped_component_legs(&plan);
 
     for old_index in 0..=start_component_index {
-        let new_index = new_components.len();
-        new_components.push(plan.route_components[old_index].clone());
-        if let Some(legs) = old_grouped_legs.get(&old_index) {
-            preserved_grouped_legs.insert(new_index, rewrite_grouped_legs_source(legs, new_index));
-        }
+        rebuilt_components.push(rebuilt_existing_component(
+            &plan,
+            &old_grouped_legs,
+            old_index,
+        ));
     }
 
-    let procedure_component_index = new_components.len();
-    new_components.push(RouteComponent::Procedure {
-        procedure: procedure.clone(),
-    });
+    rebuilt_components.push(rebuilt_new_component(
+        RouteComponent::Procedure {
+            procedure: procedure.clone(),
+        },
+        Some(procedure_legs),
+    ));
 
     for old_index in end_component_index..plan.route_components.len() {
-        let new_index = new_components.len();
-        new_components.push(plan.route_components[old_index].clone());
-        if let Some(legs) = old_grouped_legs.get(&old_index) {
-            preserved_grouped_legs.insert(new_index, rewrite_grouped_legs_source(legs, new_index));
-        }
+        rebuilt_components.push(rebuilt_existing_component(
+            &plan,
+            &old_grouped_legs,
+            old_index,
+        ));
     }
 
-    preserved_grouped_legs.insert(
-        procedure_component_index,
-        rewrite_grouped_legs_source(&procedure_legs, procedure_component_index),
+    let rebuilt = rebuild_plan_from_uid_components(
+        &plan,
+        rebuilt_components,
+        GuidanceRebuildPolicy::PreserveByRowUid,
     );
-
-    let resolved_legs =
-        rebuild_resolved_legs_with_grouped_components(&new_components, &preserved_grouped_legs);
-
-    if resolved_legs.is_empty() {
+    if rebuilt.resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message: "flight plan must contain at least one flyable leg after procedure insertion"
                 .to_string(),
         });
     }
-    let old_index_by_new_index = (0..=start_component_index)
-        .map(Some)
-        .chain(std::iter::once(None))
-        .chain((end_component_index..plan.route_components.len()).map(Some));
-    let (route_component_uids, route_component_uid_counter) =
-        route_component_uids_from_remap(&plan, old_index_by_new_index);
-
-    Ok(FlightPlan {
-        route_components: new_components,
-        route_component_uids,
-        route_component_uid_counter,
-        resolved_legs: resolved_legs.clone(),
-        guidance: revalidate_guidance_after_plan_edit(plan.guidance.clone(), &resolved_legs),
-        ..plan
-    })
+    Ok(rebuilt)
 }
 
 pub fn insert_initial_procedure_before_airport(
@@ -3998,51 +4117,37 @@ pub fn insert_initial_procedure_before_airport(
         }
     }
 
-    let mut new_components = Vec::<RouteComponent>::new();
-    let mut preserved_grouped_legs = BTreeMap::<usize, Vec<ResolvedLeg>>::new();
     let old_grouped_legs = grouped_component_legs(&plan);
+    let mut rebuilt_components = Vec::<RebuiltRouteComponent>::new();
 
-    let procedure_component_index = new_components.len();
-    new_components.push(RouteComponent::Procedure {
-        procedure: procedure.clone(),
-    });
+    rebuilt_components.push(rebuilt_new_component(
+        RouteComponent::Procedure {
+            procedure: procedure.clone(),
+        },
+        Some(procedure_legs),
+    ));
 
     for old_index in 0..plan.route_components.len() {
-        let new_index = new_components.len();
-        new_components.push(plan.route_components[old_index].clone());
-        if let Some(legs) = old_grouped_legs.get(&old_index) {
-            preserved_grouped_legs.insert(new_index, rewrite_grouped_legs_source(legs, new_index));
-        }
+        rebuilt_components.push(rebuilt_existing_component(
+            &plan,
+            &old_grouped_legs,
+            old_index,
+        ));
     }
 
-    preserved_grouped_legs.insert(
-        procedure_component_index,
-        rewrite_grouped_legs_source(&procedure_legs, procedure_component_index),
+    let rebuilt = rebuild_plan_from_uid_components(
+        &plan,
+        rebuilt_components,
+        GuidanceRebuildPolicy::PreserveByRowUid,
     );
-
-    let resolved_legs =
-        rebuild_resolved_legs_with_grouped_components(&new_components, &preserved_grouped_legs);
-
-    if resolved_legs.is_empty() {
+    if rebuilt.resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message: "flight plan must contain at least one flyable leg after procedure insertion"
                 .to_string(),
         });
     }
-    let old_index_by_new_index =
-        std::iter::once(None).chain((0..plan.route_components.len()).map(Some));
-    let (route_component_uids, route_component_uid_counter) =
-        route_component_uids_from_remap(&plan, old_index_by_new_index);
-
-    Ok(FlightPlan {
-        route_components: new_components,
-        route_component_uids,
-        route_component_uid_counter,
-        resolved_legs: resolved_legs.clone(),
-        guidance: revalidate_guidance_after_plan_edit(plan.guidance.clone(), &resolved_legs),
-        ..plan
-    })
+    Ok(rebuilt)
 }
 
 pub fn materialize_airway_exit_before_component(
@@ -4098,37 +4203,36 @@ pub fn replace_airway_component(
         });
     }
 
-    let mut new_components = plan.route_components.clone();
-    new_components[component_index] = RouteComponent::Airway {
-        airway: airway.clone(),
-    };
+    let old_grouped_legs = grouped_component_legs(&plan);
+    let rebuilt_components = (0..plan.route_components.len())
+        .map(|old_index| {
+            if old_index == component_index {
+                RebuiltRouteComponent {
+                    uid: plan.route_component_uids.get(old_index).cloned(),
+                    component: RouteComponent::Airway {
+                        airway: airway.clone(),
+                    },
+                    preserved_legs: Some(airway_legs.clone()),
+                }
+            } else {
+                rebuilt_existing_component(&plan, &old_grouped_legs, old_index)
+            }
+        })
+        .collect::<Vec<_>>();
 
-    let mut grouped_legs = grouped_component_legs(&plan);
-    grouped_legs.insert(
-        component_index,
-        rewrite_grouped_legs_source(&airway_legs, component_index),
+    let rebuilt = rebuild_plan_from_uid_components(
+        &plan,
+        rebuilt_components,
+        GuidanceRebuildPolicy::PreserveByRowUid,
     );
-
-    let resolved_legs =
-        rebuild_resolved_legs_with_grouped_components(&new_components, &grouped_legs);
-    if resolved_legs.is_empty() {
+    if rebuilt.resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message: "flight plan must contain at least one flyable leg after airway replacement"
                 .to_string(),
         });
     }
-    let (route_component_uids, route_component_uid_counter) =
-        route_component_uids_from_remap(&plan, (0..plan.route_components.len()).map(Some));
-
-    Ok(FlightPlan {
-        route_components: new_components,
-        route_component_uids,
-        route_component_uid_counter,
-        resolved_legs: resolved_legs.clone(),
-        guidance: revalidate_guidance_after_plan_edit(plan.guidance.clone(), &resolved_legs),
-        ..plan
-    })
+    Ok(rebuilt)
 }
 
 pub fn replace_procedure_component(
@@ -4161,20 +4265,26 @@ pub fn replace_procedure_component(
         });
     }
 
-    let mut new_components = plan.route_components.clone();
-    new_components[component_index] = RouteComponent::Procedure {
-        procedure: procedure.clone(),
-    };
+    let old_grouped_legs = grouped_component_legs(&plan);
+    let rebuilt_components = (0..plan.route_components.len())
+        .map(|old_index| {
+            if old_index == component_index {
+                RebuiltRouteComponent {
+                    uid: plan.route_component_uids.get(old_index).cloned(),
+                    component: RouteComponent::Procedure {
+                        procedure: procedure.clone(),
+                    },
+                    preserved_legs: Some(procedure_legs.clone()),
+                }
+            } else {
+                rebuilt_existing_component(&plan, &old_grouped_legs, old_index)
+            }
+        })
+        .collect::<Vec<_>>();
 
-    let mut grouped_legs = grouped_component_legs(&plan);
-    grouped_legs.insert(
-        component_index,
-        rewrite_grouped_legs_source(&procedure_legs, component_index),
-    );
-
-    let resolved_legs =
-        rebuild_resolved_legs_with_grouped_components(&new_components, &grouped_legs);
-    if resolved_legs.is_empty() {
+    let rebuilt =
+        rebuild_plan_from_uid_components(&plan, rebuilt_components, GuidanceRebuildPolicy::Clear);
+    if rebuilt.resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message:
@@ -4182,17 +4292,7 @@ pub fn replace_procedure_component(
                     .to_string(),
         });
     }
-    let (route_component_uids, route_component_uid_counter) =
-        route_component_uids_from_remap(&plan, (0..plan.route_components.len()).map(Some));
-
-    Ok(FlightPlan {
-        route_components: new_components,
-        route_component_uids,
-        route_component_uid_counter,
-        resolved_legs: resolved_legs.clone(),
-        guidance: None,
-        ..plan
-    })
+    Ok(rebuilt)
 }
 
 pub fn change_airway_entry(
@@ -4706,6 +4806,9 @@ fn leg_index_by_id(resolved_legs: &[ResolvedLeg], leg_id: &str) -> Option<usize>
     resolved_legs.iter().position(|leg| leg.id == leg_id)
 }
 
+// Plan edits should reach this only through rebuild_plan_from_uid_components().
+// For active guidance legs, that helper first restores by stable display-row UID;
+// this bounded-index fallback is only for states that cannot be row-anchored.
 fn revalidate_guidance_after_plan_edit(
     guidance: Option<GuidanceState>,
     resolved_legs: &[ResolvedLeg],
@@ -5295,6 +5398,72 @@ mod tests {
                 },
             ],
         )
+    }
+
+    fn sample_task_6_route_plan() -> FlightPlan {
+        let route_components = vec![
+            RouteComponent::Waypoint {
+                waypoint: NavRef::Airport("KRNT".to_string()),
+            },
+            RouteComponent::Airway {
+                airway: AirwaySegment {
+                    name: "V2".to_string(),
+                    branch_key: Some("V2".to_string()),
+                    entry: NavRef::Navaid("SEA".to_string()),
+                    exit: NavRef::Navaid("ELN".to_string()),
+                },
+            },
+            RouteComponent::Waypoint {
+                waypoint: NavRef::Airport("KYKM".to_string()),
+            },
+        ];
+        let grouped_legs = BTreeMap::from([(
+            1,
+            vec![
+                ResolvedLeg {
+                    id: "airway-V2-0".to_string(),
+                    from: NavRef::Navaid("SEA".to_string()),
+                    to: NavRef::Fix("VAMPS".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "airway-V2-1".to_string(),
+                    from: NavRef::Fix("VAMPS".to_string()),
+                    to: NavRef::Fix("BANDR".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "airway-V2-2".to_string(),
+                    from: NavRef::Fix("BANDR".to_string()),
+                    to: NavRef::Navaid("ELN".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
+                    procedure_provenance: None,
+                },
+            ],
+        )]);
+        let resolved_legs =
+            rebuild_resolved_legs_with_grouped_components(&route_components, &grouped_legs);
+
+        FlightPlan {
+            id: "task-6".to_string(),
+            name: "KRNT SEA V2 ELN KYKM".to_string(),
+            legs: Vec::new(),
+            route_components,
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs,
+            guidance: None,
+            departure: Some(AirportId("KRNT".to_string())),
+            destination: Some(AirportId("KYKM".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        }
+        .normalized()
     }
 
     fn sample_inserted_procedure() -> (ProcedureSegment, Vec<ResolvedLeg>) {
@@ -7193,6 +7362,31 @@ mod tests {
                 original_uids[0].clone(),
                 original_uids[3].clone(),
             ]
+        );
+    }
+
+    #[test]
+    fn deleting_row_before_active_airway_leg_preserves_active_leg_identity() {
+        let plan = sample_task_6_route_plan();
+        let sea_to_vamps_index = plan
+            .resolved_legs
+            .iter()
+            .position(|leg| {
+                leg.from == NavRef::Navaid("SEA".to_string())
+                    && leg.to == NavRef::Fix("VAMPS".to_string())
+            })
+            .expect("SEA to VAMPS leg");
+        let active = activate_leg(&plan, sea_to_vamps_index).expect("activate SEA -> VAMPS");
+
+        let deleted = delete_component(&active, 0).expect("delete KRNT row");
+        let active_leg = active_guidance_leg(&deleted).expect("active leg after delete");
+
+        assert_eq!(
+            (active_leg.from, active_leg.to),
+            (
+                NavRef::Navaid("SEA".to_string()),
+                NavRef::Fix("VAMPS".to_string())
+            )
         );
     }
 

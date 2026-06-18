@@ -680,7 +680,7 @@ export type OwnshipSourceKind =
   | "adsb_track_playback"
   | "live_network_track"
   | "flight_plan_simulator"
-  | "debug_ownship_driver";
+  | "bad_autopilot";
 
 export type SourceConnectionState = "unavailable" | "searching" | "connected" | "stale" | "failed";
 

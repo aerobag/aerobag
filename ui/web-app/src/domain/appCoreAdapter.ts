@@ -78,6 +78,7 @@ export type UiSessionSnapshot = {
   app_state: UiSnapshotAppState;
   app_ui_state: AppUiState;
   playback_ui_state: PlaybackUiState;
+  playback_panel_state: UiPlaybackPanelState;
   map_follow_ui_state: MapFollowUiState;
   map_follow_target_viewport: {
     center: LatLon;
@@ -101,12 +102,15 @@ export type DebugFlagId = "tile_labels" | "nexrad_tile_labels" | "fast_tiles" | 
 export type UiDebugState = {
   tile_labels: boolean;
   nexrad_tile_labels: boolean;
-  playback_visible: boolean;
   fast_tiles: boolean;
   offline_simulated_clock_buttons: boolean;
   sequencing_finish_lines: boolean;
   bad_autopilot: boolean;
   gps_capture: boolean;
+};
+
+export type UiPlaybackPanelState = {
+  visible: boolean;
 };
 
 export type UiStatusSeverity = "ok" | "info" | "caution" | "warning" | "unavailable";
@@ -611,7 +615,7 @@ export interface UiSession {
   unsuspendSequencing(): Promise<UiSessionSnapshot>;
   sequenceActiveLeg(): Promise<UiSessionSnapshot>;
   setSituation(situation: Situation): Promise<UiSessionSnapshot>;
-  tickDebugOwnshipDriver(nowEpochMs: number): Promise<UiSessionSnapshot>;
+  tickBadAutopilot(nowEpochMs: number): Promise<UiSessionSnapshot>;
   loadPlaybackTrace(sourcePath: string, traceJson: string): Promise<UiSessionSnapshot>;
   playPlayback(nowEpochMs: number): Promise<UiSessionSnapshot>;
   pausePlayback(nowEpochMs: number): Promise<UiSessionSnapshot>;
@@ -738,7 +742,7 @@ type WasmModule = {
   set_resource_policy_in_session(handle: number, policyJson: string): Promise<string> | string;
   configure_platform_capabilities_in_session(handle: number, capabilitiesJson: string): Promise<string> | string;
   set_situation_in_session_paged(handle: number, situationJson: string): Promise<string> | string;
-  tick_debug_ownship_driver_in_session_paged(handle: number, nowEpochMs: number): Promise<string> | string;
+  tick_bad_autopilot_in_session_paged(handle: number, nowEpochMs: number): Promise<string> | string;
   engage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
   disengage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
   set_map_follow_offset_in_session(handle: number, viewportJson: string, offsetXPx: number, offsetYPx: number): Promise<string> | string;
@@ -1204,10 +1208,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         return snapshot;
       },
-      tickDebugOwnshipDriver: async (nowEpochMs) => {
+      tickBadAutopilot: async (nowEpochMs) => {
         snapshot = await withSessionRetry(async () =>
           runSessionOperation<UiSessionSnapshot>(() =>
-            this.module.tick_debug_ownship_driver_in_session_paged(handle, nowEpochMs),
+            this.module.tick_bad_autopilot_in_session_paged(handle, nowEpochMs),
           ),
         );
         await syncGuidanceGeometry();
@@ -1803,7 +1807,7 @@ async function loadBestAvailableAdapterUncached(
     "perform_flight_plan_row_action_in_session",
     "perform_status_action_in_session",
     "set_situation_in_session_paged",
-    "tick_debug_ownship_driver_in_session_paged",
+    "tick_bad_autopilot_in_session_paged",
     "engage_map_follow_in_session",
     "disengage_map_follow_in_session",
     "set_map_follow_offset_in_session",

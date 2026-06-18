@@ -264,6 +264,7 @@ import org.aerobag.app.domain.TerrainOverlayQueryResult
 import org.aerobag.app.domain.TerrainOverlayTileRequest
 import org.aerobag.app.domain.UiDebugState
 import org.aerobag.app.domain.UiMapLayerToggleState
+import org.aerobag.app.domain.UiPlaybackPanelState
 import org.aerobag.app.domain.UiTheme
 import org.aerobag.app.domain.UiThemeLoader
 import org.aerobag.app.domain.UiSessionSnapshot
@@ -448,6 +449,7 @@ internal fun MapExplorerPage(
     ownship: OwnshipRenderState,
     flightDataBanner: FlightDataBannerModel,
     playbackUiState: PlaybackUiState,
+    playbackPanelState: UiPlaybackPanelState,
     playbackSourcePath: String,
     mapFollowUiState: MapFollowUiState,
     mapFollowTargetViewport: CoreMapViewport?,
@@ -1892,7 +1894,7 @@ internal fun MapExplorerPage(
             } else {
                 ThumbGap
             }
-        if (debugState.playbackVisible) {
+        if (playbackPanelState.visible) {
             PlaybackWidget(
                 uiSession = uiSession,
                 playbackUiState = playbackUiState,

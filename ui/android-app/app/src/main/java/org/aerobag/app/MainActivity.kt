@@ -486,7 +486,6 @@ internal const val OverlayPlaneModal = 90f
 internal fun defaultUiDebugState() = UiDebugState(
     tileLabels = false,
     nexradTileLabels = false,
-    playbackVisible = false,
     fastTiles = false,
     offlineSimulatedClockButtons = false,
     badAutopilot = false,
@@ -3624,6 +3623,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                         ownship = appUiState.ownship.render,
                         flightDataBanner = appUiState.flightDataBanner,
                         playbackUiState = sessionSnapshot.playbackUiState,
+                        playbackPanelState = sessionSnapshot.playbackPanelState,
                         playbackSourcePath = playbackSourcePath,
                         mapFollowUiState = sessionSnapshot.mapFollowUiState,
                         mapFollowTargetViewport = sessionSnapshot.mapFollowTargetViewport,

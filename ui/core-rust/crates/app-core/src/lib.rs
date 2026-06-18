@@ -233,14 +233,15 @@ pub use session::{
     set_resource_policy_in_session, set_situation_in_session, set_situation_in_session_outcome,
     suggest_waypoint_identifiers_at_flight_plan_row_in_session, suspend_sequencing_in_session,
     sync_guidance_geometry_in_session, sync_live_feeds_in_session, sync_map_follow_in_session,
-    tick_debug_ownship_driver_in_session, tick_debug_ownship_driver_in_session_outcome,
-    tick_playback_in_session, tick_playback_in_session_outcome, unsuspend_sequencing_in_session,
+    tick_bad_autopilot_in_session, tick_bad_autopilot_in_session_outcome, tick_playback_in_session,
+    tick_playback_in_session_outcome, unsuspend_sequencing_in_session,
     update_ownship_source_status_in_session, update_ownship_source_status_in_session_outcome,
     DisplayDimTimeout, GuidanceLegGeometry, LiveFeedConnectionEvent, LiveFeedConnectionEventKind,
     PlatformCapabilities, PlatformDisplayPolicyCapability, SettingsPreferences, SettingsStorage,
     SettingsStorageHandle, UiChartPageState, UiDebugState, UiDisplayPolicy, UiMapLayerState,
-    UiMapLayerToggleState, UiSessionInitResult, UiSessionResourceEffect, UiSessionSnapshot,
-    UiSettingsAction, UiSettingsPageRow, UiSettingsPageState, UiSettingsSliderStop,
+    UiMapLayerToggleState, UiPlaybackPanelState, UiSessionInitResult, UiSessionResourceEffect,
+    UiSessionSnapshot, UiSettingsAction, UiSettingsPageRow, UiSettingsPageState,
+    UiSettingsSliderStop,
 };
 pub use situation::{Situation, SituationPosition};
 pub use state::{
@@ -249,8 +250,7 @@ pub use state::{
 };
 pub use terrain::{
     parse_abt2_tile, prepare_terrain_overlay_frame, query_terrain_overlay,
-    query_terrain_overlay_with_available_packages, render_terrain_warning_png,
-    render_terrain_warning_png_from_tiles, render_terrain_warning_raw_rgba_from_tiles,
+    query_terrain_overlay_with_available_packages, render_terrain_warning_raw_rgba_from_tiles,
     render_terrain_warning_rgba, schedule_terrain_overlay_frame, terrain_altitude_bucket_ft,
     TerrainOverlayQueryResult, TerrainOverlayScheduleDecision, TerrainOverlaySourceTile,
     TerrainOverlayStatus, TerrainOverlayTileRequest, TerrainTileInfo,
@@ -1166,32 +1166,6 @@ fn nav_ref_identifier(nav_ref: &NavRef) -> Option<&str> {
         NavRef::TerminalNavaid { identifier, .. } => Some(identifier.as_str()),
         NavRef::LatLon(_) | NavRef::Spot(_) => None,
     }
-}
-
-pub fn remove_flight_plan_leg(plan: &FlightPlan, index: usize) -> AppResult<FlightPlan> {
-    let _ = plan;
-    let _ = index;
-    Err(AppError {
-        kind: AppErrorKind::UnsupportedOperation,
-        message: "legacy leg removal is no longer supported; use structured component mutations"
-            .to_string(),
-    })
-}
-
-pub fn move_flight_plan_waypoint(
-    plan: &FlightPlan,
-    waypoint_index: usize,
-    delta: isize,
-) -> AppResult<FlightPlan> {
-    let _ = plan;
-    let _ = waypoint_index;
-    let _ = delta;
-    Err(AppError {
-        kind: AppErrorKind::UnsupportedOperation,
-        message:
-            "legacy waypoint reordering is no longer supported; use structured component reordering"
-                .to_string(),
-    })
 }
 
 pub fn flight_leg_distance_nm(first: LatLon, second: LatLon) -> f64 {

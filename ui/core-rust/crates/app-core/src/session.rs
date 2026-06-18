@@ -154,7 +154,6 @@ pub struct UiDebugState {
     pub tile_labels: bool,
     #[serde(default)]
     pub nexrad_tile_labels: bool,
-    pub playback_visible: bool,
     pub fast_tiles: bool,
     pub offline_simulated_clock_buttons: bool,
     #[serde(default)]
@@ -252,10 +251,16 @@ struct SettingsPersistenceDocument {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiPlaybackPanelState {
+    pub visible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiSessionSnapshot {
     pub app_state: UiSnapshotAppState,
     pub app_ui_state: AppUiState,
     pub playback_ui_state: PlaybackUiState,
+    pub playback_panel_state: UiPlaybackPanelState,
     pub map_follow_ui_state: MapFollowUiState,
     pub map_follow_target_viewport: Option<MapViewport>,
     pub chart_page_state: UiChartPageState,
@@ -286,7 +291,7 @@ struct UiSession {
     app_state: AppState,
     playback: PlaybackSessionState,
     plan_preview: PlanPreviewState,
-    debug_ownship_driver: DebugOwnshipDriverState,
+    bad_autopilot: BadAutopilotState,
     map_follow: MapFollowSessionState,
     guidance_leg_geometry: HashMap<String, GuidanceLegGeometry>,
     map_overlay_config: MapOverlayConfig,
@@ -486,7 +491,7 @@ pub struct ScreenPoint {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
-struct DebugOwnshipDriverState {
+struct BadAutopilotState {
     running: bool,
     active_detail_id: Option<String>,
     offset_nm: f64,
@@ -508,14 +513,14 @@ struct PlanPreviewPointer {
 
 const DIRECT_SITUATION_SOURCE_ID: &str = "__direct_situation__";
 const PLAYBACK_SOURCE_ID: &str = "__playback_trace__";
-const DEBUG_OWNSHIP_DRIVER_SOURCE_ID: &str = "__debug_ownship_driver__";
+const BAD_AUTOPILOT_SOURCE_ID: &str = "__bad_autopilot__";
 const CDI_NM_PER_DOT: f64 = 1.0;
 const CDI_OFFSCALE_DOTS: f64 = 2.1;
-const DEBUG_OWNSHIP_DRIVER_NM_PER_SECOND: f64 = 0.36;
-const DEBUG_OWNSHIP_DRIVER_REPORTED_SPEED_SCALE: f64 = 0.1;
-const DEBUG_OWNSHIP_DRIVER_MAX_DT_SECONDS: f64 = 1.0;
-const DEBUG_OWNSHIP_DRIVER_WANDER_NM: f64 = 0.125;
-const DEBUG_OWNSHIP_DRIVER_OVERRUN_NM: f64 = 0.5;
+const BAD_AUTOPILOT_NM_PER_SECOND: f64 = 0.36;
+const BAD_AUTOPILOT_REPORTED_SPEED_SCALE: f64 = 0.1;
+const BAD_AUTOPILOT_MAX_DT_SECONDS: f64 = 1.0;
+const BAD_AUTOPILOT_WANDER_NM: f64 = 0.125;
+const BAD_AUTOPILOT_OVERRUN_NM: f64 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2647,7 +2652,7 @@ fn create_ui_session_inner(
         AppEvent::ReplaceFlightPlan(plan.clone()),
     )?;
     let app_state = register_default_situation_sources(app_state)?;
-    let app_state = register_debug_ownship_driver_source(app_state)?;
+    let app_state = register_bad_autopilot_source(app_state)?;
     let active_plan = app_state
         .active_plan
         .clone()
@@ -2676,11 +2681,12 @@ fn create_ui_session_inner(
     }
     let debug_state = default_debug_state();
     let mut app_ui_state = state::project_app_ui_state(&app_state);
-    project_debug_ownship_driver_availability_for_state(&debug_state, false, &mut app_ui_state);
+    project_bad_autopilot_availability_for_state(&debug_state, false, &mut app_ui_state);
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_project_app_ui_state");
     }
     let playback_ui_state = playback.ui_state();
+    let playback_panel_state = playback_panel_state_for_app_state(&app_state);
     let map_follow_ui_state = map_follow.ui_state(&app_state.ownship.render);
     let map_follow_target_viewport = map_follow.target_viewport(&app_state.ownship.render);
     if let Some(mark) = mark.as_deref_mut() {
@@ -2701,6 +2707,7 @@ fn create_ui_session_inner(
         app_state: snapshot_app_state,
         app_ui_state,
         playback_ui_state,
+        playback_panel_state,
         map_follow_ui_state,
         map_follow_target_viewport,
         chart_page_state: chart_page_state.clone(),
@@ -2720,7 +2727,7 @@ fn create_ui_session_inner(
             app_state,
             playback,
             plan_preview: PlanPreviewState::default(),
-            debug_ownship_driver: DebugOwnshipDriverState::default(),
+            bad_autopilot: BadAutopilotState::default(),
             map_follow,
             guidance_leg_geometry: HashMap::new(),
             map_overlay_config,
@@ -3621,8 +3628,8 @@ pub fn select_ownship_source_in_session(
             .map(|source| source.source_kind),
         crate::OwnshipSelectionCommand::Auto => None,
     };
-    if selected_source_kind == Some(crate::OwnshipSourceKind::DebugOwnshipDriver)
-        && !debug_ownship_driver_selectable(session)
+    if selected_source_kind == Some(crate::OwnshipSourceKind::BadAutopilot)
+        && !bad_autopilot_selectable(session)
     {
         return snapshot_for_session(session);
     }
@@ -3632,9 +3639,9 @@ pub fn select_ownship_source_in_session(
         Some(crate::OwnshipSourceKind::FlightPlanSimulator) => {
             sync_plan_preview_to_active_leg(session)?;
         }
-        Some(crate::OwnshipSourceKind::DebugOwnshipDriver) => {
-            session.debug_ownship_driver = DebugOwnshipDriverState::default();
-            tick_debug_ownship_driver(session, 0.0)?;
+        Some(crate::OwnshipSourceKind::BadAutopilot) => {
+            session.bad_autopilot = BadAutopilotState::default();
+            tick_bad_autopilot(session, 0.0)?;
         }
         _ => {}
     }
@@ -3658,8 +3665,8 @@ pub fn select_ownship_source_in_session_outcome(
             .map(|source| source.source_kind),
         crate::OwnshipSelectionCommand::Auto => None,
     };
-    if selected_source_kind == Some(crate::OwnshipSourceKind::DebugOwnshipDriver)
-        && !debug_ownship_driver_selectable(session)
+    if selected_source_kind == Some(crate::OwnshipSourceKind::BadAutopilot)
+        && !bad_autopilot_selectable(session)
     {
         return session_snapshot_outcome(session);
     }
@@ -3669,9 +3676,9 @@ pub fn select_ownship_source_in_session_outcome(
         Some(crate::OwnshipSourceKind::FlightPlanSimulator) => {
             sync_plan_preview_to_active_leg(session)?;
         }
-        Some(crate::OwnshipSourceKind::DebugOwnshipDriver) => {
-            session.debug_ownship_driver = DebugOwnshipDriverState::default();
-            tick_debug_ownship_driver(session, 0.0)?;
+        Some(crate::OwnshipSourceKind::BadAutopilot) => {
+            session.bad_autopilot = BadAutopilotState::default();
+            tick_bad_autopilot(session, 0.0)?;
         }
         _ => {}
     }
@@ -4014,24 +4021,24 @@ pub fn set_situation_in_session_outcome(
     )
 }
 
-pub fn tick_debug_ownship_driver_in_session(
+pub fn tick_bad_autopilot_in_session(
     handle: u32,
     now_epoch_ms: f64,
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    tick_debug_ownship_driver(session, now_epoch_ms)?;
+    tick_bad_autopilot(session, now_epoch_ms)?;
     snapshot_for_session(session)
 }
 
-pub fn tick_debug_ownship_driver_in_session_outcome(
+pub fn tick_bad_autopilot_in_session_outcome(
     handle: u32,
     now_epoch_ms: f64,
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let terrain_key_before = ownship_terrain_refresh_key(session);
-    tick_debug_ownship_driver(session, now_epoch_ms)?;
+    tick_bad_autopilot(session, now_epoch_ms)?;
     session_snapshot_outcome_with_invalidations(
         session,
         terrain_overlay_invalidations_for_ownship_change(
@@ -5012,9 +5019,9 @@ pub fn set_debug_flag_in_session(
         "bad_autopilot" => {
             session.debug_state.bad_autopilot = enabled;
             if !enabled {
-                session.debug_ownship_driver = DebugOwnshipDriverState::default();
+                session.bad_autopilot = BadAutopilotState::default();
                 if selected_ownship_source_kind(&session.app_state.ownship)
-                    == Some(crate::OwnshipSourceKind::DebugOwnshipDriver)
+                    == Some(crate::OwnshipSourceKind::BadAutopilot)
                 {
                     session.app_state = state::reduce(
                         &session.app_state,
@@ -8399,8 +8406,11 @@ fn try_snapshot_for_session(session: &UiSession) -> Result<UiSessionSnapshot, Ha
     let app_ui_state = project_session_app_ui_state(session)?;
     let app_ui_ms = elapsed_ms(app_ui_started_at);
     let debug_started_at = crate::core_clock_ms();
-    let debug_state = debug_state_for_app_state(&session.debug_state, &session.app_state);
+    let debug_state = session.debug_state.clone();
     let debug_ms = elapsed_ms(debug_started_at);
+    let playback_panel_started_at = crate::core_clock_ms();
+    let playback_panel_state = playback_panel_state_for_app_state(&session.app_state);
+    let playback_panel_ms = elapsed_ms(playback_panel_started_at);
     let app_state_started_at = crate::core_clock_ms();
     let app_state = state::project_ui_snapshot_app_state(&session.app_state);
     let app_state_ms = elapsed_ms(app_state_started_at);
@@ -8436,6 +8446,7 @@ fn try_snapshot_for_session(session: &UiSession) -> Result<UiSessionSnapshot, Ha
             "total_ms": total_ms,
             "app_ui_ms": app_ui_ms,
             "debug_ms": debug_ms,
+            "playback_panel_ms": playback_panel_ms,
             "app_state_ms": app_state_ms,
             "playback_ms": playback_ms,
             "map_follow_ms": map_follow_ms,
@@ -8451,6 +8462,7 @@ fn try_snapshot_for_session(session: &UiSession) -> Result<UiSessionSnapshot, Ha
         app_state,
         app_ui_state,
         playback_ui_state,
+        playback_panel_state,
         map_follow_ui_state,
         map_follow_target_viewport,
         chart_page_state,
@@ -8467,10 +8479,10 @@ fn try_snapshot_for_session(session: &UiSession) -> Result<UiSessionSnapshot, Ha
     })
 }
 
-fn debug_state_for_app_state(debug_state: &UiDebugState, app_state: &AppState) -> UiDebugState {
-    let mut next = debug_state.clone();
-    next.playback_visible = situation_source_handler_for_ownship(&app_state.ownship).is_replay();
-    next
+fn playback_panel_state_for_app_state(app_state: &AppState) -> UiPlaybackPanelState {
+    UiPlaybackPanelState {
+        visible: situation_source_handler_for_ownship(&app_state.ownship).is_replay(),
+    }
 }
 
 fn selected_ownship_source_kind(ownship: &crate::OwnshipState) -> Option<crate::OwnshipSourceKind> {
@@ -8507,13 +8519,13 @@ fn register_default_situation_sources(app_state: AppState) -> AppResult<AppState
     )
 }
 
-fn register_debug_ownship_driver_source(app_state: AppState) -> AppResult<AppState> {
+fn register_bad_autopilot_source(app_state: AppState) -> AppResult<AppState> {
     let app_state = state::reduce(
         &app_state,
         AppEvent::RegisterOwnshipSource(crate::OwnshipSourceRegistration {
-            source_id: crate::OwnshipSourceId(DEBUG_OWNSHIP_DRIVER_SOURCE_ID.to_string()),
-            source_kind: crate::OwnshipSourceKind::DebugOwnshipDriver,
-            display_name: "Bad Autopilot".to_string(),
+            source_id: crate::OwnshipSourceId(BAD_AUTOPILOT_SOURCE_ID.to_string()),
+            source_kind: crate::OwnshipSourceKind::BadAutopilot,
+            display_name: "Bad AP".to_string(),
             selectable: true,
             auto_eligible: true,
         }),
@@ -8521,7 +8533,7 @@ fn register_debug_ownship_driver_source(app_state: AppState) -> AppResult<AppSta
     state::reduce(
         &app_state,
         AppEvent::UpdateOwnshipSourceStatus(crate::OwnshipSourceStatusUpdate {
-            source_id: crate::OwnshipSourceId(DEBUG_OWNSHIP_DRIVER_SOURCE_ID.to_string()),
+            source_id: crate::OwnshipSourceId(BAD_AUTOPILOT_SOURCE_ID.to_string()),
             connection_state: crate::SourceConnectionState::Connected,
             enabled: true,
             status_label: "Ready".to_string(),
@@ -8676,7 +8688,6 @@ fn default_debug_state() -> UiDebugState {
     UiDebugState {
         tile_labels: false,
         nexrad_tile_labels: false,
-        playback_visible: false,
         fast_tiles: false,
         offline_simulated_clock_buttons: false,
         sequencing_finish_lines: false,
@@ -8735,7 +8746,7 @@ fn empty_map_overlay_query() -> MapOverlayQueryResult {
 
 fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadReadError> {
     let mut app_ui_state = state::project_app_ui_state(&session.app_state);
-    project_debug_ownship_driver_availability(session, &mut app_ui_state);
+    project_bad_autopilot_availability(session, &mut app_ui_state);
     if let (Some(store), Some(position)) = (
         session.nav_kv_store.as_ref(),
         app_ui_state.ownship.render.position,
@@ -8845,15 +8856,15 @@ fn project_flight_data_banner(
     }))
 }
 
-fn project_debug_ownship_driver_availability(session: &UiSession, app_ui_state: &mut AppUiState) {
-    project_debug_ownship_driver_availability_for_state(
+fn project_bad_autopilot_availability(session: &UiSession, app_ui_state: &mut AppUiState) {
+    project_bad_autopilot_availability_for_state(
         &session.debug_state,
-        debug_ownship_driver_available(session),
+        bad_autopilot_available(session),
         app_ui_state,
     );
 }
 
-fn project_debug_ownship_driver_availability_for_state(
+fn project_bad_autopilot_availability_for_state(
     debug_state: &UiDebugState,
     available: bool,
     app_ui_state: &mut AppUiState,
@@ -8863,11 +8874,11 @@ fn project_debug_ownship_driver_availability_for_state(
             .ownship
             .controls
             .sources
-            .retain(|source| source.source_kind != crate::OwnshipSourceKind::DebugOwnshipDriver);
+            .retain(|source| source.source_kind != crate::OwnshipSourceKind::BadAutopilot);
         return;
     }
     for source in &mut app_ui_state.ownship.controls.sources {
-        if source.source_kind == crate::OwnshipSourceKind::DebugOwnshipDriver {
+        if source.source_kind == crate::OwnshipSourceKind::BadAutopilot {
             source.enabled = available;
             if !available {
                 source.tone = crate::ownship::OwnshipControlTone::Unavailable;
@@ -8877,11 +8888,11 @@ fn project_debug_ownship_driver_availability_for_state(
     }
 }
 
-fn debug_ownship_driver_selectable(session: &UiSession) -> bool {
-    session.debug_state.bad_autopilot && debug_ownship_driver_available(session)
+fn bad_autopilot_selectable(session: &UiSession) -> bool {
+    session.debug_state.bad_autopilot && bad_autopilot_available(session)
 }
 
-fn debug_ownship_driver_available(session: &UiSession) -> bool {
+fn bad_autopilot_available(session: &UiSession) -> bool {
     active_guidance_detail_geometry(session).is_some()
 }
 
@@ -9342,66 +9353,65 @@ fn apply_plan_preview_pointer(
     )
 }
 
-fn tick_debug_ownship_driver(session: &mut UiSession, now_epoch_ms: f64) -> AppResult<()> {
+fn tick_bad_autopilot(session: &mut UiSession, now_epoch_ms: f64) -> AppResult<()> {
     if !session.debug_state.bad_autopilot {
         return Ok(());
     }
     if selected_ownship_source_kind(&session.app_state.ownship)
-        != Some(crate::OwnshipSourceKind::DebugOwnshipDriver)
+        != Some(crate::OwnshipSourceKind::BadAutopilot)
     {
         return Ok(());
     }
-    session.debug_ownship_driver.running = true;
+    session.bad_autopilot.running = true;
 
     let Some((detail_id, geometry)) = active_guidance_detail_geometry(session) else {
-        session.debug_ownship_driver.last_tick_epoch_ms = Some(now_epoch_ms);
+        session.bad_autopilot.last_tick_epoch_ms = Some(now_epoch_ms);
         return Ok(());
     };
     let distance_nm = geometry_distance_nm(&geometry);
     if distance_nm <= f64::EPSILON {
-        session.debug_ownship_driver.last_tick_epoch_ms = Some(now_epoch_ms);
+        session.bad_autopilot.last_tick_epoch_ms = Some(now_epoch_ms);
         return Ok(());
     }
 
     let dt_seconds = session
-        .debug_ownship_driver
+        .bad_autopilot
         .last_tick_epoch_ms
         .map(|last_tick| {
-            ((now_epoch_ms - last_tick) / 1000.0).clamp(0.0, DEBUG_OWNSHIP_DRIVER_MAX_DT_SECONDS)
+            ((now_epoch_ms - last_tick) / 1000.0).clamp(0.0, BAD_AUTOPILOT_MAX_DT_SECONDS)
         })
         .unwrap_or(0.0);
-    session.debug_ownship_driver.last_tick_epoch_ms = Some(now_epoch_ms);
+    session.bad_autopilot.last_tick_epoch_ms = Some(now_epoch_ms);
 
-    if session.debug_ownship_driver.active_detail_id.as_deref() != Some(detail_id.as_str()) {
-        session.debug_ownship_driver.active_detail_id = Some(detail_id);
-        session.debug_ownship_driver.offset_nm = 0.0;
+    if session.bad_autopilot.active_detail_id.as_deref() != Some(detail_id.as_str()) {
+        session.bad_autopilot.active_detail_id = Some(detail_id);
+        session.bad_autopilot.offset_nm = 0.0;
     }
 
-    session.debug_ownship_driver.offset_nm = (session.debug_ownship_driver.offset_nm
-        + dt_seconds * DEBUG_OWNSHIP_DRIVER_NM_PER_SECOND)
-        .min(distance_nm + DEBUG_OWNSHIP_DRIVER_OVERRUN_NM);
-    session.debug_ownship_driver.wander_phase_rad += dt_seconds * 0.7;
+    session.bad_autopilot.offset_nm = (session.bad_autopilot.offset_nm
+        + dt_seconds * BAD_AUTOPILOT_NM_PER_SECOND)
+        .min(distance_nm + BAD_AUTOPILOT_OVERRUN_NM);
+    session.bad_autopilot.wander_phase_rad += dt_seconds * 0.7;
 
-    let offset_nm = session.debug_ownship_driver.offset_nm;
+    let offset_nm = session.bad_autopilot.offset_nm;
     let heading = heading_along_geometry(&geometry, offset_nm)
         .unwrap_or_else(|| bearing_degrees(geometry.from, geometry.to));
     let base_position = position_along_geometry_with_overrun(&geometry, offset_nm);
-    let wander_nm =
-        DEBUG_OWNSHIP_DRIVER_WANDER_NM * session.debug_ownship_driver.wander_phase_rad.sin();
+    let wander_nm = BAD_AUTOPILOT_WANDER_NM * session.bad_autopilot.wander_phase_rad.sin();
     let position = project_nm_from(base_position, heading + 90.0, wander_nm);
     let motion_heading = session
-        .debug_ownship_driver
+        .bad_autopilot
         .last_position
         .filter(|last_position| crate::great_circle_distance_nm(*last_position, position) > 1e-4)
         .map(|last_position| bearing_degrees(last_position, position))
         .unwrap_or(heading);
-    session.debug_ownship_driver.last_position = Some(position);
+    session.bad_autopilot.last_position = Some(position);
 
     apply_situation_to_ownship(
         session,
-        DEBUG_OWNSHIP_DRIVER_SOURCE_ID,
-        crate::OwnshipSourceKind::DebugOwnshipDriver,
-        "Bad Autopilot",
+        BAD_AUTOPILOT_SOURCE_ID,
+        crate::OwnshipSourceKind::BadAutopilot,
+        "Bad AP",
         crate::Situation {
             position: crate::SituationPosition::LatLon {
                 lat: position.lat,
@@ -9409,9 +9419,7 @@ fn tick_debug_ownship_driver(session: &mut UiSession, now_epoch_ms: f64) -> AppR
             },
             orientation_deg: Some(motion_heading),
             speed_kt: Some(
-                DEBUG_OWNSHIP_DRIVER_NM_PER_SECOND
-                    * 3600.0
-                    * DEBUG_OWNSHIP_DRIVER_REPORTED_SPEED_SCALE,
+                BAD_AUTOPILOT_NM_PER_SECOND * 3600.0 * BAD_AUTOPILOT_REPORTED_SPEED_SCALE,
             ),
             altitude_msl_ft: None,
         },
@@ -9492,7 +9500,6 @@ fn plan_preview_legs(
             } => {
                 *component_leg_counts.entry(component_index).or_insert(0) += 1;
             }
-            ResolvedLegSource::LegacyPlanLeg { .. } => {}
         }
     }
     plan.resolved_legs
@@ -9541,7 +9548,6 @@ fn pointer_key_for_preview_leg(
                 plan.route_component_uids.get(component_index).cloned()
             }
         }
-        ResolvedLegSource::LegacyPlanLeg { leg_index } => Some(format!("legacy:{leg_index}:from")),
     }
 }
 
@@ -11127,7 +11133,7 @@ mod tests {
             app_state: register_default_situation_sources(AppState::default()).expect("app state"),
             playback: PlaybackSessionState::default(),
             plan_preview: PlanPreviewState::default(),
-            debug_ownship_driver: DebugOwnshipDriverState::default(),
+            bad_autopilot: BadAutopilotState::default(),
             map_follow: MapFollowSessionState::default(),
             guidance_leg_geometry: HashMap::new(),
             map_overlay_config: map_overlay_config_from_vector_manifest_json(
@@ -11314,7 +11320,7 @@ mod tests {
             app_state: register_default_situation_sources(AppState::default()).expect("app state"),
             playback: PlaybackSessionState::default(),
             plan_preview: PlanPreviewState::default(),
-            debug_ownship_driver: DebugOwnshipDriverState::default(),
+            bad_autopilot: BadAutopilotState::default(),
             map_follow: MapFollowSessionState::default(),
             guidance_leg_geometry: HashMap::new(),
             map_overlay_config: map_overlay_config_from_vector_manifest_json(
@@ -11752,7 +11758,7 @@ mod tests {
             app_state: register_default_situation_sources(AppState::default()).expect("app state"),
             playback: PlaybackSessionState::default(),
             plan_preview: PlanPreviewState::default(),
-            debug_ownship_driver: DebugOwnshipDriverState::default(),
+            bad_autopilot: BadAutopilotState::default(),
             map_follow: MapFollowSessionState::default(),
             guidance_leg_geometry: HashMap::new(),
             map_overlay_config: map_overlay_config_from_vector_manifest_json(
@@ -14488,7 +14494,7 @@ mod tests {
             "Plan Preview should sort before Replay",
         );
         assert!(
-            !init.snapshot.debug_state.playback_visible,
+            !init.snapshot.playback_panel_state.visible,
             "playback panel starts hidden until Replay is active",
         );
         assert_enabled_situation_controls(&init.snapshot, &[]);
@@ -14500,7 +14506,7 @@ mod tests {
             },
         )
         .expect("select Replay");
-        assert!(replay.debug_state.playback_visible);
+        assert!(replay.playback_panel_state.visible);
         assert_enabled_situation_controls(&replay, &[]);
 
         let replay_with_trace = load_playback_trace_in_session(
@@ -14550,7 +14556,7 @@ mod tests {
         )
         .expect("push gps sample");
         assert!(
-            gps.debug_state.playback_visible,
+            gps.playback_panel_state.visible,
             "pushing GPS must not change a manual Replay selection",
         );
         assert_enabled_situation_controls(
@@ -14569,7 +14575,7 @@ mod tests {
         )
         .expect("select GPS");
         assert!(
-            !gps.debug_state.playback_visible,
+            !gps.playback_panel_state.visible,
             "playback panel hides as soon as Replay is not the active source",
         );
         assert!(
@@ -14594,14 +14600,14 @@ mod tests {
                 .controls
                 .sources
                 .iter()
-                .any(|source| source.source_kind == OwnshipSourceKind::DebugOwnshipDriver),
+                .any(|source| source.source_kind == OwnshipSourceKind::BadAutopilot),
             "Bad Autopilot must not appear in production/default source menu",
         );
 
         let ignored_select = select_ownship_source_in_session(
             init.handle,
             crate::OwnshipSelectionCommand::Source {
-                source_id: OwnshipSourceId(DEBUG_OWNSHIP_DRIVER_SOURCE_ID.to_string()),
+                source_id: OwnshipSourceId(BAD_AUTOPILOT_SOURCE_ID.to_string()),
             },
         )
         .expect("select Bad Autopilot while hidden");
@@ -14612,7 +14618,7 @@ mod tests {
                 .controls
                 .sources
                 .iter()
-                .all(|source| source.source_kind != OwnshipSourceKind::DebugOwnshipDriver),
+                .all(|source| source.source_kind != OwnshipSourceKind::BadAutopilot),
             "stale platform calls must not surface Bad Autopilot while the flag is off",
         );
 
@@ -14625,7 +14631,7 @@ mod tests {
                 .sources
                 .iter()
                 .any(|source| {
-                    source.source_kind == OwnshipSourceKind::DebugOwnshipDriver && source.enabled
+                    source.source_kind == OwnshipSourceKind::BadAutopilot && source.enabled
                 }),
             "Bad Autopilot should be selectable once the flag is enabled and active leg geometry is available",
         );
@@ -14633,14 +14639,14 @@ mod tests {
         let selected = select_ownship_source_in_session(
             init.handle,
             crate::OwnshipSelectionCommand::Source {
-                source_id: OwnshipSourceId(DEBUG_OWNSHIP_DRIVER_SOURCE_ID.to_string()),
+                source_id: OwnshipSourceId(BAD_AUTOPILOT_SOURCE_ID.to_string()),
             },
         )
         .expect("select Bad Autopilot");
         assert!(matches!(
             selected.app_ui_state.ownship.controls.selection,
             crate::OwnshipSelectionCommand::Source { ref source_id }
-                if source_id.0 == DEBUG_OWNSHIP_DRIVER_SOURCE_ID
+                if source_id.0 == BAD_AUTOPILOT_SOURCE_ID
         ));
 
         let disabled =
@@ -14657,7 +14663,7 @@ mod tests {
                 .controls
                 .sources
                 .iter()
-                .all(|source| source.source_kind != OwnshipSourceKind::DebugOwnshipDriver),
+                .all(|source| source.source_kind != OwnshipSourceKind::BadAutopilot),
             "disabling the flag removes Bad Autopilot from the source menu",
         );
     }
@@ -15203,11 +15209,11 @@ mod tests {
         select_ownship_source_in_session(
             init.handle,
             crate::OwnshipSelectionCommand::Source {
-                source_id: crate::OwnshipSourceId(DEBUG_OWNSHIP_DRIVER_SOURCE_ID.to_string()),
+                source_id: crate::OwnshipSourceId(BAD_AUTOPILOT_SOURCE_ID.to_string()),
             },
         )
         .expect("select bad autopilot");
-        tick_debug_ownship_driver_in_session(init.handle, 10_000.0).expect("tick bad autopilot");
+        tick_bad_autopilot_in_session(init.handle, 10_000.0).expect("tick bad autopilot");
 
         let snapshot = select_ownship_source_in_session(
             init.handle,
@@ -15722,7 +15728,7 @@ mod tests {
     }
 
     #[test]
-    fn debug_ownship_driver_advances_guidance_detail_in_core() {
+    fn bad_autopilot_advances_guidance_detail_in_core() {
         let mut plan = short_lat_lon_preview_plan();
         let a = LatLon {
             lat: 40.0,
@@ -15784,7 +15790,7 @@ mod tests {
         let mut snapshot = select_ownship_source_in_session(
             init.handle,
             crate::OwnshipSelectionCommand::Source {
-                source_id: crate::OwnshipSourceId(DEBUG_OWNSHIP_DRIVER_SOURCE_ID.to_string()),
+                source_id: crate::OwnshipSourceId(BAD_AUTOPILOT_SOURCE_ID.to_string()),
             },
         )
         .expect("select bad autopilot");
@@ -15792,8 +15798,8 @@ mod tests {
             1_000.0, 2_000.0, 3_000.0, 4_000.0, 5_000.0, 6_000.0, 7_000.0, 8_000.0, 9_000.0,
             10_000.0,
         ] {
-            snapshot = tick_debug_ownship_driver_in_session(init.handle, now_epoch_ms)
-                .expect("tick driver");
+            snapshot =
+                tick_bad_autopilot_in_session(init.handle, now_epoch_ms).expect("tick driver");
         }
         let guidance = snapshot
             .app_state
@@ -15959,7 +15965,7 @@ mod tests {
     }
 
     #[test]
-    fn debug_ownship_driver_flies_terminal_hold_until_unsuspended() {
+    fn bad_autopilot_flies_terminal_hold_until_unsuspended() {
         let a = LatLon {
             lat: 40.0,
             lon: -120.0,
@@ -16104,17 +16110,17 @@ mod tests {
         select_ownship_source_in_session(
             init.handle,
             crate::OwnshipSelectionCommand::Source {
-                source_id: crate::OwnshipSourceId(DEBUG_OWNSHIP_DRIVER_SOURCE_ID.to_string()),
+                source_id: crate::OwnshipSourceId(BAD_AUTOPILOT_SOURCE_ID.to_string()),
             },
         )
         .expect("select bad autopilot");
 
         let mut snapshot =
-            tick_debug_ownship_driver_in_session(init.handle, 1_000.0).expect("tick driver");
+            tick_bad_autopilot_in_session(init.handle, 1_000.0).expect("tick driver");
         for second in 2..=4 {
             let now_epoch_ms = f64::from(second) * 1000.0;
-            snapshot = tick_debug_ownship_driver_in_session(init.handle, now_epoch_ms)
-                .expect("tick driver");
+            snapshot =
+                tick_bad_autopilot_in_session(init.handle, now_epoch_ms).expect("tick driver");
         }
         let guidance = snapshot
             .app_state
@@ -16138,7 +16144,7 @@ mod tests {
 
         for second in 5..=8 {
             let now_epoch_ms = f64::from(second) * 1000.0;
-            snapshot = tick_debug_ownship_driver_in_session(init.handle, now_epoch_ms)
+            snapshot = tick_bad_autopilot_in_session(init.handle, now_epoch_ms)
                 .expect("tick suspended hold");
         }
         let guidance = snapshot
@@ -16154,7 +16160,7 @@ mod tests {
         unsuspend_sequencing_in_session(init.handle).expect("unsuspend hold");
         for second in 9..=30 {
             let now_epoch_ms = f64::from(second) * 1000.0;
-            snapshot = tick_debug_ownship_driver_in_session(init.handle, now_epoch_ms)
+            snapshot = tick_bad_autopilot_in_session(init.handle, now_epoch_ms)
                 .expect("tick unsuspended hold");
         }
         let guidance = snapshot
@@ -16168,7 +16174,7 @@ mod tests {
     }
 
     #[test]
-    fn debug_ownship_driver_falls_back_to_guidance_leg_geometry() {
+    fn bad_autopilot_falls_back_to_guidance_leg_geometry() {
         let a = LatLon {
             lat: 40.0,
             lon: -120.0,
@@ -16254,13 +16260,12 @@ mod tests {
         select_ownship_source_in_session(
             init.handle,
             crate::OwnshipSelectionCommand::Source {
-                source_id: crate::OwnshipSourceId(DEBUG_OWNSHIP_DRIVER_SOURCE_ID.to_string()),
+                source_id: crate::OwnshipSourceId(BAD_AUTOPILOT_SOURCE_ID.to_string()),
             },
         )
         .expect("select bad autopilot");
 
-        let snapshot =
-            tick_debug_ownship_driver_in_session(init.handle, 1_000.0).expect("tick driver");
+        let snapshot = tick_bad_autopilot_in_session(init.handle, 1_000.0).expect("tick driver");
         assert!(
             snapshot.app_ui_state.ownship.render.position.is_some(),
             "bad autopilot must keep moving when active detail geometry falls back to leg geometry"

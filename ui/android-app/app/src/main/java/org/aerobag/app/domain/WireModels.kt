@@ -449,8 +449,8 @@ enum class WireOwnshipSourceKind {
     @SerialName("flight_plan_simulator")
     FlightPlanSimulator,
 
-    @SerialName("debug_ownship_driver")
-    DebugOwnshipDriver,
+    @SerialName("bad_autopilot")
+    BadAutopilot,
 }
 
 @Serializable
@@ -1152,7 +1152,6 @@ data class WireProcedureLegMaterializationRecord(
 
 @Serializable(with = WireResolvedLegSourceSerializer::class)
 sealed interface WireResolvedLegSource {
-    data class LegacyPlanLeg(val leg_index: Int) : WireResolvedLegSource
     data class RouteComponent(val component_index: Int) : WireResolvedLegSource
     data class SyntheticBridge(val from_component_index: Int, val to_component_index: Int) : WireResolvedLegSource
 }
@@ -1164,9 +1163,6 @@ object WireResolvedLegSourceSerializer : KSerializer<WireResolvedLegSource> {
     override fun serialize(encoder: Encoder, value: WireResolvedLegSource) {
         require(encoder is JsonEncoder) { "WireResolvedLegSource is JSON-only" }
         val element = when (value) {
-            is WireResolvedLegSource.LegacyPlanLeg -> JsonObject(
-                mapOf("kind" to JsonPrimitive("legacy_plan_leg"), "leg_index" to JsonPrimitive(value.leg_index)),
-            )
             is WireResolvedLegSource.RouteComponent -> JsonObject(
                 mapOf("kind" to JsonPrimitive("route_component"), "component_index" to JsonPrimitive(value.component_index)),
             )
@@ -1185,9 +1181,6 @@ object WireResolvedLegSourceSerializer : KSerializer<WireResolvedLegSource> {
         require(decoder is JsonDecoder) { "WireResolvedLegSource is JSON-only" }
         val obj = decoder.decodeJsonElement() as? JsonObject ?: error("WireResolvedLegSource must be an object")
         return when (obj["kind"]?.jsonPrimitive?.content) {
-            "legacy_plan_leg" -> WireResolvedLegSource.LegacyPlanLeg(
-                leg_index = obj["leg_index"]?.jsonPrimitive?.content?.toInt() ?: error("leg_index required"),
-            )
             "route_component" -> WireResolvedLegSource.RouteComponent(
                 component_index = obj["component_index"]?.jsonPrimitive?.content?.toInt() ?: error("component_index required"),
             )

@@ -75,6 +75,7 @@ import {
   type UiMapLayerState,
   type UiMapLayerToggleState,
   type UiDebugState,
+  type UiPlaybackPanelState,
   type UiDataStatusPageState,
   type UiDataStatusState,
   type UiSession,
@@ -1448,12 +1449,17 @@ function defaultUiDebugState(): UiDebugState {
   return {
     tile_labels: debugTiles,
     nexrad_tile_labels: false,
-    playback_visible: false,
     fast_tiles: false,
     offline_simulated_clock_buttons: false,
     sequencing_finish_lines: false,
     bad_autopilot: false,
     gps_capture: false,
+  };
+}
+
+function defaultUiPlaybackPanelState(): UiPlaybackPanelState {
+  return {
+    visible: false,
   };
 }
 
@@ -1554,6 +1560,7 @@ export default function App() {
       last_content_report: null,
     },
     playback_ui_state: emptyPlaybackUiState(),
+    playback_panel_state: defaultUiPlaybackPanelState(),
     map_follow_ui_state: emptyMapFollowUiState(),
     map_follow_target_viewport: null,
     chart_page_state: {
@@ -1651,8 +1658,8 @@ export default function App() {
     () => normalizeUiMapLayerState(sessionSnapshot.map_layer_state),
     [sessionSnapshot.map_layer_state],
   );
-  const debugOwnshipDriverActive = appUiState.ownship.controls.sources.some(
-    (source) => source.source_kind === "debug_ownship_driver" && source.active,
+  const badAutopilotActive = appUiState.ownship.controls.sources.some(
+    (source) => source.source_kind === "bad_autopilot" && source.active,
   );
   const playbackUiState = sessionSnapshot.playback_ui_state;
   const mapFollowUiState = sessionSnapshot.map_follow_ui_state;
@@ -1920,7 +1927,7 @@ export default function App() {
   }, [playbackUiState.status, playbackUiState.tick_interval_ms, uiSession]);
 
   useEffect(() => {
-    if (!uiSession || !debugOwnshipDriverActive) {
+    if (!uiSession || !badAutopilotActive) {
       return;
     }
     let cancelled = false;
@@ -1930,7 +1937,7 @@ export default function App() {
         return;
       }
       inFlight = true;
-      void uiSession.tickDebugOwnshipDriver(Date.now()).then((nextSnapshot) => {
+      void uiSession.tickBadAutopilot(Date.now()).then((nextSnapshot) => {
         if (!cancelled) {
           setSessionSnapshot(nextSnapshot);
         }
@@ -1944,7 +1951,7 @@ export default function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [debugOwnshipDriverActive, uiSession]);
+  }, [badAutopilotActive, uiSession]);
 
   useEffect(() => {
     if (!uiSession) {
@@ -2635,6 +2642,7 @@ export default function App() {
           page={page}
           uptimeLabel={uptimeLabel}
           debugState={sessionSnapshot.debug_state}
+          playbackPanelState={sessionSnapshot.playback_panel_state}
           mapLayerState={mapLayerState}
           selectedMap={selectedMap}
           selectedFamily={selectedFamily}
@@ -2872,6 +2880,7 @@ export default function App() {
           ownship={appUiState.ownship.render}
           ownshipControls={appUiState.ownship.controls}
           playbackUiState={playbackUiState}
+          playbackPanelState={sessionSnapshot.playback_panel_state}
           playbackSourcePath={playbackSourcePath}
           onPlaybackSourcePathChange={setPlaybackSourcePath}
           onPlaybackSnapshotChange={setSessionSnapshot}
@@ -2914,6 +2923,7 @@ function MapPage(props: {
   page: AppPage;
   uptimeLabel: string;
   debugState: UiDebugState;
+  playbackPanelState: UiPlaybackPanelState;
   mapLayerState: UiMapLayerState;
   selectedMap: RasterMapUiState;
   selectedFamily: RasterMapUiState["family_options"][number] | null;
@@ -5886,7 +5896,7 @@ function MapPage(props: {
           onClick={onOpenPlan}
         />
 
-        {debugState.playback_visible ? (
+        {props.playbackPanelState.visible ? (
           <PlaybackWidget
             uiSession={uiSession}
             playbackUiState={props.playbackUiState}
@@ -8194,6 +8204,7 @@ function ChartsPage(props: {
   onSelectAirport: (airportId: string) => void;
   onSelectChart: (chartId: string) => void;
   playbackUiState: PlaybackUiState;
+  playbackPanelState: UiPlaybackPanelState;
   playbackSourcePath: string;
   onPlaybackSourcePathChange: Dispatch<SetStateAction<string>>;
   onPlaybackSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
@@ -8825,7 +8836,7 @@ function ChartsPage(props: {
           onClick={onOpenPlan}
         />
 
-        {props.debugState.playback_visible ? (
+        {props.playbackPanelState.visible ? (
           <PlaybackWidget
             uiSession={props.uiSession}
             playbackUiState={props.playbackUiState}

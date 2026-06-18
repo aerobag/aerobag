@@ -54,7 +54,7 @@ pub enum OwnshipSourceKind {
     AdsbTrackPlayback,
     LiveNetworkTrack,
     FlightPlanSimulator,
-    DebugOwnshipDriver,
+    BadAutopilot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -364,7 +364,7 @@ pub fn register_source(
                 registration.source_kind,
                 OwnshipSourceKind::ExternalAhrs
                     | OwnshipSourceKind::FlightPlanSimulator
-                    | OwnshipSourceKind::DebugOwnshipDriver
+                    | OwnshipSourceKind::BadAutopilot
             ),
             provides_track: !matches!(registration.source_kind, OwnshipSourceKind::ExternalAhrs),
             provides_speed: true,
@@ -372,7 +372,7 @@ pub fn register_source(
                 registration.source_kind,
                 OwnshipSourceKind::ExternalAhrs
                     | OwnshipSourceKind::FlightPlanSimulator
-                    | OwnshipSourceKind::DebugOwnshipDriver
+                    | OwnshipSourceKind::BadAutopilot
             ),
             status_label: "Unavailable".to_string(),
             latest_sample: None,
@@ -627,7 +627,7 @@ fn mode_for_kind(kind: OwnshipSourceKind) -> OwnshipMode {
         OwnshipSourceKind::GpxPlayback
         | OwnshipSourceKind::AdsbTrackPlayback
         | OwnshipSourceKind::LiveNetworkTrack => OwnshipMode::Replay,
-        OwnshipSourceKind::FlightPlanSimulator | OwnshipSourceKind::DebugOwnshipDriver => {
+        OwnshipSourceKind::FlightPlanSimulator | OwnshipSourceKind::BadAutopilot => {
             OwnshipMode::Simulated
         }
     }
@@ -773,7 +773,7 @@ fn source_menu_label(source: &OwnshipSourceStatus) -> String {
         | OwnshipSourceKind::AdsbTrackPlayback
         | OwnshipSourceKind::LiveNetworkTrack => "Replay".to_string(),
         OwnshipSourceKind::FlightPlanSimulator => "Plan\nPreview".to_string(),
-        OwnshipSourceKind::DebugOwnshipDriver => "Bad AP".to_string(),
+        OwnshipSourceKind::BadAutopilot => "Bad AP".to_string(),
     }
 }
 
@@ -784,7 +784,7 @@ fn source_menu_rank(kind: OwnshipSourceKind) -> u8 {
         OwnshipSourceKind::GpxPlayback
         | OwnshipSourceKind::AdsbTrackPlayback
         | OwnshipSourceKind::LiveNetworkTrack => 2,
-        OwnshipSourceKind::DebugOwnshipDriver => 3,
+        OwnshipSourceKind::BadAutopilot => 3,
         OwnshipSourceKind::ExternalAhrs => 4,
     }
 }
@@ -863,7 +863,7 @@ fn source_launcher_label(source: &OwnshipSourceStatus) -> String {
         | OwnshipSourceKind::AdsbTrackPlayback
         | OwnshipSourceKind::LiveNetworkTrack => "Replay".to_string(),
         OwnshipSourceKind::FlightPlanSimulator => "Plan Preview".to_string(),
-        OwnshipSourceKind::DebugOwnshipDriver => "Bad AP".to_string(),
+        OwnshipSourceKind::BadAutopilot => "Bad AP".to_string(),
     }
 }
 
@@ -884,7 +884,7 @@ fn source_control_tone(source: &OwnshipSourceStatus) -> OwnshipControlTone {
         | OwnshipSourceKind::AdsbTrackPlayback
         | OwnshipSourceKind::LiveNetworkTrack
         | OwnshipSourceKind::FlightPlanSimulator
-        | OwnshipSourceKind::DebugOwnshipDriver => OwnshipControlTone::Neutral,
+        | OwnshipSourceKind::BadAutopilot => OwnshipControlTone::Neutral,
     }
 }
 

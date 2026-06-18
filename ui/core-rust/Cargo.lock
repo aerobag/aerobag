@@ -48,7 +48,6 @@ dependencies = [
  "had-nav-kv",
  "image",
  "lzma-rs",
- "png",
  "postcard",
  "procedure-geometry-types",
  "product-contracts",

@@ -1630,7 +1630,7 @@ private fun WireOwnshipSourceKind.toUi(): OwnshipSourceKind = when (this) {
     WireOwnshipSourceKind.AdsbTrackPlayback -> OwnshipSourceKind.AdsbTrackPlayback
     WireOwnshipSourceKind.LiveNetworkTrack -> OwnshipSourceKind.LiveNetworkTrack
     WireOwnshipSourceKind.FlightPlanSimulator -> OwnshipSourceKind.FlightPlanSimulator
-    WireOwnshipSourceKind.DebugOwnshipDriver -> OwnshipSourceKind.DebugOwnshipDriver
+    WireOwnshipSourceKind.BadAutopilot -> OwnshipSourceKind.BadAutopilot
 }
 
 private fun OwnshipSourceKind.toWire(): WireOwnshipSourceKind = when (this) {
@@ -1641,7 +1641,7 @@ private fun OwnshipSourceKind.toWire(): WireOwnshipSourceKind = when (this) {
     OwnshipSourceKind.AdsbTrackPlayback -> WireOwnshipSourceKind.AdsbTrackPlayback
     OwnshipSourceKind.LiveNetworkTrack -> WireOwnshipSourceKind.LiveNetworkTrack
     OwnshipSourceKind.FlightPlanSimulator -> WireOwnshipSourceKind.FlightPlanSimulator
-    OwnshipSourceKind.DebugOwnshipDriver -> WireOwnshipSourceKind.DebugOwnshipDriver
+    OwnshipSourceKind.BadAutopilot -> WireOwnshipSourceKind.BadAutopilot
 }
 
 private fun WireSourceConnectionState.toUi(): SourceConnectionState = when (this) {
@@ -1722,7 +1722,7 @@ private fun OwnshipSourceKind.toWireName(): String = when (this) {
     OwnshipSourceKind.AdsbTrackPlayback -> "adsb_track_playback"
     OwnshipSourceKind.LiveNetworkTrack -> "live_network_track"
     OwnshipSourceKind.FlightPlanSimulator -> "flight_plan_simulator"
-    OwnshipSourceKind.DebugOwnshipDriver -> "debug_ownship_driver"
+    OwnshipSourceKind.BadAutopilot -> "bad_autopilot"
 }
 
 private fun SourceConnectionState.toWireName(): String = when (this) {
@@ -1914,7 +1914,6 @@ private data class WireUiDisplayPolicy(
 private data class WireUiDebugState(
     val tile_labels: Boolean = false,
     val nexrad_tile_labels: Boolean = false,
-    val playback_visible: Boolean = false,
     val fast_tiles: Boolean = false,
     val offline_simulated_clock_buttons: Boolean = false,
     val bad_autopilot: Boolean = false,
@@ -1922,10 +1921,16 @@ private data class WireUiDebugState(
 )
 
 @kotlinx.serialization.Serializable
+private data class WireUiPlaybackPanelState(
+    val visible: Boolean = false,
+)
+
+@kotlinx.serialization.Serializable
 private data class WireUiSessionSnapshot(
     val app_state: WireUiSnapshotAppState,
     val app_ui_state: WireAppUiState = WireAppUiState(),
     val playback_ui_state: WirePlaybackUiState = WirePlaybackUiState(),
+    val playback_panel_state: WireUiPlaybackPanelState = WireUiPlaybackPanelState(),
     val map_follow_ui_state: WireMapFollowUiState = WireMapFollowUiState(),
     val map_follow_target_viewport: WireMapViewport? = null,
     val chart_page_state: WireUiChartPageState,
@@ -2005,6 +2010,7 @@ data class UiSessionSnapshot(
     val appState: UiSnapshotAppState,
     val appUiState: AppUiState,
     val playbackUiState: PlaybackUiState,
+    val playbackPanelState: UiPlaybackPanelState,
     val mapFollowUiState: MapFollowUiState,
     val mapFollowTargetViewport: CoreMapViewport?,
     val chartPageState: UiChartPageState,
@@ -2118,11 +2124,14 @@ data class UiDisplayPolicy(
 data class UiDebugState(
     val tileLabels: Boolean,
     val nexradTileLabels: Boolean,
-    val playbackVisible: Boolean,
     val fastTiles: Boolean,
     val offlineSimulatedClockButtons: Boolean,
     val badAutopilot: Boolean,
     val gpsCapture: Boolean,
+)
+
+data class UiPlaybackPanelState(
+    val visible: Boolean,
 )
 
 data class UiChartPageState(
@@ -2282,17 +2291,21 @@ private fun WireUiDisplayPolicy.toUi() = UiDisplayPolicy(
 private fun WireUiDebugState.toUi() = UiDebugState(
     tileLabels = tile_labels,
     nexradTileLabels = nexrad_tile_labels,
-    playbackVisible = playback_visible,
     fastTiles = fast_tiles,
     offlineSimulatedClockButtons = offline_simulated_clock_buttons,
     badAutopilot = bad_autopilot,
     gpsCapture = gps_capture,
 )
 
+private fun WireUiPlaybackPanelState.toUi() = UiPlaybackPanelState(
+    visible = visible,
+)
+
 private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     appState = app_state.toUi(),
     appUiState = app_ui_state.toUi(),
     playbackUiState = playback_ui_state.toUi(),
+    playbackPanelState = playback_panel_state.toUi(),
     mapFollowUiState = map_follow_ui_state.toUi(),
     mapFollowTargetViewport = map_follow_target_viewport?.toUi(),
     chartPageState = chart_page_state.toUi(),
@@ -2954,7 +2967,6 @@ private fun WirePlanLeg.toUiPlanLeg() = PlanLeg(
 )
 
 private fun ResolvedLegSource.toWire(): WireResolvedLegSource = when (this) {
-    is ResolvedLegSource.LegacyPlanLeg -> WireResolvedLegSource.LegacyPlanLeg(leg_index = legIndex)
     is ResolvedLegSource.RouteComponent -> WireResolvedLegSource.RouteComponent(component_index = componentIndex)
     is ResolvedLegSource.SyntheticBridge -> WireResolvedLegSource.SyntheticBridge(
         from_component_index = fromComponentIndex,
@@ -2963,7 +2975,6 @@ private fun ResolvedLegSource.toWire(): WireResolvedLegSource = when (this) {
 }
 
 private fun WireResolvedLegSource.toUi(): ResolvedLegSource = when (this) {
-    is WireResolvedLegSource.LegacyPlanLeg -> ResolvedLegSource.LegacyPlanLeg(legIndex = leg_index)
     is WireResolvedLegSource.RouteComponent -> ResolvedLegSource.RouteComponent(componentIndex = component_index)
     is WireResolvedLegSource.SyntheticBridge -> ResolvedLegSource.SyntheticBridge(
         fromComponentIndex = from_component_index,

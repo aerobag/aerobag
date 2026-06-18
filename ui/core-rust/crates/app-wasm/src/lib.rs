@@ -1751,20 +1751,16 @@ pub fn set_situation_in_session_paged(
 }
 
 #[wasm_bindgen]
-pub fn tick_debug_ownship_driver_in_session(
-    handle: u32,
-    now_epoch_ms: f64,
-) -> Result<String, JsValue> {
-    tick_debug_ownship_driver_in_session_json(handle, now_epoch_ms)
-        .map_err(|err| JsValue::from_str(&err))
+pub fn tick_bad_autopilot_in_session(handle: u32, now_epoch_ms: f64) -> Result<String, JsValue> {
+    tick_bad_autopilot_in_session_json(handle, now_epoch_ms).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
-pub fn tick_debug_ownship_driver_in_session_paged(
+pub fn tick_bad_autopilot_in_session_paged(
     handle: u32,
     now_epoch_ms: f64,
 ) -> Result<String, JsValue> {
-    tick_debug_ownship_driver_in_session_paged_json(handle, now_epoch_ms)
+    tick_bad_autopilot_in_session_paged_json(handle, now_epoch_ms)
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -2545,20 +2541,17 @@ fn set_situation_in_session_paged_json(
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
-fn tick_debug_ownship_driver_in_session_json(
-    handle: u32,
-    now_epoch_ms: f64,
-) -> Result<String, String> {
-    let snapshot = app_core::tick_debug_ownship_driver_in_session(handle, now_epoch_ms)
+fn tick_bad_autopilot_in_session_json(handle: u32, now_epoch_ms: f64) -> Result<String, String> {
+    let snapshot = app_core::tick_bad_autopilot_in_session(handle, now_epoch_ms)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn tick_debug_ownship_driver_in_session_paged_json(
+fn tick_bad_autopilot_in_session_paged_json(
     handle: u32,
     now_epoch_ms: f64,
 ) -> Result<String, String> {
-    let outcome = app_core::tick_debug_ownship_driver_in_session_outcome(handle, now_epoch_ms)
+    let outcome = app_core::tick_bad_autopilot_in_session_outcome(handle, now_epoch_ms)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }

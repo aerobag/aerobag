@@ -30,10 +30,6 @@ data class NavDbStatus(
 
 @Serializable
 private data class WireDevBootstrap(
-    val content_policy: String,
-    val recent_airport_ids: List<String> = emptyList(),
-    val selected_airport_id: String? = null,
-    val selected_chart_id: String? = null,
     val package_management_now_utc: String? = null,
 )
 
@@ -42,7 +38,6 @@ object AndroidRuntimeContent {
     private const val TAG = "AndroidRuntimeContent"
     private val json = Json {
         encodeDefaults = true
-        ignoreUnknownKeys = true
     }
 
     fun loadBootstrap(context: Context): RuntimeBootstrap {

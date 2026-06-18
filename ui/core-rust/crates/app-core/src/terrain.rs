@@ -295,23 +295,6 @@ pub fn schedule_terrain_overlay_frame(
     };
 }
 
-pub fn render_terrain_warning_png(
-    tile_bytes: &[u8],
-    aircraft_altitude_ft: f64,
-) -> Result<Vec<u8>, String> {
-    let (info, rgba) = render_terrain_warning_rgba(tile_bytes, aircraft_altitude_ft)?;
-    encode_terrain_warning_png(&info, &rgba)
-}
-
-pub fn render_terrain_warning_png_from_tiles(
-    tile_bytes_list: &[&[u8]],
-    aircraft_altitude_ft: f64,
-) -> Result<Vec<u8>, String> {
-    let (info, rgba) =
-        render_terrain_warning_rgba_from_tiles(tile_bytes_list, aircraft_altitude_ft)?;
-    encode_terrain_warning_png(&info, &rgba)
-}
-
 pub fn render_terrain_warning_rgba_from_tiles(
     tile_bytes_list: &[&[u8]],
     aircraft_altitude_ft: f64,
@@ -335,22 +318,6 @@ pub fn render_terrain_warning_raw_rgba_from_tiles(
     let (info, rgba) =
         render_terrain_warning_rgba_from_tiles(tile_bytes_list, aircraft_altitude_ft)?;
     Ok(pack_raw_rgba(info.width, info.height, &rgba))
-}
-
-fn encode_terrain_warning_png(info: &TerrainTileInfo, rgba: &[u8]) -> Result<Vec<u8>, String> {
-    let mut png_bytes = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut png_bytes, info.width as u32, info.height as u32);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder.set_compression(png::Compression::NoCompression);
-        encoder.set_filter(png::Filter::NoFilter);
-        let mut writer = encoder.write_header().map_err(|err| err.to_string())?;
-        writer
-            .write_image_data(&rgba)
-            .map_err(|err| err.to_string())?;
-    }
-    Ok(png_bytes)
 }
 
 pub fn render_terrain_warning_rgba(
@@ -893,11 +860,14 @@ mod tests {
     }
 
     #[test]
-    fn writes_warning_png() {
+    fn writes_raw_rgba_warning_tile() {
         let bytes = terrain_tile_bytes(1, 1, &[40]);
 
-        let png = render_terrain_warning_png(&bytes, 2000.0).expect("render png");
-        assert_eq!(&png[0..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
+        let raw =
+            render_terrain_warning_raw_rgba_from_tiles(&[&bytes], 20.0).expect("render raw rgba");
+        assert_eq!(&raw[0..2], &1_u16.to_le_bytes());
+        assert_eq!(&raw[2..4], &1_u16.to_le_bytes());
+        assert_eq!(&raw[4..8], &[185, 0, 45, 190]);
     }
 
     #[test]

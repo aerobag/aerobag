@@ -105,7 +105,7 @@ fn exported_plain_snapshot_session_apis_are_allowlisted() {
         "set_playback_rate_in_session",
         "tick_playback_in_session",
         "set_situation_in_session",
-        "tick_debug_ownship_driver_in_session",
+        "tick_bad_autopilot_in_session",
         "activate_next_leg_in_session",
         "suspend_sequencing_in_session",
         "unsuspend_sequencing_in_session",
@@ -242,7 +242,7 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "sync_guidance_geometry_in_session",
         "project_flight_plan_route_in_session",
         "set_situation_in_session_paged",
-        "tick_debug_ownship_driver_in_session_paged",
+        "tick_bad_autopilot_in_session_paged",
         "register_ownship_source_in_session_paged",
         "update_ownship_source_status_in_session_paged",
         "push_situation_sample_in_session_paged",
@@ -340,7 +340,7 @@ fn platform_adapters_do_not_call_plain_had_sensitive_snapshot_exports() {
 
     for export in [
         "set_situation_in_session",
-        "tick_debug_ownship_driver_in_session",
+        "tick_bad_autopilot_in_session",
         "register_ownship_source_in_session",
         "update_ownship_source_status_in_session",
         "push_situation_sample_in_session",

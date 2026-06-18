@@ -337,7 +337,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     unsuspendSequencing: () => updateSnapshot(call("unsuspendSequencing")),
     sequenceActiveLeg: () => updateSnapshot(call("sequenceActiveLeg")),
     setSituation: (...args) => updateSnapshot(call("setSituation", args)),
-    tickDebugOwnshipDriver: (...args) => updateSnapshot(call("tickDebugOwnshipDriver", args)),
+    tickBadAutopilot: (...args) => updateSnapshot(call("tickBadAutopilot", args)),
     loadPlaybackTrace: (...args) => updateSnapshot(call("loadPlaybackTrace", args)),
     playPlayback: (...args) => updateSnapshot(call("playPlayback", args)),
     pausePlayback: (...args) => updateSnapshot(call("pausePlayback", args)),

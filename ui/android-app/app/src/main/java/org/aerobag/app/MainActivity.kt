@@ -215,7 +215,6 @@ import org.aerobag.app.domain.AirspaceDisplayPath
 import org.aerobag.app.domain.AirspaceDisplaySubpath
 import org.aerobag.app.domain.AirspaceLimitGlyph
 import org.aerobag.app.domain.AirspaceScreenPoint
-import org.aerobag.app.domain.LatLonPoint
 import org.aerobag.app.domain.MapChartFamily
 import org.aerobag.app.domain.MapLayerId
 import org.aerobag.app.domain.MapFollowUiState
@@ -232,6 +231,7 @@ import org.aerobag.app.domain.NativeUiSession
 import org.aerobag.app.domain.NavKvStore
 import org.aerobag.app.domain.NavRef
 import org.aerobag.app.domain.NavElementUiView
+import org.aerobag.app.domain.OfflineRegionDisplay
 import org.aerobag.app.domain.OwnshipControlModel
 import org.aerobag.app.domain.OwnshipLauncherTextTone
 import org.aerobag.app.domain.OwnshipMode
@@ -1282,16 +1282,6 @@ internal fun routeSegmentColor(uiTheme: UiTheme, status: RouteSegmentStatus): Co
         RouteSegmentStatus.ActiveLegRemaining -> uiTheme.flightPlanRoute.activeLegRemaining
         RouteSegmentStatus.Remaining -> uiTheme.flightPlanRoute.remaining
     }
-
-internal fun latLonToScreenPoint(
-    viewport: MapViewportState,
-    point: LatLonPoint,
-    widthPx: Float,
-    heightPx: Float,
-): Offset {
-    val screenPoint = MapDisplayFrame(viewport, widthPx, heightPx).latLonToScreen(point.lat, point.lon)
-    return Offset(screenPoint.x, screenPoint.y)
-}
 
 internal fun plateFolderColor(uiTheme: UiTheme, category: String): Color =
     uiTheme.plateFolder.labelColors[category] ?: uiTheme.plateFolder.labelColors["other"] ?: Color(0xFF52656D)
@@ -2428,6 +2418,9 @@ internal fun transformMapOverlayForDisplay(
         visibleFeatures = overlay.visibleFeatures.map { feature ->
             transformVisibleFeature(feature, fromViewport, fromSurface, toViewport, toSurface)
         },
+        flightPlanFeatures = overlay.flightPlanFeatures.map { feature ->
+            transformVisibleFeature(feature, fromViewport, fromSurface, toViewport, toSurface)
+        },
         visibleMetars = overlay.visibleMetars.map { feature ->
             transformVisibleMetarFeature(feature, fromViewport, fromSurface, toViewport, toSurface)
         },
@@ -2442,6 +2435,9 @@ internal fun transformMapOverlayForDisplay(
         },
         airspaceLabels = overlay.airspaceLabels.map { label ->
             transformAirspaceDisplayLabel(label, fromViewport, fromSurface, toViewport, toSurface)
+        },
+        offlineRegions = overlay.offlineRegions.map { region ->
+            transformOfflineRegionDisplay(region, fromViewport, fromSurface, toViewport, toSurface)
         },
     )
 }
@@ -2498,6 +2494,38 @@ internal fun transformAirspaceDisplayLabel(
         toSurface = toSurface,
     )
     return label.copy(screenX = transformed.x, screenY = transformed.y)
+}
+
+internal fun transformOfflineRegionDisplay(
+    region: OfflineRegionDisplay,
+    fromViewport: MapViewportState,
+    fromSurface: OverlaySurfaceUnits,
+    toViewport: MapViewportState,
+    toSurface: OverlaySurfaceUnits,
+): OfflineRegionDisplay {
+    val label = transformScreenPoint(
+        x = region.labelX,
+        y = region.labelY,
+        fromViewport = fromViewport,
+        fromSurface = fromSurface,
+        toViewport = toViewport,
+        toSurface = toSurface,
+    )
+    return region.copy(
+        points = region.points.map { point ->
+            val transformed = transformScreenPoint(
+                x = point.x,
+                y = point.y,
+                fromViewport = fromViewport,
+                fromSurface = fromSurface,
+                toViewport = toViewport,
+                toSurface = toSurface,
+            )
+            AirspaceScreenPoint(transformed.x, transformed.y)
+        },
+        labelX = label.x,
+        labelY = label.y,
+    )
 }
 
 internal fun transformAirspaceDisplayPath(

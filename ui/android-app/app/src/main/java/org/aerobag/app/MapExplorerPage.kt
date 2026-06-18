@@ -727,21 +727,6 @@ internal fun MapExplorerPage(
             ringCandidates = situationRingCandidates,
         )
     }
-    val routeScreenSegments = remember(flightPlanRoute, currentViewport, surfaceWidthPx, surfaceHeightPx) {
-        if (surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) {
-            emptyList()
-        } else {
-            flightPlanRoute.map { segment ->
-                Pair(
-                    (segment.path.ifEmpty { listOf(segment.from, segment.to) }).map { point ->
-                        latLonToScreenPoint(currentViewport, point, surfaceWidthPx, surfaceHeightPx)
-                    },
-                    segment,
-                )
-            }
-        }
-    }
-
     fun syncFollowStateForViewport(nextViewport: MapViewportState) {
         if (!mapFollowUiState.following || surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) {
             return
@@ -1769,7 +1754,14 @@ internal fun MapExplorerPage(
         )
         ObservationOverlayLayer(displayedMapOverlay, density.density, uiTheme)
         OfflineRegionsOverlayLayer(displayedMapOverlay, density.density, uiTheme)
-        RouteOverlayLayer(routeScreenSegments, density.density, uiTheme)
+        RouteOverlayLayer(
+            flightPlanRoute = flightPlanRoute,
+            viewport = currentViewport,
+            surfaceWidthPx = surfaceWidthPx,
+            surfaceHeightPx = surfaceHeightPx,
+            densityScale = density.density,
+            uiTheme = uiTheme,
+        )
         MapFeatureOverlayLayer(
             displayedMapOverlay = displayedMapOverlay,
             uiTheme = uiTheme,
@@ -2641,13 +2633,19 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawOfflineRegion(
 
 @Composable
 private fun RouteOverlayLayer(
-    routeScreenSegments: List<Pair<List<Offset>, FlightPlanRouteSegment>>,
+    flightPlanRoute: List<FlightPlanRouteSegment>,
+    viewport: MapViewportState,
+    surfaceWidthPx: Float,
+    surfaceHeightPx: Float,
     densityScale: Float,
     uiTheme: UiTheme,
 ) {
-    if (routeScreenSegments.isEmpty()) return
+    if (flightPlanRoute.isEmpty() || surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) return
     Canvas(modifier = Modifier.fillMaxSize()) {
-        routeScreenSegments.forEach { (path, segment) ->
+        flightPlanRoute.forEach { segment ->
+            val path = segment.path.ifEmpty { listOf(segment.from, segment.to) }.map { point ->
+                latLonToScreen(point.lat, point.lon, viewport, surfaceWidthPx, surfaceHeightPx)
+            }
             val first = path.firstOrNull() ?: return@forEach
             val routePath = Path().apply {
                 moveTo(first.x, first.y)

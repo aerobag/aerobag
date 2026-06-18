@@ -196,7 +196,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.ChartAirport
 import org.aerobag.app.domain.ChartAsset
-import org.aerobag.app.domain.CoreSettingsStore
 import org.aerobag.app.domain.AppState
 import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
@@ -1829,24 +1828,6 @@ internal fun writeUiPrefs(
 internal fun readStoredPage(prefs: SharedPreferences): AppPage {
     val stored = prefs.getString(UiPrefsPageKey, AppPage.Map.name) ?: AppPage.Map.name
     return runCatching { AppPage.valueOf(stored) }.getOrDefault(AppPage.Map)
-}
-
-private const val CoreSettingsFileName = "core-settings-v1.json"
-
-private class AndroidCoreSettingsStore(context: Context) : CoreSettingsStore {
-    private val file = File(context.applicationContext.filesDir, CoreSettingsFileName)
-
-    override fun readSettings(): ByteArray? =
-        if (file.exists()) {
-            file.readBytes()
-        } else {
-            null
-        }
-
-    override fun writeSettings(bytes: ByteArray) {
-        file.parentFile?.mkdirs()
-        file.writeBytes(bytes)
-    }
 }
 
 internal fun summarizeRuntimeBootstrapFailure(error: Throwable): String {

@@ -1,5 +1,6 @@
 package org.aerobag.app
 
+import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import org.aerobag.app.domain.FlightPlan
@@ -51,6 +52,7 @@ internal class AerobagRetainedModel : ViewModel() {
     }
 
     fun getOrCreateCoreSession(
+        context: Context,
         runtimeContent: RuntimeContent,
         recentAirportIds: List<String>,
         selectedAirportId: String?,
@@ -69,6 +71,8 @@ internal class AerobagRetainedModel : ViewModel() {
             selectedAirportId,
             selectedChartId,
             runtimeContent.installedPackageIds,
+            settingsStore = AndroidCoreSettingsStore(context.applicationContext),
+            displayPolicySettingsAvailable = true,
         )
         return AerobagRetainedCoreSession(
             runtimeContent = runtimeContent,

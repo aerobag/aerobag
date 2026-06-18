@@ -1,0 +1,201 @@
+package org.aerobag.app
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items as lazyColumnItems
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
+import kotlin.math.roundToInt
+import org.aerobag.app.domain.UiSettingsPageRow
+import org.aerobag.app.domain.UiSettingsPageState
+
+private val SettingsPageTitleTextSize = 16.sp
+private val SettingsPageRowTitleTextSize = 13.sp
+private val SettingsPageStopTextSize = 9.sp
+private val SettingsSliderStopLabelSlotWidth = 48.dp
+private val SettingsSliderStopLabelsHeight = 12.dp
+
+@Composable
+internal fun SettingsPage(
+    page: AppPage,
+    state: UiSettingsPageState,
+    mostRecentChartOrPlatePage: AppPage,
+    onOpenRecentChartOrPlate: () -> Unit,
+    onSelectPage: (AppPage) -> Unit,
+    onSettingsAction: (String, String) -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(uiTheme.controls.chartSurfaceBg),
+    ) {
+        HomeReturnDock(
+            modifier = Modifier
+                .zIndex(OverlayPlaneControls),
+            currentPage = page,
+            chartPlateTargetPage = mostRecentChartOrPlatePage,
+            onHomeClick = { onSelectPage(AppPage.Home) },
+            onOpenChartOrPlate = onOpenRecentChartOrPlate,
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(
+                    start = ThumbGap,
+                    end = ThumbGap,
+                    top = ThumbSize + (ThumbGap * 2f),
+                    bottom = ThumbGap,
+                )
+                .clip(RoundedCornerShape(ThumbRadius))
+                .background(uiTheme.controls.buttonBg.copy(alpha = 0.84f))
+                .padding(ThumbSize * 0.3f),
+            verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.25f),
+        ) {
+            Text(
+                text = state.title.uppercase(),
+                style = MaterialTheme.typography.headlineSmall.copy(
+                    fontSize = SettingsPageTitleTextSize,
+                    lineHeight = SettingsPageTitleTextSize,
+                    fontWeight = FontWeight.Black,
+                ),
+                color = uiTheme.controls.buttonFg,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (state.rows.isEmpty()) {
+                Text(
+                    text = state.summary.ifBlank { "No settings available." },
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontSize = SettingsPageRowTitleTextSize,
+                        lineHeight = SettingsPageRowTitleTextSize * 1.2f,
+                        fontWeight = FontWeight.Bold,
+                    ),
+                    color = uiTheme.controls.buttonFg.copy(alpha = 0.78f),
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.2f),
+                ) {
+                    lazyColumnItems(state.rows, key = { it.id }) { row ->
+                        SettingsPageRowView(row = row, onSettingsAction = onSettingsAction)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsPageRowView(
+    row: UiSettingsPageRow,
+    onSettingsAction: (String, String) -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    if (row.kind != "slider" || row.stops.isEmpty()) {
+        return
+    }
+    val selectedIndex = row.stops.indexOfFirst { it.id == row.valueId }.takeIf { it >= 0 } ?: 0
+    var sliderIndex by remember(row.id, row.valueId, row.stops) {
+        mutableStateOf(selectedIndex.toFloat())
+    }
+    val maxIndex = (row.stops.size - 1).coerceAtLeast(0)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(ThumbRadius))
+            .background(Color.White.copy(alpha = 0.92f))
+            .padding(ThumbSize * 0.28f),
+        verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.14f),
+    ) {
+        Text(
+            text = row.title,
+            style = MaterialTheme.typography.titleLarge.copy(
+                fontSize = SettingsPageRowTitleTextSize,
+                lineHeight = SettingsPageRowTitleTextSize * 1.08f,
+                fontWeight = FontWeight.Black,
+            ),
+            color = Color(0xFF101820),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Slider(
+            value = sliderIndex.coerceIn(0f, maxIndex.toFloat()),
+            onValueChange = { value ->
+                sliderIndex = value.roundToInt().coerceIn(0, maxIndex).toFloat()
+            },
+            onValueChangeFinished = {
+                val nextStop = row.stops.getOrNull(sliderIndex.roundToInt())
+                if (nextStop != null && nextStop.id != row.valueId) {
+                    onSettingsAction(row.actionId, nextStop.id)
+                }
+            },
+            valueRange = 0f..maxIndex.toFloat(),
+            steps = (row.stops.size - 2).coerceAtLeast(0),
+        )
+        SettingsSliderStopLabels(row)
+    }
+}
+
+@Composable
+private fun SettingsSliderStopLabels(row: UiSettingsPageRow) {
+    val uiTheme = LocalAerobagUiTheme.current
+    val maxIndex = (row.stops.size - 1).coerceAtLeast(1)
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(SettingsSliderStopLabelsHeight),
+    ) {
+        val slotWidth = SettingsSliderStopLabelSlotWidth.coerceAtMost(maxWidth)
+        val travel = (maxWidth - slotWidth).coerceAtLeast(0.dp)
+        row.stops.forEachIndexed { index, stop ->
+            val fraction = index.toFloat() / maxIndex.toFloat()
+            Text(
+                text = stop.label,
+                modifier = Modifier
+                    .width(slotWidth)
+                    .offset(x = travel * fraction),
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontSize = SettingsPageStopTextSize,
+                    lineHeight = SettingsPageStopTextSize,
+                    fontWeight = if (stop.id == row.valueId) FontWeight.Black else FontWeight.Bold,
+                ),
+                color = if (stop.id == row.valueId) {
+                    Color(0xFF101820)
+                } else {
+                    uiTheme.controls.buttonFg.copy(alpha = 0.70f)
+                },
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}

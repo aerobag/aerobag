@@ -2702,7 +2702,6 @@ fn create_ui_session_inner(
     let settings_page_state = default_settings_page_state();
     let settings_preferences = SettingsPreferences::default();
     let platform_capabilities = PlatformCapabilities::default();
-    let snapshot_debug_state = debug_state_for_app_state(&debug_state, &app_state);
     let snapshot = UiSessionSnapshot {
         app_state: snapshot_app_state,
         app_ui_state,
@@ -2716,7 +2715,7 @@ fn create_ui_session_inner(
         data_status_page_state,
         settings_page_state,
         display_policy: None,
-        debug_state: snapshot_debug_state,
+        debug_state: debug_state.clone(),
         raster_map: None,
         next_cycle_product_freshness_check_epoch_ms: None,
     };

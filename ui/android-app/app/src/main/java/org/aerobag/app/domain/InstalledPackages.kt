@@ -26,6 +26,11 @@ data class InstalledPackageArtifact(
     val checksumSha256: String? = null,
 )
 
+data class InstalledPackageStorageStats(
+    val availableBytes: Long,
+    val totalBytes: Long?,
+)
+
 object InstalledPackages {
     private val json = Json {
         ignoreUnknownKeys = true
@@ -34,6 +39,15 @@ object InstalledPackages {
 
     fun internalPackageFile(context: Context, filename: String): File =
         File(File(context.filesDir, InstalledPackagesDirectoryName), filename)
+
+    fun packageStorageStats(context: Context): InstalledPackageStorageStats {
+        val directory = File(context.filesDir, InstalledPackagesDirectoryName)
+        directory.mkdirs()
+        return InstalledPackageStorageStats(
+            availableBytes = directory.usableSpace.coerceAtLeast(0L),
+            totalBytes = directory.totalSpace.takeIf { it > 0L },
+        )
+    }
 
     private fun externalFile(context: Context, filename: String): File? =
         context.getExternalFilesDir(null)?.let { File(File(it, InstalledPackagesDirectoryName), filename) }

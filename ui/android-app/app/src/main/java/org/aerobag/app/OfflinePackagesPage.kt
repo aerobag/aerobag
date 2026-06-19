@@ -387,6 +387,7 @@ internal fun OfflinePackagesErrorPanel(
 @Composable
 internal fun OfflinePackagesLibraryPanel(
     message: String,
+    storageCapacityLabel: String?,
     packageSourceBaseUrl: String,
     onPackageSourceBaseUrlChange: (String) -> Unit,
     refreshInFlight: Boolean,
@@ -456,6 +457,14 @@ internal fun OfflinePackagesLibraryPanel(
                 style = MaterialTheme.typography.bodyMedium,
                 color = uiTheme.controls.panelFg,
             )
+            storageCapacityLabel?.let { label ->
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = uiTheme.controls.panelFg,
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.5f),
@@ -495,6 +504,7 @@ internal fun OfflinePackagesPanel(
     productOptions: List<OfflinePackageDimension>,
     uiState: OfflinePackagesUiStateWire,
     navDbStatusText: String?,
+    storageCapacityLabel: String?,
     syncMessage: String?,
     cancelRequested: Boolean,
     showSimulatedClockButtons: Boolean,
@@ -602,6 +612,14 @@ internal fun OfflinePackagesPanel(
                 fontWeight = FontWeight.Bold,
                 color = uiTheme.controls.panelFg,
             )
+            storageCapacityLabel?.let { label ->
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = uiTheme.controls.panelFg,
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.5f),
@@ -1035,7 +1053,10 @@ internal fun readPackageSourceBaseUrl(
 
 internal fun initialOfflinePackagesControllerHandle(
     prefs: android.content.SharedPreferences,
-): Long = NativeBindings.createOfflinePackagesController(readOfflinePackagesStateJson(prefs))
+): Long = NativeBindings.createOfflinePackagesController(
+    readOfflinePackagesStateJson(prefs),
+    readOfflinePackagesLibraryCacheJson(prefs),
+)
 
 internal fun writePackageSourceBaseUrl(
     prefs: android.content.SharedPreferences,
@@ -1055,6 +1076,15 @@ internal fun writeOfflinePackagesStateJson(
         .apply()
 }
 
+internal fun writeOfflinePackagesLibraryCacheJson(
+    prefs: android.content.SharedPreferences,
+    libraryCacheJson: String?,
+) {
+    prefs.edit()
+        .putString(UiPrefsOfflinePackageLibraryCacheKey, libraryCacheJson)
+        .apply()
+}
+
 internal fun listInstalledPackageArtifacts(context: Context): List<InstalledArtifactWire> {
     return InstalledPackages.listInstalledArtifacts(context)
         .asSequence()
@@ -1068,6 +1098,14 @@ internal fun listInstalledPackageArtifacts(context: Context): List<InstalledArti
             )
         }
         .toList()
+}
+
+internal fun installedPackageStorageInfo(context: Context): OfflinePackagesStorageInfoWire {
+    val stats = InstalledPackages.packageStorageStats(context)
+    return OfflinePackagesStorageInfoWire(
+        availableBytes = stats.availableBytes,
+        totalBytes = stats.totalBytes,
+    )
 }
 
 internal suspend fun syncOfflinePackages(

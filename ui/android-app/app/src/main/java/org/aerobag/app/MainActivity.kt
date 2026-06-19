@@ -477,6 +477,7 @@ internal const val UiPrefsSelectedAirportKey = "selected_airport_id"
 internal const val UiPrefsSelectedChartKey = "selected_chart_id"
 internal const val UiPrefsRecentAirportsKey = "recent_airport_ids"
 internal const val UiPrefsOfflinePackagePreferencesKey = "offline_package_preferences"
+internal const val UiPrefsOfflinePackageLibraryCacheKey = "offline_package_library_cache"
 internal const val UiPrefsPackageSourceBaseUrlKey = "package_source_base_url"
 internal const val MapViewportLogTag = "MapViewport"
 internal const val MaxViewHistoryDepth = 64
@@ -861,10 +862,14 @@ internal data class OfflinePackagesControllerUiStateWire(
     val libraryLoading: Boolean = false,
     @SerialName("library_error_message")
     val libraryErrorMessage: String? = null,
+    @SerialName("library_status_message")
+    val libraryStatusMessage: String? = null,
     @SerialName("sync_in_flight")
     val syncInFlight: Boolean = false,
     @SerialName("sync_message")
     val syncMessage: String? = null,
+    @SerialName("storage_capacity_label")
+    val storageCapacityLabel: String? = null,
     @SerialName("package_source_editable")
     val packageSourceEditable: Boolean = true,
     @SerialName("refresh_enabled")
@@ -908,6 +913,8 @@ internal sealed interface OfflinePackagesControllerCommandWire {
 internal data class OfflinePackagesControllerResultWire(
     @SerialName("packages_state_json")
     val packagesStateJson: String? = null,
+    @SerialName("library_cache_json")
+    val libraryCacheJson: String? = null,
     @SerialName("ui_state")
     val uiState: OfflinePackagesControllerUiStateWire,
     val command: OfflinePackagesControllerCommandWire? = null,
@@ -1024,7 +1031,16 @@ internal data class OfflinePackagesControllerInputWire(
     @SerialName("now_epoch_ms")
     val nowEpochMs: Long,
     val installed: List<InstalledArtifactWire>,
+    val storage: OfflinePackagesStorageInfoWire? = null,
     val event: OfflinePackagesControllerEventWire,
+)
+
+@Serializable
+internal data class OfflinePackagesStorageInfoWire(
+    @SerialName("available_bytes")
+    val availableBytes: Long,
+    @SerialName("total_bytes")
+    val totalBytes: Long? = null,
 )
 
 @Serializable

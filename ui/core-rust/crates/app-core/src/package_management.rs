@@ -152,13 +152,99 @@ pub fn select_supported_current_artifacts_manifests(
     manifests: Vec<CurrentArtifactsManifest>,
 ) -> Result<Vec<CurrentArtifactsManifest>, String> {
     let selected = manifests
-        .into_iter()
-        .filter(current_artifacts_manifest_is_supported)
+        .iter()
+        .filter(|manifest| current_artifacts_manifest_is_supported(manifest))
+        .cloned()
         .collect::<Vec<_>>();
     if selected.is_empty() {
-        return Err("current_artifacts.json has no manifest with supported contracts".to_string());
+        return Err(current_artifacts_contract_mismatch_message(&manifests));
     }
     Ok(selected)
+}
+
+fn current_artifacts_contract_mismatch_message(manifests: &[CurrentArtifactsManifest]) -> String {
+    let offered_by_family = manifests
+        .iter()
+        .flat_map(|manifest| manifest.contracts.iter())
+        .fold(
+            BTreeMap::<String, BTreeSet<String>>::new(),
+            |mut offered, (family_id, contract_id)| {
+                offered
+                    .entry(family_id.clone())
+                    .or_default()
+                    .insert(contract_id.clone());
+                offered
+            },
+        );
+    if offered_by_family.is_empty() {
+        return "current_artifacts.json has no manifest supported by this app: artifacts declare no product contracts".to_string();
+    }
+
+    let mut mismatches = Vec::new();
+    for contract in product_contracts::PRODUCT_CONTRACTS {
+        let Some(offered) = offered_by_family.get(contract.family_id) else {
+            continue;
+        };
+        if offered.contains(contract.contract_id) {
+            continue;
+        }
+        mismatches.push((
+            contract.family_id.to_string(),
+            contract.contract_id.to_string(),
+            offered.iter().cloned().collect::<Vec<_>>().join("/"),
+        ));
+    }
+
+    if mismatches.is_empty() {
+        let unknown = offered_by_family
+            .iter()
+            .filter(|(family_id, _)| required_package_contract_id(family_id).is_none())
+            .map(|(family_id, offered)| {
+                format!(
+                    "{}={}",
+                    family_id,
+                    offered.iter().cloned().collect::<Vec<_>>().join("/")
+                )
+            })
+            .take(4)
+            .collect::<Vec<_>>();
+        let more = offered_by_family
+            .keys()
+            .filter(|family_id| required_package_contract_id(family_id).is_none())
+            .count()
+            .saturating_sub(unknown.len());
+        let more_suffix = if more == 0 {
+            String::new()
+        } else {
+            format!("; {more} more unsupported contract families")
+        };
+        return format!(
+            "current_artifacts.json has no manifest supported by this app: artifacts declare unsupported contract families {}{}",
+            unknown.join(", "),
+            more_suffix
+        );
+    }
+
+    let visible = mismatches.iter().take(4).collect::<Vec<_>>();
+    let required = visible
+        .iter()
+        .map(|(family_id, required, _)| format!("{family_id}={required}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let offered = visible
+        .iter()
+        .map(|(family_id, _, offered)| format!("{family_id}={offered}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = mismatches.len().saturating_sub(visible.len());
+    let more_suffix = if more == 0 {
+        String::new()
+    } else {
+        format!("; {more} more contract mismatches")
+    };
+    format!(
+        "current_artifacts.json has no manifest supported by this app: app requires {required}; artifacts offer {offered}{more_suffix}"
+    )
 }
 
 pub fn plan_current_artifacts_discovery(
@@ -454,8 +540,10 @@ pub struct OfflinePackagesControllerUiState {
     pub library_loaded: bool,
     pub library_loading: bool,
     pub library_error_message: Option<String>,
+    pub library_status_message: Option<String>,
     pub sync_in_flight: bool,
     pub sync_message: Option<String>,
+    pub storage_capacity_label: Option<String>,
     pub package_source_editable: bool,
     pub refresh_enabled: bool,
     pub refresh_cancel_enabled: bool,
@@ -473,7 +561,16 @@ pub struct OfflinePackagesControllerInput {
     pub product_ids: Vec<String>,
     pub now_epoch_ms: i64,
     pub installed: Vec<InstalledArtifact>,
+    #[serde(default)]
+    pub storage: Option<OfflinePackagesStorageInfo>,
     pub event: OfflinePackagesControllerEvent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OfflinePackagesStorageInfo {
+    pub available_bytes: u64,
+    #[serde(default)]
+    pub total_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -696,6 +793,7 @@ pub fn reduce_offline_packages_controller(
                         &state,
                         &package_source_base_url,
                         None,
+                        input.storage.as_ref(),
                     ),
                     state,
                     command,
@@ -726,12 +824,36 @@ pub fn reduce_offline_packages_controller(
                     &state,
                     &package_source_base_url,
                     Some(reduced.ui_state),
+                    input.storage.as_ref(),
                 ),
                 state,
                 command,
             };
         }
         OfflinePackagesControllerEvent::SyncRequested => {
+            if state.library_error_message.is_some() {
+                let forced_gc_installed_filenames =
+                    forced_gc_installed_filenames(&state, &input.installed);
+                let planner_ui_state = replan_controller_ui_state(
+                    &mut state,
+                    &package_source_base_url,
+                    &input.region_ids,
+                    &input.product_ids,
+                    input.now_epoch_ms,
+                    &input.installed,
+                    &forced_gc_installed_filenames,
+                );
+                return OfflinePackagesControllerResult {
+                    ui_state: project_offline_packages_controller_ui_state(
+                        &state,
+                        &package_source_base_url,
+                        planner_ui_state,
+                        input.storage.as_ref(),
+                    ),
+                    state,
+                    command,
+                };
+            }
             let Some(library_cache) = state.library_cache.as_ref() else {
                 state.library_error_message =
                     Some("offline packages library is not loaded".to_string());
@@ -740,6 +862,7 @@ pub fn reduce_offline_packages_controller(
                         &state,
                         &package_source_base_url,
                         None,
+                        input.storage.as_ref(),
                     ),
                     state,
                     command,
@@ -757,6 +880,7 @@ pub fn reduce_offline_packages_controller(
                                 &state,
                                 &package_source_base_url,
                                 None,
+                                input.storage.as_ref(),
                             ),
                             state,
                             command,
@@ -799,6 +923,7 @@ pub fn reduce_offline_packages_controller(
                     &state,
                     &package_source_base_url,
                     Some(current.ui_state),
+                    input.storage.as_ref(),
                 ),
                 state,
                 command,
@@ -850,6 +975,7 @@ pub fn reduce_offline_packages_controller(
             &state,
             &package_source_base_url,
             planner_ui_state,
+            input.storage.as_ref(),
         ),
         state,
         command,
@@ -962,6 +1088,7 @@ fn project_offline_packages_controller_ui_state(
     state: &OfflinePackagesControllerState,
     package_source_base_url: &str,
     planner_ui_state: Option<OfflinePackagesUiState>,
+    storage: Option<&OfflinePackagesStorageInfo>,
 ) -> OfflinePackagesControllerUiState {
     let library_loaded = state.library_cache.as_ref().is_some_and(|cache| {
         cache.package_source_base_url == package_source_base_url
@@ -973,14 +1100,47 @@ fn project_offline_packages_controller_ui_state(
         library_loaded,
         library_loading: state.library_loading,
         library_error_message: state.library_error_message.clone(),
+        library_status_message: format_offline_package_library_status_message(state),
         sync_in_flight: state.sync_in_flight,
         sync_message: state.sync_message.clone(),
+        storage_capacity_label: format_offline_package_storage_capacity_label(storage),
         package_source_editable: !operation_in_flight,
         refresh_enabled: !operation_in_flight,
         refresh_cancel_enabled: state.library_loading,
-        sync_enabled: library_loaded && !operation_in_flight,
+        sync_enabled: library_loaded
+            && !operation_in_flight
+            && state.library_error_message.is_none(),
         sync_cancel_enabled: state.sync_in_flight,
         planner_interactions_enabled: !state.sync_in_flight,
+    }
+}
+
+fn format_offline_package_library_status_message(
+    state: &OfflinePackagesControllerState,
+) -> Option<String> {
+    let error = state.library_error_message.as_ref()?;
+    match state.library_cache.as_ref() {
+        Some(cache) => Some(format!(
+            "Using cached package catalog from {}; refresh failed: {error}",
+            format_epoch_ms_utc(cache.fetched_at_epoch_ms)
+        )),
+        None => Some(format!(
+            "No compatible package catalog is loaded, so installed packages cannot be grouped: {error}"
+        )),
+    }
+}
+
+fn format_offline_package_storage_capacity_label(
+    storage: Option<&OfflinePackagesStorageInfo>,
+) -> Option<String> {
+    let storage = storage?;
+    let available = format_package_size_label(storage.available_bytes);
+    match storage.total_bytes.filter(|bytes| *bytes > 0) {
+        Some(total_bytes) => Some(format!(
+            "STORAGE {available} FREE / {} TOTAL",
+            format_package_size_label(total_bytes)
+        )),
+        None => Some(format!("STORAGE {available} FREE")),
     }
 }
 
@@ -2843,6 +3003,19 @@ mod tests {
     }
 
     #[test]
+    fn current_artifacts_discovery_plan_reports_contract_mismatch() {
+        let unsupported = discovery_manifest_with_nav_contract("NAVBOGUS");
+        let list_json = serde_json::to_string(&vec![unsupported]).unwrap();
+
+        let error = plan_current_artifacts_discovery("https://example.test/packages", &list_json)
+            .unwrap_err();
+
+        assert!(error.contains("app requires nav-db="));
+        assert!(error.contains(crate::REQUIRED_NAV_DB_CONTRACT_ID));
+        assert!(error.contains("artifacts offer nav-db=NAVBOGUS"));
+    }
+
+    #[test]
     fn forced_gc_bad_navdbs_show_fetch_and_gc_in_core_row() {
         let discovery = CurrentArtifactsManifest {
             schema_version: Some(1),
@@ -2933,6 +3106,7 @@ mod tests {
             product_ids: vec!["nav-db".to_string()],
             now_epoch_ms: 1_774_401_600_000,
             installed: vec![installed("NAV_DB_2603_01"), installed("NAV_DB_2604_01")],
+            storage: None,
             event: OfflinePackagesControllerEvent::InstalledArtifactHealthObserved {
                 unreadable_installed_filename_messages: BTreeMap::from([
                     ("NAV_DB_2603_01.zip".to_string(), "bad".to_string()),
@@ -3030,6 +3204,7 @@ mod tests {
                 size_bytes: None,
                 checksum_sha256: None,
             }],
+            storage: None,
             event: OfflinePackagesControllerEvent::SyncFinished {
                 summary: OfflinePackagesSyncSummary {
                     fetched_count: 1,
@@ -3057,6 +3232,111 @@ mod tests {
             .state
             .suppressed_fetch_filename_messages
             .contains_key("nav_db_2604_01_good.zip"));
+    }
+
+    #[test]
+    fn offline_packages_controller_reports_storage_capacity_from_platform_facts() {
+        let result = reduce_offline_packages_controller(&OfflinePackagesControllerInput {
+            state: Some(OfflinePackagesControllerState::default()),
+            package_source_base_url: "http://example.test".to_string(),
+            discovery_filenames: vec![],
+            region_ids: vec![],
+            product_ids: vec![],
+            now_epoch_ms: 1_777_120_000_000,
+            installed: vec![],
+            storage: Some(OfflinePackagesStorageInfo {
+                available_bytes: 12_345_678_901,
+                total_bytes: Some(64_000_000_000),
+            }),
+            event: OfflinePackagesControllerEvent::EnsureLibrary,
+        });
+
+        assert_eq!(
+            result.ui_state.storage_capacity_label.as_deref(),
+            Some("STORAGE 12G FREE / 64G TOTAL")
+        );
+    }
+
+    #[test]
+    fn offline_packages_controller_uses_cached_catalog_for_display_after_refresh_failure() {
+        let discovery = CurrentArtifactsManifest {
+            schema_version: Some(1),
+            contracts: test_contracts(),
+            artifact_roots: test_artifact_roots(),
+            as_of_date: Some("2026-05-20".to_string()),
+            as_of_utc: Some("2026-05-20T12:00:00Z".to_string()),
+            bundles: vec![CurrentArtifactsBundleRef {
+                filename: "bundle_cycle_2605.json".to_string(),
+                relative_path: "bundle_cycle_2605.json".to_string(),
+                id: "cycle-2605".to_string(),
+                bundle_type: "cycle".to_string(),
+                cycle: Some("2605".to_string()),
+                cycle_version: Some("01".to_string()),
+                start_valid: None,
+                end_valid: None,
+                checksum_sha256: None,
+                size_bytes: None,
+            }],
+            startup_prefetch: None,
+        };
+        let bundle = BundleManifest {
+            packages: vec![with_cycle_and_size(
+                pkg(
+                    "NW_SEC_2605",
+                    "sec",
+                    Some("nw"),
+                    Some("2026-05-20"),
+                    Some("2026-06-17"),
+                ),
+                "2605",
+                52_000_000,
+            )],
+        };
+        let result = reduce_offline_packages_controller(&OfflinePackagesControllerInput {
+            state: Some(OfflinePackagesControllerState {
+                packages_state: Some(OfflinePackagesState {
+                    preferences: default_offline_package_preferences(["nw"], ["sec"]),
+                    now_override_epoch_ms: Some(1_778_025_600_000),
+                }),
+                library_cache: Some(OfflinePackagesLibraryCache {
+                    package_source_base_url: "http://example.test".to_string(),
+                    fetched_at_epoch_ms: 1_778_025_600_000,
+                    discovery_manifests: vec![discovery],
+                    bundle_manifests_by_filename: BTreeMap::from([(
+                        "bundle_cycle_2605.json".to_string(),
+                        bundle,
+                    )]),
+                }),
+                tombstoned_installed_filename_messages: BTreeMap::new(),
+                suppressed_fetch_filename_messages: BTreeMap::new(),
+                sync_progress: None,
+                library_loading: true,
+                library_error_message: None,
+                sync_in_flight: false,
+                sync_message: None,
+            }),
+            package_source_base_url: "http://example.test".to_string(),
+            discovery_filenames: vec![],
+            region_ids: vec!["nw".to_string()],
+            product_ids: vec!["sec".to_string()],
+            now_epoch_ms: 1_778_025_600_000,
+            installed: vec![installed_with_size("NW_SEC_2605", 52_000_000)],
+            storage: None,
+            event: OfflinePackagesControllerEvent::LibraryRefreshFailed {
+                message: "app requires nav-db=NAV10; artifacts offer nav-db=NAVBOGUS".to_string(),
+            },
+        });
+
+        let ui_state = result.ui_state.planner_ui_state.unwrap();
+        assert_eq!(ui_state.all_packages.installed_size_label, "52M");
+        assert_eq!(ui_state.regions[0].installed_size_label, "52M");
+        assert!(!result.ui_state.sync_enabled);
+        assert!(result
+            .ui_state
+            .library_status_message
+            .as_deref()
+            .unwrap()
+            .contains("Using cached package catalog"));
     }
 
     #[test]

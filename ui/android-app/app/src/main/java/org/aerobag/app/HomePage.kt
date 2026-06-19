@@ -418,10 +418,13 @@ internal fun HomePage(
         diagnosticLogInfo("OfflinePackages") {
             "controller event=${event::class.simpleName} handle=$offlinePackagesControllerHandle scanning installed packages"
         }
-        val installed = withContext(Dispatchers.IO) {
-            listInstalledPackageArtifacts(context.applicationContext)
+        val (installed, storage) = withContext(Dispatchers.IO) {
+            Pair(
+                listInstalledPackageArtifacts(context.applicationContext),
+                installedPackageStorageInfo(context.applicationContext),
+            )
         }
-        val installedScanElapsedMs = SystemClock.elapsedRealtime() - startMs
+        val packageStateScanElapsedMs = SystemClock.elapsedRealtime() - startMs
         val input = OfflinePackagesControllerInputWire(
             packageSourceBaseUrl = packageSourceBaseUrl,
             discoveryFilenames = emptyList(),
@@ -429,12 +432,13 @@ internal fun HomePage(
             productIds = productIds,
             nowEpochMs = bootstrap.packageManagementNowEpochMsOverride ?: System.currentTimeMillis(),
             installed = installed,
+            storage = storage,
             event = event,
         )
         val inputJson = PackageManagementJson.encodeToString(input)
         diagnosticLogInfo("OfflinePackages") {
             "controller event=${event::class.simpleName} handle=$offlinePackagesControllerHandle " +
-                "installed=${installed.size} installedScanMs=$installedScanElapsedMs inputBytes=${inputJson.length}"
+                "installed=${installed.size} packageStateScanMs=$packageStateScanElapsedMs inputBytes=${inputJson.length}"
         }
         if (!offlinePackagesControllerAlive.get()) {
             diagnosticLogInfo("OfflinePackages") {
@@ -455,6 +459,7 @@ internal fun HomePage(
         }
         val result = PackageManagementJson.decodeFromString<OfflinePackagesControllerResultWire>(outputJson)
         writeOfflinePackagesStateJson(prefs, result.packagesStateJson)
+        writeOfflinePackagesLibraryCacheJson(prefs, result.libraryCacheJson)
         offlinePackagesControllerResult = result
         when (val command = result.command) {
             is OfflinePackagesControllerCommandWire.RefreshLibrary -> {
@@ -645,13 +650,14 @@ internal fun HomePage(
                 val libraryRefreshCancelEnabled = controllerUiState?.refreshCancelEnabled ?: packageOperationActive
                 OfflinePackagesLibraryPanel(
                     message = listOfNotNull(
-                        controllerUiState?.libraryErrorMessage,
+                        controllerUiState?.libraryStatusMessage ?: controllerUiState?.libraryErrorMessage,
                         if (libraryRefreshInFlight) {
                             "Refreshing package library..."
                         } else {
                             "Refresh package library to continue."
                         },
                     ).joinToString("\n\n"),
+                    storageCapacityLabel = controllerUiState?.storageCapacityLabel,
                     packageSourceBaseUrl = packageSourceBaseUrl,
                     onPackageSourceBaseUrlChange = { nextBaseUrl ->
                         if (!packageSourceEditable) {
@@ -701,7 +707,11 @@ internal fun HomePage(
                     productOptions = OfflineProductOptions,
                     uiState = controllerUiState.plannerUiState,
                     navDbStatusText = navDbStatus?.let(::formatNavDbStatusLine),
-                    syncMessage = controllerUiState.syncMessage,
+                    storageCapacityLabel = controllerUiState.storageCapacityLabel,
+                    syncMessage = listOfNotNull(
+                        controllerUiState.libraryStatusMessage,
+                        controllerUiState.syncMessage,
+                    ).joinToString("\n\n").ifBlank { null },
                     cancelRequested = offlinePackageCancelRequested,
                     showSimulatedClockButtons = debugState.offlineSimulatedClockButtons,
                     packageSourceBaseUrl = packageSourceBaseUrl,

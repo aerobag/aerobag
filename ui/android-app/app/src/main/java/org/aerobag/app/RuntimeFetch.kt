@@ -366,6 +366,13 @@ internal fun readOfflinePackagesStateJson(
         ?.takeIf { it.isNotBlank() }
         ?: ""
 
+internal fun readOfflinePackagesLibraryCacheJson(
+    prefs: android.content.SharedPreferences,
+): String =
+    prefs.getString(UiPrefsOfflinePackageLibraryCacheKey, null)
+        ?.takeIf { it.isNotBlank() }
+        ?: ""
+
 internal fun resolvePlaybackTraceUrl(sourcePath: String, devServerBaseUrl: String): String =
     when {
         sourcePath.startsWith("http://") || sourcePath.startsWith("https://") -> sourcePath

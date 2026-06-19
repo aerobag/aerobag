@@ -1217,11 +1217,19 @@ fn live_feed_caches() -> &'static Mutex<HashMap<u32, app_core::LiveFeedCache>> {
 
 pub fn create_offline_packages_controller_json(
     packages_state_json: Option<&str>,
+    library_cache_json: Option<&str>,
 ) -> Result<u64, String> {
     let packages_state = packages_state_json
         .filter(|json| !json.trim().is_empty())
         .map(|json| {
             serde_json::from_str::<app_core::OfflinePackagesState>(json)
+                .map_err(|err| err.to_string())
+        })
+        .transpose()?;
+    let library_cache = library_cache_json
+        .filter(|json| !json.trim().is_empty())
+        .map(|json| {
+            serde_json::from_str::<app_core::OfflinePackagesLibraryCache>(json)
                 .map_err(|err| err.to_string())
         })
         .transpose()?;
@@ -1233,6 +1241,7 @@ pub fn create_offline_packages_controller_json(
             handle,
             app_core::OfflinePackagesControllerState {
                 packages_state,
+                library_cache,
                 ..Default::default()
             },
         );
@@ -1645,12 +1654,15 @@ struct OfflinePackagesControllerInputWire {
     product_ids: Vec<String>,
     now_epoch_ms: i64,
     installed: Vec<app_core::InstalledArtifact>,
+    #[serde(default)]
+    storage: Option<app_core::OfflinePackagesStorageInfo>,
     event: OfflinePackagesControllerEventWire,
 }
 
 #[derive(Serialize)]
 struct OfflinePackagesControllerResultWire {
     packages_state_json: Option<String>,
+    library_cache_json: Option<String>,
     ui_state: app_core::OfflinePackagesControllerUiState,
     command: Option<app_core::OfflinePackagesControllerCommand>,
 }
@@ -1825,6 +1837,7 @@ pub fn dispatch_offline_packages_controller_json(
             product_ids: input.product_ids,
             now_epoch_ms: input.now_epoch_ms,
             installed: input.installed,
+            storage: input.storage,
             event,
         });
     controllers.insert(handle as u32, result.state.clone());
@@ -1834,6 +1847,13 @@ pub fn dispatch_offline_packages_controller_json(
             .packages_state
             .as_ref()
             .map(|state| serde_json::to_string(state))
+            .transpose()
+            .map_err(|err| err.to_string())?,
+        library_cache_json: result
+            .state
+            .library_cache
+            .as_ref()
+            .map(|cache| serde_json::to_string(cache))
             .transpose()
             .map_err(|err| err.to_string())?,
         ui_state: result.ui_state,
@@ -2044,10 +2064,15 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_createOfflineP
     mut env: JNIEnv,
     _class: JClass,
     packages_state_json: JString,
+    library_cache_json: JString,
 ) -> i64 {
     let result = (|| {
         let packages_state_json = get_java_string(&mut env, packages_state_json)?;
-        create_offline_packages_controller_json(Some(&packages_state_json))
+        let library_cache_json = get_java_string(&mut env, library_cache_json)?;
+        create_offline_packages_controller_json(
+            Some(&packages_state_json),
+            Some(&library_cache_json),
+        )
     })();
     match result {
         Ok(handle) => handle as i64,

@@ -6,7 +6,7 @@ interface CoreSettingsStore {
 }
 
 interface NativeBridge {
-    fun createOfflinePackagesController(packagesStateJson: String): Long
+    fun createOfflinePackagesController(packagesStateJson: String, libraryCacheJson: String): Long
 
     fun dispatchOfflinePackagesControllerJson(handle: Long, inputJson: String): String
 
@@ -508,7 +508,10 @@ object NativeBindings : NativeBridge {
 
     external fun configureGpsCaptureLogPath(path: String)
 
-    external override fun createOfflinePackagesController(packagesStateJson: String): Long
+    external override fun createOfflinePackagesController(
+        packagesStateJson: String,
+        libraryCacheJson: String,
+    ): Long
 
     external override fun dispatchOfflinePackagesControllerJson(handle: Long, inputJson: String): String
 

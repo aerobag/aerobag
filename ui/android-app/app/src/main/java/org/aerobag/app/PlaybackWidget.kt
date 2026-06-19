@@ -416,7 +416,7 @@ internal fun PlaybackWidget(
                             isBusy = true
                             try {
                                 val traceUrl = resolvePlaybackTraceUrl(sourcePath, devServerBaseUrl)
-                                Log.i("AerobagPlayback", "loading trace $traceUrl")
+                                diagnosticLogInfo("AerobagPlayback") { "loading trace $traceUrl" }
                                 val traceJson =
                                     withContext(Dispatchers.IO) {
                                         fetchResourceBytes(traceUrl).decodeToString()

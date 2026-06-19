@@ -1,9 +1,9 @@
 package org.aerobag.app.domain
 
-import android.util.Log
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.ZipFile
+import org.aerobag.app.diagnosticLogInfo
 
 internal object PackageZipStore {
     internal const val TAG = "AerobagZipStore"
@@ -85,5 +85,5 @@ private fun monotonicMs(): Long =
     System.nanoTime() / 1_000_000L
 
 private fun logInfo(message: String) {
-    runCatching { Log.i(PackageZipStore.TAG, message) }
+    diagnosticLogInfo(PackageZipStore.TAG) { message }
 }

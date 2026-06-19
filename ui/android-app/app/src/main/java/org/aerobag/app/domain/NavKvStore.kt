@@ -2,7 +2,6 @@ package org.aerobag.app.domain
 
 import android.content.Context
 import android.os.SystemClock
-import android.util.Log
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
@@ -16,6 +15,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.aerobag.app.diagnosticLogInfo
 import org.aerobag.app.perfLogInfo
 
 data class CoreResourceRequest(
@@ -191,7 +191,9 @@ class NavKvStore private constructor(
                                     readInstalledArtifactResource(artifactsByFilename, resource)
                                 } catch (error: Throwable) {
                                     if (resource.optional) {
-                                        Log.i(TAG, "optional resource ${resource.id} unavailable: ${error.message}")
+                                        diagnosticLogInfo(TAG) {
+                                            "optional resource ${resource.id} unavailable: ${error.message}"
+                                        }
                                         ByteArray(0)
                                     } else {
                                         throw error
@@ -245,7 +247,9 @@ class NavKvStore private constructor(
                                     readInstalledArtifactResource(artifactsByFilename, resource)
                                 } catch (error: Throwable) {
                                     if (resource.optional) {
-                                        Log.i(TAG, "optional resource ${resource.id} unavailable: ${error.message}")
+                                        diagnosticLogInfo(TAG) {
+                                            "optional resource ${resource.id} unavailable: ${error.message}"
+                                        }
                                         ByteArray(0)
                                     } else {
                                         throw error
@@ -347,7 +351,9 @@ class NavKvStore private constructor(
                                 fetch(resource)
                             } catch (error: Throwable) {
                                 if (resource.optional) {
-                                    Log.i(TAG, "optional resource ${resource.id} unavailable: ${error.message}")
+                                    diagnosticLogInfo(TAG) {
+                                        "optional resource ${resource.id} unavailable: ${error.message}"
+                                    }
                                     ingest(resource, ByteArray(0))
                                     continue
                                 }

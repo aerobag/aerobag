@@ -19,6 +19,7 @@ const generatedRoot = path.join(webTargetRoot, "generated");
 const iconsRoot = path.join(repoRoot, "ui", "icons");
 const adsbTraceRoot = path.resolve(repoRoot, "..", "adsb-traces");
 const liveFeedsOrigin = process.env.AEROBAG_LIVE_FEEDS_ORIGIN ?? null;
+const webDebugLogEnabled = /^(1|true|yes)$/i.test(process.env.AEROBAG_WEB_DEBUG_LOG_ENABLED ?? "");
 const liveFeedsFixtureRoot = process.env.AEROBAG_LIVE_FEEDS_FIXTURE_ROOT
   ? path.resolve(process.env.AEROBAG_LIVE_FEEDS_FIXTURE_ROOT)
   : path.resolve(repoRoot, "..", "live-feeds-dev-fixture", "live-feeds");
@@ -309,6 +310,7 @@ function aerobagProductContractsPlugin(): Plugin {
 export default defineConfig({
   plugins: [aerobagProductContractsPlugin(), react(), aerobagStaticPlugin()],
   define: {
+    __AEROBAG_DEBUG_LOG_ENABLED__: JSON.stringify(webDebugLogEnabled),
     __AEROBAG_LIVE_FEEDS_ORIGIN__: JSON.stringify(liveFeedsOrigin),
   },
   resolve: {

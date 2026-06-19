@@ -2,10 +2,10 @@ package org.aerobag.app.domain
 
 import android.content.Context
 import android.os.SystemClock
-import android.util.Log
 import java.time.Instant
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import org.aerobag.app.diagnosticLogInfo
 
 data class RuntimeBootstrap(
     val packageManagementNowEpochMsOverride: Long?,
@@ -78,11 +78,10 @@ object AndroidRuntimeContent {
             navKvStore = navKvStore,
             installedPackageIds = installedPackageIds,
         ).also {
-            Log.i(
-                TAG,
+            diagnosticLogInfo(TAG) {
                 "loadInstalledRuntime completed in ${SystemClock.elapsedRealtime() - startMs}ms " +
-                    "(navKvOpen=${navKvOpenMs}ms)",
-            )
+                    "(navKvOpen=${navKvOpenMs}ms)"
+            }
         }
     }
 

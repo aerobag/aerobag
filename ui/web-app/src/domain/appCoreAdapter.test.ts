@@ -128,6 +128,7 @@ describe("loadBestAvailableAdapter", () => {
       ingest_resource_in_session: async () => {},
       report_session_resource_failure_in_session: async () => snapshotJson,
       report_session_resource_failure_in_session_at_epoch_ms: async () => snapshotJson,
+      resolve_chart_asset_resource_in_session: async () => JSON.stringify({ source: { kind: "unavailable", message: "test" } }),
       get_map_overlay_in_session: async () => "{\"state\":\"complete\",\"result\":{\"visible_features\":[],\"visible_metars\":[],\"visible_pireps\":[],\"airspace_paths\":[],\"tfr_paths\":[],\"airspace_labels\":[]}}",
       get_map_selection_in_session: async () => "{\"state\":\"complete\",\"result\":{\"click_lat\":0,\"click_lon\":0,\"categories\":[]}}",
       get_map_selection_for_nav_ref_in_session: async () => "{\"state\":\"complete\",\"result\":null}",

@@ -1207,11 +1207,10 @@ internal suspend fun syncOfflinePackages(
                                 completedFetchBytes + activeFetchBytes()
                             }
                             reportProgress(syncProgressText(fetchedCount, plan.fetch.size, aggregateFetchBytes, totalFetchBytes))
-                            Log.i(
-                                "OfflinePackages",
+                            diagnosticLogInfo("OfflinePackages") {
                                 "fetch installed $artifactId worker=$workerIndex in ${SystemClock.elapsedRealtime() - fetchStartMs}ms from $sourceUrl" +
-                                    if (validationError != null) " poison=${pkg.filename}" else "",
-                            )
+                                    if (validationError != null) " poison=${pkg.filename}" else ""
+                            }
                         }.onFailure {
                             progressMutex.withLock {
                                 activeFetchBytesByArtifactId.remove(artifactId)
@@ -1259,10 +1258,9 @@ internal suspend fun syncOfflinePackages(
                 ?.takeIf { plan.fetch.contains(installedArtifact.artifactId) }
             deleteInstalledArtifact(context, installedArtifact.artifactId, filename, keepFilename)
             gcCount += 1
-            Log.i(
-                "OfflinePackages",
-                "gc removed $filename in ${SystemClock.elapsedRealtime() - gcStartMs}ms keep=$keepFilename",
-            )
+            diagnosticLogInfo("OfflinePackages") {
+                "gc removed $filename in ${SystemClock.elapsedRealtime() - gcStartMs}ms keep=$keepFilename"
+            }
         }.onFailure {
             Log.e("OfflinePackages", "gc failed for $filename", it)
             val installedArtifact = installedByFilename[filename]
@@ -1281,11 +1279,10 @@ internal suspend fun syncOfflinePackages(
         warnings = warnings,
         remotePoisonedFilenameMessages = remotePoisonedFilenameMessages,
     ).also {
-        Log.i(
-            "OfflinePackages",
+        diagnosticLogInfo("OfflinePackages") {
             "sync completed in ${SystemClock.elapsedRealtime() - syncStartMs}ms " +
-                "(fetch=${plan.fetch.size}, gc=${plan.gc.size}, warnings=${warnings.size})",
-        )
+                "(fetch=${plan.fetch.size}, gc=${plan.gc.size}, warnings=${warnings.size})"
+        }
     }
 }
 
@@ -1397,12 +1394,12 @@ internal suspend fun readPackageSourceBytes(
     activeConnections.add(connection)
     val completionHandle = currentCoroutineContext()[Job]?.invokeOnCompletion { error ->
         if (error is CancellationException) {
-            Log.i("OfflinePackages", "cancel disconnect $sourceUrl")
+            diagnosticLogInfo("OfflinePackages") { "cancel disconnect $sourceUrl" }
             connection.disconnect()
         }
     }
     return try {
-        Log.i("OfflinePackages", "http read start $sourceUrl")
+        diagnosticLogInfo("OfflinePackages") { "http read start $sourceUrl" }
         connection.inputStream.buffered().use { input ->
             val buffer = ByteArray(64 * 1024)
             val output = expectedSizeBytes
@@ -1428,10 +1425,9 @@ internal suspend fun readPackageSourceBytes(
         completionHandle?.dispose()
         activeConnections.remove(connection)
         connection.disconnect()
-        Log.i(
-            "OfflinePackages",
-            "http read end bytes=$totalBytesRead elapsedMs=${SystemClock.elapsedRealtime() - startMs} url=$sourceUrl",
-        )
+        diagnosticLogInfo("OfflinePackages") {
+            "http read end bytes=$totalBytesRead elapsedMs=${SystemClock.elapsedRealtime() - startMs} url=$sourceUrl"
+        }
     }
 }
 
@@ -1495,7 +1491,7 @@ internal suspend fun downloadPackageToTempFile(
     activeConnections.add(connection)
     val completionHandle = currentCoroutineContext()[Job]?.invokeOnCompletion { error ->
         if (error is CancellationException) {
-            Log.i("OfflinePackages", "cancel disconnect $sourceUrl")
+            diagnosticLogInfo("OfflinePackages") { "cancel disconnect $sourceUrl" }
             connection.disconnect()
         }
     }
@@ -1503,10 +1499,9 @@ internal suspend fun downloadPackageToTempFile(
         val responseStartNanos = SystemClock.elapsedRealtimeNanos()
         responseCode = connection.responseCode
         responseContentLength = connection.contentLengthLong.takeIf { it >= 0L }
-        Log.i(
-            "OfflinePackages",
-            "http download start $sourceUrl response=$responseCode contentLength=${responseContentLength ?: "unknown"} setupMs=${downloadTimingMs(SystemClock.elapsedRealtimeNanos() - responseStartNanos)}",
-        )
+        diagnosticLogInfo("OfflinePackages") {
+            "http download start $sourceUrl response=$responseCode contentLength=${responseContentLength ?: "unknown"} setupMs=${downloadTimingMs(SystemClock.elapsedRealtimeNanos() - responseStartNanos)}"
+        }
         connection.inputStream.buffered().use { input ->
             BufferedOutputStream(temp.outputStream()).use { output ->
                 val buffer = ByteArray(64 * 1024)
@@ -1538,11 +1533,10 @@ internal suspend fun downloadPackageToTempFile(
         completionHandle?.dispose()
         activeConnections.remove(connection)
         connection.disconnect()
-        Log.i("OfflinePackages", "http download end $sourceUrl complete=$complete")
-        Log.i(
-            "OfflinePackages",
-            "http download stats filename=$filename bytes=$sizeBytes complete=$complete totalMs=${downloadTimingMs(SystemClock.elapsedRealtimeNanos() - downloadStartNanos)} readMs=${downloadTimingMs(readNanos)} writeMs=${downloadTimingMs(writeNanos)} digestMs=${downloadTimingMs(digestNanos)} progressMs=${downloadTimingMs(progressNanos)} progressCallbacks=$progressCallbacks response=$responseCode contentLength=${responseContentLength ?: "unknown"} url=$sourceUrl",
-        )
+        diagnosticLogInfo("OfflinePackages") { "http download end $sourceUrl complete=$complete" }
+        diagnosticLogInfo("OfflinePackages") {
+            "http download stats filename=$filename bytes=$sizeBytes complete=$complete totalMs=${downloadTimingMs(SystemClock.elapsedRealtimeNanos() - downloadStartNanos)} readMs=${downloadTimingMs(readNanos)} writeMs=${downloadTimingMs(writeNanos)} digestMs=${downloadTimingMs(digestNanos)} progressMs=${downloadTimingMs(progressNanos)} progressCallbacks=$progressCallbacks response=$responseCode contentLength=${responseContentLength ?: "unknown"} url=$sourceUrl"
+        }
         if (!complete) {
             temp.delete()
         }

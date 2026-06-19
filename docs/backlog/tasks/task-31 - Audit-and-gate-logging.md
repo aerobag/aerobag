@@ -1,7 +1,7 @@
 ---
 id: TASK-31
 title: Audit and gate logging
-state: high
+state: done
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:
@@ -22,8 +22,7 @@ Review all logging and decide what should be removed, commented as useful debugg
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Inventory logging across web, Android, and core boundary paths.
-- [ ] #2 Remove noisy or obsolete logs.
-- [ ] #3 Gate valuable diagnostics behind explicit debug/developer controls.
+- [x] #1 Inventory logging across web, Android, and core boundary paths.
+- [x] #2 Remove noisy or obsolete logs.
+- [x] #3 Gate valuable diagnostics behind explicit debug/developer controls.
 <!-- AC:END -->
-

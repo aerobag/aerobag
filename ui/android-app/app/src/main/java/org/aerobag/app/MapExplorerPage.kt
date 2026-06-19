@@ -632,7 +632,9 @@ internal fun MapExplorerPage(
                 val visible = !mapLayerState.metars.visible
                 val startMs = SystemClock.elapsedRealtime()
                 val snapshot = uiSession.setMapLayerVisibility(MapLayerId.Metars, visible)
-                Log.i(MapLayerLogTag, "toggle layer=metars visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                diagnosticLogInfo(MapLayerLogTag) {
+                    "toggle layer=metars visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                }
                 onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(
@@ -645,7 +647,9 @@ internal fun MapExplorerPage(
                 val visible = !mapLayerState.vectors.visible
                 val startMs = SystemClock.elapsedRealtime()
                 val snapshot = uiSession.setMapLayerVisibility(MapLayerId.Vectors, visible)
-                Log.i(MapLayerLogTag, "toggle layer=vectors visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                diagnosticLogInfo(MapLayerLogTag) {
+                    "toggle layer=vectors visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                }
                 onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(
@@ -658,7 +662,9 @@ internal fun MapExplorerPage(
                 val visible = !mapLayerState.nexrad.visible
                 val startMs = SystemClock.elapsedRealtime()
                 val snapshot = uiSession.setMapLayerVisibility(MapLayerId.Nexrad, visible)
-                Log.i(MapLayerLogTag, "toggle layer=nexrad visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                diagnosticLogInfo(MapLayerLogTag) {
+                    "toggle layer=nexrad visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                }
                 onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(
@@ -671,7 +677,9 @@ internal fun MapExplorerPage(
                 val visible = !mapLayerState.terrainWarning.visible
                 val startMs = SystemClock.elapsedRealtime()
                 val snapshot = uiSession.setMapLayerVisibility(MapLayerId.TerrainWarning, visible)
-                Log.i(MapLayerLogTag, "toggle layer=terrain_warning visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                diagnosticLogInfo(MapLayerLogTag) {
+                    "toggle layer=terrain_warning visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                }
                 onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(
@@ -684,7 +692,9 @@ internal fun MapExplorerPage(
                 val visible = !mapLayerState.worldBasemap.visible
                 val startMs = SystemClock.elapsedRealtime()
                 val snapshot = uiSession.setMapLayerVisibility(MapLayerId.WorldBasemap, visible)
-                Log.i(MapLayerLogTag, "toggle layer=world_basemap visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                diagnosticLogInfo(MapLayerLogTag) {
+                    "toggle layer=world_basemap visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                }
                 onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(
@@ -697,7 +707,9 @@ internal fun MapExplorerPage(
                 val visible = !mapLayerState.offlineRegions.visible
                 val startMs = SystemClock.elapsedRealtime()
                 val snapshot = uiSession.setMapLayerVisibility(MapLayerId.OfflineRegions, visible)
-                Log.i(MapLayerLogTag, "toggle layer=offline_regions visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                diagnosticLogInfo(MapLayerLogTag) {
+                    "toggle layer=offline_regions visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                }
                 onSessionSnapshotChange(snapshot)
             },
         )

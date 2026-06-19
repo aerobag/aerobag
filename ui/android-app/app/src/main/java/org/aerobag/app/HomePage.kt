@@ -409,17 +409,15 @@ internal fun HomePage(
     }
     suspend fun dispatchOfflinePackagesController(event: OfflinePackagesControllerEventWire) {
         if (!offlinePackagesControllerAlive.get()) {
-            Log.i(
-                "OfflinePackages",
-                "dropping event=${event::class.simpleName} for disposed controller handle=$offlinePackagesControllerHandle",
-            )
+            diagnosticLogInfo("OfflinePackages") {
+                "dropping event=${event::class.simpleName} for disposed controller handle=$offlinePackagesControllerHandle"
+            }
             return
         }
         val startMs = SystemClock.elapsedRealtime()
-        Log.i(
-            "OfflinePackages",
-            "controller event=${event::class.simpleName} handle=$offlinePackagesControllerHandle scanning installed packages",
-        )
+        diagnosticLogInfo("OfflinePackages") {
+            "controller event=${event::class.simpleName} handle=$offlinePackagesControllerHandle scanning installed packages"
+        }
         val installed = withContext(Dispatchers.IO) {
             listInstalledPackageArtifacts(context.applicationContext)
         }
@@ -434,26 +432,23 @@ internal fun HomePage(
             event = event,
         )
         val inputJson = PackageManagementJson.encodeToString(input)
-        Log.i(
-            "OfflinePackages",
+        diagnosticLogInfo("OfflinePackages") {
             "controller event=${event::class.simpleName} handle=$offlinePackagesControllerHandle " +
-                "installed=${installed.size} installedScanMs=$installedScanElapsedMs inputBytes=${inputJson.length}",
-        )
+                "installed=${installed.size} installedScanMs=$installedScanElapsedMs inputBytes=${inputJson.length}"
+        }
         if (!offlinePackagesControllerAlive.get()) {
-            Log.i(
-                "OfflinePackages",
-                "dropping event=${event::class.simpleName} after package scan for disposed controller handle=$offlinePackagesControllerHandle",
-            )
+            diagnosticLogInfo("OfflinePackages") {
+                "dropping event=${event::class.simpleName} after package scan for disposed controller handle=$offlinePackagesControllerHandle"
+            }
             return
         }
         val outputJson = try {
             NativeBindings.dispatchOfflinePackagesControllerJson(offlinePackagesControllerHandle, inputJson)
         } catch (error: RuntimeException) {
             if (error.message?.contains("invalid offline packages controller handle") == true) {
-                Log.i(
-                    "OfflinePackages",
-                    "dropping event=${event::class.simpleName} for stale controller handle=$offlinePackagesControllerHandle",
-                )
+                diagnosticLogInfo("OfflinePackages") {
+                    "dropping event=${event::class.simpleName} for stale controller handle=$offlinePackagesControllerHandle"
+                }
                 return
             }
             throw error
@@ -593,7 +588,9 @@ internal fun HomePage(
                         iconResId = button.iconResId,
                         wide = true,
                         onClick = {
-                            Log.i("AerobagNavigation", "home button key=${button.key} target=${button.targetPage} external=${button.externalUrl}")
+                            diagnosticLogInfo("AerobagNavigation") {
+                                "home button key=${button.key} target=${button.targetPage} external=${button.externalUrl}"
+                            }
                             if (button.targetPage != null) {
                                 onSelectPage(button.targetPage)
                             } else if (button.externalUrl != null) {
@@ -678,7 +675,7 @@ internal fun HomePage(
                         }
                     },
                     onCancelRefresh = {
-                        Log.i("OfflinePackages", "refresh cancel requested")
+                        diagnosticLogInfo("OfflinePackages") { "refresh cancel requested" }
                         offlinePackageCancelRequested = true
                         activePackageConnections.disconnectAll()
                         offlinePackageOperationJob?.cancel(CancellationException("offline package refresh canceled"))
@@ -732,7 +729,7 @@ internal fun HomePage(
                     syncCancelEnabled = controllerUiState.syncCancelEnabled,
                     plannerInteractionsEnabled = controllerUiState.plannerInteractionsEnabled,
                     onCancelRefresh = {
-                        Log.i("OfflinePackages", "refresh cancel requested")
+                        diagnosticLogInfo("OfflinePackages") { "refresh cancel requested" }
                         offlinePackageCancelRequested = true
                         activePackageConnections.disconnectAll()
                         offlinePackageOperationJob?.cancel(CancellationException("offline package refresh canceled"))
@@ -767,20 +764,19 @@ internal fun HomePage(
                         }
                     },
                     onSync = {
-                        Log.i(
-                            "OfflinePackages",
-                            "sync button clicked syncInFlight=${controllerUiState.syncInFlight} libraryLoading=${controllerUiState.libraryLoading}",
-                        )
+                        diagnosticLogInfo("OfflinePackages") {
+                            "sync button clicked syncInFlight=${controllerUiState.syncInFlight} libraryLoading=${controllerUiState.libraryLoading}"
+                        }
                         if (!controllerUiState.syncEnabled || offlinePackageOperationJob?.isActive == true) {
                             return@OfflinePackagesPanel
                         }
                         launchOfflinePackageOperation {
-                            Log.i("OfflinePackages", "dispatching SyncRequested")
+                            diagnosticLogInfo("OfflinePackages") { "dispatching SyncRequested" }
                             dispatchOfflinePackagesController(OfflinePackagesControllerEventWire.SyncRequested)
                         }
                     },
                     onCancelOperation = {
-                        Log.i("OfflinePackages", "sync cancel requested")
+                        diagnosticLogInfo("OfflinePackages") { "sync cancel requested" }
                         offlinePackageCancelRequested = true
                         activePackageConnections.disconnectAll()
                         offlinePackageOperationJob?.cancel(CancellationException("offline package operation canceled"))

@@ -1,6 +1,8 @@
 let seq = 0;
 let globalErrorLoggingInstalled = false;
 
+declare const __AEROBAG_DEBUG_LOG_ENABLED__: boolean;
+
 export type DebugLogRecord = {
   seq: number;
   ts_ms: number;
@@ -67,7 +69,8 @@ async function flushQueue() {
 
 export function debugLog(tag: string, data?: unknown) {
   if (
-    typeof fetch !== "function"
+    !isDebugLogEnabled()
+    || typeof fetch !== "function"
     || typeof location === "undefined"
     || !/^https?:$/.test(location.protocol)
     || typeof performance === "undefined"
@@ -92,6 +95,19 @@ export function debugLog(tag: string, data?: unknown) {
     }
   }
   scheduleFlush();
+}
+
+export function isDebugLogEnabled(): boolean {
+  if (
+    typeof __AEROBAG_DEBUG_LOG_ENABLED__ !== "undefined"
+    && __AEROBAG_DEBUG_LOG_ENABLED__
+  ) {
+    return true;
+  }
+  const global = globalThis as unknown as {
+    __aerobagDebugLogEnabled?: unknown;
+  };
+  return global.__aerobagDebugLogEnabled === true || currentDebugRunId() !== null;
 }
 
 export function perfDebugLog(tag: string, data?: () => unknown) {
@@ -194,7 +210,7 @@ export function debugTiming<T>(
   work: () => T,
   data?: unknown,
 ): T {
-  if (typeof performance === "undefined") {
+  if (!isDebugLogEnabled() || typeof performance === "undefined") {
     return work();
   }
   const start = performance.now();

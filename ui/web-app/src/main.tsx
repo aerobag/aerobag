@@ -2,7 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { loadBestAvailableAdapter } from "./domain/appCoreAdapter";
-import { debugLog, perfDebugLog, VERBOSE_PERF_DEBUG_LOGS } from "./domain/debugLog";
+import { debugLog, isDebugLogEnabled, perfDebugLog, VERBOSE_PERF_DEBUG_LOGS } from "./domain/debugLog";
 import { installStartupReloadHarness } from "./startupReloadHarness";
 import "./styles.css";
 
@@ -180,6 +180,9 @@ function installEventLoopLagMonitor() {
 }
 
 function logStartupResources() {
+  if (!isDebugLogEnabled()) {
+    return;
+  }
   window.setTimeout(() => {
     const resources = performance
       .getEntriesByType("resource")

@@ -2203,10 +2203,9 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
         }.onSuccess {
             sessionSnapshot = it
             liveFeedGeneration += 1
-            Log.i(
-                "AndroidLiveFeeds",
-                "promoted product=${summary.product} version=${summary.version} generation=$liveFeedGeneration",
-            )
+            diagnosticLogInfo("AndroidLiveFeeds") {
+                "promoted product=${summary.product} version=${summary.version} generation=$liveFeedGeneration"
+            }
         }.onFailure { error ->
             Log.w("AndroidLiveFeeds", "failed to promote ${summary.product}/${summary.version}", error)
         }
@@ -2423,9 +2422,11 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
     }
 
     fun navigateToPage(nextPage: AppPage) {
-        Log.i("AerobagNavigation", "navigate request from=$page to=$nextPage history=${pageHistory.size}")
+        diagnosticLogInfo("AerobagNavigation") {
+            "navigate request from=$page to=$nextPage history=${pageHistory.size}"
+        }
         if (nextPage == page) {
-            Log.i("AerobagNavigation", "navigate ignored same-page page=$page")
+            diagnosticLogInfo("AerobagNavigation") { "navigate ignored same-page page=$page" }
             return
         }
         if (nextPage == AppPage.Map) {
@@ -2439,7 +2440,9 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
         }
         pageHistory = boundedHistory(pageHistory + currentSnapshot())
         page = nextPage
-        Log.i("AerobagNavigation", "navigate committed page=$page history=${pageHistory.size}")
+        diagnosticLogInfo("AerobagNavigation") {
+            "navigate committed page=$page history=${pageHistory.size}"
+        }
     }
 
     fun pushViewSnapshot(snapshot: AppViewSnapshot) {
@@ -2652,7 +2655,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                     )
                 }
                 AppPage.Home -> {
-                    Log.i("AerobagNavigation", "render home history=${pageHistory.size}")
+                    diagnosticLogInfo("AerobagNavigation") { "render home history=${pageHistory.size}" }
                     HomePage(
                         page = page,
                         pageHistory = pageHistory,

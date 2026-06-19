@@ -20,6 +20,7 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import org.aerobag.app.diagnosticLogInfo
 
 private const val LiveFeedCacheDirectoryName = "live-feeds"
 private const val LiveFeedSseConnectTimeoutMs = 5_000
@@ -151,7 +152,9 @@ class AndroidLiveFeedClient(
             }.onFailure { error ->
                 if (error is CancellationException) throw error
                 if (error is SocketTimeoutException) {
-                    Log.i(TAG, "live-feed SSE idle for ${LiveFeedSseIdleTimeoutMs}ms; reconnecting")
+                    diagnosticLogInfo(TAG) {
+                        "live-feed SSE idle for ${LiveFeedSseIdleTimeoutMs}ms; reconnecting"
+                    }
                 } else {
                     Log.w(TAG, "live-feed SSE loop failed: ${error.message}", error)
                 }
@@ -301,7 +304,9 @@ class AndroidLiveFeedClient(
         }
         return try {
             connection.inputStream.buffered().use { it.readBytes() }.also {
-                Log.i(TAG, "fetched live-feed bytes=${it.size} elapsedMs=${SystemClock.elapsedRealtime() - startMs} url=$resolved")
+                diagnosticLogInfo(TAG) {
+                    "fetched live-feed bytes=${it.size} elapsedMs=${SystemClock.elapsedRealtime() - startMs} url=$resolved"
+                }
             }
         } finally {
             connection.disconnect()

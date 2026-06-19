@@ -17,6 +17,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "android")]
 const ANDROID_LOG_INFO: c_int = 4;
+#[cfg(target_os = "android")]
+const ANDROID_CORE_DEBUG_LOGCAT_ENABLED: bool = false;
 
 #[cfg(target_os = "android")]
 static GPS_CAPTURE_LOG_PATH: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -47,6 +49,9 @@ fn now_epoch_ms_f64() -> f64 {
 fn log_core_debug(tag: &str, data: &serde_json::Value) {
     append_gps_capture_log_record(tag, data);
 
+    if !ANDROID_CORE_DEBUG_LOGCAT_ENABLED {
+        return;
+    }
     let Ok(tag) = CString::new(tag) else {
         return;
     };

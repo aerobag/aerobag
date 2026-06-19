@@ -2166,6 +2166,17 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
     var rasterMapState by remember(uiSession) { mutableStateOf(initialRasterMapState) }
     var selectedMapId by remember(uiSession) { mutableStateOf(initialRasterMapState.selectedMapId) }
     var sessionSnapshot by remember(uiSession) { mutableStateOf(uiSession.snapshot) }
+    fun applySessionSnapshot(nextSnapshot: UiSessionSnapshot): Boolean {
+        if (nextSnapshot.sessionRevision < sessionSnapshot.sessionRevision) {
+            Log.i(
+                "AerobagSession",
+                "ignored stale snapshot revision=${nextSnapshot.sessionRevision} current=${sessionSnapshot.sessionRevision}",
+            )
+            return false
+        }
+        sessionSnapshot = nextSnapshot
+        return true
+    }
     LaunchedEffect(context, sessionSnapshot.displayPolicy) {
         (context as? MainActivity)?.applyCoreDisplayPolicy(sessionSnapshot.displayPolicy)
     }
@@ -2175,7 +2186,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
         }
     }
     fun selectOwnshipSource(sourceId: String) {
-        sessionSnapshot = uiSession.selectOwnshipSource(OwnshipSelection.Source(sourceId))
+        applySessionSnapshot(uiSession.selectOwnshipSource(OwnshipSelection.Source(sourceId)))
         AndroidGpsPower.clearPendingOwnshipSource(appContext)
         if (AndroidGpsPower.shouldRunHighPrecisionGpsForSource(sourceId)) {
             AerobagGpsService.startHighPrecisionGps(appContext)
@@ -2188,7 +2199,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
         val delayMs = (nextCheckEpochMs - System.currentTimeMillis())
             .coerceAtLeast(0L)
         delay(delayMs)
-        sessionSnapshot = uiSession.refreshSnapshot()
+        applySessionSnapshot(uiSession.refreshSnapshot())
     }
     val liveFeedCache = remember(uiSession, context) {
         LiveFeedCacheStore.open(context.applicationContext)
@@ -2201,7 +2212,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
         runCatching {
             uiSession.installLiveFeedCacheProduct(liveFeedCache, summary.product)
         }.onSuccess {
-            sessionSnapshot = it
+            applySessionSnapshot(it)
             liveFeedGeneration += 1
             diagnosticLogInfo("AndroidLiveFeeds") {
                 "promoted product=${summary.product} version=${summary.version} generation=$liveFeedGeneration"
@@ -2214,7 +2225,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
         runCatching {
             uiSession.reportLiveFeedConnectionEvent(event)
         }.onSuccess {
-            sessionSnapshot = it
+            applySessionSnapshot(it)
         }.onFailure { error ->
             Log.w("AndroidLiveFeeds", "failed to report live-feed connection ${event.kind}", error)
         }
@@ -2251,7 +2262,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
     DisposableEffect(uiSession, context) {
         val activity = context as? MainActivity
         activity?.onSituationControlInput = { input ->
-            sessionSnapshot = uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble())
+            applySessionSnapshot(uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble()))
             true
         }
         onDispose {
@@ -2330,8 +2341,8 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
             )
     }
     LaunchedEffect(uiSession) {
-        sessionSnapshot = uiSession.registerOwnshipSource(AndroidGpsSource.registration())
-        sessionSnapshot = uiSession.updateOwnshipSourceStatus(AndroidGpsSource.status.value)
+        applySessionSnapshot(uiSession.registerOwnshipSource(AndroidGpsSource.registration()))
+        applySessionSnapshot(uiSession.updateOwnshipSourceStatus(AndroidGpsSource.status.value))
         val startupOwnshipSource = AndroidGpsPower.consumePendingOwnshipSource(appContext)
             ?: AndroidGpsPower.batterySavingFallbackSourceId().takeIf { AndroidGpsPower.isGpsPaused(appContext) }
         if (startupOwnshipSource != null) {
@@ -2339,12 +2350,12 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
         }
         launch {
             AndroidGpsSource.status.collect { status ->
-                sessionSnapshot = uiSession.updateOwnshipSourceStatus(status)
+                applySessionSnapshot(uiSession.updateOwnshipSourceStatus(status))
             }
         }
         launch {
             AndroidGpsSource.samples.collect { sample ->
-                sessionSnapshot = uiSession.pushSituationSample(sample)
+                applySessionSnapshot(uiSession.pushSituationSample(sample))
             }
         }
         launch {
@@ -2363,7 +2374,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
             delay(tickIntervalMs)
             runCatching { uiSession.tickPlayback(System.currentTimeMillis().toDouble()) }
                 .onSuccess {
-                    sessionSnapshot = it
+                    applySessionSnapshot(it)
                 }
                 .onFailure { Log.e("AerobagPlayback", "tick failed", it) }
         }
@@ -2393,12 +2404,13 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
 
     fun restoreSnapshot(snapshot: AppViewSnapshot, history: List<AppViewSnapshot>) {
         if (snapshot.selectedAirportId.isNotBlank() || snapshot.selectedChartId.isNotBlank() || snapshot.recentAirportIds.isNotEmpty()) {
-            sessionSnapshot =
+            applySessionSnapshot(
                 uiSession.restoreChartPageState(
                     recentAirportIds = snapshot.recentAirportIds,
                     selectedAirportId = snapshot.selectedAirportId.ifBlank { null },
                     selectedChartId = snapshot.selectedChartId.ifBlank { null },
-                )
+                ),
+            )
         }
         pageHistory = history
         page = snapshot.page
@@ -2409,12 +2421,13 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                 } else {
                     uiSession.selectRasterMap(snapshot.selectedMapId)
                 }
-            sessionSnapshot = nextSnapshot
             val nextRasterMapState = requireNotNull(nextSnapshot.rasterMap) {
                 "core session returned no raster map state"
             }
-            rasterMapState = nextRasterMapState
-            selectedMapId = nextRasterMapState.selectedMapId
+            if (applySessionSnapshot(nextSnapshot)) {
+                rasterMapState = nextRasterMapState
+                selectedMapId = nextRasterMapState.selectedMapId
+            }
         }
         mapViewport = snapshot.mapViewport
         chartViewport = snapshot.chartViewport
@@ -2462,11 +2475,11 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
     }
 
     fun setDebugFlag(flagId: String, enabled: Boolean) {
-        sessionSnapshot = uiSession.setDebugFlag(flagId, enabled)
+        applySessionSnapshot(uiSession.setDebugFlag(flagId, enabled))
     }
 
     fun openChartsForAirport(airportId: String) {
-        sessionSnapshot = uiSession.selectAirport(airportId)
+        applySessionSnapshot(uiSession.selectAirport(airportId))
         val airport = chartAirportById[airportId]
         restoreSnapshot(
             currentSnapshot().copy(
@@ -2521,10 +2534,10 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                             }
                         },
                         onViewportChange = { mapViewport = it },
-                        onSessionSnapshotChange = { sessionSnapshot = it },
+                        onSessionSnapshotChange = { applySessionSnapshot(it) },
                         onSelectOwnshipSource = ::selectOwnshipSource,
                         onSituationControlInput = { input ->
-                            sessionSnapshot = uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble())
+                            applySessionSnapshot(uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble()))
                         },
                         onPlaybackSourcePathChange = { playbackSourcePath = it },
                         onSelectMapFamily = {
@@ -2547,9 +2560,10 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                             val nextRasterMapState = requireNotNull(nextSnapshot.rasterMap) {
                                 "core selectMapFamily returned no raster map state"
                             }
-                            rasterMapState = nextRasterMapState
-                            selectedMapId = nextRasterMapState.selectedMapId
-                            sessionSnapshot = nextSnapshot
+                            if (applySessionSnapshot(nextSnapshot)) {
+                                rasterMapState = nextRasterMapState
+                                selectedMapId = nextRasterMapState.selectedMapId
+                            }
                             perfLogInfo(TileBudgetLogTag) {
                                 "map-family-click-done id=$timingId family=$it elapsedMs=${SystemClock.elapsedRealtime() - clickStartMs}"
                             }
@@ -2578,7 +2592,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         onOpenCharts = { airportId -> if (airportId != null) openChartsForAirport(airportId) },
                         onApplySessionSnapshot = { snapshot ->
-                            sessionSnapshot = snapshot
+                            applySessionSnapshot(snapshot)
                         },
                     )
                 }
@@ -2601,7 +2615,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                         folderOpen = chartFolderOpen,
                         viewport = chartViewport,
                         onViewportChange = { chartViewport = it },
-                        onSessionSnapshotChange = { sessionSnapshot = it },
+                        onSessionSnapshotChange = { applySessionSnapshot(it) },
                         onFolderOpenChange = {
                             restoreSnapshot(
                                 currentSnapshot().copy(
@@ -2615,11 +2629,11 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
                         onStatusAction = { actionId ->
                             runCatching { uiSession.performStatusAction(actionId) }
-                                .onSuccess { sessionSnapshot = it }
+                                .onSuccess { applySessionSnapshot(it) }
                                 .onFailure { error -> Log.w("AerobagCharts", "status action failed: $actionId", error) }
                         },
                         onSelectAirport = { airportId ->
-                            sessionSnapshot = uiSession.selectAirport(airportId)
+                            applySessionSnapshot(uiSession.selectAirport(airportId))
                             val airport = chartAirportById[airportId]
                             restoreSnapshot(
                                 currentSnapshot().copy(
@@ -2635,7 +2649,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                             )
                         },
                         onSelectChart = {
-                            sessionSnapshot = uiSession.selectChart(it)
+                            applySessionSnapshot(uiSession.selectChart(it))
                             restoreSnapshot(
                                 currentSnapshot().copy(
                                     page = AppPage.Charts,
@@ -2704,7 +2718,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                         onSelectPage = ::navigateToPage,
                         onSettingsAction = { actionId, valueId ->
                             runCatching { uiSession.performSettingsAction(actionId, valueId) }
-                                .onSuccess { sessionSnapshot = it }
+                                .onSuccess { applySessionSnapshot(it) }
                                 .onFailure { error -> Log.w("AerobagSettings", "settings action failed: $actionId=$valueId", error) }
                         },
                     )

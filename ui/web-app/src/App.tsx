@@ -1678,9 +1678,10 @@ export default function App() {
   );
   const sessionSnapshotRefreshInFlightRef = useRef(false);
   const sessionSnapshotRefreshTimerRef = useRef<number | null>(null);
-  const explicitSessionSnapshotVersionRef = useRef(0);
+  const appliedSessionRevisionRef = useRef(0);
   const cycleProductFreshnessTimerRef = useRef<number | null>(null);
   const [sessionSnapshot, setSessionSnapshot] = useState<UiSessionSnapshot>({
+    session_revision: 0,
     app_state: {
       active_plan: null,
       content_policy: "PreferLocal",
@@ -1749,14 +1750,36 @@ export default function App() {
     raster_map: null,
     next_cycle_product_freshness_check_epoch_ms: null,
   });
-  const applyExplicitSessionSnapshot = useCallback((nextSnapshot: UiSessionSnapshot, source: string) => {
-    explicitSessionSnapshotVersionRef.current += 1;
-    debugLog("session.snapshot.explicit_apply", {
+  const applySessionSnapshot = useCallback((nextSnapshot: UiSessionSnapshot, source: string) => {
+    const nextRevision = nextSnapshot.session_revision;
+    const currentRevision = appliedSessionRevisionRef.current;
+    if (nextRevision < currentRevision) {
+      debugLog("session.snapshot.stale_skip", {
+        source,
+        next_revision: nextRevision,
+        current_revision: currentRevision,
+      });
+      return false;
+    }
+    appliedSessionRevisionRef.current = nextRevision;
+    debugLog("session.snapshot.apply", {
       source,
-      version: explicitSessionSnapshotVersionRef.current,
+      revision: nextRevision,
     });
     setSessionSnapshot(nextSnapshot);
+    return true;
   }, []);
+  const applySessionSnapshotDispatch = useCallback((nextSnapshot: SetStateAction<UiSessionSnapshot>) => {
+    if (typeof nextSnapshot === "function") {
+      setSessionSnapshot((snapshot) => {
+        const resolved = nextSnapshot(snapshot);
+        appliedSessionRevisionRef.current = Math.max(appliedSessionRevisionRef.current, resolved.session_revision);
+        return resolved;
+      });
+      return;
+    }
+    applySessionSnapshot(nextSnapshot, "session_callback");
+  }, [applySessionSnapshot]);
   const [playbackSourcePath, setPlaybackSourcePath] = useState(defaultPlaybackTracePath);
   const [debugWarningActive, setDebugWarningActive] = useState(false);
   const [derivedChartPageState, setDerivedChartPageState] = useState<DerivedChartPageState>(initialChartPageState);
@@ -1797,14 +1820,14 @@ export default function App() {
       }));
       return;
     }
-    setSessionSnapshot(await uiSession.setDebugFlag(flagId, enabled));
-  }, [uiSession]);
+    applySessionSnapshot(await uiSession.setDebugFlag(flagId, enabled), "debug_flag");
+  }, [applySessionSnapshot, uiSession]);
   const applySituationControlInput = useCallback(async (input: SituationControlInput) => {
     if (!uiSession) {
       return;
     }
-    setSessionSnapshot(await uiSession.applySituationControlInput(input, Date.now()));
-  }, [uiSession]);
+    applySessionSnapshot(await uiSession.applySituationControlInput(input, Date.now()), "situation_control_input");
+  }, [applySessionSnapshot, uiSession]);
   const reportStartupVisualReady = useCallback(() => {
     if (startupVisualReadyRef.current) {
       return;
@@ -1917,18 +1940,9 @@ export default function App() {
       return;
     }
     sessionSnapshotRefreshInFlightRef.current = true;
-    const explicitVersionAtStart = explicitSessionSnapshotVersionRef.current;
     debugLog("session.snapshot.refresh.start", { reason });
     void uiSession.snapshot().then((nextSnapshot) => {
-      if (explicitSessionSnapshotVersionRef.current !== explicitVersionAtStart) {
-        debugLog("session.snapshot.refresh.stale_skip", {
-          reason,
-          started_explicit_version: explicitVersionAtStart,
-          current_explicit_version: explicitSessionSnapshotVersionRef.current,
-        });
-        return;
-      }
-      setSessionSnapshot(nextSnapshot);
+      applySessionSnapshot(nextSnapshot, `refresh:${reason}`);
     }).catch((error: unknown) => {
       debugLog("session.snapshot.refresh.error", { reason, error: errorMessage(error) });
     }).finally(() => {
@@ -1942,7 +1956,7 @@ export default function App() {
         });
       });
     });
-  }, [uiSession]);
+  }, [applySessionSnapshot, uiSession]);
 
   const handleSessionSnapshotRefreshDecision = useCallback((
     decision: SessionSnapshotRefreshDecision,
@@ -1978,7 +1992,7 @@ export default function App() {
         error: errorMessage(error),
       });
     });
-  }, [uiSession]);
+  }, [applySessionSnapshot, uiSession]);
 
   const handleMapViewportGestureActiveChange = useCallback((active: boolean) => {
     if (!uiSession) {
@@ -2089,7 +2103,7 @@ export default function App() {
     const tick = () => {
       void uiSession.tickPlayback(Date.now()).then((nextSnapshot) => {
         if (!cancelled) {
-          setSessionSnapshot(nextSnapshot);
+          applySessionSnapshot(nextSnapshot, "playback_tick");
         }
       }).catch(() => {});
     };
@@ -2100,7 +2114,7 @@ export default function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [playbackUiState.status, playbackUiState.tick_interval_ms, uiSession]);
+  }, [applySessionSnapshot, playbackUiState.status, playbackUiState.tick_interval_ms, uiSession]);
 
   useEffect(() => {
     if (!uiSession || !badAutopilotActive) {
@@ -2115,7 +2129,7 @@ export default function App() {
       inFlight = true;
       void uiSession.tickBadAutopilot(Date.now()).then((nextSnapshot) => {
         if (!cancelled) {
-          setSessionSnapshot(nextSnapshot);
+          applySessionSnapshot(nextSnapshot, "bad_autopilot_tick");
         }
       }).catch(() => {}).finally(() => {
         inFlight = false;
@@ -2127,7 +2141,7 @@ export default function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [badAutopilotActive, uiSession]);
+  }, [applySessionSnapshot, badAutopilotActive, uiSession]);
 
   useEffect(() => {
     if (!uiSession) {
@@ -2164,7 +2178,7 @@ export default function App() {
         status_label: statusLabel,
       }).then((nextSnapshot) => {
         if (!cancelled) {
-          setSessionSnapshot(nextSnapshot);
+          applySessionSnapshot(nextSnapshot, "geolocation_status");
         }
       }).catch((error) => {
         debugLog("geolocation.status_update_failed", { error: errorMessage(error) });
@@ -2183,7 +2197,7 @@ export default function App() {
         if (cancelled) {
           return;
         }
-        setSessionSnapshot(nextSnapshot);
+        applySessionSnapshot(nextSnapshot, "geolocation_register");
 
         if (typeof navigator === "undefined" || !navigator.geolocation) {
           updateStatus("unavailable", false, "Browser geolocation unavailable");
@@ -2199,7 +2213,7 @@ export default function App() {
         if (cancelled) {
           return;
         }
-        setSessionSnapshot(nextSnapshot);
+        applySessionSnapshot(nextSnapshot, "geolocation_searching");
 
         watchId = navigator.geolocation.watchPosition(
           (position) => {
@@ -2227,14 +2241,14 @@ export default function App() {
               if (cancelled) {
                 return;
               }
-              setSessionSnapshot(pushedSnapshot);
+              applySessionSnapshot(pushedSnapshot, "geolocation_sample");
               if (selectedAutoAfterFirstFix) {
                 return;
               }
               selectedAutoAfterFirstFix = true;
               const selectedSnapshot = await uiSession.selectOwnshipSource({ kind: "auto" });
               if (!cancelled) {
-                setSessionSnapshot(selectedSnapshot);
+                applySessionSnapshot(selectedSnapshot, "geolocation_select_auto");
               }
             }).catch((error) => {
               debugLog("geolocation.sample_failed", { error: errorMessage(error) });
@@ -2399,7 +2413,7 @@ export default function App() {
       if (!cancelled) {
         markStartupProgress("session.ready", "Initial session ready");
         setUiSession(created);
-        setSessionSnapshot(createdSnapshot);
+        applySessionSnapshot(createdSnapshot, "session_create");
       }
     }).catch((error) => {
       console.error("failed to initialize web ui session", error);
@@ -2411,7 +2425,7 @@ export default function App() {
       cancelled = true;
       void nextSession?.destroy();
     };
-  }, [adapterBackend, appCoreAdapter, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, initialDebugState, initialRecentAirportIds, markStartupProgress, reportStartupFatalError]);
+  }, [adapterBackend, appCoreAdapter, applySessionSnapshot, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, initialDebugState, initialRecentAirportIds, markStartupProgress, reportStartupFatalError]);
 
   useEffect(() => {
     if (!uiSession) {
@@ -2558,7 +2572,7 @@ export default function App() {
     setPage(snapshot.page);
     if (snapshot.selectedMapId && uiSession) {
       void uiSession.selectRasterMap(snapshot.selectedMapId).then((nextSnapshot) => {
-        setSessionSnapshot(nextSnapshot);
+        applySessionSnapshot(nextSnapshot, "restore_view_map");
       }).catch((error) => {
         setMapSelectorLoadError(`failed to restore map selector state: ${errorMessage(error)}`);
       });
@@ -2572,7 +2586,7 @@ export default function App() {
         snapshot.selectedAirportId || undefined,
         snapshot.selectedChartId || undefined,
       ).then((nextSnapshot) => {
-        setSessionSnapshot(nextSnapshot);
+        applySessionSnapshot(nextSnapshot, "restore_view_chart");
       }).catch(() => {});
     }
   }
@@ -2611,7 +2625,7 @@ export default function App() {
     }
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
-  }, []);
+  }, [applySessionSnapshot]);
 
   function navigateToPage(nextPage: AppPage) {
     if (nextPage === page) {
@@ -2693,7 +2707,7 @@ export default function App() {
         airportId,
         targetChartId,
       ).then((nextSnapshot) => {
-        setSessionSnapshot(nextSnapshot);
+        applySessionSnapshot(nextSnapshot, "open_plate_target");
       }).catch((error) => {
         debugLog("plates.open.target.failed", {
           airport_id: airportId,
@@ -2842,7 +2856,9 @@ export default function App() {
             if (!uiSession) {
               return;
             }
-            void uiSession.selectMapFamily(familyId).then(setSessionSnapshot).catch((error) => {
+            void uiSession.selectMapFamily(familyId).then((nextSnapshot) => {
+              applySessionSnapshot(nextSnapshot, "select_map_family");
+            }).catch((error) => {
               setMapSelectorLoadError(`failed to select map family: ${errorMessage(error)}`);
             });
           }}
@@ -2857,7 +2873,9 @@ export default function App() {
             if (!uiSession) {
               return;
             }
-            void uiSession.performStatusAction(actionId).then(setSessionSnapshot);
+            void uiSession.performStatusAction(actionId).then((nextSnapshot) => {
+              applySessionSnapshot(nextSnapshot, "status_action");
+            });
           }}
           plan={currentPlan}
           planUiState={planUiState}
@@ -2866,10 +2884,10 @@ export default function App() {
           mapFollowTargetViewport={sessionSnapshot.map_follow_target_viewport}
           playbackSourcePath={playbackSourcePath}
           onPlaybackSourcePathChange={setPlaybackSourcePath}
-          onPlaybackSnapshotChange={setSessionSnapshot}
+          onPlaybackSnapshotChange={applySessionSnapshotDispatch}
           onSituationControlInput={applySituationControlInput}
           uiSession={uiSession}
-          onExplicitSessionSnapshot={applyExplicitSessionSnapshot}
+          onSessionSnapshot={applySessionSnapshot}
           debugOpen={debugOpen}
           onDebugToggle={() => setDebugOpen((open) => !open)}
           onDebugFlagChange={(flagId, enabled) => void setDebugFlag(flagId, enabled)}
@@ -2919,7 +2937,7 @@ export default function App() {
                   selected_airport_id: nextSnapshot.chart_page_state.selected_airport_id,
                   selected_chart_id: nextSnapshot.chart_page_state.selected_chart_id,
                 });
-                setSessionSnapshot(nextSnapshot);
+                applySessionSnapshot(nextSnapshot, "open_charts");
               }).catch(() => {});
             }
             pushViewSnapshot({
@@ -2938,7 +2956,10 @@ export default function App() {
             if (!waypoint) {
               throw new Error(`Unknown waypoint ${airportId}`);
             }
-            await uiSession.insertWaypointAtFlightPlanRow(rowUid, before, waypoint);
+            applySessionSnapshot(
+              await uiSession.insertWaypointAtFlightPlanRow(rowUid, before, waypoint),
+              "insert_waypoint_at_row",
+            );
           }}
           onPreviewFlightPlanEntry={async (input) => {
             if (!uiSession) throw new Error("flight plan preview requires live core session");
@@ -2946,50 +2967,59 @@ export default function App() {
           }}
           onAppendFlightPlanEntry={async (input) => {
             if (!uiSession) return;
-            await uiSession.appendFlightPlanEntry(input);
+            applySessionSnapshot(await uiSession.appendFlightPlanEntry(input), "append_flight_plan_entry");
           }}
           onActivateNextLeg={async () => {
             if (!uiSession) return;
             const nextSnapshot = await uiSession.activateNextLeg();
-            applyExplicitSessionSnapshot(nextSnapshot, "activate_next_leg");
+            applySessionSnapshot(nextSnapshot, "activate_next_leg");
           }}
           onSuspendSequencing={async () => {
             if (!uiSession) return;
             const nextSnapshot = await uiSession.suspendSequencing();
-            applyExplicitSessionSnapshot(nextSnapshot, "suspend_sequencing");
+            applySessionSnapshot(nextSnapshot, "suspend_sequencing");
           }}
           onUnsuspendSequencing={async () => {
             if (!uiSession) return;
             const nextSnapshot = await uiSession.unsuspendSequencing();
-            applyExplicitSessionSnapshot(nextSnapshot, "unsuspend_sequencing");
+            applySessionSnapshot(nextSnapshot, "unsuspend_sequencing");
           }}
           onSequenceActiveLeg={async () => {
             if (!uiSession) return;
             const nextSnapshot = await uiSession.sequenceActiveLeg();
-            applyExplicitSessionSnapshot(nextSnapshot, "sequence_active_leg");
+            applySessionSnapshot(nextSnapshot, "sequence_active_leg");
           }}
           onRestoreDirectTo={async () => {
             if (!uiSession) return;
             const nextSnapshot = await uiSession.restoreDirectTo();
-            applyExplicitSessionSnapshot(nextSnapshot, "restore_direct_to");
+            applySessionSnapshot(nextSnapshot, "restore_direct_to");
           }}
           onPerformFlightPlanRowAction={async (rowUid, actionUid) => {
             if (!uiSession) return;
-            await uiSession.performFlightPlanRowAction(rowUid, actionUid);
+            applySessionSnapshot(
+              await uiSession.performFlightPlanRowAction(rowUid, actionUid),
+              "flight_plan_row_action",
+            );
           }}
           onInsertAirwayAtRow={async (rowUid, entryIndex, exitIndex, presentation) => {
             if (!uiSession) return;
-            await uiSession.insertAirwayAtFlightPlanRow(rowUid, presentation, entryIndex, exitIndex);
+            applySessionSnapshot(
+              await uiSession.insertAirwayAtFlightPlanRow(rowUid, presentation, entryIndex, exitIndex),
+              "insert_airway_at_row",
+            );
           }}
           onSelectProcedureAtRow={async (rowUid, airportId, procedureId, enrouteTransition) => {
             if (!uiSession) return;
-            await uiSession.selectProcedureAtFlightPlanRow(
-              rowUid,
-              airportId,
-              procedureId,
-              "approach",
-              null,
-              enrouteTransition,
+            applySessionSnapshot(
+              await uiSession.selectProcedureAtFlightPlanRow(
+                rowUid,
+                airportId,
+                procedureId,
+                "approach",
+                null,
+                enrouteTransition,
+              ),
+              "select_procedure_at_row",
             );
           }}
           debugWarningActive={debugWarningActive}
@@ -3020,7 +3050,7 @@ export default function App() {
             const airport = chartPageData.airports.find((entry) => entry.id === airportId);
             if (uiSession) {
               void uiSession.selectAirport(airportId).then((nextSnapshot) => {
-                setSessionSnapshot(nextSnapshot);
+                applySessionSnapshot(nextSnapshot, "select_airport");
               }).catch(() => {});
             }
             pushViewSnapshot({
@@ -3047,7 +3077,7 @@ export default function App() {
                   selected_airport_id: nextSnapshot.chart_page_state.selected_airport_id,
                   selected_chart_id: nextSnapshot.chart_page_state.selected_chart_id,
                 });
-                setSessionSnapshot(nextSnapshot);
+                applySessionSnapshot(nextSnapshot, "select_chart");
               }).catch(() => {});
             }
             pushViewSnapshot({
@@ -3064,7 +3094,7 @@ export default function App() {
           playbackPanelState={sessionSnapshot.playback_panel_state}
           playbackSourcePath={playbackSourcePath}
           onPlaybackSourcePathChange={setPlaybackSourcePath}
-          onPlaybackSnapshotChange={setSessionSnapshot}
+          onPlaybackSnapshotChange={applySessionSnapshotDispatch}
           onSituationControlInput={applySituationControlInput}
           debugState={sessionSnapshot.debug_state}
           uiSession={uiSession}
@@ -3135,7 +3165,7 @@ function MapPage(props: {
   onPlaybackSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
   onSituationControlInput: (input: SituationControlInput) => void;
   uiSession: UiSession | null;
-  onExplicitSessionSnapshot: (nextSnapshot: UiSessionSnapshot, source: string) => void;
+  onSessionSnapshot: (nextSnapshot: UiSessionSnapshot, source: string) => void;
   debugOpen: boolean;
   onDebugToggle: () => void;
   onDebugFlagChange: (flagId: DebugFlagId, enabled: boolean) => void;
@@ -5432,12 +5462,11 @@ function MapPage(props: {
                       if (!uiSession) {
                         throw new Error("map selection row action requires live core session");
                       }
-                      await uiSession.performFlightPlanRowAction(
+                      const nextSnapshot = await uiSession.performFlightPlanRowAction(
                         action.flight_plan_row_action.row_uid,
                         action.flight_plan_row_action.action_uid,
                       );
-                      const nextSnapshot = await uiSession.snapshot();
-                      props.onExplicitSessionSnapshot(nextSnapshot, "map_selection_row_action");
+                      props.onSessionSnapshot(nextSnapshot, "map_selection_row_action");
                       setMapSelection(null);
                     } catch (error) {
                       debugLog("map.selection.row_action.failed", {
@@ -5454,7 +5483,7 @@ function MapPage(props: {
                         throw new Error("map selection session action requires live core session");
                       }
                       const nextSnapshot = await uiSession.performMapSelectionAction(action.session_action);
-                      props.onExplicitSessionSnapshot(nextSnapshot, "map_selection_session_action");
+                      props.onSessionSnapshot(nextSnapshot, "map_selection_session_action");
                       setMapSelection(null);
                     } catch (error) {
                       debugLog("map.selection.session_action.failed", {
@@ -8672,7 +8701,8 @@ function ChartsPage(props: {
           if (!props.uiSession) {
             return;
           }
-          void props.uiSession.loadPlateProcedure(load.load_id).then(() => {
+          void props.uiSession.loadPlateProcedure(load.load_id).then((nextSnapshot) => {
+            props.onPlaybackSnapshotChange(nextSnapshot);
             trayGroup.close("load");
           }).catch(() => {});
         },

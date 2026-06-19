@@ -309,9 +309,6 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     latestSnapshot = await promise;
     return latestSnapshot;
   };
-  const updateSnapshotVoid = async (promise: Promise<UiSessionSnapshot>) => {
-    await updateSnapshot(promise);
-  };
   return {
     setInvalidationListener: (listener) => client.setSessionInvalidationListener(sessionId, listener),
     initialSnapshot: () => latestSnapshot,
@@ -321,15 +318,15 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     sessionSnapshotViewportActivity: () => call("sessionSnapshotViewportActivity"),
     sessionSnapshotRefreshCompleted: () => call("sessionSnapshotRefreshCompleted"),
     pollSessionSnapshotRefresh: () => call("pollSessionSnapshotRefresh"),
-    insertWaypointAtFlightPlanRow: (...args) => updateSnapshotVoid(call("insertWaypointAtFlightPlanRow", args)),
+    insertWaypointAtFlightPlanRow: (...args) => updateSnapshot(call("insertWaypointAtFlightPlanRow", args)),
     suggestWaypointIdentifiersAtFlightPlanRow: (...args) => call("suggestWaypointIdentifiersAtFlightPlanRow", args),
     previewFlightPlanEntry: (...args) => call("previewFlightPlanEntry", args),
-    appendFlightPlanEntry: (...args) => updateSnapshotVoid(call("appendFlightPlanEntry", args)),
-    insertAirwayAtFlightPlanRow: (...args) => updateSnapshotVoid(call("insertAirwayAtFlightPlanRow", args)),
-    selectProcedureAtFlightPlanRow: (...args) => updateSnapshotVoid(call("selectProcedureAtFlightPlanRow", args)),
-    loadPlateProcedure: (...args) => updateSnapshotVoid(call("loadPlateProcedure", args)),
+    appendFlightPlanEntry: (...args) => updateSnapshot(call("appendFlightPlanEntry", args)),
+    insertAirwayAtFlightPlanRow: (...args) => updateSnapshot(call("insertAirwayAtFlightPlanRow", args)),
+    selectProcedureAtFlightPlanRow: (...args) => updateSnapshot(call("selectProcedureAtFlightPlanRow", args)),
+    loadPlateProcedure: (...args) => updateSnapshot(call("loadPlateProcedure", args)),
     restoreDirectTo: () => updateSnapshot(call("restoreDirectTo")),
-    performFlightPlanRowAction: (...args) => updateSnapshotVoid(call("performFlightPlanRowAction", args)),
+    performFlightPlanRowAction: (...args) => updateSnapshot(call("performFlightPlanRowAction", args)),
     performStatusAction: (...args) => updateSnapshot(call("performStatusAction", args)),
     performMapSelectionAction: (...args) => updateSnapshot(call("performMapSelectionAction", args)),
     activateNextLeg: () => updateSnapshot(call("activateNextLeg")),

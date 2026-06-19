@@ -640,13 +640,6 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
-    private fun runPagedMutationAndRefresh(operation: () -> String): UiSessionSnapshot {
-        val store = navKvStore ?: error("nav_kv store is required for paged session mutation")
-        store.runPagedSessionOperationElement(operation = operation)
-        snapshot = decodeSnapshot(bridge.getSessionSnapshotAtEpochMsJson(handle, System.currentTimeMillis()))
-        return snapshot
-    }
-
     fun syncGuidanceGeometry(): UiSessionSnapshot {
         val store = navKvStore ?: return snapshot
         snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(
@@ -674,7 +667,7 @@ class NativeUiSession internal constructor(
     }
 
     fun performMapSelectionAction(action: String): UiSessionSnapshot {
-        return runPagedMutationAndRefresh {
+        return runPagedSnapshot {
             bridge.performMapSelectionActionInSessionJson(handle, action)
         }
     }
@@ -692,13 +685,13 @@ class NativeUiSession internal constructor(
     }
 
     fun loadPlateProcedure(loadId: String): UiSessionSnapshot {
-        return runPagedMutationAndRefresh {
+        return runPagedSnapshot {
             bridge.loadPlateProcedureInSessionJson(handle, loadId)
         }
     }
 
     fun insertWaypointAtFlightPlanRow(rowUid: String, before: Boolean, waypoint: NavRef): UiSessionSnapshot {
-        return runPagedMutationAndRefresh {
+        return runPagedSnapshot {
             bridge.insertWaypointAtFlightPlanRowInSessionJson(
                 handle,
                 rowUid,
@@ -738,7 +731,7 @@ class NativeUiSession internal constructor(
     }
 
     fun appendFlightPlanEntry(input: String): UiSessionSnapshot {
-        return runPagedMutationAndRefresh {
+        return runPagedSnapshot {
             bridge.appendFlightPlanEntryInSessionJson(handle, input)
         }
     }
@@ -749,7 +742,7 @@ class NativeUiSession internal constructor(
         entryIndex: Int,
         exitIndex: Int,
     ): UiSessionSnapshot {
-        return runPagedMutationAndRefresh {
+        return runPagedSnapshot {
             bridge.insertAirwayAtFlightPlanRowInSessionJson(
                 handle,
                 rowUid,
@@ -768,7 +761,7 @@ class NativeUiSession internal constructor(
         runwayTransition: String?,
         enrouteTransition: String?,
     ): UiSessionSnapshot {
-        return runPagedMutationAndRefresh {
+        return runPagedSnapshot {
             bridge.selectProcedureAtFlightPlanRowInSessionJson(
                 handle,
                 rowUid,
@@ -942,7 +935,7 @@ class NativeUiSession internal constructor(
     }
 
     fun performFlightPlanRowAction(rowUid: String, actionUid: String): UiSessionSnapshot {
-        return runPagedMutationAndRefresh {
+        return runPagedSnapshot {
             bridge.performFlightPlanRowActionInSessionJson(handle, rowUid, actionUid)
         }
     }
@@ -1927,6 +1920,7 @@ private data class WireUiPlaybackPanelState(
 
 @kotlinx.serialization.Serializable
 private data class WireUiSessionSnapshot(
+    val session_revision: Long = 0,
     val app_state: WireUiSnapshotAppState,
     val app_ui_state: WireAppUiState = WireAppUiState(),
     val playback_ui_state: WirePlaybackUiState = WirePlaybackUiState(),
@@ -2007,6 +2001,7 @@ data class DerivedChartPageState(
 )
 
 data class UiSessionSnapshot(
+    val sessionRevision: Long,
     val appState: UiSnapshotAppState,
     val appUiState: AppUiState,
     val playbackUiState: PlaybackUiState,
@@ -2302,6 +2297,7 @@ private fun WireUiPlaybackPanelState.toUi() = UiPlaybackPanelState(
 )
 
 private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
+    sessionRevision = session_revision,
     appState = app_state.toUi(),
     appUiState = app_ui_state.toUi(),
     playbackUiState = playback_ui_state.toUi(),

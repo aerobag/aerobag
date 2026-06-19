@@ -184,10 +184,20 @@ impl DaemonStatus {
 
     fn record_tick_result(&self, result: &LiveFeedTickResult) {
         for update in &result.published {
+            self.record_product_seen(update);
             if !update.unchanged {
                 self.record_product_update(update);
             }
         }
+    }
+
+    fn record_product_seen(&self, update: &PublishedLiveFeedUpdate) {
+        self.inner
+            .lock()
+            .expect("live-feed status lock")
+            .products
+            .entry(update.product.clone())
+            .or_default();
     }
 
     fn record_product_update(&self, update: &PublishedLiveFeedUpdate) {
@@ -1783,6 +1793,33 @@ mod tests {
         assert!(response.contains("Content-Type: text/html"), "{response}");
         assert!(response.contains("Aerobag Live Feeds"), "{response}");
         Ok(())
+    }
+
+    #[test]
+    fn status_includes_unchanged_published_products() {
+        let status = DaemonStatus::default();
+        status.record_tick_result(&LiveFeedTickResult {
+            published: vec![PublishedLiveFeedUpdate {
+                product: "metars".to_string(),
+                version: "v1".to_string(),
+                unchanged: true,
+                state_path: PathBuf::from("states/metars/v1.json"),
+                version_manifest_path: PathBuf::from("versions/metars/v1.json"),
+                version_manifest_url: "versions/metars/v1.json".to_string(),
+                state_url: "states/metars/v1.json".to_string(),
+                state_sha256: "sha".to_string(),
+                published_at_utc: None,
+                collected_at_utc: None,
+                delta_path: None,
+                changed_count: 0,
+                removed_count: 0,
+            }],
+            failures: Vec::new(),
+        });
+
+        let snapshot = status.snapshot();
+        let metars = snapshot.products.get("metars").expect("METAR status");
+        assert!(metars.samples.is_empty());
     }
 
     #[test]
